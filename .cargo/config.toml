@@ -1,0 +1,5 @@
+[env]
+SQLX_OFFLINE = "true"
+
+[build]
+rustflags = ["-D", "warnings"]
