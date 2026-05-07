@@ -24,7 +24,7 @@ meridian.db-wal
 #.idea/
 
 # Cargo local config — ignore cache but track config.toml
-.cargo/
+.cargo/*
 !.cargo/config.toml
 
 # AI tooling metadata
