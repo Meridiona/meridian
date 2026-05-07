@@ -11,7 +11,8 @@ import { formatDuration, formatTime } from '@/lib/format'
 const HOUR_LABELS = [6, 9, 12, 15, 18, 21]
 
 function toEpochS(iso: string): number {
-  return Math.floor(new Date(iso).getTime() / 1000)
+  const t = Math.floor(new Date(iso).getTime() / 1000)
+  return isFinite(t) ? t : 0
 }
 
 interface Segment {
@@ -73,11 +74,13 @@ export default function DayTimeline({ data, activeSession }: DayTimelineProps) {
   ]
 
   function getLeft(startS: number): number {
-    return Math.max(0, ((startS - day_start_s) / spanS) * 100)
+    const v = ((startS - day_start_s) / spanS) * 100
+    return isFinite(v) ? Math.max(0, v) : 0
   }
 
   function getWidth(durationS: number): number {
-    return Math.max(0, (durationS / spanS) * 100)
+    const v = (durationS / spanS) * 100
+    return isFinite(v) ? Math.max(0, v) : 0
   }
 
   function handleMouseEnter(e: React.MouseEvent, segment: Segment) {
