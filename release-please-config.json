@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "packages": {
+    ".": {
+      "release-type": "rust",
+      "package-name": "meridian",
+      "changelog-sections": [
+        { "type": "feat",     "section": "Features" },
+        { "type": "fix",      "section": "Bug Fixes" },
+        { "type": "perf",     "section": "Performance" },
+        { "type": "revert",   "section": "Reverts" },
+        { "type": "docs",     "section": "Documentation", "hidden": true },
+        { "type": "chore",    "section": "Miscellaneous",  "hidden": true },
+        { "type": "refactor", "section": "Miscellaneous",  "hidden": true },
+        { "type": "test",     "section": "Miscellaneous",  "hidden": true },
+        { "type": "ci",       "section": "Miscellaneous",  "hidden": true }
+      ],
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true
+    }
+  }
+}
