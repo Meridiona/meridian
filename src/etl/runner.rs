@@ -7,7 +7,7 @@ use tracing::{debug, info, warn};
 
 use crate::db::meridian::{
     close_active_session, complete_etl_run, get_active_session, get_cursor, insert_etl_run,
-    insert_idle_session, update_cursor, upsert_active_session, ActiveSession,
+    update_cursor, upsert_active_session, ActiveSession,
 };
 use crate::db::screenpipe::{
     get_frames_since, AudioSnippet, ElementSample, OcrSample, SignalEvent, WindowTitleCount,
@@ -20,9 +20,6 @@ use crate::etl::extractor::extract_block_context;
 
 const BATCH_SIZE: i64 = 500;
 const OCR_SAMPLE_CAP: usize = 20;
-/// Timestamp gap (seconds) between consecutive frames that indicates sleep or screen-lock.
-/// Screenpipe pauses capture on both, so any gap this large means the machine was not active.
-const IDLE_GAP_SECS: i64 = 300;
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -83,15 +80,8 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
 
         loop {
             for frame in &batch {
-                // --- Effective app: capture_trigger='idle' overrides the app name ---
-                let raw_app = frame.app_name.trim();
-                let effective_app = if frame.capture_trigger.as_deref() == Some("idle") {
-                    "(idle)"
-                } else {
-                    raw_app
-                };
-
-                if effective_app.is_empty() {
+                let app = frame.app_name.trim();
+                if app.is_empty() {
                     // Extend whatever block is open without changing the app.
                     if current_app.is_some() {
                         block_frame_count += 1;
@@ -102,60 +92,11 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                     continue;
                 }
 
-                // --- Sleep / screen-lock gap detection ---
-                if current_app.is_some() {
-                    if let Some(gap) = timestamp_gap_secs(&block_last_ts, &frame.timestamp) {
-                        if gap > IDLE_GAP_SECS {
-                            let open_app = current_app.take().unwrap();
-                            let idle_started = block_last_ts.clone();
-                            let idle_min_frame = block_last_frame_id;
-
-                            info!(
-                                app = open_app,
-                                gap_secs = gap,
-                                "sleep/lock gap — closing block and inserting idle session"
-                            );
-
-                            sessions_closed += close_block(
-                                screenpipe,
-                                meridian,
-                                run_id,
-                                &BlockBounds {
-                                    app: &open_app,
-                                    started_at: &block_start_ts,
-                                    ended_at: &block_last_ts,
-                                    min_frame_id: block_start_frame_id,
-                                    max_frame_id: block_last_frame_id,
-                                    frame_count: block_frame_count,
-                                },
-                            )
-                            .await?;
-
-                            block_start_frame_id = 0;
-                            block_start_ts = String::new();
-                            block_frame_count = 0;
-                            block_last_ts = String::new();
-                            block_last_frame_id = 0;
-
-                            insert_idle_session(
-                                meridian,
-                                &idle_started,
-                                &frame.timestamp,
-                                idle_min_frame,
-                                frame.id,
-                                run_id,
-                            )
-                            .await?;
-                            sessions_closed += 1;
-                        }
-                    }
-                }
-
-                // --- App-switch / idle-trigger state machine ---
                 match current_app.as_deref() {
                     None => {
-                        debug!(frame_id = frame.id, app = effective_app, "starting block");
-                        current_app = Some(effective_app.to_owned());
+                        // Very first frame — start a block.
+                        debug!(frame_id = frame.id, app, "first frame — starting block");
+                        current_app = Some(app.to_owned());
                         block_start_frame_id = frame.id;
                         block_start_ts = frame.timestamp.clone();
                         block_frame_count = 1;
@@ -163,21 +104,24 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                         block_last_frame_id = frame.id;
                     }
 
-                    Some(cur) if cur == effective_app => {
+                    Some(cur) if cur == app => {
+                        // Same app — extend the current block.
                         block_frame_count += 1;
                         block_last_ts = frame.timestamp.clone();
                         block_last_frame_id = frame.id;
                     }
 
                     Some(cur) => {
+                        // App changed.
                         let old_app = cur.to_owned();
                         debug!(
                             old_app = old_app,
-                            new_app = effective_app,
+                            new_app = app,
                             frame_id = frame.id,
                             "app changed — closing block"
                         );
 
+                        // Close the old block.
                         sessions_closed += close_block(
                             screenpipe,
                             meridian,
@@ -193,7 +137,8 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                         )
                         .await?;
 
-                        current_app = Some(effective_app.to_owned());
+                        // Start fresh block for the new app.
+                        current_app = Some(app.to_owned());
                         block_start_frame_id = frame.id;
                         block_start_ts = frame.timestamp.clone();
                         block_frame_count = 1;
@@ -494,14 +439,4 @@ fn merge_into_active(existing: &ActiveSession, ctx: &BlockContext) -> Result<Act
         max_frame_id: ctx.max_frame_id,
         frame_count: existing.frame_count + ctx.frame_count,
     })
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn timestamp_gap_secs(from: &str, to: &str) -> Option<i64> {
-    let a = chrono::DateTime::parse_from_rfc3339(from).ok()?;
-    let b = chrono::DateTime::parse_from_rfc3339(to).ok()?;
-    Some((b - a).num_seconds())
 }
