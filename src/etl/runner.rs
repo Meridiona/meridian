@@ -51,7 +51,10 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
     }
 
     // We now know the approximate upper bound for the audit row.
-    let approx_to_frame_id = first_batch.last().map(|f| f.id).unwrap_or(last_processed_id);
+    let approx_to_frame_id = first_batch
+        .last()
+        .map(|f| f.id)
+        .unwrap_or(last_processed_id);
 
     // ------------------------------------------------------------------
     // 3. Insert ETL run (status = running)
@@ -265,7 +268,10 @@ async fn close_block(
             let new_session = build_active_session(&ctx)?;
             upsert_active_session(meridian, &new_session).await?;
             close_active_session(meridian, run_id).await?;
-            info!(app = old_app, "session closed (fresh, after evicting stale)");
+            info!(
+                app = old_app,
+                "session closed (fresh, after evicting stale)"
+            );
             Ok(2) // Two sessions closed in this call.
         }
 

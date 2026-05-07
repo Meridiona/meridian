@@ -16,8 +16,7 @@ async fn main() -> Result<()> {
     // 1. Tracing — respect RUST_LOG; default to "meridian=info"
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("meridian=info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("meridian=info")),
         )
         .init();
 
@@ -58,7 +57,10 @@ async fn main() -> Result<()> {
     // 7a. Clean up any runs left in 'running' state from a previous crash.
     match cleanup_incomplete_runs(&meridian).await {
         Ok(0) => {}
-        Ok(n) => tracing::warn!(deleted_partial_sessions = n, "cleaned up incomplete ETL run"),
+        Ok(n) => tracing::warn!(
+            deleted_partial_sessions = n,
+            "cleaned up incomplete ETL run"
+        ),
         Err(e) => tracing::error!("cleanup_incomplete_runs failed: {}", e),
     }
 

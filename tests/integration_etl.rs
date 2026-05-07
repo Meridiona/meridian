@@ -33,12 +33,10 @@ async fn make_screenpipe_db() -> SqlitePool {
     .execute(&pool)
     .await
     .unwrap();
-    sqlx::query(
-        "CREATE TABLE ocr_text (id INTEGER PRIMARY KEY, frame_id INTEGER, text TEXT)",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("CREATE TABLE ocr_text (id INTEGER PRIMARY KEY, frame_id INTEGER, text TEXT)")
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query(
         "CREATE TABLE elements (
             id INTEGER PRIMARY KEY,
@@ -86,13 +84,15 @@ async fn make_screenpipe_db() -> SqlitePool {
 
 async fn insert_frames(pool: &SqlitePool, frames: &[(&str, &str)]) {
     for (i, (app, ts)) in frames.iter().enumerate() {
-        sqlx::query("INSERT INTO frames (id, app_name, window_name, timestamp) VALUES (?, ?, NULL, ?)")
-            .bind(i as i64 + 1)
-            .bind(app)
-            .bind(ts)
-            .execute(pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO frames (id, app_name, window_name, timestamp) VALUES (?, ?, NULL, ?)",
+        )
+        .bind(i as i64 + 1)
+        .bind(app)
+        .bind(ts)
+        .execute(pool)
+        .await
+        .unwrap();
     }
 }
 
