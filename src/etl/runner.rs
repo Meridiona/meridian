@@ -126,12 +126,14 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                             screenpipe,
                             meridian,
                             run_id,
-                            &old_app,
-                            &block_start_ts,
-                            &block_last_ts,
-                            block_start_frame_id,
-                            block_last_frame_id,
-                            block_frame_count,
+                            &BlockBounds {
+                                app: &old_app,
+                                started_at: &block_start_ts,
+                                ended_at: &block_last_ts,
+                                min_frame_id: block_start_frame_id,
+                                max_frame_id: block_last_frame_id,
+                                frame_count: block_frame_count,
+                            },
                         )
                         .await?;
 
@@ -165,12 +167,14 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                     screenpipe,
                     meridian,
                     run_id,
-                    open_app,
-                    &block_start_ts,
-                    &block_last_ts,
-                    block_start_frame_id,
-                    block_last_frame_id,
-                    block_frame_count,
+                    &BlockBounds {
+                        app: open_app,
+                        started_at: &block_start_ts,
+                        ended_at: &block_last_ts,
+                        min_frame_id: block_start_frame_id,
+                        max_frame_id: block_last_frame_id,
+                        frame_count: block_frame_count,
+                    },
                 )
                 .await?;
             }
@@ -204,83 +208,71 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
 }
 
 // ---------------------------------------------------------------------------
+// BlockBounds — groups the positional fields shared by close_block /
+// upsert_open_block so both stay under clippy's 7-argument limit.
+// ---------------------------------------------------------------------------
+
+struct BlockBounds<'a> {
+    app: &'a str,
+    started_at: &'a str,
+    ended_at: &'a str,
+    min_frame_id: i64,
+    max_frame_id: i64,
+    frame_count: i64,
+}
+
+// ---------------------------------------------------------------------------
 // close_block
 // ---------------------------------------------------------------------------
 
-/// Handles the transition when `old_app`'s block has ended:
-///
-/// - If the meridian `active_session` row exists and belongs to `old_app`,
-///   merge the new block context into it then close the merged session.
-/// - Otherwise (different app or no row), close any existing active_session
-///   that belongs to a different app first, then start a new active_session
-///   for `old_app` and immediately close it.
-///
-/// Returns 1 if a session was closed into `app_sessions`, 0 if just upserted.
 async fn close_block(
     screenpipe: &SqlitePool,
     meridian: &SqlitePool,
     run_id: i64,
-    old_app: &str,
-    started_at: &str,
-    ended_at: &str,
-    min_frame_id: i64,
-    max_frame_id: i64,
-    frame_count: i64,
+    b: &BlockBounds<'_>,
 ) -> Result<i64> {
-    // Fetch the new block's enrichment context.
     let ctx = extract_block_context(
         screenpipe,
-        old_app,
-        started_at,
-        ended_at,
-        min_frame_id,
-        max_frame_id,
-        frame_count,
+        b.app,
+        b.started_at,
+        b.ended_at,
+        b.min_frame_id,
+        b.max_frame_id,
+        b.frame_count,
     )
     .await?;
 
     let existing = get_active_session(meridian).await?;
 
     match existing {
-        Some(ref active) if active.app_name == old_app => {
-            // Same app continues from a previous ETL run — merge & close.
-            debug!(
-                app = old_app,
-                "active_session exists for same app — merging and closing"
-            );
+        Some(ref active) if active.app_name == b.app => {
+            debug!(app = b.app, "merging and closing continuation block");
             let merged = merge_into_active(active, &ctx)?;
             upsert_active_session(meridian, &merged).await?;
             close_active_session(meridian, run_id).await?;
-            info!(app = old_app, "session closed (merged continuation)");
+            info!(app = b.app, "session closed (merged continuation)");
             Ok(1)
         }
 
         Some(ref active) => {
-            // A different app is currently open — close it first, then close ours.
             warn!(
                 stale_app = active.app_name,
-                new_app = old_app,
-                "stale active_session for different app — closing stale session first"
+                new_app = b.app,
+                "stale active_session — closing stale first"
             );
             close_active_session(meridian, run_id).await?;
-
-            // Now write and immediately close the old_app block.
             let new_session = build_active_session(&ctx)?;
             upsert_active_session(meridian, &new_session).await?;
             close_active_session(meridian, run_id).await?;
-            info!(
-                app = old_app,
-                "session closed (fresh, after evicting stale)"
-            );
-            Ok(2) // Two sessions closed in this call.
+            info!(app = b.app, "session closed (fresh, after evicting stale)");
+            Ok(2)
         }
 
         None => {
-            // No active session — write and immediately close.
             let new_session = build_active_session(&ctx)?;
             upsert_active_session(meridian, &new_session).await?;
             close_active_session(meridian, run_id).await?;
-            info!(app = old_app, "session closed");
+            info!(app = b.app, "session closed");
             Ok(1)
         }
     }
@@ -290,48 +282,37 @@ async fn close_block(
 // upsert_open_block
 // ---------------------------------------------------------------------------
 
-/// Upserts the still-open block at the end of a batch cycle into
-/// `active_session`, merging with any existing row for the same app.
-///
-/// Returns 0 — no session is closed, only the running row is updated.
 async fn upsert_open_block(
     screenpipe: &SqlitePool,
     meridian: &SqlitePool,
     run_id: i64,
-    app: &str,
-    started_at: &str,
-    last_ts: &str,
-    min_frame_id: i64,
-    max_frame_id: i64,
-    frame_count: i64,
+    b: &BlockBounds<'_>,
 ) -> Result<i64> {
     let ctx = extract_block_context(
         screenpipe,
-        app,
-        started_at,
-        last_ts,
-        min_frame_id,
-        max_frame_id,
-        frame_count,
+        b.app,
+        b.started_at,
+        b.ended_at,
+        b.min_frame_id,
+        b.max_frame_id,
+        b.frame_count,
     )
     .await?;
 
     let existing = get_active_session(meridian).await?;
 
     let session = match existing {
-        Some(ref active) if active.app_name == app => {
-            debug!(app, "merging new frames into existing active_session");
+        Some(ref active) if active.app_name == b.app => {
+            debug!(app = b.app, "merging new frames into existing active_session");
             merge_into_active(active, &ctx)?
         }
 
         Some(ref active) => {
-            // Different app was open — close it first, then upsert the new one.
             warn!(
                 stale_app = active.app_name,
-                new_app = app,
-                "stale active_session for different app while upserting open block"
+                new_app = b.app,
+                "stale active_session while upserting open block"
             );
-            // Evict the stale session into app_sessions so nothing is lost.
             close_active_session(meridian, run_id).await?;
             build_active_session(&ctx)?
         }
@@ -340,7 +321,7 @@ async fn upsert_open_block(
     };
 
     upsert_active_session(meridian, &session).await?;
-    debug!(app, max_frame_id, "active_session upserted");
+    debug!(app = b.app, max_frame_id = b.max_frame_id, "active_session upserted");
     Ok(0)
 }
 
@@ -372,17 +353,17 @@ fn build_active_session(ctx: &BlockContext) -> Result<ActiveSession> {
 /// returns the updated session.
 ///
 /// Merge rules:
-/// - `started_at`:    kept from the existing session (the block started earlier).
-/// - `last_seen_at`:  set to now.
-/// - `min_frame_id`:  kept from the existing session.
-/// - `max_frame_id`:  updated to the new block's max.
-/// - `frame_count`:   summed.
-/// - `window_titles`: counts from identical titles are incremented; new titles
-///                    are appended.
-/// - `ocr_samples`:   appended, capped at `OCR_SAMPLE_CAP` (20) total.
+///
+/// - `started_at`: kept from the existing session (the block started earlier).
+/// - `last_seen_at`: set to now.
+/// - `min_frame_id`: kept from the existing session.
+/// - `max_frame_id`: updated to the new block's max.
+/// - `frame_count`: summed.
+/// - `window_titles`: counts from identical titles are incremented; new titles are appended.
+/// - `ocr_samples`: appended, capped at `OCR_SAMPLE_CAP` (20) total.
 /// - `elements_samples`: appended, capped at `OCR_SAMPLE_CAP` (20) total.
 /// - `audio_snippets`: all new snippets appended (no cap — audio is sparse).
-/// - `signals`:       all new signals appended.
+/// - `signals`: all new signals appended.
 fn merge_into_active(existing: &ActiveSession, ctx: &BlockContext) -> Result<ActiveSession> {
     let now = ctx.ended_at.clone();
 
