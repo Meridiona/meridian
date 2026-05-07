@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# meridian — normalises screenpipe activity into structured app sessions
+# Note: run `chmod +x .githooks/pre-commit` after cloning to make this executable
+set -e
+export SQLX_OFFLINE=true
+echo "Running cargo fmt check..."
+cargo fmt --check || { echo "Run 'cargo fmt' before committing"; exit 1; }
+echo "Running cargo clippy..."
+cargo clippy -- -D warnings || { echo "Fix clippy warnings before committing"; exit 1; }
