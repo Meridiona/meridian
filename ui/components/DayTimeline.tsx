@@ -40,10 +40,13 @@ export default function DayTimeline({ data, activeSession }: DayTimelineProps) {
   const spanS = Math.max(day_end_s - day_start_s, 1)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  const [nowS, setNowS] = useState(() => Math.floor(Date.now() / 1000))
+  // Initialize to 0 on both server and client to avoid hydration mismatch.
+  // useEffect sets the real value after first paint.
+  const [nowS, setNowS] = useState(0)
   const [tooltip, setTooltip] = useState<TooltipState | null>(null)
 
   useEffect(() => {
+    setNowS(Math.floor(Date.now() / 1000))
     const id = setInterval(() => setNowS(Math.floor(Date.now() / 1000)), 1000)
     return () => clearInterval(id)
   }, [])
@@ -63,7 +66,7 @@ export default function DayTimeline({ data, activeSession }: DayTimelineProps) {
       app_name: activeSession.app_name,
       started_at: activeSession.started_at,
       ended_at: undefined,
-      duration_s: nowS - toEpochS(activeSession.started_at),
+      duration_s: Math.max(0, nowS - toEpochS(activeSession.started_at)),
       window_titles: activeSession.window_titles,
       isActive: true,
     }] : []),
