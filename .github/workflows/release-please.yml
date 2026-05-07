@@ -1,0 +1,50 @@
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name:        ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # Build release binaries only when release-please actually cut a release.
+  build-release:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    env:
+      SQLX_OFFLINE: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Upload binary to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          files: target/release/meridian
