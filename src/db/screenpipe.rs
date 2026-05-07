@@ -17,6 +17,7 @@ pub struct FrameRow {
     pub app_name: String,
     pub window_name: Option<String>,
     pub timestamp: String,
+    pub capture_trigger: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,8 +80,8 @@ pub async fn get_frames_since(
     after_frame_id: i64,
     limit: i64,
 ) -> Result<Vec<FrameRow>> {
-    let rows = sqlx::query_as::<_, (i64, String, Option<String>, String)>(
-        "SELECT id, app_name, window_name, timestamp
+    let rows = sqlx::query_as::<_, (i64, String, Option<String>, String, Option<String>)>(
+        "SELECT id, app_name, window_name, timestamp, capture_trigger
          FROM frames
          WHERE id > ? AND app_name IS NOT NULL AND app_name != ''
          ORDER BY id ASC
@@ -93,11 +94,12 @@ pub async fn get_frames_since(
 
     let result = rows
         .into_iter()
-        .map(|(id, app_name, window_name, timestamp)| FrameRow {
+        .map(|(id, app_name, window_name, timestamp, capture_trigger)| FrameRow {
             id,
             app_name,
             window_name,
             timestamp,
+            capture_trigger,
         })
         .collect();
 

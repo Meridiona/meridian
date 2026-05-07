@@ -27,7 +27,8 @@ async fn make_screenpipe_db() -> SqlitePool {
             id INTEGER PRIMARY KEY,
             app_name TEXT,
             window_name TEXT,
-            timestamp TEXT NOT NULL
+            timestamp TEXT NOT NULL,
+            capture_trigger TEXT
         )",
     )
     .execute(&pool)
