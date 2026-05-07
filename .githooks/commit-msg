@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# meridian — normalises screenpipe activity into structured app sessions
+
+COMMIT_MSG=$(cat "$1")
+
+# Skip merge commits, reverts, fixups, and WIP squash commits
+if echo "$COMMIT_MSG" | grep -qE "^(Merge|Revert|fixup!|squash!)"; then
+  exit 0
+fi
+
+# Conventional Commits: type[(scope)][!]: description
+PATTERN='^(feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert)(\([a-zA-Z0-9_/,-]+\))?(!)?: .{1,}'
+
+if ! echo "$COMMIT_MSG" | grep -qE "$PATTERN"; then
+  echo ""
+  echo "ERROR: commit message does not follow Conventional Commits."
+  echo ""
+  echo "  Format : <type>(<scope>): <description>"
+  echo "  Example: feat(etl): add frame deduplication"
+  echo "  Example: fix: handle missing app_name in frames"
+  echo "  Example: feat!: drop support for screenpipe < 0.28  (breaking change)"
+  echo ""
+  echo "  Types  : feat fix docs style refactor perf test chore ci build revert"
+  echo ""
+  echo "  Your message: $COMMIT_MSG"
+  echo ""
+  exit 1
+fi
