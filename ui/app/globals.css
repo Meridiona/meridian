@@ -1,0 +1,34 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+
+  --color-paper: #F8F7F4;
+  --color-ink: #141414;
+  --color-accent: #FF6B2B;
+  --color-muted: #E8E6E1;
+  --color-muted-2: #D4D1CB;
+  --color-idle: #9B9A97;
+  --color-success: #22C55E;
+  --color-surface: #FFFFFF;
+}
+
+@keyframes meridian-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.65; }
+}
+
+.animate-meridian-pulse {
+  animation: meridian-pulse 2.4s ease-in-out infinite;
+}
+
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background-color: #FF6B2B;
+  color: #ffffff;
+}
