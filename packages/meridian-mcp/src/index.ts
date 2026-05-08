@@ -14,6 +14,7 @@ import Database from "better-sqlite3";
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
+import { runInstaller } from "./install.js";
 
 function getDbPath(): string {
   return process.env.MERIDIAN_DB ?? path.join(os.homedir(), ".meridian", "meridian.db");
@@ -591,6 +592,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 async function main() {
+  if (process.argv[2] === "install") {
+    runInstaller();
+    return;
+  }
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("Meridian MCP server running on stdio");

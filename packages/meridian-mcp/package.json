@@ -4,11 +4,13 @@
   "description": "MCP server for Meridian — query app sessions, focus time, and activity data",
   "main": "dist/index.js",
   "bin": {
-    "meridian-mcp": "dist/index.js"
+    "meridian-mcp": "dist/index.js",
+    "meridian-mcp-install": "dist/install.js"
   },
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
+    "install-mcp": "node dist/install.js",
     "dev": "ts-node src/index.ts",
     "prepublishOnly": "npm run build"
   },
