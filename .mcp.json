@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "meridian": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "meridian-mcp@latest"
+      ]
+    }
+  }
+}

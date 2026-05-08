@@ -6,6 +6,7 @@ import * as path from "path";
 import * as os from "os";
 
 type McpEntry = {
+  type?: string;
   command: string;
   args: string[];
   env?: Record<string, string>;
@@ -18,7 +19,7 @@ type McpConfig = {
 
 // ─── Config paths ─────────────────────────────────────────────────────────────
 
-function getClaudeConfigPath(): string {
+function getClaudeDesktopConfigPath(): string {
   const home = os.homedir();
   if (process.platform === "win32") {
     const appData = process.env.APPDATA ?? path.join(home, "AppData", "Roaming");
@@ -31,6 +32,16 @@ function getClaudeConfigPath(): string {
   return path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json");
 }
 
+// ~/.claude.json — Claude Code (CLI) user-level MCPs
+function getClaudeCodeUserConfigPath(): string {
+  return path.join(os.homedir(), ".claude.json");
+}
+
+// .mcp.json in cwd — Claude Code project-level MCPs
+function getProjectMcpConfigPath(): string {
+  return path.join(process.cwd(), ".mcp.json");
+}
+
 function getCursorConfigPath(): string {
   return path.join(os.homedir(), ".cursor", "mcp.json");
 }
@@ -41,20 +52,21 @@ function getWindsurfConfigPath(): string {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function readConfig(filePath: string): McpConfig {
+function readJson(filePath: string): Record<string, unknown> {
   try {
     if (fs.existsSync(filePath)) {
-      return JSON.parse(fs.readFileSync(filePath, "utf-8")) as McpConfig;
+      return JSON.parse(fs.readFileSync(filePath, "utf-8")) as Record<string, unknown>;
     }
-  } catch { /* ignore parse errors — treat as empty */ }
+  } catch { /* treat as empty on parse error */ }
   return {};
 }
 
-function writeConfig(filePath: string, config: McpConfig): void {
+function writeJson(filePath: string, data: Record<string, unknown>): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(config, null, 2) + "\n", "utf-8");
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n", "utf-8");
 }
 
+// Standard entry for Claude Desktop, Cursor, Windsurf, .mcp.json
 function buildEntry(): McpEntry {
   const entry: McpEntry = { command: "npx", args: ["-y", "meridian-mcp@latest"] };
   const dbPath = process.env.MERIDIAN_DB;
@@ -62,13 +74,32 @@ function buildEntry(): McpEntry {
   return entry;
 }
 
-function installInto(configPath: string): { updated: boolean } {
-  const config = readConfig(configPath);
+// Claude Code user-level entry — needs "type": "stdio" and always has env key
+function buildClaudeCodeEntry(): McpEntry {
+  const entry: McpEntry = {
+    type: "stdio",
+    command: "npx",
+    args: ["-y", "meridian-mcp@latest"],
+    env: {},
+  };
+  const dbPath = process.env.MERIDIAN_DB;
+  if (dbPath) entry.env = { MERIDIAN_DB: dbPath };
+  return entry;
+}
+
+function installMcpServers(configPath: string, entry: McpEntry): { updated: boolean } {
+  const config = readJson(configPath);
   if (!config.mcpServers || typeof config.mcpServers !== "object") config.mcpServers = {};
-  const updated = !!config.mcpServers["meridian"];
-  config.mcpServers["meridian"] = buildEntry();
-  writeConfig(configPath, config);
+  const servers = config.mcpServers as Record<string, McpEntry>;
+  const updated = !!servers["meridian"];
+  servers["meridian"] = entry;
+  writeJson(configPath, config);
   return { updated };
+}
+
+// For ~/.claude.json the mcpServers lives at the TOP LEVEL (not nested in a project)
+function installClaudeCodeUser(configPath: string): { updated: boolean } {
+  return installMcpServers(configPath, buildClaudeCodeEntry());
 }
 
 // ─── Installer ────────────────────────────────────────────────────────────────
@@ -76,47 +107,64 @@ function installInto(configPath: string): { updated: boolean } {
 export function runInstaller(): void {
   console.log("\nMeridian MCP Installer\n");
 
-  const targets: Array<{ name: string; path: string }> = [
-    { name: "Claude Desktop", path: getClaudeConfigPath() },
-    { name: "Cursor", path: getCursorConfigPath() },
-    { name: "Windsurf", path: getWindsurfConfigPath() },
-  ];
-
   let any = false;
 
-  for (const { name, path: configPath } of targets) {
-    // Only install into Cursor/Windsurf if their config dir already exists
-    const dir = path.dirname(configPath);
-    if (name !== "Claude Desktop" && !fs.existsSync(dir)) continue;
-
+  function tryInstall(
+    name: string,
+    configPath: string,
+    installer: (p: string) => { updated: boolean },
+    requireDirExists = false,
+  ): void {
+    if (requireDirExists && !fs.existsSync(path.dirname(configPath))) return;
     try {
-      const { updated } = installInto(configPath);
+      const { updated } = installer(configPath);
       any = true;
-      console.log(`  ${updated ? "↻ Updated" : "✓ Installed"} ${name}`);
+      const verb = updated ? "↻ Updated " : "✓ Installed";
+      console.log(`  ${verb} ${name}`);
       console.log(`    ${configPath}`);
     } catch (err) {
       console.log(`  ✗ ${name} — ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
+  // Claude Code — user level (~/.claude.json)
+  tryInstall("Claude Code (user)", getClaudeCodeUserConfigPath(), installClaudeCodeUser, false);
+
+  // Claude Code — project level (.mcp.json in cwd)
+  tryInstall(
+    "Claude Code (project)",
+    getProjectMcpConfigPath(),
+    (p) => installMcpServers(p, buildEntry()),
+    false,
+  );
+
+  // Claude Desktop
+  tryInstall("Claude Desktop", getClaudeDesktopConfigPath(), (p) => installMcpServers(p, buildEntry()), false);
+
+  // Cursor — only if ~/.cursor exists
+  tryInstall("Cursor", getCursorConfigPath(), (p) => installMcpServers(p, buildEntry()), true);
+
+  // Windsurf — only if ~/.codeium/windsurf exists
+  tryInstall("Windsurf", getWindsurfConfigPath(), (p) => installMcpServers(p, buildEntry()), true);
+
   console.log();
 
   if (any) {
-    console.log("Restart Claude Desktop / Cursor / Windsurf to activate the MCP server.");
+    console.log("Done. Restart any open clients to activate the server.");
     console.log();
     console.log("Available tools:");
-    console.log("  get-sessions      — list app sessions by date");
-    console.log("  get-timeline      — chronological day view with gaps");
-    console.log("  get-stats         — focus/idle time and top apps");
-    console.log("  get-active-session— currently active app");
-    console.log("  get-apps          — all-time app usage");
-    console.log("  search-sessions   — search OCR text, audio, window titles");
-    console.log("  get-session-detail— full content for a session");
-    console.log("  health-check      — ETL status and DB info");
+    console.log("  get-sessions       — list app sessions by date");
+    console.log("  get-timeline       — chronological day view with gaps");
+    console.log("  get-stats          — focus/idle time and top apps");
+    console.log("  get-active-session — currently active app");
+    console.log("  get-apps           — all-time app usage");
+    console.log("  search-sessions    — search OCR text, audio, window titles");
+    console.log("  get-session-detail — full content for a session");
+    console.log("  health-check       — ETL status and DB info");
   } else {
-    console.log("No supported clients found. Add this manually to claude_desktop_config.json:");
+    console.log("No clients configured. Add manually to ~/.claude.json → mcpServers:");
     console.log();
-    console.log(JSON.stringify({ mcpServers: { meridian: buildEntry() } }, null, 2));
+    console.log(JSON.stringify({ meridian: buildClaudeCodeEntry() }, null, 2));
   }
 
   console.log();
