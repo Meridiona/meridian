@@ -258,6 +258,29 @@ pub async fn get_audio_snippets(
     Ok(result)
 }
 
+/// Returns the timestamp of the last user-interaction ui_event for `app_name`
+/// in the half-open window (after_ts, before_ts). Returns None if not found.
+pub async fn get_last_ui_event_for_app(
+    pool: &SqlitePool,
+    app_name: &str,
+    after_ts: &str,
+    before_ts: &str,
+) -> anyhow::Result<Option<String>> {
+    let row: Option<(Option<String>,)> = sqlx::query_as(
+        "SELECT MAX(timestamp) FROM ui_events
+         WHERE app_name = ?1
+           AND event_type IN ('click', 'key', 'text')
+           AND timestamp > ?2
+           AND timestamp < ?3",
+    )
+    .bind(app_name)
+    .bind(after_ts)
+    .bind(before_ts)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|(ts,)| ts.filter(|s| !s.is_empty())))
+}
+
 /// Returns clipboard and app_switch UI events within the given timestamp range.
 /// For clipboard events `value` is `text_content`; for app_switch it is `app_name`.
 pub async fn get_signals(
