@@ -8,9 +8,9 @@ allowed-tools: Bash, Read, Edit, Grep, Write
 
 ## What It Is
 
-A TypeScript MCP server (`packages/meridian-mcp/`) that exposes Meridian's structured session database to any MCP-compatible AI tool (Claude Desktop, Cursor, etc.).
+A TypeScript MCP server (`packages/meridian-mcp/`) that exposes Meridian's structured session database to any MCP-compatible AI tool (Claude Code, Claude Desktop, Cursor, etc.).
 
-It opens `~/.meridian/meridian.db` read-only and provides tools for querying app sessions, focus time, and activity history.
+It opens `~/.meridian/meridian.db` read-only using **sql.js** (pure WebAssembly SQLite — no native Node.js modules, works with any Node.js version) and provides tools for querying app sessions, focus time, and activity history.
 
 ## Build & Run
 
@@ -24,24 +24,23 @@ npm install
 npm run build
 
 # Start server (stdio transport)
-npm start
-# or
 node dist/index.js
 ```
 
-**Prerequisite**: The Meridian daemon must be running and have produced at least one session. The MCP server will error on tool calls (not crash) if the DB is missing.
+**Prerequisite**: The Meridian daemon must be running and have produced at least one session. The MCP server returns an error message on tool calls (does not crash) if the DB is missing.
 
 ## Available Tools
 
-The server exposes these MCP tools (defined in `src/index.ts`):
-
 | Tool | Description |
 |------|-------------|
-| `get_sessions` | List app sessions for a given date (defaults to today) |
-| `get_focus_time` | Total time per app for a date range |
-| `get_active_session` | Current in-progress session (if daemon is running) |
-| `get_app_stats` | Usage stats aggregated by app over a time range |
-| `search_sessions` | Find sessions containing specific OCR text or window title |
+| `get-sessions` | List completed app sessions for a date (default: today) |
+| `get-timeline` | Full day timeline including idle and sleep gaps |
+| `get-stats` | Daily productivity stats — focus/idle/away time, top apps |
+| `get-active-session` | Currently in-progress session (if daemon is running) |
+| `get-apps` | All-time app usage stats |
+| `search-sessions` | Search sessions by window title, OCR text, or audio |
+| `get-session-detail` | Full OCR, audio, and element content for a session ID |
+| `health-check` | ETL run status, cursor position, and total session count |
 
 ## Configuration
 
@@ -50,7 +49,7 @@ The server exposes these MCP tools (defined in `src/index.ts`):
 MERIDIAN_DB=/path/to/custom.db node dist/index.js
 ```
 
-## Add to Claude Desktop
+## Add to Claude Desktop / Claude Code
 
 Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
@@ -59,10 +58,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
   "mcpServers": {
     "meridian": {
       "command": "node",
-      "args": ["/path/to/meridian/packages/meridian-mcp/dist/index.js"],
-      "env": {
-        "MERIDIAN_DB": "/Users/yourname/.meridian/meridian.db"
-      }
+      "args": ["/path/to/meridian/packages/meridian-mcp/dist/index.js"]
     }
   }
 }
@@ -94,7 +90,6 @@ npm run build       # full build
 
 ### Test a tool call manually
 ```bash
-# Use the MCP inspector (if available)
 npx @modelcontextprotocol/inspector node dist/index.js
 ```
 
@@ -119,7 +114,13 @@ npx tsc --noEmit
 packages/meridian-mcp/
 ├── src/
 │   └── index.ts          # All MCP logic (single file)
-├── dist/                 # Compiled JS (git-ignored)
+├── dist/                 # Compiled JS (committed)
 ├── package.json
 └── tsconfig.json
 ```
+
+## Implementation Notes
+
+- Uses `sql.js` (pure WASM) instead of `better-sqlite3` (native) to avoid Node.js version mismatch errors across different environments (Claude Code, Claude Desktop, shell).
+- The DB file is loaded into memory on each tool call so data is always fresh (daemon writes every 60s).
+- The sql.js engine itself (`_SQL`) is cached across calls to avoid re-initialising the WASM runtime.

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// meridian — AI activity intelligence by Meridiona
+// meridian — normalises screenpipe activity into structured app sessions
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -10,28 +10,62 @@ import {
   ReadResourceRequestSchema,
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import Database from "better-sqlite3";
+import initSqlJs from "sql.js";
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
 import { runInstaller } from "./install.js";
 
+type SqlJsStatic = Awaited<ReturnType<typeof initSqlJs>>;
+type SqlDatabase = InstanceType<SqlJsStatic["Database"]>;
+type SqlVal = string | number | null | Uint8Array;
+
 function getDbPath(): string {
   return process.env.MERIDIAN_DB ?? path.join(os.homedir(), ".meridian", "meridian.db");
 }
 
-let _db: Database.Database | null = null;
+let _SQL: SqlJsStatic | null = null;
 
-function getDb(): Database.Database {
-  if (!_db) {
-    const dbPath = getDbPath();
-    if (!fs.existsSync(dbPath)) {
-      throw new Error(`Meridian DB not found at ${dbPath}. Is the Meridian daemon running?`);
-    }
-    _db = new Database(dbPath, { readonly: true });
-    _db.pragma("journal_mode = WAL");
+async function getSqlEngine(): Promise<SqlJsStatic> {
+  if (!_SQL) {
+    _SQL = await initSqlJs();
   }
-  return _db;
+  return _SQL;
+}
+
+async function openDb(): Promise<SqlDatabase> {
+  const dbPath = getDbPath();
+  if (!fs.existsSync(dbPath)) {
+    throw new Error(`Meridian DB not found at ${dbPath}. Is the Meridian daemon running?`);
+  }
+  const SQL = await getSqlEngine();
+  const fileBuffer = fs.readFileSync(dbPath);
+  return new SQL.Database(fileBuffer);
+}
+
+function dbGet(db: SqlDatabase, sql: string, params: SqlVal[] = []): Record<string, unknown> | undefined {
+  const stmt = db.prepare(sql);
+  try {
+    stmt.bind(params);
+    if (!stmt.step()) return undefined;
+    return stmt.getAsObject() as Record<string, unknown>;
+  } finally {
+    stmt.free();
+  }
+}
+
+function dbAll(db: SqlDatabase, sql: string, params: SqlVal[] = []): Record<string, unknown>[] {
+  const stmt = db.prepare(sql);
+  const rows: Record<string, unknown>[] = [];
+  try {
+    stmt.bind(params);
+    while (stmt.step()) {
+      rows.push(stmt.getAsObject() as Record<string, unknown>);
+    }
+    return rows;
+  } finally {
+    stmt.free();
+  }
 }
 
 function localDayBounds(dateStr: string): { start: string; end: string } {
@@ -253,9 +287,10 @@ Meridian tracks your app usage by reading screenpipe's ambient recordings and no
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+  let db: SqlDatabase | undefined;
 
   try {
-    const db = getDb();
+    db = await openDb();
 
     switch (name) {
       case "get-sessions": {
@@ -267,21 +302,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const { start, end } = localDayBounds(date);
 
         const appCond = appFilter ? "AND app_name = ?" : "";
-        const baseParams: unknown[] = appFilter ? [start, end, appFilter] : [start, end];
+        const baseParams: SqlVal[] = appFilter ? [start, end, appFilter] : [start, end];
 
-        const total = (db.prepare(`
+        const total = (dbGet(db, `
           SELECT COUNT(*) AS n FROM app_sessions
           WHERE started_at >= ? AND started_at < ? ${appCond}
-        `).get(...(baseParams as Parameters<typeof db.prepare>)) as { n: number }).n;
+        `, baseParams) as { n: number } | undefined)?.n ?? 0;
 
-        const rows = db.prepare(`
+        const rows = dbAll(db, `
           SELECT id, app_name, started_at, ended_at, duration_s,
                  window_titles, frame_count, etl_run_id
           FROM app_sessions
           WHERE started_at >= ? AND started_at < ? ${appCond}
           ORDER BY started_at DESC
           LIMIT ? OFFSET ?
-        `).all(...(baseParams as Parameters<typeof db.prepare>), pageSize, offset) as Array<Record<string, unknown>>;
+        `, [...baseParams, pageSize, offset]);
 
         if (rows.length === 0) {
           return { content: [{ type: "text", text: `No sessions for ${date}${appFilter ? ` (${appFilter})` : ""}.` }] };
@@ -305,19 +340,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const date = (args?.date as string) ?? todayString();
         const { start, end } = localDayBounds(date);
 
-        const sessions = db.prepare(`
+        const sessions = dbAll(db, `
           SELECT id, app_name, started_at, ended_at, duration_s, window_titles, frame_count
           FROM app_sessions
           WHERE started_at >= ? AND started_at < ?
           ORDER BY started_at ASC
-        `).all(start, end) as Array<Record<string, unknown>>;
+        `, [start, end]);
 
-        const gaps = db.prepare(`
+        const gaps = dbAll(db, `
           SELECT id, started_at, ended_at, duration_s, kind
           FROM gaps
           WHERE started_at >= ? AND started_at < ?
           ORDER BY started_at ASC
-        `).all(start, end) as Array<Record<string, unknown>>;
+        `, [start, end]);
 
         if (sessions.length === 0 && gaps.length === 0) {
           return { content: [{ type: "text", text: `No data recorded for ${date}.` }] };
@@ -354,26 +389,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const date = (args?.date as string) ?? todayString();
         const { start, end } = localDayBounds(date);
 
-        const focusRow = db.prepare(`
+        const focusRow = (dbGet(db, `
           SELECT COALESCE(SUM(duration_s), 0) AS focus_s, COUNT(*) AS session_count
           FROM app_sessions WHERE started_at >= ? AND started_at < ?
-        `).get(start, end) as { focus_s: number; session_count: number };
+        `, [start, end]) ?? { focus_s: 0, session_count: 0 }) as { focus_s: number; session_count: number };
 
-        const idleS = (db.prepare(`
+        const idleS = ((dbGet(db, `
           SELECT COALESCE(SUM(duration_s), 0) AS s FROM gaps
           WHERE started_at >= ? AND started_at < ? AND kind = 'user_idle'
-        `).get(start, end) as { s: number }).s;
+        `, [start, end]) ?? { s: 0 }) as { s: number }).s;
 
-        const awayS = (db.prepare(`
+        const awayS = ((dbGet(db, `
           SELECT COALESCE(SUM(duration_s), 0) AS s FROM gaps
           WHERE started_at >= ? AND started_at < ? AND kind = 'system_sleep'
-        `).get(start, end) as { s: number }).s;
+        `, [start, end]) ?? { s: 0 }) as { s: number }).s;
 
-        const topApps = db.prepare(`
+        const topApps = dbAll(db, `
           SELECT app_name, SUM(duration_s) AS total_s, COUNT(*) AS session_count
           FROM app_sessions WHERE started_at >= ? AND started_at < ?
           GROUP BY app_name ORDER BY total_s DESC LIMIT 8
-        `).all(start, end) as Array<{ app_name: string; total_s: number; session_count: number }>;
+        `, [start, end]) as Array<{ app_name: string; total_s: number; session_count: number }>;
 
         const appLines = topApps.map((a, i) =>
           `  ${i + 1}. ${a.app_name}: ${Math.round(a.total_s / 60)}min (${a.session_count} sessions)`
@@ -392,11 +427,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "get-active-session": {
-        const row = db.prepare(`
+        const row = dbGet(db, `
           SELECT app_name, started_at, last_seen_at, window_titles,
                  ocr_samples, audio_snippets, frame_count
           FROM active_session WHERE id = 1
-        `).get() as Record<string, unknown> | undefined;
+        `);
 
         if (!row) {
           return { content: [{ type: "text", text: "No active session. The Meridian daemon may not have run recently." }] };
@@ -423,7 +458,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "get-apps": {
         const limit = Math.min(50, (args?.limit as number) ?? 20);
 
-        const rows = db.prepare(`
+        const rows = dbAll(db, `
           SELECT app_name,
                  SUM(duration_s) AS total_s,
                  COUNT(*) AS session_count,
@@ -433,7 +468,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           GROUP BY app_name
           ORDER BY total_s DESC
           LIMIT ?
-        `).all(limit) as Array<{ app_name: string; total_s: number; session_count: number; avg_session_s: number; last_seen: string }>;
+        `, [limit]) as Array<{ app_name: string; total_s: number; session_count: number; avg_session_s: number; last_seen: string }>;
 
         if (rows.length === 0) {
           return { content: [{ type: "text", text: "No app data yet." }] };
@@ -462,7 +497,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           FROM app_sessions
           WHERE (window_titles LIKE ? OR ocr_samples LIKE ? OR audio_snippets LIKE ?)
         `;
-        const params: unknown[] = [pattern, pattern, pattern];
+        const params: SqlVal[] = [pattern, pattern, pattern];
 
         if (date) {
           const { start, end } = localDayBounds(date);
@@ -476,7 +511,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         sql += " ORDER BY started_at DESC LIMIT ?";
         params.push(limit);
 
-        const rows = db.prepare(sql).all(...(params as Parameters<typeof db.prepare>)) as Array<Record<string, unknown>>;
+        const rows = dbAll(db, sql, params);
 
         if (rows.length === 0) {
           return { content: [{ type: "text", text: `No sessions found containing "${q}".` }] };
@@ -497,12 +532,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const id = args?.id as number;
         if (!id) return { content: [{ type: "text", text: "Error: id is required" }] };
 
-        const row = db.prepare(`
+        const row = dbGet(db, `
           SELECT id, app_name, started_at, ended_at, duration_s,
                  window_titles, ocr_samples, elements_samples, audio_snippets, signals,
                  frame_count, idle_frame_count, etl_run_id
           FROM app_sessions WHERE id = ?
-        `).get(id) as Record<string, unknown> | undefined;
+        `, [id]);
 
         if (!row) {
           return { content: [{ type: "text", text: `Session #${id} not found.` }] };
@@ -556,16 +591,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "health-check": {
         const dbPath = getDbPath();
 
-        const lastRun = db.prepare(`
+        const lastRun = dbGet(db, `
           SELECT id, started_at, completed_at, status, sessions_closed, from_frame_id, to_frame_id
           FROM etl_runs ORDER BY id DESC LIMIT 1
-        `).get() as Record<string, unknown> | undefined;
+        `);
 
-        const cursor = db.prepare(`
+        const cursor = dbGet(db, `
           SELECT last_frame_id, last_run_at FROM etl_cursor WHERE id = 1
-        `).get() as Record<string, unknown> | undefined;
+        `);
 
-        const sessionCount = (db.prepare(`SELECT COUNT(*) AS n FROM app_sessions`).get() as { n: number }).n;
+        const sessionCount = (dbGet(db, `SELECT COUNT(*) AS n FROM app_sessions`) as { n: number } | undefined)?.n ?? 0;
 
         const lines = [
           `DB: ${dbPath}`,
@@ -588,6 +623,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     return { content: [{ type: "text", text: `Error: ${msg}` }] };
+  } finally {
+    db?.close();
   }
 });
 
