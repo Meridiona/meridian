@@ -10,8 +10,8 @@ use crate::db::meridian::{
     insert_gap, update_cursor, upsert_active_session, ActiveSession,
 };
 use crate::db::screenpipe::{
-    count_frames_in_window, get_frames_since, AudioSnippet, ElementSample, OcrSample, SignalEvent,
-    WindowTitleCount,
+    count_frames_in_window, get_frames_since, get_last_ui_event_for_app, AudioSnippet,
+    ElementSample, OcrSample, SignalEvent, WindowTitleCount,
 };
 use crate::etl::extractor::extract_block_context;
 
@@ -149,6 +149,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                                     app: &closing_app,
                                     started_at: &block_start_ts,
                                     ended_at: &block_last_ts,
+                                    next_frame_ts: None,
                                     min_frame_id: block_start_frame_id,
                                     max_frame_id: block_last_frame_id,
                                     frame_count: block_frame_count,
@@ -212,6 +213,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                                 app: &old_app,
                                 started_at: &block_start_ts,
                                 ended_at: &block_last_ts,
+                                next_frame_ts: Some(&frame.timestamp),
                                 min_frame_id: block_start_frame_id,
                                 max_frame_id: block_last_frame_id,
                                 frame_count: block_frame_count,
@@ -263,6 +265,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                         app: open_app,
                         started_at: &block_start_ts,
                         ended_at: &block_last_ts,
+                        next_frame_ts: None,
                         min_frame_id: block_start_frame_id,
                         max_frame_id: block_last_frame_id,
                         frame_count: block_frame_count,
@@ -309,6 +312,7 @@ struct BlockBounds<'a> {
     app: &'a str,
     started_at: &'a str,
     ended_at: &'a str,
+    next_frame_ts: Option<&'a str>,
     min_frame_id: i64,
     max_frame_id: i64,
     frame_count: i64,
@@ -337,7 +341,7 @@ async fn close_block(
     run_id: i64,
     b: &BlockBounds<'_>,
 ) -> Result<i64> {
-    let ctx = extract_block_context(
+    let mut ctx = extract_block_context(
         screenpipe,
         b.app,
         b.started_at,
@@ -347,6 +351,19 @@ async fn close_block(
         b.frame_count,
     )
     .await?;
+
+    // Option C: use last ui_event as ended_at if it's more recent than the last frame.
+    // Only when next_frame_ts is set (app-switch close, not gap-close).
+    if let Some(next_ts) = b.next_frame_ts {
+        if let Ok(Some(ui_ts)) =
+            get_last_ui_event_for_app(screenpipe, b.app, b.started_at, next_ts).await
+        {
+            if ui_ts.as_str() > b.ended_at {
+                debug!(app = b.app, ui_ts = ui_ts, "ended_at refined via ui_event (Option C)");
+                ctx.ended_at = ui_ts;
+            }
+        }
+    }
 
     let existing = get_active_session(meridian).await?;
 
