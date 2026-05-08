@@ -135,6 +135,29 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                                 to = frame.timestamp,
                                 "gap recorded"
                             );
+
+                            // Close the pre-gap block so its duration_s ends at
+                            // block_last_ts (the last real frame before the gap),
+                            // not at the first frame after. This prevents the gap
+                            // time from inflating the session's focus duration.
+                            let closing_app = current_app.take().unwrap();
+                            sessions_closed += close_block(
+                                screenpipe,
+                                meridian,
+                                run_id,
+                                &BlockBounds {
+                                    app: &closing_app,
+                                    started_at: &block_start_ts,
+                                    ended_at: &block_last_ts,
+                                    min_frame_id: block_start_frame_id,
+                                    max_frame_id: block_last_frame_id,
+                                    frame_count: block_frame_count,
+                                    idle_frame_count: block_idle_frame_count,
+                                },
+                            )
+                            .await?;
+                            // current_app is now None; the match below will
+                            // start a fresh block for the post-gap frame.
                         }
                     }
                 }
