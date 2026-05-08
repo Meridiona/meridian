@@ -70,7 +70,7 @@ export default function AppsPage() {
       />
 
       <section>
-        <p className="text-[10px] uppercase tracking-widest text-[#C8C6C1] mb-3">All Time</p>
+        <p className="text-[10px] uppercase tracking-widest text-[#141414] mb-3">All Time</p>
         <AppTable apps={apps} />
       </section>
     </div>
