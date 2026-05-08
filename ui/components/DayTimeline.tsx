@@ -109,11 +109,10 @@ export default function DayTimeline({ data, activeSession }: DayTimelineProps) {
   function handleMouseEnter(e: React.MouseEvent, segment: Segment) {
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
-    setTooltip({
-      segment,
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
-    })
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+    if (!isFinite(x) || !isFinite(y)) return
+    setTooltip({ segment, x, y })
   }
 
   function handleMouseMove(e: React.MouseEvent) {
