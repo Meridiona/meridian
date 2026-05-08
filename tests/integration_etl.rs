@@ -8,6 +8,31 @@ use meridian::etl::run_etl;
 use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
 use std::str::FromStr;
 
+/// Inserts frames where each entry is `(app_name, timestamp, capture_trigger)`.
+/// `app_name` may be `None` to insert a NULL (hidden from ETL's get_frames_since
+/// but still visible to count_frames_in_window for gap classification).
+/// `capture_trigger` may be `None` to leave the column NULL.
+/// IDs are assigned sequentially starting from `id_offset`.
+async fn insert_frames_with_trigger(
+    pool: &SqlitePool,
+    id_offset: i64,
+    frames: &[(Option<&str>, &str, Option<&str>)],
+) {
+    for (i, (app, ts, trigger)) in frames.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO frames (id, app_name, window_name, timestamp, capture_trigger)
+             VALUES (?, ?, NULL, ?, ?)",
+        )
+        .bind(id_offset + i as i64)
+        .bind(app)
+        .bind(ts)
+        .bind(trigger)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+}
+
 async fn make_meridian_db() -> SqlitePool {
     let opts = SqliteConnectOptions::from_str("sqlite::memory:")
         .unwrap()
@@ -293,4 +318,186 @@ async fn test_gap_detection() {
     assert_eq!(row.0, "system_sleep", "gap should be classified as system_sleep");
     assert_eq!(row.1, 600, "gap duration should be 600 seconds");
     assert_eq!(row.2, "2026-01-01T10:00:00+00:00", "gap started_at should match first frame ts");
+}
+
+// ---------------------------------------------------------------------------
+// Gap classification — user_idle
+// ---------------------------------------------------------------------------
+
+/// Two processed frames 400 s apart create a gap.  Extra screenpipe rows with
+/// NULL app_name are inserted inside the gap window so count_frames_in_window
+/// can see them (it counts ALL frames regardless of app_name) without the ETL
+/// runner processing them (get_frames_since filters out NULL/empty app_name).
+/// 3 of 4 in-gap rows have capture_trigger='idle' (75% ≥ 50%).
+/// ETL must classify the gap as 'user_idle'.
+#[tokio::test]
+async fn test_gap_classification_user_idle() {
+    let sp = make_screenpipe_db().await;
+    let md = make_meridian_db().await;
+
+    // Processed frames: ids 1 and 2, 400 s apart.
+    // Gap window queried by count_frames_in_window:
+    //   timestamp > '10:00:00' AND timestamp <= '10:06:40'
+    // In-gap rows (ids 3-6): NULL app_name → skipped by get_frames_since,
+    //   but counted by count_frames_in_window.  3 idle, 1 non-idle.
+    //   idle * 2 = 6 >= total (4) → user_idle.
+    insert_frames_with_trigger(
+        &sp,
+        1, // id_offset
+        &[
+            (Some("Terminal"), "2026-01-01T10:00:00+00:00", None), // id=1, pre-gap
+            (Some("Terminal"), "2026-01-01T10:06:40+00:00", None), // id=2, post-gap (400 s later)
+        ],
+    )
+    .await;
+
+    // Insert the in-gap classification frames with NULL app_name.
+    insert_frames_with_trigger(
+        &sp,
+        3, // id_offset — must not clash with ids 1-2
+        &[
+            (None, "2026-01-01T10:01:00+00:00", Some("idle")),
+            (None, "2026-01-01T10:02:00+00:00", Some("idle")),
+            (None, "2026-01-01T10:03:00+00:00", Some("idle")),
+            (None, "2026-01-01T10:04:00+00:00", None), // not idle
+        ],
+    )
+    .await;
+
+    run_etl(&sp, &md).await.unwrap();
+
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM gaps")
+        .fetch_one(&md)
+        .await
+        .unwrap();
+    assert_eq!(count.0, 1, "expected exactly one gap row");
+
+    let kind: (String,) = sqlx::query_as("SELECT kind FROM gaps LIMIT 1")
+        .fetch_one(&md)
+        .await
+        .unwrap();
+    assert_eq!(kind.0, "user_idle", "gap with ≥50% idle frames must be classified as user_idle");
+}
+
+// ---------------------------------------------------------------------------
+// Gap classification — system_sleep
+// ---------------------------------------------------------------------------
+
+/// Two processed frames 400 s apart with NO frames at all in the gap window.
+/// count_frames_in_window returns (0, 0), so the gap must be 'system_sleep'.
+#[tokio::test]
+async fn test_gap_classification_system_sleep() {
+    let sp = make_screenpipe_db().await;
+    let md = make_meridian_db().await;
+
+    // Only two frames, nothing in between — no in-gap rows at all.
+    insert_frames_with_trigger(
+        &sp,
+        1,
+        &[
+            (Some("Chrome"), "2026-01-01T12:00:00+00:00", None),
+            (Some("Chrome"), "2026-01-01T12:06:40+00:00", None), // 400 s later
+        ],
+    )
+    .await;
+
+    run_etl(&sp, &md).await.unwrap();
+
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM gaps")
+        .fetch_one(&md)
+        .await
+        .unwrap();
+    assert_eq!(count.0, 1, "expected exactly one gap row");
+
+    let kind: (String,) = sqlx::query_as("SELECT kind FROM gaps LIMIT 1")
+        .fetch_one(&md)
+        .await
+        .unwrap();
+    assert_eq!(
+        kind.0, "system_sleep",
+        "gap with no frames in window must be classified as system_sleep"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Session duration excludes gap time
+// ---------------------------------------------------------------------------
+
+/// One app block before a 400 s gap, same app resumes after.
+/// Pre-gap block: 10:00:00 → 10:00:30 (30 s).
+/// ETL closes the pre-gap block with ended_at = last frame before the gap
+/// (10:00:30), so duration_s must equal 30 — not the 430 s wall-clock span
+/// that would result from including the gap.
+#[tokio::test]
+async fn test_session_duration_excludes_gap() {
+    let sp = make_screenpipe_db().await;
+    let md = make_meridian_db().await;
+
+    // Pre-gap block: 10:00:00 → 10:00:30  (30 s block, 4 frames)
+    // 400 s gap (no in-gap frames)
+    // Post-gap block: 10:07:10 onwards (stays open as active_session)
+    insert_frames_with_trigger(
+        &sp,
+        1,
+        &[
+            (Some("VSCode"), "2026-01-01T10:00:00+00:00", None),
+            (Some("VSCode"), "2026-01-01T10:00:10+00:00", None),
+            (Some("VSCode"), "2026-01-01T10:00:20+00:00", None),
+            (Some("VSCode"), "2026-01-01T10:00:30+00:00", None), // last pre-gap frame
+            // 400 s gap — no frames
+            (Some("VSCode"), "2026-01-01T10:07:10+00:00", None), // first post-gap
+            (Some("VSCode"), "2026-01-01T10:07:20+00:00", None),
+        ],
+    )
+    .await;
+
+    run_etl(&sp, &md).await.unwrap();
+
+    // The pre-gap block must be closed into app_sessions.
+    let closed: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM app_sessions")
+        .fetch_one(&md)
+        .await
+        .unwrap();
+    assert_eq!(closed.0, 1, "the pre-gap block should be closed into app_sessions");
+
+    // duration_s must reflect only the 30 s pre-gap span.
+    let duration: (i64,) = sqlx::query_as("SELECT duration_s FROM app_sessions LIMIT 1")
+        .fetch_one(&md)
+        .await
+        .unwrap();
+    assert_eq!(
+        duration.0, 30,
+        "session duration must be pre-gap block time (30 s) and must not include the 400 s gap"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// No gap below threshold
+// ---------------------------------------------------------------------------
+
+/// Two frames only 299 s apart — strictly below GAP_THRESHOLD_SECS (300).
+/// No gap row should be inserted.
+#[tokio::test]
+async fn test_no_gap_below_threshold() {
+    let sp = make_screenpipe_db().await;
+    let md = make_meridian_db().await;
+
+    // 299 s separation — strictly less than the 300 s threshold.
+    insert_frames_with_trigger(
+        &sp,
+        1,
+        &[
+            (Some("Finder"), "2026-01-01T09:00:00+00:00", None),
+            (Some("Finder"), "2026-01-01T09:04:59+00:00", None), // 299 s later
+        ],
+    )
+    .await;
+
+    run_etl(&sp, &md).await.unwrap();
+
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM gaps")
+        .fetch_one(&md)
+        .await
+        .unwrap();
+    assert_eq!(count.0, 0, "a 299 s gap is below threshold and must not produce a gap row");
 }
