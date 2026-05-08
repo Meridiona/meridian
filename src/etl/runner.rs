@@ -69,6 +69,48 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
     // ------------------------------------------------------------------
     let mut sessions_closed: i64 = 0;
 
+    // Cross-run gap check: if there's a stale active_session from the previous
+    // ETL run, compare its last_seen_at against the first frame we're about to
+    // process. A gap > GAP_THRESHOLD_SECS means the machine was asleep or idle
+    // between runs. Close the stale session at its real end time and record the
+    // gap so the new run starts clean.
+    if let Ok(Some(stale)) = get_active_session(meridian).await {
+        if let Some(first_frame) = first_batch.first() {
+            if let Some(gap_secs) = timestamp_gap_secs(&stale.last_seen_at, &first_frame.timestamp) {
+                if gap_secs > GAP_THRESHOLD_SECS {
+                    let (total, idle) = count_frames_in_window(
+                        screenpipe,
+                        &stale.last_seen_at,
+                        &first_frame.timestamp,
+                    )
+                    .await
+                    .unwrap_or((0, 0));
+                    let kind = if total > 0 && idle > 0 && idle * 2 >= total {
+                        "user_idle"
+                    } else {
+                        "system_sleep"
+                    };
+                    insert_gap(
+                        meridian,
+                        &stale.last_seen_at,
+                        &first_frame.timestamp,
+                        gap_secs,
+                        kind,
+                        run_id,
+                    )
+                    .await?;
+                    close_active_session(meridian, run_id).await?;
+                    info!(
+                        gap_secs,
+                        kind,
+                        app = stale.app_name,
+                        "cross-run gap detected — closed stale active_session"
+                    );
+                }
+            }
+        }
+    }
+
     // Carry over the in-flight block state across batches.
     let mut current_app: Option<String> = None;
     let mut block_start_frame_id: i64 = 0;
