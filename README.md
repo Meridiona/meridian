@@ -112,6 +112,33 @@ screenpipe.db (read-only)
                                                     meridian.db
 ```
 
+## MCP Server
+
+Meridian ships a TypeScript MCP server that exposes your session data to any MCP-compatible AI tool (Claude Code, Claude Desktop, Cursor, etc.).
+
+```bash
+cd packages/meridian-mcp
+npm install
+npm run build
+```
+
+Add to your MCP client config (e.g. `~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "meridian": {
+      "command": "node",
+      "args": ["/path/to/meridian/packages/meridian-mcp/dist/index.js"]
+    }
+  }
+}
+```
+
+Available tools: `get-sessions`, `get-timeline`, `get-stats`, `get-active-session`, `get-apps`, `search-sessions`, `get-session-detail`, `health-check`.
+
+The MCP server uses [sql.js](https://github.com/sql-js/sql.js) (pure WebAssembly SQLite) — no native Node.js modules, works with any Node.js version.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

@@ -14,18 +14,25 @@
     "dev": "ts-node src/index.ts",
     "prepublishOnly": "npm run build"
   },
-  "keywords": ["mcp", "meridian", "model-context-protocol", "activity", "screenpipe", "ai"],
+  "keywords": [
+    "mcp",
+    "meridian",
+    "model-context-protocol",
+    "activity",
+    "screenpipe",
+    "ai"
+  ],
   "author": "Meridiona",
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "better-sqlite3": "^12.2.0"
+    "sql.js": "^1.14.1"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.0.0",
-    "typescript": "^5.9.3",
-    "ts-node": "^10.9.2"
+    "@types/sql.js": "^1.4.11",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
   },
   "engines": {
     "node": ">=18.0.0"
