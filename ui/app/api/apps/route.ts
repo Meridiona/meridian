@@ -16,7 +16,6 @@ export async function GET() {
         CAST(AVG(duration_s) AS INTEGER) AS avg_session_s,
         MAX(ended_at) AS last_seen
       FROM app_sessions
-      WHERE app_name != '(idle)'
       GROUP BY app_name
       ORDER BY total_s DESC
     `).all() as AppStat[]

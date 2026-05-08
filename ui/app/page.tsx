@@ -10,7 +10,7 @@ import StatsRow from '@/components/StatsRow'
 import SessionCard from '@/components/SessionCard'
 import RefreshTrigger from '@/components/RefreshTrigger'
 import type {
-  ActiveSessionRow, StatsResponse, TimelineResponse, SessionRow
+  ActiveSessionRow, StatsResponse, TimelineResponse, SessionRow, GapRow
 } from '@/lib/types'
 
 export const revalidate = 30
@@ -56,23 +56,35 @@ function getActiveSession(): ActiveSessionRow | null {
 }
 
 function getStats(date: string): StatsResponse {
-  const empty: StatsResponse = { date, total_s: 0, focus_s: 0, idle_s: 0, session_count: 0, top_apps: [] }
+  const empty: StatsResponse = { date, focus_s: 0, user_idle_s: 0, away_s: 0, session_count: 0, top_apps: [] }
   try {
     const db = getDb()
     const { start, end } = localDayBounds(date)
     const t = db.prepare(`
       SELECT
-        SUM(CASE WHEN app_name != '(idle)' THEN duration_s ELSE 0 END) AS focus_s,
-        SUM(CASE WHEN app_name = '(idle)'  THEN duration_s ELSE 0 END) AS idle_s,
+        SUM(duration_s) AS focus_s,
         COUNT(*) AS session_count
       FROM app_sessions WHERE started_at >= ? AND started_at < ?
-    `).get(start, end) as { focus_s: number | null; idle_s: number | null; session_count: number }
+    `).get(start, end) as { focus_s: number | null; session_count: number }
     const topApps = db.prepare(`
       SELECT app_name, SUM(duration_s) AS duration_s, COUNT(*) AS session_count
-      FROM app_sessions WHERE started_at >= ? AND started_at < ? AND app_name != '(idle)'
+      FROM app_sessions WHERE started_at >= ? AND started_at < ?
       GROUP BY app_name ORDER BY duration_s DESC LIMIT 8
     `).all(start, end) as StatsResponse['top_apps']
-    return { date, total_s: (t.focus_s ?? 0) + (t.idle_s ?? 0), focus_s: t.focus_s ?? 0, idle_s: t.idle_s ?? 0, session_count: t.session_count, top_apps: topApps }
+    let user_idle_s = 0
+    let away_s = 0
+    try {
+      const gapStats = db.prepare(`
+        SELECT
+          SUM(CASE WHEN kind = 'user_idle'    THEN duration_s ELSE 0 END) AS user_idle_s,
+          SUM(CASE WHEN kind = 'system_sleep' THEN duration_s ELSE 0 END) AS away_s
+        FROM gaps
+        WHERE started_at >= ? AND started_at < ?
+      `).get(start, end) as { user_idle_s: number | null; away_s: number | null } | null
+      user_idle_s = gapStats?.user_idle_s ?? 0
+      away_s = gapStats?.away_s ?? 0
+    } catch { /* gaps table not yet created by ETL */ }
+    return { date, focus_s: t.focus_s ?? 0, user_idle_s, away_s, session_count: t.session_count, top_apps: topApps }
   } catch { return empty }
 }
 
@@ -87,16 +99,26 @@ function getTimeline(date: string): TimelineResponse {
       FROM app_sessions WHERE started_at >= ? AND started_at < ?
       ORDER BY started_at ASC
     `).all(start, end) as Array<Record<string, unknown>>
+    let gaps: GapRow[] = []
+    try {
+      gaps = db.prepare(`
+        SELECT id, started_at, ended_at, duration_s, kind
+        FROM gaps
+        WHERE started_at >= ? AND started_at < ?
+        ORDER BY started_at ASC
+      `).all(start, end) as GapRow[]
+    } catch { gaps = [] }
     const dayStartMs = new Date(`${date}T00:00:00`).getTime()
     const isToday = date === todayString()
     return {
       date,
       sessions: rows.map(parseSession),
+      gaps,
       day_start_s: Math.floor(dayStartMs / 1000),
       day_end_s: Math.floor((isToday ? Date.now() : new Date(`${date}T23:59:59`).getTime()) / 1000),
     }
   } catch {
-    return { date, sessions: [], day_start_s: Math.floor(Date.now() / 1000 - 3600), day_end_s: Math.floor(Date.now() / 1000) }
+    return { date, sessions: [], gaps: [], day_start_s: Math.floor(Date.now() / 1000 - 3600), day_end_s: Math.floor(Date.now() / 1000) }
   }
 }
 

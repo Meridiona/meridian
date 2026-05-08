@@ -27,7 +27,7 @@ export default function FocusDonut({ apps, focusS, idleS }: FocusDonutProps) {
 
   const data = [
     ...apps.map(a => ({ name: a.app_name, value: a.duration_s })),
-    ...(idleS > 0 ? [{ name: '(idle)', value: idleS }] : []),
+    ...(idleS > 0 ? [{ name: '(away)', value: idleS }] : []),
   ]
 
   return (
@@ -70,7 +70,7 @@ export default function FocusDonut({ apps, focusS, idleS }: FocusDonutProps) {
                   className="w-2 h-2 rounded-full shrink-0"
                   style={{ backgroundColor: getAppColor(item.name) }}
                 />
-                <span className="text-xs text-[#141414] truncate">{item.name === '(idle)' ? 'Idle' : item.name}</span>
+                <span className="text-xs text-[#141414] truncate">{item.name === '(away)' ? 'Away' : item.name}</span>
               </div>
               <span className="font-mono text-xs text-[#9B9A97] tabular-nums shrink-0">
                 {formatDuration(item.value)}

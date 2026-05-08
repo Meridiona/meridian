@@ -17,8 +17,6 @@ interface SessionCardProps {
 
 export default function SessionCard({ session }: SessionCardProps) {
   const [open, setOpen] = useState(false)
-  const isIdle = session.app_name === '(idle)'
-
   const hasDetail =
     (session.ocr_samples && session.ocr_samples.length > 0) ||
     (session.audio_snippets && session.audio_snippets.length > 0) ||
@@ -34,17 +32,14 @@ export default function SessionCard({ session }: SessionCardProps) {
         <Collapsible.Trigger asChild>
           <button
             className="w-full text-left px-4 py-3.5 flex items-center gap-3 group"
-            disabled={!hasDetail && !isIdle}
+            disabled={!hasDetail}
           >
             <AppIcon appName={session.app_name} size="sm" />
 
             <div className="flex-1 min-w-0">
               <div className="flex items-baseline justify-between gap-2">
-                <span className={clsx(
-                  'text-sm font-medium truncate',
-                  isIdle ? 'text-[#9B9A97]' : 'text-[#141414]'
-                )}>
-                  {isIdle ? 'Idle / Sleep' : session.app_name}
+                <span className="text-sm font-medium truncate text-[#141414]">
+                  {session.app_name}
                 </span>
                 <span className="font-mono text-xs text-[#9B9A97] shrink-0 tabular-nums">
                   {formatDuration(session.duration_s)}
