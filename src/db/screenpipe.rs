@@ -17,6 +17,7 @@ pub struct FrameRow {
     pub app_name: String,
     pub window_name: Option<String>,
     pub timestamp: String,
+    pub capture_trigger: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,8 +80,8 @@ pub async fn get_frames_since(
     after_frame_id: i64,
     limit: i64,
 ) -> Result<Vec<FrameRow>> {
-    let rows = sqlx::query_as::<_, (i64, String, Option<String>, String)>(
-        "SELECT id, app_name, window_name, timestamp
+    let rows = sqlx::query_as::<_, (i64, String, Option<String>, String, Option<String>)>(
+        "SELECT id, app_name, window_name, timestamp, capture_trigger
          FROM frames
          WHERE id > ? AND app_name IS NOT NULL AND app_name != ''
          ORDER BY id ASC
@@ -93,15 +94,37 @@ pub async fn get_frames_since(
 
     let result = rows
         .into_iter()
-        .map(|(id, app_name, window_name, timestamp)| FrameRow {
+        .map(|(id, app_name, window_name, timestamp, capture_trigger)| FrameRow {
             id,
             app_name,
             window_name,
             timestamp,
+            capture_trigger,
         })
         .collect();
 
     Ok(result)
+}
+
+/// Counts ALL frames (including null-app) within a timestamp window.
+/// Returns (total_count, idle_count).
+/// Used to classify whether a gap was user-idle-while-awake or system-sleep.
+pub async fn count_frames_in_window(
+    pool: &SqlitePool,
+    start_ts: &str,
+    end_ts: &str,
+) -> Result<(i64, i64)> {
+    let row = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT COUNT(*),
+                COALESCE(SUM(CASE WHEN capture_trigger = 'idle' THEN 1 ELSE 0 END), 0)
+         FROM frames
+         WHERE timestamp > ? AND timestamp <= ?",
+    )
+    .bind(start_ts)
+    .bind(end_ts)
+    .fetch_one(pool)
+    .await?;
+    Ok((row.0, row.1))
 }
 
 /// Returns per-window-title frame counts for a given app within a frame-id

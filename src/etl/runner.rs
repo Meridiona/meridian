@@ -7,10 +7,11 @@ use tracing::{debug, info, warn};
 
 use crate::db::meridian::{
     close_active_session, complete_etl_run, get_active_session, get_cursor, insert_etl_run,
-    update_cursor, upsert_active_session, ActiveSession,
+    insert_gap, update_cursor, upsert_active_session, ActiveSession,
 };
 use crate::db::screenpipe::{
-    get_frames_since, AudioSnippet, ElementSample, OcrSample, SignalEvent, WindowTitleCount,
+    count_frames_in_window, get_frames_since, AudioSnippet, ElementSample, OcrSample, SignalEvent,
+    WindowTitleCount,
 };
 use crate::etl::extractor::extract_block_context;
 
@@ -20,6 +21,7 @@ use crate::etl::extractor::extract_block_context;
 
 const BATCH_SIZE: i64 = 500;
 const OCR_SAMPLE_CAP: usize = 20;
+const GAP_THRESHOLD_SECS: i64 = 300;
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -72,6 +74,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
     let mut block_start_frame_id: i64 = 0;
     let mut block_start_ts: String = String::new();
     let mut block_frame_count: i64 = 0;
+    let mut block_idle_frame_count: i64 = 0;
     let mut block_last_ts: String = String::new();
     let mut block_last_frame_id: i64 = 0;
 
@@ -92,6 +95,50 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                     continue;
                 }
 
+                // ----------------------------------------------------------
+                // Gap detection: check for a long pause between the last
+                // frame we processed and this one.  This runs BEFORE the
+                // app-switch state machine so it observes every inter-frame
+                // gap regardless of whether the app changed.
+                // ----------------------------------------------------------
+                if current_app.is_some() {
+                    if let Some(gap) = timestamp_gap_secs(&block_last_ts, &frame.timestamp) {
+                        if gap > GAP_THRESHOLD_SECS {
+                            let (total, idle) = count_frames_in_window(
+                                screenpipe,
+                                &block_last_ts,
+                                &frame.timestamp,
+                            )
+                            .await
+                            .unwrap_or((0, 0));
+
+                            let kind = if total > 0 && idle > 0 && (idle * 2 >= total) {
+                                "user_idle"
+                            } else {
+                                "system_sleep"
+                            };
+
+                            insert_gap(
+                                meridian,
+                                &block_last_ts,
+                                &frame.timestamp,
+                                gap,
+                                kind,
+                                run_id,
+                            )
+                            .await?;
+
+                            debug!(
+                                gap_secs = gap,
+                                kind,
+                                from = block_last_ts,
+                                to = frame.timestamp,
+                                "gap recorded"
+                            );
+                        }
+                    }
+                }
+
                 match current_app.as_deref() {
                     None => {
                         // Very first frame — start a block.
@@ -100,6 +147,15 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                         block_start_frame_id = frame.id;
                         block_start_ts = frame.timestamp.clone();
                         block_frame_count = 1;
+                        block_idle_frame_count = if frame
+                            .capture_trigger
+                            .as_deref()
+                            == Some("idle")
+                        {
+                            1
+                        } else {
+                            0
+                        };
                         block_last_ts = frame.timestamp.clone();
                         block_last_frame_id = frame.id;
                     }
@@ -107,6 +163,9 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                     Some(cur) if cur == app => {
                         // Same app — extend the current block.
                         block_frame_count += 1;
+                        if frame.capture_trigger.as_deref() == Some("idle") {
+                            block_idle_frame_count += 1;
+                        }
                         block_last_ts = frame.timestamp.clone();
                         block_last_frame_id = frame.id;
                     }
@@ -133,6 +192,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                                 min_frame_id: block_start_frame_id,
                                 max_frame_id: block_last_frame_id,
                                 frame_count: block_frame_count,
+                                idle_frame_count: block_idle_frame_count,
                             },
                         )
                         .await?;
@@ -142,6 +202,15 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                         block_start_frame_id = frame.id;
                         block_start_ts = frame.timestamp.clone();
                         block_frame_count = 1;
+                        block_idle_frame_count = if frame
+                            .capture_trigger
+                            .as_deref()
+                            == Some("idle")
+                        {
+                            1
+                        } else {
+                            0
+                        };
                         block_last_ts = frame.timestamp.clone();
                         block_last_frame_id = frame.id;
                     }
@@ -174,6 +243,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                         min_frame_id: block_start_frame_id,
                         max_frame_id: block_last_frame_id,
                         frame_count: block_frame_count,
+                        idle_frame_count: block_idle_frame_count,
                     },
                 )
                 .await?;
@@ -219,6 +289,19 @@ struct BlockBounds<'a> {
     min_frame_id: i64,
     max_frame_id: i64,
     frame_count: i64,
+    idle_frame_count: i64,
+}
+
+// ---------------------------------------------------------------------------
+// timestamp_gap_secs
+// ---------------------------------------------------------------------------
+
+/// Parses two RFC3339 timestamps and returns the difference in whole seconds,
+/// or `None` if either timestamp fails to parse.
+fn timestamp_gap_secs(earlier: &str, later: &str) -> Option<i64> {
+    let t0 = chrono::DateTime::parse_from_rfc3339(earlier).ok()?;
+    let t1 = chrono::DateTime::parse_from_rfc3339(later).ok()?;
+    Some((t1 - t0).num_seconds())
 }
 
 // ---------------------------------------------------------------------------
@@ -247,7 +330,7 @@ async fn close_block(
     match existing {
         Some(ref active) if active.app_name == b.app => {
             debug!(app = b.app, "merging and closing continuation block");
-            let merged = merge_into_active(active, &ctx)?;
+            let merged = merge_into_active(active, &ctx, b.idle_frame_count)?;
             upsert_active_session(meridian, &merged).await?;
             close_active_session(meridian, run_id).await?;
             info!(app = b.app, "session closed (merged continuation)");
@@ -261,7 +344,7 @@ async fn close_block(
                 "stale active_session — closing stale first"
             );
             close_active_session(meridian, run_id).await?;
-            let new_session = build_active_session(&ctx)?;
+            let new_session = build_active_session(&ctx, b.idle_frame_count)?;
             upsert_active_session(meridian, &new_session).await?;
             close_active_session(meridian, run_id).await?;
             info!(app = b.app, "session closed (fresh, after evicting stale)");
@@ -269,7 +352,7 @@ async fn close_block(
         }
 
         None => {
-            let new_session = build_active_session(&ctx)?;
+            let new_session = build_active_session(&ctx, b.idle_frame_count)?;
             upsert_active_session(meridian, &new_session).await?;
             close_active_session(meridian, run_id).await?;
             info!(app = b.app, "session closed");
@@ -304,7 +387,7 @@ async fn upsert_open_block(
     let session = match existing {
         Some(ref active) if active.app_name == b.app => {
             debug!(app = b.app, "merging new frames into existing active_session");
-            merge_into_active(active, &ctx)?
+            merge_into_active(active, &ctx, b.idle_frame_count)?
         }
 
         Some(ref active) => {
@@ -314,10 +397,10 @@ async fn upsert_open_block(
                 "stale active_session while upserting open block"
             );
             close_active_session(meridian, run_id).await?;
-            build_active_session(&ctx)?
+            build_active_session(&ctx, b.idle_frame_count)?
         }
 
-        None => build_active_session(&ctx)?,
+        None => build_active_session(&ctx, b.idle_frame_count)?,
     };
 
     upsert_active_session(meridian, &session).await?;
@@ -332,7 +415,7 @@ async fn upsert_open_block(
 use crate::etl::extractor::BlockContext;
 
 /// Builds a brand-new `ActiveSession` from a `BlockContext`.
-fn build_active_session(ctx: &BlockContext) -> Result<ActiveSession> {
+fn build_active_session(ctx: &BlockContext, idle_frame_count: i64) -> Result<ActiveSession> {
     Ok(ActiveSession {
         id: 1,
         app_name: ctx.app_name.clone(),
@@ -346,6 +429,7 @@ fn build_active_session(ctx: &BlockContext) -> Result<ActiveSession> {
         min_frame_id: ctx.min_frame_id,
         max_frame_id: ctx.max_frame_id,
         frame_count: ctx.frame_count,
+        idle_frame_count,
     })
 }
 
@@ -364,7 +448,11 @@ fn build_active_session(ctx: &BlockContext) -> Result<ActiveSession> {
 /// - `elements_samples`: appended, capped at `OCR_SAMPLE_CAP` (20) total.
 /// - `audio_snippets`: all new snippets appended (no cap — audio is sparse).
 /// - `signals`: all new signals appended.
-fn merge_into_active(existing: &ActiveSession, ctx: &BlockContext) -> Result<ActiveSession> {
+fn merge_into_active(
+    existing: &ActiveSession,
+    ctx: &BlockContext,
+    new_idle_frame_count: i64,
+) -> Result<ActiveSession> {
     let now = ctx.ended_at.clone();
 
     // -- window_titles --
@@ -438,5 +526,6 @@ fn merge_into_active(existing: &ActiveSession, ctx: &BlockContext) -> Result<Act
         min_frame_id: existing.min_frame_id,
         max_frame_id: ctx.max_frame_id,
         frame_count: existing.frame_count + ctx.frame_count,
+        idle_frame_count: existing.idle_frame_count + new_idle_frame_count,
     })
 }

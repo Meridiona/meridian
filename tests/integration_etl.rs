@@ -27,7 +27,8 @@ async fn make_screenpipe_db() -> SqlitePool {
             id INTEGER PRIMARY KEY,
             app_name TEXT,
             window_name TEXT,
-            timestamp TEXT NOT NULL
+            timestamp TEXT NOT NULL,
+            capture_trigger TEXT
         )",
     )
     .execute(&pool)
@@ -256,4 +257,40 @@ async fn test_cleanup_incomplete_runs() {
         .await
         .unwrap();
     assert_eq!(status.0, "aborted");
+}
+
+#[tokio::test]
+async fn test_gap_detection() {
+    let sp = make_screenpipe_db().await;
+    let md = make_meridian_db().await;
+
+    // Two frames separated by a 10-minute gap (600 s > GAP_THRESHOLD_SECS=300).
+    // No frames exist inside the gap window, so it should be classified as
+    // 'system_sleep' (total_count == 0, therefore idle condition is false).
+    insert_frames(
+        &sp,
+        &[
+            ("Terminal", "2026-01-01T10:00:00+00:00"),
+            ("Terminal", "2026-01-01T10:10:00+00:00"),
+        ],
+    )
+    .await;
+
+    run_etl(&sp, &md).await.unwrap();
+
+    // There should be exactly one gap row recorded.
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM gaps")
+        .fetch_one(&md)
+        .await
+        .unwrap();
+    assert_eq!(count.0, 1, "expected exactly one gap row");
+
+    let row: (String, i64, String) =
+        sqlx::query_as("SELECT kind, duration_s, started_at FROM gaps LIMIT 1")
+            .fetch_one(&md)
+            .await
+            .unwrap();
+    assert_eq!(row.0, "system_sleep", "gap should be classified as system_sleep");
+    assert_eq!(row.1, 600, "gap duration should be 600 seconds");
+    assert_eq!(row.2, "2026-01-01T10:00:00+00:00", "gap started_at should match first frame ts");
 }
