@@ -15,12 +15,23 @@ interface SessionCardProps {
   session: SessionRow
 }
 
+function roleBadgeClass(role: string | null): string {
+  if (!role) return 'bg-[#F0EFEC] text-[#9B9A97]'
+  if (role.includes('Button')) return 'bg-[#EBF0FB] text-[#4A6CC4]'
+  if (role.includes('Heading')) return 'bg-[#FBF0EB] text-[#C47A4A]'
+  if (role.includes('Link')) return 'bg-[#EBF8F0] text-[#4A9E6A]'
+  return 'bg-[#F0EFEC] text-[#9B9A97]'
+}
+
 export default function SessionCard({ session }: SessionCardProps) {
   const [open, setOpen] = useState(false)
+
   const hasDetail =
-    (session.ocr_samples && session.ocr_samples.length > 0) ||
-    (session.audio_snippets && session.audio_snippets.length > 0) ||
-    (session.signals && session.signals.length > 0)
+    session.window_titles.length > 1 ||
+    (session.ocr_samples?.length ?? 0) > 0 ||
+    (session.elements_samples?.length ?? 0) > 0 ||
+    (session.audio_snippets?.length ?? 0) > 0 ||
+    (session.signals?.length ?? 0) > 0
 
   return (
     <Collapsible.Root open={open} onOpenChange={setOpen}>
@@ -74,7 +85,8 @@ export default function SessionCard({ session }: SessionCardProps) {
 
         <Collapsible.Content className="overflow-hidden data-[state=closed]:animate-none">
           <div className="px-4 pb-4 pt-0 space-y-3 border-t border-[#E8E6E1]">
-            {/* Window titles */}
+
+            {/* Windows */}
             {session.window_titles.length > 1 && (
               <div className="pt-3">
                 <p className="text-[10px] uppercase tracking-widest text-[#C8C6C1] mb-2">Windows</p>
@@ -94,12 +106,54 @@ export default function SessionCard({ session }: SessionCardProps) {
               </div>
             )}
 
+            {/* Screen Text (OCR) */}
+            {session.ocr_samples && session.ocr_samples.length > 0 && (
+              <div className="pt-1">
+                <p className="text-[10px] uppercase tracking-widest text-[#C8C6C1] mb-2">Screen Text</p>
+                <div className="space-y-2">
+                  {session.ocr_samples.slice(0, 5).map((o, i) => (
+                    <div key={i}>
+                      {o.window_name && (
+                        <p className="text-[10px] text-[#C8C6C1] mb-0.5">· {o.window_name}</p>
+                      )}
+                      <p className="text-xs text-[#6B6A67] leading-relaxed line-clamp-3 whitespace-pre-wrap">
+                        {o.text}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* UI Elements (Accessibility) */}
+            {session.elements_samples && session.elements_samples.length > 0 && (
+              <div className="pt-1">
+                <p className="text-[10px] uppercase tracking-widest text-[#C8C6C1] mb-2">UI Elements</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {session.elements_samples.slice(0, 8).map((el, i) => (
+                    <span
+                      key={i}
+                      className={clsx(
+                        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium',
+                        roleBadgeClass(el.role)
+                      )}
+                    >
+                      {el.role && (
+                        <span className="opacity-60">{el.role.replace(/^AX/, '')}</span>
+                      )}
+                      <span className="truncate max-w-[120px]">{el.text}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Audio snippets */}
             {session.audio_snippets && session.audio_snippets.length > 0 && (
               <div className="pt-1">
                 <p className="text-[10px] uppercase tracking-widest text-[#C8C6C1] mb-2">Audio</p>
                 <div className="space-y-1.5">
-                  {session.audio_snippets.slice(0, 3).map((a, i) => (
+                  {session.audio_snippets.slice(0, 5).map((a, i) => (
                     <div key={i} className="flex items-start gap-2">
                       <Mic className="w-3 h-3 text-[#C8C6C1] mt-0.5 shrink-0" />
                       <p className="text-xs text-[#6B6A67] leading-relaxed">{a.transcription}</p>
@@ -127,6 +181,7 @@ export default function SessionCard({ session }: SessionCardProps) {
                 </div>
               </div>
             )}
+
           </div>
         </Collapsible.Content>
       </div>
