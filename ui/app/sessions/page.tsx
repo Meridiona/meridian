@@ -7,30 +7,57 @@ import { useState, useEffect, useCallback } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import SessionCard from '@/components/SessionCard'
 import { formatDateLabel, toLocalDateString } from '@/lib/format'
-import type { PaginatedSessions } from '@/lib/types'
+import type { PaginatedSessions, SessionRow } from '@/lib/types'
 
 export default function SessionsPage() {
   const [date, setDate] = useState(toLocalDateString())
-  const [data, setData] = useState<PaginatedSessions | null>(null)
+  const [sessions, setSessions] = useState<SessionRow[]>([])
+  const [total, setTotal] = useState(0)
+  const [hasMore, setHasMore] = useState(false)
+  const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
 
-  const load = useCallback(async (d: string) => {
-    setLoading(true)
+  const loadPage = useCallback(async (d: string, p: number, append: boolean) => {
+    if (p === 1) {
+      setLoading(true)
+    } else {
+      setLoadingMore(true)
+    }
     try {
-      const res = await fetch(`/api/sessions?date=${d}&page_size=30`)
+      const res = await fetch(`/api/sessions?date=${d}&page=${p}&page_size=30`)
       const json: PaginatedSessions = await res.json()
-      setData(json)
+      if (append) {
+        setSessions(prev => [...prev, ...json.sessions])
+      } else {
+        setSessions(json.sessions)
+      }
+      setTotal(json.total)
+      setHasMore(json.has_more)
     } finally {
       setLoading(false)
+      setLoadingMore(false)
     }
   }, [])
 
-  useEffect(() => { load(date) }, [date, load])
+  // When date changes, reset to page 1
+  useEffect(() => {
+    setPage(1)
+    setSessions([])
+    setHasMore(false)
+    loadPage(date, 1, false)
+  }, [date, loadPage])
 
   function offsetDate(days: number) {
     const d = new Date(date + 'T12:00:00')
     d.setDate(d.getDate() + days)
     setDate(toLocalDateString(d))
+  }
+
+  function handleLoadMore() {
+    const nextPage = page + 1
+    setPage(nextPage)
+    loadPage(date, nextPage, true)
   }
 
   return (
@@ -63,8 +90,10 @@ export default function SessionsPage() {
 
       <div className="flex items-center justify-between">
         <span className="text-[#9B9A97] text-sm">{formatDateLabel(date)}</span>
-        {data && (
-          <span className="text-xs text-[#C8C6C1] font-mono">{data.total} sessions</span>
+        {!loading && sessions.length > 0 && (
+          <span className="text-xs text-[#C8C6C1] font-mono">
+            {sessions.length} of {total} sessions
+          </span>
         )}
       </div>
 
@@ -76,16 +105,26 @@ export default function SessionsPage() {
         </div>
       )}
 
-      {!loading && data && data.sessions.length === 0 && (
+      {!loading && sessions.length === 0 && (
         <div className="rounded-xl border border-[#E8E6E1] bg-white px-5 py-12 text-center">
           <p className="text-sm text-[#9B9A97]">No sessions on {formatDateLabel(date)}</p>
         </div>
       )}
 
-      {!loading && data && data.sessions.length > 0 && (
+      {!loading && sessions.length > 0 && (
         <div className="space-y-2">
-          {data.sessions.map(s => <SessionCard key={s.id} session={s} />)}
+          {sessions.map(s => <SessionCard key={s.id} session={s} />)}
         </div>
+      )}
+
+      {hasMore && !loading && (
+        <button
+          onClick={handleLoadMore}
+          disabled={loadingMore}
+          className="w-full py-2.5 text-sm text-[#9B9A97] border border-[#E8E6E1] rounded-xl hover:border-[#D4D1CB] hover:text-[#141414] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {loadingMore ? 'Loading...' : 'Load more'}
+        </button>
       )}
     </div>
   )
