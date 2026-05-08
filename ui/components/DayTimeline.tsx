@@ -4,7 +4,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import type { SessionRow, ActiveSessionRow, TimelineResponse } from '@/lib/types'
+import type { SessionRow, ActiveSessionRow, TimelineResponse, GapRow } from '@/lib/types'
 import { getAppColor } from '@/lib/app-colors'
 import { formatDuration, formatTime } from '@/lib/format'
 
@@ -23,6 +23,8 @@ interface Segment {
   duration_s: number
   window_titles: SessionRow['window_titles']
   isActive: boolean
+  isGap: boolean
+  gapKind?: GapRow['kind']
 }
 
 interface TooltipState {
@@ -36,8 +38,13 @@ interface DayTimelineProps {
   activeSession?: ActiveSessionRow | null
 }
 
+const GAP_COLORS: Record<GapRow['kind'], string> = {
+  user_idle: '#D4D1CB',
+  system_sleep: '#C8C6C1',
+}
+
 export default function DayTimeline({ data, activeSession }: DayTimelineProps) {
-  const { sessions, day_start_s, day_end_s } = data
+  const { sessions, gaps, day_start_s, day_end_s } = data
   const spanS = Math.max(day_end_s - day_start_s, 1)
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -52,7 +59,7 @@ export default function DayTimeline({ data, activeSession }: DayTimelineProps) {
     return () => clearInterval(id)
   }, [])
 
-  const segments: Segment[] = [
+  const sessionSegments: Segment[] = [
     ...sessions.map(s => ({
       id: s.id,
       app_name: s.app_name,
@@ -61,6 +68,7 @@ export default function DayTimeline({ data, activeSession }: DayTimelineProps) {
       duration_s: s.duration_s,
       window_titles: s.window_titles,
       isActive: false,
+      isGap: false,
     })),
     ...(activeSession ? [{
       id: -1,
@@ -70,8 +78,23 @@ export default function DayTimeline({ data, activeSession }: DayTimelineProps) {
       duration_s: Math.max(0, nowS - toEpochS(activeSession.started_at)),
       window_titles: activeSession.window_titles,
       isActive: true,
+      isGap: false,
     }] : []),
   ]
+
+  const gapSegments: Segment[] = (gaps ?? []).map(g => ({
+    id: g.id * -1000,  // avoid id collisions with session ids
+    app_name: g.kind === 'user_idle' ? 'Idle' : 'Away',
+    started_at: g.started_at,
+    ended_at: g.ended_at,
+    duration_s: g.duration_s,
+    window_titles: [],
+    isActive: false,
+    isGap: true,
+    gapKind: g.kind,
+  }))
+
+  const segments: Segment[] = [...sessionSegments, ...gapSegments]
 
   function getLeft(startS: number): number {
     const v = ((startS - day_start_s) / spanS) * 100
@@ -147,28 +170,31 @@ export default function DayTimeline({ data, activeSession }: DayTimelineProps) {
           const startS = toEpochS(seg.started_at)
           const left = getLeft(startS)
           const width = getWidth(seg.duration_s)
-          const color = seg.isActive ? '#FF6B2B' : getAppColor(seg.app_name)
-          const isIdle = seg.app_name === '(idle)'
+          const color = seg.isGap
+            ? GAP_COLORS[seg.gapKind!]
+            : seg.isActive
+              ? '#FF6B2B'
+              : getAppColor(seg.app_name)
 
           return (
             <div
               key={seg.id}
-              role={isIdle ? undefined : 'button'}
-              tabIndex={isIdle ? -1 : 0}
-              aria-label={isIdle ? undefined : `${seg.app_name}: ${formatDuration(seg.duration_s)}`}
+              role={seg.isGap ? undefined : 'button'}
+              tabIndex={seg.isGap ? -1 : 0}
+              aria-label={seg.isGap ? undefined : `${seg.app_name}: ${formatDuration(seg.duration_s)}`}
+              aria-hidden={seg.isGap ? true : undefined}
               className={[
                 'absolute top-0 h-full transition-filter',
-                !isIdle && 'hover:brightness-110 cursor-pointer',
+                !seg.isGap && 'hover:brightness-110 cursor-pointer',
                 seg.isActive && 'animate-meridian-pulse',
               ].filter(Boolean).join(' ')}
               style={{
                 left: `max(0%, ${left}%)`,
                 width: `max(2px, ${width}%)`,
                 backgroundColor: color,
-                opacity: isIdle ? 0.45 : 1,
               }}
-              onMouseEnter={e => !isIdle && handleMouseEnter(e, seg)}
-              onFocus={e => !isIdle && handleMouseEnter(e as unknown as React.MouseEvent, seg)}
+              onMouseEnter={e => !seg.isGap && handleMouseEnter(e, seg)}
+              onFocus={e => !seg.isGap && handleMouseEnter(e as unknown as React.MouseEvent, seg)}
               onBlur={() => setTooltip(null)}
             />
           )

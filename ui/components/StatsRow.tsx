@@ -20,9 +20,12 @@ function StatCell({ label, value, sub }: { label: string; value: string; sub?: s
 }
 
 export default function StatsRow({ stats }: StatsRowProps) {
-  const focusPct = stats.total_s > 0
-    ? Math.round((stats.focus_s / stats.total_s) * 100)
+  const totalTrackedS = stats.focus_s + stats.user_idle_s + stats.away_s
+  const focusPct = totalTrackedS > 0
+    ? Math.round((stats.focus_s / totalTrackedS) * 100)
     : 0
+
+  const awayS = stats.user_idle_s + stats.away_s
 
   const topApp = stats.top_apps[0]
 
@@ -35,8 +38,12 @@ export default function StatsRow({ stats }: StatsRowProps) {
           sub: `${focusPct}% of tracked time`,
         },
         {
-          label: 'Idle',
-          value: formatDuration(stats.idle_s),
+          label: 'Away',
+          value: formatDuration(awayS),
+          sub: awayS > 0 ? [
+            stats.user_idle_s > 0 ? `${formatDuration(stats.user_idle_s)} idle` : null,
+            stats.away_s > 0 ? `${formatDuration(stats.away_s)} sleep` : null,
+          ].filter(Boolean).join(' · ') || undefined : undefined,
         },
         {
           label: 'Sessions',
