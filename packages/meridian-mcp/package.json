@@ -1,0 +1,31 @@
+{
+  "name": "meridian-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for Meridian — query app sessions, focus time, and activity data",
+  "main": "dist/index.js",
+  "bin": {
+    "meridian-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": ["mcp", "meridian", "model-context-protocol", "activity", "screenpipe", "ai"],
+  "author": "Meridiona",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "better-sqlite3": "^12.2.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3",
+    "ts-node": "^10.9.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
