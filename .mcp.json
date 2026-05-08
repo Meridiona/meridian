@@ -1,10 +1,9 @@
 {
   "mcpServers": {
     "meridian": {
-      "command": "npx",
+      "command": "node",
       "args": [
-        "-y",
-        "meridian-mcp@latest"
+        "/Users/adityaharish/Documents/Document/Meridiona/meridian/packages/meridian-mcp/dist/index.js"
       ]
     }
   }

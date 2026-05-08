@@ -66,9 +66,13 @@ function writeJson(filePath: string, data: Record<string, unknown>): void {
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n", "utf-8");
 }
 
+// Resolve the absolute path to the compiled MCP server next to this file.
+// In CJS output, __dirname is the dist/ directory containing both install.js and index.js.
+const SERVER_PATH = path.join(__dirname, "index.js");
+
 // Standard entry for Claude Desktop, Cursor, Windsurf, .mcp.json
 function buildEntry(): McpEntry {
-  const entry: McpEntry = { command: "npx", args: ["-y", "meridian-mcp@latest"] };
+  const entry: McpEntry = { command: "node", args: [SERVER_PATH] };
   const dbPath = process.env.MERIDIAN_DB;
   if (dbPath) entry.env = { MERIDIAN_DB: dbPath };
   return entry;
@@ -78,8 +82,8 @@ function buildEntry(): McpEntry {
 function buildClaudeCodeEntry(): McpEntry {
   const entry: McpEntry = {
     type: "stdio",
-    command: "npx",
-    args: ["-y", "meridian-mcp@latest"],
+    command: "node",
+    args: [SERVER_PATH],
     env: {},
   };
   const dbPath = process.env.MERIDIAN_DB;
