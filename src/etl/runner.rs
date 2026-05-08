@@ -365,6 +365,16 @@ async fn close_block(
         }
     }
 
+    // Option D: single-frame session (ended_at == started_at, duration would be 0).
+    // Use next_frame_ts as the ended_at so we capture the full inter-frame interval
+    // instead of recording a 0s session that actually had real screen time.
+    if ctx.ended_at == b.started_at {
+        if let Some(next_ts) = b.next_frame_ts {
+            debug!(app = b.app, next_ts, "ended_at filled from next_frame_ts (single-frame session)");
+            ctx.ended_at = next_ts.to_string();
+        }
+    }
+
     let existing = get_active_session(meridian).await?;
 
     match existing {
