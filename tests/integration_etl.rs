@@ -472,6 +472,129 @@ async fn test_session_duration_excludes_gap() {
 }
 
 // ---------------------------------------------------------------------------
+// Option C — ui_event refines session ended_at on app switch
+// ---------------------------------------------------------------------------
+
+/// Scenario: Terminal runs from 10:00:00 to 10:01:00 (two frames), then Chrome
+/// appears at 10:02:00. A ui_event click at 10:01:45 (45 s after the last Terminal
+/// frame, 15 s before Chrome) should become the Terminal session's ended_at.
+///
+/// Expected:
+///   ended_at  = "2026-01-01T10:01:45+00:00"  (ui_event time, not 10:01:00)
+///   duration_s = 105                          (10:01:45 − 10:00:00)
+#[tokio::test]
+async fn test_ui_event_refines_session_end() {
+    let sp = make_screenpipe_db().await;
+    let md = make_meridian_db().await;
+
+    // Two Terminal frames followed by one Chrome frame (triggers app-switch close).
+    insert_frames(
+        &sp,
+        &[
+            ("Terminal", "2026-01-01T10:00:00+00:00"),
+            ("Terminal", "2026-01-01T10:01:00+00:00"),
+            ("Chrome", "2026-01-01T10:02:00+00:00"),
+        ],
+    )
+    .await;
+
+    // ui_event: click in Terminal at 10:01:45 — AFTER the last Terminal frame.
+    sqlx::query(
+        "INSERT INTO ui_events (id, timestamp, event_type, app_name)
+         VALUES (1, '2026-01-01T10:01:45+00:00', 'click', 'Terminal')",
+    )
+    .execute(&sp)
+    .await
+    .unwrap();
+
+    run_etl(&sp, &md).await.unwrap();
+
+    // Terminal block must be closed; Chrome stays open.
+    let closed: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM app_sessions")
+        .fetch_one(&md)
+        .await
+        .unwrap();
+    assert_eq!(closed.0, 1, "Terminal block should be closed into app_sessions");
+
+    let row: (String, i64) =
+        sqlx::query_as("SELECT ended_at, duration_s FROM app_sessions LIMIT 1")
+            .fetch_one(&md)
+            .await
+            .unwrap();
+
+    assert!(
+        row.0.starts_with("2026-01-01T10:01:45"),
+        "ended_at should be the ui_event timestamp (10:01:45), got: {}",
+        row.0
+    );
+    assert_eq!(
+        row.1, 105,
+        "duration_s should be 105 s (10:01:45 − 10:00:00), got: {}",
+        row.1
+    );
+}
+
+/// Scenario: Terminal runs from 10:00:00 to 10:01:30 (two frames), then Chrome
+/// appears at 10:02:00. A ui_event click at 10:00:45 is BEFORE the last Terminal
+/// frame (10:01:30). Option C must NOT use it — the session end must remain at
+/// the last frame timestamp.
+///
+/// Expected:
+///   ended_at  = "2026-01-01T10:01:30+00:00"  (last frame, NOT the earlier ui_event)
+///   duration_s = 90                           (10:01:30 − 10:00:00)
+#[tokio::test]
+async fn test_ui_event_before_last_frame_ignored() {
+    let sp = make_screenpipe_db().await;
+    let md = make_meridian_db().await;
+
+    // Two Terminal frames followed by one Chrome frame.
+    insert_frames(
+        &sp,
+        &[
+            ("Terminal", "2026-01-01T10:00:00+00:00"),
+            ("Terminal", "2026-01-01T10:01:30+00:00"),
+            ("Chrome", "2026-01-01T10:02:00+00:00"),
+        ],
+    )
+    .await;
+
+    // ui_event: click in Terminal at 10:00:45 — BEFORE the last Terminal frame.
+    sqlx::query(
+        "INSERT INTO ui_events (id, timestamp, event_type, app_name)
+         VALUES (1, '2026-01-01T10:00:45+00:00', 'click', 'Terminal')",
+    )
+    .execute(&sp)
+    .await
+    .unwrap();
+
+    run_etl(&sp, &md).await.unwrap();
+
+    // Terminal block must be closed.
+    let closed: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM app_sessions")
+        .fetch_one(&md)
+        .await
+        .unwrap();
+    assert_eq!(closed.0, 1, "Terminal block should be closed into app_sessions");
+
+    let row: (String, i64) =
+        sqlx::query_as("SELECT ended_at, duration_s FROM app_sessions LIMIT 1")
+            .fetch_one(&md)
+            .await
+            .unwrap();
+
+    assert!(
+        row.0.starts_with("2026-01-01T10:01:30"),
+        "ended_at should be the last frame timestamp (10:01:30), not the earlier ui_event; got: {}",
+        row.0
+    );
+    assert_eq!(
+        row.1, 90,
+        "duration_s should be 90 s (10:01:30 − 10:00:00), got: {}",
+        row.1
+    );
+}
+
+// ---------------------------------------------------------------------------
 // No gap below threshold
 // ---------------------------------------------------------------------------
 
