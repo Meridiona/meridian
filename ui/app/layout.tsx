@@ -8,7 +8,7 @@ import Nav from '@/components/Nav'
 
 export const metadata: Metadata = {
   title: 'Meridian',
-  description: 'Local activity intelligence by Meridiana',
+  description: 'Local activity intelligence by Meridiona',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
