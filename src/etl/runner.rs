@@ -6,8 +6,8 @@ use sqlx::SqlitePool;
 use tracing::{debug, info, warn};
 
 use crate::db::meridian::{
-    close_active_session, complete_etl_run, get_active_session, get_cursor, insert_etl_run,
-    insert_gap, update_cursor, upsert_active_session, ActiveSession,
+    close_active_session, close_active_session_with, complete_etl_run, get_active_session,
+    get_cursor, insert_etl_run, insert_gap, update_cursor, upsert_active_session, ActiveSession,
 };
 use crate::db::screenpipe::{
     count_frames_in_window, get_frames_since, get_last_ui_event_for_app, AudioSnippet,
@@ -21,6 +21,7 @@ use crate::etl::extractor::extract_block_context;
 
 const BATCH_SIZE: i64 = 500;
 const OCR_SAMPLE_CAP: usize = 20;
+const AUDIO_SNIPPET_CAP: usize = 50;
 const GAP_THRESHOLD_SECS: i64 = 300;
 
 // ---------------------------------------------------------------------------
@@ -113,6 +114,8 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
 
     // Carry over the in-flight block state across batches.
     let mut current_app: Option<String> = None;
+    // For browser apps, also track the current window title so we split on tab change.
+    let mut current_window: Option<String> = None;
     let mut block_start_frame_id: i64 = 0;
     let mut block_start_ts: String = String::new();
     let mut block_frame_count: i64 = 0;
@@ -126,6 +129,16 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
         loop {
             for frame in &batch {
                 let app = frame.app_name.trim();
+                // For browsers, use the URL domain as the split key — it's stable
+                // within a site even as the page title changes. Falls back to
+                // window_name if screenpipe didn't capture a URL for this frame.
+                let window = frame
+                    .browser_url
+                    .as_deref()
+                    .map(url_domain)
+                    .filter(|d| !d.is_empty())
+                    .or_else(|| frame.window_name.as_deref().filter(|w| !w.is_empty()))
+                    .unwrap_or("");
                 if app.is_empty() {
                     // Extend whatever block is open without changing the app.
                     if current_app.is_some() {
@@ -183,6 +196,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                             // not at the first frame after. This prevents the gap
                             // time from inflating the session's focus duration.
                             let closing_app = current_app.take().unwrap();
+                            current_window = None;
                             sessions_closed += close_block(
                                 screenpipe,
                                 meridian,
@@ -205,11 +219,19 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                     }
                 }
 
+                // For browsers, a window title change is treated as a context switch —
+                // same as an app change for every other app. An empty window name
+                // (screenpipe didn't capture it yet) does not trigger a split.
+                let browser_window_changed = is_browser(app)
+                    && !window.is_empty()
+                    && current_window.as_deref() != Some(window);
+
                 match current_app.as_deref() {
                     None => {
                         // Very first frame — start a block.
                         debug!(frame_id = frame.id, app, "first frame — starting block");
                         current_app = Some(app.to_owned());
+                        current_window = Some(window.to_owned());
                         block_start_frame_id = frame.id;
                         block_start_ts = frame.timestamp.clone();
                         block_frame_count = 1;
@@ -226,8 +248,8 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                         block_last_frame_id = frame.id;
                     }
 
-                    Some(cur) if cur == app => {
-                        // Same app — extend the current block.
+                    Some(cur) if cur == app && !browser_window_changed => {
+                        // Same app and same browser window (or non-browser) — extend.
                         block_frame_count += 1;
                         if frame.capture_trigger.as_deref() == Some("idle") {
                             block_idle_frame_count += 1;
@@ -237,14 +259,24 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                     }
 
                     Some(cur) => {
-                        // App changed.
+                        // App changed, or browser tab switched to a new window.
                         let old_app = cur.to_owned();
-                        debug!(
-                            old_app = old_app,
-                            new_app = app,
-                            frame_id = frame.id,
-                            "app changed — closing block"
-                        );
+                        if browser_window_changed {
+                            debug!(
+                                app,
+                                old_window = current_window.as_deref(),
+                                new_window = window,
+                                frame_id = frame.id,
+                                "browser window changed — closing block"
+                            );
+                        } else {
+                            debug!(
+                                old_app = old_app,
+                                new_app = app,
+                                frame_id = frame.id,
+                                "app changed — closing block"
+                            );
+                        }
 
                         // Close the old block.
                         sessions_closed += close_block(
@@ -264,8 +296,9 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                         )
                         .await?;
 
-                        // Start fresh block for the new app.
+                        // Start fresh block for the new app or browser window.
                         current_app = Some(app.to_owned());
+                        current_window = Some(window.to_owned());
                         block_start_frame_id = frame.id;
                         block_start_ts = frame.timestamp.clone();
                         block_frame_count = 1;
@@ -423,8 +456,7 @@ async fn close_block(
         Some(ref active) if active.app_name == b.app => {
             debug!(app = b.app, "merging and closing continuation block");
             let merged = merge_into_active(active, &ctx, b.idle_frame_count)?;
-            upsert_active_session(meridian, &merged).await?;
-            close_active_session(meridian, run_id).await?;
+            close_active_session_with(meridian, &merged, run_id).await?;
             info!(app = b.app, "session closed (merged continuation)");
             Ok(1)
         }
@@ -435,18 +467,16 @@ async fn close_block(
                 new_app = b.app,
                 "stale active_session — closing stale first"
             );
-            close_active_session(meridian, run_id).await?;
+            close_active_session_with(meridian, active, run_id).await?;
             let new_session = build_active_session(&ctx, b.idle_frame_count)?;
-            upsert_active_session(meridian, &new_session).await?;
-            close_active_session(meridian, run_id).await?;
+            close_active_session_with(meridian, &new_session, run_id).await?;
             info!(app = b.app, "session closed (fresh, after evicting stale)");
             Ok(2)
         }
 
         None => {
             let new_session = build_active_session(&ctx, b.idle_frame_count)?;
-            upsert_active_session(meridian, &new_session).await?;
-            close_active_session(meridian, run_id).await?;
+            close_active_session_with(meridian, &new_session, run_id).await?;
             info!(app = b.app, "session closed");
             Ok(1)
         }
@@ -488,7 +518,7 @@ async fn upsert_open_block(
                 new_app = b.app,
                 "stale active_session while upserting open block"
             );
-            close_active_session(meridian, run_id).await?;
+            close_active_session_with(meridian, active, run_id).await?;
             build_active_session(&ctx, b.idle_frame_count)?
         }
 
@@ -538,7 +568,7 @@ fn build_active_session(ctx: &BlockContext, idle_frame_count: i64) -> Result<Act
 /// - `window_titles`: counts from identical titles are incremented; new titles are appended.
 /// - `ocr_samples`: appended, capped at `OCR_SAMPLE_CAP` (20) total.
 /// - `elements_samples`: appended, capped at `OCR_SAMPLE_CAP` (20) total.
-/// - `audio_snippets`: all new snippets appended (no cap — audio is sparse).
+/// - `audio_snippets`: appended, capped at `AUDIO_SNIPPET_CAP` (50) total.
 /// - `signals`: all new signals appended.
 fn merge_into_active(
     existing: &ActiveSession,
@@ -595,7 +625,12 @@ fn merge_into_active(
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or_default();
-    audio.extend(ctx.audio_snippets.iter().cloned());
+    for snippet in &ctx.audio_snippets {
+        if audio.len() >= AUDIO_SNIPPET_CAP {
+            break;
+        }
+        audio.push(snippet.clone());
+    }
 
     // -- signals --
     let mut signals: Vec<SignalEvent> = existing
@@ -620,4 +655,32 @@ fn merge_into_active(
         frame_count: existing.frame_count + ctx.frame_count,
         idle_frame_count: existing.idle_frame_count + new_idle_frame_count,
     })
+}
+
+// ---------------------------------------------------------------------------
+// is_browser
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if `app` is a known browser.
+/// Used to decide whether window/URL changes should trigger a session split.
+fn is_browser(app: &str) -> bool {
+    let lc = app.to_lowercase();
+    ["chrome", "safari", "firefox", "arc", "edge", "brave", "opera", "vivaldi"]
+        .iter()
+        .any(|b| lc.contains(b))
+}
+
+/// Extracts the bare domain from a URL — strips scheme, path, query, and `www.`.
+/// Returns the full string unchanged if it doesn't look like a URL.
+///
+/// Examples:
+///   `https://www.youtube.com/watch?v=abc` → `youtube.com`
+///   `https://github.com/org/repo/pull/1`  → `github.com`
+fn url_domain(url: &str) -> &str {
+    let without_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    let domain = without_scheme.split('/').next().unwrap_or(without_scheme);
+    domain.strip_prefix("www.").unwrap_or(domain)
 }
