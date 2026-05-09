@@ -22,12 +22,11 @@ dependencies = [
     "python-dotenv>=1.0.1",
     # Async SQLite client; coexists with the Rust daemon's WAL-mode connection
     "aiosqlite>=0.20.0",
-    # Required by vendored hermes_runtime — utils.py uses pyyaml for atomic
-    # YAML writes; hermes_cli/config.py also reads YAML config files.
-    "pyyaml>=6.0",
-    # hermes_runtime uses `requests` for some HTTP calls (separate from our
-    # httpx async stack). Per hermes' own pyproject this is >=2.33,<3.
-    "requests>=2.33.0,<3",
+    # Hermes agent runtime — full power, installed from upstream. Provides
+    # `from run_agent import AIAgent` plus the entire tool-call / provider /
+    # skill machinery. We pin to v0.13.0; bump deliberately when the
+    # synthesizer prompt is exercised against a newer release.
+    "hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git@v2026.5.7",
 ]
 
 [project.optional-dependencies]
@@ -47,13 +46,17 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/meridian_agents"]
 
+[tool.hatch.metadata]
+# Required to allow `hermes-agent @ git+https://...` in project.dependencies.
+# Hatchling rejects direct refs by default.
+allow-direct-references = true
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 extend-exclude = [
-    # Vendored from hermes-activity-agent — keep upstream style intact so
-    # we can pull updates without merge churn. Lint our own code only.
-    "src/meridian_agents/hermes_runtime",
+    # Source material from hermes upstream — kept for reference, not on the
+    # import path. Don't lint upstream style we don't control.
     "reference",
 ]
 
