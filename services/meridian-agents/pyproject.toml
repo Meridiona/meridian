@@ -20,6 +20,8 @@ dependencies = [
     "pydantic>=2.7.0",
     # .env loading at startup (mirrors the Rust daemon's dotenvy behavior)
     "python-dotenv>=1.0.1",
+    # Async SQLite client; coexists with the Rust daemon's WAL-mode connection
+    "aiosqlite>=0.20.0",
 ]
 
 [project.optional-dependencies]
@@ -42,6 +44,12 @@ packages = ["src/meridian_agents"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-exclude = [
+    # Vendored from hermes-activity-agent — keep upstream style intact so
+    # we can pull updates without merge churn. Lint our own code only.
+    "src/meridian_agents/hermes_runtime",
+    "reference",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "N", "RUF"]
