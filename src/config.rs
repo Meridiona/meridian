@@ -3,13 +3,72 @@
 
 use std::path::PathBuf;
 
+// ---------------------------------------------------------------------------
+// Per-provider credential structs
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct JiraConfig {
+    /// e.g. "https://acme.atlassian.net"
+    pub base_url: String,
+    pub email: String,
+    pub api_token: String,
+    /// Filter to specific project keys. Empty = accept all.
+    pub project_keys: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct GitHubConfig {
+    /// Personal access token with `repo` scope.
+    pub token: String,
+    /// GitHub organisation slug.
+    pub org: String,
+    /// Optional list of "org/repo" slugs to restrict fetching. Empty = all org repos.
+    pub repos: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LinearConfig {
+    pub api_key: String,
+    /// Linear team IDs to filter by. Empty = all teams.
+    pub team_ids: Vec<String>,
+}
+
+/// Provider-agnostic credential variant. Add new providers here; callers
+/// match on this enum, so the compiler enforces exhaustive handling.
+#[derive(Clone, Debug)]
+pub enum PmProviderConfig {
+    Jira(JiraConfig),
+    GitHub(GitHubConfig),
+    Linear(LinearConfig),
+}
+
+impl PmProviderConfig {
+    pub fn provider_name(&self) -> &'static str {
+        match self {
+            Self::Jira(_) => "jira",
+            Self::GitHub(_) => "github",
+            Self::Linear(_) => "linear",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Top-level config
+// ---------------------------------------------------------------------------
+
 pub struct Config {
     pub screenpipe_db: String,
     pub meridian_db: String,
     pub poll_interval_secs: u64,
+    /// All configured PM providers. Empty = intelligence silently disabled.
+    pub pm_providers: Vec<PmProviderConfig>,
 }
 
-/// Expand a leading `~` to the current user's home directory.
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 fn expand_tilde(path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Ok(home) = std::env::var("HOME") {
@@ -19,13 +78,79 @@ fn expand_tilde(path: &str) -> String {
     path.to_owned()
 }
 
+fn env_list(key: &str) -> Vec<String> {
+    std::env::var(key)
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Provider parsers — each returns None if required vars are missing
+// ---------------------------------------------------------------------------
+
+fn parse_jira() -> Option<PmProviderConfig> {
+    let base_url = std::env::var("JIRA_BASE_URL").ok()?;
+    let email = std::env::var("JIRA_EMAIL").ok()?;
+    let api_token = std::env::var("JIRA_API_TOKEN").ok()?;
+    Some(PmProviderConfig::Jira(JiraConfig {
+        base_url,
+        email,
+        api_token,
+        project_keys: env_list("JIRA_PROJECT_KEYS"),
+    }))
+}
+
+fn parse_github() -> Option<PmProviderConfig> {
+    let token = std::env::var("GITHUB_TOKEN").ok()?;
+    let org = std::env::var("GITHUB_ORG").ok()?;
+    Some(PmProviderConfig::GitHub(GitHubConfig {
+        token,
+        org,
+        repos: env_list("GITHUB_REPOS"),
+    }))
+}
+
+fn parse_linear() -> Option<PmProviderConfig> {
+    let api_key = std::env::var("LINEAR_API_KEY").ok()?;
+    Some(PmProviderConfig::Linear(LinearConfig {
+        api_key,
+        team_ids: env_list("LINEAR_TEAM_IDS"),
+    }))
+}
+
+fn parse_providers() -> Vec<PmProviderConfig> {
+    [parse_jira(), parse_github(), parse_linear()]
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Config::from_env
+// ---------------------------------------------------------------------------
+
 impl Config {
     /// Build config from environment variables, falling back to defaults.
     ///
-    /// Variables read:
+    /// Core vars:
     ///   SCREENPIPE_DB       — path to screenpipe's SQLite file
     ///   MERIDIAN_DB         — path to meridian's SQLite file
-    ///   POLL_INTERVAL_SECS  — poll cadence in seconds (u64)
+    ///   POLL_INTERVAL_SECS  — poll cadence in seconds (default 60)
+    ///
+    /// Jira provider (all three required):
+    ///   JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN
+    ///   JIRA_PROJECT_KEYS   — optional comma-separated filter, e.g. "KAN,ENG"
+    ///
+    /// GitHub provider (all two required):
+    ///   GITHUB_TOKEN, GITHUB_ORG
+    ///   GITHUB_REPOS        — optional comma-separated filter, e.g. "org/api,org/web"
+    ///
+    /// Linear provider (required):
+    ///   LINEAR_API_KEY
+    ///   LINEAR_TEAM_IDS     — optional comma-separated filter
     pub fn from_env() -> Self {
         let screenpipe_db = std::env::var("SCREENPIPE_DB")
             .map(|v| expand_tilde(&v))
@@ -50,16 +175,14 @@ impl Config {
             screenpipe_db,
             meridian_db,
             poll_interval_secs,
+            pm_providers: parse_providers(),
         }
     }
 
-    /// Returns an `sqlite://` URI suitable for sqlx, pointing at the screenpipe DB.
     pub fn screenpipe_db_uri(&self) -> String {
         format!("sqlite://{}", self.screenpipe_db)
     }
 
-    /// Returns an `sqlite://` URI suitable for sqlx, pointing at the meridian DB.
-    /// Creates the parent directory if it does not already exist.
     pub fn meridian_db_uri(&self) -> String {
         if let Some(parent) = PathBuf::from(&self.meridian_db).parent() {
             if !parent.as_os_str().is_empty() && !parent.exists() {
@@ -69,6 +192,10 @@ impl Config {
         format!("sqlite://{}", self.meridian_db)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -119,4 +246,5 @@ mod tests {
         std::env::remove_var("SCREENPIPE_DB");
         std::env::remove_var("MERIDIAN_DB");
     }
+
 }

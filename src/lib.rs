@@ -4,3 +4,4 @@
 pub mod config;
 pub mod db;
 pub mod etl;
+pub mod intelligence;
