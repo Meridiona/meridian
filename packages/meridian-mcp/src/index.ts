@@ -97,7 +97,7 @@ const TOOLS: Tool[] = [
     name: "get-sessions",
     description:
       "List completed app sessions for a given date. Each session includes app name, duration, " +
-      "window titles, OCR text visible on screen, audio snippets, and accessibility elements. " +
+      "window titles, OCR text visible on screen, and accessibility elements. " +
       "Use this to answer: 'what apps did I use today?', 'how long was I in VS Code?', 'what was I working on?'",
     annotations: { title: "Get Sessions", readOnlyHint: true, openWorldHint: false, idempotentHint: true },
     inputSchema: {
@@ -180,7 +180,7 @@ const TOOLS: Tool[] = [
   {
     name: "get-session-detail",
     description:
-      "Get full detail for a specific session by ID: all window titles, OCR text samples, audio transcriptions, " +
+      "Get full detail for a specific session by ID: all window titles, OCR text samples, " +
       "accessibility elements, and signals (clipboard, app switches). " +
       "Use after get-sessions or search-sessions when you need the full content of a specific session.",
     annotations: { title: "Get Session Detail", readOnlyHint: true, openWorldHint: false, idempotentHint: true },
@@ -429,7 +429,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "get-active-session": {
         const row = dbGet(db, `
           SELECT app_name, started_at, last_seen_at, window_titles,
-                 ocr_samples, audio_snippets, frame_count
+                 ocr_samples, frame_count
           FROM active_session WHERE id = 1
         `);
 
@@ -440,8 +440,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const elapsed = Math.round((Date.now() - new Date(row.last_seen_at as string).getTime()) / 1000);
         const titles = parseJsonColumn<Array<{ window_name: string }>>(row.window_titles as string);
         const topTitle = titles?.[0]?.window_name ?? "";
-        const audio = parseJsonColumn<Array<{ transcription: string }>>(row.audio_snippets as string);
-        const lastAudio = audio?.at(-1)?.transcription ?? "";
 
         const lines = [
           `Active: ${row.app_name}`,
@@ -449,7 +447,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           `Last seen: ${elapsed}s ago`,
           `Frames: ${row.frame_count}`,
           topTitle ? `Window: ${topTitle}` : "",
-          lastAudio ? `Last audio: "${lastAudio}"` : "",
         ].filter(Boolean);
 
         return { content: [{ type: "text", text: lines.join("\n") }] };
@@ -534,7 +531,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         const row = dbGet(db, `
           SELECT id, app_name, started_at, ended_at, duration_s,
-                 window_titles, ocr_samples, elements_samples, audio_snippets, signals,
+                 window_titles, ocr_samples, elements_samples, signals,
                  frame_count, idle_frame_count, etl_run_id
           FROM app_sessions WHERE id = ?
         `, [id]);
@@ -546,7 +543,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const durMin = Math.round((row.duration_s as number) / 60);
         const titles = parseJsonColumn<Array<{ window_name: string; count: number }>>(row.window_titles as string);
         const ocr = parseJsonColumn<Array<{ text: string; window_name: string; timestamp: string }>>(row.ocr_samples as string);
-        const audio = parseJsonColumn<Array<{ transcription: string; timestamp: string; speaker_id: number | null }>>(row.audio_snippets as string);
         const elements = parseJsonColumn<Array<{ text: string; role: string; window_name: string }>>(row.elements_samples as string);
         const signals = parseJsonColumn<Array<{ event_type: string; value: string; timestamp: string }>>(row.signals as string);
 
@@ -565,12 +561,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (ocr?.length) {
           lines.push(`OCR samples (${ocr.length}):`);
           ocr.slice(0, 5).forEach((o) => lines.push(`  [${o.timestamp.slice(11, 19)}] ${o.text.slice(0, 200)}`));
-          lines.push("");
-        }
-
-        if (audio?.length) {
-          lines.push(`Audio (${audio.length} snippets):`);
-          audio.forEach((a) => lines.push(`  [${a.timestamp.slice(11, 19)}] ${a.transcription}`));
           lines.push("");
         }
 
