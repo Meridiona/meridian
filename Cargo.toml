@@ -16,6 +16,10 @@ path = "src/lib.rs"
 name = "meridian"
 path = "src/main.rs"
 
+[[bin]]
+name = "cat_smoke"
+path = "src/bin/cat_smoke.rs"
+
 [dependencies]
 # DB — exact versions matching screenpipe
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls", "chrono", "migrate", "json"] }
@@ -46,6 +50,7 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 # Misc
 once_cell = "1.19"
 dotenvy = "0.15"
+shellexpand = "3"
 
 [dev-dependencies]
 tokio = { version = "1.15", features = ["full", "test-util"] }
