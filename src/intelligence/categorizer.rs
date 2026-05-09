@@ -199,6 +199,11 @@ static APP_PATTERNS: &[(&str, ActivityKind, f32)] = &[
     ("helix",            ActivityKind::Coding,           25.0),
     // "code" last — short token, match after longer names
     ("code",             ActivityKind::Coding,           20.0),
+    // Media / entertainment — always idle
+    ("music",            ActivityKind::IdlePersonal,     30.0),
+    ("spotify",          ActivityKind::IdlePersonal,     30.0),
+    ("vlc",              ActivityKind::IdlePersonal,     30.0),
+    ("quicktime player", ActivityKind::IdlePersonal,     30.0),
 ];
 
 /// Terminal emulators — low base weight; OCR decides the real category.
@@ -242,6 +247,7 @@ static DOCS_TITLE_TOKENS: &[&str] = &[
 ];
 static COMM_TITLE_TOKENS: &[&str] = &[
     "mail.google.com", "outlook.live", "outlook.office", "app.slack.com",
+    "chat.google.com", "teams.microsoft.com", "discord.com/channels",
 ];
 static RESEARCH_TITLE_TOKENS: &[&str] = &[
     "stackoverflow.com", "docs.rs", "developer.mozilla", "developer.apple",
@@ -403,6 +409,9 @@ fn score_window_titles(titles: &[WindowTitleCount], scores: &mut Scores) {
             } else {
                 scores.add(ActivityKind::IdlePersonal, w);
             }
+        } else if t.contains("localhost") || t.contains("127.0.0.1") {
+            // Local dev server — the user is testing their own code.
+            scores.add(ActivityKind::Coding, w);
         } else if contains_any(&t, RESEARCH_TITLE_TOKENS) {
             scores.add(ActivityKind::Research, w);
         } else if contains_any(&t, IDLE_TITLE_TOKENS) {
