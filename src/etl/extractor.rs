@@ -33,6 +33,22 @@ pub struct BlockContext {
 // extract_block_context
 // ---------------------------------------------------------------------------
 
+/// Keeps only the last AXTextArea element and drops all earlier ones.
+/// AXTextArea in terminal apps is the full scroll buffer — each frame is a
+/// superset of the previous, so only the final snapshot is needed.
+/// SQL orders by timestamp ASC so the last entry in the vec is the most recent.
+fn dedup_ax_textarea(mut elements: Vec<ElementSample>) -> Vec<ElementSample> {
+    let last = elements
+        .iter()
+        .rfind(|e| e.role.as_deref() == Some("AXTextArea"))
+        .cloned();
+    elements.retain(|e| e.role.as_deref() != Some("AXTextArea"));
+    if let Some(textarea) = last {
+        elements.push(textarea);
+    }
+    elements
+}
+
 /// Fetches all enrichment data for a single contiguous block of frames in
 /// parallel.  All five screenpipe query functions are called concurrently via
 /// `tokio::join!`.
@@ -63,7 +79,7 @@ pub async fn extract_block_context(
         frame_count,
         window_titles: window_titles_res?,
         ocr_samples: ocr_res?,
-        elements_samples: elements_res?,
+        elements_samples: dedup_ax_textarea(elements_res?),
         audio_snippets: audio_res?,
         signals: signals_res?,
     })
