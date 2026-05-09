@@ -188,7 +188,8 @@ fn is_browser_app(app_name: &str) -> bool {
         .any(|b| lc.contains(b))
 }
 
-/// Returns up to 10 OCR text samples from the given frame-id range.
+/// Returns up to 10 unique OCR text samples from the given frame-id range.
+/// Deduplicates on exact text — keeps the earliest occurrence of each unique string.
 /// Only samples with more than 30 characters are included.
 pub async fn get_ocr_samples(
     pool: &SqlitePool,
@@ -196,12 +197,13 @@ pub async fn get_ocr_samples(
     max_frame_id: i64,
 ) -> Result<Vec<OcrSample>> {
     let rows = sqlx::query_as::<_, (String, Option<String>, String)>(
-        "SELECT ot.text, f.window_name, f.timestamp
+        "SELECT ot.text, MIN(f.window_name) AS window_name, MIN(f.timestamp) AS timestamp
          FROM ocr_text ot
          JOIN frames f ON ot.frame_id = f.id
          WHERE f.id BETWEEN ? AND ?
            AND length(ot.text) > 30
-         ORDER BY f.timestamp
+         GROUP BY ot.text
+         ORDER BY timestamp
          LIMIT 10",
     )
     .bind(min_frame_id)
@@ -221,7 +223,8 @@ pub async fn get_ocr_samples(
     Ok(result)
 }
 
-/// Returns up to 10 accessibility element samples from the given frame-id range.
+/// Returns up to 10 unique accessibility element samples from the given frame-id range.
+/// Deduplicates on (text, role) — same element appearing in multiple frames is stored once.
 /// Only elements with more than 20 characters and source = 'accessibility' are included.
 pub async fn get_element_samples(
     pool: &SqlitePool,
@@ -229,13 +232,14 @@ pub async fn get_element_samples(
     max_frame_id: i64,
 ) -> Result<Vec<ElementSample>> {
     let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>, String)>(
-        "SELECT e.text, e.role, f.window_name, f.timestamp
+        "SELECT e.text, e.role, MIN(f.window_name) AS window_name, MIN(f.timestamp) AS timestamp
          FROM elements e
          JOIN frames f ON e.frame_id = f.id
          WHERE f.id BETWEEN ? AND ?
            AND e.text IS NOT NULL AND length(e.text) > 20
            AND e.source = 'accessibility'
-         ORDER BY f.timestamp
+         GROUP BY e.text, e.role
+         ORDER BY timestamp
          LIMIT 10",
     )
     .bind(min_frame_id)
@@ -256,7 +260,8 @@ pub async fn get_element_samples(
     Ok(result)
 }
 
-/// Returns audio transcription snippets within the given timestamp range.
+/// Returns unique audio transcription snippets within the given timestamp range.
+/// Deduplicates on exact transcription text — repeated chunks are stored once (earliest timestamp).
 /// Hallucinations and very short snippets (<=10 chars) are excluded.
 pub async fn get_audio_snippets(
     pool: &SqlitePool,
@@ -264,10 +269,11 @@ pub async fn get_audio_snippets(
     end_ts: &str,
 ) -> Result<Vec<AudioSnippet>> {
     let rows = sqlx::query_as::<_, (String, String, Option<i64>)>(
-        "SELECT transcription, timestamp, speaker_id
+        "SELECT transcription, MIN(timestamp) AS timestamp, MIN(speaker_id) AS speaker_id
          FROM audio_transcriptions
          WHERE timestamp BETWEEN ? AND ?
            AND transcription IS NOT NULL AND length(transcription) > 10
+         GROUP BY transcription
          ORDER BY timestamp
          LIMIT 50",
     )
@@ -312,6 +318,7 @@ pub async fn get_last_ui_event_for_app(
 }
 
 /// Returns clipboard and app_switch UI events within the given timestamp range.
+/// Clipboard events are deduplicated by value — same text copied multiple times is stored once.
 /// For clipboard events `value` is `text_content`; for app_switch it is `app_name`.
 pub async fn get_signals(
     pool: &SqlitePool,
@@ -319,11 +326,12 @@ pub async fn get_signals(
     end_ts: &str,
 ) -> Result<Vec<SignalEvent>> {
     let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>, String)>(
-        "SELECT event_type, text_content, app_name, timestamp
+        "SELECT event_type, text_content, app_name, MIN(timestamp) AS timestamp
          FROM ui_events
          WHERE timestamp BETWEEN ? AND ?
            AND event_type IN ('clipboard', 'app_switch')
            AND (text_content IS NOT NULL OR app_name IS NOT NULL)
+         GROUP BY event_type, COALESCE(text_content, app_name)
          ORDER BY timestamp",
     )
     .bind(start_ts)
