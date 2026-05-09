@@ -76,6 +76,8 @@ pub struct ActiveSession {
     pub max_frame_id: i64,
     pub frame_count: i64,
     pub idle_frame_count: i64,
+    pub category: String,
+    pub confidence: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -284,8 +286,9 @@ pub async fn upsert_active_session(
             id, app_name, started_at, last_seen_at,
             window_titles, ocr_samples, elements_samples,
             audio_snippets, signals,
-            min_frame_id, max_frame_id, frame_count, idle_frame_count
-        ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            min_frame_id, max_frame_id, frame_count, idle_frame_count,
+            category, confidence
+        ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
         ON CONFLICT (id) DO UPDATE SET
             app_name         = excluded.app_name,
             started_at       = excluded.started_at,
@@ -298,7 +301,9 @@ pub async fn upsert_active_session(
             min_frame_id     = excluded.min_frame_id,
             max_frame_id     = excluded.max_frame_id,
             frame_count      = excluded.frame_count,
-            idle_frame_count = excluded.idle_frame_count
+            idle_frame_count = excluded.idle_frame_count,
+            category         = excluded.category,
+            confidence       = excluded.confidence
         "#,
     )
     .bind(&session.app_name)
@@ -313,6 +318,8 @@ pub async fn upsert_active_session(
     .bind(session.max_frame_id)
     .bind(session.frame_count)
     .bind(session.idle_frame_count)
+    .bind(&session.category)
+    .bind(session.confidence)
     .execute(pool)
     .await
     .context("upsert_active_session: upsert failed")?;
@@ -326,7 +333,8 @@ pub async fn get_active_session(pool: &SqlitePool) -> anyhow::Result<Option<Acti
         SELECT id, app_name, started_at, last_seen_at,
                window_titles, ocr_samples, elements_samples,
                audio_snippets, signals,
-               min_frame_id, max_frame_id, frame_count, idle_frame_count
+               min_frame_id, max_frame_id, frame_count, idle_frame_count,
+               category, confidence
         FROM active_session WHERE id = 1
         "#,
     )
@@ -372,8 +380,9 @@ pub async fn close_active_session_with(
             window_titles, ocr_samples, elements_samples,
             audio_snippets, signals,
             min_frame_id, max_frame_id, frame_count,
-            idle_frame_count, etl_run_id
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            idle_frame_count, etl_run_id,
+            category, confidence
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
         "#,
     )
     .bind(&active.app_name)
@@ -390,6 +399,8 @@ pub async fn close_active_session_with(
     .bind(active.frame_count)
     .bind(active.idle_frame_count)
     .bind(etl_run_id)
+    .bind(&active.category)
+    .bind(active.confidence)
     .execute(pool)
     .await
     .context("close_active_session_with: insert into app_sessions failed")?;
