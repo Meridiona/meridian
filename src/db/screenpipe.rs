@@ -16,6 +16,7 @@ pub struct FrameRow {
     pub id: i64,
     pub app_name: String,
     pub window_name: Option<String>,
+    pub browser_url: Option<String>,
     pub timestamp: String,
     pub capture_trigger: Option<String>,
 }
@@ -80,8 +81,8 @@ pub async fn get_frames_since(
     after_frame_id: i64,
     limit: i64,
 ) -> Result<Vec<FrameRow>> {
-    let rows = sqlx::query_as::<_, (i64, String, Option<String>, String, Option<String>)>(
-        "SELECT id, app_name, window_name, timestamp, capture_trigger
+    let rows = sqlx::query_as::<_, (i64, String, Option<String>, Option<String>, String, Option<String>)>(
+        "SELECT id, app_name, window_name, browser_url, timestamp, capture_trigger
          FROM frames
          WHERE id > ? AND app_name IS NOT NULL AND app_name != ''
          ORDER BY id ASC
@@ -94,10 +95,11 @@ pub async fn get_frames_since(
 
     let result = rows
         .into_iter()
-        .map(|(id, app_name, window_name, timestamp, capture_trigger)| FrameRow {
+        .map(|(id, app_name, window_name, browser_url, timestamp, capture_trigger)| FrameRow {
             id,
             app_name,
             window_name,
+            browser_url,
             timestamp,
             capture_trigger,
         })
@@ -127,36 +129,63 @@ pub async fn count_frames_in_window(
     Ok((row.0, row.1))
 }
 
-/// Returns per-window-title frame counts for a given app within a frame-id
-/// range, sorted by count descending (top 20).
+/// Returns per-context frame counts for a given app within a frame-id range,
+/// sorted by count descending (top 20).
+///
+/// For browser apps: groups by `browser_url` (the real URL screenpipe captures),
+/// falling back to `window_name` for frames where the URL is NULL.
+/// For all other apps: groups by `window_name` as before.
 pub async fn get_window_titles(
     pool: &SqlitePool,
     min_frame_id: i64,
     max_frame_id: i64,
     app_name: &str,
 ) -> Result<Vec<WindowTitleCount>> {
-    let rows = sqlx::query_as::<_, (String, i64)>(
-        "SELECT window_name, COUNT(*) as count
-         FROM frames
-         WHERE id BETWEEN ? AND ?
-           AND app_name = ?
-           AND window_name IS NOT NULL AND window_name != ''
-         GROUP BY window_name
-         ORDER BY count DESC
-         LIMIT 20",
-    )
-    .bind(min_frame_id)
-    .bind(max_frame_id)
-    .bind(app_name)
-    .fetch_all(pool)
-    .await?;
+    let rows = if is_browser_app(app_name) {
+        sqlx::query_as::<_, (String, i64)>(
+            "SELECT COALESCE(browser_url, window_name) as context, COUNT(*) as count
+             FROM frames
+             WHERE id BETWEEN ? AND ?
+               AND app_name = ?
+               AND (browser_url IS NOT NULL OR (window_name IS NOT NULL AND window_name != ''))
+             GROUP BY context
+             ORDER BY count DESC
+             LIMIT 20",
+        )
+        .bind(min_frame_id)
+        .bind(max_frame_id)
+        .bind(app_name)
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, (String, i64)>(
+            "SELECT window_name, COUNT(*) as count
+             FROM frames
+             WHERE id BETWEEN ? AND ?
+               AND app_name = ?
+               AND window_name IS NOT NULL AND window_name != ''
+             GROUP BY window_name
+             ORDER BY count DESC
+             LIMIT 20",
+        )
+        .bind(min_frame_id)
+        .bind(max_frame_id)
+        .bind(app_name)
+        .fetch_all(pool)
+        .await?
+    };
 
-    let result = rows
+    Ok(rows
         .into_iter()
         .map(|(window_name, count)| WindowTitleCount { window_name, count })
-        .collect();
+        .collect())
+}
 
-    Ok(result)
+fn is_browser_app(app_name: &str) -> bool {
+    let lc = app_name.to_lowercase();
+    ["chrome", "safari", "firefox", "arc", "edge", "brave", "opera", "vivaldi"]
+        .iter()
+        .any(|b| lc.contains(b))
 }
 
 /// Returns up to 10 OCR text samples from the given frame-id range.
@@ -239,7 +268,8 @@ pub async fn get_audio_snippets(
          FROM audio_transcriptions
          WHERE timestamp BETWEEN ? AND ?
            AND transcription IS NOT NULL AND length(transcription) > 10
-         ORDER BY timestamp",
+         ORDER BY timestamp
+         LIMIT 50",
     )
     .bind(start_ts)
     .bind(end_ts)

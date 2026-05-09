@@ -1,0 +1,19 @@
+# Rust build artifacts (3.9 GB — causes Claude to hang on file searches)
+target/
+
+# Node dependencies
+node_modules/
+packages/*/node_modules/
+
+# DB files
+*.db
+*.db-shm
+*.db-wal
+
+# Cargo cache
+.cargo/registry/
+.cargo/git/
+
+# Claude worktrees
+.claude/worktrees/
+.claude-flow/
