@@ -14,6 +14,7 @@ use crate::db::screenpipe::{
     ElementSample, OcrSample, SignalEvent, WindowTitleCount,
 };
 use crate::etl::extractor::extract_block_context;
+use crate::intelligence::categorizer::{categorize, SessionSignals};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -536,8 +537,56 @@ async fn upsert_open_block(
 
 use crate::etl::extractor::BlockContext;
 
+/// Input bundle for `classify()` — keeps the argument count under the clippy limit.
+struct ClassifyInput<'a> {
+    app_name: &'a str,
+    window_titles: &'a [WindowTitleCount],
+    ocr_samples: &'a [OcrSample],
+    elements_samples: &'a [ElementSample],
+    audio_snippets: &'a [AudioSnippet],
+    signals: &'a [SignalEvent],
+    started_at: &'a str,
+    ended_at: &'a str,
+}
+
+/// Runs `categorize()` from already-in-memory session data.
+/// Pure computation — zero I/O, negligible CPU.
+fn classify(i: &ClassifyInput<'_>) -> (String, f64) {
+    let ocr_text = i.ocr_samples
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let duration_secs = chrono::DateTime::parse_from_rfc3339(i.ended_at)
+        .ok()
+        .zip(chrono::DateTime::parse_from_rfc3339(i.started_at).ok())
+        .map(|(end, start)| (end - start).num_seconds().max(0) as u64)
+        .unwrap_or(0);
+    let sig = SessionSignals {
+        app_name: i.app_name,
+        window_titles: i.window_titles,
+        ocr_text: &ocr_text,
+        elements: i.elements_samples,
+        signals: i.signals,
+        audio_present: !i.audio_snippets.is_empty(),
+        duration_secs,
+    };
+    let (kind, confidence) = categorize(&sig);
+    (kind.as_str().to_owned(), confidence as f64)
+}
+
 /// Builds a brand-new `ActiveSession` from a `BlockContext`.
 fn build_active_session(ctx: &BlockContext, idle_frame_count: i64) -> Result<ActiveSession> {
+    let (category, confidence) = classify(&ClassifyInput {
+        app_name: &ctx.app_name,
+        window_titles: &ctx.window_titles,
+        ocr_samples: &ctx.ocr_samples,
+        elements_samples: &ctx.elements_samples,
+        audio_snippets: &ctx.audio_snippets,
+        signals: &ctx.signals,
+        started_at: &ctx.started_at,
+        ended_at: &ctx.ended_at,
+    });
     Ok(ActiveSession {
         id: 1,
         app_name: ctx.app_name.clone(),
@@ -552,6 +601,8 @@ fn build_active_session(ctx: &BlockContext, idle_frame_count: i64) -> Result<Act
         max_frame_id: ctx.max_frame_id,
         frame_count: ctx.frame_count,
         idle_frame_count,
+        category,
+        confidence,
     })
 }
 
@@ -640,6 +691,17 @@ fn merge_into_active(
         .unwrap_or_default();
     signals.extend(ctx.signals.iter().cloned());
 
+    let (category, confidence) = classify(&ClassifyInput {
+        app_name: &existing.app_name,
+        window_titles: &merged_titles,
+        ocr_samples: &ocr,
+        elements_samples: &elements,
+        audio_snippets: &audio,
+        signals: &signals,
+        started_at: &existing.started_at,
+        ended_at: &now,
+    });
+
     Ok(ActiveSession {
         id: 1,
         app_name: existing.app_name.clone(),
@@ -654,6 +716,8 @@ fn merge_into_active(
         max_frame_id: ctx.max_frame_id,
         frame_count: existing.frame_count + ctx.frame_count,
         idle_frame_count: existing.idle_frame_count + new_idle_frame_count,
+        category,
+        confidence,
     })
 }
 

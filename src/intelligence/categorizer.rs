@@ -30,6 +30,22 @@ impl ActivityKind {
         !matches!(self, Self::Meeting | Self::Communication | Self::IdlePersonal)
     }
 
+    /// Snake-case string stored in the database `category` column.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Coding           => "coding",
+            Self::CodeReview       => "code_review",
+            Self::Meeting          => "meeting",
+            Self::Communication    => "communication",
+            Self::Design           => "design",
+            Self::Documentation    => "documentation",
+            Self::Planning         => "planning",
+            Self::DeploymentDevops => "deployment_devops",
+            Self::Research         => "research",
+            Self::IdlePersonal     => "idle_personal",
+        }
+    }
+
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Coding => "Coding",
@@ -200,10 +216,22 @@ static APP_PATTERNS: &[(&str, ActivityKind, f32)] = &[
     // "code" last — short token, match after longer names
     ("code",             ActivityKind::Coding,           20.0),
     // Media / entertainment — always idle
-    ("music",            ActivityKind::IdlePersonal,     30.0),
-    ("spotify",          ActivityKind::IdlePersonal,     30.0),
-    ("vlc",              ActivityKind::IdlePersonal,     30.0),
-    ("quicktime player", ActivityKind::IdlePersonal,     30.0),
+    ("music",                ActivityKind::IdlePersonal,     30.0),
+    ("spotify",              ActivityKind::IdlePersonal,     30.0),
+    ("vlc",                  ActivityKind::IdlePersonal,     30.0),
+    ("quicktime player",     ActivityKind::IdlePersonal,     30.0),
+    // macOS system / personal apps
+    ("finder",               ActivityKind::IdlePersonal,     30.0),
+    ("system settings",      ActivityKind::IdlePersonal,     30.0),
+    ("system preferences",   ActivityKind::IdlePersonal,     30.0),
+    ("app store",            ActivityKind::IdlePersonal,     30.0),
+    ("spotlight",            ActivityKind::IdlePersonal,     25.0),
+    ("preview",              ActivityKind::IdlePersonal,     25.0),
+    ("reminders",            ActivityKind::IdlePersonal,     25.0),
+    ("facetime",             ActivityKind::IdlePersonal,     25.0),
+    ("iphone mirroring",     ActivityKind::IdlePersonal,     25.0),
+    // claude.ai / Claude desktop — personal AI usage, not billable work
+    ("claude",               ActivityKind::IdlePersonal,     20.0),
 ];
 
 /// Terminal emulators — low base weight; OCR decides the real category.
@@ -258,7 +286,9 @@ static RESEARCH_TITLE_TOKENS: &[&str] = &[
     "egghead.io", "frontendmasters.com", "pluralsight.com", "oreilly.com",
 ];
 static IDLE_TITLE_TOKENS: &[&str] = &[
-    "youtube.com", "netflix.com", "twitter.com", "x.com",
+    "youtube.com",
+    "- youtube -",  // window title format when screenpipe stores the page title, not the URL
+    "netflix.com", "twitter.com", "x.com",
     "instagram.com", "facebook.com", "tiktok.com", "twitch.tv", "spotify.com",
     "news.", "nytimes.com", "bbc.com",
 ];
@@ -276,12 +306,19 @@ static DEVOPS_WINDOW_TOKENS: &[&str] = &[
     "helm", "ansible", ".sh", "makefile", "jenkinsfile",
 ];
 
-// A11y element roles that amplify the weight of matched text
-static INTERACTIVE_ROLES: &[&str] = &["button", "menuitem", "menubutton", "link"];
+// A11y element roles that amplify the weight of matched text.
+// Includes both bare role names (unit tests) and macOS AX-prefixed names (real screenpipe data).
+// AXRadioButton is intentionally excluded — macOS uses it for browser tab bars, not action buttons.
+static INTERACTIVE_ROLES: &[&str] = &[
+    "button", "menuitem", "menubutton",
+    "AXButton", "AXMenuItem", "AXMenuButton", "AXPopUpButton", "AXCheckBox",
+];
 
-// A11y button/action text tokens
+// A11y button/action text tokens — only scored for interactive roles (see score_elements).
+// "release" and "apply" are excluded: both appear in YouTube headings, form submit buttons,
+// and informational UI text, causing systematic false positives.
 static DEVOPS_ELEMENT_TOKENS: &[&str] = &[
-    "deploy", "apply", "run pipeline", "trigger", "release", "publish",
+    "deploy", "run pipeline", "trigger", "publish",
 ];
 static MEETING_ELEMENT_TOKENS: &[&str] = &[
     "mute", "unmute", "leave", "share screen", "end meeting", "join",
@@ -454,22 +491,21 @@ fn score_ocr(ocr_lc: &str, scores: &mut Scores) {
 /// A11y element scoring.
 /// Interactive roles (button, menuitem) multiply the weight — an "Approve"
 /// button is stronger evidence than the word "approve" in a text node.
+///
+/// DevOps tokens are gated on interactive roles only: heading/tab elements
+/// that happen to contain words like "deploy" or "trigger" in content text
+/// (GitHub READMEs, YouTube titles, browser tab bars) must not score.
 fn score_elements(elements: &[ElementSample], scores: &mut Scores) {
     for el in elements {
         let text_lc = el.text.to_lowercase();
-        let role_multiplier = el
+        let is_interactive = el
             .role
             .as_deref()
-            .map(|r| {
-                if INTERACTIVE_ROLES.iter().any(|ir| r.eq_ignore_ascii_case(ir)) {
-                    1.5_f32
-                } else {
-                    1.0
-                }
-            })
-            .unwrap_or(1.0);
+            .map(|r| INTERACTIVE_ROLES.iter().any(|ir| r.eq_ignore_ascii_case(ir)))
+            .unwrap_or(false);
+        let role_multiplier = if is_interactive { 1.5_f32 } else { 1.0 };
 
-        if contains_any(&text_lc, DEVOPS_ELEMENT_TOKENS) {
+        if is_interactive && contains_any(&text_lc, DEVOPS_ELEMENT_TOKENS) {
             scores.add(ActivityKind::DeploymentDevops, 10.0 * role_multiplier);
         }
         if contains_any(&text_lc, MEETING_ELEMENT_TOKENS) {
