@@ -28,7 +28,7 @@ async fn test_ui_event_refines_session_end() {
         &[
             ("Terminal", "2026-01-01T10:00:00+00:00"),
             ("Terminal", "2026-01-01T10:01:00+00:00"),
-            ("Chrome",   "2026-01-01T10:02:00+00:00"),
+            ("Chrome", "2026-01-01T10:02:00+00:00"),
         ],
     )
     .await;
@@ -60,7 +60,10 @@ async fn test_ui_event_refines_session_end() {
         "ended_at should be the ui_event timestamp (10:01:45), got: {}",
         row.0
     );
-    assert_eq!(row.1, 105, "duration_s should be 105 s (10:01:45 − 10:00:00)");
+    assert_eq!(
+        row.1, 105,
+        "duration_s should be 105 s (10:01:45 − 10:00:00)"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -82,7 +85,7 @@ async fn test_ui_event_before_last_frame_ignored() {
         &[
             ("Terminal", "2026-01-01T10:00:00+00:00"),
             ("Terminal", "2026-01-01T10:01:30+00:00"),
-            ("Chrome",   "2026-01-01T10:02:00+00:00"),
+            ("Chrome", "2026-01-01T10:02:00+00:00"),
         ],
     )
     .await;

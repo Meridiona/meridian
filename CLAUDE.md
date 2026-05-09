@@ -31,7 +31,7 @@ SQL migration files use the SQL comment form:
 -- meridian — normalises screenpipe activity into structured app sessions
 ```
 
-The pre-commit hook enforces `cargo fmt` and `cargo clippy -- -D warnings`. CI runs the same checks plus `cargo test` and `cargo build --release`.
+The `commit-msg` hook enforces conventional commit format. The `pre-commit` hook enforces `cargo fmt` and `cargo clippy`. The `pre-push` hook runs the full suite: fmt + clippy + `cargo test` + UI build + UI tests.
 
 ---
 
@@ -253,6 +253,9 @@ Read `VISION.md` first.
 ## Git Hygiene
 
 - Commit message style: `type(scope): short description` — e.g. `fix(etl): detect sleep gaps that span ETL run boundaries`
-- Pre-commit hook runs `cargo fmt --check` and `cargo clippy -- -D warnings` — fix failures before committing, never skip hooks with `--no-verify`
+- `commit-msg` hook validates conventional commits format — fix message before retrying
+- `pre-commit` hook runs `cargo fmt --check` and `cargo clippy -- -D warnings`
+- `pre-push` hook runs the full suite: `cargo fmt` + `cargo clippy` + `cargo test` + `cd ui && npm run build` + `cd ui && bun test`
+- Never skip hooks with `--no-verify`
 - Install hooks after cloning: `bash scripts/setup-hooks.sh`
 - Never amend a commit that has already been pushed to `main`

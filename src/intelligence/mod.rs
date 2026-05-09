@@ -20,8 +20,12 @@ pub async fn run_intelligence(meridian: &SqlitePool, config: &Config) -> Result<
         let name = provider.provider_name();
         let result = match provider {
             PmProviderConfig::Jira(cfg) => providers::jira::refresh_if_stale(meridian, cfg).await,
-            PmProviderConfig::GitHub(cfg) => providers::github::refresh_if_stale(meridian, cfg).await,
-            PmProviderConfig::Linear(cfg) => providers::linear::refresh_if_stale(meridian, cfg).await,
+            PmProviderConfig::GitHub(cfg) => {
+                providers::github::refresh_if_stale(meridian, cfg).await
+            }
+            PmProviderConfig::Linear(cfg) => {
+                providers::linear::refresh_if_stale(meridian, cfg).await
+            }
         };
         if let Err(e) = result {
             warn!(provider = name, error = %e, "provider refresh failed");

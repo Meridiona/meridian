@@ -128,9 +128,7 @@ async fn fetch(jira: &JiraConfig) -> Result<Vec<JiraIssue>> {
 
 async fn upsert(pool: &SqlitePool, issues: &[JiraIssue], jira: &JiraConfig) -> Result<()> {
     for issue in issues {
-        if !jira.project_keys.is_empty()
-            && !jira.project_keys.contains(&issue.fields.project.key)
-        {
+        if !jira.project_keys.is_empty() && !jira.project_keys.contains(&issue.fields.project.key) {
             continue;
         }
 

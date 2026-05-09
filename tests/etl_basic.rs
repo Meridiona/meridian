@@ -4,7 +4,9 @@
 
 mod common;
 
-use meridian::db::meridian::{cleanup_incomplete_runs, get_active_session, get_cursor, insert_etl_run};
+use meridian::db::meridian::{
+    cleanup_incomplete_runs, get_active_session, get_cursor, insert_etl_run,
+};
 use meridian::etl::run_etl;
 
 // ---------------------------------------------------------------------------
@@ -147,8 +149,16 @@ async fn test_cleanup_incomplete_runs() {
 
     let run_id = insert_etl_run(&md, 0, 10).await.unwrap();
     for (app, start, end) in [
-        ("Terminal", "2026-01-01T10:00:00+00:00", "2026-01-01T10:00:10+00:00"),
-        ("Chrome",   "2026-01-01T10:00:11+00:00", "2026-01-01T10:00:20+00:00"),
+        (
+            "Terminal",
+            "2026-01-01T10:00:00+00:00",
+            "2026-01-01T10:00:10+00:00",
+        ),
+        (
+            "Chrome",
+            "2026-01-01T10:00:11+00:00",
+            "2026-01-01T10:00:20+00:00",
+        ),
     ] {
         sqlx::query(
             "INSERT INTO app_sessions

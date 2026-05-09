@@ -135,7 +135,10 @@ async fn test_gap_classification_system_sleep() {
         .fetch_one(&md)
         .await
         .unwrap();
-    assert_eq!(kind.0, "system_sleep", "zero in-gap frames must yield system_sleep");
+    assert_eq!(
+        kind.0, "system_sleep",
+        "zero in-gap frames must yield system_sleep"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -170,7 +173,10 @@ async fn test_session_duration_excludes_gap() {
         .fetch_one(&md)
         .await
         .unwrap();
-    assert_eq!(closed.0, 1, "the pre-gap block should be closed into app_sessions");
+    assert_eq!(
+        closed.0, 1,
+        "the pre-gap block should be closed into app_sessions"
+    );
 
     let duration: (i64,) = sqlx::query_as("SELECT duration_s FROM app_sessions LIMIT 1")
         .fetch_one(&md)
@@ -209,5 +215,8 @@ async fn test_no_gap_below_threshold() {
         .fetch_one(&md)
         .await
         .unwrap();
-    assert_eq!(count.0, 0, "a 299 s gap is below threshold — no gap row expected");
+    assert_eq!(
+        count.0, 0,
+        "a 299 s gap is below threshold — no gap row expected"
+    );
 }
