@@ -40,8 +40,12 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter", "chrono"] }
 # Error handling
 anyhow = "1.0.86"
 
+# HTTP client for PM provider APIs (Jira, GitHub, Linear)
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
 # Misc
 once_cell = "1.19"
+dotenvy = "0.15"
 
 [dev-dependencies]
 tokio = { version = "1.15", features = ["full", "test-util"] }

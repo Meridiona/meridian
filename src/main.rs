@@ -8,6 +8,7 @@ use meridian::config::Config;
 use meridian::db::meridian::{cleanup_incomplete_runs, setup_db};
 use meridian::db::screenpipe::open_screenpipe;
 use meridian::etl::run_etl;
+use meridian::intelligence::run_intelligence;
 use tokio::signal::unix::{signal, SignalKind};
 use tracing_subscriber::EnvFilter;
 
@@ -20,10 +21,16 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    // 2. Load config
+    // 2. Load ~/.meridian/.env if it exists (silently ignored if absent)
+    if let Ok(home) = std::env::var("HOME") {
+        let env_path = std::path::Path::new(&home).join(".meridian").join(".env");
+        let _ = dotenvy::from_path(env_path);
+    }
+
+    // 3. Load config
     let cfg = Config::from_env();
 
-    // 3. Log startup parameters
+    // 4. Log startup parameters
     tracing::info!(
         screenpipe_db = %cfg.screenpipe_db,
         meridian_db   = %cfg.meridian_db,
@@ -68,6 +75,9 @@ async fn main() -> Result<()> {
     tracing::info!("running initial ETL pass");
     if let Err(e) = run_etl(&screenpipe, &meridian).await {
         tracing::error!("ETL run failed: {}", e);
+    }
+    if let Err(e) = run_intelligence(&meridian, &cfg).await {
+        tracing::error!("intelligence run failed: {}", e);
     }
 
     // 7b. Poll loop
