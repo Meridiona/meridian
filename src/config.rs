@@ -200,9 +200,17 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    // Env vars are process-global — serialize all config tests to prevent races.
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn test_default_paths_contain_expected_dirs() {
+        let _guard = env_lock().lock().unwrap();
         std::env::remove_var("SCREENPIPE_DB");
         std::env::remove_var("MERIDIAN_DB");
         std::env::set_var("HOME", "/tmp/test_home");
@@ -214,6 +222,7 @@ mod tests {
 
     #[test]
     fn test_env_overrides() {
+        let _guard = env_lock().lock().unwrap();
         std::env::set_var("SCREENPIPE_DB", "/custom/screenpipe.db");
         std::env::set_var("MERIDIAN_DB", "/custom/meridian.db");
         std::env::set_var("POLL_INTERVAL_SECS", "30");
@@ -228,6 +237,7 @@ mod tests {
 
     #[test]
     fn test_tilde_expansion() {
+        let _guard = env_lock().lock().unwrap();
         std::env::set_var("HOME", "/Users/testuser");
         std::env::set_var("SCREENPIPE_DB", "~/custom/db.sqlite");
         let cfg = Config::from_env();
@@ -238,6 +248,7 @@ mod tests {
 
     #[test]
     fn test_uri_prefix() {
+        let _guard = env_lock().lock().unwrap();
         std::env::set_var("SCREENPIPE_DB", "/some/path/db.sqlite");
         std::env::set_var("MERIDIAN_DB", "/other/meridian.db");
         let cfg = Config::from_env();
