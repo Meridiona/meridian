@@ -22,11 +22,12 @@ dependencies = [
     "python-dotenv>=1.0.1",
     # Async SQLite client; coexists with the Rust daemon's WAL-mode connection
     "aiosqlite>=0.20.0",
-    # Hermes agent runtime — full power, installed from upstream. Provides
-    # `from run_agent import AIAgent` plus the entire tool-call / provider /
-    # skill machinery. We pin to v0.13.0; bump deliberately when the
-    # synthesizer prompt is exercised against a newer release.
-    "hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git@v2026.5.7",
+    # Hermes agent runtime — full power, vendored in-repo at vendor/hermes/
+    # so the code is visible, modifiable, and pinned without a git fetch at
+    # install time. uv installs from the local path via [tool.uv.sources]
+    # below. Provides `from run_agent import AIAgent`, the full tool
+    # catalogue (terminal, browser, environments), and provider plumbing.
+    "hermes-agent",
 ]
 
 [project.optional-dependencies]
@@ -46,10 +47,11 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/meridian_agents"]
 
-[tool.hatch.metadata]
-# Required to allow `hermes-agent @ git+https://...` in project.dependencies.
-# Hatchling rejects direct refs by default.
-allow-direct-references = true
+[tool.uv.sources]
+# Install hermes-agent from the in-repo vendor/hermes/ directory rather
+# than from PyPI or git. The hermes source is committed; uv builds the
+# wheel locally on `uv sync`.
+hermes-agent = { path = "vendor/hermes", editable = false }
 
 [tool.ruff]
 line-length = 100
