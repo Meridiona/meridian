@@ -110,8 +110,15 @@ async def seed_app_session(
     ocr_samples: str = '["fn main() {}"]',
     audio_snippets: str = "[]",
     signals: str = "{}",
-    activity_kind: str | None = None,
+    category: str = "coding",
+    confidence: float = 0.85,
 ) -> int:
+    """Insert a fake closed app_session.
+
+    `category` and `confidence` are populated by the Rust ETL inline
+    (004_categories.sql); we set them explicitly in tests so we can
+    verify the synthesizer's reads include them.
+    """
     cur = await conn.execute(
         """
         INSERT INTO app_sessions (
@@ -119,8 +126,9 @@ async def seed_app_session(
             window_titles, ocr_samples, elements_samples,
             audio_snippets, signals,
             min_frame_id, max_frame_id, frame_count,
-            idle_frame_count, etl_run_id, activity_kind
-        ) VALUES (?, ?, ?, ?, ?, ?, '[]', ?, ?, 1, 1, 1, 0, ?, ?)
+            idle_frame_count, etl_run_id,
+            category, confidence
+        ) VALUES (?, ?, ?, ?, ?, ?, '[]', ?, ?, 1, 1, 1, 0, ?, ?, ?)
         """,
         (
             app_name,
@@ -132,7 +140,8 @@ async def seed_app_session(
             audio_snippets,
             signals,
             etl_run_id,
-            activity_kind,
+            category,
+            confidence,
         ),
     )
     session_id = cur.lastrowid
@@ -147,12 +156,24 @@ async def seed_pm_task(
     task_key: str = "KAN-86",
     provider: str = "jira",
     title: str = "migrate intelligence code",
+    status: str = "In Progress",
+    status_category: str = "in_progress",
     expires_at: str = "2099-01-01T00:00:00Z",
 ) -> None:
     await conn.execute(
         """
-        INSERT INTO pm_tasks (task_key, provider, title, updated_at, expires_at)
-        VALUES (?, ?, ?, '2026-05-09T10:00:00Z', ?)
+        INSERT INTO pm_tasks (task_key, provider, title, status, status_category,
+                              updated_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, '2026-05-09T10:00:00Z', ?)
         """,
-        (task_key, provider, title, expires_at),
+        (task_key, provider, title, status, status_category, expires_at),
     )
+
+
+async def seed_agent_run(conn: aiosqlite.Connection) -> int:
+    """Insert a fresh agent_runs row (status='running') and return its id."""
+    cur = await conn.execute("INSERT INTO agent_runs DEFAULT VALUES")
+    run_id = cur.lastrowid
+    await cur.close()
+    assert run_id is not None
+    return run_id

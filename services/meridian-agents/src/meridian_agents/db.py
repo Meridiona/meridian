@@ -3,9 +3,9 @@
 """Async SQLite access layer for meridian-agents.
 
 The Rust daemon owns the schema. This module only does SELECT/INSERT/UPDATE
-against tables defined by `src/migrations/00{1..4}_*.sql`. WAL mode is
-already enabled by the daemon; we set busy_timeout on each connection so
-writes contend gracefully with the daemon's ETL writes.
+against tables defined by `src/migrations/00*.sql`. WAL mode is already
+enabled by the daemon; we set busy_timeout on each connection so writes
+contend gracefully with the daemon's ETL writes.
 """
 
 from __future__ import annotations
@@ -17,24 +17,37 @@ from typing import Any
 import aiosqlite
 
 REQUIRED_TABLES = (
+    # Rust-owned (Python reads only)
     "app_sessions",
-    "ticket_links",
+    "active_session",
     "pm_tasks",
+    # Cross-domain (existed in 003, agent-owned writer)
+    "ticket_links",
+    # Agent-owned (introduced in 005)
     "agent_runs",
     "agent_cursor",
     "dispatch_queue",
+    "session_summaries",
+    "context_graph_nodes",
+    "activity_context",
 )
-REQUIRED_APP_SESSIONS_COLUMNS = ("summary_json", "activity_kind")
 
 # Open transactions block writers; default to 5s so the orchestrator backs off
 # rather than failing immediately when the Rust daemon is mid-write.
 BUSY_TIMEOUT_MS = 5000
 
+VALID_ROUTINGS = ("auto", "queue", "skip")
+VALID_SESSION_TYPES = ("task", "overhead", "unknown")
+VALID_DISPATCH_PROVIDERS = ("jira", "github", "linear", "log")
+VALID_DISPATCH_STATES = ("sent", "failed", "skipped")
+VALID_RUN_STATUSES = ("success", "failed", "aborted")
+VALID_NODE_TYPES = ("project", "task", "tool", "pattern", "ticket")
+
 
 class SchemaError(RuntimeError):
-    """Raised when the meridian.db schema is missing tables or columns the
-    agent service depends on. Almost always means the Rust daemon hasn't
-    been run on this DB yet (or hasn't been rebuilt after a migration)."""
+    """Raised when the meridian.db schema is missing tables the agent
+    service depends on. Almost always means the Rust daemon hasn't been
+    run on this DB yet (or hasn't been rebuilt after a migration)."""
 
 
 # ---------------------------------------------------------------------------
@@ -52,8 +65,10 @@ class Session:
     window_titles: list[Any]
     ocr_samples: list[Any]
     audio_snippets: list[Any]
-    activity_kind: str | None
-    summary_json: str | None
+    # category + confidence are populated by the Rust ETL inline (004_categories.sql).
+    # category is one of the 10 ActivityKind values (lowercase enum name).
+    category: str
+    confidence: float
 
 
 @dataclass(frozen=True)
@@ -74,10 +89,33 @@ class PmTask:
 class DispatchItem:
     id: int
     session_id: int
+    agent_run_id: int
     task_key: str
     provider: str
     payload_json: str
     attempts: int
+
+
+@dataclass(frozen=True)
+class ContextNode:
+    node_id: str
+    node_type: str
+    label: str
+    last_seen: str
+    frequency: int
+    confidence_avg: float
+
+
+@dataclass(frozen=True)
+class ActivityContext:
+    updated_at: str
+    active_project: str | None
+    jira_key: str | None
+    inferred_task: str
+    confidence: float
+    trigger_jira_sync: bool
+    tags: list[Any]
+    last_synced: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +149,7 @@ async def open_rw(meridian_db_path: str) -> aiosqlite.Connection:
 
 
 async def schema_check(conn: aiosqlite.Connection) -> None:
-    """Verify the DB has every table + column meridian-agents needs.
+    """Verify the DB has every table meridian-agents needs.
 
     Raises `SchemaError` with an actionable message — almost always the
     fix is "run the Rust daemon at least once on this DB so migrations
@@ -130,15 +168,6 @@ async def schema_check(conn: aiosqlite.Connection) -> None:
                 "Run the Rust daemon (`./target/release/meridian`) on this "
                 "MERIDIAN_DB at least once so migrations apply."
             )
-    cur = await conn.execute("PRAGMA table_info(app_sessions)")
-    columns = {row["name"] async for row in cur}
-    await cur.close()
-    for col in REQUIRED_APP_SESSIONS_COLUMNS:
-        if col not in columns:
-            raise SchemaError(
-                f"app_sessions is missing column {col!r} from migration 004. "
-                "Rebuild and re-run the Rust daemon."
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +180,7 @@ async def read_cursor(conn: aiosqlite.Connection) -> int:
     row = await cur.fetchone()
     await cur.close()
     if row is None:
-        # 004 seeds the row, but tolerate odd states for tests.
+        # 005 seeds the row, but tolerate odd states for tests.
         return 0
     return int(row["last_session_id"])
 
@@ -188,7 +217,7 @@ async def finish_run(
     dispatches_queued: int = 0,
     dispatches_sent: int = 0,
 ) -> None:
-    if status not in ("success", "failed", "aborted"):
+    if status not in VALID_RUN_STATUSES:
         raise ValueError(f"finish_run: invalid status {status!r}")
     await conn.execute(
         """
@@ -217,7 +246,7 @@ async def finish_run(
 
 
 # ---------------------------------------------------------------------------
-# Reads against existing tables
+# Reads
 # ---------------------------------------------------------------------------
 
 
@@ -228,6 +257,17 @@ def _parse_json(value: Any, fallback: Any) -> Any:
         return json.loads(value)
     except (TypeError, ValueError):
         return fallback
+
+
+async def count_new_sessions(conn: aiosqlite.Connection, *, after_id: int) -> int:
+    """Cheap watchdog query — no JOIN, no JSON parsing."""
+    cur = await conn.execute(
+        "SELECT COUNT(*) AS n FROM app_sessions WHERE id > ?",
+        (after_id,),
+    )
+    row = await cur.fetchone()
+    await cur.close()
+    return int(row["n"]) if row else 0
 
 
 async def fetch_unanalysed_sessions(
@@ -246,7 +286,7 @@ async def fetch_unanalysed_sessions(
         """
         SELECT s.id, s.app_name, s.started_at, s.ended_at, s.duration_s,
                s.window_titles, s.ocr_samples, s.audio_snippets,
-               s.activity_kind, s.summary_json
+               s.category, s.confidence
         FROM app_sessions s
         LEFT JOIN ticket_links t ON t.session_id = s.id
         WHERE s.id > ?
@@ -268,8 +308,8 @@ async def fetch_unanalysed_sessions(
             window_titles=_parse_json(row["window_titles"], []),
             ocr_samples=_parse_json(row["ocr_samples"], []),
             audio_snippets=_parse_json(row["audio_snippets"], []),
-            activity_kind=row["activity_kind"],
-            summary_json=row["summary_json"],
+            category=row["category"],
+            confidence=float(row["confidence"]),
         )
         for row in rows
     ]
@@ -279,33 +319,129 @@ async def fetch_pm_tasks(
     conn: aiosqlite.Connection,
     *,
     only_fresh: bool = True,
+    provider: str | None = None,
+    exclude_done: bool = True,
 ) -> list[PmTask]:
-    sql = """
-        SELECT task_key, provider, title, description_text, status,
-               status_category, issue_type, project_key, url, updated_at
-        FROM pm_tasks
+    """Cached PM tasks the Rust intelligence layer has fetched.
+
+    `only_fresh=True` — drops rows past `expires_at`.
+    `provider='jira'` — narrows to a single provider (defaults to all).
+    `exclude_done=True` — drops `status_category='done'` rows so we only
+    propose open tickets to the synthesizer.
     """
+    sql = [
+        "SELECT task_key, provider, title, description_text, status,",
+        "       status_category, issue_type, project_key, url, updated_at",
+        "FROM pm_tasks",
+    ]
+    where: list[str] = []
+    params: list[Any] = []
     if only_fresh:
-        sql += " WHERE expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')"
-    sql += " ORDER BY updated_at DESC"
-    cur = await conn.execute(sql)
+        where.append("expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')")
+    if provider is not None:
+        where.append("provider = ?")
+        params.append(provider)
+    if exclude_done:
+        where.append("status_category != 'done'")
+    if where:
+        sql.append("WHERE " + " AND ".join(where))
+    sql.append("ORDER BY updated_at DESC")
+    cur = await conn.execute(" ".join(sql), tuple(params))
     rows = await cur.fetchall()
     await cur.close()
     return [PmTask(**dict(row)) for row in rows]
 
 
-# ---------------------------------------------------------------------------
-# Writes against agent-owned tables
-# ---------------------------------------------------------------------------
-
-
-async def write_summary(
-    conn: aiosqlite.Connection, *, session_id: int, summary_json: str
-) -> None:
-    await conn.execute(
-        "UPDATE app_sessions SET summary_json = ? WHERE id = ?",
-        (summary_json, session_id),
+async def read_activity_context(
+    conn: aiosqlite.Connection,
+) -> ActivityContext | None:
+    cur = await conn.execute(
+        """
+        SELECT updated_at, active_project, jira_key, inferred_task,
+               confidence, trigger_jira_sync, tags, last_synced
+        FROM activity_context
+        WHERE id = 1
+        """
     )
+    row = await cur.fetchone()
+    await cur.close()
+    if row is None:
+        return None
+    return ActivityContext(
+        updated_at=row["updated_at"],
+        active_project=row["active_project"],
+        jira_key=row["jira_key"],
+        inferred_task=row["inferred_task"],
+        confidence=float(row["confidence"]),
+        trigger_jira_sync=bool(row["trigger_jira_sync"]),
+        tags=_parse_json(row["tags"], []),
+        last_synced=row["last_synced"],
+    )
+
+
+async def fetch_context_nodes(
+    conn: aiosqlite.Connection,
+    *,
+    node_type: str | None = None,
+    limit: int = 200,
+) -> list[ContextNode]:
+    sql = (
+        "SELECT node_id, node_type, label, last_seen, frequency, confidence_avg "
+        "FROM context_graph_nodes"
+    )
+    params: tuple[Any, ...] = ()
+    if node_type is not None:
+        if node_type not in VALID_NODE_TYPES:
+            raise ValueError(f"fetch_context_nodes: invalid node_type {node_type!r}")
+        sql += " WHERE node_type = ?"
+        params = (node_type,)
+    sql += " ORDER BY last_seen DESC LIMIT ?"
+    params = (*params, limit)
+    cur = await conn.execute(sql, params)
+    rows = await cur.fetchall()
+    await cur.close()
+    return [
+        ContextNode(
+            node_id=row["node_id"],
+            node_type=row["node_type"],
+            label=row["label"],
+            last_seen=row["last_seen"],
+            frequency=int(row["frequency"]),
+            confidence_avg=float(row["confidence_avg"]),
+        )
+        for row in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Writes
+# ---------------------------------------------------------------------------
+
+
+async def write_session_summary(
+    conn: aiosqlite.Connection,
+    *,
+    session_id: int,
+    agent_run_id: int,
+    summary_json: str,
+) -> int:
+    """Insert one LLM-derived summary for a session.
+
+    Schema enforces UNIQUE on session_id, so a second call for the same
+    session raises `aiosqlite.IntegrityError` (caller decides whether to
+    treat that as idempotent).
+    """
+    cur = await conn.execute(
+        """
+        INSERT INTO session_summaries (session_id, agent_run_id, summary_json)
+        VALUES (?, ?, ?)
+        """,
+        (session_id, agent_run_id, summary_json),
+    )
+    summary_id = cur.lastrowid
+    await cur.close()
+    assert summary_id is not None
+    return summary_id
 
 
 async def link_ticket(
@@ -320,12 +456,14 @@ async def link_ticket(
 ) -> None:
     """Insert a ticket_links row produced by an LLM matcher.
 
-    `method='llm'` is hardcoded to distinguish from the rule-based matcher
-    the Rust intelligence module may add later.
+    `method='llm'` is hardcoded. Every closed session gets exactly one
+    ticket_links row (UNIQUE on session_id) — see the contract in the
+    project plan for the four valid (session_type, task_key, routing)
+    combinations.
     """
-    if routing not in ("auto", "queue", "skip"):
+    if routing not in VALID_ROUTINGS:
         raise ValueError(f"link_ticket: invalid routing {routing!r}")
-    if session_type not in ("task", "overhead", "unknown"):
+    if session_type not in VALID_SESSION_TYPES:
         raise ValueError(f"link_ticket: invalid session_type {session_type!r}")
     await conn.execute(
         """
@@ -337,22 +475,113 @@ async def link_ticket(
     )
 
 
+async def upsert_context_node(
+    conn: aiosqlite.Connection,
+    *,
+    node_id: str,
+    node_type: str,
+    label: str,
+    last_seen: str | None = None,
+) -> None:
+    """Upsert a knowledge-graph node.
+
+    On conflict (`node_id` UNIQUE), label and last_seen are refreshed and
+    frequency is incremented. confidence_avg stays at its previous value
+    — refining the smoothing algorithm is a v2 concern.
+    """
+    if node_type not in VALID_NODE_TYPES:
+        raise ValueError(f"upsert_context_node: invalid node_type {node_type!r}")
+    await conn.execute(
+        """
+        INSERT INTO context_graph_nodes (node_id, node_type, label, last_seen)
+        VALUES (?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))
+        ON CONFLICT (node_id) DO UPDATE SET
+            label     = excluded.label,
+            last_seen = excluded.last_seen,
+            frequency = frequency + 1
+        """,
+        (node_id, node_type, label, last_seen),
+    )
+
+
+async def write_activity_context(
+    conn: aiosqlite.Connection,
+    *,
+    inferred_task: str,
+    confidence: float,
+    trigger_jira_sync: bool = False,
+    active_project: str | None = None,
+    jira_key: str | None = None,
+    tags: list[Any] | None = None,
+) -> None:
+    """Update the single-row activity_context.
+
+    Synthesizer overwrites this every tick; jira-keeper updates only
+    `last_synced` + `trigger_jira_sync` via `mark_activity_context_synced`.
+    """
+    tags_json = json.dumps(tags) if tags is not None else None
+    await conn.execute(
+        """
+        UPDATE activity_context
+        SET updated_at        = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+            active_project    = ?,
+            jira_key          = ?,
+            inferred_task     = ?,
+            confidence        = ?,
+            trigger_jira_sync = ?,
+            tags              = ?
+        WHERE id = 1
+        """,
+        (
+            active_project,
+            jira_key,
+            inferred_task,
+            confidence,
+            1 if trigger_jira_sync else 0,
+            tags_json,
+        ),
+    )
+
+
+async def mark_activity_context_synced(
+    conn: aiosqlite.Connection,
+    *,
+    last_synced: str | None = None,
+) -> None:
+    """Called by jira-keeper after a successful dispatch.
+
+    Clears `trigger_jira_sync` and stamps `last_synced`. Defaults to NOW
+    when `last_synced` is omitted.
+    """
+    await conn.execute(
+        """
+        UPDATE activity_context
+        SET trigger_jira_sync = 0,
+            last_synced       = COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        WHERE id = 1
+        """,
+        (last_synced,),
+    )
+
+
 async def enqueue_dispatch(
     conn: aiosqlite.Connection,
     *,
     session_id: int,
+    agent_run_id: int,
     task_key: str,
     provider: str,
     payload_json: str,
 ) -> int:
-    if provider not in ("jira", "github", "linear", "log"):
+    if provider not in VALID_DISPATCH_PROVIDERS:
         raise ValueError(f"enqueue_dispatch: invalid provider {provider!r}")
     cur = await conn.execute(
         """
-        INSERT INTO dispatch_queue (session_id, task_key, provider, payload_json)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO dispatch_queue
+            (session_id, agent_run_id, task_key, provider, payload_json)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (session_id, task_key, provider, payload_json),
+        (session_id, agent_run_id, task_key, provider, payload_json),
     )
     dispatch_id = cur.lastrowid
     await cur.close()
@@ -365,7 +594,7 @@ async def claim_dispatch_pending(
 ) -> list[DispatchItem]:
     cur = await conn.execute(
         """
-        SELECT id, session_id, task_key, provider, payload_json, attempts
+        SELECT id, session_id, agent_run_id, task_key, provider, payload_json, attempts
         FROM dispatch_queue
         WHERE state = 'pending'
         ORDER BY id ASC
@@ -390,7 +619,7 @@ async def mark_dispatched(
     `attempts` is incremented atomically. `dispatched_at` is stamped only
     when state == 'sent'; failures leave it NULL so retries are visible.
     """
-    if state not in ("sent", "failed", "skipped"):
+    if state not in VALID_DISPATCH_STATES:
         raise ValueError(f"mark_dispatched: invalid state {state!r}")
     await conn.execute(
         """
