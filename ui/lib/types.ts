@@ -45,6 +45,8 @@ export interface SessionRow {
   signals: Signal[] | null
   frame_count: number
   etl_run_id: number
+  category: string
+  confidence: number
 }
 
 export interface ActiveSessionRow {
@@ -57,6 +59,8 @@ export interface ActiveSessionRow {
   signals: Signal[] | null
   frame_count: number
   elapsed_s: number
+  category: string
+  confidence: number
 }
 
 export interface GapRow {
@@ -78,6 +82,7 @@ export interface StatsResponse {
     duration_s: number
     session_count: number
   }>
+  category_breakdown: Array<{ category: string; duration_s: number }>
 }
 
 export interface AppStat {

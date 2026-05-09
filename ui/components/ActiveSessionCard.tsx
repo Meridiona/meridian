@@ -6,6 +6,7 @@ import { useState, useEffect } from 'react'
 import AppIcon from './AppIcon'
 import { formatDuration } from '@/lib/format'
 import type { ActiveSessionRow } from '@/lib/types'
+import CategoryBadge from './CategoryBadge'
 
 interface ActiveSessionCardProps {
   session: ActiveSessionRow | null
@@ -55,6 +56,12 @@ export default function ActiveSessionCard({ session }: ActiveSessionCardProps) {
               {formatDuration(elapsed)}
             </span>
           </div>
+
+          {session.category && session.category !== 'idle_personal' && (
+            <div className="mt-1">
+              <CategoryBadge category={session.category} confidence={session.confidence} />
+            </div>
+          )}
 
           {topWindows.length > 0 && (
             <div className="mt-1.5 flex flex-wrap gap-1">

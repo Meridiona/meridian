@@ -9,6 +9,7 @@ import AppIcon from './AppIcon'
 import { formatDuration, formatTime } from '@/lib/format'
 import type { SessionRow } from '@/lib/types'
 import { clsx } from 'clsx'
+import CategoryBadge from './CategoryBadge'
 
 interface SessionCardProps {
   session: SessionRow
@@ -47,13 +48,18 @@ export default function SessionCard({ session }: SessionCardProps) {
             <AppIcon appName={session.app_name} size="sm" />
 
             <div className="flex-1 min-w-0">
-              <div className="flex items-baseline justify-between gap-2">
+              <div className="flex items-center justify-between gap-2">
                 <span className="text-sm font-medium truncate text-[#141414]">
                   {session.app_name}
                 </span>
-                <span className="font-mono text-xs text-[#9B9A97] shrink-0 tabular-nums">
-                  {formatDuration(session.duration_s)}
-                </span>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <span className="font-mono text-xs text-[#9B9A97] tabular-nums">
+                    {formatDuration(session.duration_s)}
+                  </span>
+                  {session.category && (
+                    <CategoryBadge category={session.category} size="xs" />
+                  )}
+                </div>
               </div>
 
               <div className="flex items-center gap-2 mt-1">

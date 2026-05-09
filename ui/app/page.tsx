@@ -8,6 +8,7 @@ import DayTimeline from '@/components/DayTimeline'
 import StatsRow from '@/components/StatsRow'
 import SessionCard from '@/components/SessionCard'
 import RefreshTrigger from '@/components/RefreshTrigger'
+import CategoryBreakdown from '@/components/CategoryBreakdown'
 import type {
   ActiveSessionRow, StatsResponse, TimelineResponse, SessionRow, GapRow
 } from '@/lib/types'
@@ -28,6 +29,8 @@ function parseSession(r: Record<string, unknown>): SessionRow {
     signals: r.signals ? JSON.parse(r.signals as string) : null,
     frame_count: r.frame_count as number,
     etl_run_id: r.etl_run_id as number,
+    category: (r.category as string) || 'idle_personal',
+    confidence: (r.confidence as number) || 0,
   }
 }
 
@@ -36,7 +39,8 @@ function getActiveSession(): ActiveSessionRow | null {
     const db = getDb()
     const row = db.prepare(`
       SELECT app_name, started_at, last_seen_at,
-             window_titles, ocr_samples, audio_snippets, signals, frame_count
+             window_titles, ocr_samples, audio_snippets, signals, frame_count,
+             category, confidence
       FROM active_session WHERE id = 1
     `).get() as Record<string, unknown> | undefined
     if (!row) return null
@@ -50,12 +54,14 @@ function getActiveSession(): ActiveSessionRow | null {
       signals: row.signals ? JSON.parse(row.signals as string) : null,
       frame_count: row.frame_count as number,
       elapsed_s: Math.floor((Date.now() - new Date(row.started_at as string).getTime()) / 1000),
+      category: (row.category as string) || 'idle_personal',
+      confidence: (row.confidence as number) || 0,
     }
   } catch { return null }
 }
 
 function getStats(date: string): StatsResponse {
-  const empty: StatsResponse = { date, focus_s: 0, user_idle_s: 0, away_s: 0, session_count: 0, top_apps: [] }
+  const empty: StatsResponse = { date, focus_s: 0, user_idle_s: 0, away_s: 0, session_count: 0, top_apps: [], category_breakdown: [] }
   try {
     const db = getDb()
     const { start, end } = localDayBounds(date)
@@ -83,7 +89,12 @@ function getStats(date: string): StatsResponse {
       user_idle_s = gapStats?.user_idle_s ?? 0
       away_s = gapStats?.away_s ?? 0
     } catch { /* gaps table not yet created by ETL */ }
-    return { date, focus_s: t.focus_s ?? 0, user_idle_s, away_s, session_count: t.session_count, top_apps: topApps }
+    const categoryBreakdown = db.prepare(`
+      SELECT category, SUM(duration_s) AS duration_s
+      FROM app_sessions WHERE started_at >= ? AND started_at < ?
+      GROUP BY category ORDER BY duration_s DESC
+    `).all(start, end) as StatsResponse['category_breakdown']
+    return { date, focus_s: t.focus_s ?? 0, user_idle_s, away_s, session_count: t.session_count, top_apps: topApps, category_breakdown: categoryBreakdown }
   } catch { return empty }
 }
 
@@ -94,7 +105,8 @@ function getTimeline(date: string): TimelineResponse {
     const rows = db.prepare(`
       SELECT id, app_name, started_at, ended_at, duration_s,
              window_titles, ocr_samples, elements_samples,
-             audio_snippets, signals, frame_count, etl_run_id
+             audio_snippets, signals, frame_count, etl_run_id,
+             category, confidence
       FROM app_sessions WHERE started_at >= ? AND started_at < ?
       ORDER BY started_at ASC
     `).all(start, end) as Array<Record<string, unknown>>
@@ -128,7 +140,8 @@ function getRecentSessions(date: string): SessionRow[] {
     const rows = db.prepare(`
       SELECT id, app_name, started_at, ended_at, duration_s,
              window_titles, ocr_samples, elements_samples,
-             audio_snippets, signals, frame_count, etl_run_id
+             audio_snippets, signals, frame_count, etl_run_id,
+             category, confidence
       FROM app_sessions WHERE started_at >= ? AND started_at < ?
       ORDER BY started_at DESC LIMIT 8
     `).all(start, end) as Array<Record<string, unknown>>
@@ -168,6 +181,16 @@ export default function DashboardPage() {
 
       {/* Stats */}
       {stats.session_count > 0 && <StatsRow stats={stats} />}
+
+      {/* Category breakdown */}
+      {stats.category_breakdown && stats.category_breakdown.length > 0 && (
+        <section>
+          <p className="text-[10px] uppercase tracking-widest text-[#C8C6C1] mb-3">By Category</p>
+          <div className="rounded-2xl border border-[#E8E6E1] bg-white p-5">
+            <CategoryBreakdown stats={stats.category_breakdown} />
+          </div>
+        </section>
+      )}
 
       {/* Recent sessions */}
       {recent.length > 0 && (
