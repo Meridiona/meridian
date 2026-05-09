@@ -11,6 +11,7 @@ Skills live in `.claude/skills/` and can be invoked in Claude Code.
 | `release` | `.claude/skills/release/SKILL.md` | Bumping versions, triggering builds, monitoring CI |
 | `meridian-etl` | `.claude/skills/meridian-etl/SKILL.md` | Debugging ETL pipeline, inspecting sessions, fixing boundary issues |
 | `meridian-mcp` | `.claude/skills/meridian-mcp/SKILL.md` | Building, configuring, and debugging the MCP server |
+| `meridian-ui` | `.claude/skills/meridian-ui/SKILL.md` | Working on the Next.js dashboard — components, API routes, category system, tests |
 
 ## Quick Reference
 

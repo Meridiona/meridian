@@ -35,10 +35,12 @@ screenpipe.db (read-only)
 
 | Concept | What it is |
 |---------|-----------|
-| **cursor** | `last_processed_frame_id` — marks where ETL left off |
+| **cursor** | `last_frame_id` in `etl_cursor` — marks where ETL left off |
 | **app-switch boundary** | frame where `focused_app` differs from the previous frame |
 | **active_session** | the currently-open, in-progress session (one row, upserted) |
 | **app_sessions** | completed, closed sessions with final timestamps |
+| **category / confidence** | AI-assigned activity category and confidence score on each session |
+| **gaps** | `user_idle` or `system_sleep` periods between sessions |
 
 ## Running with Verbose Logging
 ```bash
@@ -59,7 +61,7 @@ WHERE started_at >= date('now')
 GROUP BY app_name ORDER BY minutes DESC LIMIT 10;
 
 # Check cursor (last processed frame)
-SELECT * FROM etl_state;
+SELECT * FROM etl_cursor;
 
 # Inspect active session
 SELECT * FROM active_session;
@@ -81,6 +83,21 @@ SELECT * FROM app_sessions WHERE duration_s = 0;
 SELECT date(started_at) AS day, COUNT(*) AS n, ROUND(SUM(duration_s)/3600.0,2) AS hours
 FROM app_sessions
 GROUP BY day ORDER BY day DESC;
+
+# Category breakdown (today)
+SELECT category, COUNT(*) AS sessions, ROUND(SUM(duration_s)/60.0,1) AS minutes
+FROM app_sessions
+WHERE started_at >= date('now')
+GROUP BY category ORDER BY minutes DESC;
+
+# Inspect gaps (sleep / idle periods)
+SELECT kind, COUNT(*) AS n, ROUND(SUM(duration_s)/60.0,1) AS total_min
+FROM gaps GROUP BY kind;
+
+# Long sessions that may be miscategorised
+SELECT app_name, category, confidence, ROUND(duration_s/60.0) AS min, window_titles
+FROM app_sessions WHERE duration_s > 600
+ORDER BY started_at DESC LIMIT 10;
 ```
 
 ## Common Issues
@@ -97,7 +114,7 @@ Check: `SELECT * FROM app_sessions WHERE duration_s > 3600 ORDER BY duration_s D
 ### Duplicate sessions
 Cursor not advancing correctly caused re-processing. Check cursor value:
 ```bash
-sqlite3 ~/.meridian/meridian.db "SELECT * FROM etl_state;"
+sqlite3 ~/.meridian/meridian.db "SELECT * FROM etl_cursor;"
 ```
 
 ### Screenpipe DB locked

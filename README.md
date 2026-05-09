@@ -18,11 +18,13 @@ to `app_sessions`:
 | `started_at` / `ended_at` | ISO8601 UTC timestamps |
 | `duration_s` | Wall-clock seconds |
 | `frame_count` | Number of screenpipe frames in the block |
+| `category` | AI-assigned activity category (e.g. `coding`, `meeting`, `research`) |
+| `confidence` | Category confidence score (0.0–1.0) |
 | `window_titles` | JSON array of `{title, count}` — top windows seen |
-| `ocr_samples` | JSON array of up to 20 OCR text samples |
-| `elements_samples` | JSON array of up to 20 accessibility tree samples |
-| `audio_snippets` | JSON array of transcribed audio during this block |
-| `signals` | JSON array of clipboard copies and app-switch events |
+| `ocr_samples` | JSON array of up to 20 deduplicated OCR text samples |
+| `elements_samples` | JSON array of up to 20 deduplicated accessibility tree samples |
+| `audio_snippets` | JSON array of transcribed audio (stored in DB; not sent to LLMs) |
+| `signals` | JSON array of deduplicated clipboard copies and app-switch events |
 | `min_frame_id` / `max_frame_id` | Frame-id range linking back to screenpipe |
 
 ## Prerequisites
@@ -136,6 +138,8 @@ Add to your MCP client config (e.g. `~/Library/Application Support/Claude/claude
 ```
 
 Available tools: `get-sessions`, `get-timeline`, `get-stats`, `get-active-session`, `get-apps`, `search-sessions`, `get-session-detail`, `health-check`.
+
+> **Note**: `audio_snippets` are stored in the DB but intentionally excluded from MCP tool responses to reduce LLM noise. They remain searchable via `search-sessions`.
 
 The MCP server uses [sql.js](https://github.com/sql-js/sql.js) (pure WebAssembly SQLite) — no native Node.js modules, works with any Node.js version.
 
