@@ -46,11 +46,9 @@ async fn main() -> Result<()> {
 
     let db_path = shellexpand::tilde("~/.meridian/meridian.db").into_owned();
 
-    let pool = SqlitePool::connect_with(
-        SqliteConnectOptions::from_str(&db_path)?.read_only(true),
-    )
-    .await
-    .context("failed to open meridian.db")?;
+    let pool = SqlitePool::connect_with(SqliteConnectOptions::from_str(&db_path)?.read_only(true))
+        .await
+        .context("failed to open meridian.db")?;
 
     let rows: Vec<SessionRow> = if let Some(ref app) = app_filter {
         sqlx::query_as(

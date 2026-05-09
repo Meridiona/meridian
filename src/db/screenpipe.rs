@@ -81,7 +81,17 @@ pub async fn get_frames_since(
     after_frame_id: i64,
     limit: i64,
 ) -> Result<Vec<FrameRow>> {
-    let rows = sqlx::query_as::<_, (i64, String, Option<String>, Option<String>, String, Option<String>)>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            i64,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+        ),
+    >(
         "SELECT id, app_name, window_name, browser_url, timestamp, capture_trigger
          FROM frames
          WHERE id > ? AND app_name IS NOT NULL AND app_name != ''
@@ -95,14 +105,16 @@ pub async fn get_frames_since(
 
     let result = rows
         .into_iter()
-        .map(|(id, app_name, window_name, browser_url, timestamp, capture_trigger)| FrameRow {
-            id,
-            app_name,
-            window_name,
-            browser_url,
-            timestamp,
-            capture_trigger,
-        })
+        .map(
+            |(id, app_name, window_name, browser_url, timestamp, capture_trigger)| FrameRow {
+                id,
+                app_name,
+                window_name,
+                browser_url,
+                timestamp,
+                capture_trigger,
+            },
+        )
         .collect();
 
     Ok(result)
@@ -183,9 +195,11 @@ pub async fn get_window_titles(
 
 fn is_browser_app(app_name: &str) -> bool {
     let lc = app_name.to_lowercase();
-    ["chrome", "safari", "firefox", "arc", "edge", "brave", "opera", "vivaldi"]
-        .iter()
-        .any(|b| lc.contains(b))
+    [
+        "chrome", "safari", "firefox", "arc", "edge", "brave", "opera", "vivaldi",
+    ]
+    .iter()
+    .any(|b| lc.contains(b))
 }
 
 /// Returns up to 10 unique OCR text samples from the given frame-id range.

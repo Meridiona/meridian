@@ -246,5 +246,4 @@ mod tests {
         std::env::remove_var("SCREENPIPE_DB");
         std::env::remove_var("MERIDIAN_DB");
     }
-
 }

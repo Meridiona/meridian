@@ -78,7 +78,8 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
     // gap so the new run starts clean.
     if let Ok(Some(stale)) = get_active_session(meridian).await {
         if let Some(first_frame) = first_batch.first() {
-            if let Some(gap_secs) = timestamp_gap_secs(&stale.last_seen_at, &first_frame.timestamp) {
+            if let Some(gap_secs) = timestamp_gap_secs(&stale.last_seen_at, &first_frame.timestamp)
+            {
                 if gap_secs > GAP_THRESHOLD_SECS {
                     let (total, idle) = count_frames_in_window(
                         screenpipe,
@@ -236,10 +237,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                         block_start_frame_id = frame.id;
                         block_start_ts = frame.timestamp.clone();
                         block_frame_count = 1;
-                        block_idle_frame_count = if frame
-                            .capture_trigger
-                            .as_deref()
-                            == Some("idle")
+                        block_idle_frame_count = if frame.capture_trigger.as_deref() == Some("idle")
                         {
                             1
                         } else {
@@ -303,10 +301,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                         block_start_frame_id = frame.id;
                         block_start_ts = frame.timestamp.clone();
                         block_frame_count = 1;
-                        block_idle_frame_count = if frame
-                            .capture_trigger
-                            .as_deref()
-                            == Some("idle")
+                        block_idle_frame_count = if frame.capture_trigger.as_deref() == Some("idle")
                         {
                             1
                         } else {
@@ -435,7 +430,11 @@ async fn close_block(
             get_last_ui_event_for_app(screenpipe, b.app, b.started_at, next_ts).await
         {
             if ui_ts.as_str() > b.ended_at {
-                debug!(app = b.app, ui_ts = ui_ts, "ended_at refined via ui_event (Option C)");
+                debug!(
+                    app = b.app,
+                    ui_ts = ui_ts,
+                    "ended_at refined via ui_event (Option C)"
+                );
                 ctx.ended_at = ui_ts;
             }
         }
@@ -446,7 +445,10 @@ async fn close_block(
     // instead of recording a 0s session that actually had real screen time.
     if ctx.ended_at == b.started_at {
         if let Some(next_ts) = b.next_frame_ts {
-            debug!(app = b.app, next_ts, "ended_at filled from next_frame_ts (single-frame session)");
+            debug!(
+                app = b.app,
+                next_ts, "ended_at filled from next_frame_ts (single-frame session)"
+            );
             ctx.ended_at = next_ts.to_string();
         }
     }
@@ -509,7 +511,10 @@ async fn upsert_open_block(
 
     let session = match existing {
         Some(ref active) if active.app_name == b.app => {
-            debug!(app = b.app, "merging new frames into existing active_session");
+            debug!(
+                app = b.app,
+                "merging new frames into existing active_session"
+            );
             merge_into_active(active, &ctx, b.idle_frame_count)?
         }
 
@@ -527,7 +532,11 @@ async fn upsert_open_block(
     };
 
     upsert_active_session(meridian, &session).await?;
-    debug!(app = b.app, max_frame_id = b.max_frame_id, "active_session upserted");
+    debug!(
+        app = b.app,
+        max_frame_id = b.max_frame_id,
+        "active_session upserted"
+    );
     Ok(0)
 }
 
@@ -552,7 +561,8 @@ struct ClassifyInput<'a> {
 /// Runs `categorize()` from already-in-memory session data.
 /// Pure computation — zero I/O, negligible CPU.
 fn classify(i: &ClassifyInput<'_>) -> (String, f64) {
-    let ocr_text = i.ocr_samples
+    let ocr_text = i
+        .ocr_samples
         .iter()
         .map(|s| s.text.as_str())
         .collect::<Vec<_>>()
@@ -729,9 +739,11 @@ fn merge_into_active(
 /// Used to decide whether window/URL changes should trigger a session split.
 fn is_browser(app: &str) -> bool {
     let lc = app.to_lowercase();
-    ["chrome", "safari", "firefox", "arc", "edge", "brave", "opera", "vivaldi"]
-        .iter()
-        .any(|b| lc.contains(b))
+    [
+        "chrome", "safari", "firefox", "arc", "edge", "brave", "opera", "vivaldi",
+    ]
+    .iter()
+    .any(|b| lc.contains(b))
 }
 
 /// Extracts the bare domain from a URL — strips scheme, path, query, and `www.`.
