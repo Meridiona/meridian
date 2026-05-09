@@ -202,7 +202,7 @@ fn is_browser_app(app_name: &str) -> bool {
     .any(|b| lc.contains(b))
 }
 
-/// Returns up to 10 unique OCR text samples from the given frame-id range.
+/// Returns all unique OCR text samples from the given frame-id range.
 /// Deduplicates on exact text — keeps the earliest occurrence of each unique string.
 /// Only samples with more than 30 characters are included.
 pub async fn get_ocr_samples(
@@ -217,8 +217,7 @@ pub async fn get_ocr_samples(
          WHERE f.id BETWEEN ? AND ?
            AND length(ot.text) > 30
          GROUP BY ot.text
-         ORDER BY timestamp
-         LIMIT 10",
+         ORDER BY timestamp",
     )
     .bind(min_frame_id)
     .bind(max_frame_id)
@@ -237,7 +236,7 @@ pub async fn get_ocr_samples(
     Ok(result)
 }
 
-/// Returns up to 10 unique accessibility element samples from the given frame-id range.
+/// Returns all unique accessibility element samples from the given frame-id range.
 /// Deduplicates on (text, role) — same element appearing in multiple frames is stored once.
 /// Only elements with more than 20 characters and source = 'accessibility' are included.
 pub async fn get_element_samples(
@@ -253,8 +252,7 @@ pub async fn get_element_samples(
            AND e.text IS NOT NULL AND length(e.text) > 20
            AND e.source = 'accessibility'
          GROUP BY e.text, e.role
-         ORDER BY timestamp
-         LIMIT 10",
+         ORDER BY timestamp",
     )
     .bind(min_frame_id)
     .bind(max_frame_id)
