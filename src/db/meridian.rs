@@ -346,7 +346,19 @@ pub async fn close_active_session(
     let Some(active) = get_active_session(pool).await? else {
         return Ok(None);
     };
+    close_active_session_with(pool, &active, etl_run_id)
+        .await
+        .map(Some)
+}
 
+/// Like `close_active_session` but skips the SELECT — caller already holds
+/// the `ActiveSession`.  Inserts into `app_sessions`, deletes the row, and
+/// returns the new `app_sessions.id`.
+pub async fn close_active_session_with(
+    pool: &SqlitePool,
+    active: &ActiveSession,
+    etl_run_id: i64,
+) -> anyhow::Result<i64> {
     let started = chrono::DateTime::parse_from_rfc3339(&active.started_at)
         .with_context(|| format!("bad started_at: {}", active.started_at))?;
     let ended = chrono::DateTime::parse_from_rfc3339(&active.last_seen_at)
@@ -380,16 +392,16 @@ pub async fn close_active_session(
     .bind(etl_run_id)
     .execute(pool)
     .await
-    .context("close_active_session: insert into app_sessions failed")?;
+    .context("close_active_session_with: insert into app_sessions failed")?;
 
     let new_id = result.last_insert_rowid();
 
     sqlx::query("DELETE FROM active_session WHERE id = 1")
         .execute(pool)
         .await
-        .context("close_active_session: delete failed")?;
+        .context("close_active_session_with: delete failed")?;
 
-    Ok(Some(new_id))
+    Ok(new_id)
 }
 
 // ---------------------------------------------------------------------------

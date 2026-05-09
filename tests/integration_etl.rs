@@ -2,7 +2,8 @@
 // https://github.com/meridiona/meridian
 
 use meridian::db::meridian::{
-    cleanup_incomplete_runs, get_active_session, get_cursor, insert_etl_run,
+    cleanup_incomplete_runs, close_active_session_with, get_active_session, get_cursor,
+    insert_etl_run, upsert_active_session, ActiveSession,
 };
 use meridian::etl::run_etl;
 use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
@@ -52,6 +53,7 @@ async fn make_screenpipe_db() -> SqlitePool {
             id INTEGER PRIMARY KEY,
             app_name TEXT,
             window_name TEXT,
+            browser_url TEXT,
             timestamp TEXT NOT NULL,
             capture_trigger TEXT
         )",
@@ -623,4 +625,178 @@ async fn test_no_gap_below_threshold() {
         .await
         .unwrap();
     assert_eq!(count.0, 0, "a 299 s gap is below threshold and must not produce a gap row");
+}
+
+// ---------------------------------------------------------------------------
+// close_active_session_with — unit-style tests
+// ---------------------------------------------------------------------------
+
+/// `close_active_session_with` should insert into `app_sessions` and remove
+/// the `active_session` row without performing an additional SELECT.
+#[tokio::test]
+async fn test_close_active_session_with_inserts_and_clears() {
+    let md = make_meridian_db().await;
+
+    let session = ActiveSession {
+        id: 1,
+        app_name: "Terminal".into(),
+        started_at: "2026-01-01T10:00:00+00:00".into(),
+        last_seen_at: "2026-01-01T10:05:00+00:00".into(),
+        window_titles: "[]".into(),
+        ocr_samples: None,
+        elements_samples: None,
+        audio_snippets: None,
+        signals: None,
+        min_frame_id: 1,
+        max_frame_id: 10,
+        frame_count: 10,
+        idle_frame_count: 0,
+    };
+
+    upsert_active_session(&md, &session).await.unwrap();
+
+    // Confirm the row is present before calling our function.
+    assert!(get_active_session(&md).await.unwrap().is_some());
+
+    let etl_run_id = insert_etl_run(&md, 1, 10).await.unwrap();
+    let new_id = close_active_session_with(&md, &session, etl_run_id).await.unwrap();
+
+    // active_session must be empty.
+    assert!(get_active_session(&md).await.unwrap().is_none());
+
+    // One row in app_sessions with the correct values.
+    let row: (i64, String, i64) =
+        sqlx::query_as("SELECT id, app_name, duration_s FROM app_sessions WHERE id = ?")
+            .bind(new_id)
+            .fetch_one(&md)
+            .await
+            .unwrap();
+    assert_eq!(row.0, new_id);
+    assert_eq!(row.1, "Terminal");
+    assert_eq!(row.2, 300); // 10:05 - 10:00 = 300 s
+}
+
+/// Calling `close_active_session_with` twice with different pre-fetched sessions
+/// (simulating the stale-session eviction path in `close_block`) must produce
+/// two rows in `app_sessions` with no extra SELECTs.
+#[tokio::test]
+async fn test_close_active_session_with_stale_then_new() {
+    let md = make_meridian_db().await;
+    let etl_run_id = insert_etl_run(&md, 1, 20).await.unwrap();
+
+    let stale = ActiveSession {
+        id: 1,
+        app_name: "Slack".into(),
+        started_at: "2026-01-01T09:00:00+00:00".into(),
+        last_seen_at: "2026-01-01T09:10:00+00:00".into(),
+        window_titles: "[]".into(),
+        ocr_samples: None,
+        elements_samples: None,
+        audio_snippets: None,
+        signals: None,
+        min_frame_id: 1,
+        max_frame_id: 5,
+        frame_count: 5,
+        idle_frame_count: 0,
+    };
+
+    upsert_active_session(&md, &stale).await.unwrap();
+    close_active_session_with(&md, &stale, etl_run_id).await.unwrap();
+
+    // active_session is now clear; insert the new session and close it too.
+    let new_session = ActiveSession {
+        id: 1,
+        app_name: "Code".into(),
+        started_at: "2026-01-01T09:10:00+00:00".into(),
+        last_seen_at: "2026-01-01T09:20:00+00:00".into(),
+        window_titles: "[]".into(),
+        ocr_samples: None,
+        elements_samples: None,
+        audio_snippets: None,
+        signals: None,
+        min_frame_id: 6,
+        max_frame_id: 10,
+        frame_count: 5,
+        idle_frame_count: 0,
+    };
+
+    // No upsert needed — close_active_session_with skips the SELECT entirely.
+    close_active_session_with(&md, &new_session, etl_run_id).await.unwrap();
+
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT app_name FROM app_sessions ORDER BY started_at")
+            .fetch_all(&md)
+            .await
+            .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].0, "Slack");
+    assert_eq!(rows[1].0, "Code");
+
+    // active_session must remain empty after both closes.
+    assert!(get_active_session(&md).await.unwrap().is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Audio snippet cap
+// ---------------------------------------------------------------------------
+
+/// When many ETL runs merge audio snippets into the same active_session the
+/// total stored must not exceed 50 (AUDIO_SNIPPET_CAP).
+#[tokio::test]
+async fn test_audio_snippet_cap_across_runs() {
+    let sp = make_screenpipe_db().await;
+    let md = make_meridian_db().await;
+
+    // Insert 60 audio transcriptions spread across 60 frames of the same app.
+    // Each frame is 10 s apart so no gap fires.
+    for i in 0i64..60 {
+        let ts = format!("2026-01-01T10:{:02}:{:02}+00:00", i / 6, (i % 6) * 10);
+        sqlx::query(
+            "INSERT INTO frames (id, app_name, window_name, timestamp) VALUES (?, 'Code', NULL, ?)",
+        )
+        .bind(i + 1)
+        .bind(&ts)
+        .execute(&sp)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO audio_transcriptions \
+             (audio_chunk_id, offset_index, timestamp, transcription, device) \
+             VALUES (?, 0, ?, 'working on the auth module right now', 'mic')",
+        )
+        .bind(i + 1)
+        .bind(&ts)
+        .execute(&sp)
+        .await
+        .unwrap();
+    }
+
+    // First ETL run processes all 60 frames in one batch — Code stays open.
+    run_etl(&sp, &md).await.unwrap();
+
+    // Now trigger an app switch so the Code session is closed into app_sessions.
+    sqlx::query(
+        "INSERT INTO frames (id, app_name, window_name, timestamp) VALUES (61, 'Slack', NULL, '2026-01-01T10:10:00+00:00')",
+    )
+    .execute(&sp)
+    .await
+    .unwrap();
+
+    run_etl(&sp, &md).await.unwrap();
+
+    // The closed Code session's audio_snippets must be capped at 50.
+    let row: (Option<String>,) =
+        sqlx::query_as("SELECT audio_snippets FROM app_sessions WHERE app_name = 'Code'")
+            .fetch_one(&md)
+            .await
+            .unwrap();
+
+    let snippets: Vec<serde_json::Value> =
+        serde_json::from_str(row.0.as_deref().unwrap_or("[]")).unwrap();
+    assert!(
+        snippets.len() <= 50,
+        "expected ≤ 50 audio snippets, got {}",
+        snippets.len()
+    );
 }
