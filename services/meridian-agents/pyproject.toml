@@ -22,6 +22,12 @@ dependencies = [
     "python-dotenv>=1.0.1",
     # Async SQLite client; coexists with the Rust daemon's WAL-mode connection
     "aiosqlite>=0.20.0",
+    # Required by vendored hermes_runtime — utils.py uses pyyaml for atomic
+    # YAML writes; hermes_cli/config.py also reads YAML config files.
+    "pyyaml>=6.0",
+    # hermes_runtime uses `requests` for some HTTP calls (separate from our
+    # httpx async stack). Per hermes' own pyproject this is >=2.33,<3.
+    "requests>=2.33.0,<3",
 ]
 
 [project.optional-dependencies]
