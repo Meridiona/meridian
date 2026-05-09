@@ -1,41 +1,41 @@
-# Reference: hermes-activity-agent
+# Reference: hermes-activity-agent source material
 
-Source material vendored from
-[`hermes-activity-agent`](https://github.com/) — a fork/derivative of Hermes
-(Nous Research). Files in this directory are **not on the Python import
-path**; they exist as templates the meridian-agents implementation will
-mine from.
+Source files used as a porting reference. **Off the Python import path.**
 
-The active vendored runtime lives at
-`../src/meridian_agents/hermes_runtime/`. Files there have been copied in
-unmodified; pull future updates from upstream and replay any local
-adjustments.
+The active hermes runtime is the full upstream `hermes-agent` v2026.5.7,
+vendored at `../vendor/hermes/` and installed via uv from local path. This
+`reference/` directory holds smaller artefacts we lifted from the
+hermes-activity-agent demo (in `~/Documents/Learning/hermes-activity-agent/`)
+when we were initially mapping out the synthesizer's behaviour. They serve
+as templates for the upcoming meridian agents but are not imported anywhere.
 
 ## Contents
 
 - `LICENSE.hermes` — MIT license from upstream. Preserve attribution when
   copying any further files.
 - `hermes_agents/` — the original `agents/` directory:
-  - `watcher.py` — polls Screenpipe MCP every 3 min; ignored (we read
-    `meridian.db` directly).
+  - `watcher.py` — polls Screenpipe MCP every 3 min; meridian replaced this
+    with direct reads from `app_sessions` / `active_session` (no separate
+    watcher agent).
   - `synthesizer.py` — every 20 min, infers task / project from buffered
-    activity. Source material for `meridian_agents/agents/session_summarizer.py`.
+    activity. Source material for `meridian_agents/agents/synthesizer.py`,
+    which now also handles per-session task tagging.
   - `jira_keeper.py` — syncs to Jira via mcp-atlassian. Source material for
-    `meridian_agents/agents/project_tagger.py` and `meridian_agents/sinks/jira.py`
-    (which uses Jira REST directly via `httpx`, not MCP).
-  - `orchestrator.py` — asyncio coordinator. We write a fresh orchestrator
-    tuned to "new rows in app_sessions" rather than fixed-cadence polling.
-  - `bootstrap.py` — state-dir init under `~/.hermes/`. Replaced by
-    `meridian_agents/config.py` (no separate state dir; we read/write
-    `meridian.db`).
-  - `config.py` — env-var + skill loader. Already vendored as
-    `hermes_runtime/skill_loader.py`.
-- `hermes_skills/` — original SKILL.md prompts. Adapt into
-  `services/meridian-agents/skills/{session_summarizer,project_tagger}/SKILL.md`.
+    `meridian_agents/agents/jira_keeper.py`, which uses Rovo Atlassian MCP
+    + cross-checks `pm_tasks`.
+  - `orchestrator.py` — asyncio coordinator. Replaced by the upcoming
+    meridian-side orchestrator with a hybrid time + session trigger.
+  - `bootstrap.py` — state-dir init under `~/.hermes/`. Not needed —
+    meridian persists everything in `meridian.db`.
+  - `config.py` — env-var + skill loader. Replaced by
+    `src/meridian_agents/skills.py` for skill loading.
+- `hermes_skills/` — original SKILL.md prompts. The current synthesizer
+  prompt at `services/meridian-agents/skills/synthesizer/SKILL.md` was
+  written from scratch but draws on these.
 
-## What we did NOT bring over
+## What we did NOT bring over here
 
 The full hermes platform (`cli.py`, `gateway/`, `tools/`, `plugins/`,
-`hermes_cli/`, `acp_adapter/`, etc.) is not vendored — we only need the
-runtime pieces an autonomous agent loop relies on. If a future feature
-needs more from upstream, vendor it here first and document why.
+`hermes_cli/`, `acp_*`, etc.) is not in this `reference/` dir. Those live
+in the active vendor at `../vendor/hermes/` and are installed by uv as
+`hermes-agent`.
