@@ -138,7 +138,7 @@ async fn upsert(pool: &SqlitePool, issues: &[JiraIssue], jira: &JiraConfig) -> R
             .fields
             .description
             .as_ref()
-            .map(|v| adf_to_plaintext(v))
+            .map(adf_to_plaintext)
             .unwrap_or_default();
 
         let cat = map_status_category(&issue.fields.status.status_category.key);

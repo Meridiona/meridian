@@ -1,5 +1,6 @@
 // meridian — normalises screenpipe activity into structured app sessions
 
+pub mod categorizer;
 pub mod providers;
 
 use anyhow::Result;
