@@ -41,6 +41,8 @@ async fn test_close_active_session_with_inserts_and_clears() {
         max_frame_id: 10,
         frame_count: 10,
         idle_frame_count: 0,
+        category: "idle_personal".into(),
+        confidence: 0.0,
     };
 
     upsert_active_session(&md, &session).await.unwrap();
@@ -94,6 +96,8 @@ async fn test_close_active_session_with_stale_then_new() {
         max_frame_id: 5,
         frame_count: 5,
         idle_frame_count: 0,
+        category: "communication".into(),
+        confidence: 0.8,
     };
 
     upsert_active_session(&md, &stale).await.unwrap();
@@ -117,6 +121,8 @@ async fn test_close_active_session_with_stale_then_new() {
         max_frame_id: 10,
         frame_count: 5,
         idle_frame_count: 0,
+        category: "coding".into(),
+        confidence: 0.7,
     };
 
     close_active_session_with(&md, &new_session, etl_run_id)
