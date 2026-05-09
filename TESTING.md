@@ -37,20 +37,26 @@ these break whenever `runner.rs` or `extractor.rs` changes. test ALL of these af
 
 ### 4. session data extraction
 
-- [ ] **OCR samples capped at 20** — a block with 50+ frames; `ocr_samples` JSON array contains at most 20 entries and is valid JSON.
+- [ ] **OCR samples capped at 20 and deduplicated** — a block with 50+ frames, some repeating the same text; `ocr_samples` JSON array contains at most 20 entries, each unique, valid JSON.
 - [ ] **window titles aggregated** — multiple windows seen in one session; `window_titles` is a JSON array of `{title, count}` sorted by count descending.
-- [ ] **audio snippets captured** — frames with transcription data; `audio_snippets` JSON array contains the transcripts.
+- [ ] **audio snippets deduplicated** — repeated transcription chunks (same text) stored once in `audio_snippets`; only the earliest timestamp kept.
+- [ ] **signals deduplicated** — same clipboard value copied multiple times appears once in `signals`.
+- [ ] **elements deduplicated** — same accessibility element (text + role) seen across frames stored once in `elements_samples`.
 - [ ] **signals captured** — clipboard copy events during a session appear in `signals` JSON array.
 - [ ] **`min_frame_id` / `max_frame_id`** — values span exactly the frames in the session block; no off-by-one.
 - [ ] **`frame_count`** — equals the actual number of frames in the block, not an estimate.
 - [ ] **null-safe extraction** — frames with null OCR, null audio, or null accessibility data do not crash the extractor.
+- [ ] **category and confidence assigned** — completed session has non-empty `category` string and `confidence` between 0.0 and 1.0.
+- [ ] **gaps recorded** — a gap > 300s between sessions produces a row in the `gaps` table with correct `kind` (`user_idle` or `system_sleep`) and `duration_s`.
 
 ### 5. UI dashboard
 
 - [ ] **sessions page loads** — `npm run dev` in `ui/`; sessions page renders without JS errors.
 - [ ] **load more pagination** — scroll to bottom; "load more" fetches the next page of sessions without duplicating visible rows (commit `15d0fd7`).
 - [ ] **active session card** — while meridian daemon is running, active session card shows current app and updates duration.
-- [ ] **timeline renders** — day timeline shows session blocks without gaps or overlaps.
+- [ ] **category badge** — session cards and active session card show a CategoryBadge with emoji, label, and hex color matching the `category` field.
+- [ ] **category breakdown chart** — dashboard "By Category" section renders a horizontal bar chart for the top non-idle categories; bars use the correct colors.
+- [ ] **timeline category colors** — day timeline segment colors come from `getCategoryMeta(category).color`, not app-name hashing.
 - [ ] **focus donut chart** — donut reflects actual session durations; percentages sum to 100%.
 - [ ] **stats row totals** — total active time and session count match what is in the DB.
 - [ ] **app name branding** — UI shows "Meridian" / "Meridiona", not "Meridiana" (typo fix commit `331f456`).

@@ -39,7 +39,7 @@ node dist/index.js
 | `get-active-session` | Currently in-progress session (if daemon is running) |
 | `get-apps` | All-time app usage stats |
 | `search-sessions` | Search sessions by window title, OCR text, or audio |
-| `get-session-detail` | Full OCR, audio, and element content for a session ID |
+| `get-session-detail` | Full OCR, elements, and signals for a session ID (audio excluded — stored in DB but not sent to LLMs) |
 | `health-check` | ETL run status, cursor position, and total session count |
 
 ## Configuration
@@ -124,3 +124,4 @@ packages/meridian-mcp/
 - Uses `sql.js` (pure WASM) instead of `better-sqlite3` (native) to avoid Node.js version mismatch errors across different environments (Claude Code, Claude Desktop, shell).
 - The DB file is loaded into memory on each tool call so data is always fresh (daemon writes every 60s).
 - The sql.js engine itself (`_SQL`) is cached across calls to avoid re-initialising the WASM runtime.
+- `audio_snippets` is intentionally excluded from all MCP tool responses. Audio transcriptions from screenpipe are noisy and prone to hallucinations. They are still stored in `app_sessions.audio_snippets` and remain searchable via `search-sessions` (LIKE match on the column).

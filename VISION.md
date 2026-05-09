@@ -18,11 +18,15 @@ Meridian does that ETL. Zero config, zero prompts, zero UI interaction required.
 
 ## Where this goes
 
-1. **Now: Reliable ETL.** Convert screenpipe's frame stream into correct, complete, deduplicated app sessions. No phantom sessions, no gaps, no duration errors. The foundation has to be right before anything else matters.
+1. **Done: Reliable ETL.** Correct, complete, deduplicated app sessions. Gap detection (user idle vs system sleep), OCR/audio/signal deduplication, single-frame duration fix, sleep gap boundary detection. The foundation is solid.
 
-2. **Next: AI context via MCP.** The MCP server makes meridian's data available to any AI agent. Ask Claude what you worked on, how long you focused, which apps dominated your week — and get accurate answers sourced from your actual screen time.
+2. **Done: AI context via MCP.** The MCP server exposes structured session data to any MCP-compatible AI (Claude Code, Claude Desktop, Cursor). Sessions include window titles, OCR samples, accessibility elements, and signals. Audio is stored in the DB but excluded from LLM responses (noise reduction).
 
-3. **Later: Productivity intelligence.** Project-level session grouping, focus quality scoring, anomaly detection, cross-day patterns. The structured session data is the substrate for everything.
+3. **Done: Activity categorization.** AI-assigned categories (`coding`, `meeting`, `research`, `communication`, `design`, `documentation`, `planning`, `deployment_devops`, `idle_personal`) with confidence scores. Category-aware UI: timeline coloring, session badges, daily breakdown chart.
+
+4. **Next: Ticket and project linking.** Match sessions to Jira tickets using OCR text, window titles, and URLs. `ticket_links` table already exists — needs a matcher that extracts ticket keys (e.g. `ENG-123`) and links them to session IDs.
+
+5. **Later: Productivity intelligence.** Focus quality scoring (coding vs meeting ratio, context-switch frequency), cross-day patterns, anomaly detection. The categorized session data is the substrate.
 
 ## Product principles
 
