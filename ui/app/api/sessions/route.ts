@@ -21,6 +21,8 @@ function parseRow(r: Record<string, unknown>): SessionRow {
     signals: r.signals ? JSON.parse(r.signals as string) : null,
     frame_count: r.frame_count as number,
     etl_run_id: r.etl_run_id as number,
+    category: (r.category as string) || 'idle_personal',
+    confidence: (r.confidence as number) || 0,
   }
 }
 
@@ -51,7 +53,8 @@ export async function GET(request: Request) {
     const rows = db.prepare(`
       SELECT id, app_name, started_at, ended_at, duration_s,
              window_titles, ocr_samples, elements_samples,
-             audio_snippets, signals, frame_count, etl_run_id
+             audio_snippets, signals, frame_count, etl_run_id,
+             category, confidence
       FROM app_sessions
       WHERE started_at >= ? AND started_at < ? ${appCondition}
       ORDER BY started_at DESC

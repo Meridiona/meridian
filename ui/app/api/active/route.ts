@@ -1,3 +1,5 @@
+// meridian — AI activity intelligence by Meridiona
+
 import { NextResponse } from 'next/server'
 import getDb from '@/lib/db'
 import type { ActiveSessionRow } from '@/lib/types'
@@ -9,7 +11,8 @@ export async function GET() {
     const db = getDb()
     const row = db.prepare(`
       SELECT app_name, started_at, last_seen_at,
-             window_titles, ocr_samples, audio_snippets, signals, frame_count
+             window_titles, ocr_samples, audio_snippets, signals, frame_count,
+             category, confidence
       FROM active_session WHERE id = 1
     `).get() as Record<string, unknown> | undefined
 
@@ -29,6 +32,8 @@ export async function GET() {
       signals: row.signals ? JSON.parse(row.signals as string) : null,
       frame_count: row.frame_count as number,
       elapsed_s,
+      category: (row.category as string) || 'idle_personal',
+      confidence: (row.confidence as number) || 0,
     }
 
     return NextResponse.json(result)

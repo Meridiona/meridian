@@ -46,6 +46,14 @@ export async function GET(request: Request) {
       away_s = gapStats?.away_s ?? 0
     } catch { /* gaps table not yet created by ETL */ }
 
+    const category_breakdown = db.prepare(`
+      SELECT category, SUM(duration_s) AS duration_s
+      FROM app_sessions
+      WHERE started_at >= ? AND started_at < ?
+      GROUP BY category
+      ORDER BY duration_s DESC
+    `).all(start, end) as Array<{ category: string; duration_s: number }>
+
     const response: StatsResponse = {
       date,
       focus_s: totals.focus_s ?? 0,
@@ -53,6 +61,7 @@ export async function GET(request: Request) {
       away_s,
       session_count: totals.session_count,
       top_apps: topApps,
+      category_breakdown,
     }
 
     return NextResponse.json(response)

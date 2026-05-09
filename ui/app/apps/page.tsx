@@ -22,7 +22,7 @@ function getAllApps(): AppStat[] {
 
 function getTodayStats(): StatsResponse {
   const today = todayString()
-  const empty: StatsResponse = { date: today, focus_s: 0, user_idle_s: 0, away_s: 0, session_count: 0, top_apps: [] }
+  const empty: StatsResponse = { date: today, focus_s: 0, user_idle_s: 0, away_s: 0, session_count: 0, top_apps: [], category_breakdown: [] }
   try {
     const db = getDb()
     const { start, end } = localDayBounds(today)
@@ -49,7 +49,7 @@ function getTodayStats(): StatsResponse {
       user_idle_s = gapStats?.user_idle_s ?? 0
       away_s = gapStats?.away_s ?? 0
     } catch { /* gaps table not yet created by ETL */ }
-    return { date: today, focus_s: t.focus_s ?? 0, user_idle_s, away_s, session_count: t.session_count, top_apps: topApps }
+    return { date: today, focus_s: t.focus_s ?? 0, user_idle_s, away_s, session_count: t.session_count, top_apps: topApps, category_breakdown: [] }
   } catch { return empty }
 }
 

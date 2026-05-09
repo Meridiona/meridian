@@ -4,7 +4,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import type { SessionRow, ActiveSessionRow, TimelineResponse, GapRow } from '@/lib/types'
-import { getAppColor } from '@/lib/app-colors'
+import { getCategoryMeta } from '@/lib/category-colors'
 import { formatDuration, formatTime } from '@/lib/format'
 
 const HOUR_LABELS = [6, 9, 12, 15, 18, 21]
@@ -24,6 +24,7 @@ interface Segment {
   isActive: boolean
   isGap: boolean
   gapKind?: GapRow['kind']
+  category?: string
 }
 
 interface TooltipState {
@@ -68,6 +69,7 @@ export default function DayTimeline({ data, activeSession }: DayTimelineProps) {
       window_titles: s.window_titles,
       isActive: false,
       isGap: false,
+      category: s.category,
     })),
     ...(activeSession ? [{
       id: -1,
@@ -78,6 +80,7 @@ export default function DayTimeline({ data, activeSession }: DayTimelineProps) {
       window_titles: activeSession.window_titles,
       isActive: true,
       isGap: false,
+      category: activeSession.category,
     }] : []),
   ]
 
@@ -171,8 +174,8 @@ export default function DayTimeline({ data, activeSession }: DayTimelineProps) {
           const color = seg.isGap
             ? GAP_COLORS[seg.gapKind!]
             : seg.isActive
-              ? '#FF6B2B'
-              : getAppColor(seg.app_name)
+              ? getCategoryMeta(seg.category ?? 'idle_personal').color
+              : getCategoryMeta(seg.category ?? 'idle_personal').color
 
           return (
             <div
@@ -210,6 +213,11 @@ export default function DayTimeline({ data, activeSession }: DayTimelineProps) {
           >
             <div className="bg-[#141414] text-white rounded-xl px-3 py-2.5 shadow-xl text-left min-w-[160px] max-w-[220px]">
               <p className="font-semibold text-sm leading-tight">{tooltip.segment.app_name}</p>
+              {!tooltip.segment.isGap && tooltip.segment.category && (
+                <p className="text-[11px] mt-1" style={{ color: getCategoryMeta(tooltip.segment.category).color }}>
+                  {getCategoryMeta(tooltip.segment.category).label}
+                </p>
+              )}
               <p className="font-mono text-[#9B9A97] text-xs mt-0.5">
                 {formatDuration(tooltip.segment.duration_s)}
                 {' · '}
