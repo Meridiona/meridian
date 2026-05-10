@@ -33,14 +33,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents import db                                     # noqa: E402
 from agents import tagger                                 # noqa: E402
-from agents.config import LOG_DIR, ONLY_TODAY, today_start_utc_iso  # noqa: E402
+from agents.config import (                            # noqa: E402
+    LOG_DIR, ONLY_TODAY, today_start_utc_iso,
+    default_stages, STAGE1_ENABLED, STAGE2_ENABLED, STAGE3_ENABLED,
+)
 
 log = logging.getLogger("tagger_daemon")
 
 # ────────────────────────── Config / defaults ─────────────────────────────────
 DEFAULT_TICK_SECS  = int(os.environ.get("TAGGER_TICK_SECS", "7"))
 HEARTBEAT_SECS     = int(os.environ.get("TAGGER_HEARTBEAT_SECS", "300"))   # 5 min
-DEFAULT_STAGES_RAW = os.environ.get("TAGGER_STAGES", "1,2,3")
+# 'auto' resolves at parse time to the STAGE{1,2,3}_ENABLED env flags. The
+# legacy TAGGER_STAGES env var still works for explicit overrides
+# (e.g. `TAGGER_STAGES=1,2`); when unset, we honour the per-stage flags.
+DEFAULT_STAGES_RAW = os.environ.get("TAGGER_STAGES", "auto")
 
 
 # ────────────────────────── Logging ───────────────────────────────────────────
@@ -97,15 +103,22 @@ def _summarise_state(conn: sqlite3.Connection) -> dict:
 
 
 def _parse_stages(spec: str) -> set[int]:
+    """Parse the daemon's --stage CLI flag.
+
+    'auto' (the default) defers to STAGE{1,2,3}_ENABLED env flags via
+    config.default_stages(). An explicit comma list overrides them.
+    """
+    if spec is None or spec.strip() in ("", "auto"):
+        return default_stages() or {1}
     out: set[int] = set()
-    for piece in (spec or "").split(","):
+    for piece in spec.split(","):
         piece = piece.strip()
         if not piece:
             continue
         if piece not in ("1", "2", "3"):
             raise ValueError(f"unknown stage {piece!r} (valid: 1, 2, 3)")
         out.add(int(piece))
-    return out or {1, 2, 3}
+    return out or default_stages() or {1}
 
 
 # ────────────────────────── Tick + main loop ──────────────────────────────────
@@ -134,6 +147,12 @@ def _install_signal_handlers() -> None:
 def run_forever(tick_secs: int, stages: set[int]) -> None:
     log.info("=" * 76)
     log.info("tagger-daemon up | tick=%ds stages=%s", tick_secs, sorted(stages))
+    log.info(
+        "stage flags (env): STAGE1_ENABLED=%s  STAGE2_ENABLED=%s  STAGE3_ENABLED=%s",
+        STAGE1_ENABLED, STAGE2_ENABLED, STAGE3_ENABLED,
+    )
+    if not stages:
+        log.warning("All stages disabled — daemon will idle until at least one stage is enabled")
 
     with db.connection() as conn:
         aborted = _sweep_zombie_agent_runs(conn)
