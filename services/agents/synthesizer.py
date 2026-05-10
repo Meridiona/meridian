@@ -34,7 +34,9 @@ import json
 import logging
 import sqlite3
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -43,6 +45,8 @@ from agents.config import (
     MODEL, BASE_URL, API_KEY,
     SESSION_BATCH_LIMIT, CONTEXT_NODES_LIMIT,
     MIN_LLM_DURATION_S, ONLY_TODAY,
+    SYNTHESIZER_WORKERS,
+    LLM_RETRY_ATTEMPTS, LLM_RETRY_BACKOFF_S,
     load_skill, today_start_utc_iso,
 )
 
@@ -174,19 +178,41 @@ class _ToolBridge:
     )
 
     def __init__(self):
-        self.conn: sqlite3.Connection | None = None
+        # Per-thread state — phase, scoped session, and the worker's
+        # sqlite connection live here so parallel tag-phase calls don't
+        # clobber each other's scope.
+        self._tls = threading.local()
+        # Cycle-wide bookkeeping (shared across threads, guarded by _lock).
+        self._lock = threading.Lock()
         self.run_id: int = 0
         self.valid_task_keys: set[str] = set()
-        # Cycle-wide bookkeeping
         self.expected_session_ids: set[int] = set()
         self.tagged_sessions: dict[int, dict] = {}
         self.summaries_written: int = 0
         self.dispatches_queued: int = 0
         self.context_written: bool = False
         self.last_context: dict = {}
-        # Per-call scope
-        self.phase: str = PHASE_TAG
-        self.scoped_session_id: int | None = None  # in tag phase, the only valid session id
+
+    # ---- thread-local accessors ---------------------------------------------
+    @property
+    def phase(self) -> str:
+        return getattr(self._tls, "phase", PHASE_TAG)
+
+    @property
+    def scoped_session_id(self) -> int | None:
+        return getattr(self._tls, "scoped_session_id", None)
+
+    @scoped_session_id.setter
+    def scoped_session_id(self, value: int | None) -> None:
+        self._tls.scoped_session_id = value
+
+    @property
+    def conn(self) -> sqlite3.Connection | None:
+        return getattr(self._tls, "conn", None)
+
+    @conn.setter
+    def conn(self, value: sqlite3.Connection | None) -> None:
+        self._tls.conn = value
 
     # ---- lifecycle -----------------------------------------------------------
     def init_cycle(
@@ -197,6 +223,8 @@ class _ToolBridge:
         pm_tasks: list[dict],
         sessions: list[dict],
     ) -> None:
+        """Set up cycle-wide state. The supplied connection is the
+        main-thread connection — workers open their own."""
         self.conn = conn
         self.run_id = run_id
         self.valid_task_keys = {t["task_key"] for t in pm_tasks}
@@ -206,18 +234,17 @@ class _ToolBridge:
         self.dispatches_queued = 0
         self.context_written = False
         self.last_context = {}
-        self.phase = PHASE_TAG
-        self.scoped_session_id = None
+        self.set_phase(PHASE_TAG)
 
     def set_phase(self, phase: str) -> None:
         if phase not in PHASE_TOOLS:
             raise ValueError(f"Unknown phase: {phase}")
-        self.phase = phase
-        self.scoped_session_id = None
+        self._tls.phase = phase
+        self._tls.scoped_session_id = None
 
     def set_session_scope(self, session_id: int) -> None:
         """Restrict tag-phase tool calls to a specific session id."""
-        self.scoped_session_id = int(session_id)
+        self._tls.scoped_session_id = int(session_id)
 
     @property
     def tool_names(self) -> set:
@@ -292,7 +319,8 @@ class _ToolBridge:
             agent_run_id=self.run_id,
             summary_json=payload,
         )
-        self.summaries_written += 1
+        with self._lock:
+            self.summaries_written += 1
         return f"Summary written for session {sid}."
 
     def _match_session_to_task(self, args: dict) -> str:
@@ -333,7 +361,8 @@ class _ToolBridge:
             "session_type": session_type,
             "routing":      routing,
         }
-        self.tagged_sessions[sid] = record
+        with self._lock:
+            self.tagged_sessions[sid] = record
 
         # ticket_links is the authoritative session→task map (one row per session).
         db.write_ticket_link(
@@ -360,7 +389,8 @@ class _ToolBridge:
                     "confidence":   confidence,
                 },
             )
-            self.dispatches_queued += 1
+            with self._lock:
+                self.dispatches_queued += 1
 
         return f"Tagged session {sid} → {task_key or '∅'} ({session_type}/{routing}, {confidence:.2f})."
 
@@ -678,6 +708,37 @@ def _make_agent(skill_name: str, schemas: list[dict], max_iterations: int):
 
 
 # ── Tag phase ──────────────────────────────────────────────────────────────────
+def _looks_like_rate_limit(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return (
+        "429" in text
+        or "rate limit" in text
+        or "too many requests" in text
+        or "rate_limit_exceeded" in text
+    )
+
+
+def _run_with_backoff(fn, *, attempts: int, backoff_s: float, label: str):
+    """Invoke `fn` up to `attempts` times, sleeping `backoff_s * 2^k` between
+    tries when the exception looks like a rate-limit error. Other exceptions
+    bubble immediately."""
+    last_exc: BaseException | None = None
+    for k in range(attempts):
+        try:
+            return fn()
+        except Exception as exc:
+            last_exc = exc
+            if k == attempts - 1 or not _looks_like_rate_limit(exc):
+                raise
+            wait = backoff_s * (2 ** k)
+            log.warning("%s: rate-limited (%s) — retry %d/%d in %.1fs",
+                        label, exc, k + 1, attempts, wait)
+            time.sleep(wait)
+    if last_exc:
+        raise last_exc
+    return None
+
+
 def _tag_one_session(
     bridge: _ToolBridge,
     *,
@@ -688,44 +749,148 @@ def _tag_one_session(
 ) -> bool:
     """Run one focused AIAgent call to tag exactly one session.
 
+    Each worker thread opens its own sqlite connection (sqlite3 connections
+    are not thread-safe) and writes via the shared bridge. The bridge's
+    phase + scoped_session_id are thread-local, so multiple workers can
+    operate concurrently without colliding.
+
     Returns True if the model emitted both a match and a summary for this
     session, False otherwise (Python backfill picks up the slack).
     """
     sid = int(session["id"])
-    bridge.set_phase(PHASE_TAG)
-    bridge.set_session_scope(sid)
 
-    bundle = {
-        "now":                 datetime.now(timezone.utc).isoformat(),
-        "session":             session,
-        "pm_tasks":            pm_tasks,
-        "previous_context":    previous_context,
-        "context_graph_nodes": context_nodes,
-    }
-    _log_bundle(
-        f"tag-phase session {sid}",
-        bundle,
-        info_keys=("session", "pm_tasks", "previous_context"),
-    )
-
-    user_message = (
-        f"Tag session {sid}. Call match_session_to_task and write_session_summary "
-        "exactly once each, plus any helpful upsert_context_node calls. Do not "
-        "write current_context — that's a later phase. Bundle:\n\n"
-        + json.dumps(bundle, indent=2, default=str)
-    )
-
-    pre_summaries = bridge.summaries_written
-
-    agent = _make_agent("synthesizer-tag", _TAG_TOOL_SCHEMAS, max_iterations=6)
+    # Per-thread DB connection. Closed at the end so we don't leak fds.
+    worker_conn: sqlite3.Connection | None = None
     try:
-        agent.run_conversation(user_message)
-    except Exception as exc:
-        log.error("Tag-phase LLM error on session %s: %s", sid, exc, exc_info=True)
+        worker_conn = sqlite3.connect(str(Path(db.MERIDIAN_DB).expanduser()),
+                                      isolation_level=None, timeout=15.0)
+        worker_conn.row_factory = sqlite3.Row
+        worker_conn.execute("PRAGMA journal_mode=WAL;")
+        worker_conn.execute("PRAGMA foreign_keys=ON;")
+        bridge.conn = worker_conn  # thread-local
 
-    post_match = sid in bridge.tagged_sessions
-    summary_added = bridge.summaries_written > pre_summaries
-    return post_match and summary_added
+        bridge.set_phase(PHASE_TAG)
+        bridge.set_session_scope(sid)
+
+        bundle = {
+            "now":                 datetime.now(timezone.utc).isoformat(),
+            "session":             session,
+            "pm_tasks":            pm_tasks,
+            "previous_context":    previous_context,
+            "context_graph_nodes": context_nodes,
+        }
+        _log_bundle(
+            f"tag-phase session {sid}",
+            bundle,
+            info_keys=("session", "pm_tasks", "previous_context"),
+        )
+
+        user_message = (
+            f"Tag session {sid}. Call match_session_to_task and write_session_summary "
+            "exactly once each, plus any helpful upsert_context_node calls. Do not "
+            "write current_context — that's a later phase. Bundle:\n\n"
+            + json.dumps(bundle, indent=2, default=str)
+        )
+
+        with bridge._lock:
+            pre_summaries = bridge.summaries_written
+
+        agent = _make_agent("synthesizer-tag", _TAG_TOOL_SCHEMAS, max_iterations=6)
+        try:
+            _run_with_backoff(
+                lambda: agent.run_conversation(user_message),
+                attempts=LLM_RETRY_ATTEMPTS,
+                backoff_s=LLM_RETRY_BACKOFF_S,
+                label=f"tag session {sid}",
+            )
+        except Exception as exc:
+            log.error("Tag-phase LLM error on session %s: %s", sid, exc, exc_info=True)
+
+        with bridge._lock:
+            post_match = sid in bridge.tagged_sessions
+            summary_added = bridge.summaries_written > pre_summaries
+        return post_match and summary_added
+    finally:
+        if worker_conn is not None:
+            try:
+                worker_conn.close()
+            except Exception:
+                pass
+        bridge.conn = None
+
+
+def _run_tag_phase(
+    bridge: _ToolBridge,
+    *,
+    llm_sessions: list[dict],
+    pm_tasks: list[dict],
+    previous_context: dict,
+    context_nodes: list[dict],
+) -> int:
+    """Tag every LLM-eligible session, in parallel up to SYNTHESIZER_WORKERS.
+
+    Sequential when SYNTHESIZER_WORKERS == 1 (no thread pool overhead).
+    Each worker opens its own sqlite connection and gets its own thread-local
+    bridge state, so the cycle-wide counters/maps are the only shared state
+    (guarded by bridge._lock).
+    """
+    total = len(llm_sessions)
+    if total == 0:
+        log.info("Tag phase: nothing to do (0 LLM-eligible sessions)")
+        return 0
+
+    workers = min(SYNTHESIZER_WORKERS, total)
+    log.info("Tag phase starting — %d session(s), %d worker(s)", total, workers)
+
+    if workers <= 1:
+        ok_count = 0
+        for idx, s in enumerate(llm_sessions, start=1):
+            log.info("─" * 40)
+            log.info("Tag %d/%d — session %s (%s, %ss)",
+                     idx, total, s["id"], s["app_name"], s.get("duration_s"))
+            if _tag_one_session(
+                bridge,
+                session=s,
+                pm_tasks=pm_tasks,
+                previous_context=previous_context,
+                context_nodes=context_nodes,
+            ):
+                ok_count += 1
+        return ok_count
+
+    ok_count = 0
+    completed = 0
+    completed_lock = threading.Lock()
+
+    def _worker(s: dict) -> bool:
+        nonlocal completed
+        sid = int(s["id"])
+        try:
+            return _tag_one_session(
+                bridge,
+                session=s,
+                pm_tasks=pm_tasks,
+                previous_context=previous_context,
+                context_nodes=context_nodes,
+            )
+        finally:
+            with completed_lock:
+                completed += 1
+                log.info(
+                    "Tag %d/%d done — session %s (%s, %ss)",
+                    completed, total, sid, s["app_name"], s.get("duration_s"),
+                )
+
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="syn-tag") as pool:
+        futures = {pool.submit(_worker, s): int(s["id"]) for s in llm_sessions}
+        for fut in as_completed(futures):
+            sid = futures[fut]
+            try:
+                if fut.result():
+                    ok_count += 1
+            except Exception as exc:
+                log.error("Worker for session %s raised: %s", sid, exc, exc_info=True)
+    return ok_count
 
 
 def _backfill_missing_tags(bridge: _ToolBridge) -> int:
@@ -864,20 +1029,13 @@ def run_synthesizer() -> dict:
             bridge.init_cycle(conn, run_id=run_id, pm_tasks=pm_tasks, sessions=sessions)
 
             t0 = time.time()
-            tag_ok = 0
-            for idx, s in enumerate(llm_sessions, start=1):
-                log.info("─" * 40)
-                log.info("Tag %d/%d — session %s (%s, %ss)",
-                         idx, len(llm_sessions), s["id"], s["app_name"], s.get("duration_s"))
-                ok = _tag_one_session(
-                    bridge,
-                    session=s,
-                    pm_tasks=pm_tasks,
-                    previous_context=prev,
-                    context_nodes=nodes,
-                )
-                if ok:
-                    tag_ok += 1
+            tag_ok = _run_tag_phase(
+                bridge,
+                llm_sessions=llm_sessions,
+                pm_tasks=pm_tasks,
+                previous_context=prev,
+                context_nodes=nodes,
+            )
 
             backfilled = _backfill_missing_tags(bridge)
             log.info("─" * 40)
