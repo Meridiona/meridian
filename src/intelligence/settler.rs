@@ -331,6 +331,28 @@ pub async fn settle_chrome_categories(meridian: &SqlitePool, backend: &LlmBacken
     Ok(())
 }
 
+/// Removes non-Latin-script characters that cause Foundation Models to reject the prompt
+/// with "unsupported language". Keeps printable ASCII plus common Latin-block symbols
+/// (bullets •, arrows →, chevrons ›, registered ®, etc.). OCR artifacts like Thai Baht ฿
+/// (U+0E3F) are the typical culprit.
+fn strip_non_latin(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            let cp = c as u32;
+            // Printable ASCII + Latin-1 Supplement (covers accented chars, ®, ©, etc.)
+            // + General Punctuation block (bullets, dashes, arrows — U+2000..U+206F)
+            // + Arrows block (→ etc. — U+2190..U+21FF)
+            // + Enclosed Alphanumerics, box drawing, etc. up to U+25FF
+            let keep = (0x0020..=0x00FF).contains(&cp) || (0x2000..=0x25FF).contains(&cp);
+            if keep {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect()
+}
+
 pub fn build_category_prompt(
     duration_s: i64,
     window_titles: &str,
@@ -346,7 +368,7 @@ pub fn build_category_prompt(
                 .or_else(|| v.get("title"))
                 .and_then(|n| n.as_str())
                 .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
+                .map(strip_non_latin)
         })
         .collect::<Vec<_>>()
         .join(" | ")
@@ -357,7 +379,7 @@ pub fn build_category_prompt(
     let ocr: String = serde_json::from_str::<Vec<serde_json::Value>>(ocr_samples)
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|v| v.get("text")?.as_str().map(|t| t.to_string()))
+        .filter_map(|v| v.get("text")?.as_str().map(strip_non_latin))
         .collect::<Vec<_>>()
         .join("\n")
         .chars()
@@ -367,7 +389,7 @@ pub fn build_category_prompt(
     let elements: String = serde_json::from_str::<Vec<serde_json::Value>>(elements_samples)
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|v| v.get("text")?.as_str().map(|t| t.to_string()))
+        .filter_map(|v| v.get("text")?.as_str().map(strip_non_latin))
         .collect::<Vec<_>>()
         .join(", ")
         .chars()
