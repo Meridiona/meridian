@@ -20,6 +20,10 @@ path = "src/main.rs"
 name = "cat_smoke"
 path = "src/bin/cat_smoke.rs"
 
+[[bin]]
+name = "classify_smoke"
+path = "src/bin/classify_smoke.rs"
+
 [dependencies]
 # DB — exact versions matching screenpipe
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls", "chrono", "migrate", "json"] }

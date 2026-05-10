@@ -200,8 +200,21 @@ pub async fn get_window_titles(
 
     Ok(rows
         .into_iter()
-        .map(|(window_name, count)| WindowTitleCount { window_name, count })
+        .map(|(window_name, count)| WindowTitleCount {
+            window_name: normalize_window_title(window_name),
+            count,
+        })
         .collect())
+}
+
+/// Reduce any URL-shaped window title to its domain so stored data is
+/// clean regardless of which app emitted it.
+fn normalize_window_title(title: String) -> String {
+    if title.starts_with("https://") || title.starts_with("http://") {
+        url_domain(&title).to_owned()
+    } else {
+        title
+    }
 }
 
 fn url_domain(url: &str) -> &str {
