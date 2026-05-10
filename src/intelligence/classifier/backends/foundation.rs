@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::sync::OnceLock;
-use tracing::debug;
+use tracing::{debug, warn};
 
 static MACOS_26_OR_LATER: OnceLock<bool> = OnceLock::new();
 
@@ -120,11 +120,11 @@ impl FoundationBackend {
         match result {
             Err(e) => {
                 let msg = e.to_string();
-                // Treat non-English content and oversized prompts as "no match" rather than errors
                 if msg.contains("unsupported language")
                     || msg.contains("unsupported Language")
                     || msg.contains("context window")
                 {
+                    warn!(error = %e, "Foundation Models skipped session — unsupported language or prompt too large");
                     return Ok(ClassifyResponse {
                         task_key: None,
                         method: "foundation_models_skip".to_string(),
