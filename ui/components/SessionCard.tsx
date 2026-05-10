@@ -3,8 +3,9 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import * as Collapsible from '@radix-ui/react-collapsible'
-import { ChevronDown, Mic, Clipboard, ArrowRight } from 'lucide-react'
+import { ChevronDown, Mic, Clipboard, ArrowRight, Maximize2 } from 'lucide-react'
 import AppIcon from './AppIcon'
 import { formatDuration, formatTime } from '@/lib/format'
 import type { SessionRow } from '@/lib/types'
@@ -95,6 +96,15 @@ export default function SessionCard({ session }: SessionCardProps) {
                 )}
               />
             )}
+            <Link
+              href={`/sessions/${session.id}`}
+              onClick={(e) => e.stopPropagation()}
+              className="text-[#C8C6C1] hover:text-[#6B6A67] transition-colors shrink-0"
+              aria-label={`Open session ${session.id} detail`}
+              title="Open detail"
+            >
+              <Maximize2 className="w-3.5 h-3.5" />
+            </Link>
           </button>
         </Collapsible.Trigger>
 
