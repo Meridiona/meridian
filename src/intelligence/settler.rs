@@ -225,7 +225,7 @@ const VALID_CATEGORIES: &[&str] = &[
 
 const CATEGORY_SYSTEM: &str = "\
 You are a JSON-only classifier. Given a Chrome browser session return exactly \
-{\"category\": \"VALUE\"}.\n\
+{\"category\": \"VALUE\", \"why\": \"one sentence reason\"}.\n\
 \n\
 Valid values:\n\
   code_review      — PR diffs, GitHub pull requests, code comments, merge requests\n\
@@ -236,7 +236,7 @@ Valid values:\n\
   deployment_devops — CI/CD dashboards, cloud consoles, deploy logs, monitoring\n\
   idle_personal    — YouTube, social media, news, entertainment, shopping\n\
 \n\
-Return ONLY {\"category\": \"VALUE\"}. No explanation.";
+Return ONLY {\"category\": \"VALUE\", \"why\": \"one sentence reason\"}. No explanation outside the JSON.";
 
 /// Re-classifies browser sessions that still carry the rule-based category using
 /// Foundation Models. Only runs when the configured backend is Foundation Models —
@@ -288,12 +288,13 @@ pub async fn settle_chrome_categories(meridian: &SqlitePool, backend: &LlmBacken
     for (id, app_name, duration_s, window_titles, ocr_samples, elements_samples) in &rows {
         let user = build_category_prompt(*duration_s, window_titles, ocr_samples, elements_samples);
         match backend.raw_generate(CATEGORY_SYSTEM, &user).await {
-            Ok(text) => match parse_category(&text) {
-                Some(cat) => {
-                    if let Err(e) = update_session_category(meridian, *id, cat, 0.9).await {
+            Ok(text) => match parse_category_response(&text) {
+                Some(resp) => {
+                    if let Err(e) = update_session_category(meridian, *id, resp.category, 0.9).await
+                    {
                         warn!(session_id = id, error = %e, "failed to update category");
                     } else {
-                        debug!(session_id = id, app = %app_name, category = cat, "category updated");
+                        debug!(session_id = id, app = %app_name, category = resp.category, why = %resp.why, "category updated");
                     }
                 }
                 None => {
@@ -412,15 +413,37 @@ pub fn build_category_prompt(
     prompt
 }
 
-pub fn parse_category(text: &str) -> Option<&'static str> {
-    let trimmed = text.trim().trim_matches('`');
-    let value = if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        v.get("category")?.as_str()?.to_lowercase()
+pub struct CategoryResult {
+    pub category: &'static str,
+    pub why: String,
+}
+
+pub fn parse_category_response(text: &str) -> Option<CategoryResult> {
+    // Strip optional markdown fences: ```json ... ``` or `...`
+    let trimmed = text.trim();
+    let trimmed = if trimmed.starts_with("```") {
+        trimmed
+            .trim_start_matches('`')
+            .trim_start_matches(|c: char| c.is_alphabetic()) // strip optional language tag (json)
+            .trim_end_matches('`')
+            .trim()
     } else {
-        trimmed.to_lowercase()
+        trimmed.trim_matches('`').trim()
     };
-    VALID_CATEGORIES
+    let v: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    let value = v.get("category")?.as_str()?.to_lowercase();
+    let category = VALID_CATEGORIES
         .iter()
         .copied()
-        .find(|&c| c == value.as_str())
+        .find(|&c| c == value.as_str())?;
+    let why = v
+        .get("why")
+        .and_then(|w| w.as_str())
+        .unwrap_or("")
+        .to_string();
+    Some(CategoryResult { category, why })
+}
+
+pub fn parse_category(text: &str) -> Option<&'static str> {
+    parse_category_response(text).map(|r| r.category)
 }
