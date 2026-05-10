@@ -45,6 +45,9 @@ from agents.rules import (                                # noqa: E402
     extract_tickets,
 )
 from agents.taxonomy import SINGLE_VALUE_DIMENSIONS       # noqa: E402
+from agents.stage2 import (                               # noqa: E402
+    stage2_match, Stage2Result, CandidateBreakdown,
+)
 
 log = logging.getLogger("tagger")
 
@@ -158,87 +161,153 @@ def _tag_session(
     *,
     run_id: int,
     session: dict,
-    valid_task_keys: set[str],
+    pm_tasks: list[dict],
+    stages: set[int],
 ) -> dict:
-    """Apply all stage-1 rules to one session and persist results.
+    """Run the configured stages on one session and persist results.
 
-    Returns a small report dict for logging / aggregation.
+    `stages` is a subset of {1, 2}. Stage 1 is rules + ticket regex.
+    Stage 2 runs only when Stage 1 deferred (or when called in isolation).
     """
     sid = int(session["id"])
+    valid_task_keys: set[str] = {t["task_key"] for t in pm_tasks}
     log.info("─" * 76)
     log.info("Session %s", _session_header(session))
 
-    # 1. Run all rules.
-    raw_hits = run_rules(session)
-    if not raw_hits:
-        log.info("  no rule hits")
-    else:
-        log.debug("  raw hits: %s", json.dumps([h.__dict__ for h in raw_hits], default=str))
-
-    # 2. Resolve single-value dimension conflicts.
-    resolved = resolve_hits(raw_hits)
-    log.info("  resolved → %s", _format_resolved(resolved))
-
-    # 3. Persist dimensions.
     written = 0
-    for h in resolved:
-        db.upsert_session_dimension(
-            conn,
-            session_id=sid,
-            dimension=h.dimension,
-            value=h.value,
-            confidence=h.confidence,
-            source=h.source,
-        )
-        written += 1
+    stage1_decision: tuple[str | None, float, str, str] = (None, 0.0, "", "")
+    stage2_result: Stage2Result | None = None
 
-    # 4. Decide ticket link.
-    task_key, conf, stype, routing = _pick_ticket_link(session, valid_task_keys)
-    if stype:
-        db.write_ticket_link(
-            conn,
-            session_id=sid,
-            task_key=task_key,
-            confidence=conf,
-            session_type=stype,
-            routing=routing,
-            method="stage1_regex",
-        )
-        if task_key and routing in ("auto", "queue"):
-            db.enqueue_dispatch(
+    # ── Stage 1 ──
+    if 1 in stages:
+        raw_hits = run_rules(session)
+        if not raw_hits:
+            log.info("  no rule hits")
+        else:
+            log.debug("  raw hits: %s", json.dumps([h.__dict__ for h in raw_hits], default=str))
+
+        resolved = resolve_hits(raw_hits)
+        log.info("  resolved → %s", _format_resolved(resolved))
+
+        for h in resolved:
+            db.upsert_session_dimension(
                 conn,
                 session_id=sid,
-                agent_run_id=run_id,
-                task_key=task_key,
-                provider="jira",
-                payload={
-                    "routing":      routing,
-                    "session_type": stype,
-                    "confidence":   conf,
-                    "stage":        "stage1_regex",
-                },
+                dimension=h.dimension,
+                value=h.value,
+                confidence=h.confidence,
+                source=h.source,
             )
-            log.info("  ticket_links → %s / %s / %.2f  (queued for dispatch)", task_key, routing, conf)
-        else:
-            log.info("  ticket_links → %s / %s / %.2f", task_key or "∅", routing, conf)
-    else:
-        log.info("  ticket_links → not decided at stage 1 (deferred)")
+            written += 1
 
+        task_key, conf, stype, routing = _pick_ticket_link(session, valid_task_keys)
+        stage1_decision = (task_key, conf, stype, routing)
+
+        if stype and (task_key or routing == "skip"):
+            # Stage 1 made a real decision (matched ticket, or "ticket-shaped
+            # but unknown" → skip). Persist it; Stage 2 only kicks in when
+            # Stage 1 didn't decide at all.
+            db.write_ticket_link(
+                conn,
+                session_id=sid,
+                task_key=task_key,
+                confidence=conf,
+                session_type=stype,
+                routing=routing,
+                method="stage1_regex",
+            )
+            if task_key and routing in ("auto", "queue"):
+                db.enqueue_dispatch(
+                    conn, session_id=sid, agent_run_id=run_id, task_key=task_key,
+                    provider="jira",
+                    payload={"routing": routing, "session_type": stype,
+                             "confidence": conf, "stage": "stage1_regex"},
+                )
+                log.info("  stage1 ticket → %s / %s / %.2f  (queued for dispatch)",
+                         task_key, routing, conf)
+            else:
+                log.info("  stage1 ticket → %s / %s / %.2f", task_key or "∅", routing, conf)
+        elif not stype:
+            log.info("  stage1 ticket → deferred (no candidate keys visible)")
+
+    # ── Stage 2 ──
+    # Only run if stage 1 deferred (no decision at all). If stage 1 already
+    # wrote `task/skip` because it saw a ticket-shaped string but couldn't
+    # match, that's a final decision — Stage 2 doesn't override.
+    stage1_deferred = stage1_decision[2] == ""
+    if 2 in stages and stage1_deferred and pm_tasks:
+        try:
+            stage2_result = stage2_match(conn, session, pm_tasks)
+        except ImportError as exc:
+            log.warning("stage2 unavailable: %s", exc)
+            stage2_result = Stage2Result(
+                session_id=sid, top_candidates=[], chosen_task_key=None,
+                confidence=0.0, routing="skip", method="stage2_unavailable",
+            )
+        except Exception as exc:
+            log.exception("stage2 failed for session %d: %s", sid, exc)
+            stage2_result = None
+
+        if stage2_result and stage2_result.method == "stage2_embed":
+            top = stage2_result.top_candidates
+            log.info("  stage2 top-3: %s",
+                     ", ".join(f"{c.task_key}={c.score:.2f}" for c in top[:3]))
+            log.info("  stage2 → %s / %s / %.2f  (gap=%.2f)",
+                     stage2_result.chosen_task_key or "∅",
+                     stage2_result.routing,
+                     stage2_result.confidence,
+                     stage2_result.debug.get("score_gap", 0.0))
+
+            stype2 = "task" if stage2_result.chosen_task_key else "task"  # always "task" — embeds matched something work-shaped
+            db.write_ticket_link(
+                conn,
+                session_id=sid,
+                task_key=stage2_result.chosen_task_key,
+                confidence=stage2_result.confidence,
+                session_type=stype2,
+                routing=stage2_result.routing,
+                method="stage2_embed",
+            )
+            if stage2_result.chosen_task_key and stage2_result.routing in ("auto", "queue"):
+                db.enqueue_dispatch(
+                    conn, session_id=sid, agent_run_id=run_id,
+                    task_key=stage2_result.chosen_task_key, provider="jira",
+                    payload={
+                        "routing":      stage2_result.routing,
+                        "session_type": stype2,
+                        "confidence":   stage2_result.confidence,
+                        "stage":        "stage2_embed",
+                        "top_candidates": [
+                            {"task_key": c.task_key, "score": round(c.score, 4)}
+                            for c in top[:3]
+                        ],
+                    },
+                )
+
+    # ── Report ──
+    final_link = db.fetch_ticket_link(conn, sid)
     return {
-        "session_id":        sid,
+        "session_id":         sid,
         "dimensions_written": written,
-        "ticket_decided":    bool(stype),
-        "task_key":          task_key,
-        "session_type":      stype,
-        "routing":           routing,
+        "ticket_decided":     final_link is not None,
+        "task_key":           (final_link or {}).get("task_key"),
+        "session_type":       (final_link or {}).get("session_type", ""),
+        "routing":            (final_link or {}).get("routing", ""),
+        "stage2_method":      stage2_result.method if stage2_result else None,
     }
 
 
 # ──────────────────────── Cycle entry ─────────────────────────────────────────
-def run_once(*, since_iso: str | None = None) -> dict:
-    """Pull a batch of unprocessed sessions and tag them with stage-1 rules."""
+def run_once(*, since_iso: str | None = None, stages: set[int] | None = None) -> dict:
+    """Pull a batch of unprocessed sessions and tag them with the chosen stages.
+
+    `stages` defaults to {1, 2}.
+    """
+    if stages is None:
+        stages = {1, 2}
     log.info("=" * 76)
-    log.info("Tagger Stage-1 cycle — %s", datetime.now(timezone.utc).isoformat())
+    log.info("Tagger cycle (stages=%s) — %s",
+             sorted(stages), datetime.now(timezone.utc).isoformat())
 
     discover_rules()
     log.info("Loaded %d rules", len(rules_mod.RULE_REGISTRY))
@@ -293,7 +362,10 @@ def run_once(*, since_iso: str | None = None) -> dict:
         reports: list[dict] = []
         for idx, s in enumerate(kept, start=1):
             log.info("[%d/%d]", idx, len(kept))
-            reports.append(_tag_session(conn, run_id=run_id, session=s, valid_task_keys=valid_keys))
+            reports.append(_tag_session(
+                conn, run_id=run_id, session=s,
+                pm_tasks=pm_tasks, stages=stages,
+            ))
         elapsed = time.time() - t0
 
         if sessions:
@@ -406,12 +478,52 @@ def _print_db_state(conn: sqlite3.Connection, session_id: int) -> None:
                   f"src={r['source']}")
 
 
-def inspect_one(session_id: int, *, dry_run: bool = False, reset: bool = True) -> None:
-    """Tag exactly one session and dump every step (input → rules → DB)."""
+def _print_stage2_block(result: Stage2Result) -> None:
+    _print_block("STAGE 2")
+    if result.method != "stage2_embed":
+        print(f"  method = {result.method}  (no candidates scored)")
+        return
+    print(f"  candidates scored : {result.debug.get('n_pm_tasks')}  "
+          f"(re-embedded {result.debug.get('n_embedded', 0)})")
+    print(f"  has_dim={result.debug.get('has_dim')}  has_past={result.debug.get('has_past')}")
+    print(f"  score_top1 = {result.debug.get('score_top1')}  "
+          f"score_top2 = {result.debug.get('score_top2')}  "
+          f"gap = {result.debug.get('score_gap')}")
+    auto_t = result.debug.get('auto_threshold', 0.62)
+    auto_g = result.debug.get('auto_gap', 0.08)
+    print(f"  auto needs    : top1 ≥ {auto_t}  AND  gap ≥ {auto_g}")
+
+    print("\n  rank  task        score   cosine  dim_ovl  past   topic_overlap")
+    print("  ----  ----------  ------  ------  -------  ----   ----------------------")
+    for i, c in enumerate(result.top_candidates, start=1):
+        topics = c.overlap_detail.get("topic_overlap") or []
+        topic_s = ",".join(topics[:6])
+        print(f"  {i:>4}  {c.task_key:<10}  {c.score:.3f}   {c.cosine:.3f}   "
+              f"{c.dim_overlap:.3f}    {c.past_vote:.2f}   {topic_s}")
+
+    print(f"\n  decision : {result.chosen_task_key or '∅'} / {result.routing} / "
+          f"{result.confidence:.3f}")
+    nbrs = result.debug.get("past_neighbors") or []
+    if nbrs:
+        print(f"  past_session_vote (top {len(nbrs)} similar tagged sessions):")
+        for n in nbrs[:5]:
+            print(f"    • session {n['session_id']:>5} → {n['task_key']:<10} sim={n['sim']}")
+
+
+def inspect_one(
+    session_id: int,
+    *,
+    dry_run: bool = False,
+    reset: bool = True,
+    stages: set[int] | None = None,
+) -> None:
+    """Tag exactly one session and dump every step (input → rules → stage 2 → DB)."""
+    if stages is None:
+        stages = {1, 2}
     _configure_logging()
     discover_rules()
-    log.info("Single-session inspection: id=%d  dry_run=%s  reset=%s",
-             session_id, dry_run, reset)
+    log.info("Single-session inspection: id=%d  stages=%s  dry_run=%s  reset=%s",
+             session_id, sorted(stages), dry_run, reset)
 
     with db.connection() as conn:
         session = db.fetch_session(conn, session_id)
@@ -428,55 +540,91 @@ def inspect_one(session_id: int, *, dry_run: bool = False, reset: bool = True) -
             removed_t = db.clear_ticket_link(conn, session_id)
             print(f"\n  reset: cleared {removed_d} dimensions, {removed_t} ticket_links")
 
-        # Run rules and print every fire (handler logs at INFO already).
-        _print_block(f"RULES — {len(rules_mod.RULE_REGISTRY)} registered, firing")
-        raw_hits = run_rules(session)
-        if not raw_hits:
-            print("  (no rules fired)")
-        resolved = resolve_hits(raw_hits)
+        resolved: list[RuleHit] = []
+        stage1_decision: tuple[str | None, float, str, str] = (None, 0.0, "", "")
 
-        _print_block("RESOLVED")
-        if not resolved:
-            print("  (nothing resolved)")
-        else:
-            for h in sorted(resolved, key=lambda h: (h.dimension, -h.confidence)):
-                marker = "★" if h.dimension in SINGLE_VALUE_DIMENSIONS else " "
-                print(f"  {marker} {h.dimension:14s} = {h.value:24s}  conf={h.confidence:.2f}  "
-                      f"src={h.source}"
-                      + (f"   ({h.explanation})" if h.explanation else ""))
+        # ── Stage 1 ──
+        if 1 in stages:
+            _print_block(f"STAGE 1 — RULES ({len(rules_mod.RULE_REGISTRY)} registered)")
+            raw_hits = run_rules(session)
+            if not raw_hits:
+                print("  (no rules fired)")
+            resolved = resolve_hits(raw_hits)
 
-        _print_block("TICKET DECISION")
-        candidates = sorted(set(re_extract_tickets(session)))
-        matched = [c for c in candidates if c in valid_keys]
-        unmatched = [c for c in candidates if c not in valid_keys]
-        print(f"  ticket-key candidates seen   : {candidates or '(none)'}")
-        print(f"    in pm_tasks  (would match) : {matched or '(none)'}")
-        print(f"    not in pm_tasks            : {unmatched or '(none)'}")
-        task_key, conf, stype, routing = _pick_ticket_link(session, valid_keys)
-        if stype:
-            print(f"  → ticket_links: task={task_key or '∅'}  type={stype}  route={routing}  conf={conf:.2f}")
-        else:
-            print("  → ticket_links: deferred (no decision at stage 1)")
+            _print_block("STAGE 1 — RESOLVED")
+            if not resolved:
+                print("  (nothing resolved)")
+            else:
+                for h in sorted(resolved, key=lambda h: (h.dimension, -h.confidence)):
+                    marker = "★" if h.dimension in SINGLE_VALUE_DIMENSIONS else " "
+                    print(f"  {marker} {h.dimension:14s} = {h.value:24s}  conf={h.confidence:.2f}  "
+                          f"src={h.source}"
+                          + (f"   ({h.explanation})" if h.explanation else ""))
+
+            _print_block("STAGE 1 — TICKET DECISION (regex)")
+            candidates = sorted(set(re_extract_tickets(session)))
+            matched = [c for c in candidates if c in valid_keys]
+            unmatched = [c for c in candidates if c not in valid_keys]
+            print(f"  ticket-key candidates seen   : {candidates or '(none)'}")
+            print(f"    in pm_tasks  (would match) : {matched or '(none)'}")
+            print(f"    not in pm_tasks            : {unmatched or '(none)'}")
+            stage1_decision = _pick_ticket_link(session, valid_keys)
+            task_key, conf, stype, routing = stage1_decision
+            if stype:
+                print(f"  → ticket_links: task={task_key or '∅'}  type={stype}  "
+                      f"route={routing}  conf={conf:.2f}")
+            else:
+                print("  → ticket_links: deferred (no candidate keys, escalating to Stage 2)")
+
+        # ── Stage 2 ──
+        stage1_deferred = stage1_decision[2] == ""
+        stage2_result: Stage2Result | None = None
+        if 2 in stages and (stage1_deferred or 1 not in stages) and pm_tasks:
+            # Persist Stage 1 dimensions FIRST so Stage 2 can read them when
+            # computing dim_overlap.
+            if not dry_run and resolved:
+                for h in resolved:
+                    db.upsert_session_dimension(
+                        conn,
+                        session_id=session_id,
+                        dimension=h.dimension,
+                        value=h.value,
+                        confidence=h.confidence,
+                        source=h.source,
+                    )
+            try:
+                stage2_result = stage2_match(conn, session, pm_tasks)
+            except ImportError as exc:
+                print(f"\n  Stage 2 unavailable: {exc}")
+                stage2_result = None
+            if stage2_result:
+                _print_stage2_block(stage2_result)
 
         if dry_run:
             _print_block("DRY-RUN — no DB writes")
             print("  No changes persisted. Re-run without --dry-run to write.")
             return
 
-        # Persist. Use a fresh agent_run for traceability.
+        # ── Persist (Stage 1 dimensions already written above when stage 2 ran). ──
         run_id = db.start_agent_run(conn)
         _print_block(f"WRITING TO DB  agent_run_id={run_id}")
-        for h in resolved:
-            db.upsert_session_dimension(
-                conn,
-                session_id=session_id,
-                dimension=h.dimension,
-                value=h.value,
-                confidence=h.confidence,
-                source=h.source,
-            )
+        if not (2 in stages and stage2_result):
+            # Stage 1-only path — write dims now.
+            for h in resolved:
+                db.upsert_session_dimension(
+                    conn,
+                    session_id=session_id,
+                    dimension=h.dimension,
+                    value=h.value,
+                    confidence=h.confidence,
+                    source=h.source,
+                )
         print(f"  wrote {len(resolved)} session_dimensions row(s)")
-        if stype:
+
+        ticket_written = False
+        # Stage 1 decision wins if non-deferred.
+        if stage1_decision[2]:
+            task_key, conf, stype, routing = stage1_decision
             db.write_ticket_link(
                 conn,
                 session_id=session_id,
@@ -486,30 +634,52 @@ def inspect_one(session_id: int, *, dry_run: bool = False, reset: bool = True) -
                 routing=routing,
                 method="stage1_regex_inspect",
             )
-            print(f"  wrote ticket_links → {task_key or '∅'} / {stype} / {routing} / {conf:.2f}")
+            ticket_written = True
+            print(f"  wrote ticket_links (stage1) → {task_key or '∅'} / {stype} / {routing} / {conf:.2f}")
             if task_key and routing in ("auto", "queue"):
                 db.enqueue_dispatch(
-                    conn,
-                    session_id=session_id,
-                    agent_run_id=run_id,
-                    task_key=task_key,
-                    provider="jira",
+                    conn, session_id=session_id, agent_run_id=run_id,
+                    task_key=task_key, provider="jira",
+                    payload={"routing": routing, "session_type": stype,
+                             "confidence": conf, "stage": "stage1_inspect"},
+                )
+        elif stage2_result and stage2_result.method == "stage2_embed":
+            db.write_ticket_link(
+                conn,
+                session_id=session_id,
+                task_key=stage2_result.chosen_task_key,
+                confidence=stage2_result.confidence,
+                session_type="task",
+                routing=stage2_result.routing,
+                method="stage2_embed_inspect",
+            )
+            ticket_written = True
+            print(f"  wrote ticket_links (stage2) → "
+                  f"{stage2_result.chosen_task_key or '∅'} / {stage2_result.routing} / "
+                  f"{stage2_result.confidence:.3f}")
+            if stage2_result.chosen_task_key and stage2_result.routing in ("auto", "queue"):
+                db.enqueue_dispatch(
+                    conn, session_id=session_id, agent_run_id=run_id,
+                    task_key=stage2_result.chosen_task_key, provider="jira",
                     payload={
-                        "routing":      routing,
-                        "session_type": stype,
-                        "confidence":   conf,
-                        "stage":        "stage1_inspect",
+                        "routing":      stage2_result.routing,
+                        "session_type": "task",
+                        "confidence":   stage2_result.confidence,
+                        "stage":        "stage2_embed_inspect",
+                        "top_candidates": [
+                            {"task_key": c.task_key, "score": round(c.score, 4)}
+                            for c in stage2_result.top_candidates[:3]
+                        ],
                     },
                 )
-                print(f"  enqueued dispatch_queue row for {task_key}")
         else:
-            print("  ticket_links: not written (deferred)")
+            print("  ticket_links: not written (deferred from both stages)")
+
         db.complete_agent_run(
             conn, run_id, "success",
-            sessions_processed=1,
-            summaries_written=0,
-            links_written=1 if stype else 0,
-            dispatches_queued=1 if (task_key and routing in ("auto", "queue")) else 0,
+            sessions_processed=1, summaries_written=0,
+            links_written=1 if ticket_written else 0,
+            dispatches_queued=0,
         )
 
         _print_db_state(conn, session_id)
@@ -573,8 +743,43 @@ def re_extract_tickets(session: dict) -> list[str]:
 
 
 # ──────────────────────── CLI ─────────────────────────────────────────────────
+def _parse_stages(spec: str) -> set[int]:
+    out: set[int] = set()
+    for piece in (spec or "").split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        if piece not in ("1", "2"):
+            raise ValueError(f"unknown stage {piece!r} (valid: 1, 2)")
+        out.add(int(piece))
+    return out or {1, 2}
+
+
+def warm_pm_task_embeddings() -> None:
+    """One-shot: embed every active pm_task. Useful before the first run."""
+    _configure_logging()
+    from agents import embeddings as emb_mod
+    from agents.stage2 import derive_expected_dims
+    with db.connection() as conn:
+        tasks = db.fetch_pm_tasks(conn)
+        if not tasks:
+            print("No pm_tasks to embed.")
+            return
+        print(f"Embedding {len(tasks)} pm_tasks with {emb_mod.EMBED_MODEL_NAME}…")
+        n_new = 0
+        for t in tasks:
+            expected = derive_expected_dims(t)
+            _, did = emb_mod.upsert_pm_task_embedding(conn, t, expected_dims=expected)
+            if did:
+                n_new += 1
+                print(f"  embedded {t['task_key']:<10} expected_dims={expected}")
+            else:
+                print(f"  cached   {t['task_key']:<10}")
+        print(f"\n✓ embedded {n_new}, reused cache for {len(tasks) - n_new}")
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Meridian session tagger — Stage 1 (rules)")
+    parser = argparse.ArgumentParser(description="Meridian session tagger — Stages 1 + 2")
     g = parser.add_mutually_exclusive_group()
     g.add_argument("--session", type=int, metavar="ID",
                    help="Tag exactly one session by id and dump every step.")
@@ -583,8 +788,12 @@ def main() -> None:
     g.add_argument("--list-recent", type=int, metavar="N", nargs="?", const=20,
                    help="List the last N sessions and any tags they carry (default 20).")
     g.add_argument("--once", action="store_true",
-                   help="Run a full stage-1 pass over the next batch (default).")
+                   help="Run a full pass over the next batch (default).")
+    g.add_argument("--embed-tasks", action="store_true",
+                   help="One-shot: embed every active pm_task (warm-up before first run).")
 
+    parser.add_argument("--stage", default="1,2",
+                        help="Comma list of stages to run (e.g. '1', '2', '1,2'). Default: 1,2")
     parser.add_argument("--all-history", action="store_true",
                         help="Disable ONLY_TODAY filter for --once / --list-recent.")
     parser.add_argument("--dry-run", action="store_true",
@@ -593,8 +802,13 @@ def main() -> None:
                         help="With --session: keep existing dims/ticket_link instead of clearing first.")
     args = parser.parse_args()
 
+    stages = _parse_stages(args.stage)
+
+    if args.embed_tasks:
+        warm_pm_task_embeddings()
+        return
     if args.session is not None:
-        inspect_one(args.session, dry_run=args.dry_run, reset=not args.no_reset)
+        inspect_one(args.session, dry_run=args.dry_run, reset=not args.no_reset, stages=stages)
         return
     if args.show is not None:
         show_one(args.show)
@@ -607,7 +821,7 @@ def main() -> None:
     # Default: full batch run.
     _configure_logging()
     since_iso = None if args.all_history else (today_start_utc_iso() if ONLY_TODAY else None)
-    summary = run_once(since_iso=since_iso)
+    summary = run_once(since_iso=since_iso, stages=stages)
     print(json.dumps(summary, indent=2, default=str))
 
 
