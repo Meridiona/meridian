@@ -206,7 +206,7 @@ async fn classify_session(
 const BROWSER_BATCH_LIMIT: i64 = 10;
 
 // 4 chars ≈ 1 token; caps keep total prompt under ~2,500 tokens (well within FM's 4,096 limit).
-const OCR_CAP: usize = 8_000;
+const OCR_CAP: usize = 0; // OCR disabled — concatenated screencap text triggers FM language detector
 const WINDOW_CAP: usize = 500;
 const ELEMENTS_CAP: usize = 1_500;
 
@@ -376,12 +376,18 @@ pub fn build_category_prompt(
         .take(WINDOW_CAP)
         .collect();
 
+    // Use only the first OCR sample capped at OCR_CAP chars.
+    // Multiple frames or large single frames create dense concatenated text that triggers
+    // FM's language detector even when the content is English.
     let ocr: String = serde_json::from_str::<Vec<serde_json::Value>>(ocr_samples)
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|v| v.get("text")?.as_str().map(strip_non_latin))
+        .next()
+        .and_then(|v| v.get("text")?.as_str().map(strip_non_latin))
+        .unwrap_or_default()
+        .split_whitespace()
         .collect::<Vec<_>>()
-        .join("\n")
+        .join(" ")
         .chars()
         .take(OCR_CAP)
         .collect();
