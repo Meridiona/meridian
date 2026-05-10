@@ -225,7 +225,7 @@ const VALID_CATEGORIES: &[&str] = &[
 
 const CATEGORY_SYSTEM: &str = "\
 You are a JSON-only classifier. Given a Chrome browser session return exactly \
-{\"category\": \"VALUE\", \"why\": \"one sentence reason\"}.\n\
+{\"category\": \"VALUE\", \"explanation\": \"one sentence explanation\"}.\n\
 \n\
 Valid values:\n\
   code_review      — PR diffs, GitHub pull requests, code comments, merge requests\n\
@@ -236,7 +236,7 @@ Valid values:\n\
   deployment_devops — CI/CD dashboards, cloud consoles, deploy logs, monitoring\n\
   idle_personal    — YouTube, social media, news, entertainment, shopping\n\
 \n\
-Return ONLY {\"category\": \"VALUE\", \"why\": \"one sentence reason\"}. No explanation outside the JSON.";
+Return ONLY {\"category\": \"VALUE\", \"explanation\": \"one sentence explanation\"}. No explanation outside the JSON.";
 
 /// Re-classifies browser sessions that still carry the rule-based category using
 /// Foundation Models. Only runs when the configured backend is Foundation Models —
@@ -294,7 +294,7 @@ pub async fn settle_chrome_categories(meridian: &SqlitePool, backend: &LlmBacken
                     {
                         warn!(session_id = id, error = %e, "failed to update category");
                     } else {
-                        debug!(session_id = id, app = %app_name, category = resp.category, why = %resp.why, "category updated");
+                        debug!(session_id = id, app = %app_name, category = resp.category, explanation = %resp.explanation, "category updated");
                     }
                 }
                 None => {
@@ -415,7 +415,7 @@ pub fn build_category_prompt(
 
 pub struct CategoryResult {
     pub category: &'static str,
-    pub why: String,
+    pub explanation: String,
 }
 
 pub fn parse_category_response(text: &str) -> Option<CategoryResult> {
@@ -436,12 +436,15 @@ pub fn parse_category_response(text: &str) -> Option<CategoryResult> {
         .iter()
         .copied()
         .find(|&c| c == value.as_str())?;
-    let why = v
-        .get("why")
+    let explanation = v
+        .get("explanation")
         .and_then(|w| w.as_str())
         .unwrap_or("")
         .to_string();
-    Some(CategoryResult { category, why })
+    Some(CategoryResult {
+        category,
+        explanation,
+    })
 }
 
 pub fn parse_category(text: &str) -> Option<&'static str> {

@@ -21,7 +21,7 @@ use sqlx::SqlitePool;
 
 const CATEGORY_SYSTEM: &str = "\
 You are a JSON-only classifier. Given a Chrome browser session return exactly \
-{\"category\": \"VALUE\", \"why\": \"one sentence reason\"}.\n\
+{\"category\": \"VALUE\", \"explanation\": \"one sentence explanation\"}.\n\
 \n\
 Valid values:\n\
   code_review      — PR diffs, GitHub pull requests, code comments, merge requests\n\
@@ -32,7 +32,7 @@ Valid values:\n\
   deployment_devops — CI/CD dashboards, cloud consoles, deploy logs, monitoring\n\
   idle_personal    — YouTube, social media, news, entertainment, shopping\n\
 \n\
-Return ONLY {\"category\": \"VALUE\", \"why\": \"one sentence reason\"}. No explanation outside the JSON.";
+Return ONLY {\"category\": \"VALUE\", \"explanation\": \"one sentence explanation\"}. No explanation outside the JSON.";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -97,7 +97,7 @@ async fn main() -> Result<()> {
         rows.len()
     );
     println!(
-        "{:<6}  {:<16}  {:<5}  {:<15}  {:<20}  {:<6}  WHY",
+        "{:<6}  {:<16}  {:<5}  {:<15}  {:<20}  {:<6}  EXPLANATION",
         "ID", "APP", "DUR", "WAS", "→ CATEGORY", "MS"
     );
     println!("{}", "-".repeat(120));
@@ -115,7 +115,7 @@ async fn main() -> Result<()> {
                 let resp = parse_category_response(&text);
                 let category = resp.as_ref().map(|r| r.category).unwrap_or("(unparseable)");
                 let why = resp
-                    .map(|r| r.why)
+                    .map(|r| r.explanation)
                     .unwrap_or_else(|| text.replace('\n', " "));
                 println!(
                     "{:<6}  {:<16}  {:<5}  {:<15}  {:<20}  {:<6}  {}",
