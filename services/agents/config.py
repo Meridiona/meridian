@@ -13,7 +13,19 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).parent.parent
-load_dotenv(REPO_ROOT / ".env")
+
+# Load .env files in priority order (later loads do NOT override earlier ones).
+# 1. services/.env       — service-specific overrides (preferred)
+# 2. <repo>/.env          — repo root, shared with the Rust daemon
+# 3. ~/.hermes/.env       — legacy hermes home, where OLLAMA_API_KEY etc. live
+_ENV_CANDIDATES = [
+    REPO_ROOT / ".env",
+    REPO_ROOT.parent / ".env",
+    Path.home() / ".hermes" / ".env",
+]
+for _candidate in _ENV_CANDIDATES:
+    if _candidate.exists():
+        load_dotenv(_candidate, override=False)
 
 SKILLS_SEARCH_PATHS = [
     REPO_ROOT / "skills" / "activity",
