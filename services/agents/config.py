@@ -53,6 +53,16 @@ ONLY_TODAY = os.environ.get("ONLY_TODAY", "1").strip() not in ("0", "false", "no
 # `overhead/skip` in Python without burning an LLM call.
 MIN_LLM_DURATION_S = int(os.environ.get("MIN_LLM_DURATION_S", "30"))
 
+# Concurrency for the per-session tag phase. Each worker is a thread that
+# opens its own sqlite connection and makes its own AIAgent.run_conversation()
+# call to the cloud LLM. 1 = old sequential behaviour; raise gradually if
+# you don't see 429s from Ollama Cloud.
+SYNTHESIZER_WORKERS = max(1, int(os.environ.get("SYNTHESIZER_WORKERS", "4")))
+
+# Bounded retry/backoff when an LLM call hits a rate limit (HTTP 429).
+LLM_RETRY_ATTEMPTS  = max(1, int(os.environ.get("LLM_RETRY_ATTEMPTS",  "3")))
+LLM_RETRY_BACKOFF_S = float(os.environ.get("LLM_RETRY_BACKOFF_S", "5"))
+
 
 def today_start_utc_iso() -> str:
     """Return today's local-midnight expressed as an ISO-8601 UTC timestamp.
