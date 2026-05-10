@@ -50,7 +50,6 @@ MERIDIAN_DB   = Path(os.environ.get("MERIDIAN_DB",   str(MERIDIAN_HOME / "meridi
 LOG_DIR       = MERIDIAN_HOME / "logs"
 
 # ── Loop tunables ─────────────────────────────────────────────────────────────
-SYNTHESIZER_INTERVAL_SECONDS = int(os.environ.get("SYNTHESIZER_INTERVAL_SECONDS", "1200"))   # 20 min
 SESSION_BATCH_LIMIT          = int(os.environ.get("SESSION_BATCH_LIMIT", "50"))
 CONTEXT_NODES_LIMIT          = int(os.environ.get("CONTEXT_NODES_LIMIT", "100"))
 CONFIDENCE_THRESHOLD         = float(os.environ.get("CONFIDENCE_THRESHOLD", "0.65"))
@@ -64,12 +63,6 @@ ONLY_TODAY = os.environ.get("ONLY_TODAY", "1").strip() not in ("0", "false", "no
 # Pre-filter thresholds — sessions that fail every test are auto-tagged
 # `overhead/skip` in Python without burning an LLM call.
 MIN_LLM_DURATION_S = int(os.environ.get("MIN_LLM_DURATION_S", "30"))
-
-# Concurrency for the per-session tag phase. Each worker is a thread that
-# opens its own sqlite connection and makes its own AIAgent.run_conversation()
-# call to the cloud LLM. 1 = old sequential behaviour; raise gradually if
-# you don't see 429s from Ollama Cloud.
-SYNTHESIZER_WORKERS = max(1, int(os.environ.get("SYNTHESIZER_WORKERS", "4")))
 
 # Bounded retry/backoff when an LLM call hits a rate limit (HTTP 429).
 LLM_RETRY_ATTEMPTS  = max(1, int(os.environ.get("LLM_RETRY_ATTEMPTS",  "3")))
