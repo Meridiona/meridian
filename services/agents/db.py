@@ -130,6 +130,51 @@ _SESSION_COLS = (
 )
 
 
+def fetch_session(conn: sqlite3.Connection, session_id: int) -> dict | None:
+    """Fetch one session by id, regardless of cursor / date filter."""
+    row = conn.execute(
+        f"SELECT {_SESSION_COLS} FROM app_sessions WHERE id = ?",
+        (int(session_id),),
+    ).fetchone()
+    return _row_to_session(row) if row else None
+
+
+def fetch_recent_sessions(
+    conn: sqlite3.Connection,
+    limit: int,
+    *,
+    since_iso: str | None = None,
+) -> list[dict]:
+    """Fetch the most recent N sessions (newest first), unrelated to the cursor."""
+    sql = f"SELECT {_SESSION_COLS} FROM app_sessions"
+    args: list[Any] = []
+    if since_iso:
+        sql += " WHERE started_at >= ?"
+        args.append(since_iso)
+    sql += " ORDER BY id DESC LIMIT ?"
+    args.append(int(limit))
+    rows = conn.execute(sql, args).fetchall()
+    return [_row_to_session(r) for r in rows]
+
+
+def fetch_ticket_link(conn: sqlite3.Connection, session_id: int) -> dict | None:
+    row = conn.execute(
+        """
+        SELECT session_id, task_key, provider, method, confidence,
+               session_type, routing, created_at
+          FROM ticket_links
+         WHERE session_id = ?
+        """,
+        (int(session_id),),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def clear_ticket_link(conn: sqlite3.Connection, session_id: int) -> int:
+    cur = conn.execute("DELETE FROM ticket_links WHERE session_id = ?", (int(session_id),))
+    return int(cur.rowcount or 0)
+
+
 def fetch_unprocessed_sessions(
     conn: sqlite3.Connection,
     limit: int,
