@@ -8,7 +8,7 @@ use meridian::config::Config;
 use meridian::db::meridian::{cleanup_incomplete_runs, setup_db};
 use meridian::db::screenpipe::open_screenpipe;
 use meridian::etl::run_etl;
-// use meridian::intelligence::run_intelligence; // re-enable with AI loop
+use meridian::intelligence::run_categorization;
 use tokio::signal::unix::{signal, SignalKind};
 use tracing_subscriber::EnvFilter;
 
@@ -79,10 +79,9 @@ async fn main() -> Result<()> {
     if let Err(e) = run_etl(&screenpipe, &meridian).await {
         tracing::error!("ETL run failed: {}", e);
     }
-    // TODO: re-enable once AI classification loop is finalised
-    // if let Err(e) = run_intelligence(&meridian, &cfg).await {
-    //     tracing::error!("intelligence run failed: {}", e);
-    // }
+    if let Err(e) = run_categorization(&meridian, &cfg).await {
+        tracing::error!("categorization run failed: {}", e);
+    }
 
     // 7b. Poll loop
     loop {
@@ -95,10 +94,9 @@ async fn main() -> Result<()> {
                 if let Err(e) = run_etl(&screenpipe, &meridian).await {
                     tracing::error!("ETL run failed: {}", e);
                 }
-                // TODO: re-enable once AI classification loop is finalised
-                // if let Err(e) = run_intelligence(&meridian, &cfg).await {
-                //     tracing::error!("intelligence run failed: {}", e);
-                // }
+                if let Err(e) = run_categorization(&meridian, &cfg).await {
+                    tracing::error!("categorization run failed: {}", e);
+                }
             }
         }
     }

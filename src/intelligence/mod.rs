@@ -11,6 +11,16 @@ use tracing::warn;
 
 use crate::config::{Config, PmProviderConfig};
 
+/// Runs only the browser category settler — re-classifies Chrome/Safari/etc. sessions
+/// that still have a rule-based category using Foundation Models.
+pub async fn run_categorization(meridian: &SqlitePool, config: &Config) -> Result<()> {
+    let backend = classifier::backends::build_backend(&config.llm_backend);
+    if let Err(e) = settler::settle_chrome_categories(meridian, &backend).await {
+        warn!(error = %e, "chrome category settler failed");
+    }
+    Ok(())
+}
+
 /// Runs one intelligence cycle after ETL completes.
 /// Iterates all configured PM providers; silently skips if none are configured.
 pub async fn run_intelligence(meridian: &SqlitePool, config: &Config) -> Result<()> {
