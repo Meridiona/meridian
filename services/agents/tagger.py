@@ -483,8 +483,12 @@ def _print_stage2_block(result: Stage2Result) -> None:
     if result.method != "stage2_embed":
         print(f"  method = {result.method}  (no candidates scored)")
         return
+    n_samples = result.debug.get("n_samples", 0)
+    sample_labels = result.debug.get("sample_labels") or []
     print(f"  candidates scored : {result.debug.get('n_pm_tasks')}  "
           f"(re-embedded {result.debug.get('n_embedded', 0)})")
+    print(f"  session samples   : {n_samples} ({', '.join(sample_labels[:8])}"
+          + (f", … +{len(sample_labels) - 8}" if len(sample_labels) > 8 else "") + ")")
     print(f"  has_dim={result.debug.get('has_dim')}  has_past={result.debug.get('has_past')}")
     print(f"  score_top1 = {result.debug.get('score_top1')}  "
           f"score_top2 = {result.debug.get('score_top2')}  "
@@ -493,19 +497,21 @@ def _print_stage2_block(result: Stage2Result) -> None:
     auto_g = result.debug.get('auto_gap', 0.08)
     print(f"  auto needs    : top1 ≥ {auto_t}  AND  gap ≥ {auto_g}")
 
-    print("\n  rank  task        score   cosine  dim_ovl  past   topic_overlap")
-    print("  ----  ----------  ------  ------  -------  ----   ----------------------")
+    print("\n  rank  task        score   cosine  raw_cos  dim_ovl  past   best_sample   topic_overlap")
+    print("  ----  ----------  ------  ------  -------  -------  ----   -----------   ----------------------")
     for i, c in enumerate(result.top_candidates, start=1):
         topics = c.overlap_detail.get("topic_overlap") or []
         topic_s = ",".join(topics[:6])
         print(f"  {i:>4}  {c.task_key:<10}  {c.score:.3f}   {c.cosine:.3f}   "
-              f"{c.dim_overlap:.3f}    {c.past_vote:.2f}   {topic_s}")
+              f"{c.raw_cosine:+.3f}   {c.dim_overlap:.3f}    {c.past_vote:.2f}   "
+              f"{c.best_sample_label:<11}   {topic_s}")
 
     print(f"\n  decision : {result.chosen_task_key or '∅'} / {result.routing} / "
           f"{result.confidence:.3f}")
     nbrs = result.debug.get("past_neighbors") or []
     if nbrs:
-        print(f"  past_session_vote (top {len(nbrs)} similar tagged sessions):")
+        print(f"  past_session_vote (top {len(nbrs)} similar tagged sessions, "
+              f"stage2-tagged excluded):")
         for n in nbrs[:5]:
             print(f"    • session {n['session_id']:>5} → {n['task_key']:<10} sim={n['sim']}")
 

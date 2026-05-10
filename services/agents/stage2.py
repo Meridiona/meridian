@@ -65,10 +65,12 @@ DIM_W_TOOL     = 0.25
 @dataclass
 class CandidateBreakdown:
     task_key: str
-    cosine: float           # rescaled to [0,1] via (cos+1)/2
+    cosine: float           # rescaled to [0,1] via (cos+1)/2 — max over session samples
     dim_overlap: float      # [0,1]
     past_vote: float        # [0,1]
     score: float            # weighted blend
+    best_sample_label: str = ""  # which session sample contributed the max cosine
+    raw_cosine: float = 0.0      # unrescaled max cosine (signed, [-1, 1])
     overlap_detail: dict = field(default_factory=dict)
 
 
@@ -202,31 +204,37 @@ def _dim_overlap_score(
 
 def _past_vote(
     conn: sqlite3.Connection,
-    session_vec: np.ndarray,
+    session_matrix: np.ndarray,
     *,
     session_id: int,
     k: int = 10,
 ) -> tuple[dict[str, float], list[tuple[int, str, float]]]:
     """Return (votes_per_task_key, debug_neighbors).
 
-    Neighbours are the K most similar past sessions whose ticket_links has a
-    real task_key (not None). Each neighbour contributes its similarity to
-    that task's vote tally; the dict is then normalised to sum to 1.
+    With multi-vec sessions, neighbour similarity is the MaxSim over
+    (query_sample, past_sample) pairs. We group by past session_id and keep
+    the max — so a session that has *one* sample matching the query strongly
+    counts as a strong neighbour even if its other samples are unrelated.
+
+    To avoid the documented self-reinforcing failure mode, we exclude
+    ticket_links rows whose `method` was written by Stage 2 itself — only
+    Stage-1 regex matches and (eventually) human-confirmed tags vote.
     """
     neighbors = emb.fetch_top_k_similar_sessions(
-        conn, session_vec, k=k * 3, exclude_session_id=session_id
+        conn, session_matrix, k=k * 3, exclude_session_id=session_id
     )
     if not neighbors:
         return {}, []
 
-    # Filter to sessions that already have a non-null ticket_link.
-    ids = [sid for sid, _ in neighbors]
+    ids = [sid for sid, _, _ in neighbors]
     placeholders = ",".join(["?"] * len(ids))
     rows = conn.execute(
         f"""
-        SELECT session_id, task_key
+        SELECT session_id, task_key, method
           FROM ticket_links
-         WHERE session_id IN ({placeholders}) AND task_key IS NOT NULL
+         WHERE session_id IN ({placeholders})
+           AND task_key IS NOT NULL
+           AND (method IS NULL OR method NOT LIKE 'stage2%')
         """,
         ids,
     ).fetchall()
@@ -235,7 +243,7 @@ def _past_vote(
     debug: list[tuple[int, str, float]] = []
     weighted: dict[str, float] = {}
     total = 0.0
-    for sid, sim in neighbors:
+    for sid, sim, _ in neighbors:
         if sid not in tagged:
             continue
         if sim <= 0.0:
@@ -297,7 +305,8 @@ def stage2_match(
     k_top: int = 5,
     k_neighbors: int = 10,
 ) -> Stage2Result:
-    """Embed `session`, score against `pm_tasks`, return a decision."""
+    """Embed `session` as a multi-vec matrix, score against `pm_tasks` via
+    max-pool cosine, and return a decision."""
     sid = int(session["id"])
 
     if not pm_tasks:
@@ -315,19 +324,27 @@ def stage2_match(
             n_embedded += 1
     log.debug("stage2: re-embedded %d/%d pm_tasks", n_embedded, len(pm_tasks))
 
-    # 2. Embed the session.
-    session_vec, _ = emb.upsert_session_embedding(conn, session)
+    # 2. Embed the session as a multi-vector matrix (one row per OCR sample
+    #    + titles + audio).
+    session_matrix, sample_labels, _ = emb.upsert_session_embeddings(conn, session)
+    if session_matrix.size == 0:
+        return Stage2Result(
+            session_id=sid, top_candidates=[], chosen_task_key=None,
+            confidence=0.0, routing="skip", method="stage2_no_session_text",
+        )
 
-    # 3. Cosine against every pm_task (we already have all vectors loaded).
+    # 3. Cosine against every pm_task — max over session samples per task.
     keys, task_matrix, expected_dims_list = emb.fetch_all_pm_task_embeddings(conn)
     if not keys:
         return Stage2Result(
             session_id=sid, top_candidates=[], chosen_task_key=None,
             confidence=0.0, routing="skip", method="stage2_no_pm_tasks",
         )
-    raw_cos = task_matrix @ session_vec  # (N,)
 
-    # Restrict to the *currently active* pm_tasks (caller filters).
+    sim_matrix = session_matrix @ task_matrix.T          # (M_samples, N_tasks)
+    raw_max_cos = sim_matrix.max(axis=0)                 # (N_tasks,)
+    best_sample_idx = sim_matrix.argmax(axis=0)          # (N_tasks,)
+
     active_keys = {t["task_key"] for t in pm_tasks}
     candidates_idx = [i for i, k in enumerate(keys) if k in active_keys]
     if not candidates_idx:
@@ -340,15 +357,16 @@ def stage2_match(
     sess_dims = _session_dims_grouped(conn, sid)
     has_dim = bool(sess_dims.get("topic") or sess_dims.get("tool") or sess_dims.get("activity"))
 
-    # 5. Past-similar-session vote across the same neighbour set.
-    past_votes, past_debug = _past_vote(conn, session_vec, session_id=sid, k=k_neighbors)
+    # 5. Past-similar-session vote (multi-vec MaxSim, anti-self-reinforce filter inside).
+    past_votes, past_debug = _past_vote(conn, session_matrix, session_id=sid, k=k_neighbors)
     has_past = bool(past_votes)
 
     # 6. Blend per candidate.
     candidates: list[CandidateBreakdown] = []
     for i in candidates_idx:
         key = keys[i]
-        cos_unit = _cos_to_unit(float(raw_cos[i]))
+        raw = float(raw_max_cos[i])
+        cos_unit = _cos_to_unit(raw)
         expected = expected_dims_list[i]
         dim_score, dim_detail = _dim_overlap_score(sess_dims, expected)
         past_score = past_votes.get(key, 0.0)
@@ -356,12 +374,15 @@ def stage2_match(
             cos_unit, dim_score, past_score,
             has_dim=has_dim, has_past=has_past,
         )
+        best_label = sample_labels[int(best_sample_idx[i])] if sample_labels else ""
         candidates.append(CandidateBreakdown(
             task_key=key,
             cosine=cos_unit,
             dim_overlap=dim_score,
             past_vote=past_score,
             score=score,
+            best_sample_label=best_label,
+            raw_cosine=raw,
             overlap_detail=dim_detail,
         ))
 
@@ -382,6 +403,8 @@ def stage2_match(
         "method":       "stage2_embed",
         "n_pm_tasks":   len(active_keys),
         "n_embedded":   n_embedded,
+        "n_samples":    int(session_matrix.shape[0]),
+        "sample_labels": sample_labels,
         "has_dim":      has_dim,
         "has_past":     has_past,
         "score_top1":   round(top1, 4),
