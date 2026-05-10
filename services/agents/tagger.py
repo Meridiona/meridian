@@ -48,6 +48,9 @@ from agents.taxonomy import SINGLE_VALUE_DIMENSIONS       # noqa: E402
 from agents.stage2 import (                               # noqa: E402
     stage2_match, Stage2Result, CandidateBreakdown,
 )
+from agents.stage3 import (                               # noqa: E402
+    stage3_decide, Stage3Result,
+)
 
 log = logging.getLogger("tagger")
 
@@ -258,29 +261,57 @@ def _tag_session(
                      stage2_result.confidence,
                      stage2_result.debug.get("score_gap", 0.0))
 
-            stype2 = "task" if stage2_result.chosen_task_key else "task"  # always "task" — embeds matched something work-shaped
+            # ── Stage 3 (only when Stage 2 wants queue) ──
+            stage3_result: Stage3Result | None = None
+            if 3 in stages and stage2_result.routing == "queue" and top:
+                pm_lookup = {t["task_key"]: t for t in pm_tasks}
+                from agents.stage2 import _session_dims_grouped
+                dims_grouped = _session_dims_grouped(conn, sid)
+                stage3_result = stage3_decide(session, dims_grouped, top, pm_lookup)
+                log.info("  stage3 → %s / %s / %.2f  (%.1fs)",
+                         stage3_result.chosen_task_key or "∅",
+                         stage3_result.routing,
+                         stage3_result.confidence,
+                         stage3_result.elapsed_s)
+
+            # Decide what to persist: Stage 3 wins if it produced a usable
+            # result; otherwise fall back to Stage 2's verdict.
+            if stage3_result and stage3_result.method == "stage3_llm" and stage3_result.routing != "skip":
+                final_task   = stage3_result.chosen_task_key
+                final_conf   = stage3_result.confidence
+                final_route  = stage3_result.routing
+                final_method = "stage3_llm"
+                final_top = top
+            else:
+                final_task   = stage2_result.chosen_task_key
+                final_conf   = stage2_result.confidence
+                final_route  = stage2_result.routing
+                final_method = "stage2_embed"
+                final_top = top
+
             db.write_ticket_link(
                 conn,
                 session_id=sid,
-                task_key=stage2_result.chosen_task_key,
-                confidence=stage2_result.confidence,
-                session_type=stype2,
-                routing=stage2_result.routing,
-                method="stage2_embed",
+                task_key=final_task,
+                confidence=final_conf,
+                session_type="task",
+                routing=final_route,
+                method=final_method,
             )
-            if stage2_result.chosen_task_key and stage2_result.routing in ("auto", "queue"):
+            if final_task and final_route in ("auto", "queue"):
                 db.enqueue_dispatch(
                     conn, session_id=sid, agent_run_id=run_id,
-                    task_key=stage2_result.chosen_task_key, provider="jira",
+                    task_key=final_task, provider="jira",
                     payload={
-                        "routing":      stage2_result.routing,
-                        "session_type": stype2,
-                        "confidence":   stage2_result.confidence,
-                        "stage":        "stage2_embed",
-                        "top_candidates": [
+                        "routing":      final_route,
+                        "session_type": "task",
+                        "confidence":   final_conf,
+                        "stage":        final_method,
+                        "stage2_top": [
                             {"task_key": c.task_key, "score": round(c.score, 4)}
-                            for c in top[:3]
+                            for c in final_top[:3]
                         ],
+                        "stage3_reasoning": (stage3_result.reasoning if stage3_result else ""),
                     },
                 )
 
@@ -478,6 +509,25 @@ def _print_db_state(conn: sqlite3.Connection, session_id: int) -> None:
                   f"src={r['source']}")
 
 
+def _print_stage3_block(result: Stage3Result) -> None:
+    _print_block("STAGE 3 — LLM TIEBREAKER")
+    print(f"  method   = {result.method}")
+    print(f"  model    = {result.debug.get('model')}")
+    print(f"  endpoint = {result.debug.get('base_url')}")
+    print(f"  elapsed  = {result.elapsed_s:.2f}s")
+    if result.method != "stage3_llm":
+        print(f"  ✗ {result.reasoning}")
+        if result.raw_response:
+            print(f"  raw response (truncated):\n    {result.raw_response[:500]}")
+        return
+    print(f"  decision : {result.chosen_task_key or '∅'} / {result.routing} / "
+          f"{result.confidence:.2f}")
+    print(f"  reasoning: {result.reasoning}")
+    auto_floor  = result.debug.get("auto_floor")
+    queue_floor = result.debug.get("queue_floor")
+    print(f"  thresholds: auto ≥ {auto_floor}, queue ≥ {queue_floor}")
+
+
 def _print_stage2_block(result: Stage2Result) -> None:
     _print_block("STAGE 2")
     if result.method != "stage2_embed":
@@ -585,6 +635,7 @@ def inspect_one(
         # ── Stage 2 ──
         stage1_deferred = stage1_decision[2] == ""
         stage2_result: Stage2Result | None = None
+        stage3_result: Stage3Result | None = None
         if 2 in stages and (stage1_deferred or 1 not in stages) and pm_tasks:
             # Persist Stage 1 dimensions FIRST so Stage 2 can read them when
             # computing dim_overlap.
@@ -605,6 +656,20 @@ def inspect_one(
                 stage2_result = None
             if stage2_result:
                 _print_stage2_block(stage2_result)
+
+            # ── Stage 3 — only when Stage 2 wants queue ──
+            if (3 in stages
+                and stage2_result is not None
+                and stage2_result.method == "stage2_embed"
+                and stage2_result.routing == "queue"
+                and stage2_result.top_candidates):
+                pm_lookup = {t["task_key"]: t for t in pm_tasks}
+                from agents.stage2 import _session_dims_grouped
+                dims_grouped = _session_dims_grouped(conn, session_id)
+                stage3_result = stage3_decide(
+                    session, dims_grouped, stage2_result.top_candidates, pm_lookup,
+                )
+                _print_stage3_block(stage3_result)
 
         if dry_run:
             _print_block("DRY-RUN — no DB writes")
@@ -650,32 +715,47 @@ def inspect_one(
                              "confidence": conf, "stage": "stage1_inspect"},
                 )
         elif stage2_result and stage2_result.method == "stage2_embed":
+            # Stage 3 wins when it produced a usable verdict; otherwise
+            # fall back to Stage 2.
+            if stage3_result and stage3_result.method == "stage3_llm" and stage3_result.routing != "skip":
+                final_task   = stage3_result.chosen_task_key
+                final_conf   = stage3_result.confidence
+                final_route  = stage3_result.routing
+                final_method = "stage3_llm_inspect"
+                final_label  = "stage3"
+            else:
+                final_task   = stage2_result.chosen_task_key
+                final_conf   = stage2_result.confidence
+                final_route  = stage2_result.routing
+                final_method = "stage2_embed_inspect"
+                final_label  = "stage2"
+
             db.write_ticket_link(
                 conn,
                 session_id=session_id,
-                task_key=stage2_result.chosen_task_key,
-                confidence=stage2_result.confidence,
+                task_key=final_task,
+                confidence=final_conf,
                 session_type="task",
-                routing=stage2_result.routing,
-                method="stage2_embed_inspect",
+                routing=final_route,
+                method=final_method,
             )
             ticket_written = True
-            print(f"  wrote ticket_links (stage2) → "
-                  f"{stage2_result.chosen_task_key or '∅'} / {stage2_result.routing} / "
-                  f"{stage2_result.confidence:.3f}")
-            if stage2_result.chosen_task_key and stage2_result.routing in ("auto", "queue"):
+            print(f"  wrote ticket_links ({final_label}) → "
+                  f"{final_task or '∅'} / {final_route} / {final_conf:.3f}")
+            if final_task and final_route in ("auto", "queue"):
                 db.enqueue_dispatch(
                     conn, session_id=session_id, agent_run_id=run_id,
-                    task_key=stage2_result.chosen_task_key, provider="jira",
+                    task_key=final_task, provider="jira",
                     payload={
-                        "routing":      stage2_result.routing,
+                        "routing":      final_route,
                         "session_type": "task",
-                        "confidence":   stage2_result.confidence,
-                        "stage":        "stage2_embed_inspect",
-                        "top_candidates": [
+                        "confidence":   final_conf,
+                        "stage":        final_method,
+                        "stage2_top": [
                             {"task_key": c.task_key, "score": round(c.score, 4)}
                             for c in stage2_result.top_candidates[:3]
                         ],
+                        "stage3_reasoning": (stage3_result.reasoning if stage3_result else ""),
                     },
                 )
         else:
@@ -755,10 +835,10 @@ def _parse_stages(spec: str) -> set[int]:
         piece = piece.strip()
         if not piece:
             continue
-        if piece not in ("1", "2"):
-            raise ValueError(f"unknown stage {piece!r} (valid: 1, 2)")
+        if piece not in ("1", "2", "3"):
+            raise ValueError(f"unknown stage {piece!r} (valid: 1, 2, 3)")
         out.add(int(piece))
-    return out or {1, 2}
+    return out or {1, 2, 3}
 
 
 def warm_pm_task_embeddings() -> None:
@@ -798,8 +878,10 @@ def main() -> None:
     g.add_argument("--embed-tasks", action="store_true",
                    help="One-shot: embed every active pm_task (warm-up before first run).")
 
-    parser.add_argument("--stage", default="1,2",
-                        help="Comma list of stages to run (e.g. '1', '2', '1,2'). Default: 1,2")
+    parser.add_argument("--stage", default="1,2,3",
+                        help="Comma list of stages to run (e.g. '1', '2', '1,2', '1,2,3'). "
+                             "Default: 1,2,3 — Stage 3 (LLM tiebreak) only fires when "
+                             "Stage 2 returns routing=queue.")
     parser.add_argument("--all-history", action="store_true",
                         help="Disable ONLY_TODAY filter for --once / --list-recent.")
     parser.add_argument("--dry-run", action="store_true",
