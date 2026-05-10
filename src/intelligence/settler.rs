@@ -259,18 +259,16 @@ pub async fn settle_chrome_categories(meridian: &SqlitePool, backend: &LlmBacken
          FROM app_sessions
          WHERE category_method = 'rule_based'
            AND duration_s >= 5
-           AND ended_at >= datetime('now', '-2 hours')
            AND (lower(app_name) LIKE '%chrome%'
                 OR lower(app_name) LIKE '%safari%'
                 OR lower(app_name) LIKE '%firefox%'
                 OR lower(app_name) LIKE '%arc%'
                 OR lower(app_name) LIKE '%edge%'
                 OR lower(app_name) LIKE '%brave%')
-         ORDER BY id DESC
+         ORDER BY id ASC
          LIMIT ?",
     )
-    // Only recent sessions (last 2 hours) — prevents backfilling historical data.
-    // Sessions with category_method = 'foundation_models' (including the fm_parse_error sentinel)
+    // Sessions with category_method != 'rule_based' (foundation_models, fm_parse_error, fm_skip)
     // are excluded by the WHERE clause and won't be retried.
     .bind(BROWSER_BATCH_LIMIT)
     .fetch_all(meridian)
