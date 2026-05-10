@@ -250,6 +250,47 @@ Read `VISION.md` first.
 
 ---
 
+## Python agent service (`services/`)
+
+A Python service runs alongside the Rust daemon and writes Jira task mappings + multi-label dimension tags into `meridian.db`. The pipeline is three stages, each optional:
+
+1. **Stage 1** — deterministic rules + ticket-key regex against window titles, OCR, and audio. No LLM.
+2. **Stage 2** — `bge-small-en-v1.5` embeddings, blended with rule-derived `dim_overlap` and a past-session `past_vote`. No LLM.
+3. **Stage 3** — hermes `AIAgent` LLM tiebreak. Only fires when Stage 2 returns `routing=queue`.
+
+For installation, ops (launchd daemon, hot-toggle, single-session inspector), see `services/README.md`. For the deep technical reference (per-stage detail, score formulas, recipes for adding a rule / swapping the model / debugging a misclassification), see `services/agents/README.md`.
+
+### Hard rules
+
+- **Every `.py` file in `services/agents/` must start with a `"""…"""` module docstring** describing its purpose. The Rust/TS file-header convention does not apply — Python uses docstrings. Match the prose style of existing modules (terse, opinionated).
+- **Don't break the cursor monotonicity invariant in `tagger.run_once`.** `agent_cursor.last_session_id` only advances; the SQL has `WHERE ? > last_session_id`. Cursor advances after EVERY session in the batch, regardless of which stages ran. A SIGTERM mid-batch must lose at most the in-flight session.
+- **Stage 2 and Stage 3 must remain optional.** They can be turned off via `STAGE2_ENABLED=0` / `STAGE3_ENABLED=0` (or the live override file) without breaking Stage 1. New code must respect the `stages: set[int]` parameter threaded through `tagger.run_once` and `_tag_session`.
+- **Embedding-model swaps require a new migration.** `model` and `dim` are columns on both `session_embeddings` and `pm_task_embeddings`. Same-dim swaps coexist with old rows; different-dim swaps need a new numbered migration that recreates the tables. Never modify migrations in place.
+- **`ticket_links` and `session_dimensions` writes must be idempotent.** Both tables have UNIQUE / composite-PK constraints with explicit `ON CONFLICT … DO UPDATE` policies. New writers must use the same UPSERT pattern (see `db.write_ticket_link`, `db.upsert_session_dimension`). Never `DELETE` then `INSERT` from the daemon path.
+
+### Quick command reference
+
+```bash
+# Run the daemon manually (default tick = 7s, all stages auto)
+python -m agents.tagger_daemon
+
+# Inspect or re-tag one session, full log dump
+python -m agents.tagger --session <ID>
+python -m agents.tagger --session <ID> --dry-run
+
+# Hot-toggle stages on a running daemon
+python -m agents.tagger --enable-stage 3
+python -m agents.tagger --disable-stage 3
+python -m agents.tagger --stages-status
+
+# launchd lifecycle
+./services/scripts/install-tagger-daemon.sh
+./services/scripts/uninstall-tagger-daemon.sh
+tail -f ~/.meridian/logs/tagger-daemon.log
+```
+
+---
+
 ## Git Hygiene
 
 - Commit message style: `type(scope): short description` — e.g. `fix(etl): detect sleep gaps that span ETL run boundaries`

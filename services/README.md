@@ -1,167 +1,142 @@
-# Active Intelligence
+# Meridian agent service
 
-A small system of three cooperating agents that watch your screen activity, infer what you're working on, and (optionally) sync that context back into Jira.
+Python service that runs alongside the Rust daemon and the Next.js dashboard. It reads completed `app_sessions` rows out of `~/.meridian/meridian.db`, classifies each one through a 3-stage pipeline (rules → embeddings → LLM tiebreak), and writes Jira task mappings + multi-label dimension tags back into the same DB. The Rust daemon owns all DDL; this service only does SELECT/INSERT/UPDATE on a small number of agent-side tables.
 
-The agents themselves live in [`agents/`](agents/). Everything else in this repo is the
-[Hermes](https://github.com/NousResearch/hermes-agent) framework code that the agents depend on for
-LLM orchestration, MCP plumbing, and tool dispatch.
+For the deep technical reference (per-stage detail, schema, tuning, recipes for adding rules / swapping models), see [`agents/README.md`](agents/README.md). For the Rust-side ETL and product rules, see the project root `CLAUDE.md`.
 
 ---
 
-## How it works
-
-Three agents run in a coordinated asyncio loop driven by [`agents/orchestrator.py`](agents/orchestrator.py):
-
-```
-┌──────────┐   buffer.jsonl   ┌──────────────┐  current_context.json   ┌──────────────┐
-│ Watcher  │ ───────────────> │ Synthesizer  │ ──────────────────────> │ Jira Keeper  │
-│ 3 min    │                  │  20 min      │                         │ on demand    │
-└──────────┘                  └──────────────┘                         └──────────────┘
-     │                              │                                        │
-     ▼                              ▼                                        ▼
- Screenpipe MCP              Python tool calls                       mcp-atlassian MCP
- (npx)                       (write_current_context,                 (uvx)
-                              upsert_context_map_node)
-```
-
-| Agent | File | Cadence | What it does |
-|---|---|---|---|
-| **Watcher** | [`agents/watcher.py`](agents/watcher.py) | every 3 min | Asks the LLM to call Screenpipe MCP tools and emit a structured JSON activity event. Appends to `~/.hermes/activity/buffer.jsonl`. |
-| **Synthesizer** | [`agents/synthesizer.py`](agents/synthesizer.py) | every 20 min | Reads the recent buffer + the persistent context map, asks the LLM to infer the current project / Jira ticket / task, and updates `~/.hermes/activity/current_context.json`. |
-| **Jira Keeper** | [`agents/jira_keeper.py`](agents/jira_keeper.py) | when `trigger_jira_sync == true` and confidence ≥ 0.65 | Logs time, posts a progress comment, and transitions status on the inferred Jira ticket via `mcp-atlassian`. |
-| **Orchestrator** | [`agents/orchestrator.py`](agents/orchestrator.py) | — | Single asyncio process running the three loops. `--once` runs one full pipeline pass for debugging. |
-| **Bootstrap** | [`agents/bootstrap.py`](agents/bootstrap.py) | one-time | Creates `~/.hermes/{activity,jira,memories,logs}/` and seeds JSON state files; can wire Screenpipe into `~/.hermes/config.yaml`. |
-
-Each agent uses an `AIAgent` (from [`run_agent.py`](run_agent.py)) and patches `handle_function_call` so MCP and Python-side tools route through small per-agent bridges.
-
-State lives outside the repo, under `~/.hermes/`:
-
-```
-~/.hermes/
-├── activity/
-│   ├── buffer.jsonl           ← Watcher events
-│   ├── context_map.json       ← persistent knowledge graph
-│   └── current_context.json   ← latest inferred context
-├── jira/
-│   ├── jira_state.json        ← per-ticket sync history
-│   └── ticket_mappings.json
-└── logs/activity-agent.log
-```
-
-The system prompts for each agent live in [`skills/activity/{watcher,synthesizer,jira-keeper}/SKILL.md`](skills/activity/) and are loaded by [`agents/config.py`](agents/config.py).
-
----
-
-## Setup
+## Quickstart
 
 ### Prerequisites
 
-- Python 3.10+
-- `npx` (for `screenpipe-mcp`) — install Node.js if missing
-- `uvx` (for `mcp-atlassian`) — `pip install uv` or `brew install uv`
-- The [Screenpipe](https://screenpi.pe) desktop app, running, with screen capture permissions granted
-- An LLM endpoint (Ollama Cloud, Anthropic, OpenAI, LM Studio…)
-- (Optional) An Atlassian Cloud account with a Jira API token, if you want the Jira Keeper to actually sync
+- Python **3.11+** (see `services/pyproject.toml`)
+- The Rust daemon already running, with at least one `app_sessions` row present at `~/.meridian/meridian.db` — start screenpipe + meridian first
+- A working LLM endpoint if you want Stage 3 to fire. Defaults: `HERMES_BASE_URL=https://ollama.com/v1`, `HERMES_MODEL=nemotron-3-super`, `OLLAMA_API_KEY=…` (read from `~/.hermes/.env` if present)
+- (Optional) Atlassian creds in `JIRA_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` if you want the eventual dispatcher to write to Jira
 
 ### Install
 
 ```bash
-git clone <this-repo> hermes-activity-agent
-cd hermes-activity-agent
-
-python3 -m venv .venv
+cd services/
+python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -e .
-
-cp .env.example .env
-# Edit .env — at minimum set your LLM provider key + (optionally) JIRA_*
-
-python -m agents.bootstrap --add-mcp
 ```
 
-`bootstrap.py` creates the state directories under `~/.hermes/` and (with `--add-mcp`) wires `screenpipe-mcp` into `~/.hermes/config.yaml`.
+### First-run sanity check
 
-### Run
-
-One pass through the full pipeline (good for debugging):
+Before installing the daemon, run a single manual cycle and inspect the output:
 
 ```bash
-python -m agents.orchestrator --once
+# Run a full pass over the next batch (default 50 unprocessed sessions)
+python -m agents.tagger --once
+
+# Inspect one session end-to-end (rules → stage 2 → stage 3) without persisting
+python -m agents.tagger --session 1234 --dry-run
+
+# List the most recent 20 sessions and their tags
+python -m agents.tagger --list-recent
 ```
 
-Long-running loop:
-
-```bash
-python -m agents.orchestrator
-# or, with the wrapper script:
-./start-activity-agent.sh
-```
-
-Each agent module is also runnable standalone for targeted testing:
-
-```bash
-python -m agents.watcher
-python -m agents.synthesizer
-python -m agents.jira_keeper
-```
+If `--once` exits cleanly with `tickets_decided` >= 0 and the log at `~/.meridian/logs/tagger.log` is non-empty, the pipeline is wired up correctly.
 
 ---
 
-## Configuration
+## What it does
 
-The defaults are in [`agents/config.py`](agents/config.py). Override at runtime via env vars:
+```
+app_sessions row (Rust ETL writes it)
+        │
+        ▼
+┌─────────────────────────────────────────────────────────┐
+│ Stage 1  rules + ticket regex + trivial-overhead skip   │  no LLM
+│   writes session_dimensions, may write ticket_links     │
+└─────────────────────────────────────────────────────────┘
+        │  (only when Stage 1 deferred — no ticket-shaped string seen)
+        ▼
+┌─────────────────────────────────────────────────────────┐
+│ Stage 2  bge-small embedding · cosine + dim_overlap +   │  no LLM
+│          past_vote → top-K candidates                   │
+│   may finalise ticket_links with method=stage2_embed    │
+└─────────────────────────────────────────────────────────┘
+        │  (only when Stage 2 returns routing=queue)
+        ▼
+┌─────────────────────────────────────────────────────────┐
+│ Stage 3  hermes AIAgent — LLM picks one candidate       │  LLM
+│   refines ticket_links with method=stage3_llm           │
+└─────────────────────────────────────────────────────────┘
+```
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `HERMES_MODEL` | `nemotron-3-super` | LLM model name |
-| `HERMES_BASE_URL` | `https://ollama.com/v1` | OpenAI-compatible endpoint |
-| `OLLAMA_API_KEY` | — | API key for the default endpoint |
-| `JIRA_URL` | — | e.g. `https://yourorg.atlassian.net` |
-| `JIRA_EMAIL` | — | Account email |
-| `JIRA_API_TOKEN` | — | Atlassian API token |
+- **Stage 1** (`agents/tagger.py`, `agents/rules/`) — deterministic regexes against window titles, OCR, and audio. Writes multi-label dimensions (`activity`, `intent`, `engagement`, `tool`, `topic`, …) and resolves ticket keys that match an active `pm_tasks` row. Sessions that fail the trivial-overhead pre-filter (duration < `MIN_LLM_DURATION_S`, no titles/OCR/audio) get tagged `overhead/skip` and don't see Stage 2 or 3.
+- **Stage 2** (`agents/stage2.py`) — only runs when Stage 1 didn't see a ticket-shaped string at all. Embeds the session as a multi-vector matrix (titles + audio + per-OCR-sample), max-pool cosine against `pm_task_embeddings`, blends with Stage-1 `dim_overlap` and a softmax-weighted `past_vote` over similar tagged sessions. Routing decision: `auto` (top1 ≥ 0.62 and gap ≥ 0.08), `queue` (≥ 0.40), or `skip`.
+- **Stage 3** (`agents/stage3.py` + `skills/activity/stage3-tiebreaker/SKILL.md`) — only runs when Stage 2 returns `routing=queue`. Calls hermes `AIAgent` in single-shot mode (`max_iterations=1`, no toolsets) with the candidate descriptions, parses one JSON object back, and writes the final `ticket_links` row.
 
-Loop cadences and thresholds (edit [`agents/config.py`](agents/config.py)):
-
-- `WATCHER_INTERVAL_SECONDS = 180`
-- `SYNTHESIZER_INTERVAL_SECONDS = 1200`
-- `CONFIDENCE_THRESHOLD = 0.65` (below this, Jira sync is skipped)
-- `BUFFER_WINDOW_MINUTES = 30`
+The **daemon** (`agents/tagger_daemon.py`) wraps `tagger.run_once` in a polling loop. Every `TAGGER_TICK_SECS` (default 7s) it checks `app_sessions.id > agent_cursor.last_session_id`. If there's nothing new, the tick is one cheap `SELECT 1` and the loop sleeps. On startup it sweeps any zombie `agent_runs` rows left in `'running'` by a previous crash, mirroring the Rust daemon's `cleanup_incomplete_runs`.
 
 ---
 
-## Repository layout
+## Common ops
 
-```
-agents/                     ← The 5 agent modules — start reading here
-  bootstrap.py              ← one-time state setup
-  config.py                 ← env vars, paths, skill loader
-  watcher.py                ← Screenpipe → buffer.jsonl
-  synthesizer.py            ← buffer → current_context.json
-  jira_keeper.py            ← current_context.json → Jira via mcp-atlassian
-  orchestrator.py           ← asyncio loop coordinator
-skills/activity/            ← System prompts for each agent
-  watcher/SKILL.md
-  synthesizer/SKILL.md
-  jira-keeper/SKILL.md
-skills/activity-intelligence/
-                            ← Earlier-iteration source skills (kept for reference)
+### Install / uninstall the launchd daemon
 
-run_agent.py                ← The Hermes AIAgent class the agents wrap
-agent/, tools/, hermes_cli/ ← Hermes framework support modules
-toolsets.py, model_tools.py, utils.py, hermes_*.py
-                            ← More framework support
-plugins/, providers/, gateway/, cli.py …
-                            ← Other Hermes framework modules; pulled in
-                              transitively by run_agent.py and friends
-start-activity-agent.sh     ← Convenience launcher
-pyproject.toml              ← Dependency manifest
+```bash
+# Install — symlinks the plist into ~/Library/LaunchAgents/, kickstarts it
+./services/scripts/install-tagger-daemon.sh
+
+# Uninstall — bootouts and removes the plist
+./services/scripts/uninstall-tagger-daemon.sh
+
+# Status / logs
+launchctl print gui/$(id -u)/com.meridiona.tagger-daemon
+tail -f ~/.meridian/logs/tagger-daemon.log
+tail -f ~/.meridian/logs/tagger-daemon.err
 ```
+
+The plist template is at `services/scripts/com.meridiona.tagger-daemon.plist` — env vars (`MERIDIAN_DB`, `STAGE{1,2,3}_ENABLED`, `ONLY_TODAY`, `TAGGER_TICK_SECS`) are set inline there.
+
+### Inspect a single session
+
+```bash
+# Re-run all stages on session 1234 with full dump (resets dimensions/ticket_link first)
+python -m agents.tagger --session 1234
+
+# Read-only view of what's stored right now
+python -m agents.tagger --show 1234
+
+# Last 20 sessions in a compact table
+python -m agents.tagger --list-recent
+```
+
+### Hot-toggle stages (without restarting the daemon)
+
+The daemon re-reads `~/.meridian/tagger.config.json` every tick when invoked with the default `--stage auto`. CLI helpers write the file for you:
+
+```bash
+python -m agents.tagger --stages-status         # show resolved live set
+python -m agents.tagger --disable-stage 3       # turn Stage 3 off live
+python -m agents.tagger --enable-stage 3        # back on
+python -m agents.tagger --clear-stages-override # delete the override file
+```
+
+If you launched the daemon with an explicit `--stage 1,2`, the stage set is frozen for that process's lifetime — predictable for ad-hoc runs.
+
+### Embed pm_tasks (warm-up)
+
+The first Stage 2 cycle embeds every active `pm_tasks` row, which can take a few seconds. Run this once after Jira sync populates `pm_tasks`:
+
+```bash
+python -m agents.tagger --embed-tasks
+```
+
+Subsequent runs only re-embed when the task title/description/etc. changes (tracked via `text_hash`).
 
 ---
 
-## Credits
+## Pointers
 
-- Agent design and orchestration: this repo
-- LLM/MCP plumbing, `AIAgent`, framework code: [Nous Research Hermes](https://github.com/NousResearch/hermes-agent) (Apache-2.0)
-
-See `LICENSE` for the upstream Hermes license.
+- Deep technical reference: [`services/agents/README.md`](agents/README.md)
+- Rust ETL rules + repository layout: project-root `CLAUDE.md`
+- Stage-3 system prompt: [`services/skills/activity/stage3-tiebreaker/SKILL.md`](skills/activity/stage3-tiebreaker/SKILL.md)
+- Schema source of truth (Rust-owned): `src/migrations/003_intelligence.sql`, `005_agents.sql`, `007_session_dimensions.sql`, `008_session_embeddings.sql`, `009_multi_sample_embeddings.sql`
+- Logs: `~/.meridian/logs/tagger.log` (CLI runs), `~/.meridian/logs/tagger-daemon.log` (long-running daemon)
