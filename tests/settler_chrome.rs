@@ -199,14 +199,14 @@ async fn settle_chrome_categories_sentinel_prevents_retry() {
 async fn settle_chrome_categories_short_sessions_excluded() {
     let db = common::make_meridian_db().await;
 
-    // Session with duration_s = 5 (below threshold of 10)
+    // Session with duration_s = 4 (below threshold of 5)
     sqlx::query(
         "INSERT INTO app_sessions
            (app_name, started_at, ended_at, duration_s,
             window_titles, min_frame_id, max_frame_id, frame_count,
             idle_frame_count, etl_run_id, category, confidence, category_method)
          VALUES
-           ('Google Chrome', '2024-01-01T10:00:00Z', '2024-01-01T10:00:05Z', 5,
+           ('Google Chrome', '2024-01-01T10:00:00Z', '2024-01-01T10:00:04Z', 4,
             '[{\"window_name\":\"Google\"}]', 1, 2, 2,
             0, 1, 'research', 1.0, 'rule_based')",
     )
@@ -217,7 +217,7 @@ async fn settle_chrome_categories_short_sessions_excluded() {
     // Verify the query that drives the settler excludes this row
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM app_sessions
-         WHERE category_method = 'rule_based' AND duration_s > 10
+         WHERE category_method = 'rule_based' AND duration_s >= 5
            AND lower(app_name) LIKE '%chrome%'",
     )
     .fetch_one(&db)
@@ -226,7 +226,7 @@ async fn settle_chrome_categories_short_sessions_excluded() {
 
     assert_eq!(
         count, 0,
-        "session shorter than 10s should be excluded from classification queue"
+        "session shorter than 5s should be excluded from classification queue"
     );
 }
 
