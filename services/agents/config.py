@@ -69,6 +69,44 @@ LLM_RETRY_ATTEMPTS  = max(1, int(os.environ.get("LLM_RETRY_ATTEMPTS",  "3")))
 LLM_RETRY_BACKOFF_S = float(os.environ.get("LLM_RETRY_BACKOFF_S", "5"))
 
 
+# ── Per-stage enable flags ────────────────────────────────────────────────────
+# Each stage of the tagger pipeline can be turned off via env if it's giving
+# false positives or you want to A/B test something:
+#
+#     STAGE1_ENABLED   rules + KAN-NN regex + trivial-overhead prefilter
+#     STAGE2_ENABLED   bge-small embeddings → top-K candidates
+#     STAGE3_ENABLED   small LLM tiebreak via hermes (only fires when
+#                      Stage 2 returns routing=queue)
+#
+# Defaults: all on. CLI `--stage 1,2,3` overrides these for ad-hoc invocations.
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in ("0", "false", "no", "off", "")
+
+
+STAGE1_ENABLED = _env_bool("STAGE1_ENABLED", True)
+STAGE2_ENABLED = _env_bool("STAGE2_ENABLED", True)
+STAGE3_ENABLED = _env_bool("STAGE3_ENABLED", True)
+
+
+def default_stages() -> set[int]:
+    """Return the stage set the tagger should run with by default.
+
+    Honours the STAGE{1,2,3}_ENABLED env flags. Used by both the daemon
+    (long-running) and the CLI (when --stage isn't passed).
+    """
+    out: set[int] = set()
+    if STAGE1_ENABLED:
+        out.add(1)
+    if STAGE2_ENABLED:
+        out.add(2)
+    if STAGE3_ENABLED:
+        out.add(3)
+    return out
+
+
 def today_start_utc_iso() -> str:
     """Return today's local-midnight expressed as an ISO-8601 UTC timestamp.
 

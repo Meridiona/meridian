@@ -38,7 +38,8 @@ from agents import db                                     # noqa: E402
 from agents import rules as rules_mod                     # noqa: E402
 from agents.config import (                               # noqa: E402
     SESSION_BATCH_LIMIT, MIN_LLM_DURATION_S, ONLY_TODAY,
-    LOG_DIR, today_start_utc_iso,
+    LOG_DIR, today_start_utc_iso, default_stages,
+    STAGE1_ENABLED, STAGE2_ENABLED, STAGE3_ENABLED,
 )
 from agents.rules import (                                # noqa: E402
     RuleHit, discover_rules, run_rules, resolve_hits,
@@ -332,10 +333,14 @@ def _tag_session(
 def run_once(*, since_iso: str | None = None, stages: set[int] | None = None) -> dict:
     """Pull a batch of unprocessed sessions and tag them with the chosen stages.
 
-    `stages` defaults to {1, 2}.
+    `stages` defaults to whatever the STAGE{1,2,3}_ENABLED env flags resolve
+    to via `config.default_stages()` — typically all three.
     """
     if stages is None:
-        stages = {1, 2}
+        stages = default_stages()
+        if not stages:
+            log.warning("All stages disabled via STAGE{1,2,3}_ENABLED — nothing to do")
+            return {"sessions_processed": 0, "elapsed_s": 0.0, "skipped_all_stages_disabled": True}
     log.info("=" * 76)
     log.info("Tagger cycle (stages=%s) — %s",
              sorted(stages), datetime.now(timezone.utc).isoformat())
@@ -574,7 +579,7 @@ def inspect_one(
 ) -> None:
     """Tag exactly one session and dump every step (input → rules → stage 2 → DB)."""
     if stages is None:
-        stages = {1, 2}
+        stages = default_stages() or {1}
     _configure_logging()
     discover_rules()
     log.info("Single-session inspection: id=%d  stages=%s  dry_run=%s  reset=%s",
@@ -829,15 +834,23 @@ def re_extract_tickets(session: dict) -> list[str]:
 
 # ──────────────────────── CLI ─────────────────────────────────────────────────
 def _parse_stages(spec: str) -> set[int]:
+    """Parse a `--stage` CLI value (e.g. '1,2,3' or '1' or '2,3').
+
+    Empty / unset falls back to STAGE{1,2,3}_ENABLED env flags via
+    config.default_stages(). The 'auto' literal also routes there
+    explicitly.
+    """
+    if spec is None or spec.strip() in ("", "auto"):
+        return default_stages() or {1}
     out: set[int] = set()
-    for piece in (spec or "").split(","):
+    for piece in spec.split(","):
         piece = piece.strip()
         if not piece:
             continue
         if piece not in ("1", "2", "3"):
             raise ValueError(f"unknown stage {piece!r} (valid: 1, 2, 3)")
         out.add(int(piece))
-    return out or {1, 2, 3}
+    return out or default_stages() or {1}
 
 
 def warm_pm_task_embeddings() -> None:
@@ -877,10 +890,11 @@ def main() -> None:
     g.add_argument("--embed-tasks", action="store_true",
                    help="One-shot: embed every active pm_task (warm-up before first run).")
 
-    parser.add_argument("--stage", default="1,2,3",
+    parser.add_argument("--stage", default="auto",
                         help="Comma list of stages to run (e.g. '1', '2', '1,2', '1,2,3'). "
-                             "Default: 1,2,3 — Stage 3 (LLM tiebreak) only fires when "
-                             "Stage 2 returns routing=queue.")
+                             "Default 'auto' uses STAGE{1,2,3}_ENABLED env flags from config "
+                             "(all on by default). Stage 3 still self-gates — it only fires "
+                             "when Stage 2 returns routing=queue.")
     parser.add_argument("--all-history", action="store_true",
                         help="Disable ONLY_TODAY filter for --once / --list-recent.")
     parser.add_argument("--dry-run", action="store_true",

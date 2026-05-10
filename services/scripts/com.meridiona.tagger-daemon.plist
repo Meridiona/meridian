@@ -41,6 +41,16 @@
              override keeps it close to the supervisor for easy tuning. -->
         <key>TAGGER_TICK_SECS</key>
         <string>7</string>
+        <!-- Per-stage on/off switches. Set any to "0" (or "false"/"no"/"off")
+             to disable that stage if it's giving false positives. The CLI
+             `--stage 1,2` flag is still available for one-off invocations
+             without re-loading the plist. -->
+        <key>STAGE1_ENABLED</key>
+        <string>1</string>
+        <key>STAGE2_ENABLED</key>
+        <string>1</string>
+        <key>STAGE3_ENABLED</key>
+        <string>1</string>
         <!-- Stage 3 (LLM) credentials are read from .env files inside config.py;
              the launchd context still loads them since we set MERIDIAN_HOME and
              agents/config.py walks ~/.hermes/.env automatically. -->
