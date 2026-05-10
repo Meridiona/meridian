@@ -179,11 +179,18 @@ def _extract_json(text: str) -> str | None:
 
 
 def _repair_truncated_json(partial: str) -> str:
-    """Best-effort: close any dangling string, then balance braces.
+    """Best-effort: close any dangling string, strip trailing commas inside
+    the *current* object scope, then balance braces.
 
     Used when the model ran out of tokens partway through emitting the
     JSON object. The repaired string is at minimum a syntactically valid
     object so `json.loads` can pull out whatever fields completed.
+
+    Common truncation shapes we handle:
+      `{"k": "v"`              → `{"k": "v"}`
+      `{"k": "v", "k2":`        → `{"k": "v"}`     (drop the orphan key)
+      `{"k": "v", "k2": "v2`    → `{"k": "v", "k2": "v2"}`
+      `{"k": 0.85,`             → `{"k": 0.85}`     (strip dangling comma)
     """
     out = partial
     # Walk the string tracking quote state (ignoring escaped quotes).
@@ -206,11 +213,59 @@ def _repair_truncated_json(partial: str) -> str:
             depth += 1
         elif ch == "}":
             depth = max(0, depth - 1)
+
     # Close any open string first.
     if in_string:
         out += '"'
-    # Then close any open braces.
-    out += "}" * depth
+
+    # If the tail (outside any string) ends mid-key — i.e. `, "k2":` or
+    # `, "k2": ` — drop everything from the last comma so we don't leave
+    # an orphan key without a value. Only safe when we're not inside a
+    # string and the tail contains a `:` after the last comma at top level.
+    if depth > 0 and not in_string:
+        tail = out.rstrip()
+        # Strip a value-position trailing comma so `{"k": 1,}` becomes `{"k": 1}`.
+        # Also handle `{"k": 1, ` (whitespace after comma).
+        # If the tail after the last comma doesn't have a finished value, drop
+        # from that comma onward.
+        last_comma = tail.rfind(",")
+        last_brace = tail.rfind("{")
+        last_close = tail.rfind("}")
+        if last_comma > max(last_brace, last_close):
+            after_comma = tail[last_comma + 1:].strip()
+            looks_unfinished = (
+                after_comma == ""                                  # `{"k":1,`
+                or after_comma.endswith(":")                       # `{"k":1, "k2":`
+                or (after_comma.count('"') == 1)                   # `{"k":1, "k2`
+                or (after_comma.endswith(":") is False and ":" in after_comma
+                    and after_comma.split(":", 1)[1].strip() == "")  # `{"k":1, "k2":  `
+            )
+            if looks_unfinished:
+                out = tail[:last_comma]
+
+    # Finally, balance any open braces.
+    open_braces = out.count("{") - out.count("}")
+    # The brace counts above include any inside strings — recompute clean.
+    open_braces = 0
+    in_str = False
+    esc = False
+    for ch in out:
+        if esc:
+            esc = False
+            continue
+        if ch == "\\":
+            esc = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == "{":
+            open_braces += 1
+        elif ch == "}":
+            open_braces = max(0, open_braces - 1)
+    out += "}" * open_braces
     return out
 
 
