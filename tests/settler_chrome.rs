@@ -118,13 +118,19 @@ fn build_category_prompt_title_key_fallback() {
 }
 
 #[test]
-fn build_category_prompt_ocr_included() {
+fn build_category_prompt_ocr_excluded() {
+    // OCR is disabled (OCR_CAP=0) because dense screencap text triggers FM's language detector.
+    // Classification relies on window titles and UI elements instead.
     let ocr =
         r#"[{"text":"def solve(n): return n * 2","window":"VSCode","ts":"2024-01-01T00:00:00Z"}]"#;
     let prompt = build_category_prompt(300, "[]", ocr, "[]");
     assert!(
-        prompt.contains("def solve"),
-        "OCR text should appear in prompt"
+        !prompt.contains("def solve"),
+        "OCR text should not appear in prompt (OCR disabled)"
+    );
+    assert!(
+        !prompt.contains("Screen:"),
+        "Screen section should not appear when OCR is disabled"
     );
 }
 
