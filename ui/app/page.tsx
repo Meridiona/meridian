@@ -9,6 +9,7 @@ import StatsRow from '@/components/StatsRow'
 import SessionCard from '@/components/SessionCard'
 import RefreshTrigger from '@/components/RefreshTrigger'
 import CategoryBreakdown from '@/components/CategoryBreakdown'
+import TicketBreakdown from '@/components/TicketBreakdown'
 import type {
   ActiveSessionRow, StatsResponse, TimelineResponse, SessionRow, GapRow
 } from '@/lib/types'
@@ -140,6 +141,72 @@ function getTimeline(date: string): TimelineResponse {
   }
 }
 
+interface TicketsBundle {
+  tasks: Array<{
+    task_key: string
+    title: string | null
+    url: string | null
+    provider: string | null
+    duration_s: number
+    session_count: number
+  }>
+  overhead_s: number
+  untagged_s: number
+}
+
+function getTickets(date: string): TicketsBundle {
+  try {
+    const db = getDb()
+    const { start, end } = localDayBounds(date)
+    const tasks = db.prepare(`
+      SELECT tl.task_key                                AS task_key,
+             pt.title                                   AS title,
+             pt.url                                     AS url,
+             pt.provider                                AS provider,
+             SUM(s.duration_s)                          AS duration_s,
+             COUNT(*)                                   AS session_count
+        FROM app_sessions s
+        JOIN ticket_links tl ON tl.session_id = s.id AND tl.session_type = 'task'
+        LEFT JOIN pm_tasks pt ON pt.task_key  = tl.task_key
+       WHERE s.started_at >= ? AND s.started_at < ?
+         AND tl.task_key IS NOT NULL
+       GROUP BY tl.task_key
+       ORDER BY duration_s DESC
+    `).all(start, end) as Array<Record<string, unknown>>
+
+    const overhead = (db.prepare(`
+      SELECT COALESCE(SUM(s.duration_s), 0) AS s
+        FROM app_sessions s
+        JOIN ticket_links tl ON tl.session_id = s.id
+       WHERE s.started_at >= ? AND s.started_at < ?
+         AND tl.session_type = 'overhead'
+    `).get(start, end) as { s: number }).s
+
+    const untagged = (db.prepare(`
+      SELECT COALESCE(SUM(s.duration_s), 0) AS s
+        FROM app_sessions s
+        LEFT JOIN ticket_links tl ON tl.session_id = s.id
+       WHERE s.started_at >= ? AND s.started_at < ?
+         AND tl.session_id IS NULL
+    `).get(start, end) as { s: number }).s
+
+    return {
+      tasks: tasks.map(r => ({
+        task_key: r.task_key as string,
+        title: (r.title as string | null) ?? null,
+        url:   (r.url as string | null) ?? null,
+        provider: (r.provider as string | null) ?? null,
+        duration_s: Number(r.duration_s ?? 0),
+        session_count: Number(r.session_count ?? 0),
+      })),
+      overhead_s: Number(overhead ?? 0),
+      untagged_s: Number(untagged ?? 0),
+    }
+  } catch {
+    return { tasks: [], overhead_s: 0, untagged_s: 0 }
+  }
+}
+
 function getRecentSessions(date: string): SessionRow[] {
   try {
     const db = getDb()
@@ -173,6 +240,7 @@ export default function DashboardPage() {
   const stats = getStats(today)
   const timeline = getTimeline(today)
   const recent = getRecentSessions(today)
+  const tickets = getTickets(today)
 
   return (
     <div className="space-y-6">
@@ -199,6 +267,20 @@ export default function DashboardPage() {
 
       {/* Stats */}
       {stats.session_count > 0 && <StatsRow stats={stats} />}
+
+      {/* Today's tickets */}
+      {(tickets.tasks.length > 0 || tickets.overhead_s > 0 || tickets.untagged_s > 0) && (
+        <section>
+          <p className="text-[10px] uppercase tracking-widest text-[#C8C6C1] mb-3">Today&rsquo;s Tickets</p>
+          <div className="rounded-2xl border border-[#E8E6E1] bg-white p-5">
+            <TicketBreakdown
+              tasks={tickets.tasks}
+              overhead_s={tickets.overhead_s}
+              untagged_s={tickets.untagged_s}
+            />
+          </div>
+        </section>
+      )}
 
       {/* Category breakdown */}
       {stats.category_breakdown && stats.category_breakdown.length > 0 && (
