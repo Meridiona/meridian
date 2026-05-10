@@ -49,6 +49,31 @@ fn dedup_ax_textarea(mut elements: Vec<ElementSample>) -> Vec<ElementSample> {
     elements
 }
 
+/// If screenpipe reports "Terminal" but the OCR/element text contains
+/// unambiguous Antigravity IDE fingerprints, return the corrected name.
+/// Only triggers on high-confidence signals to avoid false positives.
+fn reclassify_terminal<'a>(
+    app_name: &'a str,
+    ocr_samples: &[OcrSample],
+    elements_samples: &[ElementSample],
+) -> &'a str {
+    if app_name != "Terminal" {
+        return app_name;
+    }
+    // Combine all text into one scan pass.
+    let ide_signals = ["Antigravity", "Open Agent Manager"];
+    let hit = ocr_samples
+        .iter()
+        .map(|s| s.text.as_str())
+        .chain(elements_samples.iter().map(|e| e.text.as_str()))
+        .any(|t| ide_signals.iter().any(|sig| t.contains(sig)));
+    if hit {
+        "Antigravity"
+    } else {
+        app_name
+    }
+}
+
 /// Fetches all enrichment data for a single contiguous block of frames in
 /// parallel.  All five screenpipe query functions are called concurrently via
 /// `tokio::join!`.
@@ -70,16 +95,20 @@ pub async fn extract_block_context(
         get_signals(screenpipe, started_at, ended_at),
     );
 
+    let ocr_samples = ocr_res?;
+    let elements_samples = dedup_ax_textarea(elements_res?);
+    let true_app_name = reclassify_terminal(app_name, &ocr_samples, &elements_samples).to_owned();
+
     Ok(BlockContext {
-        app_name: app_name.to_owned(),
+        app_name: true_app_name,
         started_at: started_at.to_owned(),
         ended_at: ended_at.to_owned(),
         min_frame_id,
         max_frame_id,
         frame_count,
         window_titles: window_titles_res?,
-        ocr_samples: ocr_res?,
-        elements_samples: dedup_ax_textarea(elements_res?),
+        ocr_samples,
+        elements_samples,
         audio_snippets: audio_res?,
         signals: signals_res?,
     })
