@@ -1,0 +1,10 @@
+# Core LLM + MCP plumbing the agents/ package needs
+openai>=1.40.0
+mcp>=0.9.0
+python-dotenv>=1.0.0
+PyYAML>=6.0
+
+# AIAgent (run_agent.py) and the broader Hermes framework pull in many things;
+# the canonical dependency list is in pyproject.toml. Install with:
+#   pip install -e .
+# This requirements.txt is the bare minimum to drive agents/ in development.
