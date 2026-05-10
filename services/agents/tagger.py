@@ -38,8 +38,10 @@ from agents import db                                     # noqa: E402
 from agents import rules as rules_mod                     # noqa: E402
 from agents.config import (                               # noqa: E402
     SESSION_BATCH_LIMIT, MIN_LLM_DURATION_S, ONLY_TODAY,
-    LOG_DIR, today_start_utc_iso, default_stages,
+    LOG_DIR, today_start_utc_iso, default_stages, current_stages,
+    stages_from_file, write_stages_override, clear_stages_override,
     STAGE1_ENABLED, STAGE2_ENABLED, STAGE3_ENABLED,
+    TAGGER_CONFIG_FILE,
 )
 from agents.rules import (                                # noqa: E402
     RuleHit, discover_rules, run_rules, resolve_hits,
@@ -853,6 +855,44 @@ def _parse_stages(spec: str) -> set[int]:
     return out or default_stages() or {1}
 
 
+def _print_stages_status() -> None:
+    """Show env defaults, override file contents, and the resolved live set."""
+    env_set = sorted(default_stages())
+    override = stages_from_file()
+    resolved = sorted(current_stages())
+    print(f"env defaults  (STAGE1_ENABLED={STAGE1_ENABLED}, "
+          f"STAGE2_ENABLED={STAGE2_ENABLED}, STAGE3_ENABLED={STAGE3_ENABLED}) "
+          f"→ {env_set}")
+    if override is None:
+        print(f"override file ({TAGGER_CONFIG_FILE}) absent — env defaults win")
+    else:
+        print(f"override file ({TAGGER_CONFIG_FILE}) → {sorted(override)}")
+    print(f"\nresolved live stages = {resolved}"
+          + ("   (a running daemon will use this on its next tick)" if resolved else ""))
+
+
+def _toggle_stage_cli(*, enable: int | None, disable: int | None) -> None:
+    """Write the override file based on current state + the requested toggle.
+
+    If no override file exists yet, we seed it from `default_stages()` so
+    the user's explicit toggle doesn't accidentally turn off the others.
+    """
+    base = stages_from_file()
+    if base is None:
+        base = default_stages()
+    flags = {1: 1 in base, 2: 2 in base, 3: 3 in base}
+    if enable is not None:
+        flags[enable] = True
+    if disable is not None:
+        flags[disable] = False
+
+    path = write_stages_override(
+        stage1=flags[1], stage2=flags[2], stage3=flags[3],
+    )
+    print(f"✓ wrote {path}")
+    _print_stages_status()
+
+
 def warm_pm_task_embeddings() -> None:
     """One-shot: embed every active pm_task. Useful before the first run."""
     _configure_logging()
@@ -889,6 +929,17 @@ def main() -> None:
                    help="Run a full pass over the next batch (default).")
     g.add_argument("--embed-tasks", action="store_true",
                    help="One-shot: embed every active pm_task (warm-up before first run).")
+    g.add_argument("--enable-stage", type=int, metavar="N", choices=(1, 2, 3),
+                   help="Live: write the override file so stage N is ENABLED. "
+                        "A running daemon will pick this up on its next tick.")
+    g.add_argument("--disable-stage", type=int, metavar="N", choices=(1, 2, 3),
+                   help="Live: write the override file so stage N is DISABLED. "
+                        "A running daemon will pick this up on its next tick.")
+    g.add_argument("--clear-stages-override", action="store_true",
+                   help="Delete the override file so the daemon falls back to "
+                        "STAGE{1,2,3}_ENABLED env flags.")
+    g.add_argument("--stages-status", action="store_true",
+                   help="Print the current resolved stage set + override file state.")
 
     parser.add_argument("--stage", default="auto",
                         help="Comma list of stages to run (e.g. '1', '2', '1,2', '1,2,3'). "
@@ -905,6 +956,23 @@ def main() -> None:
 
     stages = _parse_stages(args.stage)
 
+    if args.enable_stage is not None or args.disable_stage is not None:
+        _toggle_stage_cli(
+            enable=args.enable_stage,
+            disable=args.disable_stage,
+        )
+        return
+    if args.clear_stages_override:
+        path = clear_stages_override()
+        if path:
+            print(f"✓ removed override file at {path}")
+        else:
+            print(f"(no override file present at {TAGGER_CONFIG_FILE})")
+        _print_stages_status()
+        return
+    if args.stages_status:
+        _print_stages_status()
+        return
     if args.embed_tasks:
         warm_pm_task_embeddings()
         return
