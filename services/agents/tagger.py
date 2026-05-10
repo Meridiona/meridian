@@ -359,13 +359,18 @@ def run_once(*, since_iso: str | None = None, stages: set[int] | None = None) ->
             len(sessions), len(pm_tasks), since_iso or "∅", SESSION_BATCH_LIMIT,
         )
 
-        # Pre-filter trivial overhead: write ticket_links overhead/skip and
-        # one engagement=idle dim, no rule run.
-        kept: list[dict] = []
+        # Single linear pass through sessions in id-ascending order, with
+        # cursor advance after EACH session. A SIGTERM mid-batch loses at
+        # most the in-flight session; everything completed before is durable.
+        # The two paths (trivial-overhead prefilter / full rule+stage pass)
+        # both write before they advance the cursor.
         skipped = 0
-        for s in sessions:
+        kept_count = 0
+        reports: list[dict] = []
+        t0 = time.time()
+        for idx, s in enumerate(sessions, start=1):
+            sid = int(s["id"])
             if _is_trivial_overhead(s):
-                sid = int(s["id"])
                 db.write_ticket_link(
                     conn,
                     session_id=sid,
@@ -385,22 +390,16 @@ def run_once(*, since_iso: str | None = None, stages: set[int] | None = None) ->
                 )
                 skipped += 1
             else:
-                kept.append(s)
-        log.info("Pre-filter: %d trivial → overhead/skip; %d kept for rule pass",
-                 skipped, len(kept))
-
-        t0 = time.time()
-        reports: list[dict] = []
-        for idx, s in enumerate(kept, start=1):
-            log.info("[%d/%d]", idx, len(kept))
-            reports.append(_tag_session(
-                conn, run_id=run_id, session=s,
-                pm_tasks=pm_tasks, stages=stages,
-            ))
+                kept_count += 1
+                log.info("[%d/%d kept]", kept_count, len(sessions) - skipped)
+                reports.append(_tag_session(
+                    conn, run_id=run_id, session=s,
+                    pm_tasks=pm_tasks, stages=stages,
+                ))
+            db.advance_cursor(conn, sid)
         elapsed = time.time() - t0
-
-        if sessions:
-            db.advance_cursor(conn, db.session_id_max(sessions))
+        log.info("Single-pass done: %d trivial-overhead, %d ran rules+stages",
+                 skipped, kept_count)
 
         # Counters.
         dims_total       = sum(r["dimensions_written"] for r in reports)
@@ -420,7 +419,7 @@ def run_once(*, since_iso: str | None = None, stages: set[int] | None = None) ->
         log.info("Stage-1 cycle complete: run_id=%d", run_id)
         log.info("  sessions seen          : %d", len(sessions))
         log.info("  pre-filter overhead    : %d", skipped)
-        log.info("  rule-pass sessions     : %d", len(kept))
+        log.info("  rule-pass sessions     : %d", kept_count)
         log.info("  dimensions written     : %d", dims_total)
         log.info("  ticket_links decided   : %d  (auto=%d skip=%d)",
                  tickets_decided, auto_tickets, skip_decisions)
@@ -429,7 +428,7 @@ def run_once(*, since_iso: str | None = None, stages: set[int] | None = None) ->
         return {
             "run_id":          run_id,
             "sessions":        len(sessions),
-            "kept":            len(kept),
+            "kept":            kept_count,
             "skipped":         skipped,
             "dimensions":      dims_total,
             "tickets_decided": tickets_decided,
