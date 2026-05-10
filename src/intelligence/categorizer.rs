@@ -200,6 +200,7 @@ static APP_PATTERNS: &[(&str, ActivityKind, f32)] = &[
     ("jenkins", ActivityKind::DeploymentDevops, 35.0),
     ("argocd", ActivityKind::DeploymentDevops, 35.0),
     // Coding IDEs — medium weight; content signals can push to DevOps or CodeReview
+    ("antigravity", ActivityKind::Coding, 50.0),
     ("cursor", ActivityKind::Coding, 25.0),
     ("intellij", ActivityKind::Coding, 25.0),
     ("pycharm", ActivityKind::Coding, 25.0),

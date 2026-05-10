@@ -35,8 +35,7 @@ export async function GET(request: Request) {
     const db = getDb()
     const rows = db.prepare(`
       SELECT id, app_name, started_at, ended_at, duration_s,
-             window_titles, ocr_samples, elements_samples,
-             audio_snippets, signals, frame_count, etl_run_id,
+             window_titles, frame_count, etl_run_id,
              category, confidence
       FROM app_sessions
       WHERE started_at >= ? AND started_at < ?

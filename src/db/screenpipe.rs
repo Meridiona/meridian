@@ -5,6 +5,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::SqlitePool;
+use std::collections::HashMap;
 use std::str::FromStr;
 
 // ---------------------------------------------------------------------------
@@ -154,21 +155,31 @@ pub async fn get_window_titles(
     app_name: &str,
 ) -> Result<Vec<WindowTitleCount>> {
     let rows = if is_browser_app(app_name) {
-        sqlx::query_as::<_, (String, i64)>(
+        // Fetch raw URLs grouped by full URL, then aggregate by domain in Rust.
+        // SQLite has no URL-parsing functions, and we want localhost:3000/ and
+        // localhost:3000/sessions to count as one entry, not two.
+        let raw = sqlx::query_as::<_, (String, i64)>(
             "SELECT COALESCE(browser_url, window_name) as context, COUNT(*) as count
              FROM frames
              WHERE id BETWEEN ? AND ?
                AND app_name = ?
                AND (browser_url IS NOT NULL OR (window_name IS NOT NULL AND window_name != ''))
-             GROUP BY context
-             ORDER BY count DESC
-             LIMIT 20",
+             GROUP BY context",
         )
         .bind(min_frame_id)
         .bind(max_frame_id)
         .bind(app_name)
         .fetch_all(pool)
-        .await?
+        .await?;
+
+        let mut by_domain: HashMap<String, i64> = HashMap::new();
+        for (url, count) in raw {
+            *by_domain.entry(url_domain(&url).to_owned()).or_insert(0) += count;
+        }
+        let mut aggregated: Vec<(String, i64)> = by_domain.into_iter().collect();
+        aggregated.sort_by(|a, b| b.1.cmp(&a.1));
+        aggregated.truncate(20);
+        aggregated
     } else {
         sqlx::query_as::<_, (String, i64)>(
             "SELECT window_name, COUNT(*) as count
@@ -191,6 +202,15 @@ pub async fn get_window_titles(
         .into_iter()
         .map(|(window_name, count)| WindowTitleCount { window_name, count })
         .collect())
+}
+
+fn url_domain(url: &str) -> &str {
+    let without_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    let domain = without_scheme.split('/').next().unwrap_or(without_scheme);
+    domain.strip_prefix("www.").unwrap_or(domain)
 }
 
 fn is_browser_app(app_name: &str) -> bool {

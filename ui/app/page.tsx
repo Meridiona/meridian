@@ -39,7 +39,7 @@ function getActiveSession(): ActiveSessionRow | null {
     const db = getDb()
     const row = db.prepare(`
       SELECT app_name, started_at, last_seen_at,
-             window_titles, ocr_samples, audio_snippets, signals, frame_count,
+             window_titles, audio_snippets, frame_count,
              category, confidence
       FROM active_session WHERE id = 1
     `).get() as Record<string, unknown> | undefined
@@ -49,9 +49,9 @@ function getActiveSession(): ActiveSessionRow | null {
       started_at: row.started_at as string,
       last_seen_at: row.last_seen_at as string,
       window_titles: JSON.parse((row.window_titles as string) || '[]'),
-      ocr_samples: row.ocr_samples ? JSON.parse(row.ocr_samples as string) : null,
+      ocr_samples: null,
       audio_snippets: row.audio_snippets ? JSON.parse(row.audio_snippets as string) : null,
-      signals: row.signals ? JSON.parse(row.signals as string) : null,
+      signals: null,
       frame_count: row.frame_count as number,
       elapsed_s: Math.floor((Date.now() - new Date(row.started_at as string).getTime()) / 1000),
       category: (row.category as string) || 'idle_personal',
@@ -104,8 +104,7 @@ function getTimeline(date: string): TimelineResponse {
     const { start, end } = localDayBounds(date)
     const rows = db.prepare(`
       SELECT id, app_name, started_at, ended_at, duration_s,
-             window_titles, ocr_samples, elements_samples,
-             audio_snippets, signals, frame_count, etl_run_id,
+             window_titles, frame_count, etl_run_id,
              category, confidence
       FROM app_sessions WHERE started_at >= ? AND started_at < ?
       ORDER BY started_at ASC
