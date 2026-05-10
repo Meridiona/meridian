@@ -35,7 +35,9 @@ from agents import db                                     # noqa: E402
 from agents import tagger                                 # noqa: E402
 from agents.config import (                            # noqa: E402
     LOG_DIR, ONLY_TODAY, today_start_utc_iso,
-    default_stages, STAGE1_ENABLED, STAGE2_ENABLED, STAGE3_ENABLED,
+    default_stages, current_stages,
+    STAGE1_ENABLED, STAGE2_ENABLED, STAGE3_ENABLED,
+    TAGGER_CONFIG_FILE,
 )
 
 log = logging.getLogger("tagger_daemon")
@@ -144,13 +146,27 @@ def _install_signal_handlers() -> None:
     signal.signal(signal.SIGTERM, _handle)
 
 
-def run_forever(tick_secs: int, stages: set[int]) -> None:
+def run_forever(tick_secs: int, stages: set[int], *, live: bool) -> None:
+    """Long-running daemon loop.
+
+    `stages` is the *initial* stage set. When `live=True` (the default —
+    invoked when --stage was 'auto' / unset), the loop re-reads
+    config.current_stages() every tick so the user can flip stages on/off
+    by editing ~/.meridian/tagger.config.json without restarting. When
+    `live=False` (the user passed an explicit --stage 1,2 etc.), the
+    initial set is frozen for the lifetime of this process — predictable
+    behaviour for ad-hoc runs.
+    """
     log.info("=" * 76)
-    log.info("tagger-daemon up | tick=%ds stages=%s", tick_secs, sorted(stages))
+    log.info("tagger-daemon up | tick=%ds stages=%s mode=%s",
+             tick_secs, sorted(stages), "live" if live else "frozen")
     log.info(
         "stage flags (env): STAGE1_ENABLED=%s  STAGE2_ENABLED=%s  STAGE3_ENABLED=%s",
         STAGE1_ENABLED, STAGE2_ENABLED, STAGE3_ENABLED,
     )
+    log.info("override file: %s (%s)",
+             TAGGER_CONFIG_FILE,
+             "exists" if TAGGER_CONFIG_FILE.exists() else "absent")
     if not stages:
         log.warning("All stages disabled — daemon will idle until at least one stage is enabled")
 
@@ -164,11 +180,21 @@ def run_forever(tick_secs: int, stages: set[int]) -> None:
 
     last_heartbeat = time.time()
     consecutive_errors = 0
+    active_stages: set[int] = set(stages)
 
     while not _shutdown.is_set():
         try:
+            # Hot-toggle: in live mode, re-read the stage set every tick
+            # and announce when it changes.
+            if live:
+                next_stages = current_stages()
+                if next_stages != active_stages:
+                    log.info("stages changed: %s → %s",
+                             sorted(active_stages), sorted(next_stages))
+                    active_stages = next_stages
+
             t0 = time.time()
-            report = _tick(stages)
+            report = _tick(active_stages)
             dt = time.time() - t0
             n = int(report.get("sessions_processed") or report.get("sessions") or 0)
             if n:
@@ -224,15 +250,22 @@ def main() -> None:
     )
     parser.add_argument(
         "--stage", default=DEFAULT_STAGES_RAW,
-        help="Comma list of stages to run (e.g. '1,2,3'). Stage 3 only fires when "
-             "Stage 2 returns routing=queue.",
+        help="Comma list of stages to run (e.g. '1,2,3'). The default 'auto' "
+             "honours STAGE{1,2,3}_ENABLED env flags AND re-reads the override "
+             "file (~/.meridian/tagger.config.json) every tick — flip stages "
+             "without restarting the daemon. Pass an explicit list to freeze "
+             "the stage set for the lifetime of this process.",
     )
     args = parser.parse_args()
 
     _configure_logging()
     _install_signal_handlers()
     stages = _parse_stages(args.stage)
-    run_forever(args.tick, stages)
+    # Live mode = no explicit --stage. We treat the env-default and the
+    # 'auto' literal the same: both mean "honour the override file".
+    spec = (args.stage or "").strip().lower()
+    live = spec in ("", "auto")
+    run_forever(args.tick, stages, live=live)
 
 
 if __name__ == "__main__":
