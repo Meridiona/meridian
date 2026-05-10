@@ -3,7 +3,10 @@
 use anyhow::{bail, Result};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
+use std::sync::OnceLock;
 use tracing::debug;
+
+static MACOS_26_OR_LATER: OnceLock<bool> = OnceLock::new();
 
 use crate::intelligence::classifier::prompt;
 use crate::intelligence::classifier::{ClassifyRequest, ClassifyResponse};
@@ -29,24 +32,30 @@ unsafe fn take_cstring(ptr: *mut c_char) -> Option<String> {
 }
 
 fn is_macos_26_or_later() -> bool {
-    std::process::Command::new("sw_vers")
-        .arg("-productVersion")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|v| {
-            v.trim()
-                .split('.')
-                .next()
-                .and_then(|m| m.parse::<u32>().ok())
-        })
-        .map(|major| major >= 26)
-        .unwrap_or(false)
+    *MACOS_26_OR_LATER.get_or_init(|| {
+        std::process::Command::new("sw_vers")
+            .arg("-productVersion")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|v| {
+                v.trim()
+                    .split('.')
+                    .next()
+                    .and_then(|m| m.parse::<u32>().ok())
+            })
+            .map(|major| major >= 26)
+            .unwrap_or(false)
+    })
 }
 
 pub struct FoundationBackend;
 
 impl FoundationBackend {
+    pub fn is_available() -> bool {
+        is_macos_26_or_later()
+    }
+
     pub fn availability_status() -> String {
         if !is_macos_26_or_later() {
             return "macOS 26+ required".to_string();
@@ -83,6 +92,17 @@ impl FoundationBackend {
             take_cstring(out_error);
             Ok(text)
         }
+    }
+
+    pub async fn raw_generate(&self, system: &str, user: &str) -> Result<String> {
+        if !is_macos_26_or_later() {
+            anyhow::bail!("Foundation Models requires macOS 26+");
+        }
+        let system = system.to_owned();
+        let user = user.to_owned();
+        let text =
+            tokio::task::spawn_blocking(move || Self::call_generate_text(&system, &user)).await??;
+        Ok(text)
     }
 
     pub async fn classify(&self, req: &ClassifyRequest) -> Result<ClassifyResponse> {
