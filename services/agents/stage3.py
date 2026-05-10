@@ -1,19 +1,21 @@
-"""Stage 3 — LLM tiebreaker.
+"""Stage 3 — LLM tiebreaker (hermes AIAgent driven).
 
 Runs only when Stage 2 returns `routing="queue"` — i.e. the embedding+rules
-score gave us a candidate but couldn't separate the top-K confidently. Stage
-3 hands the top candidates and the session evidence to a small LLM and asks
-for a single JSON decision. No tool calls, no conversation loop, one prompt
-in / one structured object out.
+score gave us candidates but couldn't separate them confidently. Stage 3
+asks the LLM, via hermes' `AIAgent`, to read the candidate ticket
+descriptions + session evidence and pick one (or none).
 
-Provider/model switching: the LLM endpoint is whatever HERMES_BASE_URL +
-HERMES_MODEL + (OLLAMA_API_KEY | ANTHROPIC_API_KEY) point at. Same
-environment hermes uses, but we talk to it directly via the OpenAI SDK
-because we don't need the AIAgent runtime — there are no tools to route.
+Why hermes (not direct openai SDK):
+* model + provider switching across OpenAI / Anthropic / Ollama / LM Studio
+  / Bedrock / Gemini / xAI without code changes — pick via env vars
+* prompt caching, context compression, deterministic logging
+* same configuration surface as the rest of the meridian agent stack
 
-Default model is whatever's already in services/.env (today: nemotron-3-super
-on Ollama Cloud). To switch to a local gemma3 or qwen2.5, just point
-HERMES_BASE_URL at http://localhost:11434/v1 and set HERMES_MODEL.
+We deliberately use AIAgent in its simplest mode:
+* `enabled_toolsets=[]`  — no tools to call
+* `max_iterations=1`     — one model round, no agent loop
+* system prompt loaded from skills/activity/stage3-tiebreaker/SKILL.md
+  so prompt iteration doesn't require code changes.
 """
 from __future__ import annotations
 
@@ -21,23 +23,27 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
-from agents.config import MODEL, BASE_URL, API_KEY
+from agents.config import MODEL, BASE_URL, API_KEY, load_skill
 
 log = logging.getLogger("agents.stage3")
 
+# Make `import run_agent` work — the hermes runtime lives at services/run_agent.py.
+_REPO_ROOT = Path(__file__).parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+
 # ──────────────────────── Config / thresholds ─────────────────────────────────
-# Stage 3's confidence is what the LLM reports. We use it to decide whether
-# the result deserves auto-dispatch (high) or stays in the queue for human
-# review (medium). Below the QUEUE floor we treat as no decision and revert
-# to Stage 2's queue verdict.
 STAGE3_AUTO_FLOOR  = float(os.environ.get("STAGE3_AUTO_FLOOR",  "0.65"))
 STAGE3_QUEUE_FLOOR = float(os.environ.get("STAGE3_QUEUE_FLOOR", "0.40"))
-STAGE3_MAX_TOKENS  = int(os.environ.get("STAGE3_MAX_TOKENS", "2000"))
-STAGE3_TIMEOUT_S   = float(os.environ.get("STAGE3_TIMEOUT_S",  "60"))
+STAGE3_MAX_TOKENS  = int(os.environ.get("STAGE3_MAX_TOKENS", "4000"))
+STAGE3_SKILL_NAME  = os.environ.get("STAGE3_SKILL_NAME", "stage3-tiebreaker")
 
 
 # ──────────────────────── Result type ─────────────────────────────────────────
@@ -54,34 +60,13 @@ class Stage3Result:
     debug: dict = field(default_factory=dict)
 
 
-# ──────────────────────── OpenAI client cache ─────────────────────────────────
-_client = None
-
-
-def _get_client():
-    """Lazy-load an OpenAI-compatible client pointed at the configured provider.
-
-    Works against Ollama (cloud or local), OpenAI, Anthropic-via-openai-shim,
-    LM Studio, vLLM, anything that speaks OpenAI's chat-completions API.
-    """
-    global _client
-    if _client is not None:
-        return _client
-    try:
-        from openai import OpenAI
-    except ImportError as exc:
-        raise ImportError(
-            "Stage 3 needs the `openai` Python SDK. "
-            "Install with: pip install 'openai>=2,<3'"
-        ) from exc
-    base_url = (BASE_URL or "").rstrip("/")
-    api_key  = API_KEY or "none"
-    log.info("stage3: using model=%s  base_url=%s", MODEL, base_url or "(default)")
-    _client = OpenAI(base_url=base_url or None, api_key=api_key, timeout=STAGE3_TIMEOUT_S)
-    return _client
-
-
 # ──────────────────────── Prompt builder ──────────────────────────────────────
+_VSCODE_BANNER_RE = re.compile(
+    r"\s+[—-]+\s+The following extensions want to relaunch.*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
 def _format_session(session: dict) -> str:
     parts: list[str] = []
     parts.append(f"app: {session.get('app_name') or '?'}")
@@ -103,13 +88,7 @@ def _format_session(session: dict) -> str:
                 name, cnt = t[0], (t[1] if len(t) > 1 else 1)
             else:
                 name, cnt = str(t), 1
-            # Strip the noisy VS Code extension banner.
-            name = re.sub(
-                r"\s+[—-]+\s+The following extensions want to relaunch.*$",
-                "",
-                name,
-                flags=re.IGNORECASE | re.DOTALL,
-            ).strip()
+            name = _VSCODE_BANNER_RE.sub("", name).strip()
             parts.append(f"  • {name} (×{cnt})")
     ocr = session.get("ocr_samples") or []
     audio = session.get("audio_snippets") or []
@@ -134,7 +113,6 @@ def _format_dimensions(dims_grouped: dict[str, set[str]]) -> str:
 
 
 def _format_candidates(top_candidates: list, pm_task_lookup: dict[str, dict]) -> str:
-    """top_candidates is a list of CandidateBreakdown from stage2."""
     rows: list[str] = []
     for i, c in enumerate(top_candidates, start=1):
         task = pm_task_lookup.get(c.task_key, {})
@@ -151,37 +129,21 @@ def _format_candidates(top_candidates: list, pm_task_lookup: dict[str, dict]) ->
     return "\n\n".join(rows) if rows else "(no candidates)"
 
 
-def _build_prompt(
+def _build_user_message(
     session: dict,
     dims_grouped: dict[str, set[str]],
     top_candidates: list,
     pm_task_lookup: dict[str, dict],
 ) -> str:
     return (
-        "You are tagging a screen-activity session with the most likely Jira ticket.\n"
-        "Pick exactly one ticket from CANDIDATES, or return null if NONE fits the session.\n"
-        "\n"
         "SESSION:\n"
         f"{_format_session(session)}\n"
         "\n"
         "OBSERVED DIMENSIONS (rule-extracted):\n"
         f"{_format_dimensions(dims_grouped)}\n"
         "\n"
-        "CANDIDATE TICKETS (top by embedding similarity, all from this user's open queue):\n"
-        f"{_format_candidates(top_candidates, pm_task_lookup)}\n"
-        "\n"
-        "Respond with VALID JSON only, no markdown fences, exactly this shape:\n"
-        '{"task_key": "<KAN-N or null>",\n'
-        ' "confidence": <number 0..1>,\n'
-        ' "reasoning": "<1-2 sentences>"}\n'
-        "\n"
-        "Rules:\n"
-        "- task_key MUST be one of the candidates above, or null.\n"
-        "- confidence reflects how clearly the session matches that ticket; "
-        "use < 0.40 only if you are not confident at all.\n"
-        "- If the session looks like overhead (idle / chrome / unrelated), "
-        'return {"task_key": null, "confidence": 0.0, "reasoning": "..."}.\n'
-        "- Output JSON. Nothing else."
+        "CANDIDATE TICKETS:\n"
+        f"{_format_candidates(top_candidates, pm_task_lookup)}"
     )
 
 
@@ -189,19 +151,76 @@ def _build_prompt(
 _NULL_LITERALS = {"", "null", "none", "n/a", "nil", "undefined"}
 
 
+def _extract_json(text: str) -> str | None:
+    """Pull the first JSON object out of a possibly-fenced or chatty response.
+
+    Tolerant of truncation: thinking-style models sometimes blow through
+    max_tokens mid-JSON-string. We attempt to repair by closing dangling
+    quotes and brace depth so the partial object still parses.
+    """
+    if not text:
+        return None
+    candidate = text.strip()
+
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", candidate, re.DOTALL)
+    if fence:
+        return fence.group(1)
+
+    m = re.search(r"\{.*\}", candidate, re.DOTALL)
+    if m:
+        return m.group()
+
+    # Truncated case: response starts with a brace but never closed.
+    start = candidate.find("{")
+    if start >= 0:
+        partial = candidate[start:]
+        return _repair_truncated_json(partial)
+    return None
+
+
+def _repair_truncated_json(partial: str) -> str:
+    """Best-effort: close any dangling string, then balance braces.
+
+    Used when the model ran out of tokens partway through emitting the
+    JSON object. The repaired string is at minimum a syntactically valid
+    object so `json.loads` can pull out whatever fields completed.
+    """
+    out = partial
+    # Walk the string tracking quote state (ignoring escaped quotes).
+    in_string = False
+    escape = False
+    depth = 0
+    for ch in out:
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth = max(0, depth - 1)
+    # Close any open string first.
+    if in_string:
+        out += '"'
+    # Then close any open braces.
+    out += "}" * depth
+    return out
+
+
 def _parse_response(text: str, valid_keys: set[str]) -> tuple[str | None, float, str, str | None]:
     """Returns (task_key, confidence, reasoning, error). error is None on success."""
     if not text:
         return None, 0.0, "", "empty response"
-    # Accept JSON either bare or wrapped in a fenced block.
-    candidate = text.strip()
-    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", candidate, re.DOTALL)
-    if fence:
-        candidate = fence.group(1)
-    else:
-        m = re.search(r"\{.*\}", candidate, re.DOTALL)
-        if m:
-            candidate = m.group()
+    candidate = _extract_json(text)
+    if candidate is None:
+        return None, 0.0, "", "no JSON object in response"
     try:
         obj = json.loads(candidate)
     except json.JSONDecodeError as exc:
@@ -242,7 +261,8 @@ def stage3_decide(
     top_candidates: list,
     pm_task_lookup: dict[str, dict],
 ) -> Stage3Result:
-    """Ask the configured LLM to break the tie between Stage-2 candidates."""
+    """Ask the configured LLM (via hermes AIAgent) to break the tie between
+    Stage-2 candidates."""
     sid = int(session["id"])
     valid_keys = {c.task_key for c in top_candidates}
     if not valid_keys:
@@ -251,87 +271,66 @@ def stage3_decide(
             reasoning="no candidates", routing="skip", method="stage3_unavailable",
         )
 
-    prompt = _build_prompt(session, dims_grouped, top_candidates, pm_task_lookup)
-    log.debug("stage3 prompt:\n%s", prompt)
+    user_message = _build_user_message(session, dims_grouped, top_candidates, pm_task_lookup)
+    log.debug("stage3 user message:\n%s", user_message)
 
     try:
-        client = _get_client()
-    except ImportError as exc:
+        system_prompt = load_skill(STAGE3_SKILL_NAME)
+    except FileNotFoundError as exc:
         return Stage3Result(
             session_id=sid, chosen_task_key=None, confidence=0.0,
             reasoning=str(exc), routing="skip", method="stage3_unavailable",
         )
 
-    t0 = time.time()
-    raw = ""
-
-    def _call(use_json_format: bool):
-        kwargs: dict[str, Any] = {
-            "model":       MODEL,
-            "messages":    [{"role": "user", "content": prompt}],
-            "temperature": 0.0,
-            "max_tokens":  STAGE3_MAX_TOKENS,
-        }
-        if use_json_format:
-            kwargs["response_format"] = {"type": "json_object"}
-        return client.chat.completions.create(**kwargs)
-
-    def _extract_text(resp) -> str:
-        """Pull JSON-bearing text out of the response, accommodating
-        thinking-style models that put chain-of-thought in `reasoning_content`
-        and the actual answer in `content`."""
-        if not resp.choices:
-            return ""
-        msg = resp.choices[0].message
-        content = (getattr(msg, "content", None) or "").strip()
-        if content:
-            return content
-        # Fallback: some providers expose reasoning fields on the message.
-        for attr in ("reasoning_content", "reasoning", "thinking"):
-            v = getattr(msg, attr, None)
-            if isinstance(v, str) and v.strip():
-                return v.strip()
-        # Last-ditch: dict form (raw model output).
-        try:
-            d = msg.model_dump()
-        except Exception:
-            d = {}
-        for k in ("content", "reasoning_content", "reasoning", "thinking", "text"):
-            v = d.get(k)
-            if isinstance(v, str) and v.strip():
-                return v.strip()
-        return ""
-
     try:
-        # First try JSON mode. If the provider rejects it OR returns empty,
-        # retry without — common failure mode with Ollama Cloud / smaller
-        # models that don't enforce json_object reliably.
-        try:
-            resp = _call(use_json_format=True)
-            raw = _extract_text(resp)
-            if not raw:
-                log.info("stage3: empty content with json_object — retrying without")
-                resp = _call(use_json_format=False)
-                raw = _extract_text(resp)
-        except Exception as exc_first:
-            log.info("stage3: json_object call failed (%s) — retrying without", exc_first)
-            resp = _call(use_json_format=False)
-            raw = _extract_text(resp)
-        # If we got something but it ends mid-string, the LLM blew through max_tokens.
-        # Log finish_reason for visibility.
-        finish = getattr(resp.choices[0], "finish_reason", "") if resp and resp.choices else ""
-        if finish and finish != "stop":
-            log.warning("stage3: finish_reason=%s — response may be truncated", finish)
-    except Exception as exc:
-        elapsed = time.time() - t0
-        log.warning("stage3 call failed: %s", exc)
+        from run_agent import AIAgent
+    except ImportError as exc:
         return Stage3Result(
             session_id=sid, chosen_task_key=None, confidence=0.0,
-            reasoning=f"LLM call failed: {exc}", routing="skip",
+            reasoning=f"hermes AIAgent import failed: {exc}",
+            routing="skip", method="stage3_unavailable",
+        )
+
+    log.info("stage3: model=%s base_url=%s skill=%s", MODEL, BASE_URL, STAGE3_SKILL_NAME)
+
+    t0 = time.time()
+    raw = ""
+    try:
+        agent = AIAgent(
+            model=MODEL,
+            base_url=BASE_URL,
+            api_key=API_KEY or "none",
+            ephemeral_system_prompt=system_prompt,
+            enabled_toolsets=[],          # no tools — single-shot completion
+            quiet_mode=True,
+            skip_context_files=True,
+            load_soul_identity=False,
+            skip_memory=True,
+            max_iterations=1,             # one model round, no tool loop
+            max_tokens=STAGE3_MAX_TOKENS,
+        )
+        result = agent.run_conversation(user_message)
+    except Exception as exc:
+        elapsed = time.time() - t0
+        log.warning("stage3 AIAgent failed: %s", exc)
+        return Stage3Result(
+            session_id=sid, chosen_task_key=None, confidence=0.0,
+            reasoning=f"AIAgent run failed: {exc}", routing="skip",
             method="stage3_unavailable", elapsed_s=elapsed,
         )
 
     elapsed = time.time() - t0
+
+    # AIAgent.run_conversation returns a dict; the visible answer lives under
+    # `final_response` (string). Some failure modes return None there.
+    raw = ""
+    if isinstance(result, dict):
+        raw = str(
+            result.get("final_response")
+            or result.get("response")
+            or ""
+        ).strip()
+
     log.debug("stage3 raw response (%.1fs): %s", elapsed, raw[:1000])
 
     task_key, confidence, reasoning, err = _parse_response(raw, valid_keys)
@@ -341,7 +340,7 @@ def stage3_decide(
             session_id=sid, chosen_task_key=None, confidence=0.0,
             reasoning=err, routing="skip", method="stage3_invalid_response",
             raw_response=raw[:1000], elapsed_s=elapsed,
-            debug={"error": err},
+            debug={"error": err, "model": MODEL, "base_url": BASE_URL},
         )
 
     routing = _routing_for(confidence, task_key)
@@ -360,6 +359,7 @@ def stage3_decide(
             "n_candidates":  len(valid_keys),
             "auto_floor":    STAGE3_AUTO_FLOOR,
             "queue_floor":   STAGE3_QUEUE_FLOOR,
+            "skill":         STAGE3_SKILL_NAME,
         },
     )
 
