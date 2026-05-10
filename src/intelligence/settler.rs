@@ -306,7 +306,24 @@ pub async fn settle_chrome_categories(meridian: &SqlitePool, backend: &LlmBacken
                 }
             },
             Err(e) => {
-                warn!(session_id = id, error = %e, "Foundation Models call failed for category");
+                let msg = e.to_string();
+                let is_permanent = msg.contains("unsupported language")
+                    || msg.contains("unsupported Language")
+                    || msg.contains("context window")
+                    || msg.contains("deviceNotEligible")
+                    || msg.contains("appleIntelligenceNotEnabled");
+                if is_permanent {
+                    // Write sentinel so this session is never retried
+                    warn!(session_id = id, error = %e, "FM permanent failure — writing sentinel");
+                    if let Err(db_err) =
+                        update_session_category(meridian, *id, PARSE_ERROR_SENTINEL, 0.0).await
+                    {
+                        warn!(session_id = id, error = %db_err, "failed to write FM error sentinel");
+                    }
+                } else {
+                    // Transient error (throttle, network) — leave as rule_based so next tick retries
+                    warn!(session_id = id, error = %e, "FM transient failure — will retry next tick");
+                }
             }
         }
     }
