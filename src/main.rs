@@ -8,7 +8,7 @@ use meridian::config::Config;
 use meridian::db::meridian::{cleanup_incomplete_runs, setup_db};
 use meridian::db::screenpipe::open_screenpipe;
 use meridian::etl::run_etl;
-use meridian::intelligence::run_intelligence;
+// use meridian::intelligence::run_intelligence; // re-enable with AI loop
 use tokio::signal::unix::{signal, SignalKind};
 use tracing_subscriber::EnvFilter;
 
@@ -21,11 +21,14 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    // 2. Load ~/.meridian/.env if it exists (silently ignored if absent)
+    // 2. Load env files — later file wins on conflicts.
+    //    ~/.meridian/.env  — system / user-level defaults
+    //    .env in cwd       — project root, easiest to edit during development
     if let Ok(home) = std::env::var("HOME") {
         let env_path = std::path::Path::new(&home).join(".meridian").join(".env");
         let _ = dotenvy::from_path(env_path);
     }
+    let _ = dotenvy::dotenv(); // loads .env from current working directory
 
     // 3. Load config
     let cfg = Config::from_env();
@@ -76,9 +79,10 @@ async fn main() -> Result<()> {
     if let Err(e) = run_etl(&screenpipe, &meridian).await {
         tracing::error!("ETL run failed: {}", e);
     }
-    if let Err(e) = run_intelligence(&meridian, &cfg).await {
-        tracing::error!("intelligence run failed: {}", e);
-    }
+    // TODO: re-enable once AI classification loop is finalised
+    // if let Err(e) = run_intelligence(&meridian, &cfg).await {
+    //     tracing::error!("intelligence run failed: {}", e);
+    // }
 
     // 7b. Poll loop
     loop {
@@ -90,8 +94,11 @@ async fn main() -> Result<()> {
                 tracing::debug!("starting ETL tick");
                 if let Err(e) = run_etl(&screenpipe, &meridian).await {
                     tracing::error!("ETL run failed: {}", e);
-                    // Don't exit — retry next tick
                 }
+                // TODO: re-enable once AI classification loop is finalised
+                // if let Err(e) = run_intelligence(&meridian, &cfg).await {
+                //     tracing::error!("intelligence run failed: {}", e);
+                // }
             }
         }
     }
