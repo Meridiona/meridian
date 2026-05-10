@@ -53,6 +53,20 @@ impl PmProviderConfig {
     }
 }
 
+/// Which LLM backend to use for session-to-task classification.
+#[derive(Clone, Debug)]
+pub enum LlmBackendConfig {
+    /// Apple Foundation Models via Swift FFI (macOS 26+, Apple Silicon only).
+    /// Zero setup for end users. Developers need: xcode-select --install
+    FoundationModels,
+    /// Any OpenAI-compatible HTTP server (e.g. Ollama at localhost:11434).
+    OpenAiCompat { base_url: String, model: String },
+    /// Anthropic Claude API (requires ANTHROPIC_API_KEY or LLM_API_KEY).
+    Claude { api_key: String, model: String },
+    /// LLM classification disabled — sessions are not mapped to tasks.
+    Disabled,
+}
+
 // ---------------------------------------------------------------------------
 // Top-level config
 // ---------------------------------------------------------------------------
@@ -63,6 +77,7 @@ pub struct Config {
     pub poll_interval_secs: u64,
     /// All configured PM providers. Empty = intelligence silently disabled.
     pub pm_providers: Vec<PmProviderConfig>,
+    pub llm_backend: LlmBackendConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +143,43 @@ fn parse_providers() -> Vec<PmProviderConfig> {
         .collect()
 }
 
+fn parse_llm_backend() -> LlmBackendConfig {
+    let backend = std::env::var("LLM_BACKEND")
+        .unwrap_or_else(|_| {
+            if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+                "foundation".to_string()
+            } else {
+                "disabled".to_string()
+            }
+        })
+        .to_lowercase();
+
+    match backend.as_str() {
+        "foundation" | "apple" | "apple_intelligence" => LlmBackendConfig::FoundationModels,
+        "ollama" | "openai_compat" | "openai" => {
+            let base_url = std::env::var("LLM_BASE_URL")
+                .unwrap_or_else(|_| "http://localhost:11434".to_string());
+            let model = std::env::var("LLM_MODEL").unwrap_or_else(|_| "qwen2.5:3b".to_string());
+            LlmBackendConfig::OpenAiCompat { base_url, model }
+        }
+        "claude" | "anthropic" => {
+            let api_key = std::env::var("ANTHROPIC_API_KEY")
+                .or_else(|_| std::env::var("LLM_API_KEY"))
+                .unwrap_or_default();
+            if api_key.is_empty() {
+                eprintln!(
+                    "warning: LLM_BACKEND=claude but no ANTHROPIC_API_KEY set — using Disabled"
+                );
+                return LlmBackendConfig::Disabled;
+            }
+            let model = std::env::var("LLM_MODEL")
+                .unwrap_or_else(|_| "claude-haiku-4-5-20251001".to_string());
+            LlmBackendConfig::Claude { api_key, model }
+        }
+        _ => LlmBackendConfig::Disabled,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Config::from_env
 // ---------------------------------------------------------------------------
@@ -151,6 +203,12 @@ impl Config {
     /// Linear provider (required):
     ///   LINEAR_API_KEY
     ///   LINEAR_TEAM_IDS     — optional comma-separated filter
+    ///
+    /// LLM backend:
+    ///   LLM_BACKEND      — 'foundation' (default on Apple Silicon) | 'ollama' | 'claude' | 'disabled'
+    ///   LLM_BASE_URL     — base URL for ollama (default: http://localhost:11434)
+    ///   LLM_MODEL        — model name for ollama or claude
+    ///   ANTHROPIC_API_KEY — API key for Claude backend
     pub fn from_env() -> Self {
         let screenpipe_db = std::env::var("SCREENPIPE_DB")
             .map(|v| expand_tilde(&v))
@@ -176,6 +234,7 @@ impl Config {
             meridian_db,
             poll_interval_secs,
             pm_providers: parse_providers(),
+            llm_backend: parse_llm_backend(),
         }
     }
 
