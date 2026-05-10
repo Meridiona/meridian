@@ -559,6 +559,55 @@ def mark_dispatch_skipped(conn: sqlite3.Connection, dispatch_id: int, reason: st
     )
 
 
+# ── session_dimensions (multi-label tagging) ──────────────────────────────────
+def upsert_session_dimension(
+    conn: sqlite3.Connection,
+    *,
+    session_id: int,
+    dimension: str,
+    value: str,
+    confidence: float,
+    source: str,
+) -> None:
+    """Insert or refresh one (session, dimension, value) row.
+
+    On conflict we keep the higher confidence and the newer source. This makes
+    the writer idempotent across multiple stage runs (regex → embeddings → LLM).
+    """
+    conn.execute(
+        """
+        INSERT INTO session_dimensions (session_id, dimension, value, confidence, source, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_id, dimension, value) DO UPDATE SET
+            confidence = MAX(session_dimensions.confidence, excluded.confidence),
+            source     = excluded.source,
+            created_at = excluded.created_at
+        """,
+        (session_id, dimension, value, float(confidence), source, _utc_now()),
+    )
+
+
+def fetch_session_dimensions(conn: sqlite3.Connection, session_id: int) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT dimension, value, confidence, source, created_at
+          FROM session_dimensions
+         WHERE session_id = ?
+         ORDER BY dimension, confidence DESC
+        """,
+        (session_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def clear_session_dimensions(conn: sqlite3.Connection, session_id: int) -> int:
+    cur = conn.execute(
+        "DELETE FROM session_dimensions WHERE session_id = ?",
+        (session_id,),
+    )
+    return int(cur.rowcount or 0)
+
+
 # ── Misc helpers ───────────────────────────────────────────────────────────────
 def session_id_max(sessions: Iterable[dict]) -> int:
     """Return the largest id in a session bundle, or 0 if empty."""
