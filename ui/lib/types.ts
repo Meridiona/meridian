@@ -47,6 +47,18 @@ export interface SessionRow {
   etl_run_id: number
   category: string
   confidence: number
+  // Set when a row exists in ticket_links for this session (LEFT JOIN).
+  // task_key is null when the tagger classified the session as overhead
+  // or couldn't match any pm_task. session_type/routing/method/link_confidence
+  // are all null when no ticket_links row exists at all.
+  task_key: string | null
+  task_title: string | null
+  task_url: string | null
+  task_provider: string | null
+  session_type: string | null         // 'task' | 'overhead' | 'unknown'
+  routing: string | null              // 'auto' | 'queue' | 'skip'
+  link_confidence: number | null
+  link_method: string | null          // 'stage1_regex' | 'stage2_embed' | 'stage3_llm' | 'stage1_prefilter'
 }
 
 export interface ActiveSessionRow {

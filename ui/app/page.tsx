@@ -31,6 +31,14 @@ function parseSession(r: Record<string, unknown>): SessionRow {
     etl_run_id: r.etl_run_id as number,
     category: (r.category as string) || 'idle_personal',
     confidence: (r.confidence as number) || 0,
+    task_key:        (r.task_key as string | null) ?? null,
+    task_title:      (r.task_title as string | null) ?? null,
+    task_url:        (r.task_url as string | null) ?? null,
+    task_provider:   (r.task_provider as string | null) ?? null,
+    session_type:    (r.session_type as string | null) ?? null,
+    routing:         (r.routing as string | null) ?? null,
+    link_confidence: (r.link_confidence as number | null) ?? null,
+    link_method:     (r.link_method as string | null) ?? null,
   }
 }
 
@@ -137,12 +145,23 @@ function getRecentSessions(date: string): SessionRow[] {
     const db = getDb()
     const { start, end } = localDayBounds(date)
     const rows = db.prepare(`
-      SELECT id, app_name, started_at, ended_at, duration_s,
-             window_titles, ocr_samples, elements_samples,
-             audio_snippets, signals, frame_count, etl_run_id,
-             category, confidence
-      FROM app_sessions WHERE started_at >= ? AND started_at < ?
-      ORDER BY started_at DESC LIMIT 8
+      SELECT s.id, s.app_name, s.started_at, s.ended_at, s.duration_s,
+             s.window_titles, s.ocr_samples, s.elements_samples,
+             s.audio_snippets, s.signals, s.frame_count, s.etl_run_id,
+             s.category, s.confidence,
+             tl.task_key       AS task_key,
+             tl.session_type   AS session_type,
+             tl.routing        AS routing,
+             tl.confidence     AS link_confidence,
+             tl.method         AS link_method,
+             pt.title          AS task_title,
+             pt.url            AS task_url,
+             pt.provider       AS task_provider
+        FROM app_sessions s
+        LEFT JOIN ticket_links tl ON tl.session_id = s.id
+        LEFT JOIN pm_tasks    pt ON pt.task_key   = tl.task_key
+       WHERE s.started_at >= ? AND s.started_at < ?
+       ORDER BY s.started_at DESC LIMIT 8
     `).all(start, end) as Array<Record<string, unknown>>
     return rows.map(parseSession)
   } catch { return [] }
