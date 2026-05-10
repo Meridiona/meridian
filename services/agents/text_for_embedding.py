@@ -101,10 +101,10 @@ def _join_audio(session: dict, budget: int = _AUDIO_BUDGET_CHARS) -> str:
 
 
 def session_text(session: dict) -> str:
-    """Return the canonical embedding input for a session.
+    """Return the canonical embedding input for a session (single-vector mode).
 
-    Format is `app | titles | ocr | audio` so the encoder gets a clear
-    structural cue. Sections are dropped when empty.
+    Kept for callers that still want a one-string view of the session, but
+    Stage 2 now uses `session_text_samples` for multi-vector encoding.
     """
     parts: list[str] = []
     app = (session.get("app_name") or "").strip()
@@ -123,6 +123,70 @@ def session_text(session: dict) -> str:
     if audio:
         parts.append(f"audio: {audio}")
     return "\n".join(parts)
+
+
+# Per-sample budgets: each piece is independently meaningful, so we don't need
+# the global 3 KB cap any more. Per-OCR-sample cap of 1500 keeps the encoder
+# in its sweet spot (≤512 tokens) while preserving Tailscale-style content.
+_PER_OCR_SAMPLE_CAP = 1500
+_MIN_OCR_SAMPLE_CHARS = 30
+_MAX_OCR_SAMPLES      = 20
+_PER_AUDIO_CAP        = 1500
+
+
+def session_text_samples(session: dict) -> list[tuple[str, str]]:
+    """Return a list of (label, text) tuples to embed independently.
+
+    Stage 2 max-pools cosine similarity over these — so each sample only
+    needs to be meaningful on its own, and noisy ones (e.g. an OS chrome
+    OCR frame) won't drag the matched ticket out of the running.
+
+    Labels are stable: 'titles', 'audio', 'ocr_0' ... 'ocr_N'. The
+    matching code uses these labels for debug output ("which sample
+    matched best for this ticket?").
+    """
+    out: list[tuple[str, str]] = []
+
+    # Title block — the strongest "what is the user looking at" signal.
+    # We prepend app + category as a metadata header so the encoder gets
+    # the right register (e.g. "app: Code, category: coding | windows: ...").
+    titles = _join_titles(session)
+    if titles:
+        meta = " ".join(filter(None, [
+            f"app: {session.get('app_name')}" if session.get("app_name") else "",
+            f"category: {session.get('category')}" if session.get("category") else "",
+        ])).strip()
+        out.append(("titles", f"{meta} | windows: {titles}" if meta else f"windows: {titles}"))
+    elif session.get("app_name"):
+        # No titles — at least give the encoder the app name + category.
+        meta = " ".join(filter(None, [
+            f"app: {session.get('app_name')}" if session.get("app_name") else "",
+            f"category: {session.get('category')}" if session.get("category") else "",
+        ])).strip()
+        if meta:
+            out.append(("titles", meta))
+
+    # Each OCR sample as its own document. Tiny and obviously-junk samples
+    # are skipped — they only add noise to the max-pool.
+    for i, s in enumerate((session.get("ocr_samples") or [])[:_MAX_OCR_SAMPLES]):
+        text = (s.get("text", "") if isinstance(s, dict) else str(s)).strip()
+        if len(text) < _MIN_OCR_SAMPLE_CHARS:
+            continue
+        if len(text) > _PER_OCR_SAMPLE_CAP:
+            text = text[:_PER_OCR_SAMPLE_CAP]
+        out.append((f"ocr_{i}", text))
+
+    # Audio block — small enough that one combined doc is fine.
+    audio = _join_audio(session, budget=_PER_AUDIO_CAP)
+    if audio:
+        out.append(("audio", audio))
+
+    if not out:
+        # Pathological — make sure we still have *something* to embed
+        # (otherwise stage 2 returns empty and the inspector reports nothing).
+        out.append(("empty", session.get("app_name") or "session"))
+
+    return out
 
 
 def task_text(task: dict) -> str:
@@ -150,4 +214,4 @@ def text_hash(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 
-__all__ = ["session_text", "task_text", "text_hash"]
+__all__ = ["session_text", "session_text_samples", "task_text", "text_hash"]
