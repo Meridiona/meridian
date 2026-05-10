@@ -456,24 +456,27 @@ async fn close_block(
     let existing = get_active_session(meridian).await?;
 
     match existing {
-        Some(ref active) if active.app_name == b.app => {
-            debug!(app = b.app, "merging and closing continuation block");
+        Some(ref active) if active.app_name == ctx.app_name => {
+            debug!(app = ctx.app_name, "merging and closing continuation block");
             let merged = merge_into_active(active, &ctx, b.idle_frame_count)?;
             close_active_session_with(meridian, &merged, run_id).await?;
-            info!(app = b.app, "session closed (merged continuation)");
+            info!(app = ctx.app_name, "session closed (merged continuation)");
             Ok(1)
         }
 
         Some(ref active) => {
             warn!(
                 stale_app = active.app_name,
-                new_app = b.app,
+                new_app = ctx.app_name,
                 "stale active_session — closing stale first"
             );
             close_active_session_with(meridian, active, run_id).await?;
             let new_session = build_active_session(&ctx, b.idle_frame_count)?;
             close_active_session_with(meridian, &new_session, run_id).await?;
-            info!(app = b.app, "session closed (fresh, after evicting stale)");
+            info!(
+                app = ctx.app_name,
+                "session closed (fresh, after evicting stale)"
+            );
             Ok(2)
         }
 
@@ -510,9 +513,9 @@ async fn upsert_open_block(
     let existing = get_active_session(meridian).await?;
 
     let session = match existing {
-        Some(ref active) if active.app_name == b.app => {
+        Some(ref active) if active.app_name == ctx.app_name => {
             debug!(
-                app = b.app,
+                app = ctx.app_name,
                 "merging new frames into existing active_session"
             );
             merge_into_active(active, &ctx, b.idle_frame_count)?
@@ -521,7 +524,7 @@ async fn upsert_open_block(
         Some(ref active) => {
             warn!(
                 stale_app = active.app_name,
-                new_app = b.app,
+                new_app = ctx.app_name,
                 "stale active_session while upserting open block"
             );
             close_active_session_with(meridian, active, run_id).await?;
