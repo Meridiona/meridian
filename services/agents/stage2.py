@@ -34,9 +34,10 @@ from typing import Any
 
 import numpy as np
 
-from agents import db, embeddings as emb, text_for_embedding as tfe
+from agents import db, embeddings as emb, observability, text_for_embedding as tfe
 
 log = logging.getLogger("agents.stage2")
+tracer = observability.setup("meridian-stage2")
 
 
 # ────────────────────────── Constants / defaults ──────────────────────────────
@@ -308,6 +309,31 @@ def stage2_match(
     """Embed `session` as a multi-vec matrix, score against `pm_tasks` via
     max-pool cosine, and return a decision."""
     sid = int(session["id"])
+    with tracer.start_as_current_span("stage2.match") as span:
+        span.set_attribute("session_id", sid)
+        span.set_attribute("pm_tasks_count", len(pm_tasks))
+        result = _stage2_match_inner(
+            conn, session, pm_tasks, sid,
+            k_top=k_top, k_neighbors=k_neighbors,
+        )
+        span.set_attribute("method", result.method)
+        span.set_attribute("routing", result.routing)
+        if result.chosen_task_key:
+            span.set_attribute("chosen_task_key", result.chosen_task_key)
+        span.set_attribute("score_top1", float(result.debug.get("score_top1") or 0.0))
+        span.set_attribute("score_top2_gap", float(result.debug.get("score_gap") or 0.0))
+        return result
+
+
+def _stage2_match_inner(
+    conn: sqlite3.Connection,
+    session: dict,
+    pm_tasks: list[dict],
+    sid: int,
+    *,
+    k_top: int = 5,
+    k_neighbors: int = 10,
+) -> Stage2Result:
 
     if not pm_tasks:
         return Stage2Result(

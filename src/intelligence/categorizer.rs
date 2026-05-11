@@ -455,6 +455,15 @@ const CONFIDENCE_FLOOR: f32 = 0.35;
 /// `ticket_links.confidence` so PM matching can gate on it.
 ///
 /// Pure function — no I/O, no allocations beyond small `to_lowercase` copies.
+#[tracing::instrument(
+    skip_all,
+    fields(
+        app_name = %signals.app_name,
+        signal_count = tracing::field::Empty,
+        category = tracing::field::Empty,
+        confidence = tracing::field::Empty,
+    )
+)]
 pub fn categorize(signals: &SessionSignals<'_>) -> (ActivityKind, f32) {
     let mut scores = Scores::new();
 
@@ -468,12 +477,21 @@ pub fn categorize(signals: &SessionSignals<'_>) -> (ActivityKind, f32) {
     score_elements(signals.elements, &mut scores);
     score_signals(signals.signals, &mut scores);
 
+    let signal_count = signals.window_titles.len()
+        + signals.elements.len()
+        + signals.signals.len()
+        + if signals.audio_present { 1 } else { 0 };
+    tracing::Span::current().record("signal_count", signal_count);
+
     let (kind, confidence) = scores.winner();
-    if confidence < CONFIDENCE_FLOOR {
+    let (final_kind, final_conf) = if confidence < CONFIDENCE_FLOOR {
         (ActivityKind::IdlePersonal, confidence)
     } else {
         (kind, confidence)
-    }
+    };
+    tracing::Span::current().record("category", final_kind.as_str());
+    tracing::Span::current().record("confidence", final_conf as f64);
+    (final_kind, final_conf)
 }
 
 // ---------------------------------------------------------------------------
