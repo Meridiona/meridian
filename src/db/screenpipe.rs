@@ -289,25 +289,24 @@ pub async fn get_ocr_samples(
     Ok(result)
 }
 
-/// Returns up to 10 unique accessibility element samples from the given frame-id range.
-/// Deduplicates on (text, role) — same element appearing in multiple frames is stored once.
-/// Only elements with more than 20 characters and source = 'accessibility' are included.
-/// Capped at 10 — Terminal accessibility trees can be hundreds of MB without this.
+/// Returns unique accessibility element samples from the given frame-id range.
+/// Deduplicates on (trimmed text, role) — same element appearing in multiple frames is stored once.
+/// Only elements with more than 20 characters (after trimming) and source = 'accessibility' are included.
+/// AXTextArea deduplication (terminal scroll buffer collapse) is handled in extractor.rs after this call.
 pub async fn get_element_samples(
     pool: &SqlitePool,
     min_frame_id: i64,
     max_frame_id: i64,
 ) -> Result<Vec<ElementSample>> {
     let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>, String)>(
-        "SELECT e.text, e.role, MIN(f.window_name) AS window_name, MIN(f.timestamp) AS timestamp
+        "SELECT TRIM(e.text), e.role, MIN(f.window_name) AS window_name, MIN(f.timestamp) AS timestamp
          FROM elements e
          JOIN frames f ON e.frame_id = f.id
          WHERE f.id BETWEEN ? AND ?
-           AND e.text IS NOT NULL AND length(e.text) > 20
+           AND e.text IS NOT NULL AND length(TRIM(e.text)) > 20
            AND e.source = 'accessibility'
-         GROUP BY e.text, e.role
-         ORDER BY timestamp
-         LIMIT 10",
+         GROUP BY TRIM(e.text), e.role
+         ORDER BY timestamp",
     )
     .bind(min_frame_id)
     .bind(max_frame_id)
