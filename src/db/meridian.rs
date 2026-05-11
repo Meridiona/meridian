@@ -256,6 +256,13 @@ pub async fn cleanup_incomplete_runs(pool: &SqlitePool) -> anyhow::Result<u64> {
 
     let deleted = result.rows_affected();
 
+    sqlx::query(
+        "DELETE FROM gaps WHERE etl_run_id IN (SELECT id FROM etl_runs WHERE status = 'running')",
+    )
+    .execute(pool)
+    .await
+    .context("cleanup_incomplete_runs: delete partial gaps")?;
+
     sqlx::query("DELETE FROM active_session")
         .execute(pool)
         .await

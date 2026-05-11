@@ -5,7 +5,7 @@
 mod common;
 
 use meridian::db::meridian::{
-    cleanup_incomplete_runs, get_active_session, get_cursor, insert_etl_run,
+    cleanup_incomplete_runs, get_active_session, get_cursor, insert_etl_run, insert_gap,
 };
 use meridian::etl::run_etl;
 
@@ -196,4 +196,58 @@ async fn test_cleanup_incomplete_runs() {
         .await
         .unwrap();
     assert_eq!(status.0, "aborted");
+
+    let gaps_after: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM gaps")
+        .fetch_one(&md)
+        .await
+        .unwrap();
+    assert_eq!(gaps_after.0, 0, "gaps for aborted run must be deleted");
+}
+
+// ---------------------------------------------------------------------------
+// Cleanup also removes gaps written by aborted runs
+// ---------------------------------------------------------------------------
+
+/// An aborted run may have written gap rows before crashing. Those rows must
+/// be deleted by cleanup_incomplete_runs so they are not duplicated when the
+/// run restarts from the same cursor position.
+#[tokio::test]
+async fn test_cleanup_removes_aborted_gaps() {
+    let md = common::make_meridian_db().await;
+
+    let run_id = insert_etl_run(&md, 0, 10).await.unwrap();
+    insert_gap(
+        &md,
+        "2026-01-01T10:00:00+00:00",
+        "2026-01-01T10:10:00+00:00",
+        600,
+        "system_sleep",
+        run_id,
+    )
+    .await
+    .unwrap();
+    insert_gap(
+        &md,
+        "2026-01-01T11:00:00+00:00",
+        "2026-01-01T11:08:00+00:00",
+        480,
+        "user_idle",
+        run_id,
+    )
+    .await
+    .unwrap();
+
+    let before: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM gaps")
+        .fetch_one(&md)
+        .await
+        .unwrap();
+    assert_eq!(before.0, 2);
+
+    cleanup_incomplete_runs(&md).await.unwrap();
+
+    let after: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM gaps")
+        .fetch_one(&md)
+        .await
+        .unwrap();
+    assert_eq!(after.0, 0, "all gaps from the aborted run must be removed");
 }
