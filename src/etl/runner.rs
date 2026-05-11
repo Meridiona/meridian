@@ -80,14 +80,24 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
         if let Some(first_frame) = first_batch.first() {
             if let Some(gap_secs) = timestamp_gap_secs(&stale.last_seen_at, &first_frame.timestamp)
             {
-                if gap_secs > GAP_THRESHOLD_SECS {
+                if gap_secs < 0 {
+                    warn!(
+                        gap_secs,
+                        last_seen_at = stale.last_seen_at,
+                        first_frame_ts = first_frame.timestamp,
+                        "cross-run gap is negative — clock drift or NTP sync, skipping"
+                    );
+                } else if gap_secs > GAP_THRESHOLD_SECS {
                     let (total, idle) = count_frames_in_window(
                         screenpipe,
                         &stale.last_seen_at,
                         &first_frame.timestamp,
                     )
                     .await
-                    .unwrap_or((0, 0));
+                    .unwrap_or_else(|e| {
+                        warn!(error = %e, "count_frames_in_window failed — classifying gap as system_sleep");
+                        (0, 0)
+                    });
                     let kind = if total > 0 && idle > 0 && idle * 2 >= total {
                         "user_idle"
                     } else {
@@ -160,14 +170,24 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                 // ----------------------------------------------------------
                 if current_app.is_some() {
                     if let Some(gap) = timestamp_gap_secs(&block_last_ts, &frame.timestamp) {
-                        if gap > GAP_THRESHOLD_SECS {
+                        if gap < 0 {
+                            warn!(
+                                gap_secs = gap,
+                                block_last_ts,
+                                frame_ts = frame.timestamp,
+                                "intra-batch gap is negative — clock drift or NTP sync, skipping"
+                            );
+                        } else if gap > GAP_THRESHOLD_SECS {
                             let (total, idle) = count_frames_in_window(
                                 screenpipe,
                                 &block_last_ts,
                                 &frame.timestamp,
                             )
                             .await
-                            .unwrap_or((0, 0));
+                            .unwrap_or_else(|e| {
+                                warn!(error = %e, "count_frames_in_window failed — classifying gap as system_sleep");
+                                (0, 0)
+                            });
 
                             let kind = if total > 0 && idle > 0 && (idle * 2 >= total) {
                                 "user_idle"
