@@ -20,7 +20,7 @@ use crate::intelligence::categorizer::{categorize, SessionSignals};
 // Constants
 // ---------------------------------------------------------------------------
 
-const BATCH_SIZE: i64 = 2000;
+const BATCH_SIZE: i64 = 10;
 const OCR_SAMPLE_CAP: usize = 20;
 const AUDIO_SNIPPET_CAP: usize = 50;
 const GAP_THRESHOLD_SECS: i64 = 300;
