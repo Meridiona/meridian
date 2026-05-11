@@ -3,6 +3,7 @@
 import { NextResponse } from 'next/server'
 import getDb from '@/lib/db'
 import { localDayBounds, todayString } from '@/lib/date-utils'
+import { logger, withSpan } from '@/lib/observability'
 
 export const dynamic = 'force-dynamic'
 
@@ -24,10 +25,11 @@ export interface TicketsTodayResponse {
 }
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url)
-  const date = searchParams.get('date') ?? todayString()
+  const url = new URL(request.url)
+  const date = url.searchParams.get('date') ?? todayString()
   const { start, end } = localDayBounds(date)
 
+  return withSpan('api.tickets', { route: url.pathname, date }, async () => {
   try {
     const db = getDb()
 
@@ -87,7 +89,7 @@ export async function GET(request: Request) {
 
     return NextResponse.json(response)
   } catch (e) {
-    console.error('tickets error:', e)
+    logger.error({ err: e instanceof Error ? e.message : String(e), route: 'tickets' }, 'tickets handler failed')
     return NextResponse.json({
       date,
       tasks: [],
@@ -96,4 +98,5 @@ export async function GET(request: Request) {
       total_tagged_s: 0,
     } as TicketsTodayResponse)
   }
+  })
 }

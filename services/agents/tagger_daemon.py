@@ -32,6 +32,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents import db                                     # noqa: E402
+from agents import observability                          # noqa: E402
+
+# Claim the process service.name before importing `tagger` (which transitively
+# imports stage2/stage3/embeddings, each calling observability.setup).
+tracer = observability.setup("meridian-tagger-daemon")
+
 from agents import tagger                                 # noqa: E402
 from agents.config import (                            # noqa: E402
     LOG_DIR, ONLY_TODAY, today_start_utc_iso,
@@ -53,19 +59,10 @@ DEFAULT_STAGES_RAW = os.environ.get("TAGGER_STAGES", "auto")
 
 # ────────────────────────── Logging ───────────────────────────────────────────
 def _configure_logging() -> Path:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = LOG_DIR / "tagger-daemon.log"
-    level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
-    level = getattr(logging, level_name, logging.INFO)
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        handlers=[logging.FileHandler(log_path), logging.StreamHandler(sys.stdout)],
-    )
-    for noisy in ("httpx", "httpcore", "openai._base_client"):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
-    log.info("LOG_LEVEL=%s log=%s", logging.getLevelName(level), log_path)
-    return log_path
+    """Idempotent — wires OTel + JSON logging via observability.setup."""
+    global tracer
+    tracer = observability.setup("meridian-tagger-daemon")
+    return LOG_DIR / "meridian-tagger-daemon.jsonl"
 
 
 # ────────────────────────── Helpers ───────────────────────────────────────────
@@ -130,12 +127,24 @@ _in_flight_session_id: int | None = None
 
 def _tick(stages: set[int]) -> dict:
     """Run one poll cycle. Returns a small report dict."""
-    with db.connection() as conn:
-        if not _has_new_work(conn):
-            return {"sessions_processed": 0, "elapsed_s": 0.0}
+    with tracer.start_as_current_span("tagger_daemon.tick") as tick_span:
+        tick_span.set_attribute("stages", sorted(stages))
+        t0 = time.time()
+        with db.connection() as conn:
+            if not _has_new_work(conn):
+                tick_span.set_attribute("sessions_processed", 0)
+                tick_span.set_attribute("tick_duration_s", round(time.time() - t0, 4))
+                tick_span.set_attribute("idle", True)
+                return {"sessions_processed": 0, "elapsed_s": 0.0}
 
-    since_iso = today_start_utc_iso() if ONLY_TODAY else None
-    return tagger.run_once(since_iso=since_iso, stages=stages) or {}
+        since_iso = today_start_utc_iso() if ONLY_TODAY else None
+        report = tagger.run_once(since_iso=since_iso, stages=stages) or {}
+        sessions_processed = int(
+            report.get("sessions_processed") or report.get("sessions") or 0
+        )
+        tick_span.set_attribute("sessions_processed", sessions_processed)
+        tick_span.set_attribute("tick_duration_s", round(time.time() - t0, 4))
+        return report
 
 
 def _install_signal_handlers() -> None:

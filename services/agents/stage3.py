@@ -29,9 +29,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from agents import observability
 from agents.config import MODEL, BASE_URL, API_KEY, load_skill
 
 log = logging.getLogger("agents.stage3")
+tracer = observability.setup("meridian-stage3")
 
 # Make `import run_agent` work — the hermes runtime lives at services/run_agent.py.
 _REPO_ROOT = Path(__file__).parent.parent
@@ -319,6 +321,29 @@ def stage3_decide(
     """Ask the configured LLM (via hermes AIAgent) to break the tie between
     Stage-2 candidates."""
     sid = int(session["id"])
+    with tracer.start_as_current_span("stage3.decide") as span:
+        span.set_attribute("session_id", sid)
+        span.set_attribute("model", MODEL or "")
+        span.set_attribute("candidates_count", len(top_candidates))
+        result = _stage3_decide_inner(
+            session, dims_grouped, top_candidates, pm_task_lookup, sid,
+        )
+        span.set_attribute("method", result.method)
+        span.set_attribute("routing", result.routing)
+        span.set_attribute("confidence", float(result.confidence))
+        if result.chosen_task_key:
+            span.set_attribute("chosen_task_key", result.chosen_task_key)
+        span.set_attribute("llm_latency_ms", int(result.elapsed_s * 1000))
+        return result
+
+
+def _stage3_decide_inner(
+    session: dict,
+    dims_grouped: dict[str, set[str]],
+    top_candidates: list,
+    pm_task_lookup: dict[str, dict],
+    sid: int,
+) -> Stage3Result:
     valid_keys = {c.task_key for c in top_candidates}
     if not valid_keys:
         return Stage3Result(

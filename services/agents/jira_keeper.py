@@ -16,6 +16,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from agents import observability
 from agents.config import (
     MODEL, BASE_URL, API_KEY,
     JIRA_STATE_FILE, CURRENT_CONTEXT_FILE, JIRA_DIR,
@@ -24,9 +25,7 @@ from agents.config import (
 )
 
 log = logging.getLogger("jira_keeper")
-
-for _noisy in ["httpx", "httpcore", "openai._base_client", "mcp"]:
-    logging.getLogger(_noisy).setLevel(logging.WARNING)
+tracer = observability.setup("meridian-jira-keeper")
 
 
 _MARK_SYNC_COMPLETE_SCHEMA = {
@@ -112,11 +111,22 @@ class _MCPBridge:
         return schemas
 
     def call_tool(self, name: str, args: dict) -> str:
-        log.info("  → tool call: %s(%s)", name, json.dumps(args)[:120])
-        result = asyncio.run(self._call_async(name, args))
-        log.info("  ← %s: %d chars returned", name, len(result))
-        log.debug("     %s", result[:400])
-        return result
+        with tracer.start_as_current_span("jira.api.update") as span:
+            span.set_attribute("action", name)
+            task_key = (
+                args.get("issue_key")
+                or args.get("key")
+                or args.get("task_key")
+                or ""
+            )
+            if task_key:
+                span.set_attribute("task_key", str(task_key))
+            log.info("  → tool call: %s(%s)", name, json.dumps(args)[:120])
+            result = asyncio.run(self._call_async(name, args))
+            log.info("  ← %s: %d chars returned", name, len(result))
+            log.debug("     %s", result[:400])
+            span.set_attribute("response_chars", len(result))
+            return result
 
     async def _call_async(self, name: str, args: dict) -> str:
         from mcp.client.stdio import stdio_client
@@ -243,6 +253,12 @@ def _load_json(path: Path, default) -> dict:
 
 # ── Public entry point ─────────────────────────────────────────────────────────
 def run_jira_keeper() -> dict:
+    with tracer.start_as_current_span("jira_keeper.sync") as span:
+        result = _run_jira_keeper_inner(span)
+        return result
+
+
+def _run_jira_keeper_inner(span) -> dict:
     from run_agent import AIAgent
 
     _ensure_bridges_and_patch()
@@ -265,6 +281,7 @@ def run_jira_keeper() -> dict:
 
     jira_state = _load_json(JIRA_STATE_FILE, {"tickets": {}, "last_sync": None})
     _state_bridge.init_cycle(now, current_ctx)
+    span.set_attribute("tickets_to_sync", len(jira_state.get("tickets") or {}))
 
     user_message = (
         f"Current time: {now.isoformat()}\n\n"
@@ -295,6 +312,9 @@ def run_jira_keeper() -> dict:
 
     elapsed = time.time() - t0
     result = _state_bridge.sync_result or {"status": "error", "reason": "mark_sync_complete not called"}
+    span.set_attribute("status", str(result.get("status") or ""))
+    span.set_attribute("tickets_updated", len(result.get("actions") or []))
+    span.set_attribute("elapsed_s", round(elapsed, 4))
 
     log.info("─" * 40)
     log.info("status:   %s", result.get("status"))
@@ -307,9 +327,6 @@ def run_jira_keeper() -> dict:
 
 if __name__ == "__main__":
     import json as _json
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format="%(asctime)s [%(levelname)-8s] %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    # `observability.setup` (called at module import) has already configured
+    # JSON logging + OTel traces. Don't re-wire logging here.
     print(_json.dumps(run_jira_keeper(), indent=2))

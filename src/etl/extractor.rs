@@ -37,6 +37,17 @@ pub struct BlockContext {
 /// Fetches all enrichment data for a single contiguous block of frames in
 /// parallel.  All three screenpipe query functions are called concurrently via
 /// `tokio::join!`.
+#[tracing::instrument(
+    skip_all,
+    fields(
+        app_name = %app_name,
+        min_frame_id,
+        max_frame_id,
+        frame_count,
+        ocr_sample_count = tracing::field::Empty,
+        audio_snippet_count = tracing::field::Empty,
+    )
+)]
 pub async fn extract_block_context(
     screenpipe: &SqlitePool,
     app_name: &str,
@@ -54,6 +65,10 @@ pub async fn extract_block_context(
     );
 
     let session_text = build_session_text(&frames_res?);
+    let audio_snippets = audio_res?;
+
+    tracing::Span::current().record("ocr_sample_count", ocr_samples.len());
+    tracing::Span::current().record("audio_snippet_count", audio_snippets.len());
 
     Ok(BlockContext {
         app_name: app_name.to_owned(),
@@ -63,7 +78,7 @@ pub async fn extract_block_context(
         max_frame_id,
         frame_count,
         window_titles: window_titles_res?,
-        audio_snippets: audio_res?,
+        audio_snippets,
         signals: signals_res?,
         session_text,
     })

@@ -27,6 +27,14 @@ struct UnlinkedSession {
     _category: String,
 }
 
+#[tracing::instrument(
+    skip_all,
+    fields(
+        backend = backend.name(),
+        sessions_processed = tracing::field::Empty,
+        sessions_linked = tracing::field::Empty,
+    )
+)]
 pub async fn settle_sessions(meridian: &SqlitePool, backend: &LlmBackend) -> Result<()> {
     // Load active (non-done) pm_tasks
     let tasks: Vec<PmTask> = sqlx::query_as::<_, (String, String)>(
@@ -91,11 +99,15 @@ pub async fn settle_sessions(meridian: &SqlitePool, backend: &LlmBackend) -> Res
         "classifying unlinked sessions"
     );
 
+    let mut linked: i64 = 0;
     for session in &sessions {
         let result = classify_session(session, backend, &task_refs, &valid_keys).await;
 
         match result {
             Ok((task_key, method)) => {
+                if task_key.is_some() {
+                    linked += 1;
+                }
                 let session_type = if task_key.is_some() {
                     "task"
                 } else {
@@ -143,6 +155,9 @@ pub async fn settle_sessions(meridian: &SqlitePool, backend: &LlmBackend) -> Res
             }
         }
     }
+
+    tracing::Span::current().record("sessions_processed", sessions.len() as i64);
+    tracing::Span::current().record("sessions_linked", linked);
 
     Ok(())
 }
@@ -224,6 +239,13 @@ Given the session duration and window titles, choose the single best category.\n
 /// Re-classifies browser sessions that still carry the rule-based category using
 /// Foundation Models. Only runs when the configured backend is Foundation Models —
 /// silently skips otherwise (category stays as-is until the backend is switched).
+#[tracing::instrument(
+    skip_all,
+    fields(
+        backend = backend.name(),
+        sessions_processed = tracing::field::Empty,
+    )
+)]
 pub async fn settle_chrome_categories(meridian: &SqlitePool, backend: &LlmBackend) -> Result<()> {
     if !backend.is_foundation_models() {
         debug!("Chrome category settler skipped — requires Foundation Models backend");
@@ -266,6 +288,7 @@ pub async fn settle_chrome_categories(meridian: &SqlitePool, backend: &LlmBacken
         count = rows.len(),
         "re-classifying browser sessions via Foundation Models"
     );
+    tracing::Span::current().record("sessions_processed", rows.len() as i64);
 
     for (id, app_name, duration_s, window_titles, session_text) in &rows {
         let user = build_category_prompt(*duration_s, window_titles, session_text.as_deref());
