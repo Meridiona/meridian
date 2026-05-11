@@ -143,11 +143,12 @@ pub async fn count_frames_in_window(
 }
 
 /// Returns per-context frame counts for a given app within a frame-id range,
-/// sorted by count descending (top 20).
+/// sorted by count descending.
 ///
 /// For browser apps: groups by `browser_url` (the real URL screenpipe captures),
 /// falling back to `window_name` for frames where the URL is NULL.
-/// For all other apps: groups by `window_name` as before.
+/// For all other apps: groups by `window_name`, trimmed and with the trailing
+/// " — AppName" OS suffix stripped so dynamic titles collapse correctly.
 pub async fn get_window_titles(
     pool: &SqlitePool,
     min_frame_id: i64,
@@ -162,7 +163,7 @@ pub async fn get_window_titles(
             "SELECT COALESCE(browser_url, window_name) as context, COUNT(*) as count
              FROM frames
              WHERE id BETWEEN ? AND ?
-               AND app_name = ?
+               AND app_name = ? COLLATE NOCASE
                AND (browser_url IS NOT NULL OR (window_name IS NOT NULL AND window_name != ''))
              GROUP BY context",
         )
@@ -178,18 +179,18 @@ pub async fn get_window_titles(
         }
         let mut aggregated: Vec<(String, i64)> = by_domain.into_iter().collect();
         aggregated.sort_by(|a, b| b.1.cmp(&a.1));
-        aggregated.truncate(20);
         aggregated
     } else {
+        // TRIM in GROUP BY so "Title " and "Title" collapse into one bucket at
+        // the SQL level before Rust normalization strips the app-name suffix.
         sqlx::query_as::<_, (String, i64)>(
-            "SELECT window_name, COUNT(*) as count
+            "SELECT TRIM(window_name) as window_name, COUNT(*) as count
              FROM frames
              WHERE id BETWEEN ? AND ?
-               AND app_name = ?
-               AND window_name IS NOT NULL AND window_name != ''
-             GROUP BY window_name
-             ORDER BY count DESC
-             LIMIT 20",
+               AND app_name = ? COLLATE NOCASE
+               AND window_name IS NOT NULL AND TRIM(window_name) != ''
+             GROUP BY TRIM(window_name)
+             ORDER BY count DESC",
         )
         .bind(min_frame_id)
         .bind(max_frame_id)
@@ -201,19 +202,38 @@ pub async fn get_window_titles(
     Ok(rows
         .into_iter()
         .map(|(window_name, count)| WindowTitleCount {
-            window_name: normalize_window_title(window_name),
+            window_name: normalize_window_title(window_name, app_name),
             count,
         })
         .collect())
 }
 
-/// Reduce any URL-shaped window title to its domain so stored data is
-/// clean regardless of which app emitted it.
-fn normalize_window_title(title: String) -> String {
-    if title.starts_with("https://") || title.starts_with("http://") {
-        url_domain(&title).to_owned()
+/// Normalize a window title:
+///   1. Trim leading/trailing whitespace.
+///   2. Strip the trailing " — AppName" OS suffix (case-insensitive) so that
+///      "runner.rs — meridian — Antigravity" and "extractor.rs — Antigravity"
+///      both collapse to their file/project portion instead of being one unique
+///      entry per title string.
+///   3. Reduce URL-shaped titles to their domain.
+fn normalize_window_title(title: String, app_name: &str) -> String {
+    let title = title.trim();
+
+    // Strip trailing " — <app_name>" suffix (the macOS window title convention).
+    let suffix = format!(" \u{2014} {}", app_name);
+    let title = if let Some(stripped) = title
+        .to_lowercase()
+        .rfind(&suffix.to_lowercase())
+        .map(|pos| title[..pos].trim())
+    {
+        stripped
     } else {
         title
+    };
+
+    if title.starts_with("https://") || title.starts_with("http://") {
+        url_domain(title).to_owned()
+    } else {
+        title.to_owned()
     }
 }
 
