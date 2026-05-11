@@ -3,6 +3,7 @@
 import { NextResponse } from 'next/server'
 import getDb from '@/lib/db'
 import { localDayBounds, todayString } from '@/lib/date-utils'
+import { logger, withSpan } from '@/lib/observability'
 import type { TimelineResponse, SessionRow, GapRow } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
@@ -35,10 +36,11 @@ function parseRow(r: Record<string, unknown>): SessionRow {
 }
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url)
-  const date = searchParams.get('date') ?? todayString()
+  const url = new URL(request.url)
+  const date = url.searchParams.get('date') ?? todayString()
   const { start, end } = localDayBounds(date)
 
+  return withSpan('api.timeline', { route: url.pathname, date }, async () => {
   try {
     const db = getDb()
     const rows = db.prepare(`
@@ -76,7 +78,7 @@ export async function GET(request: Request) {
 
     return NextResponse.json(response)
   } catch (e) {
-    console.error('timeline error:', e)
+    logger.error({ err: e instanceof Error ? e.message : String(e), route: 'timeline' }, 'timeline handler failed')
     const dayStartMs = new Date(`${date}T00:00:00`).getTime()
     return NextResponse.json({
       date,
@@ -86,4 +88,5 @@ export async function GET(request: Request) {
       day_end_s: Math.floor(Date.now() / 1000),
     })
   }
+  })
 }

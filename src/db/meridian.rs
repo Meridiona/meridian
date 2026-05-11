@@ -243,6 +243,10 @@ pub async fn complete_etl_run(
 /// Finds any ETL run stuck in 'running' state (i.e., the daemon was killed mid-run),
 /// removes the partial sessions it wrote, clears the active_session row, and marks
 /// the run as 'aborted'.  Call this once on startup before the first ETL pass.
+#[tracing::instrument(
+    skip_all,
+    fields(deleted_count = tracing::field::Empty)
+)]
 pub async fn cleanup_incomplete_runs(pool: &SqlitePool) -> anyhow::Result<u64> {
     let result = sqlx::query(
         r#"
@@ -269,7 +273,24 @@ pub async fn cleanup_incomplete_runs(pool: &SqlitePool) -> anyhow::Result<u64> {
     .await
     .context("cleanup_incomplete_runs: mark aborted")?;
 
+    tracing::Span::current().record("deleted_count", deleted);
     Ok(deleted)
+}
+
+/// Writes the W3C `traceparent` string for a freshly-closed `app_sessions` row.
+/// Used to propagate trace context to downstream consumers (Python agents).
+pub async fn write_session_traceparent(
+    pool: &SqlitePool,
+    session_id: i64,
+    traceparent: &str,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE app_sessions SET traceparent = ?1 WHERE id = ?2")
+        .bind(traceparent)
+        .bind(session_id)
+        .execute(pool)
+        .await
+        .context("write_session_traceparent: update failed")?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

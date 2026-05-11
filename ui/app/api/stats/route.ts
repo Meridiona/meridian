@@ -3,15 +3,17 @@
 import { NextResponse } from 'next/server'
 import getDb from '@/lib/db'
 import { localDayBounds, todayString } from '@/lib/date-utils'
+import { logger, withSpan } from '@/lib/observability'
 import type { StatsResponse } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url)
-  const date = searchParams.get('date') ?? todayString()
+  const url = new URL(request.url)
+  const date = url.searchParams.get('date') ?? todayString()
   const { start, end } = localDayBounds(date)
 
+  return withSpan('api.stats', { route: url.pathname, date }, async () => {
   try {
     const db = getDb()
 
@@ -66,7 +68,8 @@ export async function GET(request: Request) {
 
     return NextResponse.json(response)
   } catch (e) {
-    console.error('stats error:', e)
+    logger.error({ err: e instanceof Error ? e.message : String(e), route: 'stats' }, 'stats handler failed')
     return NextResponse.json({ date, focus_s: 0, user_idle_s: 0, away_s: 0, session_count: 0, top_apps: [] })
   }
+  })
 }
