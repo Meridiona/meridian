@@ -98,7 +98,7 @@ fn parse_category_all_valid_categories_round_trip() {
 #[test]
 fn build_category_prompt_window_name_key() {
     let titles = r#"[{"window_name":"GitHub - Pull Requests","count":3}]"#;
-    let prompt = build_category_prompt(120, titles);
+    let prompt = build_category_prompt(120, titles, None);
     assert!(
         prompt.contains("GitHub - Pull Requests"),
         "should include window_name value; prompt was:\n{prompt}"
@@ -108,7 +108,7 @@ fn build_category_prompt_window_name_key() {
 #[test]
 fn build_category_prompt_title_key_fallback() {
     let titles = r#"[{"title":"Notion - Project Plan","count":2}]"#;
-    let prompt = build_category_prompt(60, titles);
+    let prompt = build_category_prompt(60, titles, None);
     assert!(
         prompt.contains("Notion - Project Plan"),
         "should include title value; prompt was:\n{prompt}"
@@ -117,7 +117,7 @@ fn build_category_prompt_title_key_fallback() {
 
 #[test]
 fn build_category_prompt_includes_duration() {
-    let prompt = build_category_prompt(999, "[]");
+    let prompt = build_category_prompt(999, "[]", None);
     assert!(prompt.contains("999s"), "duration in seconds should appear");
 }
 
