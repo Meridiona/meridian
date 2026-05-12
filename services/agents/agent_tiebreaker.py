@@ -1,9 +1,10 @@
 """Agent Tiebreaker — resolves ambiguous session→task matches via hermes AIAgent.
 
-Runs only when the Semantic Matcher returns `routing="queue"` — i.e. the
-embedding+rules score gave us candidates but couldn't separate them
-confidently. The tiebreaker asks a hermes AIAgent to read the candidate
-ticket descriptions + session evidence and pick one (or none).
+Three execution modes (controlled by the `mode` parameter):
+  MODE_TIEBREAK   — Stage 2 ran; break the tie among top-K ranked candidates.
+  MODE_NO_DIMS    — Stage 2 ran; Stage 1 disabled — no rule-derived dims.
+  MODE_STANDALONE — Stage 1+2 both disabled; keyword-prefilter from all tasks
+                    and ask the agent to also infer dimension tags.
 
 Why hermes (not direct openai SDK):
 * model + provider switching across OpenAI / Anthropic / Ollama / LM Studio
@@ -14,7 +15,7 @@ Why hermes (not direct openai SDK):
 We deliberately use AIAgent in its simplest mode:
 * `enabled_toolsets=[]`  — no tools to call
 * `max_iterations=1`     — one model round, no agent loop
-* system prompt loaded from skills/activity/stage3-tiebreaker/SKILL.md
+* system prompt is the base SKILL.md with a mode-specific addendum appended
   so prompt iteration doesn't require code changes.
 """
 from __future__ import annotations
@@ -30,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from agents import observability
-from agents.config import MODEL, BASE_URL, API_KEY, load_skill
+from agents.config import MODEL, BASE_URL, API_KEY, load_skill, load_skill_addendum
 
 log = logging.getLogger("agents.agent_tiebreaker")
 tracer = observability.setup("meridian-agent-tiebreaker")
@@ -39,8 +40,14 @@ tracer = observability.setup("meridian-agent-tiebreaker")
 # ──────────────────────── Config / thresholds ─────────────────────────────────
 AUTO_FLOOR  = float(os.environ.get("AGENT_AUTO_FLOOR",  "0.65"))
 QUEUE_FLOOR = float(os.environ.get("AGENT_QUEUE_FLOOR", "0.40"))
-MAX_TOKENS  = int(os.environ.get("AGENT_MAX_TOKENS", "4000"))
-SKILL_NAME  = os.environ.get("AGENT_SKILL_NAME", "stage3-tiebreaker")
+MAX_TOKENS           = int(os.environ.get("AGENT_MAX_TOKENS", "4000"))
+SKILL_NAME           = os.environ.get("AGENT_SKILL_NAME", "stage3-agent")
+MAX_STANDALONE_TASKS = int(os.environ.get("AGENT_STANDALONE_MAX_TASKS", "20"))
+
+# Execution mode — controls prompt adaptation and candidate format.
+MODE_TIEBREAK   = "tiebreak"    # Stage 2 ran; break the tie among top-K ranked candidates
+MODE_NO_DIMS    = "no_dims"     # Stage 2 ran; Stage 1 was disabled — no rule-derived dims
+MODE_STANDALONE = "standalone"  # Stage 1+2 both disabled; pick from all tasks + infer dims
 
 
 # ──────────────────────── Result type ─────────────────────────────────────────
@@ -55,6 +62,7 @@ class AgentDecision:
     raw_response: str = ""
     elapsed_s: float = 0.0
     debug: dict = field(default_factory=dict)
+    dimensions: dict[str, list[str]] = field(default_factory=dict)
 
 
 # ──────────────────────── Prompt builder ──────────────────────────────────────
@@ -126,21 +134,107 @@ def _format_candidates(top_candidates: list, pm_task_lookup: dict[str, dict]) ->
     return "\n\n".join(rows) if rows else "(no candidates)"
 
 
+def _prefilter_tasks(
+    session: dict,
+    all_pm_tasks: list[dict],
+    max_tasks: int,
+) -> list[dict]:
+    """Return up to max_tasks tasks ordered by keyword overlap with the session."""
+    words: set[str] = set()
+    for t in (session.get("window_titles") or []):
+        name = (t.get("window_name") or t.get("title") or "") if isinstance(t, dict) else str(t)
+        words.update(w.lower() for w in re.split(r"\W+", name) if len(w) > 3)
+    for o in (session.get("ocr_samples") or [])[:10]:
+        text = (o.get("text") or "") if isinstance(o, dict) else str(o)
+        words.update(w.lower() for w in re.split(r"\W+", text) if len(w) > 3)
+    if not words:
+        return all_pm_tasks[:max_tasks]
+    scored: list[tuple[int, dict]] = []
+    for task in all_pm_tasks:
+        task_text = f"{task.get('title', '')} {task.get('description_text', '')}".lower()
+        score = sum(1 for w in words if w in task_text)
+        scored.append((score, task))
+    scored.sort(key=lambda x: -x[0])
+    return [t for _, t in scored[:max_tasks]]
+
+
+def _format_candidates_standalone(tasks: list[dict]) -> str:
+    rows: list[str] = []
+    for i, task in enumerate(tasks, start=1):
+        title = (task.get("title") or "").strip()
+        desc  = (task.get("description_text") or "").strip()
+        if len(desc) > 240:
+            desc = desc[:240] + "…"
+        rows.append(
+            f"{i}. {task['task_key']}\n"
+            f"   title: {title}\n"
+            f"   description: {desc or '(empty)'}"
+        )
+    return "\n\n".join(rows) if rows else "(no candidates)"
+
+
+def _build_system_prompt(mode: str, base: str) -> str:
+    """Append the mode-specific addendum from SKILL-{mode}.md to the base prompt.
+
+    Addenda live in the same skills directory as SKILL.md so wording can be
+    tuned without touching Python code. Missing file → no addendum (safe default).
+    """
+    addendum = load_skill_addendum(SKILL_NAME, mode)
+    return (base + "\n" + addendum) if addendum.strip() else base
+
+
+def _parse_dimensions(obj: dict) -> dict[str, list[str]]:
+    """Extract the optional 'dimensions' field from an agent response object."""
+    raw = obj.get("dimensions")
+    if not isinstance(raw, dict):
+        return {}
+    valid = {"activity", "intent", "engagement", "collaboration", "tool", "topic", "practice"}
+    result: dict[str, list[str]] = {}
+    for dim, vals in raw.items():
+        if dim not in valid:
+            continue
+        if isinstance(vals, list):
+            cleaned = [str(v).strip().lower() for v in vals if v]
+            if cleaned:
+                result[dim] = cleaned
+        elif isinstance(vals, str) and vals.strip():
+            result[dim] = [vals.strip().lower()]
+    return result
+
+
 def _build_user_message(
     session: dict,
     dims_grouped: dict[str, set[str]],
     top_candidates: list,
     pm_task_lookup: dict[str, dict],
+    *,
+    mode: str = MODE_TIEBREAK,
+    standalone_tasks: list[dict] | None = None,
 ) -> str:
+    if mode == MODE_NO_DIMS:
+        dims_section = "(Stage 1 disabled — no rule-extracted dimensions available)"
+    elif mode == MODE_STANDALONE:
+        dims_section = (
+            "(Stages 1 and 2 disabled — no dimensions available; "
+            "infer from session evidence and include a `dimensions` field in your JSON)"
+        )
+    else:
+        dims_section = _format_dimensions(dims_grouped)
+
+    if mode == MODE_STANDALONE and standalone_tasks is not None:
+        candidates_section = _format_candidates_standalone(standalone_tasks)
+    else:
+        candidates_section = _format_candidates(top_candidates, pm_task_lookup)
+
     return (
         "SESSION:\n"
         f"{_format_session(session)}\n"
         "\n"
         "OBSERVED DIMENSIONS (rule-extracted):\n"
-        f"{_format_dimensions(dims_grouped)}\n"
+        f"{dims_section}\n"
         "\n"
         "CANDIDATE TICKETS:\n"
-        f"{_format_candidates(top_candidates, pm_task_lookup)}"
+        f"{candidates_section}"
     )
 
 
@@ -260,25 +354,28 @@ def _repair_truncated_json(partial: str) -> str:
     return out
 
 
-def _parse_response(text: str, valid_keys: set[str]) -> tuple[str | None, float, str, str | None]:
-    """Returns (task_key, confidence, reasoning, error). error is None on success."""
+def _parse_response(
+    text: str,
+    valid_keys: set[str],
+) -> tuple[str | None, float, str, dict[str, list[str]], str | None]:
+    """Returns (task_key, confidence, reasoning, dimensions, error). error is None on success."""
     if not text:
-        return None, 0.0, "", "empty response"
+        return None, 0.0, "", {}, "empty response"
     candidate = _extract_json(text)
     if candidate is None:
-        return None, 0.0, "", "no JSON object in response"
+        return None, 0.0, "", {}, "no JSON object in response"
     try:
         obj = json.loads(candidate)
     except json.JSONDecodeError as exc:
-        return None, 0.0, "", f"json decode failed: {exc}"
+        return None, 0.0, "", {}, f"json decode failed: {exc}"
     if not isinstance(obj, dict):
-        return None, 0.0, "", "response was not a JSON object"
+        return None, 0.0, "", {}, "response was not a JSON object"
 
     raw_key = obj.get("task_key")
     if isinstance(raw_key, str) and raw_key.strip().lower() in _NULL_LITERALS:
         raw_key = None
     if raw_key is not None and raw_key not in valid_keys:
-        return None, 0.0, "", f"task_key {raw_key!r} not in candidate set"
+        return None, 0.0, "", {}, f"task_key {raw_key!r} not in candidate set"
 
     try:
         confidence = float(obj.get("confidence", 0.0))
@@ -286,8 +383,9 @@ def _parse_response(text: str, valid_keys: set[str]) -> tuple[str | None, float,
         confidence = 0.0
     confidence = max(0.0, min(1.0, confidence))
 
-    reasoning = str(obj.get("reasoning") or "")[:500]
-    return raw_key, confidence, reasoning, None
+    reasoning   = str(obj.get("reasoning") or "")[:500]
+    dimensions  = _parse_dimensions(obj)
+    return raw_key, confidence, reasoning, dimensions, None
 
 
 def _routing_for(confidence: float, task_key: str | None) -> str:
@@ -306,16 +404,27 @@ def agent_tiebreak(
     dims_grouped: dict[str, set[str]],
     top_candidates: list,
     pm_task_lookup: dict[str, dict],
+    *,
+    mode: str = MODE_TIEBREAK,
+    all_pm_tasks: list[dict] | None = None,
 ) -> AgentDecision:
-    """Ask the configured hermes AIAgent to break the tie between
-    Semantic Matcher candidates."""
+    """Ask the configured hermes AIAgent to break the tie or (in standalone mode) pick a task.
+
+    `mode` controls prompt adaptation and candidate format:
+      MODE_TIEBREAK   — Stage 2 ran; break the tie among top_candidates (default)
+      MODE_NO_DIMS    — Stage 2 ran; Stage 1 disabled — no rule-derived dims
+      MODE_STANDALONE — Stage 1+2 disabled; pick from all_pm_tasks + infer dims
+    """
     sid = int(session["id"])
     with tracer.start_as_current_span("agent_tiebreaker.decide") as span:
         span.set_attribute("session_id", sid)
         span.set_attribute("model", MODEL or "")
-        span.set_attribute("candidates_count", len(top_candidates))
+        span.set_attribute("mode", mode)
+        span.set_attribute("candidates_count",
+                           len(all_pm_tasks) if mode == MODE_STANDALONE else len(top_candidates))
         result = _agent_tiebreak_inner(
             session, dims_grouped, top_candidates, pm_task_lookup, sid,
+            mode=mode, all_pm_tasks=all_pm_tasks,
         )
         span.set_attribute("method", result.method)
         span.set_attribute("routing", result.routing)
@@ -332,24 +441,44 @@ def _agent_tiebreak_inner(
     top_candidates: list,
     pm_task_lookup: dict[str, dict],
     sid: int,
+    *,
+    mode: str = MODE_TIEBREAK,
+    all_pm_tasks: list[dict] | None = None,
 ) -> AgentDecision:
-    valid_keys = {c.task_key for c in top_candidates}
-    if not valid_keys:
-        return AgentDecision(
-            session_id=sid, chosen_task_key=None, confidence=0.0,
-            reasoning="no candidates", routing="skip", method="agent_unavailable",
-        )
+    # Build the candidate set depending on mode.
+    standalone_tasks: list[dict] | None = None
+    if mode == MODE_STANDALONE:
+        if not all_pm_tasks:
+            return AgentDecision(
+                session_id=sid, chosen_task_key=None, confidence=0.0,
+                reasoning="no pm_tasks for standalone mode", routing="skip",
+                method="agent_unavailable",
+            )
+        standalone_tasks = _prefilter_tasks(session, all_pm_tasks, MAX_STANDALONE_TASKS)
+        valid_keys = {t["task_key"] for t in standalone_tasks}
+    else:
+        valid_keys = {c.task_key for c in top_candidates}
+        if not valid_keys:
+            return AgentDecision(
+                session_id=sid, chosen_task_key=None, confidence=0.0,
+                reasoning="no candidates", routing="skip", method="agent_unavailable",
+            )
 
-    user_message = _build_user_message(session, dims_grouped, top_candidates, pm_task_lookup)
+    user_message = _build_user_message(
+        session, dims_grouped, top_candidates, pm_task_lookup,
+        mode=mode, standalone_tasks=standalone_tasks,
+    )
     log.debug("agent_tiebreaker user message:\n%s", user_message)
 
     try:
-        system_prompt = load_skill(SKILL_NAME)
+        base_prompt = load_skill(SKILL_NAME)
     except FileNotFoundError as exc:
         return AgentDecision(
             session_id=sid, chosen_task_key=None, confidence=0.0,
             reasoning=str(exc), routing="skip", method="agent_unavailable",
         )
+
+    system_prompt = _build_system_prompt(mode, base_prompt)
 
     from agents._hermes_setup import ensure_hermes_importable
     ensure_hermes_importable()
@@ -362,7 +491,8 @@ def _agent_tiebreak_inner(
             routing="skip", method="agent_unavailable",
         )
 
-    log.info("agent_tiebreaker: model=%s base_url=%s skill=%s", MODEL, BASE_URL, SKILL_NAME)
+    log.info("agent_tiebreaker: model=%s base_url=%s skill=%s mode=%s",
+             MODEL, BASE_URL, SKILL_NAME, mode)
 
     t0 = time.time()
     raw = ""
@@ -404,7 +534,7 @@ def _agent_tiebreak_inner(
 
     log.debug("agent_tiebreaker raw response (%.1fs): %s", elapsed, raw[:1000])
 
-    task_key, confidence, reasoning, err = _parse_response(raw, valid_keys)
+    task_key, confidence, reasoning, dimensions, err = _parse_response(raw, valid_keys)
     if err:
         log.warning("agent_tiebreaker invalid response: %s", err)
         return AgentDecision(
@@ -424,6 +554,7 @@ def _agent_tiebreak_inner(
         method="agent_tiebreak",
         raw_response=raw[:1000],
         elapsed_s=elapsed,
+        dimensions=dimensions,
         debug={
             "model":         MODEL,
             "base_url":      BASE_URL,
@@ -431,8 +562,12 @@ def _agent_tiebreak_inner(
             "auto_floor":    AUTO_FLOOR,
             "queue_floor":   QUEUE_FLOOR,
             "skill":         SKILL_NAME,
+            "mode":          mode,
         },
     )
 
 
-__all__ = ["AgentDecision", "agent_tiebreak", "AUTO_FLOOR", "QUEUE_FLOOR"]
+__all__ = [
+    "AgentDecision", "agent_tiebreak", "AUTO_FLOOR", "QUEUE_FLOOR",
+    "MODE_TIEBREAK", "MODE_NO_DIMS", "MODE_STANDALONE",
+]

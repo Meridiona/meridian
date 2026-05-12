@@ -70,6 +70,7 @@ from agents.semantic_matcher import (                      # noqa: E402
 )
 from agents.agent_tiebreaker import (                     # noqa: E402
     agent_tiebreak, AgentDecision,
+    MODE_TIEBREAK, MODE_NO_DIMS, MODE_STANDALONE,
 )
 
 log = logging.getLogger("tagger")
@@ -291,7 +292,8 @@ def _tag_session_inner(
     # wrote `task/skip` because it saw a ticket-shaped string but couldn't
     # match, that's a final decision — Stage 2 doesn't override.
     stage1_deferred = rule_decision[2] == ""
-    if 2 in stages and stage1_deferred and pm_tasks:
+    stage2_attempted = 2 in stages and stage1_deferred and bool(pm_tasks)
+    if stage2_attempted:
         try:
             semantic_result = semantic_match(conn, session, pm_tasks)
         except ImportError as exc:
@@ -320,16 +322,22 @@ def _tag_session_inner(
                 pm_lookup = {t["task_key"]: t for t in pm_tasks}
                 from agents.semantic_matcher import _session_dims_grouped
                 dims_grouped = _session_dims_grouped(conn, sid)
-                agent_result = agent_tiebreak(session, dims_grouped, top, pm_lookup)
-                log.info("  agent → %s / %s / %.2f  (%.1fs)",
+                # Use MODE_NO_DIMS when Stage 1 was disabled — no rule-derived dims.
+                mode = MODE_TIEBREAK if 1 in stages else MODE_NO_DIMS
+                agent_result = agent_tiebreak(session, dims_grouped, top, pm_lookup, mode=mode)
+                log.info("  agent → %s / %s / %.2f  (%.1fs mode=%s)",
                          agent_result.chosen_task_key or "∅",
                          agent_result.routing,
                          agent_result.confidence,
-                         agent_result.elapsed_s)
+                         agent_result.elapsed_s,
+                         mode)
 
-            # Decide what to persist: Stage 3 wins if it produced a usable
-            # result; otherwise fall back to Stage 2's verdict.
-            if agent_result and agent_result.method == "agent_tiebreak" and agent_result.routing != "skip":
+            # Decide what to persist.
+            # Stage 3 verdict wins when the method is "agent_tiebreak" — including
+            # when it says null/skip (that means "none of these candidates fit").
+            # Only fall back to Stage 2 when Stage 3 was unavailable or returned
+            # an invalid/unparseable response.
+            if agent_result and agent_result.method == "agent_tiebreak":
                 final_task   = agent_result.chosen_task_key
                 final_conf   = agent_result.confidence
                 final_route  = agent_result.routing
@@ -365,6 +373,56 @@ def _tag_session_inner(
                             for c in final_top[:3]
                         ],
                         "agent_reasoning": (agent_result.reasoning if agent_result else ""),
+                    },
+                )
+
+    # ── Stage 3 standalone (Stage 1+2 both not attempted) ──
+    # Fires when Stage 2 was never attempted (disabled or no tasks) and Stage 1
+    # also deferred — i.e. no prior stage produced a decision.
+    elif (3 in stages and stage1_deferred and pm_tasks
+          and db.fetch_ticket_link(conn, sid) is None):
+        pm_lookup = {t["task_key"]: t for t in pm_tasks}
+        agent_result = agent_tiebreak(
+            session, {}, [], pm_lookup,
+            mode=MODE_STANDALONE,
+            all_pm_tasks=pm_tasks,
+        )
+        log.info("  agent standalone → %s / %s / %.2f  (%.1fs)",
+                 agent_result.chosen_task_key or "∅",
+                 agent_result.routing,
+                 agent_result.confidence,
+                 agent_result.elapsed_s)
+        if agent_result.method == "agent_tiebreak":
+            db.write_ticket_link(
+                conn,
+                session_id=sid,
+                task_key=agent_result.chosen_task_key,
+                confidence=agent_result.confidence,
+                session_type="task",
+                routing=agent_result.routing,
+                method="agent_standalone",
+            )
+            for dim, vals in agent_result.dimensions.items():
+                for val in vals:
+                    db.upsert_session_dimension(
+                        conn,
+                        session_id=sid,
+                        dimension=dim,
+                        value=val,
+                        confidence=0.75,
+                        source="agent_standalone",
+                    )
+                    written += 1
+            if agent_result.chosen_task_key and agent_result.routing in ("auto", "queue"):
+                db.enqueue_dispatch(
+                    conn, session_id=sid, agent_run_id=run_id,
+                    task_key=agent_result.chosen_task_key, provider="jira",
+                    payload={
+                        "routing":         agent_result.routing,
+                        "session_type":    "task",
+                        "confidence":      agent_result.confidence,
+                        "stage":           "agent_standalone",
+                        "agent_reasoning": agent_result.reasoning,
                     },
                 )
 
@@ -745,8 +803,9 @@ def inspect_one(
                 pm_lookup = {t["task_key"]: t for t in pm_tasks}
                 from agents.semantic_matcher import _session_dims_grouped
                 dims_grouped = _session_dims_grouped(conn, session_id)
+                mode = MODE_TIEBREAK if 1 in stages else MODE_NO_DIMS
                 agent_result = agent_tiebreak(
-                    session, dims_grouped, semantic_result.top_candidates, pm_lookup,
+                    session, dims_grouped, semantic_result.top_candidates, pm_lookup, mode=mode,
                 )
                 _print_agent_block(agent_result)
 
@@ -794,9 +853,10 @@ def inspect_one(
                              "confidence": conf, "stage": "rule_inspect"},
                 )
         elif semantic_result and semantic_result.method == "semantic_embed":
-            # Stage 3 wins when it produced a usable verdict; otherwise
-            # fall back to Stage 2.
-            if agent_result and agent_result.method == "agent_tiebreak" and agent_result.routing != "skip":
+            # Stage 3 verdict wins when method is "agent_tiebreak" — including null/skip.
+            # Fall back to Stage 2 only when Stage 3 was unavailable or returned
+            # an invalid/unparseable response.
+            if agent_result and agent_result.method == "agent_tiebreak":
                 final_task   = agent_result.chosen_task_key
                 final_conf   = agent_result.confidence
                 final_route  = agent_result.routing
@@ -837,8 +897,45 @@ def inspect_one(
                         "stage3_reasoning": (agent_result.reasoning if agent_result else ""),
                     },
                 )
+        elif (3 in stages and stage1_deferred and pm_tasks
+              and 2 not in stages and not ticket_written):
+            # ── Stage 3 standalone (inspect path) ──
+            _print_block("AGENT TIEBREAKER — STANDALONE")
+            pm_lookup = {t["task_key"]: t for t in pm_tasks}
+            standalone_result = agent_tiebreak(
+                session, {}, [], pm_lookup,
+                mode=MODE_STANDALONE,
+                all_pm_tasks=pm_tasks,
+            )
+            _print_agent_block(standalone_result)
+            if standalone_result.method == "agent_tiebreak":
+                db.write_ticket_link(
+                    conn,
+                    session_id=session_id,
+                    task_key=standalone_result.chosen_task_key,
+                    confidence=standalone_result.confidence,
+                    session_type="task",
+                    routing=standalone_result.routing,
+                    method="agent_standalone_inspect",
+                )
+                ticket_written = True
+                print(f"  wrote ticket_links (agent standalone) → "
+                      f"{standalone_result.chosen_task_key or '∅'} / "
+                      f"{standalone_result.routing} / {standalone_result.confidence:.3f}")
+                for dim, vals in standalone_result.dimensions.items():
+                    for val in vals:
+                        db.upsert_session_dimension(
+                            conn,
+                            session_id=session_id,
+                            dimension=dim,
+                            value=val,
+                            confidence=0.75,
+                            source="agent_standalone",
+                        )
+                print(f"  wrote {sum(len(v) for v in standalone_result.dimensions.values())} "
+                      f"standalone dimension(s)")
         else:
-            print("  ticket_links: not written (deferred from both stages)")
+            print("  ticket_links: not written (deferred from all stages)")
 
         db.complete_agent_run(
             conn, run_id, "success",

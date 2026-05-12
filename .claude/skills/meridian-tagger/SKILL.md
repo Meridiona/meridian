@@ -1,6 +1,6 @@
 ---
 name: meridian-tagger
-description: "Debug and work with Meridian's Python tagger pipeline. Covers the 3-stage classifier (rules + embeddings + LLM tiebreak), the long-running daemon, hot-toggle config, and common misclassification recipes."
+description: "Debug and work with Meridian's Python tagger pipeline. Covers the 3-stage classifier (rules + embeddings + agent), the long-running daemon, hot-toggle config, and common misclassification recipes."
 allowed-tools: Bash, Read, Edit, Grep
 ---
 
@@ -25,25 +25,37 @@ new app_sessions row (Rust ETL, every ~60s)
  tagger_daemon.py polls every TAGGER_TICK_SECS (default 7s)
        │
        ├─ pre-filter (services/agents/tagger.py)
-       │     trivial overhead → ticket_links overhead/skip, no LLM
+       │     trivial overhead → ticket_links overhead/skip, no agent
        │
        ├─ STAGE 1 — rules + regex   (services/agents/rules/)
        │     • 30+ rules emit RuleHits across activity / intent /
        │       engagement / collaboration / tool / topic / practice
        │     • KAN-NN regex hit + lookup in pm_tasks → auto-dispatch
+       │     • if no decision → stage1_deferred = True
        │
-       ├─ STAGE 2 — embeddings      (services/agents/stage2.py)
+       ├─ STAGE 2 — embeddings      (services/agents/semantic_matcher.py)
        │     • bge-small-en-v1.5 multi-vector encoding (per OCR sample)
        │     • cosine vs pm_task_embeddings (max-pool over samples)
        │     • blend: 0.55*cosine + 0.30*dim_overlap + 0.15*past_vote
        │     • routes auto / queue / skip by gap + threshold
+       │     • runs only when Stage 1 deferred AND stage2_attempted
        │
-       └─ STAGE 3 — LLM tiebreaker  (services/agents/stage3.py)
-             • only when Stage 2 returns routing=queue
+       └─ STAGE 3 — agent classifier (services/agents/agent_tiebreaker.py)
+             • three modes, selected automatically by tagger.py:
+               ┌─ tiebreak   — Stage 1+2 both ran; Stage 2 returned queue
+               ├─ no_dims    — Stage 2 ran; Stage 1 was disabled
+               └─ standalone — Stage 1+2 both disabled; picks from ALL tasks
+                               and also infers dimension tags
              • single-shot via hermes AIAgent (run_agent.py)
-             • prompt at services/skills/activity/stage3-tiebreaker/
+             • base prompt: services/skills/activity/stage3-agent/SKILL.md
+               + mode-specific pipeline context injected at call time
              • JSON-only response, parser tolerant of truncation
 ```
+
+**Stage interactions:**
+- Stage 3 runs in *tiebreak/no_dims* mode only when Stage 2 returns `routing=queue`.
+- Stage 3 runs in *standalone* mode when Stage 2 was never attempted (`2 not in stages`).
+- Stage 3's verdict is always final — including `null`. It falls back to Stage 2 only when it was unavailable or returned an unparseable response.
 
 ## Key Files
 
@@ -54,9 +66,10 @@ new app_sessions row (Rust ETL, every ~60s)
 | `services/agents/config.py` | env vars, stage flags, override file helpers |
 | `services/agents/db.py` | sqlite3 layer for the agent tables |
 | `services/agents/rules/` | rule library (one file per dimension) |
-| `services/agents/stage2.py` | retrieval + scoring math |
-| `services/agents/stage3.py` | LLM call + JSON repair |
+| `services/agents/semantic_matcher.py` | Stage 2 — retrieval + scoring math |
+| `services/agents/agent_tiebreaker.py` | Stage 3 — agent call, mode selection, JSON repair |
 | `services/agents/embeddings.py` | sentence-transformers loader, BLOB <-> ndarray |
+| `services/skills/activity/stage3-agent/SKILL.md` | Stage 3 base prompt (mode-agnostic) |
 | `services/scripts/install-tagger-daemon.sh` | launchd installer |
 
 ## Key DB Tables
@@ -125,8 +138,16 @@ SELECT tl.session_id, s.app_name, ROUND(s.duration_s/60.0,1) AS min,
        tl.task_key, tl.routing, ROUND(tl.confidence,2) AS conf
 FROM ticket_links tl
 JOIN app_sessions s ON s.id = tl.session_id
-WHERE tl.method LIKE 'stage2%' AND tl.routing = 'queue'
+WHERE tl.method LIKE 'semantic%' AND tl.routing = 'queue'
 ORDER BY tl.confidence ASC LIMIT 20;
+
+-- Sessions decided by Stage 3 agent (any mode)
+SELECT tl.session_id, s.app_name, tl.task_key, tl.routing,
+       ROUND(tl.confidence,2) AS conf, tl.method
+FROM ticket_links tl
+JOIN app_sessions s ON s.id = tl.session_id
+WHERE tl.method LIKE 'agent%'
+ORDER BY tl.session_id DESC LIMIT 20;
 
 -- Cursor + backlog
 SELECT 'cursor' AS k, last_session_id AS v FROM agent_cursor
@@ -138,7 +159,6 @@ SELECT id, status, sessions_processed, links_written, dispatches_queued, started
 FROM agent_runs ORDER BY id DESC LIMIT 10;
 
 -- Sessions where Stage 1 regex matched a ticket-shaped string NOT in pm_tasks
--- (these are deferred to Stage 2 — verify the denylist isn't too aggressive)
 SELECT session_id, task_key, session_type, routing, method
 FROM ticket_links
 WHERE method = 'stage1_regex' AND task_key IS NULL;
@@ -168,13 +188,21 @@ Single-vector encoding averages out the signal when an OCR sample is app chrome 
 - Tune the OCR cap in `services/agents/text_for_embedding.py:_PER_OCR_SAMPLE_CAP`
 
 ### Self-reinforcing past_vote
-Stage 2's `past_vote` term gives weight to ticket assignments on similar past sessions. Sessions tagged by Stage 2 itself are filtered out (`stage2.py:237`'s `method NOT LIKE 'stage2%'`) to prevent ossification of early mistakes. **Never rename the `stage2_*` method strings** without updating that filter.
+Stage 2's `past_vote` term gives weight to ticket assignments on similar past sessions. Sessions tagged by Stage 2 itself are filtered out (`semantic_matcher.py`'s `method NOT LIKE 'semantic%'`) to prevent ossification of early mistakes. **Never rename the `semantic_*` method strings** without updating that filter.
 
 ### Cursor stuck or rewinding
 The cursor advances per-session inside `tagger.run_once`'s loop. If it rewinds, something is calling `agent_cursor` UPDATE without the `WHERE ? > last_session_id` guard. Audit `services/agents/db.py:advance_cursor`.
 
 ### Stage 3 returning empty/truncated JSON
-Thinking models (nemotron-3-super) burn tokens on internal reasoning before emitting JSON. The truncation repair in `services/agents/stage3.py:_repair_truncated_json` salvages partial responses, but if `STAGE3_MAX_TOKENS` is too low we see `stage3_invalid_response`. Defaults to 4000; bump if needed.
+Thinking models (e.g. nemotron-3-super) burn tokens on internal reasoning before emitting JSON. The truncation repair in `services/agents/agent_tiebreaker.py:_repair_truncated_json` salvages partial responses, but if `AGENT_MAX_TOKENS` is too low we see `agent_invalid_response`. Default is 4000; bump `AGENT_MAX_TOKENS` if needed.
+
+### Stage 3 running in wrong mode
+Mode is selected in `tagger.py:_tag_session_inner` automatically:
+- `MODE_TIEBREAK` — Stage 1+2 ran, Stage 2 returned `queue`
+- `MODE_NO_DIMS` — Stage 1 disabled, Stage 2 ran and returned `queue`
+- `MODE_STANDALONE` — Stage 2 not attempted at all (disabled or no tasks)
+
+If Stage 3 fires in standalone mode unexpectedly, check `STAGE2_ENABLED` and that `pm_tasks` is non-empty.
 
 ### Daemon idle but cursor lagging
 Check `ps aux | grep tagger_daemon`. If the launchd agent isn't running:

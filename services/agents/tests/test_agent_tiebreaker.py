@@ -18,7 +18,7 @@ VALID_KEYS = {"KAN-86", "KAN-99"}
 def test_parse_response_accepts_clean_json():
     """A naked JSON object parses straight through."""
     raw = '{"task_key": "KAN-86", "confidence": 0.85, "reasoning": "obvious match"}'
-    key, conf, reason, err = agent_tiebreaker._parse_response(raw, VALID_KEYS)
+    key, conf, reason, _dims, err = agent_tiebreaker._parse_response(raw, VALID_KEYS)
     assert err is None
     assert key == "KAN-86"
     assert conf == 0.85
@@ -33,7 +33,7 @@ def test_parse_response_strips_markdown_fences():
 ```
 Hope that helps.
 """
-    key, conf, reason, err = agent_tiebreaker._parse_response(raw, VALID_KEYS)
+    key, conf, reason, _dims, err = agent_tiebreaker._parse_response(raw, VALID_KEYS)
     assert err is None
     assert key == "KAN-99"
     assert conf == 0.7
@@ -45,7 +45,7 @@ def test_parse_response_recovers_truncated_json():
     `_repair_truncated_json`; the test now confirms the regression hole is
     closed.)"""
     raw = '{"task_key": "KAN-86", "confidence": 0.85,'
-    key, conf, _reason, err = agent_tiebreaker._parse_response(raw, VALID_KEYS)
+    key, conf, _reason, _dims, err = agent_tiebreaker._parse_response(raw, VALID_KEYS)
     assert err is None
     assert key == "KAN-86"
     assert conf == 0.85
@@ -54,7 +54,7 @@ def test_parse_response_recovers_truncated_json():
 def test_parse_response_recovers_truncated_orphan_key():
     """Tail like `, "k2":` should drop the orphan key, not produce invalid JSON."""
     raw = '{"task_key": "KAN-86", "confidence": 0.85, "reasoning":'
-    key, conf, _reason, err = agent_tiebreaker._parse_response(raw, VALID_KEYS)
+    key, conf, _reason, _dims, err = agent_tiebreaker._parse_response(raw, VALID_KEYS)
     assert err is None
     assert key == "KAN-86"
     assert conf == 0.85
@@ -63,7 +63,7 @@ def test_parse_response_recovers_truncated_orphan_key():
 def test_parse_response_recovers_truncated_json_without_trailing_comma():
     """Sibling case that does not hit the trailing-comma bug — repair succeeds."""
     raw = '{"task_key": "KAN-86", "confidence": 0.85'
-    key, conf, _reason, err = agent_tiebreaker._parse_response(raw, VALID_KEYS)
+    key, conf, _reason, _dims, err = agent_tiebreaker._parse_response(raw, VALID_KEYS)
     assert err is None
     assert key == "KAN-86"
     assert conf == 0.85
@@ -73,7 +73,7 @@ def test_parse_response_recovers_truncated_json_without_trailing_comma():
 def test_parse_response_coerces_null_literals(literal):
     """'none', 'null', 'n/a', 'nil', 'undefined' (any case, with whitespace) → None."""
     raw = f'{{"task_key": "{literal}", "confidence": 0.0, "reasoning": "no match"}}'
-    key, _conf, _reason, err = agent_tiebreaker._parse_response(raw, VALID_KEYS)
+    key, _conf, _reason, _dims, err = agent_tiebreaker._parse_response(raw, VALID_KEYS)
     assert err is None
     assert key is None
 
@@ -81,7 +81,7 @@ def test_parse_response_coerces_null_literals(literal):
 def test_parse_response_rejects_unknown_task_key():
     """A task_key outside the candidate set is an error (defensive against hallucination)."""
     raw = '{"task_key": "ZZZ-99", "confidence": 0.9, "reasoning": "made up"}'
-    key, _conf, _reason, err = agent_tiebreaker._parse_response(raw, VALID_KEYS)
+    key, _conf, _reason, _dims, err = agent_tiebreaker._parse_response(raw, VALID_KEYS)
     assert err is not None
     assert key is None
 
@@ -134,7 +134,7 @@ def test_repair_truncated_json_balances_nested_braces():
 
 def test_parse_response_handles_empty_input():
     """Empty/whitespace input is rejected with an error."""
-    key, conf, _reason, err = agent_tiebreaker._parse_response("", VALID_KEYS)
+    key, conf, _reason, _dims, err = agent_tiebreaker._parse_response("", VALID_KEYS)
     assert key is None
     assert conf == 0.0
     assert err is not None
