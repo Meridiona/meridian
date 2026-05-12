@@ -60,11 +60,10 @@ async fn seed_session(pool: &SqlitePool) -> i64 {
     let result = sqlx::query(
         "INSERT INTO app_sessions (
             app_name, started_at, ended_at, duration_s,
-            window_titles, ocr_samples, elements_samples,
-            audio_snippets, signals,
+            window_titles, audio_snippets, signals,
             min_frame_id, max_frame_id, frame_count,
             idle_frame_count, etl_run_id
-        ) VALUES ('x', 't', 't', 0, '[]', '[]', '[]', '[]', '{}', 1, 1, 1, 0, 1)",
+        ) VALUES ('x', 't', 't', 0, '[]', '[]', '{}', 1, 1, 1, 0, 1)",
     )
     .execute(pool)
     .await

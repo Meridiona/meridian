@@ -103,7 +103,7 @@ fn parse_category_all_valid_categories_round_trip() {
 fn build_category_prompt_window_name_key() {
     // Browser sessions store window titles under "window_name"
     let titles = r#"[{"window_name":"GitHub - Pull Requests","count":3}]"#;
-    let prompt = build_category_prompt("Chrome", 120, titles, "[]", "[]");
+    let prompt = build_category_prompt("Chrome", 120, titles, "");
     assert!(
         prompt.contains("GitHub - Pull Requests"),
         "should include window_name value; prompt was:\n{prompt}"
@@ -114,7 +114,7 @@ fn build_category_prompt_window_name_key() {
 fn build_category_prompt_title_key_fallback() {
     // General sessions use "title" — prompt builder must handle both
     let titles = r#"[{"title":"Notion - Project Plan","count":2}]"#;
-    let prompt = build_category_prompt("Notion", 60, titles, "[]", "[]");
+    let prompt = build_category_prompt("Notion", 60, titles, "");
     assert!(
         prompt.contains("Notion - Project Plan"),
         "should include title value; prompt was:\n{prompt}"
@@ -122,55 +122,50 @@ fn build_category_prompt_title_key_fallback() {
 }
 
 #[test]
-fn build_category_prompt_ocr_excluded() {
-    // OCR is disabled (OCR_CAP=0) because dense screencap text triggers FM's language detector.
-    // Classification relies on window titles and UI elements instead.
-    let ocr =
-        r#"[{"text":"def solve(n): return n * 2","window":"VSCode","ts":"2024-01-01T00:00:00Z"}]"#;
-    let prompt = build_category_prompt("Visual Studio Code", 300, "[]", ocr, "[]");
+fn build_category_prompt_session_text_included() {
+    // session_text content appears in the Content section of the prompt
+    let text = "def solve(n): return n * 2";
+    let prompt = build_category_prompt("Visual Studio Code", 300, "[]", text);
     assert!(
-        !prompt.contains("def solve"),
-        "OCR text should not appear in prompt (OCR disabled)"
+        prompt.contains("def solve"),
+        "session_text should appear in prompt; prompt was:\n{prompt}"
     );
     assert!(
-        !prompt.contains("Screen:"),
-        "Screen section should not appear when OCR is disabled"
+        prompt.contains("Content:"),
+        "Content section should appear when session_text is non-empty"
     );
 }
 
 #[test]
-fn build_category_prompt_elements_included() {
-    let elements = r#"[{"text":"Submit PR"},{"text":"Request review"}]"#;
-    let prompt = build_category_prompt("GitHub", 45, "[]", "[]", elements);
+fn build_category_prompt_session_text_plain() {
+    // session_text is plain text, not JSON — included directly
+    let text = "Submit PR\nRequest review";
+    let prompt = build_category_prompt("GitHub", 45, "[]", text);
     assert!(
         prompt.contains("Submit PR"),
-        "elements text should appear in prompt"
+        "session_text should appear in prompt"
     );
     assert!(prompt.contains("Request review"));
 }
 
 #[test]
-fn build_category_prompt_empty_ocr_and_elements_omitted() {
-    let prompt = build_category_prompt("Chrome", 30, r#"[{"window_name":"Google"}]"#, "[]", "[]");
+fn build_category_prompt_empty_session_text_omits_content_section() {
+    let prompt = build_category_prompt("Chrome", 30, r#"[{"window_name":"Google"}]"#, "");
     assert!(
-        !prompt.contains("Screen:"),
-        "empty OCR should not add Screen section"
-    );
-    assert!(
-        !prompt.contains("UI elements:"),
-        "empty elements should not add UI elements section"
+        !prompt.contains("Content:"),
+        "empty session_text should not add Content section"
     );
 }
 
 #[test]
 fn build_category_prompt_includes_duration() {
-    let prompt = build_category_prompt("Xcode", 999, "[]", "[]", "[]");
+    let prompt = build_category_prompt("Xcode", 999, "[]", "");
     assert!(prompt.contains("999s"), "duration in seconds should appear");
 }
 
 #[test]
 fn build_category_prompt_includes_app_name() {
-    let prompt = build_category_prompt("Visual Studio Code", 120, "[]", "[]", "[]");
+    let prompt = build_category_prompt("Visual Studio Code", 120, "[]", "");
     assert!(
         prompt.contains("Visual Studio Code"),
         "app name should appear; prompt was:\n{prompt}"
