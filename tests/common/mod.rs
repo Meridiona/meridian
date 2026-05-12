@@ -34,7 +34,9 @@ pub async fn make_screenpipe_db() -> SqlitePool {
             window_name TEXT,
             browser_url TEXT,
             timestamp TEXT NOT NULL,
-            capture_trigger TEXT
+            capture_trigger TEXT,
+            full_text TEXT,
+            text_source TEXT
         )",
     )
     .execute(&pool)
@@ -108,6 +110,29 @@ pub async fn insert_frames(pool: &SqlitePool, frames: &[(&str, &str)]) {
         .bind(i as i64 + 1)
         .bind(app)
         .bind(ts)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+}
+
+/// Inserts frames carrying `full_text` and `text_source = 'accessibility'`.
+/// Each entry is `(app_name, timestamp, full_text)`.
+/// `id_offset` is the ID of the first frame; subsequent frames increment by 1.
+pub async fn insert_frames_with_text(
+    pool: &SqlitePool,
+    id_offset: i64,
+    frames: &[(&str, &str, &str)],
+) {
+    for (i, (app, ts, text)) in frames.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO frames (id, app_name, window_name, timestamp, full_text, text_source)
+             VALUES (?, ?, NULL, ?, ?, 'accessibility')",
+        )
+        .bind(id_offset + i as i64)
+        .bind(app)
+        .bind(ts)
+        .bind(text)
         .execute(pool)
         .await
         .unwrap();
