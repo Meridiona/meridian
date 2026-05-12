@@ -34,7 +34,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from opentelemetry import trace                           # noqa: E402
+
 from agents import db                                     # noqa: E402
+from agents import observability                          # noqa: E402
+
+# Claim the process's service.name BEFORE importing stage2/stage3 — each of
+# those modules also calls observability.setup at import time. First-call-
+# wins on the global TracerProvider, so without this the process would end
+# up labelled `meridian-stage2` in OpenObserve.
+tracer = observability.setup("meridian-tagger")
+
 from agents import rules as rules_mod                     # noqa: E402
 from agents.config import (                               # noqa: E402
     SESSION_BATCH_LIMIT, MIN_LLM_DURATION_S, ONLY_TODAY,
@@ -60,18 +70,15 @@ log = logging.getLogger("tagger")
 
 # ──────────────────────── Logging setup ───────────────────────────────────────
 def _configure_logging() -> Path:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = LOG_DIR / "tagger.log"
-    level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        handlers=[logging.FileHandler(log_path), logging.StreamHandler(sys.stdout)],
-    )
-    for noisy in ("httpx", "httpcore"):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
-    log.info("LOG_LEVEL=%s (file=%s)", logging.getLevelName(level), log_path)
-    return log_path
+    """Idempotent — wires OTel + JSON logging via observability.setup.
+
+    Kept under the old name (and returning a Path) so the CLI / inspector
+    entry points don't have to change. The returned path is the JSONL log
+    file under ~/.meridian/logs/.
+    """
+    global tracer
+    tracer = observability.setup("meridian-tagger")
+    return LOG_DIR / "meridian-tagger.jsonl"
 
 
 # ──────────────────────── Pre-filter ───────────────────────────────────────────
@@ -180,13 +187,48 @@ def _tag_session(
     log.info("─" * 76)
     log.info("Session %s", _session_header(session))
 
+    # Continue the Rust ETL trace if the session row carries a traceparent.
+    # When it doesn't (older rows, or daemon ran without observability) we
+    # fall through to a root span — still useful, just not linked upstream.
+    parent_ctx = observability.extract_parent_context(session.get("traceparent"))
+    session_span = tracer.start_as_current_span("tagger.session", context=parent_ctx)
+    with session_span as span:
+        span.set_attribute("session_id", sid)
+        if session.get("app_name"):
+            span.set_attribute("app_name", str(session["app_name"]))
+        if session.get("duration_s") is not None:
+            span.set_attribute("duration_s", int(session.get("duration_s") or 0))
+
+        return _tag_session_inner(
+            conn,
+            run_id=run_id,
+            session=session,
+            pm_tasks=pm_tasks,
+            stages=stages,
+            valid_task_keys=valid_task_keys,
+        )
+
+
+def _tag_session_inner(
+    conn: sqlite3.Connection,
+    *,
+    run_id: int,
+    session: dict,
+    pm_tasks: list[dict],
+    stages: set[int],
+    valid_task_keys: set[str],
+) -> dict:
+    """Body of `_tag_session`, split out so the per-session span wraps cleanly."""
+    sid = int(session["id"])
     written = 0
     stage1_decision: tuple[str | None, float, str, str] = (None, 0.0, "", "")
     stage2_result: Stage2Result | None = None
 
     # ── Stage 1 ──
     if 1 in stages:
-        raw_hits = run_rules(session)
+        with tracer.start_as_current_span("tagger.rules.fire") as rules_span:
+            raw_hits = run_rules(session)
+            rules_span.set_attribute("rule_hits", len(raw_hits))
         if not raw_hits:
             log.info("  no rule hits")
         else:
@@ -352,96 +394,119 @@ def run_once(*, since_iso: str | None = None, stages: set[int] | None = None) ->
     for name, dim, _fn in rules_mod.RULE_REGISTRY:
         log.debug("  registered rule: %-30s dim=%s", name, dim)
 
-    with db.connection() as conn:
-        run_id = db.start_agent_run(conn)
+    # Single root span for the whole cycle. Per-session spans (created in
+    # `_tag_session`) link back to the Rust ETL trace via the session row's
+    # `traceparent` column; they do NOT inherit this run_once span as their
+    # parent — keeping the agent cycle separate from cross-process traces
+    # avoids fanning every ETL trace into one giant tagger run tree.
+    with tracer.start_as_current_span("tagger.run_once") as cycle_span:
+        cycle_span.set_attribute("stages", sorted(stages))
+        with db.connection() as conn:
+            run_id = db.start_agent_run(conn)
 
-        sessions = db.fetch_unprocessed_sessions(
-            conn, SESSION_BATCH_LIMIT, since_iso=since_iso,
-        )
-        pm_tasks = db.fetch_pm_tasks(conn)
-        valid_keys: set[str] = {t["task_key"] for t in pm_tasks}
+            sessions = db.fetch_unprocessed_sessions(
+                conn, SESSION_BATCH_LIMIT, since_iso=since_iso,
+            )
+            pm_tasks = db.fetch_pm_tasks(conn)
+            valid_keys: set[str] = {t["task_key"] for t in pm_tasks}
 
-        log.info(
-            "%d session(s) | %d pm_tasks | filter since=%s | batch_limit=%d",
-            len(sessions), len(pm_tasks), since_iso or "∅", SESSION_BATCH_LIMIT,
-        )
+            cycle_span.set_attribute("sessions_batch_count", len(sessions))
+            cycle_span.set_attribute("pm_tasks_count", len(pm_tasks))
 
-        # Single linear pass through sessions in id-ascending order, with
-        # cursor advance after EACH session. A SIGTERM mid-batch loses at
-        # most the in-flight session; everything completed before is durable.
-        # The two paths (trivial-overhead prefilter / full rule+stage pass)
-        # both write before they advance the cursor.
-        skipped = 0
-        kept_count = 0
-        reports: list[dict] = []
-        t0 = time.time()
-        for idx, s in enumerate(sessions, start=1):
-            sid = int(s["id"])
-            if _is_trivial_overhead(s):
-                db.write_ticket_link(
-                    conn,
-                    session_id=sid,
-                    task_key=None,
-                    confidence=0.0,
-                    session_type="overhead",
-                    routing="skip",
-                    method="stage1_prefilter",
-                )
-                db.upsert_session_dimension(
-                    conn,
-                    session_id=sid,
-                    dimension="engagement",
-                    value="idle",
-                    confidence=0.9,
-                    source="rule:prefilter_trivial",
-                )
-                skipped += 1
-            else:
-                kept_count += 1
-                log.info("[%d/%d kept]", kept_count, len(sessions) - skipped)
-                reports.append(_tag_session(
-                    conn, run_id=run_id, session=s,
-                    pm_tasks=pm_tasks, stages=stages,
-                ))
-            db.advance_cursor(conn, sid)
-        elapsed = time.time() - t0
-        log.info("Single-pass done: %d trivial-overhead, %d ran rules+stages",
-                 skipped, kept_count)
+            log.info(
+                "%d session(s) | %d pm_tasks | filter since=%s | batch_limit=%d",
+                len(sessions), len(pm_tasks), since_iso or "∅", SESSION_BATCH_LIMIT,
+            )
 
-        # Counters.
-        dims_total       = sum(r["dimensions_written"] for r in reports)
-        tickets_decided  = sum(1 for r in reports if r["ticket_decided"])
-        auto_tickets     = sum(1 for r in reports if r["routing"] == "auto" and r["task_key"])
-        skip_decisions   = sum(1 for r in reports if r["routing"] == "skip")
+            # Single linear pass through sessions in id-ascending order, with
+            # cursor advance after EACH session. A SIGTERM mid-batch loses at
+            # most the in-flight session; everything completed before is durable.
+            # The two paths (trivial-overhead prefilter / full rule+stage pass)
+            # both write before they advance the cursor.
+            skipped = 0
+            kept_count = 0
+            reports: list[dict] = []
+            t0 = time.time()
+            for idx, s in enumerate(sessions, start=1):
+                sid = int(s["id"])
+                if _is_trivial_overhead(s):
+                    db.write_ticket_link(
+                        conn,
+                        session_id=sid,
+                        task_key=None,
+                        confidence=0.0,
+                        session_type="overhead",
+                        routing="skip",
+                        method="stage1_prefilter",
+                    )
+                    db.upsert_session_dimension(
+                        conn,
+                        session_id=sid,
+                        dimension="engagement",
+                        value="idle",
+                        confidence=0.9,
+                        source="rule:prefilter_trivial",
+                    )
+                    skipped += 1
+                else:
+                    kept_count += 1
+                    log.info("[%d/%d kept]", kept_count, len(sessions) - skipped)
+                    reports.append(_tag_session(
+                        conn, run_id=run_id, session=s,
+                        pm_tasks=pm_tasks, stages=stages,
+                    ))
+                db.advance_cursor(conn, sid)
+            elapsed = time.time() - t0
+            log.info("Single-pass done: %d trivial-overhead, %d ran rules+stages",
+                     skipped, kept_count)
 
-        db.complete_agent_run(
-            conn, run_id, "success",
-            sessions_processed=len(sessions),
-            summaries_written=0,        # stage 1 doesn't generate narrative summaries
-            links_written=skipped + tickets_decided,
-            dispatches_queued=auto_tickets,
-        )
+            # Counters.
+            dims_total       = sum(r["dimensions_written"] for r in reports)
+            tickets_decided  = sum(1 for r in reports if r["ticket_decided"])
+            auto_tickets     = sum(1 for r in reports if r["routing"] == "auto" and r["task_key"])
+            skip_decisions   = sum(1 for r in reports if r["routing"] == "skip")
+            stage1_hits      = sum(1 for r in reports if r.get("stage2_method") is None)
+            stage2_cands     = sum(1 for r in reports if r.get("stage2_method") == "stage2_embed")
+            stage3_res       = sum(
+                1 for r in reports
+                if r.get("routing") in ("auto", "queue") and r.get("task_key")
+            )
 
-        log.info("=" * 76)
-        log.info("Stage-1 cycle complete: run_id=%d", run_id)
-        log.info("  sessions seen          : %d", len(sessions))
-        log.info("  pre-filter overhead    : %d", skipped)
-        log.info("  rule-pass sessions     : %d", kept_count)
-        log.info("  dimensions written     : %d", dims_total)
-        log.info("  ticket_links decided   : %d  (auto=%d skip=%d)",
-                 tickets_decided, auto_tickets, skip_decisions)
-        log.info("  elapsed                : %.2fs", elapsed)
+            cycle_span.set_attribute("stage1_hits", stage1_hits)
+            cycle_span.set_attribute("stage2_candidates", stage2_cands)
+            cycle_span.set_attribute("stage3_resolutions", stage3_res)
+            cycle_span.set_attribute("tickets_decided", tickets_decided)
+            cycle_span.set_attribute("auto_tickets", auto_tickets)
+            cycle_span.set_attribute("elapsed_s", elapsed)
 
-        return {
-            "run_id":          run_id,
-            "sessions":        len(sessions),
-            "kept":            kept_count,
-            "skipped":         skipped,
-            "dimensions":      dims_total,
-            "tickets_decided": tickets_decided,
-            "auto_tickets":    auto_tickets,
-            "elapsed_s":       elapsed,
-        }
+            db.complete_agent_run(
+                conn, run_id, "success",
+                sessions_processed=len(sessions),
+                summaries_written=0,        # stage 1 doesn't generate narrative summaries
+                links_written=skipped + tickets_decided,
+                dispatches_queued=auto_tickets,
+            )
+
+            log.info("=" * 76)
+            log.info("Stage-1 cycle complete: run_id=%d", run_id)
+            log.info("  sessions seen          : %d", len(sessions))
+            log.info("  pre-filter overhead    : %d", skipped)
+            log.info("  rule-pass sessions     : %d", kept_count)
+            log.info("  dimensions written     : %d", dims_total)
+            log.info("  ticket_links decided   : %d  (auto=%d skip=%d)",
+                     tickets_decided, auto_tickets, skip_decisions)
+            log.info("  elapsed                : %.2fs", elapsed)
+
+            return {
+                "run_id":          run_id,
+                "sessions":        len(sessions),
+                "kept":            kept_count,
+                "skipped":         skipped,
+                "dimensions":      dims_total,
+                "tickets_decided": tickets_decided,
+                "auto_tickets":    auto_tickets,
+                "elapsed_s":       elapsed,
+            }
 
 
 # ──────────────────────── Single-session inspection ──────────────────────────

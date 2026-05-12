@@ -3,6 +3,7 @@
 import { NextResponse } from 'next/server'
 import getDb from '@/lib/db'
 import { localDayBounds, todayString } from '@/lib/date-utils'
+import { logger, withSpan } from '@/lib/observability'
 import type { PaginatedSessions, SessionRow } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
@@ -35,7 +36,8 @@ function parseRow(r: Record<string, unknown>): SessionRow {
 }
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url)
+  const url = new URL(request.url)
+  const { searchParams } = url
   const date = searchParams.get('date') ?? todayString()
   const appFilter = searchParams.get('app')
   const page = Math.max(1, parseInt(searchParams.get('page') ?? '1'))
@@ -44,6 +46,15 @@ export async function GET(request: Request) {
 
   const { start, end } = localDayBounds(date)
 
+  const attrs: Record<string, string | number> = {
+    route: url.pathname,
+    date,
+    page,
+    page_size: pageSize,
+  }
+  if (appFilter) attrs.app_name = appFilter
+
+  return withSpan('api.sessions', attrs, async () => {
   try {
     const db = getDb()
 
@@ -93,7 +104,8 @@ export async function GET(request: Request) {
 
     return NextResponse.json(response)
   } catch (e) {
-    console.error('sessions error:', e)
+    logger.error({ err: e instanceof Error ? e.message : String(e), route: 'sessions' }, 'sessions handler failed')
     return NextResponse.json({ sessions: [], page, page_size: pageSize, total: 0, has_more: false })
   }
+  })
 }

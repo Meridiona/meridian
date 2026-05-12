@@ -25,9 +25,15 @@ from typing import Any
 
 import numpy as np
 
-from agents import text_for_embedding as tfe
+from agents import observability, text_for_embedding as tfe
 
 log = logging.getLogger("agents.embeddings")
+# Embeddings is a shared library — `setup` here gives the module its own
+# tracer so spans surface as `meridian-embeddings` when there's no active
+# caller-supplied span. When the tagger's per-session span is active, this
+# tracer still emits child spans under that parent — the SDK uses the
+# current Context regardless of which TracerProvider created the Tracer.
+tracer = observability.setup("meridian-embeddings")
 
 # ────────────────────────── Model cache ───────────────────────────────────────
 EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
@@ -74,15 +80,19 @@ def encode_batch(texts: list[str], *, batch_size: int = 32) -> np.ndarray:
 
     `normalize_embeddings=True` so cosine == dot product downstream.
     """
-    model = get_model()
-    out = model.encode(
-        texts,
-        batch_size=batch_size,
-        normalize_embeddings=True,
-        convert_to_numpy=True,
-        show_progress_bar=False,
-    )
-    return np.ascontiguousarray(out, dtype=np.float32)
+    with tracer.start_as_current_span("embeddings.encode_batch") as span:
+        span.set_attribute("batch_size", len(texts))
+        span.set_attribute("vector_dim", EMBED_DIM)
+        span.set_attribute("model", EMBED_MODEL_SHORT)
+        model = get_model()
+        out = model.encode(
+            texts,
+            batch_size=batch_size,
+            normalize_embeddings=True,
+            convert_to_numpy=True,
+            show_progress_bar=False,
+        )
+        return np.ascontiguousarray(out, dtype=np.float32)
 
 
 # ────────────────────────── BLOB <-> ndarray ──────────────────────────────────
