@@ -1,14 +1,14 @@
-"""Stage 2 — embedding-based session→task matcher.
+"""Semantic Matcher — embedding-based session→task matcher.
 
-Runs after Stage 1 has written the dimensions and only when Stage 1's regex
-deferred. Combines three signals into one score:
+Runs after the Rule Classifier has written the dimensions and only when the
+rule-based stage deferred. Combines three signals into one score:
 
     score(task) = 0.55 * cosine
                 + 0.30 * dim_overlap
                 + 0.15 * past_vote
 
 cosine        — embedding similarity between session text and task text
-dim_overlap   — agreement between Stage-1 dimensions and the task's
+dim_overlap   — agreement between rule-extracted dimensions and the task's
                 expected_dims (activity / topic / tool weighted blend)
 past_vote     — softmax-weighted vote from the K nearest past sessions
                 whose ticket_links.task_key was set to a real task
@@ -36,8 +36,8 @@ import numpy as np
 
 from agents import db, embeddings as emb, observability, text_for_embedding as tfe
 
-log = logging.getLogger("agents.stage2")
-tracer = observability.setup("meridian-stage2")
+log = logging.getLogger("agents.semantic_matcher")
+tracer = observability.setup("meridian-semantic-matcher")
 
 
 # ────────────────────────── Constants / defaults ──────────────────────────────
@@ -76,13 +76,13 @@ class CandidateBreakdown:
 
 
 @dataclass
-class Stage2Result:
+class SemanticMatchResult:
     session_id: int
     top_candidates: list[CandidateBreakdown]
     chosen_task_key: str | None
     confidence: float
     routing: str            # 'auto' | 'queue' | 'skip'
-    method: str             # 'stage2_embed' | 'stage2_no_pm_tasks' | 'stage2_unavailable'
+    method: str             # 'semantic_embed' | 'semantic_no_pm_tasks' | 'semantic_unavailable'
     debug: dict = field(default_factory=dict)
 
 
@@ -100,7 +100,7 @@ _ISSUE_TYPE_TO_ACTIVITY: dict[str, list[str]] = {
 
 
 def derive_expected_dims(task: dict) -> dict:
-    """Heuristic mapping pm_task → expected Stage-1 dimensions.
+    """Heuristic mapping pm_task → expected Rule-Classifier dimensions.
 
     Used to compute dim_overlap. Stored on `pm_task_embeddings.expected_dims`
     when a task is embedded, and refreshed on each re-embed.
@@ -218,8 +218,10 @@ def _past_vote(
     counts as a strong neighbour even if its other samples are unrelated.
 
     To avoid the documented self-reinforcing failure mode, we exclude
-    ticket_links rows whose `method` was written by Stage 2 itself — only
-    Stage-1 regex matches and (eventually) human-confirmed tags vote.
+    ticket_links rows whose `method` was written by the semantic matcher —
+    only Rule-Classifier regex matches and (eventually) human-confirmed tags
+    vote. Both old method prefix ('stage2%') and new ('semantic%') are
+    excluded for backward compatibility with existing DB rows.
     """
     neighbors = emb.fetch_top_k_similar_sessions(
         conn, session_matrix, k=k * 3, exclude_session_id=session_id
@@ -235,7 +237,8 @@ def _past_vote(
           FROM ticket_links
          WHERE session_id IN ({placeholders})
            AND task_key IS NOT NULL
-           AND (method IS NULL OR method NOT LIKE 'stage2%')
+           AND (method IS NULL
+                OR (method NOT LIKE 'stage2%' AND method NOT LIKE 'semantic%'))
         """,
         ids,
     ).fetchall()
@@ -298,21 +301,21 @@ def _session_dims_grouped(
 
 
 # ────────────────────────── Main entry ────────────────────────────────────────
-def stage2_match(
+def semantic_match(
     conn: sqlite3.Connection,
     session: dict,
     pm_tasks: list[dict],
     *,
     k_top: int = 5,
     k_neighbors: int = 10,
-) -> Stage2Result:
+) -> SemanticMatchResult:
     """Embed `session` as a multi-vec matrix, score against `pm_tasks` via
     max-pool cosine, and return a decision."""
     sid = int(session["id"])
-    with tracer.start_as_current_span("stage2.match") as span:
+    with tracer.start_as_current_span("semantic_matcher.match") as span:
         span.set_attribute("session_id", sid)
         span.set_attribute("pm_tasks_count", len(pm_tasks))
-        result = _stage2_match_inner(
+        result = _semantic_match_inner(
             conn, session, pm_tasks, sid,
             k_top=k_top, k_neighbors=k_neighbors,
         )
@@ -325,7 +328,7 @@ def stage2_match(
         return result
 
 
-def _stage2_match_inner(
+def _semantic_match_inner(
     conn: sqlite3.Connection,
     session: dict,
     pm_tasks: list[dict],
@@ -333,12 +336,12 @@ def _stage2_match_inner(
     *,
     k_top: int = 5,
     k_neighbors: int = 10,
-) -> Stage2Result:
+) -> SemanticMatchResult:
 
     if not pm_tasks:
-        return Stage2Result(
+        return SemanticMatchResult(
             session_id=sid, top_candidates=[], chosen_task_key=None,
-            confidence=0.0, routing="skip", method="stage2_no_pm_tasks",
+            confidence=0.0, routing="skip", method="semantic_no_pm_tasks",
         )
 
     # 1. Make sure all pm_tasks have an up-to-date embedding (and expected_dims).
@@ -348,23 +351,23 @@ def _stage2_match_inner(
         _, did = emb.upsert_pm_task_embedding(conn, t, expected_dims=expected)
         if did:
             n_embedded += 1
-    log.debug("stage2: re-embedded %d/%d pm_tasks", n_embedded, len(pm_tasks))
+    log.debug("semantic_matcher: re-embedded %d/%d pm_tasks", n_embedded, len(pm_tasks))
 
     # 2. Embed the session as a multi-vector matrix (one row per OCR sample
     #    + titles + audio).
     session_matrix, sample_labels, _ = emb.upsert_session_embeddings(conn, session)
     if session_matrix.size == 0:
-        return Stage2Result(
+        return SemanticMatchResult(
             session_id=sid, top_candidates=[], chosen_task_key=None,
-            confidence=0.0, routing="skip", method="stage2_no_session_text",
+            confidence=0.0, routing="skip", method="semantic_no_session_text",
         )
 
     # 3. Cosine against every pm_task — max over session samples per task.
     keys, task_matrix, expected_dims_list = emb.fetch_all_pm_task_embeddings(conn)
     if not keys:
-        return Stage2Result(
+        return SemanticMatchResult(
             session_id=sid, top_candidates=[], chosen_task_key=None,
-            confidence=0.0, routing="skip", method="stage2_no_pm_tasks",
+            confidence=0.0, routing="skip", method="semantic_no_pm_tasks",
         )
 
     sim_matrix = session_matrix @ task_matrix.T          # (M_samples, N_tasks)
@@ -374,9 +377,9 @@ def _stage2_match_inner(
     active_keys = {t["task_key"] for t in pm_tasks}
     candidates_idx = [i for i, k in enumerate(keys) if k in active_keys]
     if not candidates_idx:
-        return Stage2Result(
+        return SemanticMatchResult(
             session_id=sid, top_candidates=[], chosen_task_key=None,
-            confidence=0.0, routing="skip", method="stage2_no_pm_tasks",
+            confidence=0.0, routing="skip", method="semantic_no_pm_tasks",
         )
 
     # 4. Read session dimensions once, group by dim for cheap lookup.
@@ -415,9 +418,9 @@ def _stage2_match_inner(
     candidates.sort(key=lambda c: -c.score)
     top = candidates[:k_top]
     if not top:
-        return Stage2Result(
+        return SemanticMatchResult(
             session_id=sid, top_candidates=[], chosen_task_key=None,
-            confidence=0.0, routing="skip", method="stage2_no_pm_tasks",
+            confidence=0.0, routing="skip", method="semantic_no_pm_tasks",
         )
 
     top1 = top[0].score
@@ -426,7 +429,7 @@ def _stage2_match_inner(
     chosen = top[0].task_key if routing != "skip" else None
 
     debug = {
-        "method":       "stage2_embed",
+        "method":       "semantic_embed",
         "n_pm_tasks":   len(active_keys),
         "n_embedded":   n_embedded,
         "n_samples":    int(session_matrix.shape[0]),
@@ -444,18 +447,18 @@ def _stage2_match_inner(
         ],
     }
 
-    return Stage2Result(
+    return SemanticMatchResult(
         session_id=sid,
         top_candidates=top,
         chosen_task_key=chosen,
         confidence=top1,
         routing=routing,
-        method="stage2_embed",
+        method="semantic_embed",
         debug=debug,
     )
 
 
 __all__ = [
-    "Stage2Result", "CandidateBreakdown",
-    "stage2_match", "derive_expected_dims",
+    "SemanticMatchResult", "CandidateBreakdown",
+    "semantic_match", "derive_expected_dims",
 ]

@@ -444,7 +444,7 @@ class TestPerSession:
         assert link["session_type"] == "overhead"
         assert link["routing"] == "skip"
         assert link["task_key"] is None
-        assert link["method"] == "stage1_prefilter"
+        assert link["method"] == "rule_prefilter"
 
     def test_b_sub30_with_content_is_overhead_skip(self, seeded_db, run_summary):
         link = _ticket_link(seeded_db, SID_SUBTHIRTY)
@@ -452,7 +452,7 @@ class TestPerSession:
         # Prefilter triggers on duration < MIN_LLM_DURATION_S (30s).
         assert link["session_type"] == "overhead"
         assert link["routing"] == "skip"
-        assert link["method"] == "stage1_prefilter"
+        assert link["method"] == "rule_prefilter"
 
     def test_c_code_defer_runs_stage2(self, seeded_db, run_summary):
         # 31s Code session with .py file → Stage 1 should add activity=coding
@@ -463,8 +463,8 @@ class TestPerSession:
         link = _ticket_link(seeded_db, SID_CODE_DEFER)
         assert link is not None
         # Stage 1 deferred — Stage 2 wrote the row with method=stage2_embed.
-        assert link["method"] == "stage2_embed", \
-            f"expected stage 2 to handle this session, got method={link['method']}"
+        assert link["method"] == "semantic_embed", \
+            f"expected semantic matcher to handle this session, got method={link['method']}"
         assert link["session_type"] == "task"
 
     def test_d_verbatim_kan86_auto_dispatches(self, seeded_db, run_summary):
@@ -473,7 +473,7 @@ class TestPerSession:
         assert link["task_key"] == "KAN-86"
         assert link["session_type"] == "task"
         assert link["routing"] == "auto"
-        assert link["method"] == "stage1_regex"
+        assert link["method"] == "rule_regex"
         assert link["confidence"] >= 0.9
 
         # Dispatch row queued under jira provider.
@@ -491,8 +491,8 @@ class TestPerSession:
         assert link is not None, "session should still get a stage 2 row"
         assert link["task_key"] != "UTF-8"
         assert link["task_key"] != "RFC-2616"
-        assert link["method"] != "stage1_regex", \
-            "stage 1 regex must not have matched a denylisted token"
+        assert link["method"] != "rule_regex", \
+            "rule classifier must not have matched a denylisted token"
 
     def test_f_multi_ticket_first_in_text_wins(self, seeded_db, run_summary):
         # First-seen ticket key wins — extract_tickets de-dupes preserving
@@ -503,7 +503,7 @@ class TestPerSession:
         assert link["task_key"] == "KAN-87", \
             f"first-seen ticket should win; got {link['task_key']}"
         assert link["routing"] == "auto"
-        assert link["method"] == "stage1_regex"
+        assert link["method"] == "rule_regex"
 
     def test_g_unknown_ticket_records_task_skip(self, seeded_db, run_summary):
         # ABC-1 is ticket-shaped but not in pm_tasks → write task/skip with
@@ -513,7 +513,7 @@ class TestPerSession:
         assert link["task_key"] is None
         assert link["session_type"] == "task"
         assert link["routing"] == "skip"
-        assert link["method"] == "stage1_regex"
+        assert link["method"] == "rule_regex"
 
     def test_h_cursor_chat_is_ai_pair_programming(self, seeded_db, run_summary):
         dims = _dims(seeded_db, SID_CURSOR_AI)
@@ -535,8 +535,8 @@ class TestPerSession:
         # No verbatim KAN-NN → Stage 1 defers. Stage 2 must produce a row.
         link = _ticket_link(seeded_db, SID_TAILSCALE_SEM)
         assert link is not None
-        assert link["method"] == "stage2_embed", \
-            f"expected stage2_embed to handle tailscale session, got {link['method']}"
+        assert link["method"] == "semantic_embed", \
+            f"expected semantic matcher to handle tailscale session, got {link['method']}"
         # With our fake encoder, KAN-83 shares many tokens (tailscale, mac
         # studio, macbook air, ssh, remote) with the session — so we
         # expect KAN-83 to be the chosen task IF stage 2 routes anywhere
