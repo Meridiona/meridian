@@ -8,6 +8,27 @@ private func makeCString(_ str: String) -> UnsafeMutablePointer<CChar> {
 }
 
 @available(macOS 26, *)
+@Generable
+private struct CategoryOutput {
+    @Guide(.anyOf([
+        "coding",
+        "code_review",
+        "meeting",
+        "communication",
+        "design",
+        "documentation",
+        "planning",
+        "deployment_devops",
+        "research",
+        "idle_personal",
+    ]))
+    var category: String
+
+    @Guide(description: "One sentence explaining why this category fits the browser session")
+    var explanation: String
+}
+
+@available(macOS 26, *)
 private enum FM {
     static func checkAvailability(_ out_reason: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> Int32 {
         let model = SystemLanguageModel.default
