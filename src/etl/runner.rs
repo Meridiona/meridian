@@ -444,32 +444,42 @@ async fn close_block(
     .await?;
 
     // Option C: use last ui_event as ended_at if it's more recent than the last frame.
-    // Only when next_frame_ts is set (app-switch close, not gap-close).
-    if let Some(next_ts) = b.next_frame_ts {
-        if let Ok(Some(ui_ts)) =
-            get_last_ui_event_for_app(screenpipe, b.app, b.started_at, next_ts).await
-        {
-            if ui_ts.as_str() > b.ended_at {
+    // Only fires for app-switch closes (next_frame_ts is set); never for gap-closes.
+    // Tracks whether it fired so Option D below does not double-advance ended_at.
+    let option_c_fired = if let Some(next_ts) = b.next_frame_ts {
+        match get_last_ui_event_for_app(screenpipe, b.app, b.started_at, next_ts).await {
+            Ok(Some(ui_ts)) if ui_ts.as_str() > b.ended_at => {
                 debug!(
                     app = b.app,
                     ui_ts = ui_ts,
                     "ended_at refined via ui_event (Option C)"
                 );
                 ctx.ended_at = ui_ts;
+                true
             }
+            _ => false,
         }
-    }
+    } else {
+        false
+    };
 
-    // Option D: single-frame session (ended_at == started_at, duration would be 0).
-    // Use next_frame_ts as the ended_at so we capture the full inter-frame interval
-    // instead of recording a 0s session that actually had real screen time.
-    if ctx.ended_at == b.started_at {
+    // Option D (extended to all app-switch closes): when Option C did not fire,
+    // advance ended_at to next_frame_ts if it is later than the current ended_at.
+    // This recovers the inter-frame gap between the last captured frame of this
+    // session and the first frame of the next app — time that is otherwise
+    // silently lost from duration_s.  next_frame_ts is only set for app-switch
+    // closes, never for gap-closes, so gap time is never included.
+    if !option_c_fired {
         if let Some(next_ts) = b.next_frame_ts {
-            debug!(
-                app = b.app,
-                next_ts, "ended_at filled from next_frame_ts (single-frame session)"
-            );
-            ctx.ended_at = next_ts.to_string();
+            if next_ts > ctx.ended_at.as_str() {
+                debug!(
+                    app = b.app,
+                    next_ts,
+                    old_ended_at = ctx.ended_at.as_str(),
+                    "ended_at advanced to next_frame_ts (inter-frame gap recovery)"
+                );
+                ctx.ended_at = next_ts.to_string();
+            }
         }
     }
 

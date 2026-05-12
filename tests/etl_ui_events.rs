@@ -72,9 +72,11 @@ async fn test_ui_event_refines_session_end() {
 
 /// Terminal runs 10:00:00–10:01:30, Chrome starts at 10:02:00.
 /// A click at 10:00:45 is BEFORE the last Terminal frame (10:01:30).
-/// Option C must NOT fire; ended_at must stay at the last frame.
+/// Option C must NOT fire (ui_event is not more recent than the last frame).
+/// Extended Option D fires instead: ended_at is advanced to next_frame_ts
+/// (Chrome's first frame at 10:02:00) to recover the inter-frame gap.
 ///
-/// Expected: ended_at = 10:01:30, duration_s = 90.
+/// Expected: ended_at = 10:02:00, duration_s = 120.
 #[tokio::test]
 async fn test_ui_event_before_last_frame_ignored() {
     let sp = common::make_screenpipe_db().await;
@@ -113,9 +115,12 @@ async fn test_ui_event_before_last_frame_ignored() {
             .unwrap();
 
     assert!(
-        row.0.starts_with("2026-01-01T10:01:30"),
-        "ended_at must be the last frame (10:01:30), not the earlier ui_event; got: {}",
+        row.0.starts_with("2026-01-01T10:02:00"),
+        "ended_at must be next_frame_ts (10:02:00) — Option C did not fire, Option D advanced it; got: {}",
         row.0
     );
-    assert_eq!(row.1, 90, "duration_s should be 90 s (10:01:30 − 10:00:00)");
+    assert_eq!(
+        row.1, 120,
+        "duration_s should be 120 s (10:02:00 − 10:00:00)"
+    );
 }
