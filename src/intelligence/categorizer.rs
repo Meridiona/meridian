@@ -442,7 +442,6 @@ pub fn categorize(signals: &SessionSignals<'_>) -> (ActivityKind, f32) {
     score_signals(signals.signals, &mut scores);
 
     let signal_count = signals.window_titles.len()
-        + signals.elements.len()
         + signals.signals.len()
         + if signals.audio_present { 1 } else { 0 };
     tracing::Span::current().record("signal_count", signal_count);

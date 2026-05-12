@@ -67,7 +67,7 @@ pub async fn extract_block_context(
     let session_text = build_session_text(&frames_res?);
     let audio_snippets = audio_res?;
 
-    tracing::Span::current().record("ocr_sample_count", ocr_samples.len());
+    tracing::Span::current().record("ocr_sample_count", 0_usize);
     tracing::Span::current().record("audio_snippet_count", audio_snippets.len());
 
     Ok(BlockContext {

@@ -20,12 +20,6 @@ extern "C" {
         out_text: *mut *mut c_char,
         out_error: *mut *mut c_char,
     ) -> i32;
-    fn fm_generate_category(
-        instructions: *const c_char,
-        prompt: *const c_char,
-        out_text: *mut *mut c_char,
-        out_error: *mut *mut c_char,
-    ) -> i32;
 }
 
 unsafe fn take_cstring(ptr: *mut c_char) -> Option<String> {
@@ -119,8 +113,9 @@ impl FoundationBackend {
         let start = std::time::Instant::now();
         let system_s = system.to_owned();
         let user_s = user.to_owned();
-        let text = tokio::task::spawn_blocking(move || Self::call_generate_text(&system_s, &user_s))
-            .await??;
+        let text =
+            tokio::task::spawn_blocking(move || Self::call_generate_text(&system_s, &user_s))
+                .await??;
         tracing::Span::current().record("latency_ms", start.elapsed().as_millis() as i64);
         if std::env::var("MERIDIAN_LOG_PROMPTS").is_ok() {
             tracing::trace!(response = %text, "llm response");
@@ -178,10 +173,7 @@ impl FoundationBackend {
                     tracing::trace!(response = %text, "llm response");
                 }
                 let task_key = prompt::extract_key(&text, &valid_keys);
-                tracing::Span::current().record(
-                    "decision",
-                    task_key.as_deref().unwrap_or("none"),
-                );
+                tracing::Span::current().record("decision", task_key.as_deref().unwrap_or("none"));
                 Ok(ClassifyResponse {
                     task_key,
                     method: "foundation_models".to_string(),

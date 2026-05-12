@@ -15,13 +15,13 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use meridian::config::LlmBackendConfig;
 use meridian::intelligence::classifier::backends::build_backend;
-use meridian::intelligence::settler::{build_category_prompt, parse_category_response};
+use meridian::intelligence::settler::{build_category_prompt, parse_category};
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::SqlitePool;
 
 const CATEGORY_SYSTEM: &str = "\
 You are a JSON-only classifier. Given a Chrome browser session return exactly \
-{\"category\": \"VALUE\", \"explanation\": \"one sentence explanation\"}.\n\
+{\"category\": \"VALUE\"}.\n\
 \n\
 Valid values:\n\
   code_review      — PR diffs, GitHub pull requests, code comments, merge requests\n\
@@ -32,7 +32,7 @@ Valid values:\n\
   deployment_devops — CI/CD dashboards, cloud consoles, deploy logs, monitoring\n\
   idle_personal    — YouTube, social media, news, entertainment, shopping\n\
 \n\
-Return ONLY {\"category\": \"VALUE\", \"explanation\": \"one sentence explanation\"}. No explanation outside the JSON.";
+Return ONLY {\"category\": \"VALUE\"}. No explanation.";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -51,21 +51,24 @@ async fn main() -> Result<()> {
         .await
         .context("failed to open meridian.db")?;
 
-    let rows: Vec<(i64, String, i64, String, String)> = if let Some(ids) = &id_filter {
-        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!(
-            "SELECT id, app_name, duration_s, window_titles, category
+    let rows: Vec<(i64, String, i64, String, String, String, String)> =
+        if let Some(ids) = &id_filter {
+            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT id, app_name, duration_s, window_titles,
+                    COALESCE(ocr_samples, '[]'), COALESCE(elements_samples, '[]'), category
              FROM app_sessions WHERE id IN ({}) ORDER BY id ASC",
-            placeholders
-        );
-        let mut q = sqlx::query_as(&sql);
-        for id in ids {
-            q = q.bind(id);
-        }
-        q.fetch_all(&pool).await?
-    } else {
-        sqlx::query_as(
-            "SELECT id, app_name, duration_s, window_titles, category
+                placeholders
+            );
+            let mut q = sqlx::query_as(&sql);
+            for id in ids {
+                q = q.bind(id);
+            }
+            q.fetch_all(&pool).await?
+        } else {
+            sqlx::query_as(
+                "SELECT id, app_name, duration_s, window_titles,
+                    COALESCE(ocr_samples, '[]'), COALESCE(elements_samples, '[]'), category
              FROM app_sessions
              WHERE duration_s >= 5
                AND (lower(app_name) LIKE '%chrome%'
@@ -75,11 +78,11 @@ async fn main() -> Result<()> {
                     OR lower(app_name) LIKE '%edge%'
                     OR lower(app_name) LIKE '%brave%')
              ORDER BY id DESC LIMIT ?",
-        )
-        .bind(limit)
-        .fetch_all(&pool)
-        .await?
-    };
+            )
+            .bind(limit)
+            .fetch_all(&pool)
+            .await?
+        };
 
     if rows.is_empty() {
         eprintln!("No sessions found.");
@@ -94,23 +97,22 @@ async fn main() -> Result<()> {
         rows.len()
     );
     println!(
-        "{:<6}  {:<16}  {:<5}  {:<15}  {:<20}  {:<6}  EXPLANATION",
+        "{:<6}  {:<16}  {:<5}  {:<15}  {:<20}  {:<6}  RAW",
         "ID", "APP", "DUR", "WAS", "→ CATEGORY", "MS"
     );
-    println!("{}", "-".repeat(120));
+    println!("{}", "-".repeat(110));
 
-    for (id, app_name, duration_s, window_titles, was_category) in &rows {
-        let prompt = build_category_prompt(*duration_s, window_titles, None);
+    for (id, app_name, duration_s, window_titles, ocr_samples, elements_samples, was_category) in
+        &rows
+    {
+        let prompt =
+            build_category_prompt(*duration_s, window_titles, ocr_samples, elements_samples);
 
         let t0 = Instant::now();
         match backend.raw_generate(CATEGORY_SYSTEM, &prompt).await {
             Ok(text) => {
                 let ms = t0.elapsed().as_millis();
-                let resp = parse_category_response(&text);
-                let category = resp.as_ref().map(|r| r.category).unwrap_or("(unparseable)");
-                let why = resp
-                    .map(|r| r.explanation)
-                    .unwrap_or_else(|| text.replace('\n', " "));
+                let category = parse_category(&text).unwrap_or("(unparseable)");
                 println!(
                     "{:<6}  {:<16}  {:<5}  {:<15}  {:<20}  {:<6}  {}",
                     id,
@@ -119,7 +121,7 @@ async fn main() -> Result<()> {
                     truncate(was_category, 13),
                     category,
                     format!("{}ms", ms),
-                    truncate(&why, 50),
+                    truncate(&text.replace('\n', " "), 40),
                 );
             }
             Err(e) => {
@@ -135,7 +137,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    println!("{}", "-".repeat(120));
+    println!("{}", "-".repeat(110));
     Ok(())
 }
 
