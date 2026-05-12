@@ -27,6 +27,7 @@ struct SessionRow {
     app_name: String,
     duration_s: i64,
     window_titles: String,
+    ocr_samples: String,
     category: String,
 }
 
@@ -82,7 +83,7 @@ async fn main() -> Result<()> {
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
             "SELECT id, app_name, duration_s, window_titles,
-                    category
+                    COALESCE(ocr_samples, '[]') AS ocr_samples, category
              FROM app_sessions WHERE id IN ({}) ORDER BY started_at DESC",
             placeholders
         );
@@ -94,7 +95,7 @@ async fn main() -> Result<()> {
     } else if let Some(app) = app_filter {
         sqlx::query_as(
             "SELECT id, app_name, duration_s, window_titles,
-                    category
+                    COALESCE(ocr_samples, '[]') AS ocr_samples, category
              FROM app_sessions WHERE app_name = ? AND duration_s > 10
              ORDER BY started_at DESC LIMIT ?",
         )
@@ -105,7 +106,7 @@ async fn main() -> Result<()> {
     } else {
         sqlx::query_as(
             "SELECT id, app_name, duration_s, window_titles,
-                    category
+                    COALESCE(ocr_samples, '[]') AS ocr_samples, category
              FROM app_sessions WHERE duration_s > 10
              ORDER BY started_at DESC LIMIT ?",
         )
@@ -158,11 +159,17 @@ async fn main() -> Result<()> {
             })
             .collect();
 
+        let ocr_snippet: String = serde_json::from_str::<Vec<serde_json::Value>>(&s.ocr_samples)
+            .unwrap_or_default()
+            .first()
+            .and_then(|v| v.get("text")?.as_str().map(|t| t.to_string()))
+            .unwrap_or_default();
+
         let req = ClassifyRequest {
             app_name: s.app_name.clone(),
             duration_s: s.duration_s,
             windows,
-            ocr_snippet: String::new(),
+            ocr_snippet,
             tasks: task_refs.clone(),
             valid_keys: valid_keys.clone(),
         };

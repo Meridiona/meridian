@@ -25,14 +25,20 @@
   "author": "Meridiona",
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.27.1",
-    "sql.js": "^1.14.1"
+    "@modelcontextprotocol/sdk": "1.27.1",
+    "@opentelemetry/api": "1.9",
+    "@opentelemetry/exporter-trace-otlp-http": "0.55",
+    "@opentelemetry/resources": "1.28",
+    "@opentelemetry/sdk-node": "0.55",
+    "@opentelemetry/semantic-conventions": "1.28",
+    "pino": "9",
+    "sql.js": "1.14.1"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "@types/sql.js": "^1.4.11",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.9.3"
+    "@types/node": "22.0.0",
+    "@types/sql.js": "1.4.11",
+    "ts-node": "10.9.2",
+    "typescript": "5.9.3"
   },
   "engines": {
     "node": ">=18.0.0"

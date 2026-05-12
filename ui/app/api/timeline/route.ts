@@ -3,6 +3,7 @@
 import { NextResponse } from 'next/server'
 import getDb from '@/lib/db'
 import { localDayBounds, todayString } from '@/lib/date-utils'
+import { logger, withSpan } from '@/lib/observability'
 import type { TimelineResponse, SessionRow, GapRow } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
@@ -21,14 +22,23 @@ function parseRow(r: Record<string, unknown>): SessionRow {
     etl_run_id: r.etl_run_id as number,
     category: (r.category as string) || 'idle_personal',
     confidence: (r.confidence as number) || 0,
+    task_key:        (r.task_key as string | null) ?? null,
+    task_title:      (r.task_title as string | null) ?? null,
+    task_url:        (r.task_url as string | null) ?? null,
+    task_provider:   (r.task_provider as string | null) ?? null,
+    session_type:    (r.session_type as string | null) ?? null,
+    routing:         (r.routing as string | null) ?? null,
+    link_confidence: (r.link_confidence as number | null) ?? null,
+    link_method:     (r.link_method as string | null) ?? null,
   }
 }
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url)
-  const date = searchParams.get('date') ?? todayString()
+  const url = new URL(request.url)
+  const date = url.searchParams.get('date') ?? todayString()
   const { start, end } = localDayBounds(date)
 
+  return withSpan('api.timeline', { route: url.pathname, date }, async () => {
   try {
     const db = getDb()
     const rows = db.prepare(`
@@ -66,7 +76,7 @@ export async function GET(request: Request) {
 
     return NextResponse.json(response)
   } catch (e) {
-    console.error('timeline error:', e)
+    logger.error({ err: e instanceof Error ? e.message : String(e), route: 'timeline' }, 'timeline handler failed')
     const dayStartMs = new Date(`${date}T00:00:00`).getTime()
     return NextResponse.json({
       date,
@@ -76,4 +86,5 @@ export async function GET(request: Request) {
       day_end_s: Math.floor(Date.now() / 1000),
     })
   }
+  })
 }

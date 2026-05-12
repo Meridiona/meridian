@@ -1,0 +1,18 @@
+# Core LLM + MCP plumbing the agents/ package needs
+openai>=2.0.0,<3
+mcp>=1.3.0,<2
+python-dotenv>=1.0.0,<2
+PyYAML>=6.0,<7
+
+# Observability — OTel traces + structured logging to OpenObserve.
+opentelemetry-api>=1.27,<2
+opentelemetry-sdk>=1.27,<2
+opentelemetry-exporter-otlp-proto-http>=1.27,<2
+opentelemetry-instrumentation-logging>=0.48b0
+python-json-logger>=2.0,<3
+
+# AIAgent (run_agent.py) and the broader Hermes framework pull in many things;
+# the canonical dependency list is in pyproject.toml. Install with:
+#   pip install -e .
+# This requirements.txt is the bare minimum to drive agents/ in development.
+hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git@v2026.4.30
