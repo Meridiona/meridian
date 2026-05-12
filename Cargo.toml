@@ -51,8 +51,9 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter", "chrono", "
 tracing-appender = "0.2"
 tracing-opentelemetry = "0.28"
 opentelemetry = "0.27"
-opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.27", default-features = false, features = ["http-proto", "reqwest-client", "trace"] }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio", "logs"] }
+opentelemetry-otlp = { version = "0.27", default-features = false, features = ["http-proto", "reqwest-client", "trace", "logs"] }
+opentelemetry-appender-tracing = { version = "0.27", features = ["experimental_metadata_attributes"] }
 opentelemetry-semantic-conventions = "0.27"
 
 # Error handling

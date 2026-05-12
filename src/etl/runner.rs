@@ -529,7 +529,12 @@ async fn close_block(
                 new_app = ctx.app_name,
                 "stale active_session — closing stale first"
             );
-            close_active_session_with(meridian, active, run_id).await?;
+            let stale_id = close_active_session_with(meridian, active, run_id).await?;
+            if let Some(tp) = crate::observability::current_traceparent() {
+                write_session_traceparent(meridian, stale_id, &tp)
+                    .await
+                    .context("write traceparent (stale session)")?;
+            }
             let new_session = build_active_session(&ctx, b.idle_frame_count)?;
             let new_id = close_active_session_with(meridian, &new_session, run_id).await?;
             info!(

@@ -3,13 +3,11 @@
 // Observability bootstrap.
 //
 // One call to `init(service_name)` builds a layered `tracing` subscriber that:
-//   1. Pretty-prints to stdout (dev ergonomics)
+//   1. Pretty-prints to stderr (dev ergonomics)
 //   2. Writes JSON Lines to `~/.meridian/logs/<service>.jsonl` with daily rotation
 //   3. Exports OpenTelemetry traces to OpenObserve via OTLP/HTTP
-//
-// Every log event automatically carries the active span's `trace_id` and
-// `span_id` (tracing-opentelemetry installs this), so logs and spans in
-// OpenObserve correlate by trace_id.
+//   4. Exports OpenTelemetry logs  to OpenObserve via OTLP/HTTP
+//      (log events carry trace_id/span_id so they correlate with traces in OO)
 //
 // Environment variables read at init time:
 //   MERIDIAN_OTLP_ENDPOINT  — OTLP/HTTP traces endpoint
@@ -20,46 +18,54 @@
 //   RUST_LOG                — standard env-filter; default
 //                              "meridian=info,meridian::etl=debug,sqlx=warn"
 //
-// `init` returns an `ObservabilityGuard` whose `Drop` flushes the file writer
-// and shuts down the OTel tracer provider. Keep it alive for the program's
-// lifetime.
+// `init` returns an `ObservabilityGuard` whose `Drop` flushes the file writer.
+// Call `ObservabilityGuard::shutdown().await` before tearing down the tokio
+// runtime so the batch exporters flush their final payloads.
 
 use anyhow::{Context, Result};
 use opentelemetry::{global, trace::TracerProvider as _, KeyValue};
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::{Protocol, WithExportConfig, WithHttpConfig};
 use opentelemetry_sdk::{
+    logs::LoggerProvider,
     propagation::TraceContextPropagator,
     runtime,
-    trace::{RandomIdGenerator, Sampler, TracerProvider},
+    trace::{RandomIdGenerator, Sampler, Tracer, TracerProvider},
     Resource,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 const DEFAULT_OTLP_ENDPOINT: &str = "http://localhost:5080/api/default/v1/traces";
 const DEFAULT_ENV_FILTER: &str =
     "meridian=info,meridian::etl=debug,meridian::intelligence=debug,sqlx=warn";
 
-/// RAII guard returned from [`init`]. Holds the file-writer worker thread.
+/// RAII guard returned from [`init`]. Holds the file-writer worker thread and
+/// (when OTel is enabled) the logger provider for graceful shutdown.
 ///
 /// Call [`ObservabilityGuard::shutdown`] explicitly before the tokio runtime
-/// is torn down — the OTel tracer provider's shutdown is blocking, and a Drop
+/// is torn down — the BatchSpanProcessor's shutdown is blocking, and a Drop
 /// inside an async context panics with "Cannot drop a runtime in a context
-/// where blocking is not allowed".  Drop here just releases the file writer.
+/// where blocking is not allowed". Drop here just releases the file writer.
 pub struct ObservabilityGuard {
     _file_guard: WorkerGuard,
+    logger_provider: Option<LoggerProvider>,
     otel_enabled: bool,
 }
 
 impl ObservabilityGuard {
-    /// Flush and shut down OTel exporters. Must be `await`ed while the tokio
-    /// runtime is still alive — the BatchSpanProcessor's shutdown does its
-    /// final flush on a blocking-pool task and panics if run during runtime
-    /// teardown.
+    /// Flush and shut down both OTel exporters (traces + logs). Must be
+    /// `await`ed while the tokio runtime is still alive.
     pub async fn shutdown(self) {
         if self.otel_enabled {
+            if let Some(lp) = self.logger_provider {
+                let _ = tokio::task::spawn_blocking(move || {
+                    let _ = lp.shutdown();
+                })
+                .await;
+            }
             let _ = tokio::task::spawn_blocking(global::shutdown_tracer_provider).await;
         }
     }
@@ -91,25 +97,43 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
         .with_current_span(true)
         .with_span_list(false);
 
-    let registry = tracing_subscriber::registry()
-        .with(env_filter)
-        .with(fmt_stdout)
-        .with(fmt_file);
+    // Build OTel providers first (no generic subscriber type involved yet),
+    // then construct the layers inline so the subscriber type is concrete at
+    // each .with() call — this avoids the Box<dyn Layer<S>> type-erasure issue
+    // that arises when chaining two boxed layers with different subscriber types.
+    let (otel_enabled, logger_provider) = match try_build_otel_providers(service_name) {
+        Ok(Some((tracer, lp))) => {
+            let trace_layer = tracing_opentelemetry::layer()
+                .with_tracer(tracer)
+                .with_tracked_inactivity(false);
+            let log_layer = OpenTelemetryTracingBridge::new(&lp);
 
-    let otel_enabled = match try_init_otel(service_name) {
-        Ok(Some(layer)) => {
-            registry.with(layer).init();
-            true
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(fmt_stdout)
+                .with(fmt_file)
+                .with(trace_layer)
+                .with(log_layer)
+                .init();
+
+            (true, Some(lp))
         }
         Ok(None) => {
-            registry.init();
-            false
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(fmt_stdout)
+                .with(fmt_file)
+                .init();
+            (false, None)
         }
         Err(err) => {
-            // Don't kill the daemon if OO is down — fall back to file + stdout.
             eprintln!("observability: OTLP exporter init failed: {err:#}");
-            registry.init();
-            false
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(fmt_stdout)
+                .with(fmt_file)
+                .init();
+            (false, None)
         }
     };
 
@@ -135,15 +159,15 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
 
     Ok(ObservabilityGuard {
         _file_guard: file_guard,
+        logger_provider,
         otel_enabled,
     })
 }
 
-/// Returns Some(layer) when MERIDIAN_OO_AUTH is set, None when disabled.
-fn try_init_otel<S>(service_name: &str) -> Result<Option<Box<dyn Layer<S> + Send + Sync + 'static>>>
-where
-    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a> + Send + Sync,
-{
+/// Builds the OTel tracer and logger providers when `MERIDIAN_OO_AUTH` is set.
+/// Returns the providers (not layers) so the caller can construct layers at the
+/// correct generic subscriber type without boxing.
+fn try_build_otel_providers(service_name: &str) -> Result<Option<(Tracer, LoggerProvider)>> {
     let Ok(auth) = std::env::var("MERIDIAN_OO_AUTH") else {
         return Ok(None);
     };
@@ -151,38 +175,54 @@ where
         return Ok(None);
     }
 
-    let endpoint = std::env::var("MERIDIAN_OTLP_ENDPOINT")
+    let trace_endpoint = std::env::var("MERIDIAN_OTLP_ENDPOINT")
         .unwrap_or_else(|_| DEFAULT_OTLP_ENDPOINT.to_string());
+
+    // Derive the log endpoint from the trace endpoint by swapping the path suffix.
+    let log_endpoint = trace_endpoint.replace("/v1/traces", "/v1/logs");
+
+    let resource = Resource::new(vec![KeyValue::new(
+        "service.name",
+        service_name.to_string(),
+    )]);
 
     let mut headers = HashMap::new();
     headers.insert("Authorization".to_string(), format!("Basic {auth}"));
 
-    let exporter = opentelemetry_otlp::SpanExporter::builder()
+    // ── Trace pipeline ────────────────────────────────────────────────────
+    let span_exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_http()
-        .with_endpoint(endpoint)
+        .with_endpoint(&trace_endpoint)
         .with_protocol(Protocol::HttpBinary)
-        .with_headers(headers)
+        .with_headers(headers.clone())
         .build()
         .context("build OTLP span exporter")?;
 
-    let provider = TracerProvider::builder()
-        .with_batch_exporter(exporter, runtime::Tokio)
+    let tracer_provider = TracerProvider::builder()
+        .with_batch_exporter(span_exporter, runtime::Tokio)
         .with_sampler(Sampler::AlwaysOn)
         .with_id_generator(RandomIdGenerator::default())
-        .with_resource(Resource::new(vec![KeyValue::new(
-            "service.name",
-            service_name.to_string(),
-        )]))
+        .with_resource(resource.clone())
         .build();
 
-    let tracer = provider.tracer(service_name.to_string());
-    global::set_tracer_provider(provider);
+    let tracer = tracer_provider.tracer(service_name.to_string());
+    global::set_tracer_provider(tracer_provider);
 
-    let layer = tracing_opentelemetry::layer()
-        .with_tracer(tracer)
-        .with_tracked_inactivity(false);
+    // ── Log pipeline ──────────────────────────────────────────────────────
+    let log_exporter = opentelemetry_otlp::LogExporter::builder()
+        .with_http()
+        .with_endpoint(&log_endpoint)
+        .with_protocol(Protocol::HttpBinary)
+        .with_headers(headers)
+        .build()
+        .context("build OTLP log exporter")?;
 
-    Ok(Some(Box::new(layer)))
+    let logger_provider = LoggerProvider::builder()
+        .with_batch_exporter(log_exporter, runtime::Tokio)
+        .with_resource(resource)
+        .build();
+
+    Ok(Some((tracer, logger_provider)))
 }
 
 fn resolve_log_dir() -> Result<PathBuf> {
