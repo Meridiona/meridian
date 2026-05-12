@@ -24,6 +24,8 @@ struct UnlinkedSession {
     app_name: String,
     duration_s: i64,
     window_titles: String,
+    ocr_samples: String,
+    // fetched for potential future use in classification heuristics
     _category: String,
 }
 
@@ -65,28 +67,31 @@ pub async fn settle_sessions(meridian: &SqlitePool, backend: &LlmBackend) -> Res
     let valid_keys: HashSet<String> = tasks.iter().map(|t| t.task_key.clone()).collect();
 
     // Find sessions not yet in ticket_links
-    let sessions: Vec<UnlinkedSession> = sqlx::query_as::<_, (i64, String, i64, String, String)>(
-        "SELECT id, app_name, duration_s, window_titles, COALESCE(category, '')
+    let sessions: Vec<UnlinkedSession> =
+        sqlx::query_as::<_, (i64, String, i64, String, String, String)>(
+            "SELECT id, app_name, duration_s, window_titles,
+                COALESCE(ocr_samples, '[]'), COALESCE(category, '')
          FROM app_sessions
          WHERE id NOT IN (SELECT session_id FROM ticket_links)
          ORDER BY id DESC
          LIMIT ?",
-    )
-    .bind(BATCH_LIMIT)
-    .fetch_all(meridian)
-    .await
-    .context("loading unlinked sessions")?
-    .into_iter()
-    .map(
-        |(id, app_name, duration_s, window_titles, category)| UnlinkedSession {
-            id,
-            app_name,
-            duration_s,
-            window_titles,
-            _category: category,
-        },
-    )
-    .collect();
+        )
+        .bind(BATCH_LIMIT)
+        .fetch_all(meridian)
+        .await
+        .context("loading unlinked sessions")?
+        .into_iter()
+        .map(
+            |(id, app_name, duration_s, window_titles, ocr_samples, category)| UnlinkedSession {
+                id,
+                app_name,
+                duration_s,
+                window_titles,
+                ocr_samples,
+                _category: category,
+            },
+        )
+        .collect();
 
     if sessions.is_empty() {
         debug!("all sessions already linked — settler idle");
@@ -186,11 +191,21 @@ async fn classify_session(
             })
             .collect();
 
+    let ocr_snippet: String = serde_json::from_str::<Vec<serde_json::Value>>(&session.ocr_samples)
+        .unwrap_or_default()
+        .first()
+        .and_then(|v| {
+            v.get("text")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_default();
+
     let req = ClassifyRequest {
         app_name: session.app_name.clone(),
         duration_s: session.duration_s,
         windows,
-        ocr_snippet: String::new(),
+        ocr_snippet,
         tasks: task_refs.to_vec(),
         valid_keys: valid_keys.clone(),
     };
@@ -206,15 +221,15 @@ async fn classify_session(
 const BROWSER_BATCH_LIMIT: i64 = 10;
 
 // 4 chars ≈ 1 token; caps keep total prompt under ~2,500 tokens (well within FM's 4,096 limit).
+const OCR_CAP: usize = 0; // OCR disabled — concatenated screencap text triggers FM language detector
 const WINDOW_CAP: usize = 500;
-const SESSION_TEXT_CAP: usize = 2000;
+const ELEMENTS_CAP: usize = 1_500;
 
 // Sentinel written when FM returns an unparseable response — prevents infinite retry.
 const PARSE_ERROR_SENTINEL: &str = "fm_parse_error";
 
 const VALID_CATEGORIES: &[&str] = &[
     "code_review",
-    "development",
     "research",
     "documentation",
     "planning",
@@ -224,17 +239,19 @@ const VALID_CATEGORIES: &[&str] = &[
 ];
 
 const CATEGORY_SYSTEM: &str = "\
-You are a Chrome browser session classifier. \
-Given the session duration and window titles, choose the single best category.\n\
+You are a JSON-only classifier. Given a Chrome browser session return exactly \
+{\"category\": \"VALUE\"}.\n\
 \n\
+Valid values:\n\
   code_review      — PR diffs, GitHub pull requests, code comments, merge requests\n\
-  development      — localhost, browser DevTools, local app testing, CodeSandbox, Replit, StackBlitz\n\
   research         — docs, Stack Overflow, GitHub repos (reading), tutorials, articles\n\
   documentation    — writing/editing: Notion, Confluence, Google Docs, GitBook\n\
   planning         — Jira, Linear, GitHub Issues, project boards, sprint planning\n\
   communication    — Gmail, Slack web, Discord web, email, chat\n\
   deployment_devops — CI/CD dashboards, cloud consoles, deploy logs, monitoring\n\
-  idle_personal    — YouTube, social media, news, entertainment, shopping";
+  idle_personal    — YouTube, social media, news, entertainment, shopping\n\
+\n\
+Return ONLY {\"category\": \"VALUE\"}. No explanation.";
 
 /// Re-classifies browser sessions that still carry the rule-based category using
 /// Foundation Models. Only runs when the configured backend is Foundation Models —
@@ -258,8 +275,9 @@ pub async fn settle_chrome_categories(meridian: &SqlitePool, backend: &LlmBacken
         return Ok(());
     }
 
-    let rows: Vec<(i64, String, i64, String, Option<String>)> = sqlx::query_as(
-        "SELECT id, app_name, duration_s, window_titles, session_text
+    let rows: Vec<(i64, String, i64, String, String, String)> = sqlx::query_as(
+        "SELECT id, app_name, duration_s, window_titles,
+                COALESCE(ocr_samples, '[]'), COALESCE(elements_samples, '[]')
          FROM app_sessions
          WHERE category_method = 'rule_based'
            AND duration_s >= 5
@@ -290,16 +308,15 @@ pub async fn settle_chrome_categories(meridian: &SqlitePool, backend: &LlmBacken
     );
     tracing::Span::current().record("sessions_processed", rows.len() as i64);
 
-    for (id, app_name, duration_s, window_titles, session_text) in &rows {
-        let user = build_category_prompt(*duration_s, window_titles, session_text.as_deref());
+    for (id, app_name, duration_s, window_titles, ocr_samples, elements_samples) in &rows {
+        let user = build_category_prompt(*duration_s, window_titles, ocr_samples, elements_samples);
         match backend.raw_generate(CATEGORY_SYSTEM, &user).await {
-            Ok(text) => match parse_category_response(&text) {
-                Some(resp) => {
-                    if let Err(e) = update_session_category(meridian, *id, resp.category, 0.9).await
-                    {
+            Ok(text) => match parse_category(&text) {
+                Some(cat) => {
+                    if let Err(e) = update_session_category(meridian, *id, cat, 0.9).await {
                         warn!(session_id = id, error = %e, "failed to update category");
                     } else {
-                        debug!(session_id = id, app = %app_name, category = resp.category, explanation = %resp.explanation, "category updated");
+                        debug!(session_id = id, app = %app_name, category = cat, "category updated");
                     }
                 }
                 None => {
@@ -362,12 +379,14 @@ fn strip_non_latin(s: &str) -> String {
 pub fn build_category_prompt(
     duration_s: i64,
     window_titles: &str,
-    session_text: Option<&str>,
+    ocr_samples: &str,
+    elements_samples: &str,
 ) -> String {
     let windows: String = serde_json::from_str::<Vec<serde_json::Value>>(window_titles)
         .unwrap_or_default()
         .into_iter()
         .filter_map(|v| {
+            // window_titles may use either "window_name" (browser sessions) or "title" (general)
             v.get("window_name")
                 .or_else(|| v.get("title"))
                 .and_then(|n| n.as_str())
@@ -380,58 +399,51 @@ pub fn build_category_prompt(
         .take(WINDOW_CAP)
         .collect();
 
-    let mut prompt = format!("Duration: {}s\nTabs: {}", duration_s, windows);
+    // Use only the first OCR sample capped at OCR_CAP chars.
+    // Multiple frames or large single frames create dense concatenated text that triggers
+    // FM's language detector even when the content is English.
+    let ocr: String = serde_json::from_str::<Vec<serde_json::Value>>(ocr_samples)
+        .unwrap_or_default()
+        .into_iter()
+        .next()
+        .and_then(|v| v.get("text")?.as_str().map(strip_non_latin))
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(OCR_CAP)
+        .collect();
 
-    if let Some(text) = session_text {
-        let snippet: String = strip_non_latin(text)
-            .chars()
-            .filter(|c| !c.is_control() || *c == '\n')
-            .take(SESSION_TEXT_CAP)
-            .collect();
-        let snippet = snippet.trim();
-        if !snippet.is_empty() {
-            prompt.push_str("\nContent:\n");
-            prompt.push_str(snippet);
-        }
+    let elements: String = serde_json::from_str::<Vec<serde_json::Value>>(elements_samples)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| v.get("text")?.as_str().map(strip_non_latin))
+        .collect::<Vec<_>>()
+        .join(", ")
+        .chars()
+        .take(ELEMENTS_CAP)
+        .collect();
+
+    let mut prompt = format!("Chrome session ({}s)\nWindows: {}\n", duration_s, windows);
+    if !ocr.is_empty() {
+        prompt.push_str(&format!("Screen:\n{}\n", ocr));
     }
-
+    if !elements.is_empty() {
+        prompt.push_str(&format!("UI elements: {}\n", elements));
+    }
     prompt
 }
 
-pub struct CategoryResult {
-    pub category: &'static str,
-    pub explanation: String,
-}
-
-pub fn parse_category_response(text: &str) -> Option<CategoryResult> {
-    // Strip optional markdown fences: ```json ... ``` or `...`
-    let trimmed = text.trim();
-    let trimmed = if trimmed.starts_with("```") {
-        trimmed
-            .trim_start_matches('`')
-            .trim_start_matches(|c: char| c.is_alphabetic()) // strip optional language tag (json)
-            .trim_end_matches('`')
-            .trim()
+pub fn parse_category(text: &str) -> Option<&'static str> {
+    let trimmed = text.trim().trim_matches('`');
+    let value = if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        v.get("category")?.as_str()?.to_lowercase()
     } else {
-        trimmed.trim_matches('`').trim()
+        trimmed.to_lowercase()
     };
-    let v: serde_json::Value = serde_json::from_str(trimmed).ok()?;
-    let value = v.get("category")?.as_str()?.to_lowercase();
-    let category = VALID_CATEGORIES
+    VALID_CATEGORIES
         .iter()
         .copied()
-        .find(|&c| c == value.as_str())?;
-    let explanation = v
-        .get("explanation")
-        .and_then(|w| w.as_str())
-        .unwrap_or("")
-        .to_string();
-    Some(CategoryResult {
-        category,
-        explanation,
-    })
-}
-
-pub fn parse_category(text: &str) -> Option<&'static str> {
-    parse_category_response(text).map(|r| r.category)
+        .find(|&c| c == value.as_str())
 }
