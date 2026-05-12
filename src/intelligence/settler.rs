@@ -276,7 +276,13 @@ pub async fn settle_all_categories(meridian: &SqlitePool, backend: &LlmBackend) 
         match backend.raw_generate(CATEGORY_SYSTEM, &user).await {
             Ok(text) => match parse_category_response(&text) {
                 Some(resp) => {
-                    if let Err(e) = update_session_category(meridian, *id, resp.category, 0.9).await
+                    let expl = if resp.explanation.is_empty() {
+                        None
+                    } else {
+                        Some(resp.explanation.as_str())
+                    };
+                    if let Err(e) =
+                        update_session_category(meridian, *id, resp.category, 0.9, expl).await
                     {
                         warn!(session_id = id, error = %e, "failed to update category");
                     } else {
@@ -286,7 +292,8 @@ pub async fn settle_all_categories(meridian: &SqlitePool, backend: &LlmBackend) 
                 None => {
                     warn!(session_id = id, raw = %text, "could not parse category response — writing sentinel");
                     if let Err(e) =
-                        update_session_category(meridian, *id, PARSE_ERROR_SENTINEL, 0.0).await
+                        update_session_category(meridian, *id, PARSE_ERROR_SENTINEL, 0.0, None)
+                            .await
                     {
                         warn!(session_id = id, error = %e, "failed to write parse-error sentinel");
                     }
@@ -294,16 +301,72 @@ pub async fn settle_all_categories(meridian: &SqlitePool, backend: &LlmBackend) 
             },
             Err(e) => {
                 let msg = e.to_string();
-                let is_permanent = msg.contains("unsupported language")
-                    || msg.contains("unsupported Language")
+                let is_language_error =
+                    msg.contains("unsupported language") || msg.contains("unsupported Language");
+                let is_permanent = is_language_error
                     || msg.contains("context window")
                     || msg.contains("deviceNotEligible")
                     || msg.contains("appleIntelligenceNotEnabled");
-                if is_permanent {
+
+                if is_language_error && session_text.is_some() {
+                    // session_text contained non-Latin content that survived strip_non_latin —
+                    // retry with titles only (no Content section)
+                    warn!(
+                        session_id = id,
+                        "unsupported language in session_text — retrying with titles only"
+                    );
+                    let fallback =
+                        build_category_prompt(app_name, *duration_s, window_titles, None);
+                    match backend.raw_generate(CATEGORY_SYSTEM, &fallback).await {
+                        Ok(text) => match parse_category_response(&text) {
+                            Some(resp) => {
+                                let expl = if resp.explanation.is_empty() {
+                                    None
+                                } else {
+                                    Some(resp.explanation.as_str())
+                                };
+                                if let Err(db_err) =
+                                    update_session_category(meridian, *id, resp.category, 0.8, expl)
+                                        .await
+                                {
+                                    warn!(session_id = id, error = %db_err, "failed to update category (fallback)");
+                                } else {
+                                    debug!(session_id = id, app = %app_name, category = resp.category, "category updated via titles-only fallback");
+                                }
+                            }
+                            None => {
+                                warn!(
+                                    session_id = id,
+                                    "could not parse fallback response — writing sentinel"
+                                );
+                                let _ = update_session_category(
+                                    meridian,
+                                    *id,
+                                    PARSE_ERROR_SENTINEL,
+                                    0.0,
+                                    None,
+                                )
+                                .await;
+                            }
+                        },
+                        Err(retry_err) => {
+                            warn!(session_id = id, error = %retry_err, "titles-only fallback also failed — writing sentinel");
+                            let _ = update_session_category(
+                                meridian,
+                                *id,
+                                PARSE_ERROR_SENTINEL,
+                                0.0,
+                                None,
+                            )
+                            .await;
+                        }
+                    }
+                } else if is_permanent {
                     // Write sentinel so this session is never retried
                     warn!(session_id = id, error = %e, "FM permanent failure — writing sentinel");
                     if let Err(db_err) =
-                        update_session_category(meridian, *id, PARSE_ERROR_SENTINEL, 0.0).await
+                        update_session_category(meridian, *id, PARSE_ERROR_SENTINEL, 0.0, None)
+                            .await
                     {
                         warn!(session_id = id, error = %db_err, "failed to write FM error sentinel");
                     }
