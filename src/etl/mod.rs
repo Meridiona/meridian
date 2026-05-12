@@ -3,5 +3,6 @@
 
 pub mod extractor;
 pub mod runner;
+pub mod text_merge;
 
 pub use runner::run_etl;

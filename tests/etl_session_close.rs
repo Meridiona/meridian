@@ -33,8 +33,6 @@ async fn test_close_active_session_with_inserts_and_clears() {
         started_at: "2026-01-01T10:00:00+00:00".into(),
         last_seen_at: "2026-01-01T10:05:00+00:00".into(),
         window_titles: "[]".into(),
-        ocr_samples: None,
-        elements_samples: None,
         audio_snippets: None,
         signals: None,
         min_frame_id: 1,
@@ -43,6 +41,7 @@ async fn test_close_active_session_with_inserts_and_clears() {
         idle_frame_count: 0,
         category: "idle_personal".into(),
         confidence: 0.0,
+        session_text: None,
     };
 
     upsert_active_session(&md, &session).await.unwrap();
@@ -88,8 +87,6 @@ async fn test_close_active_session_with_stale_then_new() {
         started_at: "2026-01-01T09:00:00+00:00".into(),
         last_seen_at: "2026-01-01T09:10:00+00:00".into(),
         window_titles: "[]".into(),
-        ocr_samples: None,
-        elements_samples: None,
         audio_snippets: None,
         signals: None,
         min_frame_id: 1,
@@ -98,6 +95,7 @@ async fn test_close_active_session_with_stale_then_new() {
         idle_frame_count: 0,
         category: "communication".into(),
         confidence: 0.8,
+        session_text: None,
     };
 
     upsert_active_session(&md, &stale).await.unwrap();
@@ -113,8 +111,6 @@ async fn test_close_active_session_with_stale_then_new() {
         started_at: "2026-01-01T09:10:00+00:00".into(),
         last_seen_at: "2026-01-01T09:20:00+00:00".into(),
         window_titles: "[]".into(),
-        ocr_samples: None,
-        elements_samples: None,
         audio_snippets: None,
         signals: None,
         min_frame_id: 6,
@@ -123,6 +119,7 @@ async fn test_close_active_session_with_stale_then_new() {
         idle_frame_count: 0,
         category: "coding".into(),
         confidence: 0.7,
+        session_text: None,
     };
 
     close_active_session_with(&md, &new_session, etl_run_id)

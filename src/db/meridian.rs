@@ -18,13 +18,6 @@ pub struct WindowTitle {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OcrSample {
-    pub text: String,
-    pub window: String,
-    pub ts: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioSnippet {
     pub text: String,
     pub ts: String,
@@ -51,8 +44,6 @@ pub struct AppSession {
     pub ended_at: String,
     pub duration_s: i64,
     pub window_titles: String,
-    pub ocr_samples: Option<String>,
-    pub elements_samples: Option<String>,
     pub audio_snippets: Option<String>,
     pub signals: Option<String>,
     pub min_frame_id: i64,
@@ -68,8 +59,6 @@ pub struct ActiveSession {
     pub started_at: String,
     pub last_seen_at: String,
     pub window_titles: String,
-    pub ocr_samples: Option<String>,
-    pub elements_samples: Option<String>,
     pub audio_snippets: Option<String>,
     pub signals: Option<String>,
     pub min_frame_id: i64,
@@ -78,6 +67,7 @@ pub struct ActiveSession {
     pub idle_frame_count: i64,
     pub category: String,
     pub confidence: f64,
+    pub session_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -291,18 +281,15 @@ pub async fn upsert_active_session(
         r#"
         INSERT INTO active_session (
             id, app_name, started_at, last_seen_at,
-            window_titles, ocr_samples, elements_samples,
-            audio_snippets, signals,
+            window_titles, audio_snippets, signals,
             min_frame_id, max_frame_id, frame_count, idle_frame_count,
-            category, confidence
-        ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            category, confidence, session_text
+        ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
         ON CONFLICT (id) DO UPDATE SET
             app_name         = excluded.app_name,
             started_at       = excluded.started_at,
             last_seen_at     = excluded.last_seen_at,
             window_titles    = excluded.window_titles,
-            ocr_samples      = excluded.ocr_samples,
-            elements_samples = excluded.elements_samples,
             audio_snippets   = excluded.audio_snippets,
             signals          = excluded.signals,
             min_frame_id     = excluded.min_frame_id,
@@ -310,15 +297,14 @@ pub async fn upsert_active_session(
             frame_count      = excluded.frame_count,
             idle_frame_count = excluded.idle_frame_count,
             category         = excluded.category,
-            confidence       = excluded.confidence
+            confidence       = excluded.confidence,
+            session_text     = excluded.session_text
         "#,
     )
     .bind(&session.app_name)
     .bind(&session.started_at)
     .bind(&session.last_seen_at)
     .bind(&session.window_titles)
-    .bind(&session.ocr_samples)
-    .bind(&session.elements_samples)
     .bind(&session.audio_snippets)
     .bind(&session.signals)
     .bind(session.min_frame_id)
@@ -327,6 +313,7 @@ pub async fn upsert_active_session(
     .bind(session.idle_frame_count)
     .bind(&session.category)
     .bind(session.confidence)
+    .bind(&session.session_text)
     .execute(pool)
     .await
     .context("upsert_active_session: upsert failed")?;
@@ -338,10 +325,9 @@ pub async fn get_active_session(pool: &SqlitePool) -> anyhow::Result<Option<Acti
     let row = sqlx::query_as::<_, ActiveSession>(
         r#"
         SELECT id, app_name, started_at, last_seen_at,
-               window_titles, ocr_samples, elements_samples,
-               audio_snippets, signals,
+               window_titles, audio_snippets, signals,
                min_frame_id, max_frame_id, frame_count, idle_frame_count,
-               category, confidence
+               category, confidence, session_text
         FROM active_session WHERE id = 1
         "#,
     )
@@ -384,12 +370,11 @@ pub async fn close_active_session_with(
         r#"
         INSERT INTO app_sessions (
             app_name, started_at, ended_at, duration_s,
-            window_titles, ocr_samples, elements_samples,
-            audio_snippets, signals,
+            window_titles, audio_snippets, signals,
             min_frame_id, max_frame_id, frame_count,
             idle_frame_count, etl_run_id,
-            category, confidence
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+            category, confidence, session_text
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
         "#,
     )
     .bind(&active.app_name)
@@ -397,8 +382,6 @@ pub async fn close_active_session_with(
     .bind(&active.last_seen_at)
     .bind(duration_s)
     .bind(&active.window_titles)
-    .bind(&active.ocr_samples)
-    .bind(&active.elements_samples)
     .bind(&active.audio_snippets)
     .bind(&active.signals)
     .bind(active.min_frame_id)
@@ -408,6 +391,7 @@ pub async fn close_active_session_with(
     .bind(etl_run_id)
     .bind(&active.category)
     .bind(active.confidence)
+    .bind(&active.session_text)
     .execute(pool)
     .await
     .context("close_active_session_with: insert into app_sessions failed")?;
