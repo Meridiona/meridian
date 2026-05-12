@@ -35,9 +35,6 @@ from agents.config import MODEL, BASE_URL, API_KEY, load_skill
 log = logging.getLogger("agents.agent_tiebreaker")
 tracer = observability.setup("meridian-agent-tiebreaker")
 
-from agents._hermes_setup import ensure_hermes_importable
-ensure_hermes_importable()
-
 
 # ──────────────────────── Config / thresholds ─────────────────────────────────
 AUTO_FLOOR  = float(os.environ.get("AGENT_AUTO_FLOOR",  "0.65"))
@@ -354,6 +351,8 @@ def _agent_tiebreak_inner(
             reasoning=str(exc), routing="skip", method="agent_unavailable",
         )
 
+    from agents._hermes_setup import ensure_hermes_importable
+    ensure_hermes_importable()
     try:
         from run_agent import AIAgent
     except ImportError as exc:

@@ -1,4 +1,4 @@
-// meridian — AI activity intelligence by Meridiona
+// meridian — normalises screenpipe activity into structured app sessions
 
 import { NextResponse } from 'next/server'
 import getDb from '@/lib/db'

@@ -1,16 +1,24 @@
-"""Tagger — Rule Classifier (rules-only).
+"""Tagger — 3-stage session classification pipeline.
 
-Reads recently-closed sessions from `meridian.db`, runs a library of fast,
-deterministic rules against each one, and writes the results into:
+Reads recently-closed sessions from `meridian.db` and drives them through:
 
-  * `ticket_links`        — best-effort Jira task assignment, regex-driven
+  Stage 1 — Rule Classifier: fast deterministic rules + ticket-key regex
+             (no LLM). Writes session_dimensions and may write ticket_links.
+  Stage 2 — Semantic Matcher: bge-small embeddings, cosine + dim_overlap +
+             past_vote score → top-K candidates. May finalise ticket_links.
+  Stage 3 — Agent Tiebreaker: hermes AIAgent single-shot call, fires only
+             when Stage 2 returns routing=queue.
+
+Results are written into:
+
+  * `ticket_links`        — best-effort Jira task assignment
   * `session_dimensions`  — multi-label tags (activity, intent, engagement,
                             tool, topic, practice, collaboration)
   * `agent_runs`          — audit row per cycle
 
-No LLM is involved at this stage. Everything is observable from logs:
-every rule fire, every dimension assigned, every DB write is logged at
-INFO; full session bundles + raw rule output are at DEBUG.
+Everything is observable from logs: every rule fire, every dimension
+assigned, every DB write is logged at INFO; full session bundles + raw
+stage output are at DEBUG.
 
 CLI entry:
     python -m agents.tagger --once
@@ -33,9 +41,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agents._hermes_setup import ensure_hermes_importable
-ensure_hermes_importable()
-from opentelemetry import trace                           # noqa: E402
+from opentelemetry import trace
 
 from agents import db                                     # noqa: E402
 from agents import observability                          # noqa: E402

@@ -23,13 +23,13 @@ app_sessions row (Rust ETL writes it)
 ┌─────────────────────────────────────────────────────────┐
 │ Stage 2  bge-small embedding · cosine + dim_overlap +   │  no LLM
 │          past_vote → top-K candidates                   │
-│   may finalise ticket_links with method=stage2_embed    │
+│   may finalise ticket_links with method=semantic_embed  │
 └─────────────────────────────────────────────────────────┘
         │  (only when Stage 2 returns routing=queue)
         ▼
 ┌─────────────────────────────────────────────────────────┐
-│ Stage 3  hermes AIAgent — LLM picks one candidate       │  LLM
-│   refines ticket_links with method=stage3_llm           │
+│ Stage 3  hermes AIAgent — picks one candidate           │  LLM
+│   refines ticket_links with method=agent_tiebreak       │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -150,6 +150,14 @@ By default the pipeline imports `run_agent` and related modules from the install
    ```
 
 `agents/_hermes_setup.py` then prepends `services/.hermes/` to `sys.path` so local source takes precedence over the installed package. All other behaviour is identical. Unset or set `HERMES_DEV_MODE=0` to revert.
+
+### Recovery if the pinned tag disappears
+
+`requirements.txt` pins `hermes-agent` to a Git tag on the NousResearch public repo (`@v2026.4.30`). If that tag is ever deleted or the repo changes visibility, `pip install` will fail. To recover:
+
+1. Obtain the source at that revision (from a team member's local clone or a fork).
+2. Point the dependency at your mirror: replace the `git+https://github.com/NousResearch/...@v2026.4.30` URL in `requirements.txt` with your mirror URL.
+3. Alternatively, use dev mode (above) with a local copy in `services/.hermes/`.
 
 ---
 
