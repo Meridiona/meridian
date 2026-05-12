@@ -1,4 +1,5 @@
-// meridian — AI activity intelligence by Meridiona
+// meridian — normalises screenpipe activity into structured app sessions
+'use client'
 
 import getDb from '@/lib/db'
 import { localDayBounds, todayString } from '@/lib/date-utils'
@@ -14,7 +15,12 @@ import type {
   ActiveSessionRow, StatsResponse, TimelineResponse, SessionRow, GapRow
 } from '@/lib/types'
 
-export const revalidate = 30
+// Lazy-load heavy views
+const TodayView    = dynamic(() => import('@/components/views/TodayView'),    { ssr: false })
+const TasksView    = dynamic(() => import('@/components/views/TasksView'),    { ssr: false })
+const QueueView    = dynamic(() => import('@/components/views/QueueView'),    { ssr: false })
+const SessionsView = dynamic(() => import('@/components/views/SessionsView'), { ssr: false })
+const WeekView     = dynamic(() => import('@/components/views/WeekView'),     { ssr: false })
 
 function parseSession(r: Record<string, unknown>): SessionRow {
   return {
@@ -104,39 +110,46 @@ function getStats(date: string): StatsResponse {
   } catch { return empty }
 }
 
-function getTimeline(date: string): TimelineResponse {
-  try {
-    const db = getDb()
-    const { start, end } = localDayBounds(date)
-    const rows = db.prepare(`
-      SELECT id, app_name, started_at, ended_at, duration_s,
-             window_titles, frame_count, etl_run_id,
-             category, confidence
-      FROM app_sessions WHERE started_at >= ? AND started_at < ?
-      ORDER BY started_at ASC
-    `).all(start, end) as Array<Record<string, unknown>>
-    let gaps: GapRow[] = []
-    try {
-      gaps = db.prepare(`
-        SELECT id, started_at, ended_at, duration_s, kind
-        FROM gaps
-        WHERE started_at >= ? AND started_at < ?
-        ORDER BY started_at ASC
-      `).all(start, end) as GapRow[]
-    } catch { gaps = [] }
-    const dayStartMs = new Date(`${date}T00:00:00`).getTime()
-    const isToday = date === todayString()
-    return {
-      date,
-      sessions: rows.map(parseSession),
-      gaps,
-      day_start_s: Math.floor(dayStartMs / 1000),
-      day_end_s: Math.floor((isToday ? Date.now() : new Date(`${date}T23:59:59`).getTime()) / 1000),
+export default function DashboardPage() {
+  const [view, setView] = useState<View>('today')
+  const [focusKey, setFocusKey] = useState<string | null>(null)
+  const [cmdOpen, setCmdOpen] = useState(false)
+  const [queueCount, setQueueCount] = useState(0)
+
+  const navigate = useCallback((v: View, key?: string) => {
+    setView(v)
+    setFocusKey(key ?? null)
+    window.scrollTo({ top: 0, behavior: 'instant' })
+  }, [])
+
+  // fetch queue count for sidebar badge
+  useEffect(() => {
+    fetch('/api/queue-review')
+      .then(r => r.json())
+      .then(d => setQueueCount(d.items?.length ?? 0))
+  }, [])
+
+  // keyboard shortcuts
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setCmdOpen(o => !o)
+        return
+      }
+      if (e.key === 'Escape') { setCmdOpen(false); return }
+      if (cmdOpen || e.metaKey || e.ctrlKey || e.altKey) return
+      const target = e.target as HTMLElement
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+      if (e.key === '1') navigate('today')
+      else if (e.key === '2') navigate('tasks')
+      else if (e.key === '3') navigate('queue')
+      else if (e.key === '4') navigate('sessions')
+      else if (e.key === '5') navigate('week')
     }
-  } catch {
-    return { date, sessions: [], gaps: [], day_start_s: Math.floor(Date.now() / 1000 - 3600), day_end_s: Math.floor(Date.now() / 1000) }
-  }
-}
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [cmdOpen, navigate])
 
 interface TicketsBundle {
   tasks: Array<{
@@ -289,22 +302,14 @@ export default function DashboardPage() {
         </section>
       )}
 
-      {/* Recent sessions */}
-      {recent.length > 0 && (
-        <section>
-          <p className="text-[10px] uppercase tracking-widest text-[#C8C6C1] mb-3">Recent</p>
-          <div className="space-y-2">
-            {recent.map(s => <SessionCard key={s.id} session={s} />)}
-          </div>
-        </section>
+      {cmdOpen && (
+        <CommandBar
+          onClose={() => setCmdOpen(false)}
+          onNavigate={(v, k) => { navigate(v, k); setCmdOpen(false) }}
+        />
       )}
 
-      {stats.session_count === 0 && !active && (
-        <div className="rounded-2xl border border-[#E8E6E1] bg-white px-6 py-12 text-center">
-          <p className="text-[#9B9A97] text-sm">No activity recorded today</p>
-          <p className="text-[#C8C6C1] text-xs mt-1">Run <code className="font-mono bg-[#F8F7F4] px-1.5 py-0.5 rounded text-[#9B9A97]">meridian</code> to start tracking</p>
-        </div>
-      )}
+      <TweaksPanel />
     </div>
   )
 }
