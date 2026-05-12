@@ -119,9 +119,6 @@ void fm_free_string(char* p) { if(p) free(p); }
 int fm_generate_text(const char* i, const char* p, char** t, char** e) {
     if(e) *e=ms("Apple Intelligence not available"); if(t) *t=0; return -1;
 }
-int fm_generate_category(const char* i, const char* p, char** t, char** e) {
-    if(e) *e=ms("Apple Intelligence not available"); if(t) *t=0; return -1;
-}
 int fm_prewarm(void) { return -1; }
 "#,
     )
