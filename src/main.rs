@@ -9,19 +9,13 @@ use meridian::db::meridian::{cleanup_incomplete_runs, setup_db};
 use meridian::db::screenpipe::open_screenpipe;
 use meridian::etl::run_etl;
 use meridian::intelligence::run_categorization;
+use meridian::observability;
 use tokio::signal::unix::{signal, SignalKind};
-use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 1. Tracing — respect RUST_LOG; default to "meridian=info"
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("meridian=info")),
-        )
-        .init();
-
-    // 2. Load env files — later file wins on conflicts.
+    // 1. Load env files first so MERIDIAN_OO_AUTH / MERIDIAN_OTLP_ENDPOINT are
+    //    visible to observability::init().  Later file wins on conflicts.
     //    ~/.meridian/.env  — system / user-level defaults
     //    .env in cwd       — project root, easiest to edit during development
     if let Ok(home) = std::env::var("HOME") {
@@ -30,8 +24,14 @@ async fn main() -> Result<()> {
     }
     let _ = dotenvy::dotenv(); // loads .env from current working directory
 
+    // 2. Tracing — layered subscriber (stdout + JSONL file + OTLP to OpenObserve).
+    //    Guard must outlive the program; we shut it down explicitly at the end
+    //    so OTel's blocking flush doesn't run inside tokio's drop path.
+    let obs_guard = observability::init("meridian-rust")?;
+
     // 3. Load config
     let cfg = Config::from_env();
+    tracing::info!(stage = "config_loaded", "configuration ready");
 
     // 4. Log startup parameters
     tracing::info!(
@@ -105,6 +105,9 @@ async fn main() -> Result<()> {
     tracing::info!("shutting down");
     screenpipe.close().await;
     meridian.close().await;
+
+    // Flush OTel exporters while the tokio runtime is still alive.
+    obs_guard.shutdown().await;
 
     Ok(())
 }

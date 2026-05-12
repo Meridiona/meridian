@@ -9,6 +9,7 @@ import StatsRow from '@/components/StatsRow'
 import SessionCard from '@/components/SessionCard'
 import RefreshTrigger from '@/components/RefreshTrigger'
 import CategoryBreakdown from '@/components/CategoryBreakdown'
+import TicketBreakdown from '@/components/TicketBreakdown'
 import type {
   ActiveSessionRow, StatsResponse, TimelineResponse, SessionRow, GapRow
 } from '@/lib/types'
@@ -29,6 +30,14 @@ function parseSession(r: Record<string, unknown>): SessionRow {
     etl_run_id: r.etl_run_id as number,
     category: (r.category as string) || 'idle_personal',
     confidence: (r.confidence as number) || 0,
+    task_key:        (r.task_key as string | null) ?? null,
+    task_title:      (r.task_title as string | null) ?? null,
+    task_url:        (r.task_url as string | null) ?? null,
+    task_provider:   (r.task_provider as string | null) ?? null,
+    session_type:    (r.session_type as string | null) ?? null,
+    routing:         (r.routing as string | null) ?? null,
+    link_confidence: (r.link_confidence as number | null) ?? null,
+    link_method:     (r.link_method as string | null) ?? null,
   }
 }
 
@@ -129,16 +138,94 @@ function getTimeline(date: string): TimelineResponse {
   }
 }
 
+interface TicketsBundle {
+  tasks: Array<{
+    task_key: string
+    title: string | null
+    url: string | null
+    provider: string | null
+    duration_s: number
+    session_count: number
+  }>
+  overhead_s: number
+  untagged_s: number
+}
+
+function getTickets(date: string): TicketsBundle {
+  try {
+    const db = getDb()
+    const { start, end } = localDayBounds(date)
+    const tasks = db.prepare(`
+      SELECT tl.task_key                                AS task_key,
+             pt.title                                   AS title,
+             pt.url                                     AS url,
+             pt.provider                                AS provider,
+             SUM(s.duration_s)                          AS duration_s,
+             COUNT(*)                                   AS session_count
+        FROM app_sessions s
+        JOIN ticket_links tl ON tl.session_id = s.id AND tl.session_type = 'task'
+        LEFT JOIN pm_tasks pt ON pt.task_key  = tl.task_key
+       WHERE s.started_at >= ? AND s.started_at < ?
+         AND tl.task_key IS NOT NULL
+       GROUP BY tl.task_key
+       ORDER BY duration_s DESC
+    `).all(start, end) as Array<Record<string, unknown>>
+
+    const overhead = (db.prepare(`
+      SELECT COALESCE(SUM(s.duration_s), 0) AS s
+        FROM app_sessions s
+        JOIN ticket_links tl ON tl.session_id = s.id
+       WHERE s.started_at >= ? AND s.started_at < ?
+         AND tl.session_type = 'overhead'
+    `).get(start, end) as { s: number }).s
+
+    const untagged = (db.prepare(`
+      SELECT COALESCE(SUM(s.duration_s), 0) AS s
+        FROM app_sessions s
+        LEFT JOIN ticket_links tl ON tl.session_id = s.id
+       WHERE s.started_at >= ? AND s.started_at < ?
+         AND tl.session_id IS NULL
+    `).get(start, end) as { s: number }).s
+
+    return {
+      tasks: tasks.map(r => ({
+        task_key: r.task_key as string,
+        title: (r.title as string | null) ?? null,
+        url:   (r.url as string | null) ?? null,
+        provider: (r.provider as string | null) ?? null,
+        duration_s: Number(r.duration_s ?? 0),
+        session_count: Number(r.session_count ?? 0),
+      })),
+      overhead_s: Number(overhead ?? 0),
+      untagged_s: Number(untagged ?? 0),
+    }
+  } catch {
+    return { tasks: [], overhead_s: 0, untagged_s: 0 }
+  }
+}
+
 function getRecentSessions(date: string): SessionRow[] {
   try {
     const db = getDb()
     const { start, end } = localDayBounds(date)
     const rows = db.prepare(`
-      SELECT id, app_name, started_at, ended_at, duration_s,
-             window_titles, audio_snippets, signals, frame_count, etl_run_id,
-             category, confidence
-      FROM app_sessions WHERE started_at >= ? AND started_at < ?
-      ORDER BY started_at DESC LIMIT 8
+      SELECT s.id, s.app_name, s.started_at, s.ended_at, s.duration_s,
+             s.window_titles, s.ocr_samples, s.elements_samples,
+             s.audio_snippets, s.signals, s.frame_count, s.etl_run_id,
+             s.category, s.confidence,
+             tl.task_key       AS task_key,
+             tl.session_type   AS session_type,
+             tl.routing        AS routing,
+             tl.confidence     AS link_confidence,
+             tl.method         AS link_method,
+             pt.title          AS task_title,
+             pt.url            AS task_url,
+             pt.provider       AS task_provider
+        FROM app_sessions s
+        LEFT JOIN ticket_links tl ON tl.session_id = s.id
+        LEFT JOIN pm_tasks    pt ON pt.task_key   = tl.task_key
+       WHERE s.started_at >= ? AND s.started_at < ?
+       ORDER BY s.started_at DESC LIMIT 8
     `).all(start, end) as Array<Record<string, unknown>>
     return rows.map(parseSession)
   } catch { return [] }
@@ -150,6 +237,7 @@ export default function DashboardPage() {
   const stats = getStats(today)
   const timeline = getTimeline(today)
   const recent = getRecentSessions(today)
+  const tickets = getTickets(today)
 
   return (
     <div className="space-y-6">
@@ -176,6 +264,20 @@ export default function DashboardPage() {
 
       {/* Stats */}
       {stats.session_count > 0 && <StatsRow stats={stats} />}
+
+      {/* Today's tickets */}
+      {(tickets.tasks.length > 0 || tickets.overhead_s > 0 || tickets.untagged_s > 0) && (
+        <section>
+          <p className="text-[10px] uppercase tracking-widest text-[#C8C6C1] mb-3">Today&rsquo;s Tickets</p>
+          <div className="rounded-2xl border border-[#E8E6E1] bg-white p-5">
+            <TicketBreakdown
+              tasks={tickets.tasks}
+              overhead_s={tickets.overhead_s}
+              untagged_s={tickets.untagged_s}
+            />
+          </div>
+        </section>
+      )}
 
       {/* Category breakdown */}
       {stats.category_breakdown && stats.category_breakdown.length > 0 && (

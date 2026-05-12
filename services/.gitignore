@@ -1,0 +1,55 @@
+# Secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.ppk
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Tooling caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.tox/
+.coverage
+htmlcov/
+
+# Lockfiles regenerated locally
+uv.lock
+
+# Local hermes runtime state (state lives in ~/.hermes/, but just in case)
+.hermes/
+logs/
+testlogs
+
+# CLI / hub state from the upstream Hermes framework
+cli-config.yaml
+skills/.hub/
+
+# Misc
+ignored/
+.worktrees/

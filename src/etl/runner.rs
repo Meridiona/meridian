@@ -1,13 +1,14 @@
 // meridian — normalises screenpipe activity into structured app sessions
 // https://github.com/meridiona/meridian
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use sqlx::SqlitePool;
 use tracing::{debug, info, warn};
 
 use crate::db::meridian::{
     close_active_session, close_active_session_with, complete_etl_run, get_active_session,
-    get_cursor, insert_etl_run, insert_gap, update_cursor, upsert_active_session, ActiveSession,
+    get_cursor, insert_etl_run, insert_gap, update_cursor, upsert_active_session,
+    write_session_traceparent, ActiveSession,
 };
 use crate::db::screenpipe::{
     count_frames_in_window, get_frames_since, get_last_ui_event_for_app, AudioSnippet, SignalEvent,
@@ -35,6 +36,15 @@ const GAP_THRESHOLD_SECS: i64 = 300;
 ///   3. Closes finished sessions into `app_sessions` and keeps the still-open
 ///      block in `active_session`.
 ///   4. Advances the cursor and writes the ETL audit row.
+#[tracing::instrument(
+    skip_all,
+    fields(
+        run_id = tracing::field::Empty,
+        from_frame_id = tracing::field::Empty,
+        to_frame_id = tracing::field::Empty,
+        sessions_closed = tracing::field::Empty,
+    )
+)]
 pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<()> {
     // ------------------------------------------------------------------
     // 1. Read cursor
@@ -43,6 +53,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
     let mut last_processed_id = cursor.last_frame_id;
     let run_start_cursor = last_processed_id;
 
+    tracing::Span::current().record("from_frame_id", run_start_cursor);
     info!(from_frame_id = last_processed_id, "ETL run starting");
 
     // ------------------------------------------------------------------
@@ -64,6 +75,8 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
     // 3. Insert ETL run (status = running)
     // ------------------------------------------------------------------
     let run_id = insert_etl_run(meridian, run_start_cursor, approx_to_frame_id).await?;
+    tracing::Span::current().record("run_id", run_id);
+    tracing::Span::current().record("to_frame_id", approx_to_frame_id);
     info!(run_id, "ETL run row inserted");
 
     // ------------------------------------------------------------------
@@ -115,8 +128,8 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                     close_active_session(meridian, run_id).await?;
                     info!(
                         gap_secs,
-                        kind,
-                        app = stale.app_name,
+                        gap_kind = kind,
+                        app_name = stale.app_name,
                         "cross-run gap detected — closed stale active_session"
                     );
                 }
@@ -207,7 +220,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
 
                             debug!(
                                 gap_secs = gap,
-                                kind,
+                                gap_kind = kind,
                                 from = block_last_ts,
                                 to = frame.timestamp,
                                 "gap recorded"
@@ -384,6 +397,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
     update_cursor(meridian, last_processed_id, run_id).await?;
     complete_etl_run(meridian, run_id, sessions_closed, None).await?;
 
+    tracing::Span::current().record("sessions_closed", sessions_closed);
     info!(
         run_id,
         sessions_closed,
@@ -426,6 +440,17 @@ fn timestamp_gap_secs(earlier: &str, later: &str) -> Option<i64> {
 // close_block
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(
+    skip_all,
+    fields(
+        app_name = %b.app,
+        frame_count = b.frame_count,
+        idle_frame_count = b.idle_frame_count,
+        run_id,
+        duration_s = tracing::field::Empty,
+        session_id = tracing::field::Empty,
+    )
+)]
 async fn close_block(
     screenpipe: &SqlitePool,
     meridian: &SqlitePool,
@@ -485,13 +510,17 @@ async fn close_block(
 
     let existing = get_active_session(meridian).await?;
 
-    match existing {
+    let result: (i64, i64) = match existing {
         Some(ref active) if active.app_name == ctx.app_name => {
             debug!(app = ctx.app_name, "merging and closing continuation block");
             let merged = merge_into_active(active, &ctx, b.idle_frame_count)?;
-            close_active_session_with(meridian, &merged, run_id).await?;
-            info!(app = ctx.app_name, "session closed (merged continuation)");
-            Ok(1)
+            let new_id = close_active_session_with(meridian, &merged, run_id).await?;
+            info!(
+                app_name = ctx.app_name,
+                session_id = new_id,
+                "session closed (merged continuation)"
+            );
+            (new_id, 1)
         }
 
         Some(ref active) => {
@@ -500,29 +529,65 @@ async fn close_block(
                 new_app = ctx.app_name,
                 "stale active_session — closing stale first"
             );
-            close_active_session_with(meridian, active, run_id).await?;
+            let stale_id = close_active_session_with(meridian, active, run_id).await?;
+            if let Some(tp) = crate::observability::current_traceparent() {
+                write_session_traceparent(meridian, stale_id, &tp)
+                    .await
+                    .context("write traceparent (stale session)")?;
+            }
             let new_session = build_active_session(&ctx, b.idle_frame_count)?;
-            close_active_session_with(meridian, &new_session, run_id).await?;
+            let new_id = close_active_session_with(meridian, &new_session, run_id).await?;
             info!(
-                app = ctx.app_name,
+                app_name = ctx.app_name,
+                session_id = new_id,
                 "session closed (fresh, after evicting stale)"
             );
-            Ok(2)
+            (new_id, 2)
         }
 
         None => {
             let new_session = build_active_session(&ctx, b.idle_frame_count)?;
-            close_active_session_with(meridian, &new_session, run_id).await?;
-            info!(app = b.app, "session closed");
-            Ok(1)
+            let new_id = close_active_session_with(meridian, &new_session, run_id).await?;
+            info!(app_name = b.app, session_id = new_id, "session closed");
+            (new_id, 1)
         }
+    };
+
+    let (new_session_id, closed_count) = result;
+
+    // Record the duration for the span
+    if let (Ok(started), Ok(ended)) = (
+        chrono::DateTime::parse_from_rfc3339(&ctx.started_at),
+        chrono::DateTime::parse_from_rfc3339(&ctx.ended_at),
+    ) {
+        let duration_s = (ended - started).num_seconds().max(0);
+        tracing::Span::current().record("duration_s", duration_s);
     }
+    tracing::Span::current().record("session_id", new_session_id);
+
+    // Persist the active span's W3C traceparent so Python consumers can stitch
+    // their spans into the same trace tree.
+    if let Some(tp) = crate::observability::current_traceparent() {
+        write_session_traceparent(meridian, new_session_id, &tp)
+            .await
+            .context("write traceparent")?;
+    }
+
+    Ok(closed_count)
 }
 
 // ---------------------------------------------------------------------------
 // upsert_open_block
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(
+    skip_all,
+    fields(
+        app_name = %b.app,
+        frame_count = b.frame_count,
+        run_id,
+    )
+)]
 async fn upsert_open_block(
     screenpipe: &SqlitePool,
     meridian: &SqlitePool,
