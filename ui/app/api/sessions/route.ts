@@ -73,8 +73,7 @@ export async function GET(request: Request) {
     // a session-only query in the catch below.
     const rows = db.prepare(`
       SELECT s.id, s.app_name, s.started_at, s.ended_at, s.duration_s,
-             s.window_titles, s.ocr_samples, s.elements_samples,
-             s.audio_snippets, s.signals, s.frame_count, s.etl_run_id,
+             s.window_titles, s.audio_snippets, s.signals, s.frame_count, s.etl_run_id,
              s.category, s.confidence,
              tl.task_key       AS task_key,
              tl.session_type   AS session_type,
