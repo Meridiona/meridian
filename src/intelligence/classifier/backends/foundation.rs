@@ -20,6 +20,12 @@ extern "C" {
         out_text: *mut *mut c_char,
         out_error: *mut *mut c_char,
     ) -> i32;
+    fn fm_generate_category(
+        instructions: *const c_char,
+        prompt: *const c_char,
+        out_text: *mut *mut c_char,
+        out_error: *mut *mut c_char,
+    ) -> i32;
 }
 
 unsafe fn take_cstring(ptr: *mut c_char) -> Option<String> {
@@ -94,6 +100,33 @@ impl FoundationBackend {
         }
     }
 
+    fn call_generate_category(instructions: &str, user_prompt: &str) -> Result<String> {
+        let inst_c = CString::new(instructions)?;
+        let prompt_c = CString::new(user_prompt)?;
+        let mut out_text: *mut c_char = std::ptr::null_mut();
+        let mut out_error: *mut c_char = std::ptr::null_mut();
+
+        let status = unsafe {
+            fm_generate_category(
+                inst_c.as_ptr(),
+                prompt_c.as_ptr(),
+                &mut out_text,
+                &mut out_error,
+            )
+        };
+
+        unsafe {
+            if status != 0 {
+                let err = take_cstring(out_error).unwrap_or_else(|| "unknown error".to_string());
+                take_cstring(out_text);
+                bail!("Foundation Models error: {}", err);
+            }
+            let text = take_cstring(out_text).unwrap_or_default();
+            take_cstring(out_error);
+            Ok(text)
+        }
+    }
+
     pub async fn raw_generate(&self, system: &str, user: &str) -> Result<String> {
         if !is_macos_26_or_later() {
             anyhow::bail!("Foundation Models requires macOS 26+");
@@ -101,7 +134,8 @@ impl FoundationBackend {
         let system = system.to_owned();
         let user = user.to_owned();
         let text =
-            tokio::task::spawn_blocking(move || Self::call_generate_text(&system, &user)).await??;
+            tokio::task::spawn_blocking(move || Self::call_generate_category(&system, &user))
+                .await??;
         Ok(text)
     }
 

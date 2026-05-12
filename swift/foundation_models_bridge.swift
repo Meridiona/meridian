@@ -8,6 +8,25 @@ private func makeCString(_ str: String) -> UnsafeMutablePointer<CChar> {
 }
 
 @available(macOS 26, *)
+@Generable
+private struct CategoryOutput {
+    @Guide(.anyOf([
+        "code_review",
+        "development",
+        "research",
+        "documentation",
+        "planning",
+        "communication",
+        "deployment_devops",
+        "idle_personal",
+    ]))
+    var category: String
+
+    @Guide(description: "One sentence explaining why this category fits the browser session")
+    var explanation: String
+}
+
+@available(macOS 26, *)
 private enum FM {
     static func checkAvailability(_ out_reason: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> Int32 {
         let model = SystemLanguageModel.default
@@ -75,6 +94,47 @@ private enum FM {
         LanguageModelSession().prewarm()
         return 0
     }
+
+    static func generateCategory(
+        _ instructions: UnsafePointer<CChar>?,
+        _ prompt: UnsafePointer<CChar>?,
+        _ out_text: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>,
+        _ out_error: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>
+    ) -> Int32 {
+        guard let prompt = prompt else {
+            out_error.pointee = makeCString("prompt is null")
+            return -1
+        }
+        let promptStr = String(cString: prompt)
+        let instructionsStr = instructions.map { String(cString: $0) }
+        let semaphore = DispatchSemaphore(value: 0)
+        var status: Int32 = 0
+        Task {
+            do {
+                let model = SystemLanguageModel(guardrails: .permissiveContentTransformations)
+                let session: LanguageModelSession
+                if let inst = instructionsStr {
+                    session = LanguageModelSession(model: model, instructions: inst)
+                } else {
+                    session = LanguageModelSession(model: model)
+                }
+                let response = try await session.respond(to: promptStr, generating: CategoryOutput.self)
+                let escaped = response.content.explanation
+                    .replacingOccurrences(of: "\\", with: "\\\\")
+                    .replacingOccurrences(of: "\"", with: "\\\"")
+                    .replacingOccurrences(of: "\n", with: "\\n")
+                let json = "{\"category\":\"\(response.content.category)\",\"explanation\":\"\(escaped)\"}"
+                out_text.pointee = makeCString(json)
+                status = 0
+            } catch {
+                out_error.pointee = makeCString(error.localizedDescription)
+                status = -1
+            }
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return status
+    }
 }
 
 @_cdecl("fm_check_availability")
@@ -104,5 +164,17 @@ public func fmGenerateText(
 @_cdecl("fm_prewarm")
 public func fmPrewarm() -> Int32 {
     if #available(macOS 26, *) { return FM.prewarm() }
+    return -1
+}
+
+@_cdecl("fm_generate_category")
+public func fmGenerateCategory(
+    _ instructions: UnsafePointer<CChar>?,
+    _ prompt: UnsafePointer<CChar>?,
+    _ out_text: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>,
+    _ out_error: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>
+) -> Int32 {
+    if #available(macOS 26, *) { return FM.generateCategory(instructions, prompt, out_text, out_error) }
+    out_error.pointee = makeCString("macOS 26 or later required")
     return -1
 }
