@@ -15,14 +15,10 @@ import sys
 
 import pytest
 
-from agents._hermes_setup import ensure_hermes_importable
-
 # services/ is two levels up from this conftest (agents/tests/conftest.py).
 _SERVICES_DIR = Path(__file__).resolve().parent.parent.parent
 if str(_SERVICES_DIR) not in sys.path:
     sys.path.insert(0, str(_SERVICES_DIR))
-
-ensure_hermes_importable()
 
 
 @pytest.fixture

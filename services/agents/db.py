@@ -112,7 +112,7 @@ def get_cursor(conn: sqlite3.Connection) -> int:
 
 
 def advance_cursor(conn: sqlite3.Connection, last_session_id: int) -> None:
-    conn.execute(
+    cur = conn.execute(
         """
         UPDATE agent_cursor
            SET last_session_id = ?, updated_at = ?
@@ -120,6 +120,11 @@ def advance_cursor(conn: sqlite3.Connection, last_session_id: int) -> None:
         """,
         (last_session_id, _utc_now(), last_session_id),
     )
+    if cur.rowcount == 0:
+        log.warning(
+            "advance_cursor: no row updated (id=1 missing or last_session_id=%d not greater than stored value)",
+            last_session_id,
+        )
 
 
 # ── Reads from app_sessions / active_session ──────────────────────────────────
