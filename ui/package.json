@@ -11,8 +11,8 @@
   },
   "dependencies": {
     "next": "16.2.5",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
     "better-sqlite3": "^12.2.0",
     "date-fns": "^4.1.0",
     "recharts": "^2.15.3",
@@ -31,10 +31,10 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
     "@types/better-sqlite3": "^7.6.13",
-    "typescript": "^5.8.0",
+    "typescript": "^5.8.2",
     "tailwindcss": "^4.1.4",
     "@tailwindcss/postcss": "^4.1.4"
   }
