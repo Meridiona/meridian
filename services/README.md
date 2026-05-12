@@ -1,45 +1,10 @@
-# Meridian agent service
+# meridian-agents
 
-Python service that runs alongside the Rust daemon and the Next.js dashboard. It reads completed `app_sessions` rows out of `~/.meridian/meridian.db`, classifies each one through a 3-stage pipeline (rules → embeddings → LLM tiebreak), and writes Jira task mappings + multi-label dimension tags back into the same DB. The Rust daemon owns all DDL; this service only does SELECT/INSERT/UPDATE on a small number of agent-side tables.
+Python service that runs alongside the Rust daemon. It reads completed `app_sessions` rows from `~/.meridian/meridian.db`, classifies each one through a 3-stage pipeline (rules → embeddings → LLM tiebreak), and writes Jira task mappings and multi-label dimension tags back into the same DB.
 
-For the deep technical reference (per-stage detail, schema, tuning, recipes for adding rules / swapping models), see [`agents/README.md`](agents/README.md). For the Rust-side ETL and product rules, see the project root `CLAUDE.md`.
+The Rust daemon owns all DDL; this service only does SELECT/INSERT/UPDATE on its agent-side tables.
 
----
-
-## Quickstart
-
-### Prerequisites
-
-- Python **3.11+** (see `services/pyproject.toml`)
-- The Rust daemon already running, with at least one `app_sessions` row present at `~/.meridian/meridian.db` — start screenpipe + meridian first
-- A working LLM endpoint if you want Stage 3 to fire. Defaults: `HERMES_BASE_URL=https://ollama.com/v1`, `HERMES_MODEL=nemotron-3-super`, `OLLAMA_API_KEY=…` (read from `~/.hermes/.env` if present)
-- (Optional) Atlassian creds in `JIRA_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` if you want the eventual dispatcher to write to Jira
-
-### Install
-
-```bash
-cd services/
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-```
-
-### First-run sanity check
-
-Before installing the daemon, run a single manual cycle and inspect the output:
-
-```bash
-# Run a full pass over the next batch (default 50 unprocessed sessions)
-python -m agents.tagger --once
-
-# Inspect one session end-to-end (rules → stage 2 → stage 3) without persisting
-python -m agents.tagger --session 1234 --dry-run
-
-# List the most recent 20 sessions and their tags
-python -m agents.tagger --list-recent
-```
-
-If `--once` exits cleanly with `tickets_decided` >= 0 and the log at `~/.meridian/logs/tagger.log` is non-empty, the pipeline is wired up correctly.
+For the deep technical reference (per-stage detail, score formulas, schema, recipes), see [`agents/README.md`](agents/README.md).
 
 ---
 
@@ -53,7 +18,7 @@ app_sessions row (Rust ETL writes it)
 │ Stage 1  rules + ticket regex + trivial-overhead skip   │  no LLM
 │   writes session_dimensions, may write ticket_links     │
 └─────────────────────────────────────────────────────────┘
-        │  (only when Stage 1 deferred — no ticket-shaped string seen)
+        │  (only when Stage 1 found no ticket-shaped string)
         ▼
 ┌─────────────────────────────────────────────────────────┐
 │ Stage 2  bge-small embedding · cosine + dim_overlap +   │  no LLM
@@ -68,75 +33,130 @@ app_sessions row (Rust ETL writes it)
 └─────────────────────────────────────────────────────────┘
 ```
 
-- **Stage 1** (`agents/tagger.py`, `agents/rules/`) — deterministic regexes against window titles, OCR, and audio. Writes multi-label dimensions (`activity`, `intent`, `engagement`, `tool`, `topic`, …) and resolves ticket keys that match an active `pm_tasks` row. Sessions that fail the trivial-overhead pre-filter (duration < `MIN_LLM_DURATION_S`, no titles/OCR/audio) get tagged `overhead/skip` and don't see Stage 2 or 3.
-- **Stage 2** (`agents/stage2.py`) — only runs when Stage 1 didn't see a ticket-shaped string at all. Embeds the session as a multi-vector matrix (titles + audio + per-OCR-sample), max-pool cosine against `pm_task_embeddings`, blends with Stage-1 `dim_overlap` and a softmax-weighted `past_vote` over similar tagged sessions. Routing decision: `auto` (top1 ≥ 0.62 and gap ≥ 0.08), `queue` (≥ 0.40), or `skip`.
-- **Stage 3** (`agents/stage3.py` + `skills/activity/stage3-tiebreaker/SKILL.md`) — only runs when Stage 2 returns `routing=queue`. Calls hermes `AIAgent` in single-shot mode (`max_iterations=1`, no toolsets) with the candidate descriptions, parses one JSON object back, and writes the final `ticket_links` row.
+---
 
-The **daemon** (`agents/tagger_daemon.py`) wraps `tagger.run_once` in a polling loop. Every `TAGGER_TICK_SECS` (default 7s) it checks `app_sessions.id > agent_cursor.last_session_id`. If there's nothing new, the tick is one cheap `SELECT 1` and the loop sleeps. On startup it sweeps any zombie `agent_runs` rows left in `'running'` by a previous crash, mirroring the Rust daemon's `cleanup_incomplete_runs`.
+## Installation
+
+```bash
+cd services/
+
+# Option A — editable install (recommended for development)
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+
+# Option B — bare dependencies only
+pip install -r requirements.txt
+```
+
+Requires Python 3.11+. The `hermes-agent` package is fetched from the NousResearch GitHub repo at the pinned tag; an internet connection is needed on first install.
 
 ---
 
-## Common ops
+## Configuration
+
+All variables are read in `agents/config.py`. Copy `.env.example` to `.env` in this directory and set what you need.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MERIDIAN_DB` | `~/.meridian/meridian.db` | Path to the SQLite file. Must already exist (the Rust daemon creates it). |
+| `HERMES_MODEL` | `nemotron-3-super` | Model name passed to hermes `AIAgent` for Stage 3. |
+| `HERMES_BASE_URL` | `https://ollama.com/v1` | OpenAI-compatible LLM endpoint for Stage 3. |
+| `OLLAMA_API_KEY` | — | API key for the LLM endpoint (also accepts standard OpenAI-compat keys). |
+| `STAGE1_ENABLED` | `1` | Set to `0` to skip Stage 1 (rules + regex). Almost never useful. |
+| `STAGE2_ENABLED` | `1` | Set to `0` to skip Stage 2 (embeddings). Stage 1 result is final. |
+| `STAGE3_ENABLED` | `1` | Set to `0` to skip Stage 3 (LLM). Stage 2 result is final. |
+| `HERMES_DEV_MODE` | `0` | Set to `1` to load hermes from `services/.hermes/` instead of the installed package (see Dev mode below). |
+
+Additional variables (`TAGGER_TICK_SECS`, `ONLY_TODAY`, `SESSION_BATCH_LIMIT`, etc.) are documented in [`agents/README.md`](agents/README.md#configuration).
+
+---
+
+## Running
+
+### One-shot (process all untagged sessions, then exit)
+
+```bash
+python -m agents.tagger --once
+```
+
+### Long-running daemon
+
+```bash
+python -m agents.tagger_daemon
+```
+
+Polls every `TAGGER_TICK_SECS` (default 7 s). On each tick it runs `tagger.run_once` over the next batch of unprocessed sessions.
+
+### Debug a single session
+
+```bash
+# Re-run all stages with full logging — does NOT write to DB
+python -m agents.tagger --session <id> --dry-run
+
+# Re-run and persist (resets dims + ticket_link first)
+python -m agents.tagger --session <id>
+
+# Read-only view of what's stored
+python -m agents.tagger --show <id>
+```
 
 ### Install / uninstall the launchd daemon
 
 ```bash
-# Install — symlinks the plist into ~/Library/LaunchAgents/, kickstarts it
-./services/scripts/install-tagger-daemon.sh
+# Installs plist → ~/Library/LaunchAgents/, starts the service
+./scripts/install-tagger-daemon.sh
 
-# Uninstall — bootouts and removes the plist
-./services/scripts/uninstall-tagger-daemon.sh
+# Stops and removes the plist
+./scripts/uninstall-tagger-daemon.sh
 
-# Status / logs
+# Status and logs
 launchctl print gui/$(id -u)/com.meridiona.tagger-daemon
 tail -f ~/.meridian/logs/tagger-daemon.log
 tail -f ~/.meridian/logs/tagger-daemon.err
 ```
 
-The plist template is at `services/scripts/com.meridiona.tagger-daemon.plist` — env vars (`MERIDIAN_DB`, `STAGE{1,2,3}_ENABLED`, `ONLY_TODAY`, `TAGGER_TICK_SECS`) are set inline there.
+---
 
-### Inspect a single session
+## Hot-toggle stages
 
-```bash
-# Re-run all stages on session 1234 with full dump (resets dimensions/ticket_link first)
-python -m agents.tagger --session 1234
-
-# Read-only view of what's stored right now
-python -m agents.tagger --show 1234
-
-# Last 20 sessions in a compact table
-python -m agents.tagger --list-recent
-```
-
-### Hot-toggle stages (without restarting the daemon)
-
-The daemon re-reads `~/.meridian/tagger.config.json` every tick when invoked with the default `--stage auto`. CLI helpers write the file for you:
+The daemon re-reads `~/.meridian/tagger.config.json` every tick. CLI helpers write it for you:
 
 ```bash
-python -m agents.tagger --stages-status         # show resolved live set
+python -m agents.tagger --stages-status         # show env / override file / resolved set
+python -m agents.tagger --enable-stage 3        # turn Stage 3 on live
 python -m agents.tagger --disable-stage 3       # turn Stage 3 off live
-python -m agents.tagger --enable-stage 3        # back on
-python -m agents.tagger --clear-stages-override # delete the override file
+python -m agents.tagger --clear-stages-override # delete override → fall back to env vars
 ```
 
-If you launched the daemon with an explicit `--stage 1,2`, the stage set is frozen for that process's lifetime — predictable for ad-hoc runs.
-
-### Embed pm_tasks (warm-up)
-
-The first Stage 2 cycle embeds every active `pm_tasks` row, which can take a few seconds. Run this once after Jira sync populates `pm_tasks`:
-
-```bash
-python -m agents.tagger --embed-tasks
-```
-
-Subsequent runs only re-embed when the task title/description/etc. changes (tracked via `text_hash`).
+If you launch the daemon with an explicit `--stage 1,2`, the stage set is frozen for that process's lifetime and the override file is ignored.
 
 ---
 
-## Pointers
+## Dev mode (hermes source)
 
-- Deep technical reference: [`services/agents/README.md`](agents/README.md)
-- Rust ETL rules + repository layout: project-root `CLAUDE.md`
-- Stage-3 system prompt: [`services/skills/activity/stage3-tiebreaker/SKILL.md`](skills/activity/stage3-tiebreaker/SKILL.md)
-- Schema source of truth (Rust-owned): `src/migrations/003_intelligence.sql`, `005_agents.sql`, `007_session_dimensions.sql`, `008_session_embeddings.sql`, `009_multi_sample_embeddings.sql`
-- Logs: `~/.meridian/logs/tagger.log` (CLI runs), `~/.meridian/logs/tagger-daemon.log` (long-running daemon)
+By default the pipeline imports `run_agent` and related modules from the installed `hermes-agent` package. To step into hermes internals instead:
+
+1. Clone the hermes source into `services/.hermes/` (gitignored — do not commit it):
+
+   ```bash
+   git clone --branch v2026.4.30 https://github.com/NousResearch/hermes-agent.git services/.hermes
+   ```
+
+2. Set `HERMES_DEV_MODE=1`:
+
+   ```bash
+   echo "HERMES_DEV_MODE=1" >> services/.env
+   ```
+
+`agents/_hermes_setup.py` then prepends `services/.hermes/` to `sys.path` so local source takes precedence over the installed package. All other behaviour is identical. Unset or set `HERMES_DEV_MODE=0` to revert.
+
+---
+
+## Tests
+
+```bash
+python -m pytest agents/tests/
+```
+
+Smoke + unit tests run without external services. Integration tests (marked `integration`) require a live `meridian.db` and an LLM endpoint and are excluded by default.

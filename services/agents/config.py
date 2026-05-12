@@ -213,3 +213,8 @@ def today_start_utc_iso() -> str:
 MODEL    = os.environ.get("HERMES_MODEL",    "nemotron-3-super")
 BASE_URL = os.environ.get("HERMES_BASE_URL", "https://ollama.com/v1")
 API_KEY  = os.environ.get("OLLAMA_API_KEY",  "")
+
+# When true, _hermes_setup.ensure_hermes_importable() prepends services/.hermes/
+# to sys.path so the local source checkout shadows the installed hermes-agent
+# package. Set HERMES_DEV_MODE=1 in your .env for breakpoint debugging.
+HERMES_DEV_MODE = os.environ.get("HERMES_DEV_MODE", "0") == "1"

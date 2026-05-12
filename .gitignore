@@ -36,3 +36,6 @@ data/memory/
 .claude/*.local* # local changes are specific to the individual developer, let's not check them in for everyone.
 .claude/*.lock
 .claude/memory.db
+
+# Hermes dev-mode local source checkout (HERMES_DEV_MODE=1)
+services/.hermes/

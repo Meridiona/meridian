@@ -139,7 +139,7 @@ Migrations: `003_intelligence.sql` (pm_tasks, ticket_links), `005_agents.sql` (a
 
 ## Configuration
 
-All env vars are read in `agents/config.py`. `.env` files are loaded in priority order (earliest wins): `services/.env` → repo-root `.env` → `~/.hermes/.env`.
+All env vars are read in `agents/config.py`. `.env` files are loaded in priority order (earliest wins): `services/.env` → repo-root `.env`.
 
 ### Pipeline scope
 

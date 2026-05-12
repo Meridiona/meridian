@@ -223,9 +223,8 @@ def _ensure_bridges_and_patch():
 
 
 def _patch_tools(mcp_bridge: _MCPBridge, state_bridge: _StateBridge):
-    repo_root = Path(__file__).parent.parent
-    if str(repo_root) not in sys.path:
-        sys.path.insert(0, str(repo_root))
+    from agents._hermes_setup import ensure_hermes_importable
+    ensure_hermes_importable()
 
     import run_agent as _ra
     _original = _ra.handle_function_call
@@ -259,6 +258,8 @@ def run_jira_keeper() -> dict:
 
 
 def _run_jira_keeper_inner(span) -> dict:
+    from agents._hermes_setup import ensure_hermes_importable
+    ensure_hermes_importable()
     from run_agent import AIAgent
 
     _ensure_bridges_and_patch()

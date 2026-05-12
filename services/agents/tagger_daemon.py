@@ -30,7 +30,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+from agents._hermes_setup import ensure_hermes_importable
+ensure_hermes_importable()
 from agents import db                                     # noqa: E402
 from agents import observability                          # noqa: E402
 
