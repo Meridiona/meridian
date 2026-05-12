@@ -428,8 +428,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "get-active-session": {
         const row = dbGet(db, `
-          SELECT app_name, started_at, last_seen_at, window_titles,
-                 ocr_samples, frame_count
+          SELECT app_name, started_at, last_seen_at, window_titles, frame_count
           FROM active_session WHERE id = 1
         `);
 
@@ -492,7 +491,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let sql = `
           SELECT id, app_name, started_at, ended_at, duration_s, window_titles
           FROM app_sessions
-          WHERE (window_titles LIKE ? OR ocr_samples LIKE ? OR audio_snippets LIKE ?)
+          WHERE (window_titles LIKE ? OR audio_snippets LIKE ? OR session_text LIKE ?)
         `;
         const params: SqlVal[] = [pattern, pattern, pattern];
 
@@ -531,8 +530,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         const row = dbGet(db, `
           SELECT id, app_name, started_at, ended_at, duration_s,
-                 window_titles, ocr_samples, elements_samples, signals,
-                 frame_count, idle_frame_count, etl_run_id
+                 window_titles, signals,
+                 frame_count, idle_frame_count, etl_run_id,
+                 session_text
           FROM app_sessions WHERE id = ?
         `, [id]);
 
@@ -542,9 +542,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         const durMin = Math.round((row.duration_s as number) / 60);
         const titles = parseJsonColumn<Array<{ window_name: string; count: number }>>(row.window_titles as string);
-        const ocr = parseJsonColumn<Array<{ text: string; window_name: string; timestamp: string }>>(row.ocr_samples as string);
-        const elements = parseJsonColumn<Array<{ text: string; role: string; window_name: string }>>(row.elements_samples as string);
         const signals = parseJsonColumn<Array<{ event_type: string; value: string; timestamp: string }>>(row.signals as string);
+        const sessionText = row.session_text as string | null;
 
         const lines: string[] = [
           `Session #${row.id}: ${row.app_name}`,
@@ -558,21 +557,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           lines.push("");
         }
 
-        if (ocr?.length) {
-          lines.push(`OCR samples (${ocr.length}):`);
-          ocr.slice(0, 5).forEach((o) => lines.push(`  [${o.timestamp.slice(11, 19)}] ${o.text.slice(0, 200)}`));
-          lines.push("");
-        }
-
-        if (elements?.length) {
-          lines.push(`Accessibility elements (${elements.length} samples):`);
-          elements.slice(0, 5).forEach((e) => lines.push(`  [${e.role}] ${e.text?.slice(0, 150)}`));
-          lines.push("");
-        }
-
         if (signals?.length) {
           lines.push(`Signals (${signals.length}):`);
           signals.forEach((s) => lines.push(`  [${s.event_type}] ${s.value?.slice(0, 100)}`));
+          lines.push("");
+        }
+
+        if (sessionText) {
+          lines.push("Screen content:");
+          lines.push(sessionText.slice(0, 4000));
+          if (sessionText.length > 4000) {
+            lines.push(`... (${sessionText.length - 4000} more chars)`);
+          }
         }
 
         return { content: [{ type: "text", text: lines.join("\n") }] };
