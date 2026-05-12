@@ -3,24 +3,54 @@
 @theme {
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-
-  --color-paper: #F8F7F4;
-  --color-ink: #141414;
-  --color-accent: #FF6B2B;
-  --color-muted: #E8E6E1;
-  --color-muted-2: #D4D1CB;
-  --color-idle: #9B9A97;
-  --color-success: #22C55E;
-  --color-surface: #FFFFFF;
 }
 
-@keyframes meridian-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.65; }
+/* ── Design token layer ─────────────────────────────────────────────────── */
+:root {
+  --paper:        #F8F7F4;
+  --surface:      #FFFFFF;
+  --surface-2:    #FBFAF7;
+  --ink:          #141414;
+  --ink-2:        #46443F;
+  --ink-3:        #8C8A85;
+  --ink-4:        #BCBAB4;
+  --rule:         #ECEAE4;
+  --rule-2:       #E2DFD8;
+  --accent:       #FF6B2B;
+  --accent-soft:  #FFE9DC;
+  --live:         #FF6B2B;
+  --success:      #2C8A4A;
+  --warn:         #B7791F;
+  --tint:         rgba(255, 107, 43, 0.06);
 }
 
-.animate-meridian-pulse {
-  animation: meridian-pulse 2.4s ease-in-out infinite;
+html.dark {
+  --paper:        #0C0C0B;
+  --surface:      #141413;
+  --surface-2:    #181816;
+  --ink:          #F4F1EB;
+  --ink-2:        #B6B2AB;
+  --ink-3:        #7A766F;
+  --ink-4:        #4D4A45;
+  --rule:         #232220;
+  --rule-2:       #2C2B28;
+  --accent:       #FF7E47;
+  --accent-soft:  rgba(255, 126, 71, 0.13);
+  --live:         #FF7E47;
+  --success:      #6BCB8A;
+  --warn:         #E0B26B;
+  --tint:         rgba(255, 126, 71, 0.07);
+}
+
+/* ── Base ────────────────────────────────────────────────────────────────── */
+html, body {
+  background: var(--paper);
+  color: var(--ink);
+}
+
+body, .font-sans {
+  font-family: GeistSans, 'GeistSans Fallback', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-feature-settings: 'ss01', 'cv11';
 }
 
 * {
@@ -28,7 +58,105 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+.font-mono {
+  font-family: GeistMono, ui-monospace, SFMono-Regular, monospace;
+  font-feature-settings: 'tnum', 'ss01';
+}
+
 ::selection {
-  background-color: #FF6B2B;
+  background-color: var(--accent);
   color: #ffffff;
 }
+
+/* ── Category dot colors ─────────────────────────────────────────────────── */
+.cat-coding            { background: #4F7BE8; }
+.cat-code_review       { background: #8B5CF6; }
+.cat-meeting           { background: #F59E0B; }
+.cat-communication     { background: #10B981; }
+.cat-design            { background: #EC4899; }
+.cat-documentation     { background: #14B8A6; }
+.cat-planning          { background: #F97316; }
+.cat-deployment_devops { background: #EF4444; }
+.cat-research          { background: #6366F1; }
+.cat-idle_personal     { background: #9CA3AF; }
+
+.cat-text-coding            { color: #4F7BE8; }
+.cat-text-code_review       { color: #8B5CF6; }
+.cat-text-meeting           { color: #F59E0B; }
+.cat-text-communication     { color: #10B981; }
+.cat-text-design            { color: #EC4899; }
+.cat-text-documentation     { color: #14B8A6; }
+.cat-text-planning          { color: #F97316; }
+.cat-text-deployment_devops { color: #EF4444; }
+.cat-text-research          { color: #6366F1; }
+.cat-text-idle_personal     { color: #9CA3AF; }
+
+/* ── Hairlines ───────────────────────────────────────────────────────────── */
+.rule   { border-color: var(--rule); }
+.rule-b { border-bottom: 1px solid var(--rule); }
+.rule-t { border-top:    1px solid var(--rule); }
+.rule-r { border-right:  1px solid var(--rule); }
+.rule-l { border-left:   1px solid var(--rule); }
+
+/* ── Animations ──────────────────────────────────────────────────────────── */
+@keyframes mer-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: .45; transform: scale(.92); }
+}
+.live-dot { animation: mer-pulse 2.2s ease-in-out infinite; }
+
+@keyframes mer-blink { 50% { opacity: .35; } }
+.blink { animation: mer-blink 1.1s ease-in-out infinite; }
+
+@keyframes mer-rise {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.rise { animation: mer-rise .5s cubic-bezier(.2,.6,.2,1) both; }
+
+/* ── Typography helpers ──────────────────────────────────────────────────── */
+.tnum { font-variant-numeric: tabular-nums; }
+
+.font-serif {
+  font-family: 'Instrument Serif', Georgia, serif !important;
+  font-feature-settings: 'liga', 'dlig';
+}
+
+/* ── KBD key badge ────────────────────────────────────────────────────────── */
+.kbd {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 10px;
+  padding: 2px 5px;
+  border: 1px solid var(--rule-2);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  color: var(--ink-3);
+  background: var(--surface);
+  line-height: 1;
+}
+
+/* ── Scrollbar ────────────────────────────────────────────────────────────── */
+.nice-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+.nice-scroll::-webkit-scrollbar-track { background: transparent; }
+.nice-scroll::-webkit-scrollbar-thumb {
+  background: var(--rule-2);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.nice-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-4);
+  background-clip: content-box;
+  border: 2px solid transparent;
+}
+
+/* ── Focus ring ───────────────────────────────────────────────────────────── */
+button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ── Density ──────────────────────────────────────────────────────────────── */
+html.density-compact .density-pad { padding-top: .5rem; padding-bottom: .5rem; }
+html.density-comfy  .density-pad  { padding-top: 1.25rem; padding-bottom: 1.25rem; }
