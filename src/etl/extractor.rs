@@ -77,6 +77,17 @@ fn reclassify_terminal<'a>(
 /// Fetches all enrichment data for a single contiguous block of frames in
 /// parallel.  All five screenpipe query functions are called concurrently via
 /// `tokio::join!`.
+#[tracing::instrument(
+    skip_all,
+    fields(
+        app_name = %app_name,
+        min_frame_id,
+        max_frame_id,
+        frame_count,
+        ocr_sample_count = tracing::field::Empty,
+        audio_snippet_count = tracing::field::Empty,
+    )
+)]
 pub async fn extract_block_context(
     screenpipe: &SqlitePool,
     app_name: &str,
@@ -98,6 +109,10 @@ pub async fn extract_block_context(
     let ocr_samples = ocr_res?;
     let elements_samples = dedup_ax_textarea(elements_res?);
     let true_app_name = reclassify_terminal(app_name, &ocr_samples, &elements_samples).to_owned();
+    let audio_snippets = audio_res?;
+
+    tracing::Span::current().record("ocr_sample_count", ocr_samples.len());
+    tracing::Span::current().record("audio_snippet_count", audio_snippets.len());
 
     Ok(BlockContext {
         app_name: true_app_name,
@@ -109,7 +124,7 @@ pub async fn extract_block_context(
         window_titles: window_titles_res?,
         ocr_samples,
         elements_samples,
-        audio_snippets: audio_res?,
+        audio_snippets,
         signals: signals_res?,
     })
 }

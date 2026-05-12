@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 // meridian — normalises screenpipe activity into structured app sessions
 
+// Initialise OTel BEFORE any other imports create spans / tracers.
+import { initOtel, logger, withSpan } from "./observability.js";
+initOtel("meridian-mcp");
+
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -287,12 +291,24 @@ Meridian tracks your app usage by reading screenpipe's ambient recordings and no
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
-  let db: SqlDatabase | undefined;
 
-  try {
-    db = await openDb();
+  const spanAttrs: Record<string, string | number | boolean> = { tool_name: name };
+  if (args && typeof args === "object") {
+    for (const [k, v] of Object.entries(args as Record<string, unknown>)) {
+      if (v == null) continue;
+      if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+        spanAttrs[k] = v;
+      }
+    }
+  }
 
-    switch (name) {
+  return withSpan(`mcp.tool.${name}`, spanAttrs, async (span) => {
+    let db: SqlDatabase | undefined;
+
+    try {
+      db = await openDb();
+
+      switch (name) {
       case "get-sessions": {
         const date = (args?.date as string) ?? todayString();
         const appFilter = args?.app as string | undefined;
@@ -528,6 +544,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "get-session-detail": {
         const id = args?.id as number;
         if (!id) return { content: [{ type: "text", text: "Error: id is required" }] };
+        span.setAttribute("session_id", id);
 
         const row = dbGet(db, `
           SELECT id, app_name, started_at, ended_at, duration_s,
@@ -607,15 +624,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: "text", text: lines.join("\n") }] };
       }
 
-      default:
-        throw new Error(`Unknown tool: ${name}`);
+        default:
+          throw new Error(`Unknown tool: ${name}`);
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      span.setAttribute("error", true);
+      logger.error({ tool_name: name, err: msg }, "mcp tool failed");
+      return { content: [{ type: "text", text: `Error: ${msg}` }] };
+    } finally {
+      db?.close();
     }
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    return { content: [{ type: "text", text: `Error: ${msg}` }] };
-  } finally {
-    db?.close();
-  }
+  });
 });
 
 async function main() {
@@ -625,10 +645,10 @@ async function main() {
   }
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Meridian MCP server running on stdio");
+  logger.info({ service: "meridian-mcp" }, "MCP server running on stdio");
 }
 
 main().catch((err) => {
-  console.error("Fatal error:", err);
+  logger.fatal({ err: err instanceof Error ? err.message : String(err) }, "fatal error");
   process.exit(1);
 });

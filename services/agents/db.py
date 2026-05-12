@@ -126,7 +126,7 @@ def advance_cursor(conn: sqlite3.Connection, last_session_id: int) -> None:
 _SESSION_COLS = (
     "id, app_name, started_at, ended_at, duration_s, "
     "window_titles, ocr_samples, audio_snippets, "
-    "category, confidence"
+    "category, confidence, traceparent"
 )
 
 
@@ -241,6 +241,10 @@ def fetch_active_session(conn: sqlite3.Connection) -> dict | None:
 
 
 def _row_to_session(row: sqlite3.Row) -> dict:
+    # `traceparent` is populated by the Rust ETL when it closes a session
+    # (migration 010_traceparent.sql). May be NULL for older rows or when
+    # the daemon ran without observability — agents treat None as
+    # "no parent context, start a fresh root span".
     return {
         "id": row["id"],
         "app_name": row["app_name"],
@@ -252,6 +256,7 @@ def _row_to_session(row: sqlite3.Row) -> dict:
         "audio_snippets": _json_or_none(row["audio_snippets"]) or [],
         "category": row["category"],
         "confidence": row["confidence"],
+        "traceparent": row["traceparent"] if "traceparent" in row.keys() else None,
     }
 
 

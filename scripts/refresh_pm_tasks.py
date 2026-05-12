@@ -7,10 +7,18 @@ src/intelligence/providers/jira.rs::refresh_if_stale). When the cache goes
 stale during a long daemon run, this script repopulates it without restarting
 the daemon. Mirrors the Rust upsert exactly (30-min expiry).
 
+By default also prunes any provider='jira' rows whose task_key is no longer
+returned by the JQL — keeps the cache in sync when tickets are closed,
+reassigned, or deleted. Cascades into pm_task_embeddings; ticket_links is
+left alone (it's audit history). Skipped automatically when len(issues) ==
+--limit to avoid wiping the tail on a truncated response; override with
+--no-prune.
+
 Usage:
     python3 scripts/refresh_pm_tasks.py
     python3 scripts/refresh_pm_tasks.py --jql "project=KAN ORDER BY updated DESC"
     python3 scripts/refresh_pm_tasks.py --db /path/to/meridian.db
+    python3 scripts/refresh_pm_tasks.py --no-prune
 
 Reads credentials from JIRA_URL / JIRA_EMAIL / JIRA_API_TOKEN. Will pick them
 up from any of these .env files (does not override existing env vars):
@@ -142,6 +150,11 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=50)
     ap.add_argument("--db", type=Path, default=Path(os.environ.get("MERIDIAN_DB", DEFAULT_DB)))
     ap.add_argument("--expires-min", type=int, default=DEFAULT_EXPIRES_MIN)
+    ap.add_argument(
+        "--no-prune",
+        action="store_true",
+        help="skip deleting jira rows that are no longer returned by the JQL",
+    )
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -184,15 +197,49 @@ def main() -> int:
         return 0
 
     sql = UPSERT_SQL.format(mins=int(args.expires_min))
+    fetched_keys = {issue.get("key", "") for issue in issues if issue.get("key")}
+
     conn = sqlite3.connect(args.db)
     try:
         for issue in issues:
             conn.execute(sql, normalise(issue, base_url))
+
+        pruned = 0
+        if args.no_prune:
+            log.info("prune: skipped (--no-prune)")
+        elif len(issues) >= args.limit:
+            log.warning(
+                "prune: skipped — fetched %d == --limit; result may be truncated. "
+                "Re-run with a higher --limit to enable pruning.",
+                len(issues),
+            )
+        elif fetched_keys:
+            placeholders = ",".join("?" * len(fetched_keys))
+            keys = list(fetched_keys)
+            # Cascade FK target first (pm_task_embeddings.task_key REFERENCES pm_tasks).
+            conn.execute(
+                f"DELETE FROM pm_task_embeddings "
+                f"WHERE task_key IN ("
+                f"  SELECT task_key FROM pm_tasks "
+                f"  WHERE provider = 'jira' AND task_key NOT IN ({placeholders})"
+                f")",
+                keys,
+            )
+            cur = conn.execute(
+                f"DELETE FROM pm_tasks "
+                f"WHERE provider = 'jira' AND task_key NOT IN ({placeholders})",
+                keys,
+            )
+            pruned = cur.rowcount or 0
+
         conn.commit()
     finally:
         conn.close()
 
-    log.info("upserted %d rows; expires_at = now + %dmin", len(issues), args.expires_min)
+    log.info(
+        "upserted %d rows; pruned %d stale; expires_at = now + %dmin",
+        len(issues), pruned, args.expires_min,
+    )
     return 0
 
 

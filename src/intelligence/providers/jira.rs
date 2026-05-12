@@ -94,6 +94,14 @@ fn map_status_category(key: &str) -> &'static str {
 // Fetch
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(
+    skip(jira),
+    fields(
+        provider = "jira",
+        latency_ms = tracing::field::Empty,
+        status_code = tracing::field::Empty,
+    )
+)]
 async fn fetch(jira: &JiraConfig) -> Result<Vec<JiraIssue>> {
     let client = reqwest::Client::new();
     let url = format!("{}/rest/api/3/search/jql", jira.base_url);
@@ -104,6 +112,7 @@ async fn fetch(jira: &JiraConfig) -> Result<Vec<JiraIssue>> {
         "fields": ["summary", "description", "status", "issuetype", "project", "updated"]
     });
 
+    let start = std::time::Instant::now();
     let resp = client
         .post(&url)
         .basic_auth(&jira.email, Some(&jira.api_token))
@@ -112,8 +121,11 @@ async fn fetch(jira: &JiraConfig) -> Result<Vec<JiraIssue>> {
         .await
         .context("POST /search/jql")?;
 
-    if !resp.status().is_success() {
-        let status = resp.status();
+    let status = resp.status();
+    tracing::Span::current().record("status_code", status.as_u16() as i64);
+    tracing::Span::current().record("latency_ms", start.elapsed().as_millis() as i64);
+
+    if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
         anyhow::bail!("Jira /search/jql → {}: {}", status, text);
     }
