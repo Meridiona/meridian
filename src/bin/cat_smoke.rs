@@ -9,7 +9,7 @@
 //   cargo run --bin cat_smoke -- --app "Google Chrome"
 
 use anyhow::{Context, Result};
-use meridian::db::screenpipe::{ElementSample, SignalEvent, WindowTitleCount};
+use meridian::db::screenpipe::{SignalEvent, WindowTitleCount};
 use meridian::intelligence::categorizer::{categorize, SessionSignals};
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::SqlitePool;
@@ -25,8 +25,6 @@ struct SessionRow {
     app_name: String,
     duration_s: i64,
     window_titles: String,
-    ocr_samples: Option<String>,
-    elements_samples: Option<String>,
     audio_snippets: Option<String>,
     signals: Option<String>,
 }
@@ -53,7 +51,7 @@ async fn main() -> Result<()> {
     let rows: Vec<SessionRow> = if let Some(ref app) = app_filter {
         sqlx::query_as(
             "SELECT id, app_name, duration_s, window_titles,
-                    ocr_samples, elements_samples, audio_snippets, signals
+                    audio_snippets, signals
              FROM app_sessions
              WHERE app_name = ?
              ORDER BY started_at DESC
@@ -66,7 +64,7 @@ async fn main() -> Result<()> {
     } else {
         sqlx::query_as(
             "SELECT id, app_name, duration_s, window_titles,
-                    ocr_samples, elements_samples, audio_snippets, signals
+                    audio_snippets, signals
              FROM app_sessions
              WHERE duration_s > 10
              ORDER BY started_at DESC
@@ -89,14 +87,6 @@ async fn main() -> Result<()> {
         let window_titles: Vec<WindowTitleCount> =
             serde_json::from_str(&row.window_titles).unwrap_or_default();
 
-        let ocr_text = concat_ocr(row.ocr_samples.as_deref());
-
-        let elements: Vec<ElementSample> = row
-            .elements_samples
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok())
-            .unwrap_or_default();
-
         let signals: Vec<SignalEvent> = row
             .signals
             .as_deref()
@@ -112,8 +102,7 @@ async fn main() -> Result<()> {
         let session_signals = SessionSignals {
             app_name: &row.app_name,
             window_titles: &window_titles,
-            ocr_text: &ocr_text,
-            elements: &elements,
+            ocr_text: "",
             signals: &signals,
             audio_present,
             duration_secs: row.duration_s as u64,
@@ -155,21 +144,6 @@ async fn main() -> Result<()> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn concat_ocr(ocr_json: Option<&str>) -> String {
-    #[derive(serde::Deserialize)]
-    struct OcrEntry {
-        text: String,
-    }
-    let entries: Vec<OcrEntry> = ocr_json
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or_default();
-    entries
-        .iter()
-        .map(|e| e.text.as_str())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
 
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {

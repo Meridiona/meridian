@@ -10,10 +10,11 @@ use crate::db::meridian::{
     get_cursor, insert_etl_run, insert_gap, update_cursor, upsert_active_session, ActiveSession,
 };
 use crate::db::screenpipe::{
-    count_frames_in_window, get_frames_since, get_last_ui_event_for_app, AudioSnippet,
-    ElementSample, OcrSample, SignalEvent, WindowTitleCount,
+    count_frames_in_window, get_frames_since, get_last_ui_event_for_app, AudioSnippet, SignalEvent,
+    WindowTitleCount,
 };
 use crate::etl::extractor::extract_block_context;
+use crate::etl::text_merge::merge_session_texts;
 use crate::intelligence::categorizer::{categorize, SessionSignals};
 
 // ---------------------------------------------------------------------------
@@ -21,7 +22,6 @@ use crate::intelligence::categorizer::{categorize, SessionSignals};
 // ---------------------------------------------------------------------------
 
 const BATCH_SIZE: i64 = 100;
-const OCR_SAMPLE_CAP: usize = 20;
 const AUDIO_SNIPPET_CAP: usize = 50;
 const GAP_THRESHOLD_SECS: i64 = 300;
 
@@ -573,23 +573,16 @@ use crate::etl::extractor::BlockContext;
 struct ClassifyInput<'a> {
     app_name: &'a str,
     window_titles: &'a [WindowTitleCount],
-    ocr_samples: &'a [OcrSample],
-    elements_samples: &'a [ElementSample],
     audio_snippets: &'a [AudioSnippet],
     signals: &'a [SignalEvent],
     started_at: &'a str,
     ended_at: &'a str,
+    session_text: &'a str,
 }
 
 /// Runs `categorize()` from already-in-memory session data.
 /// Pure computation — zero I/O, negligible CPU.
 fn classify(i: &ClassifyInput<'_>) -> (String, f64) {
-    let ocr_text = i
-        .ocr_samples
-        .iter()
-        .map(|s| s.text.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
     let duration_secs = chrono::DateTime::parse_from_rfc3339(i.ended_at)
         .ok()
         .zip(chrono::DateTime::parse_from_rfc3339(i.started_at).ok())
@@ -598,8 +591,7 @@ fn classify(i: &ClassifyInput<'_>) -> (String, f64) {
     let sig = SessionSignals {
         app_name: i.app_name,
         window_titles: i.window_titles,
-        ocr_text: &ocr_text,
-        elements: i.elements_samples,
+        ocr_text: i.session_text,
         signals: i.signals,
         audio_present: !i.audio_snippets.is_empty(),
         duration_secs,
@@ -613,12 +605,11 @@ fn build_active_session(ctx: &BlockContext, idle_frame_count: i64) -> Result<Act
     let (category, confidence) = classify(&ClassifyInput {
         app_name: &ctx.app_name,
         window_titles: &ctx.window_titles,
-        ocr_samples: &ctx.ocr_samples,
-        elements_samples: &ctx.elements_samples,
         audio_snippets: &ctx.audio_snippets,
         signals: &ctx.signals,
         started_at: &ctx.started_at,
         ended_at: &ctx.ended_at,
+        session_text: &ctx.session_text,
     });
     Ok(ActiveSession {
         id: 1,
@@ -626,8 +617,6 @@ fn build_active_session(ctx: &BlockContext, idle_frame_count: i64) -> Result<Act
         started_at: ctx.started_at.clone(),
         last_seen_at: ctx.ended_at.clone(),
         window_titles: serde_json::to_string(&ctx.window_titles)?,
-        ocr_samples: Some(serde_json::to_string(&ctx.ocr_samples)?),
-        elements_samples: Some(serde_json::to_string(&ctx.elements_samples)?),
         audio_snippets: Some(serde_json::to_string(&ctx.audio_snippets)?),
         signals: Some(serde_json::to_string(&ctx.signals)?),
         min_frame_id: ctx.min_frame_id,
@@ -636,6 +625,7 @@ fn build_active_session(ctx: &BlockContext, idle_frame_count: i64) -> Result<Act
         idle_frame_count,
         category,
         confidence,
+        session_text: Some(ctx.session_text.clone()),
     })
 }
 
@@ -650,8 +640,6 @@ fn build_active_session(ctx: &BlockContext, idle_frame_count: i64) -> Result<Act
 /// - `max_frame_id`: updated to the new block's max.
 /// - `frame_count`: summed.
 /// - `window_titles`: counts from identical titles are incremented; new titles are appended.
-/// - `ocr_samples`: appended, capped at `OCR_SAMPLE_CAP` (20) total.
-/// - `elements_samples`: appended, capped at `OCR_SAMPLE_CAP` (20) total.
 /// - `audio_snippets`: appended, capped at `AUDIO_SNIPPET_CAP` (50) total.
 /// - `signals`: all new signals appended.
 fn merge_into_active(
@@ -677,32 +665,6 @@ fn merge_into_active(
     // Re-sort descending by count so the JSON stays human-readable.
     merged_titles.sort_by(|a, b| b.count.cmp(&a.count));
 
-    // -- ocr_samples --
-    let mut ocr: Vec<OcrSample> = existing
-        .ocr_samples
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or_default();
-    for sample in &ctx.ocr_samples {
-        if ocr.len() >= OCR_SAMPLE_CAP {
-            break;
-        }
-        ocr.push(sample.clone());
-    }
-
-    // -- elements_samples --
-    let mut elements: Vec<ElementSample> = existing
-        .elements_samples
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or_default();
-    for sample in &ctx.elements_samples {
-        if elements.len() >= OCR_SAMPLE_CAP {
-            break;
-        }
-        elements.push(sample.clone());
-    }
-
     // -- audio_snippets --
     let mut audio: Vec<AudioSnippet> = existing
         .audio_snippets
@@ -724,15 +686,19 @@ fn merge_into_active(
         .unwrap_or_default();
     signals.extend(ctx.signals.iter().cloned());
 
+    let merged_session_text = merge_session_texts(
+        existing.session_text.as_deref().unwrap_or(""),
+        &ctx.session_text,
+    );
+
     let (category, confidence) = classify(&ClassifyInput {
         app_name: &existing.app_name,
         window_titles: &merged_titles,
-        ocr_samples: &ocr,
-        elements_samples: &elements,
         audio_snippets: &audio,
         signals: &signals,
         started_at: &existing.started_at,
         ended_at: &now,
+        session_text: &merged_session_text,
     });
 
     Ok(ActiveSession {
@@ -741,8 +707,6 @@ fn merge_into_active(
         started_at: existing.started_at.clone(),
         last_seen_at: now,
         window_titles: serde_json::to_string(&merged_titles)?,
-        ocr_samples: Some(serde_json::to_string(&ocr)?),
-        elements_samples: Some(serde_json::to_string(&elements)?),
         audio_snippets: Some(serde_json::to_string(&audio)?),
         signals: Some(serde_json::to_string(&signals)?),
         min_frame_id: existing.min_frame_id,
@@ -751,6 +715,7 @@ fn merge_into_active(
         idle_frame_count: existing.idle_frame_count + new_idle_frame_count,
         category,
         confidence,
+        session_text: Some(merged_session_text),
     })
 }
 

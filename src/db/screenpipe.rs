@@ -29,21 +29,6 @@ pub struct WindowTitleCount {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OcrSample {
-    pub text: String,
-    pub window_name: Option<String>,
-    pub timestamp: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ElementSample {
-    pub text: String,
-    pub role: Option<String>,
-    pub window_name: Option<String>,
-    pub timestamp: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioSnippet {
     pub transcription: String,
     pub timestamp: String,
@@ -57,6 +42,15 @@ pub struct SignalEvent {
     /// text_content for clipboard; app_name for app_switch
     pub value: Option<String>,
     pub timestamp: String,
+}
+
+/// One frame's text content fetched from screenpipe for session_text building.
+#[derive(Debug, Clone)]
+pub struct FrameText {
+    pub frame_id: i64,
+    pub timestamp: String,
+    pub full_text: String,
+    pub text_source: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -255,77 +249,6 @@ fn is_browser_app(app_name: &str) -> bool {
     .any(|b| lc.contains(b))
 }
 
-/// Returns all unique OCR text samples from the given frame-id range.
-/// Deduplicates on exact text — keeps the earliest occurrence of each unique string.
-/// Only samples with more than 30 characters are included.
-pub async fn get_ocr_samples(
-    pool: &SqlitePool,
-    min_frame_id: i64,
-    max_frame_id: i64,
-) -> Result<Vec<OcrSample>> {
-    let rows = sqlx::query_as::<_, (String, Option<String>, String)>(
-        "SELECT ot.text, MIN(f.window_name) AS window_name, MIN(f.timestamp) AS timestamp
-         FROM ocr_text ot
-         JOIN frames f ON ot.frame_id = f.id
-         WHERE f.id BETWEEN ? AND ?
-           AND length(ot.text) > 30
-         GROUP BY ot.text
-         ORDER BY timestamp",
-    )
-    .bind(min_frame_id)
-    .bind(max_frame_id)
-    .fetch_all(pool)
-    .await?;
-
-    let result = rows
-        .into_iter()
-        .map(|(text, window_name, timestamp)| OcrSample {
-            text,
-            window_name,
-            timestamp,
-        })
-        .collect();
-
-    Ok(result)
-}
-
-/// Returns unique accessibility element samples from the given frame-id range.
-/// Deduplicates on (trimmed text, role) — same element appearing in multiple frames is stored once.
-/// Only elements with more than 20 characters (after trimming) and source = 'accessibility' are included.
-/// AXTextArea deduplication (terminal scroll buffer collapse) is handled in extractor.rs after this call.
-pub async fn get_element_samples(
-    pool: &SqlitePool,
-    min_frame_id: i64,
-    max_frame_id: i64,
-) -> Result<Vec<ElementSample>> {
-    let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>, String)>(
-        "SELECT TRIM(e.text), e.role, MIN(f.window_name) AS window_name, MIN(f.timestamp) AS timestamp
-         FROM elements e
-         JOIN frames f ON e.frame_id = f.id
-         WHERE f.id BETWEEN ? AND ?
-           AND e.text IS NOT NULL AND length(TRIM(e.text)) > 20
-           AND e.source = 'accessibility'
-         GROUP BY TRIM(e.text), e.role
-         ORDER BY timestamp",
-    )
-    .bind(min_frame_id)
-    .bind(max_frame_id)
-    .fetch_all(pool)
-    .await?;
-
-    let result = rows
-        .into_iter()
-        .map(|(text, role, window_name, timestamp)| ElementSample {
-            text,
-            role,
-            window_name,
-            timestamp,
-        })
-        .collect();
-
-    Ok(result)
-}
-
 /// Returns unique audio transcription snippets within the given timestamp range.
 /// Deduplicates on exact transcription text — repeated chunks are stored once (earliest timestamp).
 /// Hallucinations and very short snippets (<=10 chars) are excluded.
@@ -381,6 +304,36 @@ pub async fn get_last_ui_event_for_app(
     .fetch_optional(pool)
     .await?;
     Ok(row.and_then(|(ts,)| ts.filter(|s| !s.is_empty())))
+}
+
+/// Returns all frames in [min_frame_id, max_frame_id] that have non-empty full_text,
+/// ordered oldest-first.  Used to build session_text.
+pub async fn get_frame_full_texts(
+    pool: &SqlitePool,
+    min_frame_id: i64,
+    max_frame_id: i64,
+) -> Result<Vec<FrameText>> {
+    let rows = sqlx::query_as::<_, (i64, String, String, String)>(
+        "SELECT id, timestamp, full_text, COALESCE(text_source, 'ocr')
+         FROM frames
+         WHERE id BETWEEN ?1 AND ?2
+           AND full_text IS NOT NULL AND full_text != ''
+         ORDER BY id ASC",
+    )
+    .bind(min_frame_id)
+    .bind(max_frame_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(frame_id, timestamp, full_text, text_source)| FrameText {
+            frame_id,
+            timestamp,
+            full_text,
+            text_source,
+        })
+        .collect())
 }
 
 /// Returns clipboard and app_switch UI events within the given timestamp range.

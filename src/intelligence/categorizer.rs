@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::db::screenpipe::{ElementSample, SignalEvent, WindowTitleCount};
+use crate::db::screenpipe::{SignalEvent, WindowTitleCount};
 
 // ---------------------------------------------------------------------------
 // ActivityKind
@@ -105,7 +105,6 @@ pub struct SessionSignals<'a> {
     pub app_name: &'a str,
     pub window_titles: &'a [WindowTitleCount],
     pub ocr_text: &'a str,
-    pub elements: &'a [ElementSample],
     pub signals: &'a [SignalEvent],
     pub audio_present: bool,
     pub duration_secs: u64,
@@ -396,40 +395,6 @@ static DEVOPS_WINDOW_TOKENS: &[&str] = &[
     "jenkinsfile",
 ];
 
-// A11y element roles that amplify the weight of matched text.
-// Includes both bare role names (unit tests) and macOS AX-prefixed names (real screenpipe data).
-// AXRadioButton is intentionally excluded — macOS uses it for browser tab bars, not action buttons.
-static INTERACTIVE_ROLES: &[&str] = &[
-    "button",
-    "menuitem",
-    "menubutton",
-    "AXButton",
-    "AXMenuItem",
-    "AXMenuButton",
-    "AXPopUpButton",
-    "AXCheckBox",
-];
-
-// A11y button/action text tokens — only scored for interactive roles (see score_elements).
-// "release" and "apply" are excluded: both appear in YouTube headings, form submit buttons,
-// and informational UI text, causing systematic false positives.
-static DEVOPS_ELEMENT_TOKENS: &[&str] = &["deploy", "run pipeline", "trigger", "publish"];
-static MEETING_ELEMENT_TOKENS: &[&str] = &[
-    "mute",
-    "unmute",
-    "leave",
-    "share screen",
-    "end meeting",
-    "join",
-];
-static REVIEW_ELEMENT_TOKENS: &[&str] = &[
-    "approve",
-    "request changes",
-    "submit review",
-    "resolve",
-    "comment",
-];
-
 // Clipboard / signal tokens
 static BRANCH_PREFIXES: &[&str] = &[
     "feat/",
@@ -465,7 +430,6 @@ pub fn categorize(signals: &SessionSignals<'_>) -> (ActivityKind, f32) {
     score_app_name(&app_lc, &mut scores);
     score_window_titles(signals.window_titles, &mut scores);
     score_ocr(&ocr_lc, &mut scores);
-    score_elements(signals.elements, &mut scores);
     score_signals(signals.signals, &mut scores);
 
     let (kind, confidence) = scores.winner();
@@ -605,39 +569,6 @@ fn score_ocr(ocr_lc: &str, scores: &mut Scores) {
     }
 }
 
-/// A11y element scoring.
-/// Interactive roles (button, menuitem) multiply the weight — an "Approve"
-/// button is stronger evidence than the word "approve" in a text node.
-///
-/// DevOps tokens are gated on interactive roles only: heading/tab elements
-/// that happen to contain words like "deploy" or "trigger" in content text
-/// (GitHub READMEs, YouTube titles, browser tab bars) must not score.
-fn score_elements(elements: &[ElementSample], scores: &mut Scores) {
-    for el in elements {
-        let text_lc = el.text.to_lowercase();
-        let is_interactive = el
-            .role
-            .as_deref()
-            .map(|r| {
-                INTERACTIVE_ROLES
-                    .iter()
-                    .any(|ir| r.eq_ignore_ascii_case(ir))
-            })
-            .unwrap_or(false);
-        let role_multiplier = if is_interactive { 1.5_f32 } else { 1.0 };
-
-        if is_interactive && contains_any(&text_lc, DEVOPS_ELEMENT_TOKENS) {
-            scores.add(ActivityKind::DeploymentDevops, 10.0 * role_multiplier);
-        }
-        if contains_any(&text_lc, MEETING_ELEMENT_TOKENS) {
-            scores.add(ActivityKind::Meeting, 12.0 * role_multiplier);
-        }
-        if contains_any(&text_lc, REVIEW_ELEMENT_TOKENS) {
-            scores.add(ActivityKind::CodeReview, 12.0 * role_multiplier);
-        }
-    }
-}
-
 /// Clipboard and app-switch signals.
 /// Clipboard is high-intent evidence — the user deliberately copied something.
 fn score_signals(signals: &[SignalEvent], scores: &mut Scores) {
@@ -698,7 +629,6 @@ mod tests {
                 app_name: $app,
                 window_titles: $titles,
                 ocr_text: $ocr,
-                elements: &[],
                 signals: &[],
                 audio_present: $audio,
                 duration_secs: 120,
@@ -764,7 +694,6 @@ mod tests {
             app_name: "Visual Studio Code",
             window_titles: &titles,
             ocr_text: "kubectl get pods -n production\ndocker build -t myapp:latest .",
-            elements: &[],
             signals: &[],
             audio_present: false,
             duration_secs: 600,
@@ -779,7 +708,6 @@ mod tests {
             app_name: "Visual Studio Code",
             window_titles: &titles,
             ocr_text: "fn main() {\n    let x = 42;\n}",
-            elements: &[],
             signals: &[],
             audio_present: false,
             duration_secs: 600,
@@ -883,52 +811,9 @@ mod tests {
             app_name: "code",
             window_titles: &titles,
             ocr_text: "",
-            elements: &[],
             signals: &[],
             audio_present: false,
             duration_secs: 300,
-        };
-        assert_eq!(categorize(&signals).0, ActivityKind::DeploymentDevops);
-    }
-
-    // --- A11y elements ---
-
-    #[test]
-    fn approve_button_boosts_code_review() {
-        let elements = vec![ElementSample {
-            text: "Approve".to_string(),
-            role: Some("button".to_string()),
-            window_name: None,
-            timestamp: "2024-01-01T00:00:00Z".to_string(),
-        }];
-        let signals = SessionSignals {
-            app_name: "chrome",
-            window_titles: &[],
-            ocr_text: "",
-            elements: &elements,
-            signals: &[],
-            audio_present: false,
-            duration_secs: 120,
-        };
-        assert_eq!(categorize(&signals).0, ActivityKind::CodeReview);
-    }
-
-    #[test]
-    fn deploy_button_boosts_devops() {
-        let elements = vec![ElementSample {
-            text: "Deploy to production".to_string(),
-            role: Some("button".to_string()),
-            window_name: None,
-            timestamp: "2024-01-01T00:00:00Z".to_string(),
-        }];
-        let signals = SessionSignals {
-            app_name: "chrome",
-            window_titles: &[],
-            ocr_text: "",
-            elements: &elements,
-            signals: &[],
-            audio_present: false,
-            duration_secs: 120,
         };
         assert_eq!(categorize(&signals).0, ActivityKind::DeploymentDevops);
     }
@@ -946,7 +831,6 @@ mod tests {
             app_name: "cursor",
             window_titles: &[],
             ocr_text: "",
-            elements: &[],
             signals: &sigs,
             audio_present: false,
             duration_secs: 120,
@@ -963,7 +847,6 @@ mod tests {
             app_name: "zoom",
             window_titles: &[],
             ocr_text: "",
-            elements: &[],
             signals: &[],
             audio_present: false,
             duration_secs: 120,
