@@ -74,12 +74,11 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
     std::fs::create_dir_all(&log_dir)
         .with_context(|| format!("create log dir {}", log_dir.display()))?;
 
-    let file_appender =
-        tracing_appender::rolling::daily(&log_dir, format!("{service_name}.jsonl"));
+    let file_appender = tracing_appender::rolling::daily(&log_dir, format!("{service_name}.jsonl"));
     let (file_writer, file_guard) = tracing_appender::non_blocking(file_appender);
 
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(DEFAULT_ENV_FILTER));
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_ENV_FILTER));
 
     let fmt_stdout = tracing_subscriber::fmt::layer()
         .with_target(true)
@@ -143,10 +142,7 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
 /// Returns Some(layer) when MERIDIAN_OO_AUTH is set, None when disabled.
 fn try_init_otel<S>(service_name: &str) -> Result<Option<Box<dyn Layer<S> + Send + Sync + 'static>>>
 where
-    S: tracing::Subscriber
-        + for<'a> tracing_subscriber::registry::LookupSpan<'a>
-        + Send
-        + Sync,
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a> + Send + Sync,
 {
     let Ok(auth) = std::env::var("MERIDIAN_OO_AUTH") else {
         return Ok(None);

@@ -28,22 +28,23 @@ async fn fk_enabled_db() -> SqlitePool {
 }
 
 async fn table_exists(pool: &SqlitePool, name: &str) -> bool {
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?1",
-    )
-    .bind(name)
-    .fetch_optional(pool)
-    .await
-    .unwrap();
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?1")
+            .bind(name)
+            .fetch_optional(pool)
+            .await
+            .unwrap();
     row.is_some()
 }
 
 async fn column_exists(pool: &SqlitePool, table: &str, column: &str) -> bool {
-    let rows: Vec<(i64, String)> =
-        sqlx::query_as(&format!("SELECT cid, name FROM pragma_table_info('{}')", table))
-            .fetch_all(pool)
-            .await
-            .unwrap();
+    let rows: Vec<(i64, String)> = sqlx::query_as(&format!(
+        "SELECT cid, name FROM pragma_table_info('{}')",
+        table
+    ))
+    .fetch_all(pool)
+    .await
+    .unwrap();
     rows.iter().any(|(_, n)| n == column)
 }
 
@@ -582,11 +583,10 @@ async fn activity_context_rejects_id_other_than_one() {
 #[tokio::test]
 async fn activity_context_rejects_invalid_trigger_jira_sync() {
     let pool = fresh_db().await;
-    let err =
-        sqlx::query("UPDATE activity_context SET trigger_jira_sync = 5 WHERE id = 1")
-            .execute(&pool)
-            .await
-            .unwrap_err();
+    let err = sqlx::query("UPDATE activity_context SET trigger_jira_sync = 5 WHERE id = 1")
+        .execute(&pool)
+        .await
+        .unwrap_err();
     assert!(
         err.to_string().to_lowercase().contains("check"),
         "expected CHECK violation on trigger_jira_sync, got: {err}"
