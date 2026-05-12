@@ -52,32 +52,31 @@ async fn main() -> Result<()> {
         .await
         .context("failed to open meridian.db")?;
 
-    let rows: Vec<(i64, String, i64, String, String, String, String)> =
-        if let Some(ids) = &id_filter {
-            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            let sql = format!(
-                "SELECT id, app_name, duration_s, window_titles,
-                    COALESCE(ocr_samples, '[]'), COALESCE(elements_samples, '[]'), category
+    let rows: Vec<(i64, String, i64, String, String, String)> = if let Some(ids) = &id_filter {
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT id, app_name, duration_s, window_titles,
+                    COALESCE(session_text, ''), category
              FROM app_sessions WHERE id IN ({}) ORDER BY id ASC",
-                placeholders
-            );
-            let mut q = sqlx::query_as(&sql);
-            for id in ids {
-                q = q.bind(id);
-            }
-            q.fetch_all(&pool).await?
-        } else {
-            sqlx::query_as(
-                "SELECT id, app_name, duration_s, window_titles,
-                    COALESCE(ocr_samples, '[]'), COALESCE(elements_samples, '[]'), category
+            placeholders
+        );
+        let mut q = sqlx::query_as(&sql);
+        for id in ids {
+            q = q.bind(id);
+        }
+        q.fetch_all(&pool).await?
+    } else {
+        sqlx::query_as(
+            "SELECT id, app_name, duration_s, window_titles,
+                    COALESCE(session_text, ''), category
              FROM app_sessions
              WHERE duration_s >= 5
              ORDER BY id DESC LIMIT ?",
-            )
-            .bind(limit)
-            .fetch_all(&pool)
-            .await?
-        };
+        )
+        .bind(limit)
+        .fetch_all(&pool)
+        .await?
+    };
 
     if rows.is_empty() {
         eprintln!("No sessions found.");
@@ -97,16 +96,8 @@ async fn main() -> Result<()> {
     );
     println!("{}", "-".repeat(110));
 
-    for (id, app_name, duration_s, window_titles, ocr_samples, elements_samples, was_category) in
-        &rows
-    {
-        let prompt = build_category_prompt(
-            app_name,
-            *duration_s,
-            window_titles,
-            ocr_samples,
-            elements_samples,
-        );
+    for (id, app_name, duration_s, window_titles, session_text, was_category) in &rows {
+        let prompt = build_category_prompt(app_name, *duration_s, window_titles, session_text);
 
         let t0 = Instant::now();
         match backend.raw_generate(CATEGORY_SYSTEM, &prompt).await {

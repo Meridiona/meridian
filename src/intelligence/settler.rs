@@ -24,8 +24,7 @@ struct UnlinkedSession {
     app_name: String,
     duration_s: i64,
     window_titles: String,
-    ocr_samples: String,
-    // fetched for potential future use in classification heuristics
+    session_text: String,
     _category: String,
 }
 
@@ -70,7 +69,7 @@ pub async fn settle_sessions(meridian: &SqlitePool, backend: &LlmBackend) -> Res
     let sessions: Vec<UnlinkedSession> =
         sqlx::query_as::<_, (i64, String, i64, String, String, String)>(
             "SELECT id, app_name, duration_s, window_titles,
-                COALESCE(ocr_samples, '[]'), COALESCE(category, '')
+                COALESCE(session_text, ''), COALESCE(category, '')
          FROM app_sessions
          WHERE id NOT IN (SELECT session_id FROM ticket_links)
          ORDER BY id DESC
@@ -82,12 +81,12 @@ pub async fn settle_sessions(meridian: &SqlitePool, backend: &LlmBackend) -> Res
         .context("loading unlinked sessions")?
         .into_iter()
         .map(
-            |(id, app_name, duration_s, window_titles, ocr_samples, category)| UnlinkedSession {
+            |(id, app_name, duration_s, window_titles, session_text, category)| UnlinkedSession {
                 id,
                 app_name,
                 duration_s,
                 window_titles,
-                ocr_samples,
+                session_text,
                 _category: category,
             },
         )
@@ -191,15 +190,14 @@ async fn classify_session(
             })
             .collect();
 
-    let ocr_snippet: String = serde_json::from_str::<Vec<serde_json::Value>>(&session.ocr_samples)
-        .unwrap_or_default()
-        .first()
-        .and_then(|v| {
-            v.get("text")
-                .and_then(|s| s.as_str())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_default();
+    let ocr_snippet: String = session
+        .session_text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(500)
+        .collect();
 
     let req = ClassifyRequest {
         app_name: session.app_name.clone(),
@@ -221,9 +219,8 @@ async fn classify_session(
 const SETTLE_BATCH_LIMIT: i64 = 20;
 
 // 4 chars ≈ 1 token; caps keep total prompt under ~2,500 tokens (well within FM's 4,096 limit).
-const OCR_CAP: usize = 0; // OCR disabled — concatenated screencap text triggers FM language detector
 const WINDOW_CAP: usize = 500;
-const ELEMENTS_CAP: usize = 1_500;
+const CONTENT_CAP: usize = 1_500;
 
 // Sentinel written when FM returns an unparseable response — prevents infinite retry.
 const PARSE_ERROR_SENTINEL: &str = "fm_parse_error";
@@ -279,9 +276,9 @@ pub async fn settle_all_categories(meridian: &SqlitePool, backend: &LlmBackend) 
         return Ok(());
     }
 
-    let rows: Vec<(i64, String, i64, String, String, String)> = sqlx::query_as(
+    let rows: Vec<(i64, String, i64, String, String)> = sqlx::query_as(
         "SELECT id, app_name, duration_s, window_titles,
-                COALESCE(ocr_samples, '[]'), COALESCE(elements_samples, '[]')
+                COALESCE(session_text, '')
          FROM app_sessions
          WHERE category_method = 'rule_based'
            AND duration_s >= 5
@@ -306,16 +303,9 @@ pub async fn settle_all_categories(meridian: &SqlitePool, backend: &LlmBackend) 
     );
     tracing::Span::current().record("sessions_processed", rows.len() as i64);
 
-    for (id, app_name, duration_s, window_titles, ocr_samples, elements_samples) in &rows {
-        let user = build_category_prompt(
-            app_name,
-            *duration_s,
-            window_titles,
-            ocr_samples,
-            elements_samples,
-        );
-        let has_content =
-            !ocr_samples_empty(ocr_samples) || !elements_samples_empty(elements_samples);
+    for (id, app_name, duration_s, window_titles, session_text) in &rows {
+        let user = build_category_prompt(app_name, *duration_s, window_titles, session_text);
+        let has_content = !session_text.trim().is_empty();
         match backend.raw_generate(CATEGORY_SYSTEM, &user).await {
             Ok(text) => match parse_category(&text) {
                 Some(cat) => {
@@ -345,14 +335,13 @@ pub async fn settle_all_categories(meridian: &SqlitePool, backend: &LlmBackend) 
                     || msg.contains("appleIntelligenceNotEnabled");
 
                 if is_language_error && has_content {
-                    // ocr_samples/elements_samples contained non-Latin content that survived
-                    // strip_non_latin — retry with titles only (no Content section)
+                    // session_text contained non-Latin content that survived strip_non_latin
+                    // — retry with titles only (no Content section)
                     warn!(
                         session_id = id,
                         "unsupported language in content — retrying with titles only"
                     );
-                    let fallback =
-                        build_category_prompt(app_name, *duration_s, window_titles, "[]", "[]");
+                    let fallback = build_category_prompt(app_name, *duration_s, window_titles, "");
                     match backend.raw_generate(CATEGORY_SYSTEM, &fallback).await {
                         Ok(text) => match parse_category(&text) {
                             Some(cat) => {
@@ -411,32 +400,6 @@ pub async fn settle_all_categories(meridian: &SqlitePool, backend: &LlmBackend) 
     Ok(())
 }
 
-/// Returns true if the ocr_samples JSON string contains no usable text entries.
-fn ocr_samples_empty(ocr_samples: &str) -> bool {
-    serde_json::from_str::<Vec<serde_json::Value>>(ocr_samples)
-        .unwrap_or_default()
-        .iter()
-        .all(|v| {
-            v.get("text")
-                .and_then(|s| s.as_str())
-                .map(|s| s.trim().is_empty())
-                .unwrap_or(true)
-        })
-}
-
-/// Returns true if the elements_samples JSON string contains no usable text entries.
-fn elements_samples_empty(elements_samples: &str) -> bool {
-    serde_json::from_str::<Vec<serde_json::Value>>(elements_samples)
-        .unwrap_or_default()
-        .iter()
-        .all(|v| {
-            v.get("text")
-                .and_then(|s| s.as_str())
-                .map(|s| s.trim().is_empty())
-                .unwrap_or(true)
-        })
-}
-
 /// Removes non-Latin-script characters that cause Foundation Models to reject the prompt
 /// with "unsupported language". Keeps printable ASCII plus common Latin-block symbols
 /// (bullets •, arrows →, chevrons ›, registered ®, etc.). OCR artifacts like Thai Baht ฿
@@ -463,14 +426,12 @@ pub fn build_category_prompt(
     app_name: &str,
     duration_s: i64,
     window_titles: &str,
-    ocr_samples: &str,
-    elements_samples: &str,
+    session_text: &str,
 ) -> String {
     let windows: String = serde_json::from_str::<Vec<serde_json::Value>>(window_titles)
         .unwrap_or_default()
         .into_iter()
         .filter_map(|v| {
-            // window_titles may use either "window_name" (browser sessions) or "title" (general)
             v.get("window_name")
                 .or_else(|| v.get("title"))
                 .and_then(|n| n.as_str())
@@ -483,41 +444,20 @@ pub fn build_category_prompt(
         .take(WINDOW_CAP)
         .collect();
 
-    // Use only the first OCR sample capped at OCR_CAP chars.
-    // Multiple frames or large single frames create dense concatenated text that triggers
-    // FM's language detector even when the content is English.
-    let ocr: String = serde_json::from_str::<Vec<serde_json::Value>>(ocr_samples)
-        .unwrap_or_default()
-        .into_iter()
-        .next()
-        .and_then(|v| v.get("text")?.as_str().map(strip_non_latin))
-        .unwrap_or_default()
+    let content: String = strip_non_latin(session_text)
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .chars()
-        .take(OCR_CAP)
-        .collect();
-
-    let elements: String = serde_json::from_str::<Vec<serde_json::Value>>(elements_samples)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|v| v.get("text")?.as_str().map(strip_non_latin))
-        .collect::<Vec<_>>()
-        .join(", ")
-        .chars()
-        .take(ELEMENTS_CAP)
+        .take(CONTENT_CAP)
         .collect();
 
     let mut prompt = format!(
         "App: {} ({}s)\nWindows: {}\n",
         app_name, duration_s, windows
     );
-    if !ocr.is_empty() {
-        prompt.push_str(&format!("Screen:\n{}\n", ocr));
-    }
-    if !elements.is_empty() {
-        prompt.push_str(&format!("UI elements: {}\n", elements));
+    if !content.is_empty() {
+        prompt.push_str(&format!("Content: {}\n", content));
     }
     prompt
 }
