@@ -10,6 +10,7 @@ import { formatDuration, formatTime } from '@/lib/format'
 import type { SessionRow } from '@/lib/types'
 import { clsx } from 'clsx'
 import CategoryBadge from './CategoryBadge'
+import TaskBadge from './TaskBadge'
 
 interface SessionCardProps {
   session: SessionRow
@@ -49,6 +50,15 @@ export default function SessionCard({ session }: SessionCardProps) {
                   {session.category && (
                     <CategoryBadge category={session.category} size="xs" />
                   )}
+                  <TaskBadge
+                    taskKey={session.task_key}
+                    sessionType={session.session_type}
+                    routing={session.routing}
+                    confidence={session.link_confidence}
+                    taskTitle={session.task_title}
+                    taskUrl={session.task_url}
+                    size="xs"
+                  />
                 </div>
               </div>
 

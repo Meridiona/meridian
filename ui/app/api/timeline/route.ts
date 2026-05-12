@@ -21,6 +21,14 @@ function parseRow(r: Record<string, unknown>): SessionRow {
     etl_run_id: r.etl_run_id as number,
     category: (r.category as string) || 'idle_personal',
     confidence: (r.confidence as number) || 0,
+    task_key:        (r.task_key as string | null) ?? null,
+    task_title:      (r.task_title as string | null) ?? null,
+    task_url:        (r.task_url as string | null) ?? null,
+    task_provider:   (r.task_provider as string | null) ?? null,
+    session_type:    (r.session_type as string | null) ?? null,
+    routing:         (r.routing as string | null) ?? null,
+    link_confidence: (r.link_confidence as number | null) ?? null,
+    link_method:     (r.link_method as string | null) ?? null,
   }
 }
 
