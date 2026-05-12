@@ -35,10 +35,8 @@ from agents.config import MODEL, BASE_URL, API_KEY, load_skill
 log = logging.getLogger("agents.stage3")
 tracer = observability.setup("meridian-stage3")
 
-# Make `import run_agent` work — the hermes runtime lives at services/run_agent.py.
-_REPO_ROOT = Path(__file__).parent.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+from agents._hermes_setup import ensure_hermes_importable
+ensure_hermes_importable()
 
 
 # ──────────────────────── Config / thresholds ─────────────────────────────────

@@ -9,7 +9,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+from agents._hermes_setup import ensure_hermes_importable
+ensure_hermes_importable()
 from agents.config import LOG_DIR, MERIDIAN_DB, MERIDIAN_HOME
 from agents import db
 

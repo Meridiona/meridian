@@ -15,3 +15,4 @@ python-json-logger>=2.0,<3
 # the canonical dependency list is in pyproject.toml. Install with:
 #   pip install -e .
 # This requirements.txt is the bare minimum to drive agents/ in development.
+hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git@v2026.4.30
