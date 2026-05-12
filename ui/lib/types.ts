@@ -7,19 +7,6 @@ export interface WindowTitle {
   count: number
 }
 
-export interface OcrSample {
-  text: string
-  window_name: string | null
-  timestamp: string
-}
-
-export interface ElementSample {
-  text: string
-  role: string | null
-  window_name: string | null
-  timestamp: string
-}
-
 export interface AudioSnippet {
   transcription: string
   timestamp: string
@@ -39,8 +26,6 @@ export interface SessionRow {
   ended_at: string
   duration_s: number
   window_titles: WindowTitle[]
-  ocr_samples: OcrSample[] | null
-  elements_samples: ElementSample[] | null
   audio_snippets: AudioSnippet[] | null
   signals: Signal[] | null
   frame_count: number
@@ -54,7 +39,6 @@ export interface ActiveSessionRow {
   started_at: string
   last_seen_at: string
   window_titles: WindowTitle[]
-  ocr_samples: OcrSample[] | null
   audio_snippets: AudioSnippet[] | null
   signals: Signal[] | null
   frame_count: number

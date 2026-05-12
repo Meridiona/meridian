@@ -15,8 +15,6 @@ function parseRow(r: Record<string, unknown>): SessionRow {
     ended_at: r.ended_at as string,
     duration_s: r.duration_s as number,
     window_titles: JSON.parse((r.window_titles as string) || '[]'),
-    ocr_samples: r.ocr_samples ? JSON.parse(r.ocr_samples as string) : null,
-    elements_samples: r.elements_samples ? JSON.parse(r.elements_samples as string) : null,
     audio_snippets: r.audio_snippets ? JSON.parse(r.audio_snippets as string) : null,
     signals: r.signals ? JSON.parse(r.signals as string) : null,
     frame_count: r.frame_count as number,
