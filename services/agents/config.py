@@ -44,6 +44,19 @@ def load_skill(name: str) -> str:
     )
 
 
+def load_skill_addendum(name: str, mode: str) -> str:
+    """Load the mode-specific addendum for a skill (e.g. SKILL-tiebreak.md).
+
+    Returns empty string when the file is absent so callers can treat missing
+    addenda as a no-op rather than an error.
+    """
+    for base in SKILLS_SEARCH_PATHS:
+        addendum_file = base / name / f"SKILL-{mode}.md"
+        if addendum_file.exists():
+            return addendum_file.read_text()
+    return ""
+
+
 # ── DB / runtime paths ────────────────────────────────────────────────────────
 MERIDIAN_HOME = Path(os.environ.get("MERIDIAN_HOME", str(Path.home() / ".meridian")))
 MERIDIAN_DB   = Path(os.environ.get("MERIDIAN_DB",   str(MERIDIAN_HOME / "meridian.db")))
