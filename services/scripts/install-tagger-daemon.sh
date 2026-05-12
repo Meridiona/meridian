@@ -35,10 +35,24 @@ fi
 mkdir -p "${HOME}/.meridian/logs"
 mkdir -p "${LAUNCH_AGENTS}"
 
+# Read MERIDIAN_OO_AUTH from services/.env (required — observability.py
+# initialises before dotenv is loaded, so launchd must inject it directly).
+ENV_FILE="${SERVICES_DIR}/.env"
+MERIDIAN_OO_AUTH=""
+if [[ -f "${ENV_FILE}" ]]; then
+    MERIDIAN_OO_AUTH="$(grep -E '^MERIDIAN_OO_AUTH=' "${ENV_FILE}" | cut -d= -f2- | tr -d '[:space:]')"
+fi
+if [[ -z "${MERIDIAN_OO_AUTH}" ]]; then
+    echo "✗ MERIDIAN_OO_AUTH not found in ${ENV_FILE}" >&2
+    echo "  Add:  MERIDIAN_OO_AUTH=<base64-encoded user:password>" >&2
+    exit 1
+fi
+
 echo "→ writing ${PLIST_DEST}"
 sed \
     -e "s|{{REPO_ROOT}}|${REPO_ROOT}|g" \
     -e "s|{{HOME}}|${HOME}|g" \
+    -e "s|{{MERIDIAN_OO_AUTH}}|${MERIDIAN_OO_AUTH}|g" \
     "${TEMPLATE}" > "${PLIST_DEST}"
 
 # Validate the plist before loading.
