@@ -466,15 +466,18 @@ pub async fn update_session_category(
     session_id: i64,
     category: &str,
     confidence: f64,
+    explanation: Option<&str>,
 ) -> anyhow::Result<()> {
     sqlx::query(
         "UPDATE app_sessions
-            SET category = ?1, confidence = ?2, category_method = 'foundation_models'
+            SET category = ?1, confidence = ?2, category_method = 'foundation_models',
+                category_explanation = ?4
           WHERE id = ?3",
     )
     .bind(category)
     .bind(confidence)
     .bind(session_id)
+    .bind(explanation)
     .execute(pool)
     .await
     .context("update_session_category failed")?;

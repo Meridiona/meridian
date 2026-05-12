@@ -54,6 +54,7 @@ fn parse_category_json_with_backticks() {
 fn parse_category_unknown_value_returns_none() {
     assert_eq!(parse_category(r#"{"category": "gaming"}"#), None);
     assert_eq!(parse_category(r#"{"category": "not_a_category"}"#), None);
+    assert_eq!(parse_category(r#"{"category": "development"}"#), None);
 }
 
 #[test]
@@ -73,12 +74,15 @@ fn parse_category_empty_returns_none() {
 #[test]
 fn parse_category_all_valid_categories_round_trip() {
     let categories = [
+        "coding",
         "code_review",
-        "research",
+        "meeting",
+        "communication",
+        "design",
         "documentation",
         "planning",
-        "communication",
         "deployment_devops",
+        "research",
         "idle_personal",
     ];
     for cat in categories {
@@ -99,7 +103,7 @@ fn parse_category_all_valid_categories_round_trip() {
 fn build_category_prompt_window_name_key() {
     // Browser sessions store window titles under "window_name"
     let titles = r#"[{"window_name":"GitHub - Pull Requests","count":3}]"#;
-    let prompt = build_category_prompt(120, titles, "[]", "[]");
+    let prompt = build_category_prompt("Chrome", 120, titles, "[]", "[]");
     assert!(
         prompt.contains("GitHub - Pull Requests"),
         "should include window_name value; prompt was:\n{prompt}"
@@ -110,7 +114,7 @@ fn build_category_prompt_window_name_key() {
 fn build_category_prompt_title_key_fallback() {
     // General sessions use "title" — prompt builder must handle both
     let titles = r#"[{"title":"Notion - Project Plan","count":2}]"#;
-    let prompt = build_category_prompt(60, titles, "[]", "[]");
+    let prompt = build_category_prompt("Notion", 60, titles, "[]", "[]");
     assert!(
         prompt.contains("Notion - Project Plan"),
         "should include title value; prompt was:\n{prompt}"
@@ -123,7 +127,7 @@ fn build_category_prompt_ocr_excluded() {
     // Classification relies on window titles and UI elements instead.
     let ocr =
         r#"[{"text":"def solve(n): return n * 2","window":"VSCode","ts":"2024-01-01T00:00:00Z"}]"#;
-    let prompt = build_category_prompt(300, "[]", ocr, "[]");
+    let prompt = build_category_prompt("Visual Studio Code", 300, "[]", ocr, "[]");
     assert!(
         !prompt.contains("def solve"),
         "OCR text should not appear in prompt (OCR disabled)"
@@ -137,7 +141,7 @@ fn build_category_prompt_ocr_excluded() {
 #[test]
 fn build_category_prompt_elements_included() {
     let elements = r#"[{"text":"Submit PR"},{"text":"Request review"}]"#;
-    let prompt = build_category_prompt(45, "[]", "[]", elements);
+    let prompt = build_category_prompt("GitHub", 45, "[]", "[]", elements);
     assert!(
         prompt.contains("Submit PR"),
         "elements text should appear in prompt"
@@ -147,7 +151,7 @@ fn build_category_prompt_elements_included() {
 
 #[test]
 fn build_category_prompt_empty_ocr_and_elements_omitted() {
-    let prompt = build_category_prompt(30, r#"[{"window_name":"Google"}]"#, "[]", "[]");
+    let prompt = build_category_prompt("Chrome", 30, r#"[{"window_name":"Google"}]"#, "[]", "[]");
     assert!(
         !prompt.contains("Screen:"),
         "empty OCR should not add Screen section"
@@ -160,27 +164,36 @@ fn build_category_prompt_empty_ocr_and_elements_omitted() {
 
 #[test]
 fn build_category_prompt_includes_duration() {
-    let prompt = build_category_prompt(999, "[]", "[]", "[]");
+    let prompt = build_category_prompt("Xcode", 999, "[]", "[]", "[]");
     assert!(prompt.contains("999s"), "duration in seconds should appear");
 }
 
+#[test]
+fn build_category_prompt_includes_app_name() {
+    let prompt = build_category_prompt("Visual Studio Code", 120, "[]", "[]", "[]");
+    assert!(
+        prompt.contains("Visual Studio Code"),
+        "app name should appear; prompt was:\n{prompt}"
+    );
+}
+
 // ---------------------------------------------------------------------------
-// settle_chrome_categories — DB integration: sentinel prevents retry
+// settle_all_categories — DB integration: sentinel prevents retry
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn settle_chrome_categories_sentinel_prevents_retry() {
+async fn settle_all_categories_sentinel_prevents_retry() {
     let db = common::make_meridian_db().await;
 
-    // Insert a browser session that has already been marked with the parse-error sentinel
+    // Insert a session already marked with the parse-error sentinel
     sqlx::query(
         "INSERT INTO app_sessions
            (app_name, started_at, ended_at, duration_s,
             window_titles, min_frame_id, max_frame_id, frame_count,
             idle_frame_count, etl_run_id, category, confidence, category_method)
          VALUES
-           ('Google Chrome', '2024-01-01T10:00:00Z', '2024-01-01T10:05:00Z', 300,
-            '[{\"window_name\":\"GitHub\"}]', 1, 5, 5,
+           ('Visual Studio Code', '2024-01-01T10:00:00Z', '2024-01-01T10:05:00Z', 300,
+            '[{\"window_name\":\"main.rs\"}]', 1, 5, 5,
             0, 1, 'fm_parse_error', 0.0, 'foundation_models')",
     )
     .execute(&db)
@@ -202,7 +215,7 @@ async fn settle_chrome_categories_sentinel_prevents_retry() {
 }
 
 #[tokio::test]
-async fn settle_chrome_categories_short_sessions_excluded() {
+async fn settle_all_categories_short_sessions_excluded() {
     let db = common::make_meridian_db().await;
 
     // Session with duration_s = 4 (below threshold of 5)
@@ -212,19 +225,17 @@ async fn settle_chrome_categories_short_sessions_excluded() {
             window_titles, min_frame_id, max_frame_id, frame_count,
             idle_frame_count, etl_run_id, category, confidence, category_method)
          VALUES
-           ('Google Chrome', '2024-01-01T10:00:00Z', '2024-01-01T10:00:04Z', 4,
-            '[{\"window_name\":\"Google\"}]', 1, 2, 2,
-            0, 1, 'research', 1.0, 'rule_based')",
+           ('Xcode', '2024-01-01T10:00:00Z', '2024-01-01T10:00:04Z', 4,
+            '[{\"window_name\":\"AppDelegate.swift\"}]', 1, 2, 2,
+            0, 1, 'coding', 1.0, 'rule_based')",
     )
     .execute(&db)
     .await
     .unwrap();
 
-    // Verify the query that drives the settler excludes this row
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM app_sessions
-         WHERE category_method = 'rule_based' AND duration_s >= 5
-           AND lower(app_name) LIKE '%chrome%'",
+         WHERE category_method = 'rule_based' AND duration_s >= 5",
     )
     .fetch_one(&db)
     .await
@@ -237,37 +248,45 @@ async fn settle_chrome_categories_short_sessions_excluded() {
 }
 
 #[tokio::test]
-async fn settle_chrome_categories_non_browser_excluded() {
+async fn settle_all_categories_all_apps_included() {
     let db = common::make_meridian_db().await;
 
-    // Non-browser app should not be picked up
-    sqlx::query(
-        "INSERT INTO app_sessions
-           (app_name, started_at, ended_at, duration_s,
-            window_titles, min_frame_id, max_frame_id, frame_count,
-            idle_frame_count, etl_run_id, category, confidence, category_method)
-         VALUES
-           ('Xcode', '2024-01-01T10:00:00Z', '2024-01-01T10:05:00Z', 300,
-            '[{\"window_name\":\"Xcode - Project\"}]', 1, 5, 5,
-            0, 1, 'code_review', 1.0, 'rule_based')",
-    )
-    .execute(&db)
-    .await
-    .unwrap();
+    // Insert sessions from diverse app types — all should be in the settler queue
+    for (app, category) in [
+        ("Google Chrome", "research"),
+        ("Visual Studio Code", "coding"),
+        ("Xcode", "coding"),
+        ("Figma", "design"),
+        ("Slack", "communication"),
+        ("Terminal", "coding"),
+    ] {
+        sqlx::query(
+            "INSERT INTO app_sessions
+               (app_name, started_at, ended_at, duration_s,
+                window_titles, min_frame_id, max_frame_id, frame_count,
+                idle_frame_count, etl_run_id, category, confidence, category_method)
+             VALUES
+               (?, '2024-01-01T10:00:00Z', '2024-01-01T10:05:00Z', 300,
+                '[{\"window_name\":\"Test\"}]', 1, 5, 5,
+                0, 1, ?, 0.8, 'rule_based')",
+        )
+        .bind(app)
+        .bind(category)
+        .execute(&db)
+        .await
+        .unwrap();
+    }
 
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM app_sessions
-         WHERE category_method = 'rule_based' AND duration_s > 10
-           AND (lower(app_name) LIKE '%chrome%' OR lower(app_name) LIKE '%safari%'
-                OR lower(app_name) LIKE '%firefox%' OR lower(app_name) LIKE '%arc%'
-                OR lower(app_name) LIKE '%edge%' OR lower(app_name) LIKE '%brave%')",
+         WHERE category_method = 'rule_based' AND duration_s >= 5",
     )
     .fetch_one(&db)
     .await
     .unwrap();
 
     assert_eq!(
-        count, 0,
-        "non-browser app should not be in classification queue"
+        count, 6,
+        "all 6 app sessions should be in the settler queue"
     );
 }

@@ -1,6 +1,6 @@
 // meridian — normalises screenpipe activity into structured app sessions
 //
-// Smoke-test binary: reads Chrome/browser sessions from meridian.db,
+// Smoke-test binary: reads app sessions from meridian.db,
 // runs the FM category classifier, and prints results.
 // Nothing is written to the DB — read-only.
 //
@@ -20,19 +20,20 @@ use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::SqlitePool;
 
 const CATEGORY_SYSTEM: &str = "\
-You are a JSON-only classifier. Given a Chrome browser session return exactly \
-{\"category\": \"VALUE\"}.\n\
+You are an app session classifier. \
+Given the app name, session duration, window titles, and optional page content, \
+choose the single best category.\n\
 \n\
-Valid values:\n\
-  code_review      — PR diffs, GitHub pull requests, code comments, merge requests\n\
-  research         — docs, Stack Overflow, GitHub repos (reading), tutorials, articles\n\
-  documentation    — writing/editing: Notion, Confluence, Google Docs, GitBook\n\
+  coding           — writing or editing code: VS Code, Xcode, JetBrains, Vim, terminal builds, localhost testing\n\
+  code_review      — reviewing diffs, PRs, or merge requests on GitHub, GitLab, Gerrit\n\
+  meeting          — Zoom, Google Meet, Teams, or any live video or audio call\n\
+  communication    — Slack, email, Discord, Teams messages, chat\n\
+  design           — Figma, Sketch, Adobe XD, Framer, Canva\n\
+  documentation    — writing or editing docs: Notion, Confluence, Google Docs, GitBook\n\
   planning         — Jira, Linear, GitHub Issues, project boards, sprint planning\n\
-  communication    — Gmail, Slack web, Discord web, email, chat\n\
-  deployment_devops — CI/CD dashboards, cloud consoles, deploy logs, monitoring\n\
-  idle_personal    — YouTube, social media, news, entertainment, shopping\n\
-\n\
-Return ONLY {\"category\": \"VALUE\"}. No explanation.";
+  deployment_devops — CI/CD pipelines, cloud consoles, Kubernetes, monitoring dashboards\n\
+  research         — reading docs, Stack Overflow, tutorials, GitHub repos, articles\n\
+  idle_personal    — YouTube, social media, news, entertainment, shopping, games";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -71,12 +72,6 @@ async fn main() -> Result<()> {
                     COALESCE(ocr_samples, '[]'), COALESCE(elements_samples, '[]'), category
              FROM app_sessions
              WHERE duration_s >= 5
-               AND (lower(app_name) LIKE '%chrome%'
-                    OR lower(app_name) LIKE '%safari%'
-                    OR lower(app_name) LIKE '%firefox%'
-                    OR lower(app_name) LIKE '%arc%'
-                    OR lower(app_name) LIKE '%edge%'
-                    OR lower(app_name) LIKE '%brave%')
              ORDER BY id DESC LIMIT ?",
             )
             .bind(limit)
@@ -92,7 +87,7 @@ async fn main() -> Result<()> {
     let backend = build_backend(&LlmBackendConfig::FoundationModels);
 
     println!(
-        "\nCategory smoke test — backend: {}  sessions: {}\n",
+        "\nCategory smoke test (all apps) — backend: {}  sessions: {}\n",
         backend.name(),
         rows.len()
     );
@@ -105,8 +100,13 @@ async fn main() -> Result<()> {
     for (id, app_name, duration_s, window_titles, ocr_samples, elements_samples, was_category) in
         &rows
     {
-        let prompt =
-            build_category_prompt(*duration_s, window_titles, ocr_samples, elements_samples);
+        let prompt = build_category_prompt(
+            app_name,
+            *duration_s,
+            window_titles,
+            ocr_samples,
+            elements_samples,
+        );
 
         let t0 = Instant::now();
         match backend.raw_generate(CATEGORY_SYSTEM, &prompt).await {

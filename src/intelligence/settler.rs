@@ -218,7 +218,7 @@ async fn classify_session(
 // Chrome / browser category settler
 // ---------------------------------------------------------------------------
 
-const BROWSER_BATCH_LIMIT: i64 = 10;
+const SETTLE_BATCH_LIMIT: i64 = 20;
 
 // 4 chars ≈ 1 token; caps keep total prompt under ~2,500 tokens (well within FM's 4,096 limit).
 const OCR_CAP: usize = 0; // OCR disabled — concatenated screencap text triggers FM language detector
@@ -229,31 +229,35 @@ const ELEMENTS_CAP: usize = 1_500;
 const PARSE_ERROR_SENTINEL: &str = "fm_parse_error";
 
 const VALID_CATEGORIES: &[&str] = &[
+    "coding",
     "code_review",
-    "research",
+    "meeting",
+    "communication",
+    "design",
     "documentation",
     "planning",
-    "communication",
     "deployment_devops",
+    "research",
     "idle_personal",
 ];
 
 const CATEGORY_SYSTEM: &str = "\
-You are a JSON-only classifier. Given a Chrome browser session return exactly \
-{\"category\": \"VALUE\"}.\n\
+You are an app session classifier. \
+Given the app name, session duration, window titles, and optional page content, \
+choose the single best category.\n\
 \n\
-Valid values:\n\
-  code_review      — PR diffs, GitHub pull requests, code comments, merge requests\n\
-  research         — docs, Stack Overflow, GitHub repos (reading), tutorials, articles\n\
-  documentation    — writing/editing: Notion, Confluence, Google Docs, GitBook\n\
+  coding           — writing or editing code: VS Code, Xcode, JetBrains, Vim, terminal builds, localhost testing\n\
+  code_review      — reviewing diffs, PRs, or merge requests on GitHub, GitLab, Gerrit\n\
+  meeting          — Zoom, Google Meet, Teams, or any live video or audio call\n\
+  communication    — Slack, email, Discord, Teams messages, chat\n\
+  design           — Figma, Sketch, Adobe XD, Framer, Canva\n\
+  documentation    — writing or editing docs: Notion, Confluence, Google Docs, GitBook\n\
   planning         — Jira, Linear, GitHub Issues, project boards, sprint planning\n\
-  communication    — Gmail, Slack web, Discord web, email, chat\n\
-  deployment_devops — CI/CD dashboards, cloud consoles, deploy logs, monitoring\n\
-  idle_personal    — YouTube, social media, news, entertainment, shopping\n\
-\n\
-Return ONLY {\"category\": \"VALUE\"}. No explanation.";
+  deployment_devops — CI/CD pipelines, cloud consoles, Kubernetes, monitoring dashboards\n\
+  research         — reading docs, Stack Overflow, tutorials, GitHub repos, articles\n\
+  idle_personal    — YouTube, social media, news, entertainment, shopping, games";
 
-/// Re-classifies browser sessions that still carry the rule-based category using
+/// Re-classifies all sessions that still carry the rule-based category using
 /// Foundation Models. Only runs when the configured backend is Foundation Models —
 /// silently skips otherwise (category stays as-is until the backend is switched).
 #[tracing::instrument(
@@ -263,15 +267,15 @@ Return ONLY {\"category\": \"VALUE\"}. No explanation.";
         sessions_processed = tracing::field::Empty,
     )
 )]
-pub async fn settle_chrome_categories(meridian: &SqlitePool, backend: &LlmBackend) -> Result<()> {
+pub async fn settle_all_categories(meridian: &SqlitePool, backend: &LlmBackend) -> Result<()> {
     if !backend.is_foundation_models() {
-        debug!("Chrome category settler skipped — requires Foundation Models backend");
+        debug!("category settler skipped — requires Foundation Models backend");
         return Ok(());
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     if !crate::intelligence::classifier::backends::foundation::FoundationBackend::is_available() {
-        debug!("Chrome category settler skipped — Foundation Models not available on this OS");
+        debug!("category settler skipped — Foundation Models not available on this OS");
         return Ok(());
     }
 
@@ -281,39 +285,41 @@ pub async fn settle_chrome_categories(meridian: &SqlitePool, backend: &LlmBacken
          FROM app_sessions
          WHERE category_method = 'rule_based'
            AND duration_s >= 5
-           AND (lower(app_name) LIKE '%chrome%'
-                OR lower(app_name) LIKE '%safari%'
-                OR lower(app_name) LIKE '%firefox%'
-                OR lower(app_name) LIKE '%arc%'
-                OR lower(app_name) LIKE '%edge%'
-                OR lower(app_name) LIKE '%brave%')
          ORDER BY id ASC
          LIMIT ?",
     )
     // Sessions with category_method != 'rule_based' (foundation_models, fm_parse_error, fm_skip)
     // are excluded by the WHERE clause and won't be retried.
-    .bind(BROWSER_BATCH_LIMIT)
+    .bind(SETTLE_BATCH_LIMIT)
     .fetch_all(meridian)
     .await
-    .context("loading browser sessions for category settler")?;
+    .context("loading sessions for category settler")?;
 
     if rows.is_empty() {
-        debug!("no browser sessions pending category re-classification");
+        debug!("no sessions pending category re-classification");
         return Ok(());
     }
 
     info!(
         count = rows.len(),
-        "re-classifying browser sessions via Foundation Models"
+        "re-classifying sessions via Foundation Models"
     );
     tracing::Span::current().record("sessions_processed", rows.len() as i64);
 
     for (id, app_name, duration_s, window_titles, ocr_samples, elements_samples) in &rows {
-        let user = build_category_prompt(*duration_s, window_titles, ocr_samples, elements_samples);
+        let user = build_category_prompt(
+            app_name,
+            *duration_s,
+            window_titles,
+            ocr_samples,
+            elements_samples,
+        );
+        let has_content =
+            !ocr_samples_empty(ocr_samples) || !elements_samples_empty(elements_samples);
         match backend.raw_generate(CATEGORY_SYSTEM, &user).await {
             Ok(text) => match parse_category(&text) {
                 Some(cat) => {
-                    if let Err(e) = update_session_category(meridian, *id, cat, 0.9).await {
+                    if let Err(e) = update_session_category(meridian, *id, cat, 0.9, None).await {
                         warn!(session_id = id, error = %e, "failed to update category");
                     } else {
                         debug!(session_id = id, app = %app_name, category = cat, "category updated");
@@ -322,7 +328,8 @@ pub async fn settle_chrome_categories(meridian: &SqlitePool, backend: &LlmBacken
                 None => {
                     warn!(session_id = id, raw = %text, "could not parse category response — writing sentinel");
                     if let Err(e) =
-                        update_session_category(meridian, *id, PARSE_ERROR_SENTINEL, 0.0).await
+                        update_session_category(meridian, *id, PARSE_ERROR_SENTINEL, 0.0, None)
+                            .await
                     {
                         warn!(session_id = id, error = %e, "failed to write parse-error sentinel");
                     }
@@ -330,16 +337,66 @@ pub async fn settle_chrome_categories(meridian: &SqlitePool, backend: &LlmBacken
             },
             Err(e) => {
                 let msg = e.to_string();
-                let is_permanent = msg.contains("unsupported language")
-                    || msg.contains("unsupported Language")
+                let is_language_error =
+                    msg.contains("unsupported language") || msg.contains("unsupported Language");
+                let is_permanent = is_language_error
                     || msg.contains("context window")
                     || msg.contains("deviceNotEligible")
                     || msg.contains("appleIntelligenceNotEnabled");
-                if is_permanent {
+
+                if is_language_error && has_content {
+                    // ocr_samples/elements_samples contained non-Latin content that survived
+                    // strip_non_latin — retry with titles only (no Content section)
+                    warn!(
+                        session_id = id,
+                        "unsupported language in content — retrying with titles only"
+                    );
+                    let fallback =
+                        build_category_prompt(app_name, *duration_s, window_titles, "[]", "[]");
+                    match backend.raw_generate(CATEGORY_SYSTEM, &fallback).await {
+                        Ok(text) => match parse_category(&text) {
+                            Some(cat) => {
+                                if let Err(db_err) =
+                                    update_session_category(meridian, *id, cat, 0.8, None).await
+                                {
+                                    warn!(session_id = id, error = %db_err, "failed to update category (fallback)");
+                                } else {
+                                    debug!(session_id = id, app = %app_name, category = cat, "category updated via titles-only fallback");
+                                }
+                            }
+                            None => {
+                                warn!(
+                                    session_id = id,
+                                    "could not parse fallback response — writing sentinel"
+                                );
+                                let _ = update_session_category(
+                                    meridian,
+                                    *id,
+                                    PARSE_ERROR_SENTINEL,
+                                    0.0,
+                                    None,
+                                )
+                                .await;
+                            }
+                        },
+                        Err(retry_err) => {
+                            warn!(session_id = id, error = %retry_err, "titles-only fallback also failed — writing sentinel");
+                            let _ = update_session_category(
+                                meridian,
+                                *id,
+                                PARSE_ERROR_SENTINEL,
+                                0.0,
+                                None,
+                            )
+                            .await;
+                        }
+                    }
+                } else if is_permanent {
                     // Write sentinel so this session is never retried
                     warn!(session_id = id, error = %e, "FM permanent failure — writing sentinel");
                     if let Err(db_err) =
-                        update_session_category(meridian, *id, PARSE_ERROR_SENTINEL, 0.0).await
+                        update_session_category(meridian, *id, PARSE_ERROR_SENTINEL, 0.0, None)
+                            .await
                     {
                         warn!(session_id = id, error = %db_err, "failed to write FM error sentinel");
                     }
@@ -352,6 +409,32 @@ pub async fn settle_chrome_categories(meridian: &SqlitePool, backend: &LlmBacken
     }
 
     Ok(())
+}
+
+/// Returns true if the ocr_samples JSON string contains no usable text entries.
+fn ocr_samples_empty(ocr_samples: &str) -> bool {
+    serde_json::from_str::<Vec<serde_json::Value>>(ocr_samples)
+        .unwrap_or_default()
+        .iter()
+        .all(|v| {
+            v.get("text")
+                .and_then(|s| s.as_str())
+                .map(|s| s.trim().is_empty())
+                .unwrap_or(true)
+        })
+}
+
+/// Returns true if the elements_samples JSON string contains no usable text entries.
+fn elements_samples_empty(elements_samples: &str) -> bool {
+    serde_json::from_str::<Vec<serde_json::Value>>(elements_samples)
+        .unwrap_or_default()
+        .iter()
+        .all(|v| {
+            v.get("text")
+                .and_then(|s| s.as_str())
+                .map(|s| s.trim().is_empty())
+                .unwrap_or(true)
+        })
 }
 
 /// Removes non-Latin-script characters that cause Foundation Models to reject the prompt
@@ -377,6 +460,7 @@ fn strip_non_latin(s: &str) -> String {
 }
 
 pub fn build_category_prompt(
+    app_name: &str,
     duration_s: i64,
     window_titles: &str,
     ocr_samples: &str,
@@ -425,7 +509,10 @@ pub fn build_category_prompt(
         .take(ELEMENTS_CAP)
         .collect();
 
-    let mut prompt = format!("Chrome session ({}s)\nWindows: {}\n", duration_s, windows);
+    let mut prompt = format!(
+        "App: {} ({}s)\nWindows: {}\n",
+        app_name, duration_s, windows
+    );
     if !ocr.is_empty() {
         prompt.push_str(&format!("Screen:\n{}\n", ocr));
     }
