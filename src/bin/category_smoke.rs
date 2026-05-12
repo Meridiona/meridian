@@ -100,7 +100,7 @@ async fn main() -> Result<()> {
     println!("{}", "-".repeat(120));
 
     for (id, app_name, duration_s, window_titles, was_category) in &rows {
-        let prompt = build_category_prompt(*duration_s, window_titles);
+        let prompt = build_category_prompt(*duration_s, window_titles, None);
 
         let t0 = Instant::now();
         match backend.raw_generate(CATEGORY_SYSTEM, &prompt).await {

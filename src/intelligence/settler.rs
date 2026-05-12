@@ -190,14 +190,16 @@ async fn classify_session(
 
 const BROWSER_BATCH_LIMIT: i64 = 10;
 
-// 4 chars ≈ 1 token; cap keeps total prompt under ~2,500 tokens (well within FM's 4,096 limit).
+// 4 chars ≈ 1 token; caps keep total prompt under ~2,500 tokens (well within FM's 4,096 limit).
 const WINDOW_CAP: usize = 500;
+const SESSION_TEXT_CAP: usize = 2000;
 
 // Sentinel written when FM returns an unparseable response — prevents infinite retry.
 const PARSE_ERROR_SENTINEL: &str = "fm_parse_error";
 
 const VALID_CATEGORIES: &[&str] = &[
     "code_review",
+    "development",
     "research",
     "documentation",
     "planning",
@@ -207,19 +209,17 @@ const VALID_CATEGORIES: &[&str] = &[
 ];
 
 const CATEGORY_SYSTEM: &str = "\
-You are a JSON-only classifier. Given a Chrome browser session return exactly \
-{\"category\": \"VALUE\", \"explanation\": \"one sentence explanation\"}.\n\
+You are a Chrome browser session classifier. \
+Given the session duration and window titles, choose the single best category.\n\
 \n\
-Valid values:\n\
   code_review      — PR diffs, GitHub pull requests, code comments, merge requests\n\
+  development      — localhost, browser DevTools, local app testing, CodeSandbox, Replit, StackBlitz\n\
   research         — docs, Stack Overflow, GitHub repos (reading), tutorials, articles\n\
   documentation    — writing/editing: Notion, Confluence, Google Docs, GitBook\n\
   planning         — Jira, Linear, GitHub Issues, project boards, sprint planning\n\
   communication    — Gmail, Slack web, Discord web, email, chat\n\
   deployment_devops — CI/CD dashboards, cloud consoles, deploy logs, monitoring\n\
-  idle_personal    — YouTube, social media, news, entertainment, shopping\n\
-\n\
-Return ONLY {\"category\": \"VALUE\", \"explanation\": \"one sentence explanation\"}. No explanation outside the JSON.";
+  idle_personal    — YouTube, social media, news, entertainment, shopping";
 
 /// Re-classifies browser sessions that still carry the rule-based category using
 /// Foundation Models. Only runs when the configured backend is Foundation Models —
@@ -236,8 +236,8 @@ pub async fn settle_chrome_categories(meridian: &SqlitePool, backend: &LlmBacken
         return Ok(());
     }
 
-    let rows: Vec<(i64, String, i64, String)> = sqlx::query_as(
-        "SELECT id, app_name, duration_s, window_titles
+    let rows: Vec<(i64, String, i64, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, app_name, duration_s, window_titles, session_text
          FROM app_sessions
          WHERE category_method = 'rule_based'
            AND duration_s >= 5
@@ -267,8 +267,8 @@ pub async fn settle_chrome_categories(meridian: &SqlitePool, backend: &LlmBacken
         "re-classifying browser sessions via Foundation Models"
     );
 
-    for (id, app_name, duration_s, window_titles) in &rows {
-        let user = build_category_prompt(*duration_s, window_titles);
+    for (id, app_name, duration_s, window_titles, session_text) in &rows {
+        let user = build_category_prompt(*duration_s, window_titles, session_text.as_deref());
         match backend.raw_generate(CATEGORY_SYSTEM, &user).await {
             Ok(text) => match parse_category_response(&text) {
                 Some(resp) => {
@@ -336,7 +336,11 @@ fn strip_non_latin(s: &str) -> String {
         .collect()
 }
 
-pub fn build_category_prompt(duration_s: i64, window_titles: &str) -> String {
+pub fn build_category_prompt(
+    duration_s: i64,
+    window_titles: &str,
+    session_text: Option<&str>,
+) -> String {
     let windows: String = serde_json::from_str::<Vec<serde_json::Value>>(window_titles)
         .unwrap_or_default()
         .into_iter()
@@ -353,7 +357,22 @@ pub fn build_category_prompt(duration_s: i64, window_titles: &str) -> String {
         .take(WINDOW_CAP)
         .collect();
 
-    format!("Chrome session ({}s)\nWindows: {}\n", duration_s, windows)
+    let mut prompt = format!("Duration: {}s\nTabs: {}", duration_s, windows);
+
+    if let Some(text) = session_text {
+        let snippet: String = strip_non_latin(text)
+            .chars()
+            .filter(|c| !c.is_control() || *c == '\n')
+            .take(SESSION_TEXT_CAP)
+            .collect();
+        let snippet = snippet.trim();
+        if !snippet.is_empty() {
+            prompt.push_str("\nContent:\n");
+            prompt.push_str(snippet);
+        }
+    }
+
+    prompt
 }
 
 pub struct CategoryResult {
