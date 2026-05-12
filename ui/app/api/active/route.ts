@@ -11,7 +11,7 @@ export async function GET() {
     const db = getDb()
     const row = db.prepare(`
       SELECT app_name, started_at, last_seen_at,
-             window_titles, ocr_samples, audio_snippets, signals, frame_count,
+             window_titles, audio_snippets, signals, frame_count,
              category, confidence
       FROM active_session WHERE id = 1
     `).get() as Record<string, unknown> | undefined
@@ -27,7 +27,6 @@ export async function GET() {
       started_at: row.started_at as string,
       last_seen_at: row.last_seen_at as string,
       window_titles: JSON.parse((row.window_titles as string) || '[]'),
-      ocr_samples: row.ocr_samples ? JSON.parse(row.ocr_samples as string) : null,
       audio_snippets: row.audio_snippets ? JSON.parse(row.audio_snippets as string) : null,
       signals: row.signals ? JSON.parse(row.signals as string) : null,
       frame_count: row.frame_count as number,

@@ -23,8 +23,6 @@ function parseSession(r: Record<string, unknown>): SessionRow {
     ended_at: r.ended_at as string,
     duration_s: r.duration_s as number,
     window_titles: JSON.parse((r.window_titles as string) || '[]'),
-    ocr_samples: r.ocr_samples ? JSON.parse(r.ocr_samples as string) : null,
-    elements_samples: r.elements_samples ? JSON.parse(r.elements_samples as string) : null,
     audio_snippets: r.audio_snippets ? JSON.parse(r.audio_snippets as string) : null,
     signals: r.signals ? JSON.parse(r.signals as string) : null,
     frame_count: r.frame_count as number,
@@ -49,7 +47,6 @@ function getActiveSession(): ActiveSessionRow | null {
       started_at: row.started_at as string,
       last_seen_at: row.last_seen_at as string,
       window_titles: JSON.parse((row.window_titles as string) || '[]'),
-      ocr_samples: null,
       audio_snippets: row.audio_snippets ? JSON.parse(row.audio_snippets as string) : null,
       signals: null,
       frame_count: row.frame_count as number,
@@ -138,8 +135,7 @@ function getRecentSessions(date: string): SessionRow[] {
     const { start, end } = localDayBounds(date)
     const rows = db.prepare(`
       SELECT id, app_name, started_at, ended_at, duration_s,
-             window_titles, ocr_samples, elements_samples,
-             audio_snippets, signals, frame_count, etl_run_id,
+             window_titles, audio_snippets, signals, frame_count, etl_run_id,
              category, confidence
       FROM app_sessions WHERE started_at >= ? AND started_at < ?
       ORDER BY started_at DESC LIMIT 8
