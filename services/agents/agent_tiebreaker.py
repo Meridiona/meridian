@@ -1,9 +1,9 @@
-"""Stage 3 — LLM tiebreaker (hermes AIAgent driven).
+"""Agent Tiebreaker — resolves ambiguous session→task matches via hermes AIAgent.
 
-Runs only when Stage 2 returns `routing="queue"` — i.e. the embedding+rules
-score gave us candidates but couldn't separate them confidently. Stage 3
-asks the LLM, via hermes' `AIAgent`, to read the candidate ticket
-descriptions + session evidence and pick one (or none).
+Runs only when the Semantic Matcher returns `routing="queue"` — i.e. the
+embedding+rules score gave us candidates but couldn't separate them
+confidently. The tiebreaker asks a hermes AIAgent to read the candidate
+ticket descriptions + session evidence and pick one (or none).
 
 Why hermes (not direct openai SDK):
 * model + provider switching across OpenAI / Anthropic / Ollama / LM Studio
@@ -32,29 +32,29 @@ from typing import Any
 from agents import observability
 from agents.config import MODEL, BASE_URL, API_KEY, load_skill
 
-log = logging.getLogger("agents.stage3")
-tracer = observability.setup("meridian-stage3")
+log = logging.getLogger("agents.agent_tiebreaker")
+tracer = observability.setup("meridian-agent-tiebreaker")
 
 from agents._hermes_setup import ensure_hermes_importable
 ensure_hermes_importable()
 
 
 # ──────────────────────── Config / thresholds ─────────────────────────────────
-STAGE3_AUTO_FLOOR  = float(os.environ.get("STAGE3_AUTO_FLOOR",  "0.65"))
-STAGE3_QUEUE_FLOOR = float(os.environ.get("STAGE3_QUEUE_FLOOR", "0.40"))
-STAGE3_MAX_TOKENS  = int(os.environ.get("STAGE3_MAX_TOKENS", "4000"))
-STAGE3_SKILL_NAME  = os.environ.get("STAGE3_SKILL_NAME", "stage3-tiebreaker")
+AUTO_FLOOR  = float(os.environ.get("AGENT_AUTO_FLOOR",  "0.65"))
+QUEUE_FLOOR = float(os.environ.get("AGENT_QUEUE_FLOOR", "0.40"))
+MAX_TOKENS  = int(os.environ.get("AGENT_MAX_TOKENS", "4000"))
+SKILL_NAME  = os.environ.get("AGENT_SKILL_NAME", "stage3-tiebreaker")
 
 
 # ──────────────────────── Result type ─────────────────────────────────────────
 @dataclass
-class Stage3Result:
+class AgentDecision:
     session_id: int
     chosen_task_key: str | None
     confidence: float
     reasoning: str
     routing: str                      # 'auto' | 'queue' | 'skip'
-    method: str                       # 'stage3_llm' | 'stage3_unavailable' | 'stage3_invalid_response'
+    method: str                       # 'agent_tiebreak' | 'agent_unavailable' | 'agent_invalid_response'
     raw_response: str = ""
     elapsed_s: float = 0.0
     debug: dict = field(default_factory=dict)
@@ -224,28 +224,22 @@ def _repair_truncated_json(partial: str) -> str:
     # string and the tail contains a `:` after the last comma at top level.
     if depth > 0 and not in_string:
         tail = out.rstrip()
-        # Strip a value-position trailing comma so `{"k": 1,}` becomes `{"k": 1}`.
-        # Also handle `{"k": 1, ` (whitespace after comma).
-        # If the tail after the last comma doesn't have a finished value, drop
-        # from that comma onward.
         last_comma = tail.rfind(",")
         last_brace = tail.rfind("{")
         last_close = tail.rfind("}")
         if last_comma > max(last_brace, last_close):
             after_comma = tail[last_comma + 1:].strip()
             looks_unfinished = (
-                after_comma == ""                                  # `{"k":1,`
-                or after_comma.endswith(":")                       # `{"k":1, "k2":`
-                or (after_comma.count('"') == 1)                   # `{"k":1, "k2`
+                after_comma == ""
+                or after_comma.endswith(":")
+                or (after_comma.count('"') == 1)
                 or (after_comma.endswith(":") is False and ":" in after_comma
-                    and after_comma.split(":", 1)[1].strip() == "")  # `{"k":1, "k2":  `
+                    and after_comma.split(":", 1)[1].strip() == "")
             )
             if looks_unfinished:
                 out = tail[:last_comma]
 
-    # Finally, balance any open braces.
-    open_braces = out.count("{") - out.count("}")
-    # The brace counts above include any inside strings — recompute clean.
+    # Balance any open braces (recompute clean, ignoring chars inside strings).
     open_braces = 0
     in_str = False
     esc = False
@@ -302,28 +296,28 @@ def _parse_response(text: str, valid_keys: set[str]) -> tuple[str | None, float,
 def _routing_for(confidence: float, task_key: str | None) -> str:
     if task_key is None:
         return "skip"
-    if confidence >= STAGE3_AUTO_FLOOR:
+    if confidence >= AUTO_FLOOR:
         return "auto"
-    if confidence >= STAGE3_QUEUE_FLOOR:
+    if confidence >= QUEUE_FLOOR:
         return "queue"
     return "skip"
 
 
 # ──────────────────────── Public entry ────────────────────────────────────────
-def stage3_decide(
+def agent_tiebreak(
     session: dict,
     dims_grouped: dict[str, set[str]],
     top_candidates: list,
     pm_task_lookup: dict[str, dict],
-) -> Stage3Result:
-    """Ask the configured LLM (via hermes AIAgent) to break the tie between
-    Stage-2 candidates."""
+) -> AgentDecision:
+    """Ask the configured hermes AIAgent to break the tie between
+    Semantic Matcher candidates."""
     sid = int(session["id"])
-    with tracer.start_as_current_span("stage3.decide") as span:
+    with tracer.start_as_current_span("agent_tiebreaker.decide") as span:
         span.set_attribute("session_id", sid)
         span.set_attribute("model", MODEL or "")
         span.set_attribute("candidates_count", len(top_candidates))
-        result = _stage3_decide_inner(
+        result = _agent_tiebreak_inner(
             session, dims_grouped, top_candidates, pm_task_lookup, sid,
         )
         span.set_attribute("method", result.method)
@@ -331,45 +325,45 @@ def stage3_decide(
         span.set_attribute("confidence", float(result.confidence))
         if result.chosen_task_key:
             span.set_attribute("chosen_task_key", result.chosen_task_key)
-        span.set_attribute("llm_latency_ms", int(result.elapsed_s * 1000))
+        span.set_attribute("agent_latency_ms", int(result.elapsed_s * 1000))
         return result
 
 
-def _stage3_decide_inner(
+def _agent_tiebreak_inner(
     session: dict,
     dims_grouped: dict[str, set[str]],
     top_candidates: list,
     pm_task_lookup: dict[str, dict],
     sid: int,
-) -> Stage3Result:
+) -> AgentDecision:
     valid_keys = {c.task_key for c in top_candidates}
     if not valid_keys:
-        return Stage3Result(
+        return AgentDecision(
             session_id=sid, chosen_task_key=None, confidence=0.0,
-            reasoning="no candidates", routing="skip", method="stage3_unavailable",
+            reasoning="no candidates", routing="skip", method="agent_unavailable",
         )
 
     user_message = _build_user_message(session, dims_grouped, top_candidates, pm_task_lookup)
-    log.debug("stage3 user message:\n%s", user_message)
+    log.debug("agent_tiebreaker user message:\n%s", user_message)
 
     try:
-        system_prompt = load_skill(STAGE3_SKILL_NAME)
+        system_prompt = load_skill(SKILL_NAME)
     except FileNotFoundError as exc:
-        return Stage3Result(
+        return AgentDecision(
             session_id=sid, chosen_task_key=None, confidence=0.0,
-            reasoning=str(exc), routing="skip", method="stage3_unavailable",
+            reasoning=str(exc), routing="skip", method="agent_unavailable",
         )
 
     try:
         from run_agent import AIAgent
     except ImportError as exc:
-        return Stage3Result(
+        return AgentDecision(
             session_id=sid, chosen_task_key=None, confidence=0.0,
             reasoning=f"hermes AIAgent import failed: {exc}",
-            routing="skip", method="stage3_unavailable",
+            routing="skip", method="agent_unavailable",
         )
 
-    log.info("stage3: model=%s base_url=%s skill=%s", MODEL, BASE_URL, STAGE3_SKILL_NAME)
+    log.info("agent_tiebreaker: model=%s base_url=%s skill=%s", MODEL, BASE_URL, SKILL_NAME)
 
     t0 = time.time()
     raw = ""
@@ -384,17 +378,17 @@ def _stage3_decide_inner(
             skip_context_files=True,
             load_soul_identity=False,
             skip_memory=True,
-            max_iterations=1,             # one model round, no tool loop
-            max_tokens=STAGE3_MAX_TOKENS,
+            max_iterations=1,             # one model round, no agent loop
+            max_tokens=MAX_TOKENS,
         )
         result = agent.run_conversation(user_message)
     except Exception as exc:
         elapsed = time.time() - t0
-        log.warning("stage3 AIAgent failed: %s", exc)
-        return Stage3Result(
+        log.warning("agent_tiebreaker AIAgent failed: %s", exc)
+        return AgentDecision(
             session_id=sid, chosen_task_key=None, confidence=0.0,
             reasoning=f"AIAgent run failed: {exc}", routing="skip",
-            method="stage3_unavailable", elapsed_s=elapsed,
+            method="agent_unavailable", elapsed_s=elapsed,
         )
 
     elapsed = time.time() - t0
@@ -409,37 +403,37 @@ def _stage3_decide_inner(
             or ""
         ).strip()
 
-    log.debug("stage3 raw response (%.1fs): %s", elapsed, raw[:1000])
+    log.debug("agent_tiebreaker raw response (%.1fs): %s", elapsed, raw[:1000])
 
     task_key, confidence, reasoning, err = _parse_response(raw, valid_keys)
     if err:
-        log.warning("stage3 invalid response: %s", err)
-        return Stage3Result(
+        log.warning("agent_tiebreaker invalid response: %s", err)
+        return AgentDecision(
             session_id=sid, chosen_task_key=None, confidence=0.0,
-            reasoning=err, routing="skip", method="stage3_invalid_response",
+            reasoning=err, routing="skip", method="agent_invalid_response",
             raw_response=raw[:1000], elapsed_s=elapsed,
             debug={"error": err, "model": MODEL, "base_url": BASE_URL},
         )
 
     routing = _routing_for(confidence, task_key)
-    return Stage3Result(
+    return AgentDecision(
         session_id=sid,
         chosen_task_key=task_key,
         confidence=confidence,
         reasoning=reasoning,
         routing=routing,
-        method="stage3_llm",
+        method="agent_tiebreak",
         raw_response=raw[:1000],
         elapsed_s=elapsed,
         debug={
             "model":         MODEL,
             "base_url":      BASE_URL,
             "n_candidates":  len(valid_keys),
-            "auto_floor":    STAGE3_AUTO_FLOOR,
-            "queue_floor":   STAGE3_QUEUE_FLOOR,
-            "skill":         STAGE3_SKILL_NAME,
+            "auto_floor":    AUTO_FLOOR,
+            "queue_floor":   QUEUE_FLOOR,
+            "skill":         SKILL_NAME,
         },
     )
 
 
-__all__ = ["Stage3Result", "stage3_decide", "STAGE3_AUTO_FLOOR", "STAGE3_QUEUE_FLOOR"]
+__all__ = ["AgentDecision", "agent_tiebreak", "AUTO_FLOOR", "QUEUE_FLOOR"]

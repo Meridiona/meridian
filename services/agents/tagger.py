@@ -1,4 +1,4 @@
-"""Tagger — Stage 1 (rules-only).
+"""Tagger — Rule Classifier (rules-only).
 
 Reads recently-closed sessions from `meridian.db`, runs a library of fast,
 deterministic rules against each one, and writes the results into:
@@ -40,10 +40,10 @@ from opentelemetry import trace                           # noqa: E402
 from agents import db                                     # noqa: E402
 from agents import observability                          # noqa: E402
 
-# Claim the process's service.name BEFORE importing stage2/stage3 — each of
-# those modules also calls observability.setup at import time. First-call-
-# wins on the global TracerProvider, so without this the process would end
-# up labelled `meridian-stage2` in OpenObserve.
+# Claim the process's service.name BEFORE importing semantic_matcher/agent_tiebreaker
+# — each of those modules also calls observability.setup at import time.
+# First-call-wins on the global TracerProvider, so without this the process
+# would end up labelled `meridian-semantic-matcher` in OpenObserve.
 tracer = observability.setup("meridian-tagger")
 
 from agents import rules as rules_mod                     # noqa: E402
@@ -59,11 +59,11 @@ from agents.rules import (                                # noqa: E402
     extract_tickets,
 )
 from agents.taxonomy import SINGLE_VALUE_DIMENSIONS       # noqa: E402
-from agents.stage2 import (                               # noqa: E402
-    stage2_match, Stage2Result, CandidateBreakdown,
+from agents.semantic_matcher import (                      # noqa: E402
+    semantic_match, SemanticMatchResult, CandidateBreakdown,
 )
-from agents.stage3 import (                               # noqa: E402
-    stage3_decide, Stage3Result,
+from agents.agent_tiebreaker import (                     # noqa: E402
+    agent_tiebreak, AgentDecision,
 )
 
 log = logging.getLogger("tagger")
@@ -180,8 +180,9 @@ def _tag_session(
 ) -> dict:
     """Run the configured stages on one session and persist results.
 
-    `stages` is a subset of {1, 2}. Stage 1 is rules + ticket regex.
-    Stage 2 runs only when Stage 1 deferred (or when called in isolation).
+    `stages` is a subset of {1, 2, 3}. Stage 1 is the Rule Classifier (rules + regex).
+    Stage 2 (Semantic Matcher) runs only when Stage 1 deferred (or called in isolation).
+    Stage 3 (Agent Tiebreaker) runs only when Stage 2 routes to queue.
     """
     sid = int(session["id"])
     valid_task_keys: set[str] = {t["task_key"] for t in pm_tasks}
@@ -222,8 +223,8 @@ def _tag_session_inner(
     """Body of `_tag_session`, split out so the per-session span wraps cleanly."""
     sid = int(session["id"])
     written = 0
-    stage1_decision: tuple[str | None, float, str, str] = (None, 0.0, "", "")
-    stage2_result: Stage2Result | None = None
+    rule_decision: tuple[str | None, float, str, str] = (None, 0.0, "", "")
+    semantic_result: SemanticMatchResult | None = None
 
     # ── Stage 1 ──
     if 1 in stages:
@@ -250,7 +251,7 @@ def _tag_session_inner(
             written += 1
 
         task_key, conf, stype, routing = _pick_ticket_link(session, valid_task_keys)
-        stage1_decision = (task_key, conf, stype, routing)
+        rule_decision = (task_key, conf, stype, routing)
 
         if stype and (task_key or routing == "skip"):
             # Stage 1 made a real decision (matched ticket, or "ticket-shaped
@@ -263,76 +264,76 @@ def _tag_session_inner(
                 confidence=conf,
                 session_type=stype,
                 routing=routing,
-                method="stage1_regex",
+                method="rule_regex",
             )
             if task_key and routing in ("auto", "queue"):
                 db.enqueue_dispatch(
                     conn, session_id=sid, agent_run_id=run_id, task_key=task_key,
                     provider="jira",
                     payload={"routing": routing, "session_type": stype,
-                             "confidence": conf, "stage": "stage1_regex"},
+                             "confidence": conf, "stage": "rule_regex"},
                 )
-                log.info("  stage1 ticket → %s / %s / %.2f  (queued for dispatch)",
+                log.info("  rule ticket → %s / %s / %.2f  (queued for dispatch)",
                          task_key, routing, conf)
             else:
-                log.info("  stage1 ticket → %s / %s / %.2f", task_key or "∅", routing, conf)
+                log.info("  rule ticket → %s / %s / %.2f", task_key or "∅", routing, conf)
         elif not stype:
-            log.info("  stage1 ticket → deferred (no candidate keys visible)")
+            log.info("  rule ticket → deferred (no candidate keys visible)")
 
     # ── Stage 2 ──
     # Only run if stage 1 deferred (no decision at all). If stage 1 already
     # wrote `task/skip` because it saw a ticket-shaped string but couldn't
     # match, that's a final decision — Stage 2 doesn't override.
-    stage1_deferred = stage1_decision[2] == ""
+    stage1_deferred = rule_decision[2] == ""
     if 2 in stages and stage1_deferred and pm_tasks:
         try:
-            stage2_result = stage2_match(conn, session, pm_tasks)
+            semantic_result = semantic_match(conn, session, pm_tasks)
         except ImportError as exc:
-            log.warning("stage2 unavailable: %s", exc)
-            stage2_result = Stage2Result(
+            log.warning("semantic_matcher unavailable: %s", exc)
+            semantic_result = SemanticMatchResult(
                 session_id=sid, top_candidates=[], chosen_task_key=None,
-                confidence=0.0, routing="skip", method="stage2_unavailable",
+                confidence=0.0, routing="skip", method="semantic_unavailable",
             )
         except Exception as exc:
-            log.exception("stage2 failed for session %d: %s", sid, exc)
-            stage2_result = None
+            log.exception("semantic_matcher failed for session %d: %s", sid, exc)
+            semantic_result = None
 
-        if stage2_result and stage2_result.method == "stage2_embed":
-            top = stage2_result.top_candidates
-            log.info("  stage2 top-3: %s",
+        if semantic_result and semantic_result.method == "semantic_embed":
+            top = semantic_result.top_candidates
+            log.info("  semantic top-3: %s",
                      ", ".join(f"{c.task_key}={c.score:.2f}" for c in top[:3]))
-            log.info("  stage2 → %s / %s / %.2f  (gap=%.2f)",
-                     stage2_result.chosen_task_key or "∅",
-                     stage2_result.routing,
-                     stage2_result.confidence,
-                     stage2_result.debug.get("score_gap", 0.0))
+            log.info("  semantic → %s / %s / %.2f  (gap=%.2f)",
+                     semantic_result.chosen_task_key or "∅",
+                     semantic_result.routing,
+                     semantic_result.confidence,
+                     semantic_result.debug.get("score_gap", 0.0))
 
             # ── Stage 3 (only when Stage 2 wants queue) ──
-            stage3_result: Stage3Result | None = None
-            if 3 in stages and stage2_result.routing == "queue" and top:
+            agent_result: AgentDecision | None = None
+            if 3 in stages and semantic_result.routing == "queue" and top:
                 pm_lookup = {t["task_key"]: t for t in pm_tasks}
-                from agents.stage2 import _session_dims_grouped
+                from agents.semantic_matcher import _session_dims_grouped
                 dims_grouped = _session_dims_grouped(conn, sid)
-                stage3_result = stage3_decide(session, dims_grouped, top, pm_lookup)
-                log.info("  stage3 → %s / %s / %.2f  (%.1fs)",
-                         stage3_result.chosen_task_key or "∅",
-                         stage3_result.routing,
-                         stage3_result.confidence,
-                         stage3_result.elapsed_s)
+                agent_result = agent_tiebreak(session, dims_grouped, top, pm_lookup)
+                log.info("  agent → %s / %s / %.2f  (%.1fs)",
+                         agent_result.chosen_task_key or "∅",
+                         agent_result.routing,
+                         agent_result.confidence,
+                         agent_result.elapsed_s)
 
             # Decide what to persist: Stage 3 wins if it produced a usable
             # result; otherwise fall back to Stage 2's verdict.
-            if stage3_result and stage3_result.method == "stage3_llm" and stage3_result.routing != "skip":
-                final_task   = stage3_result.chosen_task_key
-                final_conf   = stage3_result.confidence
-                final_route  = stage3_result.routing
-                final_method = "stage3_llm"
+            if agent_result and agent_result.method == "agent_tiebreak" and agent_result.routing != "skip":
+                final_task   = agent_result.chosen_task_key
+                final_conf   = agent_result.confidence
+                final_route  = agent_result.routing
+                final_method = "agent_tiebreak"
                 final_top = top
             else:
-                final_task   = stage2_result.chosen_task_key
-                final_conf   = stage2_result.confidence
-                final_route  = stage2_result.routing
-                final_method = "stage2_embed"
+                final_task   = semantic_result.chosen_task_key
+                final_conf   = semantic_result.confidence
+                final_route  = semantic_result.routing
+                final_method = "semantic_embed"
                 final_top = top
 
             db.write_ticket_link(
@@ -353,11 +354,11 @@ def _tag_session_inner(
                         "session_type": "task",
                         "confidence":   final_conf,
                         "stage":        final_method,
-                        "stage2_top": [
+                        "semantic_top": [
                             {"task_key": c.task_key, "score": round(c.score, 4)}
                             for c in final_top[:3]
                         ],
-                        "stage3_reasoning": (stage3_result.reasoning if stage3_result else ""),
+                        "agent_reasoning": (agent_result.reasoning if agent_result else ""),
                     },
                 )
 
@@ -370,7 +371,7 @@ def _tag_session_inner(
         "task_key":           (final_link or {}).get("task_key"),
         "session_type":       (final_link or {}).get("session_type", ""),
         "routing":            (final_link or {}).get("routing", ""),
-        "stage2_method":      stage2_result.method if stage2_result else None,
+        "semantic_method":    semantic_result.method if semantic_result else None,
     }
 
 
@@ -438,7 +439,7 @@ def run_once(*, since_iso: str | None = None, stages: set[int] | None = None) ->
                         confidence=0.0,
                         session_type="overhead",
                         routing="skip",
-                        method="stage1_prefilter",
+                        method="rule_prefilter",
                     )
                     db.upsert_session_dimension(
                         conn,
@@ -466,16 +467,16 @@ def run_once(*, since_iso: str | None = None, stages: set[int] | None = None) ->
             tickets_decided  = sum(1 for r in reports if r["ticket_decided"])
             auto_tickets     = sum(1 for r in reports if r["routing"] == "auto" and r["task_key"])
             skip_decisions   = sum(1 for r in reports if r["routing"] == "skip")
-            stage1_hits      = sum(1 for r in reports if r.get("stage2_method") is None)
-            stage2_cands     = sum(1 for r in reports if r.get("stage2_method") == "stage2_embed")
-            stage3_res       = sum(
+            rule_hits        = sum(1 for r in reports if r.get("semantic_method") is None)
+            semantic_cands   = sum(1 for r in reports if r.get("semantic_method") == "semantic_embed")
+            agent_resolutions = sum(
                 1 for r in reports
                 if r.get("routing") in ("auto", "queue") and r.get("task_key")
             )
 
-            cycle_span.set_attribute("stage1_hits", stage1_hits)
-            cycle_span.set_attribute("stage2_candidates", stage2_cands)
-            cycle_span.set_attribute("stage3_resolutions", stage3_res)
+            cycle_span.set_attribute("rule_classifier_hits", rule_hits)
+            cycle_span.set_attribute("semantic_matcher_candidates", semantic_cands)
+            cycle_span.set_attribute("agent_tiebreaker_resolutions", agent_resolutions)
             cycle_span.set_attribute("tickets_decided", tickets_decided)
             cycle_span.set_attribute("auto_tickets", auto_tickets)
             cycle_span.set_attribute("elapsed_s", elapsed)
@@ -489,7 +490,7 @@ def run_once(*, since_iso: str | None = None, stages: set[int] | None = None) ->
             )
 
             log.info("=" * 76)
-            log.info("Stage-1 cycle complete: run_id=%d", run_id)
+            log.info("Rule Classifier cycle complete: run_id=%d", run_id)
             log.info("  sessions seen          : %d", len(sessions))
             log.info("  pre-filter overhead    : %d", skipped)
             log.info("  rule-pass sessions     : %d", kept_count)
@@ -581,13 +582,13 @@ def _print_db_state(conn: sqlite3.Connection, session_id: int) -> None:
                   f"src={r['source']}")
 
 
-def _print_stage3_block(result: Stage3Result) -> None:
-    _print_block("STAGE 3 — LLM TIEBREAKER")
+def _print_agent_block(result: AgentDecision) -> None:
+    _print_block("AGENT TIEBREAKER")
     print(f"  method   = {result.method}")
     print(f"  model    = {result.debug.get('model')}")
     print(f"  endpoint = {result.debug.get('base_url')}")
     print(f"  elapsed  = {result.elapsed_s:.2f}s")
-    if result.method != "stage3_llm":
+    if result.method != "agent_tiebreak":
         print(f"  ✗ {result.reasoning}")
         if result.raw_response:
             print(f"  raw response (truncated):\n    {result.raw_response[:500]}")
@@ -600,9 +601,9 @@ def _print_stage3_block(result: Stage3Result) -> None:
     print(f"  thresholds: auto ≥ {auto_floor}, queue ≥ {queue_floor}")
 
 
-def _print_stage2_block(result: Stage2Result) -> None:
-    _print_block("STAGE 2")
-    if result.method != "stage2_embed":
+def _print_semantic_block(result: SemanticMatchResult) -> None:
+    _print_block("SEMANTIC MATCHER")
+    if result.method != "semantic_embed":
         print(f"  method = {result.method}  (no candidates scored)")
         return
     n_samples = result.debug.get("n_samples", 0)
@@ -669,17 +670,17 @@ def inspect_one(
             print(f"\n  reset: cleared {removed_d} dimensions, {removed_t} ticket_links")
 
         resolved: list[RuleHit] = []
-        stage1_decision: tuple[str | None, float, str, str] = (None, 0.0, "", "")
+        rule_decision: tuple[str | None, float, str, str] = (None, 0.0, "", "")
 
         # ── Stage 1 ──
         if 1 in stages:
-            _print_block(f"STAGE 1 — RULES ({len(rules_mod.RULE_REGISTRY)} registered)")
+            _print_block(f"RULE CLASSIFIER ({len(rules_mod.RULE_REGISTRY)} registered)")
             raw_hits = run_rules(session)
             if not raw_hits:
                 print("  (no rules fired)")
             resolved = resolve_hits(raw_hits)
 
-            _print_block("STAGE 1 — RESOLVED")
+            _print_block("RULE CLASSIFIER — RESOLVED")
             if not resolved:
                 print("  (nothing resolved)")
             else:
@@ -689,15 +690,15 @@ def inspect_one(
                           f"src={h.source}"
                           + (f"   ({h.explanation})" if h.explanation else ""))
 
-            _print_block("STAGE 1 — TICKET DECISION (regex)")
+            _print_block("RULE CLASSIFIER — TICKET DECISION (regex)")
             candidates = sorted(set(re_extract_tickets(session)))
             matched = [c for c in candidates if c in valid_keys]
             unmatched = [c for c in candidates if c not in valid_keys]
             print(f"  ticket-key candidates seen   : {candidates or '(none)'}")
             print(f"    in pm_tasks  (would match) : {matched or '(none)'}")
             print(f"    not in pm_tasks            : {unmatched or '(none)'}")
-            stage1_decision = _pick_ticket_link(session, valid_keys)
-            task_key, conf, stype, routing = stage1_decision
+            rule_decision = _pick_ticket_link(session, valid_keys)
+            task_key, conf, stype, routing = rule_decision
             if stype:
                 print(f"  → ticket_links: task={task_key or '∅'}  type={stype}  "
                       f"route={routing}  conf={conf:.2f}")
@@ -705,9 +706,9 @@ def inspect_one(
                 print("  → ticket_links: deferred (no candidate keys, escalating to Stage 2)")
 
         # ── Stage 2 ──
-        stage1_deferred = stage1_decision[2] == ""
-        stage2_result: Stage2Result | None = None
-        stage3_result: Stage3Result | None = None
+        stage1_deferred = rule_decision[2] == ""
+        semantic_result: SemanticMatchResult | None = None
+        agent_result: AgentDecision | None = None
         if 2 in stages and (stage1_deferred or 1 not in stages) and pm_tasks:
             # Persist Stage 1 dimensions FIRST so Stage 2 can read them when
             # computing dim_overlap.
@@ -722,26 +723,26 @@ def inspect_one(
                         source=h.source,
                     )
             try:
-                stage2_result = stage2_match(conn, session, pm_tasks)
+                semantic_result = semantic_match(conn, session, pm_tasks)
             except ImportError as exc:
-                print(f"\n  Stage 2 unavailable: {exc}")
-                stage2_result = None
-            if stage2_result:
-                _print_stage2_block(stage2_result)
+                print(f"\n  Semantic Matcher unavailable: {exc}")
+                semantic_result = None
+            if semantic_result:
+                _print_semantic_block(semantic_result)
 
             # ── Stage 3 — only when Stage 2 wants queue ──
             if (3 in stages
-                and stage2_result is not None
-                and stage2_result.method == "stage2_embed"
-                and stage2_result.routing == "queue"
-                and stage2_result.top_candidates):
+                and semantic_result is not None
+                and semantic_result.method == "semantic_embed"
+                and semantic_result.routing == "queue"
+                and semantic_result.top_candidates):
                 pm_lookup = {t["task_key"]: t for t in pm_tasks}
-                from agents.stage2 import _session_dims_grouped
+                from agents.semantic_matcher import _session_dims_grouped
                 dims_grouped = _session_dims_grouped(conn, session_id)
-                stage3_result = stage3_decide(
-                    session, dims_grouped, stage2_result.top_candidates, pm_lookup,
+                agent_result = agent_tiebreak(
+                    session, dims_grouped, semantic_result.top_candidates, pm_lookup,
                 )
-                _print_stage3_block(stage3_result)
+                _print_agent_block(agent_result)
 
         if dry_run:
             _print_block("DRY-RUN — no DB writes")
@@ -751,7 +752,7 @@ def inspect_one(
         # ── Persist (Stage 1 dimensions already written above when stage 2 ran). ──
         run_id = db.start_agent_run(conn)
         _print_block(f"WRITING TO DB  agent_run_id={run_id}")
-        if not (2 in stages and stage2_result):
+        if not (2 in stages and semantic_result):
             # Stage 1-only path — write dims now.
             for h in resolved:
                 db.upsert_session_dimension(
@@ -766,8 +767,8 @@ def inspect_one(
 
         ticket_written = False
         # Stage 1 decision wins if non-deferred.
-        if stage1_decision[2]:
-            task_key, conf, stype, routing = stage1_decision
+        if rule_decision[2]:
+            task_key, conf, stype, routing = rule_decision
             db.write_ticket_link(
                 conn,
                 session_id=session_id,
@@ -775,32 +776,32 @@ def inspect_one(
                 confidence=conf,
                 session_type=stype,
                 routing=routing,
-                method="stage1_regex_inspect",
+                method="rule_regex_inspect",
             )
             ticket_written = True
-            print(f"  wrote ticket_links (stage1) → {task_key or '∅'} / {stype} / {routing} / {conf:.2f}")
+            print(f"  wrote ticket_links (rule) → {task_key or '∅'} / {stype} / {routing} / {conf:.2f}")
             if task_key and routing in ("auto", "queue"):
                 db.enqueue_dispatch(
                     conn, session_id=session_id, agent_run_id=run_id,
                     task_key=task_key, provider="jira",
                     payload={"routing": routing, "session_type": stype,
-                             "confidence": conf, "stage": "stage1_inspect"},
+                             "confidence": conf, "stage": "rule_inspect"},
                 )
-        elif stage2_result and stage2_result.method == "stage2_embed":
+        elif semantic_result and semantic_result.method == "semantic_embed":
             # Stage 3 wins when it produced a usable verdict; otherwise
             # fall back to Stage 2.
-            if stage3_result and stage3_result.method == "stage3_llm" and stage3_result.routing != "skip":
-                final_task   = stage3_result.chosen_task_key
-                final_conf   = stage3_result.confidence
-                final_route  = stage3_result.routing
-                final_method = "stage3_llm_inspect"
-                final_label  = "stage3"
+            if agent_result and agent_result.method == "agent_tiebreak" and agent_result.routing != "skip":
+                final_task   = agent_result.chosen_task_key
+                final_conf   = agent_result.confidence
+                final_route  = agent_result.routing
+                final_method = "agent_tiebreak_inspect"
+                final_label  = "agent"
             else:
-                final_task   = stage2_result.chosen_task_key
-                final_conf   = stage2_result.confidence
-                final_route  = stage2_result.routing
-                final_method = "stage2_embed_inspect"
-                final_label  = "stage2"
+                final_task   = semantic_result.chosen_task_key
+                final_conf   = semantic_result.confidence
+                final_route  = semantic_result.routing
+                final_method = "semantic_embed_inspect"
+                final_label  = "semantic"
 
             db.write_ticket_link(
                 conn,
@@ -825,9 +826,9 @@ def inspect_one(
                         "stage":        final_method,
                         "stage2_top": [
                             {"task_key": c.task_key, "score": round(c.score, 4)}
-                            for c in stage2_result.top_candidates[:3]
+                            for c in semantic_result.top_candidates[:3]
                         ],
-                        "stage3_reasoning": (stage3_result.reasoning if stage3_result else ""),
+                        "stage3_reasoning": (agent_result.reasoning if agent_result else ""),
                     },
                 )
         else:
@@ -963,7 +964,7 @@ def warm_pm_task_embeddings() -> None:
     """One-shot: embed every active pm_task. Useful before the first run."""
     _configure_logging()
     from agents import embeddings as emb_mod
-    from agents.stage2 import derive_expected_dims
+    from agents.semantic_matcher import derive_expected_dims
     with db.connection() as conn:
         tasks = db.fetch_pm_tasks(conn)
         if not tasks:
@@ -1010,8 +1011,8 @@ def main() -> None:
     parser.add_argument("--stage", default="auto",
                         help="Comma list of stages to run (e.g. '1', '2', '1,2', '1,2,3'). "
                              "Default 'auto' uses STAGE{1,2,3}_ENABLED env flags from config "
-                             "(all on by default). Stage 3 still self-gates — it only fires "
-                             "when Stage 2 returns routing=queue.")
+                             "(all on by default). The Agent Tiebreaker still self-gates — "
+                             "it only fires when the Semantic Matcher returns routing=queue.")
     parser.add_argument("--all-history", action="store_true",
                         help="Disable ONLY_TODAY filter for --once / --list-recent.")
     parser.add_argument("--dry-run", action="store_true",
