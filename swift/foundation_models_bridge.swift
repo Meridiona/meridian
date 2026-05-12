@@ -11,13 +11,15 @@ private func makeCString(_ str: String) -> UnsafeMutablePointer<CChar> {
 @Generable
 private struct CategoryOutput {
     @Guide(.anyOf([
+        "coding",
         "code_review",
-        "development",
-        "research",
+        "meeting",
+        "communication",
+        "design",
         "documentation",
         "planning",
-        "communication",
         "deployment_devops",
+        "research",
         "idle_personal",
     ]))
     var category: String
