@@ -130,7 +130,7 @@ def advance_cursor(conn: sqlite3.Connection, last_session_id: int) -> None:
 # ── Reads from app_sessions / active_session ──────────────────────────────────
 _SESSION_COLS = (
     "id, app_name, started_at, ended_at, duration_s, "
-    "window_titles, ocr_samples, audio_snippets, "
+    "window_titles, session_text, audio_snippets, "
     "category, confidence, traceparent"
 )
 
@@ -224,7 +224,7 @@ def fetch_active_session(conn: sqlite3.Connection) -> dict | None:
     row = conn.execute(
         """
         SELECT id, app_name, started_at, last_seen_at,
-               window_titles, ocr_samples, audio_snippets,
+               window_titles, session_text, audio_snippets,
                category, confidence
           FROM active_session
          WHERE id = 1
@@ -238,7 +238,7 @@ def fetch_active_session(conn: sqlite3.Connection) -> dict | None:
         "started_at": row["started_at"],
         "last_seen_at": row["last_seen_at"],
         "window_titles": _json_or_none(row["window_titles"]) or [],
-        "ocr_samples": _json_or_none(row["ocr_samples"]) or [],
+        "session_text": row["session_text"] or "",
         "audio_snippets": _json_or_none(row["audio_snippets"]) or [],
         "category": row["category"],
         "confidence": row["confidence"],
@@ -257,7 +257,7 @@ def _row_to_session(row: sqlite3.Row) -> dict:
         "ended_at": row["ended_at"],
         "duration_s": row["duration_s"],
         "window_titles": _json_or_none(row["window_titles"]) or [],
-        "ocr_samples": _json_or_none(row["ocr_samples"]) or [],
+        "session_text": row["session_text"] or "",
         "audio_snippets": _json_or_none(row["audio_snippets"]) or [],
         "category": row["category"],
         "confidence": row["confidence"],

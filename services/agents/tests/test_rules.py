@@ -51,7 +51,7 @@ def test_coding_session_round_trip(make_session):
         app_name="Code",
         duration_s=900,            # 15 min → engagement=deep_work
         window_titles=[{"window_name": "main.py — meridian", "count": 5}],
-        ocr_samples=[{"text": "def run_etl(): pass  # main.py"}],
+        session_text="def run_etl(): pass  # main.py",
     )
     hits = resolve_hits(run_rules(sess))
 
@@ -72,7 +72,7 @@ def test_ai_chat_app_with_prompt_vocab(make_session):
         app_name="ChatGPT",
         duration_s=300,
         window_titles=[{"window_name": "ChatGPT — system prompt", "count": 3}],
-        ocr_samples=[{"text": "you are an expert. system prompt: respond in JSON mode."}],
+        session_text="you are an expert. system prompt: respond in JSON mode.",
     )
     hits = resolve_hits(run_rules(sess))
     activities = {h.value for h in _by_dim(hits, "activity")}
@@ -88,10 +88,7 @@ def test_topic_keywords_picks_up_multiple(make_session):
         id=2,
         app_name="Code",
         duration_s=600,
-        ocr_samples=[
-            {"text": "rust + cargo clippy + sqlx + tokio async fn"},
-            {"text": "embeddings via sentence-transformers, faiss index"},
-        ],
+        session_text="rust + cargo clippy + sqlx + tokio async fn\nembeddings via sentence-transformers, faiss index",
     )
     hits = run_rules(sess)
     topic_values = {h.value for h in hits if h.dimension == "topic"}
@@ -104,9 +101,7 @@ def test_ticket_keys_in_text_emits_topic_and_skips_denylist(make_session):
     sess = make_session(
         id=3,
         app_name="Code",
-        ocr_samples=[
-            {"text": "working on KAN-86 — encoding UTF-8 with GPT-4 helper"},
-        ],
+        session_text="working on KAN-86 — encoding UTF-8 with GPT-4 helper",
     )
     hits = run_rules(sess)
     topic_values = {h.value for h in hits if h.dimension == "topic"}
@@ -141,9 +136,7 @@ def test_multi_value_dimensions_keep_all_distinct_values():
 def test_extract_tickets_dedupes(make_session):
     """extract_tickets dedupes duplicate keys in title and OCR."""
     sess = make_session(
-        ocr_samples=[
-            {"text": "KAN-86 first mention, KAN-86 second mention, also KAN-99"},
-        ],
+        session_text="KAN-86 first mention, KAN-86 second mention, also KAN-99",
         window_titles=[{"window_name": "feat/KAN-86-migrate", "count": 1}],
     )
     keys = extract_tickets(sess)
@@ -159,7 +152,7 @@ def test_session_text_weights_titles_by_count():
             {"window_name": "main.py", "count": 10},   # capped to 3×
             {"window_name": "Cargo.toml", "count": 1},
         ],
-        "ocr_samples": [],
+        "session_text": "",
         "audio_snippets": [],
     }
     text = tfe.session_text(sess)
@@ -180,7 +173,7 @@ def test_vscode_extension_banner_stripped_from_titles():
                 "count": 1,
             },
         ],
-        "ocr_samples": [],
+        "session_text": "",
         "audio_snippets": [],
     }
     text = tfe.session_text(sess)

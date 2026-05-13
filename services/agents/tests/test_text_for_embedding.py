@@ -15,7 +15,7 @@ def test_session_text_is_deterministic():
         "window_titles": [
             {"window_name": "main.rs — meridian", "count": 4},
         ],
-        "ocr_samples": [{"text": "fn run_etl()"}],
+        "session_text": "fn run_etl()",
         "audio_snippets": [],
     }
     a = tfe.session_text(sess)
@@ -24,25 +24,25 @@ def test_session_text_is_deterministic():
     assert tfe.text_hash(a) == tfe.text_hash(b)
 
 
-def test_session_text_samples_returns_multiple_labels():
-    """Multiple OCR fragments produce one (label, text) tuple each."""
+def test_session_text_samples_returns_content_labels():
+    """session_text string produces at least one ocr_* chunk label."""
     sess = {
         "app_name": "Code",
         "category": "coding",
         "window_titles": [{"window_name": "main.py", "count": 2}],
-        "ocr_samples": [
-            {"text": "def alpha(): return 1   # this is the first OCR sample"},
-            {"text": "def beta(): return 2    # this is the second OCR sample"},
-            {"text": "def gamma(): return 3   # this is the third OCR sample"},
-        ],
+        "session_text": (
+            "def alpha(): return 1   # this is the first line\n"
+            "def beta(): return 2    # this is the second line\n"
+            "def gamma(): return 3   # this is the third line"
+        ),
         "audio_snippets": [],
     }
     samples = tfe.session_text_samples(sess)
     labels = [label for label, _ in samples]
     assert "titles" in labels
-    # Three OCR fragments → three ocr_* labels.
+    # session_text is one string — at least one ocr_* chunk should be emitted.
     ocr_labels = [l for l in labels if l.startswith("ocr_")]
-    assert len(ocr_labels) == 3
+    assert len(ocr_labels) >= 1
 
 
 def test_task_text_composes_known_sections():
@@ -79,7 +79,7 @@ def test_empty_session_falls_back_to_empty_label():
         "app_name": "",
         "category": "",
         "window_titles": [],
-        "ocr_samples": [],
+        "session_text": "",
         "audio_snippets": [],
     }
     samples = tfe.session_text_samples(sess)

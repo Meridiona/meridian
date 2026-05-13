@@ -35,7 +35,7 @@ def make_session():
             "app_name":        kw.get("app_name", ""),
             "duration_s":      kw.get("duration_s", 0),
             "window_titles":   kw.get("window_titles", []),
-            "ocr_samples":     kw.get("ocr_samples", []),
+            "session_text":    kw.get("session_text", ""),
             "audio_snippets":  kw.get("audio_snippets", []),
             "category":        kw.get("category", ""),
             "confidence":      kw.get("confidence", 0.0),
