@@ -383,8 +383,8 @@ export default function TodayView({ onNavigate }: { onNavigate?: (v: string, key
   const [data, setData] = useState<TodayResponse | null>(null)
 
   useEffect(() => {
-    fetch('/api/today').then(r => r.json()).then(setData)
-    const id = setInterval(() => fetch('/api/today').then(r => r.json()).then(setData), 30_000)
+    fetch('/api/today').then(r => r.json()).then(setData).catch(() => {})
+    const id = setInterval(() => fetch('/api/today').then(r => r.json()).then(setData).catch(() => {}), 30_000)
     return () => clearInterval(id)
   }, [])
 

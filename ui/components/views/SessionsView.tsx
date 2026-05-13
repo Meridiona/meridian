@@ -12,7 +12,7 @@ export default function SessionsView() {
   const [filter, setFilter] = useState<string>('all')
 
   useEffect(() => {
-    fetch('/api/today').then(r => r.json()).then(setData)
+    fetch('/api/today').then(r => r.json()).then(setData).catch(() => {})
   }, [])
 
   if (!data) {
