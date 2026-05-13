@@ -185,6 +185,7 @@ export default async function SessionDetailPage({
                 sessionType={session.session_type}
                 routing={session.routing}
                 confidence={session.link_confidence}
+                method={session.link_method}
                 taskTitle={session.task_title}
                 taskUrl={session.task_url}
                 size="sm"

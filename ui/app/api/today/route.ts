@@ -15,10 +15,13 @@ interface TodaySession {
   titles: string[]
   explain: string | null
   routing: string | null
+  session_type: string | null
   task_key: string | null
   candidates: string[]
   confidence: number
   method: string
+  link_method: string | null
+  link_confidence: number | null
 }
 
 interface TodayActive {
@@ -73,7 +76,9 @@ export async function GET() {
         s.window_titles,
         tl.task_key,
         tl.routing,
-        tl.session_type
+        tl.session_type,
+        tl.method    AS link_method,
+        tl.confidence AS link_confidence
       FROM app_sessions s
       LEFT JOIN ticket_links tl ON tl.session_id = s.id
       WHERE s.started_at >= ? AND s.started_at < ?
@@ -98,10 +103,13 @@ export async function GET() {
         titles: titles.length ? titles.map(t => t.window_name ?? t.title ?? '').filter(Boolean) : [topTitle],
         explain: (r.category_explanation as string) || null,
         routing: (r.routing as string) || null,
+        session_type: (r.session_type as string) || null,
         task_key: (r.task_key as string) || null,
         candidates,
         confidence: (r.confidence as number) || 0,
         method: (r.category_method as string) || 'rule_based',
+        link_method: (r.link_method as string) || null,
+        link_confidence: typeof r.link_confidence === 'number' ? r.link_confidence : null,
       }
     })
 

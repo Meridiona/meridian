@@ -7,6 +7,7 @@ import {
   CATS, AppGlyph, CatDot, CatLabel, LiveDot,
   TaskKey, ConfidenceRing, SegBar, SectionHead, Card, useTick,
 } from '@/components/atoms'
+import TaskBadge from '@/components/TaskBadge'
 import type { TodayResponse } from '@/app/api/today/route'
 
 interface BucketSession {
@@ -17,6 +18,10 @@ interface BucketSession {
   cat: string
   titles: string[]
   task_key: string | null
+  session_type: string | null
+  link_method: string | null
+  link_confidence: number | null
+  routing: string | null
 }
 
 interface Bucket {
@@ -202,7 +207,7 @@ function BucketRow({ bucket }: { bucket: Bucket }) {
         <div className="px-5 pb-4 pt-1 rule-t" style={{ borderTopColor: 'var(--rule)' }}>
           <div className="grid grid-cols-1 gap-px" style={{ background: 'var(--rule)' }}>
             {bucket.sessions.map(s => (
-              <div key={s.id} className="grid grid-cols-[auto_1fr_auto] items-center gap-4 py-2.5 px-3"
+              <div key={s.id} className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-4 py-2.5 px-3"
                 style={{ background: 'var(--surface)' }}>
                 <AppGlyph app={s.app} size={20} />
                 <div className="min-w-0">
@@ -213,6 +218,14 @@ function BucketRow({ bucket }: { bucket: Bucket }) {
                     <span className="text-[11px]" style={{ color: 'var(--ink-3)' }}>{CATS[s.cat]?.short ?? s.cat}</span>
                   </div>
                 </div>
+                <TaskBadge
+                  taskKey={s.task_key}
+                  sessionType={s.session_type}
+                  routing={s.routing}
+                  confidence={s.link_confidence}
+                  method={s.link_method}
+                  size="xs"
+                />
                 <span className="font-mono tnum text-[12px]" style={{ color: 'var(--ink-2)' }}>{fmtDur(s.dur)}</span>
               </div>
             ))}
@@ -414,14 +427,14 @@ export default function TodayView({ onNavigate }: { onNavigate?: (v: string, key
   }
 
   data.sessions.forEach(s => {
-    const bs: BucketSession = { id: s.id, app: s.app, started_at: s.started_at, dur: s.dur, cat: s.cat, titles: s.titles, task_key: s.task_key }
+    const bs: BucketSession = { id: s.id, app: s.app, started_at: s.started_at, dur: s.dur, cat: s.cat, titles: s.titles, task_key: s.task_key, session_type: s.session_type, link_method: s.link_method, link_confidence: s.link_confidence, routing: s.routing }
     if (s.task_key) pushToBucket(s.task_key, bs)
     else if (s.routing === 'queue') pushToBucket('_queue', bs)
     else pushToBucket('_overhead', bs)
   })
 
   if (data.active) {
-    const ab: BucketSession = { id: 'active', app: data.active.app, started_at: data.active.started_at, dur: data.active.elapsed_s, cat: data.active.cat, titles: data.active.titles, task_key: null }
+    const ab: BucketSession = { id: 'active', app: data.active.app, started_at: data.active.started_at, dur: data.active.elapsed_s, cat: data.active.cat, titles: data.active.titles, task_key: null, session_type: null, link_method: null, link_confidence: null, routing: null }
     pushToBucket('_active', ab)
   }
 

@@ -2,7 +2,8 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { fmtDur, fmtClock, CATS, AppGlyph, CatDot, TaskKey } from '@/components/atoms'
+import { fmtDur, fmtClock, CATS, AppGlyph, CatDot } from '@/components/atoms'
+import TaskBadge from '@/components/TaskBadge'
 import type { TodayResponse } from '@/app/api/today/route'
 
 type Session = TodayResponse['sessions'][number]
@@ -104,9 +105,16 @@ function SessionRow({ session, first }: { session: Session; first: boolean }) {
           </div>
         </div>
         <span className="font-mono tnum text-[12px]" style={{ color: 'var(--ink-2)' }}>{fmtDur(session.dur)}</span>
-        {session.task_key
-          ? <TaskKey keyId={session.task_key} />
-          : <span className="text-[11px]" style={{ color: 'var(--ink-4)' }}>—</span>}
+        <div className="min-w-[60px] flex justify-end">
+          <TaskBadge
+            taskKey={session.task_key}
+            sessionType={session.session_type}
+            routing={session.routing}
+            confidence={session.link_confidence}
+            method={session.link_method}
+            size="xs"
+          />
+        </div>
       </button>
 
       {open && (
