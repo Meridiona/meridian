@@ -91,13 +91,13 @@ def _configure_logging() -> Path:
 
 # ──────────────────────── Pre-filter ───────────────────────────────────────────
 def _is_trivial_overhead(s: dict) -> bool:
-    duration = int(s.get("duration_s") or 0)
-    titles   = s.get("window_titles") or []
-    ocr      = s.get("ocr_samples")    or []
-    audio    = s.get("audio_snippets") or []
+    duration  = int(s.get("duration_s") or 0)
+    titles    = s.get("window_titles") or []
+    has_text  = bool((s.get("session_text") or "").strip())
+    audio     = s.get("audio_snippets") or []
     if duration < MIN_LLM_DURATION_S:
         return True
-    if not titles and not ocr and not audio:
+    if not titles and not has_text and not audio:
         return True
     return False
 
@@ -122,7 +122,7 @@ def _session_header(s: dict) -> str:
     return (
         f"id={s['id']:<5} app={_truncate(s.get('app_name'), 22):<22} "
         f"dur={s.get('duration_s', 0):>4}s "
-        f"titles={len(titles):<2} ocr={len(s.get('ocr_samples') or []):<2} "
+        f"titles={len(titles):<2} txt={len(s.get('session_text') or ''):>4}c "
         f"audio={len(s.get('audio_snippets') or []):<2} "
         f"cat={s.get('category')}/{round(s.get('confidence') or 0.0, 2):<4}"
         f' top="{_truncate(top, 50)}"'
@@ -599,13 +599,14 @@ def _print_session_input(session: dict, pm_tasks: list[dict]) -> None:
     if len(titles) > 8:
         print(f"    … and {len(titles) - 8} more")
 
-    ocr = session.get("ocr_samples") or []
-    print(f"  ocr_samples ({len(ocr)}):")
-    for i, s in enumerate(ocr[:5]):
-        text = s.get("text", "") if isinstance(s, dict) else str(s)
-        print(f"    [{i}] {_truncate(text, 200)}")
-    if len(ocr) > 5:
-        print(f"    … and {len(ocr) - 5} more")
+    session_text_val = session.get("session_text") or ""
+    print(f"  session_text ({len(session_text_val)} chars):")
+    if session_text_val:
+        for i, line in enumerate(session_text_val.splitlines()[:5]):
+            print(f"    [{i}] {_truncate(line, 200)}")
+        extra = len(session_text_val.splitlines()) - 5
+        if extra > 0:
+            print(f"    … and {extra} more lines")
 
     audio = session.get("audio_snippets") or []
     print(f"  audio_snippets ({len(audio)}):")
@@ -991,7 +992,7 @@ def list_recent(n: int, *, since_iso: str | None = None) -> None:
             print(
                 f"{s['id']:>5}  {(_truncate(s.get('app_name'), 22)):22s}  "
                 f"{s.get('duration_s', 0):>4}s  "
-                f"{len(titles):>6d}  {len(s.get('ocr_samples') or []):>4d}  "
+                f"{len(titles):>6d}  {len(s.get('session_text') or ''):>4d}c  "
                 f"{(s.get('category') or '')[:16]:16s}  "
                 f"{tag:8s}  {_truncate(top, 60)}"
             )

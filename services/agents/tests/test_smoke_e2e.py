@@ -184,25 +184,25 @@ def _insert_session(
     category="coding",
     confidence=0.8,
 ):
-    titles_json = json.dumps([{"window_name": t, "count": 1} for t in (titles or [])])
-    ocr_json    = json.dumps([{"text": t} for t in (ocr or [])])
-    audio_json  = json.dumps([{"text": t} for t in (audio or [])])
+    titles_json    = json.dumps([{"window_name": t, "count": 1} for t in (titles or [])])
+    session_text   = "\n".join(ocr or [])
+    audio_json     = json.dumps([{"text": t} for t in (audio or [])])
     started = "2026-05-10T11:00:00Z"
     ended   = "2026-05-10T11:00:30Z"
     conn.execute(
         """
         INSERT INTO app_sessions (
             id, app_name, started_at, ended_at, duration_s,
-            window_titles, ocr_samples, elements_samples, audio_snippets, signals,
+            window_titles, session_text, audio_snippets, signals,
             min_frame_id, max_frame_id, frame_count, etl_run_id,
             idle_frame_count, category, confidence, category_method
         ) VALUES (?, ?, ?, ?, ?,
-                  ?, ?, '[]', ?, '[]',
+                  ?, ?, ?, '[]',
                   1, 2, 1, 1,
                   0, ?, ?, 'rule_based')
         """,
         (sid, app_name, started, ended, duration_s,
-         titles_json, ocr_json, audio_json,
+         titles_json, session_text, audio_json,
          category, confidence),
     )
 

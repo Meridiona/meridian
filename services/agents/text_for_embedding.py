@@ -63,22 +63,8 @@ def _join_titles(session: dict) -> str:
 
 
 def _join_ocr(session: dict, budget: int = _OCR_BUDGET_CHARS) -> str:
-    samples = session.get("ocr_samples") or []
-    out: list[str] = []
-    used = 0
-    for s in samples:
-        text = s.get("text", "") if isinstance(s, dict) else str(s)
-        text = text.strip()
-        if not text:
-            continue
-        room = budget - used
-        if room <= 0:
-            break
-        if len(text) > room:
-            text = text[:room]
-        out.append(text)
-        used += len(text) + 1
-    return " ".join(out)
+    text = (session.get("session_text") or "").strip()
+    return text[:budget] if text else ""
 
 
 def _join_audio(session: dict, budget: int = _AUDIO_BUDGET_CHARS) -> str:
@@ -166,15 +152,18 @@ def session_text_samples(session: dict) -> list[tuple[str, str]]:
         if meta:
             out.append(("titles", meta))
 
-    # Each OCR sample as its own document. Tiny and obviously-junk samples
-    # are skipped — they only add noise to the max-pool.
-    for i, s in enumerate((session.get("ocr_samples") or [])[:_MAX_OCR_SAMPLES]):
-        text = (s.get("text", "") if isinstance(s, dict) else str(s)).strip()
-        if len(text) < _MIN_OCR_SAMPLE_CHARS:
-            continue
-        if len(text) > _PER_OCR_SAMPLE_CAP:
-            text = text[:_PER_OCR_SAMPLE_CAP]
-        out.append((f"ocr_{i}", text))
+    # session_text is a pre-filtered, deduplicated plain string from the Rust ETL.
+    # Split it into fixed-size chunks so each can be embedded independently
+    # and max-pooled against ticket embeddings.
+    raw = (session.get("session_text") or "").strip()
+    if raw:
+        pos, i = 0, 0
+        while pos < len(raw) and i < _MAX_OCR_SAMPLES:
+            chunk = raw[pos : pos + _PER_OCR_SAMPLE_CAP].strip()
+            if len(chunk) >= _MIN_OCR_SAMPLE_CHARS:
+                out.append((f"ocr_{i}", chunk))
+                i += 1
+            pos += _PER_OCR_SAMPLE_CAP
 
     # Audio block — small enough that one combined doc is fine.
     audio = _join_audio(session, budget=_PER_AUDIO_CAP)

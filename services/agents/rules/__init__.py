@@ -98,14 +98,7 @@ def _join_titles(session: dict) -> str:
 
 
 def _join_ocr(session: dict, limit: int = 10) -> str:
-    samples = session.get("ocr_samples") or []
-    parts = []
-    for s in samples[:limit]:
-        if isinstance(s, dict):
-            parts.append(str(s.get("text", "")))
-        elif isinstance(s, str):
-            parts.append(s)
-    return " ".join(parts)
+    return (session.get("session_text") or "").strip()
 
 
 def _join_audio(session: dict) -> str:

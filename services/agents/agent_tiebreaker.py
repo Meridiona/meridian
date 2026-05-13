@@ -95,9 +95,9 @@ def _format_session(session: dict) -> str:
                 name, cnt = str(t), 1
             name = _VSCODE_BANNER_RE.sub("", name).strip()
             parts.append(f"  • {name} (×{cnt})")
-    ocr = session.get("ocr_samples") or []
+    session_text_val = session.get("session_text") or ""
     audio = session.get("audio_snippets") or []
-    parts.append(f"ocr_samples: {len(ocr)} captured")
+    parts.append(f"session_text: {len(session_text_val)} chars")
     if audio:
         parts.append(f"audio_snippets: {len(audio)} captured")
     return "\n".join(parts)
@@ -144,9 +144,8 @@ def _prefilter_tasks(
     for t in (session.get("window_titles") or []):
         name = (t.get("window_name") or t.get("title") or "") if isinstance(t, dict) else str(t)
         words.update(w.lower() for w in re.split(r"\W+", name) if len(w) > 3)
-    for o in (session.get("ocr_samples") or [])[:10]:
-        text = (o.get("text") or "") if isinstance(o, dict) else str(o)
-        words.update(w.lower() for w in re.split(r"\W+", text) if len(w) > 3)
+    session_text_words = (session.get("session_text") or "")
+    words.update(w.lower() for w in re.split(r"\W+", session_text_words) if len(w) > 3)
     if not words:
         return all_pm_tasks[:max_tasks]
     scored: list[tuple[int, dict]] = []

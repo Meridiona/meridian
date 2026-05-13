@@ -14,9 +14,9 @@ from agents.rules import RuleHit, rule
 def _duration_engagement(session: dict):
     duration = int(session.get("duration_s") or 0)
     titles   = session.get("window_titles") or []
-    ocr      = session.get("ocr_samples")    or []
+    has_text = 1 if (session.get("session_text") or "").strip() else 0
     audio    = session.get("audio_snippets") or []
-    content_score = len(titles) + len(ocr) + len(audio)
+    content_score = len(titles) + has_text + len(audio)
 
     if duration <= 5 and content_score < 2:
         value, conf = "idle", 0.85
