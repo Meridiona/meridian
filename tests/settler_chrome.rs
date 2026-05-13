@@ -54,15 +54,48 @@ fn parse_category_json_with_backticks() {
 fn parse_category_unknown_value_returns_none() {
     assert_eq!(parse_category(r#"{"category": "gaming"}"#), None);
     assert_eq!(parse_category(r#"{"category": "not_a_category"}"#), None);
-    assert_eq!(parse_category(r#"{"category": "development"}"#), None);
 }
 
 #[test]
 fn parse_category_rejects_substring_supersets() {
-    // "code_review_and_more" must NOT match "code_review" (exact match required)
+    // "code_review_extra" must NOT match "code_review" — underscore breaks word boundary
     assert_eq!(parse_category(r#"{"category": "code_review_extra"}"#), None);
     // "idle" alone must NOT match "idle_personal"
     assert_eq!(parse_category(r#"{"category": "idle"}"#), None);
+}
+
+#[test]
+fn parse_category_alias_near_misses() {
+    // FM sometimes emits synonyms instead of exact names; these must be mapped
+    assert_eq!(
+        parse_category(r#"{"category": "development"}"#),
+        Some("coding")
+    );
+    assert_eq!(
+        parse_category(r#"{"category": "developer"}"#),
+        Some("coding")
+    );
+    assert_eq!(
+        parse_category(r#"{"category": "infra"}"#),
+        Some("deployment_devops")
+    );
+}
+
+#[test]
+fn parse_category_verbose_prose_fallback() {
+    // FM sometimes returns a full sentence — extract the category from the prose
+    assert_eq!(
+        parse_category("Based on the session details, the primary activity appears to be coding."),
+        Some("coding")
+    );
+    assert_eq!(
+        parse_category("**Category: coding**\n\nReasoning: the user was editing source files."),
+        Some("coding")
+    );
+    assert_eq!(
+        parse_category("The session is best described as research."),
+        Some("research")
+    );
 }
 
 #[test]
