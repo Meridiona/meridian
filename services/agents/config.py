@@ -224,7 +224,7 @@ def today_start_utc_iso() -> str:
 
 # ── LLM ───────────────────────────────────────────────────────────────────────
 MODEL    = os.environ.get("OLLAMA_MODEL",   "gemma4:31b-cloud")
-BASE_URL = os.environ.get("OLLAMA_HOST",    "https://api.ollama.ai")
+BASE_URL = os.environ.get("OLLAMA_HOST",    "https://ollama.com/v1")
 API_KEY  = os.environ.get("OLLAMA_API_KEY", "")
 
 # When true, _hermes_setup.ensure_hermes_importable() prepends services/.hermes/
