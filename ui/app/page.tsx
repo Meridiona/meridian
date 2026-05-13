@@ -33,6 +33,7 @@ export default function DashboardPage() {
     fetch('/api/queue-review')
       .then(r => r.json())
       .then(d => setQueueCount(d.items?.length ?? 0))
+      .catch(() => {})
   }, [])
 
   // keyboard shortcuts
