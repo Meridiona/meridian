@@ -1,6 +1,6 @@
 // meridian — normalises screenpipe activity into structured app sessions
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::sync::OnceLock;
@@ -18,6 +18,12 @@ extern "C" {
         instructions: *const c_char,
         prompt: *const c_char,
         out_text: *mut *mut c_char,
+        out_error: *mut *mut c_char,
+    ) -> i32;
+    fn fm_generate_category_json(
+        instructions: *const c_char,
+        prompt: *const c_char,
+        out_json: *mut *mut c_char,
         out_error: *mut *mut c_char,
     ) -> i32;
 }
@@ -92,6 +98,50 @@ impl FoundationBackend {
             take_cstring(out_error);
             Ok(text)
         }
+    }
+
+    fn call_generate_category_json(instructions: &str, user_prompt: &str) -> Result<String> {
+        let inst_c = CString::new(instructions)?;
+        let prompt_c = CString::new(user_prompt)?;
+        let mut out_json: *mut c_char = std::ptr::null_mut();
+        let mut out_error: *mut c_char = std::ptr::null_mut();
+
+        let status = unsafe {
+            fm_generate_category_json(
+                inst_c.as_ptr(),
+                prompt_c.as_ptr(),
+                &mut out_json,
+                &mut out_error,
+            )
+        };
+
+        unsafe {
+            if status != 0 {
+                let err = take_cstring(out_error).unwrap_or_else(|| "unknown error".to_string());
+                take_cstring(out_json);
+                bail!("Foundation Models error: {}", err);
+            }
+            let text = take_cstring(out_json).unwrap_or_default();
+            take_cstring(out_error);
+            Ok(text)
+        }
+    }
+
+    pub async fn generate_category(&self, system: &str, user: &str) -> Result<(String, String)> {
+        if !is_macos_26_or_later() {
+            bail!("Foundation Models requires macOS 26+");
+        }
+        let system_s = system.to_owned();
+        let user_s = user.to_owned();
+        let json = tokio::task::spawn_blocking(move || {
+            Self::call_generate_category_json(&system_s, &user_s)
+        })
+        .await??;
+        let v: serde_json::Value =
+            serde_json::from_str(&json).context("failed to parse category JSON from FM")?;
+        let category = v["category"].as_str().unwrap_or("").to_string();
+        let explanation = v["explanation"].as_str().unwrap_or("").to_string();
+        Ok((category, explanation))
     }
 
     #[tracing::instrument(
