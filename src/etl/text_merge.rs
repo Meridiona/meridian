@@ -134,7 +134,7 @@ fn process_frame(
     }
 }
 
-/// Split full_text into trimmed, non-empty lines.
+/// Split full_text into trimmed, non-empty lines, dropping OCR noise.
 /// Terminal OCR pathology: a single long string with no newlines is split
 /// on 2+ consecutive spaces to recover phrase boundaries.
 fn split_lines(full_text: &str) -> Vec<String> {
@@ -147,15 +147,39 @@ fn split_lines(full_text: &str) -> Vec<String> {
         if trimmed.len() > 200 && trimmed.contains("  ") {
             for part in trimmed.split("  ") {
                 let p = part.trim();
-                if !p.is_empty() {
+                if !p.is_empty() && is_meaningful_line(p) {
                     result.push(p.to_owned());
                 }
             }
-        } else {
+        } else if is_meaningful_line(trimmed) {
             result.push(trimmed.to_owned());
         }
     }
     result
+}
+
+/// Returns true if a line contains real content worth storing.
+/// Filters out VS Code sidebar icons (•, ›), short OCR fragments (Ca, La),
+/// and other screenpipe UI-chrome noise.
+///
+/// A line is meaningful when it is at least 3 chars long AND contains a run
+/// of 2+ consecutive alphanumeric/underscore characters (i.e., a real word).
+fn is_meaningful_line(line: &str) -> bool {
+    if line.len() < 3 {
+        return false;
+    }
+    let mut run = 0u32;
+    for c in line.chars() {
+        if c.is_alphanumeric() || c == '_' {
+            run += 1;
+            if run >= 2 {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    false
 }
 
 /// Format an ISO 8601 timestamp to "HH:MM:SS" for marker output.
@@ -317,6 +341,21 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
+    fn split_lines_filters_ui_noise() {
+        // VS Code sidebar icons, short OCR fragments — all dropped
+        let noisy = "•\n›\nCa\nLa\n@\nfn main() {\n";
+        let result = split_lines(noisy);
+        assert_eq!(result, ["fn main() {"]);
+    }
+
+    #[test]
+    fn split_lines_keeps_short_meaningful_words() {
+        // "cmd" (len 3, word run 3) must survive; "ok" (len 2) and "•" must not
+        let result = split_lines("ok\ncmd\n•\n");
+        assert_eq!(result, ["cmd"]);
+    }
+
+    #[test]
     fn split_lines_empty_string() {
         assert_eq!(split_lines(""), Vec::<String>::new());
     }
@@ -355,8 +394,8 @@ mod tests {
 
     #[test]
     fn split_lines_long_line_no_two_spaces_stays_whole() {
-        // 240 chars, single spaces only — must not split
-        let long = "a b ".repeat(60);
+        // 240 chars of meaningful content, single spaces only — must not split on spaces
+        let long = "ab cd ".repeat(40);
         let trimmed = long.trim();
         let result = split_lines(trimmed);
         assert_eq!(

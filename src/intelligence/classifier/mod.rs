@@ -69,6 +69,16 @@ impl LlmBackend {
         }
     }
 
+    pub async fn generate_category(&self, system: &str, user: &str) -> Result<(String, String)> {
+        match self {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            Self::Foundation(b) => b.generate_category(system, user).await,
+            _ => anyhow::bail!(
+                "generate_category is only available on the Foundation Models backend"
+            ),
+        }
+    }
+
     pub async fn classify(&self, req: &ClassifyRequest) -> Result<ClassifyResponse> {
         match self {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
