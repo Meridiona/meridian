@@ -481,13 +481,41 @@ pub fn build_category_prompt(
 
 pub fn parse_category(text: &str) -> Option<&'static str> {
     let trimmed = text.trim().trim_matches('`');
-    let value = if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+    let candidate = if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
         v.get("category")?.as_str()?.to_lowercase()
     } else {
         trimmed.to_lowercase()
     };
-    VALID_CATEGORIES
-        .iter()
-        .copied()
-        .find(|&c| c == value.as_str())
+
+    // Exact match (fast path — structured generation should land here)
+    if let Some(cat) = VALID_CATEGORIES.iter().copied().find(|&c| c == candidate.as_str()) {
+        return Some(cat);
+    }
+
+    // Unambiguous near-misses the model emits instead of exact category names
+    let alias = match candidate.as_str() {
+        "development" | "developer" => "coding",
+        "devops" | "infra" | "infrastructure" | "ci/cd" => "deployment_devops",
+        "docs" | "doc" | "wiki" => "documentation",
+        "personal" | "entertainment" => "idle_personal",
+        _ => "",
+    };
+    if !alias.is_empty() {
+        return VALID_CATEGORIES.iter().copied().find(|&c| c == alias);
+    }
+
+    // Last resort: find any valid category as a whole token in verbose prose responses.
+    // Handles "Based on the session… the primary activity appears to be coding."
+    let lower = text.to_lowercase();
+    let bytes = lower.as_bytes();
+    VALID_CATEGORIES.iter().copied().find(|&cat| {
+        let cb = cat.as_bytes();
+        let cl = cb.len();
+        bytes.windows(cl).enumerate().any(|(i, w)| {
+            w == cb
+                && (i == 0 || !matches!(bytes[i - 1], b'a'..=b'z' | b'0'..=b'9' | b'_'))
+                && (i + cl >= bytes.len()
+                    || !matches!(bytes[i + cl], b'a'..=b'z' | b'0'..=b'9' | b'_'))
+        })
+    })
 }
