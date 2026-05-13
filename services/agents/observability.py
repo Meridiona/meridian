@@ -106,18 +106,20 @@ def extract_parent_context(traceparent: Optional[str]) -> Optional[Context]:
 
 # ──────────────────────── Tracing setup ────────────────────────────────────────
 def _configure_tracing(agent_name: str) -> None:
-    endpoint = os.environ.get(
-        "MERIDIAN_OTLP_TRACES_ENDPOINT", DEFAULT_TRACES_ENDPOINT,
-    )
-    headers: dict[str, str] = {}
-    auth = os.environ.get("MERIDIAN_OO_AUTH")
-    if auth:
-        headers["Authorization"] = f"Basic {auth}"
-
     resource = Resource.create({"service.name": agent_name})
     provider = TracerProvider(resource=resource)
-    exporter = OTLPSpanExporter(endpoint=endpoint, headers=headers)
-    provider.add_span_processor(BatchSpanProcessor(exporter))
+
+    disabled = os.environ.get("MERIDIAN_TRACING_DISABLED", "").lower() in ("1", "true", "yes")
+    if not disabled:
+        endpoint = os.environ.get(
+            "MERIDIAN_OTLP_TRACES_ENDPOINT", DEFAULT_TRACES_ENDPOINT,
+        )
+        headers: dict[str, str] = {}
+        auth = os.environ.get("MERIDIAN_OO_AUTH")
+        if auth:
+            headers["Authorization"] = f"Basic {auth}"
+        exporter = OTLPSpanExporter(endpoint=endpoint, headers=headers)
+        provider.add_span_processor(BatchSpanProcessor(exporter))
 
     # Set as the global provider. OTel's `set_tracer_provider` warns if
     # someone already configured a provider in-process; we accept that and
