@@ -9,7 +9,7 @@ export default function WeekView() {
   const [data, setData] = useState<WeekResponse | null>(null)
 
   useEffect(() => {
-    fetch('/api/week').then(r => r.json()).then(setData)
+    fetch('/api/week').then(r => r.json()).then(setData).catch(() => {})
   }, [])
 
   if (!data) {

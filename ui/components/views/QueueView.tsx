@@ -14,6 +14,7 @@ export default function QueueView() {
     fetch('/api/queue-review')
       .then(r => r.json())
       .then(d => { setItems(d.items ?? []); setLoading(false) })
+      .catch(() => setLoading(false))
   }, [])
 
   function dismiss(id: number) {

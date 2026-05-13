@@ -47,7 +47,7 @@ export default function Sidebar({ view, onNavigate, onOpenCmd, queueCount }: Pro
 
   useEffect(() => {
     function load() {
-      fetch('/api/active').then(r => r.json()).then((d: ActiveInfo | null) => setActive(d))
+      fetch('/api/active').then(r => r.json()).then((d: ActiveInfo | null) => setActive(d)).catch(() => {})
     }
     load()
     const id = setInterval(load, 30_000)

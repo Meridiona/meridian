@@ -94,7 +94,7 @@ export async function GET() {
         app: r.app_name as string,
         started_at: r.started_at as string,
         dur: r.duration_s as number,
-        cat: (r.category as string) || 'idle_personal',
+        cat: (['fm_parse_error', 'fm_skip'].includes(r.category as string) ? 'idle_personal' : (r.category as string)) || 'idle_personal',
         titles: titles.length ? titles.map(t => t.window_name ?? t.title ?? '').filter(Boolean) : [topTitle],
         explain: (r.category_explanation as string) || null,
         routing: (r.routing as string) || null,

@@ -16,7 +16,7 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
         const first = d.tasks.find(t => t.today_s > 0) ?? d.tasks[0]
         setSelected(first.key)
       }
-    })
+    }).catch(() => {})
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!data) {
