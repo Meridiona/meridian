@@ -2,6 +2,7 @@
 'use client'
 
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react'
+import { TooltipProvider } from '@radix-ui/react-tooltip'
 
 export const ACCENT_PRESETS = ['#FF6B2B', '#2A6FDB', '#1F8A5B', '#141414'] as const
 
@@ -89,7 +90,13 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     setTone:    (v) => update({ tone: v }),
   }
 
-  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
+  return (
+    <ThemeContext.Provider value={value}>
+      <TooltipProvider delayDuration={300}>
+        {children}
+      </TooltipProvider>
+    </ThemeContext.Provider>
+  )
 }
 
 export function useTheme() {
