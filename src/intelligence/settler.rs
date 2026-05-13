@@ -488,7 +488,11 @@ pub fn parse_category(text: &str) -> Option<&'static str> {
     };
 
     // Exact match (fast path — structured generation should land here)
-    if let Some(cat) = VALID_CATEGORIES.iter().copied().find(|&c| c == candidate.as_str()) {
+    if let Some(cat) = VALID_CATEGORIES
+        .iter()
+        .copied()
+        .find(|&c| c == candidate.as_str())
+    {
         return Some(cat);
     }
 
