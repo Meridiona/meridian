@@ -99,8 +99,13 @@ def _run_one_shot(
 # ── Daemon loop ───────────────────────────────────────────────────────────────
 
 async def daemon_loop(dry_run: bool = False) -> None:
-    """Async daemon loop — sleeps until the next slot, then fires run_update."""
+    """Async daemon loop — sleeps until the next slot, then fires run_update.
+
+    run_update is dispatched via run_in_executor so its internal asyncio.run()
+    calls (MCP stdio clients) don't conflict with the running event loop.
+    """
     from agents.jira_updater import run_update
+    import functools
 
     slots = compute_slots(OFFICE_START_HOUR, OFFICE_END_HOUR, UPDATE_INTERVAL_HOURS)
     log.info(
@@ -118,19 +123,28 @@ async def daemon_loop(dry_run: bool = False) -> None:
         sleep_s = max(0.0, (nxt - datetime.now().astimezone()).total_seconds())
         log.info("next update at %s (%.0fs)", nxt.strftime("%H:%M"), sleep_s)
 
+        # Wait for the next slot, waking early if stop is signalled.
+        # Using wait_for on the coroutine directly avoids the orphaned-task
+        # accumulation of the asyncio.shield(ensure_future(...)) pattern.
         try:
-            await asyncio.wait_for(
-                asyncio.shield(asyncio.ensure_future(stop.wait())),
-                timeout=sleep_s,
-            )
-            break
+            await asyncio.wait_for(stop.wait(), timeout=sleep_s)
+            break  # stop was set — exit cleanly
         except asyncio.TimeoutError:
             pass
+
+        if stop.is_set():
+            break
 
         from_time, to_time = slot_window(nxt.hour, UPDATE_INTERVAL_HOURS)
         log.info("running update window %s → %s", from_time, to_time)
         try:
-            results = run_update(from_time=from_time, to_time=to_time, dry_run=dry_run)
+            # run_update is synchronous and uses asyncio.run() internally.
+            # Dispatch to a thread so those nested event loops don't conflict
+            # with this one, and so SIGTERM is not blocked during the update.
+            fn = functools.partial(
+                run_update, from_time=from_time, to_time=to_time, dry_run=dry_run
+            )
+            results = await loop.run_in_executor(None, fn)
             for r in results:
                 log.info(
                     "task=%s state=%s duration=%ds had_activity=%s",

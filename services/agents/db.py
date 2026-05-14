@@ -699,7 +699,9 @@ def log_jira_update(
          int(had_activity), comment_body),
     )
     conn.commit()
-    return cur.lastrowid or _get_update_id(conn, task_key, period_start, period_end)
+    # lastrowid is unreliable on the UPSERT conflict path across SQLite versions;
+    # always resolve via SELECT to guarantee correctness.
+    return _get_update_id(conn, task_key, period_start, period_end)
 
 
 def _get_update_id(conn: sqlite3.Connection, task_key: str, period_start: str, period_end: str) -> int:
