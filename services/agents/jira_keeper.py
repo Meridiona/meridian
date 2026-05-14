@@ -5,7 +5,7 @@ Mirrors agents/watcher.py exactly:
   to `npx screenpipe-mcp`. AIAgent calls Jira tools directly through the bridge.
   mark_sync_complete is a Python-side tool that updates state files.
 
-Requires in .env:  JIRA_URL, JIRA_EMAIL, JIRA_API_TOKEN
+Requires in .env:  JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN
 """
 import asyncio
 import json
@@ -53,13 +53,13 @@ class _MCPBridge:
 
     def __init__(self):
         self._tool_objs: dict = {}
-        self._jira_url   = os.environ.get("JIRA_URL", "")
+        self._jira_url   = os.environ.get("JIRA_BASE_URL", "")
         self._jira_email = os.environ.get("JIRA_EMAIL", "")
         self._jira_token = os.environ.get("JIRA_API_TOKEN", "")
 
         if not all([self._jira_url, self._jira_email, self._jira_token]):
             missing = [k for k, v in [
-                ("JIRA_URL", self._jira_url),
+                ("JIRA_BASE_URL", self._jira_url),
                 ("JIRA_EMAIL", self._jira_email),
                 ("JIRA_API_TOKEN", self._jira_token),
             ] if not v]
@@ -76,7 +76,7 @@ class _MCPBridge:
             args=["mcp-atlassian", "--jira-url", self._jira_url],
             env={
                 **os.environ,
-                "JIRA_URL":       self._jira_url,
+                "JIRA_BASE_URL":  self._jira_url,
                 "JIRA_USERNAME":  self._jira_email,
                 "JIRA_API_TOKEN": self._jira_token,
             },
