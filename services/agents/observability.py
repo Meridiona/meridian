@@ -110,10 +110,8 @@ def _configure_tracing(agent_name: str) -> None:
     provider = TracerProvider(resource=resource)
 
     disabled = os.environ.get("MERIDIAN_TRACING_DISABLED", "").lower() in ("1", "true", "yes")
-    if not disabled:
-        endpoint = os.environ.get(
-            "MERIDIAN_OTLP_TRACES_ENDPOINT", DEFAULT_TRACES_ENDPOINT,
-        )
+    endpoint = os.environ.get("MERIDIAN_OTLP_TRACES_ENDPOINT", "").strip()
+    if not disabled and endpoint:
         headers: dict[str, str] = {}
         auth = os.environ.get("MERIDIAN_OO_AUTH")
         if auth:

@@ -20,18 +20,18 @@ import asyncio
 import functools
 import logging
 import signal
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from agents import observability
 from agents.config import (
-    LOG_DIR,
     MERIDIAN_DB,
     OFFICE_END_HOUR,
     OFFICE_START_HOUR,
     UPDATE_INTERVAL_HOURS,
 )
 
+observability.setup("meridian-jira-updater")
 log = logging.getLogger("jira_updater_daemon")
 
 
@@ -163,25 +163,6 @@ async def daemon_loop(dry_run: bool = False) -> None:
     log.info("jira-updater stopped")
 
 
-# ── Logging setup ─────────────────────────────────────────────────────────────
-
-def _configure_logging() -> None:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_file = LOG_DIR / "jira-updater.log"
-
-    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
-    root = logging.getLogger()
-    root.setLevel(logging.INFO)
-
-    sh = logging.StreamHandler(sys.stderr)
-    sh.setFormatter(fmt)
-    root.addHandler(sh)
-
-    fh = logging.FileHandler(log_file)
-    fh.setFormatter(fmt)
-    root.addHandler(fh)
-
-
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -205,8 +186,6 @@ def main() -> None:
         help=f"Look-back window in hours for one-shot runs (default: {UPDATE_INTERVAL_HOURS}).",
     )
     args = parser.parse_args()
-
-    _configure_logging()
 
     if args.trigger_now or args.task:
         _run_one_shot(

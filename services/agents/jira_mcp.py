@@ -10,7 +10,7 @@ Usage:
     from agents.jira_mcp import fetch_open_tasks
     tasks = fetch_open_tasks()  # [{ task_key, title, ... }, ...]
 
-Requires JIRA_URL, JIRA_EMAIL, JIRA_API_TOKEN in the environment.
+Requires JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN in the environment.
 """
 from __future__ import annotations
 
@@ -21,6 +21,9 @@ import os
 import re
 from typing import Any
 
+from agents import observability
+
+observability.setup("meridian-jira-mcp")
 log = logging.getLogger("agents.jira_mcp")
 
 
@@ -63,12 +66,12 @@ class _AtlassianMCP:
     """Thin wrapper around `uvx mcp-atlassian`. One stdio connection per call."""
 
     def __init__(self):
-        self.url   = os.environ.get("JIRA_URL", "")
+        self.url   = os.environ.get("JIRA_BASE_URL", "")
         self.email = os.environ.get("JIRA_EMAIL", "")
         self.token = os.environ.get("JIRA_API_TOKEN", "")
         if not (self.url and self.email and self.token):
             missing = [k for k, v in (
-                ("JIRA_URL", self.url),
+                ("JIRA_BASE_URL", self.url),
                 ("JIRA_EMAIL", self.email),
                 ("JIRA_API_TOKEN", self.token),
             ) if not v]
@@ -83,7 +86,7 @@ class _AtlassianMCP:
             args=["mcp-atlassian", "--jira-url", self.url],
             env={
                 **os.environ,
-                "JIRA_URL":       self.url,
+                "JIRA_BASE_URL":  self.url,
                 "JIRA_USERNAME":  self.email,
                 "JIRA_API_TOKEN": self.token,
             },
