@@ -231,3 +231,13 @@ API_KEY  = os.environ.get("OLLAMA_API_KEY", "")
 # to sys.path so the local source checkout shadows the installed hermes-agent
 # package. Set HERMES_DEV_MODE=1 in your .env for breakpoint debugging.
 HERMES_DEV_MODE = os.environ.get("HERMES_DEV_MODE", "0") == "1"
+
+# ── Jira updater ──────────────────────────────────────────────────────────────
+UPDATE_INTERVAL_HOURS = float(os.environ.get("UPDATE_INTERVAL_HOURS", "4"))
+OFFICE_START_HOUR     = int(os.environ.get("OFFICE_START_HOUR", "9"))
+OFFICE_END_HOUR       = int(os.environ.get("OFFICE_END_HOUR", "17"))
+JIRA_POST_NO_ACTIVITY = _env_bool("JIRA_POST_NO_ACTIVITY", True)
+MERIDIAN_MCP_PATH     = Path(os.environ.get(
+    "MERIDIAN_MCP_PATH",
+    str(REPO_ROOT.parent / "packages" / "meridian-mcp" / "dist" / "index.js"),
+))
