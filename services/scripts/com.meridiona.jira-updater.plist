@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    com.meridiona.jira-updater — slot-based Jira update daemon.
+
+    Install via services/scripts/install-jira-updater-daemon.sh which copies
+    this file into ~/Library/LaunchAgents/ with absolute paths substituted in,
+    then bootstraps it under launchd. The plist below uses {{HOME}} +
+    {{REPO_ROOT}} placeholders that the install script replaces.
+
+    Uninstall:
+        services/scripts/uninstall-jira-updater-daemon.sh
+    Or manually:
+        launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.meridiona.jira-updater.plist
+        rm ~/Library/LaunchAgents/com.meridiona.jira-updater.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.meridiona.jira-updater</string>
+
+    <key>WorkingDirectory</key>
+    <string>{{REPO_ROOT}}/services</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{REPO_ROOT}}/services/.venv/bin/python</string>
+        <string>-m</string>
+        <string>agents.jira_updater_daemon</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>MERIDIAN_DB</key>
+        <string>{{HOME}}/.meridian/meridian.db</string>
+        <key>MERIDIAN_HOME</key>
+        <string>{{HOME}}/.meridian</string>
+        <key>LOG_LEVEL</key>
+        <string>INFO</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+        <!-- Slot schedule tunables. Slots fire at OFFICE_START_HOUR +
+             UPDATE_INTERVAL_HOURS, then every UPDATE_INTERVAL_HOURS until
+             OFFICE_END_HOUR. E.g. 9–17 @ 4h → slots at 13 and 17. -->
+        <key>UPDATE_INTERVAL_HOURS</key>
+        <string>4</string>
+        <key>OFFICE_START_HOUR</key>
+        <string>9</string>
+        <key>OFFICE_END_HOUR</key>
+        <string>17</string>
+        <!-- Set JIRA_POST_NO_ACTIVITY=0 to suppress updates for tasks with
+             zero recorded activity in the window. -->
+        <key>JIRA_POST_NO_ACTIVITY</key>
+        <string>1</string>
+        <!-- OTLP auth for OpenObserve — must be set here (not just .env)
+             because observability.py initialises before dotenv is loaded.
+             The install script reads MERIDIAN_OO_AUTH from services/.env and
+             substitutes the {{MERIDIAN_OO_AUTH}} placeholder below. -->
+        <key>MERIDIAN_OO_AUTH</key>
+        <string>{{MERIDIAN_OO_AUTH}}</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>{{HOME}}/.meridian/logs/jira-updater.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{HOME}}/.meridian/logs/jira-updater-error.log</string>
+
+    <!-- RunAtLoad false: slot-based scheduling is handled by the daemon
+         itself — it is not meant to fire immediately on every login. -->
+    <key>RunAtLoad</key>
+    <false/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
