@@ -16,7 +16,7 @@ use crate::db::screenpipe::{
 };
 use crate::etl::extractor::extract_block_context;
 use crate::etl::text_merge::merge_session_texts;
-use crate::intelligence::categorizer::{categorize, SessionSignals};
+use crate::intelligence::session_categorizer::{categorize, SessionSignals};
 
 // ---------------------------------------------------------------------------
 // Constants

@@ -2,7 +2,7 @@
 
 mod common;
 
-use meridian::intelligence::settler::{build_category_prompt, parse_category};
+use meridian::intelligence::category_settler::{build_category_prompt, parse_category};
 
 // ---------------------------------------------------------------------------
 // parse_category — exact match only

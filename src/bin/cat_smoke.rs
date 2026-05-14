@@ -10,7 +10,7 @@
 
 use anyhow::{Context, Result};
 use meridian::db::screenpipe::{SignalEvent, WindowTitleCount};
-use meridian::intelligence::categorizer::{categorize, SessionSignals};
+use meridian::intelligence::session_categorizer::{categorize, SessionSignals};
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::SqlitePool;
 use std::str::FromStr;

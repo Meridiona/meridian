@@ -16,8 +16,8 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use meridian::config::LlmBackendConfig;
-use meridian::intelligence::classifier::backends::build_backend;
-use meridian::intelligence::classifier::{ClassifyRequest, PmTaskRef};
+use meridian::intelligence::category_llm::backends::build_backend;
+use meridian::intelligence::category_llm::{ClassifyRequest, PmTaskRef};
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::SqlitePool;
 

@@ -5,7 +5,7 @@ use sqlx::SqlitePool;
 use tracing::{debug, info, warn};
 
 use crate::db::meridian::update_session_category;
-use crate::intelligence::classifier::LlmBackend;
+use crate::intelligence::category_llm::LlmBackend;
 
 // ---------------------------------------------------------------------------
 // Category settler — re-classifies rule_based sessions via Foundation Models
@@ -70,7 +70,7 @@ pub async fn settle_all_categories(
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    if !crate::intelligence::classifier::backends::foundation::FoundationBackend::is_available() {
+    if !crate::intelligence::category_llm::backends::foundation::FoundationBackend::is_available() {
         debug!("category settler skipped — Foundation Models not available on this OS");
         return Ok(());
     }
