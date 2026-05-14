@@ -54,8 +54,7 @@ class UpdateResult:
 
 # ── Atlassian MCP client ───────────────────────────────────────────────────────
 class _AtlassianMCPClient:
-    """Wraps uvx mcp-atlassian. Holds one subprocess open for the lifetime of
-    the object so the FastMCP banner only prints once per run_update call."""
+    """Wraps uvx mcp-atlassian; each method call starts and tears down its own subprocess."""
 
     def __init__(self) -> None:
         self.url = os.environ.get("JIRA_URL", "")
@@ -92,37 +91,32 @@ class _AtlassianMCPClient:
             },
         )
 
-    async def _run(self, calls: list[tuple[str, dict]]) -> list[str]:
-        """Open one subprocess and execute all calls sequentially."""
+    async def _call(self, tool: str, args: dict) -> str:
         from mcp import ClientSession
         from mcp.client.stdio import stdio_client
 
-        results = []
         async with stdio_client(self._server_params()) as (r, w):
             async with ClientSession(r, w) as session:
                 await session.initialize()
-                for tool, args in calls:
-                    result = await session.call_tool(tool, args)
-                    if not result.content:
-                        results.append("{}")
-                        continue
-                    first = result.content[0]
-                    results.append(getattr(first, "text", str(first)) or "{}")
-        return results
+                result = await session.call_tool(tool, args)
+                if not result.content:
+                    return "{}"
+                first = result.content[0]
+                return getattr(first, "text", str(first)) or "{}"
 
     def fetch_in_progress(self) -> list[dict]:
         log.info("fetching in-progress tasks (JQL: %s)", _IN_PROGRESS_JQL)
         raw = asyncio.run(
-            self._run([("jira_search", {"jql": _IN_PROGRESS_JQL, "limit": 50})])
-        )[0]
+            self._call("jira_search", {"jql": _IN_PROGRESS_JQL, "limit": 50})
+        )
         issues = _parse_search_result(raw)
         return [_normalise_issue(i, self.url) for i in issues]
 
     def add_comment(self, task_key: str, body: str) -> str:
         log.info("posting comment to %s", task_key)
         raw = asyncio.run(
-            self._run([("jira_add_comment", {"issue_key": task_key, "body": body})])
-        )[0]
+            self._call("jira_add_comment", {"issue_key": task_key, "body": body})
+        )
         try:
             data = json.loads(raw)
             if isinstance(data, dict):
@@ -172,7 +166,11 @@ def _normalise_issue(issue: dict, base_url: str) -> dict:
 
 # ── Meridian MCP client ────────────────────────────────────────────────────────
 class _MeridianMCPClient:
-    """Wraps the local Node.js meridian-mcp server."""
+    """Wraps the local Node.js meridian-mcp server.
+
+    Use get_task_sessions_batch() to query multiple tasks in a single
+    subprocess, avoiding per-task Node.js startup overhead.
+    """
 
     def __init__(self) -> None:
         self.mcp_path = Path(MERIDIAN_MCP_PATH)
@@ -191,31 +189,45 @@ class _MeridianMCPClient:
             env={**os.environ, "MERIDIAN_DB": str(MERIDIAN_DB)},
         )
 
-    async def _call(self, tool: str, args: dict) -> str:
+    async def _call_many(self, calls: list[tuple[str, dict]]) -> list[str]:
         from mcp import ClientSession
         from mcp.client.stdio import stdio_client
 
+        results: list[str] = []
         async with stdio_client(self._server_params()) as (r, w):
             async with ClientSession(r, w) as session:
                 await session.initialize()
-                result = await session.call_tool(tool, args)
-                if not result.content:
-                    return ""
-                first = result.content[0]
-                return getattr(first, "text", str(first)) or ""
+                for tool, args in calls:
+                    result = await session.call_tool(tool, args)
+                    if not result.content:
+                        results.append("")
+                    else:
+                        first = result.content[0]
+                        results.append(getattr(first, "text", str(first)) or "")
+        return results
 
-    def get_task_sessions(self, task_key: str, from_time: str, to_time: str) -> str:
-        return asyncio.run(
-            self._call(
+    def get_task_sessions_batch(
+        self,
+        tasks: list[tuple[str, str, str]],
+    ) -> list[str]:
+        """Fetch sessions for multiple tasks in a single subprocess.
+
+        tasks: list of (task_key, from_time, to_time)
+        Returns response strings in the same order.
+        """
+        calls = [
+            (
                 "get-task-sessions",
                 {
-                    "task_key": task_key,
-                    "from_time": from_time,
-                    "to_time": to_time,
+                    "task_key": tk,
+                    "from_time": ft,
+                    "to_time": tt,
                     "include_content": True,
                 },
             )
-        )
+            for tk, ft, tt in tasks
+        ]
+        return asyncio.run(self._call_many(calls))
 
 
 # ── Hermes summary generator ───────────────────────────────────────────────────
@@ -262,7 +274,8 @@ def _parse_mcp_summary(mcp_text: str) -> tuple[bool, int, int]:
         return False, 0, 0
     m = _SUMMARY_RE.search(mcp_text)
     if not m:
-        return True, 1, 0
+        log.warning("could not parse session summary from MCP response: %s", mcp_text[:200])
+        return True, 0, 0
     count = int(m.group(1))
     hours = int(m.group(2) or 0)
     minutes = int(m.group(3))
@@ -339,7 +352,7 @@ def run_update(
     task_filter: str | None = None,
     dry_run: bool = False,
 ) -> list[UpdateResult]:
-    """Main entry point — safe to call from a thread (via run_in_executor)."""
+    """Main entry point called by daemon and CLI."""
     conn = sqlite3.connect(str(MERIDIAN_DB))
     conn.row_factory = sqlite3.Row
     try:
@@ -347,23 +360,20 @@ def run_update(
         meridian = _MeridianMCPClient()
 
         tasks = jira.fetch_in_progress()
-        log.info("found %d in-progress task(s): %s", len(tasks), [t["task_key"] for t in tasks])
         if task_filter:
             tasks = [t for t in tasks if t["task_key"] == task_filter]
-            if not tasks:
-                log.warning(
-                    "task %s not found in in-progress tasks — check its status in Jira",
-                    task_filter,
-                )
-                return []
         if not tasks:
             log.info("no in-progress tasks found")
             return []
 
+        mcp_results = meridian.get_task_sessions_batch(
+            [(t["task_key"], from_time, to_time) for t in tasks]
+        )
+
         results: list[UpdateResult] = []
-        for task in tasks:
+        for task, mcp_text in zip(tasks, mcp_results):
             result = _process_task(
-                conn, jira, meridian, task, task["task_key"], from_time, to_time, dry_run
+                conn, jira, task, task["task_key"], from_time, to_time, dry_run, mcp_text
             )
             results.append(result)
         return results
@@ -374,12 +384,12 @@ def run_update(
 def _process_task(
     conn: sqlite3.Connection,
     jira: _AtlassianMCPClient,
-    meridian: _MeridianMCPClient,
     task: dict,
     task_key: str,
     from_time: str,
     to_time: str,
     dry_run: bool,
+    mcp_text: str,
 ) -> UpdateResult:
     if db.get_last_update(conn, task_key, from_time, to_time):
         log.info("skipping %s: already posted for this slot", task_key)
@@ -388,7 +398,6 @@ def _process_task(
             session_count=0, comment_body="", comment_id=None, state="skipped",
         )
 
-    mcp_text = meridian.get_task_sessions(task_key, from_time, to_time)
     had_activity, session_count, duration_s = _parse_mcp_summary(mcp_text)
 
     if had_activity:

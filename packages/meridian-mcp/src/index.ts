@@ -723,14 +723,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         // Fetch all dimension tags for these sessions in one query
-        const sessionIds = rows.map(r => r.id);
-        const placeholders = sessionIds.map(() => "?").join(",");
         const dimRows = dbAll(db, `
-          SELECT session_id, dimension, value, confidence
-          FROM session_dimensions
-          WHERE session_id IN (${placeholders})
-          ORDER BY session_id, confidence DESC
-        `, sessionIds as SqlVal[]) as Array<{
+          SELECT sd.session_id, sd.dimension, sd.value, sd.confidence
+          FROM session_dimensions sd
+          WHERE sd.session_id IN (
+            SELECT s.id
+            FROM app_sessions s
+            JOIN ticket_links tl ON s.id = tl.session_id
+            WHERE tl.task_key = ? AND ${tw.cond}
+          )
+          ORDER BY sd.session_id, sd.confidence DESC
+        `, [taskKey, ...tw.params] as SqlVal[]) as Array<{
           session_id: number; dimension: string; value: string; confidence: number;
         }>;
 
@@ -972,6 +975,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           topTitle ? `Window: ${topTitle}` : "",
           "",
         ].filter(l => l !== "");
+
+        if (elapsed > 120) {
+          lines.push(`⚠ Session data is ${Math.round(elapsed / 60)}min old — Meridian daemon may not be running`);
+        }
 
         const taskKey = ctx?.jira_key ?? recent?.task_key ?? null;
 
