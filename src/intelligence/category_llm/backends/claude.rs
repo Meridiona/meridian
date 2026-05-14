@@ -3,8 +3,8 @@
 use anyhow::{Context, Result};
 use tracing::debug;
 
-use crate::intelligence::classifier::prompt;
-use crate::intelligence::classifier::{ClassifyRequest, ClassifyResponse};
+use crate::intelligence::category_llm::prompt;
+use crate::intelligence::category_llm::{ClassifyRequest, ClassifyResponse};
 
 const CLAUDE_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";

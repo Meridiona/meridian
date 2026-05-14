@@ -1,10 +1,10 @@
 // meridian — normalises screenpipe activity into structured app sessions
 
-pub mod categorizer;
-pub mod classifier;
+pub mod category_llm;
+pub mod session_categorizer;
+pub mod category_settler;
 pub mod jira_updater;
 pub mod providers;
-pub mod settler;
 pub mod task_linker;
 
 pub use jira_updater::run_jira_update;
@@ -18,8 +18,8 @@ use crate::config::{Config, PmProviderConfig};
 
 /// Re-classifies all sessions that still have a rule-based category using Foundation Models.
 pub async fn run_categorization(meridian: &SqlitePool, config: &Config) -> Result<()> {
-    let backend = classifier::backends::build_backend(&config.llm_backend);
-    if let Err(e) = settler::settle_all_categories(meridian, &backend, config.min_classification_duration_s).await {
+    let backend = category_llm::backends::build_backend(&config.llm_backend);
+    if let Err(e) = category_settler::settle_all_categories(meridian, &backend, config.min_classification_duration_s).await {
         warn!(error = %e, "category settler failed");
     }
     Ok(())

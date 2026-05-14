@@ -3,8 +3,8 @@
 use anyhow::{Context, Result};
 use tracing::debug;
 
-use crate::intelligence::classifier::prompt;
-use crate::intelligence::classifier::{ClassifyRequest, ClassifyResponse};
+use crate::intelligence::category_llm::prompt;
+use crate::intelligence::category_llm::{ClassifyRequest, ClassifyResponse};
 
 pub struct OpenAiCompatBackend {
     base_url: String,

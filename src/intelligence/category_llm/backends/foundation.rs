@@ -8,8 +8,8 @@ use tracing::{debug, warn};
 
 static MACOS_26_OR_LATER: OnceLock<bool> = OnceLock::new();
 
-use crate::intelligence::classifier::prompt;
-use crate::intelligence::classifier::{ClassifyRequest, ClassifyResponse};
+use crate::intelligence::category_llm::prompt;
+use crate::intelligence::category_llm::{ClassifyRequest, ClassifyResponse};
 
 extern "C" {
     fn fm_check_availability(out_reason: *mut *mut c_char) -> i32;
