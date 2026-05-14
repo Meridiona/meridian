@@ -1,10 +1,10 @@
 // meridian — normalises screenpipe activity into structured app sessions
 
 pub mod category_llm;
-pub mod session_categorizer;
 pub mod category_settler;
 pub mod jira_updater;
 pub mod providers;
+pub mod session_categorizer;
 pub mod task_linker;
 
 pub use jira_updater::run_jira_update;
@@ -19,7 +19,13 @@ use crate::config::{Config, PmProviderConfig};
 /// Re-classifies all sessions that still have a rule-based category using Foundation Models.
 pub async fn run_categorization(meridian: &SqlitePool, config: &Config) -> Result<()> {
     let backend = category_llm::backends::build_backend(&config.llm_backend);
-    if let Err(e) = category_settler::settle_all_categories(meridian, &backend, config.min_classification_duration_s).await {
+    if let Err(e) = category_settler::settle_all_categories(
+        meridian,
+        &backend,
+        config.min_classification_duration_s,
+    )
+    .await
+    {
         warn!(error = %e, "category settler failed");
     }
     Ok(())
@@ -35,9 +41,7 @@ pub async fn run_pm_sync(meridian: &SqlitePool, config: &Config) -> Result<()> {
     for provider in &config.pm_providers {
         let name = provider.provider_name();
         let result = match provider {
-            PmProviderConfig::Jira(cfg) => {
-                providers::jira::refresh_if_stale(meridian, cfg).await
-            }
+            PmProviderConfig::Jira(cfg) => providers::jira::refresh_if_stale(meridian, cfg).await,
             PmProviderConfig::GitHub(cfg) => {
                 providers::github::refresh_if_stale(meridian, cfg).await
             }
