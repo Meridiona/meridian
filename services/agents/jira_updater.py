@@ -339,35 +339,36 @@ def run_update(
     task_filter: str | None = None,
     dry_run: bool = False,
 ) -> list[UpdateResult]:
-    """Main entry point called by daemon and CLI."""
+    """Main entry point — safe to call from a thread (via run_in_executor)."""
     conn = sqlite3.connect(str(MERIDIAN_DB))
     conn.row_factory = sqlite3.Row
-    jira = _AtlassianMCPClient()
-    meridian = _MeridianMCPClient()
+    try:
+        jira = _AtlassianMCPClient()
+        meridian = _MeridianMCPClient()
 
-    tasks = jira.fetch_in_progress()
-    log.info("found %d in-progress task(s): %s", len(tasks), [t["task_key"] for t in tasks])
-    if task_filter:
-        tasks = [t for t in tasks if t["task_key"] == task_filter]
+        tasks = jira.fetch_in_progress()
+        log.info("found %d in-progress task(s): %s", len(tasks), [t["task_key"] for t in tasks])
+        if task_filter:
+            tasks = [t for t in tasks if t["task_key"] == task_filter]
+            if not tasks:
+                log.warning(
+                    "task %s not found in in-progress tasks — check its status in Jira",
+                    task_filter,
+                )
+                return []
         if not tasks:
-            log.warning("task %s is not in your in-progress tasks — check its status in Jira", task_filter)
-            conn.close()
+            log.info("no in-progress tasks found")
             return []
-    if not tasks:
-        log.info("no in-progress tasks found")
+
+        results: list[UpdateResult] = []
+        for task in tasks:
+            result = _process_task(
+                conn, jira, meridian, task, task["task_key"], from_time, to_time, dry_run
+            )
+            results.append(result)
+        return results
+    finally:
         conn.close()
-        return []
-
-    results: list[UpdateResult] = []
-    for task in tasks:
-        task_key = task["task_key"]
-        result = _process_task(
-            conn, jira, meridian, task, task_key, from_time, to_time, dry_run
-        )
-        results.append(result)
-
-    conn.close()
-    return results
 
 
 def _process_task(
