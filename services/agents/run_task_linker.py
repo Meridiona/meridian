@@ -1,6 +1,6 @@
 """run_task_linker — thin hermes bridge for batch session→task classification.
 
-Reads a JSON batch from stdin, calls agent_tiebreak() in MODE_STANDALONE on
+Reads a JSON batch from stdin, calls classify_session() in MODE_STANDALONE on
 each session, writes a single JSON object with all results to stdout.
 
 No DB access, no cursor management, no orchestration — pure function: JSON in,
@@ -17,7 +17,7 @@ from typing import Any
 
 from agents._hermes_setup import ensure_hermes_importable
 from agents import observability
-from agents.agent_tiebreaker import agent_tiebreak, AgentDecision, MODE_STANDALONE
+from agents.task_classifier_agent import classify_session, ClassifierDecision, MODE_STANDALONE
 
 log = logging.getLogger("agents.run_task_linker")
 tracer = observability.setup("meridian-task-linker")
@@ -42,7 +42,7 @@ def _classify_one(
     pm_task_lookup: dict[str, dict[str, Any]],
     all_pm_tasks: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Run agent_tiebreak for one session; return a result dict."""
+    """Run classify_session for one session; return a result dict."""
     sid = int(session_raw["id"])
     session = _build_session(session_raw)
 
@@ -52,7 +52,7 @@ def _classify_one(
         # any print() statements inside AIAgent.__init__ or the LLM call do not
         # contaminate the JSON output that Rust reads from our stdout.
         with contextlib.redirect_stdout(sys.stderr):
-            result: AgentDecision = agent_tiebreak(
+            result: ClassifierDecision = classify_session(
                 session,
                 dims_grouped={},        # no Stage 1/2 dims available
                 top_candidates=[],      # not used in MODE_STANDALONE
@@ -74,7 +74,7 @@ def _classify_one(
             "elapsed_s":  elapsed,
         }
 
-    method = "llm_standalone" if result.method == "agent_tiebreak" else result.method
+    method = "llm_standalone" if result.method == "task_classifier" else result.method
 
     return {
         "session_id": sid,

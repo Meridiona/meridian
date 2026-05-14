@@ -39,7 +39,7 @@ def make_decision(
     task_key: str | None = "KAN-42",
     confidence: float = 0.9,
     routing: str = "auto",
-    method: str = "agent_tiebreak",
+    method: str = "task_classifier",
     dimensions: dict | None = None,
     elapsed_s: float = 0.05,
 ) -> MagicMock:
@@ -92,7 +92,7 @@ class TestClassifyOne:
         raw = make_session_raw(id=5)
         decision = make_decision(task_key="KAN-42", confidence=0.9, routing="auto",
                                   dimensions={"activity": ["coding"]})
-        with patch("agents.run_task_linker.agent_tiebreak", return_value=decision):
+        with patch("agents.run_task_linker.classify_session", return_value=decision):
             result = _classify_one(raw, {"KAN-42": {}}, [])
 
         assert result["session_id"] == 5
@@ -102,24 +102,24 @@ class TestClassifyOne:
         assert result["dimensions"] == {"activity": ["coding"]}
         assert "elapsed_s" in result
 
-    def test_relabels_agent_tiebreak_method_to_llm_standalone(self):
+    def test_relabels_task_classifier_method_to_llm_standalone(self):
         raw = make_session_raw(id=3)
-        decision = make_decision(method="agent_tiebreak")
-        with patch("agents.run_task_linker.agent_tiebreak", return_value=decision):
+        decision = make_decision(method="task_classifier")
+        with patch("agents.run_task_linker.classify_session", return_value=decision):
             result = _classify_one(raw, {}, [])
         assert result["method"] == "llm_standalone", \
-            "agent_tiebreak must be renamed to llm_standalone in output"
+            "task_classifier must be renamed to llm_standalone in output"
 
     def test_preserves_non_tiebreak_method_names(self):
         raw = make_session_raw(id=4)
         decision = make_decision(method="rule_match")
-        with patch("agents.run_task_linker.agent_tiebreak", return_value=decision):
+        with patch("agents.run_task_linker.classify_session", return_value=decision):
             result = _classify_one(raw, {}, [])
         assert result["method"] == "rule_match"
 
     def test_exception_returns_llm_error_result_not_exception(self):
         raw = make_session_raw(id=7)
-        with patch("agents.run_task_linker.agent_tiebreak",
+        with patch("agents.run_task_linker.classify_session",
                    side_effect=RuntimeError("LLM timeout")):
             result = _classify_one(raw, {}, [])
 
@@ -133,7 +133,7 @@ class TestClassifyOne:
     def test_overhead_routing_when_no_task_key(self):
         raw = make_session_raw(id=9)
         decision = make_decision(task_key=None, routing="skip", confidence=0.15)
-        with patch("agents.run_task_linker.agent_tiebreak", return_value=decision):
+        with patch("agents.run_task_linker.classify_session", return_value=decision):
             result = _classify_one(raw, {}, [])
         assert result["task_key"] is None
         assert result["routing"] == "skip"
@@ -141,14 +141,14 @@ class TestClassifyOne:
     def test_elapsed_s_is_float(self):
         raw = make_session_raw(id=11)
         decision = make_decision(elapsed_s=0.123)
-        with patch("agents.run_task_linker.agent_tiebreak", return_value=decision):
+        with patch("agents.run_task_linker.classify_session", return_value=decision):
             result = _classify_one(raw, {}, [])
         assert isinstance(result["elapsed_s"], float)
 
     def test_dimensions_empty_dict_when_none_returned(self):
         raw = make_session_raw(id=13)
         decision = make_decision(dimensions={})
-        with patch("agents.run_task_linker.agent_tiebreak", return_value=decision):
+        with patch("agents.run_task_linker.classify_session", return_value=decision):
             result = _classify_one(raw, {}, [])
         assert result["dimensions"] == {}
 
@@ -176,14 +176,14 @@ class TestSubprocessContract:
             "sys.modules['agents._hermes_setup'] = MagicMock()\n"
             "m = MagicMock(); m.setup = lambda *a, **kw: MagicMock()\n"
             "sys.modules['agents.observability'] = m\n"
-            # stub agent_tiebreak to return a fixed decision
+            # stub classify_session to return a fixed decision
             "from unittest.mock import MagicMock as _M\n"
             "_d = _M(); _d.chosen_task_key = 'KAN-1'; _d.confidence = 0.85\n"
-            "_d.routing = 'auto'; _d.method = 'agent_tiebreak'\n"
+            "_d.routing = 'auto'; _d.method = 'task_classifier'\n"
             "_d.dimensions = {}; _d.elapsed_s = 0.01; _d.reasoning = 'stub'\n"
-            "_tb = _M(); _tb.agent_tiebreak = lambda *a, **kw: _d\n"
-            "_tb.AgentDecision = _M(); _tb.MODE_STANDALONE = 'standalone'\n"
-            "sys.modules['agents.agent_tiebreaker'] = _tb\n"
+            "_tc = _M(); _tc.classify_session = lambda *a, **kw: _d\n"
+            "_tc.ClassifierDecision = _M(); _tc.MODE_STANDALONE = 'standalone'\n"
+            "sys.modules['agents.task_classifier_agent'] = _tc\n"
             "import agents.run_task_linker as m\n"
             "m.main()\n"
         )

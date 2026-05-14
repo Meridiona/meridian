@@ -169,13 +169,12 @@ async fn trivial_sessions_overhead_skip_without_python() {
     run_task_linking(&pool, &cfg_no_python()).await.unwrap();
 
     for session_id in [id1, id2] {
-        let row = sqlx::query(
-            "SELECT method, routing, task_key FROM ticket_links WHERE session_id = ?",
-        )
-        .bind(session_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap_or_else(|_| panic!("no ticket_link for session {session_id}"));
+        let row =
+            sqlx::query("SELECT method, routing, task_key FROM ticket_links WHERE session_id = ?")
+                .bind(session_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap_or_else(|_| panic!("no ticket_link for session {session_id}"));
 
         assert_eq!(row.get::<String, _>(0), "prefilter_trivial");
         assert_eq!(row.get::<String, _>(1), "skip");
@@ -183,11 +182,10 @@ async fn trivial_sessions_overhead_skip_without_python() {
     }
 
     // Cursor must advance past both
-    let cursor: (i64,) =
-        sqlx::query_as("SELECT last_session_id FROM agent_cursor WHERE id = 1")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let cursor: (i64,) = sqlx::query_as("SELECT last_session_id FROM agent_cursor WHERE id = 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(cursor.0, id2);
 }
 
@@ -223,13 +221,15 @@ async fn pre_linked_sessions_are_not_reprocessed() {
 
     run_task_linking(&pool, &cfg_no_python()).await.unwrap();
 
-    let count: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM ticket_links WHERE session_id = ?")
-            .bind(session_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(count.0, 1, "pre-linked session must not get a duplicate link");
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM ticket_links WHERE session_id = ?")
+        .bind(session_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        count.0, 1,
+        "pre-linked session must not get a duplicate link"
+    );
 }
 
 #[tokio::test]
@@ -241,13 +241,11 @@ async fn mixed_batch_trivial_and_short_handled_correctly() {
     run_task_linking(&pool, &cfg_no_python()).await.unwrap();
 
     // Trivial: linked as overhead/skip
-    let trivial_row = sqlx::query(
-        "SELECT method FROM ticket_links WHERE session_id = ?",
-    )
-    .bind(trivial_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let trivial_row = sqlx::query("SELECT method FROM ticket_links WHERE session_id = ?")
+        .bind(trivial_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(trivial_row.get::<String, _>(0), "prefilter_trivial");
 
     // Short: not linked at all
@@ -270,8 +268,7 @@ async fn stub_python_writes_task_link_dimensions_and_cursor() {
     }
 
     let pool = common::make_meridian_db().await;
-    let session_id =
-        seed_session(&pool, "Xcode", 120, Some("implementing hermes bridge")).await;
+    let session_id = seed_session(&pool, "Xcode", 120, Some("implementing hermes bridge")).await;
 
     let stub_dir = stub_services_dir();
     let cfg = make_cfg_backfill(
@@ -316,11 +313,10 @@ async fn stub_python_writes_task_link_dimensions_and_cursor() {
     assert_eq!(activity.0, "coding");
 
     // cursor advanced to this session
-    let cursor: (i64,) =
-        sqlx::query_as("SELECT last_session_id FROM agent_cursor WHERE id = 1")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let cursor: (i64,) = sqlx::query_as("SELECT last_session_id FROM agent_cursor WHERE id = 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(cursor.0, session_id);
 
     // agent_run audit row is success
@@ -345,8 +341,7 @@ async fn second_run_is_idle_when_cursor_is_current() {
     }
 
     let pool = common::make_meridian_db().await;
-    let session_id =
-        seed_session(&pool, "VSCode", 120, Some("adding unit tests")).await;
+    let session_id = seed_session(&pool, "VSCode", 120, Some("adding unit tests")).await;
 
     let stub_dir = stub_services_dir();
     let cfg = make_cfg_backfill(
@@ -394,14 +389,16 @@ async fn no_backfill_skips_existing_sessions_on_first_run() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(count.0, 0, "existing sessions must not be classified when backfill=false");
+    assert_eq!(
+        count.0, 0,
+        "existing sessions must not be classified when backfill=false"
+    );
 
     // Cursor must have advanced to the max session id
-    let cursor: (i64,) =
-        sqlx::query_as("SELECT last_session_id FROM agent_cursor WHERE id = 1")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let cursor: (i64,) = sqlx::query_as("SELECT last_session_id FROM agent_cursor WHERE id = 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     let max_id: (i64,) = sqlx::query_as("SELECT MAX(id) FROM app_sessions")
         .fetch_one(&pool)
         .await
@@ -448,5 +445,8 @@ async fn no_backfill_classifies_new_sessions_after_first_run() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(count_new.0, 1, "new session added after first run must be classified");
+    assert_eq!(
+        count_new.0, 1,
+        "new session added after first run must be classified"
+    );
 }
