@@ -743,6 +743,8 @@ def mark_update_sent(conn: sqlite3.Connection, update_id: int, comment_id: str) 
         (comment_id, update_id),
     )
     conn.commit()
+    if conn.execute("SELECT changes()").fetchone()[0] == 0:
+        log.warning("mark_update_sent: no row matched id=%d", update_id)
 
 
 def mark_update_failed(conn: sqlite3.Connection, update_id: int, error: str) -> None:
@@ -752,3 +754,5 @@ def mark_update_failed(conn: sqlite3.Connection, update_id: int, error: str) -> 
         (error[:1000], update_id),
     )
     conn.commit()
+    if conn.execute("SELECT changes()").fetchone()[0] == 0:
+        log.warning("mark_update_failed: no row matched id=%d", update_id)

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
 import logging
 import signal
 import sys
@@ -43,6 +44,11 @@ def compute_slots(office_start: int, office_end: int, interval_h: float) -> list
     while t <= office_end:
         slots.append(round(t))
         t += interval_h
+    if not slots:
+        raise ValueError(
+            f"No update slots fit interval {interval_h}h within office hours "
+            f"{office_start}–{office_end}"
+        )
     return slots
 
 
@@ -61,6 +67,8 @@ def slot_window(slot_hour: int, interval_h: float) -> tuple[str, str]:
 
 def next_slot_dt(slots: list[int]) -> datetime:
     """Return datetime of the next scheduled slot (may be tomorrow)."""
+    if not slots:
+        raise ValueError("slots must be non-empty")
     now = datetime.now().astimezone()
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     for h in sorted(slots):
@@ -105,7 +113,6 @@ async def daemon_loop(dry_run: bool = False) -> None:
     calls (MCP stdio clients) don't conflict with the running event loop.
     """
     from agents.jira_updater import run_update
-    import functools
 
     slots = compute_slots(OFFICE_START_HOUR, OFFICE_END_HOUR, UPDATE_INTERVAL_HOURS)
     log.info(

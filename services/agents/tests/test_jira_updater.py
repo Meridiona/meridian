@@ -1,4 +1,3 @@
-# meridian — normalises screenpipe activity into structured app sessions
 """Unit tests for jira_updater and jira_updater_daemon helper functions.
 
 Covers pure-logic helpers (_parse_search_result, _normalise_issue,
@@ -25,7 +24,7 @@ from agents.jira_updater import (
     _parse_mcp_summary,
     _parse_search_result,
 )
-from agents.jira_updater_daemon import compute_slots, slot_window
+from agents.jira_updater_daemon import compute_slots, next_slot_dt, slot_window
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────────
@@ -206,10 +205,10 @@ def test_parse_mcp_summary_exact_one_hour():
 
 
 def test_parse_mcp_summary_unrecognised_format_treated_as_activity():
-    """Unrecognised text that lacks the sentinel → (True, 1, 0) defensive default."""
+    """Unrecognised text that lacks the sentinel → (True, 0, 0): activity present but counts unknown."""
     had, count, dur = _parse_mcp_summary("Some unexpected MCP output.")
     assert had is True
-    assert count == 1
+    assert count == 0
     assert dur == 0
 
 
@@ -310,13 +309,20 @@ def test_compute_slots_2h_interval():
 
 
 def test_compute_slots_interval_exceeds_window():
-    """Interval longer than office window → empty list."""
-    assert compute_slots(9, 10, 8) == []
+    """Interval longer than office window → ValueError (no valid slots)."""
+    with pytest.raises(ValueError, match="No update slots fit"):
+        compute_slots(9, 10, 8)
 
 
 def test_compute_slots_tight_window():
     """Exactly one interval fits at end → one slot."""
     assert compute_slots(9, 11, 2) == [11]
+
+
+def test_next_slot_dt_raises_on_empty_slots():
+    """next_slot_dt with an empty list raises ValueError, not IndexError."""
+    with pytest.raises(ValueError, match="slots must be non-empty"):
+        next_slot_dt([])
 
 
 # ── slot_window ──────────────────────────────────────────────────────────────────
