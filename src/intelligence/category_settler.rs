@@ -316,17 +316,19 @@ pub async fn settle_range(
             .await
         }
         None => {
-            sqlx::query_as(
-                "SELECT id, app_name, duration_s, window_titles, COALESCE(session_text, '')
+            {
+                sqlx::query_as(
+                    "SELECT id, app_name, duration_s, window_titles, COALESCE(session_text, '')
                  FROM app_sessions
                  WHERE duration_s >= ? AND id >= ?
                  ORDER BY id ASC",
-            )
-            .bind(min_duration_s)
-            .bind(from_id)
-            .fetch_all(meridian)
+                )
+                .bind(min_duration_s)
+                .bind(from_id)
+                .fetch_all(meridian)
+            }
+            .await
         }
-        .await,
     }
     .context("loading sessions for backfill")?;
 
@@ -341,17 +343,29 @@ pub async fn settle_range(
         }
         match backend.generate_category(CATEGORY_SYSTEM, &user).await {
             Ok((cat, explanation)) => {
-                let expl = if explanation.is_empty() { None } else { Some(explanation.as_str()) };
+                let expl = if explanation.is_empty() {
+                    None
+                } else {
+                    Some(explanation.as_str())
+                };
                 let method = parse_category(&cat).unwrap_or(PARSE_ERROR_SENTINEL);
-                let conf = if method == PARSE_ERROR_SENTINEL { 0.0 } else { 0.9 };
-                if update_session_category(meridian, *id, method, conf, expl).await.is_ok() {
+                let conf = if method == PARSE_ERROR_SENTINEL {
+                    0.0
+                } else {
+                    0.9
+                };
+                if update_session_category(meridian, *id, method, conf, expl)
+                    .await
+                    .is_ok()
+                {
                     updated += 1;
                     info!(session_id = id, app = %app_name, category = method, "backfill: category updated");
                 }
             }
             Err(e) => {
                 warn!(session_id = id, error = %e, "backfill: FM failed — writing sentinel");
-                let _ = update_session_category(meridian, *id, PARSE_ERROR_SENTINEL, 0.0, None).await;
+                let _ =
+                    update_session_category(meridian, *id, PARSE_ERROR_SENTINEL, 0.0, None).await;
             }
         }
     }

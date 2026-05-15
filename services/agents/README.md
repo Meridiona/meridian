@@ -309,6 +309,33 @@ Order from cheapest to most invasive:
 
 ---
 
+## Backfill tools
+
+Two Rust binaries for re-running classification on past sessions. Neither
+touches `agent_cursor` — safe to re-run multiple times (writes are idempotent).
+
+### Session category backfill
+Re-runs Foundation Models categorisation on a session range:
+```bash
+cargo run --bin backfill_session_categories -- --today
+cargo run --bin backfill_session_categories -- --yesterday
+cargo run --bin backfill_session_categories -- --from-date 2025-05-01 --to-date 2025-05-14
+cargo run --bin backfill_session_categories -- --from-id 100 --to-id 500
+cargo run --bin backfill_session_categories -- --dry-run --today
+```
+
+### Task classification backfill
+Re-runs hermes session→task classification on a session range:
+```bash
+cargo run --bin backfill_task_classification -- --today
+cargo run --bin backfill_task_classification -- --yesterday
+cargo run --bin backfill_task_classification -- --from-date 2025-05-01 --to-date 2025-05-14
+cargo run --bin backfill_task_classification -- --from-id 100 --to-id 500
+cargo run --bin backfill_task_classification -- --dry-run --today
+```
+
+---
+
 ## Limitations / known gaps
 
 - **`dispatch_queue` drainer is not implemented.** Stage 1/2/3 enqueue rows with `state='pending'`, but nothing currently moves them to `'sent'`. The old `agents/jira_keeper.py` was the hermes-era equivalent and hasn't been ported to read from the queue. Until the drainer ships, no automatic Jira write-backs happen.
