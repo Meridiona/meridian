@@ -1,37 +1,23 @@
 // meridian — normalises screenpipe activity into structured app sessions
-// https://github.com/meridiona/meridian
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use sqlx::SqlitePool;
 use tracing::{debug, info, warn};
 
 use crate::db::meridian::{
-    close_active_session, close_active_session_with, complete_etl_run, get_active_session,
-    get_cursor, insert_etl_run, insert_gap, update_cursor, upsert_active_session,
-    write_session_traceparent, ActiveSession,
+    close_active_session, complete_etl_run, get_active_session, get_cursor, insert_etl_run,
+    insert_gap, update_cursor,
 };
-use crate::db::screenpipe::{
-    count_frames_in_window, get_frames_since, get_last_ui_event_for_app, AudioSnippet, SignalEvent,
-    WindowTitleCount,
-};
-use crate::etl::extractor::extract_block_context;
-use crate::etl::text_merge::merge_session_texts;
-use crate::intelligence::categorizer::{categorize, SessionSignals};
+use crate::db::screenpipe::{count_frames_in_window, get_frames_since};
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
+use super::block_ops::{close_block, timestamp_gap_secs, upsert_open_block, BlockBounds};
+use super::session_builder::{is_browser, url_domain};
 
 const BATCH_SIZE: i64 = 100;
-const AUDIO_SNIPPET_CAP: usize = 50;
 const GAP_THRESHOLD_SECS: i64 = 300;
 
-// ---------------------------------------------------------------------------
-// Public entry point
-// ---------------------------------------------------------------------------
-
 /// Runs one full ETL cycle:
-///   1. Reads frames from screenpipe in batches of 500.
+///   1. Reads frames from screenpipe in batches of 100.
 ///   2. Groups consecutive frames by `app_name` (strict: every change = new session).
 ///   3. Closes finished sessions into `app_sessions` and keeps the still-open
 ///      block in `active_session`.
@@ -46,9 +32,6 @@ const GAP_THRESHOLD_SECS: i64 = 300;
     )
 )]
 pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<()> {
-    // ------------------------------------------------------------------
-    // 1. Read cursor
-    // ------------------------------------------------------------------
     let cursor = get_cursor(meridian).await?;
     let mut last_processed_id = cursor.last_frame_id;
     let run_start_cursor = last_processed_id;
@@ -56,39 +39,27 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
     tracing::Span::current().record("from_frame_id", run_start_cursor);
     info!(from_frame_id = last_processed_id, "ETL run starting");
 
-    // ------------------------------------------------------------------
-    // 2. Peek at whether there is anything to process
-    // ------------------------------------------------------------------
     let first_batch = get_frames_since(screenpipe, last_processed_id, BATCH_SIZE).await?;
     if first_batch.is_empty() {
         info!("no new frames — nothing to do");
         return Ok(());
     }
 
-    // We now know the approximate upper bound for the audit row.
     let approx_to_frame_id = first_batch
         .last()
         .map(|f| f.id)
         .unwrap_or(last_processed_id);
 
-    // ------------------------------------------------------------------
-    // 3. Insert ETL run (status = running)
-    // ------------------------------------------------------------------
     let run_id = insert_etl_run(meridian, run_start_cursor, approx_to_frame_id).await?;
     tracing::Span::current().record("run_id", run_id);
     tracing::Span::current().record("to_frame_id", approx_to_frame_id);
     info!(run_id, "ETL run row inserted");
 
-    // ------------------------------------------------------------------
-    // 4. Process frames in batches
-    // ------------------------------------------------------------------
     let mut sessions_closed: i64 = 0;
 
-    // Cross-run gap check: if there's a stale active_session from the previous
-    // ETL run, compare its last_seen_at against the first frame we're about to
-    // process. A gap > GAP_THRESHOLD_SECS means the machine was asleep or idle
-    // between runs. Close the stale session at its real end time and record the
-    // gap so the new run starts clean.
+    // Cross-run gap check: if there's a stale active_session from the previous ETL run,
+    // compare its last_seen_at against the first frame we're about to process. A gap
+    // > GAP_THRESHOLD_SECS means the machine was asleep or idle between runs.
     if let Ok(Some(stale)) = get_active_session(meridian).await {
         if let Some(first_frame) = first_batch.first() {
             if let Some(gap_secs) = timestamp_gap_secs(&stale.last_seen_at, &first_frame.timestamp)
@@ -137,9 +108,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
         }
     }
 
-    // Carry over the in-flight block state across batches.
     let mut current_app: Option<String> = None;
-    // For browser apps, also track the current window title so we split on tab change.
     let mut current_window: Option<String> = None;
     let mut block_start_frame_id: i64 = 0;
     let mut block_start_ts: String = String::new();
@@ -154,9 +123,6 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
         loop {
             for frame in &batch {
                 let app = frame.app_name.trim();
-                // For browsers, use the URL domain as the split key — it's stable
-                // within a site even as the page title changes. Falls back to
-                // window_name if screenpipe didn't capture a URL for this frame.
                 let window = frame
                     .browser_url
                     .as_deref()
@@ -164,8 +130,8 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                     .filter(|d| !d.is_empty())
                     .or_else(|| frame.window_name.as_deref().filter(|w| !w.is_empty()))
                     .unwrap_or("");
+
                 if app.is_empty() {
-                    // Extend whatever block is open without changing the app.
                     if current_app.is_some() {
                         block_frame_count += 1;
                         block_last_ts = frame.timestamp.clone();
@@ -175,12 +141,8 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                     continue;
                 }
 
-                // ----------------------------------------------------------
-                // Gap detection: check for a long pause between the last
-                // frame we processed and this one.  This runs BEFORE the
-                // app-switch state machine so it observes every inter-frame
-                // gap regardless of whether the app changed.
-                // ----------------------------------------------------------
+                // Gap detection: check for a long pause between the last frame and this one.
+                // Runs BEFORE the app-switch state machine so it fires regardless of app change.
                 if current_app.is_some() {
                     if let Some(gap) = timestamp_gap_secs(&block_last_ts, &frame.timestamp) {
                         if gap < 0 {
@@ -218,18 +180,10 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                             )
                             .await?;
 
-                            debug!(
-                                gap_secs = gap,
-                                gap_kind = kind,
-                                from = block_last_ts,
-                                to = frame.timestamp,
-                                "gap recorded"
-                            );
+                            debug!(gap_secs = gap, gap_kind = kind, from = block_last_ts, to = frame.timestamp, "gap recorded");
 
-                            // Close the pre-gap block so its duration_s ends at
-                            // block_last_ts (the last real frame before the gap),
-                            // not at the first frame after. This prevents the gap
-                            // time from inflating the session's focus duration.
+                            // Close the pre-gap block so its duration_s ends at block_last_ts,
+                            // preventing gap time from inflating the session's focus duration.
                             let closing_app = current_app.take().unwrap();
                             current_window = None;
                             sessions_closed += close_block(
@@ -248,40 +202,30 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                                 },
                             )
                             .await?;
-                            // current_app is now None; the match below will
-                            // start a fresh block for the post-gap frame.
                         }
                     }
                 }
 
-                // For browsers, a window title change is treated as a context switch —
-                // same as an app change for every other app. An empty window name
-                // (screenpipe didn't capture it yet) does not trigger a split.
+                // For browsers, a window/domain change triggers a session split.
                 let browser_window_changed = is_browser(app)
                     && !window.is_empty()
                     && current_window.as_deref() != Some(window);
 
                 match current_app.as_deref() {
                     None => {
-                        // Very first frame — start a block.
                         debug!(frame_id = frame.id, app, "first frame — starting block");
                         current_app = Some(app.to_owned());
                         current_window = Some(window.to_owned());
                         block_start_frame_id = frame.id;
                         block_start_ts = frame.timestamp.clone();
                         block_frame_count = 1;
-                        block_idle_frame_count = if frame.capture_trigger.as_deref() == Some("idle")
-                        {
-                            1
-                        } else {
-                            0
-                        };
+                        block_idle_frame_count =
+                            if frame.capture_trigger.as_deref() == Some("idle") { 1 } else { 0 };
                         block_last_ts = frame.timestamp.clone();
                         block_last_frame_id = frame.id;
                     }
 
                     Some(cur) if cur == app && !browser_window_changed => {
-                        // Same app and same browser window (or non-browser) — extend.
                         block_frame_count += 1;
                         if frame.capture_trigger.as_deref() == Some("idle") {
                             block_idle_frame_count += 1;
@@ -291,26 +235,16 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                     }
 
                     Some(cur) => {
-                        // App changed, or browser tab switched to a new window.
                         let old_app = cur.to_owned();
                         if browser_window_changed {
                             debug!(
-                                app,
-                                old_window = current_window.as_deref(),
-                                new_window = window,
-                                frame_id = frame.id,
-                                "browser window changed — closing block"
+                                app, old_window = current_window.as_deref(), new_window = window,
+                                frame_id = frame.id, "browser window changed — closing block"
                             );
                         } else {
-                            debug!(
-                                old_app = old_app,
-                                new_app = app,
-                                frame_id = frame.id,
-                                "app changed — closing block"
-                            );
+                            debug!(old_app = old_app, new_app = app, frame_id = frame.id, "app changed — closing block");
                         }
 
-                        // Close the old block.
                         sessions_closed += close_block(
                             screenpipe,
                             meridian,
@@ -328,18 +262,13 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                         )
                         .await?;
 
-                        // Start fresh block for the new app or browser window.
                         current_app = Some(app.to_owned());
                         current_window = Some(window.to_owned());
                         block_start_frame_id = frame.id;
                         block_start_ts = frame.timestamp.clone();
                         block_frame_count = 1;
-                        block_idle_frame_count = if frame.capture_trigger.as_deref() == Some("idle")
-                        {
-                            1
-                        } else {
-                            0
-                        };
+                        block_idle_frame_count =
+                            if frame.capture_trigger.as_deref() == Some("idle") { 1 } else { 0 };
                         block_last_ts = frame.timestamp.clone();
                         block_last_frame_id = frame.id;
                     }
@@ -348,7 +277,6 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
 
             last_processed_id = batch.last().map(|f| f.id).unwrap_or(last_processed_id);
 
-            // Fetch next batch.
             let next = get_frames_since(screenpipe, last_processed_id, BATCH_SIZE).await?;
             if next.is_empty() {
                 break;
@@ -356,9 +284,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
             batch = next;
         }
 
-        // ------------------------------------------------------------------
-        // 5. Upsert the still-open block into active_session
-        // ------------------------------------------------------------------
+        // Upsert the still-open block into active_session.
         if let Some(ref open_app) = current_app {
             if block_frame_count > 0 {
                 sessions_closed += upsert_open_block(
@@ -384,9 +310,6 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
     }
     .await;
 
-    // ------------------------------------------------------------------
-    // 6. Update cursor and finalise ETL run
-    // ------------------------------------------------------------------
     if let Err(ref e) = result {
         warn!(error = %e, "ETL run failed — updating cursor to last successful frame");
         complete_etl_run(meridian, run_id, sessions_closed, Some(&e.to_string())).await?;
@@ -406,420 +329,4 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
     );
 
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// BlockBounds — groups the positional fields shared by close_block /
-// upsert_open_block so both stay under clippy's 7-argument limit.
-// ---------------------------------------------------------------------------
-
-struct BlockBounds<'a> {
-    app: &'a str,
-    started_at: &'a str,
-    ended_at: &'a str,
-    next_frame_ts: Option<&'a str>,
-    min_frame_id: i64,
-    max_frame_id: i64,
-    frame_count: i64,
-    idle_frame_count: i64,
-}
-
-// ---------------------------------------------------------------------------
-// timestamp_gap_secs
-// ---------------------------------------------------------------------------
-
-/// Parses two RFC3339 timestamps and returns the difference in whole seconds,
-/// or `None` if either timestamp fails to parse.
-fn timestamp_gap_secs(earlier: &str, later: &str) -> Option<i64> {
-    let t0 = chrono::DateTime::parse_from_rfc3339(earlier).ok()?;
-    let t1 = chrono::DateTime::parse_from_rfc3339(later).ok()?;
-    Some((t1 - t0).num_seconds())
-}
-
-// ---------------------------------------------------------------------------
-// close_block
-// ---------------------------------------------------------------------------
-
-#[tracing::instrument(
-    skip_all,
-    fields(
-        app_name = %b.app,
-        frame_count = b.frame_count,
-        idle_frame_count = b.idle_frame_count,
-        run_id,
-        duration_s = tracing::field::Empty,
-        session_id = tracing::field::Empty,
-    )
-)]
-async fn close_block(
-    screenpipe: &SqlitePool,
-    meridian: &SqlitePool,
-    run_id: i64,
-    b: &BlockBounds<'_>,
-) -> Result<i64> {
-    let mut ctx = extract_block_context(
-        screenpipe,
-        b.app,
-        b.started_at,
-        b.ended_at,
-        b.min_frame_id,
-        b.max_frame_id,
-        b.frame_count,
-    )
-    .await?;
-
-    // Option C: use last ui_event as ended_at if it's more recent than the last frame.
-    // Only fires for app-switch closes (next_frame_ts is set); never for gap-closes.
-    // Tracks whether it fired so Option D below does not double-advance ended_at.
-    let option_c_fired = if let Some(next_ts) = b.next_frame_ts {
-        match get_last_ui_event_for_app(screenpipe, b.app, b.started_at, next_ts).await {
-            Ok(Some(ui_ts)) if ui_ts.as_str() > b.ended_at => {
-                debug!(
-                    app = b.app,
-                    ui_ts = ui_ts,
-                    "ended_at refined via ui_event (Option C)"
-                );
-                ctx.ended_at = ui_ts;
-                true
-            }
-            _ => false,
-        }
-    } else {
-        false
-    };
-
-    // Option D (extended to all app-switch closes): when Option C did not fire,
-    // advance ended_at to next_frame_ts if it is later than the current ended_at.
-    // This recovers the inter-frame gap between the last captured frame of this
-    // session and the first frame of the next app — time that is otherwise
-    // silently lost from duration_s.  next_frame_ts is only set for app-switch
-    // closes, never for gap-closes, so gap time is never included.
-    if !option_c_fired {
-        if let Some(next_ts) = b.next_frame_ts {
-            if next_ts > ctx.ended_at.as_str() {
-                debug!(
-                    app = b.app,
-                    next_ts,
-                    old_ended_at = ctx.ended_at.as_str(),
-                    "ended_at advanced to next_frame_ts (inter-frame gap recovery)"
-                );
-                ctx.ended_at = next_ts.to_string();
-            }
-        }
-    }
-
-    let existing = get_active_session(meridian).await?;
-
-    let result: (i64, i64) = match existing {
-        Some(ref active) if active.app_name == ctx.app_name => {
-            debug!(app = ctx.app_name, "merging and closing continuation block");
-            let merged = merge_into_active(active, &ctx, b.idle_frame_count)?;
-            let new_id = close_active_session_with(meridian, &merged, run_id).await?;
-            info!(
-                app_name = ctx.app_name,
-                session_id = new_id,
-                "session closed (merged continuation)"
-            );
-            (new_id, 1)
-        }
-
-        Some(ref active) => {
-            warn!(
-                stale_app = active.app_name,
-                new_app = ctx.app_name,
-                "stale active_session — closing stale first"
-            );
-            let stale_id = close_active_session_with(meridian, active, run_id).await?;
-            if let Some(tp) = crate::observability::current_traceparent() {
-                write_session_traceparent(meridian, stale_id, &tp)
-                    .await
-                    .context("write traceparent (stale session)")?;
-            }
-            let new_session = build_active_session(&ctx, b.idle_frame_count)?;
-            let new_id = close_active_session_with(meridian, &new_session, run_id).await?;
-            info!(
-                app_name = ctx.app_name,
-                session_id = new_id,
-                "session closed (fresh, after evicting stale)"
-            );
-            (new_id, 2)
-        }
-
-        None => {
-            let new_session = build_active_session(&ctx, b.idle_frame_count)?;
-            let new_id = close_active_session_with(meridian, &new_session, run_id).await?;
-            info!(app_name = b.app, session_id = new_id, "session closed");
-            (new_id, 1)
-        }
-    };
-
-    let (new_session_id, closed_count) = result;
-
-    // Record the duration for the span
-    if let (Ok(started), Ok(ended)) = (
-        chrono::DateTime::parse_from_rfc3339(&ctx.started_at),
-        chrono::DateTime::parse_from_rfc3339(&ctx.ended_at),
-    ) {
-        let duration_s = (ended - started).num_seconds().max(0);
-        tracing::Span::current().record("duration_s", duration_s);
-    }
-    tracing::Span::current().record("session_id", new_session_id);
-
-    // Persist the active span's W3C traceparent so Python consumers can stitch
-    // their spans into the same trace tree.
-    if let Some(tp) = crate::observability::current_traceparent() {
-        write_session_traceparent(meridian, new_session_id, &tp)
-            .await
-            .context("write traceparent")?;
-    }
-
-    Ok(closed_count)
-}
-
-// ---------------------------------------------------------------------------
-// upsert_open_block
-// ---------------------------------------------------------------------------
-
-#[tracing::instrument(
-    skip_all,
-    fields(
-        app_name = %b.app,
-        frame_count = b.frame_count,
-        run_id,
-    )
-)]
-async fn upsert_open_block(
-    screenpipe: &SqlitePool,
-    meridian: &SqlitePool,
-    run_id: i64,
-    b: &BlockBounds<'_>,
-) -> Result<i64> {
-    let ctx = extract_block_context(
-        screenpipe,
-        b.app,
-        b.started_at,
-        b.ended_at,
-        b.min_frame_id,
-        b.max_frame_id,
-        b.frame_count,
-    )
-    .await?;
-
-    let existing = get_active_session(meridian).await?;
-
-    let session = match existing {
-        Some(ref active) if active.app_name == ctx.app_name => {
-            debug!(
-                app = ctx.app_name,
-                "merging new frames into existing active_session"
-            );
-            merge_into_active(active, &ctx, b.idle_frame_count)?
-        }
-
-        Some(ref active) => {
-            warn!(
-                stale_app = active.app_name,
-                new_app = ctx.app_name,
-                "stale active_session while upserting open block"
-            );
-            close_active_session_with(meridian, active, run_id).await?;
-            build_active_session(&ctx, b.idle_frame_count)?
-        }
-
-        None => build_active_session(&ctx, b.idle_frame_count)?,
-    };
-
-    upsert_active_session(meridian, &session).await?;
-    debug!(
-        app = b.app,
-        max_frame_id = b.max_frame_id,
-        "active_session upserted"
-    );
-    Ok(0)
-}
-
-// ---------------------------------------------------------------------------
-// Context helpers — build / merge ActiveSession
-// ---------------------------------------------------------------------------
-
-use crate::etl::extractor::BlockContext;
-
-/// Input bundle for `classify()` — keeps the argument count under the clippy limit.
-struct ClassifyInput<'a> {
-    app_name: &'a str,
-    window_titles: &'a [WindowTitleCount],
-    audio_snippets: &'a [AudioSnippet],
-    signals: &'a [SignalEvent],
-    started_at: &'a str,
-    ended_at: &'a str,
-    session_text: &'a str,
-}
-
-/// Runs `categorize()` from already-in-memory session data.
-/// Pure computation — zero I/O, negligible CPU.
-fn classify(i: &ClassifyInput<'_>) -> (String, f64) {
-    let duration_secs = chrono::DateTime::parse_from_rfc3339(i.ended_at)
-        .ok()
-        .zip(chrono::DateTime::parse_from_rfc3339(i.started_at).ok())
-        .map(|(end, start)| (end - start).num_seconds().max(0) as u64)
-        .unwrap_or(0);
-    let sig = SessionSignals {
-        app_name: i.app_name,
-        window_titles: i.window_titles,
-        ocr_text: i.session_text,
-        signals: i.signals,
-        audio_present: !i.audio_snippets.is_empty(),
-        duration_secs,
-    };
-    let (kind, confidence) = categorize(&sig);
-    (kind.as_str().to_owned(), confidence as f64)
-}
-
-/// Builds a brand-new `ActiveSession` from a `BlockContext`.
-fn build_active_session(ctx: &BlockContext, idle_frame_count: i64) -> Result<ActiveSession> {
-    let (category, confidence) = classify(&ClassifyInput {
-        app_name: &ctx.app_name,
-        window_titles: &ctx.window_titles,
-        audio_snippets: &ctx.audio_snippets,
-        signals: &ctx.signals,
-        started_at: &ctx.started_at,
-        ended_at: &ctx.ended_at,
-        session_text: &ctx.session_text,
-    });
-    Ok(ActiveSession {
-        id: 1,
-        app_name: ctx.app_name.clone(),
-        started_at: ctx.started_at.clone(),
-        last_seen_at: ctx.ended_at.clone(),
-        window_titles: serde_json::to_string(&ctx.window_titles)?,
-        audio_snippets: Some(serde_json::to_string(&ctx.audio_snippets)?),
-        signals: Some(serde_json::to_string(&ctx.signals)?),
-        min_frame_id: ctx.min_frame_id,
-        max_frame_id: ctx.max_frame_id,
-        frame_count: ctx.frame_count,
-        idle_frame_count,
-        category,
-        confidence,
-        session_text: Some(ctx.session_text.clone()),
-    })
-}
-
-/// Merges a new `BlockContext` into an existing `ActiveSession` row and
-/// returns the updated session.
-///
-/// Merge rules:
-///
-/// - `started_at`: kept from the existing session (the block started earlier).
-/// - `last_seen_at`: set to now.
-/// - `min_frame_id`: kept from the existing session.
-/// - `max_frame_id`: updated to the new block's max.
-/// - `frame_count`: summed.
-/// - `window_titles`: counts from identical titles are incremented; new titles are appended.
-/// - `audio_snippets`: appended, capped at `AUDIO_SNIPPET_CAP` (50) total.
-/// - `signals`: all new signals appended.
-fn merge_into_active(
-    existing: &ActiveSession,
-    ctx: &BlockContext,
-    new_idle_frame_count: i64,
-) -> Result<ActiveSession> {
-    let now = ctx.ended_at.clone();
-
-    // -- window_titles --
-    let mut merged_titles: Vec<WindowTitleCount> =
-        serde_json::from_str(&existing.window_titles).unwrap_or_default();
-    for new_t in &ctx.window_titles {
-        if let Some(existing_t) = merged_titles
-            .iter_mut()
-            .find(|t| t.window_name == new_t.window_name)
-        {
-            existing_t.count += new_t.count;
-        } else {
-            merged_titles.push(new_t.clone());
-        }
-    }
-    // Re-sort descending by count so the JSON stays human-readable.
-    merged_titles.sort_by(|a, b| b.count.cmp(&a.count));
-
-    // -- audio_snippets --
-    let mut audio: Vec<AudioSnippet> = existing
-        .audio_snippets
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or_default();
-    for snippet in &ctx.audio_snippets {
-        if audio.len() >= AUDIO_SNIPPET_CAP {
-            break;
-        }
-        audio.push(snippet.clone());
-    }
-
-    // -- signals --
-    let mut signals: Vec<SignalEvent> = existing
-        .signals
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or_default();
-    signals.extend(ctx.signals.iter().cloned());
-
-    let merged_session_text = merge_session_texts(
-        existing.session_text.as_deref().unwrap_or(""),
-        &ctx.session_text,
-    );
-
-    let (category, confidence) = classify(&ClassifyInput {
-        app_name: &existing.app_name,
-        window_titles: &merged_titles,
-        audio_snippets: &audio,
-        signals: &signals,
-        started_at: &existing.started_at,
-        ended_at: &now,
-        session_text: &merged_session_text,
-    });
-
-    Ok(ActiveSession {
-        id: 1,
-        app_name: existing.app_name.clone(),
-        started_at: existing.started_at.clone(),
-        last_seen_at: now,
-        window_titles: serde_json::to_string(&merged_titles)?,
-        audio_snippets: Some(serde_json::to_string(&audio)?),
-        signals: Some(serde_json::to_string(&signals)?),
-        min_frame_id: existing.min_frame_id,
-        max_frame_id: ctx.max_frame_id,
-        frame_count: existing.frame_count + ctx.frame_count,
-        idle_frame_count: existing.idle_frame_count + new_idle_frame_count,
-        category,
-        confidence,
-        session_text: Some(merged_session_text),
-    })
-}
-
-// ---------------------------------------------------------------------------
-// is_browser
-// ---------------------------------------------------------------------------
-
-/// Returns `true` if `app` is a known browser.
-/// Used to decide whether window/URL changes should trigger a session split.
-fn is_browser(app: &str) -> bool {
-    let lc = app.to_lowercase();
-    [
-        "chrome", "safari", "firefox", "arc", "edge", "brave", "opera", "vivaldi",
-    ]
-    .iter()
-    .any(|b| lc.contains(b))
-}
-
-/// Extracts the bare domain from a URL — strips scheme, path, query, and `www.`.
-/// Returns the full string unchanged if it doesn't look like a URL.
-///
-/// Examples:
-///   `https://www.youtube.com/watch?v=abc` → `youtube.com`
-///   `https://github.com/org/repo/pull/1`  → `github.com`
-fn url_domain(url: &str) -> &str {
-    let without_scheme = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-        .unwrap_or(url);
-    let domain = without_scheme.split('/').next().unwrap_or(without_scheme);
-    domain.strip_prefix("www.").unwrap_or(domain)
 }

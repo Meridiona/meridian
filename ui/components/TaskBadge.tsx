@@ -10,7 +10,7 @@ interface TaskBadgeProps {
   sessionType: string | null         // 'task' | 'overhead' | 'unknown' | null
   routing: string | null             // 'auto' | 'queue' | 'skip'
   confidence: number | null
-  method: string | null              // 'stage1_regex' | 'stage1_prefilter' | 'stage2_embed' | 'stage3_llm' | 'agent_tiebreak' | …
+  method: string | null              // 'llm_standalone' | 'prefilter_trivial' | legacy: 'stage1_regex' | 'stage2_embed' | 'stage3_llm' | …
   taskTitle?: string | null
   taskUrl?: string | null
   size?: 'xs' | 'sm'
@@ -25,6 +25,12 @@ interface Stage {
 function inferPipeline(method: string | null): Stage[] {
   if (!method) return []
   switch (method) {
+    // Current hermes pipeline methods
+    case 'prefilter_trivial':
+      return [{ label: 'Hermes · pre-filter', deciding: true }]
+    case 'llm_standalone':
+      return [{ label: 'Hermes · standalone', deciding: true }]
+    // Legacy tagger pipeline methods (pre-existing DB rows)
     case 'stage1_regex':
       return [{ label: 'Stage 1 · regex', deciding: true }]
     case 'stage1_prefilter':

@@ -8,11 +8,13 @@ idempotent deduplication per (task_key, period_start, period_end) slot.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import re
 import sqlite3
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,13 +59,13 @@ class _AtlassianMCPClient:
     """Wraps uvx mcp-atlassian; each method call starts and tears down its own subprocess."""
 
     def __init__(self) -> None:
-        self.url = os.environ.get("JIRA_URL", "")
+        self.url = os.environ.get("JIRA_BASE_URL", "")
         self.email = os.environ.get("JIRA_EMAIL", "")
         self.token = os.environ.get("JIRA_API_TOKEN", "")
         missing = [
             k
             for k, v in (
-                ("JIRA_URL", self.url),
+                ("JIRA_BASE_URL", self.url),
                 ("JIRA_EMAIL", self.email),
                 ("JIRA_API_TOKEN", self.token),
             )
@@ -82,7 +84,7 @@ class _AtlassianMCPClient:
             args=["mcp-atlassian", "--jira-url", self.url],
             env={
                 **os.environ,
-                "JIRA_URL": self.url,
+                "JIRA_BASE_URL": self.url,
                 "JIRA_USERNAME": self.email,
                 "JIRA_API_TOKEN": self.token,
                 # Suppress FastMCP startup banner and toolset warning.
@@ -258,13 +260,14 @@ class _HermesUpdater:
             max_iterations=1,
             max_tokens=1500,
         )
-        result = agent.run_conversation(user_message)
+        with contextlib.redirect_stdout(sys.stderr):
+            result = agent.run_conversation(user_message)
         return result.get("final_response", "").strip()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 _SUMMARY_RE = re.compile(
-    r"(\d+)\s+session\(s\),\s*(?:(\d+)h\s*)?(\d+)m\s+total", re.IGNORECASE
+    r"(\d+)\s+sessions?,\s*(?:(\d+)h\s*)?(\d+)m\s+total", re.IGNORECASE
 )
 
 
@@ -295,7 +298,7 @@ def _fmt_date(iso: str) -> str:
     """Parse ISO 8601 UTC and return 'Month Day' (e.g. 'May 14')."""
     try:
         dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        return dt.strftime("%B %-d")
+        return dt.strftime("%B ") + str(dt.day)
     except ValueError:
         return iso
 
@@ -353,8 +356,10 @@ def run_update(
     dry_run: bool = False,
 ) -> list[UpdateResult]:
     """Main entry point called by daemon and CLI."""
-    conn = sqlite3.connect(str(MERIDIAN_DB))
+    conn = sqlite3.connect(str(MERIDIAN_DB), isolation_level=None)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
     try:
         jira = _AtlassianMCPClient()
         meridian = _MeridianMCPClient()
