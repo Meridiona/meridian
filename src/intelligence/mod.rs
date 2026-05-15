@@ -23,6 +23,7 @@ pub async fn run_categorization(meridian: &SqlitePool, config: &Config) -> Resul
         meridian,
         &backend,
         config.min_classification_duration_s,
+        config.category_backfill,
     )
     .await
     {
