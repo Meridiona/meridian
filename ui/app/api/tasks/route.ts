@@ -44,22 +44,20 @@ export async function GET() {
 
     // today session + task associations
     const todaySessions = db.prepare(`
-      SELECT s.id, s.duration_s, s.category, tl.task_key
+      SELECT s.id, s.duration_s, s.category, s.task_key
       FROM app_sessions s
-      JOIN ticket_links tl ON tl.session_id = s.id
       WHERE s.started_at >= ? AND s.started_at < ?
-        AND tl.session_type = 'task'
-        AND tl.task_key IS NOT NULL
+        AND s.task_session_type = 'task'
+        AND s.task_key IS NOT NULL
     `).all(todayStart, todayEnd) as Array<Record<string, unknown>>
 
     // week sessions
     const weekSessions = db.prepare(`
-      SELECT s.duration_s, tl.task_key
+      SELECT s.duration_s, s.task_key
       FROM app_sessions s
-      JOIN ticket_links tl ON tl.session_id = s.id
       WHERE s.started_at >= ? AND s.started_at < ?
-        AND tl.session_type = 'task'
-        AND tl.task_key IS NOT NULL
+        AND s.task_session_type = 'task'
+        AND s.task_key IS NOT NULL
     `).all(ws, todayEnd) as Array<Record<string, unknown>>
 
     // build aggregations
@@ -83,9 +81,8 @@ export async function GET() {
     const unassigned = db.prepare(`
       SELECT COALESCE(SUM(s.duration_s), 0) as total
       FROM app_sessions s
-      LEFT JOIN ticket_links tl ON tl.session_id = s.id
       WHERE s.started_at >= ? AND s.started_at < ?
-        AND (tl.id IS NULL OR tl.session_type = 'overhead')
+        AND (s.task_method IS NULL OR s.task_session_type = 'overhead')
     `).get(todayStart, todayEnd) as { total: number }
 
     const tasks: TaskSummary[] = taskRows.map(t => {

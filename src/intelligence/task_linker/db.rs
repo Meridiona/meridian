@@ -45,7 +45,7 @@ pub(super) async fn advance_agent_cursor(pool: &SqlitePool, session_id: i64) -> 
 }
 
 /// Fetch up to `BATCH_LIMIT` sessions with id > `after_id` that have not yet
-/// been classified (absent from `ticket_links`) and meet the minimum duration.
+/// been classified (task_method IS NULL) and meet the minimum duration.
 pub(super) async fn fetch_unclassified_sessions(
     pool: &SqlitePool,
     after_id: i64,
@@ -77,7 +77,7 @@ pub(super) async fn fetch_unclassified_sessions(
          FROM app_sessions
          WHERE id > ?
            AND duration_s > ?
-           AND id NOT IN (SELECT session_id FROM ticket_links)
+           AND task_method IS NULL
          ORDER BY id ASC
          LIMIT ?",
     )
@@ -117,23 +117,27 @@ pub(super) async fn fetch_open_pm_tasks(pool: &SqlitePool) -> Result<Vec<super::
     .collect()
 }
 
-/// Write a trivial (no session text) session as `overhead/skip` without calling
-/// the LLM.
-pub(super) async fn write_overhead_link(pool: &SqlitePool, session_id: i64) -> Result<()> {
+/// Mark a trivial (empty session_text) session as overhead/skip without calling the LLM.
+pub(super) async fn update_session_overhead(pool: &SqlitePool, session_id: i64) -> Result<()> {
     sqlx::query(
-        "INSERT OR IGNORE INTO ticket_links \
-         (session_id, task_key, provider, method, confidence, session_type, routing, reasoning) \
-         VALUES (?, NULL, NULL, 'prefilter_trivial', 0.0, 'overhead', 'skip', NULL)",
+        "UPDATE app_sessions
+         SET task_key = NULL, task_confidence = 0.0, task_routing = 'skip',
+             task_method = 'prefilter_trivial', task_reasoning = NULL,
+             task_session_type = 'overhead'
+         WHERE id = ?",
     )
     .bind(session_id)
     .execute(pool)
     .await
-    .with_context(|| format!("writing overhead link for session {}", session_id))?;
+    .with_context(|| format!("marking session {} as overhead", session_id))?;
     Ok(())
 }
 
-/// Persist a classification result from Python into `ticket_links`.
-pub(super) async fn write_ticket_link(pool: &SqlitePool, r: &SessionClassification) -> Result<()> {
+/// Persist a hermes classification result into `app_sessions`.
+pub(super) async fn update_session_task(
+    pool: &SqlitePool,
+    r: &SessionClassification,
+) -> Result<()> {
     let session_type = if r.task_key.is_some() {
         "task"
     } else {
@@ -145,20 +149,21 @@ pub(super) async fn write_ticket_link(pool: &SqlitePool, r: &SessionClassificati
         Some(&r.reasoning)
     };
     sqlx::query(
-        "INSERT OR IGNORE INTO ticket_links \
-         (session_id, task_key, provider, method, confidence, session_type, routing, reasoning) \
-         VALUES (?, ?, 'jira', ?, ?, ?, ?, ?)",
+        "UPDATE app_sessions
+         SET task_key = ?, task_confidence = ?, task_routing = ?,
+             task_method = ?, task_reasoning = ?, task_session_type = ?
+         WHERE id = ?",
     )
-    .bind(r.session_id)
     .bind(&r.task_key)
-    .bind(&r.method)
     .bind(r.confidence)
-    .bind(session_type)
     .bind(&r.routing)
+    .bind(&r.method)
     .bind(reasoning)
+    .bind(session_type)
+    .bind(r.session_id)
     .execute(pool)
     .await
-    .with_context(|| format!("writing ticket_link for session {}", r.session_id))?;
+    .with_context(|| format!("updating task classification for session {}", r.session_id))?;
     Ok(())
 }
 
@@ -364,17 +369,17 @@ mod tests {
         assert_eq!(get_agent_cursor(&pool).await.unwrap(), 20);
     }
 
-    // ── write_overhead_link ───────────────────────────────────────────────
+    // ── update_session_overhead ───────────────────────────────────────────
 
     #[tokio::test]
-    async fn write_overhead_link_inserts_correct_row() {
+    async fn update_session_overhead_sets_correct_fields() {
         let pool = fresh_db().await;
         let session_id = seed_session(&pool).await;
-        write_overhead_link(&pool, session_id).await.unwrap();
+        update_session_overhead(&pool, session_id).await.unwrap();
 
         let row = sqlx::query_as::<_, (Option<String>, String, String, f64)>(
-            "SELECT task_key, method, routing, confidence
-             FROM ticket_links WHERE session_id = ?",
+            "SELECT task_key, task_method, task_routing, task_confidence
+             FROM app_sessions WHERE id = ?",
         )
         .bind(session_id)
         .fetch_one(&pool)
@@ -387,24 +392,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_overhead_link_is_idempotent() {
+    async fn update_session_overhead_is_idempotent() {
         let pool = fresh_db().await;
         let session_id = seed_session(&pool).await;
-        write_overhead_link(&pool, session_id).await.unwrap();
-        write_overhead_link(&pool, session_id).await.unwrap();
-        let count: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM ticket_links WHERE session_id = ?")
+        update_session_overhead(&pool, session_id).await.unwrap();
+        update_session_overhead(&pool, session_id).await.unwrap();
+        let row =
+            sqlx::query_as::<_, (String,)>("SELECT task_method FROM app_sessions WHERE id = ?")
                 .bind(session_id)
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(count.0, 1);
+        assert_eq!(row.0, "prefilter_trivial");
     }
 
-    // ── write_ticket_link ─────────────────────────────────────────────────
+    // ── update_session_task ───────────────────────────────────────────────
 
     #[tokio::test]
-    async fn write_ticket_link_task_match_stores_correct_row() {
+    async fn update_session_task_stores_correct_fields() {
         let pool = fresh_db().await;
         let session_id = seed_session(&pool).await;
         let r = SessionClassification {
@@ -417,11 +422,11 @@ mod tests {
             dimensions: HashMap::new(),
             elapsed_s: 0.5,
         };
-        write_ticket_link(&pool, &r).await.unwrap();
+        update_session_task(&pool, &r).await.unwrap();
 
         let row = sqlx::query_as::<_, (String, String, f64, String)>(
-            "SELECT task_key, method, confidence, session_type
-             FROM ticket_links WHERE session_id = ?",
+            "SELECT task_key, task_method, task_confidence, task_session_type
+             FROM app_sessions WHERE id = ?",
         )
         .bind(session_id)
         .fetch_one(&pool)
@@ -434,7 +439,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_ticket_link_overhead_when_no_task_key() {
+    async fn update_session_task_overhead_when_no_task_key() {
         let pool = fresh_db().await;
         let session_id = seed_session(&pool).await;
         let r = SessionClassification {
@@ -447,10 +452,10 @@ mod tests {
             dimensions: HashMap::new(),
             elapsed_s: 0.2,
         };
-        write_ticket_link(&pool, &r).await.unwrap();
+        update_session_task(&pool, &r).await.unwrap();
 
         let row = sqlx::query_as::<_, (String,)>(
-            "SELECT session_type FROM ticket_links WHERE session_id = ?",
+            "SELECT task_session_type FROM app_sessions WHERE id = ?",
         )
         .bind(session_id)
         .fetch_one(&pool)
@@ -460,7 +465,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_ticket_link_is_idempotent() {
+    async fn update_session_task_overwrites_on_second_call() {
         let pool = fresh_db().await;
         let session_id = seed_session(&pool).await;
         let r = SessionClassification {
@@ -473,15 +478,14 @@ mod tests {
             dimensions: HashMap::new(),
             elapsed_s: 0.1,
         };
-        write_ticket_link(&pool, &r).await.unwrap();
-        write_ticket_link(&pool, &r).await.unwrap();
-        let count: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM ticket_links WHERE session_id = ?")
-                .bind(session_id)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(count.0, 1);
+        update_session_task(&pool, &r).await.unwrap();
+        update_session_task(&pool, &r).await.unwrap();
+        let row = sqlx::query_as::<_, (String,)>("SELECT task_key FROM app_sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.0, "KAN-1");
     }
 
     // ── write_dimensions ──────────────────────────────────────────────────
@@ -546,14 +550,14 @@ mod tests {
             1
         );
 
-        write_overhead_link(&pool, session_id).await.unwrap();
+        update_session_overhead(&pool, session_id).await.unwrap();
         assert_eq!(
             fetch_unclassified_sessions(&pool, 0, 10)
                 .await
                 .unwrap()
                 .len(),
             0,
-            "linked session must be excluded"
+            "classified session must be excluded"
         );
     }
 
