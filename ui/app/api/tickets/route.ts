@@ -35,37 +35,35 @@ export async function GET(request: Request) {
 
     // Per-task minutes today.
     const taskRows = db.prepare(`
-      SELECT tl.task_key                                AS task_key,
+      SELECT s.task_key                                 AS task_key,
              pt.title                                   AS title,
              pt.url                                     AS url,
              pt.provider                                AS provider,
              SUM(s.duration_s)                          AS duration_s,
              COUNT(*)                                   AS session_count
         FROM app_sessions s
-        JOIN ticket_links tl ON tl.session_id = s.id AND tl.session_type = 'task'
-        LEFT JOIN pm_tasks pt ON pt.task_key  = tl.task_key
+        LEFT JOIN pm_tasks pt ON pt.task_key = s.task_key
        WHERE s.started_at >= ? AND s.started_at < ?
-         AND tl.task_key IS NOT NULL
+         AND s.task_session_type = 'task'
+         AND s.task_key IS NOT NULL
        GROUP BY tl.task_key
        ORDER BY duration_s DESC
     `).all(start, end) as Array<Record<string, unknown>>
 
-    // Overhead today (session_type = 'overhead').
+    // Overhead today (task_session_type = 'overhead').
     const overheadRow = db.prepare(`
-      SELECT COALESCE(SUM(s.duration_s), 0) AS s
-        FROM app_sessions s
-        JOIN ticket_links tl ON tl.session_id = s.id
-       WHERE s.started_at >= ? AND s.started_at < ?
-         AND tl.session_type = 'overhead'
+      SELECT COALESCE(SUM(duration_s), 0) AS s
+        FROM app_sessions
+       WHERE started_at >= ? AND started_at < ?
+         AND task_session_type = 'overhead'
     `).get(start, end) as { s: number }
 
-    // Untagged today (no ticket_links row at all).
+    // Untagged today (not yet classified by hermes).
     const untaggedRow = db.prepare(`
-      SELECT COALESCE(SUM(s.duration_s), 0) AS s
-        FROM app_sessions s
-        LEFT JOIN ticket_links tl ON tl.session_id = s.id
-       WHERE s.started_at >= ? AND s.started_at < ?
-         AND tl.session_id IS NULL
+      SELECT COALESCE(SUM(duration_s), 0) AS s
+        FROM app_sessions
+       WHERE started_at >= ? AND started_at < ?
+         AND task_method IS NULL
     `).get(start, end) as { s: number }
 
     const tasks: TicketBreakdownEntry[] = taskRows.map(r => ({

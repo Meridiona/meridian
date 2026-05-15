@@ -16,7 +16,7 @@ use crate::config::Config;
 use db::{
     advance_agent_cursor, complete_agent_run, fetch_open_pm_tasks, fetch_sessions_in_range,
     fetch_unclassified_sessions, get_agent_cursor, get_max_session_id, start_agent_run,
-    write_dimensions, write_overhead_link, write_ticket_link,
+    update_session_overhead, update_session_task, write_dimensions,
 };
 
 // One session per daemon tick — at 30-60s cadence there is typically one new
@@ -220,7 +220,7 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
         );
     }
     for id in trivial_ids {
-        write_overhead_link(pool, id).await?;
+        update_session_overhead(pool, id).await?;
         advance_agent_cursor(pool, id).await?;
     }
 
@@ -365,7 +365,7 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
 
     let write_result: Result<()> = 'write_loop: {
         for r in &classify_output.results {
-            if let Err(e) = write_ticket_link(pool, r).await {
+            if let Err(e) = update_session_task(pool, r).await {
                 break 'write_loop Err(e);
             }
             if let Err(e) = write_dimensions(pool, r.session_id, &r.dimensions).await {
@@ -466,7 +466,7 @@ pub async fn link_range(
     }
 
     for id in trivial_ids {
-        write_overhead_link(pool, id).await?;
+        update_session_overhead(pool, id).await?;
         linked += 1;
     }
 
@@ -575,7 +575,7 @@ pub async fn link_range(
     };
 
     for r in &classify_output.results {
-        write_ticket_link(pool, r).await?;
+        update_session_task(pool, r).await?;
         write_dimensions(pool, r.session_id, &r.dimensions).await?;
         linked += 1;
     }

@@ -71,17 +71,16 @@ function loadSession(id: number): PageData | null {
       SELECT s.id, s.app_name, s.started_at, s.ended_at, s.duration_s,
              s.window_titles, s.audio_snippets, s.signals, s.frame_count, s.etl_run_id,
              s.category, s.confidence,
-             tl.task_key       AS task_key,
-             tl.session_type   AS session_type,
-             tl.routing        AS routing,
-             tl.confidence     AS link_confidence,
-             tl.method         AS link_method,
-             pt.title          AS task_title,
-             pt.url            AS task_url,
-             pt.provider       AS task_provider
+             s.task_key,
+             s.task_session_type AS session_type,
+             s.task_routing      AS routing,
+             s.task_confidence   AS link_confidence,
+             s.task_method       AS link_method,
+             pt.title            AS task_title,
+             pt.url              AS task_url,
+             pt.provider         AS task_provider
         FROM app_sessions s
-        LEFT JOIN ticket_links tl ON tl.session_id = s.id
-        LEFT JOIN pm_tasks    pt ON pt.task_key   = tl.task_key
+        LEFT JOIN pm_tasks pt ON pt.task_key = s.task_key
        WHERE s.id = ?
     `).get(id) as Record<string, unknown> | undefined
     if (!sessionRow) return null

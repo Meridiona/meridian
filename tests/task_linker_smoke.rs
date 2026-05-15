@@ -5,7 +5,7 @@
 //   - no pending sessions (idle no-op)
 //   - trivial sessions (empty/whitespace session_text → overhead/skip without Python)
 //   - short-duration sessions (below min threshold → not processed)
-//   - pre-linked sessions (already in ticket_links → not reprocessed)
+//   - pre-classified sessions (task_method IS NOT NULL → not reprocessed)
 //   - stub Python subprocess → task link + dimensions + cursor advance
 
 mod common;
@@ -44,6 +44,7 @@ fn make_cfg_backfill(enabled: bool, services_dir: Option<String>, backfill: bool
         min_classification_duration_s: 10,
         classification_services_dir: services_dir,
         classification_backfill: backfill,
+        category_backfill: false,
         jira_update_enabled: false,
         jira_update_interval_s: 14400,
         jira_office_start_hour: 9,
@@ -130,10 +131,11 @@ async fn classification_disabled_returns_ok_and_writes_nothing() {
 
     run_task_linking(&pool, &disabled_cfg()).await.unwrap();
 
-    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM ticket_links")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM app_sessions WHERE task_method IS NOT NULL")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(count.0, 0);
 
     let run_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM agent_runs")
@@ -166,15 +168,18 @@ async fn trivial_sessions_overhead_skip_without_python() {
     let id1 = seed_session(&pool, "Slack", 60, None).await;
     let id2 = seed_session(&pool, "Spotify", 90, Some("   ")).await; // whitespace-only
 
+    // BATCH_LIMIT=1 — each call processes one session; run twice for two sessions.
+    run_task_linking(&pool, &cfg_no_python()).await.unwrap();
     run_task_linking(&pool, &cfg_no_python()).await.unwrap();
 
     for session_id in [id1, id2] {
-        let row =
-            sqlx::query("SELECT method, routing, task_key FROM ticket_links WHERE session_id = ?")
-                .bind(session_id)
-                .fetch_one(&pool)
-                .await
-                .unwrap_or_else(|_| panic!("no ticket_link for session {session_id}"));
+        let row = sqlx::query(
+            "SELECT task_method, task_routing, task_key FROM app_sessions WHERE id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap_or_else(|_| panic!("no classified session {session_id}"));
 
         assert_eq!(row.get::<String, _>(0), "prefilter_trivial");
         assert_eq!(row.get::<String, _>(1), "skip");
@@ -197,22 +202,24 @@ async fn short_duration_sessions_are_not_processed() {
 
     run_task_linking(&pool, &cfg_no_python()).await.unwrap();
 
-    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM ticket_links")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM app_sessions WHERE task_method IS NOT NULL")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(count.0, 0);
 }
 
 #[tokio::test]
-async fn pre_linked_sessions_are_not_reprocessed() {
+async fn pre_classified_sessions_are_not_reprocessed() {
     let pool = common::make_meridian_db().await;
     let session_id = seed_session(&pool, "Xcode", 120, Some("building meridian")).await;
 
     sqlx::query(
-        "INSERT INTO ticket_links
-             (session_id, task_key, provider, method, confidence, session_type, routing)
-         VALUES (?, 'KAN-1', 'jira', 'manual', 1.0, 'task', 'auto')",
+        "UPDATE app_sessions
+         SET task_key='KAN-1', task_method='manual', task_confidence=1.0,
+             task_session_type='task', task_routing='auto'
+         WHERE id = ?",
     )
     .bind(session_id)
     .execute(&pool)
@@ -221,14 +228,14 @@ async fn pre_linked_sessions_are_not_reprocessed() {
 
     run_task_linking(&pool, &cfg_no_python()).await.unwrap();
 
-    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM ticket_links WHERE session_id = ?")
+    let row = sqlx::query_as::<_, (String,)>("SELECT task_method FROM app_sessions WHERE id = ?")
         .bind(session_id)
         .fetch_one(&pool)
         .await
         .unwrap();
     assert_eq!(
-        count.0, 1,
-        "pre-linked session must not get a duplicate link"
+        row.0, "manual",
+        "pre-classified session must not be overwritten"
     );
 }
 
@@ -241,25 +248,26 @@ async fn mixed_batch_trivial_and_short_handled_correctly() {
     run_task_linking(&pool, &cfg_no_python()).await.unwrap();
 
     // Trivial: linked as overhead/skip
-    let trivial_row = sqlx::query("SELECT method FROM ticket_links WHERE session_id = ?")
+    let trivial_row = sqlx::query("SELECT task_method FROM app_sessions WHERE id = ?")
         .bind(trivial_id)
         .fetch_one(&pool)
         .await
         .unwrap();
     assert_eq!(trivial_row.get::<String, _>(0), "prefilter_trivial");
 
-    // Short: not linked at all
-    let short_count: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM ticket_links WHERE session_id = ?")
-            .bind(short_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    // Short: not classified
+    let short_count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM app_sessions WHERE id = ? AND task_method IS NOT NULL",
+    )
+    .bind(short_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(short_count.0, 0);
 }
 
-/// Full pipeline smoke test: stub Python returns a task match; verify ticket_links,
-/// session_dimensions, cursor, and agent_runs are all written correctly.
+/// Full pipeline smoke test: stub Python returns a task match; verify app_sessions
+/// task columns, session_dimensions, cursor, and agent_runs are all written correctly.
 #[tokio::test]
 async fn stub_python_writes_task_link_dimensions_and_cursor() {
     if !python3_available() {
@@ -279,15 +287,15 @@ async fn stub_python_writes_task_link_dimensions_and_cursor() {
 
     run_task_linking(&pool, &cfg).await.unwrap();
 
-    // ticket_links row
+    // task classification written to app_sessions
     let link = sqlx::query(
-        "SELECT task_key, method, session_type, routing, confidence
-         FROM ticket_links WHERE session_id = ?",
+        "SELECT task_key, task_method, task_session_type, task_routing, task_confidence
+         FROM app_sessions WHERE id = ?",
     )
     .bind(session_id)
     .fetch_one(&pool)
     .await
-    .expect("ticket_link must be written");
+    .expect("task classification must be written to app_sessions");
     assert_eq!(link.get::<String, _>(0), "KAN-99");
     assert_eq!(link.get::<String, _>(1), "llm_standalone");
     assert_eq!(link.get::<String, _>(2), "task");
@@ -353,13 +361,14 @@ async fn second_run_is_idle_when_cursor_is_current() {
     run_task_linking(&pool, &cfg).await.unwrap(); // first run classifies
     run_task_linking(&pool, &cfg).await.unwrap(); // second run: nothing new
 
-    let link_count: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM ticket_links WHERE session_id = ?")
-            .bind(session_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(link_count.0, 1, "session must not be linked twice");
+    let link_count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM app_sessions WHERE id = ? AND task_method IS NOT NULL",
+    )
+    .bind(session_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(link_count.0, 1, "session must be classified exactly once");
 
     let run_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM agent_runs")
         .fetch_one(&pool)
@@ -385,10 +394,11 @@ async fn no_backfill_skips_existing_sessions_on_first_run() {
     run_task_linking(&pool, &cfg).await.unwrap();
 
     // Nothing classified — cursor jumped past everything
-    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM ticket_links")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM app_sessions WHERE task_method IS NOT NULL")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(
         count.0, 0,
         "existing sessions must not be classified when backfill=false"
@@ -427,10 +437,11 @@ async fn no_backfill_classifies_new_sessions_after_first_run() {
 
     // First run: cursor jumps to max, nothing classified
     run_task_linking(&pool, &cfg).await.unwrap();
-    let count_after_first: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM ticket_links")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let count_after_first: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM app_sessions WHERE task_method IS NOT NULL")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(count_after_first.0, 0);
 
     // New session arrives after the cursor advance
@@ -439,12 +450,13 @@ async fn no_backfill_classifies_new_sessions_after_first_run() {
     // Second run: only the new session is classified
     run_task_linking(&pool, &cfg).await.unwrap();
 
-    let count_new: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM ticket_links WHERE session_id = ?")
-            .bind(new_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let count_new: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM app_sessions WHERE id = ? AND task_method IS NOT NULL",
+    )
+    .bind(new_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(
         count_new.0, 1,
         "new session added after first run must be classified"

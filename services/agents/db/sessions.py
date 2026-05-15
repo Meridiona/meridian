@@ -113,10 +113,10 @@ def fetch_active_session(conn: sqlite3.Connection) -> dict | None:
 def fetch_ticket_link(conn: sqlite3.Connection, session_id: int) -> dict | None:
     row = conn.execute(
         """
-        SELECT session_id, task_key, provider, method, confidence,
-               session_type, routing, created_at
-          FROM ticket_links
-         WHERE session_id = ?
+        SELECT id AS session_id, task_key, task_method AS method, task_confidence AS confidence,
+               task_session_type AS session_type, task_routing AS routing
+          FROM app_sessions
+         WHERE id = ? AND task_method IS NOT NULL
         """,
         (int(session_id),),
     ).fetchone()
@@ -124,7 +124,13 @@ def fetch_ticket_link(conn: sqlite3.Connection, session_id: int) -> dict | None:
 
 
 def clear_ticket_link(conn: sqlite3.Connection, session_id: int) -> int:
-    cur = conn.execute("DELETE FROM ticket_links WHERE session_id = ?", (int(session_id),))
+    cur = conn.execute(
+        """UPDATE app_sessions
+           SET task_key = NULL, task_confidence = NULL, task_routing = NULL,
+               task_method = NULL, task_reasoning = NULL, task_session_type = NULL
+           WHERE id = ?""",
+        (int(session_id),),
+    )
     return int(cur.rowcount or 0)
 
 
@@ -141,28 +147,21 @@ def write_ticket_link(
 ) -> None:
     conn.execute(
         """
-        INSERT INTO ticket_links (
-            session_id, task_key, provider, method,
-            confidence, session_type, routing, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(session_id) DO UPDATE SET
-            task_key     = excluded.task_key,
-            provider     = excluded.provider,
-            method       = excluded.method,
-            confidence   = excluded.confidence,
-            session_type = excluded.session_type,
-            routing      = excluded.routing,
-            created_at   = excluded.created_at
+        UPDATE app_sessions
+        SET task_key          = ?,
+            task_confidence   = ?,
+            task_session_type = ?,
+            task_routing      = ?,
+            task_method       = ?
+        WHERE id = ?
         """,
         (
-            session_id,
             task_key,
-            provider if task_key else None,
-            method,
             float(confidence),
             session_type,
             routing,
-            _utc_now(),
+            method,
+            session_id,
         ),
     )
 

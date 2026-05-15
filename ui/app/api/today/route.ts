@@ -74,13 +74,12 @@ export async function GET() {
         s.category_method,
         ${hasExplanation ? 's.category_explanation,' : "NULL AS category_explanation,"}
         s.window_titles,
-        tl.task_key,
-        tl.routing,
-        tl.session_type,
-        tl.method    AS link_method,
-        tl.confidence AS link_confidence
+        s.task_key,
+        s.task_routing      AS routing,
+        s.task_session_type AS session_type,
+        s.task_method       AS link_method,
+        s.task_confidence   AS link_confidence
       FROM app_sessions s
-      LEFT JOIN ticket_links tl ON tl.session_id = s.id
       WHERE s.started_at >= ? AND s.started_at < ?
       ORDER BY s.started_at ASC
     `
