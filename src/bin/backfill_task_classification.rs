@@ -23,6 +23,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 struct Args {
     from_id: Option<i64>,
     to_id: Option<i64>,
+    session: Option<i64>,
     from_date: Option<NaiveDate>,
     to_date: Option<NaiveDate>,
     today: bool,
@@ -34,7 +35,7 @@ fn print_usage() {
     eprintln!(
         "usage: backfill-task-classification [--today | --yesterday \
          | --from-date YYYY-MM-DD [--to-date YYYY-MM-DD] \
-         | --from-id N [--to-id N]] [--dry-run]"
+         | --from-id N [--to-id N] | --session N] [--dry-run]"
     );
 }
 
@@ -42,6 +43,7 @@ fn parse_args() -> Result<Args> {
     let mut args = Args {
         from_id: None,
         to_id: None,
+        session: None,
         from_date: None,
         to_date: None,
         today: false,
@@ -54,6 +56,10 @@ fn parse_args() -> Result<Args> {
             "--today" => args.today = true,
             "--yesterday" => args.yesterday = true,
             "--dry-run" => args.dry_run = true,
+            "--session" => {
+                let v = argv.next().context("--session requires a value")?;
+                args.session = Some(v.parse::<i64>().context("--session must be an integer")?);
+            }
             "--from-id" => {
                 let v = argv.next().context("--from-id requires a value")?;
                 args.from_id = Some(v.parse::<i64>().context("--from-id must be an integer")?);
@@ -91,6 +97,9 @@ async fn resolve_id_range(
     args: &Args,
     min_duration_s: i64,
 ) -> Result<(i64, Option<i64>)> {
+    if let Some(id) = args.session {
+        return Ok((id, Some(id)));
+    }
     if args.from_id.is_some() || args.to_id.is_some() {
         return Ok((args.from_id.unwrap_or(0), args.to_id));
     }
