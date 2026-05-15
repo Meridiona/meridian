@@ -122,8 +122,8 @@ pub(super) async fn fetch_open_pm_tasks(pool: &SqlitePool) -> Result<Vec<super::
 pub(super) async fn write_overhead_link(pool: &SqlitePool, session_id: i64) -> Result<()> {
     sqlx::query(
         "INSERT OR IGNORE INTO ticket_links \
-         (session_id, task_key, provider, method, confidence, session_type, routing) \
-         VALUES (?, NULL, NULL, 'prefilter_trivial', 0.0, 'overhead', 'skip')",
+         (session_id, task_key, provider, method, confidence, session_type, routing, reasoning) \
+         VALUES (?, NULL, NULL, 'prefilter_trivial', 0.0, 'overhead', 'skip', NULL)",
     )
     .bind(session_id)
     .execute(pool)
@@ -139,10 +139,15 @@ pub(super) async fn write_ticket_link(pool: &SqlitePool, r: &SessionClassificati
     } else {
         "overhead"
     };
+    let reasoning = if r.reasoning.is_empty() {
+        None
+    } else {
+        Some(&r.reasoning)
+    };
     sqlx::query(
         "INSERT OR IGNORE INTO ticket_links \
-         (session_id, task_key, provider, method, confidence, session_type, routing) \
-         VALUES (?, ?, 'jira', ?, ?, ?, ?)",
+         (session_id, task_key, provider, method, confidence, session_type, routing, reasoning) \
+         VALUES (?, ?, 'jira', ?, ?, ?, ?, ?)",
     )
     .bind(r.session_id)
     .bind(&r.task_key)
@@ -150,6 +155,7 @@ pub(super) async fn write_ticket_link(pool: &SqlitePool, r: &SessionClassificati
     .bind(r.confidence)
     .bind(session_type)
     .bind(&r.routing)
+    .bind(reasoning)
     .execute(pool)
     .await
     .with_context(|| format!("writing ticket_link for session {}", r.session_id))?;

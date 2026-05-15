@@ -69,7 +69,6 @@ pub(super) struct SessionClassification {
     pub(super) task_key: Option<String>,
     pub(super) confidence: f64,
     pub(super) routing: String,
-    #[allow(dead_code)]
     pub(super) reasoning: String,
     pub(super) method: String,
     #[serde(default)]
@@ -332,6 +331,10 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
     let stdout_bytes = stdout_task.await.unwrap_or_default();
     let stderr_bytes = stderr_task.await.unwrap_or_default();
 
+    if !stderr_bytes.is_empty() {
+        debug!(stderr = %String::from_utf8_lossy(&stderr_bytes), "run_task_linker python stderr");
+    }
+
     if !status.success() {
         let stderr = String::from_utf8_lossy(&stderr_bytes);
         warn!(
@@ -551,6 +554,10 @@ pub async fn link_range(
 
     let stdout_bytes = stdout_task.await.unwrap_or_default();
     let stderr_bytes = stderr_task.await.unwrap_or_default();
+
+    if !stderr_bytes.is_empty() {
+        debug!(stderr = %String::from_utf8_lossy(&stderr_bytes), "run_task_linker python stderr");
+    }
 
     if !status.success() {
         let stderr = String::from_utf8_lossy(&stderr_bytes);
