@@ -7,11 +7,11 @@ from unittest.mock import MagicMock
 # These must be inserted before run_task_linker (or task_classifier_agent) is imported.
 _hermes_setup = MagicMock()
 _hermes_setup.ensure_hermes_importable = lambda: None
-sys.modules.setdefault("agents._hermes_setup", _hermes_setup)
+sys.modules["agents._hermes_setup"] = _hermes_setup
 
 _observability = MagicMock()
 _observability.setup = lambda *a, **kw: MagicMock()
-sys.modules.setdefault("agents.observability", _observability)
+sys.modules["agents.observability"] = _observability
 
 _classifier = MagicMock()
-sys.modules.setdefault("agents.task_classifier_agent", _classifier)
+sys.modules["agents.task_classifier_agent"] = _classifier

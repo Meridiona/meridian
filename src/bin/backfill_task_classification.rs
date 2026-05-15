@@ -1,25 +1,19 @@
 // meridian — normalises screenpipe activity into structured app sessions
 
-//! Backfill session categories via Foundation Models for a specific range.
-//! Does not touch the settler cursor — safe to re-run multiple times.
+//! Backfill task classification (hermes) for a specific session range.
+//! Does not touch the agent_cursor — safe to re-run multiple times.
 //!
 //! Usage:
-//!   backfill-categories --today
-//!   backfill-categories --yesterday
-//!   backfill-categories --from-date 2025-05-01 --to-date 2025-05-14
-//!   backfill-categories --from-id 100 --to-id 500
-//!   backfill-categories --from-id 100           # from 100 onwards
-//!   backfill-categories --dry-run --today        # print without writing
+//!   backfill-task-classification --today
+//!   backfill-task-classification --yesterday
+//!   backfill-task-classification --from-date 2025-05-01 --to-date 2025-05-14
+//!   backfill-task-classification --from-id 100 --to-id 500
+//!   backfill-task-classification --from-id 100           # from 100 onwards
+//!   backfill-task-classification --dry-run --today        # print without writing
 
 use anyhow::{bail, Context, Result};
 use chrono::{Local, NaiveDate, TimeZone, Utc};
-use meridian::{
-    config::{Config, LlmBackendConfig},
-    intelligence::{
-        category_llm::backends::build_backend,
-        category_settler::settle_range,
-    },
-};
+use meridian::{config::Config, intelligence::link_range};
 use sqlx::sqlite::SqlitePoolOptions;
 
 // ---------------------------------------------------------------------------
@@ -27,18 +21,18 @@ use sqlx::sqlite::SqlitePoolOptions;
 // ---------------------------------------------------------------------------
 
 struct Args {
-    from_id:   Option<i64>,
-    to_id:     Option<i64>,
+    from_id: Option<i64>,
+    to_id: Option<i64>,
     from_date: Option<NaiveDate>,
-    to_date:   Option<NaiveDate>,
-    today:     bool,
+    to_date: Option<NaiveDate>,
+    today: bool,
     yesterday: bool,
-    dry_run:   bool,
+    dry_run: bool,
 }
 
 fn print_usage() {
     eprintln!(
-        "usage: backfill-categories [--today | --yesterday \
+        "usage: backfill-task-classification [--today | --yesterday \
          | --from-date YYYY-MM-DD [--to-date YYYY-MM-DD] \
          | --from-id N [--to-id N]] [--dry-run]"
     );
@@ -46,17 +40,20 @@ fn print_usage() {
 
 fn parse_args() -> Result<Args> {
     let mut args = Args {
-        from_id: None, to_id: None,
-        from_date: None, to_date: None,
-        today: false, yesterday: false,
+        from_id: None,
+        to_id: None,
+        from_date: None,
+        to_date: None,
+        today: false,
+        yesterday: false,
         dry_run: false,
     };
     let mut argv = std::env::args().skip(1).peekable();
     while let Some(flag) = argv.next() {
         match flag.as_str() {
-            "--today"     => args.today     = true,
+            "--today" => args.today = true,
             "--yesterday" => args.yesterday = true,
-            "--dry-run"   => args.dry_run   = true,
+            "--dry-run" => args.dry_run = true,
             "--from-id" => {
                 let v = argv.next().context("--from-id requires a value")?;
                 args.from_id = Some(v.parse::<i64>().context("--from-id must be an integer")?);
@@ -94,17 +91,18 @@ async fn resolve_id_range(
     args: &Args,
     min_duration_s: i64,
 ) -> Result<(i64, Option<i64>)> {
-    // Id-based range takes priority when explicitly set
     if args.from_id.is_some() || args.to_id.is_some() {
         return Ok((args.from_id.unwrap_or(0), args.to_id));
     }
 
-    // Compute date-based UTC window
     let (from_date, to_date_exclusive) = if args.today {
         let d = Local::now().date_naive();
         (d, d.succ_opt())
     } else if args.yesterday {
-        let d = Local::now().date_naive().pred_opt().context("date underflow")?;
+        let d = Local::now()
+            .date_naive()
+            .pred_opt()
+            .context("date underflow")?;
         (d, d.succ_opt())
     } else if let Some(fd) = args.from_date {
         (fd, args.to_date.and_then(|d| d.succ_opt()))
@@ -120,7 +118,6 @@ async fn resolve_id_range(
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
 
-    // Find min id >= from_utc
     let row: Option<(i64,)> = sqlx::query_as(
         "SELECT MIN(id) FROM app_sessions
          WHERE started_at >= ? AND duration_s >= ?",
@@ -139,7 +136,6 @@ async fn resolve_id_range(
         }
     };
 
-    // Find max id < to_date_exclusive
     let to_id = if let Some(to_date) = to_date_exclusive {
         let to_utc = Local
             .from_local_datetime(&to_date.and_hms_opt(0, 0, 0).unwrap())
@@ -185,7 +181,6 @@ async fn main() -> Result<()> {
     };
 
     let cfg = Config::from_env();
-    let backend = build_backend(&LlmBackendConfig::FoundationModels);
 
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
@@ -193,33 +188,31 @@ async fn main() -> Result<()> {
         .await
         .context("opening meridian.db")?;
 
-    // Run migrations so last_settled_session_id column exists
     sqlx::migrate!("./src/migrations")
         .run(&pool)
         .await
         .context("running migrations")?;
 
-    let (from_id, to_id) = resolve_id_range(&pool, &args, cfg.min_classification_duration_s).await?;
+    let (from_id, to_id) =
+        resolve_id_range(&pool, &args, cfg.min_classification_duration_s).await?;
 
     println!(
-        "Backfilling categories: from_id={from_id}  to_id={}  dry_run={}",
-        to_id.map(|id| id.to_string()).unwrap_or_else(|| "∞".to_string()),
+        "Backfilling task classification: from_id={from_id}  to_id={}  dry_run={}",
+        to_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "∞".to_string()),
         args.dry_run,
     );
 
-    let (processed, updated) = settle_range(
-        &pool,
-        &backend,
-        from_id,
-        to_id,
-        cfg.min_classification_duration_s,
-        args.dry_run,
-    )
-    .await?;
+    let (processed, linked) = link_range(&pool, &cfg, from_id, to_id, args.dry_run).await?;
 
     println!(
-        "Done. processed={processed}  updated={updated}{}",
-        if args.dry_run { "  (dry run — nothing written)" } else { "" }
+        "Done. processed={processed}  linked={linked}{}",
+        if args.dry_run {
+            "  (dry run — nothing written)"
+        } else {
+            ""
+        }
     );
 
     Ok(())

@@ -28,6 +28,14 @@ path = "src/bin/classify_smoke.rs"
 name = "category_smoke"
 path = "src/bin/category_smoke.rs"
 
+[[bin]]
+name = "backfill_session_categories"
+path = "src/bin/backfill_session_categories.rs"
+
+[[bin]]
+name = "backfill_task_classification"
+path = "src/bin/backfill_task_classification.rs"
+
 [dependencies]
 # DB — exact versions matching screenpipe
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls", "chrono", "migrate", "json"] }

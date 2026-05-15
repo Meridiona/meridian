@@ -185,6 +185,75 @@ pub(super) async fn write_dimensions(
     Ok(())
 }
 
+/// Fetch sessions in the explicit id range `[from_id, to_id]` (inclusive) that
+/// meet the minimum duration. No cursor check; no `ticket_links` exclusion —
+/// the caller (backfill) may intentionally re-classify already-linked sessions.
+pub(super) async fn fetch_sessions_in_range(
+    pool: &SqlitePool,
+    from_id: i64,
+    to_id: Option<i64>,
+    min_duration_s: i64,
+) -> Result<
+    Vec<(
+        i64,
+        String,
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<f64>,
+    )>,
+> {
+    match to_id {
+        Some(to) => sqlx::query_as::<
+            _,
+            (
+                i64,
+                String,
+                i64,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<f64>,
+            ),
+        >(
+            "SELECT id, app_name, duration_s, window_titles, session_text, category, confidence
+             FROM app_sessions
+             WHERE id >= ? AND id <= ? AND duration_s > ?
+             ORDER BY id ASC",
+        )
+        .bind(from_id)
+        .bind(to)
+        .bind(min_duration_s)
+        .fetch_all(pool)
+        .await
+        .context("fetching sessions in id range"),
+
+        None => sqlx::query_as::<
+            _,
+            (
+                i64,
+                String,
+                i64,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<f64>,
+            ),
+        >(
+            "SELECT id, app_name, duration_s, window_titles, session_text, category, confidence
+             FROM app_sessions
+             WHERE id >= ? AND duration_s > ?
+             ORDER BY id ASC",
+        )
+        .bind(from_id)
+        .bind(min_duration_s)
+        .fetch_all(pool)
+        .await
+        .context("fetching sessions in id range"),
+    }
+}
+
 /// Insert an `agent_runs` row with `status = 'running'` and return its id.
 pub(super) async fn start_agent_run(pool: &SqlitePool) -> Result<i64> {
     let now = Utc::now().to_rfc3339();
