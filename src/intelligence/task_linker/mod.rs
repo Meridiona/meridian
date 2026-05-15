@@ -19,8 +19,9 @@ use db::{
     write_dimensions, write_overhead_link, write_ticket_link,
 };
 
-// Maximum sessions per classification batch.
-pub(super) const BATCH_LIMIT: i64 = 50;
+// One session per daemon tick — at 30-60s cadence there is typically one new
+// session. The backfill binary handles bulk catch-up after downtime.
+pub(super) const BATCH_LIMIT: i64 = 1;
 
 // ---------------------------------------------------------------------------
 // Serialization structs — sent to and received from the Python subprocess
