@@ -78,6 +78,31 @@ pub struct Config {
     /// All configured PM providers. Empty = intelligence silently disabled.
     pub pm_providers: Vec<PmProviderConfig>,
     pub llm_backend: LlmBackendConfig,
+    /// Whether to run hermes-based task classification after each ETL tick.
+    /// CLASSIFICATION_ENABLED — default true
+    pub classification_enabled: bool,
+    /// Seconds to wait for the Python classification subprocess before killing it.
+    /// CLASSIFICATION_TIMEOUT_S — default 120
+    pub classification_timeout_s: u64,
+    /// Minimum session duration in seconds to classify (shorter = overhead/skip).
+    /// MIN_LLM_DURATION_S — default 10
+    pub min_classification_duration_s: i64,
+    /// Path to the meridian services/ directory containing agents/run_task_linker.py.
+    /// MERIDIAN_SERVICES_DIR — optional, auto-detected if not set
+    pub classification_services_dir: Option<String>,
+    /// Whether to classify sessions that existed before the first run.
+    /// CLASSIFICATION_BACKFILL — default false (skip historical sessions)
+    pub classification_backfill: bool,
+    /// Whether to post Jira progress updates. Auto-enabled when JIRA_BASE_URL is set.
+    /// JIRA_UPDATE_ENABLED — default true if Jira is configured
+    pub jira_update_enabled: bool,
+    /// Minimum seconds between Jira update runs.
+    /// JIRA_UPDATE_INTERVAL_HOURS — default 4 (14400s)
+    pub jira_update_interval_s: u64,
+    /// Local hour at which the office day starts (inclusive). OFFICE_START_HOUR — default 9
+    pub jira_office_start_hour: u32,
+    /// Local hour at which the office day ends (exclusive). OFFICE_END_HOUR — default 17
+    pub jira_office_end_hour: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -229,12 +254,64 @@ impl Config {
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(60);
 
+        let classification_enabled = std::env::var("CLASSIFICATION_ENABLED")
+            .map(|v| !matches!(v.to_lowercase().trim(), "0" | "false" | "no" | "off"))
+            .unwrap_or(true);
+
+        let classification_timeout_s = std::env::var("CLASSIFICATION_TIMEOUT_S")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(120);
+
+        let min_classification_duration_s = std::env::var("MIN_LLM_DURATION_S")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(10);
+
+        let classification_services_dir = std::env::var("MERIDIAN_SERVICES_DIR")
+            .ok()
+            .map(|v| expand_tilde(&v));
+
+        let classification_backfill = std::env::var("CLASSIFICATION_BACKFILL")
+            .map(|v| matches!(v.to_lowercase().trim(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false);
+
+        let jira_configured = std::env::var("JIRA_BASE_URL").is_ok();
+        let jira_update_enabled = std::env::var("JIRA_UPDATE_ENABLED")
+            .map(|v| !matches!(v.to_lowercase().trim(), "0" | "false" | "no" | "off"))
+            .unwrap_or(jira_configured);
+
+        let jira_update_interval_s = std::env::var("JIRA_UPDATE_INTERVAL_HOURS")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|h| (h * 3600.0) as u64)
+            .unwrap_or(14400); // default 4 hours
+
+        let jira_office_start_hour = std::env::var("OFFICE_START_HOUR")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(9);
+
+        let jira_office_end_hour = std::env::var("OFFICE_END_HOUR")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(17);
+
         Self {
             screenpipe_db,
             meridian_db,
             poll_interval_secs,
             pm_providers: parse_providers(),
             llm_backend: parse_llm_backend(),
+            classification_enabled,
+            classification_timeout_s,
+            min_classification_duration_s,
+            classification_services_dir,
+            classification_backfill,
+            jira_update_enabled,
+            jira_update_interval_s,
+            jira_office_start_hour,
+            jira_office_end_hour,
         }
     }
 

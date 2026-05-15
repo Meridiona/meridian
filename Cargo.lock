@@ -1029,6 +1029,7 @@ dependencies = [
  "shellexpand",
  "sqlite-vec",
  "sqlx",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-appender",

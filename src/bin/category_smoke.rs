@@ -14,8 +14,8 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use meridian::config::LlmBackendConfig;
-use meridian::intelligence::classifier::backends::build_backend;
-use meridian::intelligence::settler::{build_category_prompt, parse_category}; // parse_category used for non-FM fallback display
+use meridian::intelligence::category_llm::backends::build_backend;
+use meridian::intelligence::category_settler::{build_category_prompt, parse_category}; // parse_category used for non-FM fallback display
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::SqlitePool;
 
