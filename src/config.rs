@@ -93,6 +93,9 @@ pub struct Config {
     /// Whether to classify sessions that existed before the first run.
     /// CLASSIFICATION_BACKFILL — default false (skip historical sessions)
     pub classification_backfill: bool,
+    /// Whether to re-categorize sessions that existed before the first run.
+    /// CATEGORY_BACKFILL — default false (skip historical sessions)
+    pub category_backfill: bool,
     /// Whether to post Jira progress updates. Auto-enabled when JIRA_BASE_URL is set.
     /// JIRA_UPDATE_ENABLED — default true if Jira is configured
     pub jira_update_enabled: bool,
@@ -230,7 +233,7 @@ impl Config {
     ///   LINEAR_TEAM_IDS     — optional comma-separated filter
     ///
     /// LLM backend:
-    ///   LLM_BACKEND      — 'foundation' (default on Apple Silicon) | 'ollama' | 'claude' | 'disabled'
+    ///   LLM_BACKEND           — 'foundation' (default on Apple Silicon) | 'ollama' | 'claude' | 'disabled'
     ///   LLM_BASE_URL     — base URL for ollama (default: http://localhost:11434)
     ///   LLM_MODEL        — model name for ollama or claude
     ///   ANTHROPIC_API_KEY — API key for Claude backend
@@ -276,6 +279,10 @@ impl Config {
             .map(|v| matches!(v.to_lowercase().trim(), "1" | "true" | "yes" | "on"))
             .unwrap_or(false);
 
+        let category_backfill = std::env::var("CATEGORY_BACKFILL")
+            .map(|v| matches!(v.to_lowercase().trim(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false);
+
         let jira_configured = std::env::var("JIRA_BASE_URL").is_ok();
         let jira_update_enabled = std::env::var("JIRA_UPDATE_ENABLED")
             .map(|v| !matches!(v.to_lowercase().trim(), "0" | "false" | "no" | "off"))
@@ -308,6 +315,7 @@ impl Config {
             min_classification_duration_s,
             classification_services_dir,
             classification_backfill,
+            category_backfill,
             jira_update_enabled,
             jira_update_interval_s,
             jira_office_start_hour,

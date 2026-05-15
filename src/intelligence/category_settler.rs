@@ -7,6 +7,38 @@ use tracing::{debug, info, warn};
 use crate::db::meridian::update_session_category;
 use crate::intelligence::category_llm::LlmBackend;
 
+async fn get_settler_cursor(pool: &SqlitePool) -> Result<i64> {
+    let row: (i64,) = sqlx::query_as(
+        "SELECT last_settled_session_id FROM agent_cursor WHERE id = 1",
+    )
+    .fetch_one(pool)
+    .await
+    .context("reading settler cursor")?;
+    Ok(row.0)
+}
+
+async fn advance_settler_cursor(pool: &SqlitePool, session_id: i64) -> Result<()> {
+    sqlx::query(
+        "UPDATE agent_cursor
+         SET last_settled_session_id = MAX(last_settled_session_id, ?),
+             updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+         WHERE id = 1",
+    )
+    .bind(session_id)
+    .execute(pool)
+    .await
+    .context("advancing settler cursor")?;
+    Ok(())
+}
+
+async fn get_max_session_id(pool: &SqlitePool) -> Result<Option<i64>> {
+    let row: (Option<i64>,) = sqlx::query_as("SELECT MAX(id) FROM app_sessions")
+        .fetch_one(pool)
+        .await
+        .context("reading max session id")?;
+    Ok(row.0)
+}
+
 // ---------------------------------------------------------------------------
 // Category settler — re-classifies rule_based sessions via Foundation Models
 // ---------------------------------------------------------------------------
@@ -49,9 +81,10 @@ choose the single best category.\n\
   research         — reading docs, Stack Overflow, tutorials, GitHub repos, articles\n\
   idle_personal    — YouTube, social media, news, entertainment, shopping, games";
 
-/// Re-classifies all sessions that still carry the rule-based category using
-/// Foundation Models. Only runs when the configured backend is Foundation Models —
-/// silently skips otherwise (category stays as-is until the backend is switched).
+/// Re-classifies sessions that still carry the rule-based category using
+/// Foundation Models. Only processes sessions created after the daemon started —
+/// historical sessions are skipped on first run unless `backfill` is true.
+/// Only runs when the configured backend is Foundation Models.
 #[tracing::instrument(
     skip_all,
     fields(
@@ -63,6 +96,7 @@ pub async fn settle_all_categories(
     meridian: &SqlitePool,
     backend: &LlmBackend,
     min_duration_s: i64,
+    backfill: bool,
 ) -> Result<()> {
     if !backend.is_foundation_models() {
         debug!("category settler skipped — requires Foundation Models backend");
@@ -75,18 +109,34 @@ pub async fn settle_all_categories(
         return Ok(());
     }
 
+    let cursor = get_settler_cursor(meridian).await?;
+
+    // First run: fast-forward cursor to current max session id to skip history.
+    if cursor == 0 && !backfill {
+        if let Some(max_id) = get_max_session_id(meridian).await? {
+            info!(
+                max_session_id = max_id,
+                "first category settler run — advancing cursor to skip historical sessions"
+            );
+            advance_settler_cursor(meridian, max_id).await?;
+        }
+        return Ok(());
+    }
+
     let rows: Vec<(i64, String, i64, String, String)> = sqlx::query_as(
         "SELECT id, app_name, duration_s, window_titles,
                 COALESCE(session_text, '')
          FROM app_sessions
          WHERE category_method = 'rule_based'
            AND duration_s >= ?
+           AND id > ?
          ORDER BY id ASC
          LIMIT ?",
     )
     // Sessions with category_method != 'rule_based' (foundation_models, fm_parse_error, fm_skip)
     // are excluded by the WHERE clause and won't be retried.
     .bind(min_duration_s)
+    .bind(cursor)
     .bind(SETTLE_BATCH_LIMIT)
     .fetch_all(meridian)
     .await
@@ -102,6 +152,10 @@ pub async fn settle_all_categories(
         "re-classifying sessions via Foundation Models"
     );
     tracing::Span::current().record("sessions_processed", rows.len() as i64);
+
+    // Track the highest id definitively processed (success or permanent failure).
+    // Transient failures keep the cursor where it is so next tick retries them.
+    let mut max_settled: i64 = cursor;
 
     for (id, app_name, duration_s, window_titles, session_text) in &rows {
         let user = build_category_prompt(app_name, *duration_s, window_titles, session_text);
@@ -121,6 +175,7 @@ pub async fn settle_all_categories(
                             warn!(session_id = id, error = %e, "failed to update category");
                         } else {
                             debug!(session_id = id, app = %app_name, category = valid_cat, "category updated");
+                            max_settled = max_settled.max(*id);
                         }
                     }
                     None => {
@@ -131,6 +186,8 @@ pub async fn settle_all_categories(
                                 .await
                         {
                             warn!(session_id = id, error = %e, "failed to write parse-error sentinel");
+                        } else {
+                            max_settled = max_settled.max(*id);
                         }
                     }
                 }
@@ -168,6 +225,7 @@ pub async fn settle_all_categories(
                                         warn!(session_id = id, error = %db_err, "failed to update category (fallback)");
                                     } else {
                                         debug!(session_id = id, app = %app_name, category = valid_cat, "category updated via titles-only fallback");
+                                        max_settled = max_settled.max(*id);
                                     }
                                 }
                                 None => {
@@ -175,43 +233,47 @@ pub async fn settle_all_categories(
                                         session_id = id,
                                         "unexpected category from fallback — writing sentinel"
                                     );
-                                    let _ = update_session_category(
-                                        meridian,
-                                        *id,
-                                        PARSE_ERROR_SENTINEL,
-                                        0.0,
-                                        None,
+                                    if update_session_category(
+                                        meridian, *id, PARSE_ERROR_SENTINEL, 0.0, None,
                                     )
-                                    .await;
+                                    .await
+                                    .is_ok()
+                                    {
+                                        max_settled = max_settled.max(*id);
+                                    }
                                 }
                             }
                         }
                         Err(retry_err) => {
                             warn!(session_id = id, error = %retry_err, "titles-only fallback also failed — writing sentinel");
-                            let _ = update_session_category(
-                                meridian,
-                                *id,
-                                PARSE_ERROR_SENTINEL,
-                                0.0,
-                                None,
+                            if update_session_category(
+                                meridian, *id, PARSE_ERROR_SENTINEL, 0.0, None,
                             )
-                            .await;
+                            .await
+                            .is_ok()
+                            {
+                                max_settled = max_settled.max(*id);
+                            }
                         }
                     }
                 } else if is_permanent {
                     warn!(session_id = id, error = %e, "FM permanent failure — writing sentinel");
-                    if let Err(db_err) =
-                        update_session_category(meridian, *id, PARSE_ERROR_SENTINEL, 0.0, None)
-                            .await
+                    if update_session_category(meridian, *id, PARSE_ERROR_SENTINEL, 0.0, None)
+                        .await
+                        .is_ok()
                     {
-                        warn!(session_id = id, error = %db_err, "failed to write FM error sentinel");
+                        max_settled = max_settled.max(*id);
                     }
                 } else {
-                    // Transient error (throttle, network) — leave as rule_based so next tick retries
+                    // Transient error (throttle, network) — do NOT advance cursor; retry next tick.
                     warn!(session_id = id, error = %e, "FM transient failure — will retry next tick");
                 }
             }
         }
+    }
+
+    if max_settled > cursor {
+        advance_settler_cursor(meridian, max_settled).await?;
     }
 
     Ok(())
