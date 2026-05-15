@@ -8,12 +8,11 @@ use crate::db::meridian::update_session_category;
 use crate::intelligence::category_llm::LlmBackend;
 
 async fn get_settler_cursor(pool: &SqlitePool) -> Result<i64> {
-    let row: (i64,) = sqlx::query_as(
-        "SELECT last_settled_session_id FROM agent_cursor WHERE id = 1",
-    )
-    .fetch_one(pool)
-    .await
-    .context("reading settler cursor")?;
+    let row: (i64,) =
+        sqlx::query_as("SELECT last_settled_session_id FROM agent_cursor WHERE id = 1")
+            .fetch_one(pool)
+            .await
+            .context("reading settler cursor")?;
     Ok(row.0)
 }
 
@@ -234,7 +233,11 @@ pub async fn settle_all_categories(
                                         "unexpected category from fallback — writing sentinel"
                                     );
                                     if update_session_category(
-                                        meridian, *id, PARSE_ERROR_SENTINEL, 0.0, None,
+                                        meridian,
+                                        *id,
+                                        PARSE_ERROR_SENTINEL,
+                                        0.0,
+                                        None,
                                     )
                                     .await
                                     .is_ok()
@@ -247,7 +250,11 @@ pub async fn settle_all_categories(
                         Err(retry_err) => {
                             warn!(session_id = id, error = %retry_err, "titles-only fallback also failed — writing sentinel");
                             if update_session_category(
-                                meridian, *id, PARSE_ERROR_SENTINEL, 0.0, None,
+                                meridian,
+                                *id,
+                                PARSE_ERROR_SENTINEL,
+                                0.0,
+                                None,
                             )
                             .await
                             .is_ok()
@@ -277,6 +284,79 @@ pub async fn settle_all_categories(
     }
 
     Ok(())
+}
+
+/// Re-categorize sessions in a specific id range via Foundation Models.
+/// Does not touch the settler cursor — intended for manual backfill runs.
+/// Returns (processed, updated) counts.
+pub async fn settle_range(
+    meridian: &SqlitePool,
+    backend: &LlmBackend,
+    from_id: i64,
+    to_id: Option<i64>,
+    min_duration_s: i64,
+    dry_run: bool,
+) -> Result<(usize, usize)> {
+    if !backend.is_foundation_models() {
+        anyhow::bail!("settle_range requires Foundation Models backend");
+    }
+
+    let rows: Vec<(i64, String, i64, String, String)> = match to_id {
+        Some(to) => {
+            sqlx::query_as(
+                "SELECT id, app_name, duration_s, window_titles, COALESCE(session_text, '')
+                 FROM app_sessions
+                 WHERE duration_s >= ? AND id >= ? AND id <= ?
+                 ORDER BY id ASC",
+            )
+            .bind(min_duration_s)
+            .bind(from_id)
+            .bind(to)
+            .fetch_all(meridian)
+            .await
+        }
+        None => {
+            sqlx::query_as(
+                "SELECT id, app_name, duration_s, window_titles, COALESCE(session_text, '')
+                 FROM app_sessions
+                 WHERE duration_s >= ? AND id >= ?
+                 ORDER BY id ASC",
+            )
+            .bind(min_duration_s)
+            .bind(from_id)
+            .fetch_all(meridian)
+        }
+        .await,
+    }
+    .context("loading sessions for backfill")?;
+
+    let total = rows.len();
+    let mut updated = 0usize;
+
+    for (id, app_name, duration_s, window_titles, session_text) in &rows {
+        let user = build_category_prompt(app_name, *duration_s, window_titles, session_text);
+        if dry_run {
+            println!("  session {id:6}  app={app_name}  duration={duration_s}s  (dry run)");
+            continue;
+        }
+        match backend.generate_category(CATEGORY_SYSTEM, &user).await {
+            Ok((cat, explanation)) => {
+                let expl = if explanation.is_empty() { None } else { Some(explanation.as_str()) };
+                let method = parse_category(&cat).unwrap_or(PARSE_ERROR_SENTINEL);
+                let conf = if method == PARSE_ERROR_SENTINEL { 0.0 } else { 0.9 };
+                if update_session_category(meridian, *id, method, conf, expl).await.is_ok() {
+                    updated += 1;
+                    info!(session_id = id, app = %app_name, category = method, "backfill: category updated");
+                }
+            }
+            Err(e) => {
+                warn!(session_id = id, error = %e, "backfill: FM failed — writing sentinel");
+                let _ = update_session_category(meridian, *id, PARSE_ERROR_SENTINEL, 0.0, None).await;
+            }
+        }
+    }
+
+    Ok((total, updated))
 }
 
 /// Removes non-Latin-script characters that cause Foundation Models to reject the prompt
