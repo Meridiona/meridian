@@ -14,13 +14,14 @@ use tracing::{debug, info, warn};
 use crate::config::Config;
 
 use db::{
-    advance_agent_cursor, complete_agent_run, fetch_open_pm_tasks, fetch_unclassified_sessions,
-    get_agent_cursor, get_max_session_id, start_agent_run, write_dimensions, write_overhead_link,
-    write_ticket_link,
+    advance_agent_cursor, complete_agent_run, fetch_open_pm_tasks, fetch_sessions_in_range,
+    fetch_unclassified_sessions, get_agent_cursor, get_max_session_id, start_agent_run,
+    update_session_overhead, update_session_task, write_dimensions,
 };
 
-// Maximum sessions per classification batch.
-pub(super) const BATCH_LIMIT: i64 = 50;
+// One session per daemon tick — at 30-60s cadence there is typically one new
+// session. The backfill binary handles bulk catch-up after downtime.
+pub(super) const BATCH_LIMIT: i64 = 1;
 
 // ---------------------------------------------------------------------------
 // Serialization structs — sent to and received from the Python subprocess
@@ -68,7 +69,6 @@ pub(super) struct SessionClassification {
     pub(super) task_key: Option<String>,
     pub(super) confidence: f64,
     pub(super) routing: String,
-    #[allow(dead_code)]
     pub(super) reasoning: String,
     pub(super) method: String,
     #[serde(default)]
@@ -220,7 +220,7 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
         );
     }
     for id in trivial_ids {
-        write_overhead_link(pool, id).await?;
+        update_session_overhead(pool, id).await?;
         advance_agent_cursor(pool, id).await?;
     }
 
@@ -331,6 +331,10 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
     let stdout_bytes = stdout_task.await.unwrap_or_default();
     let stderr_bytes = stderr_task.await.unwrap_or_default();
 
+    if !stderr_bytes.is_empty() {
+        debug!(stderr = %String::from_utf8_lossy(&stderr_bytes), "run_task_linker python stderr");
+    }
+
     if !status.success() {
         let stderr = String::from_utf8_lossy(&stderr_bytes);
         warn!(
@@ -359,20 +363,33 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
     let mut links_written: i64 = trivial_count;
     let total_sessions = trivial_count + classify_output.results.len() as i64;
 
-    for r in &classify_output.results {
-        write_ticket_link(pool, r).await?;
-        write_dimensions(pool, r.session_id, &r.dimensions).await?;
-        advance_agent_cursor(pool, r.session_id).await?;
-        debug!(
-            session_id = r.session_id,
-            task_key   = ?r.task_key,
-            routing    = %r.routing,
-            confidence = r.confidence,
-            elapsed_s  = r.elapsed_s,
-            method     = %r.method,
-            "session classified"
-        );
-        links_written += 1;
+    let write_result: Result<()> = 'write_loop: {
+        for r in &classify_output.results {
+            if let Err(e) = update_session_task(pool, r).await {
+                break 'write_loop Err(e);
+            }
+            if let Err(e) = write_dimensions(pool, r.session_id, &r.dimensions).await {
+                break 'write_loop Err(e);
+            }
+            if let Err(e) = advance_agent_cursor(pool, r.session_id).await {
+                break 'write_loop Err(e);
+            }
+            debug!(
+                session_id = r.session_id,
+                task_key   = ?r.task_key,
+                routing    = %r.routing,
+                confidence = r.confidence,
+                elapsed_s  = r.elapsed_s,
+                method     = %r.method,
+                "session classified"
+            );
+            links_written += 1;
+        }
+        Ok(())
+    };
+    if let Err(e) = write_result {
+        complete_agent_run(pool, run_id, "failed", total_sessions, links_written).await?;
+        return Err(e);
     }
 
     let elapsed = wall.elapsed().as_secs_f64();
@@ -385,4 +402,183 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
 
     complete_agent_run(pool, run_id, "success", total_sessions, links_written).await?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Backfill entry point — does NOT touch agent_cursor
+// ---------------------------------------------------------------------------
+
+/// Classify sessions in an explicit id range without advancing `agent_cursor`.
+/// Safe to run while the daemon is active. Returns `(processed, linked)`.
+pub async fn link_range(
+    pool: &SqlitePool,
+    cfg: &Config,
+    from_id: i64,
+    to_id: Option<i64>,
+    dry_run: bool,
+) -> Result<(usize, usize)> {
+    let raw_sessions =
+        fetch_sessions_in_range(pool, from_id, to_id, cfg.min_classification_duration_s).await?;
+
+    if raw_sessions.is_empty() {
+        return Ok((0, 0));
+    }
+
+    let pm_tasks = fetch_open_pm_tasks(pool).await?;
+
+    let mut trivial_ids: Vec<i64> = Vec::new();
+    let mut classifiable: Vec<SessionPayload> = Vec::new();
+
+    for (id, app_name, duration_s, wt_json, session_text_opt, category, confidence) in raw_sessions
+    {
+        let text = session_text_opt.unwrap_or_default();
+        if text.trim().is_empty() {
+            trivial_ids.push(id);
+        } else {
+            let window_titles =
+                serde_json::from_str(&wt_json).unwrap_or(serde_json::Value::Array(vec![]));
+            classifiable.push(SessionPayload {
+                id,
+                app_name,
+                duration_s,
+                session_text: text,
+                window_titles,
+                category,
+                confidence,
+            });
+        }
+    }
+
+    let total = trivial_ids.len() + classifiable.len();
+    let mut linked: usize = 0;
+
+    if dry_run {
+        for id in &trivial_ids {
+            println!("  session {id}: overhead/skip (empty text — would write prefilter_trivial)");
+        }
+        for s in &classifiable {
+            println!(
+                "  session {}: {} — would classify via hermes",
+                s.id, s.app_name
+            );
+        }
+        return Ok((total, 0));
+    }
+
+    for id in trivial_ids {
+        update_session_overhead(pool, id).await?;
+        linked += 1;
+    }
+
+    if classifiable.is_empty() {
+        return Ok((total, linked));
+    }
+
+    let services_dir = match find_services_dir(cfg) {
+        Some(d) => d,
+        None => {
+            warn!("could not locate services/agents/run_task_linker.py — skipping hermes classification");
+            return Ok((total, linked));
+        }
+    };
+
+    let input = ClassifyInput {
+        sessions: classifiable,
+        pm_tasks,
+    };
+    let input_json = serde_json::to_string(&input).context("serializing ClassifyInput")?;
+    let python = resolve_python(&services_dir);
+
+    let mut child = match Command::new(&python)
+        .arg("-m")
+        .arg("agents.run_task_linker")
+        .current_dir(&services_dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(python = %python, error = %e, "could not spawn run_task_linker");
+            return Ok((total, linked));
+        }
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(input_json.as_bytes())
+            .await
+            .context("writing to run_task_linker stdin")?;
+    }
+
+    let stdout_task = {
+        use tokio::io::AsyncReadExt;
+        let mut out = child.stdout.take().expect("stdout was piped");
+        tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let _ = out.read_to_end(&mut buf).await;
+            buf
+        })
+    };
+    let stderr_task = {
+        use tokio::io::AsyncReadExt;
+        let mut err = child.stderr.take().expect("stderr was piped");
+        tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let _ = err.read_to_end(&mut buf).await;
+            buf
+        })
+    };
+
+    let timeout_dur = std::time::Duration::from_secs(cfg.classification_timeout_s);
+    let status = match tokio::time::timeout(timeout_dur, child.wait()).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            warn!(error = %e, "run_task_linker subprocess IO error");
+            stdout_task.abort();
+            stderr_task.abort();
+            return Ok((total, linked));
+        }
+        Err(_elapsed) => {
+            warn!(
+                timeout_s = cfg.classification_timeout_s,
+                "run_task_linker timed out — killing"
+            );
+            let _ = child.kill().await;
+            stdout_task.abort();
+            stderr_task.abort();
+            return Ok((total, linked));
+        }
+    };
+
+    let stdout_bytes = stdout_task.await.unwrap_or_default();
+    let stderr_bytes = stderr_task.await.unwrap_or_default();
+
+    if !stderr_bytes.is_empty() {
+        debug!(stderr = %String::from_utf8_lossy(&stderr_bytes), "run_task_linker python stderr");
+    }
+
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr_bytes);
+        warn!(exit_code = ?status.code(), stderr = %stderr, "run_task_linker exited non-zero");
+        return Ok((total, linked));
+    }
+
+    let classify_output: ClassifyOutput = match serde_json::from_slice(&stdout_bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            let raw = String::from_utf8_lossy(&stdout_bytes);
+            warn!(error = %e, stdout = %raw, "run_task_linker stdout not valid JSON");
+            return Ok((total, linked));
+        }
+    };
+
+    for r in &classify_output.results {
+        update_session_task(pool, r).await?;
+        write_dimensions(pool, r.session_id, &r.dimensions).await?;
+        linked += 1;
+    }
+
+    Ok((total, linked))
 }
