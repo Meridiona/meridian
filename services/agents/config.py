@@ -96,6 +96,13 @@ MODEL    = os.environ.get("OLLAMA_MODEL",   "gemma4:31b-cloud")
 BASE_URL = os.environ.get("OLLAMA_HOST",    "https://ollama.com/v1")
 API_KEY  = os.environ.get("OLLAMA_API_KEY", "")
 
+# Local model selection — Apple Silicon only.
+# LLM_PREFER_LOCAL=1 tries a local model before the cloud AIAgent path.
+# LLM_BUDGET_PCT controls the fraction of available Metal headroom to allocate
+# (0.5 = 50% of free GPU memory). Set to 0 or LLM_PREFER_LOCAL=0 to disable.
+LLM_PREFER_LOCAL = _env_bool("LLM_PREFER_LOCAL", True)
+LLM_BUDGET_PCT   = float(os.environ.get("LLM_BUDGET_PCT", "0.5"))
+
 # When true, _hermes_setup.ensure_hermes_importable() prepends services/.hermes/
 # to sys.path so the local source checkout shadows the installed hermes-agent
 # package. Set HERMES_DEV_MODE=1 in your .env for breakpoint debugging.
