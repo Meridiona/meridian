@@ -1,16 +1,12 @@
-"""Task Classifier Agent — resolves ambiguous session→task matches via hermes AIAgent.
+"""Session Task Classifier — resolves session→task matches via hermes AIAgent.
 
-Three execution modes (controlled by the `mode` parameter):
-  MODE_TIEBREAK   — Stage 2 ran; break the tie among top-K ranked candidates.
-  MODE_NO_DIMS    — Stage 2 ran; Stage 1 disabled — no rule-derived dims.
-  MODE_STANDALONE — Stage 1+2 both disabled; keyword-prefilter from all tasks
-                    and ask the agent to also infer dimension tags.
+Receives a session and the full list of open pm_tasks. Keyword-ranks candidates
+down to MAX_CANDIDATES before sending to the LLM so the prompt stays focused.
 
-We deliberately use AIAgent in its simplest mode:
+Uses AIAgent in its simplest mode:
 * `enabled_toolsets=[]`  — no tools to call
 * `max_iterations=1`     — one model round, no agent loop
-* system prompt is the base SKILL.md with a mode-specific addendum appended
-  so prompt iteration doesn't require code changes.
+* system prompt is the SKILL.md for 'task-classifier'
 """
 from __future__ import annotations
 
@@ -22,7 +18,7 @@ from dataclasses import dataclass, field
 from agents import observability
 from agents.config import MODEL, BASE_URL, API_KEY, load_skill
 
-from ._prompts import build_system_prompt, build_user_message, _prefilter_tasks
+from ._prompts import build_user_message
 from ._parser import parse_response, routing_for
 
 log = logging.getLogger("agents.task_classifier_agent")
@@ -30,16 +26,10 @@ tracer = observability.setup("meridian-task-classifier")
 
 
 # ── Config / thresholds ────────────────────────────────────────────────────────
-AUTO_FLOOR  = float(os.environ.get("AGENT_AUTO_FLOOR",  "0.65"))
-QUEUE_FLOOR = float(os.environ.get("AGENT_QUEUE_FLOOR", "0.40"))
-MAX_TOKENS           = int(os.environ.get("AGENT_MAX_TOKENS", "4000"))
-SKILL_NAME           = os.environ.get("AGENT_SKILL_NAME", "stage3-agent")
-MAX_STANDALONE_TASKS = int(os.environ.get("AGENT_STANDALONE_MAX_TASKS", "20"))
-
-# Execution mode constants.
-MODE_TIEBREAK   = "tiebreak"
-MODE_NO_DIMS    = "no_dims"
-MODE_STANDALONE = "standalone"
+AUTO_FLOOR     = float(os.environ.get("AGENT_AUTO_FLOOR",  "0.65"))
+QUEUE_FLOOR    = float(os.environ.get("AGENT_QUEUE_FLOOR", "0.40"))
+MAX_TOKENS = int(os.environ.get("AGENT_MAX_TOKENS", "4000"))
+SKILL_NAME = os.environ.get("AGENT_SKILL_NAME", "task-classifier")
 
 
 # ── Result type ────────────────────────────────────────────────────────────────
@@ -60,31 +50,21 @@ class ClassifierDecision:
 # ── Public entry ───────────────────────────────────────────────────────────────
 def classify_session(
     session: dict,
-    dims_grouped: dict[str, set[str]],
-    top_candidates: list,
-    pm_task_lookup: dict[str, dict],
-    *,
-    mode: str = MODE_TIEBREAK,
-    all_pm_tasks: list[dict] | None = None,
+    pm_tasks: list[dict],
+    pm_task_lookup: dict[str, dict] | None = None,
 ) -> ClassifierDecision:
-    """Ask the configured hermes AIAgent to classify a session into a task.
+    """Match a session to the best open Jira ticket via the hermes AIAgent.
 
-    `mode` controls prompt adaptation and candidate format:
-      MODE_TIEBREAK   — Stage 2 ran; break the tie among top_candidates (default)
-      MODE_NO_DIMS    — Stage 2 ran; Stage 1 disabled — no rule-derived dims
-      MODE_STANDALONE — Stage 1+2 disabled; pick from all_pm_tasks + infer dims
+    pm_tasks is the full list of open tasks; they are keyword-ranked down to
+    MAX_CANDIDATES before being sent to the LLM.
+    pm_task_lookup is unused but accepted for call-site compatibility.
     """
     sid = int(session["id"])
     with tracer.start_as_current_span("task_classifier_agent.decide") as span:
         span.set_attribute("session_id", sid)
         span.set_attribute("model", MODEL or "")
-        span.set_attribute("mode", mode)
-        span.set_attribute("candidates_count",
-                           len(all_pm_tasks) if mode == MODE_STANDALONE else len(top_candidates))
-        result = _classify_session_inner(
-            session, dims_grouped, top_candidates, pm_task_lookup, sid,
-            mode=mode, all_pm_tasks=all_pm_tasks,
-        )
+        span.set_attribute("pm_tasks", len(pm_tasks))
+        result = _classify_session_inner(session, pm_tasks, sid)
         span.set_attribute("method", result.method)
         span.set_attribute("routing", result.routing)
         span.set_attribute("confidence", float(result.confidence))
@@ -96,40 +76,19 @@ def classify_session(
 
 def _classify_session_inner(
     session: dict,
-    dims_grouped: dict[str, set[str]],
-    top_candidates: list,
-    pm_task_lookup: dict[str, dict],
+    pm_tasks: list[dict],
     sid: int,
-    *,
-    mode: str = MODE_TIEBREAK,
-    all_pm_tasks: list[dict] | None = None,
 ) -> ClassifierDecision:
-    standalone_tasks: list[dict] | None = None
-    if mode == MODE_STANDALONE:
-        if not all_pm_tasks:
-            return ClassifierDecision(
-                session_id=sid, chosen_task_key=None, confidence=0.0,
-                reasoning="no pm_tasks for standalone mode", routing="skip",
-                method="agent_unavailable",
-            )
-        standalone_tasks = _prefilter_tasks(session, all_pm_tasks, MAX_STANDALONE_TASKS)
-        valid_keys = {t["task_key"] for t in standalone_tasks}
-    else:
-        valid_keys = {c.task_key for c in top_candidates}
-        if not valid_keys:
-            return ClassifierDecision(
-                session_id=sid, chosen_task_key=None, confidence=0.0,
-                reasoning="no candidates", routing="skip", method="agent_unavailable",
-            )
+    if not pm_tasks:
+        return ClassifierDecision(
+            session_id=sid, chosen_task_key=None, confidence=0.0,
+            reasoning="no pm_tasks available", routing="skip",
+            method="agent_unavailable",
+        )
 
-    user_message = build_user_message(
-        session, dims_grouped, top_candidates, pm_task_lookup,
-        mode=mode,
-        mode_tiebreak=MODE_TIEBREAK,
-        mode_no_dims=MODE_NO_DIMS,
-        mode_standalone=MODE_STANDALONE,
-        standalone_tasks=standalone_tasks,
-    )
+    valid_keys = {t["task_key"] for t in pm_tasks}
+
+    user_message = build_user_message(session, pm_tasks)
     log.debug("task_classifier_agent user message:\n%s", user_message)
 
     try:
@@ -139,8 +98,6 @@ def _classify_session_inner(
             session_id=sid, chosen_task_key=None, confidence=0.0,
             reasoning=str(exc), routing="skip", method="agent_unavailable",
         )
-
-    system_prompt = build_system_prompt(SKILL_NAME, mode, base_prompt)
 
     from agents._hermes_setup import ensure_hermes_importable
     ensure_hermes_importable()
@@ -153,8 +110,8 @@ def _classify_session_inner(
             routing="skip", method="agent_unavailable",
         )
 
-    log.info("task_classifier_agent: model=%s base_url=%s skill=%s mode=%s",
-             MODEL, BASE_URL, SKILL_NAME, mode)
+    log.info("task_classifier_agent: model=%s base_url=%s skill=%s pm_tasks=%d",
+             MODEL, BASE_URL, SKILL_NAME, len(pm_tasks))
 
     t0 = time.time()
     try:
@@ -162,7 +119,7 @@ def _classify_session_inner(
             model=MODEL,
             base_url=BASE_URL,
             api_key=API_KEY or "none",
-            ephemeral_system_prompt=system_prompt,
+            ephemeral_system_prompt=base_prompt,
             enabled_toolsets=[],
             quiet_mode=True,
             skip_context_files=True,
@@ -172,7 +129,7 @@ def _classify_session_inner(
             max_tokens=MAX_TOKENS,
         )
         result = agent.run_conversation(user_message)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         elapsed = time.time() - t0
         log.warning("task_classifier_agent AIAgent failed: %s", exc)
         return ClassifierDecision(
@@ -215,18 +172,16 @@ def _classify_session_inner(
         elapsed_s=elapsed,
         dimensions=dimensions,
         debug={
-            "model":         MODEL,
-            "base_url":      BASE_URL,
-            "n_candidates":  len(valid_keys),
-            "auto_floor":    AUTO_FLOOR,
-            "queue_floor":   QUEUE_FLOOR,
-            "skill":         SKILL_NAME,
-            "mode":          mode,
+            "model":       MODEL,
+            "base_url":    BASE_URL,
+            "n_tasks":     len(pm_tasks),
+            "auto_floor":  AUTO_FLOOR,
+            "queue_floor": QUEUE_FLOOR,
+            "skill":       SKILL_NAME,
         },
     )
 
 
 __all__ = [
     "ClassifierDecision", "classify_session", "AUTO_FLOOR", "QUEUE_FLOOR",
-    "MODE_TIEBREAK", "MODE_NO_DIMS", "MODE_STANDALONE",
 ]
