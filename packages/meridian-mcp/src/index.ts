@@ -701,10 +701,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           SELECT
             s.id, s.app_name, s.started_at, s.ended_at, s.duration_s,
             s.window_titles, s.session_text,
-            tl.confidence, tl.method, tl.session_type
+            s.task_confidence AS confidence, s.task_method AS method, s.task_session_type AS session_type
           FROM app_sessions s
-          JOIN ticket_links tl ON s.id = tl.session_id
-          WHERE tl.task_key = ? AND ${tw.cond}
+          WHERE s.task_key = ? AND ${tw.cond}
           ORDER BY s.started_at ASC
         `, [taskKey, ...tw.params]) as Array<{
           id: number; app_name: string; started_at: string; ended_at: string;
@@ -727,10 +726,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           SELECT sd.session_id, sd.dimension, sd.value, sd.confidence
           FROM session_dimensions sd
           WHERE sd.session_id IN (
-            SELECT s.id
-            FROM app_sessions s
-            JOIN ticket_links tl ON s.id = tl.session_id
-            WHERE tl.task_key = ? AND ${tw.cond}
+            SELECT id FROM app_sessions
+            WHERE task_key = ? AND ${tw.cond}
           )
           ORDER BY sd.session_id, sd.confidence DESC
         `, [taskKey, ...tw.params] as SqlVal[]) as Array<{
@@ -807,11 +804,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const rows = dbAll(db, `
           SELECT
             s.id, s.app_name, s.started_at, s.ended_at, s.duration_s, s.window_titles,
-            tl.task_key, tl.session_type,
+            s.task_key, s.task_session_type AS session_type,
             pt.title AS task_title
           FROM app_sessions s
-          LEFT JOIN ticket_links tl ON s.id = tl.session_id
-          LEFT JOIN pm_tasks pt ON tl.task_key = pt.task_key
+          LEFT JOIN pm_tasks pt ON s.task_key = pt.task_key
           WHERE s.started_at >= ? ${appCond}
           ORDER BY s.started_at DESC
           LIMIT ?
@@ -868,17 +864,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         const taskRows = dbAll(db, `
           SELECT
-            tl.task_key,
+            s.task_key,
             pt.title,
             pt.url,
             pt.status,
             SUM(s.duration_s) AS total_s,
             COUNT(*) AS session_count
           FROM app_sessions s
-          JOIN ticket_links tl ON s.id = tl.session_id
-          LEFT JOIN pm_tasks pt ON tl.task_key = pt.task_key
-          WHERE tl.task_key IS NOT NULL AND tl.session_type != 'overhead' AND ${tw.cond}
-          GROUP BY tl.task_key, pt.title, pt.url, pt.status
+          LEFT JOIN pm_tasks pt ON s.task_key = pt.task_key
+          WHERE s.task_key IS NOT NULL AND s.task_session_type != 'overhead' AND ${tw.cond}
+          GROUP BY s.task_key, pt.title, pt.url, pt.status
           ORDER BY total_s DESC
         `, tw.params) as Array<{
           task_key: string; title: string | null; url: string | null;
@@ -886,10 +881,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }>;
 
         const overheadRow = dbGet(db, `
-          SELECT COALESCE(SUM(s.duration_s), 0) AS s, COUNT(*) AS n
-          FROM app_sessions s
-          LEFT JOIN ticket_links tl ON s.id = tl.session_id
-          WHERE (tl.task_key IS NULL OR tl.session_type = 'overhead') AND ${tw.cond}
+          SELECT COALESCE(SUM(duration_s), 0) AS s, COUNT(*) AS n
+          FROM app_sessions
+          WHERE (task_key IS NULL OR task_session_type = 'overhead') AND ${tw.cond}
         `, tw.params) as { s: number; n: number } | undefined;
 
         const focusRow = dbGet(db, `
@@ -951,13 +945,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         // 2. Fallback: most recently linked completed session for the same app
         const recent = dbGet(db, `
-          SELECT tl.task_key, tl.confidence, tl.method,
+          SELECT s.task_key, s.task_confidence AS confidence, s.task_method AS method,
                  pt.title, pt.url, pt.status,
                  s.ended_at
           FROM app_sessions s
-          JOIN ticket_links tl ON s.id = tl.session_id
-          LEFT JOIN pm_tasks pt ON tl.task_key = pt.task_key
-          WHERE s.app_name = ? AND tl.task_key IS NOT NULL AND tl.session_type != 'overhead'
+          LEFT JOIN pm_tasks pt ON s.task_key = pt.task_key
+          WHERE s.app_name = ? AND s.task_key IS NOT NULL AND s.task_session_type != 'overhead'
           ORDER BY s.ended_at DESC
           LIMIT 1
         `, [active.app_name]) as {

@@ -236,6 +236,48 @@ launchctl kickstart -k gui/$(id -u)/com.meridiona.tagger-daemon
 tail -f ~/.meridian/logs/tagger-daemon.log
 ```
 
+## Backfill
+
+Both backfill tools are Rust binaries that bypass the live cursor — safe to re-run.
+
+### Session categories (Foundation Models)
+
+```bash
+# Re-classify sessions from today or yesterday
+cargo run --bin backfill_session_categories -- --today
+cargo run --bin backfill_session_categories -- --yesterday
+
+# Explicit date range
+cargo run --bin backfill_session_categories -- --from-date 2025-05-01 --to-date 2025-05-14
+
+# By session id
+cargo run --bin backfill_session_categories -- --from-id 100 --to-id 500
+cargo run --bin backfill_session_categories -- --from-id 100   # from 100 onwards
+
+# Dry run — print without writing
+cargo run --bin backfill_session_categories -- --dry-run --today
+```
+
+### Task classification (hermes)
+
+```bash
+# Re-link sessions to Jira tasks from today or yesterday
+cargo run --bin backfill_task_classification -- --today
+cargo run --bin backfill_task_classification -- --yesterday
+
+# Explicit date range
+cargo run --bin backfill_task_classification -- --from-date 2025-05-01 --to-date 2025-05-14
+
+# By session id
+cargo run --bin backfill_task_classification -- --from-id 100 --to-id 500
+cargo run --bin backfill_task_classification -- --from-id 100   # from 100 onwards
+
+# Dry run — print sessions that would be classified without writing
+cargo run --bin backfill_task_classification -- --dry-run --today
+```
+
+Neither backfill tool touches the live cursor (`agent_cursor`), so they are safe to run while the daemon is active.
+
 ## Running the Test Suite
 
 ```bash

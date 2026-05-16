@@ -8,7 +8,7 @@ pub mod session_categorizer;
 pub mod task_linker;
 
 pub use jira_updater::run_jira_update;
-pub use task_linker::run_task_linking;
+pub use task_linker::{link_range, run_task_linking};
 
 use anyhow::Result;
 use sqlx::SqlitePool;
@@ -23,6 +23,7 @@ pub async fn run_categorization(meridian: &SqlitePool, config: &Config) -> Resul
         meridian,
         &backend,
         config.min_classification_duration_s,
+        config.category_backfill,
     )
     .await
     {

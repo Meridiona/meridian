@@ -19,7 +19,7 @@ REQUIRED_TABLES = (
     "app_sessions",
     "active_session",
     "pm_tasks",            # populated by the Rust jira provider (003_intelligence)
-    "ticket_links",        # session→task map (003_intelligence)
+    # ticket_links merged into app_sessions (018_merge_ticket_links)
     "agent_runs",
     "agent_cursor",
     "session_summaries",

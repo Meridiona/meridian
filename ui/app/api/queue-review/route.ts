@@ -43,14 +43,13 @@ export async function GET() {
         ${explCol},
         s.window_titles,
         s.confidence,
-        tl.task_key,
-        tl.routing
+        s.task_key,
+        s.task_routing AS routing
       FROM app_sessions s
-      LEFT JOIN ticket_links tl ON tl.session_id = s.id
       WHERE s.started_at >= ? AND s.started_at < ?
         AND (
-          tl.routing = 'queue'
-          OR (tl.id IS NULL AND s.confidence < 0.6 AND s.category_method = 'foundation_models')
+          s.task_routing = 'queue'
+          OR (s.task_method IS NULL AND s.confidence < 0.6 AND s.category_method = 'foundation_models')
         )
       ORDER BY s.started_at DESC
       LIMIT 50

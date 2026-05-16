@@ -1,7 +1,7 @@
 """run_task_linker — thin hermes bridge for batch session→task classification.
 
-Reads a JSON batch from stdin, calls classify_session() in MODE_STANDALONE on
-each session, writes a single JSON object with all results to stdout.
+Reads a JSON batch from stdin, calls classify_session() for each session,
+writes a single JSON object with all results to stdout.
 
 No DB access, no cursor management, no orchestration — pure function: JSON in,
 JSON out. Intended to be spawned by the Rust daemon as a subprocess.
@@ -17,7 +17,7 @@ from typing import Any
 
 from agents._hermes_setup import ensure_hermes_importable
 from agents import observability
-from agents.task_classifier_agent import classify_session, ClassifierDecision, MODE_STANDALONE
+from agents.task_classifier_agent import classify_session, ClassifierDecision
 
 log = logging.getLogger("agents.run_task_linker")
 tracer = observability.setup("meridian-task-linker")
@@ -39,8 +39,7 @@ def _build_session(raw: dict[str, Any]) -> dict[str, Any]:
 
 def _classify_one(
     session_raw: dict[str, Any],
-    pm_task_lookup: dict[str, dict[str, Any]],
-    all_pm_tasks: list[dict[str, Any]],
+    pm_tasks: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Run classify_session for one session; return a result dict."""
     sid = int(session_raw["id"])
@@ -52,14 +51,7 @@ def _classify_one(
         # any print() statements inside AIAgent.__init__ or the LLM call do not
         # contaminate the JSON output that Rust reads from our stdout.
         with contextlib.redirect_stdout(sys.stderr):
-            result: ClassifierDecision = classify_session(
-                session,
-                dims_grouped={},        # no Stage 1/2 dims available
-                top_candidates=[],      # not used in MODE_STANDALONE
-                pm_task_lookup=pm_task_lookup,
-                mode=MODE_STANDALONE,
-                all_pm_tasks=all_pm_tasks,
-            )
+            result: ClassifierDecision = classify_session(session, pm_tasks)
     except Exception as exc:  # noqa: BLE001
         elapsed = time.time() - t0
         log.warning("run_task_linker: exception for session %d: %s", sid, exc)
@@ -100,7 +92,6 @@ def main() -> None:
 
     sessions: list[dict[str, Any]] = payload.get("sessions", [])
     pm_tasks: list[dict[str, Any]] = payload.get("pm_tasks", [])
-    pm_task_lookup: dict[str, dict[str, Any]] = {t["task_key"]: t for t in pm_tasks}
 
     log.info("run_task_linker: received %d sessions, %d pm_tasks", len(sessions), len(pm_tasks))
 
@@ -113,7 +104,7 @@ def main() -> None:
             session_raw.get("duration_s"),
             len(session_raw.get("session_text", "")),
         )
-        result = _classify_one(session_raw, pm_task_lookup, pm_tasks)
+        result = _classify_one(session_raw, pm_tasks)
         results.append(result)
         log.info(
             "run_task_linker: session_id=%d task_key=%s routing=%s elapsed_s=%.2f",
