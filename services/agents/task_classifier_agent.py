@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 
 from agents import observability
-from agents.config import MODEL, BASE_URL, API_KEY, load_skill
+from agents.config import MODEL, BASE_URL, API_KEY, load_skill, LLM_PREFER_LOCAL, LLM_BUDGET_PCT
 
 from ._prompts import build_user_message
 from ._parser import parse_response, routing_for
