@@ -28,10 +28,14 @@ import logging
 import os
 import platform
 import re
+import signal
 import socket
 import subprocess
+import sys
+import time
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 log = logging.getLogger("agents.llm_selector")
@@ -202,6 +206,18 @@ class ComputeSnapshot:
     screen_locked: bool
     chip_name: str
     mem_bw_gbs: int
+
+
+@dataclass
+class LocalModelEndpoint:
+    model: str       # model name to pass to AIAgent
+    base_url: str    # OpenAI-compatible base URL
+    api_key: str     # typically "local"
+    runtime: str     # "ollama" | "lmstudio" | "llamacpp" | "mlxlm" | "mlx_managed"
+
+
+_MANAGED_SERVER_PORT = 8765
+_MANAGED_SERVER_PID_FILE = Path.home() / ".meridian" / "mlx_lm_server.pid"
 
 
 def _metal_headroom_gb() -> float:
@@ -386,5 +402,92 @@ def _infer_mlx(model_id: str, system: str, user: str, max_tokens: int) -> Option
         return None
 
 
+def _ensure_mlx_server(model_id: str, port: int = _MANAGED_SERVER_PORT) -> bool:
+    pid_file = _MANAGED_SERVER_PID_FILE
+    if pid_file.exists():
+        try:
+            meta = json.loads(pid_file.read_text())
+            pid, existing_model, existing_port = meta["pid"], meta["model"], meta["port"]
+            try:
+                os.kill(pid, 0)
+                alive = True
+            except OSError:
+                alive = False
+            if alive and existing_model == model_id and existing_port == port:
+                return True
+            if alive:
+                os.kill(pid, signal.SIGTERM)
+                time.sleep(3)
+        except Exception:
+            pass
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "mlx_lm.server",
+         "--model", model_id, "--port", str(port), "--max-tokens", "4096"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(json.dumps({"pid": proc.pid, "model": model_id, "port": port}))
+
+    url = f"http://127.0.0.1:{port}/v1/models"
+    deadline = time.monotonic() + 90.0
+    while time.monotonic() < deadline:
+        _, status = _get_json(url, timeout=1.0)
+        if status == 200:
+            log.info("llm_selector: mlx_lm.server ready model=%s port=%d", model_id, port)
+            return True
+        time.sleep(1)
+    log.warning("llm_selector: mlx_lm.server startup timeout model=%s", model_id)
+    return False
+
+
+def select_model_for_hermes(budget_pct: float = 0.5) -> Optional[LocalModelEndpoint]:
+    """Return the best available local endpoint for AIAgent, or None to use cloud."""
+    if platform.system() != "Darwin":
+        return None
+    brand = _sysctl("machdep.cpu.brand_string") or ""
+    if not brand.startswith("Apple M"):
+        return None
+
+    for server in discover_running_servers():
+        if server.runtime == "apple_fm":
+            continue
+        log.info("llm_selector: hermes endpoint reusing %s model=%s",
+                 server.runtime, server.best_model)
+        return LocalModelEndpoint(
+            model=server.best_model,
+            base_url=server.base_url,
+            api_key="local",
+            runtime=server.runtime,
+        )
+
+    try:
+        snap = probe_compute()
+    except Exception as exc:
+        log.warning("llm_selector: compute probe failed: %s", exc)
+        return None
+
+    effective_pct = min(0.8, budget_pct * 1.5) if snap.screen_locked else budget_pct
+    entry = _select_mlx_entry(snap.metal_headroom_gb, effective_pct,
+                              snap.thermal_level, apple_intelligence=False)
+    if entry is None:
+        log.info("llm_selector: no local model fits budget headroom=%.1f GB pct=%.2f",
+                 snap.metal_headroom_gb, effective_pct)
+        return None
+
+    model_id, _, _, _, hf_id = entry
+    log.info("llm_selector: hermes will use mlx_managed model=%s hf=%s", model_id, hf_id)
+    if _ensure_mlx_server(hf_id, _MANAGED_SERVER_PORT):
+        return LocalModelEndpoint(
+            model=hf_id,
+            base_url=f"http://127.0.0.1:{_MANAGED_SERVER_PORT}/v1",
+            api_key="local",
+            runtime="mlx_managed",
+        )
+    return None
+
+
 __all__ = ["local_infer", "discover_running_servers", "probe_compute",
-           "RunningServer", "ComputeSnapshot"]
+           "RunningServer", "ComputeSnapshot", "LocalModelEndpoint",
+           "select_model_for_hermes"]
