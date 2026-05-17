@@ -99,6 +99,20 @@ def _classify_session_inner(
             reasoning=str(exc), routing="skip", method="agent_unavailable",
         )
 
+    # ── Dynamic LLM endpoint selection ───────────────────────────────────────
+    # Default to static config; override with a local model if available.
+    _model, _base_url, _api_key = MODEL, BASE_URL, (API_KEY or "none")
+    if LLM_PREFER_LOCAL:
+        from agents.llm_selector import select_model_for_hermes
+        local_ep = select_model_for_hermes(budget_pct=LLM_BUDGET_PCT)
+        if local_ep:
+            _model, _base_url, _api_key = local_ep.model, local_ep.base_url, local_ep.api_key
+            log.info("task_classifier_agent: local model=%s runtime=%s",
+                     _model, local_ep.runtime)
+        else:
+            log.info("task_classifier_agent: no local model available, using cloud model=%s",
+                     _model)
+
     from agents._hermes_setup import ensure_hermes_importable
     ensure_hermes_importable()
     try:
@@ -111,14 +125,14 @@ def _classify_session_inner(
         )
 
     log.info("task_classifier_agent: model=%s base_url=%s skill=%s pm_tasks=%d",
-             MODEL, BASE_URL, SKILL_NAME, len(pm_tasks))
+             _model, _base_url, SKILL_NAME, len(pm_tasks))
 
     t0 = time.time()
     try:
         agent = AIAgent(
-            model=MODEL,
-            base_url=BASE_URL,
-            api_key=API_KEY or "none",
+            model=_model,
+            base_url=_base_url,
+            api_key=_api_key,
             ephemeral_system_prompt=base_prompt,
             enabled_toolsets=[],
             quiet_mode=True,
@@ -157,7 +171,7 @@ def _classify_session_inner(
             session_id=sid, chosen_task_key=None, confidence=0.0,
             reasoning=err, routing="skip", method="agent_invalid_response",
             raw_response=raw[:1000], elapsed_s=elapsed,
-            debug={"error": err, "model": MODEL, "base_url": BASE_URL},
+            debug={"error": err, "model": _model, "base_url": _base_url},
         )
 
     routing = routing_for(confidence, task_key, AUTO_FLOOR, QUEUE_FLOOR)
@@ -172,8 +186,8 @@ def _classify_session_inner(
         elapsed_s=elapsed,
         dimensions=dimensions,
         debug={
-            "model":       MODEL,
-            "base_url":    BASE_URL,
+            "model":       _model,
+            "base_url":    _base_url,
             "n_tasks":     len(pm_tasks),
             "auto_floor":  AUTO_FLOOR,
             "queue_floor": QUEUE_FLOOR,

@@ -286,6 +286,27 @@ If the new model is noisier (e.g. emits chain-of-thought before the JSON), the p
 
 ---
 
+## Dynamic local LLM selection
+
+When `LLM_PREFER_LOCAL=1` (the default), Stage 3 attempts to route hermes through a local LLM endpoint before falling back to the static cloud config. The feature is implemented in `llm_selector.py` and wired into `task_classifier_agent.py`.
+
+**Selection priority:** The function `select_model_for_hermes()` checks for available endpoints in this order:
+
+1. Any already-running LLM server (Ollama on port 11434, LM Studio on 1234, llama.cpp/mlx_lm on 8080) with a model loaded in memory — zero load cost.
+2. Start a persistent `mlx_lm.server` process on port 8765, selecting the best-fitting MLX model by available Metal GPU headroom × `LLM_BUDGET_PCT`.
+3. Return `None` — caller uses static `MODEL`/`BASE_URL` from env or config.
+
+**Persistent MLX server:** When option 2 runs, `_ensure_mlx_server()` manages a subprocess tracked in `~/.meridian/mlx_lm_server.pid` (JSON: pid, model, port). If the same model is already running, returns immediately. If a different model is needed, kills and restarts. The model loads once and persists between `run_task_linker.py` invocations, avoiding repeated cold-start costs.
+
+Configuration:
+
+| Var | Default | Purpose |
+|---|---|---|
+| `LLM_PREFER_LOCAL` | `1` | Try local model before cloud when Stage 3 runs. |
+| `LLM_BUDGET_PCT` | `0.5` | Fraction of free GPU memory to use when loading MLX models (0.0–1.0). |
+
+---
+
 ## How to debug a misclassification
 
 Order from cheapest to most invasive:
