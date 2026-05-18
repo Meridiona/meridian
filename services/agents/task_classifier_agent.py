@@ -62,12 +62,15 @@ def classify_session(
     sid = int(session["id"])
     with tracer.start_as_current_span("task_classifier_agent.decide") as span:
         span.set_attribute("session_id", sid)
-        span.set_attribute("model", MODEL or "")
         span.set_attribute("pm_tasks", len(pm_tasks))
         result = _classify_session_inner(session, pm_tasks, sid)
-        span.set_attribute("method", result.method)
-        span.set_attribute("routing", result.routing)
-        span.set_attribute("confidence", float(result.confidence))
+        # Use the actual model that ran, not the static config default.
+        span.set_attribute("llm.model",    result.debug.get("model") or MODEL or "")
+        span.set_attribute("llm.runtime",  result.debug.get("llm_runtime", "cloud"))
+        span.set_attribute("llm.is_local", result.debug.get("llm_is_local", False))
+        span.set_attribute("method",           result.method)
+        span.set_attribute("routing",          result.routing)
+        span.set_attribute("confidence",       float(result.confidence))
         if result.chosen_task_key:
             span.set_attribute("chosen_task_key", result.chosen_task_key)
         span.set_attribute("agent_latency_ms", int(result.elapsed_s * 1000))
@@ -102,11 +105,15 @@ def _classify_session_inner(
     # ── Dynamic LLM endpoint selection ───────────────────────────────────────
     # Default to static config; override with a local model if available.
     _model, _base_url, _api_key = MODEL, BASE_URL, (API_KEY or "none")
+    _llm_runtime  = "cloud"
+    _llm_is_local = False
     if LLM_PREFER_LOCAL:
         from agents.llm_selector import select_model_for_hermes
         local_ep = select_model_for_hermes(budget_pct=LLM_BUDGET_PCT)
         if local_ep:
             _model, _base_url, _api_key = local_ep.model, local_ep.base_url, local_ep.api_key
+            _llm_runtime  = local_ep.runtime
+            _llm_is_local = True
             log.info("task_classifier_agent: local model=%s runtime=%s",
                      _model, local_ep.runtime)
         else:
@@ -171,7 +178,8 @@ def _classify_session_inner(
             session_id=sid, chosen_task_key=None, confidence=0.0,
             reasoning=err, routing="skip", method="agent_invalid_response",
             raw_response=raw[:1000], elapsed_s=elapsed,
-            debug={"error": err, "model": _model, "base_url": _base_url},
+            debug={"error": err, "model": _model, "base_url": _base_url,
+               "llm_runtime": _llm_runtime, "llm_is_local": _llm_is_local},
         )
 
     routing = routing_for(confidence, task_key, AUTO_FLOOR, QUEUE_FLOOR)
@@ -186,12 +194,14 @@ def _classify_session_inner(
         elapsed_s=elapsed,
         dimensions=dimensions,
         debug={
-            "model":       _model,
-            "base_url":    _base_url,
-            "n_tasks":     len(pm_tasks),
-            "auto_floor":  AUTO_FLOOR,
-            "queue_floor": QUEUE_FLOOR,
-            "skill":       SKILL_NAME,
+            "model":        _model,
+            "base_url":     _base_url,
+            "llm_runtime":  _llm_runtime,
+            "llm_is_local": _llm_is_local,
+            "n_tasks":      len(pm_tasks),
+            "auto_floor":   AUTO_FLOOR,
+            "queue_floor":  QUEUE_FLOOR,
+            "skill":        SKILL_NAME,
         },
     )
 

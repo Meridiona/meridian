@@ -69,14 +69,17 @@ def _classify_one(
     method = "llm_standalone" if result.method == "task_classifier" else result.method
 
     return {
-        "session_id": sid,
-        "task_key":   result.chosen_task_key,
-        "confidence": result.confidence,
-        "routing":    result.routing,
-        "reasoning":  result.reasoning,
-        "method":     method,
-        "dimensions": result.dimensions,
-        "elapsed_s":  result.elapsed_s,
+        "session_id":  sid,
+        "task_key":    result.chosen_task_key,
+        "confidence":  result.confidence,
+        "routing":     result.routing,
+        "reasoning":   result.reasoning,
+        "method":      method,
+        "dimensions":  result.dimensions,
+        "elapsed_s":   result.elapsed_s,
+        "llm_model":   result.debug.get("model"),
+        "llm_runtime": result.debug.get("llm_runtime", "cloud"),
+        "llm_is_local": result.debug.get("llm_is_local", False),
     }
 
 
@@ -107,11 +110,18 @@ def main() -> None:
         result = _classify_one(session_raw, pm_tasks)
         results.append(result)
         log.info(
-            "run_task_linker: session_id=%d task_key=%s routing=%s elapsed_s=%.2f",
+            "run_task_linker: session_id=%d task_key=%s routing=%s model=%s runtime=%s elapsed_s=%.2f",
             result["session_id"],
             result["task_key"],
             result["routing"],
+            result.get("llm_model", "?"),
+            result.get("llm_runtime", "cloud"),
             result["elapsed_s"],
+            extra={
+                "llm_model":    result.get("llm_model"),
+                "llm_runtime":  result.get("llm_runtime"),
+                "llm_is_local": result.get("llm_is_local"),
+            },
         )
 
     sys.stdout.write(json.dumps({"results": results}))
