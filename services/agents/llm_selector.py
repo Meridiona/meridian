@@ -224,10 +224,10 @@ def _metal_headroom_gb() -> float:
     """Primary memory signal — headroom within Metal's recommended working set."""
     try:
         import mlx.core as mx  # type: ignore[import]
-        info    = mx.metal.device_info()
+        info    = mx.device_info()
         ceiling = info["max_recommended_working_set_size"]
-        active  = mx.metal.get_active_memory()
-        cached  = mx.metal.get_cache_memory()
+        active  = mx.get_active_memory()
+        cached  = mx.get_cache_memory()
         return (ceiling - active - cached) / (1 << 30)
     except Exception:
         pass
@@ -433,6 +433,11 @@ def _ensure_mlx_server(model_id: str, port: int = _MANAGED_SERVER_PORT) -> bool:
     url = f"http://127.0.0.1:{port}/v1/models"
     deadline = time.monotonic() + 90.0
     while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            log.warning("llm_selector: mlx_lm.server exited early (exit=%d) — is mlx_lm installed?",
+                        proc.returncode)
+            pid_file.unlink(missing_ok=True)
+            return False
         _, status = _get_json(url, timeout=1.0)
         if status == 200:
             log.info("llm_selector: mlx_lm.server ready model=%s port=%d", model_id, port)
