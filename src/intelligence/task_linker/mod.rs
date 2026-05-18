@@ -332,7 +332,7 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
     let stderr_bytes = stderr_task.await.unwrap_or_default();
 
     if !stderr_bytes.is_empty() {
-        debug!(stderr = %String::from_utf8_lossy(&stderr_bytes), "run_task_linker python stderr");
+        info!(stderr = %String::from_utf8_lossy(&stderr_bytes), "run_task_linker python stderr");
     }
 
     if !status.success() {
@@ -556,7 +556,7 @@ pub async fn link_range(
     let stderr_bytes = stderr_task.await.unwrap_or_default();
 
     if !stderr_bytes.is_empty() {
-        debug!(stderr = %String::from_utf8_lossy(&stderr_bytes), "run_task_linker python stderr");
+        info!(stderr = %String::from_utf8_lossy(&stderr_bytes), "run_task_linker python stderr");
     }
 
     if !status.success() {
