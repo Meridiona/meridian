@@ -267,7 +267,7 @@ class _HermesUpdater:
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 _SUMMARY_RE = re.compile(
-    r"(\d+)\s+sessions?,\s*(?:(\d+)h\s*)?(\d+)m\s+total", re.IGNORECASE
+    r"(\d+)\s+session(?:s|\(s\))?,\s*(?:(\d+)h\s*)?(\d+)m\s+total", re.IGNORECASE
 )
 
 
