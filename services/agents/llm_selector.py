@@ -132,16 +132,21 @@ def discover_running_servers() -> list[RunningServer]:
                     "ollama", "http://127.0.0.1:11434/v1", models, models[0]))
                 log.info("llm_selector: Ollama loaded=%s", models)
 
-    # 2. LM Studio — unique port; state=="loaded" distinguishes in-memory models
+    # 2. LM Studio — use native /api/v0/models (has state field) to distinguish
+    #    in-memory models from installed-only ones. /v1/models omits state entirely.
     if _tcp_open("127.0.0.1", 1234):
-        data, status = _get_json("http://127.0.0.1:1234/v1/models")
-        if status == 200 and data:
-            models = [m["id"] for m in data.get("data", [])
+        native, native_status = _get_json("http://127.0.0.1:1234/api/v0/models")
+        if native_status == 200 and native:
+            models = [m["id"] for m in native.get("data", [])
                       if m.get("state") == "loaded"]
-            if models:
-                found.append(RunningServer(
-                    "lmstudio", "http://127.0.0.1:1234/v1", models, models[0]))
-                log.info("llm_selector: LM Studio loaded=%s", models)
+        else:
+            # Older LM Studio — fall back to /v1/models, take all listed models
+            data, status = _get_json("http://127.0.0.1:1234/v1/models")
+            models = [m["id"] for m in (data or {}).get("data", [])] if status == 200 else []
+        if models:
+            found.append(RunningServer(
+                "lmstudio", "http://127.0.0.1:1234/v1", models, models[0]))
+            log.info("llm_selector: LM Studio loaded=%s", models)
 
     # 3. Port 8080 — llama.cpp or mlx_lm; /props 200 = llama.cpp, 404 = mlx_lm
     if _tcp_open("127.0.0.1", 8080):
