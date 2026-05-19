@@ -427,6 +427,26 @@ def _infer_mlx(model_id: str, system: str, user: str, max_tokens: int) -> Option
         return None
 
 
+def _shutdown_managed_server() -> None:
+    """Kill the managed mlx_lm.server if it is running and remove the PID file."""
+    pid_file = _MANAGED_SERVER_PID_FILE
+    if not pid_file.exists():
+        return
+    try:
+        meta = json.loads(pid_file.read_text())
+        pid = meta["pid"]
+        try:
+            os.kill(pid, 0)
+            os.kill(pid, signal.SIGTERM)
+            log.info("llm_selector: unloaded managed mlx_lm.server pid=%d model=%s",
+                     pid, meta.get("model", "?"))
+        except OSError:
+            pass
+    except Exception:
+        pass
+    pid_file.unlink(missing_ok=True)
+
+
 def _ensure_mlx_server(model_id: str, port: int = _MANAGED_SERVER_PORT) -> bool:
     pid_file = _MANAGED_SERVER_PID_FILE
     if pid_file.exists():
@@ -498,6 +518,7 @@ def select_model_for_hermes(budget_pct: Optional[float] = None) -> Optional[Loca
             for server in discover_running_servers():
                 if server.runtime == "apple_fm":
                     continue
+                _shutdown_managed_server()
                 log.info("llm_selector: hermes endpoint reusing %s model=%s",
                          server.runtime, server.best_model)
                 result = LocalModelEndpoint(
@@ -548,4 +569,7 @@ def select_model_for_hermes(budget_pct: Optional[float] = None) -> Optional[Loca
 
 __all__ = ["local_infer", "discover_running_servers", "probe_compute",
            "RunningServer", "ComputeSnapshot", "LocalModelEndpoint",
-           "select_model_for_hermes"]
+           "select_model_for_hermes", "shutdown_managed_server"]
+
+# Public alias (no underscore) for external callers
+shutdown_managed_server = _shutdown_managed_server
