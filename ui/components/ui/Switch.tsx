@@ -15,6 +15,8 @@ export function Switch({ checked, onCheckedChange, id }: SwitchProps) {
       id={id}
       checked={checked}
       onCheckedChange={onCheckedChange}
+      // data-state="checked"|"unchecked" set by Radix — CSS in globals.css handles colors + animation
+      className="meridian-switch"
       style={{
         width: '42px',
         height: '24px',
@@ -23,25 +25,23 @@ export function Switch({ checked, onCheckedChange, id }: SwitchProps) {
         padding: 0,
         cursor: 'default',
         flexShrink: 0,
-        background: checked ? 'var(--accent)' : 'var(--rule-2)',
-        transition: 'background 0.2s ease',
         position: 'relative',
         outline: 'none',
       }}
     >
       <RadixSwitch.Thumb
+        className="meridian-switch-thumb"
         style={{
           display: 'block',
           width: '20px',
           height: '20px',
           borderRadius: '50%',
           background: '#fff',
-          boxShadow: '0 1px 4px rgba(0,0,0,0.22)',
+          // layered shadow: first layer is the ambient drop, second is the key light
+          boxShadow: '0 2px 4px rgba(0,0,0,0.24), 0 0.5px 1px rgba(0,0,0,0.12)',
           position: 'absolute',
           top: '2px',
-          left: checked ? '20px' : '2px',
-          transition: 'left 0.18s cubic-bezier(0.25,0.46,0.45,0.94)',
-          willChange: 'left',
+          willChange: 'transform',
         }}
       />
     </RadixSwitch.Root>

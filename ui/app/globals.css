@@ -166,8 +166,45 @@ html.density-comfy  .density-pad  { padding-top: 1.25rem; padding-bottom: 1.25re
 .stepper-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 .stepper-input { -moz-appearance: textfield; }
 
-/* ── Radix Select trigger focus ───────────────────────────────────────────── */
+/* ── Radix Select ─────────────────────────────────────────────────────────── */
 .select-trigger:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+.select-item[data-highlighted] {
+  background: var(--accent);
+  color: #fff;
+  outline: none;
+}
+.select-item[data-highlighted] .select-check {
+  color: #fff;
+}
+
+/* ── Radix Switch — iOS-style pill ────────────────────────────────────────── */
+.meridian-switch {
+  background: rgba(120, 120, 128, 0.28);
+  transition: background 0.22s ease;
+}
+.meridian-switch[data-state="checked"] {
+  background: var(--accent);
+}
+.meridian-switch-thumb {
+  transform: translateX(2px);
+  transition: transform 0.22s cubic-bezier(0.25, 0.46, 0.45, 0.94),
+              box-shadow 0.15s ease;
+}
+.meridian-switch-thumb[data-state="checked"] {
+  transform: translateX(20px);
+}
+
+/* ── Number stepper buttons ───────────────────────────────────────────────── */
+.stepper-btn {
+  background: transparent;
+  transition: background 0.1s ease;
+}
+.stepper-btn:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+.stepper-btn:active:not(:disabled) {
+  background: var(--rule);
 }
