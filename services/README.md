@@ -60,9 +60,11 @@ All variables are read in `agents/config.py`. Copy `.env.example` to `.env` in t
 | Variable | Default | Purpose |
 |---|---|---|
 | `MERIDIAN_DB` | `~/.meridian/meridian.db` | Path to the SQLite file. Must already exist (the Rust daemon creates it). |
-| `HERMES_MODEL` | `nemotron-3-super` | Model name passed to hermes `AIAgent` for Stage 3. |
-| `HERMES_BASE_URL` | `https://ollama.com/v1` | OpenAI-compatible LLM endpoint for Stage 3. |
-| `OLLAMA_API_KEY` | — | API key for the LLM endpoint (also accepts standard OpenAI-compat keys). |
+| `LLM_PREFER_LOCAL` | `1` | On Apple Silicon, try a running local LLM server first; fall back to cloud when none is found. Set to `0` to always use cloud. |
+| `LLM_BUDGET_PCT` | `0.5` | Fraction of free Metal GPU memory to allocate when starting an mlx_lm.server (0.0–1.0). `0.8` is recommended on 64 GB+ machines. |
+| `OLLAMA_MODEL` | — | Cloud fallback model ID (any OpenAI-compatible endpoint). Used when no local server is detected or `LLM_PREFER_LOCAL=0`. Also the primary LLM config for the Jira updater. |
+| `OLLAMA_HOST` | — | Cloud fallback base URL (e.g. `https://api.openai.com/v1`). |
+| `OLLAMA_API_KEY` | — | API key for the cloud fallback endpoint. |
 | `STAGE1_ENABLED` | `1` | Set to `0` to skip Stage 1 (rules + regex). Almost never useful. |
 | `STAGE2_ENABLED` | `1` | Set to `0` to skip Stage 2 (embeddings). Stage 1 result is final. |
 | `STAGE3_ENABLED` | `1` | Set to `0` to skip Stage 3 (LLM). Stage 2 result is final. |
