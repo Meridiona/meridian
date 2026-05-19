@@ -269,9 +269,18 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
         "spawning run_task_linker subprocess"
     );
 
+    let rt = &cfg.runtime;
     let mut child = match Command::new(&python)
         .arg("-m")
         .arg("agents.run_task_linker")
+        .env("LOG_LEVEL", &rt.log_level)
+        .env("AGENT_AUTO_FLOOR", rt.agent_auto_floor.to_string())
+        .env("AGENT_QUEUE_FLOOR", rt.agent_queue_floor.to_string())
+        .env(
+            "LLM_PREFER_LOCAL",
+            if rt.llm_prefer_local { "1" } else { "0" },
+        )
+        .env("LLM_BUDGET_PCT", rt.llm_budget_pct.to_string())
         .current_dir(&services_dir)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -498,9 +507,18 @@ pub async fn link_range(
     let input_json = serde_json::to_string(&input).context("serializing ClassifyInput")?;
     let python = resolve_python(&services_dir);
 
+    let rt = &cfg.runtime;
     let mut child = match Command::new(&python)
         .arg("-m")
         .arg("agents.run_task_linker")
+        .env("LOG_LEVEL", &rt.log_level)
+        .env("AGENT_AUTO_FLOOR", rt.agent_auto_floor.to_string())
+        .env("AGENT_QUEUE_FLOOR", rt.agent_queue_floor.to_string())
+        .env(
+            "LLM_PREFER_LOCAL",
+            if rt.llm_prefer_local { "1" } else { "0" },
+        )
+        .env("LLM_BUDGET_PCT", rt.llm_budget_pct.to_string())
         .current_dir(&services_dir)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
