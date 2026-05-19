@@ -447,6 +447,31 @@ def _shutdown_managed_server() -> None:
     pid_file.unlink(missing_ok=True)
 
 
+def _wait_for_process_exit(pid: int, timeout: float = 10.0) -> None:
+    """Wait for a process to exit; SIGKILL after timeout."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return  # dead
+        time.sleep(0.3)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    time.sleep(0.5)
+
+
+def _wait_for_port_free(port: int, timeout: float = 5.0) -> None:
+    """Wait until a local TCP port stops accepting connections."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _tcp_open("127.0.0.1", port, timeout=0.3):
+            return
+        time.sleep(0.3)
+
+
 def _ensure_mlx_server(model_id: str, port: int = _MANAGED_SERVER_PORT) -> bool:
     pid_file = _MANAGED_SERVER_PID_FILE
     if pid_file.exists():
@@ -462,7 +487,10 @@ def _ensure_mlx_server(model_id: str, port: int = _MANAGED_SERVER_PORT) -> bool:
                 return True
             if alive:
                 os.kill(pid, signal.SIGTERM)
-                time.sleep(3)
+                _wait_for_process_exit(pid)
+                _wait_for_port_free(port)
+                log.info("llm_selector: stopped old managed server pid=%d model=%s",
+                         pid, existing_model)
         except Exception:
             pass
 
