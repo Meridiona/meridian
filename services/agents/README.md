@@ -171,13 +171,15 @@ Booleans accept `1` / `true` / `yes` / `on` (truthy) and `0` / `false` / `no` / 
 | `TAGGER_CONFIG_FILE` | `~/.meridian/tagger.config.json` | Hot-toggle override file (see below). |
 | `LOG_LEVEL` | `INFO` | Standard Python log level. `DEBUG` dumps full session bundles + raw rule output. |
 
-### LLM (Stage 3 only)
+### LLM (Stage 3 and task classifier)
 
 | Var | Default | Purpose |
 |---|---|---|
-| `HERMES_MODEL` | `nemotron-3-super` | Model name passed to `AIAgent`. |
-| `HERMES_BASE_URL` | `https://ollama.com/v1` | OpenAI-compatible endpoint. |
-| `OLLAMA_API_KEY` | — | API key (also doubles as the OpenAI-compat key). |
+| `LLM_PREFER_LOCAL` | `1` | On Apple Silicon, try a running local LLM server first; fall back to cloud when none is found. Set to `0` to always use the cloud config below. |
+| `LLM_BUDGET_PCT` | `0.5` | Fraction of free Metal GPU memory to allocate when starting an mlx_lm server. `0.8` recommended on 64 GB+ machines (unlocks 35B+ models). |
+| `OLLAMA_MODEL` | — | Cloud fallback model ID for any OpenAI-compatible endpoint (e.g. `gpt-4o`, `claude-sonnet-4-6`). Used when no local server is detected or `LLM_PREFER_LOCAL=0`. Also the primary LLM config for the Jira updater, which has no local selection. |
+| `OLLAMA_HOST` | — | Cloud fallback base URL (e.g. `https://api.openai.com/v1`, `https://openrouter.ai/api/v1`). |
+| `OLLAMA_API_KEY` | — | API key for the cloud fallback endpoint. |
 | `STAGE3_AUTO_FLOOR` | `0.65` | LLM confidence ≥ this → routing `auto`. |
 | `STAGE3_QUEUE_FLOOR` | `0.40` | LLM confidence ≥ this → routing `queue`. |
 | `STAGE3_MAX_TOKENS` | `4000` | Per-response cap. The JSON parser is truncation-tolerant if you tighten this. |
@@ -219,7 +221,7 @@ When you launch the daemon with an **explicit** `--stage 1,2`, live mode is off 
 
 | File | Role |
 |---|---|
-| `config.py` | Env loading, paths (`MERIDIAN_DB`, `LOG_DIR`), stage flags, override-file helpers, LLM creds. |
+| `config.py` | Env loading, paths (`MERIDIAN_DB`, `LOG_DIR`), stage flags, override-file helpers, LLM config (`LLM_PREFER_LOCAL`, `LLM_BUDGET_PCT`, cloud fallback `OLLAMA_*`). |
 | `db.py` | SQLite connection + every read/write the tagger does. Schema is read-only here. |
 | `tagger.py` | Stage-1 driver, single-session inspector (`--session`), `run_once` entry point. |
 | `tagger_daemon.py` | Long-running launchd-supervised loop wrapping `tagger.run_once`. Zombie sweep, hot-toggle, backoff. |
@@ -230,6 +232,8 @@ When you launch the daemon with an **explicit** `--stage 1,2`, live mode is off 
 | `text_for_embedding.py` | Deterministic recipe for "what text represents this session / task" + `text_hash` for change detection. |
 | `stage2.py` | Embedding match, dim_overlap blend, past_vote MaxSim, routing decision. |
 | `stage3.py` | hermes `AIAgent` wrapper, prompt builder, JSON parser (truncation-tolerant), routing decision. |
+| `llm_selector.py` | Dynamic local LLM selection — server discovery (Ollama, LM Studio, llama.cpp, mlx_lm), MLX model catalog, managed `mlx_lm.server` lifecycle, `select_model_for_hermes()`. |
+| `task_classifier_agent.py` | Calls `select_model_for_hermes()` before each AIAgent invocation; falls back to cloud config when no local endpoint is available. |
 | `jira_keeper.py` | **Deprecated** — old hermes-style synthesizer that wrote to Jira via `mcp-atlassian`. Not yet replaced; the dispatch_queue drainer that should subsume it is unimplemented. |
 | `jira_mcp.py` | Fallback Jira fetcher when `pm_tasks` is empty (boots `uvx mcp-atlassian` over stdio). The Rust daemon owns the long-term cache. |
 | `bootstrap.py` | One-time setup helpers (legacy — most paths now created on demand). |
@@ -270,40 +274,143 @@ When you launch the daemon with an **explicit** `--stage 1,2`, live mode is off 
 
 ---
 
-## How to swap the LLM provider for Stage 3
+## How to change the LLM
 
-The hermes `AIAgent` is OpenAI-compatible-API generic. Just set:
+### Local server already running (LM Studio / Ollama)
 
-```bash
-export HERMES_BASE_URL=https://api.anthropic.com/v1     # or LM Studio, Ollama, etc.
-export HERMES_MODEL=claude-3-5-sonnet-20241022
-export OLLAMA_API_KEY=<provider key>                    # name is legacy
+No config needed. The selector auto-detects any running server and reuses its loaded model. Load whichever model you want in LM Studio or Ollama — the next classification tick picks it up automatically.
+
+```
+LM Studio  → open app, load model from the Models panel
+Ollama     → ollama run <model-name>
 ```
 
-No code change. Restart the daemon (`launchctl kickstart -k gui/$(id -u)/com.meridiona.tagger-daemon`). The model + endpoint are logged at the top of every Stage-3 invocation (`stage3: model=… base_url=…`).
+### Change which MLX model loads automatically
 
-If the new model is noisier (e.g. emits chain-of-thought before the JSON), the parser at `stage3.py:154` already tolerates fenced blocks and leading prose. If it consistently truncates, lower `STAGE3_MAX_TOKENS` is the wrong fix — raise it. The truncation-repair path is a fallback, not a target.
+When no external server is running, the selector starts its own `mlx_lm.server` on port 8765 and picks the largest model that fits within `metal_headroom × LLM_BUDGET_PCT`. Raise `LLM_BUDGET_PCT` to unlock larger models:
+
+```bash
+# In services/.env
+LLM_BUDGET_PCT=0.8   # 80% of free Metal headroom (recommended on 64 GB+ machines)
+```
+
+No restart needed for `run_task_linker.py` (fresh subprocess per tick). If the selected model changes, the managed server is killed and restarted automatically.
+
+### Force a specific cloud provider
+
+Set `LLM_PREFER_LOCAL=0` and configure the cloud endpoint:
+
+```bash
+# OpenAI
+OLLAMA_MODEL=gpt-4o
+OLLAMA_HOST=https://api.openai.com/v1
+OLLAMA_API_KEY=sk-...
+
+# OpenRouter
+OLLAMA_MODEL=anthropic/claude-sonnet-4-6
+OLLAMA_HOST=https://openrouter.ai/api/v1
+OLLAMA_API_KEY=sk-or-...
+
+# Anthropic direct
+OLLAMA_MODEL=claude-sonnet-4-6
+OLLAMA_HOST=https://api.anthropic.com/v1
+OLLAMA_API_KEY=sk-ant-...
+```
+
+The `OLLAMA_*` names are legacy — they accept any OpenAI-compatible endpoint. These vars also serve as the primary (and only) LLM config for the Jira updater, which has no local selection.
+
+If the new model emits chain-of-thought before its JSON answer, the parser at `stage3.py:154` already tolerates fenced blocks and leading prose. If it consistently truncates, raise `STAGE3_MAX_TOKENS` — the truncation-repair path is a fallback, not a target.
 
 ---
 
 ## Dynamic local LLM selection
 
-When `LLM_PREFER_LOCAL=1` (the default), Stage 3 attempts to route hermes through a local LLM endpoint before falling back to the static cloud config. The feature is implemented in `llm_selector.py` and wired into `task_classifier_agent.py`.
+`llm_selector.py` implements `select_model_for_hermes()`, called by `task_classifier_agent.py` at the start of every Stage 3 invocation. It returns a `LocalModelEndpoint` (model, base_url, api_key, runtime) or `None` to fall back to cloud.
 
-**Selection priority:** The function `select_model_for_hermes()` checks for available endpoints in this order:
+### Decision flow
 
-1. Any already-running LLM server (Ollama on port 11434, LM Studio on 1234, llama.cpp/mlx_lm on 8080) with a model loaded in memory — zero load cost.
-2. Start a persistent `mlx_lm.server` process on port 8765, selecting the best-fitting MLX model by available Metal GPU headroom × `LLM_BUDGET_PCT`.
-3. Return `None` — caller uses static `MODEL`/`BASE_URL` from env or config.
+```
+LLM_PREFER_LOCAL=0  ──────────────────────────────────────────► cloud fallback
+LLM_PREFER_LOCAL=1 (default)
+  │
+  ├─ non-Apple Silicon ──────────────────────────────────────► cloud fallback
+  │
+  ├─ Ollama running? (:11434, /api/ps has loaded models)
+  │    └─ YES ─────────────────────────────────────────────► reuse Ollama model
+  │
+  ├─ LM Studio running? (:1234, /api/v0/models state=loaded)
+  │    └─ YES ─────────────────────────────────────────────► reuse LM Studio model
+  │
+  ├─ llama.cpp / mlx_lm running? (:8080)
+  │    └─ YES ─────────────────────────────────────────────► reuse that model
+  │
+  ├─ headroom < model min_ram_gb × budget_pct ──────────────► cloud fallback
+  ├─ thermal pressure high ─────────────────────────────────► cloud fallback
+  │
+  └─ start mlx_lm.server on :8765 with best-fitting model ─► managed MLX model
+       └─ server fails to start ────────────────────────────► cloud fallback
+```
 
-**Persistent MLX server:** When option 2 runs, `_ensure_mlx_server()` manages a subprocess tracked in `~/.meridian/mlx_lm_server.pid` (JSON: pid, model, port). If the same model is already running, returns immediately. If a different model is needed, kills and restarts. The model loads once and persists between `run_task_linker.py` invocations, avoiding repeated cold-start costs.
+### MLX model catalog
 
-Configuration:
+Models are ordered largest→smallest by `min_ram_gb`. Selection picks the first that fits `metal_headroom_gb × budget_pct`:
 
-| Var | Default | Purpose |
+| Model | HuggingFace ID | Min RAM |
 |---|---|---|
-| `LLM_PREFER_LOCAL` | `1` | Try local model before cloud when Stage 3 runs. |
-| `LLM_BUDGET_PCT` | `0.5` | Fraction of free GPU memory to use when loading MLX models (0.0–1.0). |
+| llama3.3-70b | `mlx-community/Llama-3.3-70B-Instruct-4bit` | 40 GB |
+| r1-70b | `mlx-community/DeepSeek-R1-Distill-Llama-70B-4bit` | 40 GB |
+| qwen3.6-35b-moe | `mlx-community/Qwen3.6-35B-A3B-4bit` | 21 GB |
+| r1-32b | `mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit` | 19 GB |
+| phi-4 | `mlx-community/phi-4-4bit` | 8.5 GB |
+| r1-14b | `mlx-community/DeepSeek-R1-Distill-Qwen-14B-4bit` | 8.5 GB |
+| gemma3-12b | `mlx-community/gemma-3-12b-it-qat-4bit` | 7 GB |
+| qwen3.5-4b | `mlx-community/Qwen3.5-4B-MLX-4bit` | 2.5 GB |
+| llama3.2-3b | `mlx-community/Llama-3.2-3B-Instruct-4bit` | 1.8 GB |
+
+Example: 28 GB headroom, `LLM_BUDGET_PCT=0.5` → budget = 14 GB → **phi-4** (first fit at 8.5 GB). Same machine with `LLM_BUDGET_PCT=0.8` → budget = 22.4 GB → **qwen3.6-35b-moe** (first fit at 21 GB).
+
+When the screen is locked the selector uses `min(0.8, budget_pct × 1.5)` as the effective budget, allowing a larger model to load while the machine is idle.
+
+### Persistent MLX server
+
+`_ensure_mlx_server()` manages a subprocess tracked in `~/.meridian/mlx_lm_server.pid` (JSON: pid, model, port). The model loads once and persists between `run_task_linker.py` invocations (which are fresh subprocesses each tick). If the budget changes and a different model is selected, the old server is killed and the new model loads automatically.
+
+### Check which model is currently selected
+
+```bash
+cd services
+.venv/bin/python -c "
+from agents.llm_selector import discover_running_servers, select_model_for_hermes, probe_compute
+stats = probe_compute()
+print(f'Headroom: {stats.metal_headroom_gb:.1f} GB  chip: {stats.chip_name}')
+for s in discover_running_servers():
+    print(f'  running: {s.runtime} @ {s.base_url}  loaded={s.models}')
+ep = select_model_for_hermes()
+print(f'Selected: {ep.model}  runtime={ep.runtime}' if ep else 'No local model — cloud fallback')
+"
+```
+
+### Observability
+
+Every `task_classifier_agent.decide` span carries three attributes you can filter on in OpenObserve Traces:
+
+| Span attribute | Example values |
+|---|---|
+| `llm.model` | `mlx-community/Qwen3.6-35B-A3B-4bit`, `gpt-4o` |
+| `llm.runtime` | `lmstudio`, `ollama`, `mlx_managed`, `cloud` |
+| `llm.is_local` | `true` / `false` |
+
+Every `run_task_linker` result log line also emits `llm_model`, `llm_runtime`, `llm_is_local` as top-level JSON fields, queryable by field filter in OpenObserve Logs.
+
+### Installation for local inference
+
+```bash
+# Install the optional mlx-lm extra (Apple Silicon only)
+cd services
+pip install -e ".[local-llm]"
+```
+
+`psutil` is in core dependencies and always installed. `mlx-lm` is optional — without it, the managed MLX server path is skipped and the selector falls through to cloud.
 
 ---
 
