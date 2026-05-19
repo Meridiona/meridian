@@ -107,18 +107,22 @@ def _classify_session_inner(
     _model, _base_url, _api_key = MODEL, BASE_URL, (API_KEY or "none")
     _llm_runtime  = "cloud"
     _llm_is_local = False
-    if LLM_PREFER_LOCAL:
-        from agents.llm_selector import select_model_for_hermes
-        local_ep = select_model_for_hermes(budget_pct=LLM_BUDGET_PCT)
-        if local_ep:
-            _model, _base_url, _api_key = local_ep.model, local_ep.base_url, local_ep.api_key
-            _llm_runtime  = local_ep.runtime
-            _llm_is_local = True
-            log.info("task_classifier_agent: local model=%s runtime=%s",
-                     _model, local_ep.runtime)
-        else:
-            log.info("task_classifier_agent: no local model available, using cloud model=%s",
-                     _model)
+    with tracer.start_as_current_span("task_classifier.select_model") as ms_span:
+        if LLM_PREFER_LOCAL:
+            from agents.llm_selector import select_model_for_hermes
+            local_ep = select_model_for_hermes(budget_pct=LLM_BUDGET_PCT)
+            if local_ep:
+                _model, _base_url, _api_key = local_ep.model, local_ep.base_url, local_ep.api_key
+                _llm_runtime  = local_ep.runtime
+                _llm_is_local = True
+                log.info("task_classifier_agent: local model=%s runtime=%s",
+                         _model, local_ep.runtime)
+            else:
+                log.info("task_classifier_agent: no local model available, using cloud model=%s",
+                         _model)
+        ms_span.set_attribute("llm.is_local", _llm_is_local)
+        ms_span.set_attribute("llm.model",    _model or "")
+        ms_span.set_attribute("llm.runtime",  _llm_runtime)
 
     from agents._hermes_setup import ensure_hermes_importable
     ensure_hermes_importable()
@@ -134,55 +138,70 @@ def _classify_session_inner(
     log.info("task_classifier_agent: model=%s base_url=%s skill=%s pm_tasks=%d",
              _model, _base_url, SKILL_NAME, len(pm_tasks))
 
-    t0 = time.time()
-    try:
-        agent = AIAgent(
-            model=_model,
-            base_url=_base_url,
-            api_key=_api_key,
-            ephemeral_system_prompt=base_prompt,
-            enabled_toolsets=[],
-            quiet_mode=True,
-            skip_context_files=True,
-            load_soul_identity=False,
-            skip_memory=True,
-            max_iterations=1,
-            max_tokens=MAX_TOKENS,
-        )
-        result = agent.run_conversation(user_message)
-    except Exception as exc:  # noqa: BLE001
+    with tracer.start_as_current_span("task_classifier.agent_call") as ac_span:
+        ac_span.set_attribute("llm.model",      _model or "")
+        ac_span.set_attribute("llm.base_url",   _base_url or "")
+        ac_span.set_attribute("pm_tasks.count", len(pm_tasks))
+        t0 = time.time()
+        try:
+            agent = AIAgent(
+                model=_model,
+                base_url=_base_url,
+                api_key=_api_key,
+                ephemeral_system_prompt=base_prompt,
+                enabled_toolsets=[],
+                quiet_mode=True,
+                skip_context_files=True,
+                load_soul_identity=False,
+                skip_memory=True,
+                max_iterations=1,
+                max_tokens=MAX_TOKENS,
+            )
+            result = agent.run_conversation(user_message)
+        except Exception as exc:  # noqa: BLE001
+            elapsed = time.time() - t0
+            log.warning("task_classifier_agent AIAgent failed: %s", exc)
+            ac_span.record_exception(exc)
+            return ClassifierDecision(
+                session_id=sid, chosen_task_key=None, confidence=0.0,
+                reasoning=f"AIAgent run failed: {exc}", routing="skip",
+                method="agent_unavailable", elapsed_s=elapsed,
+            )
+
         elapsed = time.time() - t0
-        log.warning("task_classifier_agent AIAgent failed: %s", exc)
-        return ClassifierDecision(
-            session_id=sid, chosen_task_key=None, confidence=0.0,
-            reasoning=f"AIAgent run failed: {exc}", routing="skip",
-            method="agent_unavailable", elapsed_s=elapsed,
-        )
 
-    elapsed = time.time() - t0
+        raw = ""
+        if isinstance(result, dict):
+            raw = str(
+                result.get("final_response")
+                or result.get("response")
+                or ""
+            ).strip()
 
-    raw = ""
-    if isinstance(result, dict):
-        raw = str(
-            result.get("final_response")
-            or result.get("response")
-            or ""
-        ).strip()
+        log.debug("task_classifier_agent raw response (%.1fs): %s", elapsed, raw[:1000])
+        ac_span.set_attribute("response.length",  len(raw))
+        ac_span.set_attribute("agent.elapsed_ms", int(elapsed * 1000))
 
-    log.debug("task_classifier_agent raw response (%.1fs): %s", elapsed, raw[:1000])
+    with tracer.start_as_current_span("task_classifier.parse_response") as pr_span:
+        task_key, confidence, reasoning, dimensions, err = parse_response(raw, valid_keys)
+        if err:
+            log.warning("task_classifier_agent invalid response: %s", err)
+            pr_span.set_attribute("parsed.task_key",   "")
+            pr_span.set_attribute("parsed.confidence", 0.0)
+            pr_span.set_attribute("parsed.routing",    "skip")
+            return ClassifierDecision(
+                session_id=sid, chosen_task_key=None, confidence=0.0,
+                reasoning=err, routing="skip", method="agent_invalid_response",
+                raw_response=raw[:1000], elapsed_s=elapsed,
+                debug={"error": err, "model": _model, "base_url": _base_url,
+                   "llm_runtime": _llm_runtime, "llm_is_local": _llm_is_local},
+            )
 
-    task_key, confidence, reasoning, dimensions, err = parse_response(raw, valid_keys)
-    if err:
-        log.warning("task_classifier_agent invalid response: %s", err)
-        return ClassifierDecision(
-            session_id=sid, chosen_task_key=None, confidence=0.0,
-            reasoning=err, routing="skip", method="agent_invalid_response",
-            raw_response=raw[:1000], elapsed_s=elapsed,
-            debug={"error": err, "model": _model, "base_url": _base_url,
-               "llm_runtime": _llm_runtime, "llm_is_local": _llm_is_local},
-        )
+        routing = routing_for(confidence, task_key, AUTO_FLOOR, QUEUE_FLOOR)
+        pr_span.set_attribute("parsed.task_key",   task_key or "")
+        pr_span.set_attribute("parsed.confidence", confidence)
+        pr_span.set_attribute("parsed.routing",    routing)
 
-    routing = routing_for(confidence, task_key, AUTO_FLOOR, QUEUE_FLOOR)
     return ClassifierDecision(
         session_id=sid,
         chosen_task_key=task_key,

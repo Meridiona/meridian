@@ -32,6 +32,8 @@ pub(super) const BATCH_LIMIT: i64 = 1;
 struct ClassifyInput {
     sessions: Vec<SessionPayload>,
     pm_tasks: Vec<TaskPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    traceparent: Option<String>,
 }
 
 /// Per-session data sent to Python.
@@ -145,6 +147,7 @@ pub(crate) fn resolve_python(services_dir: &std::path::Path) -> String {
 /// Run one hermes-based classification cycle:
 ///   - trivial sessions (empty session_text) → `overhead/skip` without LLM
 ///   - non-trivial batch → spawned `python3 -m agents.run_task_linker` subprocess
+#[tracing::instrument(skip_all, fields(sessions = 0, pm_tasks = 0, cursor = 0))]
 pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
     if !cfg.classification_enabled {
         debug!("classification disabled — skipping");
@@ -155,6 +158,7 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
     let run_id = start_agent_run(pool).await?;
 
     let cursor = get_agent_cursor(pool).await?;
+    tracing::Span::current().record("cursor", cursor);
 
     if cursor == 0 && !cfg.classification_backfill {
         if let Some(max_id) = get_max_session_id(pool).await? {
@@ -181,6 +185,8 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
 
     let pm_tasks = fetch_open_pm_tasks(pool).await?;
 
+    tracing::Span::current().record("sessions", raw_sessions.len());
+    tracing::Span::current().record("pm_tasks", pm_tasks.len());
     info!(
         sessions = raw_sessions.len(),
         pm_tasks = pm_tasks.len(),
@@ -249,6 +255,7 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
     let input = ClassifyInput {
         sessions: classifiable,
         pm_tasks,
+        traceparent: crate::observability::current_traceparent(),
     };
     let input_json = serde_json::to_string(&input).context("serializing ClassifyInput")?;
 
@@ -410,6 +417,7 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
 
 /// Classify sessions in an explicit id range without advancing `agent_cursor`.
 /// Safe to run while the daemon is active. Returns `(processed, linked)`.
+#[tracing::instrument(skip(pool, cfg), fields(from_id, to_id = ?to_id, dry_run))]
 pub async fn link_range(
     pool: &SqlitePool,
     cfg: &Config,
@@ -485,6 +493,7 @@ pub async fn link_range(
     let input = ClassifyInput {
         sessions: classifiable,
         pm_tasks,
+        traceparent: crate::observability::current_traceparent(),
     };
     let input_json = serde_json::to_string(&input).context("serializing ClassifyInput")?;
     let python = resolve_python(&services_dir);
