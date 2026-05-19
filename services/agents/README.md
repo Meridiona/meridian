@@ -1,8 +1,8 @@
 # `services/agents/` — pipeline reference
 
-Deep technical reference for the 3-stage tagger. Read this before modifying any stage, adding a rule, swapping the embedding model, or changing the LLM provider.
+Technical reference for the task classifier and Jira agents. Read this before changing the LLM provider, modifying classification logic, or working on the Jira update flow.
 
-For a higher-level overview (what this service is, how to install the daemon, common ops), see [`services/README.md`](../README.md).
+For a higher-level overview (installation, daemon ops, configuration), see [`services/README.md`](../README.md).
 
 ---
 
@@ -11,106 +11,53 @@ For a higher-level overview (what this service is, how to install the daemon, co
 ```
 app_sessions (Rust ETL writes)
         │
-        │  daemon polls every TAGGER_TICK_SECS
-        │  picks rows with id > agent_cursor.last_session_id
+        │  Rust intelligence module reads rows where
+        │  id > agent_cursor.last_session_id, builds
+        │  a JSON batch and spawns run_task_linker.py
         ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│ tagger.run_once  (agents/tagger.py:335)                              │
+│ run_task_linker.py  (JSON stdin → JSON stdout)                       │
 │                                                                      │
-│   for each session in id-ascending order:                            │
-│     ┌──────────────────────────────────────┐                         │
-│     │ trivial-overhead pre-filter          │  duration < MIN_LLM_DUR │
-│     │   write ticket_links/overhead/skip   │  OR no titles/ocr/audio│
-│     │   advance cursor; next session       │                         │
-│     └──────────────────────────────────────┘                         │
-│                       │ otherwise                                    │
-│                       ▼                                              │
-│   ┌──────── Stage 1  rules + ticket regex ────────┐                  │
-│   │ run_rules() → resolve_hits() → upsert dims    │                  │
-│   │ extract_tickets() ∩ pm_tasks                  │                  │
-│   │   match  → ticket_links task/auto  (final)    │                  │
-│   │   shaped → ticket_links task/skip  (final)    │                  │
-│   │   none   → defer to Stage 2                   │                  │
-│   └──────────────────────────────────────────────┘                  │
-│                       │  (only when Stage 1 deferred)                │
-│                       ▼                                              │
-│   ┌──────── Stage 2  embedding match ─────────────┐                  │
-│   │ stage2_match():                                │                  │
-│   │   embed session as multi-vec (titles+audio+OCR)│                  │
-│   │   cosine_max @ pm_task_embeddings              │                  │
-│   │   blend: 0.55*cos + 0.30*dim + 0.15*past_vote  │                  │
-│   │   route: auto | queue | skip                   │                  │
-│   └────────────────────────────────────────────────┘                 │
-│                       │  (only when Stage 2 routing=queue)           │
-│                       ▼                                              │
-│   ┌──────── Stage 3  LLM tiebreaker ───────────────┐                 │
-│   │ hermes AIAgent (skill: stage3-tiebreaker)      │                 │
-│   │   one shot, no tools, JSON in / JSON out       │                 │
-│   │   wins iff routing != skip, else fall back to S2│                │
-│   └────────────────────────────────────────────────┘                 │
+│   reads: {sessions: [...], pm_tasks: [...], traceparent: ...}        │
 │                                                                      │
-│     advance_cursor(session.id)                                       │
+│   for each session:                                                  │
+│     duration_s < MIN_LLM_DURATION_S → routing=skip                  │
+│     otherwise:                                                       │
+│       classify_session()  ──►  task_classifier_agent.py             │
+│         select_model_for_hermes()  (local-first, cloud fallback)     │
+│         hermes AIAgent (skill: task-classifier)                      │
+│           max_iterations=1, no tools, JSON response                  │
+│         parse_response() → {task_key, confidence, routing}          │
+│                                                                      │
+│   writes: {results: [{session_id, task_key, confidence, routing}]}   │
 └──────────────────────────────────────────────────────────────────────┘
-```
+        │
+        ▼
+Rust reads stdout JSON, writes ticket_links, advances agent_cursor
 
-The cursor is advanced after **every** session, regardless of which stages ran. A SIGTERM mid-batch loses at most the in-flight session; everything written before the advance is durable.
+The cursor advances after every session regardless of routing outcome.
+A SIGTERM mid-batch loses at most the in-flight session.
+```
 
 ---
 
-## Per-stage detail
+## Classifier detail (`task_classifier_agent.py`)
 
-### Stage 1 — rules + regex (`agents/tagger.py`, `agents/rules/`)
+**Reads:** `session` dict (app_name, duration_s, window_titles, session_text, audio_snippets) and a list of open `pm_tasks` (task_key, title, description_text).
 
-**Reads:** `app_sessions` row (window titles, OCR samples, audio snippets, app name, duration).
-**Writes:** `session_dimensions` (multi-label tags, idempotent UPSERT on `(session_id, dimension, value)`); `ticket_links` only when a regex hit matches a known `pm_tasks.task_key`, OR when a ticket-shaped string is seen but doesn't match (recorded as `task/skip`).
-**Skips:** trivial-overhead sessions (`duration_s < MIN_LLM_DURATION_S` or no signal) — written as `overhead/skip` with method `stage1_prefilter`, never see Stages 2 or 3.
+**Writes:** nothing directly — returns a `ClassifierDecision` dataclass; the Rust caller writes `ticket_links`.
 
-The rule registry lives in `agents/rules/__init__.py:50`. Rules self-register via the `@rule(name=…, dim=…)` decorator. Each rule receives a session dict and returns `RuleHit | list[RuleHit] | None`.
+**Skips:** sessions shorter than `MIN_LLM_DURATION_S` (default 30 s) return `routing=skip` without an LLM call.
 
-Built-in rules: `activity.py`, `intent.py`, `engagement.py`, `collaboration.py`, `tool.py`, `topic.py`, `practice.py`, `ticket.py`.
-
-The taxonomy (allowed dimensions, closed-vocab values, single- vs multi-value flag) is in `agents/taxonomy.py`. Hits with unknown dimensions or unknown values on closed dimensions are dropped with a warning — never persisted (`agents/rules/__init__.py:182`).
-
-### Stage 2 — embedding match (`agents/stage2.py`)
-
-**Reads:** the session row, all `pm_tasks` (open, sorted by updated_at), `session_dimensions` (for `dim_overlap`), `session_embeddings` of past sessions whose `ticket_links.method` is **not** `stage2*` (anti-self-reinforcement filter).
-**Writes:** `session_embeddings` (multi-row, one per sample), `pm_task_embeddings` (single-row per task, refreshed when `text_hash` changes), and the final `ticket_links` row (method `stage2_embed`).
-**Skips:** when `pm_tasks` is empty, when the session has no extractable text, or when no candidates score above the queue threshold.
-
-Score formula:
-
-```
-score = 0.55 * cosine_unit + 0.30 * dim_overlap + 0.15 * past_vote
-```
-
-Re-normalised when one component has no signal:
-
-- no past history → `0.65 * cos + 0.35 * dim`
-- empty session dims → `0.75 * cos + 0.25 * past`
-- nothing else available → `1.0 * cos`
-
-Routing:
-
-- `auto` — `top1 ≥ 0.62` AND `top1 - top2 ≥ 0.08`
-- `queue` — `top1 ≥ 0.40` (sent to Stage 3 if enabled)
-- `skip` — anything below
-
-Multi-vec MaxSim: each session is encoded as `(M, 384)` where M = 1 (titles) + 1 (audio) + N (per-OCR-sample, capped at 20 by the ETL). Per-task cosine is `max over session samples`. See migration `009_multi_sample_embeddings.sql` for the rationale.
-
-### Stage 3 — LLM tiebreaker (`agents/stage3.py`)
-
-**Reads:** the session, Stage-1 `session_dimensions`, Stage-2 top candidates, and the `pm_tasks` rows for those candidates (for title + description).
-**Writes:** the final `ticket_links` row (method `stage3_llm`) and a `dispatch_queue` row when `routing in ('auto', 'queue')`.
-**Skips:** the LLM returns `null`, returns invalid JSON, returns a `task_key` not in the candidate set, or hermes `AIAgent` import fails. In any of these the Stage-2 verdict stands.
-
-System prompt loaded from `services/skills/activity/stage3-tiebreaker/SKILL.md` (or `~/.meridian/skills/activity/stage3-tiebreaker/SKILL.md` for user-level overrides). hermes `AIAgent` config: `enabled_toolsets=[]`, `max_iterations=1`, `quiet_mode=True`, `skip_context_files=True`, `skip_memory=True`, `load_soul_identity=False`.
+The system prompt is loaded from `services/skills/activity/task-classifier/SKILL.md` (or `~/.meridian/skills/activity/task-classifier/SKILL.md` for user-level overrides). hermes `AIAgent` config: `enabled_toolsets=[]`, `max_iterations=1`, `quiet_mode=True`, `skip_context_files=True`, `skip_memory=True`, `load_soul_identity=False`.
 
 Routing thresholds (env-overridable):
 
-- `STAGE3_AUTO_FLOOR` (default `0.65`)
-- `STAGE3_QUEUE_FLOOR` (default `0.40`)
+- `AGENT_AUTO_FLOOR` (default `0.65`) — confidence ≥ this → `routing=auto`
+- `AGENT_QUEUE_FLOOR` (default `0.40`) — confidence ≥ this → `routing=queue`
+- below both floors → `routing=skip`
 
-The parser (`_extract_json` in `stage3.py:154`) tolerates fenced blocks, leading prose, and **truncated** JSON (thinking-style models sometimes blow through `STAGE3_MAX_TOKENS` mid-string).
+The response parser (`_parser.py`) tolerates fenced code blocks, leading prose, and truncated JSON — thinking-style models sometimes exceed `AGENT_MAX_TOKENS` mid-string.
 
 ---
 
@@ -122,13 +69,13 @@ All tables below live in `meridian.db`. The Rust daemon owns DDL (`src/migration
 |---|---|---|
 | `app_sessions` | Rust ETL | Completed sessions — append-only, read-only from Python (`db.fetch_session`, `db.fetch_unprocessed_sessions`). |
 | `pm_tasks` | Rust intelligence | Cached Jira/GitHub/Linear tasks, refreshed every ~30 min. Stage 2 reads, falls back to `agents/jira_mcp.py` when empty. |
-| `ticket_links` | Python tagger | One row per session: `task_key`, `session_type` (`task`/`overhead`/`unknown`), `routing` (`auto`/`queue`/`skip`), `method` (`stage1_regex` / `stage1_prefilter` / `stage2_embed` / `stage3_llm`). UNIQUE on `session_id`. |
-| `session_dimensions` | Python tagger | Multi-label tags. Composite PK `(session_id, dimension, value)`. Conflict policy: keep MAX confidence, replace source. |
-| `dispatch_queue` | Python tagger | Pending external write-backs (Jira worklog/comment, GitHub, Linear, log no-op). Drainer not yet wired (see Limitations). |
-| `session_embeddings` | Python tagger | Multi-vec session encoding. PK `(session_id, model, sample_idx)`. Replaced wholesale on each upsert (sample count varies). |
-| `pm_task_embeddings` | Python tagger | One vector per task, plus JSON `expected_dims` for `dim_overlap`. PK `(task_key, model)`. Re-embedded only when `text_hash` changes. |
-| `agent_runs` | Python tagger | Audit log per `tagger.run_once` cycle. `'running'` rows are swept to `'aborted'` on daemon startup. |
-| `agent_cursor` | Python tagger | Single-row high-water mark `last_session_id`. Never decreases (the SQL has `WHERE ? > last_session_id`). |
+| `ticket_links` | Python agents | One row per session: `task_key`, `session_type` (`task`/`overhead`/`unknown`), `routing` (`auto`/`queue`/`skip`), `method` (`llm_standalone` / `agent_unavailable` / `agent_invalid_response`). UNIQUE on `session_id`. |
+| `session_dimensions` | Python agents | Multi-label tags written by legacy pipeline. Composite PK `(session_id, dimension, value)`. |
+| `dispatch_queue` | Python agents | Pending external write-backs (Jira worklog/comment, GitHub, Linear). Drainer not yet wired (see Limitations). |
+| `session_embeddings` | Legacy | Multi-vec session encoding from the old embedding pipeline. Not written by the current classifier. |
+| `pm_task_embeddings` | Legacy | Task vectors from the old embedding pipeline. Not written by the current classifier. |
+| `agent_runs` | Python agents | Audit log per classification batch. `'running'` rows are swept to `'aborted'` on next run. |
+| `agent_cursor` | Python agents | Single-row high-water mark `last_session_id`. Advanced by Rust after each batch; never decreases. |
 | `activity_context` | Legacy | Single-row "current focus" snapshot — written by the old synthesizer, read by the (deferred) jira_keeper drainer. |
 | `context_graph_nodes` | Legacy | Persistent knowledge graph from the old hermes-style synthesizer. Currently unused by the 3-stage pipeline. |
 | `session_summaries` | Legacy | One LLM-derived narrative summary per session. Stage 1+2+3 don't write this — left in place for a future summariser. |
@@ -141,37 +88,17 @@ Migrations: `003_intelligence.sql` (pm_tasks, ticket_links), `005_agents.sql` (a
 
 All env vars are read in `agents/config.py`. `.env` files are loaded in priority order (earliest wins): `services/.env` → repo-root `.env`.
 
-### Pipeline scope
+### Classifier
 
 | Var | Default | Purpose |
 |---|---|---|
 | `MERIDIAN_DB` | `~/.meridian/meridian.db` | Path to the SQLite file. Must already exist (Rust daemon creates it). |
-| `MERIDIAN_HOME` | `~/.meridian` | Parent dir; logs and `tagger.config.json` go under this. |
-| `SESSION_BATCH_LIMIT` | `50` | Max sessions per `tagger.run_once` cycle. |
-| `ONLY_TODAY` | `1` | When truthy, skip sessions whose `started_at` is before today's local-midnight (UTC-converted). Set `0` to backfill history. |
-| `MIN_LLM_DURATION_S` | `30` | Stage-1 trivial-overhead floor — sessions shorter than this are auto-tagged `overhead/skip`. |
+| `MERIDIAN_HOME` | `~/.meridian` | Parent dir; logs go under this. |
+| `MIN_LLM_DURATION_S` | `30` | Sessions shorter than this (seconds) skip the LLM call entirely (`routing=skip`). |
+| `CONFIDENCE_THRESHOLD` | `0.65` | Minimum confidence for a result to be used downstream (e.g. by the Jira keeper). |
+| `LOG_LEVEL` | `INFO` | Standard Python log level. |
 
-### Stage on/off
-
-| Var | Default | Purpose |
-|---|---|---|
-| `STAGE1_ENABLED` | `1` | Turn off Stage 1 (rules + regex). Almost never useful. |
-| `STAGE2_ENABLED` | `1` | Turn off Stage 2 (embeddings). Falls back to Stage 1 only. |
-| `STAGE3_ENABLED` | `1` | Turn off Stage 3 (LLM). Stage 2 verdict is final. |
-
-Booleans accept `1` / `true` / `yes` / `on` (truthy) and `0` / `false` / `no` / `off` / `""` (falsy).
-
-### Daemon loop
-
-| Var | Default | Purpose |
-|---|---|---|
-| `TAGGER_TICK_SECS` | `7` | Poll cadence in seconds. |
-| `TAGGER_HEARTBEAT_SECS` | `300` | Heartbeat log when idle (no new sessions). |
-| `TAGGER_STAGES` | `auto` | Legacy override. `auto` (the default) honours `STAGE{1,2,3}_ENABLED` + the override file; an explicit list (`1,2`) freezes the stage set. |
-| `TAGGER_CONFIG_FILE` | `~/.meridian/tagger.config.json` | Hot-toggle override file (see below). |
-| `LOG_LEVEL` | `INFO` | Standard Python log level. `DEBUG` dumps full session bundles + raw rule output. |
-
-### LLM (Stage 3 and task classifier)
+### LLM (task classifier and Jira updater)
 
 | Var | Default | Purpose |
 |---|---|---|
@@ -180,40 +107,19 @@ Booleans accept `1` / `true` / `yes` / `on` (truthy) and `0` / `false` / `no` / 
 | `OLLAMA_MODEL` | — | Cloud fallback model ID for any OpenAI-compatible endpoint (e.g. `gpt-4o`, `claude-sonnet-4-6`). Used when no local server is detected or `LLM_PREFER_LOCAL=0`. Also the primary LLM config for the Jira updater, which has no local selection. |
 | `OLLAMA_HOST` | — | Cloud fallback base URL (e.g. `https://api.openai.com/v1`, `https://openrouter.ai/api/v1`). |
 | `OLLAMA_API_KEY` | — | API key for the cloud fallback endpoint. |
-| `STAGE3_AUTO_FLOOR` | `0.65` | LLM confidence ≥ this → routing `auto`. |
-| `STAGE3_QUEUE_FLOOR` | `0.40` | LLM confidence ≥ this → routing `queue`. |
-| `STAGE3_MAX_TOKENS` | `4000` | Per-response cap. The JSON parser is truncation-tolerant if you tighten this. |
-| `STAGE3_SKILL_NAME` | `stage3-tiebreaker` | Subdir under `skills/activity/` to load the system prompt from. |
+| `AGENT_AUTO_FLOOR` | `0.65` | Confidence ≥ this → routing `auto`. |
+| `AGENT_QUEUE_FLOOR` | `0.40` | Confidence ≥ this → routing `queue`. |
+| `AGENT_MAX_TOKENS` | `4000` | Per-response token cap. The JSON parser is truncation-tolerant if you raise this. |
+| `AGENT_SKILL_NAME` | `task-classifier` | Subdir under `skills/activity/` to load the system prompt from. |
 
-### Bounded retry
+### Classifier thresholds
 
 | Var | Default | Purpose |
 |---|---|---|
-| `LLM_RETRY_ATTEMPTS` | `3` | Retries on HTTP 429 / transient failure. |
-| `LLM_RETRY_BACKOFF_S` | `5` | Backoff between attempts. |
-
----
-
-## Hot-toggle: `~/.meridian/tagger.config.json`
-
-The daemon re-reads this file every tick when launched with the default `--stage auto`. File schema:
-
-```json
-{ "stage1": true, "stage2": false, "stage3": true }
-```
-
-Resolution order: file present → file wins; file absent → env defaults (`STAGE{1,2,3}_ENABLED`).
-
-CLI helpers (you almost never want to hand-edit JSON):
-
-```bash
-python -m agents.tagger --stages-status         # show env / file / resolved
-python -m agents.tagger --enable-stage 3
-python -m agents.tagger --disable-stage 3
-python -m agents.tagger --clear-stages-override # delete the file → fall back to env
-```
-
-When you launch the daemon with an **explicit** `--stage 1,2`, live mode is off and the stage set is frozen for the lifetime of that process. Passing `--stage auto` (or no `--stage`) keeps live mode on.
+| `AGENT_AUTO_FLOOR` | `0.65` | Confidence ≥ this → `routing=auto` (high-confidence match). |
+| `AGENT_QUEUE_FLOOR` | `0.40` | Confidence ≥ this → `routing=queue` (low-confidence, human review). |
+| `AGENT_MAX_TOKENS` | `4000` | Per-response token cap for the hermes AIAgent call. |
+| `AGENT_SKILL_NAME` | `task-classifier` | Subdir under `skills/activity/` to load the system prompt from. |
 
 ---
 
@@ -221,56 +127,21 @@ When you launch the daemon with an **explicit** `--stage 1,2`, live mode is off 
 
 | File | Role |
 |---|---|
-| `config.py` | Env loading, paths (`MERIDIAN_DB`, `LOG_DIR`), stage flags, override-file helpers, LLM config (`LLM_PREFER_LOCAL`, `LLM_BUDGET_PCT`, cloud fallback `OLLAMA_*`). |
-| `db.py` | SQLite connection + every read/write the tagger does. Schema is read-only here. |
-| `tagger.py` | Stage-1 driver, single-session inspector (`--session`), `run_once` entry point. |
-| `tagger_daemon.py` | Long-running launchd-supervised loop wrapping `tagger.run_once`. Zombie sweep, hot-toggle, backoff. |
-| `rules/__init__.py` | Rule decorator + registry, hit resolver, shared text helpers (`session_text`, `extract_tickets`, `extract_urls`). |
-| `rules/{activity,intent,engagement,collaboration,tool,topic,practice,ticket}.py` | The actual rule library. |
-| `taxonomy.py` | Allowed dimensions + closed-vocab values + `SINGLE_VALUE_DIMENSIONS`. The runner drops unknown values silently with a warning. |
-| `embeddings.py` | Lazy-loads `BAAI/bge-small-en-v1.5`, BLOB ↔ ndarray, multi-vec session encoder, brute-force cosine. |
-| `text_for_embedding.py` | Deterministic recipe for "what text represents this session / task" + `text_hash` for change detection. |
-| `stage2.py` | Embedding match, dim_overlap blend, past_vote MaxSim, routing decision. |
-| `stage3.py` | hermes `AIAgent` wrapper, prompt builder, JSON parser (truncation-tolerant), routing decision. |
+| `config.py` | Env loading, paths (`MERIDIAN_DB`, `LOG_DIR`), LLM config (`LLM_PREFER_LOCAL`, `LLM_BUDGET_PCT`, cloud fallback `OLLAMA_*`), Jira updater tunables. |
+| `observability.py` | OpenTelemetry + JSON structured logging bootstrap. Single `setup(agent_name)` call per process. |
 | `llm_selector.py` | Dynamic local LLM selection — server discovery (Ollama, LM Studio, llama.cpp, mlx_lm), MLX model catalog, managed `mlx_lm.server` lifecycle, `select_model_for_hermes()`. |
-| `task_classifier_agent.py` | Calls `select_model_for_hermes()` before each AIAgent invocation; falls back to cloud config when no local endpoint is available. |
-| `jira_keeper.py` | **Deprecated** — old hermes-style synthesizer that wrote to Jira via `mcp-atlassian`. Not yet replaced; the dispatch_queue drainer that should subsume it is unimplemented. |
-| `jira_mcp.py` | Fallback Jira fetcher when `pm_tasks` is empty (boots `uvx mcp-atlassian` over stdio). The Rust daemon owns the long-term cache. |
-| `bootstrap.py` | One-time setup helpers (legacy — most paths now created on demand). |
-
----
-
-## How to add a new rule
-
-1. Pick the dimension. Closed-vocab dimensions (`activity`, `intent`, `engagement`, `collaboration`) require values from `agents/taxonomy.py`; open ones (`tool`, `topic`, `practice`) accept any string.
-2. Add a function in the appropriate `agents/rules/<dimension>.py`:
-
-   ```python
-   from agents.rules import rule, RuleHit, session_text
-
-   @rule(name="cargo_test_visible", dim="practice")
-   def cargo_test_rule(session: dict):
-       text = session_text(session).lower()
-       if "cargo test" in text or "running tests" in text:
-           return RuleHit(dimension="practice", value="tests_written", confidence=0.85)
-       return None
-   ```
-
-3. The rule auto-registers when the module is imported. `discover_rules()` in `agents/rules/__init__.py:150` iterates every submodule on tagger startup, so no manual registration needed.
-4. Verify with `python -m agents.tagger --session <ID> --dry-run` — the inspector prints every fire under `STAGE 1 — RULES`.
-5. If the dimension or value is new, add it to `agents/taxonomy.py` first. The runner drops unknown dim/value pairs with a warning.
-
----
-
-## How to swap the embedding model
-
-1. Pick a new SentenceTransformer-compatible model. Same dim → easier (no schema change). Different dim → still safe, the `dim` column on each row scopes the index.
-2. Edit `agents/embeddings.py`:
-   - `EMBED_MODEL_NAME = "..."`
-   - `EMBED_MODEL_SHORT = "..."` (this is what gets written to the `model` column)
-   - `EMBED_DIM = ...`
-3. **Add a new migration** that recreates `session_embeddings` and `pm_task_embeddings` if the dim changed (existing BLOBs are wrong-sized). Otherwise the next tick will re-embed every session/task with the new model name and the old rows linger harmlessly.
-4. Drop old rows or wait — `text_hash` mismatches force re-embed on the next access.
+| `task_classifier_agent.py` | hermes AIAgent wrapper; calls `select_model_for_hermes()` for every invocation, falls back to cloud config when no local endpoint is available. Returns `ClassifierDecision`. |
+| `run_task_linker.py` | Subprocess entry point spawned by the Rust daemon. Reads JSON from stdin (sessions + pm_tasks), calls `classify_session()` for each, writes JSON to stdout. |
+| `_parser.py` | `parse_response()` — extracts `{task_key, confidence, reasoning}` from raw LLM output; truncation-tolerant. |
+| `_prompts.py` | `build_user_message()` — formats a session + candidate tasks into the prompt for the task classifier. |
+| `_hermes_setup.py` | Ensures the `run_agent` module is importable; switches between installed package and `services/.hermes/` dev checkout. |
+| `db/` | SQLite read/write layer. Six submodules: `sessions`, `agent_runs`, `dispatch`, `jira_updates`, `context`, `connections`. Schema owned by the Rust daemon. |
+| `jira_updater.py` | `run_update()` — fetches in-progress Jira tickets, queries Meridian MCP for session data, generates hermes summary, posts comment. |
+| `jira_updater_daemon.py` | Long-running daemon wrapping `run_update()` on office-hour slots. CLI: `--trigger-now`, `--task`, `--dry-run`, `--interval`. |
+| `run_jira_updater.py` | One-shot CLI entry point spawned by the Rust daemon for Jira updates. |
+| `jira_mcp.py` | Fallback Jira task fetcher (boots `uvx mcp-atlassian` over stdio) used when `pm_tasks` is empty. |
+| `jira_keeper.py` | Legacy hermes-era synthesizer. Not exercised by the current pipeline; kept for eventual dispatch_queue drainer port. |
+| `bootstrap.py` | Legacy DB sanity-check script. Verifies required tables exist. |
 
 ---
 
@@ -319,7 +190,7 @@ OLLAMA_API_KEY=sk-ant-...
 
 The `OLLAMA_*` names are legacy — they accept any OpenAI-compatible endpoint. These vars also serve as the primary (and only) LLM config for the Jira updater, which has no local selection.
 
-If the new model emits chain-of-thought before its JSON answer, the parser at `stage3.py:154` already tolerates fenced blocks and leading prose. If it consistently truncates, raise `STAGE3_MAX_TOKENS` — the truncation-repair path is a fallback, not a target.
+If the new model emits chain-of-thought before its JSON answer, the parser in `_parser.py` already tolerates fenced blocks and leading prose. If it consistently truncates, raise `AGENT_MAX_TOKENS` — the truncation-repair path is a fallback, not a target.
 
 ---
 
@@ -439,24 +310,50 @@ pip install -e ".[local-llm]"
 
 ## How to debug a misclassification
 
-Order from cheapest to most invasive:
-
-1. `python -m agents.tagger --show <ID>` — read-only dump of what's stored.
-2. `python -m agents.tagger --session <ID> --dry-run` — re-run all stages with full logging, no DB writes.
-3. `python -m agents.tagger --session <ID>` — same, but persists. Resets dims + ticket_link first.
-4. `python -m agents.tagger --list-recent 50 --all-history` — overview of recent tagging quality.
-5. `python -m agents.tagger --stages-status` — confirm which stages are actually running.
-6. Tail logs:
-   - `~/.meridian/logs/tagger.log` — CLI runs
-   - `~/.meridian/logs/tagger-daemon.log` — long-running daemon
-   - `~/.meridian/logs/tagger-daemon.err` — launchd stderr
-7. SQL spot checks:
+1. **Check what the Rust daemon stored:**
    ```sql
-   SELECT * FROM ticket_links WHERE session_id = <ID>;
-   SELECT * FROM session_dimensions WHERE session_id = <ID> ORDER BY dimension, confidence DESC;
-   SELECT method, COUNT(*) FROM ticket_links GROUP BY method;
+   -- in ~/.meridian/meridian.db
+   SELECT session_id, task_key, confidence, routing, method
+   FROM ticket_links WHERE session_id = <ID>;
    ```
-8. `LOG_LEVEL=DEBUG python -m agents.tagger --session <ID>` — full session bundle + raw rule hits.
+
+2. **Re-run the classifier against a live session** — build the same JSON payload the Rust daemon sends and pipe it to `run_task_linker.py`:
+   ```bash
+   cd services
+   sqlite3 ~/.meridian/meridian.db \
+     "SELECT json_object('id',id,'app_name',app_name,'duration_s',duration_s,
+       'session_text',COALESCE(session_text,''),'window_titles',COALESCE(window_titles,'[]'),
+       'audio_snippets',COALESCE(audio_snippets,'[]')) FROM app_sessions WHERE id=<ID>" \
+   | python3 -c "
+   import json,sys
+   row = json.loads(sys.stdin.read())
+   payload = json.dumps({'sessions':[row], 'pm_tasks':[]})
+   print(payload)
+   " | .venv/bin/python -m agents.run_task_linker
+   ```
+
+3. **Check which model was used** — look in the log line emitted after each classification:
+   ```bash
+   grep 'session_id=<ID>' ~/.meridian/logs/meridian-task-linker.jsonl | jq '{model:.llm_model,runtime:.llm_runtime,routing:.routing,confidence:.confidence}'
+   ```
+
+4. **Verify LLM selection** — confirm which endpoint the selector would choose:
+   ```bash
+   cd services && .venv/bin/python -c "
+   from agents.llm_selector import select_model_for_hermes, probe_compute
+   stats = probe_compute()
+   print(f'headroom: {stats.metal_headroom_gb:.1f} GB')
+   ep = select_model_for_hermes()
+   print(f'selected: {ep.model} runtime={ep.runtime}' if ep else 'cloud fallback')
+   "
+   ```
+
+5. **Tail the classifier log** for a running session:
+   ```bash
+   tail -f ~/.meridian/logs/meridian-task-linker.jsonl | jq .
+   ```
+
+6. **Tune the skill prompt** — edit `services/skills/activity/task-classifier/SKILL.md` and re-run. Changes take effect on the next subprocess invocation with no restart required.
 
 ---
 
@@ -489,9 +386,7 @@ cargo run --bin backfill_task_classification -- --dry-run --today
 
 ## Limitations / known gaps
 
-- **`dispatch_queue` drainer is not implemented.** Stage 1/2/3 enqueue rows with `state='pending'`, but nothing currently moves them to `'sent'`. The old `agents/jira_keeper.py` was the hermes-era equivalent and hasn't been ported to read from the queue. Until the drainer ships, no automatic Jira write-backs happen.
-- **`past_vote` requires history.** The first ~50 tagged sessions of a clean install run with `has_past=False` and the `0.65 * cos + 0.35 * dim` cold-start blend.
-- **Self-reinforcement avoidance.** `_past_vote` filters out neighbours whose `ticket_links.method LIKE 'stage2%'`, so Stage 2 only votes from Stage-1 regex matches and (eventually) human-confirmed tags. This is correct but means past_vote only kicks in for sessions whose rule-based ticket extraction worked — which is exactly the cases Stage 2 doesn't run for. The signal is weaker than it looks.
-- **OCR domination.** A single noisy OCR sample (VS Code extension banner, Claude.ai sidebar) used to dominate the single-vec embedding. Migration `009` switched to multi-vec MaxSim to fix this; if you see it recur, check `text_for_embedding._VSCODE_BANNER_RE` and similar guards.
-- **`_TICKET_FALSE_POSITIVES`** in `rules/__init__.py:69` is hand-curated. New regex false positives need to be added there (e.g. `GPT-5`, `HTTP-429`).
-- **The legacy modules (`jira_keeper.py`, `bootstrap.py`, `activity_context`, `context_graph_nodes`, `session_summaries`)** are kept in place for the eventual dispatcher port. They are NOT exercised by the current pipeline.
+- **`dispatch_queue` drainer is not implemented.** `run_task_linker.py` enqueues rows with `state='pending'` for write-backs (Jira worklog, GitHub, Linear), but nothing moves them to `'sent'`. The legacy `agents/jira_keeper.py` was the hermes-era equivalent and hasn't been ported to read from the queue. Until the drainer ships, no automatic Jira write-backs from task classification happen — the Jira updater daemon handles Jira separately via its own scheduled path.
+- **`pm_tasks` populated by Rust.** The classifier receives `pm_tasks` as part of the JSON payload from the Rust daemon. If the Rust intelligence module hasn't synced tasks yet (clean install, first run), `pm_tasks` will be empty and every session gets `routing=skip`. Run the Rust daemon for at least one full cycle first.
+- **No re-classification UI.** There is no CLI to re-run classification on a single session — it must be done by constructing the JSON payload manually (see debugging guide above) or by triggering the Rust daemon.
+- **The legacy modules (`jira_keeper.py`, `bootstrap.py`) and DB tables (`activity_context`, `context_graph_nodes`, `session_summaries`)** are kept in place for the eventual dispatcher port. They are not exercised by the current pipeline.
