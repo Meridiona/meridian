@@ -10,7 +10,7 @@
 
 mod common;
 
-use meridian::config::{Config, LlmBackendConfig};
+use meridian::config::{Config, LlmBackendConfig, RuntimeSettings};
 use meridian::intelligence::run_task_linking;
 use sqlx::Row;
 
@@ -49,6 +49,7 @@ fn make_cfg_backfill(enabled: bool, services_dir: Option<String>, backfill: bool
         jira_update_interval_s: 14400,
         jira_office_start_hour: 9,
         jira_office_end_hour: 17,
+        runtime: RuntimeSettings::default(),
     }
 }
 
