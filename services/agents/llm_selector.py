@@ -40,6 +40,9 @@ from typing import Optional
 
 log = logging.getLogger("agents.llm_selector")
 
+from opentelemetry import trace as trace_api
+_tracer = trace_api.get_tracer(__name__)
+
 # ── Chip specs: (gpu_cores_lower_bin, mem_bw_gbs_lower_bin) ──────────────────
 # 18 entries — every Apple Silicon Mac chip shipped as of mid-2026.
 # Where two GPU/BW tiers share the same brand string, the lower-bandwidth bin
@@ -119,65 +122,72 @@ def discover_running_servers() -> list[RunningServer]:
     (llama.cpp disambiguated from mlx_lm via /props) → Apple FoundationModels.
     Total latency: <200 ms on a healthy system (0.5 s TCP timeout per port).
     """
-    found: list[RunningServer] = []
+    with _tracer.start_as_current_span("llm_selector.discover_servers") as span:
+        try:
+            found: list[RunningServer] = []
 
-    # 1. Ollama — unique port; /api/ps = currently loaded in VRAM
-    if _tcp_open("127.0.0.1", 11434):
-        ver, _ = _get_json("http://127.0.0.1:11434/api/version")
-        if ver and "version" in ver:
-            ps, _ = _get_json("http://127.0.0.1:11434/api/ps")
-            models = [m["name"] for m in (ps or {}).get("models", [])]
-            if models:
-                found.append(RunningServer(
-                    "ollama", "http://127.0.0.1:11434/v1", models, models[0]))
-                log.info("llm_selector: Ollama loaded=%s", models)
+            # 1. Ollama — unique port; /api/ps = currently loaded in VRAM
+            if _tcp_open("127.0.0.1", 11434):
+                ver, _ = _get_json("http://127.0.0.1:11434/api/version")
+                if ver and "version" in ver:
+                    ps, _ = _get_json("http://127.0.0.1:11434/api/ps")
+                    models = [m["name"] for m in (ps or {}).get("models", [])]
+                    if models:
+                        found.append(RunningServer(
+                            "ollama", "http://127.0.0.1:11434/v1", models, models[0]))
+                        log.info("llm_selector: Ollama loaded=%s", models)
 
-    # 2. LM Studio — use native /api/v0/models (has state field) to distinguish
-    #    in-memory models from installed-only ones. /v1/models omits state entirely.
-    if _tcp_open("127.0.0.1", 1234):
-        native, native_status = _get_json("http://127.0.0.1:1234/api/v0/models")
-        if native_status == 200 and native:
-            models = [m["id"] for m in native.get("data", [])
-                      if m.get("state") == "loaded"]
-        else:
-            # Older LM Studio — fall back to /v1/models, take all listed models
-            data, status = _get_json("http://127.0.0.1:1234/v1/models")
-            models = [m["id"] for m in (data or {}).get("data", [])] if status == 200 else []
-        if models:
-            found.append(RunningServer(
-                "lmstudio", "http://127.0.0.1:1234/v1", models, models[0]))
-            log.info("llm_selector: LM Studio loaded=%s", models)
-
-    # 3. Port 8080 — llama.cpp or mlx_lm; /props 200 = llama.cpp, 404 = mlx_lm
-    if _tcp_open("127.0.0.1", 8080):
-        props, props_status = _get_json("http://127.0.0.1:8080/props")
-        if props_status == 200 and props:
-            data, _ = _get_json("http://127.0.0.1:8080/v1/models")
-            models = [m["id"] for m in (data or {}).get("data", [])]
-            if models:
-                found.append(RunningServer(
-                    "llamacpp", "http://127.0.0.1:8080/v1", models, models[0]))
-                log.info("llm_selector: llama.cpp loaded=%s", models)
-        else:
-            data, status = _get_json("http://127.0.0.1:8080/v1/models")
-            if status == 200 and data:
-                models = [m["id"] for m in data.get("data", [])]
+            # 2. LM Studio — use native /api/v0/models (has state field) to distinguish
+            #    in-memory models from installed-only ones. /v1/models omits state entirely.
+            if _tcp_open("127.0.0.1", 1234):
+                native, native_status = _get_json("http://127.0.0.1:1234/api/v0/models")
+                if native_status == 200 and native:
+                    models = [m["id"] for m in native.get("data", [])
+                              if m.get("state") == "loaded"]
+                else:
+                    # Older LM Studio — fall back to /v1/models, take all listed models
+                    data, status = _get_json("http://127.0.0.1:1234/v1/models")
+                    models = [m["id"] for m in (data or {}).get("data", [])] if status == 200 else []
                 if models:
                     found.append(RunningServer(
-                        "mlxlm", "http://127.0.0.1:8080/v1", models, models[0]))
-                    log.info("llm_selector: mlx_lm server loaded=%s", models)
+                        "lmstudio", "http://127.0.0.1:1234/v1", models, models[0]))
+                    log.info("llm_selector: LM Studio loaded=%s", models)
 
-    # 4. Apple FoundationModels — in-process, no port, macOS 26+
-    try:
-        from apple_fm_sdk import SystemLanguageModel  # type: ignore[import]
-        if SystemLanguageModel.default.is_available()[0]:
-            found.append(RunningServer(
-                "apple_fm", "", ["apple-intelligence"], "apple-intelligence"))
-            log.info("llm_selector: Apple Intelligence available")
-    except ImportError:
-        pass
+            # 3. Port 8080 — llama.cpp or mlx_lm; /props 200 = llama.cpp, 404 = mlx_lm
+            if _tcp_open("127.0.0.1", 8080):
+                props, props_status = _get_json("http://127.0.0.1:8080/props")
+                if props_status == 200 and props:
+                    data, _ = _get_json("http://127.0.0.1:8080/v1/models")
+                    models = [m["id"] for m in (data or {}).get("data", [])]
+                    if models:
+                        found.append(RunningServer(
+                            "llamacpp", "http://127.0.0.1:8080/v1", models, models[0]))
+                        log.info("llm_selector: llama.cpp loaded=%s", models)
+                else:
+                    data, status = _get_json("http://127.0.0.1:8080/v1/models")
+                    if status == 200 and data:
+                        models = [m["id"] for m in data.get("data", [])]
+                        if models:
+                            found.append(RunningServer(
+                                "mlxlm", "http://127.0.0.1:8080/v1", models, models[0]))
+                            log.info("llm_selector: mlx_lm server loaded=%s", models)
 
-    return found
+            # 4. Apple FoundationModels — in-process, no port, macOS 26+
+            try:
+                from apple_fm_sdk import SystemLanguageModel  # type: ignore[import]
+                if SystemLanguageModel.default.is_available()[0]:
+                    found.append(RunningServer(
+                        "apple_fm", "", ["apple-intelligence"], "apple-intelligence"))
+                    log.info("llm_selector: Apple Intelligence available")
+            except ImportError:
+                pass
+
+            span.set_attribute("servers.found", len(found))
+            span.set_attribute("servers.names", str([s.runtime for s in found]))
+            return found
+        except Exception as exc:
+            span.record_exception(exc)
+            raise
 
 
 def _infer_via_server(server: RunningServer, system_prompt: str,
@@ -283,18 +293,28 @@ def _sysctl(key: str) -> Optional[str]:
 
 
 def probe_compute() -> ComputeSnapshot:
-    import psutil  # type: ignore[import]
-    brand = _sysctl("machdep.cpu.brand_string") or ""
-    key   = re.sub(r"\s+", " ", brand).lower()
-    _, mem_bw = _CHIP_SPECS.get(key, (None, 0))
-    return ComputeSnapshot(
-        metal_headroom_gb=_metal_headroom_gb(),
-        thermal_level=_thermal_level(),
-        cpu_pct=psutil.cpu_percent(interval=0.5),
-        screen_locked=_screen_locked(),
-        chip_name=brand,
-        mem_bw_gbs=mem_bw or 0,
-    )
+    with _tracer.start_as_current_span("llm_selector.probe_compute") as span:
+        try:
+            import psutil  # type: ignore[import]
+            brand = _sysctl("machdep.cpu.brand_string") or ""
+            key   = re.sub(r"\s+", " ", brand).lower()
+            _, mem_bw = _CHIP_SPECS.get(key, (None, 0))
+            snap = ComputeSnapshot(
+                metal_headroom_gb=_metal_headroom_gb(),
+                thermal_level=_thermal_level(),
+                cpu_pct=psutil.cpu_percent(interval=0.5),
+                screen_locked=_screen_locked(),
+                chip_name=brand,
+                mem_bw_gbs=mem_bw or 0,
+            )
+            span.set_attribute("compute.headroom_pct", snap.metal_headroom_gb)
+            span.set_attribute("compute.thermal_ok", snap.thermal_level < 2)
+            span.set_attribute("compute.chip", snap.chip_name)
+            span.set_attribute("compute.screen_locked", snap.screen_locked)
+            return snap
+        except Exception as exc:
+            span.record_exception(exc)
+            raise
 
 
 # ─────────────────────────── Model selection ─────────────────────────────────
@@ -452,50 +472,78 @@ def _ensure_mlx_server(model_id: str, port: int = _MANAGED_SERVER_PORT) -> bool:
     return False
 
 
-def select_model_for_hermes(budget_pct: float = 0.5) -> Optional[LocalModelEndpoint]:
+def select_model_for_hermes(budget_pct: Optional[float] = None) -> Optional[LocalModelEndpoint]:
     """Return the best available local endpoint for AIAgent, or None to use cloud."""
-    if platform.system() != "Darwin":
-        return None
-    brand = _sysctl("machdep.cpu.brand_string") or ""
-    if not brand.startswith("Apple M"):
-        return None
+    if budget_pct is None:
+        from agents.config import LLM_BUDGET_PCT
+        budget_pct = LLM_BUDGET_PCT
+    with _tracer.start_as_current_span("llm_selector.select_model") as span:
+        try:
+            result: Optional[LocalModelEndpoint] = None
 
-    for server in discover_running_servers():
-        if server.runtime == "apple_fm":
-            continue
-        log.info("llm_selector: hermes endpoint reusing %s model=%s",
-                 server.runtime, server.best_model)
-        return LocalModelEndpoint(
-            model=server.best_model,
-            base_url=server.base_url,
-            api_key="local",
-            runtime=server.runtime,
-        )
+            if platform.system() != "Darwin":
+                span.set_attribute("llm.budget_pct", budget_pct)
+                span.set_attribute("llm.selected_model", "cloud_fallback")
+                span.set_attribute("llm.selected_runtime", "cloud")
+                span.set_attribute("llm.is_local", False)
+                return None
+            brand = _sysctl("machdep.cpu.brand_string") or ""
+            if not brand.startswith("Apple M"):
+                span.set_attribute("llm.budget_pct", budget_pct)
+                span.set_attribute("llm.selected_model", "cloud_fallback")
+                span.set_attribute("llm.selected_runtime", "cloud")
+                span.set_attribute("llm.is_local", False)
+                return None
 
-    try:
-        snap = probe_compute()
-    except Exception as exc:
-        log.warning("llm_selector: compute probe failed: %s", exc)
-        return None
+            for server in discover_running_servers():
+                if server.runtime == "apple_fm":
+                    continue
+                log.info("llm_selector: hermes endpoint reusing %s model=%s",
+                         server.runtime, server.best_model)
+                result = LocalModelEndpoint(
+                    model=server.best_model,
+                    base_url=server.base_url,
+                    api_key="local",
+                    runtime=server.runtime,
+                )
+                break
 
-    effective_pct = min(0.8, budget_pct * 1.5) if snap.screen_locked else budget_pct
-    entry = _select_mlx_entry(snap.metal_headroom_gb, effective_pct,
-                              snap.thermal_level, apple_intelligence=False)
-    if entry is None:
-        log.info("llm_selector: no local model fits budget headroom=%.1f GB pct=%.2f",
-                 snap.metal_headroom_gb, effective_pct)
-        return None
+            if result is None:
+                try:
+                    snap = probe_compute()
+                except Exception as exc:
+                    log.warning("llm_selector: compute probe failed: %s", exc)
+                    span.set_attribute("llm.budget_pct", budget_pct)
+                    span.set_attribute("llm.selected_model", "cloud_fallback")
+                    span.set_attribute("llm.selected_runtime", "cloud")
+                    span.set_attribute("llm.is_local", False)
+                    return None
 
-    model_id, _, _, _, hf_id = entry
-    log.info("llm_selector: hermes will use mlx_managed model=%s hf=%s", model_id, hf_id)
-    if _ensure_mlx_server(hf_id, _MANAGED_SERVER_PORT):
-        return LocalModelEndpoint(
-            model=hf_id,
-            base_url=f"http://127.0.0.1:{_MANAGED_SERVER_PORT}/v1",
-            api_key="local",
-            runtime="mlx_managed",
-        )
-    return None
+                effective_pct = min(0.8, budget_pct * 1.5) if snap.screen_locked else budget_pct
+                entry = _select_mlx_entry(snap.metal_headroom_gb, effective_pct,
+                                          snap.thermal_level, apple_intelligence=False)
+                if entry is None:
+                    log.info("llm_selector: no local model fits budget headroom=%.1f GB pct=%.2f",
+                             snap.metal_headroom_gb, effective_pct)
+                else:
+                    model_id, _, _, _, hf_id = entry
+                    log.info("llm_selector: hermes will use mlx_managed model=%s hf=%s", model_id, hf_id)
+                    if _ensure_mlx_server(hf_id, _MANAGED_SERVER_PORT):
+                        result = LocalModelEndpoint(
+                            model=hf_id,
+                            base_url=f"http://127.0.0.1:{_MANAGED_SERVER_PORT}/v1",
+                            api_key="local",
+                            runtime="mlx_managed",
+                        )
+
+            span.set_attribute("llm.budget_pct", budget_pct)
+            span.set_attribute("llm.selected_model", result.model if result else "cloud_fallback")
+            span.set_attribute("llm.selected_runtime", result.runtime if result else "cloud")
+            span.set_attribute("llm.is_local", result is not None)
+            return result
+        except Exception as exc:
+            span.record_exception(exc)
+            raise
 
 
 __all__ = ["local_infer", "discover_running_servers", "probe_compute",
