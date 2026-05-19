@@ -568,12 +568,38 @@ def select_model_for_hermes(budget_pct: Optional[float] = None) -> Optional[Loca
                     span.set_attribute("llm.is_local", False)
                     return None
 
+                # If a managed server is already running, its model weight is
+                # included in Metal's "used" accounting, which shrinks headroom.
+                # Add that weight back so the selection sees the true system-wide
+                # budget rather than headroom-minus-current-model.  Without this
+                # the selected model changes on every tick as headroom shifts,
+                # causing an oscillation loop (Qwen3.5 → phi-4 → gemma → …).
+                headroom = snap.metal_headroom_gb
+                if _MANAGED_SERVER_PID_FILE.exists():
+                    try:
+                        meta = json.loads(_MANAGED_SERVER_PID_FILE.read_text())
+                        os.kill(meta["pid"], 0)  # raises OSError if dead
+                        current_ram = next(
+                            (min_ram for _, _, min_ram, _, hf in _MODELS
+                             if hf == meta["model"]),
+                            0.0,
+                        )
+                        headroom = snap.metal_headroom_gb + current_ram
+                        log.debug(
+                            "llm_selector: adjusted headroom %.1f→%.1f GB "
+                            "(adding managed model=%s %.1f GB)",
+                            snap.metal_headroom_gb, headroom,
+                            meta["model"], current_ram,
+                        )
+                    except (OSError, Exception):
+                        pass
+
                 effective_pct = min(0.8, budget_pct * 1.5) if snap.screen_locked else budget_pct
-                entry = _select_mlx_entry(snap.metal_headroom_gb, effective_pct,
+                entry = _select_mlx_entry(headroom, effective_pct,
                                           snap.thermal_level, apple_intelligence=False)
                 if entry is None:
                     log.info("llm_selector: no local model fits budget headroom=%.1f GB pct=%.2f",
-                             snap.metal_headroom_gb, effective_pct)
+                             headroom, effective_pct)
                 else:
                     model_id, _, _, _, hf_id = entry
                     log.info("llm_selector: hermes will use mlx_managed model=%s hf=%s", model_id, hf_id)
