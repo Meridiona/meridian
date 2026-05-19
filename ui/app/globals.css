@@ -160,3 +160,14 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
 /* ── Density ──────────────────────────────────────────────────────────────── */
 html.density-compact .density-pad { padding-top: .5rem; padding-bottom: .5rem; }
 html.density-comfy  .density-pad  { padding-top: 1.25rem; padding-bottom: 1.25rem; }
+
+/* ── Number stepper — hide native spin buttons ────────────────────────────── */
+.stepper-input::-webkit-inner-spin-button,
+.stepper-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.stepper-input { -moz-appearance: textfield; }
+
+/* ── Radix Select trigger focus ───────────────────────────────────────────── */
+.select-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
