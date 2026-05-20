@@ -34,11 +34,11 @@ If the session is **idle, system settings, app chrome, random browsing, or unrel
 These sessions should never force a Jira link.
 
 ### 2. Is this work-related?
-If the session shows **clear work signals** (coding, writing, research) but **no Jira candidates match** → return:
+If the session shows **clear work signals** (coding, writing, research) but **no Jira candidates match** → mark as **untracked** and return:
 ```json
 {"task_key": null, "confidence": 0.3-0.5, "session_type": "unknown", "routing": "queue"}
 ```
-Mark dimensions to show *what* the work was. The session may trigger new task creation.
+Mark dimensions to show *what* the work was (activity, intent, tool, etc.). The session is untracked but useful for potential new task creation.
 
 ### 3. Can it map to an open Jira ticket?
 If the session evidence **directly or contextually matches** an open ticket → return:
