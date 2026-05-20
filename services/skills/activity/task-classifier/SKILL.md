@@ -94,16 +94,14 @@ Schema:
 
 You have access to **the previous 5 sessions** to disambiguate the current session:
 
-**Example: Coding → Communication → Coding**
-- Session 1 (5 min ago): VS Code, editing KAN-42 implementation → task_key: KAN-42
-- Session 2 (3 min ago): Slack, discussing PR review → task_key: null, session_type: "unknown"
-- Session 3 (now): VS Code, editing same file → ?
+**Example: Coding → Communication about same work → Coding**
+- Session 1 (5 min ago): VS Code, editing KAN-42 implementation → task_key: KAN-42, confidence: 0.90
+- Session 2 (3 min ago): Slack, discussing PR review for KAN-42 → **if related to same work**, task_key: KAN-42, confidence: 0.75 (work mention + prior context)
+- Session 3 (now): VS Code, editing same file → task_key: KAN-42, confidence: 0.85 (context continuity)
 
-**Decision:** Session 2 (Slack) returns `null` because it's generic work discussion with no visible task reference. Session 3 gets classified to **KAN-42** via context continuity: you're back in VS Code on the same file 3 minutes later, and the prior context (Session 1) shows you were on KAN-42.
+**Decision:** If Session 2 (Slack) content shows it's about the same work (discussing the PR, architecture, blockers for KAN-42), classify it to **KAN-42** using context from Session 1. If Slack is generic work discussion with no connection to the prior task, return `null` with `session_type: "unknown"`.
 
-Return for Session 3: `task_key: KAN-42, confidence: 0.80, reasoning: "Returned to VS Code editing same file (KAN-42 implementation) after brief Slack; 3 min since prior task, context continuity applies."`
-
-**Note:** If Slack content explicitly mentioned "KAN-42" or its PR, Session 2 could be linked to KAN-42 given prior context. Generic work discussion without visible task reference stays `null`.
+Example reasoning for Session 2 (if task-related): `"Slack discusses PR review for KAN-42 implementation mentioned in prior VS Code session; linked via work context."`
 
 **When to break continuity:**
 - 30+ minutes have passed since the last task session → assume the user switched contexts
