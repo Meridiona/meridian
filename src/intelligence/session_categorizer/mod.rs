@@ -282,6 +282,7 @@ pub fn categorize(signals: &SessionSignals<'_>) -> (ActivityKind, f32) {
 
     let score_breakdown = scores.breakdown();
     let reasoning_breakdown = reasoning.format();
+
     tracing::debug!(
         app_name = signals.app_name,
         window_titles = signals.window_titles.len(),
@@ -291,8 +292,12 @@ pub fn categorize(signals: &SessionSignals<'_>) -> (ActivityKind, f32) {
         category = final_kind.as_str(),
         confidence = final_conf,
         scores = score_breakdown,
-        reasoning = reasoning_breakdown,
         "session categorized"
+    );
+
+    tracing::debug!(
+        reasoning = reasoning_breakdown,
+        "categorization reasoning"
     );
 
     (final_kind, final_conf)
