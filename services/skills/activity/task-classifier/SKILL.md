@@ -18,8 +18,8 @@ The task classifier sits at the center of Meridian's workflow understanding:
 1. **Screen frames** → **app sessions** (Rust daemon combines frames by app into sessions)
 2. **Sessions** → **task classification** (you classify each session)
 3. **Classification outcome** dictates downstream usage:
-   - Sessions marked as **overhead** → idle/system/unrelated activity, no task link, routing=skip
-   - Sessions marked as **unknown** → work-related but no matching ticket, routing=queue for potential new task creation
+   - Sessions marked as **overhead** → idle/system/unrelated activity, truly overhead, not tracked, routing=skip
+   - Sessions marked as **unknown** → work-related but no matching ticket, useful for potential new task creation, routing=queue
    - Sessions with **task matches** → linked to Jira tickets, routing=auto for tracking
 
 ## Classification Decision Tree
