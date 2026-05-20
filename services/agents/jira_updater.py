@@ -21,7 +21,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from agents import db
+from agents import db, observability
 from agents._hermes_setup import ensure_hermes_importable
 from agents.config import (
     API_KEY,
@@ -33,8 +33,10 @@ from agents.config import (
     REPO_ROOT,
     load_skill,
 )
+from opentelemetry import trace as trace_api
 
 log = logging.getLogger("agents.jira_updater")
+tracer = observability.setup("meridian-jira-updater")
 
 _IN_PROGRESS_JQL = (
     "assignee = currentUser() AND statusCategory = indeterminate ORDER BY updated DESC"
@@ -267,7 +269,7 @@ class _HermesUpdater:
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 _SUMMARY_RE = re.compile(
-    r"(\d+)\s+sessions?,\s*(?:(\d+)h\s*)?(\d+)m\s+total", re.IGNORECASE
+    r"(\d+)\s+session(?:s|\(s\))?,\s*(?:(\d+)h\s*)?(\d+)m\s+total", re.IGNORECASE
 )
 
 
@@ -356,34 +358,49 @@ def run_update(
     dry_run: bool = False,
 ) -> list[UpdateResult]:
     """Main entry point called by daemon and CLI."""
-    conn = sqlite3.connect(str(MERIDIAN_DB), isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    try:
-        jira = _AtlassianMCPClient()
-        meridian = _MeridianMCPClient()
+    with tracer.start_as_current_span(
+        "jira_updater.run_update",
+        attributes={
+            "window.from": str(from_time),
+            "window.to": str(to_time),
+            "dry_run": dry_run,
+            "task_filter": task_filter or "",
+        },
+    ) as span:
+        conn = sqlite3.connect(str(MERIDIAN_DB), isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            jira = _AtlassianMCPClient()
+            meridian = _MeridianMCPClient()
 
-        tasks = jira.fetch_in_progress()
-        if task_filter:
-            tasks = [t for t in tasks if t["task_key"] == task_filter]
-        if not tasks:
-            log.info("no in-progress tasks found")
-            return []
+            tasks = jira.fetch_in_progress()
+            if task_filter:
+                tasks = [t for t in tasks if t["task_key"] == task_filter]
+            if not tasks:
+                log.info("no in-progress tasks found")
+                span.set_attribute("tasks.processed", 0)
+                return []
 
-        mcp_results = meridian.get_task_sessions_batch(
-            [(t["task_key"], from_time, to_time) for t in tasks]
-        )
-
-        results: list[UpdateResult] = []
-        for task, mcp_text in zip(tasks, mcp_results):
-            result = _process_task(
-                conn, jira, task, task["task_key"], from_time, to_time, dry_run, mcp_text
+            mcp_results = meridian.get_task_sessions_batch(
+                [(t["task_key"], from_time, to_time) for t in tasks]
             )
-            results.append(result)
-        return results
-    finally:
-        conn.close()
+
+            results: list[UpdateResult] = []
+            for task, mcp_text in zip(tasks, mcp_results):
+                result = _process_task(
+                    conn, jira, task, task["task_key"], from_time, to_time, dry_run, mcp_text
+                )
+                results.append(result)
+            span.set_attribute("tasks.processed", len(results))
+            return results
+        except Exception as exc:
+            span.record_exception(exc)
+            span.set_status(trace_api.StatusCode.ERROR, str(exc))
+            raise
+        finally:
+            conn.close()
 
 
 def _process_task(
@@ -396,71 +413,90 @@ def _process_task(
     dry_run: bool,
     mcp_text: str,
 ) -> UpdateResult:
-    if db.get_last_update(conn, task_key, from_time, to_time):
-        log.info("skipping %s: already posted for this slot", task_key)
-        return UpdateResult(
-            task_key=task_key, had_activity=False, duration_s=0,
-            session_count=0, comment_body="", comment_id=None, state="skipped",
+    with tracer.start_as_current_span(
+        "jira_updater.process_task",
+        attributes={
+            "task.key": task_key,
+            "dry_run": dry_run,
+        },
+    ) as span:
+        if db.get_last_update(conn, task_key, from_time, to_time):
+            log.info("skipping %s: already posted for this slot", task_key)
+            span.set_attribute("result.state", "skipped")
+            return UpdateResult(
+                task_key=task_key, had_activity=False, duration_s=0,
+                session_count=0, comment_body="", comment_id=None, state="skipped",
+            )
+
+        had_activity, session_count, duration_s = _parse_mcp_summary(mcp_text)
+        span.set_attribute("had_activity", had_activity)
+        span.set_attribute("session_count", session_count)
+        span.set_attribute("duration_s", duration_s)
+
+        if had_activity:
+            user_msg = _build_user_message(task, mcp_text, from_time, to_time)
+            try:
+                summary = _HermesUpdater().generate(user_msg)
+            except Exception as exc:
+                log.error("hermes failed for %s: %s", task_key, exc)
+                span.record_exception(exc)
+                summary = "Could not generate summary."
+        else:
+            summary = "No activity recorded in this period."
+
+        if not had_activity and not JIRA_POST_NO_ACTIVITY:
+            span.set_attribute("result.state", "no_activity_skipped")
+            return UpdateResult(
+                task_key=task_key, had_activity=False, duration_s=0,
+                session_count=0, comment_body="", comment_id=None,
+                state="no_activity_skipped",
+            )
+
+        comment_body = _format_comment(
+            task, summary, from_time, to_time, duration_s, session_count
+        )
+        update_id = db.log_jira_update(
+            conn,
+            task_key=task_key,
+            period_start=from_time,
+            period_end=to_time,
+            session_count=session_count,
+            duration_s=duration_s,
+            had_activity=had_activity,
+            comment_body=comment_body,
         )
 
-    had_activity, session_count, duration_s = _parse_mcp_summary(mcp_text)
+        if dry_run:
+            print(f"\n{'=' * 60}\n{task_key}\n{'=' * 60}\n{comment_body}\n")
+            span.set_attribute("result.state", "dry_run")
+            return UpdateResult(
+                task_key=task_key, had_activity=had_activity, duration_s=duration_s,
+                session_count=session_count, comment_body=comment_body,
+                comment_id=None, state="dry_run",
+            )
 
-    if had_activity:
-        user_msg = _build_user_message(task, mcp_text, from_time, to_time)
         try:
-            summary = _HermesUpdater().generate(user_msg)
+            comment_id = jira.add_comment(task_key, comment_body)
+            db.mark_update_sent(conn, update_id, comment_id)
+            log.info("posted update for %s (comment_id=%s)", task_key, comment_id)
+            span.set_attribute("jira.comment_id", comment_id)
+            span.set_attribute("result.state", "sent")
+            return UpdateResult(
+                task_key=task_key, had_activity=had_activity, duration_s=duration_s,
+                session_count=session_count, comment_body=comment_body,
+                comment_id=comment_id, state="sent",
+            )
         except Exception as exc:
-            log.error("hermes failed for %s: %s", task_key, exc)
-            summary = "Could not generate summary."
-    else:
-        summary = "No activity recorded in this period."
-
-    if not had_activity and not JIRA_POST_NO_ACTIVITY:
-        return UpdateResult(
-            task_key=task_key, had_activity=False, duration_s=0,
-            session_count=0, comment_body="", comment_id=None,
-            state="no_activity_skipped",
-        )
-
-    comment_body = _format_comment(
-        task, summary, from_time, to_time, duration_s, session_count
-    )
-    update_id = db.log_jira_update(
-        conn,
-        task_key=task_key,
-        period_start=from_time,
-        period_end=to_time,
-        session_count=session_count,
-        duration_s=duration_s,
-        had_activity=had_activity,
-        comment_body=comment_body,
-    )
-
-    if dry_run:
-        print(f"\n{'=' * 60}\n{task_key}\n{'=' * 60}\n{comment_body}\n")
-        return UpdateResult(
-            task_key=task_key, had_activity=had_activity, duration_s=duration_s,
-            session_count=session_count, comment_body=comment_body,
-            comment_id=None, state="dry_run",
-        )
-
-    try:
-        comment_id = jira.add_comment(task_key, comment_body)
-        db.mark_update_sent(conn, update_id, comment_id)
-        log.info("posted update for %s (comment_id=%s)", task_key, comment_id)
-        return UpdateResult(
-            task_key=task_key, had_activity=had_activity, duration_s=duration_s,
-            session_count=session_count, comment_body=comment_body,
-            comment_id=comment_id, state="sent",
-        )
-    except Exception as exc:
-        db.mark_update_failed(conn, update_id, str(exc))
-        log.error("failed to post for %s: %s", task_key, exc)
-        return UpdateResult(
-            task_key=task_key, had_activity=had_activity, duration_s=duration_s,
-            session_count=session_count, comment_body=comment_body,
-            comment_id=None, state="failed", error=str(exc),
-        )
+            db.mark_update_failed(conn, update_id, str(exc))
+            log.error("failed to post for %s: %s", task_key, exc)
+            span.record_exception(exc)
+            span.set_status(trace_api.StatusCode.ERROR, str(exc))
+            span.set_attribute("result.state", "failed")
+            return UpdateResult(
+                task_key=task_key, had_activity=had_activity, duration_s=duration_s,
+                session_count=session_count, comment_body=comment_body,
+                comment_id=None, state="failed", error=str(exc),
+            )
 
 
 __all__ = ["UpdateResult", "run_update"]

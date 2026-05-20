@@ -30,16 +30,14 @@ pub(super) const BATCH_LIMIT: i64 = 1;
 // Startup preflight check
 // ---------------------------------------------------------------------------
 
-/// Validates that the classification stack is ready to run.
-/// Called once at daemon startup — returns Err with a human-readable fix
-/// if anything is missing so the daemon refuses to start rather than
-/// silently failing on every tick.
-///
-/// No-op when `classification_enabled` is false.
-pub fn check_classification_ready(cfg: &Config) -> Result<()> {
-    if !cfg.classification_enabled {
-        return Ok(());
-    }
+/// Full payload sent to `python3 -m agents.run_task_linker` via stdin.
+#[derive(Serialize)]
+struct ClassifyInput {
+    sessions: Vec<SessionPayload>,
+    pm_tasks: Vec<TaskPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    traceparent: Option<String>,
+}
 
     let services_dir = find_services_dir(cfg).ok_or_else(|| {
         anyhow::anyhow!(
@@ -318,6 +316,7 @@ async fn spawn_classify_subprocess(
 /// Run one hermes-based classification cycle:
 ///   - trivial sessions (empty session_text) → `overhead/skip` without LLM
 ///   - non-trivial batch → spawned `python3 -m agents.run_task_linker` subprocess
+#[tracing::instrument(skip_all, fields(sessions = 0, pm_tasks = 0, cursor = 0))]
 pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
     if !cfg.classification_enabled {
         debug!("classification disabled — skipping");
@@ -328,6 +327,7 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
     let run_id = start_agent_run(pool).await?;
 
     let cursor = get_agent_cursor(pool).await?;
+    tracing::Span::current().record("cursor", cursor);
 
     if cursor == 0 && !cfg.classification_backfill {
         if let Some(max_id) = get_max_session_id(pool).await? {
@@ -352,6 +352,10 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
         return Ok(());
     }
 
+    let pm_tasks = fetch_open_pm_tasks(pool).await?;
+
+    tracing::Span::current().record("sessions", raw_sessions.len());
+    tracing::Span::current().record("pm_tasks", pm_tasks.len());
     info!(
         sessions = raw_sessions.len(),
         cursor,
@@ -417,8 +421,9 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
 
     let batch_size = classifiable_ids.len();
     let input = ClassifyInput {
-        session_ids: classifiable_ids,
-        meridian_db: cfg.meridian_db.clone(),
+        sessions: classifiable,
+        pm_tasks,
+        traceparent: crate::observability::current_traceparent(),
     };
     let input_json = serde_json::to_string(&input).context("serializing ClassifyInput")?;
 
@@ -433,16 +438,108 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
         "spawning run_task_linker subprocess"
     );
 
-    let classify_output = match spawn_classify_subprocess(
-        &python,
-        &services_dir,
-        &input_json,
-        cfg.classification_timeout_s,
-    )
-    .await?
+    let rt = &cfg.runtime;
+    let mut child = match Command::new(&python)
+        .arg("-m")
+        .arg("agents.run_task_linker")
+        .env("LOG_LEVEL", &rt.log_level)
+        .env("AGENT_AUTO_FLOOR", rt.agent_auto_floor.to_string())
+        .env("AGENT_QUEUE_FLOOR", rt.agent_queue_floor.to_string())
+        .env(
+            "LLM_PREFER_LOCAL",
+            if rt.llm_prefer_local { "1" } else { "0" },
+        )
+        .env("LLM_BUDGET_PCT", rt.llm_budget_pct.to_string())
+        .current_dir(&services_dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
     {
-        Some(v) => v,
-        None => {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(python = %python, error = %e, "could not spawn run_task_linker — is python installed and hermes set up?");
+            complete_agent_run(pool, run_id, "failed", trivial_count, trivial_count).await?;
+            return Ok(());
+        }
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(input_json.as_bytes())
+            .await
+            .context("writing to run_task_linker stdin")?;
+    }
+
+    let stdout_task = {
+        use tokio::io::AsyncReadExt;
+        let mut out = child.stdout.take().expect("stdout was piped");
+        tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let _ = out.read_to_end(&mut buf).await;
+            buf
+        })
+    };
+    let stderr_task = {
+        use tokio::io::AsyncReadExt;
+        let mut err = child.stderr.take().expect("stderr was piped");
+        tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let _ = err.read_to_end(&mut buf).await;
+            buf
+        })
+    };
+
+    let timeout_dur = std::time::Duration::from_secs(cfg.classification_timeout_s);
+    let status = match tokio::time::timeout(timeout_dur, child.wait()).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            warn!(error = %e, "run_task_linker subprocess IO error");
+            stdout_task.abort();
+            stderr_task.abort();
+            complete_agent_run(pool, run_id, "failed", trivial_count, trivial_count).await?;
+            return Ok(());
+        }
+        Err(_elapsed) => {
+            warn!(
+                timeout_s = cfg.classification_timeout_s,
+                "run_task_linker subprocess timed out — killing"
+            );
+            let _ = child.kill().await;
+            stdout_task.abort();
+            stderr_task.abort();
+            complete_agent_run(pool, run_id, "failed", trivial_count, trivial_count).await?;
+            return Ok(());
+        }
+    };
+
+    let stdout_bytes = stdout_task.await.unwrap_or_default();
+    let stderr_bytes = stderr_task.await.unwrap_or_default();
+
+    if !stderr_bytes.is_empty() {
+        info!(stderr = %String::from_utf8_lossy(&stderr_bytes), "run_task_linker python stderr");
+    }
+
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr_bytes);
+        warn!(
+            exit_code = ?status.code(),
+            stderr = %stderr,
+            "run_task_linker exited with non-zero status"
+        );
+        complete_agent_run(pool, run_id, "failed", trivial_count, trivial_count).await?;
+        return Ok(());
+    }
+
+    let classify_output: ClassifyOutput = match serde_json::from_slice(&stdout_bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            let raw = String::from_utf8_lossy(&stdout_bytes);
+            warn!(
+                error = %e,
+                stdout = %raw,
+                "run_task_linker stdout is not valid JSON — hermes may be printing to stdout; check observability setup"
+            );
             complete_agent_run(pool, run_id, "failed", trivial_count, trivial_count).await?;
             return Ok(());
         }
@@ -498,6 +595,7 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
 
 /// Classify sessions in an explicit id range without advancing `agent_cursor`.
 /// Safe to run while the daemon is active. Returns `(processed, linked)`.
+#[tracing::instrument(skip(pool, cfg), fields(from_id, to_id = ?to_id, dry_run))]
 pub async fn link_range(
     pool: &SqlitePool,
     cfg: &Config,
@@ -566,22 +664,105 @@ pub async fn link_range(
     };
 
     let input = ClassifyInput {
-        session_ids: classifiable_ids,
-        meridian_db: cfg.meridian_db.clone(),
+        sessions: classifiable,
+        pm_tasks,
+        traceparent: crate::observability::current_traceparent(),
     };
     let input_json = serde_json::to_string(&input).context("serializing ClassifyInput")?;
     let python = resolve_python(&services_dir);
 
-    let classify_output = match spawn_classify_subprocess(
-        &python,
-        &services_dir,
-        &input_json,
-        cfg.classification_timeout_s,
-    )
-    .await?
+    let rt = &cfg.runtime;
+    let mut child = match Command::new(&python)
+        .arg("-m")
+        .arg("agents.run_task_linker")
+        .env("LOG_LEVEL", &rt.log_level)
+        .env("AGENT_AUTO_FLOOR", rt.agent_auto_floor.to_string())
+        .env("AGENT_QUEUE_FLOOR", rt.agent_queue_floor.to_string())
+        .env(
+            "LLM_PREFER_LOCAL",
+            if rt.llm_prefer_local { "1" } else { "0" },
+        )
+        .env("LLM_BUDGET_PCT", rt.llm_budget_pct.to_string())
+        .current_dir(&services_dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
     {
-        Some(v) => v,
-        None => return Ok((total, linked)),
+        Ok(c) => c,
+        Err(e) => {
+            warn!(python = %python, error = %e, "could not spawn run_task_linker");
+            return Ok((total, linked));
+        }
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(input_json.as_bytes())
+            .await
+            .context("writing to run_task_linker stdin")?;
+    }
+
+    let stdout_task = {
+        use tokio::io::AsyncReadExt;
+        let mut out = child.stdout.take().expect("stdout was piped");
+        tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let _ = out.read_to_end(&mut buf).await;
+            buf
+        })
+    };
+    let stderr_task = {
+        use tokio::io::AsyncReadExt;
+        let mut err = child.stderr.take().expect("stderr was piped");
+        tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let _ = err.read_to_end(&mut buf).await;
+            buf
+        })
+    };
+
+    let timeout_dur = std::time::Duration::from_secs(cfg.classification_timeout_s);
+    let status = match tokio::time::timeout(timeout_dur, child.wait()).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            warn!(error = %e, "run_task_linker subprocess IO error");
+            stdout_task.abort();
+            stderr_task.abort();
+            return Ok((total, linked));
+        }
+        Err(_elapsed) => {
+            warn!(
+                timeout_s = cfg.classification_timeout_s,
+                "run_task_linker timed out — killing"
+            );
+            let _ = child.kill().await;
+            stdout_task.abort();
+            stderr_task.abort();
+            return Ok((total, linked));
+        }
+    };
+
+    let stdout_bytes = stdout_task.await.unwrap_or_default();
+    let stderr_bytes = stderr_task.await.unwrap_or_default();
+
+    if !stderr_bytes.is_empty() {
+        info!(stderr = %String::from_utf8_lossy(&stderr_bytes), "run_task_linker python stderr");
+    }
+
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr_bytes);
+        warn!(exit_code = ?status.code(), stderr = %stderr, "run_task_linker exited non-zero");
+        return Ok((total, linked));
+    }
+
+    let classify_output: ClassifyOutput = match serde_json::from_slice(&stdout_bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            let raw = String::from_utf8_lossy(&stdout_bytes);
+            warn!(error = %e, stdout = %raw, "run_task_linker stdout not valid JSON");
+            return Ok((total, linked));
+        }
     };
 
     for r in &classify_output.results {

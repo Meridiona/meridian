@@ -10,6 +10,7 @@ const links = [
   { href: '/', label: 'Today' },
   { href: '/sessions', label: 'Sessions' },
   { href: '/apps', label: 'Apps' },
+  { href: '/settings', label: 'Settings' },
 ]
 
 export default function Nav() {
