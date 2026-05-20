@@ -85,10 +85,7 @@ fn make_cfg_backfill(enabled: bool, services_dir: Option<String>, backfill: bool
         classification_backfill: backfill,
         category_backfill: false,
         classification_context_window: 5,
-        jira_update_enabled: false,
-        jira_update_interval_s: 14400,
-        jira_office_start_hour: 9,
-        jira_office_end_hour: 17,
+
         runtime: RuntimeSettings::default(),
     }
 }
@@ -178,10 +175,7 @@ fn make_cfg(services_dir: &str, db_path: &str) -> Config {
         classification_backfill: true,
         category_backfill: false,
         classification_context_window: 5,
-        jira_update_enabled: false,
-        jira_update_interval_s: 14400,
-        jira_office_start_hour: 9,
-        jira_office_end_hour: 17,
+
         runtime: RuntimeSettings::default(),
     }
 }
@@ -348,10 +342,7 @@ async fn short_session_is_not_classified() {
         classification_backfill: true,
         category_backfill: false,
         classification_context_window: 5,
-        jira_update_enabled: false,
-        jira_update_interval_s: 14400,
-        jira_office_start_hour: 9,
-        jira_office_end_hour: 17,
+
         runtime: RuntimeSettings::default(),
     };
 
@@ -388,10 +379,7 @@ async fn trivial_session_is_marked_overhead_without_python() {
         classification_backfill: true,
         category_backfill: false,
         classification_context_window: 5,
-        jira_update_enabled: false,
-        jira_update_interval_s: 14400,
-        jira_office_start_hour: 9,
-        jira_office_end_hour: 17,
+
         runtime: RuntimeSettings::default(),
     };
 
