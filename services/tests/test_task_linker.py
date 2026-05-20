@@ -102,13 +102,21 @@ class TestClassifyOne:
         assert result["dimensions"] == {"activity": ["coding"]}
         assert "elapsed_s" in result
 
-    def test_relabels_task_classifier_method_to_llm_standalone(self):
+    def test_hermes_aiagent_method_on_success(self):
+        """Successful hermes classification returns method=hermes_aiagent."""
         raw = make_session_raw(id=3)
-        decision = make_decision(method="task_classifier")
-        with patch("agents.run_task_linker.classify_session", return_value=decision):
+        # At e370944, run_task_linker directly returns hermes_aiagent method
+        # (no task_classifier_agent.py intermediary)
+        with patch("agents.run_task_linker._call_hermes") as mock_hermes:
+            mock_hermes.return_value = (
+                "KAN-42",  # task_key
+                0.9,       # confidence
+                "Coding work",  # reasoning
+                {"activity": ["coding"]},  # dimensions
+                0.5,       # elapsed_s
+            )
             result = _classify_one(raw, {}, [])
-        assert result["method"] == "llm_standalone", \
-            "task_classifier must be renamed to llm_standalone in output"
+        assert result["method"] == "hermes_aiagent"
 
     def test_preserves_non_tiebreak_method_names(self):
         raw = make_session_raw(id=4)
