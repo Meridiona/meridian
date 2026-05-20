@@ -8,7 +8,9 @@ use meridian::config::Config;
 use meridian::db::meridian::{cleanup_incomplete_runs, setup_db};
 use meridian::db::screenpipe::open_screenpipe;
 use meridian::etl::run_etl;
-use meridian::intelligence::{run_categorization, run_jira_update, run_pm_sync, run_task_linking};
+use meridian::intelligence::{
+    check_classification_ready, run_categorization, run_jira_update, run_pm_sync, run_task_linking,
+};
 use meridian::observability;
 use tokio::signal::unix::{signal, SignalKind};
 
@@ -40,6 +42,14 @@ async fn main() -> Result<()> {
         poll_interval_secs = cfg.poll_interval_secs,
         "meridian daemon starting"
     );
+
+    // 4b. Preflight: verify classification stack is ready before starting the daemon.
+    //     Fails fast with a clear message rather than silently erroring every tick.
+    if let Err(e) = check_classification_ready(&cfg) {
+        tracing::error!("{}", e);
+        eprintln!("\nERROR: {}\n", e);
+        std::process::exit(1);
+    }
 
     // 4. Open screenpipe pool (read-only)
     let screenpipe = open_screenpipe(&cfg.screenpipe_db_uri()).await?;
