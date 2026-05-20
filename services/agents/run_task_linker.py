@@ -67,12 +67,12 @@ def _fetch_pm_tasks(con: _sqlite3.Connection) -> list[dict[str, Any]]:
     rows = con.execute(
         "SELECT task_key, title,"
         "       COALESCE(description_text,'') AS description_text,"
-        "       COALESCE(status,'') AS status,"
         "       COALESCE(status_category,'') AS status_category,"
         "       COALESCE(issue_type,'') AS issue_type,"
+        "       COALESCE(parent_key,'') AS parent_key,"
         "       COALESCE(epic_title,'') AS epic_title,"
         "       COALESCE(sprint_name,'') AS sprint_name"
-        " FROM pm_tasks WHERE LOWER(status_category) != 'done'",
+        " FROM pm_tasks WHERE LOWER(status_category) != 'done' AND parent_key IS NULL",
     ).fetchall()
     return [dict(r) for r in rows]
 

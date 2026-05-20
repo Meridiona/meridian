@@ -30,11 +30,23 @@ struct JiraFields {
     issuetype: JiraIssueType,
     project: JiraProject,
     updated: String,
+    #[serde(rename = "parent")]
+    parent: Option<JiraParent>,
+}
+
+#[derive(Deserialize)]
+struct JiraParent {
+    key: String,
+    fields: Option<JiraParentFields>,
+}
+
+#[derive(Deserialize)]
+struct JiraParentFields {
+    summary: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct JiraStatus {
-    name: String,
     #[serde(rename = "statusCategory")]
     status_category: JiraStatusCategory,
 }
@@ -107,9 +119,9 @@ async fn fetch(jira: &JiraConfig) -> Result<Vec<JiraIssue>> {
     let url = format!("{}/rest/api/3/search/jql", jira.base_url);
 
     let body = serde_json::json!({
-        "jql": "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC",
+        "jql": "assignee = currentUser() AND statusCategory != Done AND type IN (Task, Feature) ORDER BY updated DESC",
         "maxResults": 100,
-        "fields": ["summary", "description", "status", "issuetype", "project", "updated"]
+        "fields": ["summary", "description", "issuetype", "project", "updated", "parent", "status"]
     });
 
     let start = std::time::Instant::now();
@@ -154,21 +166,36 @@ async fn upsert(pool: &SqlitePool, issues: &[JiraIssue], jira: &JiraConfig) -> R
         let cat = map_status_category(&issue.fields.status.status_category.key);
         let url = format!("{}/browse/{}", jira.base_url, issue.key);
 
+        let (parent_key, epic_title) = issue
+            .fields
+            .parent
+            .as_ref()
+            .map(|p| {
+                let title = p
+                    .fields
+                    .as_ref()
+                    .and_then(|f| f.summary.as_ref().map(|s| s.as_str()))
+                    .unwrap_or("");
+                (Some(p.key.as_str()), title)
+            })
+            .unwrap_or((None, ""));
+
         sqlx::query(
             "INSERT INTO pm_tasks
-               (task_key, provider, title, description_text, status, status_category,
-                issue_type, project_key, url, updated_at, fetched_at, expires_at)
-             VALUES (?, 'jira', ?, ?, ?, ?, ?, ?, ?, ?,
+               (task_key, provider, title, description_text, status_category,
+                issue_type, project_key, url, parent_key, epic_title, updated_at, fetched_at, expires_at)
+             VALUES (?, 'jira', ?, ?, ?, ?, ?, ?, ?, ?, ?,
                      strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
                      strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+30 minutes'))
              ON CONFLICT(task_key) DO UPDATE SET
                title            = excluded.title,
                description_text = excluded.description_text,
-               status           = excluded.status,
                status_category  = excluded.status_category,
                issue_type       = excluded.issue_type,
                project_key      = excluded.project_key,
                url              = excluded.url,
+               parent_key       = excluded.parent_key,
+               epic_title       = excluded.epic_title,
                updated_at       = excluded.updated_at,
                fetched_at       = excluded.fetched_at,
                expires_at       = excluded.expires_at",
@@ -176,11 +203,12 @@ async fn upsert(pool: &SqlitePool, issues: &[JiraIssue], jira: &JiraConfig) -> R
         .bind(&issue.key)
         .bind(&issue.fields.summary)
         .bind(&description)
-        .bind(&issue.fields.status.name)
         .bind(cat)
         .bind(&issue.fields.issuetype.name)
         .bind(&issue.fields.project.key)
         .bind(&url)
+        .bind(parent_key)
+        .bind(if epic_title.is_empty() { None } else { Some(epic_title) })
         .bind(&issue.fields.updated)
         .execute(pool)
         .await
