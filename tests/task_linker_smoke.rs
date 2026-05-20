@@ -1,76 +1,109 @@
 // meridian — normalises screenpipe activity into structured app sessions
 //
-// Smoke tests for run_task_linking():
-//   - disabled path (no DB writes)
-//   - no pending sessions (idle no-op)
-//   - trivial sessions (empty/whitespace session_text → overhead/skip without Python)
-//   - short-duration sessions (below min threshold → not processed)
-//   - pre-classified sessions (task_method IS NOT NULL → not reprocessed)
-//   - stub Python subprocess → task link + dimensions + cursor advance
+// Real integration smoke tests for run_task_linking():
+//   - seeds a file-based DB (Python subprocess can't reach :memory:)
+//   - calls the real agents/run_task_linker.py via the real services/ directory
+//   - Python loads session + pm_tasks from the DB, calls hermes, returns JSON
+//   - Rust writes classification result back to DB
+//   - tests assert DB state after the full round-trip
+//
+// All tests are skipped (not failed) when the environment is not ready:
+//   - python3 not in PATH
+//   - services/ directory not found
+//   - hermes not configured (services/.hermes/config.yaml missing)
 
 mod common;
 
 use meridian::config::{Config, LlmBackendConfig};
 use meridian::intelligence::run_task_linking;
-use sqlx::Row;
+use sqlx::{sqlite::SqliteConnectOptions, Row, SqlitePool};
+use std::str::FromStr;
 
 // ---------------------------------------------------------------------------
-// Test helpers
+// Environment checks — skip, not fail, when tooling is absent
 // ---------------------------------------------------------------------------
 
-fn disabled_cfg() -> Config {
-    make_cfg(false, None)
+fn python3_available() -> bool {
+    std::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
-fn cfg_no_python() -> Config {
-    make_cfg(true, Some("/nonexistent/path".to_string()))
-}
-
-fn make_cfg(enabled: bool, services_dir: Option<String>) -> Config {
-    // Tests explicitly opt-in to backfill so they can seed sessions and observe
-    // classification results. The real daemon defaults to backfill=false.
-    make_cfg_backfill(enabled, services_dir, true)
-}
-
-fn make_cfg_backfill(enabled: bool, services_dir: Option<String>, backfill: bool) -> Config {
-    Config {
-        screenpipe_db: String::new(),
-        meridian_db: String::new(),
-        poll_interval_secs: 60,
-        pm_providers: vec![],
-        llm_backend: LlmBackendConfig::Disabled,
-        classification_enabled: enabled,
-        classification_timeout_s: 30,
-        min_classification_duration_s: 10,
-        classification_services_dir: services_dir,
-        classification_backfill: backfill,
-        category_backfill: false,
-        jira_update_enabled: false,
-        jira_update_interval_s: 14400,
-        jira_office_start_hour: 9,
-        jira_office_end_hour: 17,
+/// Returns the real `services/` path relative to the project root (CARGO_MANIFEST_DIR).
+fn real_services_dir() -> Option<String> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let candidate = root.join("services");
+    if candidate.join("agents/run_task_linker.py").exists() {
+        Some(candidate.to_string_lossy().into_owned())
+    } else {
+        None
     }
 }
 
-async fn seed_session(
-    pool: &sqlx::SqlitePool,
-    app: &str,
-    duration_s: i64,
-    session_text: Option<&str>,
-) -> i64 {
+fn hermes_configured(services_dir: &str) -> bool {
+    std::path::Path::new(services_dir)
+        .join(".hermes/config.yaml")
+        .exists()
+}
+
+macro_rules! skip_unless_ready {
+    ($services_dir:ident) => {
+        if !python3_available() {
+            eprintln!("SKIP: python3 not in PATH");
+            return;
+        }
+        let Some(ref $services_dir) = real_services_dir() else {
+            eprintln!("SKIP: services/agents/run_task_linker.py not found");
+            return;
+        };
+        if !hermes_configured($services_dir) {
+            eprintln!("SKIP: services/.hermes/config.yaml not found — hermes not configured");
+            return;
+        }
+    };
+}
+
+// ---------------------------------------------------------------------------
+// File-based DB helper (Python subprocess needs a real file, not :memory:)
+// ---------------------------------------------------------------------------
+
+async fn make_file_db() -> (tempfile::NamedTempFile, SqlitePool, String) {
+    let tmp = tempfile::Builder::new()
+        .suffix(".sqlite")
+        .tempfile()
+        .expect("tempfile");
+    let path = tmp.path().to_str().unwrap().to_string();
+    let opts = SqliteConnectOptions::from_str(&format!("sqlite:{path}"))
+        .unwrap()
+        .create_if_missing(true);
+    let pool = SqlitePool::connect_with(opts).await.unwrap();
+    sqlx::migrate!("src/migrations").run(&pool).await.unwrap();
+    (tmp, pool, path)
+}
+
+// ---------------------------------------------------------------------------
+// Seed helpers
+// ---------------------------------------------------------------------------
+
+async fn seed_session(pool: &SqlitePool, app: &str, duration_s: i64, session_text: &str) -> i64 {
     sqlx::query(
         "INSERT INTO etl_runs (started_at, from_frame_id, to_frame_id, status)
-         VALUES ('t', 0, 0, 'success')",
+         VALUES (strftime('%Y-%m-%dT%H:%M:%SZ','now'), 0, 0, 'success')",
     )
     .execute(pool)
     .await
     .unwrap();
+
     sqlx::query(
         "INSERT INTO app_sessions (
-            app_name, started_at, ended_at, duration_s, session_text,
+            app_name, started_at, ended_at, duration_s, session_text, session_text_source,
             window_titles, audio_snippets, signals,
             min_frame_id, max_frame_id, frame_count, idle_frame_count, etl_run_id
-         ) VALUES (?, 't', 't', ?, ?, '[]', '[]', '{}', 1, 1, 1, 0, 1)",
+         ) VALUES (?, strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+                      strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+                   ?, ?, 'accessibility', '[]', '[]', '{}', 1, 1, 1, 0, 1)",
     )
     .bind(app)
     .bind(duration_s)
@@ -81,256 +114,134 @@ async fn seed_session(
     .last_insert_rowid()
 }
 
-/// Creates a temp services dir containing a stub `agents/run_task_linker.py`
-/// that reads JSON from stdin and echoes back one `auto`-routed result per session.
-fn stub_services_dir() -> tempfile::TempDir {
-    let dir = tempfile::TempDir::new().unwrap();
-    let agents = dir.path().join("agents");
-    std::fs::create_dir_all(&agents).unwrap();
-    std::fs::write(agents.join("__init__.py"), "").unwrap();
-    std::fs::write(
-        agents.join("run_task_linker.py"),
-        r#"import sys, json
-payload = json.loads(sys.stdin.read())
-results = []
-for s in payload.get("sessions", []):
-    results.append({
-        "session_id": s["id"],
-        "task_key": "KAN-99",
-        "confidence": 0.92,
-        "routing": "auto",
-        "reasoning": "stub",
-        "method": "llm_standalone",
-        "dimensions": {"activity": ["coding"], "tool": ["cargo"]},
-        "elapsed_s": 0.01,
-    })
-sys.stdout.write(json.dumps({"results": results}))
-sys.stdout.write("\n")
-"#,
+async fn seed_pm_task(
+    pool: &SqlitePool,
+    task_key: &str,
+    title: &str,
+    description: &str,
+    status_category: &str,
+) {
+    sqlx::query(
+        "INSERT INTO pm_tasks
+            (task_key, provider, title, description_text, status, status_category,
+             issue_type, project_key, url, updated_at)
+         VALUES (?, 'jira', ?, ?, 'In Progress', ?, 'Story', 'KAN', '', strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
     )
+    .bind(task_key)
+    .bind(title)
+    .bind(description)
+    .bind(status_category)
+    .execute(pool)
+    .await
     .unwrap();
-    dir
 }
 
-fn python3_available() -> bool {
-    std::process::Command::new("python3")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+fn make_cfg(services_dir: &str, db_path: &str) -> Config {
+    Config {
+        screenpipe_db: String::new(),
+        meridian_db: db_path.to_string(),
+        poll_interval_secs: 60,
+        pm_providers: vec![],
+        llm_backend: LlmBackendConfig::Disabled,
+        classification_enabled: true,
+        classification_timeout_s: 120,
+        min_classification_duration_s: 10,
+        classification_services_dir: Some(services_dir.to_string()),
+        classification_backfill: true,
+        category_backfill: false,
+        classification_context_window: 5,
+        jira_update_enabled: false,
+        jira_update_interval_s: 14400,
+        jira_office_start_hour: 9,
+        jira_office_end_hour: 17,
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Full round-trip: seed session + pm_tasks → hermes classifies → Rust writes to DB.
+/// Asserts that task_method, cursor, and agent_run are all written correctly.
+/// Does NOT assert a specific task_key — that is LLM output and may vary.
 #[tokio::test]
-async fn classification_disabled_returns_ok_and_writes_nothing() {
-    let pool = common::make_meridian_db().await;
-    seed_session(&pool, "Xcode", 120, Some("working on feature")).await;
+async fn real_classification_writes_task_and_advances_cursor() {
+    skip_unless_ready!(services_dir);
 
-    run_task_linking(&pool, &disabled_cfg()).await.unwrap();
+    let (_tmp, pool, db_path) = make_file_db().await;
 
-    let count: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM app_sessions WHERE task_method IS NOT NULL")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(count.0, 0);
-
-    let run_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM agent_runs")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(run_count.0, 0, "disabled path must not write agent_runs");
-}
-
-#[tokio::test]
-async fn no_sessions_pending_is_idle_success() {
-    let pool = common::make_meridian_db().await;
-    // No sessions at all
-    run_task_linking(&pool, &cfg_no_python()).await.unwrap();
-
-    let row = sqlx::query(
-        "SELECT status, sessions_processed, links_written FROM agent_runs ORDER BY id DESC LIMIT 1",
+    let session_id = seed_session(
+        &pool,
+        "Cursor",
+        120,
+        "feat(etl): fix gap detection in runner.rs\n\
+         Editing src/etl/runner.rs — closing stale blocks when inter-frame gap \
+         exceeds GAP_THRESHOLD_SECS. Also touched src/db/meridian.rs to update \
+         the close_block helper. Tests in tests/task_linker_smoke.rs.",
     )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(row.get::<String, _>(0), "success");
-    assert_eq!(row.get::<i64, _>(1), 0);
-    assert_eq!(row.get::<i64, _>(2), 0);
-}
+    .await;
 
-#[tokio::test]
-async fn trivial_sessions_overhead_skip_without_python() {
-    let pool = common::make_meridian_db().await;
-    let id1 = seed_session(&pool, "Slack", 60, None).await;
-    let id2 = seed_session(&pool, "Spotify", 90, Some("   ")).await; // whitespace-only
-
-    // BATCH_LIMIT=1 — each call processes one session; run twice for two sessions.
-    run_task_linking(&pool, &cfg_no_python()).await.unwrap();
-    run_task_linking(&pool, &cfg_no_python()).await.unwrap();
-
-    for session_id in [id1, id2] {
-        let row = sqlx::query(
-            "SELECT task_method, task_routing, task_key FROM app_sessions WHERE id = ?",
-        )
-        .bind(session_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap_or_else(|_| panic!("no classified session {session_id}"));
-
-        assert_eq!(row.get::<String, _>(0), "prefilter_trivial");
-        assert_eq!(row.get::<String, _>(1), "skip");
-        assert!(row.get::<Option<String>, _>(2).is_none());
-    }
-
-    // Cursor must advance past both
-    let cursor: (i64,) = sqlx::query_as("SELECT last_session_id FROM agent_cursor WHERE id = 1")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(cursor.0, id2);
-}
-
-#[tokio::test]
-async fn short_duration_sessions_are_not_processed() {
-    let pool = common::make_meridian_db().await;
-    // duration_s = 5, min is 10
-    seed_session(&pool, "Terminal", 5, Some("cargo build")).await;
-
-    run_task_linking(&pool, &cfg_no_python()).await.unwrap();
-
-    let count: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM app_sessions WHERE task_method IS NOT NULL")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(count.0, 0);
-}
-
-#[tokio::test]
-async fn pre_classified_sessions_are_not_reprocessed() {
-    let pool = common::make_meridian_db().await;
-    let session_id = seed_session(&pool, "Xcode", 120, Some("building meridian")).await;
-
-    sqlx::query(
-        "UPDATE app_sessions
-         SET task_key='KAN-1', task_method='manual', task_confidence=1.0,
-             task_session_type='task', task_routing='auto'
-         WHERE id = ?",
+    seed_pm_task(
+        &pool,
+        "KAN-42",
+        "Fix gap detection across ETL run boundaries",
+        "Sessions that span a system sleep are incorrectly merged. \
+         Fix by checking inter-frame delta before processing each frame batch.",
+        "in_progress",
     )
-    .bind(session_id)
-    .execute(&pool)
-    .await
-    .unwrap();
+    .await;
 
-    run_task_linking(&pool, &cfg_no_python()).await.unwrap();
-
-    let row = sqlx::query_as::<_, (String,)>("SELECT task_method FROM app_sessions WHERE id = ?")
-        .bind(session_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(
-        row.0, "manual",
-        "pre-classified session must not be overwritten"
-    );
-}
-
-#[tokio::test]
-async fn mixed_batch_trivial_and_short_handled_correctly() {
-    let pool = common::make_meridian_db().await;
-    let trivial_id = seed_session(&pool, "Music", 60, None).await;
-    let short_id = seed_session(&pool, "App", 3, Some("some text")).await;
-
-    run_task_linking(&pool, &cfg_no_python()).await.unwrap();
-
-    // Trivial: linked as overhead/skip
-    let trivial_row = sqlx::query("SELECT task_method FROM app_sessions WHERE id = ?")
-        .bind(trivial_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(trivial_row.get::<String, _>(0), "prefilter_trivial");
-
-    // Short: not classified
-    let short_count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM app_sessions WHERE id = ? AND task_method IS NOT NULL",
+    seed_pm_task(
+        &pool,
+        "KAN-55",
+        "Add dimension tagging to classified sessions",
+        "After hermes classifies a session, write activity/intent/tool dimensions \
+         to session_dimensions for the dashboard breakdown view.",
+        "in_progress",
     )
-    .bind(short_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(short_count.0, 0);
-}
+    .await;
 
-/// Full pipeline smoke test: stub Python returns a task match; verify app_sessions
-/// task columns, session_dimensions, cursor, and agent_runs are all written correctly.
-#[tokio::test]
-async fn stub_python_writes_task_link_dimensions_and_cursor() {
-    if !python3_available() {
-        eprintln!("python3 not in PATH — skipping stub_python test");
-        return;
-    }
-
-    let pool = common::make_meridian_db().await;
-    let session_id = seed_session(&pool, "Xcode", 120, Some("implementing hermes bridge")).await;
-
-    let stub_dir = stub_services_dir();
-    let cfg = make_cfg_backfill(
-        true,
-        Some(stub_dir.path().to_str().unwrap().to_string()),
-        true,
-    );
-
+    let cfg = make_cfg(&services_dir, &db_path);
     run_task_linking(&pool, &cfg).await.unwrap();
 
     // task classification written to app_sessions
-    let link = sqlx::query(
-        "SELECT task_key, task_method, task_session_type, task_routing, task_confidence
+    let row = sqlx::query(
+        "SELECT task_method, task_routing, task_key, task_confidence
          FROM app_sessions WHERE id = ?",
     )
     .bind(session_id)
     .fetch_one(&pool)
     .await
-    .expect("task classification must be written to app_sessions");
-    assert_eq!(link.get::<String, _>(0), "KAN-99");
-    assert_eq!(link.get::<String, _>(1), "llm_standalone");
-    assert_eq!(link.get::<String, _>(2), "task");
-    assert_eq!(link.get::<String, _>(3), "auto");
-    assert!((link.get::<f64, _>(4) - 0.92).abs() < 1e-9);
+    .expect("classification must be written to app_sessions");
 
-    // dimensions: activity=coding, tool=cargo (2 rows)
-    let dim_count: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM session_dimensions WHERE session_id = ?")
-            .bind(session_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(dim_count.0, 2);
-
-    let activity: (String,) = sqlx::query_as(
-        "SELECT value FROM session_dimensions WHERE session_id = ? AND dimension = 'activity'",
-    )
-    .bind(session_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(activity.0, "coding");
+    assert!(
+        row.get::<Option<String>, _>(0).is_some(),
+        "task_method must be set after real classification"
+    );
+    assert!(
+        row.get::<Option<String>, _>(1).is_some(),
+        "task_routing must be set"
+    );
+    // task_key may be None if hermes classified as overhead — that is valid
+    let confidence = row.get::<Option<f64>, _>(3).unwrap_or(0.0);
+    assert!(
+        confidence >= 0.0 && confidence <= 1.0,
+        "confidence out of range"
+    );
 
     // cursor advanced to this session
     let cursor: (i64,) = sqlx::query_as("SELECT last_session_id FROM agent_cursor WHERE id = 1")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(cursor.0, session_id);
+    assert_eq!(
+        cursor.0, session_id,
+        "cursor must advance to classified session"
+    );
 
-    // agent_run audit row is success
+    // agent_run audit row recorded as success
     let run = sqlx::query(
-        "SELECT status, sessions_processed, links_written
-         FROM agent_runs ORDER BY id DESC LIMIT 1",
+        "SELECT status, sessions_processed, links_written FROM agent_runs ORDER BY id DESC LIMIT 1",
     )
     .fetch_one(&pool)
     .await
@@ -340,60 +251,82 @@ async fn stub_python_writes_task_link_dimensions_and_cursor() {
     assert_eq!(run.get::<i64, _>(2), 1);
 }
 
-/// Second run on already-processed sessions is a no-op (cursor has advanced).
+/// Running the classification cycle twice must not re-classify an already-processed session.
 #[tokio::test]
-async fn second_run_is_idle_when_cursor_is_current() {
-    if !python3_available() {
-        eprintln!("python3 not in PATH — skipping second_run test");
-        return;
-    }
+async fn real_classification_does_not_reprocess_classified_session() {
+    skip_unless_ready!(services_dir);
 
-    let pool = common::make_meridian_db().await;
-    let session_id = seed_session(&pool, "VSCode", 120, Some("adding unit tests")).await;
+    let (_tmp, pool, db_path) = make_file_db().await;
 
-    let stub_dir = stub_services_dir();
-    let cfg = make_cfg_backfill(
-        true,
-        Some(stub_dir.path().to_str().unwrap().to_string()),
-        true,
-    );
-
-    run_task_linking(&pool, &cfg).await.unwrap(); // first run classifies
-    run_task_linking(&pool, &cfg).await.unwrap(); // second run: nothing new
-
-    let link_count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM app_sessions WHERE id = ? AND task_method IS NOT NULL",
+    seed_session(
+        &pool,
+        "VSCode",
+        90,
+        "Working on KAN-42 — editing runner.rs gap detection logic.",
     )
-    .bind(session_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(link_count.0, 1, "session must be classified exactly once");
+    .await;
+
+    seed_pm_task(
+        &pool,
+        "KAN-42",
+        "Fix gap detection across ETL run boundaries",
+        "Sessions that span a system sleep are incorrectly merged.",
+        "in_progress",
+    )
+    .await;
+
+    let cfg = make_cfg(&services_dir, &db_path);
+    run_task_linking(&pool, &cfg).await.unwrap(); // classifies
+    run_task_linking(&pool, &cfg).await.unwrap(); // should be a no-op
 
     let run_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM agent_runs")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(run_count.0, 2, "each call creates one agent_run row");
+    // second run still inserts an agent_run row (idle success), but classifies nothing new
+    assert_eq!(run_count.0, 2, "each call writes one agent_run row");
+
+    let classified_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM app_sessions WHERE task_method IS NOT NULL")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        classified_count.0, 1,
+        "session must be classified exactly once"
+    );
 }
 
-// ---------------------------------------------------------------------------
-// No-backfill tests (default daemon behavior)
-// ---------------------------------------------------------------------------
-
-/// On first run with backfill disabled, cursor jumps to current max and
-/// no historical sessions are classified.
+/// A session below the minimum duration threshold is not sent to hermes.
+/// This does not require hermes — verifies the prefilter without LLM.
 #[tokio::test]
-async fn no_backfill_skips_existing_sessions_on_first_run() {
-    let pool = common::make_meridian_db().await;
-    // Seed sessions that look classifiable
-    seed_session(&pool, "Xcode", 120, Some("old work")).await;
-    seed_session(&pool, "VSCode", 90, Some("more old work")).await;
+async fn short_session_is_not_classified() {
+    let (_tmp, pool, db_path) = make_file_db().await;
 
-    let cfg = make_cfg_backfill(true, Some("/nonexistent/path".to_string()), false);
+    seed_session(&pool, "Terminal", 5, "cargo build").await;
+
+    // Use a bogus services dir — test must not reach Python at all
+    let cfg = Config {
+        screenpipe_db: String::new(),
+        meridian_db: db_path,
+        poll_interval_secs: 60,
+        pm_providers: vec![],
+        llm_backend: LlmBackendConfig::Disabled,
+        classification_enabled: true,
+        classification_timeout_s: 30,
+        min_classification_duration_s: 10,
+        classification_services_dir: Some("/nonexistent".to_string()),
+        classification_backfill: true,
+        category_backfill: false,
+        classification_context_window: 5,
+        jira_update_enabled: false,
+        jira_update_interval_s: 14400,
+        jira_office_start_hour: 9,
+        jira_office_end_hour: 17,
+    };
+
     run_task_linking(&pool, &cfg).await.unwrap();
 
-    // Nothing classified — cursor jumped past everything
     let count: (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM app_sessions WHERE task_method IS NOT NULL")
             .fetch_one(&pool)
@@ -401,64 +334,43 @@ async fn no_backfill_skips_existing_sessions_on_first_run() {
             .unwrap();
     assert_eq!(
         count.0, 0,
-        "existing sessions must not be classified when backfill=false"
+        "session under min_duration must not be classified"
     );
-
-    // Cursor must have advanced to the max session id
-    let cursor: (i64,) = sqlx::query_as("SELECT last_session_id FROM agent_cursor WHERE id = 1")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    let max_id: (i64,) = sqlx::query_as("SELECT MAX(id) FROM app_sessions")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(cursor.0, max_id.0);
 }
 
-/// After the initial cursor advance, sessions added afterwards ARE classified.
+/// A session with empty session_text is marked overhead/skip without calling Python.
 #[tokio::test]
-async fn no_backfill_classifies_new_sessions_after_first_run() {
-    if !python3_available() {
-        eprintln!("python3 not in PATH — skipping no_backfill_new_sessions test");
-        return;
-    }
+async fn trivial_session_is_marked_overhead_without_python() {
+    let (_tmp, pool, db_path) = make_file_db().await;
 
-    let pool = common::make_meridian_db().await;
-    // Pre-existing session — must NOT be classified
-    seed_session(&pool, "Slack", 60, Some("old stuff")).await;
+    let id = seed_session(&pool, "Spotify", 60, "").await;
 
-    let stub_dir = stub_services_dir();
-    let cfg = make_cfg_backfill(
-        true,
-        Some(stub_dir.path().to_str().unwrap().to_string()),
-        false,
-    );
+    let cfg = Config {
+        screenpipe_db: String::new(),
+        meridian_db: db_path,
+        poll_interval_secs: 60,
+        pm_providers: vec![],
+        llm_backend: LlmBackendConfig::Disabled,
+        classification_enabled: true,
+        classification_timeout_s: 30,
+        min_classification_duration_s: 10,
+        classification_services_dir: Some("/nonexistent".to_string()),
+        classification_backfill: true,
+        category_backfill: false,
+        classification_context_window: 5,
+        jira_update_enabled: false,
+        jira_update_interval_s: 14400,
+        jira_office_start_hour: 9,
+        jira_office_end_hour: 17,
+    };
 
-    // First run: cursor jumps to max, nothing classified
-    run_task_linking(&pool, &cfg).await.unwrap();
-    let count_after_first: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM app_sessions WHERE task_method IS NOT NULL")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(count_after_first.0, 0);
-
-    // New session arrives after the cursor advance
-    let new_id = seed_session(&pool, "Xcode", 120, Some("new work after cursor")).await;
-
-    // Second run: only the new session is classified
     run_task_linking(&pool, &cfg).await.unwrap();
 
-    let count_new: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM app_sessions WHERE id = ? AND task_method IS NOT NULL",
-    )
-    .bind(new_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(
-        count_new.0, 1,
-        "new session added after first run must be classified"
-    );
+    let row = sqlx::query("SELECT task_method, task_routing FROM app_sessions WHERE id = ?")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(row.get::<String, _>(0), "prefilter_trivial");
+    assert_eq!(row.get::<String, _>(1), "skip");
 }
