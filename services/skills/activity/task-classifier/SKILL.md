@@ -55,6 +55,8 @@ The user message contains:
 - **CANDIDATE TICKETS** — all open Jira tickets. These are the only tickets you may choose from.
 - **RECENT SESSIONS** (previous 5) — context to help disambiguate. Example: *"User was on KAN-42 (coding) 5 minutes ago, then Slack, now back in VS Code."* → likely same task, even if Slack doesn't directly match KAN-42.
 
+**You can also query the database if needed** — ticket descriptions, past session history, task relationships, or any other meridian/Jira data to improve classification confidence.
+
 ## Your job
 
 Pick **exactly one** of the candidate `task_key` values, OR return `null` if **none** fit the session.
@@ -115,7 +117,7 @@ Example reasoning for Session 2 (if task-related): `"Slack discusses PR review f
 **When task_key is null:**
 - **Clear overhead signals** (system settings, browser idle, unrelated activity) — `confidence: 0.0–0.2`, `session_type: "overhead"`, `routing: "skip"`
 - **Work-related but no matching ticket** (clear coding/writing signals, no candidates fit) — `confidence: 0.6–0.8`, `session_type: "untracked"`, `routing: "queue"` (high confidence in work, low in task mapping)
-- **Ambiguous activity, no match** (unclear if work or overhead, no candidates fit) — `confidence: 0.3–0.5`, `session_type: "untracked"`, `routing: "queue"`
+- **Ambiguous activity, no match** (unclear if work or overhead, no candidates fit) — `session_type: "untracked"`
 
 **Decision rule:** Always verify work matches ticket *intent*, not just visible metadata. If equally plausible, pick the ticket whose description best aligns with what the user is *actually doing*.
 
