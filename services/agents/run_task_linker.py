@@ -1,73 +1,131 @@
-"""run_task_linker — JSON bridge between the Rust daemon and the hermes task classifier.
+"""run_task_linker — task classification via hermes AIAgent (Python library).
 
-Reads a JSON payload from stdin:
-  {"sessions": [session_dict, ...], "pm_tasks": [task_dict, ...]}
+Reads a JSON payload from stdin: {"session_ids": [int, ...], "meridian_db": str}
+Fetches all required data (session, recent context, open tickets) from the DB,
+calls hermes AIAgent for each session, writes results to stdout.
 
-Sessions and pm_tasks are pre-fetched by the Rust daemon. Calls classify_session()
-from task_classifier_agent for each session and writes results to stdout:
-  {"results": [result_dict, ...]}
+Hermes memory is enabled so the agent learns developer patterns over time.
+Memory is stored in HERMES_HOME/memories/ (services/.hermes/memories/).
 """
 from __future__ import annotations
 
 import contextlib
 import json
 import logging
+import os
+import sqlite3 as _sqlite3
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from opentelemetry import trace as trace_api
 
+from agents._hermes_setup import ensure_hermes_importable
 from agents import observability
-from agents.task_classifier_agent import classify_session, ClassifierDecision
+from agents._prompts import build_user_message
+from agents._parser import parse_response
+from agents.config import MODEL, BASE_URL, API_KEY, AGENT_MAX_TOKENS
 
 log = logging.getLogger("agents.run_task_linker")
 tracer = observability.setup("meridian-task-linker")
 
+_CONTEXT_WINDOW = 5
 
-def _build_session(session_raw: dict[str, Any]) -> dict[str, Any]:
-    """Normalise a raw session dict from the Rust payload into the shape classify_session expects."""
-    wt = session_raw.get("window_titles") or []
-    if isinstance(wt, str):
-        try:
-            wt = json.loads(wt)
-        except (json.JSONDecodeError, ValueError):
-            wt = []
-    return {
-        "id":                  session_raw.get("id"),
+
+def _fetch_session(con: _sqlite3.Connection, session_id: int) -> dict[str, Any] | None:
+    row = con.execute(
+        "SELECT id, app_name, started_at, ended_at, duration_s, session_text,"
+        "       session_text_source, window_titles, category, confidence"
+        " FROM app_sessions WHERE id = ?",
+        (session_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(row)
+
+
+def _fetch_recent_sessions(con: _sqlite3.Connection, before_id: int) -> list[dict[str, Any]]:
+    rows = con.execute(
+        "SELECT app_name, started_at, duration_s, task_key, task_routing, category,"
+        "       COALESCE(SUBSTR(session_text, 1, 200), '') AS text_excerpt"
+        " FROM app_sessions"
+        " WHERE id < ? AND duration_s > 1 AND COALESCE(session_text,'') != ''"
+        " ORDER BY id DESC LIMIT ?",
+        (before_id, _CONTEXT_WINDOW),
+    ).fetchall()
+    result = [dict(r) for r in rows]
+    result.reverse()
+    return result
+
+
+def _fetch_pm_tasks(con: _sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = con.execute(
+        "SELECT task_key, title,"
+        "       COALESCE(description_text,'') AS description_text,"
+        "       COALESCE(status,'') AS status,"
+        "       COALESCE(status_category,'') AS status_category,"
+        "       COALESCE(issue_type,'') AS issue_type,"
+        "       COALESCE(epic_title,'') AS epic_title,"
+        "       COALESCE(sprint_name,'') AS sprint_name"
+        " FROM pm_tasks WHERE LOWER(status_category) != 'done'",
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _classify_one(
+    session_id: int,
+    db_path: str,
+    con: _sqlite3.Connection,
+) -> dict[str, Any]:
+    sid = session_id
+    session_raw = _fetch_session(con, sid)
+    if session_raw is None:
+        return {
+            "session_id":   sid,
+            "task_key":     None,
+            "confidence":   0.0,
+            "session_type": "overhead",
+            "reasoning":    f"session {sid} not found in DB",
+            "method":       "llm_error",
+            "dimensions":   {},
+            "elapsed_s":    0.0,
+        }
+
+    pm_tasks = _fetch_pm_tasks(con)
+    recent_sessions = _fetch_recent_sessions(con, sid)
+
+    session = {
+        "id":                  sid,
         "app_name":            session_raw.get("app_name"),
         "started_at":          session_raw.get("started_at", ""),
         "ended_at":            session_raw.get("ended_at", ""),
         "duration_s":          session_raw.get("duration_s"),
-        "session_text":        session_raw.get("session_text") or "",
+        "session_text":        session_raw.get("session_text", ""),
         "session_text_source": session_raw.get("session_text_source", "unknown"),
-        "window_titles":       wt,
+        "window_titles":       json.loads(session_raw.get("window_titles") or "[]"),
         "category":            session_raw.get("category"),
-        "confidence":          session_raw.get("confidence") or 0.0,
-        "audio_snippets":      session_raw.get("audio_snippets") or [],
+        "confidence":          session_raw.get("confidence", 0.0),
+        "audio_snippets":      [],
     }
+    valid_keys = {t["task_key"] for t in pm_tasks}
 
-
-def _classify_one(
-    session_raw: dict[str, Any],
-    pm_tasks: Any,
-    recent_sessions: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Classify a single session. Returns a result dict — never raises."""
-    session = _build_session(session_raw)
-    sid = int(session.get("id") or 0)
+    user_message = build_user_message(session, pm_tasks, recent_sessions=recent_sessions)
 
     with tracer.start_as_current_span(
         "run_task_linker.classify_one",
         attributes={
-            "session.id":         sid,
-            "session.app_name":   session.get("app_name") or "",
-            "session.duration_s": session.get("duration_s") or 0,
-            "session.text_len":   len(session.get("session_text", "")),
+            "session.id":        sid,
+            "session.app_name":  session.get("app_name", ""),
+            "session.duration_s": session.get("duration_s", 0),
+            "session.text_len":  len(session.get("session_text", "")),
         },
     ) as span:
         t0 = time.time()
         try:
+            # Redirect stdout → stderr for the duration of the hermes call so that
+            # any print() statements inside AIAgent.__init__ or the LLM call do not
+            # contaminate the JSON output that Rust reads from our stdout.
             with contextlib.redirect_stdout(sys.stderr):
                 result: ClassifierDecision = classify_session(session, pm_tasks)
         except Exception as exc:  # noqa: BLE001
@@ -94,16 +152,16 @@ def _classify_one(
         span.set_attribute("result.method",     method)
 
         return {
-            "session_id":   sid,
-            "task_key":     result.chosen_task_key,
-            "confidence":   result.confidence,
-            "routing":      result.routing,
-            "reasoning":    result.reasoning,
-            "method":       method,
-            "dimensions":   result.dimensions,
-            "elapsed_s":    result.elapsed_s,
-            "llm_model":    result.debug.get("model"),
-            "llm_runtime":  result.debug.get("llm_runtime", "cloud"),
+            "session_id":  sid,
+            "task_key":    result.chosen_task_key,
+            "confidence":  result.confidence,
+            "routing":     result.routing,
+            "reasoning":   result.reasoning,
+            "method":      method,
+            "dimensions":  result.dimensions,
+            "elapsed_s":   result.elapsed_s,
+            "llm_model":   result.debug.get("model"),
+            "llm_runtime": result.debug.get("llm_runtime", "cloud"),
             "llm_is_local": result.debug.get("llm_is_local", False),
         }
 
@@ -121,24 +179,19 @@ def main() -> None:
     sessions: list[dict[str, Any]] = payload.get("sessions", [])
     pm_tasks: list[dict[str, Any]] = payload.get("pm_tasks", [])
 
-    if not isinstance(sessions, list) or not isinstance(pm_tasks, list):
-        log.error("run_task_linker: 'sessions' and 'pm_tasks' must be lists")
+    # Input validation
+    if not db_path:
+        log.error("run_task_linker: meridian_db path is empty")
         sys.exit(1)
-
-    if not sessions:
-        sys.stdout.write(json.dumps({"results": []}))
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-        return
 
     with tracer.start_as_current_span(
         "run_task_linker.batch",
         context=parent_ctx,
         attributes={
-            "sessions.count": len(sessions),
-            "pm_tasks.count": len(pm_tasks),
+            "sessions.count":  len(sessions),
+            "pm_tasks.count":  len(pm_tasks),
         },
-    ):
+    ) as batch_span:
         results: list[dict[str, Any]] = []
         for session_raw in sessions:
             log.info(
@@ -148,13 +201,13 @@ def main() -> None:
                 session_raw.get("duration_s"),
                 len(session_raw.get("session_text", "")),
             )
-            result = _classify_one(session_raw, pm_tasks, [])
+            result = _classify_one(session_raw, pm_tasks)
             results.append(result)
             log.info(
                 "run_task_linker: session_id=%d task_key=%s routing=%s model=%s runtime=%s elapsed_s=%.2f",
                 result["session_id"],
                 result["task_key"],
-                result.get("routing", "?"),
+                result["routing"],
                 result.get("llm_model", "?"),
                 result.get("llm_runtime", "cloud"),
                 result["elapsed_s"],
