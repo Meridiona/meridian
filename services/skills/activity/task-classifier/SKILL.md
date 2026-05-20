@@ -125,8 +125,9 @@ Example reasoning for Session 2 (if task-related): `"Slack discusses PR review f
 - **Generic project-level match**  — `0.50–0.65`, `session_type: "task"`
 - **Task key only**  — `0.60–0.75`, `session_type: "task"` (lower than key+alignment because work intent unclear)
 
-**When task_key is null:**
-- **Clear overhead signals** (system settings, browser idle, unrelated activity) — `confidence: 0.0–0.2`, `session_type: "overhead"`, `routing: "skip"`
+## Task mapping
+
+ **Clear overhead signals** (system settings, browser idle, unrelated activity) — `confidence: 0.0–0.2`, `session_type: "overhead"`, `routing: "skip"`
 - **Work-related but no matching ticket** (clear coding/writing signals, no candidates fit) — `confidence: 0.6–0.8`, `session_type: "untracked"`, `routing: "queue"` (high confidence in work, low in task mapping)
 - **Ambiguous activity, no match** (unclear if work or overhead, no candidates fit) — `session_type: "untracked"`
 
