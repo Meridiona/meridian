@@ -44,8 +44,10 @@ pub struct BlockContext {
         min_frame_id,
         max_frame_id,
         frame_count,
-        ocr_sample_count = tracing::field::Empty,
+        window_title_count = tracing::field::Empty,
         audio_snippet_count = tracing::field::Empty,
+        signal_count = tracing::field::Empty,
+        session_text_bytes = tracing::field::Empty,
     )
 )]
 pub async fn extract_block_context(
@@ -66,9 +68,35 @@ pub async fn extract_block_context(
 
     let session_text = build_session_text(&frames_res?);
     let audio_snippets = audio_res?;
+    let window_titles = window_titles_res?;
+    let signals = signals_res?;
 
-    tracing::Span::current().record("ocr_sample_count", 0_usize);
+    // For logging/debugging purposes, we record the count of each enrichment type as well as a sample of the session text.  
+    // The session text sample is truncated to 500 chars to avoid overwhelming the logs, but still provide a glimpse into the content being processed.
+    let session_text_sample = if session_text.len() > 500 {
+        let truncated = session_text
+            .chars()
+            .take(500)
+            .collect::<String>();
+        format!("{}...", truncated)
+    } else {
+        session_text.clone()
+    };
+
+    tracing::Span::current().record("window_title_count", window_titles.len());
     tracing::Span::current().record("audio_snippet_count", audio_snippets.len());
+    tracing::Span::current().record("signal_count", signals.len());
+    tracing::Span::current().record("session_text_bytes", session_text.len());
+
+    tracing::debug!(
+        app_name,
+        window_titles = window_titles.len(),
+        audio_snippets = audio_snippets.len(),
+        signals = signals.len(),
+        session_text_bytes = session_text.len(),
+        session_text_sample = %session_text_sample,
+        "block context extracted"
+    );
 
     Ok(BlockContext {
         app_name: app_name.to_owned(),
@@ -77,9 +105,9 @@ pub async fn extract_block_context(
         min_frame_id,
         max_frame_id,
         frame_count,
-        window_titles: window_titles_res?,
+        window_titles,
         audio_snippets,
-        signals: signals_res?,
+        signals,
         session_text,
     })
 }

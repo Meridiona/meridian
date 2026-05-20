@@ -126,7 +126,6 @@ pub async fn get_cursor(pool: &SqlitePool) -> anyhow::Result<EtlCursor> {
     .fetch_optional(pool)
     .await
     .context("get_cursor: fetch failed")?;
-    println!("Fetched cursor row: {:?}", row);
 
     if let Some(cursor) = row {
         return Ok(cursor);
@@ -137,7 +136,6 @@ pub async fn get_cursor(pool: &SqlitePool) -> anyhow::Result<EtlCursor> {
         .await
         .context("get_cursor: insert default failed")?;
 
-    println!("Inserted default cursor row");
     Ok(EtlCursor {
         id: 1,
         last_frame_id: 0,

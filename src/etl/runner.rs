@@ -57,6 +57,12 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
 
     let mut sessions_closed: i64 = 0;
 
+    // TODO: Extract gap classification logic into helper. Currently duplicated at:
+    // 1. Cross-run gap check (below, ~line 75-89)
+    // 2. Intra-batch gap check (line ~175-179)
+    // Both compute: if idle * 2 >= total → "user_idle" else "system_sleep"
+    // Helper signature: async fn classify_and_record_gap(screenpipe, meridian, from_ts, to_ts, gap_secs, run_id) -> Result<String>
+
     // Cross-run gap check: if there's a stale active_session from the previous ETL run,
     // compare its last_seen_at against the first frame we're about to process. A gap
     // > GAP_THRESHOLD_SECS means the machine was asleep or idle between runs.
@@ -87,6 +93,14 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                     } else {
                         "system_sleep"
                     };
+                    debug!(
+                        gap_secs,
+                        gap_kind = kind,
+                        app_name = stale.app_name,
+                        frame_id = first_frame.id,
+                        gap_frame_ids = format!("{}..{}", stale.min_frame_id, first_frame.id),
+                        "cross-run gap detected — inserting gap record and closing stale active_session"
+                    );
                     insert_gap(
                         meridian,
                         &stale.last_seen_at,
@@ -169,6 +183,14 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                             } else {
                                 "system_sleep"
                             };
+                            debug!(
+                                gap_secs = gap,
+                                gap_kind = kind,
+                                app_name = current_app.as_deref().unwrap_or(""),
+                                frame_id = frame.id,
+                                gap_frame_ids = format!("{}..{}", block_last_frame_id, frame.id),
+                                "intra-batch gap detected — inserting gap record and closing current block"
+                            );
 
                             insert_gap(
                                 meridian,

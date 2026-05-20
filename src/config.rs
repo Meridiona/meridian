@@ -204,7 +204,9 @@ fn env_list(key: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 fn parse_jira() -> Option<PmProviderConfig> {
-    let base_url = std::env::var("JIRA_BASE_URL").ok()?;
+    let base_url = std::env::var("JIRA_URL")
+        .or_else(|_| std::env::var("JIRA_BASE_URL"))
+        .ok()?;
     let email = std::env::var("JIRA_EMAIL").ok()?;
     let api_token = std::env::var("JIRA_API_TOKEN").ok()?;
     Some(PmProviderConfig::Jira(JiraConfig {
