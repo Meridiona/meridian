@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
 
     // 4b. Preflight: verify classification stack is ready before starting the daemon.
     //     Fails fast with a clear message rather than silently erroring every tick.
-    if let Err(e) = check_classification_ready(&cfg) {
+    if let Err(e) = check_classification_ready(&initial_cfg) {
         tracing::error!("{}", e);
         eprintln!("\nERROR: {}\n", e);
         std::process::exit(1);
