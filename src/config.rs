@@ -21,7 +21,6 @@ pub struct RuntimeSettings {
     pub llm_prefer_local: bool,
     pub llm_budget_pct: f64,
     pub poll_interval_secs: u64,
-    pub jira_update_enabled: bool,
 }
 
 impl Default for RuntimeSettings {
@@ -36,7 +35,6 @@ impl Default for RuntimeSettings {
             llm_prefer_local: true,
             llm_budget_pct: 0.5,
             poll_interval_secs: 60,
-            jira_update_enabled: true,
         }
     }
 }
@@ -162,16 +160,6 @@ pub struct Config {
     /// Number of recent classified sessions included as temporal context in each prompt.
     /// CLASSIFICATION_CONTEXT_WINDOW — default 5
     pub classification_context_window: usize,
-    /// Whether to post Jira progress updates. Auto-enabled when JIRA_BASE_URL is set.
-    /// JIRA_UPDATE_ENABLED — default true if Jira is configured
-    pub jira_update_enabled: bool,
-    /// Minimum seconds between Jira update runs.
-    /// JIRA_UPDATE_INTERVAL_HOURS — default 4 (14400s)
-    pub jira_update_interval_s: u64,
-    /// Local hour at which the office day starts (inclusive). OFFICE_START_HOUR — default 9
-    pub jira_office_start_hour: u32,
-    /// Local hour at which the office day ends (exclusive). OFFICE_END_HOUR — default 17
-    pub jira_office_end_hour: u32,
     /// Hot-reloadable runtime settings loaded from `~/.meridian/settings.json`.
     /// Values here take precedence over the equivalent env-var defaults.
     pub runtime: RuntimeSettings,
@@ -339,12 +327,6 @@ impl Config {
             .unwrap_or(true);
         let classification_enabled = runtime.classification_enabled && classification_enabled_env;
 
-        let jira_configured = std::env::var("JIRA_BASE_URL").is_ok();
-        let jira_update_enabled_env = std::env::var("JIRA_UPDATE_ENABLED")
-            .map(|v| !matches!(v.to_lowercase().trim(), "0" | "false" | "no" | "off"))
-            .unwrap_or(jira_configured);
-        let jira_update_enabled = runtime.jira_update_enabled && jira_update_enabled_env;
-
         let classification_services_dir = std::env::var("MERIDIAN_SERVICES_DIR")
             .ok()
             .map(|v| expand_tilde(&v));
@@ -356,22 +338,6 @@ impl Config {
         let category_backfill = std::env::var("CATEGORY_BACKFILL")
             .map(|v| matches!(v.to_lowercase().trim(), "1" | "true" | "yes" | "on"))
             .unwrap_or(false);
-
-        let jira_update_interval_s = std::env::var("JIRA_UPDATE_INTERVAL_HOURS")
-            .ok()
-            .and_then(|v| v.parse::<f64>().ok())
-            .map(|h| (h * 3600.0) as u64)
-            .unwrap_or(14400); // default 4 hours
-
-        let jira_office_start_hour = std::env::var("OFFICE_START_HOUR")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(9);
-
-        let jira_office_end_hour = std::env::var("OFFICE_END_HOUR")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(17);
 
         let classification_context_window = std::env::var("CLASSIFICATION_CONTEXT_WINDOW")
             .ok()
@@ -391,10 +357,6 @@ impl Config {
             classification_backfill,
             category_backfill,
             classification_context_window,
-            jira_update_enabled,
-            jira_update_interval_s,
-            jira_office_start_hour,
-            jira_office_end_hour,
             runtime,
         }
     }
@@ -462,7 +424,6 @@ mod tests {
         assert_eq!(rt.classification_timeout_s, 120);
         assert_eq!(rt.min_classification_duration_s, 10);
         assert!(rt.classification_enabled);
-        assert!(rt.jira_update_enabled);
     }
 
     #[test]
