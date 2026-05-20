@@ -40,4 +40,3 @@ data/memory/
 # Hermes dev-mode local source checkout (HERMES_DEV_MODE=1)
 services/.hermes/
 ruvector.db
-.mcp.json
