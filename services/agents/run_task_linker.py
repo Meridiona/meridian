@@ -19,12 +19,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-# HERMES_HOME must be set before any hermes package is imported.
-# tools/skills_tool.SKILLS_DIR is a module-level constant computed at first
-# import — if HERMES_HOME is set after that import, it reads ~/.hermes instead.
-_SERVICES_DIR = Path(__file__).parent.parent
-os.environ.setdefault("HERMES_HOME", str(_SERVICES_DIR / ".hermes"))
+from opentelemetry import trace as trace_api
 
+from agents._hermes_setup import ensure_hermes_importable
 from agents import observability
 from agents._prompts import build_user_message
 from agents._parser import parse_response
@@ -115,102 +112,58 @@ def _classify_one(
 
     user_message = build_user_message(session, pm_tasks, recent_sessions=recent_sessions)
 
-    t0 = time.time()
-    try:
-        from run_agent import AIAgent
+    with tracer.start_as_current_span(
+        "run_task_linker.classify_one",
+        attributes={
+            "session.id":        sid,
+            "session.app_name":  session.get("app_name", ""),
+            "session.duration_s": session.get("duration_s", 0),
+            "session.text_len":  len(session.get("session_text", "")),
+        },
+    ) as span:
+        t0 = time.time()
+        try:
+            # Redirect stdout → stderr for the duration of the hermes call so that
+            # any print() statements inside AIAgent.__init__ or the LLM call do not
+            # contaminate the JSON output that Rust reads from our stdout.
+            with contextlib.redirect_stdout(sys.stderr):
+                result: ClassifierDecision = classify_session(session, pm_tasks)
+        except Exception as exc:  # noqa: BLE001
+            elapsed = time.time() - t0
+            log.warning("run_task_linker: exception for session %d: %s", sid, exc)
+            span.record_exception(exc)
+            span.set_status(trace_api.StatusCode.ERROR, str(exc))
+            return {
+                "session_id": sid,
+                "task_key":   None,
+                "confidence": 0.0,
+                "routing":    "skip",
+                "reasoning":  f"exception: {exc}",
+                "method":     "llm_error",
+                "dimensions": {},
+                "elapsed_s":  elapsed,
+            }
 
-        agent = AIAgent(
-            # ── Connection ────────────────────────────────────────────
-            model=MODEL,                    # e.g. "gemma4:31b"
-            base_url=BASE_URL,              # Ollama cloud endpoint
-            api_key=API_KEY or "none",
-            # provider=None,                # omit — hermes infers from base_url
-            # api_mode=None,                # omit — default "chat_completions"
-            # fallback_model=None,          # omit — no fallback needed
+        method = "llm_standalone" if result.method == "task_classifier" else result.method
 
-            # ── Toolsets ──────────────────────────────────────────────
-            # Valid names come from toolsets.get_all_toolsets() — not documented on AIAgent.
-            # "memory"  → enables tool: memory        (writes learned patterns to HERMES_HOME/memories/)
-            # "skills"  → enables tools: skills_list, skill_view, skill_manage
-            #             (background skill-review thread can patch task-classifier/SKILL.md)
-            enabled_toolsets=["memory", "skills"],
-            # disabled_toolsets=None,       # omit — using enabled_toolsets allowlist instead
+        span.set_attribute("result.routing",    result.routing)
+        span.set_attribute("result.task_key",   result.chosen_task_key or "")
+        span.set_attribute("result.confidence", result.confidence)
+        span.set_attribute("result.method",     method)
 
-            # ── Limits ────────────────────────────────────────────────
-            max_iterations=10,               # 1 classification + up to 2 memory/skill writes
-            max_tokens=AGENT_MAX_TOKENS,    # cap response size
-            # tool_delay=1.0,               # omit — default 1s is fine
-            # reasoning_config=None,        # omit — let hermes pick effort level
-
-            # ── Output / logging ──────────────────────────────────────
-            quiet_mode=True,                # suppress hermes progress lines (we redirect stdout anyway)
-            # verbose_logging=False,        # omit — we use our own logging module
-            # save_trajectories=False,      # omit — not persisting JSONL traces
-            # log_prefix="",               # omit — single-process, no prefix needed
-
-            # ── Context injection ─────────────────────────────────────
-            skip_context_files=True,        # don't inject SOUL.md / AGENTS.md / .cursorrules
-            load_soul_identity=False,       # don't load SOUL.md even partially
-            skip_memory=False,              # persistent memory ON — self-learning enabled
-            # ephemeral_system_prompt=None, # omit — skill content goes in user message, not here
-
-            # ── Session / platform (not applicable in daemon context) ─
-            # session_id=None,              # omit — auto-generated per call
-            # platform=None,               # omit — not cli/telegram/discord
-            # user_id=None,                # omit — single-user daemon
-            # prefill_messages=None,        # omit — no few-shot priming needed
-            # checkpoints_enabled=False,    # omit — not needed for short classification calls
-        )
-
-        with contextlib.redirect_stdout(sys.stderr):
-            result = agent.run_conversation(user_message)
-
-    except Exception as exc:  # noqa: BLE001
-        elapsed = time.time() - t0
-        log.warning("run_task_linker: AIAgent failed for session %d: %s", sid, exc)
         return {
-            "session_id":   sid,
-            "task_key":     None,
-            "confidence":   0.0,
-            "session_type": "overhead",
-            "reasoning":    f"agent error: {exc}",
-            "method":       "llm_error",
-            "dimensions":   {},
-            "elapsed_s":    elapsed,
+            "session_id":  sid,
+            "task_key":    result.chosen_task_key,
+            "confidence":  result.confidence,
+            "routing":     result.routing,
+            "reasoning":   result.reasoning,
+            "method":      method,
+            "dimensions":  result.dimensions,
+            "elapsed_s":   result.elapsed_s,
+            "llm_model":   result.debug.get("model"),
+            "llm_runtime": result.debug.get("llm_runtime", "cloud"),
+            "llm_is_local": result.debug.get("llm_is_local", False),
         }
-
-    elapsed = time.time() - t0
-
-    raw = ""
-    if isinstance(result, dict):
-        raw = str(result.get("final_response") or result.get("response") or "").strip()
-
-    log.debug("run_task_linker: session %d raw (%.1fs): %.200s", sid, elapsed, raw)
-
-    task_key, confidence, reasoning, dimensions, session_type, err = parse_response(raw, valid_keys)
-    if err:
-        log.warning("run_task_linker: parse error for session %d: %s", sid, err)
-        return {
-            "session_id":   sid,
-            "task_key":     None,
-            "confidence":   0.0,
-            "session_type": "overhead",
-            "reasoning":    err,
-            "method":       "llm_parse_error",
-            "dimensions":   {},
-            "elapsed_s":    elapsed,
-        }
-
-    return {
-        "session_id":   sid,
-        "task_key":     task_key,
-        "confidence":   confidence,
-        "session_type": session_type,
-        "reasoning":    reasoning,
-        "method":       "hermes_aiagent",
-        "dimensions":   dimensions,
-        "elapsed_s":    elapsed,
-    }
 
 
 def main() -> None:
@@ -220,44 +173,50 @@ def main() -> None:
         log.error("run_task_linker: malformed stdin JSON: %s", exc)
         sys.exit(1)
 
-    session_ids: list[int] = payload.get("session_ids", [])
-    db_path: str = payload.get("meridian_db", "")
+    traceparent = payload.get("traceparent")
+    parent_ctx = observability.extract_parent_context(traceparent)
+
+    sessions: list[dict[str, Any]] = payload.get("sessions", [])
+    pm_tasks: list[dict[str, Any]] = payload.get("pm_tasks", [])
 
     # Input validation
     if not db_path:
         log.error("run_task_linker: meridian_db path is empty")
         sys.exit(1)
 
-    if not Path(db_path).exists():
-        log.error("run_task_linker: db file does not exist: %s", db_path)
-        sys.exit(1)
-
-    if not session_ids:
-        log.info("run_task_linker: no session_ids provided, nothing to do")
-        sys.stdout.write(json.dumps({"results": []}))
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-        return
-
-    log.info("run_task_linker: %d sessions, db=%s", len(session_ids), db_path)
-
-    con = _sqlite3.connect(db_path)
-    con.row_factory = _sqlite3.Row
-    try:
+    with tracer.start_as_current_span(
+        "run_task_linker.batch",
+        context=parent_ctx,
+        attributes={
+            "sessions.count":  len(sessions),
+            "pm_tasks.count":  len(pm_tasks),
+        },
+    ) as batch_span:
         results: list[dict[str, Any]] = []
-        for session_id in session_ids:
-            log.info("run_task_linker: classifying session %d", session_id)
-            result = _classify_one(session_id, db_path, con)
+        for session_raw in sessions:
+            log.info(
+                "run_task_linker: classifying session %d (app=%s dur=%ss text_len=%d)",
+                int(session_raw.get("id", 0)),
+                session_raw.get("app_name"),
+                session_raw.get("duration_s"),
+                len(session_raw.get("session_text", "")),
+            )
+            result = _classify_one(session_raw, pm_tasks)
             results.append(result)
             log.info(
-                "run_task_linker: session_id=%d task_key=%s session_type=%s elapsed_s=%.2f",
+                "run_task_linker: session_id=%d task_key=%s routing=%s model=%s runtime=%s elapsed_s=%.2f",
                 result["session_id"],
                 result["task_key"],
-                result["session_type"],
+                result["routing"],
+                result.get("llm_model", "?"),
+                result.get("llm_runtime", "cloud"),
                 result["elapsed_s"],
+                extra={
+                    "llm_model":    result.get("llm_model"),
+                    "llm_runtime":  result.get("llm_runtime"),
+                    "llm_is_local": result.get("llm_is_local"),
+                },
             )
-    finally:
-        con.close()
 
     sys.stdout.write(json.dumps({"results": results}))
     sys.stdout.write("\n")

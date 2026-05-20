@@ -4,6 +4,69 @@
 use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
+// RuntimeSettings — hot-reloadable subset of config (~/.meridian/settings.json)
+// ---------------------------------------------------------------------------
+
+/// Settings that can be changed at runtime by editing `~/.meridian/settings.json`.
+/// The daemon re-reads this file on every poll tick; no restart required.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
+pub struct RuntimeSettings {
+    pub log_level: String,
+    pub classification_enabled: bool,
+    pub min_classification_duration_s: i64,
+    pub classification_timeout_s: u64,
+    pub agent_auto_floor: f64,
+    pub agent_queue_floor: f64,
+    pub llm_prefer_local: bool,
+    pub llm_budget_pct: f64,
+    pub poll_interval_secs: u64,
+    pub jira_update_enabled: bool,
+}
+
+impl Default for RuntimeSettings {
+    fn default() -> Self {
+        Self {
+            log_level: "INFO".to_string(),
+            classification_enabled: true,
+            min_classification_duration_s: 10,
+            classification_timeout_s: 120,
+            agent_auto_floor: 0.65,
+            agent_queue_floor: 0.40,
+            llm_prefer_local: true,
+            llm_budget_pct: 0.5,
+            poll_interval_secs: 60,
+            jira_update_enabled: true,
+        }
+    }
+}
+
+/// Return the path to `~/.meridian/settings.json`.
+fn settings_json_path() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    std::path::PathBuf::from(home)
+        .join(".meridian")
+        .join("settings.json")
+}
+
+/// Load `~/.meridian/settings.json`, falling back to defaults if the file is
+/// absent or cannot be parsed.
+pub fn load_runtime_settings() -> RuntimeSettings {
+    let path = settings_json_path();
+    match std::fs::read_to_string(&path) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "settings.json parse error — using defaults"
+            );
+            RuntimeSettings::default()
+        }),
+        Err(_) => RuntimeSettings::default(), // file doesn't exist yet — that's fine
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Per-provider credential structs
 // ---------------------------------------------------------------------------
 
@@ -109,6 +172,9 @@ pub struct Config {
     pub jira_office_start_hour: u32,
     /// Local hour at which the office day ends (exclusive). OFFICE_END_HOUR — default 17
     pub jira_office_end_hour: u32,
+    /// Hot-reloadable runtime settings loaded from `~/.meridian/settings.json`.
+    /// Values here take precedence over the equivalent env-var defaults.
+    pub runtime: RuntimeSettings,
 }
 
 // ---------------------------------------------------------------------------
@@ -255,24 +321,29 @@ impl Config {
                 format!("{}/.meridian/meridian.db", home)
             });
 
-        let poll_interval_secs = std::env::var("POLL_INTERVAL_SECS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(60);
+        // settings.json is loaded first; its values take precedence over env-var
+        // baselines for the fields it covers. If the file is absent the runtime
+        // defaults equal the env-var defaults, so the merge is a no-op.
+        let runtime = load_runtime_settings();
 
-        let classification_enabled = std::env::var("CLASSIFICATION_ENABLED")
+        // poll_interval_secs, classification_timeout_s, min_classification_duration_s
+        // come entirely from settings.json (runtime). The equivalent env vars are
+        // intentionally ignored when settings.json is present.
+        let poll_interval_secs = runtime.poll_interval_secs;
+        let classification_timeout_s = runtime.classification_timeout_s;
+        let min_classification_duration_s = runtime.min_classification_duration_s;
+
+        // Boolean guards: env var can only further disable, never re-enable.
+        let classification_enabled_env = std::env::var("CLASSIFICATION_ENABLED")
             .map(|v| !matches!(v.to_lowercase().trim(), "0" | "false" | "no" | "off"))
             .unwrap_or(true);
+        let classification_enabled = runtime.classification_enabled && classification_enabled_env;
 
-        let classification_timeout_s = std::env::var("CLASSIFICATION_TIMEOUT_S")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(120);
-
-        let min_classification_duration_s = std::env::var("MIN_LLM_DURATION_S")
-            .ok()
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(10);
+        let jira_configured = std::env::var("JIRA_BASE_URL").is_ok();
+        let jira_update_enabled_env = std::env::var("JIRA_UPDATE_ENABLED")
+            .map(|v| !matches!(v.to_lowercase().trim(), "0" | "false" | "no" | "off"))
+            .unwrap_or(jira_configured);
+        let jira_update_enabled = runtime.jira_update_enabled && jira_update_enabled_env;
 
         let classification_services_dir = std::env::var("MERIDIAN_SERVICES_DIR")
             .ok()
@@ -284,10 +355,6 @@ impl Config {
 
         let category_backfill = std::env::var("CATEGORY_BACKFILL")
             .map(|v| matches!(v.to_lowercase().trim(), "1" | "true" | "yes" | "on"))
-            .unwrap_or(false);
-
-        let jira_update_enabled = std::env::var("JIRA_UPDATE_ENABLED")
-            .map(|v| !matches!(v.to_lowercase().trim(), "0" | "false" | "no" | "off"))
             .unwrap_or(false);
 
         let jira_update_interval_s = std::env::var("JIRA_UPDATE_INTERVAL_HOURS")
@@ -328,6 +395,7 @@ impl Config {
             jira_update_interval_s,
             jira_office_start_hour,
             jira_office_end_hour,
+            runtime,
         }
     }
 
@@ -377,14 +445,24 @@ mod tests {
         let _guard = env_lock().lock().unwrap();
         std::env::set_var("SCREENPIPE_DB", "/custom/screenpipe.db");
         std::env::set_var("MERIDIAN_DB", "/custom/meridian.db");
-        std::env::set_var("POLL_INTERVAL_SECS", "30");
         let cfg = Config::from_env();
         assert_eq!(cfg.screenpipe_db, "/custom/screenpipe.db");
         assert_eq!(cfg.meridian_db, "/custom/meridian.db");
-        assert_eq!(cfg.poll_interval_secs, 30);
+        // poll_interval_secs is driven by settings.json (runtime), not POLL_INTERVAL_SECS env var.
+        // Default runtime value is 60 when settings.json is absent.
+        assert_eq!(cfg.runtime.poll_interval_secs, cfg.poll_interval_secs);
         std::env::remove_var("SCREENPIPE_DB");
         std::env::remove_var("MERIDIAN_DB");
-        std::env::remove_var("POLL_INTERVAL_SECS");
+    }
+
+    #[test]
+    fn test_runtime_settings_defaults() {
+        let rt = RuntimeSettings::default();
+        assert_eq!(rt.poll_interval_secs, 60);
+        assert_eq!(rt.classification_timeout_s, 120);
+        assert_eq!(rt.min_classification_duration_s, 10);
+        assert!(rt.classification_enabled);
+        assert!(rt.jira_update_enabled);
     }
 
     #[test]

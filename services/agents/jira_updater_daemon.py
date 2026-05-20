@@ -23,6 +23,8 @@ import signal
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from opentelemetry import trace as trace_api
+
 from agents import observability
 from agents.config import (
     MERIDIAN_DB,
@@ -31,7 +33,7 @@ from agents.config import (
     UPDATE_INTERVAL_HOURS,
 )
 
-observability.setup("meridian-jira-updater")
+tracer = observability.setup("meridian-jira-updater")
 log = logging.getLogger("jira_updater_daemon")
 
 
@@ -115,10 +117,20 @@ async def daemon_loop(dry_run: bool = False) -> None:
     from agents.jira_updater import run_update
 
     slots = compute_slots(OFFICE_START_HOUR, OFFICE_END_HOUR, UPDATE_INTERVAL_HOURS)
-    log.info(
-        "jira-updater starting: office=%d–%d slots=%s interval=%.1fh",
-        OFFICE_START_HOUR, OFFICE_END_HOUR, slots, UPDATE_INTERVAL_HOURS,
-    )
+
+    with tracer.start_as_current_span(
+        "jira_updater_daemon.startup",
+        attributes={
+            "office_hours.start": OFFICE_START_HOUR,
+            "office_hours.end": OFFICE_END_HOUR,
+            "slots": str(slots),
+            "interval_h": UPDATE_INTERVAL_HOURS,
+        },
+    ):
+        log.info(
+            "jira-updater starting: office=%d–%d slots=%s interval=%.1fh",
+            OFFICE_START_HOUR, OFFICE_END_HOUR, slots, UPDATE_INTERVAL_HOURS,
+        )
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -143,22 +155,30 @@ async def daemon_loop(dry_run: bool = False) -> None:
             break
 
         from_time, to_time = slot_window(nxt.hour, UPDATE_INTERVAL_HOURS)
+        current_slot_str = nxt.strftime("%Y-%m-%dT%H:%M")
         log.info("running update window %s → %s", from_time, to_time)
-        try:
-            # run_update is synchronous and uses asyncio.run() internally.
-            # Dispatch to a thread so those nested event loops don't conflict
-            # with this one, and so SIGTERM is not blocked during the update.
-            fn = functools.partial(
-                run_update, from_time=from_time, to_time=to_time, dry_run=dry_run
-            )
-            results = await loop.run_in_executor(None, fn)
-            for r in results:
-                log.info(
-                    "task=%s state=%s duration=%ds had_activity=%s",
-                    r.task_key, r.state, r.duration_s, r.had_activity,
+        with tracer.start_as_current_span(
+            "jira_updater_daemon.tick",
+            attributes={"slot": current_slot_str},
+        ) as tick_span:
+            try:
+                # run_update is synchronous and uses asyncio.run() internally.
+                # Dispatch to a thread so those nested event loops don't conflict
+                # with this one, and so SIGTERM is not blocked during the update.
+                fn = functools.partial(
+                    run_update, from_time=from_time, to_time=to_time, dry_run=dry_run
                 )
-        except Exception:
-            log.exception("update run failed")
+                results = await loop.run_in_executor(None, fn)
+                for r in results:
+                    log.info(
+                        "task=%s state=%s duration=%ds had_activity=%s",
+                        r.task_key, r.state, r.duration_s, r.had_activity,
+                    )
+                tick_span.set_attribute("tasks.updated", len(results))
+            except Exception as exc:
+                tick_span.record_exception(exc)
+                tick_span.set_status(trace_api.StatusCode.ERROR, str(exc))
+                log.exception("update run failed")
 
     log.info("jira-updater stopped")
 
