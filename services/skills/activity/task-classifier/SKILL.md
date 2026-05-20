@@ -55,8 +55,6 @@ The user message contains:
 - **CANDIDATE TICKETS** — all open Jira tickets. These are the only tickets you may choose from.
 - **RECENT SESSIONS** (previous 5) — context to help disambiguate. Example: *"User was on KAN-42 (coding) 5 minutes ago, then Slack, now back in VS Code."* → likely same task, even if Slack doesn't directly match KAN-42.
 
-**You can also query the database if needed** — ticket descriptions, past session history, task relationships, or any other meridian/Jira data to improve classification confidence.
-
 ## Your job
 
 Pick **exactly one** of the candidate `task_key` values, OR return `null` if **none** fit the session.
