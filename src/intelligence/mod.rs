@@ -2,10 +2,12 @@
 
 pub mod category_llm;
 pub mod category_settler;
+pub mod jira_updater;
 pub mod providers;
 pub mod session_categorizer;
 pub mod task_linker;
 
+pub use jira_updater::run_jira_update;
 pub use task_linker::{check_classification_ready, link_range, run_task_linking};
 
 use anyhow::Result;
