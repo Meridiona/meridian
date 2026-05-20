@@ -28,6 +28,7 @@ os.environ.setdefault("HERMES_HOME", str(_SERVICES_DIR / ".hermes"))
 from agents import observability
 from agents._prompts import build_user_message
 from agents._parser import parse_response
+from agents._system_context import SYSTEM_CONTEXT
 from agents.config import MODEL, BASE_URL, API_KEY, AGENT_MAX_TOKENS
 
 log = logging.getLogger("agents.run_task_linker")
@@ -152,7 +153,7 @@ def _classify_one(
             skip_context_files=True,        # don't inject SOUL.md / AGENTS.md / .cursorrules
             load_soul_identity=False,       # don't load SOUL.md even partially
             skip_memory=False,              # persistent memory ON — self-learning enabled
-            # ephemeral_system_prompt=None, # omit — skill content goes in user message, not here
+            ephemeral_system_prompt=SYSTEM_CONTEXT,  # shared with server.py for consistency
 
             # ── Session / platform (not applicable in daemon context) ─
             # session_id=None,              # omit — auto-generated per call
