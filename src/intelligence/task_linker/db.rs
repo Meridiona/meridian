@@ -281,7 +281,7 @@ mod tests {
             routing: "auto".to_string(),
             session_type: "task".to_string(),
             reasoning: "test".to_string(),
-            method: "llm_standalone".to_string(),
+            method: "hermes_aiagent".to_string(),
             dimensions: HashMap::new(),
             elapsed_s: 0.5,
         };
@@ -296,7 +296,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(row.0, "KAN-42");
-        assert_eq!(row.1, "llm_standalone");
+        assert_eq!(row.1, "hermes_aiagent");
         assert!((row.2 - 0.87).abs() < 1e-9);
         assert_eq!(row.3, "task");
     }
@@ -312,7 +312,7 @@ mod tests {
             routing: "skip".to_string(),
             session_type: "overhead".to_string(),
             reasoning: "test".to_string(),
-            method: "llm_standalone".to_string(),
+            method: "hermes_aiagent".to_string(),
             dimensions: HashMap::new(),
             elapsed_s: 0.2,
         };
@@ -339,7 +339,7 @@ mod tests {
             routing: "auto".to_string(),
             session_type: "task".to_string(),
             reasoning: "test".to_string(),
-            method: "llm_standalone".to_string(),
+            method: "hermes_aiagent".to_string(),
             dimensions: HashMap::new(),
             elapsed_s: 0.1,
         };

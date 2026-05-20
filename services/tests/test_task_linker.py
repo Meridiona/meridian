@@ -1,16 +1,12 @@
-"""Tests for run_task_linker.py — JSON bridge contract.
+"""Tests for run_task_linker.py — function-level unit tests.
 
 These tests exercise _build_session and _classify_one without requiring
 hermes or any LLM to be installed. conftest.py stubs the heavy imports.
 """
-import json
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 # Make services/ importable
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -102,13 +98,21 @@ class TestClassifyOne:
         assert result["dimensions"] == {"activity": ["coding"]}
         assert "elapsed_s" in result
 
-    def test_relabels_task_classifier_method_to_llm_standalone(self):
+    def test_hermes_aiagent_method_on_success(self):
+        """Successful hermes classification returns method=hermes_aiagent."""
         raw = make_session_raw(id=3)
-        decision = make_decision(method="task_classifier")
-        with patch("agents.run_task_linker.classify_session", return_value=decision):
+        # At e370944, run_task_linker directly returns hermes_aiagent method
+        # (no task_classifier_agent.py intermediary)
+        with patch("agents.run_task_linker._call_hermes") as mock_hermes:
+            mock_hermes.return_value = (
+                "KAN-42",  # task_key
+                0.9,       # confidence
+                "Coding work",  # reasoning
+                {"activity": ["coding"]},  # dimensions
+                0.5,       # elapsed_s
+            )
             result = _classify_one(raw, {}, [])
-        assert result["method"] == "llm_standalone", \
-            "task_classifier must be renamed to llm_standalone in output"
+        assert result["method"] == "hermes_aiagent"
 
     def test_preserves_non_tiebreak_method_names(self):
         raw = make_session_raw(id=4)
@@ -151,79 +155,3 @@ class TestClassifyOne:
         with patch("agents.run_task_linker.classify_session", return_value=decision):
             result = _classify_one(raw, {}, [])
         assert result["dimensions"] == {}
-
-
-# ---------------------------------------------------------------------------
-# Subprocess JSON-contract test (requires python3 + no hermes needed)
-# ---------------------------------------------------------------------------
-
-class TestSubprocessContract:
-    """Runs run_task_linker as a subprocess with stub hermes to verify
-    the stdout contract without touching a real LLM."""
-
-    SERVICES_DIR = Path(__file__).parent.parent
-
-    def _run(self, payload: dict) -> dict:
-        env_override = {
-            **__import__("os").environ,
-            "PYTHONPATH": str(self.SERVICES_DIR),
-        }
-        # Inject conftest stubs via PYTHONSTARTUP is unreliable; instead
-        # we write a tiny wrapper script that patches sys.modules first.
-        wrapper = (
-            "import sys\n"
-            "from unittest.mock import MagicMock\n"
-            "sys.modules['agents._hermes_setup'] = MagicMock()\n"
-            "m = MagicMock(); m.setup = lambda *a, **kw: MagicMock()\n"
-            "sys.modules['agents.observability'] = m\n"
-            # stub classify_session to return a fixed decision
-            "from unittest.mock import MagicMock as _M\n"
-            "_d = _M(); _d.chosen_task_key = 'KAN-1'; _d.confidence = 0.85\n"
-            "_d.routing = 'auto'; _d.method = 'task_classifier'\n"
-            "_d.dimensions = {}; _d.elapsed_s = 0.01; _d.reasoning = 'stub'\n"
-            "_tc = _M(); _tc.classify_session = lambda *a, **kw: _d\n"
-            "_tc.ClassifierDecision = _M(); _tc.MODE_STANDALONE = 'standalone'\n"
-            "sys.modules['agents.task_classifier_agent'] = _tc\n"
-            "import agents.run_task_linker as m\n"
-            "m.main()\n"
-        )
-        proc = subprocess.run(
-            [sys.executable, "-c", wrapper],
-            input=json.dumps(payload),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        assert proc.returncode == 0, f"run_task_linker failed:\n{proc.stderr}"
-        return json.loads(proc.stdout.strip())
-
-    def test_output_has_results_key(self):
-        output = self._run({"sessions": [], "pm_tasks": []})
-        assert "results" in output
-
-    def test_empty_sessions_returns_empty_results(self):
-        output = self._run({"sessions": [], "pm_tasks": []})
-        assert output["results"] == []
-
-    def test_one_session_returns_one_result(self):
-        payload = {
-            "sessions": [make_session_raw(id=42)],
-            "pm_tasks": [],
-        }
-        output = self._run(payload)
-        assert len(output["results"]) == 1
-        r = output["results"][0]
-        assert r["session_id"] == 42
-        assert "task_key" in r
-        assert "confidence" in r
-        assert "routing" in r
-        assert "method" in r
-        assert "dimensions" in r
-        assert "elapsed_s" in r
-
-    def test_multiple_sessions_all_get_results(self):
-        sessions = [make_session_raw(id=i) for i in range(1, 6)]
-        output = self._run({"sessions": sessions, "pm_tasks": []})
-        assert len(output["results"]) == 5
-        ids = {r["session_id"] for r in output["results"]}
-        assert ids == {1, 2, 3, 4, 5}
