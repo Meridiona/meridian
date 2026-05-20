@@ -8,7 +8,7 @@ pub mod session_categorizer;
 pub mod task_linker;
 
 pub use jira_updater::run_jira_update;
-pub use task_linker::{check_classification_ready, link_range, run_task_linking};
+pub use task_linker::{link_range, run_task_linking};
 
 use anyhow::Result;
 use sqlx::SqlitePool;
