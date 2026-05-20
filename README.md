@@ -32,8 +32,11 @@ to `app_sessions`:
 - macOS (screenpipe records to `~/.screenpipe/db.sqlite`)
 - [screenpipe](https://screenpi.pe) running and recording
 - Rust 1.93.1 — install via `rustup` or `rust-toolchain.toml` is picked up automatically
+- Python 3.11+ (for the hermes classification layer)
 
-## Build
+## Getting started
+
+### 1. Clone and build
 
 ```bash
 git clone https://github.com/meridiona/meridian
@@ -43,14 +46,35 @@ cargo build --release
 
 `SQLX_OFFLINE=true` is set automatically by `.cargo/config.toml` — no manual export needed.
 
-## Run
+### 2. Set up the Python services layer
+
+The classification pipeline (hermes AI agent) runs in a Python subprocess. Run this once after cloning:
+
+```bash
+bash scripts/setup-services.sh
+```
+
+This will:
+- Create `services/.venv` and install Python dependencies
+- Generate `services/.hermes/config.yaml` from the template
+- Create `services/.hermes/.env` for your API key
+
+Then fill in your model API key:
+```bash
+$EDITOR services/.hermes/.env   # set OLLAMA_API_KEY
+```
+
+> If `CLASSIFICATION_ENABLED=false` is set, this step is optional — the daemon runs ETL and categorisation only.
+
+### 3. Run
 
 ```bash
 ./target/release/meridian
 ```
 
-The daemon starts, runs an immediate ETL pass over all existing screenpipe data, then
-polls every 60 seconds for new frames. Stop it with `Ctrl-C` or `SIGTERM`.
+The daemon checks the classification stack is ready on startup and exits immediately with a clear error message if anything is missing — it will never start and silently fail on every tick.
+
+The daemon runs an immediate ETL pass over all existing screenpipe data, then polls every 60 seconds for new frames. Stop it with `Ctrl-C` or `SIGTERM`.
 
 ## Configuration
 
@@ -78,6 +102,23 @@ Query it directly:
 sqlite3 ~/.meridian/meridian.db \
   "SELECT app_name, ROUND(SUM(duration_s)/60.0,1) as min, COUNT(*) as n
    FROM app_sessions GROUP BY app_name ORDER BY min DESC LIMIT 10;"
+```
+
+## Utility Scripts
+
+| Script | Purpose |
+|---|---|
+| `scripts/setup-services.sh` | One-time setup for the Python services layer — creates venv, installs deps, configures hermes. Run after cloning. |
+| `scripts/refresh_pm_tasks.py` | Force-refresh `pm_tasks` from Jira without restarting the daemon. Stdlib only — no pip install needed. |
+| `scripts/setup-hooks.sh` | Install git hooks (fmt + clippy pre-commit, full suite pre-push). |
+
+```bash
+# Force-refresh Jira task cache now
+python3 scripts/refresh_pm_tasks.py
+
+# Custom JQL or DB path
+python3 scripts/refresh_pm_tasks.py --jql "project=KAN ORDER BY updated DESC"
+python3 scripts/refresh_pm_tasks.py --db /path/to/meridian.db
 ```
 
 ## Development
