@@ -36,9 +36,9 @@ These sessions should never force a Jira link.
 ### 2. Is this work-related?
 If the session shows **clear work signals** (coding, writing, research) but **no Jira candidates match** → mark as **untracked** and return:
 ```json
-{"task_key": null, "confidence": 0.3-0.5, "session_type": "unknown", "routing": "queue"}
+{"task_key": null, "confidence": 0.6-0.8, "session_type": "untracked", "routing": "queue"}
 ```
-Mark dimensions to show *what* the work was (activity, intent, tool, etc.). The session is untracked but useful for potential new task creation.
+Mark dimensions to show *what* the work was (activity, intent, tool, etc.). High confidence here means we're sure it's work; it's just not mapped to a tracked task. The session is useful for potential new task creation.
 
 ### 3. Can it map to an open Jira ticket?
 If the session evidence **directly or contextually matches** an open ticket → return:
@@ -119,7 +119,8 @@ Example reasoning for Session 2 (if task-related): `"Slack discusses PR review f
 
 **When task_key is null:**
 - **Clear overhead signals** (system settings, browser idle, unrelated activity) — `confidence: 0.0–0.2`, `session_type: "overhead"`, `routing: "skip"`
-- **Work-related but no matching ticket** (clear work activity, no candidates fit) — `confidence: 0.3–0.5`, `session_type: "unknown"`, `routing: "queue"`
+- **Work-related but no matching ticket** (clear coding/writing signals, no candidates fit) — `confidence: 0.6–0.8`, `session_type: "unknown"`, `routing: "queue"` (high confidence in work, low in task mapping)
+- **Ambiguous activity, no match** (unclear if work or overhead, no candidates fit) — `confidence: 0.3–0.5`, `session_type: "unknown"`, `routing: "queue"`
 
 **Decision rule:** Always verify work matches ticket *intent*, not just visible metadata. If equally plausible, pick the ticket whose description best aligns with what the user is *actually doing*.
 
