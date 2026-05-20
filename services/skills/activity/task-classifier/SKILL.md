@@ -99,8 +99,11 @@ You have access to **the previous 5 sessions** to disambiguate the current sessi
 - Session 2 (3 min ago): Slack, discussing PR review → task_key: null, session_type: "unknown"
 - Session 3 (now): VS Code, editing same file → ?
 
-**Decision:** Even though Slack appeared in between, if you're back in VS Code on the same file after only 3 minutes, treat it as a **continuation of KAN-42**.
-Return `task_key: KAN-42, confidence: 0.80, reasoning: "Back in VS Code editing KAN-42 implementation after brief Slack discussion; sessions are within 3 min, likely same task."
+**Decision:** Session 2 (Slack) returns `null` because it's generic work discussion with no visible task reference. Session 3 gets classified to **KAN-42** via context continuity: you're back in VS Code on the same file 3 minutes later, and the prior context (Session 1) shows you were on KAN-42.
+
+Return for Session 3: `task_key: KAN-42, confidence: 0.80, reasoning: "Returned to VS Code editing same file (KAN-42 implementation) after brief Slack; 3 min since prior task, context continuity applies."`
+
+**Note:** If Slack content explicitly mentioned "KAN-42" or its PR, Session 2 could be linked to KAN-42 given prior context. Generic work discussion without visible task reference stays `null`.
 
 **When to break continuity:**
 - 30+ minutes have passed since the last task session → assume the user switched contexts
