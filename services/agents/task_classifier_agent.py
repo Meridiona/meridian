@@ -183,7 +183,7 @@ def _classify_session_inner(
         ac_span.set_attribute("agent.elapsed_ms", int(elapsed * 1000))
 
     with tracer.start_as_current_span("task_classifier.parse_response") as pr_span:
-        task_key, confidence, reasoning, dimensions, err = parse_response(raw, valid_keys)
+        task_key, confidence, reasoning, dimensions, session_type, err = parse_response(raw, valid_keys)
         if err:
             log.warning("task_classifier_agent invalid response: %s", err)
             pr_span.set_attribute("parsed.task_key",   "")
