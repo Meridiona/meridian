@@ -96,7 +96,7 @@ You have access to **the previous 5 sessions** to disambiguate the current sessi
 
 **Example: Coding → Communication → Coding**
 - Session 1 (5 min ago): VS Code, editing KAN-42 implementation → task_key: KAN-42
-- Session 2 (3 min ago): Slack, discussing PR review → task_key: null (overhead)
+- Session 2 (3 min ago): Slack, discussing PR review → task_key: null, session_type: "unknown"
 - Session 3 (now): VS Code, editing same file → ?
 
 **Decision:** Even though Slack appeared in between, if you're back in VS Code on the same file after only 3 minutes, treat it as a **continuation of KAN-42**.
