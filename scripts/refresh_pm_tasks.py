@@ -40,7 +40,7 @@ import urllib.request
 from pathlib import Path
 
 DEFAULT_JQL = (
-    "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"
+    "assignee = currentUser() AND statusCategory != Done AND type IN (Task, Feature) ORDER BY updated DESC"
 )
 DEFAULT_DB = Path.home() / ".meridian" / "meridian.db"
 DEFAULT_EXPIRES_MIN = 30
@@ -69,7 +69,7 @@ def jira_search(base_url: str, email: str, token: str, jql: str, limit: int) -> 
     url = f"{base_url.rstrip('/')}/rest/api/3/search/jql"
     payload = json.dumps({
         "jql": jql,
-        "fields": ["summary", "description", "status", "issuetype", "project", "updated"],
+        "fields": ["summary", "description", "issuetype", "project", "updated", "parent", "status"],
         "maxResults": limit,
     }).encode()
     req = urllib.request.Request(
@@ -105,41 +105,52 @@ def adf_to_text(node) -> str:
 UPSERT_SQL = """
 INSERT INTO pm_tasks (
     task_key, provider, title, description_text,
-    status, status_category, issue_type, project_key, url,
-    updated_at, fetched_at, expires_at
-) VALUES (?, 'jira', ?, ?, ?, ?, ?, ?, ?, ?,
+    status_category, issue_type, project_key, url,
+    updated_at, fetched_at, expires_at,
+    parent_key, epic_title
+) VALUES (?, 'jira', ?, ?, ?, ?, ?, ?, ?,
           strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
-          strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+{mins} minutes'))
+          strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+{mins} minutes'),
+          ?, ?)
 ON CONFLICT(task_key) DO UPDATE SET
     title            = excluded.title,
     description_text = excluded.description_text,
-    status           = excluded.status,
     status_category  = excluded.status_category,
     issue_type       = excluded.issue_type,
     project_key      = excluded.project_key,
     url              = excluded.url,
     updated_at       = excluded.updated_at,
     fetched_at       = excluded.fetched_at,
-    expires_at       = excluded.expires_at
+    expires_at       = excluded.expires_at,
+    parent_key       = excluded.parent_key,
+    epic_title       = excluded.epic_title
 """
 
-STATUS_CATEGORY_MAP = {"new": "new", "indeterminate": "indeterminate", "done": "done"}
+STATUS_CATEGORY_MAP = {"done": "done", "indeterminate": "in_progress"}
 
 
 def normalise(issue: dict, base_url: str) -> tuple:
     fields = issue.get("fields") or {}
     status = fields.get("status") or {}
     cat_key = ((status.get("statusCategory") or {}).get("key")) or "new"
+    # Map Jira status categories to normalized form: todo, in_progress, done
+    status_cat = STATUS_CATEGORY_MAP.get(cat_key, "todo")
+    parent = fields.get("parent")
+    parent_key = parent.get("key") if parent else None
+    parent_title = None
+    if parent and parent.get("fields"):
+        parent_title = parent.get("fields", {}).get("summary")
     return (
         issue.get("key", ""),
         fields.get("summary") or "",
         adf_to_text(fields.get("description")),
-        status.get("name") or "",
-        STATUS_CATEGORY_MAP.get(cat_key, cat_key),
+        status_cat,
         (fields.get("issuetype") or {}).get("name") or "",
         (fields.get("project") or {}).get("key") or "",
         f"{base_url.rstrip('/')}/browse/{issue.get('key', '')}",
         fields.get("updated") or "",
+        parent_key,
+        parent_title,
     )
 
 
@@ -170,10 +181,10 @@ def main() -> int:
         if n:
             log.info("loaded %d vars from %s", n, p)
 
-    base_url = os.environ.get("JIRA_URL", "").rstrip("/")
+    base_url = os.environ.get("JIRA_BASE_URL", os.environ.get("JIRA_URL", "")).rstrip("/")
     email = os.environ.get("JIRA_EMAIL", "")
     token = os.environ.get("JIRA_API_TOKEN", "")
-    missing = [k for k, v in (("JIRA_URL", base_url), ("JIRA_EMAIL", email), ("JIRA_API_TOKEN", token)) if not v]
+    missing = [k for k, v in (("JIRA_BASE_URL or JIRA_URL", base_url), ("JIRA_EMAIL", email), ("JIRA_API_TOKEN", token)) if not v]
     if missing:
         log.error("missing env: %s", ", ".join(missing))
         return 2
@@ -202,7 +213,9 @@ def main() -> int:
     conn = sqlite3.connect(args.db)
     try:
         for issue in issues:
-            conn.execute(sql, normalise(issue, base_url))
+            norm = normalise(issue, base_url)
+            log.info(f"inserting {issue.get('key')}: {len(norm)} values")
+            conn.execute(sql, norm)
 
         pruned = 0
         if args.no_prune:
