@@ -75,7 +75,9 @@ async fn main() -> Result<()> {
 
     // 7a. Clean up any runs left in 'running' state from a previous crash.
     match cleanup_incomplete_runs(&meridian).await {
-        Ok(0) => {}
+        Ok(0) => {
+            tracing::info!("no incomplete runs found");
+        }
         Ok(n) => tracing::warn!(
             deleted_partial_sessions = n,
             "cleaned up incomplete ETL run"

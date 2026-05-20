@@ -68,19 +68,61 @@ pub(super) async fn close_block(
     // Option C: use last ui_event as ended_at if it's more recent than the last frame.
     // Only fires for app-switch closes (next_frame_ts is set); never for gap-closes.
     let option_c_fired = if let Some(next_ts) = b.next_frame_ts {
+        debug!(
+            app = b.app,
+            last_frame_ts = b.ended_at,
+            next_frame_ts = next_ts,
+            search_window = format!("{}..{}", b.started_at, next_ts),
+            "Option C: searching for ui_events (click/key/text)"
+        );
         match get_last_ui_event_for_app(screenpipe, b.app, b.started_at, next_ts).await {
-            Ok(Some(ui_ts)) if ui_ts.as_str() > b.ended_at => {
+            Ok(Some(ui_ts)) => {
+                if ui_ts.as_str() > b.ended_at {
+                    debug!(
+                        app = b.app,
+                        last_frame_ts = b.ended_at,
+                        ui_event_ts = &ui_ts,
+                        gap_recovered_s = timestamp_gap_secs(b.ended_at, &ui_ts),
+                        "Option C FIRED: ended_at refined via ui_event"
+                    );
+                    ctx.ended_at = ui_ts;
+                    true
+                } else {
+                    debug!(
+                        app = b.app,
+                        last_frame_ts = b.ended_at,
+                        ui_event_ts = &ui_ts,
+                        reason = "ui_event is not more recent than last frame",
+                        "Option C: no-op"
+                    );
+                    false
+                }
+            }
+            Ok(None) => {
                 debug!(
                     app = b.app,
-                    ui_ts = ui_ts,
-                    "ended_at refined via ui_event (Option C)"
+                    search_window = format!("{}..{}", b.started_at, next_ts),
+                    reason = "no ui_events found in window",
+                    "Option C: no-op"
                 );
-                ctx.ended_at = ui_ts;
-                true
+                false
             }
-            _ => false,
+            Err(e) => {
+                debug!(
+                    app = b.app,
+                    error = %e,
+                    reason = "ui_event query failed",
+                    "Option C: no-op"
+                );
+                false
+            }
         }
     } else {
+        debug!(
+            app = b.app,
+            reason = "gap-close (no next_frame_ts)",
+            "Option C: skipped"
+        );
         false
     };
 
@@ -90,15 +132,37 @@ pub(super) async fn close_block(
     if !option_c_fired {
         if let Some(next_ts) = b.next_frame_ts {
             if next_ts > ctx.ended_at.as_str() {
+                let gap_s = timestamp_gap_secs(ctx.ended_at.as_str(), next_ts);
                 debug!(
                     app = b.app,
-                    next_ts,
-                    old_ended_at = ctx.ended_at.as_str(),
-                    "ended_at advanced to next_frame_ts (inter-frame gap recovery)"
+                    current_ended_at = ctx.ended_at.as_str(),
+                    next_frame_ts = next_ts,
+                    gap_recovered_s = gap_s,
+                    "Option D FIRED: ended_at advanced to next_frame_ts (inter-frame gap recovery)"
                 );
                 ctx.ended_at = next_ts.to_string();
+            } else {
+                debug!(
+                    app = b.app,
+                    current_ended_at = ctx.ended_at.as_str(),
+                    next_frame_ts = next_ts,
+                    reason = "next_frame_ts is not later than current ended_at",
+                    "Option D: no-op"
+                );
             }
+        } else {
+            debug!(
+                app = b.app,
+                reason = "gap-close (no next_frame_ts)",
+                "Option D: skipped"
+            );
         }
+    } else {
+        debug!(
+            app = b.app,
+            reason = "Option C already fired (ui_event took precedence)",
+            "Option D: skipped"
+        );
     }
 
     let existing = get_active_session(meridian).await?;
