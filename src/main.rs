@@ -9,7 +9,7 @@ use meridian::db::meridian::{cleanup_incomplete_runs, setup_db};
 use meridian::db::screenpipe::open_screenpipe;
 use meridian::etl::run_etl;
 use meridian::intelligence::{
-    check_classification_ready, run_categorization, run_jira_update, run_pm_sync, run_task_linking,
+    check_classification_ready, run_fm_categorization, run_jira_update, run_pm_sync, run_task_linking,
 };
 use meridian::observability;
 use tokio::signal::unix::{signal, SignalKind};
@@ -89,6 +89,8 @@ async fn main() -> Result<()> {
     //     Re-read config so that any settings.json present at startup takes effect.
     {
         let cfg = Config::from_env();
+        let startup_tick = tracing::info_span!("startup_tick");
+        let _guard = startup_tick.enter();
         tracing::info!("running initial ETL pass");
         if let Err(e) = run_etl(&screenpipe, &meridian).await {
             tracing::error!("ETL run failed: {}", e);
@@ -96,8 +98,8 @@ async fn main() -> Result<()> {
         if let Err(e) = run_pm_sync(&meridian, &cfg).await {
             tracing::error!("intelligence run failed: {}", e);
         }
-        if let Err(e) = run_categorization(&meridian, &cfg).await {
-            tracing::error!("categorization run failed: {}", e);
+        if let Err(e) = run_fm_categorization(&meridian, &cfg).await {
+            tracing::error!("FM categorization run failed: {}", e);
         }
         if let Err(e) = run_task_linking(&meridian, &cfg).await {
             tracing::error!("classification run failed: {}", e);
@@ -123,18 +125,20 @@ async fn main() -> Result<()> {
             _ = tokio::time::sleep(poll_interval) => {
                 // Re-read config to pick up any settings.json changes made while sleeping.
                 let cfg = Config::from_env();
-                tracing::debug!(
-                    poll_interval_secs = cfg.runtime.poll_interval_secs,
-                    "starting ETL tick"
+                let poll_tick = tracing::info_span!(
+                    "poll_tick",
+                    poll_interval_secs = cfg.runtime.poll_interval_secs
                 );
+                let _guard = poll_tick.enter();
+                tracing::debug!("starting ETL tick");
                 if let Err(e) = run_etl(&screenpipe, &meridian).await {
                     tracing::error!("ETL run failed: {}", e);
                 }
                 if let Err(e) = run_pm_sync(&meridian, &cfg).await {
                     tracing::error!("intelligence run failed: {}", e);
                 }
-                if let Err(e) = run_categorization(&meridian, &cfg).await {
-                    tracing::error!("categorization run failed: {}", e);
+                if let Err(e) = run_fm_categorization(&meridian, &cfg).await {
+                    tracing::error!("FM categorization run failed: {}", e);
                 }
                 if let Err(e) = run_task_linking(&meridian, &cfg).await {
                     tracing::error!("classification run failed: {}", e);
