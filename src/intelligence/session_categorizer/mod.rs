@@ -117,6 +117,48 @@ pub struct SessionSignals<'a> {
 }
 
 // ---------------------------------------------------------------------------
+// Categorization reasoning
+// ---------------------------------------------------------------------------
+
+/// Tracks which signals fired during categorization for debugging.
+#[derive(Debug, Clone, Default)]
+pub(super) struct Reasoning {
+    pub app_match: Option<String>,
+    pub window_title_matches: Vec<String>,
+    pub ocr_matches: Vec<String>,
+    pub audio_match: Option<String>,
+    pub signal_matches: Vec<String>,
+}
+
+impl Reasoning {
+    pub(super) fn format(&self) -> String {
+        let mut parts = Vec::new();
+
+        if let Some(ref app) = self.app_match {
+            parts.push(format!("app={}", app));
+        }
+        if !self.window_title_matches.is_empty() {
+            parts.push(format!("titles=[{}]", self.window_title_matches.join(",")));
+        }
+        if !self.ocr_matches.is_empty() {
+            parts.push(format!("ocr=[{}]", self.ocr_matches.join(",")));
+        }
+        if let Some(ref audio) = self.audio_match {
+            parts.push(format!("audio={}", audio));
+        }
+        if !self.signal_matches.is_empty() {
+            parts.push(format!("signals=[{}]", self.signal_matches.join(",")));
+        }
+
+        if parts.is_empty() {
+            "no_signals".to_string()
+        } else {
+            parts.join(" ")
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Score accumulator
 // ---------------------------------------------------------------------------
 
@@ -209,15 +251,16 @@ impl Scores {
 )]
 pub fn categorize(signals: &SessionSignals<'_>) -> (ActivityKind, f32) {
     let mut scores = Scores::new();
+    let mut reasoning = Reasoning::default();
 
     let app_lc = signals.app_name.to_lowercase();
     let ocr_lc = signals.ocr_text.to_lowercase();
 
-    score_audio(signals, &mut scores);
-    score_app_name(&app_lc, &mut scores);
-    score_window_titles(signals.window_titles, &mut scores);
-    score_ocr(&ocr_lc, &mut scores);
-    score_signals(signals.signals, &mut scores);
+    score_audio(signals, &mut scores, &mut reasoning);
+    score_app_name(&app_lc, &mut scores, &mut reasoning);
+    score_window_titles(signals.window_titles, &mut scores, &mut reasoning);
+    score_ocr(&ocr_lc, &mut scores, &mut reasoning);
+    score_signals(signals.signals, &mut scores, &mut reasoning);
 
     let signal_count = signals.window_titles.len()
         + signals.signals.len()
@@ -238,6 +281,7 @@ pub fn categorize(signals: &SessionSignals<'_>) -> (ActivityKind, f32) {
     tracing::Span::current().record("confidence", final_conf as f64);
 
     let score_breakdown = scores.breakdown();
+    let reasoning_breakdown = reasoning.format();
     tracing::debug!(
         app_name = signals.app_name,
         window_titles = signals.window_titles.len(),
@@ -247,6 +291,7 @@ pub fn categorize(signals: &SessionSignals<'_>) -> (ActivityKind, f32) {
         category = final_kind.as_str(),
         confidence = final_conf,
         scores = score_breakdown,
+        reasoning = reasoning_breakdown,
         "session categorized"
     );
 
