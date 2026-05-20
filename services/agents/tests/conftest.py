@@ -11,9 +11,16 @@ without requiring the package to be installed.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 import sys
 
 import pytest
+
+# Stub modules that require hermes or external services so that importing
+# run_task_linker (and task_classifier_agent) works without a real LLM.
+# These must be inserted before any agents module is imported.
+_classifier_stub = MagicMock()
+sys.modules.setdefault("agents.task_classifier_agent", _classifier_stub)
 
 # services/ is two levels up from this conftest (agents/tests/conftest.py).
 _SERVICES_DIR = Path(__file__).resolve().parent.parent.parent
