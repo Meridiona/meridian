@@ -295,10 +295,7 @@ pub fn categorize(signals: &SessionSignals<'_>) -> (ActivityKind, f32) {
         "session categorized"
     );
 
-    tracing::debug!(
-        reasoning = reasoning_breakdown,
-        "categorization reasoning"
-    );
+    tracing::debug!(reasoning = reasoning_breakdown, "categorization reasoning");
 
     (final_kind, final_conf)
 }

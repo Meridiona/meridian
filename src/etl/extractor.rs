@@ -71,13 +71,10 @@ pub async fn extract_block_context(
     let window_titles = window_titles_res?;
     let signals = signals_res?;
 
-    // For logging/debugging purposes, we record the count of each enrichment type as well as a sample of the session text.  
+    // For logging/debugging purposes, we record the count of each enrichment type as well as a sample of the session text.
     // The session text sample is truncated to 500 chars to avoid overwhelming the logs, but still provide a glimpse into the content being processed.
     let session_text_sample = if session_text.len() > 500 {
-        let truncated = session_text
-            .chars()
-            .take(500)
-            .collect::<String>();
+        let truncated = session_text.chars().take(500).collect::<String>();
         format!("{}...", truncated)
     } else {
         session_text.clone()

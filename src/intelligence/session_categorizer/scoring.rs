@@ -43,11 +43,7 @@ pub(super) fn score_audio(
 
 /// App name lookup against the static table.
 /// Terminals and browsers contribute a low base weight — their content signals dominate.
-pub(super) fn score_app_name(
-    app_lc: &str,
-    scores: &mut Scores,
-    reasoning: &mut Reasoning,
-) {
+pub(super) fn score_app_name(app_lc: &str, scores: &mut Scores, reasoning: &mut Reasoning) {
     // Terminal: very low Coding prior — OCR will override if DevOps tools appear.
     if TERMINAL_APPS.iter().any(|p| app_lc.contains(p)) {
         scores.add(ActivityKind::Coding, 10.0);
@@ -165,11 +161,7 @@ pub(super) fn score_window_titles(
 
 /// OCR content scoring — same token lists, flat weight per match.
 /// Multiple matches accumulate (e.g. kubectl + docker → stronger DevOps signal).
-pub(super) fn score_ocr(
-    ocr_lc: &str,
-    scores: &mut Scores,
-    reasoning: &mut Reasoning,
-) {
+pub(super) fn score_ocr(ocr_lc: &str, scores: &mut Scores, reasoning: &mut Reasoning) {
     if ocr_lc.is_empty() {
         return;
     }
