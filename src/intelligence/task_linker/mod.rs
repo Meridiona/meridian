@@ -463,12 +463,14 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
                 break 'write_loop Err(e);
             }
             debug!(
-                session_id = r.session_id,
-                task_key   = ?r.task_key,
-                routing    = %r.routing,
-                confidence = r.confidence,
-                elapsed_s  = r.elapsed_s,
-                method     = %r.method,
+                session_id   = r.session_id,
+                task_key     = ?r.task_key,
+                session_type = %r.session_type,
+                routing      = %r.routing,
+                confidence   = r.confidence,
+                method       = %r.method,
+                reasoning    = %r.reasoning,
+                elapsed_s    = r.elapsed_s,
                 "session classified"
             );
             links_written += 1;
