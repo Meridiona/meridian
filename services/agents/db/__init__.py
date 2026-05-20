@@ -43,12 +43,6 @@ from .dispatch import (
     mark_dispatch_failed,
     mark_dispatch_skipped,
 )
-from .jira_updates import (
-    log_jira_update,
-    get_last_update,
-    mark_update_sent,
-    mark_update_failed,
-)
 
 __all__ = [
     "connection",
@@ -81,8 +75,4 @@ __all__ = [
     "mark_dispatch_sent",
     "mark_dispatch_failed",
     "mark_dispatch_skipped",
-    "log_jira_update",
-    "get_last_update",
-    "mark_update_sent",
-    "mark_update_failed",
 ]
