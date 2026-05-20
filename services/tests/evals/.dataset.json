@@ -1,0 +1,12 @@
+[
+  {
+    "input": "SESSION:\napp: Cursor\ntime: 09:30–09:45  (15min)\ncategory: coding (confidence 0.9)\ntop windows:\n  • meridian/src/etl/runner.rs (×8)\n  • meridian/src/db/meridian.rs (×3)\nscreen content [ocr]:\nfn run_etl() -> anyhow::Result<()> {\n    let cursor = read_cursor(&pool).await?;\n    let frames = fetch_frames(&screenpipe, cursor).await?;\n\nCANDIDATE TICKETS:\n1. KAN-86  [Task]\n   title: Fix ETL gap detection\n   description: The ETL pipeline misses sleep gaps that span run boundaries...",
+    "expected_output": "KAN-86",
+    "additional_metadata": {"session_id": null, "note": "smoke-test golden — replace with real session in KAN-111"}
+  },
+  {
+    "input": "SESSION:\napp: Spotify\ntime: 12:00–12:30  (30min)\ncategory: break (confidence 0.88)\ntop windows:\n  • Spotify (×20)\n\nCANDIDATE TICKETS:\n1. KAN-86  [Task]\n   title: Fix ETL gap detection\n   description: The ETL pipeline misses sleep gaps that span run boundaries...",
+    "expected_output": "none",
+    "additional_metadata": {"session_id": null, "note": "smoke-test golden — overhead session, no ticket match"}
+  }
+]

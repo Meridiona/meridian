@@ -174,7 +174,7 @@ async fn upsert(pool: &SqlitePool, issues: &[JiraIssue], jira: &JiraConfig) -> R
                 let title = p
                     .fields
                     .as_ref()
-                    .and_then(|f| f.summary.as_ref().map(|s| s.as_str()))
+                    .and_then(|f| f.summary.as_deref())
                     .unwrap_or("");
                 (Some(p.key.as_str()), title)
             })

@@ -10,46 +10,27 @@ interface TaskBadgeProps {
   sessionType: string | null         // 'task' | 'overhead' | 'unknown' | null
   routing: string | null             // 'auto' | 'queue' | 'skip'
   confidence: number | null
-  method: string | null              // 'llm_standalone' | 'prefilter_trivial' | legacy: 'stage1_regex' | 'stage2_embed' | 'stage3_llm' | …
+  method: string | null              // 'llm_standalone' | 'prefilter_trivial' | …
   taskTitle?: string | null
   taskUrl?: string | null
   size?: 'xs' | 'sm'
 }
 
-// ── Pipeline inference ────────────────────────────────────────────────────────
+// ── Classification method inference ───────────────────────────────────────────
 interface Stage {
   label: string
-  deciding: boolean  // this stage produced the final answer
+  deciding: boolean  // this method produced the final answer
 }
 
 function inferPipeline(method: string | null): Stage[] {
   if (!method) return []
   switch (method) {
-    // Current hermes pipeline methods
     case 'prefilter_trivial':
       return [{ label: 'Hermes · pre-filter', deciding: true }]
     case 'llm_standalone':
-      return [{ label: 'Hermes · standalone', deciding: true }]
-    // Legacy tagger pipeline methods (pre-existing DB rows)
-    case 'stage1_regex':
-      return [{ label: 'Stage 1 · regex', deciding: true }]
-    case 'stage1_prefilter':
-    case 'rule_prefilter':
-      return [{ label: 'Stage 1 · pre-filter', deciding: true }]
-    case 'stage2_embed':
-    case 'semantic_embed':
-      return [
-        { label: 'Stage 1 · pre-filter', deciding: false },
-        { label: 'Stage 2 · semantic', deciding: true },
-      ]
-    case 'stage3_llm':
-    case 'stage3_llm_inspect':
+      return [{ label: 'Hermes · classification', deciding: true }]
     case 'agent_tiebreak':
-      return [
-        { label: 'Stage 1 · pre-filter', deciding: false },
-        { label: 'Stage 2 · semantic', deciding: false },
-        { label: 'Stage 3 · LLM', deciding: true },
-      ]
+      return [{ label: 'Hermes · classification', deciding: true }]
     default:
       return [{ label: method, deciding: true }]
   }
@@ -73,7 +54,7 @@ function PipelineTooltip({
 
   return (
     <div className="space-y-2 min-w-[200px]">
-      {/* Pipeline stages */}
+      {/* Classification method */}
       {stages.length > 0 ? (
         <div className="space-y-1">
           {stages.map((stage, i) => (
@@ -94,7 +75,7 @@ function PipelineTooltip({
           ))}
         </div>
       ) : (
-        <p className="text-[11px] text-[#9B9A97]">no stage data</p>
+        <p className="text-[11px] text-[#9B9A97]">no classification data</p>
       )}
 
       {/* Task title if available */}
@@ -139,15 +120,15 @@ function WithTooltip({ children, ...tooltipProps }: {
 
 // ── Main component ────────────────────────────────────────────────────────────
 /**
- * Session classification badge with pipeline tooltip.
+ * Session classification badge with classification method tooltip.
  *
  * Visual states:
  *   task + auto  + key   → blue pill "KAN-86 ↗"
  *   task + queue + key   → amber pill "KAN-86 ?"
  *   task + queue + nokey → amber pill "queued"
- *   task + skip  + nokey → muted pill "∅" (ran all stages, no match)
+ *   task + skip  + nokey → muted pill "∅" (classification ran, no match)
  *   overhead             → grey pill "overhead"
- *   null sessionType     → nothing (tagger hasn't processed this session)
+ *   null sessionType     → nothing (classifier hasn't processed this session)
  */
 export default function TaskBadge({
   taskKey, sessionType, routing, confidence, method, taskTitle, taskUrl, size = 'xs',
@@ -223,7 +204,7 @@ export default function TaskBadge({
     )
   }
 
-  // ── Task: all stages ran but no ticket matched ────────────────────────────
+  // ── Task: classification ran but no ticket matched ─────────────────────────
   if (sessionType === 'task' && routing === 'skip') {
     return (
       <WithTooltip {...tooltipProps}>
