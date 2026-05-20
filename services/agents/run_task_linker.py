@@ -1,51 +1,116 @@
-"""run_task_linker — thin hermes bridge for batch session→task classification.
+"""run_task_linker — task classification via hermes AIAgent (Python library).
 
-Reads a JSON batch from stdin, calls classify_session() for each session,
-writes a single JSON object with all results to stdout.
+Reads a JSON payload from stdin: {"session_ids": [int, ...], "meridian_db": str}
+Fetches all required data (session, recent context, open tickets) from the DB,
+calls hermes AIAgent for each session, writes results to stdout.
 
-No DB access, no cursor management, no orchestration — pure function: JSON in,
-JSON out. Intended to be spawned by the Rust daemon as a subprocess.
+Hermes memory is enabled so the agent learns developer patterns over time.
+Memory is stored in HERMES_HOME/memories/ (services/.hermes/memories/).
 """
 from __future__ import annotations
 
 import contextlib
 import json
 import logging
+import os
+import sqlite3 as _sqlite3
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from opentelemetry import trace as trace_api
 
 from agents._hermes_setup import ensure_hermes_importable
 from agents import observability
-from agents.task_classifier_agent import classify_session, ClassifierDecision
+from agents._prompts import build_user_message
+from agents._parser import parse_response
+from agents.config import MODEL, BASE_URL, API_KEY, AGENT_MAX_TOKENS
 
 log = logging.getLogger("agents.run_task_linker")
 tracer = observability.setup("meridian-task-linker")
 
+_CONTEXT_WINDOW = 5
 
-def _build_session(raw: dict[str, Any]) -> dict[str, Any]:
-    """Normalise an input session dict to the shape _format_session() expects."""
-    return {
-        "id":             raw["id"],
-        "app_name":       raw.get("app_name"),
-        "duration_s":     raw.get("duration_s"),
-        "session_text":   raw.get("session_text", ""),
-        "window_titles":  raw.get("window_titles", []),
-        "category":       raw.get("category"),
-        "confidence":     raw.get("confidence", 0.0),
-        "audio_snippets": raw.get("audio_snippets", []),
-    }
+
+def _fetch_session(con: _sqlite3.Connection, session_id: int) -> dict[str, Any] | None:
+    row = con.execute(
+        "SELECT id, app_name, started_at, ended_at, duration_s, session_text,"
+        "       session_text_source, window_titles, category, confidence"
+        " FROM app_sessions WHERE id = ?",
+        (session_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(row)
+
+
+def _fetch_recent_sessions(con: _sqlite3.Connection, before_id: int) -> list[dict[str, Any]]:
+    rows = con.execute(
+        "SELECT app_name, started_at, duration_s, task_key, task_routing, category,"
+        "       COALESCE(SUBSTR(session_text, 1, 200), '') AS text_excerpt"
+        " FROM app_sessions"
+        " WHERE id < ? AND duration_s > 1 AND COALESCE(session_text,'') != ''"
+        " ORDER BY id DESC LIMIT ?",
+        (before_id, _CONTEXT_WINDOW),
+    ).fetchall()
+    result = [dict(r) for r in rows]
+    result.reverse()
+    return result
+
+
+def _fetch_pm_tasks(con: _sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = con.execute(
+        "SELECT task_key, title,"
+        "       COALESCE(description_text,'') AS description_text,"
+        "       COALESCE(status,'') AS status,"
+        "       COALESCE(status_category,'') AS status_category,"
+        "       COALESCE(issue_type,'') AS issue_type,"
+        "       COALESCE(epic_title,'') AS epic_title,"
+        "       COALESCE(sprint_name,'') AS sprint_name"
+        " FROM pm_tasks WHERE LOWER(status_category) != 'done'",
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def _classify_one(
-    session_raw: dict[str, Any],
-    pm_tasks: list[dict[str, Any]],
+    session_id: int,
+    db_path: str,
+    con: _sqlite3.Connection,
 ) -> dict[str, Any]:
-    """Run classify_session for one session; return a result dict."""
-    sid = int(session_raw["id"])
-    session = _build_session(session_raw)
+    sid = session_id
+    session_raw = _fetch_session(con, sid)
+    if session_raw is None:
+        return {
+            "session_id":   sid,
+            "task_key":     None,
+            "confidence":   0.0,
+            "session_type": "overhead",
+            "reasoning":    f"session {sid} not found in DB",
+            "method":       "llm_error",
+            "dimensions":   {},
+            "elapsed_s":    0.0,
+        }
+
+    pm_tasks = _fetch_pm_tasks(con)
+    recent_sessions = _fetch_recent_sessions(con, sid)
+
+    session = {
+        "id":                  sid,
+        "app_name":            session_raw.get("app_name"),
+        "started_at":          session_raw.get("started_at", ""),
+        "ended_at":            session_raw.get("ended_at", ""),
+        "duration_s":          session_raw.get("duration_s"),
+        "session_text":        session_raw.get("session_text", ""),
+        "session_text_source": session_raw.get("session_text_source", "unknown"),
+        "window_titles":       json.loads(session_raw.get("window_titles") or "[]"),
+        "category":            session_raw.get("category"),
+        "confidence":          session_raw.get("confidence", 0.0),
+        "audio_snippets":      [],
+    }
+    valid_keys = {t["task_key"] for t in pm_tasks}
+
+    user_message = build_user_message(session, pm_tasks, recent_sessions=recent_sessions)
 
     with tracer.start_as_current_span(
         "run_task_linker.classify_one",
@@ -102,11 +167,8 @@ def _classify_one(
 
 
 def main() -> None:
-    ensure_hermes_importable()
-
     try:
-        raw_input = sys.stdin.read()
-        payload = json.loads(raw_input)
+        payload = json.loads(sys.stdin.read())
     except (json.JSONDecodeError, ValueError) as exc:
         log.error("run_task_linker: malformed stdin JSON: %s", exc)
         sys.exit(1)
@@ -117,7 +179,10 @@ def main() -> None:
     sessions: list[dict[str, Any]] = payload.get("sessions", [])
     pm_tasks: list[dict[str, Any]] = payload.get("pm_tasks", [])
 
-    log.info("run_task_linker: received %d sessions, %d pm_tasks", len(sessions), len(pm_tasks))
+    # Input validation
+    if not db_path:
+        log.error("run_task_linker: meridian_db path is empty")
+        sys.exit(1)
 
     with tracer.start_as_current_span(
         "run_task_linker.batch",
