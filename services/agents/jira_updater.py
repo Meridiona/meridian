@@ -1,0 +1,502 @@
+"""Jira progress updater — posts timed activity summaries to in-progress Jira issues.
+
+Fetches in-progress tickets via mcp-atlassian, pulls session data for each ticket
+from the local Meridian MCP server, generates a bullet-point summary via hermes,
+and posts the comment back to Jira. All updates are logged in jira_update_log for
+idempotent deduplication per (task_key, period_start, period_end) slot.
+"""
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import logging
+import os
+import re
+import sqlite3
+import sys
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+from agents import db, observability
+from agents._hermes_setup import ensure_hermes_importable
+from agents.config import (
+    API_KEY,
+    BASE_URL,
+    JIRA_POST_NO_ACTIVITY,
+    MERIDIAN_DB,
+    MERIDIAN_MCP_PATH,
+    MODEL,
+    REPO_ROOT,
+    load_skill,
+)
+from opentelemetry import trace as trace_api
+
+log = logging.getLogger("agents.jira_updater")
+tracer = observability.setup("meridian-jira-updater")
+
+_IN_PROGRESS_JQL = (
+    "assignee = currentUser() AND statusCategory = indeterminate ORDER BY updated DESC"
+)
+
+
+# ── Result type ────────────────────────────────────────────────────────────────
+@dataclass
+class UpdateResult:
+    task_key: str
+    had_activity: bool
+    duration_s: int
+    session_count: int
+    comment_body: str
+    comment_id: str | None
+    state: str  # 'sent' | 'failed' | 'skipped' | 'dry_run' | 'no_activity_skipped'
+    error: str | None = None
+
+
+# ── Atlassian MCP client ───────────────────────────────────────────────────────
+class _AtlassianMCPClient:
+    """Wraps uvx mcp-atlassian; each method call starts and tears down its own subprocess."""
+
+    def __init__(self) -> None:
+        self.url = os.environ.get("JIRA_BASE_URL", "")
+        self.email = os.environ.get("JIRA_EMAIL", "")
+        self.token = os.environ.get("JIRA_API_TOKEN", "")
+        missing = [
+            k
+            for k, v in (
+                ("JIRA_BASE_URL", self.url),
+                ("JIRA_EMAIL", self.email),
+                ("JIRA_API_TOKEN", self.token),
+            )
+            if not v
+        ]
+        if missing:
+            raise RuntimeError(
+                f"Atlassian MCP unavailable — missing env: {', '.join(missing)}"
+            )
+
+    def _server_params(self):
+        from mcp import StdioServerParameters
+
+        return StdioServerParameters(
+            command="uvx",
+            args=["mcp-atlassian", "--jira-url", self.url],
+            env={
+                **os.environ,
+                "JIRA_BASE_URL": self.url,
+                "JIRA_USERNAME": self.email,
+                "JIRA_API_TOKEN": self.token,
+                # Suppress FastMCP startup banner and toolset warning.
+                "FASTMCP_BANNER": "0",
+                "TOOLSETS": "all",
+            },
+        )
+
+    async def _call(self, tool: str, args: dict) -> str:
+        from mcp import ClientSession
+        from mcp.client.stdio import stdio_client
+
+        async with stdio_client(self._server_params()) as (r, w):
+            async with ClientSession(r, w) as session:
+                await session.initialize()
+                result = await session.call_tool(tool, args)
+                if not result.content:
+                    return "{}"
+                first = result.content[0]
+                return getattr(first, "text", str(first)) or "{}"
+
+    def fetch_in_progress(self) -> list[dict]:
+        log.info("fetching in-progress tasks (JQL: %s)", _IN_PROGRESS_JQL)
+        raw = asyncio.run(
+            self._call("jira_search", {"jql": _IN_PROGRESS_JQL, "limit": 50})
+        )
+        issues = _parse_search_result(raw)
+        return [_normalise_issue(i, self.url) for i in issues]
+
+    def add_comment(self, task_key: str, body: str) -> str:
+        log.info("posting comment to %s", task_key)
+        raw = asyncio.run(
+            self._call("jira_add_comment", {"issue_key": task_key, "body": body})
+        )
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return str(data.get("id") or data.get("comment_id") or "")
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return ""
+
+
+def _parse_search_result(raw: str) -> list[dict]:
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        match = re.search(r"\{.*\}|\[.*\]", raw, re.DOTALL)
+        if not match:
+            log.warning("atlassian mcp: response was not JSON: %s", raw[:200])
+            return []
+        try:
+            data = json.loads(match.group())
+        except json.JSONDecodeError:
+            return []
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in ("issues", "results", "items"):
+            if isinstance(data.get(key), list):
+                return data[key]
+    log.warning("atlassian mcp: unexpected response shape: %s", str(data)[:200])
+    return []
+
+
+def _normalise_issue(issue: dict, base_url: str) -> dict:
+    # mcp-atlassian returns a flat structure (key, summary, status at top level)
+    # not the nested Jira REST API format (fields.summary, fields.status.name).
+    status = issue.get("status") or {}
+    if isinstance(status, dict):
+        status_name = status.get("name") or ""
+    else:
+        status_name = str(status)
+    return {
+        "task_key": issue.get("key", ""),
+        "title": issue.get("summary") or "",
+        "status": status_name,
+        "url": f"{base_url.rstrip('/')}/browse/{issue.get('key', '')}",
+    }
+
+
+# ── Meridian MCP client ────────────────────────────────────────────────────────
+class _MeridianMCPClient:
+    """Wraps the local Node.js meridian-mcp server.
+
+    Use get_task_sessions_batch() to query multiple tasks in a single
+    subprocess, avoiding per-task Node.js startup overhead.
+    """
+
+    def __init__(self) -> None:
+        self.mcp_path = Path(MERIDIAN_MCP_PATH)
+        if not self.mcp_path.exists():
+            raise RuntimeError(
+                f"Meridian MCP not found at {self.mcp_path}. "
+                "Run `npm run build` in packages/meridian-mcp/."
+            )
+
+    def _server_params(self):
+        from mcp import StdioServerParameters
+
+        return StdioServerParameters(
+            command="node",
+            args=[str(self.mcp_path)],
+            env={**os.environ, "MERIDIAN_DB": str(MERIDIAN_DB)},
+        )
+
+    async def _call_many(self, calls: list[tuple[str, dict]]) -> list[str]:
+        from mcp import ClientSession
+        from mcp.client.stdio import stdio_client
+
+        results: list[str] = []
+        async with stdio_client(self._server_params()) as (r, w):
+            async with ClientSession(r, w) as session:
+                await session.initialize()
+                for tool, args in calls:
+                    result = await session.call_tool(tool, args)
+                    if not result.content:
+                        results.append("")
+                    else:
+                        first = result.content[0]
+                        results.append(getattr(first, "text", str(first)) or "")
+        return results
+
+    def get_task_sessions_batch(
+        self,
+        tasks: list[tuple[str, str, str]],
+    ) -> list[str]:
+        """Fetch sessions for multiple tasks in a single subprocess.
+
+        tasks: list of (task_key, from_time, to_time)
+        Returns response strings in the same order.
+        """
+        calls = [
+            (
+                "get-task-sessions",
+                {
+                    "task_key": tk,
+                    "from_time": ft,
+                    "to_time": tt,
+                    "include_content": True,
+                },
+            )
+            for tk, ft, tt in tasks
+        ]
+        return asyncio.run(self._call_many(calls))
+
+
+# ── Hermes summary generator ───────────────────────────────────────────────────
+class _HermesUpdater:
+    """Single-shot hermes AIAgent call — no tools, one iteration."""
+
+    def generate(self, user_message: str) -> str:
+        ensure_hermes_importable()
+        # Force services/.env after hermes's own dotenv loading which may
+        # override OLLAMA_* vars with stale values from ~/.hermes/.env.
+        load_dotenv(REPO_ROOT / ".env", override=True)
+        from run_agent import AIAgent
+
+        model    = os.environ.get("OLLAMA_MODEL",   MODEL)
+        base_url = os.environ.get("OLLAMA_HOST",    BASE_URL)
+        api_key  = os.environ.get("OLLAMA_API_KEY", API_KEY)
+
+        agent = AIAgent(
+            model=model,
+            base_url=base_url,
+            api_key=api_key or "none",
+            ephemeral_system_prompt=load_skill("jira-updater"),
+            enabled_toolsets=[],
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            load_soul_identity=False,
+            max_iterations=1,
+            max_tokens=1500,
+        )
+        with contextlib.redirect_stdout(sys.stderr):
+            result = agent.run_conversation(user_message)
+        return result.get("final_response", "").strip()
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+_SUMMARY_RE = re.compile(
+    r"(\d+)\s+session(?:s|\(s\))?,\s*(?:(\d+)h\s*)?(\d+)m\s+total", re.IGNORECASE
+)
+
+
+def _parse_mcp_summary(mcp_text: str) -> tuple[bool, int, int]:
+    """Returns (had_activity, session_count, duration_s)."""
+    if "No sessions linked" in mcp_text:
+        return False, 0, 0
+    m = _SUMMARY_RE.search(mcp_text)
+    if not m:
+        log.warning("could not parse session summary from MCP response: %s", mcp_text[:200])
+        return True, 0, 0
+    count = int(m.group(1))
+    hours = int(m.group(2) or 0)
+    minutes = int(m.group(3))
+    return True, count, hours * 3600 + minutes * 60
+
+
+def _fmt_time(iso: str) -> str:
+    """Parse ISO 8601 UTC and return HH:MM."""
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        return dt.strftime("%H:%M")
+    except ValueError:
+        return iso
+
+
+def _fmt_date(iso: str) -> str:
+    """Parse ISO 8601 UTC and return 'Month Day' (e.g. 'May 14')."""
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        return dt.strftime("%B ") + str(dt.day)
+    except ValueError:
+        return iso
+
+
+def _fmt_duration(duration_s: int) -> str:
+    hours, rem = divmod(duration_s, 3600)
+    minutes = rem // 60
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def _build_user_message(
+    task: dict, mcp_text: str, from_time: str, to_time: str
+) -> str:
+    return (
+        f"TASK: {task['task_key']} — {task['title']}\n"
+        f"Status: {task['status']}\n"
+        f"Period: {_fmt_time(from_time)}–{_fmt_time(to_time)} UTC\n"
+        "\n"
+        "ACTIVITY DATA:\n"
+        f"{mcp_text}\n"
+        "\n"
+        "Write 3–5 bullet points summarising what was accomplished. "
+        "Bullet points only, no preamble."
+    )
+
+
+def _format_comment(
+    task: dict,
+    summary: str,
+    from_time: str,
+    to_time: str,
+    duration_s: int,
+    session_count: int,
+) -> str:
+    header = (
+        f"📊 *Progress Update* — {_fmt_time(from_time)}–{_fmt_time(to_time)}, "
+        f"{_fmt_date(from_time)}"
+    )
+    if duration_s == 0 and session_count == 0:
+        return f"{header}\n\nNo activity recorded in this period."
+    footer = (
+        f"_⏱ {_fmt_duration(duration_s)} active · "
+        f"{session_count} session(s) · Via Meridian_"
+    )
+    return f"{header}\n\n{summary}\n\n{footer}"
+
+
+# ── Public entry point ─────────────────────────────────────────────────────────
+def run_update(
+    from_time: str,
+    to_time: str,
+    task_filter: str | None = None,
+    dry_run: bool = False,
+) -> list[UpdateResult]:
+    """Main entry point called by daemon and CLI."""
+    with tracer.start_as_current_span(
+        "jira_updater.run_update",
+        attributes={
+            "window.from": str(from_time),
+            "window.to": str(to_time),
+            "dry_run": dry_run,
+            "task_filter": task_filter or "",
+        },
+    ) as span:
+        conn = sqlite3.connect(str(MERIDIAN_DB), isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            jira = _AtlassianMCPClient()
+            meridian = _MeridianMCPClient()
+
+            tasks = jira.fetch_in_progress()
+            if task_filter:
+                tasks = [t for t in tasks if t["task_key"] == task_filter]
+            if not tasks:
+                log.info("no in-progress tasks found")
+                span.set_attribute("tasks.processed", 0)
+                return []
+
+            mcp_results = meridian.get_task_sessions_batch(
+                [(t["task_key"], from_time, to_time) for t in tasks]
+            )
+
+            results: list[UpdateResult] = []
+            for task, mcp_text in zip(tasks, mcp_results):
+                result = _process_task(
+                    conn, jira, task, task["task_key"], from_time, to_time, dry_run, mcp_text
+                )
+                results.append(result)
+            span.set_attribute("tasks.processed", len(results))
+            return results
+        except Exception as exc:
+            span.record_exception(exc)
+            span.set_status(trace_api.StatusCode.ERROR, str(exc))
+            raise
+        finally:
+            conn.close()
+
+
+def _process_task(
+    conn: sqlite3.Connection,
+    jira: _AtlassianMCPClient,
+    task: dict,
+    task_key: str,
+    from_time: str,
+    to_time: str,
+    dry_run: bool,
+    mcp_text: str,
+) -> UpdateResult:
+    with tracer.start_as_current_span(
+        "jira_updater.process_task",
+        attributes={
+            "task.key": task_key,
+            "dry_run": dry_run,
+        },
+    ) as span:
+        if db.get_last_update(conn, task_key, from_time, to_time):
+            log.info("skipping %s: already posted for this slot", task_key)
+            span.set_attribute("result.state", "skipped")
+            return UpdateResult(
+                task_key=task_key, had_activity=False, duration_s=0,
+                session_count=0, comment_body="", comment_id=None, state="skipped",
+            )
+
+        had_activity, session_count, duration_s = _parse_mcp_summary(mcp_text)
+        span.set_attribute("had_activity", had_activity)
+        span.set_attribute("session_count", session_count)
+        span.set_attribute("duration_s", duration_s)
+
+        if had_activity:
+            user_msg = _build_user_message(task, mcp_text, from_time, to_time)
+            try:
+                summary = _HermesUpdater().generate(user_msg)
+            except Exception as exc:
+                log.error("hermes failed for %s: %s", task_key, exc)
+                span.record_exception(exc)
+                summary = "Could not generate summary."
+        else:
+            summary = "No activity recorded in this period."
+
+        if not had_activity and not JIRA_POST_NO_ACTIVITY:
+            span.set_attribute("result.state", "no_activity_skipped")
+            return UpdateResult(
+                task_key=task_key, had_activity=False, duration_s=0,
+                session_count=0, comment_body="", comment_id=None,
+                state="no_activity_skipped",
+            )
+
+        comment_body = _format_comment(
+            task, summary, from_time, to_time, duration_s, session_count
+        )
+        update_id = db.log_jira_update(
+            conn,
+            task_key=task_key,
+            period_start=from_time,
+            period_end=to_time,
+            session_count=session_count,
+            duration_s=duration_s,
+            had_activity=had_activity,
+            comment_body=comment_body,
+        )
+
+        if dry_run:
+            print(f"\n{'=' * 60}\n{task_key}\n{'=' * 60}\n{comment_body}\n")
+            span.set_attribute("result.state", "dry_run")
+            return UpdateResult(
+                task_key=task_key, had_activity=had_activity, duration_s=duration_s,
+                session_count=session_count, comment_body=comment_body,
+                comment_id=None, state="dry_run",
+            )
+
+        try:
+            comment_id = jira.add_comment(task_key, comment_body)
+            db.mark_update_sent(conn, update_id, comment_id)
+            log.info("posted update for %s (comment_id=%s)", task_key, comment_id)
+            span.set_attribute("jira.comment_id", comment_id)
+            span.set_attribute("result.state", "sent")
+            return UpdateResult(
+                task_key=task_key, had_activity=had_activity, duration_s=duration_s,
+                session_count=session_count, comment_body=comment_body,
+                comment_id=comment_id, state="sent",
+            )
+        except Exception as exc:
+            db.mark_update_failed(conn, update_id, str(exc))
+            log.error("failed to post for %s: %s", task_key, exc)
+            span.record_exception(exc)
+            span.set_status(trace_api.StatusCode.ERROR, str(exc))
+            span.set_attribute("result.state", "failed")
+            return UpdateResult(
+                task_key=task_key, had_activity=had_activity, duration_s=duration_s,
+                session_count=session_count, comment_body=comment_body,
+                comment_id=None, state="failed", error=str(exc),
+            )
+
+
+__all__ = ["UpdateResult", "run_update"]

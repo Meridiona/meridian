@@ -112,27 +112,6 @@ def _repair_truncated_json(partial: str) -> str:
 _VALID_SESSION_TYPES = {"task", "overhead", "untracked"}
 
 
-def routing_for(
-    confidence: float,
-    task_key: str | None,
-    auto_floor: float,
-    queue_floor: float,
-) -> str:
-    """Map (confidence, task_key) to a routing label.
-
-    "auto"  — high-confidence match, write immediately
-    "queue" — medium-confidence, needs review
-    "skip"  — no task_key or confidence too low
-    """
-    if task_key is None:
-        return "skip"
-    if confidence >= auto_floor:
-        return "auto"
-    if confidence >= queue_floor:
-        return "queue"
-    return "skip"
-
-
 def parse_response(
     text: str,
     valid_keys: set[str],
