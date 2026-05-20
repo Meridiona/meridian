@@ -1,9 +1,12 @@
 // meridian — normalises screenpipe activity into structured app sessions
 
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
+use chrono::Utc;
 use sqlx::SqlitePool;
 
-use super::BATCH_LIMIT;
+use super::{SessionClassification, BATCH_LIMIT};
 
 /// Returns the max `id` in `app_sessions`, or `None` if the table is empty.
 pub(super) async fn get_max_session_id(pool: &SqlitePool) -> Result<Option<i64>> {
@@ -24,6 +27,23 @@ pub(super) async fn get_agent_cursor(pool: &SqlitePool) -> Result<i64> {
     Ok(row.map(|(v,)| v).unwrap_or(0))
 }
 
+/// Advance the cursor monotonically — only updates when `session_id` is strictly
+/// greater than the stored value so out-of-order writes are safe.
+pub(super) async fn advance_agent_cursor(pool: &SqlitePool, session_id: i64) -> Result<()> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE agent_cursor SET last_session_id = ?, updated_at = ? \
+         WHERE id = 1 AND ? > last_session_id",
+    )
+    .bind(session_id)
+    .bind(&now)
+    .bind(session_id)
+    .execute(pool)
+    .await
+    .with_context(|| format!("advancing agent_cursor to {}", session_id))?;
+    Ok(())
+}
+
 /// Fetch up to `BATCH_LIMIT` sessions with id > `after_id` that have not yet
 /// been classified (task_method IS NULL) and meet the minimum duration.
 pub(super) async fn fetch_unclassified_sessions(
@@ -37,11 +57,8 @@ pub(super) async fn fetch_unclassified_sessions(
         i64,
         String,
         Option<String>,
-        String,
-        String,
         Option<String>,
         Option<f64>,
-        String,
     )>,
 > {
     sqlx::query_as::<
@@ -52,16 +69,11 @@ pub(super) async fn fetch_unclassified_sessions(
             i64,
             String,
             Option<String>,
-            String,
-            String,
             Option<String>,
             Option<f64>,
-            String,
         ),
     >(
-        "SELECT id, app_name, duration_s, window_titles, session_text,
-                started_at, ended_at, category, confidence,
-                COALESCE(session_text_source, 'unknown')
+        "SELECT id, app_name, duration_s, window_titles, session_text, category, confidence
          FROM app_sessions
          WHERE id > ?
            AND duration_s > ?
@@ -75,6 +87,113 @@ pub(super) async fn fetch_unclassified_sessions(
     .fetch_all(pool)
     .await
     .context("fetching unclassified sessions")
+}
+
+/// Fetch all open (non-done) PM tasks.
+pub(super) async fn fetch_open_pm_tasks(pool: &SqlitePool) -> Result<Vec<super::TaskPayload>> {
+    sqlx::query_as::<_, (String, String, String, String, String)>(
+        "SELECT task_key, title,
+                COALESCE(description_text, ''),
+                COALESCE(status, ''),
+                COALESCE(status_category, '')
+         FROM pm_tasks
+         WHERE LOWER(status_category) != 'done'",
+    )
+    .fetch_all(pool)
+    .await
+    .context("fetching open pm_tasks")?
+    .into_iter()
+    .map(
+        |(task_key, title, description_text, status, status_category)| {
+            Ok(super::TaskPayload {
+                task_key,
+                title,
+                description_text,
+                status,
+                status_category,
+            })
+        },
+    )
+    .collect()
+}
+
+/// Mark a trivial (empty session_text) session as overhead/skip without calling the LLM.
+pub(super) async fn update_session_overhead(pool: &SqlitePool, session_id: i64) -> Result<()> {
+    sqlx::query(
+        "UPDATE app_sessions
+         SET task_key = NULL, task_confidence = 0.0, task_routing = 'skip',
+             task_method = 'prefilter_trivial', task_reasoning = NULL,
+             task_session_type = 'overhead'
+         WHERE id = ?",
+    )
+    .bind(session_id)
+    .execute(pool)
+    .await
+    .with_context(|| format!("marking session {} as overhead", session_id))?;
+    Ok(())
+}
+
+/// Persist a hermes classification result into `app_sessions`.
+pub(super) async fn update_session_task(
+    pool: &SqlitePool,
+    r: &SessionClassification,
+) -> Result<()> {
+    let session_type = if r.task_key.is_some() {
+        "task"
+    } else {
+        "overhead"
+    };
+    let reasoning = if r.reasoning.is_empty() {
+        None
+    } else {
+        Some(&r.reasoning)
+    };
+    sqlx::query(
+        "UPDATE app_sessions
+         SET task_key = ?, task_confidence = ?, task_routing = ?,
+             task_method = ?, task_reasoning = ?, task_session_type = ?
+         WHERE id = ?",
+    )
+    .bind(&r.task_key)
+    .bind(r.confidence)
+    .bind(&r.routing)
+    .bind(&r.method)
+    .bind(reasoning)
+    .bind(session_type)
+    .bind(r.session_id)
+    .execute(pool)
+    .await
+    .with_context(|| format!("updating task classification for session {}", r.session_id))?;
+    Ok(())
+}
+
+/// Persist multi-label dimension tags returned by Python.
+pub(super) async fn write_dimensions(
+    pool: &SqlitePool,
+    session_id: i64,
+    dims: &HashMap<String, Vec<String>>,
+) -> Result<()> {
+    for (dimension, values) in dims {
+        for value in values {
+            sqlx::query(
+                "INSERT OR IGNORE INTO session_dimensions \
+                 (session_id, dimension, value, confidence, source) \
+                 VALUES (?, ?, ?, 0.75, 'hermes_standalone')",
+            )
+            .bind(session_id)
+            .bind(dimension)
+            .bind(value)
+            .execute(pool)
+            .await
+            .with_context(|| {
+                format!(
+                    "writing dimension {}={} for session {}",
+                    dimension, value, session_id
+                )
+            })?;
+        }
+    }
+    Ok(())
 }
 
 /// Fetch sessions in the explicit id range `[from_id, to_id]` (inclusive) that
@@ -92,11 +211,8 @@ pub(super) async fn fetch_sessions_in_range(
         i64,
         String,
         Option<String>,
-        String,
-        String,
         Option<String>,
         Option<f64>,
-        String,
     )>,
 > {
     match to_id {
@@ -108,16 +224,11 @@ pub(super) async fn fetch_sessions_in_range(
                 i64,
                 String,
                 Option<String>,
-                String,
-                String,
                 Option<String>,
                 Option<f64>,
-                String,
             ),
         >(
-            "SELECT id, app_name, duration_s, window_titles, session_text,
-                    started_at, ended_at, category, confidence,
-                    COALESCE(session_text_source, 'unknown')
+            "SELECT id, app_name, duration_s, window_titles, session_text, category, confidence
              FROM app_sessions
              WHERE id >= ? AND id <= ? AND duration_s > ?
              ORDER BY id ASC",
@@ -137,16 +248,11 @@ pub(super) async fn fetch_sessions_in_range(
                 i64,
                 String,
                 Option<String>,
-                String,
-                String,
                 Option<String>,
                 Option<f64>,
-                String,
             ),
         >(
-            "SELECT id, app_name, duration_s, window_titles, session_text,
-                    started_at, ended_at, category, confidence,
-                    COALESCE(session_text_source, 'unknown')
+            "SELECT id, app_name, duration_s, window_titles, session_text, category, confidence
              FROM app_sessions
              WHERE id >= ? AND duration_s > ?
              ORDER BY id ASC",
@@ -159,6 +265,44 @@ pub(super) async fn fetch_sessions_in_range(
     }
 }
 
+/// Insert an `agent_runs` row with `status = 'running'` and return its id.
+pub(super) async fn start_agent_run(pool: &SqlitePool) -> Result<i64> {
+    let now = Utc::now().to_rfc3339();
+    let row = sqlx::query_as::<_, (i64,)>(
+        "INSERT INTO agent_runs (started_at, status) VALUES (?, 'running') RETURNING id",
+    )
+    .bind(&now)
+    .fetch_one(pool)
+    .await
+    .context("inserting agent_run row")?;
+    Ok(row.0)
+}
+
+/// Mark an `agent_runs` row as finished.
+pub(super) async fn complete_agent_run(
+    pool: &SqlitePool,
+    run_id: i64,
+    status: &str,
+    sessions: i64,
+    links: i64,
+) -> Result<()> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE agent_runs \
+         SET finished_at = ?, status = ?, sessions_processed = ?, links_written = ? \
+         WHERE id = ?",
+    )
+    .bind(&now)
+    .bind(status)
+    .bind(sessions)
+    .bind(links)
+    .bind(run_id)
+    .execute(pool)
+    .await
+    .with_context(|| format!("completing agent_run {}", run_id))?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Tests — DB helpers; no subprocess
 // ---------------------------------------------------------------------------
@@ -166,13 +310,7 @@ pub(super) async fn fetch_sessions_in_range(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::intelligence::task_linker::db_write::{
-        advance_agent_cursor, complete_agent_run, start_agent_run, update_session_overhead,
-        update_session_task, write_dimensions,
-    };
-    use crate::intelligence::task_linker::SessionClassification;
     use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
-    use std::collections::HashMap;
     use std::str::FromStr;
 
     async fn fresh_db() -> SqlitePool {
@@ -279,7 +417,6 @@ mod tests {
             task_key: Some("KAN-42".to_string()),
             confidence: 0.87,
             routing: "auto".to_string(),
-            session_type: "task".to_string(),
             reasoning: "test".to_string(),
             method: "llm_standalone".to_string(),
             dimensions: HashMap::new(),
@@ -310,7 +447,6 @@ mod tests {
             task_key: None,
             confidence: 0.1,
             routing: "skip".to_string(),
-            session_type: "overhead".to_string(),
             reasoning: "test".to_string(),
             method: "llm_standalone".to_string(),
             dimensions: HashMap::new(),
@@ -337,7 +473,6 @@ mod tests {
             task_key: Some("KAN-1".to_string()),
             confidence: 0.9,
             routing: "auto".to_string(),
-            session_type: "task".to_string(),
             reasoning: "test".to_string(),
             method: "llm_standalone".to_string(),
             dimensions: HashMap::new(),

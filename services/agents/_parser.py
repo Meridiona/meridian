@@ -109,31 +109,28 @@ def _repair_truncated_json(partial: str) -> str:
     return out
 
 
-_VALID_SESSION_TYPES = {"task", "overhead", "untracked"}
-
-
 def parse_response(
     text: str,
     valid_keys: set[str],
-) -> tuple[str | None, float, str, dict[str, list[str]], str, str | None]:
-    """Returns (task_key, confidence, reasoning, dimensions, session_type, error). error is None on success."""
+) -> tuple[str | None, float, str, dict[str, list[str]], str | None]:
+    """Returns (task_key, confidence, reasoning, dimensions, error). error is None on success."""
     if not text:
-        return None, 0.0, "", {}, "overhead", "empty response"
+        return None, 0.0, "", {}, "empty response"
     candidate = extract_json(text)
     if candidate is None:
-        return None, 0.0, "", {}, "overhead", "no JSON object in response"
+        return None, 0.0, "", {}, "no JSON object in response"
     try:
         obj = json.loads(candidate)
     except json.JSONDecodeError as exc:
-        return None, 0.0, "", {}, "overhead", f"json decode failed: {exc}"
+        return None, 0.0, "", {}, f"json decode failed: {exc}"
     if not isinstance(obj, dict):
-        return None, 0.0, "", {}, "overhead", "response was not a JSON object"
+        return None, 0.0, "", {}, "response was not a JSON object"
 
     raw_key = obj.get("task_key")
     if isinstance(raw_key, str) and raw_key.strip().lower() in _NULL_LITERALS:
         raw_key = None
     if raw_key is not None and raw_key not in valid_keys:
-        return None, 0.0, "", {}, "overhead", f"task_key {raw_key!r} not in candidate set"
+        return None, 0.0, "", {}, f"task_key {raw_key!r} not in candidate set"
 
     try:
         confidence = float(obj.get("confidence", 0.0))
@@ -143,10 +140,14 @@ def parse_response(
 
     reasoning  = str(obj.get("reasoning") or "")[:500]
     dimensions = parse_dimensions(obj)
-
-    raw_st = str(obj.get("session_type") or "").strip().lower()
-    session_type = raw_st if raw_st in _VALID_SESSION_TYPES else ("task" if raw_key else "overhead")
-
-    return raw_key, confidence, reasoning, dimensions, session_type, None
+    return raw_key, confidence, reasoning, dimensions, None
 
 
+def routing_for(confidence: float, task_key: str | None, auto_floor: float, queue_floor: float) -> str:
+    if task_key is None:
+        return "skip"
+    if confidence >= auto_floor:
+        return "auto"
+    if confidence >= queue_floor:
+        return "queue"
+    return "skip"
