@@ -9,7 +9,7 @@ use meridian::db::meridian::{cleanup_incomplete_runs, setup_db};
 use meridian::db::screenpipe::open_screenpipe;
 use meridian::etl::run_etl;
 use meridian::intelligence::{
-    check_classification_ready, run_categorization, run_pm_sync, run_task_linking,
+    check_classification_ready, run_categorization, run_jira_update, run_pm_sync, run_task_linking,
 };
 use meridian::observability;
 use tokio::signal::unix::{signal, SignalKind};
@@ -100,6 +100,9 @@ async fn main() -> Result<()> {
         if let Err(e) = run_task_linking(&meridian, &cfg).await {
             tracing::error!("classification run failed: {}", e);
         }
+        if let Err(e) = run_jira_update(&meridian, &cfg).await {
+            tracing::error!("jira update run failed: {}", e);
+        }
     }
 
     // 8. Poll loop — config is re-read on every tick so that edits to
@@ -134,7 +137,9 @@ async fn main() -> Result<()> {
                 if let Err(e) = run_task_linking(&meridian, &cfg).await {
                     tracing::error!("classification run failed: {}", e);
                 }
-
+                if let Err(e) = run_jira_update(&meridian, &cfg).await {
+                    tracing::error!("jira update run failed: {}", e);
+                }
             }
         }
     }
