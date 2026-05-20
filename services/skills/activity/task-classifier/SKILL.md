@@ -110,16 +110,17 @@ Return `task_key: KAN-42, confidence: 0.80, reasoning: "Back in VS Code editing 
 ## Scoring heuristics
 
 **When task_key is not null (matched to a ticket):**
-- **Direct ticket-key visibility** in window title or OCR — `confidence ≥ 0.90`, `session_type: "task"`
-- **Ticket description keywords** in session evidence — `0.70–0.85`, `session_type: "task"`
-- **Context continuity** (returning to same task after brief interruption) — `0.75–0.85`, `session_type: "task"`
-- **Generic project-level match** (session and ticket both about same project, but weak evidence) — `0.50–0.65`, `session_type: "task"`
+- **Task key + work alignment** (ticket key visible in window/OCR AND actual work matches ticket description) — `confidence ≥ 0.90`, `session_type: "task"`
+- **Work description alignment** (ticket description keywords match session activity, even without visible task key) — `0.75–0.85`, `session_type: "task"`
+- **Context continuity** (returning to same task after brief work interruption, ~few minutes) — `0.75–0.85`, `session_type: "task"`
+- **Generic project-level match** (session and ticket both mention same project, weak specific evidence) — `0.50–0.65`, `session_type: "task"`
+- **Task key only** (key visible but work activity doesn't clearly match ticket) — `0.60–0.75`, `session_type: "task"` (lower than key+alignment because work intent unclear)
 
 **When task_key is null:**
-- **Clear overhead signals** (system settings, browser idle, unrelated) — `confidence: 0.0–0.2`, `session_type: "overhead"`, `routing: "skip"`
+- **Clear overhead signals** (system settings, browser idle, unrelated activity) — `confidence: 0.0–0.2`, `session_type: "overhead"`, `routing: "skip"`
 - **Work-related but no matching ticket** (clear work activity, no candidates fit) — `confidence: 0.3–0.5`, `session_type: "unknown"`, `routing: "queue"`
 
-**Decision rule:** If equally plausible matches exist, prefer the one whose description most closely matches what the user is *actually doing*. If no good match, return `null` with appropriate session_type.
+**Decision rule:** Always verify work matches ticket *intent*, not just visible metadata. If equally plausible, pick the ticket whose description best aligns with what the user is *actually doing*.
 
 ## Hard rules
 
