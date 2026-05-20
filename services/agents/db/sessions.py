@@ -66,7 +66,7 @@ def fetch_unprocessed_sessions(
     """Pull the next `limit` sessions whose id is past the cursor.
 
     When `since_iso` is set, sessions whose `started_at` is earlier than that
-    timestamp are also excluded — used by the synthesizer's ONLY_TODAY mode
+    timestamp are also excluded — used by the tagger's ONLY_TODAY mode
     so we don't grind through the full historical backlog on every cycle.
     """
     cursor = get_cursor(conn)
@@ -143,7 +143,7 @@ def write_ticket_link(
     session_type: str,
     routing: str,
     provider: str | None = "jira",
-    method: str = "synthesizer",
+    method: str = "tagger",
 ) -> None:
     conn.execute(
         """
@@ -183,7 +183,7 @@ def fetch_pm_tasks(
     rows = conn.execute(
         f"""
         SELECT task_key, provider, title, description_text,
-               status, status_category, issue_type, project_key, url,
+               status_category, issue_type, project_key, url,
                updated_at, fetched_at, expires_at
           FROM pm_tasks
           {where}
@@ -200,7 +200,6 @@ def upsert_pm_task(
     task_key: str,
     title: str = "",
     description_text: str = "",
-    status: str = "",
     status_category: str = "todo",
     issue_type: str = "",
     project_key: str = "",
@@ -216,15 +215,14 @@ def upsert_pm_task(
         f"""
         INSERT INTO pm_tasks (
             task_key, provider, title, description_text,
-            status, status_category, issue_type, project_key, url,
+            status_category, issue_type, project_key, url,
             updated_at, fetched_at, expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                   strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+{int(expires_minutes)} minutes'))
         ON CONFLICT(task_key) DO UPDATE SET
             provider         = excluded.provider,
             title            = excluded.title,
             description_text = excluded.description_text,
-            status           = excluded.status,
             status_category  = excluded.status_category,
             issue_type       = excluded.issue_type,
             project_key      = excluded.project_key,
@@ -238,7 +236,6 @@ def upsert_pm_task(
             provider,
             title,
             description_text,
-            status,
             status_category,
             issue_type,
             project_key,
@@ -261,7 +258,7 @@ def upsert_session_dimension(
     """Insert or refresh one (session, dimension, value) row.
 
     On conflict, keep the higher confidence and the newer source. This makes
-    the writer idempotent across multiple stage runs (regex → embeddings → LLM).
+    the writer idempotent across multiple classification runs.
     """
     conn.execute(
         """
