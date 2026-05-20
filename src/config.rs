@@ -159,6 +159,9 @@ pub struct Config {
     /// Whether to re-categorize sessions that existed before the first run.
     /// CATEGORY_BACKFILL — default false (skip historical sessions)
     pub category_backfill: bool,
+    /// Number of recent classified sessions included as temporal context in each prompt.
+    /// CLASSIFICATION_CONTEXT_WINDOW — default 5
+    pub classification_context_window: usize,
     /// Whether to post Jira progress updates. Auto-enabled when JIRA_BASE_URL is set.
     /// JIRA_UPDATE_ENABLED — default true if Jira is configured
     pub jira_update_enabled: bool,
@@ -370,6 +373,11 @@ impl Config {
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(17);
 
+        let classification_context_window = std::env::var("CLASSIFICATION_CONTEXT_WINDOW")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(5);
+
         Self {
             screenpipe_db,
             meridian_db,
@@ -382,6 +390,7 @@ impl Config {
             classification_services_dir,
             classification_backfill,
             category_backfill,
+            classification_context_window,
             jira_update_enabled,
             jira_update_interval_s,
             jira_office_start_hour,

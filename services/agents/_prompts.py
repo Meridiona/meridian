@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 
 
 _VSCODE_BANNER_RE = re.compile(
@@ -9,17 +10,47 @@ _VSCODE_BANNER_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# Max chars of session_text included in the prompt. ~625 tokens at 4 chars/token —
+# enough to identify files, ticket keys, and recent activity without inflating context.
+SESSION_TEXT_CAP = 2500
+
+
+def _fmt_dur(duration_s: int | float) -> str:
+    secs = int(duration_s or 0)
+    if secs < 60:
+        return "<1min"
+    return f"{secs // 60}min"
+
+
+def _fmt_time(ts: str) -> str:
+    """Parse an ISO8601 timestamp and return HH:MM in its original timezone."""
+    try:
+        return datetime.fromisoformat(ts).strftime("%H:%M")
+    except Exception:
+        return ts[:5] if len(ts) >= 5 else ts
+
 
 def _format_session(session: dict) -> str:
     parts: list[str] = []
     parts.append(f"app: {session.get('app_name') or '?'}")
+    started = (session.get("started_at") or "").strip()
+    ended   = (session.get("ended_at") or "").strip()
+    dur     = session.get("duration_s")
+    if started or ended:
+        time_parts = []
+        if started:
+            time_parts.append(_fmt_time(started))
+        if ended:
+            time_parts.append(_fmt_time(ended))
+        time_range = "–".join(time_parts)
+        dur_str = f"  ({_fmt_dur(dur)})" if dur is not None else ""
+        parts.append(f"time: {time_range}{dur_str}")
+    elif dur is not None:
+        parts.append(f"duration: {_fmt_dur(dur)}")
     cat = session.get("category")
     cat_conf = session.get("confidence")
     if cat:
         parts.append(f"category: {cat} (confidence {round(cat_conf or 0.0, 2)})")
-    dur = session.get("duration_s")
-    if dur is not None:
-        parts.append(f"duration: {dur}s")
     titles = session.get("window_titles") or []
     if titles:
         parts.append("top windows:")
@@ -33,9 +64,15 @@ def _format_session(session: dict) -> str:
                 name, cnt = str(t), 1
             name = _VSCODE_BANNER_RE.sub("", name).strip()
             parts.append(f"  • {name} (×{cnt})")
-    session_text_val = session.get("session_text") or ""
+    session_text_val = (session.get("session_text") or "").strip()
+    if session_text_val:
+        source = (session.get("session_text_source") or "unknown").strip().lower()
+        total = len(session_text_val)
+        excerpt = session_text_val[:SESSION_TEXT_CAP]
+        tail = f"\n  … ({total - SESSION_TEXT_CAP} more chars)" if total > SESSION_TEXT_CAP else ""
+        parts.append(f"screen content [{source}]:\n{excerpt}{tail}")
+
     audio = session.get("audio_snippets") or []
-    parts.append(f"session_text: {len(session_text_val)} chars")
     if audio:
         parts.append(f"audio_snippets: {len(audio)} captured")
     return "\n".join(parts)
@@ -44,20 +81,62 @@ def _format_session(session: dict) -> str:
 def _format_candidates(tasks: list[dict]) -> str:
     rows: list[str] = []
     for i, task in enumerate(tasks, start=1):
-        title = (task.get("title") or "").strip()
-        desc  = (task.get("description_text") or "").strip()
+        title       = (task.get("title") or "").strip()
+        desc        = (task.get("description_text") or "").strip()
+        issue_type  = (task.get("issue_type") or "").strip()
+        epic_title  = (task.get("epic_title") or "").strip()
+        sprint_name = (task.get("sprint_name") or "").strip()
         if len(desc) > 240:
             desc = desc[:240] + "…"
+        meta_parts = [p for p in [issue_type, f"Epic: {epic_title}" if epic_title else "", sprint_name] if p]
+        meta = "  [" + " · ".join(meta_parts) + "]" if meta_parts else ""
         rows.append(
-            f"{i}. {task['task_key']}\n"
+            f"{i}. {task['task_key']}{meta}\n"
             f"   title: {title}\n"
             f"   description: {desc or '(empty)'}"
         )
     return "\n\n".join(rows) if rows else "(no candidates)"
 
 
-def build_user_message(session: dict, candidates: list[dict]) -> str:
+def _format_recent_sessions(sessions: list[dict]) -> str:
+    if not sessions:
+        return "  (no recent session context)"
+    rows = []
+    for s in sessions:
+        time_str = _fmt_time(s.get("started_at") or "")
+        app = (s.get("app_name") or "?")[:14]
+        dur_str = _fmt_dur(s.get("duration_s") or 0)
+        task_key = s.get("task_key")
+        routing = s.get("task_routing")  # None means unclassified
+        category = (s.get("category") or "").strip()
+        if task_key:
+            target = f"→ {task_key}"
+        elif routing == "untracked":
+            target = "→ [untracked]"
+        elif routing is None:
+            # session captured but not yet classified
+            target = "→ [pending]"
+        else:
+            target = "→ [overhead]"
+        cat_tag = f"  [{category}]" if category else ""
+        rows.append(f"  {time_str}  {app:<14}  {dur_str:<7}  {target}{cat_tag}")
+    return "\n".join(rows)
+
+
+def build_user_message(
+    session: dict,
+    candidates: list[dict],
+    recent_sessions: list[dict] | None = None,
+) -> str:
+    sessions = recent_sessions or []
+    has_any_task_key = any(s.get("task_key") for s in sessions)
+    recent_block = (
+        "RECENT WORK CONTEXT:\n"
+        f"{_format_recent_sessions(sessions)}\n"
+        "\n"
+    ) if has_any_task_key else ""
     return (
+        f"{recent_block}"
         "SESSION:\n"
         f"{_format_session(session)}\n"
         "\n"

@@ -71,6 +71,11 @@ pub async fn run_jira_update(pool: &SqlitePool, cfg: &Config) -> Result<()> {
         }
     };
 
+    if !services_dir.join("agents/run_jira_updater.py").exists() {
+        debug!("agents/run_jira_updater.py not found — skipping jira update");
+        return Ok(());
+    }
+
     let python = resolve_python(&services_dir);
 
     info!(
