@@ -1,7 +1,7 @@
 ---
 name: task-classifier
 description: Classify a user work session against open Jira tickets — pick the best match (or null) using session evidence, and infer dimension tags.
-version: 1.0.0
+version: 2.0.0
 metadata:
   meridian:
     tags: [classifier, task-linker]
