@@ -1,10 +1,10 @@
 # meridian-agents
 
-Python service that runs alongside the Rust daemon. It reads completed `app_sessions` rows from `~/.meridian/meridian.db`, classifies each one through a 3-stage pipeline (rules → embeddings → LLM tiebreak), and writes Jira task mappings and multi-label dimension tags back into the same DB.
+Python service that runs alongside the Rust daemon. It reads completed `app_sessions` rows from `~/.meridian/meridian.db`, classifies each session to a Jira task using hermes `AIAgent`, and writes Jira task mappings and multi-label dimension tags back into the same DB.
 
 The Rust daemon owns all DDL; this service only does SELECT/INSERT/UPDATE on its agent-side tables.
 
-For the deep technical reference (per-stage detail, score formulas, schema, recipes), see [`agents/README.md`](agents/README.md).
+For the deep technical reference (classification logic, schema, recipes), see [`agents/README.md`](agents/README.md).
 
 ---
 
@@ -14,23 +14,11 @@ For the deep technical reference (per-stage detail, score formulas, schema, reci
 app_sessions row (Rust ETL writes it)
         │
         ▼
-┌─────────────────────────────────────────────────────────┐
-│ Stage 1  rules + ticket regex + trivial-overhead skip   │  no LLM
-│   writes session_dimensions, may write ticket_links     │
-└─────────────────────────────────────────────────────────┘
-        │  (only when Stage 1 found no ticket-shaped string)
-        ▼
-┌─────────────────────────────────────────────────────────┐
-│ Stage 2  bge-small embedding · cosine + dim_overlap +   │  no LLM
-│          past_vote → top-K candidates                   │
-│   may finalise ticket_links with method=semantic_embed  │
-└─────────────────────────────────────────────────────────┘
-        │  (only when Stage 2 returns routing=queue)
-        ▼
-┌─────────────────────────────────────────────────────────┐
-│ Stage 3  hermes AIAgent — picks one candidate           │  LLM
-│   refines ticket_links with method=agent_tiebreak       │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────┐
+│ Classification Engine (hermes AIAgent)   │ LLM-powered
+│   matches session to task                │
+│   writes ticket_links, session_dimensions│
+└──────────────────────────────────────────┘
 ```
 
 ---
@@ -60,12 +48,9 @@ All variables are read in `agents/config.py`. Copy `.env.example` to `.env` in t
 | Variable | Default | Purpose |
 |---|---|---|
 | `MERIDIAN_DB` | `~/.meridian/meridian.db` | Path to the SQLite file. Must already exist (the Rust daemon creates it). |
-| `HERMES_MODEL` | `nemotron-3-super` | Model name passed to hermes `AIAgent` for Stage 3. |
-| `HERMES_BASE_URL` | `https://ollama.com/v1` | OpenAI-compatible LLM endpoint for Stage 3. |
+| `HERMES_MODEL` | `nemotron-3-super` | Model name passed to hermes `AIAgent` for classification. |
+| `HERMES_BASE_URL` | `https://ollama.com/v1` | OpenAI-compatible LLM endpoint. |
 | `OLLAMA_API_KEY` | — | API key for the LLM endpoint (also accepts standard OpenAI-compat keys). |
-| `STAGE1_ENABLED` | `1` | Set to `0` to skip Stage 1 (rules + regex). Almost never useful. |
-| `STAGE2_ENABLED` | `1` | Set to `0` to skip Stage 2 (embeddings). Stage 1 result is final. |
-| `STAGE3_ENABLED` | `1` | Set to `0` to skip Stage 3 (LLM). Stage 2 result is final. |
 | `HERMES_DEV_MODE` | `0` | Set to `1` to load hermes from `services/.hermes/` instead of the installed package (see Dev mode below). |
 
 Additional variables (`TAGGER_TICK_SECS`, `ONLY_TODAY`, `SESSION_BATCH_LIMIT`, etc.) are documented in [`agents/README.md`](agents/README.md#configuration).
@@ -91,7 +76,7 @@ Polls every `TAGGER_TICK_SECS` (default 7 s). On each tick it runs `tagger.run_o
 ### Debug a single session
 
 ```bash
-# Re-run all stages with full logging — does NOT write to DB
+# Re-run classification with full logging — does NOT write to DB
 python -m agents.tagger --session <id> --dry-run
 
 # Re-run and persist (resets dims + ticket_link first)
@@ -115,21 +100,6 @@ launchctl print gui/$(id -u)/com.meridiona.tagger-daemon
 tail -f ~/.meridian/logs/tagger-daemon.log
 tail -f ~/.meridian/logs/tagger-daemon.err
 ```
-
----
-
-## Hot-toggle stages
-
-The daemon re-reads `~/.meridian/tagger.config.json` every tick. CLI helpers write it for you:
-
-```bash
-python -m agents.tagger --stages-status         # show env / override file / resolved set
-python -m agents.tagger --enable-stage 3        # turn Stage 3 on live
-python -m agents.tagger --disable-stage 3       # turn Stage 3 off live
-python -m agents.tagger --clear-stages-override # delete override → fall back to env vars
-```
-
-If you launch the daemon with an explicit `--stage 1,2`, the stage set is frozen for that process's lifetime and the override file is ignored.
 
 ---
 
