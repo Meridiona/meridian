@@ -165,9 +165,14 @@ impl Scores {
     skip_all,
     fields(
         app_name = %signals.app_name,
+        window_title_count = tracing::field::Empty,
+        ocr_text_bytes = tracing::field::Empty,
         signal_count = tracing::field::Empty,
+        audio_present = signals.audio_present,
+        duration_secs = signals.duration_secs,
         category = tracing::field::Empty,
         confidence = tracing::field::Empty,
+        confidence_floor_applied = tracing::field::Empty,
     )
 )]
 pub fn categorize(signals: &SessionSignals<'_>) -> (ActivityKind, f32) {
@@ -185,16 +190,32 @@ pub fn categorize(signals: &SessionSignals<'_>) -> (ActivityKind, f32) {
     let signal_count = signals.window_titles.len()
         + signals.signals.len()
         + if signals.audio_present { 1 } else { 0 };
+    tracing::Span::current().record("window_title_count", signals.window_titles.len());
+    tracing::Span::current().record("ocr_text_bytes", signals.ocr_text.len());
     tracing::Span::current().record("signal_count", signal_count);
 
     let (kind, confidence) = scores.winner();
     let (final_kind, final_conf) = if confidence < CONFIDENCE_FLOOR {
+        tracing::Span::current().record("confidence_floor_applied", true);
         (ActivityKind::IdlePersonal, confidence)
     } else {
+        tracing::Span::current().record("confidence_floor_applied", false);
         (kind, confidence)
     };
     tracing::Span::current().record("category", final_kind.as_str());
     tracing::Span::current().record("confidence", final_conf as f64);
+
+    tracing::debug!(
+        app_name = signals.app_name,
+        window_titles = signals.window_titles.len(),
+        signals = signal_count,
+        ocr_text_bytes = signals.ocr_text.len(),
+        audio_present = signals.audio_present,
+        category = final_kind.as_str(),
+        confidence = final_conf,
+        "session categorized"
+    );
+
     (final_kind, final_conf)
 }
 
