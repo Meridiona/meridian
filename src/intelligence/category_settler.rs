@@ -241,7 +241,8 @@ pub async fn run_fm_categorization(
                                     {
                                         warn!(session_id = id, error = %db_err, "failed to update category (fallback)");
                                     } else {
-                                        let expl_str = explanation.chars().take(300).collect::<String>();
+                                        let expl_str =
+                                            explanation.chars().take(300).collect::<String>();
                                         if valid_cat == prev_category.as_str() {
                                             debug!(
                                                 session_id = id,
