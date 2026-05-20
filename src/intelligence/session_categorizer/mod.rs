@@ -205,6 +205,8 @@ pub fn categorize(signals: &SessionSignals<'_>) -> (ActivityKind, f32) {
     tracing::Span::current().record("category", final_kind.as_str());
     tracing::Span::current().record("confidence", final_conf as f64);
 
+    let reasoning = build_reasoning(signals, final_kind);
+
     tracing::debug!(
         app_name = signals.app_name,
         window_titles = signals.window_titles.len(),
@@ -213,10 +215,102 @@ pub fn categorize(signals: &SessionSignals<'_>) -> (ActivityKind, f32) {
         audio_present = signals.audio_present,
         category = final_kind.as_str(),
         confidence = final_conf,
+        reasoning = %reasoning,
         "session categorized"
     );
 
     (final_kind, final_conf)
+}
+
+/// Builds a human-readable explanation of why a session was categorized a certain way.
+fn build_reasoning(signals: &SessionSignals<'_>, category: ActivityKind) -> String {
+    let app_lc = signals.app_name.to_lowercase();
+    let ocr_lc = signals.ocr_text.to_lowercase();
+
+    let mut reasons = Vec::new();
+
+    // App name signal
+    if signals.audio_present {
+        let is_meeting = [
+            "zoom", "zoom.us", "google meet", "webex", "whereby", "microsoft teams",
+        ]
+        .iter()
+        .any(|p| app_lc.contains(p));
+        if is_meeting && category == ActivityKind::Meeting {
+            reasons.push(format!("audio + {} app", signals.app_name));
+        } else if signals.audio_present && category == ActivityKind::Meeting {
+            reasons.push("audio detected".to_string());
+        }
+    }
+
+    // App name patterns
+    if app_lc.contains("zoom") || app_lc.contains("meet") || app_lc.contains("webex") {
+        if category == ActivityKind::Meeting {
+            reasons.push("meeting app detected".to_string());
+        }
+    } else if app_lc.contains("slack") || app_lc.contains("discord") {
+        if category == ActivityKind::Communication {
+            reasons.push("communication app detected".to_string());
+        }
+    } else if app_lc.contains("cursor") || app_lc.contains("vscode") || app_lc.contains("vim") {
+        if category == ActivityKind::Coding {
+            reasons.push("editor app detected".to_string());
+        }
+    } else if app_lc.contains("figma") {
+        if category == ActivityKind::Design {
+            reasons.push("figma app detected".to_string());
+        }
+    }
+
+    // Window title signals
+    if !signals.window_titles.is_empty() {
+        for title in signals.window_titles.iter().take(3) {
+            let t = title.window_name.to_lowercase();
+            if t.contains("pull request") || t.contains("pull/") {
+                if category == ActivityKind::CodeReview {
+                    reasons.push(format!("window title: {}", &title.window_name[..std::cmp::min(40, title.window_name.len())]));
+                    break;
+                }
+            } else if t.contains("dockerfile") || t.contains("kubernetes") {
+                if category == ActivityKind::DeploymentDevops {
+                    reasons.push(format!("window title: {}", &title.window_name[..std::cmp::min(40, title.window_name.len())]));
+                    break;
+                }
+            }
+        }
+    }
+
+    // OCR signals
+    let devops_tokens = ["kubectl", "docker", "terraform", "helm", "ansible", "aws", "gcp"];
+    let devops_matched: Vec<&str> = devops_tokens
+        .iter()
+        .filter(|t| ocr_lc.contains(*t))
+        .copied()
+        .collect();
+    if !devops_matched.is_empty() && category == ActivityKind::DeploymentDevops {
+        reasons.push(format!("OCR: {} detected", devops_matched.join(", ")));
+    }
+
+    let code_tokens = ["fn ", "def ", "class ", "function", "import", "const ", "let "];
+    let _code_matched: Vec<&str> = code_tokens
+        .iter()
+        .filter(|t| ocr_lc.contains(*t))
+        .copied()
+        .collect();
+    if !_code_matched.is_empty() && category == ActivityKind::Coding && reasons.is_empty() {
+        reasons.push("OCR: code patterns".to_string());
+    }
+
+    // Fallback
+    if reasons.is_empty() {
+        if signals.window_titles.is_empty() && ocr_lc.is_empty() && !signals.audio_present {
+            reasons.push("app name only".to_string());
+        } else {
+            reasons.push("multi-signal decision".to_string());
+        }
+    }
+
+    reasons.join(" | ")
 }
 
 // ---------------------------------------------------------------------------
