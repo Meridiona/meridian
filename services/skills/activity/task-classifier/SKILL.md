@@ -62,7 +62,7 @@ Pick **exactly one** of the candidate `task_key` values, OR return `null` if **n
 Use **context from previous sessions** to make smarter decisions:
 - If the current session is **generic** (e.g., Slack) but follows/precedes work on a specific ticket, consider linking it to that task.
 - If sessions alternate (coding → Slack → coding), treat them as potentially the **same task** if separated by only a few minutes.
-- Overhead (browser, system settings) should always be `null` regardless of context.
+- Overhead (system settings, music, etc) should always be `null` regardless of context.
 
 ## Output format
 
@@ -81,8 +81,8 @@ Reply with ONE valid JSON object — no preamble, no markdown fences, no follow-
 Schema:
 - `task_key` — must be one of the candidate keys above, OR `null`
 - `confidence` — number in `[0, 1]`. See "Scoring heuristics" section for ranges per outcome type.
-- `session_type` — one of: `"task"` (matched to Jira ticket), `"overhead"` (idle/system/unrelated), `"unknown"` (work-related but no match). Guides routing: task→auto, overhead→skip, unknown→queue.
-- `reasoning` — 1–2 sentences citing the specific evidence that pinned your choice. Must mention window titles, OCR snippets, or context clues.
+- `session_type` — one of: `"task"` (matched to Jira ticket), `"overhead"` (idle/system/unrelated), `"untracked"` (work-related but no matching ticket). Guides routing: task→auto, overhead→skip, untracked→queue.
+- `reasoning` — 1–2 sentences or even 2-4 sentences(if complex) citing the specific evidence that pinned your choice. Must mention window titles, OCR snippets, or context clues.
 - `dimensions` — inferred activity tags from the session evidence:
   - Keys: `activity`, `intent`, `engagement`, `collaboration`, `tool`, `topic`, `practice`
   - Values: lists of lowercase snake_case strings (e.g. `"code_review"`, `"deep_work"`, `"github_pr"`, `"communication"`, `"breaks"`)
@@ -99,28 +99,23 @@ You have access to **the previous 5 sessions** to disambiguate the current sessi
 - Session 2 (3 min ago): Slack, discussing PR review for KAN-42 → **if related to same work**, task_key: KAN-42, confidence: 0.75 (work mention + prior context)
 - Session 3 (now): VS Code, editing same file → task_key: KAN-42, confidence: 0.85 (context continuity)
 
-**Decision:** If Session 2 (Slack) content shows it's about the same work (discussing the PR, architecture, blockers for KAN-42), classify it to **KAN-42** using context from Session 1. If Slack is generic work discussion with no connection to the prior task, return `null` with `session_type: "unknown"`.
+**Decision:** If Session 2 (Slack) content shows it's about the same work (discussing the work or searching about it), classify it to **KAN-42** using context from Session 1. If Slack is generic work discussion with no connection to the prior task, return `null` with `session_type: "untracked"`.
 
 Example reasoning for Session 2 (if task-related): `"Slack discusses PR review for KAN-42 implementation mentioned in prior VS Code session; linked via work context."`
-
-**When to break continuity:**
-- 30+ minutes have passed since the last task session → assume the user switched contexts
-- The user switched to a completely different ticket → reset the context
-- System idle or system settings appeared → reset the context
 
 ## Scoring heuristics
 
 **When task_key is not null (matched to a ticket):**
-- **Task key + work alignment** (ticket key visible in window/OCR AND actual work matches ticket description) — `confidence ≥ 0.90`, `session_type: "task"`
-- **Work description alignment** (ticket description keywords match session activity, even without visible task key) — `0.75–0.85`, `session_type: "task"`
-- **Context continuity** (returning to same task after brief work interruption, ~few minutes) — `0.75–0.85`, `session_type: "task"`
-- **Generic project-level match** (session and ticket both mention same project, weak specific evidence) — `0.50–0.65`, `session_type: "task"`
-- **Task key only** (key visible but work activity doesn't clearly match ticket) — `0.60–0.75`, `session_type: "task"` (lower than key+alignment because work intent unclear)
+- **Task key + work alignment**  — `confidence ≥ 0.90`, `session_type: "task"`
+- **Work description alignment**  — `0.75–0.85`, `session_type: "task"`
+- **Context continuity**  — `0.75–0.85`, `session_type: "task"`
+- **Generic project-level match**  — `0.50–0.65`, `session_type: "task"`
+- **Task key only**  — `0.60–0.75`, `session_type: "task"` (lower than key+alignment because work intent unclear)
 
 **When task_key is null:**
 - **Clear overhead signals** (system settings, browser idle, unrelated activity) — `confidence: 0.0–0.2`, `session_type: "overhead"`, `routing: "skip"`
-- **Work-related but no matching ticket** (clear coding/writing signals, no candidates fit) — `confidence: 0.6–0.8`, `session_type: "unknown"`, `routing: "queue"` (high confidence in work, low in task mapping)
-- **Ambiguous activity, no match** (unclear if work or overhead, no candidates fit) — `confidence: 0.3–0.5`, `session_type: "unknown"`, `routing: "queue"`
+- **Work-related but no matching ticket** (clear coding/writing signals, no candidates fit) — `confidence: 0.6–0.8`, `session_type: "untracked"`, `routing: "queue"` (high confidence in work, low in task mapping)
+- **Ambiguous activity, no match** (unclear if work or overhead, no candidates fit) — `confidence: 0.3–0.5`, `session_type: "untracked"`, `routing: "queue"`
 
 **Decision rule:** Always verify work matches ticket *intent*, not just visible metadata. If equally plausible, pick the ticket whose description best aligns with what the user is *actually doing*.
 
