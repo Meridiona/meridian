@@ -13,9 +13,8 @@ const TasksView    = dynamic(() => import('@/components/views/TasksView'),    { 
 const QueueView    = dynamic(() => import('@/components/views/QueueView'),    { ssr: false })
 const SessionsView = dynamic(() => import('@/components/views/SessionsView'), { ssr: false })
 const WeekView     = dynamic(() => import('@/components/views/WeekView'),     { ssr: false })
-const SettingsView = dynamic(() => import('@/components/views/SettingsView'), { ssr: false })
 
-type View = 'today' | 'tasks' | 'queue' | 'sessions' | 'week' | 'settings'
+type View = 'today' | 'tasks' | 'queue' | 'sessions' | 'week'
 
 export default function DashboardPage() {
   const [view, setView] = useState<View>('today')
@@ -54,7 +53,6 @@ export default function DashboardPage() {
       else if (e.key === '3') navigate('queue')
       else if (e.key === '4') navigate('sessions')
       else if (e.key === '5') navigate('week')
-      else if (e.key === '6') navigate('settings')
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -78,13 +76,12 @@ export default function DashboardPage() {
           {view === 'queue'    && <QueueView    />}
           {view === 'sessions' && <SessionsView />}
           {view === 'week'     && <WeekView     />}
-          {view === 'settings' && <SettingsView />}
 
           <footer className="mt-24 pt-8 rule-t flex items-center justify-between text-[11px]"
             style={{ borderTopColor: 'var(--rule)', color: 'var(--ink-4)' }}>
             <span>Meridian · local · {todayDate}</span>
             <span className="font-mono tnum">
-              <span className="kbd">⌘</span> <span className="kbd">K</span> to jump · <span className="kbd">1</span>–<span className="kbd">6</span> to switch view
+              <span className="kbd">⌘</span> <span className="kbd">K</span> to jump · <span className="kbd">1</span>–<span className="kbd">5</span> to switch view
             </span>
           </footer>
         </div>

@@ -20,12 +20,7 @@ dependencies = [
   "mcp>=1.3.0,<2",
   "PyYAML>=6.0,<7",
   "python-json-logger>=2.0,<3",
-  "psutil>=5.9,<7",
 ]
-
-[project.optional-dependencies]
-# Apple Silicon local inference — install with: pip install -e ".[local-llm]"
-local-llm = ["mlx-lm>=0.22,<1", "psutil>=5.9,<7"]
 
 [tool.setuptools.packages.find]
 where = ["."]

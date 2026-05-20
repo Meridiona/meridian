@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 
 from agents import observability
-from agents.config import MODEL, BASE_URL, API_KEY, load_skill, LLM_PREFER_LOCAL, LLM_BUDGET_PCT
+from agents.config import MODEL, BASE_URL, API_KEY, load_skill
 
 from ._prompts import build_user_message
 from ._parser import parse_response, routing_for
@@ -62,15 +62,12 @@ def classify_session(
     sid = int(session["id"])
     with tracer.start_as_current_span("task_classifier_agent.decide") as span:
         span.set_attribute("session_id", sid)
+        span.set_attribute("model", MODEL or "")
         span.set_attribute("pm_tasks", len(pm_tasks))
         result = _classify_session_inner(session, pm_tasks, sid)
-        # Use the actual model that ran, not the static config default.
-        span.set_attribute("llm.model",    result.debug.get("model") or MODEL or "")
-        span.set_attribute("llm.runtime",  result.debug.get("llm_runtime", "cloud"))
-        span.set_attribute("llm.is_local", result.debug.get("llm_is_local", False))
-        span.set_attribute("method",           result.method)
-        span.set_attribute("routing",          result.routing)
-        span.set_attribute("confidence",       float(result.confidence))
+        span.set_attribute("method", result.method)
+        span.set_attribute("routing", result.routing)
+        span.set_attribute("confidence", float(result.confidence))
         if result.chosen_task_key:
             span.set_attribute("chosen_task_key", result.chosen_task_key)
         span.set_attribute("agent_latency_ms", int(result.elapsed_s * 1000))
@@ -102,28 +99,6 @@ def _classify_session_inner(
             reasoning=str(exc), routing="skip", method="agent_unavailable",
         )
 
-    # ── Dynamic LLM endpoint selection ───────────────────────────────────────
-    # Default to static config; override with a local model if available.
-    _model, _base_url, _api_key = MODEL, BASE_URL, (API_KEY or "none")
-    _llm_runtime  = "cloud"
-    _llm_is_local = False
-    with tracer.start_as_current_span("task_classifier.select_model") as ms_span:
-        if LLM_PREFER_LOCAL:
-            from agents.llm_selector import select_model_for_hermes
-            local_ep = select_model_for_hermes(budget_pct=LLM_BUDGET_PCT)
-            if local_ep:
-                _model, _base_url, _api_key = local_ep.model, local_ep.base_url, local_ep.api_key
-                _llm_runtime  = local_ep.runtime
-                _llm_is_local = True
-                log.info("task_classifier_agent: local model=%s runtime=%s",
-                         _model, local_ep.runtime)
-            else:
-                log.info("task_classifier_agent: no local model available, using cloud model=%s",
-                         _model)
-        ms_span.set_attribute("llm.is_local", _llm_is_local)
-        ms_span.set_attribute("llm.model",    _model or "")
-        ms_span.set_attribute("llm.runtime",  _llm_runtime)
-
     from agents._hermes_setup import ensure_hermes_importable
     ensure_hermes_importable()
     try:
@@ -136,72 +111,56 @@ def _classify_session_inner(
         )
 
     log.info("task_classifier_agent: model=%s base_url=%s skill=%s pm_tasks=%d",
-             _model, _base_url, SKILL_NAME, len(pm_tasks))
+             MODEL, BASE_URL, SKILL_NAME, len(pm_tasks))
 
-    with tracer.start_as_current_span("task_classifier.agent_call") as ac_span:
-        ac_span.set_attribute("llm.model",      _model or "")
-        ac_span.set_attribute("llm.base_url",   _base_url or "")
-        ac_span.set_attribute("pm_tasks.count", len(pm_tasks))
-        t0 = time.time()
-        try:
-            agent = AIAgent(
-                model=_model,
-                base_url=_base_url,
-                api_key=_api_key,
-                ephemeral_system_prompt=base_prompt,
-                enabled_toolsets=[],
-                quiet_mode=True,
-                skip_context_files=True,
-                load_soul_identity=False,
-                skip_memory=True,
-                max_iterations=1,
-                max_tokens=MAX_TOKENS,
-            )
-            result = agent.run_conversation(user_message)
-        except Exception as exc:  # noqa: BLE001
-            elapsed = time.time() - t0
-            log.warning("task_classifier_agent AIAgent failed: %s", exc)
-            ac_span.record_exception(exc)
-            return ClassifierDecision(
-                session_id=sid, chosen_task_key=None, confidence=0.0,
-                reasoning=f"AIAgent run failed: {exc}", routing="skip",
-                method="agent_unavailable", elapsed_s=elapsed,
-            )
-
+    t0 = time.time()
+    try:
+        agent = AIAgent(
+            model=MODEL,
+            base_url=BASE_URL,
+            api_key=API_KEY or "none",
+            ephemeral_system_prompt=base_prompt,
+            enabled_toolsets=[],
+            quiet_mode=True,
+            skip_context_files=True,
+            load_soul_identity=False,
+            skip_memory=True,
+            max_iterations=1,
+            max_tokens=MAX_TOKENS,
+        )
+        result = agent.run_conversation(user_message)
+    except Exception as exc:  # noqa: BLE001
         elapsed = time.time() - t0
+        log.warning("task_classifier_agent AIAgent failed: %s", exc)
+        return ClassifierDecision(
+            session_id=sid, chosen_task_key=None, confidence=0.0,
+            reasoning=f"AIAgent run failed: {exc}", routing="skip",
+            method="agent_unavailable", elapsed_s=elapsed,
+        )
 
-        raw = ""
-        if isinstance(result, dict):
-            raw = str(
-                result.get("final_response")
-                or result.get("response")
-                or ""
-            ).strip()
+    elapsed = time.time() - t0
 
-        log.debug("task_classifier_agent raw response (%.1fs): %s", elapsed, raw[:1000])
-        ac_span.set_attribute("response.length",  len(raw))
-        ac_span.set_attribute("agent.elapsed_ms", int(elapsed * 1000))
+    raw = ""
+    if isinstance(result, dict):
+        raw = str(
+            result.get("final_response")
+            or result.get("response")
+            or ""
+        ).strip()
 
-    with tracer.start_as_current_span("task_classifier.parse_response") as pr_span:
-        task_key, confidence, reasoning, dimensions, err = parse_response(raw, valid_keys)
-        if err:
-            log.warning("task_classifier_agent invalid response: %s", err)
-            pr_span.set_attribute("parsed.task_key",   "")
-            pr_span.set_attribute("parsed.confidence", 0.0)
-            pr_span.set_attribute("parsed.routing",    "skip")
-            return ClassifierDecision(
-                session_id=sid, chosen_task_key=None, confidence=0.0,
-                reasoning=err, routing="skip", method="agent_invalid_response",
-                raw_response=raw[:1000], elapsed_s=elapsed,
-                debug={"error": err, "model": _model, "base_url": _base_url,
-                   "llm_runtime": _llm_runtime, "llm_is_local": _llm_is_local},
-            )
+    log.debug("task_classifier_agent raw response (%.1fs): %s", elapsed, raw[:1000])
 
-        routing = routing_for(confidence, task_key, AUTO_FLOOR, QUEUE_FLOOR)
-        pr_span.set_attribute("parsed.task_key",   task_key or "")
-        pr_span.set_attribute("parsed.confidence", confidence)
-        pr_span.set_attribute("parsed.routing",    routing)
+    task_key, confidence, reasoning, dimensions, err = parse_response(raw, valid_keys)
+    if err:
+        log.warning("task_classifier_agent invalid response: %s", err)
+        return ClassifierDecision(
+            session_id=sid, chosen_task_key=None, confidence=0.0,
+            reasoning=err, routing="skip", method="agent_invalid_response",
+            raw_response=raw[:1000], elapsed_s=elapsed,
+            debug={"error": err, "model": MODEL, "base_url": BASE_URL},
+        )
 
+    routing = routing_for(confidence, task_key, AUTO_FLOOR, QUEUE_FLOOR)
     return ClassifierDecision(
         session_id=sid,
         chosen_task_key=task_key,
@@ -213,14 +172,12 @@ def _classify_session_inner(
         elapsed_s=elapsed,
         dimensions=dimensions,
         debug={
-            "model":        _model,
-            "base_url":     _base_url,
-            "llm_runtime":  _llm_runtime,
-            "llm_is_local": _llm_is_local,
-            "n_tasks":      len(pm_tasks),
-            "auto_floor":   AUTO_FLOOR,
-            "queue_floor":  QUEUE_FLOOR,
-            "skill":        SKILL_NAME,
+            "model":       MODEL,
+            "base_url":    BASE_URL,
+            "n_tasks":     len(pm_tasks),
+            "auto_floor":  AUTO_FLOOR,
+            "queue_floor": QUEUE_FLOOR,
+            "skill":       SKILL_NAME,
         },
     )
 

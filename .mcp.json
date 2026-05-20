@@ -3,13 +3,7 @@
     "meridian": {
       "command": "node",
       "args": [
-        "/Users/akarshhegde/Documents/Meridiona/meridian-v1/meridian/packages/meridian-mcp/dist/index.js"
-      ]
-    },
-    "screenpipe": {
-      "command": "node",
-      "args": [
-        "/Users/akarshhegde/.screenpipe/mcp/dist/index.js"
+        "/Users/adityaharish/Documents/Document/Meridiona/meridian/packages/meridian-mcp/dist/index.js"
       ]
     }
   }
