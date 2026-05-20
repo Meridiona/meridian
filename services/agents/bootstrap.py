@@ -2,7 +2,7 @@
 """Bootstrap — sanity-check meridian.db is reachable and the agent tables exist.
 
 The Rust daemon owns all DDL via sqlx migrations; this script just verifies the
-required tables are present so the synthesizer doesn't blow up at runtime.
+required tables are present so the tagger doesn't blow up at runtime.
 """
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ def main() -> int:
     print("\nNext steps:")
     print("  1. Make sure the Rust daemon has run at least once (pm_tasks is populated by")
     print("     src/intelligence/providers/jira.rs every 30 min).")
-    print("  2. Run synthesizer → python -m agents.orchestrator --once")
+    print("  2. Run task classifier → python -m agents.tagger --once")
     return 0
 
 
