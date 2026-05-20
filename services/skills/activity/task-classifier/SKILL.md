@@ -18,27 +18,34 @@ The task classifier sits at the center of Meridian's workflow understanding:
 1. **Screen frames** → **app sessions** (Rust daemon combines frames by app into sessions)
 2. **Sessions** → **task classification** (you classify each session)
 3. **Classification outcome** dictates downstream usage:
-   - Sessions marked as **overhead** → no task match, no Jira interaction, used for context only
-   - Sessions with **task matches** → linked to Jira tickets, can be used for tracking and reporting
-   - Sessions with **no match** → marked overhead even if work-related, to avoid incorrect Jira links
+   - Sessions marked as **overhead** → idle/system/unrelated activity, no task link, routing=skip
+   - Sessions marked as **unknown** → work-related but no matching ticket, routing=queue for potential new task creation
+   - Sessions with **task matches** → linked to Jira tickets, routing=auto for tracking
 
 ## Classification Decision Tree
 
 For each session, you must decide:
 
 ### 1. Is this overhead?
-If the session is **idle, system settings, app chrome, random browsing, or unrelated activity** → return `task_key: null, confidence: 0.0`.
-These sessions provide context but should never force a Jira link.
+If the session is **idle, system settings, app chrome, random browsing, or unrelated activity** → return:
+```json
+{"task_key": null, "confidence": 0.0, "session_type": "overhead", "routing": "skip"}
+```
+These sessions should never force a Jira link.
 
 ### 2. Is this work-related?
-If the session shows **clear work signals** (coding, writing, research) but **no Jira candidates match** → return `task_key: null` with mid-range confidence (0.3–0.5).
-Mark dimensions to show *what* the work was, but leave task unmapped. A Jira task may be created later.
+If the session shows **clear work signals** (coding, writing, research) but **no Jira candidates match** → return:
+```json
+{"task_key": null, "confidence": 0.3-0.5, "session_type": "unknown", "routing": "queue"}
+```
+Mark dimensions to show *what* the work was. The session may trigger new task creation.
 
 ### 3. Can it map to an open Jira ticket?
-If the session evidence **directly or contextually matches** an open ticket:
-- Return the `task_key` with confidence
-- Cite the evidence (window title, OCR snippet, context from previous sessions)
-- Infer activity dimensions
+If the session evidence **directly or contextually matches** an open ticket → return:
+```json
+{"task_key": "KEY-123", "confidence": 0.50-0.90, "session_type": "task", "routing": "auto"}
+```
+Cite the evidence (window title, OCR snippet, context from previous sessions) and infer activity dimensions.
 
 ## Your inputs
 
@@ -73,12 +80,8 @@ Reply with ONE valid JSON object — no preamble, no markdown fences, no follow-
 
 Schema:
 - `task_key` — must be one of the candidate keys above, OR `null`
-- `confidence` — number in `[0, 1]`. Use full range:
-  - `≥ 0.90` — ticket key visible in window title or OCR
-  - `0.70–0.85` — keywords from ticket description match session evidence
-  - `0.50–0.65` — generic project-level match; could be several tickets
-  - `0.0–0.3` — overhead, unrelated activity, or no match
-- `session_type` — one of: `"task"` (matched to Jira), `"overhead"` (no match), `"unknown"` (ambiguous). Guides downstream handling.
+- `confidence` — number in `[0, 1]`. See "Scoring heuristics" section for ranges per outcome type.
+- `session_type` — one of: `"task"` (matched to Jira ticket), `"overhead"` (idle/system/unrelated), `"unknown"` (work-related but no match). Guides routing: task→auto, overhead→skip, unknown→queue.
 - `reasoning` — 1–2 sentences citing the specific evidence that pinned your choice. Must mention window titles, OCR snippets, or context clues.
 - `dimensions` — inferred activity tags from the session evidence:
   - Keys: `activity`, `intent`, `engagement`, `collaboration`, `tool`, `topic`, `practice`
@@ -106,12 +109,17 @@ Return `task_key: KAN-42, confidence: 0.80, reasoning: "Back in VS Code editing 
 
 ## Scoring heuristics
 
-- **Direct ticket-key visibility** in window titles or OCR — `confidence` ≥ 0.90.
-- **Title or description keywords** in window titles or OCR — `0.70 – 0.85`.
-- **Context continuity** (returned to same task after communication/research) — `0.75 – 0.85`.
-- **Generic project-level overlap** (session and multiple tickets all about the same project) — pick the most specific ticket, stay at `0.50 – 0.65`.
-- **Overhead with clear signals** (system settings, browser idle) — `0.0–0.2`, always `task_key: null`.
-- If candidates are **all generic** and you cannot narrow down, prefer `null` over guessing.
+**When task_key is not null (matched to a ticket):**
+- **Direct ticket-key visibility** in window title or OCR — `confidence ≥ 0.90`, `session_type: "task"`
+- **Ticket description keywords** in session evidence — `0.70–0.85`, `session_type: "task"`
+- **Context continuity** (returning to same task after brief interruption) — `0.75–0.85`, `session_type: "task"`
+- **Generic project-level match** (session and ticket both about same project, but weak evidence) — `0.50–0.65`, `session_type: "task"`
+
+**When task_key is null:**
+- **Clear overhead signals** (system settings, browser idle, unrelated) — `confidence: 0.0–0.2`, `session_type: "overhead"`, `routing: "skip"`
+- **Work-related but no matching ticket** (clear work activity, no candidates fit) — `confidence: 0.3–0.5`, `session_type: "unknown"`, `routing: "queue"`
+
+**Decision rule:** If equally plausible matches exist, prefer the one whose description most closely matches what the user is *actually doing*. If no good match, return `null` with appropriate session_type.
 
 ## Hard rules
 
