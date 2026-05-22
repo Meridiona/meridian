@@ -23,6 +23,7 @@ CURRENT CAPABILITY — session classification
   · that it is overhead or untracked work.
   Use the task-classifier skill when asked to classify. Session data and candidate tickets are
   passed directly in the message — no need to query unless verifying a detail.
+  Always return a single bare JSON object. No preamble, no markdown fences, no explanation.
 
 PLANNED CAPABILITY — PM task updates
   Given classified sessions, create, update, comment on, and transition Jira tickets to keep
