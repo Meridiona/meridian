@@ -34,11 +34,15 @@ _SERVICES_DIR = Path(__file__).parent.parent
 os.environ.setdefault("HERMES_HOME", str(_SERVICES_DIR / ".hermes"))
 
 from agents import observability
+from agents._hermes_setup import ensure_hermes_importable
 from agents._prompts import build_user_message, _format_session, _format_candidates
 from agents._parser import parse_response
 from agents._system_context import SYSTEM_CONTEXT
 from agents.config import MODEL, BASE_URL, API_KEY, AGENT_MAX_TOKENS, LLM_PREFER_LOCAL
 from agents.llm_selector import select_model_for_hermes
+
+ensure_hermes_importable()
+from run_agent import AIAgent  # noqa: E402
 
 log = logging.getLogger("agents.run_task_linker")
 tracer = observability.setup("meridian-task-linker")
@@ -112,9 +116,9 @@ def _classify_one(
     db_path: str,
     con: _sqlite3.Connection,
     *,
+    agent: AIAgent,
     llm_model: str,
     llm_base_url: str,
-    llm_api_key: str,
 ) -> dict[str, Any]:
     _tracer = trace.get_tracer("agents.run_task_linker")
     sid = session_id
@@ -201,29 +205,15 @@ def _classify_one(
         llm_span.set_attribute("base_url", llm_base_url)
         llm_span.set_attribute("prompt_chars", len(user_message))
         try:
-            from run_agent import AIAgent
-
-            llm_span.add_event("agent_created", {
+            llm_span.add_event("agent_run", {
                 "model":           llm_model,
                 "base_url":        llm_base_url,
                 "max_iterations":  10,
-                "memory_enabled":  True,
-                "toolsets":        "memory,skills",
+                "memory_enabled":  False,
+                "toolsets":        "skills",
             })
 
             with contextlib.redirect_stdout(sys.stderr):
-                agent = AIAgent(
-                    model=llm_model,
-                    base_url=llm_base_url,
-                    api_key=llm_api_key,
-                    enabled_toolsets=["memory", "skills"],
-                    max_iterations=10,
-                    quiet_mode=True,
-                    skip_context_files=True,
-                    load_soul_identity=False,
-                    skip_memory=False,
-                    ephemeral_system_prompt=SYSTEM_CONTEXT,
-                )
                 result = agent.run_conversation(user_message)
 
             elapsed = time.time() - t0
@@ -371,6 +361,22 @@ def main() -> None:
             sel_span.set_attribute("runtime", runtime)
             sel_span.set_attribute("is_local", is_local)
 
+        with contextlib.redirect_stdout(sys.stderr):
+            agent = AIAgent(
+                model=llm_model,
+                base_url=llm_base_url,
+                api_key=llm_api_key,
+                enabled_toolsets=["skills"],
+                max_iterations=10,
+                quiet_mode=True,
+                skip_context_files=True,
+                load_soul_identity=False,
+                skip_memory=True,
+                tool_delay=0.0,
+                max_tokens=AGENT_MAX_TOKENS,
+                ephemeral_system_prompt=SYSTEM_CONTEXT,
+            )
+
         con = _sqlite3.connect(db_path)
         con.row_factory = _sqlite3.Row
         try:
@@ -383,9 +389,9 @@ def main() -> None:
                     cls_span.set_attribute("session_id", session_id)
                     result = _classify_one(
                         session_id, db_path, con,
+                        agent=agent,
                         llm_model=llm_model,
                         llm_base_url=llm_base_url,
-                        llm_api_key=llm_api_key,
                     )
                     _row = con.execute(
                         "SELECT app_name, duration_s FROM app_sessions WHERE id = ?",
