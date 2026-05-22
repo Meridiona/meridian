@@ -1,17 +1,18 @@
 # meridian — normalises screenpipe activity into structured app sessions
-"""Tests for agents.run_task_linker — input validation and subprocess boundary.
+"""Tests for agents.run_task_linker — LLM selection, input validation, and core classification.
 
-Protocol: Rust sends {"sessions": [...], "pm_tasks": [...]} via stdin.
+Protocol: Rust sends {"session_ids": [int, ...], "meridian_db": str} via stdin.
 Python classifies and returns {"results": [...]} on stdout.
 
-Subprocess tests use an inline wrapper that stubs hermes so no LLM is needed.
-Unit tests patch classify_session directly via the conftest stub.
+All tests stub hermes (AIAgent) and llm_selector so no real LLM is needed.
 """
 from __future__ import annotations
 
 import json
+import sqlite3
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -19,135 +20,307 @@ import pytest
 
 _SERVICES_DIR = Path(__file__).resolve().parent.parent.parent
 
-# ── subprocess helper ──────────────────────────────────────────────────────────
+# ── helpers ───────────────────────────────────────────────────────────────────
 
-_WRAPPER = """\
-import sys
-from unittest.mock import MagicMock
-# stub heavy imports before loading run_task_linker
-_tc = MagicMock()
-_d = MagicMock()
-_d.chosen_task_key = 'KAN-1'; _d.confidence = 0.85
-_d.routing = 'auto'; _d.method = 'task_classifier'
-_d.dimensions = {}; _d.elapsed_s = 0.01
-_d.reasoning = 'stub'; _d.debug = {}
-_tc.classify_session = lambda *a, **kw: _d
-_tc.ClassifierDecision = MagicMock()
-sys.modules['agents.task_classifier_agent'] = _tc
-_obs = MagicMock()
-_obs.setup = lambda *a, **kw: MagicMock()
-_obs.extract_parent_context = lambda *a, **kw: None
-sys.modules['agents.observability'] = _obs
-import agents.run_task_linker as m
-m.main()
-"""
+def _make_db_with_sessions(
+    sessions: list[dict],
+    pm_tasks: list[dict] | None = None,
+) -> str:
+    """Create a temp meridian.db, insert sessions and pm_tasks, return path."""
+    f = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    con = sqlite3.connect(f.name)
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS app_sessions (
+            id INTEGER PRIMARY KEY,
+            app_name TEXT,
+            started_at TEXT,
+            ended_at TEXT,
+            duration_s REAL,
+            session_text TEXT,
+            session_text_source TEXT,
+            window_titles TEXT,
+            category TEXT,
+            confidence REAL,
+            task_key TEXT,
+            task_routing TEXT
+        );
+        CREATE TABLE IF NOT EXISTS pm_tasks (
+            task_key TEXT PRIMARY KEY,
+            title TEXT,
+            description_text TEXT,
+            status TEXT,
+            status_category TEXT,
+            issue_type TEXT,
+            epic_title TEXT,
+            sprint_name TEXT
+        );
+    """)
+    for s in sessions:
+        con.execute(
+            "INSERT INTO app_sessions (id, app_name, started_at, ended_at, duration_s,"
+            " session_text, session_text_source, window_titles, category, confidence)"
+            " VALUES (:id, :app_name, :started_at, :ended_at, :duration_s,"
+            " :session_text, :session_text_source, :window_titles, :category, :confidence)",
+            {
+                "id":                  s.get("id", 1),
+                "app_name":            s.get("app_name", ""),
+                "started_at":          s.get("started_at", "2024-01-01T09:00:00"),
+                "ended_at":            s.get("ended_at", "2024-01-01T09:01:00"),
+                "duration_s":          s.get("duration_s", 60),
+                "session_text":        s.get("session_text", ""),
+                "session_text_source": s.get("session_text_source", "ocr"),
+                "window_titles":       json.dumps(s.get("window_titles", [])),
+                "category":            s.get("category", ""),
+                "confidence":          s.get("confidence", 0.0),
+            },
+        )
+    for t in (pm_tasks or []):
+        con.execute(
+            "INSERT INTO pm_tasks (task_key, title, description_text, status,"
+            " status_category, issue_type, epic_title, sprint_name)"
+            " VALUES (:task_key, :title, :description_text, :status,"
+            " :status_category, :issue_type, :epic_title, :sprint_name)",
+            {
+                "task_key":         t.get("task_key", "KAN-1"),
+                "title":            t.get("title", ""),
+                "description_text": t.get("description_text", ""),
+                "status":           t.get("status", "In Progress"),
+                "status_category":  t.get("status_category", "in_progress"),
+                "issue_type":       t.get("issue_type", "Task"),
+                "epic_title":       t.get("epic_title", ""),
+                "sprint_name":      t.get("sprint_name", ""),
+            },
+        )
+    con.commit()
+    con.close()
+    return f.name
 
 
-def _run_subprocess(payload: dict, *, timeout: int = 10) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [sys.executable, "-c", _WRAPPER],
-        input=json.dumps(payload),
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env={**__import__("os").environ, "PYTHONPATH": str(_SERVICES_DIR)},
+def _fake_agent_response(task_key: str = "KAN-1", confidence: float = 0.9) -> MagicMock:
+    raw = json.dumps({
+        "task_key":     task_key,
+        "confidence":   confidence,
+        "session_type": "active",
+        "reasoning":    "stub reasoning",
+        "dimensions":   {"activity": ["coding"]},
+    })
+    mock = MagicMock()
+    mock.run_conversation.return_value = {"final_response": raw}
+    return mock
+
+
+# ── _resolve_llm: local endpoint selected ─────────────────────────────────────
+
+def test_resolve_llm_uses_local_when_prefer_local_and_endpoint_found():
+    from agents.llm_selector import LocalModelEndpoint
+    ep = LocalModelEndpoint(model="gemma3-12b", base_url="http://127.0.0.1:11434/v1",
+                            api_key="local", runtime="ollama")
+    with patch("agents.run_task_linker.LLM_PREFER_LOCAL", True), \
+         patch("agents.run_task_linker.select_model_for_hermes", return_value=ep):
+        from agents.run_task_linker import _resolve_llm
+        model, base_url, api_key = _resolve_llm()
+    assert model == "gemma3-12b"
+    assert base_url == "http://127.0.0.1:11434/v1"
+    assert api_key == "local"
+
+
+def test_resolve_llm_falls_back_to_cloud_when_no_local_endpoint():
+    with patch("agents.run_task_linker.LLM_PREFER_LOCAL", True), \
+         patch("agents.run_task_linker.select_model_for_hermes", return_value=None), \
+         patch("agents.run_task_linker.MODEL", "gemma4:31b-cloud"), \
+         patch("agents.run_task_linker.BASE_URL", "https://ollama.com/v1"), \
+         patch("agents.run_task_linker.API_KEY", "test-key"):
+        from agents.run_task_linker import _resolve_llm
+        model, base_url, api_key = _resolve_llm()
+    assert model == "gemma4:31b-cloud"
+    assert base_url == "https://ollama.com/v1"
+    assert api_key == "test-key"
+
+
+def test_resolve_llm_falls_back_when_selector_raises():
+    with patch("agents.run_task_linker.LLM_PREFER_LOCAL", True), \
+         patch("agents.run_task_linker.select_model_for_hermes",
+               side_effect=RuntimeError("probe failed")), \
+         patch("agents.run_task_linker.MODEL", "gemma4:31b-cloud"), \
+         patch("agents.run_task_linker.BASE_URL", "https://ollama.com/v1"), \
+         patch("agents.run_task_linker.API_KEY", "key"):
+        from agents.run_task_linker import _resolve_llm
+        model, base_url, api_key = _resolve_llm()
+    assert model == "gemma4:31b-cloud"
+
+
+def test_resolve_llm_skips_selector_when_prefer_local_disabled():
+    with patch("agents.run_task_linker.LLM_PREFER_LOCAL", False), \
+         patch("agents.run_task_linker.select_model_for_hermes") as mock_sel, \
+         patch("agents.run_task_linker.MODEL", "cloud-model"), \
+         patch("agents.run_task_linker.BASE_URL", "https://cloud.example/v1"), \
+         patch("agents.run_task_linker.API_KEY", ""):
+        from agents.run_task_linker import _resolve_llm
+        model, base_url, api_key = _resolve_llm()
+    mock_sel.assert_not_called()
+    assert model == "cloud-model"
+
+
+# ── _classify_one: correct endpoint forwarded to AIAgent ─────────────────────
+
+def test_classify_one_passes_local_endpoint_to_aiagent():
+    db_path = _make_db_with_sessions(
+        [{"id": 10, "app_name": "VSCode", "duration_s": 90}],
+        pm_tasks=[{"task_key": "KAN-42", "title": "Feature work"}],
+    )
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    fake_agent = _fake_agent_response("KAN-42", 0.9)
+
+    with patch("run_agent.AIAgent", return_value=fake_agent) as MockAgent:
+        from agents.run_task_linker import _classify_one
+        result = _classify_one(
+            10, db_path, con,
+            llm_model="gemma3-12b",
+            llm_base_url="http://127.0.0.1:11434/v1",
+            llm_api_key="local",
+        )
+
+    con.close()
+    call_kwargs = MockAgent.call_args.kwargs
+    assert call_kwargs["model"] == "gemma3-12b"
+    assert call_kwargs["base_url"] == "http://127.0.0.1:11434/v1"
+    assert call_kwargs["api_key"] == "local"
+    assert result["task_key"] == "KAN-42"
+    assert result["session_id"] == 10
+
+
+def test_classify_one_passes_cloud_endpoint_to_aiagent():
+    db_path = _make_db_with_sessions(
+        [{"id": 11, "app_name": "Terminal", "duration_s": 60}],
+        pm_tasks=[{"task_key": "KAN-7", "title": "Infra task"}],
+    )
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    fake_agent = _fake_agent_response("KAN-7", 0.75)
+
+    with patch("run_agent.AIAgent", return_value=fake_agent) as MockAgent:
+        from agents.run_task_linker import _classify_one
+        _classify_one(
+            11, db_path, con,
+            llm_model="gemma4:31b-cloud",
+            llm_base_url="https://ollama.com/v1",
+            llm_api_key="sk-test",
+        )
+
+    con.close()
+    call_kwargs = MockAgent.call_args.kwargs
+    assert call_kwargs["model"] == "gemma4:31b-cloud"
+    assert call_kwargs["base_url"] == "https://ollama.com/v1"
+    assert call_kwargs["api_key"] == "sk-test"
+
+
+def test_classify_one_returns_expected_fields():
+    db_path = _make_db_with_sessions(
+        [{"id": 20, "app_name": "Xcode", "duration_s": 120}],
+        pm_tasks=[{"task_key": "KAN-99", "title": "iOS feature"}],
+    )
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    fake_agent = _fake_agent_response("KAN-99", 0.88)
+
+    with patch("run_agent.AIAgent", return_value=fake_agent):
+        from agents.run_task_linker import _classify_one
+        result = _classify_one(
+            20, db_path, con,
+            llm_model="m", llm_base_url="http://x", llm_api_key="k",
+        )
+
+    con.close()
+    for field in ("session_id", "task_key", "confidence", "session_type",
+                  "reasoning", "method", "dimensions", "elapsed_s"):
+        assert field in result, f"missing field: {field}"
+    assert result["method"] == "hermes_aiagent"
+    assert isinstance(result["elapsed_s"], float)
+
+
+def test_classify_one_session_not_found_returns_error_shape():
+    db_path = _make_db_with_sessions([])
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+
+    from agents.run_task_linker import _classify_one
+    result = _classify_one(
+        999, db_path, con,
+        llm_model="m", llm_base_url="http://x", llm_api_key="k",
     )
 
-
-# ── subprocess boundary tests ──────────────────────────────────────────────────
-
-def test_empty_sessions_exits_cleanly():
-    """Empty sessions list → exit 0, {"results": []}."""
-    proc = _run_subprocess({"sessions": [], "pm_tasks": []})
-    assert proc.returncode == 0, f"stderr: {proc.stderr[:500]}"
-    assert json.loads(proc.stdout.strip()) == {"results": []}
+    con.close()
+    assert result["session_id"] == 999
+    assert result["task_key"] is None
+    assert result["method"] == "llm_error"
 
 
-def test_one_session_returns_one_result():
-    """A single session produces one result with all required fields."""
-    payload = {
-        "sessions": [{"id": 42, "app_name": "Xcode", "duration_s": 60, "session_text": "coding"}],
-        "pm_tasks": [],
-    }
-    proc = _run_subprocess(payload)
-    assert proc.returncode == 0, f"stderr: {proc.stderr[:500]}"
-    out = json.loads(proc.stdout.strip())
-    assert len(out["results"]) == 1
-    r = out["results"][0]
-    for field in ("session_id", "task_key", "confidence", "routing", "method", "dimensions", "elapsed_s"):
-        assert field in r, f"missing field: {field}"
+def test_classify_one_agent_exception_returns_llm_error():
+    db_path = _make_db_with_sessions([{"id": 30, "app_name": "Safari", "duration_s": 60}])
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+
+    boom = MagicMock()
+    boom.run_conversation.side_effect = RuntimeError("connection refused")
+
+    with patch("run_agent.AIAgent", return_value=boom):
+        from agents.run_task_linker import _classify_one
+        result = _classify_one(
+            30, db_path, con,
+            llm_model="m", llm_base_url="http://x", llm_api_key="k",
+        )
+
+    con.close()
+    assert result["session_id"] == 30
+    assert result["task_key"] is None
+    assert result["method"] == "llm_error"
+    assert "connection refused" in result["reasoning"]
 
 
-def test_invalid_sessions_type_exits_with_error():
-    """Non-list 'sessions' value must cause a non-zero exit."""
-    proc = _run_subprocess({"sessions": "not-a-list", "pm_tasks": []})
-    assert proc.returncode != 0, "expected non-zero exit when sessions is not a list"
+# ── main(): input validation ───────────────────────────────────────────────────
+
+def test_main_empty_session_ids_exits_cleanly():
+    db_path = _make_db_with_sessions([])
+    payload = {"session_ids": [], "meridian_db": db_path}
+    with patch("agents.run_task_linker._resolve_llm", return_value=("m", "http://x", "k")):
+        from agents.run_task_linker import main
+        import io
+        captured = io.StringIO()
+        with patch("sys.stdin", io.StringIO(json.dumps(payload))), \
+             patch("sys.stdout", captured):
+            main()
+    out = json.loads(captured.getvalue().strip())
+    assert out == {"results": []}
 
 
-def test_malformed_stdin_exits_with_error():
-    """Non-JSON stdin must cause a non-zero exit."""
+def test_main_missing_meridian_db_exits_nonzero():
+    payload = {"session_ids": [1], "meridian_db": ""}
     proc = subprocess.run(
-        [sys.executable, "-c", _WRAPPER],
-        input="this is not json",
-        capture_output=True,
-        text=True,
-        timeout=10,
+        [sys.executable, "-m", "agents.run_task_linker"],
+        input=json.dumps(payload),
+        capture_output=True, text=True, timeout=10,
         env={**__import__("os").environ, "PYTHONPATH": str(_SERVICES_DIR)},
     )
     assert proc.returncode != 0
 
 
-# ── unit tests (no subprocess, classify_session is patched) ───────────────────
-
-def _make_decision(**kw) -> MagicMock:
-    d = MagicMock()
-    d.chosen_task_key = kw.get("task_key", "KAN-1")
-    d.confidence      = kw.get("confidence", 0.85)
-    d.routing         = kw.get("routing", "auto")
-    d.method          = kw.get("method", "task_classifier")
-    d.dimensions      = kw.get("dimensions", {})
-    d.elapsed_s       = kw.get("elapsed_s", 0.01)
-    d.reasoning       = kw.get("reasoning", "stub")
-    d.debug           = {}
-    return d
+def test_main_malformed_stdin_exits_nonzero():
+    proc = subprocess.run(
+        [sys.executable, "-m", "agents.run_task_linker"],
+        input="not json",
+        capture_output=True, text=True, timeout=10,
+        env={**__import__("os").environ, "PYTHONPATH": str(_SERVICES_DIR)},
+    )
+    assert proc.returncode != 0
 
 
-def test_classify_one_returns_expected_shape():
-    from agents.run_task_linker import _classify_one
-    decision = _make_decision(task_key="KAN-42", confidence=0.9, routing="auto",
-                              dimensions={"activity": ["coding"]})
-    with patch("agents.run_task_linker.classify_session", return_value=decision):
-        result = _classify_one({"id": 5, "app_name": "VSCode", "duration_s": 60}, {}, [])
-    assert result["session_id"] == 5
-    assert result["task_key"] == "KAN-42"
-    assert result["confidence"] == 0.9
-    assert result["routing"] == "auto"
-    assert result["dimensions"] == {"activity": ["coding"]}
-    assert isinstance(result["elapsed_s"], float)
-
-
-def test_classify_one_relabels_task_classifier_to_llm_standalone():
-    from agents.run_task_linker import _classify_one
-    decision = _make_decision(method="task_classifier")
-    with patch("agents.run_task_linker.classify_session", return_value=decision):
-        result = _classify_one({"id": 3}, {}, [])
-    assert result["method"] == "llm_standalone"
-
-
-def test_classify_one_preserves_other_method_names():
-    from agents.run_task_linker import _classify_one
-    decision = _make_decision(method="rule_match")
-    with patch("agents.run_task_linker.classify_session", return_value=decision):
-        result = _classify_one({"id": 4}, {}, [])
-    assert result["method"] == "rule_match"
-
-
-def test_classify_one_exception_returns_llm_error():
-    from agents.run_task_linker import _classify_one
-    with patch("agents.run_task_linker.classify_session", side_effect=RuntimeError("timeout")):
-        result = _classify_one({"id": 7}, {}, [])
-    assert result["session_id"] == 7
-    assert result["task_key"] is None
-    assert result["routing"] == "skip"
-    assert result["method"] == "llm_error"
-    assert "timeout" in result["reasoning"]
+def test_main_nonexistent_db_path_exits_nonzero():
+    payload = {"session_ids": [1], "meridian_db": "/tmp/does_not_exist_meridian.db"}
+    proc = subprocess.run(
+        [sys.executable, "-m", "agents.run_task_linker"],
+        input=json.dumps(payload),
+        capture_output=True, text=True, timeout=10,
+        env={**__import__("os").environ, "PYTHONPATH": str(_SERVICES_DIR)},
+    )
+    assert proc.returncode != 0

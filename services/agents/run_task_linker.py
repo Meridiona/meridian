@@ -6,6 +6,11 @@ calls hermes AIAgent for each session, writes results to stdout.
 
 Hermes memory is enabled so the agent learns developer patterns over time.
 Memory is stored in HERMES_HOME/memories/ (services/.hermes/memories/).
+
+LLM selection: if LLM_PREFER_LOCAL=1 (default), select_model_for_hermes() is
+called once at startup to find the best available local endpoint (Ollama, LM
+Studio, llama.cpp, mlx_lm, or Apple Intelligence). The selected endpoint is
+used for all sessions in the batch. Falls back to cloud config on failure.
 """
 from __future__ import annotations
 
@@ -29,12 +34,34 @@ from agents import observability
 from agents._prompts import build_user_message
 from agents._parser import parse_response
 from agents._system_context import SYSTEM_CONTEXT
-from agents.config import MODEL, BASE_URL, API_KEY, AGENT_MAX_TOKENS
+from agents.config import MODEL, BASE_URL, API_KEY, AGENT_MAX_TOKENS, LLM_PREFER_LOCAL
+from agents.llm_selector import select_model_for_hermes
 
 log = logging.getLogger("agents.run_task_linker")
 tracer = observability.setup("meridian-task-linker")
 
 _CONTEXT_WINDOW = 5
+
+# Resolve LLM endpoint once per process — local first, cloud fallback.
+def _resolve_llm() -> tuple[str, str, str]:
+    """Return (model, base_url, api_key) for this batch.
+
+    Tries select_model_for_hermes() when LLM_PREFER_LOCAL is enabled; falls
+    back to the static cloud config on any error or when no local model fits.
+    """
+    if LLM_PREFER_LOCAL:
+        try:
+            ep = select_model_for_hermes()
+            if ep is not None:
+                log.info(
+                    "run_task_linker: using local model=%s runtime=%s base_url=%s",
+                    ep.model, ep.runtime, ep.base_url,
+                )
+                return ep.model, ep.base_url, ep.api_key
+        except Exception as exc:  # noqa: BLE001
+            log.warning("run_task_linker: llm_selector failed, using cloud fallback: %s", exc)
+    log.info("run_task_linker: using cloud model=%s base_url=%s", MODEL, BASE_URL)
+    return MODEL, BASE_URL, API_KEY or "none"
 
 
 def _fetch_session(con: _sqlite3.Connection, session_id: int) -> dict[str, Any] | None:
@@ -81,6 +108,10 @@ def _classify_one(
     session_id: int,
     db_path: str,
     con: _sqlite3.Connection,
+    *,
+    llm_model: str,
+    llm_base_url: str,
+    llm_api_key: str,
 ) -> dict[str, Any]:
     sid = session_id
     session_raw = _fetch_session(con, sid)
@@ -122,9 +153,9 @@ def _classify_one(
 
         agent = AIAgent(
             # ── Connection ────────────────────────────────────────────
-            model=MODEL,                    # e.g. "gemma4:31b"
-            base_url=BASE_URL,              # Ollama cloud endpoint
-            api_key=API_KEY or "none",
+            model=llm_model,
+            base_url=llm_base_url,
+            api_key=llm_api_key,
             # provider=None,                # omit — hermes infers from base_url
             # api_mode=None,                # omit — default "chat_completions"
             # fallback_model=None,          # omit — no fallback needed
@@ -242,13 +273,20 @@ def main() -> None:
 
     log.info("run_task_linker: %d sessions, db=%s", len(session_ids), db_path)
 
+    llm_model, llm_base_url, llm_api_key = _resolve_llm()
+
     con = _sqlite3.connect(db_path)
     con.row_factory = _sqlite3.Row
     try:
         results: list[dict[str, Any]] = []
         for session_id in session_ids:
             log.info("run_task_linker: classifying session %d", session_id)
-            result = _classify_one(session_id, db_path, con)
+            result = _classify_one(
+                session_id, db_path, con,
+                llm_model=llm_model,
+                llm_base_url=llm_base_url,
+                llm_api_key=llm_api_key,
+            )
             results.append(result)
             log.info(
                 "run_task_linker: session_id=%d task_key=%s session_type=%s elapsed_s=%.2f",
