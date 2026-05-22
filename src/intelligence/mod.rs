@@ -15,9 +15,10 @@ use tracing::warn;
 use crate::config::{Config, PmProviderConfig};
 
 /// Re-classifies all sessions that still have a rule-based category using Foundation Models.
-pub async fn run_categorization(meridian: &SqlitePool, config: &Config) -> Result<()> {
+#[tracing::instrument(skip_all)]
+pub async fn run_fm_categorization(meridian: &SqlitePool, config: &Config) -> Result<()> {
     let backend = category_llm::backends::build_backend(&config.llm_backend);
-    if let Err(e) = category_settler::settle_all_categories(
+    if let Err(e) = category_settler::run_fm_categorization(
         meridian,
         &backend,
         config.min_classification_duration_s,
@@ -25,18 +26,22 @@ pub async fn run_categorization(meridian: &SqlitePool, config: &Config) -> Resul
     )
     .await
     {
-        warn!(error = %e, "category settler failed");
+        warn!(error = %e, "fm categorization failed");
     }
     Ok(())
 }
 
 /// Refreshes PM task caches from all configured providers.
 /// Session-to-task linking is handled exclusively by run_task_linking (hermes).
+#[tracing::instrument(skip_all)]
 pub async fn run_pm_sync(meridian: &SqlitePool, config: &Config) -> Result<()> {
     if config.pm_providers.is_empty() {
-        warn!("no PM providers configured — pm_tasks will stay empty (set JIRA_BASE_URL/GITHUB_TOKEN/LINEAR_API_KEY)");
+        tracing::warn!("no PM providers configured — pm_tasks will stay empty (set JIRA_BASE_URL/GITHUB_TOKEN/LINEAR_API_KEY)");
         return Ok(());
     }
+    let provider_count = config.pm_providers.len();
+    tracing::debug!(provider_count, "syncing PM providers");
+
     for provider in &config.pm_providers {
         let name = provider.provider_name();
         let result = match provider {
@@ -48,8 +53,13 @@ pub async fn run_pm_sync(meridian: &SqlitePool, config: &Config) -> Result<()> {
                 providers::linear::refresh_if_stale(meridian, cfg).await
             }
         };
-        if let Err(e) = result {
-            warn!(provider = name, error = %e, "provider refresh failed");
+        match result {
+            Ok(_) => {
+                tracing::debug!(provider = name, "provider sync completed");
+            }
+            Err(e) => {
+                tracing::warn!(provider = name, error = %e, "provider refresh failed");
+            }
         }
     }
     Ok(())

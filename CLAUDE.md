@@ -252,41 +252,63 @@ Read `VISION.md` first.
 
 ## Python agent service (`services/`)
 
-A Python service runs alongside the Rust daemon and writes Jira task mappings + multi-label dimension tags into `meridian.db`. The pipeline is three stages, each optional:
+Two independent Python services run alongside the Rust daemon:
 
-1. **Stage 1** — deterministic rules + ticket-key regex against window titles, OCR, and audio. No LLM.
-2. **Stage 2** — `bge-small-en-v1.5` embeddings, blended with rule-derived `dim_overlap` and a past-session `past_vote`. No LLM.
-3. **Stage 3** — hermes `AIAgent` LLM tiebreak. Only fires when Stage 2 returns `routing=queue`.
+### 1. Task Classifier (`run_task_linker.py`)
 
-For installation, ops (launchd daemon, hot-toggle, single-session inspector), see `services/README.md`. For the deep technical reference (per-stage detail, score formulas, recipes for adding a rule / swapping the model / debugging a misclassification), see `services/agents/README.md`.
+The Rust intelligence module spawns `run_task_linker.py` as a one-shot subprocess to classify `app_sessions` rows into Jira task links. The pipeline:
+
+1. Reads JSON from stdin: `{sessions: [...], pm_tasks: [...], traceparent: ...}`
+2. For each session:
+   - Skip if `duration_s < MIN_LLM_DURATION_S` (default 30 s) → `routing=skip` (no LLM call)
+   - Otherwise call `classify_session()` which:
+     - Calls `select_model_for_hermes()` for **local-first LLM selection** (Ollama, LM Studio, llama.cpp, or managed `mlx_lm.server`)
+     - Falls back to cloud LLM if no local endpoint is found
+     - Uses **hermes AIAgent** with the `task-classifier` skill (system prompt from `skills/activity/task-classifier/SKILL.md`)
+     - Returns `{task_key, confidence, routing}` where `routing` is one of: `auto` (confidence ≥ `AGENT_AUTO_FLOOR`), `queue` (confidence ≥ `AGENT_QUEUE_FLOOR`), `skip` (below thresholds)
+3. Writes JSON to stdout and exits; Rust reads it and writes `ticket_links` table
+
+The classifier runs on **every processed session** via the Rust intelligence module. Configuration: `MERIDIAN_DB`, `MIN_LLM_DURATION_S`, `LLM_PREFER_LOCAL`, `LLM_BUDGET_PCT`, `AGENT_AUTO_FLOOR`, `AGENT_QUEUE_FLOOR`.
+
+For technical detail (module layout, response parser, LLM selection), see `services/agents/README.md#pipeline`.
+
+### 2. Jira Updater Daemon (`jira_updater_daemon.py`)
+
+Optional long-running daemon that periodically fetches in-progress Jira tasks, queries Meridian MCP for recent session data on each task, generates a bullet-point summary via hermes, and posts as timed comments to Jira. Fires on office-hour slots (default 1 PM and 5 PM, looking back 4 hours).
+
+Setup requires `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` in `.env`. Runs as a launchd daemon or via `python -m agents.jira_updater_daemon`. See `services/README.md#jira-updater` for configuration and commands.
 
 ### Hard rules
 
 - **Every `.py` file in `services/agents/` must start with a `"""…"""` module docstring** describing its purpose. The Rust/TS file-header convention does not apply — Python uses docstrings. Match the prose style of existing modules (terse, opinionated).
-- **Don't break the cursor monotonicity invariant in `tagger.run_once`.** `agent_cursor.last_session_id` only advances; the SQL has `WHERE ? > last_session_id`. Cursor advances after EVERY session in the batch, regardless of which stages ran. A SIGTERM mid-batch must lose at most the in-flight session.
-- **Stage 2 and Stage 3 must remain optional.** They can be turned off via `STAGE2_ENABLED=0` / `STAGE3_ENABLED=0` (or the live override file) without breaking Stage 1. New code must respect the `stages: set[int]` parameter threaded through `tagger.run_once` and `_tag_session`.
-- **Embedding-model swaps require a new migration.** `model` and `dim` are columns on both `session_embeddings` and `pm_task_embeddings`. Same-dim swaps coexist with old rows; different-dim swaps need a new numbered migration that recreates the tables. Never modify migrations in place.
-- **`ticket_links` and `session_dimensions` writes must be idempotent.** Both tables have UNIQUE / composite-PK constraints with explicit `ON CONFLICT … DO UPDATE` policies. New writers must use the same UPSERT pattern (see `db.write_ticket_link`, `db.upsert_session_dimension`). Never `DELETE` then `INSERT` from the daemon path.
+- **`agent_cursor.last_session_id` only advances; never decreases.** Cursor advances after EVERY session in the batch, regardless of routing outcome. A SIGTERM mid-batch loses at most the in-flight session.
+- **`ticket_links` writes must be idempotent.** The table has a UNIQUE constraint on `session_id` with an `ON CONFLICT … DO UPDATE` policy. Never `DELETE` then `INSERT`.
 
 ### Quick command reference
 
 ```bash
-# Run the daemon manually (default tick = 7s, all stages auto)
-python -m agents.tagger_daemon
+# Verify which LLM will be selected
+cd services
+.venv/bin/python -c "
+from agents.llm_selector import discover_running_servers, select_model_for_hermes
+for s in discover_running_servers():
+    print(f'running: {s.runtime}  loaded={s.models}')
+ep = select_model_for_hermes()
+print(f'selected: {ep.model}  runtime={ep.runtime}' if ep else 'cloud fallback')
+"
 
-# Inspect or re-tag one session, full log dump
-python -m agents.tagger --session <ID>
-python -m agents.tagger --session <ID> --dry-run
+# Test task classifier on a single session
+python -m agents.task_classifier_agent --session <ID>
 
-# Hot-toggle stages on a running daemon
-python -m agents.tagger --enable-stage 3
-python -m agents.tagger --disable-stage 3
-python -m agents.tagger --stages-status
+# Jira updater — one-shot or daemon
+python -m agents.jira_updater_daemon --trigger-now
+python -m agents.jira_updater_daemon --task KAN-87
+python -m agents.jira_updater_daemon  # long-running daemon
 
-# launchd lifecycle
-./services/scripts/install-tagger-daemon.sh
-./services/scripts/uninstall-tagger-daemon.sh
-tail -f ~/.meridian/logs/tagger-daemon.log
+# launchd lifecycle (Jira updater only)
+./scripts/install-jira-updater-daemon.sh
+./scripts/uninstall-jira-updater-daemon.sh
+tail -f ~/.meridian/logs/jira-updater.log
 ```
 
 ---

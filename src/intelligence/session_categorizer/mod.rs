@@ -117,6 +117,48 @@ pub struct SessionSignals<'a> {
 }
 
 // ---------------------------------------------------------------------------
+// Categorization reasoning
+// ---------------------------------------------------------------------------
+
+/// Tracks which signals fired during categorization for debugging.
+#[derive(Debug, Clone, Default)]
+pub(super) struct Reasoning {
+    pub app_match: Option<String>,
+    pub window_title_matches: Vec<String>,
+    pub ocr_matches: Vec<String>,
+    pub audio_match: Option<String>,
+    pub signal_matches: Vec<String>,
+}
+
+impl Reasoning {
+    pub(super) fn format(&self) -> String {
+        let mut parts = Vec::new();
+
+        if let Some(ref app) = self.app_match {
+            parts.push(format!("app={}", app));
+        }
+        if !self.window_title_matches.is_empty() {
+            parts.push(format!("titles=[{}]", self.window_title_matches.join(",")));
+        }
+        if !self.ocr_matches.is_empty() {
+            parts.push(format!("ocr=[{}]", self.ocr_matches.join(",")));
+        }
+        if let Some(ref audio) = self.audio_match {
+            parts.push(format!("audio={}", audio));
+        }
+        if !self.signal_matches.is_empty() {
+            parts.push(format!("signals=[{}]", self.signal_matches.join(",")));
+        }
+
+        if parts.is_empty() {
+            "no_signals".to_string()
+        } else {
+            parts.join(" ")
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Score accumulator
 // ---------------------------------------------------------------------------
 
@@ -148,6 +190,38 @@ impl Scores {
             .unwrap();
         (ActivityKind::from_index(idx), max / total)
     }
+
+    /// Returns a formatted breakdown of all category scores for debugging.
+    pub(super) fn breakdown(&self) -> String {
+        let categories = [
+            ("Coding", 0),
+            ("CodeReview", 1),
+            ("Meeting", 2),
+            ("Communication", 3),
+            ("Design", 4),
+            ("Documentation", 5),
+            ("Planning", 6),
+            ("DeploymentDevops", 7),
+            ("Research", 8),
+            ("IdlePersonal", 9),
+        ];
+        let parts: Vec<String> = categories
+            .iter()
+            .filter_map(|(name, idx)| {
+                let score = self.0[*idx];
+                if score > 0.0 {
+                    Some(format!("{}={:.1}", name, score))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if parts.is_empty() {
+            "no_signals".to_string()
+        } else {
+            parts.join(" ")
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -165,36 +239,64 @@ impl Scores {
     skip_all,
     fields(
         app_name = %signals.app_name,
+        window_title_count = tracing::field::Empty,
+        ocr_text_bytes = tracing::field::Empty,
         signal_count = tracing::field::Empty,
+        audio_present = signals.audio_present,
+        duration_secs = signals.duration_secs,
         category = tracing::field::Empty,
         confidence = tracing::field::Empty,
+        confidence_floor_applied = tracing::field::Empty,
     )
 )]
 pub fn categorize(signals: &SessionSignals<'_>) -> (ActivityKind, f32) {
     let mut scores = Scores::new();
+    let mut reasoning = Reasoning::default();
 
     let app_lc = signals.app_name.to_lowercase();
     let ocr_lc = signals.ocr_text.to_lowercase();
 
-    score_audio(signals, &mut scores);
-    score_app_name(&app_lc, &mut scores);
-    score_window_titles(signals.window_titles, &mut scores);
-    score_ocr(&ocr_lc, &mut scores);
-    score_signals(signals.signals, &mut scores);
+    score_audio(signals, &mut scores, &mut reasoning);
+    score_app_name(&app_lc, &mut scores, &mut reasoning);
+    score_window_titles(signals.window_titles, &mut scores, &mut reasoning);
+    score_ocr(&ocr_lc, &mut scores, &mut reasoning);
+    score_signals(signals.signals, &mut scores, &mut reasoning);
 
     let signal_count = signals.window_titles.len()
         + signals.signals.len()
         + if signals.audio_present { 1 } else { 0 };
+    tracing::Span::current().record("window_title_count", signals.window_titles.len());
+    tracing::Span::current().record("ocr_text_bytes", signals.ocr_text.len());
     tracing::Span::current().record("signal_count", signal_count);
 
     let (kind, confidence) = scores.winner();
     let (final_kind, final_conf) = if confidence < CONFIDENCE_FLOOR {
+        tracing::Span::current().record("confidence_floor_applied", true);
         (ActivityKind::IdlePersonal, confidence)
     } else {
+        tracing::Span::current().record("confidence_floor_applied", false);
         (kind, confidence)
     };
     tracing::Span::current().record("category", final_kind.as_str());
     tracing::Span::current().record("confidence", final_conf as f64);
+
+    let score_breakdown = scores.breakdown();
+    let reasoning_breakdown = reasoning.format();
+
+    tracing::debug!(
+        app_name = signals.app_name,
+        window_titles = signals.window_titles.len(),
+        signals = signal_count,
+        ocr_text_bytes = signals.ocr_text.len(),
+        audio_present = signals.audio_present,
+        category = final_kind.as_str(),
+        confidence = final_conf,
+        scores = score_breakdown,
+        "session categorized"
+    );
+
+    tracing::debug!(reasoning = reasoning_breakdown, "categorization reasoning");
+
     (final_kind, final_conf)
 }
 

@@ -14,7 +14,7 @@
 
 mod common;
 
-use meridian::config::{Config, LlmBackendConfig};
+use meridian::config::{Config, LlmBackendConfig, RuntimeSettings};
 use meridian::intelligence::run_task_linking;
 use sqlx::{sqlite::SqliteConnectOptions, Row, SqlitePool};
 use std::str::FromStr;
@@ -48,21 +48,49 @@ fn hermes_configured(services_dir: &str) -> bool {
         .exists()
 }
 
+/// Skip a test when the classification environment is not set up, binding
+/// `$var` to the real services/ directory path when the environment is ready.
 macro_rules! skip_unless_ready {
-    ($services_dir:ident) => {
+    ($var:ident) => {
         if !python3_available() {
-            eprintln!("SKIP: python3 not in PATH");
+            eprintln!("skip: python3 not available");
             return;
         }
-        let Some(ref $services_dir) = real_services_dir() else {
-            eprintln!("SKIP: services/agents/run_task_linker.py not found");
-            return;
+        let $var = match real_services_dir() {
+            Some(dir) => dir,
+            None => {
+                eprintln!("skip: services/ directory not found");
+                return;
+            }
         };
-        if !hermes_configured($services_dir) {
-            eprintln!("SKIP: services/.hermes/config.yaml not found — hermes not configured");
+        if !hermes_configured(&$var) {
+            eprintln!("skip: hermes not configured (services/.hermes/config.yaml missing)");
             return;
         }
     };
+}
+
+#[allow(dead_code)]
+fn make_cfg_backfill(enabled: bool, services_dir: Option<String>, backfill: bool) -> Config {
+    Config {
+        screenpipe_db: String::new(),
+        meridian_db: String::new(),
+        poll_interval_secs: 60,
+        pm_providers: vec![],
+        llm_backend: LlmBackendConfig::Disabled,
+        classification_enabled: enabled,
+        classification_timeout_s: 30,
+        min_classification_duration_s: 10,
+        classification_services_dir: services_dir,
+        classification_backfill: backfill,
+        category_backfill: false,
+        classification_context_window: 5,
+        jira_update_enabled: false,
+        jira_update_interval_s: 14400,
+        jira_office_start_hour: 9,
+        jira_office_end_hour: 17,
+        runtime: RuntimeSettings::default(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +182,7 @@ fn make_cfg(services_dir: &str, db_path: &str) -> Config {
         jira_update_interval_s: 14400,
         jira_office_start_hour: 9,
         jira_office_end_hour: 17,
+        runtime: RuntimeSettings::default(),
     }
 }
 
@@ -323,6 +352,7 @@ async fn short_session_is_not_classified() {
         jira_update_interval_s: 14400,
         jira_office_start_hour: 9,
         jira_office_end_hour: 17,
+        runtime: RuntimeSettings::default(),
     };
 
     run_task_linking(&pool, &cfg).await.unwrap();
@@ -362,6 +392,7 @@ async fn trivial_session_is_marked_overhead_without_python() {
         jira_update_interval_s: 14400,
         jira_office_start_hour: 9,
         jira_office_end_hour: 17,
+        runtime: RuntimeSettings::default(),
     };
 
     run_task_linking(&pool, &cfg).await.unwrap();
