@@ -7,3 +7,18 @@ echo "Running cargo fmt check..."
 cargo fmt --check || { echo "Run 'cargo fmt' before committing"; exit 1; }
 echo "Running cargo clippy..."
 cargo clippy -- -D warnings || { echo "Fix clippy warnings before committing"; exit 1; }
+
+# Security audit — staged files only, blocks commit on HIGH/CRITICAL findings
+STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(rs|ts|tsx|py)$' || true)
+if [ -n "$STAGED" ] && command -v claude &>/dev/null; then
+  echo "Running security audit on staged files..."
+  FINDINGS=$(claude --print "Security audit of staged changes in the Meridian project. Files: $STAGED. Check only: SQL injection, command injection, path traversal, hardcoded credentials, missing input validation at API boundaries, unsafe subprocess calls (shell=True, unvalidated exec paths). Report only HIGH and CRITICAL severity findings as a compact bulleted list with file:line. If none found, output exactly: NO_HIGH_FINDINGS" 2>/dev/null || echo "NO_HIGH_FINDINGS")
+  if echo "$FINDINGS" | grep -qE "HIGH|CRITICAL"; then
+    echo ""
+    echo "Security audit findings:"
+    echo "$FINDINGS"
+    echo ""
+    echo "Fix HIGH/CRITICAL issues before committing, or run: git commit --no-verify to skip."
+    exit 1
+  fi
+fi

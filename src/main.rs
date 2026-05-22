@@ -9,7 +9,7 @@ use meridian::db::meridian::{cleanup_incomplete_runs, setup_db};
 use meridian::db::screenpipe::open_screenpipe;
 use meridian::etl::run_etl;
 use meridian::intelligence::{
-    check_classification_ready, run_categorization, run_pm_sync, run_task_linking,
+    check_classification_ready, run_fm_categorization, run_pm_sync, run_task_linking,
 };
 use meridian::observability;
 use tokio::signal::unix::{signal, SignalKind};
@@ -31,31 +31,32 @@ async fn main() -> Result<()> {
     //    so OTel's blocking flush doesn't run inside tokio's drop path.
     let obs_guard = observability::init("meridian-rust")?;
 
-    // 3. Load config
-    let cfg = Config::from_env();
+    // 3. Load initial config — DB paths and startup parameters come from here.
+    //    DB pool paths and observability are fixed at startup and do not change.
+    let initial_cfg = Config::from_env();
     tracing::info!(stage = "config_loaded", "configuration ready");
 
     // 4. Log startup parameters
     tracing::info!(
-        screenpipe_db = %cfg.screenpipe_db,
-        meridian_db   = %cfg.meridian_db,
-        poll_interval_secs = cfg.poll_interval_secs,
+        screenpipe_db = %initial_cfg.screenpipe_db,
+        meridian_db   = %initial_cfg.meridian_db,
+        poll_interval_secs = initial_cfg.poll_interval_secs,
         "meridian daemon starting"
     );
 
     // 4b. Preflight: verify classification stack is ready before starting the daemon.
     //     Fails fast with a clear message rather than silently erroring every tick.
-    if let Err(e) = check_classification_ready(&cfg) {
+    if let Err(e) = check_classification_ready(&initial_cfg) {
         tracing::error!("{}", e);
         eprintln!("\nERROR: {}\n", e);
         std::process::exit(1);
     }
 
     // 4. Open screenpipe pool (read-only)
-    let screenpipe = open_screenpipe(&cfg.screenpipe_db_uri()).await?;
+    let screenpipe = open_screenpipe(&initial_cfg.screenpipe_db_uri()).await?;
 
     // 5. Open / create meridian pool and run migrations
-    let meridian = setup_db(&cfg.meridian_db_uri()).await?;
+    let meridian = setup_db(&initial_cfg.meridian_db_uri()).await?;
 
     // 6. Graceful shutdown: listen for SIGINT and SIGTERM
     let mut sigint = signal(SignalKind::interrupt())?;
@@ -72,11 +73,11 @@ async fn main() -> Result<()> {
         }
     }
 
-    let poll_interval = Duration::from_secs(cfg.poll_interval_secs);
-
     // 7a. Clean up any runs left in 'running' state from a previous crash.
     match cleanup_incomplete_runs(&meridian).await {
-        Ok(0) => {}
+        Ok(0) => {
+            tracing::info!("no incomplete runs found");
+        }
         Ok(n) => tracing::warn!(
             deleted_partial_sessions = n,
             "cleaned up incomplete ETL run"
@@ -84,28 +85,48 @@ async fn main() -> Result<()> {
         Err(e) => tracing::error!("cleanup_incomplete_runs failed: {}", e),
     }
 
-    // 7b. Run ETL once immediately before entering the loop
-    tracing::info!("running initial ETL pass");
-    if let Err(e) = run_etl(&screenpipe, &meridian).await {
-        tracing::error!("ETL run failed: {}", e);
-    }
-    if let Err(e) = run_pm_sync(&meridian, &cfg).await {
-        tracing::error!("intelligence run failed: {}", e);
-    }
-    if let Err(e) = run_categorization(&meridian, &cfg).await {
-        tracing::error!("categorization run failed: {}", e);
-    }
-    if let Err(e) = run_task_linking(&meridian, &cfg).await {
-        tracing::error!("classification run failed: {}", e);
+    // 7b. Run ETL once immediately before entering the loop.
+    //     Re-read config so that any settings.json present at startup takes effect.
+    {
+        let cfg = Config::from_env();
+        let startup_tick = tracing::info_span!("startup_tick");
+        let _guard = startup_tick.enter();
+        tracing::info!("running initial ETL pass");
+        if let Err(e) = run_etl(&screenpipe, &meridian).await {
+            tracing::error!("ETL run failed: {}", e);
+        }
+        if let Err(e) = run_pm_sync(&meridian, &cfg).await {
+            tracing::error!("intelligence run failed: {}", e);
+        }
+        if let Err(e) = run_fm_categorization(&meridian, &cfg).await {
+            tracing::error!("FM categorization run failed: {}", e);
+        }
+        if let Err(e) = run_task_linking(&meridian, &cfg).await {
+            tracing::error!("classification run failed: {}", e);
+        }
     }
 
-    // 8. Poll loop
+    // 8. Poll loop — config is re-read on every tick so that edits to
+    //    ~/.meridian/settings.json take effect without a daemon restart.
     loop {
+        // Determine the sleep duration from the current settings.json before sleeping.
+        let poll_interval = {
+            let cfg = Config::from_env();
+            Duration::from_secs(cfg.runtime.poll_interval_secs)
+        };
+
         tokio::select! {
             _ = wait_for_shutdown(&mut sigint, &mut sigterm) => {
                 break;
             }
             _ = tokio::time::sleep(poll_interval) => {
+                // Re-read config to pick up any settings.json changes made while sleeping.
+                let cfg = Config::from_env();
+                let poll_tick = tracing::info_span!(
+                    "poll_tick",
+                    poll_interval_secs = cfg.runtime.poll_interval_secs
+                );
+                let _guard = poll_tick.enter();
                 tracing::debug!("starting ETL tick");
                 if let Err(e) = run_etl(&screenpipe, &meridian).await {
                     tracing::error!("ETL run failed: {}", e);
@@ -113,8 +134,8 @@ async fn main() -> Result<()> {
                 if let Err(e) = run_pm_sync(&meridian, &cfg).await {
                     tracing::error!("intelligence run failed: {}", e);
                 }
-                if let Err(e) = run_categorization(&meridian, &cfg).await {
-                    tracing::error!("categorization run failed: {}", e);
+                if let Err(e) = run_fm_categorization(&meridian, &cfg).await {
+                    tracing::error!("FM categorization run failed: {}", e);
                 }
                 if let Err(e) = run_task_linking(&meridian, &cfg).await {
                     tracing::error!("classification run failed: {}", e);
