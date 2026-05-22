@@ -51,6 +51,7 @@ def _make_db_with_sessions(
             status TEXT,
             status_category TEXT,
             issue_type TEXT,
+            parent_key TEXT,
             epic_title TEXT,
             sprint_name TEXT
         );
@@ -161,9 +162,10 @@ def test_resolve_llm_skips_selector_when_prefer_local_disabled():
     assert model == "cloud-model"
 
 
-# ── _classify_one: correct endpoint forwarded to AIAgent ─────────────────────
+# ── _classify_one: agent is injected, not constructed internally ──────────────
 
-def test_classify_one_passes_local_endpoint_to_aiagent():
+def test_classify_one_uses_provided_agent():
+    """_classify_one calls agent.run_conversation and returns the parsed result."""
     db_path = _make_db_with_sessions(
         [{"id": 10, "app_name": "VSCode", "duration_s": 90}],
         pm_tasks=[{"task_key": "KAN-42", "title": "Feature work"}],
@@ -172,47 +174,18 @@ def test_classify_one_passes_local_endpoint_to_aiagent():
     con.row_factory = sqlite3.Row
     fake_agent = _fake_agent_response("KAN-42", 0.9)
 
-    with patch("run_agent.AIAgent", return_value=fake_agent) as MockAgent:
-        from agents.run_task_linker import _classify_one
-        result = _classify_one(
-            10, db_path, con,
-            llm_model="gemma3-12b",
-            llm_base_url="http://127.0.0.1:11434/v1",
-            llm_api_key="local",
-        )
+    from agents.run_task_linker import _classify_one
+    result = _classify_one(
+        10, db_path, con,
+        agent=fake_agent,
+        llm_model="gemma3-12b",
+        llm_base_url="http://127.0.0.1:11434/v1",
+    )
 
     con.close()
-    call_kwargs = MockAgent.call_args.kwargs
-    assert call_kwargs["model"] == "gemma3-12b"
-    assert call_kwargs["base_url"] == "http://127.0.0.1:11434/v1"
-    assert call_kwargs["api_key"] == "local"
+    fake_agent.run_conversation.assert_called_once()
     assert result["task_key"] == "KAN-42"
     assert result["session_id"] == 10
-
-
-def test_classify_one_passes_cloud_endpoint_to_aiagent():
-    db_path = _make_db_with_sessions(
-        [{"id": 11, "app_name": "Terminal", "duration_s": 60}],
-        pm_tasks=[{"task_key": "KAN-7", "title": "Infra task"}],
-    )
-    con = sqlite3.connect(db_path)
-    con.row_factory = sqlite3.Row
-    fake_agent = _fake_agent_response("KAN-7", 0.75)
-
-    with patch("run_agent.AIAgent", return_value=fake_agent) as MockAgent:
-        from agents.run_task_linker import _classify_one
-        _classify_one(
-            11, db_path, con,
-            llm_model="gemma4:31b-cloud",
-            llm_base_url="https://ollama.com/v1",
-            llm_api_key="sk-test",
-        )
-
-    con.close()
-    call_kwargs = MockAgent.call_args.kwargs
-    assert call_kwargs["model"] == "gemma4:31b-cloud"
-    assert call_kwargs["base_url"] == "https://ollama.com/v1"
-    assert call_kwargs["api_key"] == "sk-test"
 
 
 def test_classify_one_returns_expected_fields():
@@ -224,12 +197,13 @@ def test_classify_one_returns_expected_fields():
     con.row_factory = sqlite3.Row
     fake_agent = _fake_agent_response("KAN-99", 0.88)
 
-    with patch("run_agent.AIAgent", return_value=fake_agent):
-        from agents.run_task_linker import _classify_one
-        result = _classify_one(
-            20, db_path, con,
-            llm_model="m", llm_base_url="http://x", llm_api_key="k",
-        )
+    from agents.run_task_linker import _classify_one
+    result = _classify_one(
+        20, db_path, con,
+        agent=fake_agent,
+        llm_model="m",
+        llm_base_url="http://x",
+    )
 
     con.close()
     for field in ("session_id", "task_key", "confidence", "session_type",
@@ -240,17 +214,22 @@ def test_classify_one_returns_expected_fields():
 
 
 def test_classify_one_session_not_found_returns_error_shape():
+    """_classify_one returns an error shape without calling the agent when the session row is absent."""
     db_path = _make_db_with_sessions([])
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
+    stub_agent = MagicMock()
 
     from agents.run_task_linker import _classify_one
     result = _classify_one(
         999, db_path, con,
-        llm_model="m", llm_base_url="http://x", llm_api_key="k",
+        agent=stub_agent,
+        llm_model="m",
+        llm_base_url="http://x",
     )
 
     con.close()
+    stub_agent.run_conversation.assert_not_called()
     assert result["session_id"] == 999
     assert result["task_key"] is None
     assert result["method"] == "llm_error"
@@ -264,18 +243,72 @@ def test_classify_one_agent_exception_returns_llm_error():
     boom = MagicMock()
     boom.run_conversation.side_effect = RuntimeError("connection refused")
 
-    with patch("run_agent.AIAgent", return_value=boom):
-        from agents.run_task_linker import _classify_one
-        result = _classify_one(
-            30, db_path, con,
-            llm_model="m", llm_base_url="http://x", llm_api_key="k",
-        )
+    from agents.run_task_linker import _classify_one
+    result = _classify_one(
+        30, db_path, con,
+        agent=boom,
+        llm_model="m",
+        llm_base_url="http://x",
+    )
 
     con.close()
     assert result["session_id"] == 30
     assert result["task_key"] is None
     assert result["method"] == "llm_error"
     assert "connection refused" in result["reasoning"]
+
+
+# ── main(): agent construction ─────────────────────────────────────────────────
+
+def test_main_constructs_agent_once_for_batch():
+    """AIAgent must be instantiated once per batch, not once per session."""
+    db_path = _make_db_with_sessions(
+        [
+            {"id": 1, "app_name": "VSCode", "duration_s": 90},
+            {"id": 2, "app_name": "Terminal", "duration_s": 60},
+        ],
+        pm_tasks=[{"task_key": "KAN-1", "title": "Feature"}],
+    )
+    fake_agent = _fake_agent_response("KAN-1", 0.9)
+
+    with patch("agents.run_task_linker._resolve_llm", return_value=("m", "http://x", "k")), \
+         patch("agents.run_task_linker.AIAgent", return_value=fake_agent) as MockAgent:
+        import io
+        from agents.run_task_linker import main
+        captured = io.StringIO()
+        payload = json.dumps({"session_ids": [1, 2], "meridian_db": db_path})
+        with patch("sys.stdin", io.StringIO(payload)), patch("sys.stdout", captured):
+            main()
+
+    MockAgent.assert_called_once()
+    out = json.loads(captured.getvalue().strip())
+    assert len(out["results"]) == 2
+
+
+def test_main_constructs_agent_with_correct_params():
+    """main() must build the agent with skip_memory=True, tool_delay=0, and max_tokens set."""
+    db_path = _make_db_with_sessions(
+        [{"id": 1, "app_name": "VSCode", "duration_s": 90}],
+        pm_tasks=[{"task_key": "KAN-1", "title": "Feature"}],
+    )
+    fake_agent = _fake_agent_response("KAN-1", 0.9)
+
+    with patch("agents.run_task_linker._resolve_llm", return_value=("mymodel", "http://local/v1", "mykey")), \
+         patch("agents.run_task_linker.AIAgent", return_value=fake_agent) as MockAgent:
+        import io
+        from agents.run_task_linker import main
+        captured = io.StringIO()
+        payload = json.dumps({"session_ids": [1], "meridian_db": db_path})
+        with patch("sys.stdin", io.StringIO(payload)), patch("sys.stdout", captured):
+            main()
+
+    kw = MockAgent.call_args.kwargs
+    assert kw["model"] == "mymodel"
+    assert kw["base_url"] == "http://local/v1"
+    assert kw["api_key"] == "mykey"
+    assert kw.get("skip_memory") is True
+    assert kw.get("tool_delay") == 0.0
+    assert kw.get("max_tokens") is not None
 
 
 # ── main(): input validation ───────────────────────────────────────────────────
