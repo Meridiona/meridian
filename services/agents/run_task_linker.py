@@ -24,6 +24,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+from opentelemetry import trace
+from opentelemetry.trace import StatusCode
+
 # HERMES_HOME must be set before any hermes package is imported.
 # tools/skills_tool.SKILLS_DIR is a module-level constant computed at first
 # import — if HERMES_HOME is set after that import, it reads ~/.hermes instead.
@@ -113,22 +116,46 @@ def _classify_one(
     llm_base_url: str,
     llm_api_key: str,
 ) -> dict[str, Any]:
+    _tracer = trace.get_tracer("agents.run_task_linker")
     sid = session_id
-    session_raw = _fetch_session(con, sid)
-    if session_raw is None:
-        return {
-            "session_id":   sid,
-            "task_key":     None,
-            "confidence":   0.0,
-            "session_type": "overhead",
-            "reasoning":    f"session {sid} not found in DB",
-            "method":       "llm_error",
-            "dimensions":   {},
-            "elapsed_s":    0.0,
-        }
 
-    pm_tasks = _fetch_pm_tasks(con)
-    recent_sessions = _fetch_recent_sessions(con, sid)
+    # ── db_fetch ──────────────────────────────────────────────────────────────
+    with _tracer.start_as_current_span("db_fetch") as db_span:
+        session_raw = _fetch_session(con, sid)
+        if session_raw is None:
+            db_span.set_attribute("pm_tasks_count", 0)
+            db_span.set_attribute("recent_sessions_count", 0)
+            db_span.add_event("session_not_found", {"session_id": sid})
+            db_span.set_status(StatusCode.ERROR, f"session {sid} not found in DB")
+            return {
+                "session_id":   sid,
+                "task_key":     None,
+                "confidence":   0.0,
+                "session_type": "overhead",
+                "reasoning":    f"session {sid} not found in DB",
+                "method":       "llm_error",
+                "dimensions":   {},
+                "elapsed_s":    0.0,
+            }
+        pm_tasks = _fetch_pm_tasks(con)
+        recent_sessions = _fetch_recent_sessions(con, sid)
+        db_span.set_attribute("pm_tasks_count", len(pm_tasks))
+        db_span.set_attribute("recent_sessions_count", len(recent_sessions))
+
+        session_text = session_raw.get("session_text") or ""
+        db_span.add_event("session_loaded", {
+            "app_name":          str(session_raw.get("app_name") or ""),
+            "duration_s":        float(session_raw.get("duration_s") or 0.0),
+            "category":          str(session_raw.get("category") or ""),
+            "session_text_chars": len(session_text),
+            "text_source":       str(session_raw.get("session_text_source") or ""),
+        })
+        recent_task_keys = [r.get("task_key") or "-" for r in recent_sessions if r.get("task_key")]
+        db_span.add_event("context_loaded", {
+            "pm_tasks_count":       len(pm_tasks),
+            "recent_sessions_count": len(recent_sessions),
+            "recent_task_keys":     ", ".join(recent_task_keys) if recent_task_keys else "-",
+        })
 
     session = {
         "id":                  sid,
@@ -136,7 +163,7 @@ def _classify_one(
         "started_at":          session_raw.get("started_at", ""),
         "ended_at":            session_raw.get("ended_at", ""),
         "duration_s":          session_raw.get("duration_s"),
-        "session_text":        session_raw.get("session_text", ""),
+        "session_text":        session_text,
         "session_text_source": session_raw.get("session_text_source", "unknown"),
         "window_titles":       json.loads(session_raw.get("window_titles") or "[]"),
         "category":            session_raw.get("category"),
@@ -145,73 +172,92 @@ def _classify_one(
     }
     valid_keys = {t["task_key"] for t in pm_tasks}
 
-    user_message = build_user_message(session, pm_tasks, recent_sessions=recent_sessions)
+    # ── build_prompt ──────────────────────────────────────────────────────────
+    with _tracer.start_as_current_span("build_prompt") as bp_span:
+        bp_span.set_attribute("pm_tasks_count", len(pm_tasks))
+        bp_span.set_attribute("recent_sessions_count", len(recent_sessions))
+        user_message = build_user_message(session, pm_tasks, recent_sessions=recent_sessions)
+        bp_span.set_attribute("prompt_chars", len(user_message))
+        recent_with_task = sum(1 for r in recent_sessions if r.get("task_key"))
+        bp_span.add_event("prompt_assembled", {
+            "pm_tasks_included":        len(pm_tasks),
+            "recent_sessions_included": len(recent_sessions),
+            "recent_with_task_key":     recent_with_task,
+            "session_text_chars":       len(session_text),
+            "prompt_chars":             len(user_message),
+        })
 
+    # ── llm_inference ─────────────────────────────────────────────────────────
     t0 = time.time()
-    try:
-        from run_agent import AIAgent
+    with _tracer.start_as_current_span("llm_inference") as llm_span:
+        llm_span.set_attribute("model", llm_model)
+        llm_span.set_attribute("base_url", llm_base_url)
+        llm_span.set_attribute("prompt_chars", len(user_message))
+        try:
+            from run_agent import AIAgent
 
-        agent = AIAgent(
-            # ── Connection ────────────────────────────────────────────
-            model=llm_model,
-            base_url=llm_base_url,
-            api_key=llm_api_key,
-            # provider=None,                # omit — hermes infers from base_url
-            # api_mode=None,                # omit — default "chat_completions"
-            # fallback_model=None,          # omit — no fallback needed
+            llm_span.add_event("agent_created", {
+                "model":           llm_model,
+                "base_url":        llm_base_url,
+                "max_iterations":  10,
+                "memory_enabled":  True,
+                "toolsets":        "memory,skills",
+            })
 
-            # ── Toolsets ──────────────────────────────────────────────
-            # Valid names come from toolsets.get_all_toolsets() — not documented on AIAgent.
-            # "memory"  → enables tool: memory        (writes learned patterns to HERMES_HOME/memories/)
-            # "skills"  → enables tools: skills_list, skill_view, skill_manage
-            #             (background skill-review thread can patch task-classifier/SKILL.md)
-            enabled_toolsets=["memory", "skills"],
-            # disabled_toolsets=None,       # omit — using enabled_toolsets allowlist instead
+            agent = AIAgent(
+                model=llm_model,
+                base_url=llm_base_url,
+                api_key=llm_api_key,
+                enabled_toolsets=["memory", "skills"],
+                max_iterations=10,
+                quiet_mode=True,
+                skip_context_files=True,
+                load_soul_identity=False,
+                skip_memory=False,
+                ephemeral_system_prompt=SYSTEM_CONTEXT,
+            )
 
-            # ── Limits ────────────────────────────────────────────────
-            max_iterations=10,               # 1 classification + up to 2 memory/skill writes
-            # max_tokens=AGENT_MAX_TOKENS,    # cap response size
-            # tool_delay=1.0,               # omit — default 1s is fine
-            # reasoning_config=None,        # omit — let hermes pick effort level
+            with contextlib.redirect_stdout(sys.stderr):
+                result = agent.run_conversation(user_message)
 
-            # ── Output / logging ──────────────────────────────────────
-            quiet_mode=True,                # suppress hermes progress lines (we redirect stdout anyway)
-            # verbose_logging=False,        # omit — we use our own logging module
-            # save_trajectories=False,      # omit — not persisting JSONL traces
-            # log_prefix="",               # omit — single-process, no prefix needed
+            elapsed = time.time() - t0
+            iterations = 0
+            response_chars = 0
+            if isinstance(result, dict):
+                iterations = result.get("iterations") or result.get("turns") or 0
+                raw_preview = str(result.get("final_response") or result.get("response") or "")
+                response_chars = len(raw_preview)
 
-            # ── Context injection ─────────────────────────────────────
-            skip_context_files=True,        # don't inject SOUL.md / AGENTS.md / .cursorrules
-            load_soul_identity=False,       # don't load SOUL.md even partially
-            skip_memory=False,              # persistent memory ON — self-learning enabled
-            ephemeral_system_prompt=SYSTEM_CONTEXT,  # shared with server.py for consistency
+            llm_span.set_attribute("outcome", "hermes_aiagent")
+            llm_span.set_attribute("elapsed_s", elapsed)
+            llm_span.set_attribute("iterations", iterations)
+            llm_span.add_event("conversation_complete", {
+                "elapsed_s":      elapsed,
+                "iterations":     iterations,
+                "response_chars": response_chars,
+            })
 
-            # ── Session / platform (not applicable in daemon context) ─
-            # session_id=None,              # omit — auto-generated per call
-            # platform=None,               # omit — not cli/telegram/discord
-            # user_id=None,                # omit — single-user daemon
-            # prefill_messages=None,        # omit — no few-shot priming needed
-            # checkpoints_enabled=False,    # omit — not needed for short classification calls
-        )
-
-        with contextlib.redirect_stdout(sys.stderr):
-            result = agent.run_conversation(user_message)
-
-    except Exception as exc:  # noqa: BLE001
-        elapsed = time.time() - t0
-        log.warning("run_task_linker: AIAgent failed for session %d: %s", sid, exc)
-        return {
-            "session_id":   sid,
-            "task_key":     None,
-            "confidence":   0.0,
-            "session_type": "overhead",
-            "reasoning":    f"agent error: {exc}",
-            "method":       "llm_error",
-            "dimensions":   {},
-            "elapsed_s":    elapsed,
-        }
-
-    elapsed = time.time() - t0
+        except Exception as exc:  # noqa: BLE001
+            elapsed = time.time() - t0
+            llm_span.set_attribute("outcome", "llm_error")
+            llm_span.set_attribute("elapsed_s", elapsed)
+            llm_span.set_status(StatusCode.ERROR, str(exc))
+            llm_span.add_event("agent_error", {
+                "error_type":    type(exc).__name__,
+                "error_message": str(exc)[:500],
+                "elapsed_s":     elapsed,
+            })
+            log.warning("run_task_linker: AIAgent failed for session %d: %s", sid, exc)
+            return {
+                "session_id":   sid,
+                "task_key":     None,
+                "confidence":   0.0,
+                "session_type": "overhead",
+                "reasoning":    f"agent error: {exc}",
+                "method":       "llm_error",
+                "dimensions":   {},
+                "elapsed_s":    elapsed,
+            }
 
     raw = ""
     if isinstance(result, dict):
@@ -219,19 +265,48 @@ def _classify_one(
 
     log.debug("run_task_linker: session %d raw (%.1fs): %.200s", sid, elapsed, raw)
 
-    task_key, confidence, reasoning, dimensions, session_type, err = parse_response(raw, valid_keys)
-    if err:
-        log.warning("run_task_linker: parse error for session %d: %s", sid, err)
-        return {
-            "session_id":   sid,
-            "task_key":     None,
-            "confidence":   0.0,
-            "session_type": "overhead",
-            "reasoning":    err,
-            "method":       "llm_parse_error",
-            "dimensions":   {},
-            "elapsed_s":    elapsed,
-        }
+    # ── parse_response ────────────────────────────────────────────────────────
+    with _tracer.start_as_current_span("parse_response") as pr_span:
+        pr_span.set_attribute("raw_chars", len(raw))
+        # Always emit the raw LLM output — this is the single most useful event
+        # for debugging parse failures: you can see exactly what the model returned.
+        pr_span.add_event("raw_llm_response", {
+            "chars":   len(raw),
+            "preview": raw[:500],
+        })
+
+        task_key, confidence, reasoning, dimensions, session_type, err = parse_response(raw, valid_keys)
+        if err:
+            pr_span.set_attribute("outcome", "llm_parse_error")
+            pr_span.set_attribute("task_key", "-")
+            pr_span.set_attribute("confidence", 0.0)
+            pr_span.set_status(StatusCode.ERROR, err)
+            pr_span.add_event("parse_failure", {
+                "error":       err,
+                "raw_preview": raw[:300],
+            })
+            log.warning("run_task_linker: parse error for session %d: %s", sid, err)
+            return {
+                "session_id":   sid,
+                "task_key":     None,
+                "confidence":   0.0,
+                "session_type": "overhead",
+                "reasoning":    err,
+                "method":       "llm_parse_error",
+                "dimensions":   {},
+                "elapsed_s":    elapsed,
+            }
+
+        pr_span.set_attribute("outcome", "ok")
+        pr_span.set_attribute("task_key", task_key if task_key is not None else "-")
+        pr_span.set_attribute("confidence", confidence)
+        pr_span.add_event("parse_success", {
+            "task_key":        task_key if task_key is not None else "-",
+            "confidence":      confidence,
+            "session_type":    session_type,
+            "dimensions_count": len(dimensions),
+            "dimension_keys":  ", ".join(sorted(dimensions.keys())),
+        })
 
     return {
         "session_id":   sid,
@@ -254,6 +329,7 @@ def main() -> None:
 
     session_ids: list[int] = payload.get("session_ids", [])
     db_path: str = payload.get("meridian_db", "")
+    traceparent: str | None = payload.get("traceparent")
 
     # Input validation
     if not db_path:
@@ -273,30 +349,55 @@ def main() -> None:
 
     log.info("run_task_linker: %d sessions, db=%s", len(session_ids), db_path)
 
-    llm_model, llm_base_url, llm_api_key = _resolve_llm()
+    ctx = observability.extract_parent_context(traceparent)
 
-    con = _sqlite3.connect(db_path)
-    con.row_factory = _sqlite3.Row
-    try:
-        results: list[dict[str, Any]] = []
-        for session_id in session_ids:
-            log.info("run_task_linker: classifying session %d", session_id)
-            result = _classify_one(
-                session_id, db_path, con,
-                llm_model=llm_model,
-                llm_base_url=llm_base_url,
-                llm_api_key=llm_api_key,
-            )
-            results.append(result)
-            log.info(
-                "run_task_linker: session_id=%d task_key=%s session_type=%s elapsed_s=%.2f",
-                result["session_id"],
-                result["task_key"],
-                result["session_type"],
-                result["elapsed_s"],
-            )
-    finally:
-        con.close()
+    with tracer.start_as_current_span("run_task_linker", context=ctx) as root_span:
+        root_span.set_attribute("session_count", len(session_ids))
+        root_span.set_attribute("db_path", Path(db_path).name)
+
+        # ── llm_selection ─────────────────────────────────────────────────────
+        with tracer.start_as_current_span("llm_selection") as sel_span:
+            llm_model, llm_base_url, llm_api_key = _resolve_llm()
+            is_local = llm_base_url != BASE_URL
+            runtime = "local" if is_local else "cloud"
+            sel_span.set_attribute("model", llm_model)
+            sel_span.set_attribute("runtime", runtime)
+            sel_span.set_attribute("is_local", is_local)
+
+        con = _sqlite3.connect(db_path)
+        con.row_factory = _sqlite3.Row
+        try:
+            results: list[dict[str, Any]] = []
+            for session_id in session_ids:
+                log.info("run_task_linker: classifying session %d", session_id)
+
+                # ── classify_session ──────────────────────────────────────────
+                with tracer.start_as_current_span("classify_session") as cls_span:
+                    cls_span.set_attribute("session_id", session_id)
+                    result = _classify_one(
+                        session_id, db_path, con,
+                        llm_model=llm_model,
+                        llm_base_url=llm_base_url,
+                        llm_api_key=llm_api_key,
+                    )
+                    _row = con.execute(
+                        "SELECT app_name, duration_s FROM app_sessions WHERE id = ?",
+                        (session_id,),
+                    ).fetchone()
+                    if _row:
+                        cls_span.set_attribute("app_name", _row[0] or "unknown")
+                        cls_span.set_attribute("duration_s", float(_row[1] or 0.0))
+
+                results.append(result)
+                log.info(
+                    "run_task_linker: session_id=%d task_key=%s session_type=%s elapsed_s=%.2f",
+                    result["session_id"],
+                    result["task_key"],
+                    result["session_type"],
+                    result["elapsed_s"],
+                )
+        finally:
+            con.close()
 
     sys.stdout.write(json.dumps({"results": results}))
     sys.stdout.write("\n")
