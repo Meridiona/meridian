@@ -92,16 +92,20 @@ async fn main() -> Result<()> {
         let startup_tick = tracing::info_span!("startup_tick");
         let _guard = startup_tick.enter();
         tracing::info!("running initial ETL pass");
-        if let Err(e) = run_etl(&screenpipe, &meridian).await {
-            tracing::error!("ETL run failed: {}", e);
-        }
+        let etl_sessions = match run_etl(&screenpipe, &meridian).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::error!("ETL run failed: {}", e);
+                vec![]
+            }
+        };
         if let Err(e) = run_pm_sync(&meridian, &cfg).await {
             tracing::error!("intelligence run failed: {}", e);
         }
         if let Err(e) = run_fm_categorization(&meridian, &cfg).await {
             tracing::error!("FM categorization run failed: {}", e);
         }
-        if let Err(e) = run_task_linking(&meridian, &cfg).await {
+        if let Err(e) = run_task_linking(&meridian, &cfg, etl_sessions).await {
             tracing::error!("classification run failed: {}", e);
         }
     }
@@ -128,16 +132,20 @@ async fn main() -> Result<()> {
                 );
                 let _guard = poll_tick.enter();
                 tracing::debug!("starting ETL tick");
-                if let Err(e) = run_etl(&screenpipe, &meridian).await {
-                    tracing::error!("ETL run failed: {}", e);
-                }
+                let etl_sessions = match run_etl(&screenpipe, &meridian).await {
+                    Ok(ids) => ids,
+                    Err(e) => {
+                        tracing::error!("ETL run failed: {}", e);
+                        vec![]
+                    }
+                };
                 if let Err(e) = run_pm_sync(&meridian, &cfg).await {
                     tracing::error!("intelligence run failed: {}", e);
                 }
                 if let Err(e) = run_fm_categorization(&meridian, &cfg).await {
                     tracing::error!("FM categorization run failed: {}", e);
                 }
-                if let Err(e) = run_task_linking(&meridian, &cfg).await {
+                if let Err(e) = run_task_linking(&meridian, &cfg, etl_sessions).await {
                     tracing::error!("classification run failed: {}", e);
                 }
             }

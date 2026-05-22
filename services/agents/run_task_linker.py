@@ -211,20 +211,19 @@ def _classify_one(
                 "toolsets":        "memory,skills",
             })
 
-            agent = AIAgent(
-                model=llm_model,
-                base_url=llm_base_url,
-                api_key=llm_api_key,
-                enabled_toolsets=["memory", "skills"],
-                max_iterations=10,
-                quiet_mode=True,
-                skip_context_files=True,
-                load_soul_identity=False,
-                skip_memory=False,
-                ephemeral_system_prompt=SYSTEM_CONTEXT,
-            )
-
             with contextlib.redirect_stdout(sys.stderr):
+                agent = AIAgent(
+                    model=llm_model,
+                    base_url=llm_base_url,
+                    api_key=llm_api_key,
+                    enabled_toolsets=["memory", "skills"],
+                    max_iterations=10,
+                    quiet_mode=True,
+                    skip_context_files=True,
+                    load_soul_identity=False,
+                    skip_memory=False,
+                    ephemeral_system_prompt=SYSTEM_CONTEXT,
+                )
                 result = agent.run_conversation(user_message)
 
             elapsed = time.time() - t0

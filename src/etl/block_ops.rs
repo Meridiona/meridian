@@ -53,7 +53,7 @@ pub(super) async fn close_block(
     meridian: &SqlitePool,
     run_id: i64,
     b: &BlockBounds<'_>,
-) -> Result<i64> {
+) -> Result<(i64, i64)> {
     let mut ctx = extract_block_context(
         screenpipe,
         b.app,
@@ -227,7 +227,7 @@ pub(super) async fn close_block(
             .context("write traceparent")?;
     }
 
-    Ok(closed_count)
+    Ok((new_session_id, closed_count))
 }
 
 /// Upserts the still-open block into `active_session` at the end of an ETL pass.
