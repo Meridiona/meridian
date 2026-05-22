@@ -34,7 +34,7 @@ _SERVICES_DIR = Path(__file__).parent.parent
 os.environ.setdefault("HERMES_HOME", str(_SERVICES_DIR / ".hermes"))
 
 from agents import observability
-from agents._prompts import build_user_message
+from agents._prompts import build_user_message, _format_session, _format_candidates
 from agents._parser import parse_response
 from agents._system_context import SYSTEM_CONTEXT
 from agents.config import MODEL, BASE_URL, API_KEY, AGENT_MAX_TOKENS, LLM_PREFER_LOCAL
@@ -143,18 +143,24 @@ def _classify_one(
         db_span.set_attribute("recent_sessions_count", len(recent_sessions))
 
         session_text = session_raw.get("session_text") or ""
+        _session_for_fmt = {
+            **session_raw,
+            "window_titles": json.loads(session_raw.get("window_titles") or "[]"),
+        }
         db_span.add_event("session_loaded", {
-            "app_name":          str(session_raw.get("app_name") or ""),
-            "duration_s":        float(session_raw.get("duration_s") or 0.0),
-            "category":          str(session_raw.get("category") or ""),
+            "app_name":           str(session_raw.get("app_name") or ""),
+            "duration_s":         float(session_raw.get("duration_s") or 0.0),
+            "category":           str(session_raw.get("category") or ""),
             "session_text_chars": len(session_text),
-            "text_source":       str(session_raw.get("session_text_source") or ""),
+            "text_source":        str(session_raw.get("session_text_source") or ""),
+            "session_formatted":  _format_session(_session_for_fmt)[:2000],
         })
         recent_task_keys = [r.get("task_key") or "-" for r in recent_sessions if r.get("task_key")]
         db_span.add_event("context_loaded", {
-            "pm_tasks_count":       len(pm_tasks),
+            "pm_tasks_count":        len(pm_tasks),
             "recent_sessions_count": len(recent_sessions),
-            "recent_task_keys":     ", ".join(recent_task_keys) if recent_task_keys else "-",
+            "recent_task_keys":      ", ".join(recent_task_keys) if recent_task_keys else "-",
+            "pm_tasks_formatted":    _format_candidates(pm_tasks)[:3000],
         })
 
     session = {
@@ -185,6 +191,7 @@ def _classify_one(
             "recent_with_task_key":     recent_with_task,
             "session_text_chars":       len(session_text),
             "prompt_chars":             len(user_message),
+            "prompt_text":              user_message[:3000],
         })
 
     # ── llm_inference ─────────────────────────────────────────────────────────
@@ -235,6 +242,7 @@ def _classify_one(
                 "elapsed_s":      elapsed,
                 "iterations":     iterations,
                 "response_chars": response_chars,
+                "response":       raw_preview[:3000],
             })
 
         except Exception as exc:  # noqa: BLE001
