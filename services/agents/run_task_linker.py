@@ -155,6 +155,18 @@ def _classify_one(
             skip_memory=False,              # persistent memory ON — self-learning enabled
             ephemeral_system_prompt=SYSTEM_CONTEXT,  # shared with server.py for consistency
 
+            # ── Structured output ─────────────────────────────────────
+            # Qwen3 thinking mode is incompatible with JSON output — disable it via
+            # chat_template_kwargs so the model stays in non-thinking mode.
+            # response_format is a no-op on mlx-lm today (github.com/ml-explore/mlx-lm/issues/1007)
+            # but will activate automatically when the server adds support, and already works
+            # on Ollama/LM Studio if the provider switches.
+            request_overrides={
+                "extra_body": {
+                    "chat_template_kwargs": {"enable_thinking": False},
+                },
+            },
+
             # ── Session / platform (not applicable in daemon context) ─
             # session_id=None,              # omit — auto-generated per call
             # platform=None,               # omit — not cli/telegram/discord
