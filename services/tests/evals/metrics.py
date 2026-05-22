@@ -1,12 +1,32 @@
 """Metrics for the Stage 3 session→task classifier eval suite.
 
-Import metric lists from here into test files. Do not construct metrics inline
-in test files — keep them here so thresholds stay in one place.
+Import metric lists from here into eval files. Do not construct metrics inline
+in eval files — keep them here so thresholds stay in one place.
+
+Two evaluation levels (as per DeepEval agent eval docs):
+  AGENT_E2E_METRICS   — end-to-end trace, attached to @observe on outer agent fn
+  CLASSIFIER_METRICS  — component span, attached to @observe on inner classify fn
 """
 from __future__ import annotations
 
-from deepeval.metrics import BaseMetric
+import os
+from pathlib import Path
+import sys
+
+from deepeval.metrics import BaseMetric, TaskCompletionMetric
+from deepeval.models import OllamaModel
 from deepeval.test_case import LLMTestCase
+
+_SERVICES_DIR = Path(__file__).parent.parent.parent
+if str(_SERVICES_DIR) not in sys.path:
+    sys.path.insert(0, str(_SERVICES_DIR))
+
+# Use the same Ollama model already configured for hermes as the judge.
+# Fully offline — no OpenAI API key or Confident AI login required.
+_MODEL  = os.environ.get("OLLAMA_MODEL", "gemma4:31b")
+_HOST   = os.environ.get("OLLAMA_HOST",  "http://localhost:11434")
+
+_judge = OllamaModel(model=_MODEL, base_url=_HOST)
 
 _NULL_LITERALS = {"none", "null", "n/a", "nil", "undefined", ""}
 
@@ -62,10 +82,23 @@ class TaskKeyMatchMetric(BaseMetric):
 
 
 # ---------------------------------------------------------------------------
-# Metric lists — import these in test files, do not construct inline
+# Metric lists — import these in eval files, do not construct inline
 # ---------------------------------------------------------------------------
 
-# Primary metric for all classifier evals: did the model pick the right key?
+# End-to-end (trace level): attached to @observe on the outer agent function.
+# LLM judge asks "did the agent successfully complete the session classification task?"
+# TaskCompletionMetric infers both the task and the outcome from the full trace —
+# no expected_output needed at this level.
+AGENT_E2E_METRICS = [
+    TaskCompletionMetric(
+        threshold=0.5,
+        model=_judge,
+        include_reason=True,
+    ),
+]
+
+# Component level (span level): attached to @observe on the inner classify function.
+# Exact match on the extracted task_key — no LLM judge needed.
 CLASSIFIER_METRICS = [
     TaskKeyMatchMetric(threshold=1.0),
 ]

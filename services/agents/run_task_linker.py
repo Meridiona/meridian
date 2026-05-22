@@ -139,7 +139,7 @@ def _classify_one(
 
             # ── Limits ────────────────────────────────────────────────
             max_iterations=10,               # 1 classification + up to 2 memory/skill writes
-            max_tokens=AGENT_MAX_TOKENS,    # cap response size
+            # max_tokens=AGENT_MAX_TOKENS,    # cap response size
             # tool_delay=1.0,               # omit — default 1s is fine
             # reasoning_config=None,        # omit — let hermes pick effort level
 

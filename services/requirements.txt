@@ -20,4 +20,3 @@ hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git@v2026.4.30
 # Eval harness — LLM benchmarking and prompt comparison (services/eval/).
 # Not imported by the daemon; install manually: pip install deepeval ollama
 deepeval>=4.0.2,<5
-ollama>=0.6.0,<1
