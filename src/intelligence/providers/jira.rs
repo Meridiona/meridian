@@ -144,7 +144,8 @@ async fn fetch(jira: &JiraConfig) -> Result<Vec<JiraIssue>> {
 
     let data: JiraSearchResponse = resp.json().await.context("deserialising Jira response")?;
     let issue_count = data.issues.len();
-    tracing::debug!(count = issue_count, "parsed Jira response");
+    let keys: Vec<&str> = data.issues.iter().map(|i| i.key.as_str()).collect();
+    tracing::debug!(count = issue_count, ?keys, "parsed Jira response");
     Ok(data.issues)
 }
 
@@ -224,34 +225,36 @@ async fn upsert(pool: &SqlitePool, issues: &[JiraIssue], jira: &JiraConfig) -> R
 // ---------------------------------------------------------------------------
 
 #[tracing::instrument(skip(pool, jira))]
-pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<()> {
-    let (count,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM pm_tasks
+pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Option<Vec<String>>> {
+    let cached_keys: Vec<(String,)> = sqlx::query_as(
+        "SELECT task_key FROM pm_tasks
          WHERE provider = 'jira'
            AND expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",
     )
-    .fetch_one(pool)
+    .fetch_all(pool)
     .await
     .context("checking jira task cache staleness")?;
 
-    if count > 0 {
-        tracing::debug!(cached_task_count = count, "jira task cache is fresh");
-        return Ok(());
+    if !cached_keys.is_empty() {
+        let keys: Vec<&str> = cached_keys.iter().map(|(k,)| k.as_str()).collect();
+        tracing::debug!(cached_task_count = keys.len(), ?keys, "jira task cache is fresh");
+        return Ok(None);
     }
 
     tracing::debug!("jira task cache is stale — refreshing");
 
     match fetch(jira).await {
         Ok(issues) => {
-            let n = issues.len();
+            let keys: Vec<String> = issues.iter().map(|i| i.key.clone()).collect();
+            let n = keys.len();
             tracing::debug!(fetched_count = n, "jira fetch completed");
             upsert(pool, &issues, jira).await?;
             tracing::info!(upserted_count = n, "jira tasks refreshed");
+            Ok(Some(keys))
         }
         Err(e) => {
             tracing::warn!(error = %e, "jira fetch failed — keeping stale cache");
+            Ok(None)
         }
     }
-
-    Ok(())
 }
