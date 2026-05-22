@@ -4,10 +4,11 @@
 import { useState, useMemo, useEffect } from 'react'
 import {
   fmtDur, fmtDurDecimal, fmtClock,
-  CATS, AppGlyph, CatDot, CatLabel, LiveDot,
+  CATS, AppGlyph, CatDot, LiveDot,
   TaskKey, ConfidenceRing, SegBar, SectionHead, Card, useTick,
 } from '@/components/atoms'
 import TaskBadge from '@/components/TaskBadge'
+import ShapeOfDay from '@/components/ShapeOfDay'
 import type { TodayResponse } from '@/app/api/today/route'
 
 interface BucketSession {
@@ -62,13 +63,13 @@ function ActiveSessionCard({ active, taskKey }: { active: NonNullable<TodayRespo
           <div className="flex-1 min-w-0">
             {/* "You're on" headline */}
             <div className="flex items-baseline gap-3 flex-wrap">
-              <p className="text-[28px] leading-none italic" style={{ color: 'var(--ink)', fontFamily: "'Instrument Serif', Georgia, serif" }}>
+              <p className="font-serif text-[28px] leading-none italic" style={{ color: 'var(--ink)' }}>
                 You&apos;re on
               </p>
               {taskKey && (
                 <TaskKey keyId={taskKey} big />
               )}
-              <span className="text-[28px] leading-none italic truncate" style={{ color: 'var(--ink)', fontFamily: "'Instrument Serif', Georgia, serif" }}>
+              <span className="font-serif text-[28px] leading-none italic truncate" style={{ color: 'var(--ink)' }}>
                 {active.cat !== 'idle_personal' ? CATS[active.cat]?.label?.toLowerCase() ?? active.cat : 'an uncategorized session'}
               </span>
             </div>
@@ -145,12 +146,13 @@ function ActiveSessionCard({ active, taskKey }: { active: NonNullable<TodayRespo
 // ── Totals strip ─────────────────────────────────────────────────────────────
 function TotalsStrip({ focus_s, idle_s, session_count }: { focus_s: number; idle_s: number; session_count: number }) {
   const items = [
-    { k: 'Focus',    v: fmtDur(focus_s),    note: 'active' },
-    { k: 'Idle',     v: fmtDur(idle_s),     note: 'away from keyboard' },
-    { k: 'Sessions', v: String(session_count), note: 'captured today' },
+    { k: 'Focus',    v: fmtDur(focus_s),                            note: 'active' },
+    { k: 'Idle',     v: fmtDur(idle_s),                             note: 'away from keyboard' },
+    { k: 'Sessions', v: String(session_count),                      note: 'captured today' },
+    { k: 'Switches', v: String(Math.max(0, session_count - 1)),     note: 'context switches' },
   ]
   return (
-    <div className="grid grid-cols-3 rule-t rule-b" style={{ borderColor: 'var(--rule)' }}>
+    <div className="grid grid-cols-4 rule-t rule-b" style={{ borderColor: 'var(--rule)' }}>
       {items.map((it, i) => (
         <div key={it.k} className={`py-4 px-5 ${i > 0 ? 'rule-l' : ''}`} style={{ borderColor: 'var(--rule)' }}>
           <p className="text-[10px] uppercase tracking-[0.16em] mb-2" style={{ color: 'var(--ink-3)' }}>{it.k}</p>
@@ -294,99 +296,25 @@ function buildStory(data: TodayResponse): string | null {
   return clauses.length > 0 ? clauses.join(', ') + '.' : null
 }
 
-// ── Day timeline ─────────────────────────────────────────────────────────────
-function DayTimeline({ data }: { data: TodayResponse }) {
-  const [hover, setHover] = useState<null | {
-    app: string; cat: string; started_at: string; dur: number; titles: string[]; live?: boolean
-  }>(null)
-
-  const DAY_START = 7, DAY_END = 19
-  const span = DAY_END - DAY_START
-  const pct = (h: number) => Math.max(0, Math.min(100, ((h - DAY_START) / span) * 100))
-  const toH = (iso: string) => new Date(iso).getHours() + new Date(iso).getMinutes() / 60
-
-  const hours = [7, 9, 11, 13, 15, 17, 19]
-
+// ── Queue preview row ─────────────────────────────────────────────────────────
+function QueuePreviewRow({ session }: { session: { id: number | string; app: string; started_at: string; dur: number; titles: string[]; candidates?: string[] } }) {
   return (
-    <div className="select-none">
-      <div className="relative h-4 mb-2">
-        {hours.map(h => (
-          <span key={h} className="absolute font-mono tnum text-[10px] -translate-x-1/2"
-            style={{ left: pct(h) + '%', color: 'var(--ink-4)' }}>
-            {((h + 11) % 12) + 1}{h >= 12 ? 'p' : 'a'}
-          </span>
-        ))}
+    <div className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-5 px-5 py-4 rule-t"
+         style={{ borderTopColor: 'var(--rule)' }}>
+      <AppGlyph app={session.app} size={24} />
+      <div className="min-w-0">
+        <p className="text-[13px] truncate" style={{ color: 'var(--ink)' }}>{session.titles[0] || session.app}</p>
+        <p className="text-[11px] mt-1" style={{ color: 'var(--ink-3)' }}>
+          <span className="font-mono tnum">{fmtClock(session.started_at)}</span>
+          {session.candidates && session.candidates.length > 0 && (
+            <span className="ml-2 text-[11px]" style={{ color: 'var(--accent)' }}>· needs review</span>
+          )}
+        </p>
       </div>
-
-      <div className="relative h-10 rounded-lg overflow-hidden" style={{ background: 'var(--rule)' }}>
-        {Array.from({ length: span + 1 }, (_, i) => i + DAY_START).map(h => (
-          <div key={h} className="absolute top-0 bottom-0 w-px"
-            style={{ left: pct(h) + '%', background: 'var(--paper)', opacity: .6 }} />
-        ))}
-
-        {data.gaps.map(g => {
-          const l = pct(toH(g.started_at)), w = Math.max(0.4, pct(toH(g.ended_at)) - l)
-          return (
-            <div key={g.id} className="absolute top-0 bottom-0"
-              style={{ left: l + '%', width: w + '%',
-                background: 'repeating-linear-gradient(135deg, var(--rule) 0 4px, transparent 4px 8px)' }} />
-          )
-        })}
-
-        {data.sessions.map(s => {
-          const sh = toH(s.started_at)
-          const eh = sh + s.dur / 3600
-          const l = pct(sh), w = Math.max(0.4, pct(eh) - l)
-          return (
-            <div key={s.id}
-              onMouseEnter={() => setHover({ app: s.app, cat: s.cat, started_at: s.started_at, dur: s.dur, titles: s.titles })}
-              onMouseLeave={() => setHover(null)}
-              className="absolute top-0 bottom-0 cursor-pointer transition-[filter] hover:brightness-110"
-              style={{ left: l + '%', width: w + '%' }}>
-              <div className={`w-full h-full cat-${s.cat}`} />
-            </div>
-          )
-        })}
-
-        {data.active && (() => {
-          const sh = toH(data.active.started_at)
-          const eh = sh + data.active.elapsed_s / 3600
-          const l = pct(sh), w = Math.max(0.4, pct(eh) - l)
-          return (
-            <div
-              onMouseEnter={() => setHover({ app: data.active!.app, cat: data.active!.cat, started_at: data.active!.started_at, dur: data.active!.elapsed_s, titles: data.active!.titles, live: true })}
-              onMouseLeave={() => setHover(null)}
-              className={`absolute top-0 bottom-0 cursor-pointer blink`}
-              style={{ left: l + '%', width: w + '%' }}>
-              <div className={`w-full h-full cat-${data.active.cat}`} />
-            </div>
-          )
-        })()}
+      <div className="flex items-center gap-1.5">
+        {session.candidates?.map(c => <TaskKey key={c} keyId={c} />)}
       </div>
-
-      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
-        {Array.from(new Set(data.sessions.map(s => s.cat).concat(data.active ? [data.active.cat] : []))).map(c => (
-          <CatLabel key={c} cat={c} />
-        ))}
-      </div>
-
-      <div className="mt-4 min-h-[44px]">
-        {hover ? (
-          <div className="flex items-center gap-4 text-[12px] rise">
-            <AppGlyph app={hover.app} size={20} />
-            <span style={{ color: 'var(--ink)' }}>{hover.titles[0] || hover.app}</span>
-            <CatLabel cat={hover.cat} />
-            <span className="font-mono tnum" style={{ color: 'var(--ink-3)' }}>
-              {fmtClock(hover.started_at)} · {fmtDur(hover.dur)}
-            </span>
-            {hover.live && <span className="text-[11px] inline-flex items-center gap-1.5" style={{ color: 'var(--live)' }}>
-              <LiveDot size={6} /> live
-            </span>}
-          </div>
-        ) : (
-          <p className="text-[11px]" style={{ color: 'var(--ink-4)' }}>Hover the timeline to inspect a session.</p>
-        )}
-      </div>
+      <span className="font-mono tnum text-[12px]" style={{ color: 'var(--ink-2)' }}>{fmtDur(session.dur)}</span>
     </div>
   )
 }
@@ -405,7 +333,7 @@ export default function TodayView({ onNavigate }: { onNavigate?: (v: string, key
     return (
       <div className="space-y-12">
         <header className="rise">
-          <h1 className="leading-[0.95] tracking-tight" style={{ color: 'var(--ink)', fontFamily: "'Instrument Serif', Georgia, serif" }}>Today</h1>
+          <h1 className="font-serif leading-[0.95] tracking-tight" style={{ color: 'var(--ink)' }}>Today</h1>
         </header>
         <p className="text-[13px]" style={{ color: 'var(--ink-3)' }}>Loading…</p>
       </div>
@@ -467,7 +395,7 @@ export default function TodayView({ onNavigate }: { onNavigate?: (v: string, key
             </p>
           )}
         </div>
-        <h1 className="text-[88px] leading-[0.95] tracking-tight" style={{ color: 'var(--ink)', fontFamily: "'Instrument Serif', Georgia, serif" }}>Today</h1>
+        <h1 className="font-serif text-[88px] leading-[0.95] tracking-tight" style={{ color: 'var(--ink)' }}>Today</h1>
       </header>
 
       {(() => {
@@ -475,7 +403,7 @@ export default function TodayView({ onNavigate }: { onNavigate?: (v: string, key
         return story ? (
           <section className="rise">
             <p className="text-[11px] uppercase tracking-[0.18em] mb-3" style={{ color: 'var(--ink-3)' }}>The story so far</p>
-            <p className="text-[26px] leading-[1.2]" style={{ color: 'var(--ink)', textWrap: 'pretty', fontFamily: "'Instrument Serif', Georgia, serif" } as React.CSSProperties}>{story}</p>
+            <p className="font-serif text-[26px] leading-[1.2]" style={{ color: 'var(--ink)', textWrap: 'pretty' } as React.CSSProperties}>{story}</p>
           </section>
         ) : null
       })()}
@@ -497,20 +425,26 @@ export default function TodayView({ onNavigate }: { onNavigate?: (v: string, key
 
       {(data.sessions.length > 0 || data.active) && (
         <section>
-          <SectionHead kicker="Timeline" title="The shape of the day" />
-          <Card className="p-6">
-            <DayTimeline data={data} />
-          </Card>
+          <SectionHead kicker="Shape of the day" title="Activity patterns &amp; insights" />
+          <ShapeOfDay data={data} />
         </section>
       )}
 
       {queueCount > 0 && (
         <section>
           <SectionHead
-            kicker="Queue"
-            title={<>Needs review <span className="ml-2 font-mono tnum text-[15px]" style={{ color: 'var(--accent)' }}>{queueCount}</span></>}
-            right={<button onClick={() => onNavigate?.('queue')} className="text-[12px]" style={{ color: 'var(--ink-3)' }}>Open Queue →</button>}
+            kicker="Needs review"
+            title={<>Unassigned sessions <span className="ml-2 font-mono tnum text-[15px]" style={{ color: 'var(--accent)' }}>{queueCount}</span></>}
+            right={<button onClick={() => onNavigate?.('queue')} className="text-[12px]" style={{ color: 'var(--ink-3)' }}>Review queue →</button>}
           />
+          <Card>
+            {data.sessions
+              .filter(s => s.routing === 'queue')
+              .slice(0, 3)
+              .map(s => (
+                <QueuePreviewRow key={s.id} session={{ ...s, candidates: s.task_key ? [s.task_key] : [] }} />
+              ))}
+          </Card>
         </section>
       )}
 

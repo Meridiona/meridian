@@ -49,7 +49,7 @@ testlogs
 # CLI / hub state from the upstream Hermes framework
 cli-config.yaml
 skills/.hub/
-
+.deepeval
 # Misc
 ignored/
 .worktrees/

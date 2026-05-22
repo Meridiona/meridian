@@ -2,11 +2,13 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { fmtDur, AppGlyph, TaskKey, StatusPill, SegBar, SectionHead, Card } from '@/components/atoms'
+import { fmtDur, fmtClock, AppGlyph, CatDot, TaskKey, StatusPill, SegBar, SectionHead, Card, CATS } from '@/components/atoms'
 import type { TaskSummary, TasksResponse } from '@/app/api/tasks/route'
+import type { TodayResponse } from '@/app/api/today/route'
 
 export default function TasksView({ focusKey }: { focusKey?: string | null }) {
   const [data, setData] = useState<TasksResponse | null>(null)
+  const [todaySessions, setTodaySessions] = useState<TodayResponse['sessions']>([])
   const [selected, setSelected] = useState<string | null>(focusKey ?? null)
 
   useEffect(() => {
@@ -16,6 +18,9 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
         const first = d.tasks.find(t => t.today_s > 0) ?? d.tasks[0]
         setSelected(first.key)
       }
+    }).catch(() => {})
+    fetch('/api/today').then(r => r.json()).then((d: TodayResponse) => {
+      setTodaySessions(d.sessions ?? [])
     }).catch(() => {})
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -74,7 +79,7 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
         </div>
 
         {/* Task detail */}
-        {sel && <TaskDetail task={sel} />}
+        {sel && <TaskDetail task={sel} sessions={todaySessions.filter(s => s.task_key === sel.key)} />}
       </div>
     </div>
   )
@@ -107,7 +112,9 @@ function TaskRow({ task, selected, onSelect }: { task: TaskSummary; selected: bo
   )
 }
 
-function TaskDetail({ task }: { task: TaskSummary }) {
+function TaskDetail({ task, sessions }: { task: TaskSummary; sessions: TodayResponse['sessions'] }) {
+  const sortedSessions = [...sessions].sort((a, b) => a.started_at.localeCompare(b.started_at))
+
   return (
     <div className="space-y-7 min-w-0">
       <div>
@@ -145,11 +152,33 @@ function TaskDetail({ task }: { task: TaskSummary }) {
         </div>
       </div>
 
-      {task.today_s === 0 && (
+      {sortedSessions.length > 0 ? (
+        <div>
+          <p className="text-[10px] uppercase tracking-[0.16em] mb-3" style={{ color: 'var(--ink-3)' }}>Sessions today</p>
+          <div className="rule rounded-xl border overflow-hidden" style={{ borderColor: 'var(--rule)' }}>
+            {sortedSessions.map((s, i) => (
+              <div key={s.id}
+                className={`grid grid-cols-[auto_1fr_auto] items-center gap-4 px-4 py-3 ${i > 0 ? 'rule-t' : ''}`}
+                style={{ borderTopColor: 'var(--rule)', background: 'var(--surface)' }}>
+                <AppGlyph app={s.app} size={22} />
+                <div className="min-w-0">
+                  <p className="text-[13px] truncate" style={{ color: 'var(--ink)' }}>{s.titles[0] || s.app}</p>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="font-mono tnum text-[11px]" style={{ color: 'var(--ink-3)' }}>{fmtClock(s.started_at)}</span>
+                    <CatDot cat={s.cat} />
+                    <span className="text-[11px]" style={{ color: 'var(--ink-3)' }}>{CATS[s.cat]?.label ?? s.cat}</span>
+                  </div>
+                </div>
+                <span className="font-mono tnum text-[12px]" style={{ color: 'var(--ink-2)' }}>{fmtDur(s.dur)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : task.today_s === 0 ? (
         <div className="py-12 text-center rule rounded-xl border" style={{ borderColor: 'var(--rule)', background: 'var(--surface)' }}>
           <p className="text-[13px]" style={{ color: 'var(--ink-3)' }}>No activity captured for this task today.</p>
         </div>
-      )}
+      ) : null}
 
       {task.today_s > 0 && (
         <Card className="p-5">

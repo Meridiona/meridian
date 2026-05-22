@@ -94,12 +94,12 @@ def _fetch_pm_tasks(con: _sqlite3.Connection) -> list[dict[str, Any]]:
     rows = con.execute(
         "SELECT task_key, title,"
         "       COALESCE(description_text,'') AS description_text,"
-        "       COALESCE(status,'') AS status,"
         "       COALESCE(status_category,'') AS status_category,"
         "       COALESCE(issue_type,'') AS issue_type,"
+        "       COALESCE(parent_key,'') AS parent_key,"
         "       COALESCE(epic_title,'') AS epic_title,"
         "       COALESCE(sprint_name,'') AS sprint_name"
-        " FROM pm_tasks WHERE LOWER(status_category) != 'done'",
+        " FROM pm_tasks WHERE LOWER(status_category) != 'done' AND parent_key IS NULL",
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -170,7 +170,7 @@ def _classify_one(
 
             # ── Limits ────────────────────────────────────────────────
             max_iterations=10,               # 1 classification + up to 2 memory/skill writes
-            max_tokens=AGENT_MAX_TOKENS,    # cap response size
+            # max_tokens=AGENT_MAX_TOKENS,    # cap response size
             # tool_delay=1.0,               # omit — default 1s is fine
             # reasoning_config=None,        # omit — let hermes pick effort level
 
