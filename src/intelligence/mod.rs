@@ -54,8 +54,16 @@ pub async fn run_pm_sync(meridian: &SqlitePool, config: &Config) -> Result<()> {
             }
         };
         match result {
-            Ok(_) => {
-                tracing::debug!(provider = name, "provider sync completed");
+            Ok(None) => {
+                tracing::debug!(provider = name, "provider cache is fresh — skipped");
+            }
+            Ok(Some(ref keys)) => {
+                tracing::debug!(
+                    provider = name,
+                    refreshed_count = keys.len(),
+                    ?keys,
+                    "provider cache was stale — refreshed"
+                );
             }
             Err(e) => {
                 tracing::warn!(provider = name, error = %e, "provider refresh failed");
