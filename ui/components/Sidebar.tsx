@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'react'
 import { fmtDurDecimal, AppGlyph, TaskKey, LiveDot, useTick } from '@/components/atoms'
 
-type View = 'today' | 'tasks' | 'queue' | 'sessions' | 'week'
+type View = 'today' | 'tasks' | 'queue' | 'sessions' | 'week' | 'settings'
 
 interface Props {
   view: View
@@ -104,6 +104,23 @@ export default function Sidebar({ view, onNavigate, onOpenCmd, queueCount }: Pro
           <span className="kbd">K</span>
         </button>
       </nav>
+
+      {/* Settings link */}
+      <div className="px-3 pb-4">
+        <button onClick={() => onNavigate('settings')}
+          className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-left transition-colors"
+          style={{
+            background: view === 'settings' ? 'var(--surface-2)' : 'transparent',
+            color: view === 'settings' ? 'var(--ink)' : 'var(--ink-3)',
+          }}>
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <circle cx="8" cy="8" r="2.5"/>
+            <path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3.05 3.05l1.06 1.06M11.89 11.89l1.06 1.06M3.05 12.95l1.06-1.06M11.89 4.11l1.06-1.06"/>
+          </svg>
+          <span className="text-[13px]">Settings</span>
+          <span className="kbd ml-auto">6</span>
+        </button>
+      </div>
 
       {/* Active session pill */}
       {active && <ActiveSessionPill info={active} onClick={() => onNavigate('today')} />}
