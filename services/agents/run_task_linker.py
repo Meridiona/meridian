@@ -196,7 +196,22 @@ def _classify_one(
 
     raw = ""
     if isinstance(result, dict):
-        raw = str(result.get("final_response") or result.get("response") or "").strip()
+        # Prefer the last assistant message over final_response. When the model
+        # is truncated and continued, final_response is a concatenation of ALL
+        # assistant turns (prose draft + JSON answer), which breaks JSON parsing.
+        # The last non-tool assistant message is always the actual final answer.
+        messages = result.get("messages") or result.get("conversation_history") or []
+        for msg in reversed(messages):
+            if (
+                isinstance(msg, dict)
+                and msg.get("role") == "assistant"
+                and msg.get("content")
+                and not msg.get("tool_calls")
+            ):
+                raw = str(msg["content"]).strip()
+                break
+        if not raw:
+            raw = str(result.get("final_response") or result.get("response") or "").strip()
 
     log.debug("run_task_linker: session %d raw (%.1fs): %.200s", sid, elapsed, raw)
 

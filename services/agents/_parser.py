@@ -20,9 +20,19 @@ def extract_json(text: str) -> str | None:
         return None
     candidate = text.strip()
 
-    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", candidate, re.DOTALL)
-    if fence:
-        return fence.group(1)
+    # When the model is truncated mid-response and then continued, the combined
+    # final_response may contain multiple ```json blocks. The first block is the
+    # incomplete truncated draft; the last is the correct answer. Try all fence
+    # candidates in reverse order and return the last well-formed one.
+    fences = list(re.finditer(r"```(?:json)?\s*(\{[^`]*?\})\s*```", candidate, re.DOTALL))
+    for fence in reversed(fences):
+        content = fence.group(1)
+        sanitized = re.sub(r"[\x00-\x1f]", " ", content)
+        try:
+            json.loads(sanitized)
+            return content
+        except json.JSONDecodeError:
+            continue
 
     m = re.search(r"\{.*\}", candidate, re.DOTALL)
     if m:
@@ -143,6 +153,10 @@ def parse_response(
     candidate = extract_json(text)
     if candidate is None:
         return None, 0.0, "", {}, "overhead", "no JSON object in response"
+    # Strip all ASCII control characters (0x00-0x1f) that are invalid as raw bytes
+    # inside JSON strings. Literal newlines/tabs in the model's reasoning field
+    # (from OCR content) cause json.loads to reject the response.
+    candidate = re.sub(r"[\x00-\x1f]", " ", candidate)
     try:
         obj = json.loads(candidate)
     except json.JSONDecodeError as exc:
