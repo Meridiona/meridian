@@ -4,7 +4,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react'
 import { TooltipProvider } from '@radix-ui/react-tooltip'
 
-export const ACCENT_PRESETS = ['#FF6B2B', '#2A6FDB', '#1F8A5B', '#141414'] as const
+export const ACCENT_PRESETS = ['#C4822A', '#2A6FDB', '#1F8A5B', '#0D0C0A'] as const
 
 export interface ThemeState {
   dark: boolean
@@ -22,7 +22,7 @@ interface ThemeContextValue extends ThemeState {
 
 const DEFAULTS: ThemeState = {
   dark: false,
-  accent: '#FF6B2B',
+  accent: '#C4822A',
   density: 'regular',
   tone: 'terse',
 }

@@ -16,6 +16,7 @@ mod common;
 
 use meridian::config::{Config, LlmBackendConfig, RuntimeSettings};
 use meridian::intelligence::run_task_linking;
+use serial_test::serial;
 use sqlx::{sqlite::SqliteConnectOptions, Row, SqlitePool};
 use std::str::FromStr;
 
@@ -151,9 +152,9 @@ async fn seed_pm_task(
 ) {
     sqlx::query(
         "INSERT INTO pm_tasks
-            (task_key, provider, title, description_text, status, status_category,
+            (task_key, provider, title, description_text, status_category,
              issue_type, project_key, url, updated_at)
-         VALUES (?, 'jira', ?, ?, 'In Progress', ?, 'Story', 'KAN', '', strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
+         VALUES (?, 'jira', ?, ?, ?, 'Story', 'KAN', '', strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
     )
     .bind(task_key)
     .bind(title)
@@ -194,6 +195,8 @@ fn make_cfg(services_dir: &str, db_path: &str) -> Config {
 /// Asserts that task_method, cursor, and agent_run are all written correctly.
 /// Does NOT assert a specific task_key — that is LLM output and may vary.
 #[tokio::test]
+#[serial]
+#[ignore = "requires live hermes + LLM — run with: cargo test real_classification -- --ignored"]
 async fn real_classification_writes_task_and_advances_cursor() {
     skip_unless_ready!(services_dir);
 
@@ -282,6 +285,8 @@ async fn real_classification_writes_task_and_advances_cursor() {
 
 /// Running the classification cycle twice must not re-classify an already-processed session.
 #[tokio::test]
+#[serial]
+#[ignore = "requires live hermes + LLM — run with: cargo test real_classification -- --ignored"]
 async fn real_classification_does_not_reprocess_classified_session() {
     skip_unless_ready!(services_dir);
 

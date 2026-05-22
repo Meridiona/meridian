@@ -1,45 +1,69 @@
-@import "../node_modules/tailwindcss/index.css";
+@import "tailwindcss";
+
+/* ─── Meridian design system — amber gold edition ───────────────────────────
+   Tailwind v4: all tokens live here via @theme. No tailwind.config.js.
+   Utilities generated: text-ink, bg-surface, border-rule, etc.
+   ─────────────────────────────────────────────────────────────────────────── */
 
 @theme {
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  /* Fonts */
+  --font-sans:  var(--font-geist-sans);
+  --font-mono:  var(--font-geist-mono);
+  --font-serif: var(--font-instrument-serif);
+
+  /* Colors → Tailwind utilities (text-*, bg-*, border-*) */
+  --color-paper:       var(--paper);
+  --color-surface:     var(--surface);
+  --color-surface-2:   var(--surface-2);
+  --color-ink:         var(--ink);
+  --color-ink-2:       var(--ink-2);
+  --color-ink-3:       var(--ink-3);
+  --color-ink-4:       var(--ink-4);
+  --color-rule:        var(--rule);
+  --color-rule-2:      var(--rule-2);
+  --color-accent:      var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-live:        var(--live);
+  --color-success:     var(--success);
+  --color-warn:        var(--warn);
 }
 
-/* ── Design token layer ─────────────────────────────────────────────────── */
+/* ── Palette — light ─────────────────────────────────────────────────────── */
 :root {
-  --paper:        #F8F7F4;
+  --paper:        #FAF9F7;
   --surface:      #FFFFFF;
-  --surface-2:    #FBFAF7;
-  --ink:          #141414;
-  --ink-2:        #46443F;
-  --ink-3:        #8C8A85;
-  --ink-4:        #BCBAB4;
-  --rule:         #ECEAE4;
-  --rule-2:       #E2DFD8;
-  --accent:       #FF6B2B;
-  --accent-soft:  #FFE9DC;
-  --live:         #FF6B2B;
-  --success:      #2C8A4A;
-  --warn:         #B7791F;
-  --tint:         rgba(255, 107, 43, 0.06);
+  --surface-2:    #F5F4F1;
+  --ink:          #0D0C0A;
+  --ink-2:        #3A3834;
+  --ink-3:        #7A7873;
+  --ink-4:        #B8B5AF;
+  --rule:         #EEECE8;
+  --rule-2:       #E5E3DE;
+  --accent:       #C4822A;
+  --accent-soft:  #FBF0E2;
+  --live:         #C4822A;
+  --success:      #2D7A4F;
+  --warn:         #A36A1A;
+  --tint:         rgba(196, 130, 42, 0.07);
 }
 
+/* ── Palette — dark ──────────────────────────────────────────────────────── */
 html.dark {
-  --paper:        #0C0C0B;
-  --surface:      #141413;
-  --surface-2:    #181816;
-  --ink:          #F4F1EB;
-  --ink-2:        #B6B2AB;
-  --ink-3:        #7A766F;
-  --ink-4:        #4D4A45;
-  --rule:         #232220;
-  --rule-2:       #2C2B28;
-  --accent:       #FF7E47;
-  --accent-soft:  rgba(255, 126, 71, 0.13);
-  --live:         #FF7E47;
-  --success:      #6BCB8A;
-  --warn:         #E0B26B;
-  --tint:         rgba(255, 126, 71, 0.07);
+  --paper:        #0A0908;
+  --surface:      #111010;
+  --surface-2:    #161514;
+  --ink:          #F2EFE8;
+  --ink-2:        #B5B0A8;
+  --ink-3:        #787470;
+  --ink-4:        #4A4744;
+  --rule:         #1E1D1B;
+  --rule-2:       #272522;
+  --accent:       #D4942E;
+  --accent-soft:  rgba(212, 148, 46, 0.14);
+  --live:         #D4942E;
+  --success:      #5AB87A;
+  --warn:         #D4A044;
+  --tint:         rgba(212, 148, 46, 0.08);
 }
 
 /* ── Base ────────────────────────────────────────────────────────────────── */
@@ -48,14 +72,10 @@ html, body {
   color: var(--ink);
 }
 
-body, .font-sans {
-  font-family: GeistSans, 'GeistSans Fallback', ui-sans-serif, system-ui, -apple-system, sans-serif;
-  font-feature-settings: 'ss01', 'cv11';
-}
+* { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
 
-* {
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+body, .font-sans {
+  font-feature-settings: 'ss01', 'cv11';
 }
 
 .font-mono {
@@ -63,33 +83,35 @@ body, .font-sans {
   font-feature-settings: 'tnum', 'ss01';
 }
 
-::selection {
-  background-color: var(--accent);
-  color: #ffffff;
+.font-serif {
+  font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
+  font-feature-settings: 'liga', 'dlig';
 }
 
-/* ── Category dot colors ─────────────────────────────────────────────────── */
-.cat-coding            { background: #4F7BE8; }
-.cat-code_review       { background: #8B5CF6; }
-.cat-meeting           { background: #F59E0B; }
-.cat-communication     { background: #10B981; }
-.cat-design            { background: #EC4899; }
-.cat-documentation     { background: #14B8A6; }
-.cat-planning          { background: #F97316; }
-.cat-deployment_devops { background: #EF4444; }
-.cat-research          { background: #6366F1; }
-.cat-idle_personal     { background: #9CA3AF; }
+::selection { background: var(--accent); color: #ffffff; }
 
-.cat-text-coding            { color: #4F7BE8; }
-.cat-text-code_review       { color: #8B5CF6; }
-.cat-text-meeting           { color: #F59E0B; }
-.cat-text-communication     { color: #10B981; }
-.cat-text-design            { color: #EC4899; }
-.cat-text-documentation     { color: #14B8A6; }
-.cat-text-planning          { color: #F97316; }
-.cat-text-deployment_devops { color: #EF4444; }
-.cat-text-research          { color: #6366F1; }
-.cat-text-idle_personal     { color: #9CA3AF; }
+/* ── Category colors ─────────────────────────────────────────────────────── */
+.cat-coding            { background: #3B6FE0; fill: #3B6FE0; }
+.cat-code_review       { background: #7C3AED; fill: #7C3AED; }
+.cat-meeting           { background: #D97706; fill: #D97706; }
+.cat-communication     { background: #059669; fill: #059669; }
+.cat-design            { background: #DB2777; fill: #DB2777; }
+.cat-documentation     { background: #0891B2; fill: #0891B2; }
+.cat-planning          { background: #C4822A; fill: #C4822A; }
+.cat-deployment_devops { background: #DC2626; fill: #DC2626; }
+.cat-research          { background: #4F46E5; fill: #4F46E5; }
+.cat-idle_personal     { background: #78716C; fill: #78716C; }
+
+.cat-text-coding            { color: #3B6FE0; }
+.cat-text-code_review       { color: #7C3AED; }
+.cat-text-meeting           { color: #D97706; }
+.cat-text-communication     { color: #059669; }
+.cat-text-design            { color: #DB2777; }
+.cat-text-documentation     { color: #0891B2; }
+.cat-text-planning          { color: #C4822A; }
+.cat-text-deployment_devops { color: #DC2626; }
+.cat-text-research          { color: #4F46E5; }
+.cat-text-idle_personal     { color: #78716C; }
 
 /* ── Hairlines ───────────────────────────────────────────────────────────── */
 .rule   { border-color: var(--rule); }
@@ -109,20 +131,14 @@ body, .font-sans {
 .blink { animation: mer-blink 1.1s ease-in-out infinite; }
 
 @keyframes mer-rise {
-  from { opacity: 0; transform: translateY(4px); }
+  from { opacity: 0; transform: translateY(5px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.rise { animation: mer-rise .5s cubic-bezier(.2,.6,.2,1) both; }
+.rise { animation: mer-rise .4s cubic-bezier(.16,1,.3,1) both; }
 
-/* ── Typography helpers ──────────────────────────────────────────────────── */
+/* ── Utility ─────────────────────────────────────────────────────────────── */
 .tnum { font-variant-numeric: tabular-nums; }
 
-.font-serif {
-  font-family: 'Instrument Serif', Georgia, serif !important;
-  font-feature-settings: 'liga', 'dlig';
-}
-
-/* ── KBD key badge ────────────────────────────────────────────────────────── */
 .kbd {
   font-family: var(--font-geist-mono), ui-monospace, monospace;
   font-size: 10px;
@@ -135,12 +151,11 @@ body, .font-sans {
   line-height: 1;
 }
 
-/* ── Scrollbar ────────────────────────────────────────────────────────────── */
-.nice-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
-.nice-scroll::-webkit-scrollbar-track { background: transparent; }
-.nice-scroll::-webkit-scrollbar-thumb {
+.nice-scroll::-webkit-scrollbar              { width: 8px; height: 8px; }
+.nice-scroll::-webkit-scrollbar-track        { background: transparent; }
+.nice-scroll::-webkit-scrollbar-thumb        {
   background: var(--rule-2);
-  border-radius: 8px;
+  border-radius: 6px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
@@ -150,61 +165,13 @@ body, .font-sans {
   border: 2px solid transparent;
 }
 
-/* ── Focus ring ───────────────────────────────────────────────────────────── */
+/* ── Focus ring ──────────────────────────────────────────────────────────── */
 button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: 4px;
 }
 
-/* ── Density ──────────────────────────────────────────────────────────────── */
-html.density-compact .density-pad { padding-top: .5rem; padding-bottom: .5rem; }
-html.density-comfy  .density-pad  { padding-top: 1.25rem; padding-bottom: 1.25rem; }
-
-/* ── Number stepper — hide native spin buttons ────────────────────────────── */
-.stepper-input::-webkit-inner-spin-button,
-.stepper-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-.stepper-input { -moz-appearance: textfield; }
-
-/* ── Radix Select ─────────────────────────────────────────────────────────── */
-.select-trigger:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-.select-item[data-highlighted] {
-  background: var(--accent);
-  color: #fff;
-  outline: none;
-}
-.select-item[data-highlighted] .select-check {
-  color: #fff;
-}
-
-/* ── Radix Switch — iOS-style pill ────────────────────────────────────────── */
-.meridian-switch {
-  background: rgba(120, 120, 128, 0.28);
-  transition: background 0.22s ease;
-}
-.meridian-switch[data-state="checked"] {
-  background: var(--accent);
-}
-.meridian-switch-thumb {
-  transform: translateX(2px);
-  transition: transform 0.22s cubic-bezier(0.25, 0.46, 0.45, 0.94),
-              box-shadow 0.15s ease;
-}
-.meridian-switch-thumb[data-state="checked"] {
-  transform: translateX(20px);
-}
-
-/* ── Number stepper buttons ───────────────────────────────────────────────── */
-.stepper-btn {
-  background: transparent;
-  transition: background 0.1s ease;
-}
-.stepper-btn:hover:not(:disabled) {
-  background: var(--surface-2);
-}
-.stepper-btn:active:not(:disabled) {
-  background: var(--rule);
-}
+/* ── Density ─────────────────────────────────────────────────────────────── */
+html.density-compact .density-pad { padding-top: .5rem;   padding-bottom: .5rem; }
+html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25rem; }

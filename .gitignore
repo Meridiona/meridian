@@ -29,6 +29,7 @@ meridian.db-wal
 
 # AI tooling metadata
 .claude-flow/
+.agents/*
 claude-flow.config.json
 data/memory/
 # Claude Code

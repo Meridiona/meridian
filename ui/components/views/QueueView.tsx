@@ -123,19 +123,45 @@ function QueueRow({
 
       {expanded && (
         <div className="px-5 pb-5 rule-t" style={{ borderTopColor: 'var(--rule)' }}>
-          <div className="pt-4">
-            {session.explain && <>
-              <p className="text-[10px] uppercase tracking-[0.16em] mb-2" style={{ color: 'var(--ink-3)' }}>Why ambiguous</p>
-              <p className="text-[13px] mb-4" style={{ color: 'var(--ink-2)' }}>{session.explain}</p>
-            </>}
-            <p className="text-[10px] uppercase tracking-[0.16em] mb-2" style={{ color: 'var(--ink-3)' }}>Windows seen</p>
-            <div className="flex flex-wrap gap-1.5">
-              {session.titles.map(t => (
-                <span key={t} className="font-mono text-[11px] px-2 py-1 rounded-md tnum"
-                  style={{ background: 'var(--surface-2)', border: '1px solid var(--rule)', color: 'var(--ink-2)' }}>
-                  {t}
-                </span>
-              ))}
+          <div className="grid grid-cols-[1fr_300px] gap-6 mt-4">
+            <div>
+              {session.explain && (
+                <>
+                  <p className="text-[10px] uppercase tracking-[0.16em] mb-2" style={{ color: 'var(--ink-3)' }}>Why ambiguous</p>
+                  <p className="text-[13px]" style={{ color: 'var(--ink-2)' }}>{session.explain}</p>
+                </>
+              )}
+              <p className="text-[10px] uppercase tracking-[0.16em] mt-5 mb-2" style={{ color: 'var(--ink-3)' }}>Windows seen</p>
+              <div className="flex flex-wrap gap-1.5">
+                {session.titles.map(t => (
+                  <span key={t} className="font-mono text-[11px] px-2 py-1 rounded-md tnum"
+                    style={{ background: 'var(--surface-2)', border: '1px solid var(--rule)', color: 'var(--ink-2)' }}>
+                    {t}
+                  </span>
+                ))}
+              </div>
+              <p className="text-[10px] uppercase tracking-[0.16em] mt-5 mb-2" style={{ color: 'var(--ink-3)' }}>Assign to other task</p>
+              <input type="text" placeholder="Type task key or title…"
+                className="w-full px-3 py-2 rounded-md text-[13px] font-mono tnum"
+                style={{ background: 'var(--surface-2)', border: '1px solid var(--rule-2)', color: 'var(--ink)', outline: 'none' }} />
+            </div>
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.16em] mb-2" style={{ color: 'var(--ink-3)' }}>Suggested matches</p>
+              <div className="space-y-2">
+                {session.candidates.map(c => (
+                  <button key={c} onClick={onDismiss}
+                    className="w-full text-left p-3 rounded-md flex items-start gap-3 transition-colors hover:opacity-80"
+                    style={{ background: 'var(--surface-2)', border: '1px solid var(--rule)' }}>
+                    <TaskKey keyId={c} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[12px]" style={{ color: 'var(--ink)' }}>{c}</p>
+                    </div>
+                  </button>
+                ))}
+                {session.candidates.length === 0 && (
+                  <p className="text-[12px]" style={{ color: 'var(--ink-4)' }}>No candidates found.</p>
+                )}
+              </div>
             </div>
           </div>
         </div>

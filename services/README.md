@@ -1,10 +1,10 @@
 # meridian-agents
 
-Python service that runs alongside the Rust daemon. The Rust intelligence module spawns it as a subprocess to classify `app_sessions` rows into Jira task links, and a separate long-running daemon posts timed progress comments back to Jira.
+Python service that runs alongside the Rust daemon. It reads completed `app_sessions` rows from `~/.meridian/meridian.db`, classifies each session to a Jira task using hermes `AIAgent`, and writes Jira task mappings and multi-label dimension tags back into the same DB.
 
 The Rust daemon owns all DDL; this service only does SELECT/INSERT/UPDATE on its agent-side tables.
 
-For the deep technical reference (pipeline, schema, LLM selection), see [`agents/README.md`](agents/README.md).
+For the deep technical reference (classification logic, schema, recipes), see [`agents/README.md`](agents/README.md).
 
 ---
 
@@ -16,22 +16,11 @@ app_sessions row (Rust ETL writes it)
         │  Rust intelligence module spawns run_task_linker.py
         │  as a one-shot subprocess (JSON stdin → JSON stdout)
         ▼
-┌─────────────────────────────────────────────────────────┐
-│ Task classifier  (run_task_linker.py)               LLM │
-│   hermes AIAgent + skill: task-classifier               │
-│   LLM: local-first (LM Studio / Ollama / mlx_lm)       │
-│         falls back to cloud (OLLAMA_HOST)               │
-│   returns: task_key, confidence, routing per session    │
-└─────────────────────────────────────────────────────────┘
-        │
-        ▼
-Rust reads stdout JSON, writes ticket_links, advances cursor
-
-        ┌──────────────────────────────────────────────┐
-        │  Jira updater daemon  (jira_updater_daemon)  │
-        │  fires on office-hour slots (default 4 h)    │
-        │  posts activity summaries as Jira comments   │
-        └──────────────────────────────────────────────┘
+┌──────────────────────────────────────────┐
+│ Classification Engine (hermes AIAgent)   │ LLM-powered
+│   matches session to task                │
+│   writes ticket_links, session_dimensions│
+└──────────────────────────────────────────┘
 ```
 
 ---
@@ -61,12 +50,9 @@ All variables are read in `agents/config.py`. Copy `.env.example` to `.env` in t
 | Variable | Default | Purpose |
 |---|---|---|
 | `MERIDIAN_DB` | `~/.meridian/meridian.db` | Path to the SQLite file. Must already exist (the Rust daemon creates it). |
-| `LLM_PREFER_LOCAL` | `1` | On Apple Silicon, try a running local LLM server first; fall back to cloud when none is found. Set to `0` to always use cloud. |
-| `LLM_BUDGET_PCT` | `0.5` | Fraction of free Metal GPU memory to allocate when starting an mlx_lm.server (0.0–1.0). `0.8` is recommended on 64 GB+ machines. |
-| `OLLAMA_MODEL` | — | Cloud fallback model ID (any OpenAI-compatible endpoint). Used when no local server is detected or `LLM_PREFER_LOCAL=0`. Also the primary LLM config for the Jira updater. |
-| `OLLAMA_HOST` | — | Cloud fallback base URL (e.g. `https://api.openai.com/v1`). |
-| `OLLAMA_API_KEY` | — | API key for the cloud fallback endpoint. |
-| `MIN_LLM_DURATION_S` | `30` | Sessions shorter than this (seconds) are skipped by the classifier. |
+| `HERMES_MODEL` | `nemotron-3-super` | Model name passed to hermes `AIAgent` for classification. |
+| `HERMES_BASE_URL` | `https://ollama.com/v1` | OpenAI-compatible LLM endpoint. |
+| `OLLAMA_API_KEY` | — | API key for the LLM endpoint (also accepts standard OpenAI-compat keys). |
 | `HERMES_DEV_MODE` | `0` | Set to `1` to load hermes from `services/.hermes/` instead of the installed package (see Dev mode below). |
 
 Additional variables (`AGENT_AUTO_FLOOR`, `AGENT_MAX_TOKENS`, `CONFIDENCE_THRESHOLD`, etc.) are documented in [`agents/README.md`](agents/README.md#configuration).
@@ -80,14 +66,29 @@ Additional variables (`AGENT_AUTO_FLOOR`, `AGENT_MAX_TOKENS`, `CONFIDENCE_THRESH
 The task classifier runs automatically — the Rust daemon spawns `run_task_linker.py` as a subprocess on each intelligence tick. There is no user-facing CLI for it. To verify the selected LLM:
 
 ```bash
-cd services
-.venv/bin/python -c "
-from agents.llm_selector import discover_running_servers, select_model_for_hermes
-for s in discover_running_servers():
-    print(f'running: {s.runtime}  loaded={s.models}')
-ep = select_model_for_hermes()
-print(f'selected: {ep.model}  runtime={ep.runtime}' if ep else 'cloud fallback')
-"
+# Re-run classification with full logging — does NOT write to DB
+python -m agents.tagger --session <id> --dry-run
+
+# Re-run and persist (resets dims + ticket_link first)
+python -m agents.tagger --session <id>
+
+# Read-only view of what's stored
+python -m agents.tagger --show <id>
+```
+
+### Install / uninstall the launchd daemon
+
+```bash
+# Installs plist → ~/Library/LaunchAgents/, starts the service
+./scripts/install-tagger-daemon.sh
+
+# Stops and removes the plist
+./scripts/uninstall-tagger-daemon.sh
+
+# Status and logs
+launchctl print gui/$(id -u)/com.meridiona.tagger-daemon
+tail -f ~/.meridian/logs/tagger-daemon.log
+tail -f ~/.meridian/logs/tagger-daemon.err
 ```
 
 ---

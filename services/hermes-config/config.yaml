@@ -4,8 +4,9 @@
 
 model:
   provider: ollama-cloud
-  default: gemma4:31b
-  base_url: https://ollama.com/v1
+  default: mlx-community/gemma-4-31b-it-4bit
+  base_url: http://127.0.0.1:12000/v1
+  context_length: 262144
 
 memory:
   memory_enabled: true
@@ -27,6 +28,6 @@ context:
 
 compression:
   enabled: true
-  threshold: 0.7
+  threshold: 0.50
   target_ratio: 0.3
   protect_last_n: 10
