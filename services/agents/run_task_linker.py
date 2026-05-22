@@ -210,7 +210,7 @@ def _classify_one(
                 "base_url":        llm_base_url,
                 "max_iterations":  10,
                 "memory_enabled":  False,
-                "toolsets":        "skills",
+                "toolsets":        "none",
             })
 
             with contextlib.redirect_stdout(sys.stderr):
@@ -366,7 +366,7 @@ def main() -> None:
                 model=llm_model,
                 base_url=llm_base_url,
                 api_key=llm_api_key,
-                enabled_toolsets=["skills"],
+                enabled_toolsets=[],
                 max_iterations=10,
                 quiet_mode=True,
                 skip_context_files=True,

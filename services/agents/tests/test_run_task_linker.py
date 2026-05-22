@@ -309,6 +309,7 @@ def test_main_constructs_agent_with_correct_params():
     assert kw.get("skip_memory") is True
     assert kw.get("tool_delay") == 0.0
     assert kw.get("max_tokens") is not None
+    assert kw.get("enabled_toolsets") == []
 
 
 # ── main(): input validation ───────────────────────────────────────────────────
