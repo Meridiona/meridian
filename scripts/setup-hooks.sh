@@ -9,7 +9,7 @@ chmod +x .githooks/pre-push
 
 echo "Git hooks installed:"
 echo "  commit-msg  — conventional commits format check"
-echo "  pre-commit  — cargo fmt + clippy"
+echo "  pre-commit  — cargo fmt + clippy + security audit on staged files (requires claude CLI)"
 echo "  pre-push    — cargo fmt + clippy + cargo test + UI build + UI tests"
 echo ""
 echo "Commit format: feat|fix|docs|refactor|perf|chore|ci(scope): description"

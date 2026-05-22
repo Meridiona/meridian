@@ -13,6 +13,8 @@ For the deep technical reference (classification logic, schema, recipes), see [`
 ```
 app_sessions row (Rust ETL writes it)
         │
+        │  Rust intelligence module spawns run_task_linker.py
+        │  as a one-shot subprocess (JSON stdin → JSON stdout)
         ▼
 ┌──────────────────────────────────────────┐
 │ Classification Engine (hermes AIAgent)   │ LLM-powered
@@ -53,27 +55,15 @@ All variables are read in `agents/config.py`. Copy `.env.example` to `.env` in t
 | `OLLAMA_API_KEY` | — | API key for the LLM endpoint (also accepts standard OpenAI-compat keys). |
 | `HERMES_DEV_MODE` | `0` | Set to `1` to load hermes from `services/.hermes/` instead of the installed package (see Dev mode below). |
 
-Additional variables (`TAGGER_TICK_SECS`, `ONLY_TODAY`, `SESSION_BATCH_LIMIT`, etc.) are documented in [`agents/README.md`](agents/README.md#configuration).
+Additional variables (`AGENT_AUTO_FLOOR`, `AGENT_MAX_TOKENS`, `CONFIDENCE_THRESHOLD`, etc.) are documented in [`agents/README.md`](agents/README.md#configuration).
 
 ---
 
 ## Running
 
-### One-shot (process all untagged sessions, then exit)
+### Task classifier
 
-```bash
-python -m agents.tagger --once
-```
-
-### Long-running daemon
-
-```bash
-python -m agents.tagger_daemon
-```
-
-Polls every `TAGGER_TICK_SECS` (default 7 s). On each tick it runs `tagger.run_once` over the next batch of unprocessed sessions.
-
-### Debug a single session
+The task classifier runs automatically — the Rust daemon spawns `run_task_linker.py` as a subprocess on each intelligence tick. There is no user-facing CLI for it. To verify the selected LLM:
 
 ```bash
 # Re-run classification with full logging — does NOT write to DB
@@ -114,7 +104,7 @@ Default schedule: fires at 1 PM and 5 PM within office hours (9–17), looking b
 Set these in `services/.env`:
 
 ```bash
-JIRA_URL=https://your-instance.atlassian.net
+JIRA_BASE_URL=https://your-instance.atlassian.net
 JIRA_EMAIL=your-email@example.com
 JIRA_API_TOKEN=your-api-token
 ```
@@ -154,7 +144,7 @@ python -m agents.jira_updater_daemon
 | `OFFICE_END_HOUR` | `17` | Office end hour (UTC). |
 | `JIRA_POST_NO_ACTIVITY` | `1` | Post comment even if no sessions found in the slot (set to `0` to skip posting no-activity slots). |
 | `MERIDIAN_MCP_PATH` | Auto-detected | Path to the compiled MCP server (`packages/meridian-mcp/dist/index.js`). |
-| `JIRA_URL` | — | Jira Cloud instance URL. |
+| `JIRA_BASE_URL` | — | Jira Cloud instance URL. |
 | `JIRA_EMAIL` | — | Email address for Jira API token auth. |
 | `JIRA_API_TOKEN` | — | API token for Jira REST API. |
 

@@ -91,7 +91,7 @@ choose the single best category.\n\
         sessions_processed = tracing::field::Empty,
     )
 )]
-pub async fn settle_all_categories(
+pub async fn run_fm_categorization(
     meridian: &SqlitePool,
     backend: &LlmBackend,
     min_duration_s: i64,
@@ -122,9 +122,9 @@ pub async fn settle_all_categories(
         return Ok(());
     }
 
-    let rows: Vec<(i64, String, i64, String, String)> = sqlx::query_as(
+    let rows: Vec<(i64, String, i64, String, String, String)> = sqlx::query_as(
         "SELECT id, app_name, duration_s, window_titles,
-                COALESCE(session_text, '')
+                COALESCE(session_text, ''), category
          FROM app_sessions
          WHERE category_method = 'rule_based'
            AND duration_s >= ?
@@ -156,7 +156,7 @@ pub async fn settle_all_categories(
     // Transient failures keep the cursor where it is so next tick retries them.
     let mut max_settled: i64 = cursor;
 
-    for (id, app_name, duration_s, window_titles, session_text) in &rows {
+    for (id, app_name, duration_s, window_titles, session_text, prev_category) in &rows {
         let user = build_category_prompt(app_name, *duration_s, window_titles, session_text);
         let has_content = !session_text.trim().is_empty();
         match backend.generate_category(CATEGORY_SYSTEM, &user).await {
@@ -173,7 +173,25 @@ pub async fn settle_all_categories(
                         {
                             warn!(session_id = id, error = %e, "failed to update category");
                         } else {
-                            debug!(session_id = id, app = %app_name, category = valid_cat, "category updated");
+                            let expl_str = explanation.chars().take(300).collect::<String>();
+                            if valid_cat == prev_category.as_str() {
+                                debug!(
+                                    session_id = id,
+                                    app = %app_name,
+                                    category = valid_cat,
+                                    reasoning = expl_str,
+                                    "category confirmed by foundation model"
+                                );
+                            } else {
+                                debug!(
+                                    session_id = id,
+                                    app = %app_name,
+                                    previous_category = prev_category.as_str(),
+                                    category = valid_cat,
+                                    reasoning = expl_str,
+                                    "category updated by foundation model"
+                                );
+                            }
                             max_settled = max_settled.max(*id);
                         }
                     }
@@ -223,7 +241,26 @@ pub async fn settle_all_categories(
                                     {
                                         warn!(session_id = id, error = %db_err, "failed to update category (fallback)");
                                     } else {
-                                        debug!(session_id = id, app = %app_name, category = valid_cat, "category updated via titles-only fallback");
+                                        let expl_str =
+                                            explanation.chars().take(300).collect::<String>();
+                                        if valid_cat == prev_category.as_str() {
+                                            debug!(
+                                                session_id = id,
+                                                app = %app_name,
+                                                category = valid_cat,
+                                                reasoning = expl_str,
+                                                "category confirmed via titles-only fallback"
+                                            );
+                                        } else {
+                                            debug!(
+                                                session_id = id,
+                                                app = %app_name,
+                                                previous_category = prev_category.as_str(),
+                                                category = valid_cat,
+                                                reasoning = expl_str,
+                                                "category updated via titles-only fallback"
+                                            );
+                                        }
                                         max_settled = max_settled.max(*id);
                                     }
                                 }
@@ -301,10 +338,10 @@ pub async fn settle_range(
         anyhow::bail!("settle_range requires Foundation Models backend");
     }
 
-    let rows: Vec<(i64, String, i64, String, String)> = match to_id {
+    let rows: Vec<(i64, String, i64, String, String, String)> = match to_id {
         Some(to) => {
             sqlx::query_as(
-                "SELECT id, app_name, duration_s, window_titles, COALESCE(session_text, '')
+                "SELECT id, app_name, duration_s, window_titles, COALESCE(session_text, ''), category
                  FROM app_sessions
                  WHERE duration_s >= ? AND id >= ? AND id <= ?
                  ORDER BY id ASC",
@@ -318,7 +355,7 @@ pub async fn settle_range(
         None => {
             {
                 sqlx::query_as(
-                    "SELECT id, app_name, duration_s, window_titles, COALESCE(session_text, '')
+                    "SELECT id, app_name, duration_s, window_titles, COALESCE(session_text, ''), category
                  FROM app_sessions
                  WHERE duration_s >= ? AND id >= ?
                  ORDER BY id ASC",
@@ -335,7 +372,7 @@ pub async fn settle_range(
     let total = rows.len();
     let mut updated = 0usize;
 
-    for (id, app_name, duration_s, window_titles, session_text) in &rows {
+    for (id, app_name, duration_s, window_titles, session_text, prev_category) in &rows {
         let user = build_category_prompt(app_name, *duration_s, window_titles, session_text);
         if dry_run {
             println!("  session {id:6}  app={app_name}  duration={duration_s}s  (dry run)");
@@ -359,7 +396,25 @@ pub async fn settle_range(
                     .is_ok()
                 {
                     updated += 1;
-                    info!(session_id = id, app = %app_name, category = method, "backfill: category updated");
+                    let expl_str = explanation.chars().take(300).collect::<String>();
+                    if method == prev_category.as_str() {
+                        info!(
+                            session_id = id,
+                            app = %app_name,
+                            category = method,
+                            reasoning = expl_str,
+                            "backfill: category confirmed"
+                        );
+                    } else {
+                        info!(
+                            session_id = id,
+                            app = %app_name,
+                            previous_category = prev_category.as_str(),
+                            category = method,
+                            reasoning = expl_str,
+                            "backfill: category updated"
+                        );
+                    }
                 }
             }
             Err(e) => {
