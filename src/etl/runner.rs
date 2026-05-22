@@ -31,7 +31,7 @@ const GAP_THRESHOLD_SECS: i64 = 300;
         sessions_closed = tracing::field::Empty,
     )
 )]
-pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<()> {
+pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<Vec<i64>> {
     let cursor = get_cursor(meridian).await?;
     let mut last_processed_id = cursor.last_frame_id;
     let run_start_cursor = last_processed_id;
@@ -42,7 +42,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
     let first_batch = get_frames_since(screenpipe, last_processed_id, BATCH_SIZE).await?;
     if first_batch.is_empty() {
         info!("no new frames — nothing to do");
-        return Ok(());
+        return Ok(vec![]);
     }
 
     let approx_to_frame_id = first_batch
@@ -56,6 +56,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
     info!(run_id, "ETL run row inserted");
 
     let mut sessions_closed: i64 = 0;
+    let mut new_session_ids: Vec<i64> = Vec::new();
 
     // TODO: Extract gap classification logic into helper. Currently duplicated at:
     // 1. Cross-run gap check (below, ~line 75-89)
@@ -208,7 +209,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                             // preventing gap time from inflating the session's focus duration.
                             let closing_app = current_app.take().unwrap();
                             current_window = None;
-                            sessions_closed += close_block(
+                            let (sid, cnt) = close_block(
                                 screenpipe,
                                 meridian,
                                 run_id,
@@ -224,6 +225,8 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                                 },
                             )
                             .await?;
+                            new_session_ids.push(sid);
+                            sessions_closed += cnt;
                         }
                     }
                 }
@@ -267,7 +270,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                             debug!(old_app = old_app, new_app = app, frame_id = frame.id, "app changed — closing block");
                         }
 
-                        sessions_closed += close_block(
+                        let (sid, cnt) = close_block(
                             screenpipe,
                             meridian,
                             run_id,
@@ -283,6 +286,8 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                             },
                         )
                         .await?;
+                        new_session_ids.push(sid);
+                        sessions_closed += cnt;
 
                         current_app = Some(app.to_owned());
                         current_window = Some(window.to_owned());
@@ -332,11 +337,11 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
     }
     .await;
 
-    if let Err(ref e) = result {
+    if let Err(e) = result {
         warn!(error = %e, "ETL run failed — updating cursor to last successful frame");
         complete_etl_run(meridian, run_id, sessions_closed, Some(&e.to_string())).await?;
         update_cursor(meridian, last_processed_id, run_id).await?;
-        return result;
+        return Err(e);
     }
 
     update_cursor(meridian, last_processed_id, run_id).await?;
@@ -350,5 +355,5 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
         "ETL run complete"
     );
 
-    Ok(())
+    Ok(new_session_ids)
 }

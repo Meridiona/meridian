@@ -16,7 +16,8 @@ use crate::config::Config;
 use tracing::field;
 
 use db::{
-    fetch_sessions_in_range, fetch_unclassified_sessions, get_agent_cursor, get_max_session_id,
+    fetch_sessions_by_ids, fetch_sessions_in_range, fetch_unclassified_sessions, get_agent_cursor,
+    get_max_session_id,
 };
 use db_write::{
     advance_agent_cursor, complete_agent_run, start_agent_run, update_session_overhead,
@@ -320,7 +321,15 @@ async fn spawn_classify_subprocess(
         return Ok(None);
     }
 
-    match serde_json::from_slice::<ClassifyOutput>(&stdout_bytes) {
+    // Hermes sometimes prints non-JSON warnings before the JSON payload.
+    // Find the first '{' and parse from there.
+    let json_slice = stdout_bytes
+        .iter()
+        .position(|&b| b == b'{')
+        .map(|i| &stdout_bytes[i..])
+        .unwrap_or(&stdout_bytes);
+
+    match serde_json::from_slice::<ClassifyOutput>(json_slice) {
         Ok(v) => {
             span.record("results_count", v.results.len() as i64);
             span.record("outcome", "ok");
@@ -346,11 +355,17 @@ async fn spawn_classify_subprocess(
 /// Run one hermes-based classification cycle:
 ///   - trivial sessions (empty session_text) → `overhead/skip` without LLM
 ///   - non-trivial batch → spawned `python3 -m agents.run_task_linker` subprocess
+///
+/// When `etl_session_ids` is non-empty the task linker processes exactly those
+/// sessions (the ones just created by the current ETL run). When it is empty it
+/// falls back to the cursor-based fetch so any backlog from a previous tick is
+/// still drained.
 #[tracing::instrument(
     skip_all,
     fields(
         run_id = field::Empty,
         cursor = field::Empty,
+        etl_sessions,
         trivial = field::Empty,
         classifiable = field::Empty,
         sessions = field::Empty,
@@ -358,7 +373,11 @@ async fn spawn_classify_subprocess(
         outcome = field::Empty,
     )
 )]
-pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
+pub async fn run_task_linking(
+    pool: &SqlitePool,
+    cfg: &Config,
+    etl_session_ids: Vec<i64>,
+) -> Result<()> {
     if !cfg.classification_enabled {
         tracing::Span::current().record("outcome", "disabled");
         debug!("classification disabled — skipping");
@@ -372,24 +391,30 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<()> {
 
     let cursor = get_agent_cursor(pool).await?;
     span.record("cursor", cursor);
+    span.record("etl_sessions", etl_session_ids.len() as i64);
 
-    if cursor == 0 && !cfg.classification_backfill {
-        if let Some(max_id) = get_max_session_id(pool).await? {
-            span.record("outcome", "first_run");
-            info!(
-                max_session_id = max_id,
-                "first classification run — advancing cursor to skip historical sessions"
-            );
-            advance_agent_cursor(pool, max_id).await?;
-            complete_agent_run(pool, run_id, "success", 0, 0).await?;
-            return Ok(());
+    let raw_sessions = if !etl_session_ids.is_empty() {
+        debug!(
+            session_ids = ?etl_session_ids,
+            "fetching ETL-sourced sessions for classification"
+        );
+        fetch_sessions_by_ids(pool, &etl_session_ids, cfg.min_classification_duration_s).await?
+    } else {
+        if cursor == 0 && !cfg.classification_backfill {
+            if let Some(max_id) = get_max_session_id(pool).await? {
+                span.record("outcome", "first_run");
+                info!(
+                    max_session_id = max_id,
+                    "first classification run — advancing cursor to skip historical sessions"
+                );
+                advance_agent_cursor(pool, max_id).await?;
+                complete_agent_run(pool, run_id, "success", 0, 0).await?;
+                return Ok(());
+            }
         }
-    }
-
-    debug!(cursor, "fetching unclassified sessions");
-
-    let raw_sessions =
-        fetch_unclassified_sessions(pool, cursor, cfg.min_classification_duration_s).await?;
+        debug!(cursor, "fetching unclassified sessions (cursor-based fallback)");
+        fetch_unclassified_sessions(pool, cursor, cfg.min_classification_duration_s).await?
+    };
 
     if raw_sessions.is_empty() {
         span.record("outcome", "idle");
