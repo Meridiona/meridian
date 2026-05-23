@@ -445,9 +445,6 @@ if [[ "$_oo_installed" -eq 0 ]]; then
                 _oo_installed=1
                 if [[ "${DRY_RUN}" -eq 0 ]]; then
                     ok "OpenObserve ${_oo_ver} installed at ~/.openobserve/openobserve"
-                    info "Start manually:  ~/.openobserve/openobserve"
-                    echo "    Then visit http://localhost:5080 to create your account."
-                    echo "    Use those credentials as MERIDIAN_OO_AUTH = base64(email:password)."
                 fi
             else
                 warn "Download failed from ${_oo_url}"
@@ -561,6 +558,15 @@ ok "Python services ready"
 # ---------------------------------------------------------------------------
 
 if [[ "${NO_DAEMON}" -eq 0 ]]; then
+    if [[ "${_oo_installed}" -eq 1 ]]; then
+        info "Installing OpenObserve launchd agent..."
+        if ! run bash "${REPO_ROOT}/scripts/install-openobserve-daemon.sh"; then
+            warn "OpenObserve daemon install skipped (set MERIDIAN_OO_AUTH in ~/.meridian/.env to enable)"
+        else
+            ok "OpenObserve launchd agent installed"
+        fi
+    fi
+
     info "Installing screenpipe launchd agent..."
     run bash "${REPO_ROOT}/scripts/install-screenpipe-daemon.sh"
     ok "screenpipe launchd agent installed"

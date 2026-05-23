@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    com.meridiona.openobserve — runs OpenObserve as a local OTLP backend for
+    traces + logs from the Meridian stack. Serves on http://localhost:5080.
+
+    Install via scripts/install-openobserve-daemon.sh which copies this file
+    into ~/Library/LaunchAgents/ with absolute paths and credentials
+    substituted, then bootstraps it under launchd. The plist below uses
+    {{HOME}}, {{OO_BIN}}, {{OO_EMAIL}}, and {{OO_PASSWORD}} placeholders that
+    the install script decodes from MERIDIAN_OO_AUTH and substitutes.
+
+    Uninstall:
+        scripts/uninstall-openobserve-daemon.sh
+    Or manually:
+        launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.meridiona.openobserve.plist
+        rm ~/Library/LaunchAgents/com.meridiona.openobserve.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.meridiona.openobserve</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{OO_BIN}}</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>{{HOME}}</string>
+        <!-- Admin credentials used by OO to bootstrap its first-run account.
+             Decoded from MERIDIAN_OO_AUTH = base64(email:password) by the
+             install script. -->
+        <key>ZO_ROOT_USER_EMAIL</key>
+        <string>{{OO_EMAIL}}</string>
+        <key>ZO_ROOT_USER_PASSWORD</key>
+        <string>{{OO_PASSWORD}}</string>
+        <key>ZO_DATA_DIR</key>
+        <string>{{HOME}}/.openobserve/data</string>
+        <key>ZO_HTTP_PORT</key>
+        <string>5080</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>{{HOME}}/.meridian/logs/openobserve.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{HOME}}/.meridian/logs/openobserve-error.log</string>
+
+    <!-- RunAtLoad true: OO must be up before the Rust daemon and Python agents
+         send traces, so it starts immediately on login. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
