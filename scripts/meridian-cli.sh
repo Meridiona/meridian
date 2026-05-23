@@ -57,7 +57,11 @@ cmd_start() {
             err "${label} not installed — run ./install.sh"
             any_missing=1
         else
-            launchctl kickstart -k "${GUI_TARGET}/${label}" 2>/dev/null || true
+            set +e
+            launchctl enable "${GUI_TARGET}/${label}" 2>/dev/null
+            launchctl bootstrap "${GUI_TARGET}" "$plist" 2>/dev/null
+            launchctl kickstart -k "${GUI_TARGET}/${label}" 2>/dev/null
+            set -e
             info "started ${label}"
         fi
     done
@@ -67,10 +71,14 @@ cmd_start() {
 }
 
 # --- stop ---
+# launchctl disable clears the KeepAlive intent so launchd won't auto-restart.
+# bootout removes the service from launchd entirely; the agent stays disabled
+# until cmd_start re-enables and re-bootstraps it. The plist file is untouched.
 cmd_stop() {
     for label in "${LABELS[@]}"; do
         set +e
-        launchctl kill TERM "${GUI_TARGET}/${label}" 2>/dev/null
+        launchctl disable "${GUI_TARGET}/${label}" 2>/dev/null
+        launchctl bootout "${GUI_TARGET}/${label}" 2>/dev/null
         set -e
         info "stopped ${label}"
     done
