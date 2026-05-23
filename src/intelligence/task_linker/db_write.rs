@@ -8,6 +8,25 @@ use sqlx::SqlitePool;
 
 use super::SessionClassification;
 
+/// Mark a session permanently failed after repeated subprocess errors.
+/// Advances the cursor past the stuck session so the drain loop can continue.
+/// Uses `task_method = 'subprocess_error'` as a sentinel — same pattern as
+/// the category settler's `fm_parse_error` sentinel.
+pub(super) async fn write_error_sentinel(pool: &SqlitePool, session_id: i64) -> Result<()> {
+    sqlx::query(
+        "UPDATE app_sessions
+         SET task_key = NULL, task_confidence = 0.0, task_routing = 'skip',
+             task_method = 'subprocess_error', task_reasoning = NULL,
+             task_session_type = 'overhead'
+         WHERE id = ?",
+    )
+    .bind(session_id)
+    .execute(pool)
+    .await
+    .with_context(|| format!("writing error sentinel for session {}", session_id))?;
+    Ok(())
+}
+
 /// Mark a trivial (empty session_text) session as overhead/skip without calling the LLM.
 pub(super) async fn update_session_overhead(pool: &SqlitePool, session_id: i64) -> Result<()> {
     sqlx::query(
