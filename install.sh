@@ -423,27 +423,65 @@ if [[ "$_oo_installed" -eq 0 ]]; then
             *) err "Unsupported arch: $_oo_arch — install manually from https://openobserve.ai"; exit 1 ;;
         esac
 
-        # v0.11.0 is the last release with pre-built darwin arm64/amd64 binaries.
-        _oo_ver="v0.11.0"
-        if [[ "${DRY_RUN}" -ne 0 ]]; then
-            _oo_ver="v0-dry-run"
-        fi
-
-        _oo_url="https://github.com/openobserve/openobserve/releases/download/${_oo_ver}/openobserve-${_oo_ver}-darwin-${_oo_arch}.tar.gz"
-        info "Fetching OpenObserve ${_oo_ver} (${_oo_arch})"
-        run mkdir -p "${HOME}/.openobserve"
-        if run curl -fsSL -o "${HOME}/.openobserve/openobserve.tar.gz" "$_oo_url" \
-            && run tar -xzf "${HOME}/.openobserve/openobserve.tar.gz" -C "${HOME}/.openobserve" \
-            && [[ -x "${HOME}/.openobserve/openobserve" ]]; then
-            run rm -f "${HOME}/.openobserve/openobserve.tar.gz"
-            _oo_installed=1
-            if [[ "${DRY_RUN}" -eq 0 ]]; then
-                ok "OpenObserve ${_oo_ver} installed at ~/.openobserve/openobserve"
+        _oo_url=""
+        _oo_ver=""
+        if [[ "${DRY_RUN}" -eq 0 ]]; then
+            # Newer OO releases (v0.90+) stopped attaching binary assets to GitHub
+            # releases. We fetch the 100 most-recent releases and pick the newest
+            # one that actually has a darwin-<arch> tarball attached.
+            _oo_releases_json="$(curl -fsSL \
+                "https://api.github.com/repos/openobserve/openobserve/releases?per_page=100" \
+                2>/dev/null || true)"
+            if [[ -n "$_oo_releases_json" ]]; then
+                _oo_result="$(printf '%s' "$_oo_releases_json" | python3 -c "
+import sys, json
+releases = json.load(sys.stdin)
+arch = '${_oo_arch}'
+for r in releases:
+    for a in r.get('assets', []):
+        n = a['name']
+        if 'darwin' in n and arch in n and n.endswith('.tar.gz') and 'sha256' not in n:
+            print(r['tag_name'], a['browser_download_url'])
+            sys.exit(0)
+" 2>/dev/null || true)"
+                _oo_ver="${_oo_result%% *}"
+                _oo_url="${_oo_result#* }"
+                [[ "$_oo_ver" == "$_oo_url" ]] && _oo_url=""  # single token = no URL found
             fi
         else
-            run rm -f "${HOME}/.openobserve/openobserve.tar.gz"
-            warn "Download failed from ${_oo_url}"
+            _oo_ver="v0-dry-run"
+            _oo_url="https://example.com/dry-run"
+        fi
+
+        if [[ -z "$_oo_url" ]]; then
+            warn "Could not find a darwin-${_oo_arch} binary asset for OpenObserve on GitHub"
             warn "Install manually: https://openobserve.ai/docs/install/"
+        else
+            info "Fetching OpenObserve ${_oo_ver} (${_oo_arch})"
+            run mkdir -p "${HOME}/.openobserve"
+            if run curl -fsSL -o "${HOME}/.openobserve/openobserve.tar.gz" "$_oo_url" \
+                && run tar -xzf "${HOME}/.openobserve/openobserve.tar.gz" -C "${HOME}/.openobserve"; then
+                # The binary inside the tarball may be named differently; find and
+                # normalise it to 'openobserve' so install-openobserve-daemon.sh
+                # always finds it at the expected path.
+                if [[ -f "${HOME}/.openobserve/openobserve" ]]; then
+                    : # already the right name
+                else
+                    _oo_bin_found="$(find "${HOME}/.openobserve" -maxdepth 1 -type f -perm +0111 ! -name "*.tar.gz" | head -1 || true)"
+                    if [[ -n "$_oo_bin_found" ]]; then
+                        mv "$_oo_bin_found" "${HOME}/.openobserve/openobserve"
+                    fi
+                fi
+                run chmod +x "${HOME}/.openobserve/openobserve"
+                run rm -f "${HOME}/.openobserve/openobserve.tar.gz"
+                _oo_installed=1
+                if [[ "${DRY_RUN}" -eq 0 ]]; then
+                    ok "OpenObserve ${_oo_ver} installed at ~/.openobserve/openobserve"
+                fi
+            else
+                warn "Download failed from ${_oo_url}"
+                warn "Install manually: https://openobserve.ai/docs/install/"
+            fi
         fi
     fi
 fi
