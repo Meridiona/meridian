@@ -339,8 +339,11 @@ cmd_permissions() {
     info "screenpipe needs three macOS permissions to record activity"
     echo "    binary path: ${sp_bin}"
     echo
-    echo "    In each pane that opens: click '+', navigate to the binary path,"
-    echo "    add it to the list, and toggle it ON."
+    echo "    Screen Recording + Accessibility panes: click '+', navigate to the"
+    echo "    binary path above, add it to the list, and toggle it ON."
+    echo "    Microphone pane has no '+'. screenpipe will appear there only after"
+    echo "    it tries to use the mic — then toggle it ON. If it isn't listed yet,"
+    echo "    grant Screen Recording first and screenpipe will request mic access."
     echo
     read -r -p "  Press Enter to open Screen Recording pane (1/3)… " _
     open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
@@ -352,7 +355,7 @@ cmd_permissions() {
     ok "Accessibility acknowledged"
     read -r -p "  Press Enter to open Microphone pane (3/3, optional)… " _
     open "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
-    read -r -p "  Press Enter when Microphone is granted (or skip)… " _
+    read -r -p "  Press Enter when Microphone is granted (or skip if screenpipe isn't listed yet)… " _
     ok "Microphone acknowledged"
     info "After granting permissions, restart screenpipe:"
     echo "    meridian restart"
