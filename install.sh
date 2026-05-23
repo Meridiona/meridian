@@ -133,10 +133,12 @@ prompt_env_vars() {
     local svcs_env="${REPO_ROOT}/services/.env"
     local hermes_env="${REPO_ROOT}/services/.hermes/.env"
 
-    # Ensure all three files exist (.env.example was copied earlier in step 2)
-    [[ -f "$root_env" ]]   || touch "$root_env"
-    [[ -f "$svcs_env" ]]   || touch "$svcs_env"
-    [[ -f "$hermes_env" ]] || touch "$hermes_env"
+    # Ensure parent dirs and files exist. services/.hermes/ is created later by
+    # setup-services.sh, but we need it now so env collection can write to it.
+    for f in "$root_env" "$svcs_env" "$hermes_env"; do
+        mkdir -p "$(dirname "$f")"
+        [[ -f "$f" ]] || touch "$f"
+    done
 
     info "→ Cloud LLM (for task classification)"
     echo "    Skip if you're running a local LLM (LM Studio, Ollama, mlx)."
@@ -330,11 +332,23 @@ ok "Python 3.11+"
 
 if ! command -v screenpipe >/dev/null 2>&1; then
     warn "screenpipe not found."
-    if prompt_install "Install screenpipe via Homebrew?"; then
-        run brew install screenpipe
+    echo "    Note: Homebrew's screenpipe formula is deprecated (0.2.x). We install the"
+    echo "    current 0.3.x via npm, which is what the launchd plist expects."
+    if prompt_install "Install screenpipe via npm (npm install -g screenpipe)?"; then
+        run npm install -g screenpipe
     else
         err "screenpipe required — install via https://docs.screenpi.pe"
         exit 1
+    fi
+else
+    _sp_ver="$(screenpipe --version 2>/dev/null | awk '{print $2}' || true)"
+    _sp_major_minor="${_sp_ver%.*}"
+    if [[ -n "${_sp_ver}" && "${_sp_major_minor}" < "0.3" ]]; then
+        warn "screenpipe ${_sp_ver} is from the deprecated Homebrew formula."
+        echo "    The launchd plist expects 0.3+ (uses 'screenpipe record')."
+        if prompt_install "Upgrade screenpipe via npm (npm install -g screenpipe)?"; then
+            run npm install -g screenpipe
+        fi
     fi
 fi
 ok "screenpipe"
