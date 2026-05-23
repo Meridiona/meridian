@@ -13,6 +13,8 @@ SCRIPTS=(
     "${REPO_ROOT}/scripts/uninstall-daemon.sh"
     "${REPO_ROOT}/scripts/install-screenpipe-daemon.sh"
     "${REPO_ROOT}/scripts/uninstall-screenpipe-daemon.sh"
+    "${REPO_ROOT}/scripts/install-ui-daemon.sh"
+    "${REPO_ROOT}/scripts/uninstall-ui-daemon.sh"
 )
 
 _have_shellcheck=0
