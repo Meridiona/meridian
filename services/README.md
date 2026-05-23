@@ -1,6 +1,6 @@
 # meridian-agents
 
-Python service that runs alongside the Rust daemon. It reads completed `app_sessions` rows from `~/.meridian/meridian.db`, classifies each session to a Jira task using hermes `AIAgent`, and writes Jira task mappings and multi-label dimension tags back into the same DB.
+Python service that runs alongside the Rust daemon. It classifies completed `app_sessions` rows to Jira tasks using a persistent MLX inference server, and posts timed progress comments back to Jira. Writes task mappings and multi-label dimension tags into `~/.meridian/meridian.db`.
 
 The Rust daemon owns all DDL; this service only does SELECT/INSERT/UPDATE on its agent-side tables.
 
@@ -13,49 +13,78 @@ For the deep technical reference (classification logic, schema, recipes), see [`
 ```
 app_sessions row (Rust ETL writes it)
         │
-        │  Rust intelligence module spawns run_task_linker.py
-        │  as a one-shot subprocess (JSON stdin → JSON stdout)
+        │  Rust daemon calls POST /classify_sessions
+        ▼           on the persistent MLX server
+┌──────────────────────────────────────────────┐
+│ MLX inference server (FastAPI, port 7823)    │ Apple Silicon only
+│   model: mlx-community/Qwen3.5-9B-OptiQ-4bit│
+│   loaded once at startup, served until killed│
+│   returns: task_key, session_type, confidence│
+└──────────────────────────────────────────────┘
+        │
         ▼
-┌──────────────────────────────────────────┐
-│ Classification Engine (hermes AIAgent)   │ LLM-powered
-│   matches session to task                │
-│   writes ticket_links, session_dimensions│
-└──────────────────────────────────────────┘
+Rust writes ticket_links + session_dimensions → meridian.db
 ```
 
 ---
 
 ## Installation
 
+Requires Python 3.13 and Apple Silicon.
+
 ```bash
 cd services/
 
-# Option A — editable install (recommended for development)
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -e .
+# Create a Python 3.13 virtual environment
+python3.13 -m venv .venv313
 
-# Option B — bare dependencies only
-pip install -r requirements.txt
+# Install core + MLX inference dependencies
+.venv313/bin/pip install -e ".[local-llm]"
 ```
 
-Requires Python 3.11+. The `hermes-agent` package is fetched from the NousResearch GitHub repo at the pinned tag; an internet connection is needed on first install.
+The `hermes-agent` package is fetched from GitHub at the pinned tag; an internet connection is needed on first install.
+
+---
+
+## MLX server
+
+The Rust daemon calls the MLX server for every classification. It must be running before the daemon starts.
+
+### Install as a launchd daemon (recommended)
+
+```bash
+bash scripts/install-mlx-server-daemon.sh [--port 7823]
+
+# Verify it started and the model loaded
+tail -f ~/.meridian/logs/mlx-server.log
+# Expected: "server: MLX model ready"
+
+# Status / stop / restart
+launchctl print gui/$(id -u)/com.meridiona.mlx-server
+bash scripts/uninstall-mlx-server-daemon.sh
+```
+
+### Run manually (development)
+
+```bash
+.venv313/bin/meridian-server --backend mlx --port 7823
+```
+
+The model (`Qwen3.5-9B-OptiQ-4bit`) is downloaded from Hugging Face on first run (~4 GB). Subsequent starts load from local cache in ~5 s.
 
 ---
 
 ## Configuration
 
-All variables are read in `agents/config.py`. Copy `.env.example` to `.env` in this directory and set what you need.
+All variables are read in `agents/config.py`. Copy `../.env.example` to `.env` in the repo root and set what you need.
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `MERIDIAN_DB` | `~/.meridian/meridian.db` | Path to the SQLite file. Must already exist (the Rust daemon creates it). |
-| `HERMES_MODEL` | `nemotron-3-super` | Model name passed to hermes `AIAgent` for classification. |
-| `HERMES_BASE_URL` | `https://ollama.com/v1` | OpenAI-compatible LLM endpoint. |
-| `OLLAMA_API_KEY` | — | API key for the LLM endpoint (also accepts standard OpenAI-compat keys). |
-| `HERMES_DEV_MODE` | `0` | Set to `1` to load hermes from `services/.hermes/` instead of the installed package (see Dev mode below). |
+| `MLX_SERVER_PORT` | `7823` | Port the MLX inference server listens on. |
+| `CLASSIFICATION_ENABLED` | `true` | Set to `false` to disable classification entirely (skips MLX server check). |
 
-Additional variables (`AGENT_AUTO_FLOOR`, `AGENT_MAX_TOKENS`, `CONFIDENCE_THRESHOLD`, etc.) are documented in [`agents/README.md`](agents/README.md#configuration).
+Additional variables are documented in [`agents/README.md`](agents/README.md#configuration).
 
 ---
 
@@ -63,7 +92,7 @@ Additional variables (`AGENT_AUTO_FLOOR`, `AGENT_MAX_TOKENS`, `CONFIDENCE_THRESH
 
 ### Task classifier
 
-The task classifier runs automatically — the Rust daemon spawns `run_task_linker.py` as a subprocess on each intelligence tick. There is no user-facing CLI for it. To verify the selected LLM:
+The task classifier runs automatically — the Rust daemon calls `POST /classify_sessions` on the MLX server on each intelligence tick. To inspect or re-run classification:
 
 ```bash
 # Re-run classification with full logging — does NOT write to DB
