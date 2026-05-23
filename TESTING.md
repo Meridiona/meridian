@@ -147,3 +147,27 @@ They do not assert a specific `task_key` — that is LLM output and varies by mo
 - [ ] **`RUST_LOG=debug`** — debug logging produces frame-level detail without crashing.
 - [ ] **graceful shutdown on SIGTERM** — `kill <pid>`; daemon finishes the current ETL pass and exits cleanly.
 - [ ] **graceful shutdown on Ctrl-C** — same as SIGTERM.
+
+## Install-package tests
+
+Tests for the install package (`install.sh`, `scripts/meridian-cli.sh`, the daemon installers, and the plist templates) live under `tests/install/`.
+
+Run them with:
+
+```bash
+bash tests/install/run.sh
+```
+
+Coverage:
+
+- **Syntax** — `bash -n` and (if available) `shellcheck` on every shell script.
+- **Plist linting** — `plutil -lint` on `com.meridiona.daemon.plist` and `com.meridiona.screenpipe.plist`.
+- **install.sh dry-run** — `./install.sh --dry-run --skip-permissions --skip-env --no-ui --no-daemon` exits 0.
+- **install.sh --help** — prints usage including all flags (`--no-ui`, `--dry-run`, `--no-daemon`, `--skip-permissions`, `--skip-env`).
+- **meridian CLI** — `--help`, `status`, `doctor`, and unknown-command paths all exit cleanly.
+- **Plist rendering** — runs `install-daemon.sh` against a temp HOME, verifies all `{{placeholders}}` are substituted (no leftover `{{...}}` tokens).
+- **Env collection** — calls the `get_env_value` / `set_env_value` helpers in isolation; verifies idempotency (re-setting the same key replaces in place, doesn't append duplicates).
+
+The suite does NOT actually install or load launchd agents — it stays within the cloned repo and uses temp directories. Run time is under 30 seconds.
+
+Pre-push hook integration: not currently wired (the test suite is opt-in). If you want to gate pushes on the install tests, append `bash tests/install/run.sh` to your `.git/hooks/pre-push`.

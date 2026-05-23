@@ -10,6 +10,7 @@ NO_UI=0
 DRY_RUN=0
 NO_DAEMON=0
 SKIP_PERMISSIONS=0
+SKIP_ENV=0
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -37,6 +38,144 @@ prompt_install() {
     fi
     read -r -p "  ${question} [Y/n] " ans
     [[ "${ans:-Y}" =~ ^[Yy] ]]
+}
+
+# ---------------------------------------------------------------------------
+# Env-var collection helpers
+# ---------------------------------------------------------------------------
+
+# Read a value from an .env file. Returns empty string if missing or commented.
+get_env_value() {
+    local key="$1" file="$2"
+    [[ -f "$file" ]] || return 0
+    grep -E "^${key}=" "$file" 2>/dev/null | tail -1 | cut -d= -f2- || true
+}
+
+# Set KEY=VALUE in FILE. Replaces existing uncommented line, otherwise appends.
+# Idempotent — safe to call multiple times.
+set_env_value() {
+    local key="$1" value="$2" file="$3"
+    [[ -f "$file" ]] || touch "$file"
+    if grep -qE "^${key}=" "$file" 2>/dev/null; then
+        local tmp
+        tmp="$(mktemp)"
+        awk -v k="$key" -v v="$value" '
+            BEGIN { FS=OFS="="; replaced=0 }
+            $1==k && !replaced { print k"="v; replaced=1; next }
+            { print }
+        ' "$file" > "$tmp"
+        mv "$tmp" "$file"
+    else
+        printf '%s=%s\n' "$key" "$value" >> "$file"
+    fi
+}
+
+# Prompt for ONE variable. Skips silently if value already exists in any of the files.
+# Writes to all files listed (space-separated absolute paths).
+# Args: <var_name> <human description> <secret? 0|1> <file1> [file2...]
+# Returns: 0 always (skipping is not an error).
+prompt_env_var() {
+    local key="$1" desc="$2" secret="$3"
+    shift 3
+    local files=("$@")
+    # Check if already set in any file
+    for f in "${files[@]}"; do
+        local existing
+        existing="$(get_env_value "$key" "$f")"
+        if [[ -n "$existing" ]]; then
+            ok "${key} already set in $(basename "$(dirname "$f")")/$(basename "$f") — keeping"
+            return 0
+        fi
+    done
+    local value=""
+    if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+        info "[DRY-RUN] would prompt: $desc"
+        return 0
+    fi
+    if [[ "$secret" == "1" ]]; then
+        read -r -s -p "    ${desc}: " value
+        echo
+    else
+        read -r -p "    ${desc}: " value
+    fi
+    if [[ -z "$value" ]]; then
+        info "  (skipped ${key})"
+        return 0
+    fi
+    for f in "${files[@]}"; do
+        set_env_value "$key" "$value" "$f"
+    done
+    ok "${key} written"
+}
+
+# Prompt [y/N] for a category. Returns 0 (yes) or 1 (no/skip).
+prompt_category() {
+    local label="$1"
+    if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+        info "[DRY-RUN] would ask: Configure ${label}?"
+        return 1
+    fi
+    local ans
+    read -r -p "  Configure ${label}? [y/N] " ans
+    [[ "$ans" =~ ^[Yy] ]]
+}
+
+prompt_env_vars() {
+    if [[ "${SKIP_ENV:-0}" == "1" ]]; then
+        info "Skipping env-var prompts (--skip-env)"
+        return 0
+    fi
+    info "Collecting credentials — press Enter on any prompt to skip"
+    echo "    (you can re-run later: meridian config edit)"
+    echo
+
+    local root_env="${HOME}/.meridian/.env"
+    local svcs_env="${REPO_ROOT}/services/.env"
+    local hermes_env="${REPO_ROOT}/services/.hermes/.env"
+
+    # Ensure all three files exist (.env.example was copied earlier in step 2)
+    [[ -f "$root_env" ]]   || touch "$root_env"
+    [[ -f "$svcs_env" ]]   || touch "$svcs_env"
+    [[ -f "$hermes_env" ]] || touch "$hermes_env"
+
+    info "→ Cloud LLM (for task classification)"
+    echo "    Skip if you're running a local LLM (LM Studio, Ollama, mlx)."
+    prompt_env_var "OPENROUTER_API_KEY" "OpenRouter API key (or any cloud LLM key)" 1 \
+        "$hermes_env" "$svcs_env"
+    echo
+
+    if prompt_category "Jira"; then
+        prompt_env_var "JIRA_BASE_URL" "Jira URL (e.g. https://your-org.atlassian.net)" 0 "$root_env"
+        # The python-side variable name is JIRA_URL, not JIRA_BASE_URL — write both.
+        local jira_url
+        jira_url="$(get_env_value JIRA_BASE_URL "$root_env")"
+        [[ -n "$jira_url" ]] && set_env_value JIRA_URL "$jira_url" "$svcs_env"
+        prompt_env_var "JIRA_EMAIL" "Jira email" 0 "$root_env" "$svcs_env"
+        prompt_env_var "JIRA_API_TOKEN" "Jira API token" 1 "$root_env" "$svcs_env"
+        prompt_env_var "JIRA_PROJECT_KEYS" "Jira project keys (optional, comma-sep, e.g. KAN,ENG)" 0 "$root_env"
+    fi
+    echo
+
+    if prompt_category "GitHub"; then
+        prompt_env_var "GITHUB_TOKEN" "GitHub personal access token" 1 "$root_env"
+        prompt_env_var "GITHUB_ORG" "GitHub organization" 0 "$root_env"
+        prompt_env_var "GITHUB_REPOS" "GitHub repos (optional, comma-sep, e.g. org/repo1,org/repo2)" 0 "$root_env"
+    fi
+    echo
+
+    if prompt_category "Linear"; then
+        prompt_env_var "LINEAR_API_KEY" "Linear API key" 1 "$root_env"
+        prompt_env_var "LINEAR_TEAM_IDS" "Linear team IDs (optional, comma-sep)" 0 "$root_env"
+    fi
+    echo
+
+    if prompt_category "Observability (OpenObserve)"; then
+        prompt_env_var "MERIDIAN_OO_AUTH" "base64(user:password) for OpenObserve" 1 "$root_env" "$svcs_env"
+        prompt_env_var "MERIDIAN_OTLP_ENDPOINT" "OTLP HTTP traces endpoint (Rust side, e.g. http://localhost:5080/api/default/v1/traces)" 0 "$root_env"
+        prompt_env_var "MERIDIAN_OTLP_TRACES_ENDPOINT" "OTLP HTTP traces endpoint (Python side; same URL as above is fine)" 0 "$svcs_env"
+    fi
+
+    ok "Credential collection complete"
 }
 
 prompt_permissions() {
@@ -76,6 +215,7 @@ while [[ $# -gt 0 ]]; do
         --dry-run)           DRY_RUN=1 ;;
         --no-daemon)         NO_DAEMON=1 ;;
         --skip-permissions)  SKIP_PERMISSIONS=1 ;;
+        --skip-env)          SKIP_ENV=1 ;;
         --help|-h)
             cat >&2 <<'EOF'
 Usage: bash install.sh [OPTIONS]
@@ -84,7 +224,13 @@ Usage: bash install.sh [OPTIONS]
   --dry-run            Print every action with [DRY-RUN] prefix; create/run nothing
   --no-daemon          Build everything but skip launchd registration
   --skip-permissions   Skip the macOS permissions walkthrough (Screen Recording, Accessibility, Microphone)
+  --skip-env           Skip the interactive credentials collection step
   --help, -h           Print this usage and exit
+
+After permissions, install.sh walks you through collecting credentials interactively
+(API keys for Jira, GitHub, Linear, OpenRouter, and OpenObserve). Existing values
+are never overwritten. Press Enter on any prompt to skip it. Use --skip-env to
+bypass this step entirely (e.g. in CI or when credentials are already in place).
 
 screenpipe is installed automatically via Homebrew if not already present.
 EOF
@@ -210,6 +356,12 @@ if [[ "${DRY_RUN}" -eq 0 ]]; then
 else
     info "Skipping permissions walkthrough (--dry-run)"
 fi
+
+# ---------------------------------------------------------------------------
+# Credentials walkthrough (skipped in --dry-run or --skip-env)
+# ---------------------------------------------------------------------------
+
+prompt_env_vars
 
 # ---------------------------------------------------------------------------
 # Step 2: Config bootstrap
