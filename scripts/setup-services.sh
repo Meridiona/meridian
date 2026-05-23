@@ -36,7 +36,15 @@ echo "Installing Python dependencies..."
 "${SERVICES_DIR}/.venv/bin/pip" install --quiet -r "${SERVICES_DIR}/requirements.txt"
 echo "  ✓ requirements installed"
 
-# 3. Verify hermes is importable
+# 3a. Apple Silicon — install mlx-lm for local model inference.
+#     mlx-lm only builds on macOS/arm64; skip silently on other platforms.
+if [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]]; then
+    echo "Apple Silicon detected — installing mlx-lm for local inference..."
+    "${SERVICES_DIR}/.venv/bin/pip" install --quiet "mlx-lm>=0.22,<1"
+    echo "  ✓ mlx-lm installed"
+fi
+
+# 3b. Verify hermes is importable
 echo "Verifying hermes install..."
 if ! "${SERVICES_DIR}/.venv/bin/python3" -c "import run_agent" 2>/dev/null; then
     echo "  ERROR: 'run_agent' not importable — check requirements.txt includes hermes"
@@ -44,7 +52,7 @@ if ! "${SERVICES_DIR}/.venv/bin/python3" -c "import run_agent" 2>/dev/null; then
 fi
 echo "  ✓ hermes (run_agent) importable"
 
-# 4. Run hermes config setup
+# 4. Hermes config setup
 echo "Configuring hermes..."
 bash "${SERVICES_DIR}/scripts/setup-hermes.sh"
 
