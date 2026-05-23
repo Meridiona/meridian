@@ -27,54 +27,57 @@ to `app_sessions`:
 | `signals` | JSON array of deduplicated clipboard copies and app-switch events |
 | `min_frame_id` / `max_frame_id` | Frame-id range linking back to screenpipe |
 
-## Prerequisites
-
-- macOS (screenpipe records to `~/.screenpipe/db.sqlite`)
-- [screenpipe](https://screenpi.pe) running and recording
-- Rust 1.93.1 — install via `rustup` or `rust-toolchain.toml` is picked up automatically
-- Python 3.11+ (for the hermes classification layer)
-
 ## Getting started
 
-### 1. Clone and build
+### Prerequisites
+
+- macOS 13+
+- Internet connection (for Homebrew + dependency downloads)
+
+`install.sh` handles everything else — Homebrew, Rust, Node 18+, Python 3.11+, and screenpipe itself.
+
+### Install
 
 ```bash
 git clone https://github.com/meridiona/meridian
 cd meridian
-cargo build --release
+./install.sh
 ```
 
-`SQLX_OFFLINE=true` is set automatically by `.cargo/config.toml` — no manual export needed.
+The installer detects and offers to install each missing prerequisite, then builds the Rust daemon, the MCP server, the Next.js UI, sets up the Python services, walks you through granting screenpipe its three macOS permissions (Screen Recording, Accessibility, Microphone), and registers three launchd LaunchAgents: `com.meridiona.screenpipe`, `com.meridiona.daemon`, and `com.meridiona.jira-updater`.
 
-### 2. Set up the Python services layer
+Useful flags:
 
-The classification pipeline (hermes AI agent) runs in a Python subprocess. Run this once after cloning:
+- `./install.sh --no-ui` — skip the dashboard build
+- `./install.sh --dry-run` — preview actions without executing
+- `./install.sh --no-daemon` — build only; don't register launchd agents
+- `./install.sh --skip-permissions` — skip the macOS permissions walkthrough
+
+### Configure
+
+Edit the three credentials files (defaults work for read-only operation):
+
+- `~/.meridian/.env` — Rust daemon (screenpipe paths, optional OTLP)
+- `services/.env` — Python agents (LLM endpoint, Jira/GitHub/Linear)
+- `services/.hermes/.env` — `OLLAMA_API_KEY` for the classification LLM
+
+Or open them with:
 
 ```bash
-bash scripts/setup-services.sh
+meridian config edit
 ```
 
-This will:
-- Create `services/.venv` and install Python dependencies
-- Generate `services/.hermes/config.yaml` from the template
-- Create `services/.hermes/.env` for your API key
-
-Then fill in your model API key:
-```bash
-$EDITOR services/.hermes/.env   # set OLLAMA_API_KEY
-```
-
-> If `CLASSIFICATION_ENABLED=false` is set, this step is optional — the daemon runs ETL and categorisation only.
-
-### 3. Run
+### Run
 
 ```bash
-./target/release/meridian
+meridian start          # bring up all three daemons (screenpipe + daemon + jira-updater)
+meridian status         # check what's running
+meridian logs           # tail the Rust daemon log
+meridian doctor         # diagnose missing config / services / permissions
+meridian permissions    # re-run the screenpipe permissions walkthrough
 ```
 
-The daemon checks the classification stack is ready on startup and exits immediately with a clear error message if anything is missing — it will never start and silently fail on every tick.
-
-The daemon runs an immediate ETL pass over all existing screenpipe data, then polls every 60 seconds for new frames. Stop it with `Ctrl-C` or `SIGTERM`.
+Stop with `meridian stop`. Remove everything with `meridian uninstall`.
 
 ## Configuration
 
@@ -159,10 +162,10 @@ screenpipe.db (read-only)
 
 Meridian ships a TypeScript MCP server that exposes your session data to any MCP-compatible AI tool (Claude Code, Claude Desktop, Cursor, etc.).
 
+`./install.sh` builds the MCP server into `packages/meridian-mcp/dist/index.js`. To rebuild it manually:
+
 ```bash
-cd packages/meridian-mcp
-npm install
-npm run build
+cd packages/meridian-mcp && npm run build
 ```
 
 Add to your MCP client config (e.g. `~/Library/Application Support/Claude/claude_desktop_config.json`):

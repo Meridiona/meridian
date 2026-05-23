@@ -14,10 +14,18 @@ SERVICES_DIR="${REPO_ROOT}/services"
 echo "=== meridian services setup ==="
 echo ""
 
-# 1. Python venv
+# 1. Python venv — prefer python3.11 so hermes-agent installs cleanly
+if command -v python3.11 >/dev/null 2>&1; then
+    PYTHON_BIN="python3.11"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+else
+    echo "✗ No python3 found on PATH"
+    exit 1
+fi
 if [ ! -d "${SERVICES_DIR}/.venv" ]; then
-    echo "Creating Python venv..."
-    python3 -m venv "${SERVICES_DIR}/.venv"
+    echo "Creating Python venv (using ${PYTHON_BIN})..."
+    "${PYTHON_BIN}" -m venv "${SERVICES_DIR}/.venv"
     echo "  ✓ .venv created"
 else
     echo "  ✓ .venv already exists"
