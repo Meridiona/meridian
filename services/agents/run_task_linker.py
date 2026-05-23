@@ -415,6 +415,7 @@ def main() -> None:
     sys.stdout.write(json.dumps({"results": results}))
     sys.stdout.write("\n")
     sys.stdout.flush()
+    observability.shutdown()
 
 
 if __name__ == "__main__":

@@ -92,6 +92,20 @@ def setup(agent_name: str) -> trace.Tracer:
     return tracer
 
 
+def shutdown() -> None:
+    """Flush and shut down the global TracerProvider.
+
+    Must be called before a short-lived process exits — BatchSpanProcessor
+    queues spans asynchronously and drops them on interpreter shutdown unless
+    explicitly flushed.
+    """
+    provider = trace.get_tracer_provider()
+    if hasattr(provider, "force_flush"):
+        provider.force_flush(timeout_millis=5_000)
+    if hasattr(provider, "shutdown"):
+        provider.shutdown()
+
+
 def extract_parent_context(traceparent: Optional[str]) -> Optional[Context]:
     """Parse an incoming W3C `traceparent` header into an OTel `Context`.
 
