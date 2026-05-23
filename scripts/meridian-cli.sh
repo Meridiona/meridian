@@ -247,7 +247,7 @@ cmd_doctor() {
 
     # 9. screenpipe binary in PATH
     set +e; command -v screenpipe >/dev/null 2>&1; local spbin=$?; set -e
-    _check "screenpipe binary in PATH" "$([[ $spbin -eq 0 ]] && echo 1 || echo 0)" "install screenpipe (brew install screenpipe)"
+    _check "screenpipe binary in PATH" "$([[ $spbin -eq 0 ]] && echo 1 || echo 0)" "install screenpipe (npm install -g screenpipe)"
 
     # 10. screenpipe DB
     _check "screenpipe DB exists" "$([[ -f "${HOME}/.screenpipe/db.sqlite" ]] && echo 1 || echo 0)" "install and run screenpipe"
