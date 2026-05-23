@@ -72,7 +72,7 @@ def _fetch_pm_tasks(con: _sqlite3.Connection) -> list[dict[str, Any]]:
         "       COALESCE(parent_key,'') AS parent_key,"
         "       COALESCE(epic_title,'') AS epic_title,"
         "       COALESCE(sprint_name,'') AS sprint_name"
-        " FROM pm_tasks WHERE LOWER(status_category) != 'done' AND parent_key IS NULL",
+        " FROM pm_tasks",
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -134,7 +134,7 @@ def _classify_one(
             # "memory"  → enables tool: memory        (writes learned patterns to HERMES_HOME/memories/)
             # "skills"  → enables tools: skills_list, skill_view, skill_manage
             #             (background skill-review thread can patch task-classifier/SKILL.md)
-            enabled_toolsets=["memory", "skills"],
+            enabled_toolsets=["skills"],
             # disabled_toolsets=None,       # omit — using enabled_toolsets allowlist instead
 
             # ── Limits ────────────────────────────────────────────────
@@ -256,7 +256,15 @@ def main() -> None:
         log.error("run_task_linker: meridian_db path is empty")
         sys.exit(1)
 
-    if not Path(db_path).exists():
+    resolved = Path(db_path).resolve()
+    allowed_parent = Path("~/.meridian").expanduser().resolve()
+    if resolved.parent != allowed_parent:
+        log.error(
+            "run_task_linker: db_path must be inside ~/.meridian/: %s", db_path
+        )
+        sys.exit(1)
+
+    if not resolved.exists():
         log.error("run_task_linker: db file does not exist: %s", db_path)
         sys.exit(1)
 
