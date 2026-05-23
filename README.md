@@ -52,19 +52,46 @@ Useful flags:
 - `./install.sh --dry-run` — preview actions without executing
 - `./install.sh --no-daemon` — build only; don't register launchd agents
 - `./install.sh --skip-permissions` — skip the macOS permissions walkthrough
+- `./install.sh --skip-env` — skip the credential walkthrough
 
 ### Configure
 
-Edit the three credentials files (defaults work for read-only operation):
+`./install.sh` walks you through credential prompts grouped by category:
 
-- `~/.meridian/.env` — Rust daemon (screenpipe paths, optional OTLP)
-- `services/.env` — Python agents (LLM endpoint, Jira/GitHub/Linear)
-- `services/.hermes/.env` — `OLLAMA_API_KEY` for the classification LLM
+- **Cloud LLM** — `OPENROUTER_API_KEY` (skip if you're running a local LLM)
+- **Jira** — URL, email, API token, project keys (gated by `[y/N]`)
+- **GitHub** — personal access token, org, repos
+- **Linear** — API key, team IDs
+- **Observability (OpenObserve)** — base64 auth + OTLP endpoints
 
-Or open them with:
+Empty input skips that variable. Values already in the relevant .env file are preserved on re-run.
+
+The credentials are written to three files under the hood, one per daemon:
+
+- `~/.meridian/.env` — Rust daemon (Jira/GitHub/Linear + observability)
+- `services/.env` — Python agents (LLM endpoint + Jira + observability)
+- `services/.hermes/.env` — hermes-agent library (`OPENROUTER_API_KEY`)
+
+To edit any of them later:
 
 ```bash
-meridian config edit
+meridian config edit            # opens ~/.meridian/.env in $EDITOR
+$EDITOR services/.env           # Python agents
+$EDITOR services/.hermes/.env   # hermes
+```
+
+To re-run only the credential walkthrough (skipping builds/permissions):
+
+```bash
+# Re-prompt: delete the value(s) you want to re-set, then re-run install.sh.
+# Note: install.sh skips any variable already populated.
+./install.sh --skip-permissions
+```
+
+If you want the prompts off entirely:
+
+```bash
+./install.sh --skip-env
 ```
 
 ### Run
@@ -80,6 +107,8 @@ meridian permissions    # re-run the screenpipe permissions walkthrough
 Stop with `meridian stop`. Remove everything with `meridian uninstall`.
 
 ## Configuration
+
+These variables are collected interactively by `./install.sh`. The table below is the authoritative reference for what each one means.
 
 All settings are via environment variables; defaults work out of the box.
 

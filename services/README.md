@@ -27,6 +27,8 @@ app_sessions row (Rust ETL writes it)
 
 ## Installation
 
+> If you used the top-level `./install.sh`, the Python venv, hermes config, and `.env` file are already set up — skip to "Running" / "Usage". Manual steps below are for advanced setups.
+
 ```bash
 cd services/
 
