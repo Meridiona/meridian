@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    com.meridiona.screenpipe — runs screenpipe (third-party) as a background launchd LaunchAgent.
+
+    Install via scripts/install-screenpipe-daemon.sh which copies this file into
+    ~/Library/LaunchAgents/ with absolute paths substituted in, then
+    bootstraps it under launchd. The plist below uses {{HOME}} and
+    {{SCREENPIPE_BIN}} placeholders that the install script replaces.
+
+    Uninstall:
+        scripts/uninstall-screenpipe-daemon.sh
+    Or manually:
+        launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.meridiona.screenpipe.plist
+        rm ~/Library/LaunchAgents/com.meridiona.screenpipe.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.meridiona.screenpipe</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{SCREENPIPE_BIN}}</string>
+        <string>record</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>{{HOME}}</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>{{HOME}}/.meridian/logs/screenpipe.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{HOME}}/.meridian/logs/screenpipe-error.log</string>
+
+    <!-- RunAtLoad true: screenpipe must always be running — it fires
+         immediately on login and is kept alive by launchd. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
