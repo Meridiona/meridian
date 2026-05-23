@@ -34,7 +34,7 @@ fi
 # Locate the screenpipe binary.
 SCREENPIPE_BIN="$(command -v screenpipe)" || true
 if [[ -z "${SCREENPIPE_BIN}" ]]; then
-    echo "✗ screenpipe binary not found in PATH — install with: brew install screenpipe" >&2
+    echo "✗ screenpipe binary not found in PATH — install with: npm install -g screenpipe" >&2
     exit 1
 fi
 
