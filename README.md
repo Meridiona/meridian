@@ -29,10 +29,10 @@ to `app_sessions`:
 
 ## Prerequisites
 
-- macOS (screenpipe records to `~/.screenpipe/db.sqlite`)
+- macOS with Apple Silicon (the MLX inference server requires Metal)
 - [screenpipe](https://screenpi.pe) running and recording
 - Rust 1.93.1 — install via `rustup` or `rust-toolchain.toml` is picked up automatically
-- Python 3.11+ (for the hermes classification layer)
+- Python 3.13 — install via `brew install python@3.13` or `pyenv install 3.13`
 
 ## Getting started
 
@@ -48,33 +48,69 @@ cargo build --release
 
 ### 2. Set up the Python services layer
 
-The classification pipeline (hermes AI agent) runs in a Python subprocess. Run this once after cloning:
+Task classification uses a persistent MLX inference server (Qwen3.5-9B). Set it up once after cloning:
 
 ```bash
-bash scripts/setup-services.sh
+cd services
+
+# Create a Python 3.13 virtual environment
+python3.13 -m venv .venv313
+
+# Install core dependencies + MLX inference extras
+.venv313/bin/pip install -e ".[local-llm]"
 ```
 
-This will:
-- Create `services/.venv` and install Python dependencies
-- Generate `services/.hermes/config.yaml` from the template
-- Create `services/.hermes/.env` for your API key
+### 3. Configure environment
 
-Then fill in your model API key:
+Copy the example and fill in your credentials:
+
 ```bash
-$EDITOR services/.hermes/.env   # set OLLAMA_API_KEY
+cp .env.example .env
+$EDITOR .env
 ```
 
-> If `CLASSIFICATION_ENABLED=false` is set, this step is optional — the daemon runs ETL and categorisation only.
+Minimum required variables:
 
-### 3. Run
+```bash
+# Jira (for task classification and Jira updater)
+JIRA_BASE_URL=https://your-instance.atlassian.net
+JIRA_EMAIL=you@example.com
+JIRA_API_TOKEN=your-api-token
+
+# Enable task classification
+CLASSIFICATION_ENABLED=true
+```
+
+> Set `CLASSIFICATION_ENABLED=false` to skip classification — the daemon runs ETL and FM categorisation only, with no MLX server needed.
+
+### 4. Start the MLX inference server
+
+The Rust daemon calls this server for every session classification. It must be running before the daemon starts.
+
+**Option A — launchd daemon (recommended, survives reboots and crashes):**
+
+```bash
+bash services/scripts/install-mlx-server-daemon.sh
+# Check it started:
+tail -f ~/.meridian/logs/mlx-server.log
+```
+
+**Option B — run manually in a terminal (dev/debugging):**
+
+```bash
+cd services
+.venv313/bin/meridian-server --backend mlx --port 7823
+```
+
+The server loads the model once at startup (~30 s on first run while the model downloads). Subsequent starts from cache are ~5 s. You will see `server: MLX model ready` in the log when it is ready.
+
+### 5. Run the daemon
 
 ```bash
 ./target/release/meridian
 ```
 
-The daemon checks the classification stack is ready on startup and exits immediately with a clear error message if anything is missing — it will never start and silently fail on every tick.
-
-The daemon runs an immediate ETL pass over all existing screenpipe data, then polls every 60 seconds for new frames. Stop it with `Ctrl-C` or `SIGTERM`.
+On startup the daemon TCP-connects to the MLX server to verify it is reachable before entering the poll loop. If the server is not running it exits immediately with a clear error message. Stop the daemon with `Ctrl-C` or `SIGTERM`.
 
 ## Configuration
 
@@ -85,6 +121,10 @@ All settings are via environment variables; defaults work out of the box.
 | `SCREENPIPE_DB` | `~/.screenpipe/db.sqlite` | Path to screenpipe's database (read-only) |
 | `MERIDIAN_DB` | `~/.meridian/meridian.db` | Path where Meridian writes its database |
 | `POLL_INTERVAL_SECS` | `60` | How often to check for new screenpipe frames |
+| `CLASSIFICATION_ENABLED` | `true` | Enable session→task classification via MLX server |
+| `MLX_SERVER_PORT` | `7823` | Port the persistent MLX inference server listens on |
+| `CLASSIFIER_BACKEND` | `mlx` | Classification backend (`mlx` is the only supported value) |
+| `CLASSIFICATION_TIMEOUT_S` | `120` | Per-session inference timeout in seconds |
 
 Example:
 ```bash
@@ -108,12 +148,19 @@ sqlite3 ~/.meridian/meridian.db \
 
 | Script | Purpose |
 |---|---|
-| `scripts/setup-services.sh` | One-time setup for the Python services layer — creates venv, installs deps, configures hermes. Run after cloning. |
-| `scripts/refresh_pm_tasks.py` | Force-refresh `pm_tasks` from Jira without restarting the daemon. Stdlib only — no pip install needed. |
+| `services/scripts/install-mlx-server-daemon.sh` | Install the MLX server as a launchd daemon (KeepAlive, auto-restart). |
+| `services/scripts/uninstall-mlx-server-daemon.sh` | Stop and remove the MLX server daemon. |
+| `scripts/refresh_pm_tasks.py` | Force-refresh `pm_tasks` from Jira without restarting the daemon. |
 | `scripts/setup-hooks.sh` | Install git hooks (fmt + clippy pre-commit, full suite pre-push). |
 
 ```bash
-# Force-refresh Jira task cache now
+# Install MLX server as a background daemon
+bash services/scripts/install-mlx-server-daemon.sh [--port 7823]
+
+# MLX server logs
+tail -f ~/.meridian/logs/mlx-server.log
+
+# Force-refresh Jira task cache
 python3 scripts/refresh_pm_tasks.py
 
 # Custom JQL or DB path
@@ -143,17 +190,25 @@ bash scripts/setup-hooks.sh
 screenpipe.db (read-only)
        │
        ▼
-  ETL runner  ──────────────────────────────────────────────┐
-  (every 60s)                                               │
-       │                                                     │
-       ├─ get_frames_since(cursor)                          │
-       ├─ detect app-switch boundaries                      │
-       ├─ extract_block_context (OCR, audio, signals)       │
-       ├─ upsert active_session (open block)                │
-       └─ close completed sessions → app_sessions           │
-                                                             ▼
-                                                    meridian.db
+  ETL runner  ──────────────────────────────────────────────────┐
+  (every 60s)                                                   │
+       │                                                         │
+       ├─ get_frames_since(cursor)                              │
+       ├─ detect app-switch boundaries                          │
+       ├─ extract_block_context (OCR, audio, signals)           │
+       ├─ upsert active_session (open block)                    │
+       └─ close completed sessions → app_sessions               │
+                                                                 ▼
+                                                        meridian.db
+                                                                 │
+                                                                 ▼
+  Classification ──────── POST /classify_sessions ─────► MLX server
+  (per tick)              http://127.0.0.1:7823          (Qwen3.5-9B,
+       │                                                  model in memory)
+       └─ writes ticket_links, session_dimensions ────────────► meridian.db
 ```
+
+The MLX server is a long-running FastAPI process managed by launchd. It loads the model once at startup — no cold-load penalty per session. The Rust daemon HTTP-calls it and writes the classification results back to `meridian.db`.
 
 ## MCP Server
 
