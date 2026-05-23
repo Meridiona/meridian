@@ -57,12 +57,18 @@ def _normalise_task_key(raw: str | None) -> str:
     return raw.strip()
 
 
+_SESSION_COLS = (
+    "id, app_name, started_at, ended_at, duration_s, session_text,"
+    " session_text_source, window_titles, category, confidence,"
+    " task_key, task_routing, task_method, task_session_type,"
+    " COALESCE(task_reasoning, '') AS task_reasoning"
+)
+
+
 def _fetch_sessions_by_ids(con: sqlite3.Connection, ids: list[int]) -> list[dict]:
     placeholders = ",".join("?" * len(ids))
     rows = con.execute(
-        f"SELECT id, app_name, started_at, ended_at, duration_s, session_text,"
-        f"       session_text_source, window_titles, category, confidence,"
-        f"       task_key, task_routing, task_method, task_session_type"
+        f"SELECT {_SESSION_COLS}"
         f" FROM app_sessions"
         f" WHERE id IN ({placeholders})"
         f" ORDER BY id",
@@ -74,11 +80,9 @@ def _fetch_sessions_by_ids(con: sqlite3.Connection, ids: list[int]) -> list[dict
 def _fetch_labeled_sessions(con: sqlite3.Connection) -> list[dict]:
     # hermes_aiagent sessions use task_routing='pending'; legacy auto-classified use 'auto'
     rows = con.execute(
-        "SELECT id, app_name, started_at, ended_at, duration_s, session_text,"
-        "       session_text_source, window_titles, category, confidence,"
-        "       task_key, task_routing, task_method, task_session_type"
+        f"SELECT {_SESSION_COLS}"
         " FROM app_sessions"
-        " WHERE task_method = 'hermes_aiagent'"
+        " WHERE task_method IN ('hermes_aiagent', 'mlx_direct')"
         "   AND task_routing IN ('auto', 'pending')"
         "   AND task_confidence >= ?"
         " ORDER BY id DESC"
@@ -151,15 +155,18 @@ def main() -> None:
         recent = _fetch_recent(con, s["id"])
         prompt_input = build_user_message(session, pm_tasks, recent_sessions=recent)
 
+        expected = {
+            "task_key":     _normalise_task_key(s.get("task_key")),
+            "session_type": s.get("task_session_type") or "overhead",
+            "reasoning":    s.get("task_reasoning") or "",
+        }
         goldens.append({
             "input": prompt_input,
-            "expected_output": _normalise_task_key(s.get("task_key")),
+            "expected_output": json.dumps(expected, ensure_ascii=False),
             "additional_metadata": {
-                "session_id":      s["id"],
-                "app_name":        s["app_name"],
-                "confidence":      s["confidence"],
-                "task_method":     s.get("task_method", ""),
-                "task_session_type": s.get("task_session_type", ""),
+                "session_id":  s["id"],
+                "app_name":    s["app_name"],
+                "task_method": s.get("task_method", ""),
             },
         })
 

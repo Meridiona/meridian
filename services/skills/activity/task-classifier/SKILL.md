@@ -91,20 +91,12 @@ Reply with ONE valid JSON object — no preamble, no markdown fences, no follow-
 }
 ```
 
-Schema:
-- `task_key` — must be one of the candidate keys above, OR `null`
-- `confidence` — number in `[0, 1]`. See "Scoring heuristics" section for ranges per outcome type.
-- `session_type` — one of:
-  - `"task"` — matched to a Jira ticket. Routed `auto`, linked for time-tracking.
-  - `"overhead"` — idle/personal/system/unrelated. Routed `skip`. **Thrown away — never used downstream.**
-  - `"untracked"` — real work with no matching ticket. Routed `queue`. **Retained — used for workload analysis and new-task creation.**
-- `reasoning` — 1–2 sentences or even 2-4 sentences(if complex) citing the specific evidence that pinned your choice. Must mention window titles, OCR snippets, or context clues.
-- `dimensions` — inferred activity tags from the session evidence:
-  - Keys: `activity`, `intent`, `engagement`, `collaboration`, `tool`, `topic`, `practice`
-  - Values: lists of lowercase snake_case strings (e.g. `"code_review"`, `"deep_work"`, `"github_pr"`, `"communication"`, `"breaks"`)
-  - Omit a dimension key if no value is evident from the session
-  - Return `"dimensions": {}` if the session has no clear activity signals
-  - If `task_key` is `null`, still infer dimensions when the evidence supports them
+### Field rules
+- `task_key` — must be one of the supplied candidates, or `null`. Never invent a key.
+- `confidence` — see Scoring heuristics section for exact ranges per outcome type.
+- `session_type` — `"task"` links to Jira; `"overhead"` is thrown away; `"untracked"` is kept for workload analysis.
+- `reasoning` — must cite specific window titles, OCR snippets, or context clues.
+- `dimensions` — omit keys with no evidence; return `{}` if no clear signals.
 
 ## Using Context from Previous Sessions
 
