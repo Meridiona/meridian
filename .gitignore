@@ -41,6 +41,10 @@ data/memory/
 .claude/memory.db
 .claude/settings.json
 
+# Python virtual environments
+services/.venv/
+services/.venv313/
+
 # Hermes dev-mode local source checkout (HERMES_DEV_MODE=1)
 services/.hermes/
 ruvector.db
