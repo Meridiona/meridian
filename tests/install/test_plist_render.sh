@@ -49,4 +49,21 @@ assert_eq "0" "$_leftover_count" "no leftover placeholders"
 start_test "screenpipe plist: rendered plist passes plutil -lint"
 assert_ok "plutil -lint on rendered screenpipe plist" plutil -lint "$RENDERED_SCREENPIPE"
 
+# --- ui plist ---
+UI_PLIST="${REPO_ROOT}/scripts/com.meridiona.ui.plist"
+RENDERED_UI="${TMPDIR_RENDER}/com.meridiona.ui.rendered.plist"
+
+sed \
+    -e "s|{{REPO_ROOT}}|/tmp/test-repo|g" \
+    -e "s|{{HOME}}|/tmp/test-home|g" \
+    -e "s|{{NPM_BIN}}|/opt/homebrew/bin/npm|g" \
+    "$UI_PLIST" > "$RENDERED_UI"
+
+start_test "ui plist: no leftover {{placeholders}} after render"
+_leftover_count="$(grep -c '{{' "$RENDERED_UI" || true)"
+assert_eq "0" "$_leftover_count" "no leftover placeholders"
+
+start_test "ui plist: rendered plist passes plutil -lint"
+assert_ok "plutil -lint on rendered ui plist" plutil -lint "$RENDERED_UI"
+
 exit "$FAIL_COUNT"

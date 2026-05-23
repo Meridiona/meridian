@@ -12,7 +12,8 @@ REPO_ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
 LABEL_SCREENPIPE="com.meridiona.screenpipe"
 LABEL_DAEMON="com.meridiona.daemon"
 LABEL_JIRA="com.meridiona.jira-updater"
-readonly LABELS=("${LABEL_SCREENPIPE}" "${LABEL_DAEMON}" "${LABEL_JIRA}")
+LABEL_UI="com.meridiona.ui"
+readonly LABELS=("${LABEL_SCREENPIPE}" "${LABEL_DAEMON}" "${LABEL_JIRA}" "${LABEL_UI}")
 GUI_TARGET="gui/$(id -u)"
 LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
 LOG_DIR="${HOME}/.meridian/logs"
@@ -32,12 +33,12 @@ Usage:
   meridian <command> [options]
 
 Commands:
-  start              Start all daemons (screenpipe, daemon, jira-updater)
+  start              Start all daemons (screenpipe, daemon, jira-updater, ui)
   stop               Stop all daemons
   restart            Stop, wait 1s, start
   status             Show running state of all daemons
   logs [target]      Tail log files
-                     target: daemon|daemon-error|jira-updater|screenpipe|screenpipe-error
+                     target: daemon|daemon-error|jira-updater|screenpipe|screenpipe-error|ui|ui-error
     -f               Follow (stream)
     -n N             Last N lines (default 100)
   doctor             Run environment health checks
@@ -147,7 +148,9 @@ cmd_logs() {
         jira-updater)      log_file="${LOG_DIR}/jira-updater.log" ;;
         screenpipe)        log_file="${LOG_DIR}/screenpipe.log" ;;
         screenpipe-error)  log_file="${LOG_DIR}/screenpipe-error.log" ;;
-        *) err "unknown log target: ${target} (daemon|daemon-error|jira-updater|screenpipe|screenpipe-error)"; exit 1 ;;
+        ui)                log_file="${LOG_DIR}/ui.log" ;;
+        ui-error)          log_file="${LOG_DIR}/ui-error.log" ;;
+        *) err "unknown log target: ${target} (daemon|daemon-error|jira-updater|screenpipe|screenpipe-error|ui|ui-error)"; exit 1 ;;
     esac
 
     if [[ ! -f "$log_file" ]]; then
@@ -272,6 +275,18 @@ cmd_doctor() {
     # 14. MCP server built
     _check "MCP server built" "$([[ -f "${REPO_ROOT}/packages/meridian-mcp/dist/index.js" ]] && echo 1 || echo 0)" "cd packages/meridian-mcp && npm run build"
 
+    # 15. UI plist lints
+    local uiplist="${LAUNCH_AGENTS}/${LABEL_UI}.plist"
+    if [[ -f "$uiplist" ]]; then
+        set +e; plutil -lint "$uiplist" >/dev/null 2>&1; local uil=$?; set -e
+        _check "UI plist installed and valid" "$([[ $uil -eq 0 ]] && echo 1 || echo 0)" "plutil -lint ${uiplist}"
+    else
+        _check "UI plist installed and valid" "0" "run ./install.sh"
+    fi
+
+    # 16. UI built
+    _check "UI built (ui/.next exists)" "$([[ -d "${REPO_ROOT}/ui/.next" ]] && echo 1 || echo 0)" "cd ui && npm ci && npm run build"
+
     echo
     if [[ $DOCTOR_FAILURES -eq 0 ]]; then
         ok "all checks passed"
@@ -305,6 +320,7 @@ cmd_uninstall() {
     fi
 
     set +e
+    bash "${REPO_ROOT}/scripts/uninstall-ui-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/services/scripts/uninstall-jira-updater-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/scripts/uninstall-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/scripts/uninstall-screenpipe-daemon.sh" 2>/dev/null

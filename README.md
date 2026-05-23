@@ -44,7 +44,7 @@ cd meridian
 ./install.sh
 ```
 
-The installer detects and offers to install each missing prerequisite, then builds the Rust daemon, the MCP server, the Next.js UI, sets up the Python services, walks you through granting screenpipe its three macOS permissions (Screen Recording, Accessibility, Microphone), and registers three launchd LaunchAgents: `com.meridiona.screenpipe`, `com.meridiona.daemon`, and `com.meridiona.jira-updater`.
+The installer detects and offers to install each missing prerequisite, then builds the Rust daemon, the MCP server, the Next.js UI, sets up the Python services, walks you through granting screenpipe its three macOS permissions (Screen Recording, Accessibility, Microphone), and registers four launchd LaunchAgents: `com.meridiona.screenpipe`, `com.meridiona.daemon`, `com.meridiona.jira-updater`, and `com.meridiona.ui` (the dashboard at http://localhost:3000).
 
 Useful flags:
 
@@ -97,14 +97,15 @@ If you want the prompts off entirely:
 ### Run
 
 ```bash
-meridian start          # bring up all three daemons (screenpipe + daemon + jira-updater)
+meridian start          # bring up all four daemons (screenpipe + daemon + jira-updater + ui)
 meridian status         # check what's running
 meridian logs           # tail the Rust daemon log
+meridian logs ui        # tail the dashboard log
 meridian doctor         # diagnose missing config / services / permissions
 meridian permissions    # re-run the screenpipe permissions walkthrough
 ```
 
-Stop with `meridian stop`. Remove everything with `meridian uninstall`.
+Once started, the dashboard is at **http://localhost:3000**. Stop with `meridian stop`. Remove everything with `meridian uninstall`.
 
 ## Configuration
 
