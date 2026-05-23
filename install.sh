@@ -364,6 +364,58 @@ if ! command -v ffmpeg >/dev/null 2>&1 || [[ ! -x /opt/homebrew/bin/ffmpeg && ! 
 fi
 ok "ffmpeg"
 
+# OpenObserve — optional local backend for traces + logs. Not on Homebrew; we
+# download the latest release from GitHub directly to ~/.openobserve/.
+_oo_installed=0
+command -v openobserve >/dev/null 2>&1 && _oo_installed=1
+[[ -x "${HOME}/.openobserve/openobserve" ]] && _oo_installed=1
+
+if [[ "$_oo_installed" -eq 0 ]]; then
+    warn "OpenObserve not found (optional — local backend for traces + logs)."
+    echo "    Skip if you don't need observability — Meridian works without it."
+    if prompt_install "Download OpenObserve to ~/.openobserve/?"; then
+        _oo_arch="$(uname -m)"
+        case "$_oo_arch" in
+            arm64)  _oo_arch="arm64" ;;
+            x86_64) _oo_arch="amd64" ;;
+            *) err "Unsupported arch: $_oo_arch — install manually from https://openobserve.ai"; exit 1 ;;
+        esac
+
+        _oo_ver=""
+        if [[ "${DRY_RUN}" -eq 0 ]]; then
+            _oo_ver="$(curl -fsSL https://api.github.com/repos/openobserve/openobserve/releases/latest 2>/dev/null \
+                | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
+        else
+            _oo_ver="v0-dry-run"
+        fi
+
+        if [[ -z "$_oo_ver" ]]; then
+            warn "Could not resolve latest OpenObserve version from GitHub API"
+            warn "Install manually: https://openobserve.ai/docs/install/"
+        else
+            _oo_url="https://github.com/openobserve/openobserve/releases/download/${_oo_ver}/openobserve-${_oo_ver}-darwin-${_oo_arch}.tar.gz"
+            info "Fetching OpenObserve ${_oo_ver} (${_oo_arch})"
+            run mkdir -p "${HOME}/.openobserve"
+            if run curl -fsSL -o "${HOME}/.openobserve/openobserve.tar.gz" "$_oo_url" \
+                && run tar -xzf "${HOME}/.openobserve/openobserve.tar.gz" -C "${HOME}/.openobserve"; then
+                run chmod +x "${HOME}/.openobserve/openobserve"
+                run rm -f "${HOME}/.openobserve/openobserve.tar.gz"
+                _oo_installed=1
+                if [[ "${DRY_RUN}" -eq 0 ]]; then
+                    ok "OpenObserve ${_oo_ver} installed at ~/.openobserve/openobserve"
+                    info "Start manually:  ~/.openobserve/openobserve"
+                    echo "    Then visit http://localhost:5080 to create your account."
+                    echo "    Use those credentials as MERIDIAN_OO_AUTH = base64(email:password)."
+                fi
+            else
+                warn "Download failed from ${_oo_url}"
+                warn "Install manually: https://openobserve.ai/docs/install/"
+            fi
+        fi
+    fi
+fi
+[[ "$_oo_installed" -eq 1 ]] && ok "OpenObserve" || info "OpenObserve skipped (optional)"
+
 # ---------------------------------------------------------------------------
 # Permissions walkthrough (skipped in --dry-run or --skip-permissions)
 # ---------------------------------------------------------------------------
