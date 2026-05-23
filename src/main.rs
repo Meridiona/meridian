@@ -1,6 +1,8 @@
 // meridian — normalises screenpipe activity into structured app sessions
 // https://github.com/meridiona/meridian
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -9,10 +11,16 @@ use meridian::db::meridian::{cleanup_incomplete_runs, setup_db};
 use meridian::db::screenpipe::open_screenpipe;
 use meridian::etl::run_etl;
 use meridian::intelligence::{
-    check_classification_ready, run_fm_categorization, run_pm_sync, run_task_linking,
+    check_classification_ready, mark_session_subprocess_error, run_fm_categorization, run_pm_sync,
+    run_task_linking, TaskLinkOutcome,
 };
 use meridian::observability;
 use tokio::signal::unix::{signal, SignalKind};
+use tokio::sync::Notify;
+
+/// After this many consecutive subprocess failures for the same session,
+/// write a `subprocess_error` sentinel and advance the cursor past it.
+const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -85,7 +93,11 @@ async fn main() -> Result<()> {
         Err(e) => tracing::error!("cleanup_incomplete_runs failed: {}", e),
     }
 
-    // 7b. Run ETL once immediately before entering the loop.
+    // 7b. Notify used to wake the task linker immediately after ETL writes new sessions.
+    //     ETL calls notify_one(); the linker waits on notified() instead of polling.
+    let etl_notify: Arc<Notify> = Arc::new(Notify::new());
+
+    // 7c. Run ETL once immediately before entering the loop.
     //     Re-read config so that any settings.json present at startup takes effect.
     {
         let cfg = Config::from_env();
@@ -95,19 +107,101 @@ async fn main() -> Result<()> {
         if let Err(e) = run_etl(&screenpipe, &meridian).await {
             tracing::error!("ETL run failed: {}", e);
         }
+        etl_notify.notify_one();
         if let Err(e) = run_pm_sync(&meridian, &cfg).await {
             tracing::error!("intelligence run failed: {}", e);
         }
         if let Err(e) = run_fm_categorization(&meridian, &cfg).await {
             tracing::error!("FM categorization run failed: {}", e);
         }
-        if let Err(e) = run_task_linking(&meridian, &cfg).await {
-            tracing::error!("classification run failed: {}", e);
-        }
     }
 
-    // 8. Poll loop — config is re-read on every tick so that edits to
-    //    ~/.meridian/settings.json take effect without a daemon restart.
+    // 8a. Task linker loop — wakes immediately when ETL signals new sessions.
+    //     Drains oldest-first (preserving the 5-session context window) until caught up,
+    //     then waits for the next ETL notification. A 5-min fallback ensures recovery
+    //     if a notify was missed (e.g. daemon restart with existing backlog).
+    //
+    //     Failure handling mirrors category_settler:
+    //       - Transient failure  → cursor stays, retry on next notify
+    //       - Permanent failure  → sentinel written after MAX_CONSECUTIVE_FAILURES,
+    //                              cursor advances, drain continues
+    let meridian_linker = meridian.clone();
+    let notify_linker = etl_notify.clone();
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        // Tracks consecutive subprocess failures per session_id.
+        // Reset to zero whenever any session is successfully classified.
+        // Persists across drain cycles within this daemon run (lost on restart,
+        // which is fine — transient failures before restart won't be double-counted).
+        let mut failure_counts: HashMap<i64, u32> = HashMap::new();
+
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.changed() => break,
+                _ = notify_linker.notified() => {}
+                _ = tokio::time::sleep(Duration::from_secs(300)) => {}
+            }
+
+            // Drain: classify oldest-first until nothing is left or a failure stops us.
+            loop {
+                let cfg = Config::from_env();
+                match run_task_linking(&meridian_linker, &cfg).await {
+                    Ok(TaskLinkOutcome::Classified) => {
+                        failure_counts.clear();
+                        // Loop immediately — more sessions may be waiting.
+                    }
+                    Ok(TaskLinkOutcome::NoPendingWork) => {
+                        break; // Caught up — go back to waiting for next notify.
+                    }
+                    Ok(TaskLinkOutcome::SubprocessFailed {
+                        session_id,
+                        pending,
+                    }) => {
+                        let count = failure_counts.entry(session_id).or_insert(0);
+                        *count += 1;
+
+                        if *count >= MAX_CONSECUTIVE_FAILURES {
+                            tracing::warn!(
+                                session_id,
+                                failures = *count,
+                                pending,
+                                "max consecutive failures — writing subprocess_error sentinel \
+                                 and advancing cursor"
+                            );
+                            if let Err(e) =
+                                mark_session_subprocess_error(&meridian_linker, session_id).await
+                            {
+                                tracing::error!(
+                                    session_id,
+                                    error = %e,
+                                    "failed to write error sentinel — will retry next tick"
+                                );
+                                break;
+                            }
+                            failure_counts.remove(&session_id);
+                            // Loop again — cursor advanced, try the next session.
+                        } else {
+                            tracing::warn!(
+                                session_id,
+                                failures = *count,
+                                max = MAX_CONSECUTIVE_FAILURES,
+                                pending,
+                                "subprocess failed — cursor held, will retry on next ETL tick"
+                            );
+                            break; // Stop drain, wait for next notify / 5-min fallback.
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "classification run error");
+                        break;
+                    }
+                }
+            }
+        }
+        tracing::info!("task linker loop stopped");
+    });
+
+    // 8b. Poll loop — ETL, PM sync, and FM categorization on the configured interval.
     loop {
         // Determine the sleep duration from the current settings.json before sleeping.
         let poll_interval = {
@@ -131,18 +225,19 @@ async fn main() -> Result<()> {
                 if let Err(e) = run_etl(&screenpipe, &meridian).await {
                     tracing::error!("ETL run failed: {}", e);
                 }
+                etl_notify.notify_one();
                 if let Err(e) = run_pm_sync(&meridian, &cfg).await {
                     tracing::error!("intelligence run failed: {}", e);
                 }
                 if let Err(e) = run_fm_categorization(&meridian, &cfg).await {
                     tracing::error!("FM categorization run failed: {}", e);
                 }
-                if let Err(e) = run_task_linking(&meridian, &cfg).await {
-                    tracing::error!("classification run failed: {}", e);
-                }
             }
         }
     }
+
+    // Signal the task linker loop to stop.
+    let _ = shutdown_tx.send(true);
 
     // 9. Shutdown
     tracing::info!("shutting down");
