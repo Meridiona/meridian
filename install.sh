@@ -140,9 +140,51 @@ prompt_env_vars() {
         [[ -f "$f" ]] || touch "$f"
     done
 
-    info "→ Cloud LLM (for task classification)"
-    echo "    Skip if you're running a local LLM (LM Studio, Ollama, mlx)."
-    prompt_env_var "OPENROUTER_API_KEY" "OpenRouter API key (or any cloud LLM key)" 1 \
+    info "→ LLM for task classification"
+    echo "    Meridian auto-detects running local servers (LM Studio :1234, Ollama :11434,"
+    echo "    llama.cpp/mlx_lm :8080) and uses whichever has a model loaded."
+    echo "    On Apple Silicon with no server running, it selects an MLX model from"
+    echo "    available Metal memory at runtime. No configuration needed for local."
+    echo
+
+    # Probe known LLM server ports and report what's running now.
+    _detected_llm_servers=()
+    if nc -z 127.0.0.1 11434 2>/dev/null; then
+        _ollama_model="$(curl -sf http://127.0.0.1:11434/api/ps 2>/dev/null \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); ms=d.get('models',[]); print(ms[0]['name'] if ms else '')" 2>/dev/null || true)"
+        if [[ -n "$_ollama_model" ]]; then
+            _detected_llm_servers+=("Ollama ($_ollama_model)")
+        else
+            _detected_llm_servers+=("Ollama (running, no model loaded)")
+        fi
+    fi
+    if nc -z 127.0.0.1 1234 2>/dev/null; then
+        _lms_model="$(curl -sf http://127.0.0.1:1234/api/v0/models 2>/dev/null \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); loaded=[m['id'] for m in d.get('data',[]) if m.get('state')=='loaded']; print(loaded[0] if loaded else '')" 2>/dev/null || true)"
+        if [[ -n "$_lms_model" ]]; then
+            _detected_llm_servers+=("LM Studio ($_lms_model)")
+        else
+            _detected_llm_servers+=("LM Studio (running, no model loaded)")
+        fi
+    fi
+    if nc -z 127.0.0.1 8080 2>/dev/null; then
+        _detected_llm_servers+=("llama.cpp/mlx_lm (:8080)")
+    fi
+
+    if [[ ${#_detected_llm_servers[@]} -gt 0 ]]; then
+        ok "Local LLM server detected: ${_detected_llm_servers[*]}"
+        echo "    Task classification will use this server automatically."
+    else
+        echo "    No local server detected — model will be selected from Metal memory at runtime."
+    fi
+
+    # Always prefer local; LLM_PREFER_LOCAL=1 is the default but we write it
+    # explicitly so the value is visible in services/.env.
+    set_env_value "LLM_PREFER_LOCAL" "1" "$svcs_env"
+
+    echo
+    echo "    Cloud fallback (optional) — only used when no local model is available."
+    prompt_env_var "OPENROUTER_API_KEY" "OpenRouter API key (leave blank to skip)" 1 \
         "$hermes_env" "$svcs_env"
     echo
 

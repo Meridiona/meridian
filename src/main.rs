@@ -24,7 +24,8 @@ async fn main() -> Result<()> {
         let env_path = std::path::Path::new(&home).join(".meridian").join(".env");
         let _ = dotenvy::from_path(env_path);
     }
-    let _ = dotenvy::dotenv(); // loads .env from current working directory
+    // Override so cwd .env beats any empty values injected by launchd plist.
+    let _ = dotenvy::dotenv_override();
 
     // 2. Tracing — layered subscriber (stdout + JSONL file + OTLP to OpenObserve).
     //    Guard must outlive the program; we shut it down explicitly at the end
