@@ -38,9 +38,28 @@ elif command -v openobserve >/dev/null 2>&1; then
 fi
 
 if [[ -z "${OO_BIN}" ]]; then
-    echo "✗ OpenObserve binary not found at ~/.openobserve/openobserve" >&2
-    echo "  Run ./install.sh to download it first." >&2
-    exit 1
+    echo "→ OpenObserve binary not found — downloading v0.11.0 (last release with arm64 binary)..."
+    _oo_arch="$(uname -m)"
+    case "$_oo_arch" in
+        arm64)  _oo_arch="arm64" ;;
+        x86_64) _oo_arch="amd64" ;;
+        *) echo "✗ Unsupported arch: $_oo_arch" >&2; exit 1 ;;
+    esac
+    _oo_ver="v0.11.0"
+    _oo_url="https://github.com/openobserve/openobserve/releases/download/${_oo_ver}/openobserve-${_oo_ver}-darwin-${_oo_arch}.tar.gz"
+    mkdir -p "${HOME}/.openobserve"
+    if curl -fsSL -o "${HOME}/.openobserve/openobserve.tar.gz" "$_oo_url" \
+        && tar -xzf "${HOME}/.openobserve/openobserve.tar.gz" -C "${HOME}/.openobserve" \
+        && [[ -x "${HOME}/.openobserve/openobserve" ]]; then
+        rm -f "${HOME}/.openobserve/openobserve.tar.gz"
+        OO_BIN="${HOME}/.openobserve/openobserve"
+        echo "✓ OpenObserve ${_oo_ver} downloaded"
+    else
+        rm -f "${HOME}/.openobserve/openobserve.tar.gz"
+        echo "✗ Download failed from ${_oo_url}" >&2
+        echo "  Install manually: https://openobserve.ai/docs/install/" >&2
+        exit 1
+    fi
 fi
 
 # Read MERIDIAN_OO_AUTH from ~/.meridian/.env and decode it.

@@ -423,33 +423,27 @@ if [[ "$_oo_installed" -eq 0 ]]; then
             *) err "Unsupported arch: $_oo_arch — install manually from https://openobserve.ai"; exit 1 ;;
         esac
 
-        _oo_ver=""
-        if [[ "${DRY_RUN}" -eq 0 ]]; then
-            _oo_ver="$(curl -fsSL https://api.github.com/repos/openobserve/openobserve/releases/latest 2>/dev/null \
-                | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
-        else
+        # v0.11.0 is the last release with pre-built darwin arm64/amd64 binaries.
+        _oo_ver="v0.11.0"
+        if [[ "${DRY_RUN}" -ne 0 ]]; then
             _oo_ver="v0-dry-run"
         fi
 
-        if [[ -z "$_oo_ver" ]]; then
-            warn "Could not resolve latest OpenObserve version from GitHub API"
-            warn "Install manually: https://openobserve.ai/docs/install/"
-        else
-            _oo_url="https://github.com/openobserve/openobserve/releases/download/${_oo_ver}/openobserve-${_oo_ver}-darwin-${_oo_arch}.tar.gz"
-            info "Fetching OpenObserve ${_oo_ver} (${_oo_arch})"
-            run mkdir -p "${HOME}/.openobserve"
-            if run curl -fsSL -o "${HOME}/.openobserve/openobserve.tar.gz" "$_oo_url" \
-                && run tar -xzf "${HOME}/.openobserve/openobserve.tar.gz" -C "${HOME}/.openobserve"; then
-                run chmod +x "${HOME}/.openobserve/openobserve"
-                run rm -f "${HOME}/.openobserve/openobserve.tar.gz"
-                _oo_installed=1
-                if [[ "${DRY_RUN}" -eq 0 ]]; then
-                    ok "OpenObserve ${_oo_ver} installed at ~/.openobserve/openobserve"
-                fi
-            else
-                warn "Download failed from ${_oo_url}"
-                warn "Install manually: https://openobserve.ai/docs/install/"
+        _oo_url="https://github.com/openobserve/openobserve/releases/download/${_oo_ver}/openobserve-${_oo_ver}-darwin-${_oo_arch}.tar.gz"
+        info "Fetching OpenObserve ${_oo_ver} (${_oo_arch})"
+        run mkdir -p "${HOME}/.openobserve"
+        if run curl -fsSL -o "${HOME}/.openobserve/openobserve.tar.gz" "$_oo_url" \
+            && run tar -xzf "${HOME}/.openobserve/openobserve.tar.gz" -C "${HOME}/.openobserve" \
+            && [[ -x "${HOME}/.openobserve/openobserve" ]]; then
+            run rm -f "${HOME}/.openobserve/openobserve.tar.gz"
+            _oo_installed=1
+            if [[ "${DRY_RUN}" -eq 0 ]]; then
+                ok "OpenObserve ${_oo_ver} installed at ~/.openobserve/openobserve"
             fi
+        else
+            run rm -f "${HOME}/.openobserve/openobserve.tar.gz"
+            warn "Download failed from ${_oo_url}"
+            warn "Install manually: https://openobserve.ai/docs/install/"
         fi
     fi
 fi
