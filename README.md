@@ -60,6 +60,14 @@ Useful flags:
 - `./install.sh --no-daemon` — build only; don't register launchd agents
 - `./install.sh --skip-permissions` — skip the macOS permissions walkthrough
 - `./install.sh --skip-env` — skip the credential walkthrough
+- `./install.sh --mlx` — use the persistent MLX inference server (Apple Silicon only)
+
+<!-- TODO: expose a stop.sh / `meridian stop` and `meridian start` flow so users don't need to
+     know launchctl commands to start/stop services after install. Currently:
+       stop:  bash scripts/meridian-cli.sh stop
+       start: bash scripts/meridian-cli.sh start   (or re-run install.sh)
+     Goal: single documented command for each action, ideally `meridian start` / `meridian stop`,
+     with clear notes on what each one covers (screenpipe, daemon, jira-updater, ui, mlx-server). -->
 
 Task classification uses a persistent MLX inference server (Qwen3.5-9B). Set it up once after cloning:
 
