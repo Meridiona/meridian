@@ -36,6 +36,12 @@ echo "Installing Python dependencies..."
 "${SERVICES_DIR}/.venv/bin/pip" install --quiet -r "${SERVICES_DIR}/requirements.txt"
 echo "  ✓ requirements installed"
 
+# 2b. Install the services package itself in editable mode so that
+#     `python -m agents.*` modules are importable by the launchd daemons.
+echo "Installing meridian-agents package..."
+"${SERVICES_DIR}/.venv/bin/pip" install --quiet -e "${SERVICES_DIR}"
+echo "  ✓ meridian-agents installed"
+
 # 3a. Apple Silicon — install mlx-lm for local model inference.
 #     mlx-lm only builds on macOS/arm64; skip silently on other platforms.
 if [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]]; then
