@@ -277,15 +277,15 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<TaskLin
     span.record("trivial", trivial_count);
     span.record("classifiable", classifiable_ids.len() as i64);
 
-    for id in &trivial_ids {
-        debug!(
-            session_id = id,
-            "session skipped (empty session_text → overhead/skip)"
-        );
-    }
     for id in trivial_ids {
         update_session_overhead(pool, id).await?;
         advance_agent_cursor(pool, id).await?;
+        info!(
+            session_id = id,
+            session_type = "overhead",
+            method = "trivial",
+            "session classified"
+        );
     }
 
     if classifiable_ids.is_empty() {
