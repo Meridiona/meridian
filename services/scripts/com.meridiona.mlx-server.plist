@@ -25,7 +25,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>{{REPO_ROOT}}/services/.venv313/bin/meridian-server</string>
+        <string>{{REPO_ROOT}}/services/.venv/bin/meridian-server</string>
         <string>--backend</string>
         <string>mlx</string>
         <string>--port</string>

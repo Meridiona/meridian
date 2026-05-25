@@ -41,9 +41,8 @@ data/memory/
 .claude/memory.db
 .claude/settings.json
 
-# Python virtual environments
+# Python virtual environments (.venv313 merged into .venv via --mlx extra)
 services/.venv/
-services/.venv313/
 
 # Hermes dev-mode local source checkout (HERMES_DEV_MODE=1)
 services/.hermes/

@@ -40,10 +40,10 @@ if [[ ! -f "${TEMPLATE}" ]]; then
     exit 1
 fi
 
-VENV_PYTHON="${SERVICES_DIR}/.venv313/bin/python3.13"
-if [[ ! -x "${VENV_PYTHON}" ]]; then
-    echo "✗ MLX venv not found at ${VENV_PYTHON}" >&2
-    echo "  Run:  cd services && python3.13 -m venv .venv313 && .venv313/bin/pip install -r requirements-mlx.txt" >&2
+MERIDIAN_SERVER="${SERVICES_DIR}/.venv/bin/meridian-server"
+if [[ ! -x "${MERIDIAN_SERVER}" ]]; then
+    echo "✗ meridian-server not found at ${MERIDIAN_SERVER}" >&2
+    echo "  Run:  bash scripts/setup-services.sh --mlx" >&2
     exit 1
 fi
 

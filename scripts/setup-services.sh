@@ -4,12 +4,24 @@
 # Run once after cloning:
 #   bash scripts/setup-services.sh
 #
+# Pass --mlx to also install the MLX inference server extras (arm64 only):
+#   bash scripts/setup-services.sh --mlx
+#
 # Safe to re-run. Only overwrites hermes config.yaml, never .env.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICES_DIR="${REPO_ROOT}/services"
+
+USE_MLX=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --mlx) USE_MLX=1 ;;
+        *) echo "✗ Unknown flag: $1" >&2; exit 1 ;;
+    esac
+    shift
+done
 
 echo "=== meridian services setup ==="
 echo ""
@@ -31,7 +43,7 @@ else
     echo "  ✓ .venv already exists"
 fi
 
-# 2. Install dependencies
+# 2. Install core dependencies
 echo "Installing Python dependencies..."
 "${SERVICES_DIR}/.venv/bin/pip" install --quiet -r "${SERVICES_DIR}/requirements.txt"
 echo "  ✓ requirements installed"
@@ -42,9 +54,23 @@ echo "Installing meridian-agents package..."
 "${SERVICES_DIR}/.venv/bin/pip" install --quiet -e "${SERVICES_DIR}"
 echo "  ✓ meridian-agents installed"
 
-# 3a. Apple Silicon — install mlx-lm for local model inference.
-#     mlx-lm only builds on macOS/arm64; skip silently on other platforms.
-if [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]]; then
+# 3a. MLX inference server extras — only on Apple Silicon, only when --mlx is set.
+#     Installs mlx-lm, outlines, fastapi, uvicorn and the meridian-server script.
+if [[ "${USE_MLX}" -eq 1 ]]; then
+    if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
+        echo "✗ --mlx requires Apple Silicon (arm64 macOS)" >&2
+        exit 1
+    fi
+    echo "Installing MLX inference + server extras (.[mlx])..."
+    "${SERVICES_DIR}/.venv/bin/pip" install --quiet -e "${SERVICES_DIR}[mlx]"
+    echo "  ✓ MLX extras installed"
+    if ! "${SERVICES_DIR}/.venv/bin/meridian-server" --help >/dev/null 2>&1; then
+        echo "  ✗ meridian-server not available after install" >&2
+        exit 1
+    fi
+    echo "  ✓ meridian-server script available"
+elif [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]]; then
+    # Without --mlx, install just mlx-lm so llm_selector can detect local models.
     echo "Apple Silicon detected — installing mlx-lm for local inference..."
     "${SERVICES_DIR}/.venv/bin/pip" install --quiet "mlx-lm>=0.22,<1"
     echo "  ✓ mlx-lm installed"
@@ -74,4 +100,9 @@ fi
 echo ""
 echo "=== setup complete ==="
 echo ""
-echo "Next: cargo build --release && ./target/release/meridian"
+if [[ "${USE_MLX}" -eq 1 ]]; then
+    echo "Next: start the MLX server, then cargo build --release && ./target/release/meridian"
+    echo "  ${SERVICES_DIR}/.venv/bin/meridian-server --backend mlx --port 7823"
+else
+    echo "Next: cargo build --release && ./target/release/meridian"
+fi
