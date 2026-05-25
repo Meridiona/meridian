@@ -17,6 +17,7 @@ use meridian::intelligence::{
 use meridian::observability;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::Notify;
+use tracing::Instrument as _;
 
 /// After this many consecutive subprocess failures for the same session,
 /// write a `subprocess_error` sentinel and advance the cursor past it.
@@ -158,13 +159,14 @@ async fn main() -> Result<()> {
             // Drain: classify oldest-first until nothing is left or a failure stops us.
             loop {
                 let cfg = Config::from_env();
-                // Enter parent synchronously so #[tracing::instrument] on
-                // run_task_linking captures it as the parent span at the call site.
-                let fut = {
-                    let _g = parent_span.enter();
-                    run_task_linking(&meridian_linker, &cfg)
-                };
-                match fut.await {
+                // .instrument() enters parent_span on each poll; #[tracing::instrument]
+                // on run_task_linking creates its span inside the async block at first
+                // poll (tracing-attributes >= 0.1.24), so it sees parent_span as current
+                // and becomes its child.
+                match run_task_linking(&meridian_linker, &cfg)
+                    .instrument(parent_span.clone())
+                    .await
+                {
                     Ok(TaskLinkOutcome::Classified) => {
                         failure_counts.clear();
                         // Loop immediately — more sessions may be waiting.
