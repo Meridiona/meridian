@@ -412,7 +412,10 @@ pub async fn run_task_linking(
                 return Ok(());
             }
         }
-        debug!(cursor, "fetching unclassified sessions (cursor-based fallback)");
+        debug!(
+            cursor,
+            "fetching unclassified sessions (cursor-based fallback)"
+        );
         fetch_unclassified_sessions(pool, cursor, cfg.min_classification_duration_s).await?
     };
 
