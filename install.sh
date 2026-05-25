@@ -647,17 +647,17 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
             --port "${MLX_PORT}"
         ok "MLX server launchd agent installed"
 
-        info "Waiting for MLX server to be ready (first run downloads ~5GB model, allow 10 min)..."
+        # Wait up to 60s — enough for a cached model load (~10s on Apple Silicon).
+        # On first run the model download takes many minutes; we don't block the
+        # install for that. launchd KeepAlive will restart the Rust daemon
+        # automatically once the MLX server eventually comes up.
+        info "Checking MLX server (model load ~10s cached, first-run download may take longer)..."
         _mlx_ready=0
         if [[ "${DRY_RUN}" -eq 0 ]]; then
-            for _i in $(seq 1 600); do
+            for _i in $(seq 1 60); do
                 if curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; then
                     _mlx_ready=1
                     break
-                fi
-                # Print a dot every 10s so the user can see progress
-                if (( _i % 10 == 0 )); then
-                    printf "    [%3ds] still loading…\n" "${_i}"
                 fi
                 sleep 1
             done
@@ -667,9 +667,10 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
         if [[ "${_mlx_ready}" -eq 1 ]]; then
             ok "MLX server ready on port ${MLX_PORT}"
         else
-            warn "MLX server did not respond within 600s."
-            warn "Check logs: tail -f ~/.meridian/logs/mlx-server.log"
-            warn "The Rust daemon will refuse to start until the MLX server is reachable."
+            warn "MLX server not yet responding — model is likely downloading in the background (~6.6 GB)."
+            echo "    The Rust daemon will auto-start via launchd once the model is ready."
+            echo "    Monitor progress:  tail -f ~/.meridian/logs/mlx-server.log"
+            echo "    Check when ready:  until curl -sf http://127.0.0.1:${MLX_PORT}/health; do sleep 5; done"
         fi
     fi
 
