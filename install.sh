@@ -80,15 +80,28 @@ prompt_env_var() {
     local key="$1" desc="$2" secret="$3"
     shift 3
     local files=("$@")
-    # Check if already set in any file
+    # Check if already set in any file; if so, sync to any files that are missing it.
+    local found_value=""
+    local found_in=""
     for f in "${files[@]}"; do
         local existing
         existing="$(get_env_value "$key" "$f")"
         if [[ -n "$existing" ]]; then
-            ok "${key} already set in $(basename "$(dirname "$f")")/$(basename "$f") — keeping"
-            return 0
+            found_value="$existing"
+            found_in="$f"
+            break
         fi
     done
+    if [[ -n "$found_value" ]]; then
+        ok "${key} already set in $(basename "$(dirname "$found_in")")/$(basename "$found_in") — keeping"
+        for f in "${files[@]}"; do
+            if [[ -z "$(get_env_value "$key" "$f")" ]]; then
+                set_env_value "$key" "$found_value" "$f"
+                info "  → synced ${key} to $(basename "$(dirname "$f")")/$(basename "$f")"
+            fi
+        done
+        return 0
+    fi
     local value=""
     if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
         info "[DRY-RUN] would prompt: $desc"
@@ -390,8 +403,8 @@ if ! command -v screenpipe >/dev/null 2>&1; then
     warn "screenpipe not found."
     echo "    Note: Homebrew's screenpipe formula is deprecated (0.2.x). We install the"
     echo "    current 0.3.x via npm, which is what the launchd plist expects."
-    if prompt_install "Install screenpipe via npm (npm install -g screenpipe)?"; then
-        run npm install -g screenpipe
+    if prompt_install "Install screenpipe via npm (npm install -g screenpipe@'~0.3')?"; then
+        run npm install -g screenpipe@'~0.3'
     else
         err "screenpipe required — install via https://docs.screenpi.pe"
         exit 1
@@ -402,8 +415,8 @@ else
     if [[ -n "${_sp_ver}" && "${_sp_major_minor}" < "0.3" ]]; then
         warn "screenpipe ${_sp_ver} is from the deprecated Homebrew formula."
         echo "    The launchd plist expects 0.3+ (uses 'screenpipe record')."
-        if prompt_install "Upgrade screenpipe via npm (npm install -g screenpipe)?"; then
-            run npm install -g screenpipe
+        if prompt_install "Upgrade screenpipe via npm (npm install -g screenpipe@'~0.3')?"; then
+            run npm install -g screenpipe@'~0.3'
         fi
     fi
 fi
