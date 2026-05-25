@@ -23,7 +23,7 @@ pub fn build_session_text(frames: &[FrameText]) -> String {
     for frame in frames {
         process_frame(frame, &mut seen, &mut out, &mut last_marker_secs);
     }
-    out
+    dedup_cursor_prefixes(out)
 }
 
 /// Merge new frame content into an existing session_text string (incremental update).
@@ -233,6 +233,71 @@ fn extract_last_marker_secs(text: &str) -> Option<i64> {
         }
     }
     None
+}
+
+/// Remove `❯ `-prefixed lines that are proper prefixes of a LATER `❯ `-prefixed line.
+///
+/// When screenpipe captures frames while the user is typing in a Claude Code
+/// terminal, each frame may show the input mid-keystroke:
+///
+///   ❯ hello w
+///   ❯ hello world
+///
+/// Only the final, complete version is useful. This pass removes all earlier
+/// partial versions while leaving non-`❯ ` lines untouched.
+///
+/// A bounded lookahead (MAX_LOOKAHEAD cursor lines) prevents false positives
+/// from coincidental prefix matches across unrelated commands later in the
+/// session (e.g. "❯ git" is not removed just because "❯ git status" appears
+/// 50 cursor lines later after other work).
+fn dedup_cursor_prefixes(text: String) -> String {
+    const CURSOR_PREFIX: &str = "❯ ";
+    // Only remove A if B appears within the next N cursor lines — tight enough
+    // to cover a single typing sequence (~10s at 1fps), loose enough for fast typists.
+    const MAX_LOOKAHEAD: usize = 10;
+
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() < 2 {
+        return text;
+    }
+
+    // Collect (line_index, content_after_prefix) for every ❯-prefixed line.
+    let cursor_lines: Vec<(usize, &str)> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| l.strip_prefix(CURSOR_PREFIX).map(|c| (i, c)))
+        .collect();
+
+    if cursor_lines.len() < 2 {
+        return text;
+    }
+
+    let mut superseded = vec![false; lines.len()];
+
+    for i in 0..cursor_lines.len() {
+        let (idx_a, content_a) = cursor_lines[i];
+        let end = (i + 1 + MAX_LOOKAHEAD).min(cursor_lines.len());
+        for (_, content_b) in &cursor_lines[i + 1..end] {
+            // B must strictly extend A (longer AND starts with A's content).
+            if content_b.len() > content_a.len() && content_b.starts_with(content_a) {
+                superseded[idx_a] = true;
+                break;
+            }
+        }
+    }
+
+    if !superseded.iter().any(|&s| s) {
+        return text;
+    }
+
+    let mut out = String::with_capacity(text.len());
+    for (i, line) in lines.iter().enumerate() {
+        if !superseded[i] {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -471,6 +536,82 @@ mod tests {
             None
         );
         assert_eq!(extract_last_marker_secs(""), None);
+    }
+
+    // -------------------------------------------------------------------------
+    // dedup_cursor_prefixes
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn dedup_cursor_removes_typing_increments() {
+        // Simulates mid-keystroke captures of the same message.
+        let text = "[10:00:00]\n❯ wait s\n❯ wait s how\n❯ wait s how thsi\n❯ wait s how thsi work\nsome output\n";
+        let result = dedup_cursor_prefixes(text.to_owned());
+        let cursor: Vec<&str> = result.lines().filter(|l| l.starts_with("❯ ")).collect();
+        assert_eq!(
+            cursor,
+            ["❯ wait s how thsi work"],
+            "only the final version should survive; got:\n{result}"
+        );
+        // Non-cursor lines must be preserved.
+        assert!(result.contains("some output"));
+        assert!(result.contains("[10:00:00]"));
+    }
+
+    #[test]
+    fn dedup_cursor_preserves_unrelated_short_command() {
+        // "❯ git" is more than MAX_LOOKAHEAD cursor lines away from "❯ git status".
+        let mut text = String::from("[10:00:00]\n❯ git\n");
+        for i in 0..10 {
+            text.push_str(&format!("❯ unrelated_{i}\n"));
+        }
+        text.push_str("❯ git status\n");
+        let result = dedup_cursor_prefixes(text);
+        assert!(
+            result.contains("❯ git\n"),
+            "❯ git must not be removed when superseder is beyond lookahead:\n{result}"
+        );
+        assert!(result.contains("❯ git status\n"));
+    }
+
+    #[test]
+    fn dedup_cursor_no_cursor_lines_unchanged() {
+        let text = "[10:00:00]\nalpha\nbeta\ngamma\n";
+        let result = dedup_cursor_prefixes(text.to_owned());
+        assert_eq!(result, text);
+    }
+
+    #[test]
+    fn dedup_cursor_single_cursor_line_unchanged() {
+        let text = "[10:00:00]\n❯ hello world\noutput\n";
+        let result = dedup_cursor_prefixes(text.to_owned());
+        assert_eq!(result, text);
+    }
+
+    #[test]
+    fn dedup_cursor_equal_lines_not_removed() {
+        // Same content twice (exact dupe) — neither supersedes the other.
+        let text = "❯ hello\n❯ hello\n";
+        let result = dedup_cursor_prefixes(text.to_owned());
+        // Both survive (exact dedup is the seen-set's job, not ours).
+        assert_eq!(result.lines().filter(|l| *l == "❯ hello").count(), 2);
+    }
+
+    #[test]
+    fn dedup_cursor_build_session_text_integration() {
+        // build_session_text must emit only the final version of a typed message.
+        let frames = vec![
+            frame("2024-01-01T10:00:00Z", "❯ fix\noutput1"),
+            frame("2024-01-01T10:00:01Z", "❯ fix bug\noutput1"),
+            frame("2024-01-01T10:00:02Z", "❯ fix bug now\noutput1"),
+        ];
+        let text = build_session_text(&frames);
+        let cursor: Vec<&str> = text.lines().filter(|l| l.starts_with("❯ ")).collect();
+        assert_eq!(
+            cursor,
+            ["❯ fix bug now"],
+            "only the final typed version should appear; got:\n{text}"
+        );
     }
 
     // -------------------------------------------------------------------------

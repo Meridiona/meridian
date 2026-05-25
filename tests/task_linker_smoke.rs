@@ -1,16 +1,11 @@
 // meridian — normalises screenpipe activity into structured app sessions
 //
-// Real integration smoke tests for run_task_linking():
-//   - seeds a file-based DB (Python subprocess can't reach :memory:)
-//   - calls the real agents/run_task_linker.py via the real services/ directory
-//   - Python loads session + pm_tasks from the DB, calls hermes, returns JSON
-//   - Rust writes classification result back to DB
-//   - tests assert DB state after the full round-trip
-//
-// All tests are skipped (not failed) when the environment is not ready:
-//   - python3 not in PATH
-//   - services/ directory not found
-//   - hermes not configured (services/.hermes/config.yaml missing)
+// Smoke tests for run_task_linking():
+//   - seeds a file-based DB
+//   - prefilter tests verify trivial/short sessions are handled without any LLM call
+//   - integration tests (marked #[ignore]) require the persistent MLX server running on
+//     MLX_SERVER_PORT (default 7823): start with
+//     cd services && .venv313/bin/meridian-server --backend mlx --port 7823
 
 mod common;
 
@@ -21,81 +16,7 @@ use sqlx::{sqlite::SqliteConnectOptions, Row, SqlitePool};
 use std::str::FromStr;
 
 // ---------------------------------------------------------------------------
-// Environment checks — skip, not fail, when tooling is absent
-// ---------------------------------------------------------------------------
-
-fn python3_available() -> bool {
-    std::process::Command::new("python3")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Returns the real `services/` path relative to the project root (CARGO_MANIFEST_DIR).
-fn real_services_dir() -> Option<String> {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let candidate = root.join("services");
-    if candidate.join("agents/run_task_linker.py").exists() {
-        Some(candidate.to_string_lossy().into_owned())
-    } else {
-        None
-    }
-}
-
-fn hermes_configured(services_dir: &str) -> bool {
-    std::path::Path::new(services_dir)
-        .join(".hermes/config.yaml")
-        .exists()
-}
-
-/// Skip a test when the classification environment is not set up, binding
-/// `$var` to the real services/ directory path when the environment is ready.
-macro_rules! skip_unless_ready {
-    ($var:ident) => {
-        if !python3_available() {
-            eprintln!("skip: python3 not available");
-            return;
-        }
-        let $var = match real_services_dir() {
-            Some(dir) => dir,
-            None => {
-                eprintln!("skip: services/ directory not found");
-                return;
-            }
-        };
-        if !hermes_configured(&$var) {
-            eprintln!("skip: hermes not configured (services/.hermes/config.yaml missing)");
-            return;
-        }
-    };
-}
-
-#[allow(dead_code)]
-fn make_cfg_backfill(enabled: bool, services_dir: Option<String>, backfill: bool) -> Config {
-    Config {
-        screenpipe_db: String::new(),
-        meridian_db: String::new(),
-        poll_interval_secs: 60,
-        pm_providers: vec![],
-        llm_backend: LlmBackendConfig::Disabled,
-        classification_enabled: enabled,
-        classification_timeout_s: 30,
-        min_classification_duration_s: 10,
-        classification_services_dir: services_dir,
-        classification_backfill: backfill,
-        category_backfill: false,
-        classification_context_window: 5,
-        jira_update_enabled: false,
-        jira_update_interval_s: 14400,
-        jira_office_start_hour: 9,
-        jira_office_end_hour: 17,
-        runtime: RuntimeSettings::default(),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// File-based DB helper (Python subprocess needs a real file, not :memory:)
+// File-based DB helper (MLX server needs a real file path)
 // ---------------------------------------------------------------------------
 
 async fn make_file_db() -> (tempfile::NamedTempFile, SqlitePool, String) {
@@ -165,7 +86,7 @@ async fn seed_pm_task(
     .unwrap();
 }
 
-fn make_cfg(services_dir: &str, db_path: &str) -> Config {
+fn make_cfg(db_path: &str) -> Config {
     Config {
         screenpipe_db: String::new(),
         meridian_db: db_path.to_string(),
@@ -175,10 +96,12 @@ fn make_cfg(services_dir: &str, db_path: &str) -> Config {
         classification_enabled: true,
         classification_timeout_s: 120,
         min_classification_duration_s: 10,
-        classification_services_dir: Some(services_dir.to_string()),
+        classification_services_dir: None,
         classification_backfill: true,
         category_backfill: false,
         classification_context_window: 5,
+        classifier_backend: "mlx".to_owned(),
+        mlx_server_port: 7823,
         jira_update_enabled: false,
         jira_update_interval_s: 14400,
         jira_office_start_hour: 9,
@@ -191,15 +114,13 @@ fn make_cfg(services_dir: &str, db_path: &str) -> Config {
 // Tests
 // ---------------------------------------------------------------------------
 
-/// Full round-trip: seed session + pm_tasks → hermes classifies → Rust writes to DB.
+/// Full round-trip: seed session + pm_tasks → MLX server classifies → Rust writes to DB.
 /// Asserts that task_method, cursor, and agent_run are all written correctly.
 /// Does NOT assert a specific task_key — that is LLM output and may vary.
 #[tokio::test]
 #[serial]
-#[ignore = "requires live hermes + LLM — run with: cargo test real_classification -- --ignored"]
+#[ignore = "requires live MLX server — start with: cd services && .venv313/bin/meridian-server --backend mlx --port 7823"]
 async fn real_classification_writes_task_and_advances_cursor() {
-    skip_unless_ready!(services_dir);
-
     let (_tmp, pool, db_path) = make_file_db().await;
 
     let session_id = seed_session(
@@ -227,14 +148,14 @@ async fn real_classification_writes_task_and_advances_cursor() {
         &pool,
         "KAN-55",
         "Add dimension tagging to classified sessions",
-        "After hermes classifies a session, write activity/intent/tool dimensions \
+        "After classification, write activity/intent/tool dimensions \
          to session_dimensions for the dashboard breakdown view.",
         "in_progress",
     )
     .await;
 
-    let cfg = make_cfg(&services_dir, &db_path);
-    run_task_linking(&pool, &cfg, vec![]).await.unwrap();
+    let cfg = make_cfg(&db_path);
+    run_task_linking(&pool, &cfg).await.unwrap();
 
     // task classification written to app_sessions
     let row = sqlx::query(
@@ -254,7 +175,7 @@ async fn real_classification_writes_task_and_advances_cursor() {
         row.get::<Option<String>, _>(1).is_some(),
         "task_routing must be set"
     );
-    // task_key may be None if hermes classified as overhead — that is valid
+    // task_key may be None if classified as overhead — that is valid
     let confidence = row.get::<Option<f64>, _>(3).unwrap_or(0.0);
     assert!(
         confidence >= 0.0 && confidence <= 1.0,
@@ -286,10 +207,8 @@ async fn real_classification_writes_task_and_advances_cursor() {
 /// Running the classification cycle twice must not re-classify an already-processed session.
 #[tokio::test]
 #[serial]
-#[ignore = "requires live hermes + LLM — run with: cargo test real_classification -- --ignored"]
+#[ignore = "requires live MLX server — start with: cd services && .venv313/bin/meridian-server --backend mlx --port 7823"]
 async fn real_classification_does_not_reprocess_classified_session() {
-    skip_unless_ready!(services_dir);
-
     let (_tmp, pool, db_path) = make_file_db().await;
 
     seed_session(
@@ -309,9 +228,9 @@ async fn real_classification_does_not_reprocess_classified_session() {
     )
     .await;
 
-    let cfg = make_cfg(&services_dir, &db_path);
-    run_task_linking(&pool, &cfg, vec![]).await.unwrap(); // classifies
-    run_task_linking(&pool, &cfg, vec![]).await.unwrap(); // should be a no-op
+    let cfg = make_cfg(&db_path);
+    run_task_linking(&pool, &cfg).await.unwrap(); // classifies
+    run_task_linking(&pool, &cfg).await.unwrap(); // should be a no-op
 
     let run_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM agent_runs")
         .fetch_one(&pool)
@@ -331,15 +250,15 @@ async fn real_classification_does_not_reprocess_classified_session() {
     );
 }
 
-/// A session below the minimum duration threshold is not sent to hermes.
-/// This does not require hermes — verifies the prefilter without LLM.
+/// A session below the minimum duration threshold is not sent to the MLX server.
+/// This does not require the server — verifies the prefilter without any LLM.
 #[tokio::test]
 async fn short_session_is_not_classified() {
     let (_tmp, pool, db_path) = make_file_db().await;
 
     seed_session(&pool, "Terminal", 5, "cargo build").await;
 
-    // Use a bogus services dir — test must not reach Python at all
+    // classification_enabled=true but duration_s=5 is below min_classification_duration_s=10
     let cfg = Config {
         screenpipe_db: String::new(),
         meridian_db: db_path,
@@ -349,10 +268,12 @@ async fn short_session_is_not_classified() {
         classification_enabled: true,
         classification_timeout_s: 30,
         min_classification_duration_s: 10,
-        classification_services_dir: Some("/nonexistent".to_string()),
+        classification_services_dir: None,
         classification_backfill: true,
         category_backfill: false,
         classification_context_window: 5,
+        classifier_backend: "mlx".to_owned(),
+        mlx_server_port: 7823,
         jira_update_enabled: false,
         jira_update_interval_s: 14400,
         jira_office_start_hour: 9,
@@ -360,7 +281,7 @@ async fn short_session_is_not_classified() {
         runtime: RuntimeSettings::default(),
     };
 
-    run_task_linking(&pool, &cfg, vec![]).await.unwrap();
+    run_task_linking(&pool, &cfg).await.unwrap();
 
     let count: (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM app_sessions WHERE task_method IS NOT NULL")
@@ -373,9 +294,9 @@ async fn short_session_is_not_classified() {
     );
 }
 
-/// A session with empty session_text is marked overhead/skip without calling Python.
+/// A session with empty session_text is marked overhead/skip without calling the server.
 #[tokio::test]
-async fn trivial_session_is_marked_overhead_without_python() {
+async fn trivial_session_is_marked_overhead_without_server() {
     let (_tmp, pool, db_path) = make_file_db().await;
 
     let id = seed_session(&pool, "Spotify", 60, "").await;
@@ -389,10 +310,12 @@ async fn trivial_session_is_marked_overhead_without_python() {
         classification_enabled: true,
         classification_timeout_s: 30,
         min_classification_duration_s: 10,
-        classification_services_dir: Some("/nonexistent".to_string()),
+        classification_services_dir: None,
         classification_backfill: true,
         category_backfill: false,
         classification_context_window: 5,
+        classifier_backend: "mlx".to_owned(),
+        mlx_server_port: 7823,
         jira_update_enabled: false,
         jira_update_interval_s: 14400,
         jira_office_start_hour: 9,
@@ -400,7 +323,7 @@ async fn trivial_session_is_marked_overhead_without_python() {
         runtime: RuntimeSettings::default(),
     };
 
-    run_task_linking(&pool, &cfg, vec![]).await.unwrap();
+    run_task_linking(&pool, &cfg).await.unwrap();
 
     let row = sqlx::query("SELECT task_method, task_routing FROM app_sessions WHERE id = ?")
         .bind(id)

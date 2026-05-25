@@ -12,31 +12,29 @@ For a higher-level overview (installation, daemon ops, configuration), see [`ser
 app_sessions (Rust ETL writes)
         │
         │  Rust intelligence module reads rows where
-        │  id > agent_cursor.last_session_id, builds
-        │  a JSON batch and spawns run_task_linker.py
+        │  id > agent_cursor.last_session_id and sends
+        │  POST /classify_sessions to the MLX server
         ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│ run_task_linker.py  (JSON stdin → JSON stdout)                       │
+│ MLX server  (FastAPI, http://127.0.0.1:7823)                         │
+│   model: mlx-community/Qwen3.5-9B-OptiQ-4bit (loaded at startup)    │
 │                                                                      │
-│   reads: {sessions: [...], pm_tasks: [...], traceparent: ...}        │
+│   POST /classify_sessions  {session_ids: [...], meridian_db: ...}    │
 │                                                                      │
-│   for each session:                                                  │
-│     duration_s < MIN_LLM_DURATION_S → routing=skip                  │
-│     otherwise:                                                       │
-│       classify_session()  ──►  task_classifier_agent.py             │
-│         select_model_for_hermes()  (local-first, cloud fallback)     │
-│         hermes AIAgent (skill: task-classifier)                      │
-│           max_iterations=1, no tools, JSON response                  │
-│         parse_response() → {task_key, confidence, routing}          │
+│   for each session_id:                                               │
+│     fetch session + pm_tasks + recent context from meridian.db       │
+│     run_task_linker_mlx._classify_one()                              │
+│       FSM-constrained outlines inference → SessionClassification     │
+│       semantic guard: task_key must be in candidate list             │
 │                                                                      │
-│   writes: {results: [{session_id, task_key, confidence, routing}]}   │
+│   returns: {results: [{session_id, task_key, session_type,           │
+│                         confidence, reasoning, method, dimensions}]} │
 └──────────────────────────────────────────────────────────────────────┘
         │
         ▼
-Rust reads stdout JSON, writes ticket_links, advances agent_cursor
+Rust writes ticket_links + session_dimensions, advances agent_cursor
 
 The cursor advances after every session regardless of routing outcome.
-A SIGTERM mid-batch loses at most the in-flight session.
 ```
 
 ---
@@ -317,43 +315,33 @@ pip install -e ".[local-llm]"
    FROM ticket_links WHERE session_id = <ID>;
    ```
 
-2. **Re-run the classifier against a live session** — build the same JSON payload the Rust daemon sends and pipe it to `run_task_linker.py`:
+2. **Re-run the classifier against a live session** — call the MLX server directly with the session id:
+   ```bash
+   curl -s -X POST http://127.0.0.1:7823/classify_sessions \
+     -H "Content-Type: application/json" \
+     -d "{\"session_ids\": [<ID>]}" | jq .
+   ```
+
+   Or use the standalone MLX script (reads from stdin, prints JSON to stdout):
    ```bash
    cd services
-   sqlite3 ~/.meridian/meridian.db \
-     "SELECT json_object('id',id,'app_name',app_name,'duration_s',duration_s,
-       'session_text',COALESCE(session_text,''),'window_titles',COALESCE(window_titles,'[]'),
-       'audio_snippets',COALESCE(audio_snippets,'[]')) FROM app_sessions WHERE id=<ID>" \
-   | python3 -c "
-   import json,sys
-   row = json.loads(sys.stdin.read())
-   payload = json.dumps({'sessions':[row], 'pm_tasks':[]})
-   print(payload)
-   " | .venv/bin/python -m agents.run_task_linker
+   echo '{"session_ids": [<ID>], "meridian_db": "'"$HOME"'/.meridian/meridian.db"}' \
+     | .venv313/bin/python -m agents.run_task_linker_mlx
    ```
 
-3. **Check which model was used** — look in the log line emitted after each classification:
+3. **Check the MLX server inference log** for per-session results:
    ```bash
-   grep 'session_id=<ID>' ~/.meridian/logs/meridian-task-linker.jsonl | jq '{model:.llm_model,runtime:.llm_runtime,routing:.routing,confidence:.confidence}'
+   ls -lt services/logs/mlx/
+   tail -f services/logs/mlx/server_*.jsonl | jq '{session_id:.session_id, task_key:.result.task_key, elapsed_s:.result.elapsed_s}'
    ```
 
-4. **Verify LLM selection** — confirm which endpoint the selector would choose:
+4. **Verify the MLX server is ready:**
    ```bash
-   cd services && .venv/bin/python -c "
-   from agents.llm_selector import select_model_for_hermes, probe_compute
-   stats = probe_compute()
-   print(f'headroom: {stats.metal_headroom_gb:.1f} GB')
-   ep = select_model_for_hermes()
-   print(f'selected: {ep.model} runtime={ep.runtime}' if ep else 'cloud fallback')
-   "
+   curl -s http://127.0.0.1:7823/health | jq .
+   tail -f ~/.meridian/logs/mlx-server.log
    ```
 
-5. **Tail the classifier log** for a running session:
-   ```bash
-   tail -f ~/.meridian/logs/meridian-task-linker.jsonl | jq .
-   ```
-
-6. **Tune the skill prompt** — edit `services/skills/activity/task-classifier/SKILL.md` and re-run. Changes take effect on the next subprocess invocation with no restart required.
+5. **Tune the skill prompt** — edit `services/skills/activity/task-classifier/SKILL.md` and restart the MLX server for changes to take effect (the prompt is loaded at startup).
 
 ---
 
@@ -373,7 +361,7 @@ cargo run --bin backfill_session_categories -- --dry-run --today
 ```
 
 ### Task classification backfill
-Re-runs hermes session→task classification on a session range:
+Re-runs MLX session→task classification on a session range (requires the MLX server to be running):
 ```bash
 cargo run --bin backfill_task_classification -- --today
 cargo run --bin backfill_task_classification -- --yesterday

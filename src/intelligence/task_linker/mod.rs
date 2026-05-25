@@ -8,34 +8,64 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::time::Instant;
-use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
 use tracing::field;
 
 use db::{
-    fetch_sessions_by_ids, fetch_sessions_in_range, fetch_unclassified_sessions, get_agent_cursor,
+    count_pending_sessions, fetch_sessions_in_range, fetch_unclassified_sessions, get_agent_cursor,
     get_max_session_id,
 };
 use db_write::{
     advance_agent_cursor, complete_agent_run, start_agent_run, update_session_overhead,
-    update_session_task, write_dimensions,
+    update_session_task, write_dimensions, write_error_sentinel,
 };
+
+// ---------------------------------------------------------------------------
+// Outcome type returned by run_task_linking
+// ---------------------------------------------------------------------------
+
+/// What happened during a single classification cycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskLinkOutcome {
+    /// No sessions pending — cursor is fully caught up.
+    NoPendingWork,
+    /// At least one session was processed (classified or marked overhead).
+    Classified,
+    /// MLX server call failed for this session. Cursor was NOT advanced —
+    /// the caller tracks consecutive failures and writes a sentinel after
+    /// MAX_CONSECUTIVE_FAILURES to unblock the cursor.
+    SubprocessFailed {
+        session_id: i64,
+        /// How many sessions are still waiting behind the cursor.
+        pending: i64,
+    },
+}
 
 // One session per daemon tick — at 30-60s cadence there is typically one new
 // session. The backfill binary handles bulk catch-up after downtime.
 pub(super) const BATCH_LIMIT: i64 = 1;
 
 // ---------------------------------------------------------------------------
+// Sentinel helper
+// ---------------------------------------------------------------------------
+
+/// Write `task_method = 'subprocess_error'` and advance the cursor past
+/// `session_id` so the drain loop is not permanently stuck.
+pub async fn mark_session_subprocess_error(pool: &SqlitePool, session_id: i64) -> Result<()> {
+    write_error_sentinel(pool, session_id).await?;
+    advance_agent_cursor(pool, session_id).await?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Startup preflight check
 // ---------------------------------------------------------------------------
 
-/// Validates that the classification stack is ready to run.
+/// Validates that the persistent MLX server is reachable.
 /// Called once at daemon startup — returns Err with a human-readable fix
-/// if anything is missing so the daemon refuses to start rather than
-/// silently failing on every tick.
+/// if the server is not listening.
 ///
 /// No-op when `classification_enabled` is false.
 pub fn check_classification_ready(cfg: &Config) -> Result<()> {
@@ -43,67 +73,26 @@ pub fn check_classification_ready(cfg: &Config) -> Result<()> {
         return Ok(());
     }
 
-    let services_dir = find_services_dir(cfg).ok_or_else(|| {
-        anyhow::anyhow!(
-            "classification is enabled but services/agents/run_task_linker.py not found\n\
-             Fix: run  bash scripts/setup-services.sh  from the repo root"
-        )
-    })?;
-
-    let hermes_config = services_dir.join(".hermes/config.yaml");
-    if !hermes_config.exists() {
-        anyhow::bail!(
-            "services/.hermes/config.yaml not found — hermes is not configured\n\
-             Fix: cd services && bash scripts/setup-hermes.sh"
-        );
-    }
-
-    let hermes_env = services_dir.join(".hermes/.env");
-    if !hermes_env.exists() {
-        anyhow::bail!(
-            "services/.hermes/.env not found\n\
-             Fix: cd services && bash scripts/setup-hermes.sh"
-        );
-    }
-
-    let python = resolve_python(&services_dir);
-    let check = std::process::Command::new(&python)
-        .arg("-c")
-        .arg("import run_agent")
-        .current_dir(&services_dir)
-        .output();
-
-    match check {
-        Ok(out) if out.status.success() => {}
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            anyhow::bail!(
-                "Python cannot import 'run_agent' — hermes is not installed in the venv\n\
-                 Fix: cd services && bash scripts/setup-services.sh\n\
-                 Detail: {}",
-                stderr.trim()
-            );
-        }
-        Err(e) => {
-            anyhow::bail!(
-                "Cannot run Python binary '{}'\n\
-                 Fix: cd services && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt\n\
-                 Detail: {}",
-                python,
-                e
-            );
-        }
-    }
-
+    let port = cfg.mlx_server_port;
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{port}")
+        .parse()
+        .context("invalid MLX server address")?;
+    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(5)).with_context(
+        || {
+            format!(
+                "MLX server not running on port {port}\n\
+                 Fix: cd services && .venv313/bin/meridian-server --backend mlx --port {port}"
+            )
+        },
+    )?;
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// Serialization structs — sent to and received from the Python subprocess
+// Serialization structs — sent to and received from the MLX server
 // ---------------------------------------------------------------------------
 
-/// Payload sent to `python3 -m agents.run_task_linker` via stdin.
-/// Python fetches all session data, recent context, and PM tasks from the DB.
+/// Payload sent to `POST /classify_sessions`.
 #[derive(Serialize)]
 struct ClassifyInput {
     session_ids: Vec<i64>,
@@ -111,7 +100,7 @@ struct ClassifyInput {
     traceparent: Option<String>,
 }
 
-/// Top-level response read from Python stdout.
+/// Top-level response from the MLX server.
 #[derive(Deserialize)]
 struct ClassifyOutput {
     results: Vec<SessionClassification>,
@@ -125,14 +114,14 @@ fn default_routing() -> String {
     "pending".to_owned()
 }
 
-/// Per-session classification result returned by Python.
+/// Per-session classification result returned by the MLX server.
 #[derive(Deserialize)]
 pub(super) struct SessionClassification {
     pub(super) session_id: i64,
     pub(super) task_key: Option<String>,
     pub(super) confidence: f64,
-    /// Routing is computed by Rust, not Python. Python does not send this field;
-    /// the default "pending" is a placeholder until Rust routing logic is wired in.
+    /// Routing is computed by Rust, not the server. The default "pending" is a
+    /// placeholder until routing logic applies.
     #[serde(default = "default_routing")]
     pub(super) routing: String,
     /// LLM-determined session type: "task" | "overhead" | "untracked".
@@ -147,225 +136,64 @@ pub(super) struct SessionClassification {
 }
 
 // ---------------------------------------------------------------------------
-// Services directory discovery
+// MLX HTTP server helper
 // ---------------------------------------------------------------------------
 
-/// Locate the `services/` directory that contains `agents/run_task_linker.py`.
-/// Resolution order:
-///   1. `cfg.classification_services_dir` if set
-///   2. Relative to the running executable: `../../services`, `../../../services`
-///   3. `services/` in the current working directory
-pub(crate) fn find_services_dir(cfg: &Config) -> Option<std::path::PathBuf> {
-    if let Some(ref dir) = cfg.classification_services_dir {
-        let p = std::path::Path::new(dir);
-        if p.join("agents/run_task_linker.py").exists() {
-            return Some(p.to_path_buf());
-        }
-    }
-
-    if let Ok(exe) = std::env::current_exe() {
-        for ancestor_steps in &[2usize, 3] {
-            let mut candidate = exe.clone();
-            for _ in 0..*ancestor_steps {
-                candidate.pop();
-            }
-            candidate.push("services");
-            if candidate.join("agents/run_task_linker.py").exists() {
-                return Some(candidate);
-            }
-        }
-    }
-
-    if let Ok(cwd) = std::env::current_dir() {
-        let candidate = cwd.join("services");
-        if candidate.join("agents/run_task_linker.py").exists() {
-            return Some(candidate);
-        }
-    }
-
-    None
-}
-
-// ---------------------------------------------------------------------------
-// Python executable resolution
-// ---------------------------------------------------------------------------
-
-/// Pick the Python binary to use, in priority order:
-///   1. `MERIDIAN_PYTHON` env var — explicit override
-///   2. `{services_dir}/.venv/bin/python3` — venv created by `uv venv` / `python -m venv`
-///   3. `python3` — system fallback
-pub(crate) fn resolve_python(services_dir: &std::path::Path) -> String {
-    if let Ok(explicit) = std::env::var("MERIDIAN_PYTHON") {
-        if !explicit.is_empty() {
-            return explicit;
-        }
-    }
-    let venv_python = services_dir.join(".venv/bin/python3");
-    if venv_python.exists() {
-        return venv_python.to_string_lossy().into_owned();
-    }
-    "python3".to_string()
-}
-
-// ---------------------------------------------------------------------------
-// Shared subprocess helper
-// ---------------------------------------------------------------------------
-
-/// Spawn `python3 -m agents.run_task_linker`, pipe `input_json` to its stdin,
-/// wait up to `timeout_s` seconds, and return the parsed `ClassifyOutput`.
+/// POST `input` to the persistent MLX FastAPI server and return the parsed response.
 ///
-/// Returns `Ok(None)` for all recoverable failures (spawn error, non-zero exit,
-/// timeout, JSON parse error) so callers can handle them uniformly without
-/// treating them as hard errors.
-#[tracing::instrument(
-    skip(input_json, services_dir),
-    fields(
-        python = %python,
-        timeout_s,
-        exit_code = field::Empty,
-        stdout_bytes = field::Empty,
-        results_count = field::Empty,
-        outcome = field::Empty,
-    )
-)]
-async fn spawn_classify_subprocess(
-    python: &str,
-    services_dir: &std::path::Path,
-    input_json: &str,
+/// The server holds the model in memory — no cold load per call.
+/// On failure returns `Err` with a human-readable hint to start the server.
+async fn call_mlx_server(
+    input: &ClassifyInput,
+    port: u16,
     timeout_s: u64,
-) -> Result<Option<ClassifyOutput>> {
-    let span = tracing::Span::current();
-    let mut child = match Command::new(python)
-        .arg("-m")
-        .arg("agents.run_task_linker")
-        .current_dir(services_dir)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            span.record("outcome", "spawn_failed");
-            warn!(python = %python, error = %e, "could not spawn run_task_linker — is python installed and hermes set up?");
-            return Ok(None);
-        }
-    };
+) -> Result<ClassifyOutput> {
+    let url = format!("http://127.0.0.1:{port}/classify_sessions");
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(timeout_s))
+        .build()
+        .context("building http client")?;
 
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(input_json.as_bytes())
-            .await
-            .context("writing to run_task_linker stdin")?;
+    let resp = client
+        .post(&url)
+        .json(input)
+        .send()
+        .await
+        .with_context(|| {
+            format!(
+                "MLX server unreachable at {url} — start it with: \
+                 cd services && .venv313/bin/meridian-server --backend mlx --port {port}"
+            )
+        })?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("MLX server returned {status}: {body}");
     }
 
-    let stdout_task = {
-        use tokio::io::AsyncReadExt;
-        let mut out = child.stdout.take().expect("stdout was piped");
-        tokio::spawn(async move {
-            let mut buf = Vec::new();
-            let _ = out.read_to_end(&mut buf).await;
-            buf
-        })
-    };
-    let stderr_task = {
-        use tokio::io::AsyncReadExt;
-        let mut err = child.stderr.take().expect("stderr was piped");
-        tokio::spawn(async move {
-            let mut buf = Vec::new();
-            let _ = err.read_to_end(&mut buf).await;
-            buf
-        })
-    };
-
-    let timeout_dur = std::time::Duration::from_secs(timeout_s);
-    let status = match tokio::time::timeout(timeout_dur, child.wait()).await {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => {
-            span.record("outcome", "io_error");
-            warn!(error = %e, "run_task_linker subprocess IO error");
-            stdout_task.abort();
-            stderr_task.abort();
-            return Ok(None);
-        }
-        Err(_elapsed) => {
-            span.record("outcome", "timeout");
-            warn!(timeout_s, "run_task_linker subprocess timed out — killing");
-            let _ = child.kill().await;
-            stdout_task.abort();
-            stderr_task.abort();
-            return Ok(None);
-        }
-    };
-
-    let exit_code = status.code().unwrap_or(-1);
-    span.record("exit_code", exit_code);
-
-    let stdout_bytes = stdout_task.await.unwrap_or_default();
-    let stderr_bytes = stderr_task.await.unwrap_or_default();
-
-    span.record("stdout_bytes", stdout_bytes.len() as i64);
-
-    if !stderr_bytes.is_empty() {
-        debug!(stderr = %String::from_utf8_lossy(&stderr_bytes), "run_task_linker python stderr");
-    }
-
-    if !status.success() {
-        span.record("outcome", "nonzero_exit");
-        let stderr = String::from_utf8_lossy(&stderr_bytes);
-        warn!(
-            exit_code,
-            stderr = %stderr,
-            "run_task_linker exited with non-zero status"
-        );
-        return Ok(None);
-    }
-
-    // Hermes sometimes prints non-JSON warnings before the JSON payload.
-    // Find the first '{' and parse from there.
-    let json_slice = stdout_bytes
-        .iter()
-        .position(|&b| b == b'{')
-        .map(|i| &stdout_bytes[i..])
-        .unwrap_or(&stdout_bytes);
-
-    match serde_json::from_slice::<ClassifyOutput>(json_slice) {
-        Ok(v) => {
-            span.record("results_count", v.results.len() as i64);
-            span.record("outcome", "ok");
-            Ok(Some(v))
-        }
-        Err(e) => {
-            span.record("outcome", "json_error");
-            let raw = String::from_utf8_lossy(&stdout_bytes);
-            warn!(
-                error = %e,
-                stdout = %raw,
-                "run_task_linker stdout is not valid JSON — hermes may be printing to stdout; check observability setup"
-            );
-            Ok(None)
-        }
-    }
+    resp.json::<ClassifyOutput>()
+        .await
+        .context("parsing MLX server response")
 }
 
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// Run one hermes-based classification cycle:
+/// Run one classification cycle:
 ///   - trivial sessions (empty session_text) → `overhead/skip` without LLM
-///   - non-trivial batch → spawned `python3 -m agents.run_task_linker` subprocess
+///   - non-trivial → POST to the persistent MLX server
 ///
-/// When `etl_session_ids` is non-empty the task linker processes exactly those
-/// sessions (the ones just created by the current ETL run). When it is empty it
-/// falls back to the cursor-based fetch so any backlog from a previous tick is
-/// still drained.
+/// Returns a `TaskLinkOutcome` that tells the caller whether to loop immediately
+/// (more work), wait for the next ETL notification (caught up), or track a
+/// server failure for sentinel logic.
 #[tracing::instrument(
     skip_all,
     fields(
         run_id = field::Empty,
         cursor = field::Empty,
-        etl_sessions,
         trivial = field::Empty,
         classifiable = field::Empty,
         sessions = field::Empty,
@@ -373,15 +201,11 @@ async fn spawn_classify_subprocess(
         outcome = field::Empty,
     )
 )]
-pub async fn run_task_linking(
-    pool: &SqlitePool,
-    cfg: &Config,
-    etl_session_ids: Vec<i64>,
-) -> Result<()> {
+pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<TaskLinkOutcome> {
     if !cfg.classification_enabled {
         tracing::Span::current().record("outcome", "disabled");
         debug!("classification disabled — skipping");
-        return Ok(());
+        return Ok(TaskLinkOutcome::NoPendingWork);
     }
 
     let wall = Instant::now();
@@ -391,39 +215,32 @@ pub async fn run_task_linking(
 
     let cursor = get_agent_cursor(pool).await?;
     span.record("cursor", cursor);
-    span.record("etl_sessions", etl_session_ids.len() as i64);
 
-    let raw_sessions = if !etl_session_ids.is_empty() {
-        debug!(
-            session_ids = ?etl_session_ids,
-            "fetching ETL-sourced sessions for classification"
-        );
-        fetch_sessions_by_ids(pool, &etl_session_ids, cfg.min_classification_duration_s).await?
-    } else {
-        if cursor == 0 && !cfg.classification_backfill {
-            if let Some(max_id) = get_max_session_id(pool).await? {
-                span.record("outcome", "first_run");
-                info!(
-                    max_session_id = max_id,
-                    "first classification run — advancing cursor to skip historical sessions"
-                );
-                advance_agent_cursor(pool, max_id).await?;
-                complete_agent_run(pool, run_id, "success", 0, 0).await?;
-                return Ok(());
-            }
+    if cursor == 0 && !cfg.classification_backfill {
+        if let Some(max_id) = get_max_session_id(pool).await? {
+            span.record("outcome", "first_run");
+            info!(
+                max_session_id = max_id,
+                "first classification run — advancing cursor to skip historical sessions"
+            );
+            advance_agent_cursor(pool, max_id).await?;
+            complete_agent_run(pool, run_id, "success", 0, 0).await?;
+            return Ok(TaskLinkOutcome::NoPendingWork);
         }
-        debug!(
-            cursor,
-            "fetching unclassified sessions (cursor-based fallback)"
-        );
-        fetch_unclassified_sessions(pool, cursor, cfg.min_classification_duration_s).await?
-    };
+    }
+
+    debug!(
+        cursor,
+        "fetching unclassified sessions (cursor-based)"
+    );
+    let raw_sessions =
+        fetch_unclassified_sessions(pool, cursor, cfg.min_classification_duration_s).await?;
 
     if raw_sessions.is_empty() {
         span.record("outcome", "idle");
         debug!("no sessions pending classification — idle");
         complete_agent_run(pool, run_id, "success", 0, 0).await?;
-        return Ok(());
+        return Ok(TaskLinkOutcome::NoPendingWork);
     }
 
     info!(
@@ -483,53 +300,42 @@ pub async fn run_task_linking(
             "classification run complete (trivial only)"
         );
         complete_agent_run(pool, run_id, "success", trivial_count, trivial_count).await?;
-        return Ok(());
+        return Ok(TaskLinkOutcome::Classified);
     }
 
-    let services_dir = match find_services_dir(cfg) {
-        Some(d) => d,
-        None => {
-            span.record("outcome", "subprocess_failed");
-            warn!("could not locate services/agents/run_task_linker.py — skipping classification");
-            complete_agent_run(pool, run_id, "failed", trivial_count, trivial_count).await?;
-            return Ok(());
-        }
-    };
+    // BATCH_LIMIT is 1, so there is exactly one session in classifiable_ids.
+    let failing_session_id = classifiable_ids[0];
 
-    let batch_size = classifiable_ids.len();
     let input = ClassifyInput {
         session_ids: classifiable_ids,
         meridian_db: cfg.meridian_db.clone(),
         traceparent: crate::observability::current_traceparent(),
     };
-    let input_json = serde_json::to_string(&input).context("serializing ClassifyInput")?;
-
-    let python = resolve_python(&services_dir);
 
     info!(
-        services_dir = %services_dir.display(),
-        python = %python,
-        batch = batch_size,
+        port = cfg.mlx_server_port,
         session_ids = ?input.session_ids,
         timeout_s = cfg.classification_timeout_s,
-        "spawning run_task_linker subprocess"
+        "calling mlx server"
     );
 
-    let classify_output = match spawn_classify_subprocess(
-        &python,
-        &services_dir,
-        &input_json,
-        cfg.classification_timeout_s,
-    )
-    .await?
-    {
-        Some(v) => v,
-        None => {
-            span.record("outcome", "subprocess_failed");
-            complete_agent_run(pool, run_id, "failed", trivial_count, trivial_count).await?;
-            return Ok(());
-        }
-    };
+    let classify_output =
+        match call_mlx_server(&input, cfg.mlx_server_port, cfg.classification_timeout_s).await {
+            Ok(out) => out,
+            Err(e) => {
+                warn!(error = %e, "mlx server call failed");
+                span.record("outcome", "server_failed");
+                complete_agent_run(pool, run_id, "failed", trivial_count, trivial_count).await?;
+                let pending =
+                    count_pending_sessions(pool, cursor, cfg.min_classification_duration_s)
+                        .await
+                        .unwrap_or(-1);
+                return Ok(TaskLinkOutcome::SubprocessFailed {
+                    session_id: failing_session_id,
+                    pending,
+                });
+            }
+        };
 
     info!(
         results_count = classify_output.results.len(),
@@ -584,7 +390,7 @@ pub async fn run_task_linking(
     );
 
     complete_agent_run(pool, run_id, "success", total_sessions, links_written).await?;
-    Ok(())
+    Ok(TaskLinkOutcome::Classified)
 }
 
 // ---------------------------------------------------------------------------
@@ -638,7 +444,7 @@ pub async fn link_range(
             println!("  session {id}: overhead/skip (empty text — would write prefilter_trivial)");
         }
         for id in &classifiable_ids {
-            println!("  session {id}: would classify via hermes");
+            println!("  session {id}: would classify via mlx server");
         }
         return Ok((total, 0));
     }
@@ -652,38 +458,23 @@ pub async fn link_range(
         return Ok((total, linked));
     }
 
-    let services_dir = match find_services_dir(cfg) {
-        Some(d) => d,
-        None => {
-            warn!("could not locate services/agents/run_task_linker.py — skipping hermes classification");
-            return Ok((total, linked));
-        }
-    };
-
     let input = ClassifyInput {
         session_ids: classifiable_ids,
         meridian_db: cfg.meridian_db.clone(),
         traceparent: crate::observability::current_traceparent(),
     };
-    let input_json = serde_json::to_string(&input).context("serializing ClassifyInput")?;
-    let python = resolve_python(&services_dir);
 
-    let classify_output = match spawn_classify_subprocess(
-        &python,
-        &services_dir,
-        &input_json,
-        cfg.classification_timeout_s,
-    )
-    .await?
-    {
-        Some(v) => v,
-        None => return Ok((total, linked)),
-    };
-
-    for r in &classify_output.results {
-        update_session_task(pool, r).await?;
-        write_dimensions(pool, r.session_id, &r.dimensions).await?;
-        linked += 1;
+    match call_mlx_server(&input, cfg.mlx_server_port, cfg.classification_timeout_s).await {
+        Ok(classify_output) => {
+            for r in &classify_output.results {
+                update_session_task(pool, r).await?;
+                write_dimensions(pool, r.session_id, &r.dimensions).await?;
+                linked += 1;
+            }
+        }
+        Err(e) => {
+            warn!(error = %e, "mlx server call failed — skipping classification");
+        }
     }
 
     Ok((total, linked))

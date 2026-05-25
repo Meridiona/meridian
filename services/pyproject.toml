@@ -27,6 +27,9 @@ dependencies = [
 # Apple Silicon local inference — install with: pip install -e ".[local-llm]"
 local-llm = ["mlx-lm>=0.22,<1", "psutil>=5.9,<7"]
 
+[project.scripts]
+meridian-server = "agents.server:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["agents", "agents.*"]
@@ -35,5 +38,8 @@ include = ["agents", "agents.*"]
 testpaths = ["agents/tests"]
 markers = [
     "integration: marks tests requiring external services",
+    "slow: marks tests that load the MLX model (requires Apple Silicon)",
 ]
-addopts = "-m 'not integration'"
+# Default: skip integration + slow tests (no external services needed for CI).
+# Override with --override-ini="addopts=" when running evals manually.
+addopts = "-m 'not integration and not slow'"
