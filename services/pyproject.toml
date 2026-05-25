@@ -24,8 +24,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Apple Silicon local inference — install with: pip install -e ".[local-llm]"
-local-llm = ["mlx-lm>=0.22,<1", "psutil>=5.9,<7"]
+# Apple Silicon MLX inference server — install with: pip install -e ".[mlx]"
+# Installs the model runtime (mlx-lm + outlines) and the FastAPI server
+# (fastapi + uvicorn) that the Rust daemon calls via POST /classify_sessions.
+# Requires arm64 macOS; outlines 1.x is incompatible with Python 3.14+.
+mlx = [
+    "mlx-lm>=0.31,<1",
+    "outlines[mlxlm]>=1.3,<2",
+    "pydantic>=2.10,<3",
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+]
 
 [project.scripts]
 meridian-server = "agents.server:main"
