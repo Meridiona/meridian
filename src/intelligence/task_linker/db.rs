@@ -178,66 +178,6 @@ pub(super) async fn fetch_sessions_in_range(
     }
 }
 
-/// Fetch sessions with ids in the provided list that have not yet been classified
-/// and meet the minimum duration. Used by run_task_linking to process exactly the
-/// sessions created by the current ETL run.
-pub(super) async fn fetch_sessions_by_ids(
-    pool: &SqlitePool,
-    ids: &[i64],
-    min_duration_s: i64,
-) -> Result<
-    Vec<(
-        i64,
-        String,
-        i64,
-        String,
-        Option<String>,
-        String,
-        String,
-        Option<String>,
-        Option<f64>,
-        String,
-    )>,
-> {
-    if ids.is_empty() {
-        return Ok(vec![]);
-    }
-    let id_list = ids
-        .iter()
-        .map(|id| id.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    let sql = format!(
-        "SELECT id, app_name, duration_s, window_titles, session_text,
-                started_at, ended_at, category, confidence,
-                COALESCE(session_text_source, 'unknown')
-         FROM app_sessions
-         WHERE id IN ({id_list})
-           AND duration_s > ?
-           AND task_method IS NULL
-         ORDER BY id ASC"
-    );
-    sqlx::query_as::<
-        _,
-        (
-            i64,
-            String,
-            i64,
-            String,
-            Option<String>,
-            String,
-            String,
-            Option<String>,
-            Option<f64>,
-            String,
-        ),
-    >(&sql)
-    .bind(min_duration_s)
-    .fetch_all(pool)
-    .await
-    .context("fetching sessions by ids")
-}
-
 // ---------------------------------------------------------------------------
 // Tests — DB helpers; no subprocess
 // ---------------------------------------------------------------------------
