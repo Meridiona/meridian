@@ -21,8 +21,9 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>{{SCREENPIPE_BIN}}</string>
-        <string>record</string>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>exec {{SCREENPIPE_BIN}} record</string>
     </array>
 
     <key>EnvironmentVariables</key>
