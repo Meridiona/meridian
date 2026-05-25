@@ -38,6 +38,7 @@ _SERVICES_DIR = Path(__file__).parent.parent
 os.environ.setdefault("HERMES_HOME", str(_SERVICES_DIR / ".hermes"))
 
 from fastapi import FastAPI, HTTPException
+from opentelemetry import trace
 from pydantic import BaseModel
 
 from agents import observability
@@ -226,6 +227,7 @@ async def classify(req: ClassifyRequest) -> ClassifyResponse:
 class ClassifySessionsRequest(BaseModel):
     session_ids: list[int]
     meridian_db: str
+    traceparent: str | None = None  # W3C traceparent propagated from Rust caller
 
 
 @app.post("/classify_sessions")
@@ -249,29 +251,36 @@ async def classify_sessions(req: ClassifySessionsRequest) -> dict:
         raise HTTPException(status_code=503, detail="MLX model is still loading")
 
     fh = _get_classify_log()
+    tracer = _app_state.get("tracer") or trace.get_tracer("meridian-agent-server-mlx")
+    parent_ctx = observability.extract_parent_context(req.traceparent)
 
-    def _classify_all() -> list[dict]:
-        # Always use the server's own _DB_PATH — ignoring req.meridian_db avoids
-        # path-traversal: the server knows its DB from the environment.
-        con = _sqlite3.connect(str(_DB_PATH), check_same_thread=False)
-        con.row_factory = _sqlite3.Row
-        try:
-            results: list[dict] = []
-            for sid in req.session_ids:
-                result = m._classify_one_logged(sid, con, fh)
-                log.info(
-                    "classify_sessions: session_id=%d task_key=%s session_type=%s elapsed_s=%.2f",
-                    sid,
-                    result.get("task_key"),
-                    result.get("session_type"),
-                    result.get("elapsed_s", 0.0),
-                )
-                results.append(result)
-            return results
-        finally:
-            con.close()
+    with tracer.start_as_current_span("classify_sessions", context=parent_ctx) as span:
+        span.set_attribute("session_count", len(req.session_ids))
 
-    results = await run_in_threadpool(_classify_all)
+        def _classify_all() -> list[dict]:
+            # Always use the server's own _DB_PATH — ignoring req.meridian_db avoids
+            # path-traversal: the server knows its DB from the environment.
+            con = _sqlite3.connect(str(_DB_PATH), check_same_thread=False)
+            con.row_factory = _sqlite3.Row
+            try:
+                results: list[dict] = []
+                for sid in req.session_ids:
+                    result = m._classify_one_logged(sid, con, fh)
+                    log.info(
+                        "classify_sessions: session_id=%d task_key=%s session_type=%s elapsed_s=%.2f",
+                        sid,
+                        result.get("task_key"),
+                        result.get("session_type"),
+                        result.get("elapsed_s", 0.0),
+                    )
+                    results.append(result)
+                return results
+            finally:
+                con.close()
+
+        results = await run_in_threadpool(_classify_all)
+        span.set_attribute("classified_count", len(results))
+
     return {"results": results}
 
 
@@ -295,6 +304,7 @@ def main() -> None:
 
     _app_state["backend"] = args.backend
     tracer = observability.setup(f"meridian-agent-server-{args.backend}")
+    _app_state["tracer"] = tracer
 
     log.info("meridian agent server (%s) on http://%s:%d", args.backend, args.host, args.port)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
