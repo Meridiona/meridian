@@ -55,7 +55,7 @@
     <!-- Wait 5 s before restarting after a crash (avoids tight crash loops). -->
     <key>ThrottleInterval</key>
     <integer>5</integer>
-    <key>ProcessType</key>
-    <string>Background</string>
+    <!-- ProcessType omitted intentionally: Background restricts file access to ~/Documents
+         on macOS 15+ (sandbox blocks pyvenv.cfg reads). Standard QoS is correct here. -->
 </dict>
 </plist>

@@ -647,13 +647,17 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
             --port "${MLX_PORT}"
         ok "MLX server launchd agent installed"
 
-        info "Waiting for MLX server to be ready (model load can take up to 120s on first run)..."
+        info "Waiting for MLX server to be ready (first run downloads ~5GB model, allow 10 min)..."
         _mlx_ready=0
         if [[ "${DRY_RUN}" -eq 0 ]]; then
-            for _i in $(seq 1 120); do
+            for _i in $(seq 1 600); do
                 if curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; then
                     _mlx_ready=1
                     break
+                fi
+                # Print a dot every 10s so the user can see progress
+                if (( _i % 10 == 0 )); then
+                    printf "    [%3ds] still loading…\n" "${_i}"
                 fi
                 sleep 1
             done
@@ -663,7 +667,7 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
         if [[ "${_mlx_ready}" -eq 1 ]]; then
             ok "MLX server ready on port ${MLX_PORT}"
         else
-            warn "MLX server did not respond within 120s."
+            warn "MLX server did not respond within 600s."
             warn "Check logs: tail -f ~/.meridian/logs/mlx-server.log"
             warn "The Rust daemon will refuse to start until the MLX server is reachable."
         fi
