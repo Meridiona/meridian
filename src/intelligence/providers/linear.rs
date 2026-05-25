@@ -5,7 +5,10 @@ use sqlx::SqlitePool;
 
 use crate::config::LinearConfig;
 
-pub async fn refresh_if_stale(_pool: &SqlitePool, _linear: &LinearConfig) -> Result<Option<Vec<String>>> {
+pub async fn refresh_if_stale(
+    _pool: &SqlitePool,
+    _linear: &LinearConfig,
+) -> Result<Option<Vec<String>>> {
     // TODO: implement Linear connector
     Ok(None)
 }

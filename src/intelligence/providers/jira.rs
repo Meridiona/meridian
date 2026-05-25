@@ -212,7 +212,11 @@ async fn upsert(pool: &SqlitePool, issues: &[JiraIssue], jira: &JiraConfig) -> R
         .bind(&issue.fields.project.key)
         .bind(&url)
         .bind(parent_key)
-        .bind(if epic_title.is_empty() { None } else { Some(epic_title) })
+        .bind(if epic_title.is_empty() {
+            None
+        } else {
+            Some(epic_title)
+        })
         .bind(&issue.fields.updated)
         .execute(pool)
         .await
@@ -226,7 +230,11 @@ async fn upsert(pool: &SqlitePool, issues: &[JiraIssue], jira: &JiraConfig) -> R
 // ---------------------------------------------------------------------------
 
 async fn prune(pool: &SqlitePool, fetched_keys: &[String]) -> Result<usize> {
-    let placeholders = fetched_keys.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let placeholders = fetched_keys
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
 
     // Delete embeddings first — pm_task_embeddings.task_key FK references pm_tasks.
     let emb_sql = format!(
@@ -237,7 +245,9 @@ async fn prune(pool: &SqlitePool, fetched_keys: &[String]) -> Result<usize> {
     for key in fetched_keys {
         q = q.bind(key.as_str());
     }
-    q.execute(pool).await.context("pruning pm_task_embeddings")?;
+    q.execute(pool)
+        .await
+        .context("pruning pm_task_embeddings")?;
 
     let task_sql = format!(
         "DELETE FROM pm_tasks WHERE provider = 'jira' AND task_key NOT IN ({placeholders})"
@@ -276,7 +286,11 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
                 .await
                 .context("loading cached jira task keys")?;
         let keys: Vec<&str> = cached_keys.iter().map(|(k,)| k.as_str()).collect();
-        tracing::debug!(cached_task_count = keys.len(), ?keys, "jira task cache is fresh");
+        tracing::debug!(
+            cached_task_count = keys.len(),
+            ?keys,
+            "jira task cache is fresh"
+        );
         return Ok(None);
     }
 
@@ -384,7 +398,11 @@ mod tests {
     /// Runs the same SQL sequence that `prune()` executes, bound to `fetched_keys`.
     /// Returns the number of `pm_tasks` rows deleted.
     async fn run_prune_sql(pool: &SqlitePool, fetched_keys: &[&str]) -> usize {
-        let placeholders = fetched_keys.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders = fetched_keys
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
 
         let emb_sql = format!(
             "DELETE FROM pm_task_embeddings WHERE task_key IN \
@@ -458,7 +476,10 @@ mod tests {
 
         let deleted = run_prune_sql(&pool, &["KAN-10"]).await;
 
-        assert_eq!(deleted, 0, "prune must not delete a task that is in the fetched set");
+        assert_eq!(
+            deleted, 0,
+            "prune must not delete a task that is in the fetched set"
+        );
         assert_eq!(task_count(&pool, "KAN-10").await, 1, "KAN-10 must survive");
     }
 
@@ -484,7 +505,11 @@ mod tests {
 
         // pm_tasks row deleted
         assert_eq!(deleted, 1);
-        assert_eq!(task_count(&pool, "KAN-21").await, 0, "KAN-21 pm_task must be gone");
+        assert_eq!(
+            task_count(&pool, "KAN-21").await,
+            0,
+            "KAN-21 pm_task must be gone"
+        );
         // embedding row deleted first (no FK violation)
         assert_eq!(
             embedding_count(&pool, "KAN-21").await,
@@ -518,7 +543,11 @@ mod tests {
         }
 
         // Task must still be present — no prune was called.
-        assert_eq!(task_count(&pool, "KAN-30").await, 1, "task must survive when prune is not called for empty set");
+        assert_eq!(
+            task_count(&pool, "KAN-30").await,
+            1,
+            "task must survive when prune is not called for empty set"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -543,7 +572,11 @@ mod tests {
         assert_eq!(deleted, 1, "only the stale row should be deleted");
         assert_eq!(task_count(&pool, "KAN-40").await, 1, "KAN-40 must survive");
         assert_eq!(task_count(&pool, "KAN-41").await, 1, "KAN-41 must survive");
-        assert_eq!(task_count(&pool, "KAN-42").await, 0, "KAN-42 must be deleted");
+        assert_eq!(
+            task_count(&pool, "KAN-42").await,
+            0,
+            "KAN-42 must be deleted"
+        );
         assert_eq!(
             embedding_count(&pool, "KAN-42").await,
             0,
@@ -567,8 +600,16 @@ mod tests {
         let deleted = run_prune_sql(&pool, &["KAN-99"]).await;
 
         assert_eq!(deleted, 0, "no jira rows exist — nothing deleted");
-        assert_eq!(task_count(&pool, "GH-1").await, 1, "github task must survive");
-        assert_eq!(task_count(&pool, "LIN-1").await, 1, "linear task must survive");
+        assert_eq!(
+            task_count(&pool, "GH-1").await,
+            1,
+            "github task must survive"
+        );
+        assert_eq!(
+            task_count(&pool, "LIN-1").await,
+            1,
+            "linear task must survive"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -618,7 +659,10 @@ mod tests {
         let fetched_keys: Vec<String> = vec!["KAN-60".to_string()];
         let deleted = super::prune(&pool, &fetched_keys).await.unwrap();
 
-        assert_eq!(deleted, 2, "prune() must return the count of deleted pm_tasks rows");
+        assert_eq!(
+            deleted, 2,
+            "prune() must return the count of deleted pm_tasks rows"
+        );
         assert_eq!(task_count(&pool, "KAN-60").await, 1);
         assert_eq!(task_count(&pool, "KAN-61").await, 0);
         assert_eq!(task_count(&pool, "KAN-62").await, 0);
