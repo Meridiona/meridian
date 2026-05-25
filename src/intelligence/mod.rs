@@ -6,7 +6,10 @@ pub mod providers;
 pub mod session_categorizer;
 pub mod task_linker;
 
-pub use task_linker::{check_classification_ready, link_range, run_task_linking};
+pub use task_linker::{
+    check_classification_ready, link_range, mark_session_subprocess_error, run_task_linking,
+    TaskLinkOutcome,
+};
 
 use anyhow::Result;
 use sqlx::SqlitePool;
@@ -32,7 +35,6 @@ pub async fn run_fm_categorization(meridian: &SqlitePool, config: &Config) -> Re
 }
 
 /// Refreshes PM task caches from all configured providers.
-/// Session-to-task linking is handled exclusively by run_task_linking (hermes).
 #[tracing::instrument(skip_all)]
 pub async fn run_pm_sync(meridian: &SqlitePool, config: &Config) -> Result<()> {
     if config.pm_providers.is_empty() {

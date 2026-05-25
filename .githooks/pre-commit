@@ -13,7 +13,7 @@ STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(rs|ts|tsx
 if [ -n "$STAGED" ] && command -v claude &>/dev/null; then
   echo "Running security audit on staged files..."
   FINDINGS=$(claude --print "Security audit of staged changes in the Meridian project. Files: $STAGED. Check only: SQL injection, command injection, path traversal, hardcoded credentials, missing input validation at API boundaries, unsafe subprocess calls (shell=True, unvalidated exec paths). Report only HIGH and CRITICAL severity findings as a compact bulleted list with file:line. If none found, output exactly: NO_HIGH_FINDINGS" 2>/dev/null || echo "NO_HIGH_FINDINGS")
-  if [ "$FINDINGS" != "NO_HIGH_FINDINGS" ] && echo "$FINDINGS" | grep -qE "HIGH|CRITICAL"; then
+  if echo "$FINDINGS" | grep -qE '\*\*(HIGH|CRITICAL)'; then
     echo ""
     echo "Security audit findings:"
     echo "$FINDINGS"

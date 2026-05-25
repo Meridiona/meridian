@@ -5,6 +5,25 @@ use sqlx::SqlitePool;
 
 use super::BATCH_LIMIT;
 
+/// Count sessions that have not yet been classified and are above the cursor.
+/// Used for stuck-state visibility logging when the subprocess is failing.
+pub(super) async fn count_pending_sessions(
+    pool: &SqlitePool,
+    after_id: i64,
+    min_duration_s: i64,
+) -> Result<i64> {
+    let row: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM app_sessions
+         WHERE id > ? AND duration_s > ? AND task_method IS NULL",
+    )
+    .bind(after_id)
+    .bind(min_duration_s)
+    .fetch_one(pool)
+    .await
+    .context("counting pending unclassified sessions")?;
+    Ok(row.0)
+}
+
 /// Returns the max `id` in `app_sessions`, or `None` if the table is empty.
 pub(super) async fn get_max_session_id(pool: &SqlitePool) -> Result<Option<i64>> {
     let row = sqlx::query_as::<_, (Option<i64>,)>("SELECT MAX(id) FROM app_sessions")
