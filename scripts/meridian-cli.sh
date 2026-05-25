@@ -13,7 +13,8 @@ LABEL_SCREENPIPE="com.meridiona.screenpipe"
 LABEL_DAEMON="com.meridiona.daemon"
 LABEL_JIRA="com.meridiona.jira-updater"
 LABEL_UI="com.meridiona.ui"
-readonly LABELS=("${LABEL_SCREENPIPE}" "${LABEL_DAEMON}" "${LABEL_JIRA}" "${LABEL_UI}")
+LABEL_MLX="com.meridiona.mlx-server"
+readonly LABELS=("${LABEL_SCREENPIPE}" "${LABEL_DAEMON}" "${LABEL_JIRA}" "${LABEL_UI}" "${LABEL_MLX}")
 GUI_TARGET="gui/$(id -u)"
 LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
 LOG_DIR="${HOME}/.meridian/logs"
@@ -33,12 +34,12 @@ Usage:
   meridian <command> [options]
 
 Commands:
-  start              Start all daemons (screenpipe, daemon, jira-updater, ui)
-  stop               Stop all daemons
+  start              Start all daemons (screenpipe, daemon, jira-updater, ui, mlx-server)
+  stop               Stop all daemons (also kills orphaned mlx_lm.server processes)
   restart            Stop, wait 1s, start
   status             Show running state of all daemons
   logs [target]      Tail log files
-                     target: daemon|daemon-error|jira-updater|screenpipe|screenpipe-error|ui|ui-error
+                     target: daemon|daemon-error|jira-updater|screenpipe|screenpipe-error|ui|ui-error|mlx-server
     -f               Follow (stream)
     -n N             Last N lines (default 100)
   doctor             Run environment health checks
@@ -83,6 +84,12 @@ cmd_stop() {
         set -e
         info "stopped ${label}"
     done
+    # Kill any orphaned mlx_lm.server processes spawned by the old LLM selector
+    # script (not tracked by launchd — must be killed directly).
+    if pgrep -f "mlx_lm.server" >/dev/null 2>&1; then
+        pkill -f "mlx_lm.server" 2>/dev/null || true
+        info "killed orphaned mlx_lm.server process(es)"
+    fi
 }
 
 # --- restart ---
@@ -150,7 +157,8 @@ cmd_logs() {
         screenpipe-error)  log_file="${LOG_DIR}/screenpipe-error.log" ;;
         ui)                log_file="${LOG_DIR}/ui.log" ;;
         ui-error)          log_file="${LOG_DIR}/ui-error.log" ;;
-        *) err "unknown log target: ${target} (daemon|daemon-error|jira-updater|screenpipe|screenpipe-error|ui|ui-error)"; exit 1 ;;
+        mlx-server)        log_file="${LOG_DIR}/mlx-server.log" ;;
+        *) err "unknown log target: ${target} (daemon|daemon-error|jira-updater|screenpipe|screenpipe-error|ui|ui-error|mlx-server)"; exit 1 ;;
     esac
 
     if [[ ! -f "$log_file" ]]; then
@@ -322,8 +330,10 @@ cmd_uninstall() {
     set +e
     bash "${REPO_ROOT}/scripts/uninstall-ui-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/services/scripts/uninstall-jira-updater-daemon.sh" 2>/dev/null
+    bash "${REPO_ROOT}/services/scripts/uninstall-mlx-server-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/scripts/uninstall-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/scripts/uninstall-screenpipe-daemon.sh" 2>/dev/null
+    pkill -f "mlx_lm.server" 2>/dev/null || true
     rm -f /usr/local/bin/meridian /usr/local/bin/meridian-daemon \
           "${HOME}/.local/bin/meridian" "${HOME}/.local/bin/meridian-daemon"
     set -e
