@@ -11,7 +11,7 @@ use crate::db::meridian::{
 use crate::db::screenpipe::{count_frames_in_window, get_frames_since};
 
 use super::block_ops::{close_block, timestamp_gap_secs, upsert_open_block, BlockBounds};
-use super::session_builder::{is_browser, url_domain};
+use super::session_builder::{is_browser, is_vscode_like, url_domain, vscode_project};
 
 const BATCH_SIZE: i64 = 100;
 const GAP_THRESHOLD_SECS: i64 = 300;
@@ -228,10 +228,17 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                     }
                 }
 
-                // For browsers, a window/domain change triggers a session split.
+                // For browsers, a domain change triggers a session split.
                 let browser_window_changed = is_browser(app)
                     && !window.is_empty()
                     && current_window.as_deref() != Some(window);
+
+                // For VS Code-like editors, a project/repo change triggers a split.
+                // File-to-file switches within the same project stay in one session;
+                // switching from e.g. "build.rs — screenpipe" to "Terminal - meridian"
+                // starts a new session because the repo changed.
+                let vscode_project_changed = is_vscode_like(app)
+                    && vscode_project(window) != current_window.as_deref().and_then(vscode_project);
 
                 match current_app.as_deref() {
                     None => {
@@ -247,7 +254,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                         block_last_frame_id = frame.id;
                     }
 
-                    Some(cur) if cur == app && !browser_window_changed => {
+                    Some(cur) if cur == app && !browser_window_changed && !vscode_project_changed => {
                         block_frame_count += 1;
                         if frame.capture_trigger.as_deref() == Some("idle") {
                             block_idle_frame_count += 1;
@@ -262,6 +269,14 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<(
                             debug!(
                                 app, old_window = current_window.as_deref(), new_window = window,
                                 frame_id = frame.id, "browser window changed — closing block"
+                            );
+                        } else if vscode_project_changed {
+                            debug!(
+                                app,
+                                old_project = current_window.as_deref().and_then(vscode_project),
+                                new_project = vscode_project(window),
+                                frame_id = frame.id,
+                                "VS Code project changed — closing block"
                             );
                         } else {
                             debug!(old_app = old_app, new_app = app, frame_id = frame.id, "app changed — closing block");

@@ -67,7 +67,9 @@ bash scripts/uninstall-mlx-server-daemon.sh
 ### Run manually (development)
 
 ```bash
+RUST_LOG=meridian=debug CLASSIFIER_BACKEND=mlx cargo run --bin meridian
 .venv313/bin/meridian-server --backend mlx --port 7823
+python -m agents.server --backend mlx --port 7823
 ```
 
 The model (`Qwen3.5-9B-OptiQ-4bit`) is downloaded from Hugging Face on first run (~4 GB). Subsequent starts load from local cache in ~5 s.
