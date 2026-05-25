@@ -97,12 +97,18 @@ async fn main() -> Result<()> {
     // 7b. Notify used to wake the task linker immediately after ETL writes new sessions.
     //     ETL calls notify_one(); the linker waits on notified() instead of polling.
     let etl_notify: Arc<Notify> = Arc::new(Notify::new());
+    // Shared slot: main task writes the current tick span before notify_one() so the
+    // linker task can parent its run_task_linking spans under the triggering tick.
+    let etl_tick_span: Arc<std::sync::Mutex<Option<tracing::Span>>> =
+        Arc::new(std::sync::Mutex::new(None));
 
     // 7c. Run ETL once immediately before entering the loop.
     //     Re-read config so that any settings.json present at startup takes effect.
     {
         let cfg = Config::from_env();
         let startup_tick = tracing::info_span!("startup_tick");
+        // Clone before any awaits — linker task reads this to parent its spans.
+        *etl_tick_span.lock().unwrap() = Some(startup_tick.clone());
         let _guard = startup_tick.enter();
         tracing::info!("running initial ETL pass");
         if let Err(e) = run_etl(&screenpipe, &meridian).await {
@@ -128,6 +134,7 @@ async fn main() -> Result<()> {
     //                              cursor advances, drain continues
     let meridian_linker = meridian.clone();
     let notify_linker = etl_notify.clone();
+    let tick_span_linker = etl_tick_span.clone();
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
     tokio::spawn(async move {
         // Tracks consecutive subprocess failures per session_id.
@@ -137,16 +144,27 @@ async fn main() -> Result<()> {
         let mut failure_counts: HashMap<i64, u32> = HashMap::new();
 
         loop {
-            tokio::select! {
+            // Take the tick span written by the main task so run_task_linking spans
+            // appear as children of the triggering poll_tick / startup_tick.
+            let parent_span: tracing::Span = tokio::select! {
                 _ = shutdown_rx.changed() => break,
-                _ = notify_linker.notified() => {}
-                _ = tokio::time::sleep(Duration::from_secs(300)) => {}
-            }
+                _ = notify_linker.notified() => {
+                    tick_span_linker.lock().unwrap().take()
+                        .unwrap_or_else(tracing::Span::none)
+                }
+                _ = tokio::time::sleep(Duration::from_secs(300)) => tracing::Span::none(),
+            };
 
             // Drain: classify oldest-first until nothing is left or a failure stops us.
             loop {
                 let cfg = Config::from_env();
-                match run_task_linking(&meridian_linker, &cfg).await {
+                // Enter parent synchronously so #[tracing::instrument] on
+                // run_task_linking captures it as the parent span at the call site.
+                let fut = {
+                    let _g = parent_span.enter();
+                    run_task_linking(&meridian_linker, &cfg)
+                };
+                match fut.await {
                     Ok(TaskLinkOutcome::Classified) => {
                         failure_counts.clear();
                         // Loop immediately — more sessions may be waiting.
@@ -221,6 +239,7 @@ async fn main() -> Result<()> {
                     "poll_tick",
                     poll_interval_secs = cfg.runtime.poll_interval_secs
                 );
+                *etl_tick_span.lock().unwrap() = Some(poll_tick.clone());
                 let _guard = poll_tick.enter();
                 tracing::debug!("starting ETL tick");
                 if let Err(e) = run_etl(&screenpipe, &meridian).await {
