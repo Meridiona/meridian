@@ -74,13 +74,12 @@ if ! plutil -lint "${PLIST_DEST}" >/dev/null; then
     exit 1
 fi
 
-# Bootout if previously loaded (idempotent — ignore if not loaded).
-if launchctl print "${GUI_TARGET}/${LABEL}" >/dev/null 2>&1; then
-    echo "→ bootout existing ${LABEL}"
-    launchctl bootout "${GUI_TARGET}" "${PLIST_DEST}" || true
-fi
+echo "→ bootout ${LABEL} (if loaded)"
+launchctl bootout "${GUI_TARGET}/${LABEL}" 2>/dev/null || true
+sleep 1
 
 echo "→ bootstrap ${LABEL}"
+launchctl enable "${GUI_TARGET}/${LABEL}" 2>/dev/null || true
 launchctl bootstrap "${GUI_TARGET}" "${PLIST_DEST}"
 launchctl enable "${GUI_TARGET}/${LABEL}"
 launchctl kickstart -k "${GUI_TARGET}/${LABEL}"
