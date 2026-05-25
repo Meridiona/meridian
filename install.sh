@@ -647,30 +647,40 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
             --port "${MLX_PORT}"
         ok "MLX server launchd agent installed"
 
-        # Wait up to 60s — enough for a cached model load (~10s on Apple Silicon).
-        # On first run the model download takes many minutes; we don't block the
-        # install for that. launchd KeepAlive will restart the Rust daemon
-        # automatically once the MLX server eventually comes up.
-        info "Checking MLX server (model load ~10s cached, first-run download may take longer)..."
-        _mlx_ready=0
         if [[ "${DRY_RUN}" -eq 0 ]]; then
-            for _i in $(seq 1 60); do
-                if curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; then
-                    _mlx_ready=1
-                    break
-                fi
-                sleep 1
-            done
-        else
-            _mlx_ready=1  # dry-run: assume ready
-        fi
-        if [[ "${_mlx_ready}" -eq 1 ]]; then
-            ok "MLX server ready on port ${MLX_PORT}"
-        else
-            warn "MLX server not yet responding — model is likely downloading in the background (~6.6 GB)."
-            echo "    The Rust daemon will auto-start via launchd once the model is ready."
-            echo "    Monitor progress:  tail -f ~/.meridian/logs/mlx-server.log"
-            echo "    Check when ready:  until curl -sf http://127.0.0.1:${MLX_PORT}/health; do sleep 5; done"
+            _model_cache="${HOME}/.cache/huggingface/hub/models--mlx-community--Qwen3.5-9B-OptiQ-4bit/snapshots"
+            if [[ -d "${_model_cache}" && -n "$(ls -A "${_model_cache}" 2>/dev/null)" ]]; then
+                # Model is cached — should be ready within ~60s
+                info "MLX server starting (model cached, loading into Metal)..."
+                for _i in $(seq 1 60); do
+                    if curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; then
+                        ok "MLX server ready on port ${MLX_PORT}"
+                        break
+                    fi
+                    sleep 1
+                    if [[ "${_i}" -eq 60 ]]; then
+                        warn "MLX server did not start within 60s — check: tail -f ~/.meridian/logs/mlx-server.log"
+                    fi
+                done
+            else
+                # First run — model needs to download (~6.6 GB). Stream the log so
+                # the user can see the HuggingFace download progress bars.
+                echo
+                info "First run: downloading MLX model (~6.6 GB). Streaming server log below."
+                info "This takes a few minutes on a fast connection. Do not interrupt."
+                echo "  ─────────────────────────────────────────────────────────────"
+                # Ensure log file exists before tailing
+                mkdir -p "${HOME}/.meridian/logs"
+                : >> "${HOME}/.meridian/logs/mlx-server.log"
+                tail -n 0 -f "${HOME}/.meridian/logs/mlx-server.log" &
+                _tail_pid=$!
+                until curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; do
+                    sleep 3
+                done
+                kill "${_tail_pid}" 2>/dev/null || true
+                echo "  ─────────────────────────────────────────────────────────────"
+                ok "MLX server ready on port ${MLX_PORT} — model downloaded and loaded"
+            fi
         fi
     fi
 
