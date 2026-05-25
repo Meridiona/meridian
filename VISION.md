@@ -4,17 +4,17 @@
 
 ## What Meridian is
 
-The structured activity layer between raw screen recordings and AI reasoning.
+The developer efficiency layer between raw screen activity and the tools developers already use.
 
-Screenpipe captures everything — OCR frames, audio transcriptions, accessibility tree events — at high fidelity, 24/7. That data is rich but raw: a flat stream of frames with no concept of what you were doing, when a task started, or how long you focused. Meridian is the refinery. It reads that stream, detects app-switch boundaries, extracts context from each block, and writes clean session records that AI can actually reason over.
+Screenpipe captures everything — OCR frames, audio transcriptions, accessibility tree events — at high fidelity, 24/7, with no data leaving the machine. That data is rich but raw: a flat stream of frames with no concept of what you were doing, which ticket you were working on, or how long you focused. Meridian is the refinery and the bridge. It reads that stream, detects app-switch boundaries, classifies each session into the task it belongs to, and automatically updates the developer's project management tools — Jira, GitHub Issues, Linear — without them ever having to context-switch.
 
-Not an analytics tool. Not a time tracker you fill out. An automated normalization layer that runs in the background and asks nothing of you.
+Not an analytics tool. Not a time tracker you fill out. An ambient automation layer that watches what you build and keeps your project management in sync, all locally, all silently.
 
 ## Why we exist
 
-Raw frames are not queryable intent. An AI agent looking at screenpipe's frame table sees noise — thousands of rows with no session structure, no duration, no concept of "I worked on this for 40 minutes." Before any AI can answer "what did I work on today?", someone has to do the ETL.
+Developers lose hours every week on project management overhead: updating ticket status, logging time, writing standup notes, moving cards. The information needed to do all of this already exists on their screen — in the code they're writing, the PRs they're reviewing, the terminals they're running. Meridian captures that context, structures it, and pushes it to the right place automatically.
 
-Meridian does that ETL. Zero config, zero prompts, zero UI interaction required. It runs alongside screenpipe, consumes minimal resources, and produces a clean SQLite database that any tool — query, dashboard, AI agent — can read immediately.
+Zero config, zero prompts, zero UI interaction required. It runs alongside screenpipe, consumes minimal resources, and produces both a clean local SQLite database and live updates to external project management systems.
 
 ## Where this goes
 
@@ -24,9 +24,11 @@ Meridian does that ETL. Zero config, zero prompts, zero UI interaction required.
 
 3. **Done: Activity categorization.** AI-assigned categories (`coding`, `meeting`, `research`, `communication`, `design`, `documentation`, `planning`, `deployment_devops`, `idle_personal`) with confidence scores. Category-aware UI: timeline coloring, session badges, daily breakdown chart.
 
-4. **Next: Ticket and project linking.** Match sessions to Jira tickets using OCR text, window titles, and URLs. `ticket_links` table already exists — needs a matcher that extracts ticket keys (e.g. `ENG-123`) and links them to session IDs.
+4. **Now: Task classification and PM sync.** Classify each session into the specific task or ticket it belongs to — using OCR text, window titles, URLs, git branch names, and terminal context. Aggregate task-linked sessions and automatically update the corresponding ticket on Jira, GitHub Issues, Linear, or any connected PM tool. The developer never touches a ticket; the work updates it.
 
-5. **Later: Productivity intelligence.** Focus quality scoring (coding vs meeting ratio, context-switch frequency), cross-day patterns, anomaly detection. The categorized session data is the substrate.
+5. **Next: Cross-session task aggregation.** A single task spans many sessions across many hours or days. Build the aggregation layer: sum time, collect evidence (PRs opened, files changed, terminals run), and produce a rich activity log per task that feeds into status updates, standup summaries, and sprint reviews.
+
+6. **Later: Productivity intelligence.** Focus quality scoring (coding vs meeting ratio, context-switch frequency), cross-day patterns, anomaly detection. The task-linked session data is the substrate for understanding how developers actually spend their time vs how they planned to.
 
 ## Product principles
 
