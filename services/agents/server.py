@@ -37,6 +37,7 @@ from typing import Any, AsyncIterator
 _SERVICES_DIR = Path(__file__).parent.parent
 os.environ.setdefault("HERMES_HOME", str(_SERVICES_DIR / ".hermes"))
 
+import opentelemetry.context as _otel_context
 from fastapi import FastAPI, HTTPException
 from opentelemetry import trace
 from pydantic import BaseModel
@@ -257,26 +258,42 @@ async def classify_sessions(req: ClassifySessionsRequest) -> dict:
     with tracer.start_as_current_span("classify_sessions", context=parent_ctx) as span:
         span.set_attribute("session_count", len(req.session_ids))
 
+        # Snapshot the OTel context while classify_sessions span is active so we
+        # can attach it explicitly inside the threadpool (anyio copies contextvars,
+        # but explicit attach is more reliable across anyio versions).
+        ctx_snapshot = _otel_context.get_current()
+
         def _classify_all() -> list[dict]:
-            # Always use the server's own _DB_PATH — ignoring req.meridian_db avoids
-            # path-traversal: the server knows its DB from the environment.
-            con = _sqlite3.connect(str(_DB_PATH), check_same_thread=False)
-            con.row_factory = _sqlite3.Row
+            # Attach classify_sessions context so _classify_one sub-spans
+            # (db_fetch, build_prompt, llm_inference, parse_response) appear
+            # as children of classify_sessions in the OO trace waterfall.
+            _tok = _otel_context.attach(ctx_snapshot)
             try:
-                results: list[dict] = []
-                for sid in req.session_ids:
-                    result = m._classify_one_logged(sid, con, fh)
-                    log.info(
-                        "classify_sessions: session_id=%d task_key=%s session_type=%s elapsed_s=%.2f",
-                        sid,
-                        result.get("task_key"),
-                        result.get("session_type"),
-                        result.get("elapsed_s", 0.0),
-                    )
-                    results.append(result)
-                return results
+                # Always use the server's own _DB_PATH — ignoring req.meridian_db avoids
+                # path-traversal: the server knows its DB from the environment.
+                con = _sqlite3.connect(str(_DB_PATH), check_same_thread=False)
+                con.row_factory = _sqlite3.Row
+                try:
+                    results: list[dict] = []
+                    for sid in req.session_ids:
+                        with tracer.start_as_current_span(
+                            "classify_session",
+                            attributes={"session_id": sid},
+                        ):
+                            result = m._classify_one_logged(sid, con, fh)
+                        log.info(
+                            "classify_sessions: session_id=%d task_key=%s session_type=%s elapsed_s=%.2f",
+                            sid,
+                            result.get("task_key"),
+                            result.get("session_type"),
+                            result.get("elapsed_s", 0.0),
+                        )
+                        results.append(result)
+                    return results
+                finally:
+                    con.close()
             finally:
-                con.close()
+                _otel_context.detach(_tok)
 
         results = await run_in_threadpool(_classify_all)
         span.set_attribute("classified_count", len(results))

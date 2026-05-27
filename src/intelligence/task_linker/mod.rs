@@ -229,10 +229,7 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<TaskLin
         }
     }
 
-    debug!(
-        cursor,
-        "fetching unclassified sessions (cursor-based)"
-    );
+    debug!(cursor, "fetching unclassified sessions (cursor-based)");
     let raw_sessions =
         fetch_unclassified_sessions(pool, cursor, cfg.min_classification_duration_s).await?;
 

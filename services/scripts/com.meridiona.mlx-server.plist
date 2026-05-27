@@ -23,9 +23,15 @@
     <key>WorkingDirectory</key>
     <string>{{REPO_ROOT}}/services</string>
 
+    <!-- Use the base Python binary directly (not the venv wrapper script) so
+         Python never reads pyvenv.cfg — which triggers EPERM from launchd on
+         macOS 15 even at Standard ProcessType.  PYTHONPATH gives the venv's
+         site-packages without triggering venv-detection. -->
     <key>ProgramArguments</key>
     <array>
-        <string>{{REPO_ROOT}}/services/.venv/bin/meridian-server</string>
+        <string>{{BASE_PYTHON}}</string>
+        <string>-m</string>
+        <string>agents.server</string>
         <string>--backend</string>
         <string>mlx</string>
         <string>--port</string>
@@ -38,8 +44,14 @@
         <string>{{HOME}}/.meridian/meridian.db</string>
         <key>PYTHONUNBUFFERED</key>
         <string>1</string>
+        <key>PYTHONPATH</key>
+        <string>{{SITE_PACKAGES}}</string>
         <key>MLX_SERVER_PORT</key>
         <string>{{MLX_SERVER_PORT}}</string>
+        <key>MERIDIAN_OO_AUTH</key>
+        <string>{{MERIDIAN_OO_AUTH}}</string>
+        <key>MERIDIAN_OTLP_ENDPOINT</key>
+        <string>{{MERIDIAN_OTLP_ENDPOINT}}</string>
     </dict>
 
     <key>StandardOutPath</key>
@@ -55,7 +67,6 @@
     <!-- Wait 5 s before restarting after a crash (avoids tight crash loops). -->
     <key>ThrottleInterval</key>
     <integer>5</integer>
-    <!-- ProcessType omitted intentionally: Background restricts file access to ~/Documents
-         on macOS 15+ (sandbox blocks pyvenv.cfg reads). Standard QoS is correct here. -->
+    <!-- ProcessType omitted — defaults to Standard QoS. -->
 </dict>
 </plist>
