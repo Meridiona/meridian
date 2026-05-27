@@ -49,7 +49,7 @@ POLL_INTERVAL = float(os.environ.get("AX_SIDECAR_INTERVAL", "3"))
 # considered "active" and will be re-checked. Anything older is ignored.
 MAX_AGE_SECS = float(os.environ.get("AX_SIDECAR_MAX_AGE", "30"))
 
-DEVICE_NAME = "claude-session"
+DEVICE_NAME = "ax-sidecar"
 CAPTURE_TRIGGER = "claude_session"
 APP_NAME = "Code"
 
@@ -99,9 +99,15 @@ def _format_content(content) -> str:
     return "\n".join(p for p in parts if p)
 
 
-def _parse_session(jsonl_path: Path) -> str:
-    """Parse a Claude Code session JSONL into a `[role] text` transcript."""
+def _parse_session(jsonl_path: Path) -> Tuple[str, str]:
+    """Parse a Claude Code session JSONL.
+
+    Returns (transcript, title) where transcript is `[role] text` joined with
+    blank lines, and title is the most recent `customTitle` seen in the file
+    (empty if none — caller falls back to the short UUID).
+    """
     lines: List[str] = []
+    title = ""
     try:
         with jsonl_path.open("rb") as fh:
             for raw in fh:
@@ -110,6 +116,11 @@ def _parse_session(jsonl_path: Path) -> str:
                 except Exception:
                     continue
                 rec_type = d.get("type")
+                if rec_type == "custom-title":
+                    ct = d.get("customTitle")
+                    if ct:
+                        title = ct
+                    continue
                 if rec_type not in ("user", "assistant"):
                     continue
                 msg = d.get("message") or {}
@@ -118,8 +129,8 @@ def _parse_session(jsonl_path: Path) -> str:
                 if content_str.strip():
                     lines.append(f"[{role}] {content_str}")
     except FileNotFoundError:
-        return ""
-    return "\n\n".join(lines)
+        return "", ""
+    return "\n\n".join(lines), title
 
 
 def _scan_active_sessions(max_age: float) -> Iterable[Tuple[Path, Path]]:
@@ -138,13 +149,35 @@ def _scan_active_sessions(max_age: float) -> Iterable[Tuple[Path, Path]]:
                 continue
 
 
-def _window_name(project_dir: Path) -> str:
-    """Render the window_name shown in screenpipe rows."""
-    name = project_dir.name  # e.g. "-Users-akarshhegde-Documents-Meridiona-meridian"
-    # Truncate long paths for the screenpipe column (UI shows ~50 chars).
-    if len(name) > 60:
-        name = name[:60]
-    return f"Claude Code — {name}"
+def _project_label(project_dir: Path) -> str:
+    """Best-effort human label for the project dir.
+
+    Claude Code encodes the working directory by replacing `/` with `-`, so
+    `/Users/akarshhegde/Documents/Meridiona/meridian` becomes
+    `-Users-akarshhegde-Documents-Meridiona-meridian`. We take the trailing
+    segment as the label — ambiguous if the real directory contains hyphens,
+    but readable for the common case.
+    """
+    segments = [s for s in project_dir.name.split("-") if s]
+    return segments[-1] if segments else project_dir.name
+
+
+def _window_name(project_dir: Path, jsonl_path: Path, title: str) -> str:
+    """Render a screenpipe window_name that distinguishes Claude windows.
+
+    Format: `Claude Code — <project> — <title-or-uuid> [<short-uuid>]`. The
+    short UUID always appears so rows from different concurrent sessions
+    with identical titles (e.g. a fresh session before its first custom title)
+    are still distinguishable.
+    """
+    short_uuid = jsonl_path.stem[:8]
+    label = (title or short_uuid).strip()
+    if len(label) > 60:
+        label = label[:60] + "…"
+    project = _project_label(project_dir)
+    if title:
+        return f"Claude Code — {project} — {label} [{short_uuid}]"
+    return f"Claude Code — {project} — {short_uuid}"
 
 
 def _insert_frame(text: str, window_name: str, hash_val: int) -> None:
@@ -191,20 +224,17 @@ def main() -> None:
     while True:
         try:
             for proj, jsonl in _scan_active_sessions(MAX_AGE_SECS):
-                text = _parse_session(jsonl)
+                text, title = _parse_session(jsonl)
                 if not text:
                     continue
                 h = _content_hash(text)
                 key = str(jsonl)
                 if last_hash.get(key) == h:
                     continue
-                _insert_frame(text, _window_name(proj), h)
+                window = _window_name(proj, jsonl, title)
+                _insert_frame(text, window, h)
                 last_hash[key] = h
-                log.info(
-                    "inserted %d chars — %s",
-                    len(text),
-                    jsonl.stem[:8],
-                )
+                log.info("inserted %d chars — %s", len(text), window)
         except Exception as exc:
             log.error("error: %s", exc)
 
