@@ -20,7 +20,9 @@ Frames are tagged:
   device_name      = 'ax-sidecar'
   text_source      = 'accessibility'
   capture_trigger  = 'claude_session' or 'codex_session'
-  app_name         = 'Code' (Claude) or 'Codex' (Codex)
+  app_name         = resolved from the most-recent non-sidecar screenpipe
+                     frame (the terminal/IDE actually hosting the agent —
+                     e.g. 'Code', 'Terminal', 'iTerm2', 'Ghostty')
 
 Usage:
   python -m services.ax_sidecar            # run in foreground
@@ -63,6 +65,15 @@ MAX_AGE_SECS = float(os.environ.get("AX_SIDECAR_MAX_AGE", "30"))
 
 DEVICE_NAME = "ax-sidecar"
 
+# Window (in seconds) the host-app resolver looks back over for the most
+# recent screenpipe frame whose app_name isn't ours. Wide enough to survive
+# a few skipped screenpipe ticks, narrow enough not to inherit a stale app.
+HOST_APP_LOOKBACK_SECS = float(os.environ.get("AX_SIDECAR_HOST_APP_LOOKBACK", "15"))
+
+# Used when no recent screenpipe frame is available (e.g. screenpipe stopped
+# or the user has been idle longer than HOST_APP_LOOKBACK_SECS).
+FALLBACK_APP_NAME = "unknown"
+
 # ---------------------------------------------------------------------------
 # Common helpers
 # ---------------------------------------------------------------------------
@@ -88,6 +99,38 @@ def _iter_jsonl(path: Path) -> Iterator[dict]:
                     continue
     except FileNotFoundError:
         return
+
+
+def _resolve_host_app_name(lookback_secs: float = HOST_APP_LOOKBACK_SECS) -> str:
+    """Return the app_name of the most-recent non-sidecar screenpipe frame.
+
+    Agent transcripts don't carry their own app identity — they describe the
+    conversation, not where the terminal is hosted. Pulling app_name from
+    whatever screenpipe just captured pins each transcript row to the real
+    host app (`Code`, `Terminal`, `iTerm2`, `Ghostty`, etc.) so the ETL can
+    group it with the user's actual app session instead of inventing a new one.
+    """
+    try:
+        conn = sqlite3.connect(str(SCREENPIPE_DB), timeout=5, isolation_level=None)
+        conn.execute("PRAGMA busy_timeout=5000")
+        cutoff = f"-{int(lookback_secs)} seconds"
+        row = conn.execute(
+            """
+            SELECT app_name FROM frames
+            WHERE device_name != ?
+              AND app_name IS NOT NULL
+              AND app_name != ''
+              AND timestamp > datetime('now', ?)
+            ORDER BY timestamp DESC LIMIT 1
+            """,
+            (DEVICE_NAME, cutoff),
+        ).fetchone()
+        conn.close()
+        if row and row[0]:
+            return row[0]
+    except Exception as exc:
+        log.warning("host app lookup failed: %s", exc)
+    return FALLBACK_APP_NAME
 
 
 def _insert_frame(
@@ -308,9 +351,9 @@ def _codex_records(max_age: float) -> Iterator[Tuple[str, str, str]]:
 # ---------------------------------------------------------------------------
 
 SOURCES = [
-    # (name, records_fn, app_name, capture_trigger)
-    ("claude", _claude_records, "Code", "claude_session"),
-    ("codex", _codex_records, "Codex", "codex_session"),
+    # (name, records_fn, capture_trigger)
+    ("claude", _claude_records, "claude_session"),
+    ("codex", _codex_records, "codex_session"),
 ]
 
 
@@ -341,15 +384,21 @@ def main() -> None:
     last_hash: Dict[str, int] = {}
 
     while True:
-        for _name, records_fn, app_name, trigger in SOURCES:
+        for _name, records_fn, trigger in SOURCES:
             try:
                 for key, window, text in records_fn(MAX_AGE_SECS):
                     h = _content_hash(text)
                     if last_hash.get(key) == h:
                         continue
+                    app_name = _resolve_host_app_name()
                     _insert_frame(text, window, h, app_name, trigger)
                     last_hash[key] = h
-                    log.info("inserted %d chars — %s", len(text), window)
+                    log.info(
+                        "inserted %d chars — app=%s — %s",
+                        len(text),
+                        app_name,
+                        window,
+                    )
             except Exception as exc:
                 log.error("%s source error: %s", _name, exc)
 
