@@ -75,6 +75,29 @@ HOST_APP_LOOKBACK_SECS = float(os.environ.get("AX_SIDECAR_HOST_APP_LOOKBACK", "1
 FALLBACK_APP_NAME = "unknown"
 
 # ---------------------------------------------------------------------------
+# Error log dedup — persistent failures (missing DB, locked sqlite, missing
+# source dirs) repeat every 3s; logging them once until the situation changes
+# keeps the log readable without losing signal.
+# ---------------------------------------------------------------------------
+
+_last_log: Dict[str, str] = {}
+
+
+def _log_state(level: int, key: str, msg: str, *args) -> None:
+    """Log `msg` only when it differs from the last message logged under `key`."""
+    text = msg % args if args else msg
+    if _last_log.get(key) == text:
+        return
+    _last_log[key] = text
+    log.log(level, text)
+
+
+def _clear_state(key: str) -> None:
+    """Reset dedup so the next log under `key` is emitted again."""
+    _last_log.pop(key, None)
+
+
+# ---------------------------------------------------------------------------
 # Common helpers
 # ---------------------------------------------------------------------------
 
@@ -89,23 +112,36 @@ def _content_hash(text: str) -> int:
 
 
 def _iter_jsonl(path: Path) -> Iterator[dict]:
-    """Yield each well-formed JSON record in a .jsonl file. Tolerates partial writes."""
+    """Yield each well-formed JSON record in a .jsonl file.
+
+    Tolerates partial writes (a final line being written when we open the
+    file), files disappearing or rotating mid-read, and permission/IO
+    errors — all return an empty iterator silently so callers can move on.
+    """
     try:
-        with path.open("rb") as fh:
-            for raw in fh:
-                try:
-                    yield json.loads(raw)
-                except Exception:
-                    continue
-    except FileNotFoundError:
+        fh = path.open("rb")
+    except (FileNotFoundError, PermissionError, OSError):
         return
+    try:
+        for raw in fh:
+            try:
+                yield json.loads(raw)
+            except Exception:
+                continue
+    except OSError:
+        return
+    finally:
+        try:
+            fh.close()
+        except Exception:
+            pass
 
 
 def _file_birth_time(path: Path) -> Optional[datetime]:
     """File creation time (macOS st_birthtime). Falls back to mtime elsewhere."""
     try:
         stat = path.stat()
-    except FileNotFoundError:
+    except (FileNotFoundError, PermissionError, OSError):
         return None
     ts = getattr(stat, "st_birthtime", None) or stat.st_mtime
     return datetime.fromtimestamp(ts, tz=timezone.utc)
@@ -115,9 +151,18 @@ def _lookup_app_near(
     anchor: datetime, window_secs: float = HOST_APP_LOOKBACK_SECS
 ) -> str:
     """Most-recent non-sidecar app_name within ±window_secs of `anchor`. Empty if none."""
+    if not SCREENPIPE_DB.exists():
+        _log_state(
+            logging.WARNING, "screenpipe_db_missing",
+            "screenpipe DB not found at %s — host app lookups disabled until it appears",
+            SCREENPIPE_DB,
+        )
+        return ""
+    _clear_state("screenpipe_db_missing")
     fmt = "%Y-%m-%dT%H:%M:%S+00:00"
     lo = (anchor - timedelta(seconds=window_secs)).strftime(fmt)
     hi = (anchor + timedelta(seconds=window_secs)).strftime(fmt)
+    conn = None
     try:
         conn = sqlite3.connect(str(SCREENPIPE_DB), timeout=5, isolation_level=None)
         conn.execute("PRAGMA busy_timeout=5000")
@@ -132,11 +177,20 @@ def _lookup_app_near(
             """,
             (DEVICE_NAME, lo, hi),
         ).fetchone()
-        conn.close()
         if row and row[0]:
+            _clear_state("host_app_lookup_failed")
             return row[0]
-    except Exception as exc:
-        log.warning("host app lookup near %s failed: %s", anchor.isoformat(), exc)
+    except sqlite3.Error as exc:
+        _log_state(
+            logging.WARNING, "host_app_lookup_failed",
+            "host app lookup failed: %s", exc,
+        )
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
     return ""
 
 
@@ -164,24 +218,47 @@ def _resolve_session_host_app(jsonl_path: Path) -> str:
 
 def _insert_frame(
     text: str, window_name: str, hash_val: int, app_name: str, capture_trigger: str
-) -> None:
-    """Write one accessibility frame into screenpipe's frames table."""
-    conn = sqlite3.connect(str(SCREENPIPE_DB), timeout=10, isolation_level=None)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    ts = datetime.now(timezone.utc)
-    now = ts.strftime("%Y-%m-%dT%H:%M:%S.") + f"{ts.microsecond // 1000:03d}Z"
-    conn.execute(
-        """
-        INSERT INTO frames
-            (offset_index, timestamp, app_name, window_name, focused,
-             device_name, accessibility_text, content_hash, capture_trigger,
-             text_source)
-        VALUES (0, ?, ?, ?, 1, ?, ?, ?, ?, 'accessibility')
-        """,
-        (now, app_name, window_name, DEVICE_NAME, text, hash_val, capture_trigger),
-    )
-    conn.close()
+) -> bool:
+    """Write one accessibility frame into screenpipe's frames table. Returns True on success."""
+    if not SCREENPIPE_DB.exists():
+        _log_state(
+            logging.WARNING, "screenpipe_db_missing",
+            "screenpipe DB not found at %s — inserts disabled until it appears",
+            SCREENPIPE_DB,
+        )
+        return False
+    _clear_state("screenpipe_db_missing")
+    conn = None
+    try:
+        conn = sqlite3.connect(str(SCREENPIPE_DB), timeout=10, isolation_level=None)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        ts = datetime.now(timezone.utc)
+        now = ts.strftime("%Y-%m-%dT%H:%M:%S.") + f"{ts.microsecond // 1000:03d}Z"
+        conn.execute(
+            """
+            INSERT INTO frames
+                (offset_index, timestamp, app_name, window_name, focused,
+                 device_name, accessibility_text, content_hash, capture_trigger,
+                 text_source)
+            VALUES (0, ?, ?, ?, 1, ?, ?, ?, ?, 'accessibility')
+            """,
+            (now, app_name, window_name, DEVICE_NAME, text, hash_val, capture_trigger),
+        )
+        _clear_state("insert_failed")
+        return True
+    except sqlite3.Error as exc:
+        _log_state(
+            logging.WARNING, "insert_failed",
+            "frame insert failed (will retry next tick): %s", exc,
+        )
+        return False
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def _truncate(s: str, n: int) -> str:
@@ -266,18 +343,39 @@ def _claude_window_name(project_dir: Path, jsonl_path: Path, title: str) -> str:
 
 
 def _claude_records(max_age: float) -> Iterator[Tuple[str, str, str]]:
-    """Yield (dedup_key, window_name, transcript) for active Claude sessions."""
+    """Yield (dedup_key, window_name, transcript) for active Claude sessions.
+
+    Silently returns nothing if Claude Code isn't installed (the projects dir
+    doesn't exist) or if the user simply hasn't run it recently — both are
+    expected idle states, not errors.
+    """
     if not CLAUDE_PROJECTS_DIR.exists():
         return
     cutoff = time.time() - max_age
-    for proj in CLAUDE_PROJECTS_DIR.iterdir():
-        if not proj.is_dir():
+    try:
+        projects = list(CLAUDE_PROJECTS_DIR.iterdir())
+    except (FileNotFoundError, PermissionError, OSError) as exc:
+        _log_state(
+            logging.WARNING, "claude_iterdir_failed",
+            "claude projects dir unreadable: %s", exc,
+        )
+        return
+    _clear_state("claude_iterdir_failed")
+    for proj in projects:
+        try:
+            if not proj.is_dir():
+                continue
+        except OSError:
             continue
-        for f in proj.glob("*.jsonl"):
+        try:
+            jsonls = list(proj.glob("*.jsonl"))
+        except (FileNotFoundError, PermissionError, OSError):
+            continue
+        for f in jsonls:
             try:
                 if f.stat().st_mtime < cutoff:
                     continue
-            except FileNotFoundError:
+            except (FileNotFoundError, PermissionError, OSError):
                 continue
             text, title = _claude_parse(f)
             if not text:
@@ -358,21 +456,40 @@ def _codex_window_name(
 
 
 def _codex_records(max_age: float) -> Iterator[Tuple[str, str, str]]:
-    """Yield (dedup_key, window_name, transcript) for active Codex sessions."""
+    """Yield (dedup_key, window_name, transcript) for active Codex sessions.
+
+    Silently returns nothing if Codex isn't installed or hasn't been used —
+    both are expected idle states, not errors. To stay cheap when Codex is
+    used heavily over many days, only the current and previous day's
+    subdirectories are scanned (recent rollouts sort to the top by date).
+    """
     if not CODEX_SESSIONS_DIR.exists():
         return
     cutoff = time.time() - max_age
-    # Sessions live at YYYY/MM/DD/rollout-*.jsonl — rglob keeps us robust to the layout.
-    for f in CODEX_SESSIONS_DIR.rglob("rollout-*.jsonl"):
+    today = datetime.now(timezone.utc)
+    candidates = {today, today - timedelta(days=1)}
+    seen: set = set()
+    for day in candidates:
+        day_dir = CODEX_SESSIONS_DIR / day.strftime("%Y") / day.strftime("%m") / day.strftime("%d")
+        if not day_dir.exists():
+            continue
         try:
-            if f.stat().st_mtime < cutoff:
+            files = list(day_dir.glob("rollout-*.jsonl"))
+        except (FileNotFoundError, PermissionError, OSError):
+            continue
+        for f in files:
+            if f in seen:
                 continue
-        except FileNotFoundError:
-            continue
-        text, cwd, sid, first_msg = _codex_parse(f)
-        if not text:
-            continue
-        yield (f"codex:{f}", _codex_window_name(cwd, f, sid, first_msg), text)
+            seen.add(f)
+            try:
+                if f.stat().st_mtime < cutoff:
+                    continue
+            except (FileNotFoundError, PermissionError, OSError):
+                continue
+            text, cwd, sid, first_msg = _codex_parse(f)
+            if not text:
+                continue
+            yield (f"codex:{f}", _codex_window_name(cwd, f, sid, first_msg), text)
 
 
 # ---------------------------------------------------------------------------
@@ -387,27 +504,18 @@ SOURCES = [
 
 
 def main() -> None:
-    if not SCREENPIPE_DB.exists():
-        log.error("screenpipe DB not found at %s", SCREENPIPE_DB)
-        sys.exit(1)
-
-    have_claude = CLAUDE_PROJECTS_DIR.exists()
-    have_codex = CODEX_SESSIONS_DIR.exists()
-    if not (have_claude or have_codex):
-        log.error(
-            "neither %s nor %s exists — no sources to watch",
-            CLAUDE_PROJECTS_DIR,
-            CODEX_SESSIONS_DIR,
-        )
-        sys.exit(1)
-
     log.info(
         "starting — DB=%s claude=%s codex=%s poll=%.0fs max-age=%.0fs",
         SCREENPIPE_DB,
-        CLAUDE_PROJECTS_DIR if have_claude else "(missing)",
-        CODEX_SESSIONS_DIR if have_codex else "(missing)",
+        CLAUDE_PROJECTS_DIR,
+        CODEX_SESSIONS_DIR,
         POLL_INTERVAL,
         MAX_AGE_SECS,
+    )
+    log.info(
+        "claude available=%s, codex available=%s — missing sources are skipped (not fatal)",
+        CLAUDE_PROJECTS_DIR.exists(),
+        CODEX_SESSIONS_DIR.exists(),
     )
 
     last_hash: Dict[str, int] = {}
@@ -417,31 +525,53 @@ def main() -> None:
     session_app: Dict[str, str] = {}
 
     while True:
-        for _name, records_fn, trigger in SOURCES:
-            try:
-                for key, window, text in records_fn(MAX_AGE_SECS):
-                    h = _content_hash(text)
-                    if last_hash.get(key) == h:
-                        continue
-                    if key not in session_app:
-                        _, _, path_str = key.partition(":")
-                        session_app[key] = _resolve_session_host_app(Path(path_str))
+        try:
+            for _name, records_fn, trigger in SOURCES:
+                try:
+                    for key, window, text in records_fn(MAX_AGE_SECS):
+                        h = _content_hash(text)
+                        if last_hash.get(key) == h:
+                            continue
+                        # Resolve the host app once per session. Don't cache
+                        # FALLBACK_APP_NAME — screenpipe may just be lagging,
+                        # so we retry on the next message until we get a real
+                        # app name.
+                        cached_app = session_app.get(key)
+                        if cached_app is None or cached_app == FALLBACK_APP_NAME:
+                            _, _, path_str = key.partition(":")
+                            resolved = _resolve_session_host_app(Path(path_str))
+                            session_app[key] = resolved
+                            if cached_app != resolved:
+                                log.info(
+                                    "session host app -> %s — %s",
+                                    resolved,
+                                    window,
+                                )
+                        app_name = session_app[key]
+                        ok = _insert_frame(text, window, h, app_name, trigger)
+                        if not ok:
+                            # Don't advance last_hash — retry next tick once
+                            # the DB is available again.
+                            continue
+                        last_hash[key] = h
                         log.info(
-                            "session host app -> %s — %s",
-                            session_app[key],
+                            "inserted %d chars — app=%s — %s",
+                            len(text),
+                            app_name,
                             window,
                         )
-                    app_name = session_app[key]
-                    _insert_frame(text, window, h, app_name, trigger)
-                    last_hash[key] = h
-                    log.info(
-                        "inserted %d chars — app=%s — %s",
-                        len(text),
-                        app_name,
-                        window,
+                except Exception as exc:
+                    _log_state(
+                        logging.ERROR, f"{_name}_source_error",
+                        "%s source error: %s", _name, exc,
                     )
-            except Exception as exc:
-                log.error("%s source error: %s", _name, exc)
+        except Exception as exc:
+            # Belt-and-suspenders: never let the poll loop die from a bug
+            # in a single tick. Log and try again next interval.
+            _log_state(
+                logging.ERROR, "tick_error",
+                "unexpected error in poll tick: %s", exc,
+            )
 
         time.sleep(POLL_INTERVAL)
 
