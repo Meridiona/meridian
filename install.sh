@@ -693,6 +693,13 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
         warn "jira-updater install skipped (set MERIDIAN_OO_AUTH in services/.env to enable)"
     fi
 
+    info "Installing ax-sidecar launchd agent..."
+    if ! run bash "${REPO_ROOT}/services/scripts/install-ax-sidecar.sh"; then
+        warn "ax-sidecar install skipped (requires swiftc + macOS Accessibility permission)"
+    else
+        ok "ax-sidecar launchd agent installed"
+    fi
+
     info "Installing UI launchd agent..."
     run bash "${REPO_ROOT}/scripts/install-ui-daemon.sh"
     ok "UI launchd agent installed"
