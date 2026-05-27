@@ -36,9 +36,9 @@ import os
 import sqlite3
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Iterator, List, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 logging.basicConfig(
     level=logging.INFO,
@@ -101,36 +101,65 @@ def _iter_jsonl(path: Path) -> Iterator[dict]:
         return
 
 
-def _resolve_host_app_name(lookback_secs: float = HOST_APP_LOOKBACK_SECS) -> str:
-    """Return the app_name of the most-recent non-sidecar screenpipe frame.
+def _file_birth_time(path: Path) -> Optional[datetime]:
+    """File creation time (macOS st_birthtime). Falls back to mtime elsewhere."""
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+    ts = getattr(stat, "st_birthtime", None) or stat.st_mtime
+    return datetime.fromtimestamp(ts, tz=timezone.utc)
 
-    Agent transcripts don't carry their own app identity — they describe the
-    conversation, not where the terminal is hosted. Pulling app_name from
-    whatever screenpipe just captured pins each transcript row to the real
-    host app (`Code`, `Terminal`, `iTerm2`, `Ghostty`, etc.) so the ETL can
-    group it with the user's actual app session instead of inventing a new one.
-    """
+
+def _lookup_app_near(
+    anchor: datetime, window_secs: float = HOST_APP_LOOKBACK_SECS
+) -> str:
+    """Most-recent non-sidecar app_name within ±window_secs of `anchor`. Empty if none."""
+    fmt = "%Y-%m-%dT%H:%M:%S+00:00"
+    lo = (anchor - timedelta(seconds=window_secs)).strftime(fmt)
+    hi = (anchor + timedelta(seconds=window_secs)).strftime(fmt)
     try:
         conn = sqlite3.connect(str(SCREENPIPE_DB), timeout=5, isolation_level=None)
         conn.execute("PRAGMA busy_timeout=5000")
-        cutoff = f"-{int(lookback_secs)} seconds"
         row = conn.execute(
             """
             SELECT app_name FROM frames
             WHERE device_name != ?
               AND app_name IS NOT NULL
               AND app_name != ''
-              AND timestamp > datetime('now', ?)
+              AND timestamp BETWEEN ? AND ?
             ORDER BY timestamp DESC LIMIT 1
             """,
-            (DEVICE_NAME, cutoff),
+            (DEVICE_NAME, lo, hi),
         ).fetchone()
         conn.close()
         if row and row[0]:
             return row[0]
     except Exception as exc:
-        log.warning("host app lookup failed: %s", exc)
-    return FALLBACK_APP_NAME
+        log.warning("host app lookup near %s failed: %s", anchor.isoformat(), exc)
+    return ""
+
+
+def _resolve_session_host_app(jsonl_path: Path) -> str:
+    """Resolve the host app for a session once, anchored to its start.
+
+    Looks at screenpipe frames around the JSONL file's creation time
+    (st_birthtime on macOS, mtime elsewhere). If nothing matches there
+    (e.g. screenpipe wasn't running), falls back to the most-recent frame
+    available right now. Final fallback is FALLBACK_APP_NAME.
+    """
+    birth = _file_birth_time(jsonl_path)
+    if birth is not None:
+        # Widen the window for the start-of-session lookup — screenpipe may
+        # have skipped frames during the user's keystroke that spawned the
+        # session, but a frame within ~60s either side is plenty.
+        hit = _lookup_app_near(birth, window_secs=60.0)
+        if hit:
+            return hit
+    hit = _lookup_app_near(
+        datetime.now(timezone.utc), window_secs=HOST_APP_LOOKBACK_SECS
+    )
+    return hit or FALLBACK_APP_NAME
 
 
 def _insert_frame(
@@ -382,6 +411,10 @@ def main() -> None:
     )
 
     last_hash: Dict[str, int] = {}
+    # Resolved host app for each session, set once on first sighting and
+    # kept for the session's lifetime so a single conversation gets one
+    # consistent app_name even if the user briefly switches focus.
+    session_app: Dict[str, str] = {}
 
     while True:
         for _name, records_fn, trigger in SOURCES:
@@ -390,7 +423,15 @@ def main() -> None:
                     h = _content_hash(text)
                     if last_hash.get(key) == h:
                         continue
-                    app_name = _resolve_host_app_name()
+                    if key not in session_app:
+                        _, _, path_str = key.partition(":")
+                        session_app[key] = _resolve_session_host_app(Path(path_str))
+                        log.info(
+                            "session host app -> %s — %s",
+                            session_app[key],
+                            window,
+                        )
+                    app_name = session_app[key]
                     _insert_frame(text, window, h, app_name, trigger)
                     last_hash[key] = h
                     log.info(
