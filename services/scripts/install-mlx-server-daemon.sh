@@ -40,11 +40,38 @@ if [[ ! -f "${TEMPLATE}" ]]; then
     exit 1
 fi
 
-MERIDIAN_SERVER="${SERVICES_DIR}/.venv/bin/meridian-server"
-if [[ ! -x "${MERIDIAN_SERVER}" ]]; then
-    echo "✗ meridian-server not found at ${MERIDIAN_SERVER}" >&2
+VENV="${SERVICES_DIR}/.venv"
+VENV_CFG="${VENV}/pyvenv.cfg"
+if [[ ! -f "${VENV_CFG}" ]]; then
+    echo "✗ venv not found at ${VENV}" >&2
     echo "  Run:  bash scripts/setup-services.sh --mlx" >&2
     exit 1
+fi
+
+# Resolve the base Python from pyvenv.cfg so we invoke it directly rather
+# than through the venv wrapper. The wrapper shebang causes Python to read
+# pyvenv.cfg at startup, which EPERM-fails when launchd launches the process
+# on macOS 15 (launchd inherits no TCC Documents permission).
+BASE_PYTHON=$(grep '^executable' "${VENV_CFG}" | awk '{print $3}')
+if [[ ! -x "${BASE_PYTHON}" ]]; then
+    echo "✗ base Python not found at ${BASE_PYTHON} (from ${VENV_CFG})" >&2
+    exit 1
+fi
+
+# venv site-packages directory (PYTHONPATH replaces venv activation).
+SITE_PACKAGES=$(ls -d "${VENV}/lib/python"*/site-packages 2>/dev/null | head -1)
+if [[ -z "${SITE_PACKAGES}" ]]; then
+    echo "✗ site-packages not found under ${VENV}/lib/" >&2
+    exit 1
+fi
+
+# OTel credentials — read from ~/.meridian/.env if set there; fall back to
+# empty string (telemetry silently disabled when both are unset).
+MERIDIAN_OO_AUTH=""
+MERIDIAN_OTLP_ENDPOINT=""
+if [[ -f "${HOME}/.meridian/.env" ]]; then
+    MERIDIAN_OO_AUTH=$(grep -E '^MERIDIAN_OO_AUTH=' "${HOME}/.meridian/.env" | tail -1 | cut -d= -f2-)
+    MERIDIAN_OTLP_ENDPOINT=$(grep -E '^MERIDIAN_OTLP_ENDPOINT=' "${HOME}/.meridian/.env" | tail -1 | cut -d= -f2-)
 fi
 
 mkdir -p "${HOME}/.meridian/logs"
@@ -55,6 +82,10 @@ sed \
     -e "s|{{REPO_ROOT}}|${REPO_ROOT}|g" \
     -e "s|{{HOME}}|${HOME}|g" \
     -e "s|{{MLX_SERVER_PORT}}|${MLX_SERVER_PORT}|g" \
+    -e "s|{{BASE_PYTHON}}|${BASE_PYTHON}|g" \
+    -e "s|{{SITE_PACKAGES}}|${SITE_PACKAGES}|g" \
+    -e "s|{{MERIDIAN_OO_AUTH}}|${MERIDIAN_OO_AUTH}|g" \
+    -e "s|{{MERIDIAN_OTLP_ENDPOINT}}|${MERIDIAN_OTLP_ENDPOINT}|g" \
     "${TEMPLATE}" > "${PLIST_DEST}"
 
 if ! plutil -lint "${PLIST_DEST}" >/dev/null; then

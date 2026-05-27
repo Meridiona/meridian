@@ -152,88 +152,89 @@ async fn main() -> Result<()> {
         let notify_linker = etl_notify.clone();
         let tick_span_linker = etl_tick_span.clone();
         tokio::spawn(async move {
-        // Tracks consecutive subprocess failures per session_id.
-        // Reset to zero whenever any session is successfully classified.
-        // Persists across drain cycles within this daemon run (lost on restart,
-        // which is fine — transient failures before restart won't be double-counted).
-        let mut failure_counts: HashMap<i64, u32> = HashMap::new();
+            // Tracks consecutive subprocess failures per session_id.
+            // Reset to zero whenever any session is successfully classified.
+            // Persists across drain cycles within this daemon run (lost on restart,
+            // which is fine — transient failures before restart won't be double-counted).
+            let mut failure_counts: HashMap<i64, u32> = HashMap::new();
 
-        loop {
-            // Take the tick span written by the main task so run_task_linking spans
-            // appear as children of the triggering poll_tick / startup_tick.
-            let parent_span: tracing::Span = tokio::select! {
-                _ = shutdown_rx.changed() => break,
-                _ = notify_linker.notified() => {
-                    tick_span_linker.lock().unwrap().take()
-                        .unwrap_or_else(tracing::Span::none)
-                }
-                _ = tokio::time::sleep(Duration::from_secs(300)) => tracing::Span::none(),
-            };
-
-            // Drain: classify oldest-first until nothing is left or a failure stops us.
             loop {
-                let cfg = Config::from_env();
-                // .instrument() enters parent_span on each poll; #[tracing::instrument]
-                // on run_task_linking creates its span inside the async block at first
-                // poll (tracing-attributes >= 0.1.24), so it sees parent_span as current
-                // and becomes its child.
-                match run_task_linking(&meridian_linker, &cfg)
-                    .instrument(parent_span.clone())
-                    .await
-                {
-                    Ok(TaskLinkOutcome::Classified) => {
-                        failure_counts.clear();
-                        // Loop immediately — more sessions may be waiting.
+                // Take the tick span written by the main task so run_task_linking spans
+                // appear as children of the triggering poll_tick / startup_tick.
+                let parent_span: tracing::Span = tokio::select! {
+                    _ = shutdown_rx.changed() => break,
+                    _ = notify_linker.notified() => {
+                        tick_span_linker.lock().unwrap().take()
+                            .unwrap_or_else(tracing::Span::none)
                     }
-                    Ok(TaskLinkOutcome::NoPendingWork) => {
-                        break; // Caught up — go back to waiting for next notify.
-                    }
-                    Ok(TaskLinkOutcome::SubprocessFailed {
-                        session_id,
-                        pending,
-                    }) => {
-                        let count = failure_counts.entry(session_id).or_insert(0);
-                        *count += 1;
+                    _ = tokio::time::sleep(Duration::from_secs(300)) => tracing::Span::none(),
+                };
 
-                        if *count >= MAX_CONSECUTIVE_FAILURES {
-                            tracing::warn!(
-                                session_id,
-                                failures = *count,
-                                pending,
-                                "max consecutive failures — writing subprocess_error sentinel \
-                                 and advancing cursor"
-                            );
-                            if let Err(e) =
-                                mark_session_subprocess_error(&meridian_linker, session_id).await
-                            {
-                                tracing::error!(
-                                    session_id,
-                                    error = %e,
-                                    "failed to write error sentinel — will retry next tick"
-                                );
-                                break;
-                            }
-                            failure_counts.remove(&session_id);
-                            // Loop again — cursor advanced, try the next session.
-                        } else {
-                            tracing::warn!(
-                                session_id,
-                                failures = *count,
-                                max = MAX_CONSECUTIVE_FAILURES,
-                                pending,
-                                "subprocess failed — cursor held, will retry on next ETL tick"
-                            );
-                            break; // Stop drain, wait for next notify / 5-min fallback.
+                // Drain: classify oldest-first until nothing is left or a failure stops us.
+                loop {
+                    let cfg = Config::from_env();
+                    // .instrument() enters parent_span on each poll; #[tracing::instrument]
+                    // on run_task_linking creates its span inside the async block at first
+                    // poll (tracing-attributes >= 0.1.24), so it sees parent_span as current
+                    // and becomes its child.
+                    match run_task_linking(&meridian_linker, &cfg)
+                        .instrument(parent_span.clone())
+                        .await
+                    {
+                        Ok(TaskLinkOutcome::Classified) => {
+                            failure_counts.clear();
+                            // Loop immediately — more sessions may be waiting.
                         }
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "classification run error");
-                        break;
+                        Ok(TaskLinkOutcome::NoPendingWork) => {
+                            break; // Caught up — go back to waiting for next notify.
+                        }
+                        Ok(TaskLinkOutcome::SubprocessFailed {
+                            session_id,
+                            pending,
+                        }) => {
+                            let count = failure_counts.entry(session_id).or_insert(0);
+                            *count += 1;
+
+                            if *count >= MAX_CONSECUTIVE_FAILURES {
+                                tracing::warn!(
+                                    session_id,
+                                    failures = *count,
+                                    pending,
+                                    "max consecutive failures — writing subprocess_error sentinel \
+                                 and advancing cursor"
+                                );
+                                if let Err(e) =
+                                    mark_session_subprocess_error(&meridian_linker, session_id)
+                                        .await
+                                {
+                                    tracing::error!(
+                                        session_id,
+                                        error = %e,
+                                        "failed to write error sentinel — will retry next tick"
+                                    );
+                                    break;
+                                }
+                                failure_counts.remove(&session_id);
+                                // Loop again — cursor advanced, try the next session.
+                            } else {
+                                tracing::warn!(
+                                    session_id,
+                                    failures = *count,
+                                    max = MAX_CONSECUTIVE_FAILURES,
+                                    pending,
+                                    "subprocess failed — cursor held, will retry on next ETL tick"
+                                );
+                                break; // Stop drain, wait for next notify / 5-min fallback.
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "classification run error");
+                            break;
+                        }
                     }
                 }
             }
-        }
-        tracing::info!("task linker loop stopped");
+            tracing::info!("task linker loop stopped");
         });
     } else {
         drop(shutdown_rx);
