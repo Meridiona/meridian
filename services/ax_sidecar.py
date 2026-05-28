@@ -20,8 +20,8 @@ Frames are tagged:
   device_name      = 'ax-sidecar'
   text_source      = 'accessibility'
   capture_trigger  = 'claude_session' or 'codex_session'
-  app_name         = resolved from the most-recent non-sidecar screenpipe
-                     frame (the terminal/IDE actually hosting the agent —
+  app_name         = resolved from the OS process tree of running `claude`
+                     processes (the terminal/IDE actually hosting the agent —
                      e.g. 'Code', 'Terminal', 'iTerm2', 'Ghostty')
 
 Usage:
@@ -33,7 +33,9 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sqlite3
+import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -148,9 +150,13 @@ def _file_birth_time(path: Path) -> Optional[datetime]:
 
 
 def _lookup_app_near(
-    anchor: datetime, window_secs: float = HOST_APP_LOOKBACK_SECS
+    anchor: datetime, window_secs: float = HOST_APP_LOOKBACK_SECS, before_only: bool = False
 ) -> str:
-    """Most-recent non-sidecar app_name within ±window_secs of `anchor`. Empty if none."""
+    """Most-recent non-sidecar app_name within window_secs of `anchor`. Empty if none.
+
+    When `before_only=True`, only frames at or before `anchor` are considered —
+    use this for birth-time lookups so a post-start app switch doesn't win.
+    """
     if not SCREENPIPE_DB.exists():
         _log_state(
             logging.WARNING, "screenpipe_db_missing",
@@ -161,7 +167,7 @@ def _lookup_app_near(
     _clear_state("screenpipe_db_missing")
     fmt = "%Y-%m-%dT%H:%M:%S+00:00"
     lo = (anchor - timedelta(seconds=window_secs)).strftime(fmt)
-    hi = (anchor + timedelta(seconds=window_secs)).strftime(fmt)
+    hi = anchor.strftime(fmt) if before_only else (anchor + timedelta(seconds=window_secs)).strftime(fmt)
     conn = None
     try:
         conn = sqlite3.connect(str(SCREENPIPE_DB), timeout=5, isolation_level=None)
@@ -194,20 +200,92 @@ def _lookup_app_near(
     return ""
 
 
-def _resolve_session_host_app(jsonl_path: Path) -> str:
-    """Resolve the host app for a session once, anchored to its start.
+# Maps substrings found in a process comm/path to a display app name.
+# Checked in order — first match wins.
+_TERMINAL_PATTERNS: List[Tuple[str, str]] = [
+    (r"Visual Studio Code|Code Helper|/Code\.app/", "Code"),
+    (r"iTerm2", "iTerm2"),
+    (r"/Terminal\.app/|MacOS/Terminal\b", "Terminal"),
+    (r"Ghostty", "Ghostty"),
+    (r"Warp\b", "Warp"),
+    (r"Alacritty", "Alacritty"),
+    (r"Hyper\b", "Hyper"),
+    (r"\bkitty\b", "kitty"),
+    (r"WezTerm", "WezTerm"),
+]
 
-    Looks at screenpipe frames around the JSONL file's creation time
-    (st_birthtime on macOS, mtime elsewhere). If nothing matches there
-    (e.g. screenpipe wasn't running), falls back to the most-recent frame
-    available right now. Final fallback is FALLBACK_APP_NAME.
+
+def _comm_to_app(comm: str) -> str:
+    for pattern, name in _TERMINAL_PATTERNS:
+        if re.search(pattern, comm, re.IGNORECASE):
+            return name
+    return ""
+
+
+def _walk_proc_to_terminal(pid: str, max_depth: int = 8) -> str:
+    """Walk the process tree upward from `pid`, returning the terminal/IDE app name."""
+    current = pid
+    for _ in range(max_depth):
+        try:
+            out = subprocess.run(
+                ["ps", "-o", "ppid=,comm=", "-p", current],
+                capture_output=True, text=True, timeout=2,
+            ).stdout.strip()
+            if not out:
+                return ""
+            parts = out.split(None, 1)
+            if len(parts) < 2:
+                return ""
+            ppid, comm = parts[0], parts[1]
+            app = _comm_to_app(comm)
+            if app:
+                return app
+            if ppid in ("0", "1", current):
+                return ""
+            current = ppid
+        except Exception:
+            return ""
+    return ""
+
+
+def _find_host_app_from_process(_jsonl_path: Path) -> str:
+    """Detect the terminal/IDE hosting a Claude Code session via the OS process tree.
+
+    Finds all running `claude` processes and walks each parent chain to find
+    the terminal/IDE app. Returns the first match — the same user typically
+    only has claude processes in one terminal, and if they have multiple, any
+    one of them gives the right answer for the app_name tag.
     """
+    try:
+        pids_out = subprocess.run(
+            ["pgrep", "-f", "claude"],
+            capture_output=True, text=True, timeout=2,
+        ).stdout.strip()
+        pids = [p for p in pids_out.split("\n") if p]
+    except Exception:
+        return ""
+
+    for pid in pids:
+        app = _walk_proc_to_terminal(pid)
+        if app:
+            return app
+    return ""
+
+
+def _resolve_session_host_app(jsonl_path: Path) -> str:
+    """Resolve the terminal/IDE hosting a session.
+
+    Primary: OS process tree — walks the parent chain of running `claude`
+    processes to find the actual terminal/IDE, independent of screen state.
+    Fallback: screenpipe frames around the session birth time.
+    Final fallback: FALLBACK_APP_NAME.
+    """
+    app = _find_host_app_from_process(jsonl_path)
+    if app:
+        return app
     birth = _file_birth_time(jsonl_path)
     if birth is not None:
-        # Widen the window for the start-of-session lookup — screenpipe may
-        # have skipped frames during the user's keystroke that spawned the
-        # session, but a frame within ~60s either side is plenty.
-        hit = _lookup_app_near(birth, window_secs=60.0)
+        hit = _lookup_app_near(birth, window_secs=60.0, before_only=True)
         if hit:
             return hit
     hit = _lookup_app_near(
@@ -368,7 +446,7 @@ def _claude_records(max_age: float) -> Iterator[Tuple[str, str, str]]:
         except OSError:
             continue
         try:
-            jsonls = list(proj.glob("*.jsonl"))
+            jsonls = list(proj.glob("*.jsonl")) + list(proj.glob("subagents/*.jsonl"))
         except (FileNotFoundError, PermissionError, OSError):
             continue
         for f in jsonls:
