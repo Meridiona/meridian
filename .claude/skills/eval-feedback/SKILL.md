@@ -1,7 +1,11 @@
 ---
 name: eval-feedback
 description: "After a classifier eval run, pull failed cases from OpenObserve, append them to FEEDBACK.json as structured observations, cluster them into failure_classes, and summarize what to fix in the next SKILL.md revision. Invoke when the user says 'analyze the latest eval', 'what failed in this run', 'update the feedback file', or similar."
-allowed-tools: Bash, Read, Edit, Write
+allowed-tools:
+  - Bash
+  - Read
+  - Edit
+  - Write
 ---
 
 # eval-feedback Skill
@@ -150,7 +154,9 @@ Use Edit (or Read + Write) to update the file. Append:
 - Increment `occurrence_count` by the number of new observations in this run
 - If a class's status is `resolved_in:<version>` and you're seeing it AGAIN in a newer prompt version, flip status back to `open` and add a note: `"reopened_in": "<run_id>"` — this is a regression signal worth surfacing prominently to the user.
 
-**(d) If you created a new failure_class**, append it with the full structure:
+**(d) If you created a new failure_class**, append it with the required structure and any applicable optional fields. See `_meta.failure_class_schema` in FEEDBACK.json for the authoritative field list — required vs optional fields, their types, and defaults.
+
+Required (always present):
 ```json
 {
   "id": "<kebab-case>",
@@ -164,6 +170,15 @@ Use Edit (or Read + Write) to update the file. Append:
   "resolved_in": null
 }
 ```
+
+Optional (add only when applicable — do not stub with null):
+- `highest_confidence` (number) — max confidence on any failure in this class
+- `priority` ("highest"|"high"|"medium"|"lower"|"lowest") — triage rank, default "medium" when absent
+- `rationale` (string) — one-sentence justification of priority or cross-class relationships
+- `direction` ("false-positive"|"false-negative") — default "false-positive" when absent. Set explicitly on false-negative classes since they invert the prompt-rule logic.
+- `note` (string) — caveat or cross-class-tension comment for the SKILL.md maintainer
+
+When updating an EXISTING failure_class that already has some optional fields (e.g., `highest_confidence`), recompute the value across the new observations and update in place. Don't strip optional fields from existing classes.
 
 ### 6. Validate
 
