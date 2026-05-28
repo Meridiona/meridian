@@ -1,7 +1,7 @@
 // meridian — normalises screenpipe activity into structured app sessions
 
 export async function register(): Promise<void> {
-  if (process.env.NEXT_RUNTIME === "nodejs") {
+  if (process.env.NEXT_RUNTIME === "nodejs" && process.env.NODE_ENV === "production") {
     const mod = await import("./lib/observability");
     mod.initOtel();
   }

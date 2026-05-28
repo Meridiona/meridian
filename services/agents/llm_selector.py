@@ -126,19 +126,28 @@ def discover_running_servers() -> list[RunningServer]:
         try:
             found: list[RunningServer] = []
 
-            # 1. Ollama — unique port; /api/ps = currently loaded in VRAM
+            # 1. Ollama — unique port; prefer /api/ps (loaded in VRAM), fall
+            #    back to /api/tags (installed but unloaded — Ollama loads on demand).
             if _tcp_open("127.0.0.1", 11434):
                 ver, _ = _get_json("http://127.0.0.1:11434/api/version")
                 if ver and "version" in ver:
                     ps, _ = _get_json("http://127.0.0.1:11434/api/ps")
                     models = [m["name"] for m in (ps or {}).get("models", [])]
                     if models:
+                        log.info("llm_selector: Ollama running loaded=%s", models)
+                        span.add_event("ollama_found", {"models": str(models), "source": "ps"})
+                    else:
+                        # No model in VRAM — check installed models; Ollama will load on demand.
+                        tags, _ = _get_json("http://127.0.0.1:11434/api/tags")
+                        models = [m["name"] for m in (tags or {}).get("models", [])]
+                        if models:
+                            log.info("llm_selector: Ollama running installed=%s (will load on demand)", models)
+                            span.add_event("ollama_found", {"models": str(models), "source": "tags"})
+                        else:
+                            log.debug("llm_selector: Ollama on :11434 — no models installed")
+                    if models:
                         found.append(RunningServer(
                             "ollama", "http://127.0.0.1:11434/v1", models, models[0]))
-                        log.info("llm_selector: Ollama running loaded=%s", models)
-                        span.add_event("ollama_found", {"models": str(models)})
-                    else:
-                        log.debug("llm_selector: Ollama on :11434 — no models loaded")
                 else:
                     log.debug("llm_selector: port 11434 open but not Ollama (no version endpoint)")
             else:

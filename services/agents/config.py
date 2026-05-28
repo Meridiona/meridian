@@ -39,9 +39,9 @@ SKILLS_SEARCH_PATHS: list[Path] = [
 ]
 
 # ── LLM ───────────────────────────────────────────────────────────────────────
-MODEL            = os.environ.get("OLLAMA_MODEL",    "gemma4:31b-cloud")
-BASE_URL         = os.environ.get("OLLAMA_HOST",     "https://ollama.com/v1")
-API_KEY          = os.environ.get("OLLAMA_API_KEY",  "")
+MODEL            = os.environ.get("OLLAMA_MODEL")
+BASE_URL         = os.environ.get("OLLAMA_HOST")
+API_KEY          = os.environ.get("OLLAMA_API_KEY")
 AGENT_MAX_TOKENS = int(os.environ.get("AGENT_MAX_TOKENS", "4000"))
 
 if not API_KEY:

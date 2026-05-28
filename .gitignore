@@ -43,3 +43,7 @@ data/memory/
 services/.hermes/
 ruvector.db
 .mcp.json
+
+# Compiled Swift binaries (sources committed; binaries are platform-specific)
+swift/ax_terminal
+swift/vscode-panel-reader
