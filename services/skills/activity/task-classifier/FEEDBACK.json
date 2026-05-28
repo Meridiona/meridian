@@ -29,7 +29,13 @@
         "priority": {
           "type": "string",
           "default_when_absent": "medium",
-          "values": ["highest", "high", "medium", "lower", "lowest"],
+          "values": [
+            "highest",
+            "high",
+            "medium",
+            "lower",
+            "lowest"
+          ],
           "meaning": "Triage hint for SKILL.md revision ordering. Add only when the class warrants a non-default rank (e.g., highest-leverage cross-cutting bias, or known-low-impact edge case)."
         },
         "rationale": {
@@ -40,7 +46,10 @@
         "direction": {
           "type": "string",
           "default_when_absent": "false-positive",
-          "values": ["false-positive", "false-negative"],
+          "values": [
+            "false-positive",
+            "false-negative"
+          ],
           "meaning": "Which way the classifier errs. `false-positive` = over-classifies (claims a ticket when none fits, or wrong ticket) — the default for most observed classes. `false-negative` = under-classifies (returns `none/untracked` when an open ticket actually fits). Important because prompt rules that fix one direction often regress the other — see e.g. the tension between `optimism-bias` and `dataset-analysis-missed-as-ticket-work`."
         },
         "note": {
@@ -103,6 +112,36 @@
       "notes": "Second run after the dataset expanded from 26 to 40 Goldens (same prompt v2.0.0, same model). Accuracy dropped (80.8% → 65.0% both) — expected given the new Goldens stress-test harder failure modes the baseline didn't cover: PR review, FaceTime, LM Studio dogfooding, DBeaver dataset-analysis, branch-name-locks. Surfaced 5 new failure_classes including the first observed false-negative (seed 42).",
       "model_label_corrected_on": "2026-05-28",
       "model_label_correction_note": "Same correction as the baseline run — was logged as phi-4-4bit, actually ran on Qwen3.5-9B-OptiQ-4bit."
+    },
+    {
+      "run_id": "smoke_20260528T180202",
+      "trace_id": "3ae5eb315305e4bffb7b00682b81783a",
+      "confident_ai_run": null,
+      "date": "2026-05-28",
+      "model": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+      "prompt_version": "2.0.0",
+      "prompt_path": "services/skills/activity/task-classifier/SKILL.md",
+      "dataset": "services/tests/evals/golden_seed/dev_a_sessions.json",
+      "dataset_rendered": "services/tests/evals/.synthetic-dataset-a_meridian.json",
+      "candidates": "services/tests/evals/golden_seed/candidates_meridian.json",
+      "persona": "a_meridian",
+      "server_url": "http://localhost:7823",
+      "metrics": {
+        "total_goldens": 40,
+        "passed_both": 24,
+        "passed_task_key": 26,
+        "passed_session_type": 27,
+        "task_key_accuracy": 0.65,
+        "session_type_accuracy": 0.675,
+        "both_accuracy": 0.6
+      },
+      "experiment": {
+        "name": "SESSION_TEXT_CAP=0 (no truncation)",
+        "control_run_id": "smoke_20260528T162251",
+        "control_cap_chars": 2500,
+        "experiment_cap_chars": 0
+      },
+      "notes": "SESSION_TEXT_CAP=0 experiment vs control smoke_20260528T162251 (cap=2500). Both accuracy DROPPED 65.0% → 60.0%; session_type 72.5% → 67.5%; task_key 67.5% → 65.0%. Per-tier: hard +15pp (71% → 86%), but overhead −15pp (29% → 14%), untracked −33pp (33% → 0%), medium −12pp (100% → 88%). Conclusion: the cap is a COVARIATE of optimism-bias, not the bottleneck. More context lets the classifier disambiguate genuine hard cases but also gives it more adjacent signals to misinterpret as 'active work', amplifying false-positives on overhead/untracked. Diff vs prior run: cap=0 FIXED seeds 36 (branch-name-locks) and 42 (dataset-analysis-missed) but BROKE seeds 11, 25, 34, 45. Net: prompt-design fix (anti-optimism rule in SKILL.md v2.1) is the right next move; permanent cap removal is wrong."
     }
   ],
   "observations": [
@@ -485,6 +524,326 @@
       "type_ok": true,
       "classifier_reasoning": "Session shows active coding in VS Code (app=Code) with Claude Code workflow. Window title shows 'feat/golden-dataset-kan-139' branch name directly referencing KAN-139. OCR content shows editing meridian.rb Formula file, specifically adding a sqlite version check to caveats block. This aligns with KAN-139's description of writing user flows with Claude for task classification dataset. Recent context shows prior research and coding sessions also linked to KAN-139, establishing continuity. The work",
       "failure_class_id": "branch-name-locks-classification"
+    },
+    {
+      "id": "obs-20260528-020",
+      "run_id": "smoke_20260528T180202",
+      "seed_id": 1,
+      "tier": "overhead",
+      "app_name": "Slack",
+      "expected": {
+        "task_key": null,
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "KAN-138",
+        "session_type": "task",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Slack DM with Aditya Harish explicitly mentions 'when you pick up KAN-138 lets resolve install-mlx-server-daemon.sh first' and the channel thread discusses KAN-136 observability work. The user is actively reviewing work context related to KAN-138 (MLX server daemon script) and KAN-136 (observability), with KAN-138 being the immediate next action item mentioned in the DM. The session is communication about active development tasks, not overhead.",
+      "failure_class_id": "chat-mention-as-work"
+    },
+    {
+      "id": "obs-20260528-021",
+      "run_id": "smoke_20260528T180202",
+      "seed_id": 10,
+      "tier": "overhead",
+      "app_name": "Slack",
+      "expected": {
+        "task_key": null,
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "KAN-138",
+        "session_type": "task",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Slack DM with Aditya Harish explicitly mentions KAN-138 (mlx merge) as the next task to pick up after KAN-139. User's reply confirms they will pick up KAN-138 around 9:35. This is a clear work signal with direct ticket mention.",
+      "failure_class_id": "chat-mention-as-work"
+    },
+    {
+      "id": "obs-20260528-022",
+      "run_id": "smoke_20260528T180202",
+      "seed_id": 11,
+      "tier": "medium",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "KAN-139",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": null,
+        "session_type": "untracked",
+        "confidence": 0.75
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Session shows active coding work in VS Code (Claude Code) editing golden_seed/candidates_generic.json and build_synthetic_dataset.py, but all candidate tickets (KAN-136 through KAN-145) are unrelated to this synthetic dataset creation work. The user is building test data for the classifier eval harness, not working on any of the open Jira tickets. This is untracked work that should be retained for downstream task inference.",
+      "failure_class_id": "dataset-analysis-missed-as-ticket-work"
+    },
+    {
+      "id": "obs-20260528-023",
+      "run_id": "smoke_20260528T180202",
+      "seed_id": 20,
+      "tier": "easy",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "KAN-138",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": null,
+        "session_type": "task",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "User is on branch 'feat/golden-dataset-kan-139' and stashing work with commit message 'wip KAN-139 — golden seed sessions 1-18 + builder + pytest harness', then switching to 'merge-add-obs-with-mlx-persistent-server' branch. The session shows active git operations related to KAN-139 (golden dataset) and KAN-136/138 (observability/MLX merge). Given the strong KAN-139 context in the immediate prior sessions (09:13-09:21) and the explicit branch name, KAN-139 is the primary match. The switch to the",
+      "failure_class_id": "filepath-outweighs-branch"
+    },
+    {
+      "id": "obs-20260528-024",
+      "run_id": "smoke_20260528T180202",
+      "seed_id": 25,
+      "tier": "overhead",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": null,
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "untracked",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "User is on X (Twitter) reading posts about session classification, AI tools, and benchmarking — directly related to the KAN-139 task of creating a golden dataset for task classification. The content mentions 'session-classification task' and 'classifier output', which aligns with the task's goal of building evaluation data for the classifier. However, this is passive consumption (reading posts) rather than active coding or dataset creation, so confidence is moderate (0.85) and session_type is 'u",
+      "failure_class_id": "reading-as-doing"
+    },
+    {
+      "id": "obs-20260528-025",
+      "run_id": "smoke_20260528T180202",
+      "seed_id": 26,
+      "tier": "hard-decoy",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": null,
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.92
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "User is reading an article about 'Designing golden datasets for LLM classifiers' which directly matches the task description for KAN-139 (Create golden dataset for task classification). The article discusses failure modes, contamination, and untracked labels — all relevant to the golden dataset creation task. Recent context shows KAN-139 was active 10 minutes ago (09:21), and the user is now researching the same topic in Chrome. The tab title 'Designing golden datasets for LLM classifiers' align",
+      "failure_class_id": "reading-as-doing"
+    },
+    {
+      "id": "obs-20260528-026",
+      "run_id": "smoke_20260528T180202",
+      "seed_id": 33,
+      "tier": "untracked",
+      "app_name": "Code",
+      "expected": {
+        "task_key": null,
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.9
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "User is editing CLAUDE.md in the 'feat/golden-dataset-kan-139' branch, fixing a typo in the 'Quick command reference' section. This directly aligns with KAN-139's goal of creating a golden dataset for task classification by improving documentation. The session is coding work (editing docs) within the context of the golden dataset task.",
+      "failure_class_id": "meta-file-edit-as-ticket-work"
+    },
+    {
+      "id": "obs-20260528-027",
+      "run_id": "smoke_20260528T180202",
+      "seed_id": 34,
+      "tier": "untracked",
+      "app_name": "Code",
+      "expected": {
+        "task_key": null,
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.9
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Session shows active coding in VS Code terminal with Claude Code workflow (cargo fmt, clippy, git log). Git log explicitly references 'feat/golden-dataset-kan-139' branch and commit message 'feat(daemon): restore sequential run_task_linking for non-MLX backends' which directly aligns with KAN-139's goal of creating a golden dataset for task classification. The code changes (cargo fmt) are part of the implementation work for this task. Recent context shows continuous coding on KAN-139 (09:34-09:4",
+      "failure_class_id": "branch-name-locks-classification"
+    },
+    {
+      "id": "obs-20260528-028",
+      "run_id": "smoke_20260528T180202",
+      "seed_id": 38,
+      "tier": "hard-decoy",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": null,
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "User is reading articles about LLM evaluation and golden datasets, then checks GitHub PR #33 (feat/golden-dataset-kan-139) which directly relates to the KAN-139 ticket description about creating a golden dataset for task classification. The session content (eval articles) aligns with the intent of building an eval harness for the golden dataset.",
+      "failure_class_id": "reading-as-doing"
+    },
+    {
+      "id": "obs-20260528-029",
+      "run_id": "smoke_20260528T180202",
+      "seed_id": 40,
+      "tier": "overhead",
+      "app_name": "Slack",
+      "expected": {
+        "task_key": null,
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.9
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Slack standup explicitly mentions 'shipped sessions 36-39 for KAN-139' and 'finishing the remaining 11 sessions (40-50)' for the golden dataset. OCR text directly references KAN-139 deliverables (dataset review, golden seed design). Recent context shows prior Code sessions were classified as KAN-139 (09:44, 09:51, 09:56). This is a direct work match.",
+      "failure_class_id": "chat-mention-as-work"
+    },
+    {
+      "id": "obs-20260528-030",
+      "run_id": "smoke_20260528T180202",
+      "seed_id": 41,
+      "tier": "hard-decoy",
+      "app_name": "LM Studio",
+      "expected": {
+        "task_key": null,
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": null,
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "The session shows the developer closing LM Studio and taking notes in a scratchpad about model benchmarking failures. This is meta-analysis of AI model performance, not actual work on any of the candidate tickets. The notes explicitly state 'this was curiosity, not work' and 'close notes', indicating the developer is wrapping up a personal experiment rather than performing task work. No candidate ticket matches this activity.",
+      "failure_class_id": "overhead-untracked-boundary"
+    },
+    {
+      "id": "obs-20260528-031",
+      "run_id": "smoke_20260528T180202",
+      "seed_id": 43,
+      "tier": "overhead",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": null,
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Session shows developer actively monitoring GitHub PR #33 (feat/golden-dataset-kan-139) and its CI test results. OCR text explicitly mentions 'feat(KAN-139): add hard + hard-decoy golden seeds' and the PR title matches KAN-139 description about creating golden dataset for task classification. Developer watches CI tests pass, reviews file changes (golden_seed/dev_a_sessions.json), and checks PR status — all directly related to KAN-139 work. Recent context also shows DBeaver session linked to KAN-",
+      "failure_class_id": "pr-review-as-ticket-work"
+    },
+    {
+      "id": "obs-20260528-032",
+      "run_id": "smoke_20260528T180202",
+      "seed_id": 45,
+      "tier": "hard",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "KAN-139",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": null,
+        "session_type": "task",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "Session shows developer analyzing evaluation traces for KAN-139 golden dataset work. OCR shows GitHub tab 'feat/golden-dataset-kan-139' and OpenObserve traces for 'meridian-eval' with accuracy metrics. Recent context (09:55-10:11) shows 4/5 sessions routed to KAN-139. Developer is debugging classifier failures on seeds authored for KAN-139, not KAN-136. Intent is dataset creation/evaluation, not observability instrumentation.",
+      "failure_class_id": "dataset-analysis-missed-as-ticket-work"
+    },
+    {
+      "id": "obs-20260528-033",
+      "run_id": "smoke_20260528T180202",
+      "seed_id": 47,
+      "tier": "untracked",
+      "app_name": "Activity Monitor",
+      "expected": {
+        "task_key": null,
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": null,
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "Activity Monitor is a system utility for monitoring resource usage, not a work session. The developer is performing system maintenance (quitting Xcode to free memory), which is overhead. This is not related to any Jira ticket.",
+      "failure_class_id": "overhead-untracked-boundary"
+    },
+    {
+      "id": "obs-20260528-034",
+      "run_id": "smoke_20260528T180202",
+      "seed_id": 48,
+      "tier": "overhead",
+      "app_name": "FaceTime",
+      "expected": {
+        "task_key": null,
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "KAN-136",
+        "session_type": "task",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "FaceTime call with Aditya Harish discussing Rust shutdown() implementation for observability tracing (force_flush before shutdown), matching KAN-136 description. Developer took notes on OnceCell<TracerProvider> and traceparent propagation. Later discussion of PR #33 for KAN-139, but primary technical work focused on KAN-136 observability implementation.",
+      "failure_class_id": "chat-mention-as-work"
+    },
+    {
+      "id": "obs-20260528-035",
+      "run_id": "smoke_20260528T180202",
+      "seed_id": 49,
+      "tier": "easy",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "KAN-137",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "Session shows active coding in VS Code (app=Code) with OCR text showing editing of scripts/Formula/meridian.rb. The git branch is feat/golden-dataset-kan-139, which directly matches KAN-139's title 'Create golden dataset for task classification'. The work involves adding a SQLite version check to the Homebrew formula, which is part of the implementation for the golden dataset project. Recent context shows prior research and coding on KAN-139, confirming continuity.",
+      "failure_class_id": "branch-name-locks-classification"
     }
   ],
   "failure_classes": [
@@ -494,7 +853,8 @@
       "description": "Slack DMs, emails, or other chat surfaces that *mention* a ticket key cause the classifier to claim the user is actively working on that ticket. The trigger is the literal ticket key appearing in conversation text.",
       "observed_in_runs": [
         "phi4-4bit-dev_a-baseline-20260528",
-        "smoke_20260528T162251"
+        "smoke_20260528T162251",
+        "smoke_20260528T180202"
       ],
       "observed_in_seeds": [
         1,
@@ -502,10 +862,11 @@
         40,
         48
       ],
-      "occurrence_count": 6,
+      "occurrence_count": 10,
       "proposed_prompt_rule": "Mentions of a ticket key in chat, Slack, email, or comments are *conversation*, not work. To classify a session as `task` for a ticket, the user must be actively editing files, running commands, debugging issues, or otherwise executing on the ticket — not just discussing it. Discriminator question: 'Am I seeing the user DO the work, or DISCUSS the work?'",
       "status": "open",
-      "resolved_in": null
+      "resolved_in": null,
+      "highest_confidence": 0.9
     },
     {
       "id": "reading-as-doing",
@@ -513,16 +874,19 @@
       "description": "Browsing articles, documentation, or videos about a topic that matches a ticket's domain causes the classifier to map topic → ticket and classify the session as active work on that ticket. The trigger is topical adjacency between content and ticket description.",
       "observed_in_runs": [
         "phi4-4bit-dev_a-baseline-20260528",
-        "smoke_20260528T162251"
+        "smoke_20260528T162251",
+        "smoke_20260528T180202"
       ],
       "observed_in_seeds": [
+        25,
         26,
         38
       ],
-      "occurrence_count": 3,
+      "occurrence_count": 6,
       "proposed_prompt_rule": "Reading articles, browsing documentation, or watching videos about a topic is research/learning — not active work on a matching ticket, even when the topic and the ticket are an exact match. Classify these as `untracked` or `overhead` unless the user is also actively editing or executing in the same session.",
       "status": "open",
-      "resolved_in": null
+      "resolved_in": null,
+      "highest_confidence": 0.92
     },
     {
       "id": "meta-file-edit-as-ticket-work",
@@ -530,12 +894,13 @@
       "description": "Editing files that *describe* the classifier (CLAUDE.md, SKILL.md, eval configs, etc.) causes the classifier to claim those edits are work on whichever ticket the files document. The trigger is semantic proximity between file content and ticket description.",
       "observed_in_runs": [
         "phi4-4bit-dev_a-baseline-20260528",
-        "smoke_20260528T162251"
+        "smoke_20260528T162251",
+        "smoke_20260528T180202"
       ],
       "observed_in_seeds": [
         33
       ],
-      "occurrence_count": 2,
+      "occurrence_count": 3,
       "highest_confidence": 0.9,
       "proposed_prompt_rule": "Editing documentation, configuration, CLAUDE.md, or eval files is *overhead* — not active work on whatever ticket those files describe. Exception: when the active ticket explicitly says 'update docs' or 'edit config' in its description.",
       "status": "open",
@@ -547,15 +912,17 @@
       "description": "When the git branch name encodes one ticket but modified file paths overlap with another ticket's domain, the classifier weighs file paths more heavily and picks the wrong ticket. This is the only failure class that affected the `easy` tier — a regression-detector tripwire.",
       "observed_in_runs": [
         "phi4-4bit-dev_a-baseline-20260528",
-        "smoke_20260528T162251"
+        "smoke_20260528T162251",
+        "smoke_20260528T180202"
       ],
       "observed_in_seeds": [
         20
       ],
-      "occurrence_count": 2,
+      "occurrence_count": 3,
       "proposed_prompt_rule": "When the git branch name encodes a ticket key, or strongly suggests one ticket while modified file paths suggest another, the branch name takes priority. The user committed to that branch deliberately; file overlap across tickets is incidental. Caveat: long-lived branches may accumulate work for multiple tickets — prefer branch name when it's recent and the work is consistent with what the branch was created for.",
       "status": "open",
-      "resolved_in": null
+      "resolved_in": null,
+      "highest_confidence": 0.85
     },
     {
       "id": "optimism-bias",
@@ -563,7 +930,8 @@
       "description": "Cross-cutting bias observed in 5/5 failures of the baseline run: every wrong answer was a `task` claim (with a ticket key) when the true label was `none`+`overhead` or `none`+`untracked`. Zero false negatives. Confidence on wrong answers ranged 0.85–0.90 — the classifier is not just wrong, it is *confidently* wrong. Likely the root cause that the four specific failure classes above all exploit.",
       "observed_in_runs": [
         "phi4-4bit-dev_a-baseline-20260528",
-        "smoke_20260528T162251"
+        "smoke_20260528T162251",
+        "smoke_20260528T180202"
       ],
       "observed_in_seeds": [
         1,
@@ -571,6 +939,7 @@
         20,
         26,
         33,
+        34,
         36,
         38,
         40,
@@ -579,7 +948,7 @@
         48,
         49
       ],
-      "occurrence_count": 17,
+      "occurrence_count": 27,
       "proposed_prompt_rule": "Default to `untracked` or `overhead` when the evidence is *adjacent* rather than *direct*. Adjacent evidence (mentions, related reading, related infra, file-path overlap) is the most common failure mode for this classifier in production — bias toward 'I don't know' over confidently picking a ticket that the user is merely *near*. A confidence-calibration rule may also help: if any of {chat-mention, topical-adjacency, meta-file-edit} signals are present, cap confidence at 0.6 unless paired with direct execution evidence.",
       "status": "open",
       "resolved_in": null,
@@ -592,13 +961,15 @@
       "title": "Branch name dominates classification even when content disagrees",
       "description": "Inverse of filepath-outweighs-branch. When the git branch name encodes a ticket key but the active edit/terminal content clearly belongs to a different ticket's scope, the classifier latches onto the branch name and ignores the in-session content evidence. Triggered when developers open feature branches that host opportunistic cross-ticket work.",
       "observed_in_runs": [
-        "smoke_20260528T162251"
+        "smoke_20260528T162251",
+        "smoke_20260528T180202"
       ],
       "observed_in_seeds": [
+        34,
         36,
         49
       ],
-      "occurrence_count": 2,
+      "occurrence_count": 4,
       "highest_confidence": 0.95,
       "proposed_prompt_rule": "Branch name is a strong but not authoritative signal. When the active session content (file being edited, terminal commands, OCR text) clearly indicates a different ticket's scope than the branch name, prefer the in-session content. A branch named for one ticket may host opportunistic work for another (e.g., a developer fixes a separate issue mid-branch). The most-recent-action signal beats the branch-name signal when they disagree. Note the tension with `filepath-outweighs-branch` — the right rule weighs both signals and prefers the one most clearly tied to the *current* work in the session.",
       "status": "open",
@@ -622,17 +993,20 @@
     },
     {
       "id": "dataset-analysis-missed-as-ticket-work",
-      "title": "Analyzing own product's data not recognized as legitimate ticket work",
-      "description": "Inverse direction to optimism-bias. Classifier is too cautious when the user queries the product's own database (meridian.db) to analyze metrics that directly serve an open ticket's deliverable (e.g., 'evaluate classifier quality', 'build golden dataset'). Returns `untracked` when the activity IS the ticket work. First observed false-negative class — opposite direction from all other failures.",
+      "title": "Building / analyzing own product's data not recognized as legitimate ticket work",
+      "description": "Inverse direction to optimism-bias. Classifier is too cautious when the user is BUILDING the deliverable (creating golden dataset entries, writing eval seeds), ANALYZING the product's data (querying meridian.db, inspecting eval metrics), or DEBUGGING the eval pipeline (reviewing classifier failures) — all when an open ticket explicitly calls for that activity. Classifier returns `untracked` or `none/task` instead of the matching ticket. False-negative direction — opposite from optimism-bias.",
       "observed_in_runs": [
-        "smoke_20260528T162251"
+        "smoke_20260528T162251",
+        "smoke_20260528T180202"
       ],
       "observed_in_seeds": [
-        42
+        11,
+        42,
+        45
       ],
-      "occurrence_count": 1,
+      "occurrence_count": 3,
       "direction": "false-negative",
-      "proposed_prompt_rule": "When a user queries or analyzes the product's own data (DBeaver on meridian.db, SQL on classification metrics, exploratory analysis on ETL outputs) AND an open ticket calls for that analysis, classify as `task` for the matching ticket. The analysis IS the ticket deliverable. Distinguish from pure ops queries (resource monitoring, schema migration) which remain `overhead`.",
+      "proposed_prompt_rule": "When a user is producing the deliverable for an open ticket — by building test data the ticket asks for, querying/analyzing the product's own data when the ticket calls for that analysis, or debugging the eval pipeline whose construction IS the ticket — classify as `task` for the matching ticket. The output of the session IS the ticket deliverable. Distinguish from pure ops/admin queries (resource monitoring, schema migration) which remain `overhead`, and from research not tied to any open ticket which remains `untracked`.",
       "note": "Bidirectional tension with optimism-bias. Fixing optimism-bias too aggressively (e.g., 'always default to untracked when evidence is adjacent') risks worsening this class. Worth tracking jointly when revising SKILL.md.",
       "status": "open",
       "resolved_in": null
@@ -642,12 +1016,13 @@
       "title": "Reviewing a PR for a ticket ≠ active development on that ticket",
       "description": "User is reviewing a pull request (own or others') that implements a ticket. Classifier reads the PR title's ticket reference and classifies as `task` for that ticket. But code review/QA is `overhead` — quality control on already-completed work, not active development. Triggered by GitHub/GitLab PR pages with ticket keys in title.",
       "observed_in_runs": [
-        "smoke_20260528T162251"
+        "smoke_20260528T162251",
+        "smoke_20260528T180202"
       ],
       "observed_in_seeds": [
         43
       ],
-      "occurrence_count": 1,
+      "occurrence_count": 2,
       "highest_confidence": 0.95,
       "proposed_prompt_rule": "Reviewing a pull request (GitHub/GitLab PR page, diff view, CI logs for a PR) is *code review overhead*, not active development on the underlying ticket — even when the PR title explicitly mentions the ticket key. The work being reviewed is already complete; review/approval is meta-work. Classify as `overhead`. Exception: when the reviewer IS the implementer and is making revision-pass edits in response to comments, that is active ticket work.",
       "status": "open",
@@ -658,12 +1033,14 @@
       "title": "Session-type miscategorization between overhead and untracked when key=none",
       "description": "Classifier correctly determines no ticket fits (task_key=none) but picks the wrong session_type (overhead vs untracked). The two are close: overhead = communication/admin/meta-activity; untracked = work-like activity that doesn't fit any open ticket. System utilities, exploration, and ambiguous tool use can plausibly be either. Lower priority than the optimism-bias failures because task_key is correct.",
       "observed_in_runs": [
-        "smoke_20260528T162251"
+        "smoke_20260528T162251",
+        "smoke_20260528T180202"
       ],
       "observed_in_seeds": [
+        41,
         47
       ],
-      "occurrence_count": 1,
+      "occurrence_count": 3,
       "priority": "lower",
       "proposed_prompt_rule": "Sharpen the overhead-vs-untracked distinction. Overhead = communication (chat, email, calls), admin (planning, scheduling, expense reporting), or context-switching meta-activity. Untracked = focused work-like activity that doesn't fit any open ticket — system inspection (Activity Monitor), exploration, research, learning, maintenance. When in doubt: 'is this productive activity that just isn't ticketed?' → untracked. 'Is this between-work or about-work?' → overhead.",
       "status": "open",
