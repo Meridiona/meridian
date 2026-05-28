@@ -24,7 +24,9 @@ Ask the user only if these aren't obvious from context:
 |---|---|---|
 | `trace_id` | The most recent `eval.run` trace in OpenObserve | Query OpenObserve as in step 1 below |
 | `run_id` (human label) | Derive from `trace_id` + date: `<model>-<persona>-<purpose>-<YYYYMMDD>` | Ask user if model/purpose is unclear |
-| `model`, `prompt_version`, `dataset` | Read from `services/agents/run_task_linker_mlx.py` (model id), `SKILL.md` frontmatter (version), and the env var/path used by the eval | Default to current values unless user specifies otherwise |
+| `model`, `prompt_version`, `dataset` | See note below — DO NOT trust source-code defaults | Authoritative sources: see note below |
+
+> **⚠ Model identification — known gap (task #1):** Today `smoke_run.py` does not emit the loaded model as a span attribute, and the MLX server has no `/info` endpoint to query. Reading the source default in `run_task_linker_mlx.py:54` is brittle (the `MLX_MODEL_ID` env var can override it; conversation context can drift). This caused two real runs to be labelled `phi-4-4bit` when they actually ran on Qwen3.5-9B-OptiQ-4bit (see `FEEDBACK.json:model_label_corrected_on` audit fields). Until the fix lands, always identify the running model authoritatively by either: (a) `grep "loading " ~/.meridian/logs/mlx-server.log | tail -1`, or (b) checking the live process: `ps -p $(pgrep -f 'agents.server.*mlx') -E -o command=`. Never copy the model name from prior conversation context without verifying.
 
 If the user says "latest run", use the OpenObserve query in step 1 to find the most recent `eval.run` span. If they give a `trace_id` directly, skip to step 2.
 
