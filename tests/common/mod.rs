@@ -36,6 +36,7 @@ pub async fn make_screenpipe_db() -> SqlitePool {
             timestamp TEXT NOT NULL,
             capture_trigger TEXT,
             full_text TEXT,
+            accessibility_text TEXT,
             text_source TEXT
         )",
     )

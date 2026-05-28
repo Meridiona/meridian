@@ -1,6 +1,8 @@
 // meridian — normalises screenpipe activity into structured app sessions
 // https://github.com/meridiona/meridian
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -9,10 +11,17 @@ use meridian::db::meridian::{cleanup_incomplete_runs, setup_db};
 use meridian::db::screenpipe::open_screenpipe;
 use meridian::etl::run_etl;
 use meridian::intelligence::{
-    check_classification_ready, run_fm_categorization, run_pm_sync, run_task_linking,
+    check_classification_ready, mark_session_subprocess_error, run_fm_categorization, run_pm_sync,
+    run_task_linking, TaskLinkOutcome,
 };
 use meridian::observability;
 use tokio::signal::unix::{signal, SignalKind};
+use tokio::sync::Notify;
+use tracing::Instrument as _;
+
+/// After this many consecutive subprocess failures for the same session,
+/// write a `subprocess_error` sentinel and advance the cursor past it.
+const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -86,33 +95,152 @@ async fn main() -> Result<()> {
         Err(e) => tracing::error!("cleanup_incomplete_runs failed: {}", e),
     }
 
-    // 7b. Run ETL once immediately before entering the loop.
+    // 7b. MLX persistent-server mode: a background task drains the classification
+    //     queue without blocking the poll loop (each session can take ~16 s).
+    //     Non-MLX (hermes/subprocess): run_task_linking is called inline, sequentially,
+    //     matching the original flow on main.
+    let mlx_mode = initial_cfg.classifier_backend == "mlx";
+    let etl_notify: Arc<Notify> = Arc::new(Notify::new());
+    // Shared slot: main task clones the current tick span here so the linker task
+    // can parent its run_task_linking spans under poll_tick / startup_tick.
+    let etl_tick_span: Arc<std::sync::Mutex<Option<tracing::Span>>> =
+        Arc::new(std::sync::Mutex::new(None));
+
+    // 7c. Run ETL once immediately before entering the loop.
     //     Re-read config so that any settings.json present at startup takes effect.
     {
         let cfg = Config::from_env();
         let startup_tick = tracing::info_span!("startup_tick");
+        if mlx_mode {
+            *etl_tick_span.lock().unwrap() = Some(startup_tick.clone());
+        }
         let _guard = startup_tick.enter();
         tracing::info!("running initial ETL pass");
-        let etl_sessions = match run_etl(&screenpipe, &meridian).await {
-            Ok(ids) => ids,
-            Err(e) => {
-                tracing::error!("ETL run failed: {}", e);
-                vec![]
-            }
-        };
+        if let Err(e) = run_etl(&screenpipe, &meridian).await {
+            tracing::error!("ETL run failed: {}", e);
+        }
+        if mlx_mode {
+            etl_notify.notify_one();
+        }
         if let Err(e) = run_pm_sync(&meridian, &cfg).await {
             tracing::error!("intelligence run failed: {}", e);
         }
         if let Err(e) = run_fm_categorization(&meridian, &cfg).await {
             tracing::error!("FM categorization run failed: {}", e);
         }
-        if let Err(e) = run_task_linking(&meridian, &cfg, etl_sessions).await {
-            tracing::error!("classification run failed: {}", e);
+        if !mlx_mode {
+            if let Err(e) = run_task_linking(&meridian, &cfg).await {
+                tracing::error!("classification run failed: {}", e);
+            }
         }
     }
 
-    // 8. Poll loop — config is re-read on every tick so that edits to
-    //    ~/.meridian/settings.json take effect without a daemon restart.
+    // 8a. MLX only: spawn the task linker loop.
+    //     Wakes immediately when ETL signals new sessions; drains oldest-first
+    //     (preserving the 5-session context window) until caught up, then waits
+    //     for the next ETL notification. A 5-min fallback ensures recovery if a
+    //     notify was missed (e.g. daemon restart with existing backlog).
+    //
+    //     Failure handling:
+    //       - Transient failure  → cursor stays, retry on next notify
+    //       - Permanent failure  → sentinel written after MAX_CONSECUTIVE_FAILURES,
+    //                              cursor advances, drain continues
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    if mlx_mode {
+        let mut shutdown_rx = shutdown_rx;
+        let meridian_linker = meridian.clone();
+        let notify_linker = etl_notify.clone();
+        let tick_span_linker = etl_tick_span.clone();
+        tokio::spawn(async move {
+            // Tracks consecutive subprocess failures per session_id.
+            // Reset to zero whenever any session is successfully classified.
+            // Persists across drain cycles within this daemon run (lost on restart,
+            // which is fine — transient failures before restart won't be double-counted).
+            let mut failure_counts: HashMap<i64, u32> = HashMap::new();
+
+            loop {
+                // Take the tick span written by the main task so run_task_linking spans
+                // appear as children of the triggering poll_tick / startup_tick.
+                let parent_span: tracing::Span = tokio::select! {
+                    _ = shutdown_rx.changed() => break,
+                    _ = notify_linker.notified() => {
+                        tick_span_linker.lock().unwrap().take()
+                            .unwrap_or_else(tracing::Span::none)
+                    }
+                    _ = tokio::time::sleep(Duration::from_secs(300)) => tracing::Span::none(),
+                };
+
+                // Drain: classify oldest-first until nothing is left or a failure stops us.
+                loop {
+                    let cfg = Config::from_env();
+                    // .instrument() enters parent_span on each poll; #[tracing::instrument]
+                    // on run_task_linking creates its span inside the async block at first
+                    // poll (tracing-attributes >= 0.1.24), so it sees parent_span as current
+                    // and becomes its child.
+                    match run_task_linking(&meridian_linker, &cfg)
+                        .instrument(parent_span.clone())
+                        .await
+                    {
+                        Ok(TaskLinkOutcome::Classified) => {
+                            failure_counts.clear();
+                            // Loop immediately — more sessions may be waiting.
+                        }
+                        Ok(TaskLinkOutcome::NoPendingWork) => {
+                            break; // Caught up — go back to waiting for next notify.
+                        }
+                        Ok(TaskLinkOutcome::SubprocessFailed {
+                            session_id,
+                            pending,
+                        }) => {
+                            let count = failure_counts.entry(session_id).or_insert(0);
+                            *count += 1;
+
+                            if *count >= MAX_CONSECUTIVE_FAILURES {
+                                tracing::warn!(
+                                    session_id,
+                                    failures = *count,
+                                    pending,
+                                    "max consecutive failures — writing subprocess_error sentinel \
+                                 and advancing cursor"
+                                );
+                                if let Err(e) =
+                                    mark_session_subprocess_error(&meridian_linker, session_id)
+                                        .await
+                                {
+                                    tracing::error!(
+                                        session_id,
+                                        error = %e,
+                                        "failed to write error sentinel — will retry next tick"
+                                    );
+                                    break;
+                                }
+                                failure_counts.remove(&session_id);
+                                // Loop again — cursor advanced, try the next session.
+                            } else {
+                                tracing::warn!(
+                                    session_id,
+                                    failures = *count,
+                                    max = MAX_CONSECUTIVE_FAILURES,
+                                    pending,
+                                    "subprocess failed — cursor held, will retry on next ETL tick"
+                                );
+                                break; // Stop drain, wait for next notify / 5-min fallback.
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "classification run error");
+                            break;
+                        }
+                    }
+                }
+            }
+            tracing::info!("task linker loop stopped");
+        });
+    } else {
+        drop(shutdown_rx);
+    }
+
+    // 8b. Poll loop — ETL, PM sync, and FM categorization on the configured interval.
     loop {
         // Determine the sleep duration from the current settings.json before sleeping.
         let poll_interval = {
@@ -131,27 +259,34 @@ async fn main() -> Result<()> {
                     "poll_tick",
                     poll_interval_secs = cfg.runtime.poll_interval_secs
                 );
+                if cfg.classifier_backend == "mlx" {
+                    *etl_tick_span.lock().unwrap() = Some(poll_tick.clone());
+                }
                 let _guard = poll_tick.enter();
                 tracing::debug!("starting ETL tick");
-                let etl_sessions = match run_etl(&screenpipe, &meridian).await {
-                    Ok(ids) => ids,
-                    Err(e) => {
-                        tracing::error!("ETL run failed: {}", e);
-                        vec![]
-                    }
-                };
+                if let Err(e) = run_etl(&screenpipe, &meridian).await {
+                    tracing::error!("ETL run failed: {}", e);
+                }
+                if cfg.classifier_backend == "mlx" {
+                    etl_notify.notify_one();
+                }
                 if let Err(e) = run_pm_sync(&meridian, &cfg).await {
                     tracing::error!("intelligence run failed: {}", e);
                 }
                 if let Err(e) = run_fm_categorization(&meridian, &cfg).await {
                     tracing::error!("FM categorization run failed: {}", e);
                 }
-                if let Err(e) = run_task_linking(&meridian, &cfg, etl_sessions).await {
-                    tracing::error!("classification run failed: {}", e);
+                if cfg.classifier_backend != "mlx" {
+                    if let Err(e) = run_task_linking(&meridian, &cfg).await {
+                        tracing::error!("classification run failed: {}", e);
+                    }
                 }
             }
         }
     }
+
+    // Signal the task linker loop to stop.
+    let _ = shutdown_tx.send(true);
 
     // 9. Shutdown
     tracing::info!("shutting down");

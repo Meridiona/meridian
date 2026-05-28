@@ -175,3 +175,54 @@ pub(super) fn url_domain(url: &str) -> &str {
     let domain = without_scheme.split('/').next().unwrap_or(without_scheme);
     domain.strip_prefix("www.").unwrap_or(domain)
 }
+
+/// Known VS Code-like editor app names (lowercase).
+const VSCODE_LIKE_APPS: &[&str] = &[
+    "code",
+    "cursor",
+    "windsurf",
+    "antigravity",
+    "vscodium",
+    "positron",
+    "void",
+    "aide",
+    "trae",
+];
+
+/// Returns `true` when the app is a VS Code fork using Electron + xterm.js.
+pub(super) fn is_vscode_like(app: &str) -> bool {
+    let lc = app.to_lowercase();
+    VSCODE_LIKE_APPS.iter().any(|name| lc.contains(name))
+}
+
+/// Extracts the VS Code project/repo name from a window title.
+///
+/// VS Code window title formats:
+///   "build.rs — screenpipe"                        → "screenpipe"
+///   "Terminal - meridian"                           → "meridian"
+///   "macos.rs — screenpipe (crates/screenpipe-a11y)" → "screenpipe"
+///   "● config.rs — myproject"                      → "myproject"
+///
+/// Returns `None` for windows without a recognisable separator (e.g. the
+/// VS Code Welcome tab or an empty window).
+pub(super) fn vscode_project(window_name: &str) -> Option<&str> {
+    // Find the last occurrence of " — " (em-dash, VS Code's file separator)
+    // or " - " (hyphen, used for Terminal and some older builds).
+    let sep_pos = window_name
+        .rfind(" \u{2014} ") // " — "
+        .or_else(|| window_name.rfind(" - "));
+    let sep_pos = sep_pos?;
+
+    // Everything after the separator, trimmed.
+    let after = window_name[sep_pos..].trim_start_matches([' ', '-', '\u{2014}']);
+    let bare = after.trim();
+
+    // Strip a parenthesised sub-path: "screenpipe (crates/...)" → "screenpipe"
+    let bare = bare.split(" (").next().unwrap_or(bare).trim();
+
+    if bare.is_empty() {
+        None
+    } else {
+        Some(bare)
+    }
+}

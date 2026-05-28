@@ -4,9 +4,9 @@
 
 model:
   provider: ollama-cloud
-  default: mlx-community/gemma-4-31b-it-4bit
+  default: mlx-community/Qwen3.5-9B-OptiQ-4bit
   base_url: http://127.0.0.1:12000/v1
-  context_length: 262144
+  context_length: 131072
 
 memory:
   memory_enabled: true

@@ -162,6 +162,12 @@ pub struct Config {
     /// Number of recent classified sessions included as temporal context in each prompt.
     /// CLASSIFICATION_CONTEXT_WINDOW — default 5
     pub classification_context_window: usize,
+    /// Which Python classifier subprocess to use.
+    /// CLASSIFIER_BACKEND — "hermes" (default) | "mlx"
+    pub classifier_backend: String,
+    /// Port the persistent MLX server listens on. Only used when CLASSIFIER_BACKEND=mlx.
+    /// MLX_SERVER_PORT — default 7823
+    pub mlx_server_port: u16,
     /// Whether to post Jira progress updates. Auto-enabled when JIRA_BASE_URL is set.
     /// JIRA_UPDATE_ENABLED — default true if Jira is configured
     pub jira_update_enabled: bool,
@@ -380,6 +386,15 @@ impl Config {
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(5);
 
+        let classifier_backend = std::env::var("CLASSIFIER_BACKEND")
+            .unwrap_or_else(|_| "hermes".to_owned())
+            .to_lowercase();
+
+        let mlx_server_port = std::env::var("MLX_SERVER_PORT")
+            .ok()
+            .and_then(|v| v.parse::<u16>().ok())
+            .unwrap_or(7823);
+
         Self {
             screenpipe_db,
             meridian_db,
@@ -393,6 +408,8 @@ impl Config {
             classification_backfill,
             category_backfill,
             classification_context_window,
+            classifier_backend,
+            mlx_server_port,
             jira_update_enabled,
             jira_update_interval_s,
             jira_office_start_hour,

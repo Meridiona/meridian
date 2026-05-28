@@ -306,18 +306,20 @@ pub async fn get_last_ui_event_for_app(
     Ok(row.and_then(|(ts,)| ts.filter(|s| !s.is_empty())))
 }
 
-/// Returns all frames in [min_frame_id, max_frame_id] that have non-empty full_text,
-/// ordered oldest-first.  Used to build session_text.
+/// Returns all frames in [min_frame_id, max_frame_id] that have non-empty text,
+/// ordered oldest-first.  Falls back to accessibility_text when full_text is NULL
+/// (e.g. frames inserted via non-standard paths like capture_trigger='claude_session').
 pub async fn get_frame_full_texts(
     pool: &SqlitePool,
     min_frame_id: i64,
     max_frame_id: i64,
 ) -> Result<Vec<FrameText>> {
     let rows = sqlx::query_as::<_, (i64, String, String, String)>(
-        "SELECT id, timestamp, full_text, COALESCE(text_source, 'ocr')
+        "SELECT id, timestamp, COALESCE(full_text, accessibility_text), COALESCE(text_source, 'ocr')
          FROM frames
          WHERE id BETWEEN ?1 AND ?2
-           AND full_text IS NOT NULL AND full_text != ''
+           AND COALESCE(full_text, accessibility_text) IS NOT NULL
+           AND COALESCE(full_text, accessibility_text) != ''
          ORDER BY id ASC",
     )
     .bind(min_frame_id)

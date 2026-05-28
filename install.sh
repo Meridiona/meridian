@@ -11,6 +11,8 @@ DRY_RUN=0
 NO_DAEMON=0
 SKIP_PERMISSIONS=0
 SKIP_ENV=0
+USE_MLX=0
+MLX_PORT=7823
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -78,15 +80,28 @@ prompt_env_var() {
     local key="$1" desc="$2" secret="$3"
     shift 3
     local files=("$@")
-    # Check if already set in any file
+    # Check if already set in any file; if so, sync to any files that are missing it.
+    local found_value=""
+    local found_in=""
     for f in "${files[@]}"; do
         local existing
         existing="$(get_env_value "$key" "$f")"
         if [[ -n "$existing" ]]; then
-            ok "${key} already set in $(basename "$(dirname "$f")")/$(basename "$f") — keeping"
-            return 0
+            found_value="$existing"
+            found_in="$f"
+            break
         fi
     done
+    if [[ -n "$found_value" ]]; then
+        ok "${key} already set in $(basename "$(dirname "$found_in")")/$(basename "$found_in") — keeping"
+        for f in "${files[@]}"; do
+            if [[ -z "$(get_env_value "$key" "$f")" ]]; then
+                set_env_value "$key" "$found_value" "$f"
+                info "  → synced ${key} to $(basename "$(dirname "$f")")/$(basename "$f")"
+            fi
+        done
+        return 0
+    fi
     local value=""
     if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
         info "[DRY-RUN] would prompt: $desc"
@@ -141,11 +156,16 @@ prompt_env_vars() {
     done
 
     info "→ LLM for task classification"
-    echo "    Meridian auto-detects running local servers (LM Studio :1234, Ollama :11434,"
-    echo "    llama.cpp/mlx_lm :8080) and uses whichever has a model loaded."
-    echo "    On Apple Silicon with no server running, it selects an MLX model from"
-    echo "    available Metal memory at runtime. No configuration needed for local."
-    echo
+    if [[ "${USE_MLX:-0}" -eq 1 ]]; then
+        echo "    Using persistent MLX inference server (--mlx). No LLM endpoint needed."
+        echo "    CLASSIFIER_BACKEND=mlx will be written to ~/.meridian/.env automatically."
+        echo
+    else
+        echo "    Meridian auto-detects running local servers (LM Studio :1234, Ollama :11434,"
+        echo "    llama.cpp/mlx_lm :8080) and uses whichever has a model loaded."
+        echo "    On Apple Silicon with no server running, it selects an MLX model from"
+        echo "    available Metal memory at runtime. No configuration needed for local."
+        echo
 
     # Probe known LLM server ports and report what's running now.
     _detected_llm_servers=()
@@ -187,6 +207,7 @@ prompt_env_vars() {
     prompt_env_var "OPENROUTER_API_KEY" "OpenRouter API key (leave blank to skip)" 1 \
         "$hermes_env" "$svcs_env"
     echo
+    fi  # end: non-MLX LLM section
 
     if prompt_category "Jira"; then
         prompt_env_var "JIRA_BASE_URL" "Jira URL (e.g. https://your-org.atlassian.net)" 0 "$root_env"
@@ -263,6 +284,8 @@ while [[ $# -gt 0 ]]; do
         --no-daemon)         NO_DAEMON=1 ;;
         --skip-permissions)  SKIP_PERMISSIONS=1 ;;
         --skip-env)          SKIP_ENV=1 ;;
+        --mlx)               USE_MLX=1 ;;
+        --mlx-port)          MLX_PORT="$2"; shift ;;
         --help|-h)
             cat >&2 <<'EOF'
 Usage: bash install.sh [OPTIONS]
@@ -272,6 +295,10 @@ Usage: bash install.sh [OPTIONS]
   --no-daemon          Build everything but skip launchd registration
   --skip-permissions   Skip the macOS permissions walkthrough (Screen Recording, Accessibility, Microphone)
   --skip-env           Skip the interactive credentials collection step
+  --mlx                Use the persistent MLX inference server for classification (Apple Silicon only).
+                       Installs mlx-lm + outlines + fastapi into .venv, registers the MLX server
+                       LaunchAgent, and writes CLASSIFIER_BACKEND=mlx to ~/.meridian/.env.
+  --mlx-port N         MLX server port (default: 7823). Written to ~/.meridian/.env.
   --help, -h           Print this usage and exit
 
 After permissions, install.sh walks you through collecting credentials interactively
@@ -376,8 +403,8 @@ if ! command -v screenpipe >/dev/null 2>&1; then
     warn "screenpipe not found."
     echo "    Note: Homebrew's screenpipe formula is deprecated (0.2.x). We install the"
     echo "    current 0.3.x via npm, which is what the launchd plist expects."
-    if prompt_install "Install screenpipe via npm (npm install -g screenpipe)?"; then
-        run npm install -g screenpipe
+    if prompt_install "Install screenpipe via npm (npm install -g screenpipe@'~0.3')?"; then
+        run npm install -g screenpipe@'~0.3'
     else
         err "screenpipe required — install via https://docs.screenpi.pe"
         exit 1
@@ -388,8 +415,8 @@ else
     if [[ -n "${_sp_ver}" && "${_sp_major_minor}" < "0.3" ]]; then
         warn "screenpipe ${_sp_ver} is from the deprecated Homebrew formula."
         echo "    The launchd plist expects 0.3+ (uses 'screenpipe record')."
-        if prompt_install "Upgrade screenpipe via npm (npm install -g screenpipe)?"; then
-            run npm install -g screenpipe
+        if prompt_install "Upgrade screenpipe via npm (npm install -g screenpipe@'~0.3')?"; then
+            run npm install -g screenpipe@'~0.3'
         fi
     fi
 fi
@@ -582,7 +609,11 @@ fi
 # ---------------------------------------------------------------------------
 
 info "Setting up Python services..."
-run bash "${REPO_ROOT}/scripts/setup-services.sh"
+if [[ "${USE_MLX}" -eq 1 ]]; then
+    run bash "${REPO_ROOT}/scripts/setup-services.sh" --mlx
+else
+    run bash "${REPO_ROOT}/scripts/setup-services.sh"
+fi
 ok "Python services ready"
 
 # ---------------------------------------------------------------------------
@@ -602,6 +633,56 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
     info "Installing screenpipe launchd agent..."
     run bash "${REPO_ROOT}/scripts/install-screenpipe-daemon.sh"
     ok "screenpipe launchd agent installed"
+
+    # MLX server must be running before the Rust daemon starts — the daemon
+    # TCP-connects to it on startup and exits hard if the port is not reachable.
+    if [[ "${USE_MLX}" -eq 1 ]]; then
+        info "Writing MLX classification env vars to ~/.meridian/.env..."
+        set_env_value "CLASSIFIER_BACKEND" "mlx"          "${HOME}/.meridian/.env"
+        set_env_value "MLX_SERVER_PORT"    "${MLX_PORT}"  "${HOME}/.meridian/.env"
+        ok "CLASSIFIER_BACKEND=mlx, MLX_SERVER_PORT=${MLX_PORT}"
+
+        info "Installing MLX inference server launchd agent..."
+        run bash "${REPO_ROOT}/services/scripts/install-mlx-server-daemon.sh" \
+            --port "${MLX_PORT}"
+        ok "MLX server launchd agent installed"
+
+        if [[ "${DRY_RUN}" -eq 0 ]]; then
+            _model_cache="${HOME}/.cache/huggingface/hub/models--mlx-community--Qwen3.5-9B-OptiQ-4bit/snapshots"
+            if [[ -d "${_model_cache}" && -n "$(ls -A "${_model_cache}" 2>/dev/null)" ]]; then
+                # Model is cached — should be ready within ~60s
+                info "MLX server starting (model cached, loading into Metal)..."
+                for _i in $(seq 1 60); do
+                    if curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; then
+                        ok "MLX server ready on port ${MLX_PORT}"
+                        break
+                    fi
+                    sleep 1
+                    if [[ "${_i}" -eq 60 ]]; then
+                        warn "MLX server did not start within 60s — check: tail -f ~/.meridian/logs/mlx-server.log"
+                    fi
+                done
+            else
+                # First run — model needs to download (~6.6 GB). Stream the log so
+                # the user can see the HuggingFace download progress bars.
+                echo
+                info "First run: downloading MLX model (~6.6 GB). Streaming server log below."
+                info "This takes a few minutes on a fast connection. Do not interrupt."
+                echo "  ─────────────────────────────────────────────────────────────"
+                # Ensure log file exists before tailing
+                mkdir -p "${HOME}/.meridian/logs"
+                : >> "${HOME}/.meridian/logs/mlx-server.log"
+                tail -n 0 -f "${HOME}/.meridian/logs/mlx-server.log" &
+                _tail_pid=$!
+                until curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; do
+                    sleep 3
+                done
+                kill "${_tail_pid}" 2>/dev/null || true
+                echo "  ─────────────────────────────────────────────────────────────"
+                ok "MLX server ready on port ${MLX_PORT} — model downloaded and loaded"
+            fi
+        fi
+    fi
 
     info "Installing Rust daemon launchd agent..."
     run bash "${REPO_ROOT}/scripts/install-daemon.sh"

@@ -1,7 +1,8 @@
 // meridian — normalises screenpipe activity into structured app sessions
 
-//! Backfill task classification (hermes) for a specific session range.
+//! Backfill task classification for a specific session range.
 //! Does not touch the agent_cursor — safe to re-run multiple times.
+//! Requires the persistent MLX server to be running on MLX_SERVER_PORT (default 7823).
 //!
 //! Usage:
 //!   backfill-task-classification --today

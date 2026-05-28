@@ -1,0 +1,10 @@
+# MLX inference server dependencies are now declared in pyproject.toml under
+# the [mlx] optional extra. Install with:
+#
+#   pip install -e ".[mlx]"          # from services/
+#
+# or via install.sh:
+#
+#   ./install.sh --mlx
+#
+# This file is kept only for reference. Do not install directly.
