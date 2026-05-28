@@ -79,11 +79,33 @@ Also pull the parent `eval.run` span (same query, `operation_name='eval.run' AND
 
 The `events` column on each failing span is a JSON string with the classifier's full `actual_reasoning` — that text is your primary signal for which failure_class the observation belongs to.
 
-### 3. Read current `FEEDBACK.json`
+### 3. Read current `FEEDBACK.json` — lean path
 
-Read `services/skills/activity/task-classifier/FEEDBACK.json`. Understand:
-- Which `run_id`s already exist (don't double-append; if the trace is already logged, tell the user and stop).
-- Which `failure_classes` already exist (you'll want to reuse their IDs when failures match).
+FEEDBACK.json grows ~20 KB per run (observations are 80%+ of the bulk). To avoid blowing up the context window after ~25 runs, **do not Read the whole file** for the dedup-and-cluster steps. The skill only needs three slices to make append decisions:
+
+```bash
+FB=services/skills/activity/task-classifier/FEEDBACK.json
+
+# Existing run_ids (dedup check — refuse if our run is already logged)
+jq -r '.runs[].run_id' "$FB"
+
+# Existing failure_class IDs + titles (for the clustering decision in step 4)
+jq -r '.failure_classes[] | "\(.id) — \(.title) [status=\(.status), occurrences=\(.occurrence_count)]"' "$FB"
+
+# Next observation sequence number (for the new obs IDs in step 5b)
+jq -r '.observations[].id' "$FB" | grep "^obs-$(date +%Y%m%d)-" | sort | tail -1
+# (if none for today, start at 001; otherwise increment the trailing NNN)
+
+# Schema declaration (the contract for which fields go on a failure_class)
+jq '._meta.failure_class_schema' "$FB"
+```
+
+This pulls a few KB regardless of file size. Use full `Read` ONLY when:
+- The user explicitly asks to inspect an old observation (`"show me obs-20260528-007"`)
+- You need to re-cluster a previously-recorded observation (rare, only when refactoring the taxonomy)
+- The file is genuinely small (< 50 KB) and reading it whole is simpler
+
+Refuse to double-append: if our `run_id` is already in `jq -r '.runs[].run_id'`, stop and tell the user the run is already logged.
 
 ### 4. Cluster each failure into a `failure_class`
 
@@ -103,7 +125,29 @@ Be conservative: better to create one new class for a genuinely new pattern than
 
 ### 5. Append to `FEEDBACK.json`
 
-Use Edit (or Read + Write) to update the file. Append:
+**Prefer a Python script** that does load → modify → write, rather than `Edit` or `Read + Write` on the whole file. Python keeps the JSON out of the model context entirely — it scales to any file size, and it's safer because it always rewrites valid JSON. Skeleton:
+
+```python
+import json
+from pathlib import Path
+
+fb_path = Path("services/skills/activity/task-classifier/FEEDBACK.json")
+fb = json.loads(fb_path.read_text())
+
+# Guard against double-append
+if any(r["run_id"] == NEW_RUN_ID for r in fb["runs"]):
+    raise SystemExit(f"run_id {NEW_RUN_ID} already logged")
+
+fb["runs"].append({...})              # see (a) below
+fb["observations"].extend([...])      # see (b) below
+# Mutate fb["failure_classes"] in place; see (c) and (d) below
+
+fb_path.write_text(json.dumps(fb, indent=2, ensure_ascii=False) + "\n")
+```
+
+Use `Edit` directly on FEEDBACK.json only when the file is small (< 50 KB) and the change is tiny (e.g., marking one class `resolved_in:<version>`). For appending a full run worth of data, always go through Python.
+
+Append:
 
 **(a) One entry to `runs`:**
 ```json
