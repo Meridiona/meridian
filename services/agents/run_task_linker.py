@@ -106,7 +106,7 @@ def _fetch_pm_tasks(con: _sqlite3.Connection) -> list[dict[str, Any]]:
         "       COALESCE(parent_key,'') AS parent_key,"
         "       COALESCE(epic_title,'') AS epic_title,"
         "       COALESCE(sprint_name,'') AS sprint_name"
-        " FROM pm_tasks WHERE LOWER(status_category) != 'done' AND parent_key IS NULL",
+        " FROM pm_tasks",
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -258,7 +258,22 @@ def _classify_one(
 
     raw = ""
     if isinstance(result, dict):
-        raw = str(result.get("final_response") or result.get("response") or "").strip()
+        # Prefer the last assistant message over final_response. When the model
+        # is truncated and continued, final_response is a concatenation of ALL
+        # assistant turns (prose draft + JSON answer), which breaks JSON parsing.
+        # The last non-tool assistant message is always the actual final answer.
+        messages = result.get("messages") or result.get("conversation_history") or []
+        for msg in reversed(messages):
+            if (
+                isinstance(msg, dict)
+                and msg.get("role") == "assistant"
+                and msg.get("content")
+                and not msg.get("tool_calls")
+            ):
+                raw = str(msg["content"]).strip()
+                break
+        if not raw:
+            raw = str(result.get("final_response") or result.get("response") or "").strip()
 
     log.debug("run_task_linker: session %d raw (%.1fs): %.200s", sid, elapsed, raw)
 
@@ -333,7 +348,15 @@ def main() -> None:
         log.error("run_task_linker: meridian_db path is empty")
         sys.exit(1)
 
-    if not Path(db_path).exists():
+    resolved = Path(db_path).resolve()
+    allowed_parent = Path("~/.meridian").expanduser().resolve()
+    if resolved.parent != allowed_parent:
+        log.error(
+            "run_task_linker: db_path must be inside ~/.meridian/: %s", db_path
+        )
+        sys.exit(1)
+
+    if not resolved.exists():
         log.error("run_task_linker: db file does not exist: %s", db_path)
         sys.exit(1)
 
