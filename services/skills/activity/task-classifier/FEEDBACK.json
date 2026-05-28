@@ -1,0 +1,172 @@
+{
+  "_meta": {
+    "schema_version": "1",
+    "purpose": "Structured feedback log for the task-classifier prompt. Each eval run appends one entry to `runs`, one observation per failing Golden to `observations`, and either creates a new entry in `failure_classes` or links to an existing one. The `failure_classes` are the actionable backlog for the next SKILL.md revision; observations are the evidence trail. After cutting a new SKILL.md version, update the resolved failure_classes with the version that addressed them.",
+    "append_workflow": [
+      "1. After smoke_run.py completes, copy the run summary into `runs` (run_id = identifier used on Confident AI; trace_id from OpenObserve root span).",
+      "2. For every failure (key_ok=false OR type_ok=false), add an entry to `observations` referencing the run_id, seed_id, and classifier reasoning.",
+      "3. Group new observations under an existing failure_class if the failure pattern matches; otherwise create a new failure_class.",
+      "4. When a SKILL.md revision lands, set the relevant failure_classes' status to `resolved_in:<version>` and re-run to confirm."
+    ],
+    "consumers": [
+      "Manual review when cutting a new SKILL.md version (read `failure_classes` filtered by status=open).",
+      "Future aggregator script that counts observations per failure_class across runs to prioritize prompt edits."
+    ]
+  },
+
+  "runs": [
+    {
+      "run_id": "phi4-4bit-dev_a-baseline-20260528",
+      "trace_id": "945c2f502830e4dc73a9e4a9ec417496",
+      "confident_ai_run": "https://app.confident-ai.com/project/cmpp4mjzy000ho413tsk2wrry/test-runs/cmpp5td4a000ijv13aqffxv3y/test-cases",
+      "date": "2026-05-28",
+      "model": "mlx-community/phi-4-4bit",
+      "prompt_version": "2.0.0",
+      "prompt_path": "services/skills/activity/task-classifier/SKILL.md",
+      "dataset": "services/tests/evals/golden_seed/dev_a_sessions.json",
+      "dataset_rendered": "services/tests/evals/.synthetic-dataset-a_meridian.json",
+      "candidates": "services/tests/evals/golden_seed/candidates_meridian.json",
+      "persona": "a_meridian",
+      "server_url": "http://localhost:7823",
+      "metrics": {
+        "total_goldens": 26,
+        "passed_both": 21,
+        "passed_task_key": 21,
+        "passed_session_type": 22,
+        "task_key_accuracy": 0.808,
+        "session_type_accuracy": 0.846,
+        "both_accuracy": 0.808
+      },
+      "notes": "First end-to-end run on the hand-authored Dev A dataset. Establishes the regression baseline. All 5 failures over-classify into `task` — see failure_class:optimism-bias."
+    }
+  ],
+
+  "observations": [
+    {
+      "id": "obs-20260528-001",
+      "run_id": "phi4-4bit-dev_a-baseline-20260528",
+      "seed_id": 1,
+      "tier": "overhead",
+      "app_name": "Slack",
+      "expected": { "task_key": null, "session_type": "overhead" },
+      "actual": { "task_key": "KAN-138", "session_type": "task", "confidence": 0.85 },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Slack DM with Aditya Harish explicitly mentions 'when you pick up KAN-138 lets resolve install-mlx-server-daemon.sh first' and discusses the MLX server OOM issue and plist merge. OCR shows Aditya's message about KAN-138 and the MLX server conflict, which directly aligns with the ticket description. Context from recent sessions (if any) would strengthen this, but the explicit mention in the current session is sufficient for a high-confidence match.",
+      "failure_class_id": "chat-mention-as-work"
+    },
+    {
+      "id": "obs-20260528-002",
+      "run_id": "phi4-4bit-dev_a-baseline-20260528",
+      "seed_id": 10,
+      "tier": "overhead",
+      "app_name": "Slack",
+      "expected": { "task_key": null, "session_type": "overhead" },
+      "actual": { "task_key": "KAN-138", "session_type": "task", "confidence": 0.85 },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Slack DM with Aditya Harish explicitly mentions KAN-138 (mlx merge) as the next task to pick up after KAN-139. User's reply confirms they will pick up KAN-138 around 9:35. This is a clear work signal with direct ticket mention.",
+      "failure_class_id": "chat-mention-as-work"
+    },
+    {
+      "id": "obs-20260528-003",
+      "run_id": "phi4-4bit-dev_a-baseline-20260528",
+      "seed_id": 20,
+      "tier": "easy",
+      "app_name": "Code",
+      "expected": { "task_key": "KAN-138", "session_type": "task" },
+      "actual": { "task_key": "KAN-136", "session_type": "task", "confidence": 0.85 },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "User switched to branch 'merge-add-obs-with-mlx-persistent-server' which directly aligns with KAN-136's observability and tracing work. Git log shows commits for 'emit info event for each trivial session in run_task_linking' and 'parent run_task_linking spans under poll_tick/startup_tick' — both explicitly mentioned in KAN-136's description. Modified files include 'services/agents/observability.py' and 'services/agents/server.py', matching the observability instrumentation scope.",
+      "failure_class_id": "filepath-outweighs-branch"
+    },
+    {
+      "id": "obs-20260528-004",
+      "run_id": "phi4-4bit-dev_a-baseline-20260528",
+      "seed_id": 26,
+      "tier": "hard-decoy",
+      "app_name": "Google Chrome",
+      "expected": { "task_key": null, "session_type": "untracked" },
+      "actual": { "task_key": "KAN-139", "session_type": "task", "confidence": 0.85 },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "User is reading an article about 'Designing golden datasets for LLM classifiers' which directly aligns with KAN-139's goal of creating a golden dataset for task classification. The article discusses production LLM evaluation and golden datasets, which is the exact subject of KAN-139. The user's recent work context shows they were just coding on KAN-139 (09:21) and KAN-138 (09:25-09:30), and this research session is a natural continuation of that work.",
+      "failure_class_id": "reading-as-doing"
+    },
+    {
+      "id": "obs-20260528-005",
+      "run_id": "phi4-4bit-dev_a-baseline-20260528",
+      "seed_id": 33,
+      "tier": "untracked",
+      "app_name": "Code",
+      "expected": { "task_key": null, "session_type": "untracked" },
+      "actual": { "task_key": "KAN-139", "session_type": "task", "confidence": 0.90 },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "User is editing CLAUDE.md in the Meridian repo, specifically searching for and fixing a typo ('refrence' -> 'reference') in the 'Quick command refrence' section. This directly aligns with KAN-139's goal of creating a golden dataset for task classification, as the CLAUDE.md file contains the instructions and rules that the classifier follows. The user's action of improving the classifier's instructions is part of building the dataset/documentation for the classification system.",
+      "failure_class_id": "meta-file-edit-as-ticket-work"
+    }
+  ],
+
+  "failure_classes": [
+    {
+      "id": "chat-mention-as-work",
+      "title": "Talking about a ticket ≠ working on a ticket",
+      "description": "Slack DMs, emails, or other chat surfaces that *mention* a ticket key cause the classifier to claim the user is actively working on that ticket. The trigger is the literal ticket key appearing in conversation text.",
+      "observed_in_runs": ["phi4-4bit-dev_a-baseline-20260528"],
+      "observed_in_seeds": [1, 10],
+      "occurrence_count": 2,
+      "proposed_prompt_rule": "Mentions of a ticket key in chat, Slack, email, or comments are *conversation*, not work. To classify a session as `task` for a ticket, the user must be actively editing files, running commands, debugging issues, or otherwise executing on the ticket — not just discussing it. Discriminator question: 'Am I seeing the user DO the work, or DISCUSS the work?'",
+      "status": "open",
+      "resolved_in": null
+    },
+    {
+      "id": "reading-as-doing",
+      "title": "Reading about a topic ≠ working on that topic",
+      "description": "Browsing articles, documentation, or videos about a topic that matches a ticket's domain causes the classifier to map topic → ticket and classify the session as active work on that ticket. The trigger is topical adjacency between content and ticket description.",
+      "observed_in_runs": ["phi4-4bit-dev_a-baseline-20260528"],
+      "observed_in_seeds": [26],
+      "occurrence_count": 1,
+      "proposed_prompt_rule": "Reading articles, browsing documentation, or watching videos about a topic is research/learning — not active work on a matching ticket, even when the topic and the ticket are an exact match. Classify these as `untracked` or `overhead` unless the user is also actively editing or executing in the same session.",
+      "status": "open",
+      "resolved_in": null
+    },
+    {
+      "id": "meta-file-edit-as-ticket-work",
+      "title": "Editing CLAUDE.md, configs, docs ≠ working on the ticket those files describe",
+      "description": "Editing files that *describe* the classifier (CLAUDE.md, SKILL.md, eval configs, etc.) causes the classifier to claim those edits are work on whichever ticket the files document. The trigger is semantic proximity between file content and ticket description.",
+      "observed_in_runs": ["phi4-4bit-dev_a-baseline-20260528"],
+      "observed_in_seeds": [33],
+      "occurrence_count": 1,
+      "highest_confidence": 0.90,
+      "proposed_prompt_rule": "Editing documentation, configuration, CLAUDE.md, or eval files is *overhead* — not active work on whatever ticket those files describe. Exception: when the active ticket explicitly says 'update docs' or 'edit config' in its description.",
+      "status": "open",
+      "resolved_in": null
+    },
+    {
+      "id": "filepath-outweighs-branch",
+      "title": "File-path inference outranks branch-name evidence when they disagree",
+      "description": "When the git branch name encodes one ticket but modified file paths overlap with another ticket's domain, the classifier weighs file paths more heavily and picks the wrong ticket. This is the only failure class that affected the `easy` tier — a regression-detector tripwire.",
+      "observed_in_runs": ["phi4-4bit-dev_a-baseline-20260528"],
+      "observed_in_seeds": [20],
+      "occurrence_count": 1,
+      "proposed_prompt_rule": "When the git branch name encodes a ticket key, or strongly suggests one ticket while modified file paths suggest another, the branch name takes priority. The user committed to that branch deliberately; file overlap across tickets is incidental. Caveat: long-lived branches may accumulate work for multiple tickets — prefer branch name when it's recent and the work is consistent with what the branch was created for.",
+      "status": "open",
+      "resolved_in": null
+    },
+    {
+      "id": "optimism-bias",
+      "title": "Classifier over-classifies into `task` with high confidence",
+      "description": "Cross-cutting bias observed in 5/5 failures of the baseline run: every wrong answer was a `task` claim (with a ticket key) when the true label was `none`+`overhead` or `none`+`untracked`. Zero false negatives. Confidence on wrong answers ranged 0.85–0.90 — the classifier is not just wrong, it is *confidently* wrong. Likely the root cause that the four specific failure classes above all exploit.",
+      "observed_in_runs": ["phi4-4bit-dev_a-baseline-20260528"],
+      "observed_in_seeds": [1, 10, 20, 26, 33],
+      "occurrence_count": 5,
+      "proposed_prompt_rule": "Default to `untracked` or `overhead` when the evidence is *adjacent* rather than *direct*. Adjacent evidence (mentions, related reading, related infra, file-path overlap) is the most common failure mode for this classifier in production — bias toward 'I don't know' over confidently picking a ticket that the user is merely *near*. A confidence-calibration rule may also help: if any of {chat-mention, topical-adjacency, meta-file-edit} signals are present, cap confidence at 0.6 unless paired with direct execution evidence.",
+      "status": "open",
+      "resolved_in": null,
+      "priority": "highest",
+      "rationale": "Fixing this likely addresses the four specific classes above simultaneously, since each exploits the same underlying willingness to commit to a `task` label on weak evidence."
+    }
+  ]
+}
