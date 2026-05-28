@@ -2,15 +2,10 @@
   "_meta": {
     "schema_version": "1",
     "purpose": "Structured feedback log for the task-classifier prompt. Each eval run appends one entry to `runs`, one observation per failing Golden to `observations`, and either creates a new entry in `failure_classes` or links to an existing one. The `failure_classes` are the actionable backlog for the next SKILL.md revision; observations are the evidence trail. After cutting a new SKILL.md version, update the resolved failure_classes with the version that addressed them.",
-    "append_workflow": [
-      "1. After smoke_run.py completes, copy the run summary into `runs` (run_id = identifier used on Confident AI; trace_id from OpenObserve root span).",
-      "2. For every failure (key_ok=false OR type_ok=false), add an entry to `observations` referencing the run_id, seed_id, and classifier reasoning.",
-      "3. Group new observations under an existing failure_class if the failure pattern matches; otherwise create a new failure_class.",
-      "4. When a SKILL.md revision lands, set the relevant failure_classes' status to `resolved_in:<version>` and re-run to confirm."
-    ],
+    "updated_by": "This file is appended by Claude Code via the `.claude/skills/eval-feedback/SKILL.md` skill — invoked on demand after an eval run (e.g. user says 'analyze the latest run'). Humans only edit this file to: (a) revise a `proposed_prompt_rule` after thinking through a class more carefully, (b) mark a class `resolved_in:<version>` after a SKILL.md revision lands, or (c) re-cluster observations if the failure_class taxonomy needs refactoring.",
     "consumers": [
-      "Manual review when cutting a new SKILL.md version (read `failure_classes` filtered by status=open).",
-      "Future aggregator script that counts observations per failure_class across runs to prioritize prompt edits."
+      "Claude Code, when the user asks for an eval-run analysis or feedback aggregation (via eval-feedback skill).",
+      "The author of the next SKILL.md revision: read `failure_classes` filtered by status=open, ranked by occurrence_count, and choose which prompt rules to ship."
     ]
   },
 
