@@ -60,10 +60,15 @@ os.environ.setdefault("HERMES_HOME", str(_SERVICES_DIR / ".hermes"))
 # expected_output is a JSON string: {"task_key": ..., "session_type": ..., "reasoning": ...}
 # ---------------------------------------------------------------------------
 
-dataset = EvaluationDataset()
-dataset.add_goldens_from_json_file(
-    file_path=str(Path(__file__).parent / ".dataset.json")
+# Dataset path is configurable via EVAL_DATASET_PATH — defaults to .dataset.json
+# (the real-pulled goldens from build_dataset.py). Point at .synthetic-dataset-<persona>.json
+# to run on the hand-authored seed sessions rendered by render_seeds.py.
+_DATASET_PATH = Path(
+    os.environ.get("EVAL_DATASET_PATH")
+    or (Path(__file__).parent / ".dataset.json")
 )
+dataset = EvaluationDataset()
+dataset.add_goldens_from_json_file(file_path=str(_DATASET_PATH))
 
 # ---------------------------------------------------------------------------
 # MLX runner — calls the model directly with the prompt from golden.input.
