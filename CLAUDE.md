@@ -125,6 +125,7 @@ There are no JS/TS test suites yet. When adding them, place them under `ui/__tes
 | `MERIDIAN_OO_AUTH` | (unset → no auth) | Base64 `user:password` for OpenObserve OTLP auth |
 | `MLX_SERVER_URL` | (unset → in-process load) | URL of a running MLX classifier server (eval pipeline) |
 | `EVAL_DATASET_PATH` | `services/tests/evals/.dataset.json` | Override Goldens file for the eval pipeline |
+| `SESSION_TEXT_CAP` | `2500` (chars) | Per-session OCR/a11y excerpt cap in the classifier prompt. Set to `0` to disable truncation for eval experiments (caller is then responsible for not blowing the model's context window — phi-4 = 16k tokens). |
 
 Tilde expansion is handled by `Config::from_env()`. Never hardcode paths.
 

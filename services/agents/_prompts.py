@@ -1,6 +1,7 @@
 """Prompt-building helpers for session_task_classifier — internal, not part of the public API."""
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime
 
@@ -10,9 +11,12 @@ _VSCODE_BANNER_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-# Max chars of session_text included in the prompt. ~625 tokens at 4 chars/token —
-# enough to identify files, ticket keys, and recent activity without inflating context.
-SESSION_TEXT_CAP = 2500
+# Max chars of session_text included in the prompt. Default 2500 (~625 tokens at
+# 4 chars/token) — enough to identify files, ticket keys, and recent activity
+# without inflating context in production. Override via SESSION_TEXT_CAP env var
+# for eval experiments; set to 0 to disable truncation entirely (caller is then
+# responsible for not blowing the model's context window).
+SESSION_TEXT_CAP = int(os.environ.get("SESSION_TEXT_CAP", "2500"))
 
 
 def _fmt_dur(duration_s: int | float) -> str:
@@ -68,8 +72,12 @@ def _format_session(session: dict) -> str:
     if session_text_val:
         source = (session.get("session_text_source") or "unknown").strip().lower()
         total = len(session_text_val)
-        excerpt = session_text_val[:SESSION_TEXT_CAP]
-        tail = f"\n  … ({total - SESSION_TEXT_CAP} more chars)" if total > SESSION_TEXT_CAP else ""
+        if SESSION_TEXT_CAP > 0 and total > SESSION_TEXT_CAP:
+            excerpt = session_text_val[:SESSION_TEXT_CAP]
+            tail = f"\n  … ({total - SESSION_TEXT_CAP} more chars)"
+        else:
+            excerpt = session_text_val
+            tail = ""
         parts.append(f"screen content [{source}]:\n{excerpt}{tail}")
 
     audio = session.get("audio_snippets") or []
