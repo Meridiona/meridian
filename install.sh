@@ -235,7 +235,48 @@ prompt_env_vars() {
     echo
 
     if prompt_category "Observability (OpenObserve)"; then
-        prompt_env_var "MERIDIAN_OO_AUTH" "base64(user:password) for OpenObserve" 1 "$root_env" "$svcs_env"
+        # Check if MERIDIAN_OO_AUTH is already set in any target file.
+        local _oo_auth_existing="" _oo_auth_found_in=""
+        for f in "$root_env" "$svcs_env"; do
+            local _existing
+            _existing="$(get_env_value "MERIDIAN_OO_AUTH" "$f")"
+            if [[ -n "$_existing" ]]; then
+                _oo_auth_existing="$_existing"
+                _oo_auth_found_in="$f"
+                break
+            fi
+        done
+
+        if [[ -n "$_oo_auth_existing" ]]; then
+            ok "MERIDIAN_OO_AUTH already set in $(basename "$(dirname "$_oo_auth_found_in")")/$(basename "$_oo_auth_found_in") — keeping"
+            for f in "$root_env" "$svcs_env"; do
+                if [[ -z "$(get_env_value "MERIDIAN_OO_AUTH" "$f")" ]]; then
+                    set_env_value "MERIDIAN_OO_AUTH" "$_oo_auth_existing" "$f"
+                fi
+            done
+        elif [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+            info "[DRY-RUN] would prompt: OpenObserve admin email + password"
+        else
+            echo "    OpenObserve runs locally — you are creating its admin account now."
+            echo "    Choose any email and password. They will be used the first time"
+            echo "    OpenObserve starts (they are not validated against any external service)."
+            echo
+            local _oo_email="" _oo_pass=""
+            read -r -p "    Admin email: " _oo_email
+            read -r -s -p "    Admin password: " _oo_pass
+            echo
+            if [[ -n "$_oo_email" && -n "$_oo_pass" ]]; then
+                local _oo_auth
+                _oo_auth="$(printf '%s:%s' "$_oo_email" "$_oo_pass" | base64)"
+                for f in "$root_env" "$svcs_env"; do
+                    set_env_value "MERIDIAN_OO_AUTH" "$_oo_auth" "$f"
+                done
+                ok "MERIDIAN_OO_AUTH written (base64-encoded email:password)"
+            else
+                info "  (skipped MERIDIAN_OO_AUTH — run 'meridian config edit' to add later)"
+            fi
+        fi
+
         prompt_env_var "MERIDIAN_OTLP_ENDPOINT" "OTLP HTTP traces endpoint (Rust side, e.g. http://localhost:5080/api/default/v1/traces)" 0 "$root_env"
         prompt_env_var "MERIDIAN_OTLP_TRACES_ENDPOINT" "OTLP HTTP traces endpoint (Python side; same URL as above is fine)" 0 "$svcs_env"
     fi
