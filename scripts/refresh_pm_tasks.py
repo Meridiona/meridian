@@ -43,8 +43,6 @@ DEFAULT_JQL = (
     "assignee = currentUser() AND statusCategory != Done AND type IN (Task, Feature) ORDER BY updated DESC"
 )
 DEFAULT_DB = Path.home() / ".meridian" / "meridian.db"
-DEFAULT_EXPIRES_MIN = 30
-
 
 # ── env loading ────────────────────────────────────────────────────────────────
 def _load_env(path: Path) -> int:
@@ -106,11 +104,10 @@ UPSERT_SQL = """
 INSERT INTO pm_tasks (
     task_key, provider, title, description_text,
     status_category, issue_type, project_key, url,
-    updated_at, fetched_at, expires_at,
+    updated_at, fetched_at,
     parent_key, epic_title
 ) VALUES (?, 'jira', ?, ?, ?, ?, ?, ?, ?,
           strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
-          strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+{mins} minutes'),
           ?, ?)
 ON CONFLICT(task_key) DO UPDATE SET
     title            = excluded.title,
@@ -121,9 +118,14 @@ ON CONFLICT(task_key) DO UPDATE SET
     url              = excluded.url,
     updated_at       = excluded.updated_at,
     fetched_at       = excluded.fetched_at,
-    expires_at       = excluded.expires_at,
     parent_key       = excluded.parent_key,
     epic_title       = excluded.epic_title
+"""
+
+SYNC_STATE_SQL = """
+INSERT INTO pm_sync_state (provider, last_synced_at)
+VALUES ('jira', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+ON CONFLICT(provider) DO UPDATE SET last_synced_at = excluded.last_synced_at
 """
 
 STATUS_CATEGORY_MAP = {"done": "done", "indeterminate": "in_progress"}
@@ -160,7 +162,6 @@ def main() -> int:
     ap.add_argument("--jql", default=DEFAULT_JQL)
     ap.add_argument("--limit", type=int, default=50)
     ap.add_argument("--db", type=Path, default=Path(os.environ.get("MERIDIAN_DB", DEFAULT_DB)))
-    ap.add_argument("--expires-min", type=int, default=DEFAULT_EXPIRES_MIN)
     ap.add_argument(
         "--no-prune",
         action="store_true",
@@ -207,15 +208,14 @@ def main() -> int:
         log.warning("nothing to upsert")
         return 0
 
-    sql = UPSERT_SQL.format(mins=int(args.expires_min))
     fetched_keys = {issue.get("key", "") for issue in issues if issue.get("key")}
 
     conn = sqlite3.connect(args.db)
     try:
         for issue in issues:
             norm = normalise(issue, base_url)
-            log.info(f"inserting {issue.get('key')}: {len(norm)} values")
-            conn.execute(sql, norm)
+            log.info("upserting %s", issue.get("key"))
+            conn.execute(UPSERT_SQL, norm)
 
         pruned = 0
         if args.no_prune:
@@ -245,14 +245,12 @@ def main() -> int:
             )
             pruned = cur.rowcount or 0
 
+        conn.execute(SYNC_STATE_SQL)
         conn.commit()
     finally:
         conn.close()
 
-    log.info(
-        "upserted %d rows; pruned %d stale; expires_at = now + %dmin",
-        len(issues), pruned, args.expires_min,
-    )
+    log.info("upserted %d rows; pruned %d stale", len(issues), pruned)
     return 0
 
 

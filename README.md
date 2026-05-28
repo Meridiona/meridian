@@ -27,56 +27,89 @@ to `app_sessions`:
 | `signals` | JSON array of deduplicated clipboard copies and app-switch events |
 | `min_frame_id` / `max_frame_id` | Frame-id range linking back to screenpipe |
 
-## Prerequisites
-
-- macOS (screenpipe records to `~/.screenpipe/db.sqlite`)
-- [screenpipe](https://screenpi.pe) running and recording
-- Rust 1.93.1 — install via `rustup` or `rust-toolchain.toml` is picked up automatically
-- Python 3.11+ (for the hermes classification layer)
-
 ## Getting started
 
-### 1. Clone and build
+### Prerequisites
+
+- macOS 13+
+- Internet connection (for Homebrew + dependency downloads)
+
+`install.sh` handles everything else — Homebrew, Rust, Node 18+, Python 3.11+, and screenpipe itself.
+
+### Install
 
 ```bash
 git clone https://github.com/meridiona/meridian
 cd meridian
-cargo build --release
+./install.sh
 ```
 
-`SQLX_OFFLINE=true` is set automatically by `.cargo/config.toml` — no manual export needed.
+The installer detects and offers to install each missing prerequisite, then builds the Rust daemon, the MCP server, the Next.js UI, sets up the Python services, walks you through granting screenpipe its three macOS permissions (Screen Recording, Accessibility, Microphone), and registers four launchd LaunchAgents: `com.meridiona.screenpipe`, `com.meridiona.daemon`, `com.meridiona.jira-updater`, and `com.meridiona.ui` (the dashboard at http://localhost:3000).
 
-### 2. Set up the Python services layer
+Useful flags:
 
-The classification pipeline (hermes AI agent) runs in a Python subprocess. Run this once after cloning:
+- `./install.sh --no-ui` — skip the dashboard build
+- `./install.sh --dry-run` — preview actions without executing
+- `./install.sh --no-daemon` — build only; don't register launchd agents
+- `./install.sh --skip-permissions` — skip the macOS permissions walkthrough
+- `./install.sh --skip-env` — skip the credential walkthrough
+
+### Configure
+
+`./install.sh` walks you through credential prompts grouped by category:
+
+- **Cloud LLM** — `OPENROUTER_API_KEY` (skip if you're running a local LLM)
+- **Jira** — URL, email, API token, project keys (gated by `[y/N]`)
+- **GitHub** — personal access token, org, repos
+- **Linear** — API key, team IDs
+- **Observability (OpenObserve)** — base64 auth + OTLP endpoints
+
+Empty input skips that variable. Values already in the relevant .env file are preserved on re-run.
+
+The credentials are written to three files under the hood, one per daemon:
+
+- `~/.meridian/.env` — Rust daemon (Jira/GitHub/Linear + observability)
+- `services/.env` — Python agents (LLM endpoint + Jira + observability)
+- `services/.hermes/.env` — hermes-agent library (`OPENROUTER_API_KEY`)
+
+To edit any of them later:
 
 ```bash
-bash scripts/setup-services.sh
+meridian config edit            # opens ~/.meridian/.env in $EDITOR
+$EDITOR services/.env           # Python agents
+$EDITOR services/.hermes/.env   # hermes
 ```
 
-This will:
-- Create `services/.venv` and install Python dependencies
-- Generate `services/.hermes/config.yaml` from the template
-- Create `services/.hermes/.env` for your API key
-
-Then fill in your model API key:
-```bash
-$EDITOR services/.hermes/.env   # set OLLAMA_API_KEY
-```
-
-> If `CLASSIFICATION_ENABLED=false` is set, this step is optional — the daemon runs ETL and categorisation only.
-
-### 3. Run
+To re-run only the credential walkthrough (skipping builds/permissions):
 
 ```bash
-./target/release/meridian
+# Re-prompt: delete the value(s) you want to re-set, then re-run install.sh.
+# Note: install.sh skips any variable already populated.
+./install.sh --skip-permissions
 ```
 
-The daemon checks the classification stack is ready on startup and exits immediately with a clear error message if anything is missing — it will never start and silently fail on every tick.
+If you want the prompts off entirely:
 
-The daemon runs an immediate ETL pass over all existing screenpipe data, then polls every 60 seconds for new frames. Stop it with `Ctrl-C` or `SIGTERM`.
+```bash
+./install.sh --skip-env
+```
+
+### Run
+
+```bash
+meridian start          # bring up all four daemons (screenpipe + daemon + jira-updater + ui)
+meridian status         # check what's running
+meridian logs           # tail the Rust daemon log
+meridian logs ui        # tail the dashboard log
+meridian doctor         # diagnose missing config / services / permissions
+meridian permissions    # re-run the screenpipe permissions walkthrough
+```
+
+Once started, the dashboard is at **http://localhost:3000**. Stop with `meridian stop`. Remove everything with `meridian uninstall`.
 
 ## Configuration
+
+These variables are collected interactively by `./install.sh`. The table below is the authoritative reference for what each one means.
 
 All settings are via environment variables; defaults work out of the box.
 
@@ -159,10 +192,10 @@ screenpipe.db (read-only)
 
 Meridian ships a TypeScript MCP server that exposes your session data to any MCP-compatible AI tool (Claude Code, Claude Desktop, Cursor, etc.).
 
+`./install.sh` builds the MCP server into `packages/meridian-mcp/dist/index.js`. To rebuild it manually:
+
 ```bash
-cd packages/meridian-mcp
-npm install
-npm run build
+cd packages/meridian-mcp && npm run build
 ```
 
 Add to your MCP client config (e.g. `~/Library/Application Support/Claude/claude_desktop_config.json`):
