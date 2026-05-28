@@ -116,6 +116,16 @@ def main() -> int:
         root_span.set_attribute("dataset_path", str(dataset_path))
         root_span.set_attribute("server_url",   server_url)
         root_span.set_attribute("dataset_size", len(dataset.goldens))
+        # TODO(task#1): also set `model_id` on this root span by querying the MLX
+        # server's /info endpoint (to be added — server doesn't expose it yet).
+        # Falling back to MLX_MODEL_ID env var or the source-code default
+        # (run_task_linker_mlx.py:54) is brittle — both can disagree with the
+        # actually-loaded model. The eval-feedback skill currently has the same
+        # gap and gets the model name from human input or source code, which
+        # is how `phi-4-4bit` ended up labelling 2 runs that actually ran on
+        # Qwen3.5-9B-OptiQ-4bit (see FEEDBACK.json model_label_corrected_on).
+        # Until /info exists, fall back to grepping ~/.meridian/logs/mlx-server.log
+        # for the most recent "loading <model>" line.
 
         print(f"{'seed':>5} {'app':<14} {'diff':<11} {'exp_key':<10} {'act_key':<10} K {'exp_type':<10} {'act_type':<10} T {'s':>4}")
         print("-" * 95)

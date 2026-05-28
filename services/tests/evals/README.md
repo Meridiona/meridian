@@ -83,16 +83,17 @@ MLX_SERVER_URL=http://localhost:7823 \
 services/.venv/bin/deepeval test run services/tests/evals/test_mlx_classifier.py \
   -k test_mlx_e2e \
   --override-ini "addopts=" \
-  --identifier "phi4-4bit-dev_a-baseline" \
+  --identifier "qwen35-9b-optiq-4bit-dev_a-baseline" \
   --ignore-errors
 ```
 
 Open the dashboard at `https://app.confident-ai.com` after the run completes. Each `--identifier` becomes a tagged run row.
 
 **Identifier conventions** (matters for run-over-run diffing):
-- `<model>-<dataset>-<purpose>` — e.g. `qwen3-7b-dev_a-baseline`, `phi4-4bit-dev_a-skill_v2_decoy_aware`
+- `<model>-<dataset>-<purpose>` — e.g. `qwen35-9b-optiq-4bit-dev_a-baseline`, `qwen35-9b-dev_a-skill_v2_decoy_aware`
 - Repeat the same identifier across runs to track the same configuration over time; vary identifier when you swap any of: model, prompt variant, temperature, dataset.
 - Add date suffix (`-20260528`) when you want immutable snapshots vs. moving baselines.
+- The `<model>` portion should match the actually-loaded MLX model (see `~/.meridian/logs/mlx-server.log` "loading <model>" line, or query the planned `/info` endpoint — see TODO in `smoke_run.py`). Do not infer from source-code defaults; `MLX_MODEL_ID` env var can override them.
 
 ### Choosing between OpenObserve and Confident AI
 
@@ -102,7 +103,7 @@ Open the dashboard at `https://app.confident-ai.com` after the run completes. Ea
 | "What did the classifier reason for seed_id=26?" | OpenObserve — `actual_reasoning` event has full text |
 | "Which Goldens flipped between yesterday's run and today's?" | Confident AI — per-Golden regression diff (the killer feature) |
 | "How has hard-decoy accuracy trended this week?" | Confident AI — per-tier history charts |
-| "Compare qwen3-7b vs phi-4-4bit across all tiers" | Confident AI — hyperparameter A/B view |
+| "Compare model-A vs model-B across all tiers" | Confident AI — hyperparameter A/B view |
 | "I want everything local, no third-party cloud" | OpenObserve only (build `compare_runs.py` for diffs) |
 
 Both can coexist as complementary views, but **not in the same process** — `smoke_run.py` calls `observability.setup()` which routes OTel spans to OpenObserve; `deepeval test run` hijacks the global TracerProvider and routes to Confident AI. Run each separately when you want both views of the same eval state.
@@ -163,6 +164,19 @@ The dataset is intentionally tilted toward failure modes that matter in producti
 | `untracked` | classifier hallucinates tickets when none fits (the "confidently wrong" mode) |
 
 A flat accuracy number lies about regressions — look at the per-tier breakdown, not just the headline.
+
+---
+
+## TODO / planned work
+
+- **Full-pipeline eval mode** — currently the eval only benchmarks the classifier in isolation (it receives pre-stored `session_text` from the seed). The right long-term design is a second eval mode (`--mode=full-pipeline`) that:
+  1. Pulls raw frames from screenpipe DB for a given `frame_id` range (snapshotted at label time alongside the seed)
+  2. Runs `extract_block_context()` / ETL pipeline to produce `session_text` fresh
+  3. Feeds that into the classifier and scores against ground truth
+  
+  This would let you benchmark ETL changes (e.g. raising `SESSION_TEXT_CAP`, prioritising active-file content over file-tree chrome) with the same per-tier accuracy breakdown — not just code-review them. Key prerequisite: the real-session extraction script (task #3) needs to snapshot raw screenpipe frame rows at label time before they are pruned.
+  
+  Until then: use `--mode=classifier` (default) for model/prompt experiments, and rely on integration tests (`cargo test`) for ETL correctness.
 
 ---
 

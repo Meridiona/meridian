@@ -57,7 +57,7 @@
       "trace_id": "945c2f502830e4dc73a9e4a9ec417496",
       "confident_ai_run": "https://app.confident-ai.com/project/cmpp4mjzy000ho413tsk2wrry/test-runs/cmpp5td4a000ijv13aqffxv3y/test-cases",
       "date": "2026-05-28",
-      "model": "mlx-community/phi-4-4bit",
+      "model": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
       "prompt_version": "2.0.0",
       "prompt_path": "services/skills/activity/task-classifier/SKILL.md",
       "dataset": "services/tests/evals/golden_seed/dev_a_sessions.json",
@@ -74,14 +74,16 @@
         "session_type_accuracy": 0.846,
         "both_accuracy": 0.808
       },
-      "notes": "First end-to-end run on the hand-authored Dev A dataset. Establishes the regression baseline. All 5 failures over-classify into `task` — see failure_class:optimism-bias."
+      "notes": "First end-to-end run on the hand-authored Dev A dataset. Establishes the regression baseline. All 5 failures over-classify into `task` — see failure_class:optimism-bias.",
+      "model_label_corrected_on": "2026-05-28",
+      "model_label_correction_note": "Originally logged as `mlx-community/phi-4-4bit` based on conversation context — verified against ~/.meridian/logs/mlx-server.log and the env on PID 79529 shows the running MLX server has loaded Qwen3.5-9B-OptiQ-4bit since 2026-05-25. The `run_id` and Confident AI `--identifier` still carry the `phi4-4bit-...` string (immutable history); only the `model` field reflects the actual loaded model. Source of drift documented in task #1 (add /info endpoint)."
     },
     {
       "run_id": "smoke_20260528T162251",
       "trace_id": "dfc053b27f21bcb7df86feacd228e06b",
       "confident_ai_run": null,
       "date": "2026-05-28",
-      "model": "mlx-community/phi-4-4bit",
+      "model": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
       "prompt_version": "2.0.0",
       "prompt_path": "services/skills/activity/task-classifier/SKILL.md",
       "dataset": "services/tests/evals/golden_seed/dev_a_sessions.json",
@@ -98,7 +100,9 @@
         "session_type_accuracy": 0.725,
         "both_accuracy": 0.65
       },
-      "notes": "Second run after the dataset expanded from 26 to 40 Goldens (same prompt v2.0.0, same model). Accuracy dropped (80.8% → 65.0% both) — expected given the new Goldens stress-test harder failure modes the baseline didn't cover: PR review, FaceTime, LM Studio dogfooding, DBeaver dataset-analysis, branch-name-locks. Surfaced 5 new failure_classes including the first observed false-negative (seed 42)."
+      "notes": "Second run after the dataset expanded from 26 to 40 Goldens (same prompt v2.0.0, same model). Accuracy dropped (80.8% → 65.0% both) — expected given the new Goldens stress-test harder failure modes the baseline didn't cover: PR review, FaceTime, LM Studio dogfooding, DBeaver dataset-analysis, branch-name-locks. Surfaced 5 new failure_classes including the first observed false-negative (seed 42).",
+      "model_label_corrected_on": "2026-05-28",
+      "model_label_correction_note": "Same correction as the baseline run — was logged as phi-4-4bit, actually ran on Qwen3.5-9B-OptiQ-4bit."
     }
   ],
   "observations": [
