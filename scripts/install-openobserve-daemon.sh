@@ -92,6 +92,49 @@ mkdir -p "${HOME}/.meridian/logs"
 mkdir -p "${HOME}/.openobserve/data"
 mkdir -p "${LAUNCH_AGENTS}"
 
+# Remove legacy ai.openobserve agent — it conflicts with com.meridiona.openobserve
+# (both try to bind port 5080, causing a crash-loop on the Meridian plist).
+_legacy_plist="${LAUNCH_AGENTS}/ai.openobserve.plist"
+if [[ -f "${_legacy_plist}" ]]; then
+    echo "→ removing legacy ai.openobserve agent"
+    launchctl bootout "gui/$(id -u)/ai.openobserve" 2>/dev/null || true
+    rm -f "${_legacy_plist}"
+    echo "✓ legacy agent removed"
+fi
+
+# Write the launcher script. run.sh reads ~/.openobserve/.log_level for
+# RUST_LOG (default: warn) and sets memory caps before exec-ing the binary.
+echo "→ writing ${HOME}/.openobserve/run.sh"
+cat > "${HOME}/.openobserve/run.sh" <<'RUNEOF'
+#!/usr/bin/env bash
+# meridian — normalises screenpipe activity into structured app sessions
+# OpenObserve launcher. Called by launchd (com.meridiona.openobserve).
+#
+# Log level override (dev):
+#   echo info   > ~/.openobserve/.log_level   # verbose
+#   echo warn   > ~/.openobserve/.log_level   # default (quiet)
+#   echo debug  > ~/.openobserve/.log_level   # very verbose
+#   rm ~/.openobserve/.log_level              # back to default
+#   launchctl kickstart -k gui/$(id -u)/com.meridiona.openobserve
+
+set -euo pipefail
+
+_level_file="${HOME}/.openobserve/.log_level"
+if [[ -f "${_level_file}" ]]; then
+    RUST_LOG="$(tr -d '[:space:]' < "${_level_file}")"
+else
+    RUST_LOG="warn"
+fi
+export RUST_LOG
+
+export ZO_MEMORY_CACHE_MAX_SIZE=2147483648   # 2 GB (cache layer)
+export ZO_DATAFUSION_POOL_SIZE=4294967296    # 4 GB (query engine)
+
+exec "${HOME}/.openobserve/openobserve"
+RUNEOF
+chmod +x "${HOME}/.openobserve/run.sh"
+echo "✓ run.sh written"
+
 # Write the plist via Python so email/password values with special characters
 # are substituted safely without sed delimiter collisions.
 echo "→ writing ${PLIST_DEST}"

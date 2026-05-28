@@ -21,9 +21,12 @@
     <key>Label</key>
     <string>com.meridiona.openobserve</string>
 
+    <!-- run.sh reads ~/.openobserve/.log_level for RUST_LOG (default: warn)
+         and sets memory caps before exec-ing the binary. -->
     <key>ProgramArguments</key>
     <array>
-        <string>{{OO_BIN}}</string>
+        <string>/bin/bash</string>
+        <string>{{HOME}}/.openobserve/run.sh</string>
     </array>
 
     <key>EnvironmentVariables</key>
@@ -41,6 +44,10 @@
         <string>{{HOME}}/.openobserve/data</string>
         <key>ZO_HTTP_PORT</key>
         <string>5080</string>
+        <key>ZO_GRPC_PORT</key>
+        <string>5081</string>
+        <key>ZO_TELEMETRY</key>
+        <string>false</string>
     </dict>
 
     <key>StandardOutPath</key>
