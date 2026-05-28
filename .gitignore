@@ -52,3 +52,13 @@ ruvector.db
 # Compiled Swift binaries (sources committed; binaries are platform-specific)
 swift/ax_terminal
 swift/vscode-panel-reader
+
+# deepeval CLI cache (auto-written by `deepeval test run` / `deepeval login`)
+.deepeval/
+.deepeval-cache.json
+.deepeval_telemetry.txt
+.latest_test_run.json
+.latest_run_full.json
+
+# Rendered Goldens — regenerate on demand from golden_seed/ via render_seeds.py
+services/tests/evals/.synthetic-dataset-*.json
