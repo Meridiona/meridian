@@ -64,7 +64,13 @@ def render(persona: str) -> list[dict]:
         raise FileNotFoundError(f"missing candidates file: {candidates_path}")
 
     sessions   = json.loads(sessions_path.read_text())["sessions"]
-    candidates = json.loads(candidates_path.read_text())["tasks"]
+    _candidates_raw = json.loads(candidates_path.read_text())
+    candidates = _candidates_raw.get("tasks") or _candidates_raw.get("tickets", [])
+    # Normalise: some candidate files use 'id' instead of 'task_key'
+    candidates = [
+        {**c, "task_key": c["task_key"]} if "task_key" in c else {**c, "task_key": c["id"]}
+        for c in candidates
+    ]
 
     goldens: list[dict] = []
     scoreable_prior: list[dict] = []
