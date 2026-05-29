@@ -8,21 +8,44 @@ For the full failure-mode taxonomy and reasoning-about-evals primer, see [`TESTI
 
 ## File inventory
 
+### Data
+
+| Path | Role |
+|---|---|
+| `data/seeds/sessions_<persona>.json` | Hand-authored seed sessions. One file per persona: `sessions_a_meridian.json` (Meridian dev, 35 sessions), `sessions_b_generic.json` (generic SaaS dev, 35 sessions). Each session has structured fields + `ground_truth` + `design_notes` flagging the failure mode it targets. |
+| `data/seeds/tickets_<persona>.json` | Open ticket list the classifier picks from. `tickets_meridian.json` = 5 real KAN-* + 2 synthetic decoys. `tickets_generic.json` = 5 real PROJ-* + 2 synthetic decoys. |
+| `data/generated/` | **Gitignored.** All rendered outputs go here — regenerate on demand. |
+| `data/generated/goldens_<persona>.json` | Goldens rendered from hand-authored seeds (output of `render_seeds.py`). |
+| `data/generated/goldens_real.json` | Goldens exported from real labelled sessions in `meridian.db` (output of `build_dataset.py`). |
+
+### Scripts
+
 | File | Role |
 |---|---|
-| `golden_seed/dev_<persona>_sessions.json` | Hand-authored seed sessions. Persona today: `a_meridian` (35 sessions). Future: `b_generic`. Each session has structured fields + `ground_truth` + `design_notes` flagging which failure mode it targets. |
-| `golden_seed/candidates_<project>.json` | Open ticket list the classifier picks from. `candidates_meridian.json` = 5 real KAN-* + 2 synthetic decoys (`KAN-142`, `KAN-145`). |
-| `render_seeds.py` | Bridge — reads seed sessions, projects through `agents._prompts.build_user_message`, writes `.synthetic-dataset-<persona>.json` in the deepeval Golden shape. |
-| `.dataset.json` | Goldens exported from real labelled sessions in `meridian.db` (legacy path via `build_dataset.py`). |
-| `.synthetic-dataset-<persona>.json` | Goldens rendered from hand-authored seeds (output of `render_seeds.py`). Not committed — regenerate on demand. |
-| `build_dataset.py` | Real-data exporter: queries `meridian.db` for already-classified sessions and writes `.dataset.json`. Two modes (SESSION_IDS / bulk). |
-| `metrics.py` | `TaskKeyMatchMetric`, `SessionTypeMatchMetric` (exact-match, no LLM), plus `AGENT_E2E_METRICS` (uses an Ollama-judged `TaskCompletionMetric` — only relevant for hermes-agent eval, not the MLX classifier). |
-| `conftest.py` | pytest path setup. |
-| `test_mlx_classifier.py` | deepeval-driven pytest suite — runs `_run_mlx` over every Golden, asserts both metrics pass. Smoke tests + e2e + per-Golden parametrize. Honours `EVAL_DATASET_PATH`. |
-| `test_stage3_classifier.py` | Half-built scaffold for hermes-agent eval. Placeholder for model/prompt sweep (`CANDIDATE_MODELS`, `PROMPT_VARIANTS` unfilled). |
-| `eval_agent.py` | hermes-agent end-to-end eval (uses `AGENT_E2E_METRICS`). Standalone, not in CI. |
-| `smoke_run.py` | One-shot runner that emits OTel spans to OpenObserve (one `eval.run` root + one `eval.classify` per Golden). Use this for experimentation; CI uses `test_mlx_classifier.py`. |
-| `strategies.py` | `EvalStrategy` base class + concrete strategies (`DirectHttpStrategy`, future `ExtractThenClassifyStrategy`, etc.) + `REGISTRY` + `from_env()` factory. Selected via `EVAL_STRATEGY` env var. |
+| `render_seeds.py` | Reads `data/seeds/` → renders `data/generated/goldens_<persona>.json` in the deepeval Golden shape. Run after any seed edit. |
+| `build_dataset.py` | Real-data exporter: queries `meridian.db` for already-classified sessions → writes `data/generated/goldens_real.json`. Two modes (SESSION_IDS / bulk). |
+
+### Eval runners (standalone)
+
+| File | Role |
+|---|---|
+| `eval_classifier.py` | Interactive eval runner — scores Goldens against the MLX server, emits OTel spans to OpenObserve, prints per-tier accuracy table. Use this for experimentation. |
+| `eval_agent.py` | hermes-agent eval — runs real DB sessions through the hermes AIAgent, emits deepeval `@observe` traces to Confident AI. Standalone, not in CI. |
+
+### Pytest suites
+
+| File | Role |
+|---|---|
+| `test_classifier.py` | CI pytest suite — harness smoke tests (no model) + `test_mlx_e2e` + `test_mlx_per_golden` → Confident AI. Formal assertions; runs in CI. |
+| `test_model_sweep.py` | Scaffold for Ollama model / prompt variant comparison. `CANDIDATE_MODELS` and `PROMPT_VARIANTS` are unpopulated — activate when running KAN-113/KAN-114. |
+
+### Support
+
+| File | Role |
+|---|---|
+| `metrics.py` | `TaskKeyMatchMetric`, `SessionTypeMatchMetric` (exact-match, no LLM), plus `AGENT_E2E_METRICS` (Ollama-judged `TaskCompletionMetric` for hermes-agent eval). |
+| `strategies.py` | `EvalStrategy` base class + `DirectHttpStrategy` + `REGISTRY` + `from_env()`. Selected via `EVAL_STRATEGY` env var. |
+| `conftest.py` | pytest path setup only. |
 
 ---
 
@@ -30,116 +53,92 @@ For the full failure-mode taxonomy and reasoning-about-evals primer, see [`TESTI
 
 **Eval strategies live in `services/tests/evals/strategies.py`, NOT in `services/agents/`.**
 
-This is intentional and **must be followed by all coding agents** working on this repo:
-
-- `services/agents/` is for **production code** — the running tagger daemon, the MLX server, the in-process classifier (`run_task_linker_mlx.py`). Code here ships in the production tagger path.
-- `services/tests/evals/strategies.py` is for **eval-only strategies** — pluggable inference approaches the eval harness uses to compare models, sampling params, agentic decompositions, retrieval-augmented variants, etc.
-- A strategy that proves out in eval and is worth shipping is **promoted** into `services/agents/` as a deliberate, separate productionization step. It is NOT silently shared between eval and production.
-
-**Why this matters:**
-1. Production code stays small and auditable. Adding an experimental strategy class to `services/agents/` pollutes the production surface with code the tagger never executes.
-2. Eval experimentation can move fast without "is this production-ready?" overhead.
-3. The promotion step forces a deliberate review: does this strategy meet production constraints (latency, memory, error handling, observability) — not just eval accuracy?
+- `services/agents/` = **production code** — tagger daemon, MLX server, in-process classifier. Ships in the production path.
+- `services/tests/evals/strategies.py` = **eval-only strategies** — pluggable inference approaches for comparing models, sampling params, agentic decompositions, retrieval variants.
+- A strategy that proves out in eval is **promoted** into `services/agents/` as a deliberate, separate step — never silently shared.
 
 **Common mistakes to avoid:**
-- ❌ Don't add a new `XYZStrategy` to `services/agents/` because "it might be useful in production". Add it here first; promote later.
-- ❌ Don't import from `services/agents/strategies*` — there are no such modules. Production never imports eval strategies.
-- ❌ Don't name eval strategies with an `_eval` suffix once they're inside this directory; the location already implies the scope.
+- ❌ Don't add a new strategy to `services/agents/` before it's proven in eval.
+- ❌ Don't import from `services/agents/strategies*` — no such module exists.
 
 ---
 
 ## Run cookbook
 
-### Smoke run on the synthetic dataset
+### Eval run on the synthetic dataset (primary workflow)
 
 ```bash
-# 1. Render the latest seeds
-services/.venv/bin/python services/tests/evals/render_seeds.py            # default a_meridian
+# 1. Render seeds → Goldens (once per seed edit)
+services/.venv/bin/python services/tests/evals/render_seeds.py a_meridian
+# writes: services/tests/evals/data/generated/goldens_a_meridian.json
 
-# 2. Run against the live MLX server
-EVAL_DATASET_PATH=services/tests/evals/.synthetic-dataset-a_meridian.json \
-MLX_SERVER_URL=http://localhost:7823 \
-services/.venv/bin/python services/tests/evals/smoke_run.py
+# 2. Run eval (server auto-discovered on port 7823)
+EVAL_DATASET_PATH=services/tests/evals/data/generated/goldens_a_meridian.json \
+services/.venv/bin/python services/tests/evals/eval_classifier.py
+
+# Optional: validate a specific model is loaded
+services/.venv/bin/python services/tests/evals/eval_classifier.py --model phi-4
 ```
 
-Prints a per-tier accuracy table on stdout; pushes a full trace tree to OpenObserve under `service.name = meridian-eval`.
+Prints a per-tier accuracy table to stdout; pushes a full trace tree to OpenObserve under `service.name = meridian-eval`.
 
-### Pytest mode (gate / CI)
+### Pytest mode (CI / formal gate)
 
 ```bash
 # Smoke tests only — no model load, ~1 s
-services/.venv/bin/pytest services/tests/evals/test_mlx_classifier.py \
+services/.venv/bin/pytest services/tests/evals/test_classifier.py \
   -m "integration and not slow"
 
-# End-to-end (uses MLX server if MLX_SERVER_URL set, else in-process load)
-MLX_SERVER_URL=http://localhost:7823 \
-services/.venv/bin/pytest services/tests/evals/test_mlx_classifier.py \
+# End-to-end eval → Confident AI
+EVAL_DATASET_PATH=services/tests/evals/data/generated/goldens_a_meridian.json \
+services/.venv/bin/pytest services/tests/evals/test_classifier.py \
   -k test_mlx_e2e -v
 
-# Per-Golden parametrize — one pytest test_case per Golden
-MLX_SERVER_URL=http://localhost:7823 \
-services/.venv/bin/pytest services/tests/evals/test_mlx_classifier.py \
+# Per-Golden parametrize
+EVAL_DATASET_PATH=services/tests/evals/data/generated/goldens_a_meridian.json \
+services/.venv/bin/pytest services/tests/evals/test_classifier.py \
   -k test_mlx_per_golden -v
 ```
 
-`EVAL_DATASET_PATH` defaults to `.dataset.json`. Set it explicitly to score the synthetic dataset.
-
 ### Confident AI dashboard (regression view, run history)
 
-The deepeval-native cloud dashboard at [confident-ai.com](https://confident-ai.com) — best place to see per-Golden regression diffs between runs, per-tier accuracy trends, and hyperparameter A/B comparisons. Free tier covers small teams.
-
 ```bash
-# One-time login (interactive — opens browser)
+# One-time login
 services/.venv/bin/deepeval login
 
-# IMPORTANT: deepeval login writes the API key to .env.local by default.
-# Move it to .env so the rest of the toolchain picks it up via python-dotenv.
-# Final state should have CONFIDENT_API_KEY=<key> in .env (gitignored).
-
-# Each run: tag with --identifier so you can find it in the dashboard.
-# --override-ini "addopts=" is REQUIRED to bypass the project-wide default
-#   `-m 'not integration and not slow'` filter in services/pyproject.toml,
-#   which otherwise deselects every test in test_mlx_classifier.py.
 CONFIDENT_API_KEY=$(grep '^CONFIDENT_API_KEY=' .env | cut -d= -f2-) \
-EVAL_DATASET_PATH=services/tests/evals/.synthetic-dataset-a_meridian.json \
-MLX_SERVER_URL=http://localhost:7823 \
-services/.venv/bin/deepeval test run services/tests/evals/test_mlx_classifier.py \
+EVAL_DATASET_PATH=services/tests/evals/data/generated/goldens_a_meridian.json \
+services/.venv/bin/deepeval test run services/tests/evals/test_classifier.py \
   -k test_mlx_e2e \
   --override-ini "addopts=" \
   --identifier "qwen35-9b-optiq-4bit-dev_a-baseline" \
   --ignore-errors
 ```
 
-Open the dashboard at `https://app.confident-ai.com` after the run completes. Each `--identifier` becomes a tagged run row.
-
-**Identifier conventions** (matters for run-over-run diffing):
-- `<model>-<dataset>-<purpose>` — e.g. `qwen35-9b-optiq-4bit-dev_a-baseline`, `qwen35-9b-dev_a-skill_v2_decoy_aware`
-- Repeat the same identifier across runs to track the same configuration over time; vary identifier when you swap any of: model, prompt variant, temperature, dataset.
-- Add date suffix (`-20260528`) when you want immutable snapshots vs. moving baselines.
-- The `<model>` portion should match the actually-loaded MLX model (see `~/.meridian/logs/mlx-server.log` "loading <model>" line, or query the planned `/info` endpoint — see TODO in `smoke_run.py`). Do not infer from source-code defaults; `MLX_MODEL_ID` env var can override them.
+**Identifier conventions:** `<model>-<dataset>-<purpose>` e.g. `qwen35-9b-optiq-4bit-dev_a-baseline`. Repeat to track the same config over time; vary when you change model, prompt, temperature, or dataset.
 
 ### Choosing between OpenObserve and Confident AI
 
-| Question you want answered | Use |
+| Question | Use |
 |---|---|
-| "Did the run land all 26 spans? Was the root captured?" | OpenObserve — full trace tree with custom attributes |
+| "Did all spans land? Was the root captured?" | OpenObserve — full trace tree with custom attributes |
 | "What did the classifier reason for seed_id=26?" | OpenObserve — `actual_reasoning` event has full text |
-| "Which Goldens flipped between yesterday's run and today's?" | Confident AI — per-Golden regression diff (the killer feature) |
+| "Which Goldens flipped between yesterday and today?" | Confident AI — per-Golden regression diff |
 | "How has hard-decoy accuracy trended this week?" | Confident AI — per-tier history charts |
 | "Compare model-A vs model-B across all tiers" | Confident AI — hyperparameter A/B view |
-| "I want everything local, no third-party cloud" | OpenObserve only (build `compare_runs.py` for diffs) |
+| "I want everything local, no third-party cloud" | OpenObserve only |
 
-Both can coexist as complementary views, but **not in the same process** — `smoke_run.py` calls `observability.setup()` which routes OTel spans to OpenObserve; `deepeval test run` hijacks the global TracerProvider and routes to Confident AI. Run each separately when you want both views of the same eval state.
+Both can coexist as complementary views, but **not in the same process** — `eval_classifier.py` routes OTel spans to OpenObserve; `deepeval test run` hijacks the global TracerProvider and routes to Confident AI. Run each separately.
 
 ---
 
 ## Golden file schema
 
-After `render_seeds.py`, `.synthetic-dataset-<persona>.json` contains an array of:
+After `render_seeds.py`, `data/generated/goldens_<persona>.json` contains an array of:
 
 ```json
 {
-  "input": "<rendered prompt string from build_user_message — RECENT WORK CONTEXT + SESSION + CANDIDATE TICKETS>",
+  "input": "<rendered prompt from build_user_message — RECENT WORK CONTEXT + SESSION + CANDIDATE TICKETS>",
   "expected_output": "{\"task_key\": \"KAN-139\" | \"none\", \"session_type\": \"task\"|\"overhead\"|\"untracked\", \"reasoning\": \"<ground truth reasoning>\"}",
   "additional_metadata": {
     "seed_id":    7,
@@ -150,20 +149,20 @@ After `render_seeds.py`, `.synthetic-dataset-<persona>.json` contains an array o
 }
 ```
 
-The recent-context block is built from the last 5 *scoreable* prior seed sessions (`scoreable=true` in `ground_truth`). Sub-scoreable sessions (`scoreable=false`) exist in the seed file for timeline density but never enter the Goldens or the recent-context block.
+The recent-context block is built from the last 5 *scoreable* prior seed sessions. Non-scoreable sessions (`scoreable=false`) exist for timeline density but never enter Goldens or the recent-context block.
 
 ---
 
 ## OpenObserve trace schema
 
-`smoke_run.py` emits two span types under `service.name = meridian-eval`:
+`eval_classifier.py` emits two span types under `service.name = meridian-eval`:
 
 | Span | Parent | Key attributes |
 |---|---|---|
-| `eval.run` | root | `run.id`, `persona`, `dataset_path`, `server_url`, `dataset_size`, `accuracy.task_key`, `accuracy.session_type`, `accuracy.both` |
+| `eval.run` | root | `run.id`, `persona`, `dataset_path`, `server_url`, `model_id`, `dataset_size`, `accuracy.task_key`, `accuracy.session_type`, `accuracy.both` |
 | `eval.classify` | `eval.run` | `seed_id`, `difficulty`, `app_name`, `persona`, `expected.task_key`, `expected.session_type`, `actual.task_key`, `actual.session_type`, `classifier.confidence`, `key_ok`, `type_ok`, `both_ok`, `elapsed_s`, event `actual_reasoning` |
 
-Per-Golden `force_flush` in the runner ensures spans land in OpenObserve as they complete (so killing the run mid-flight keeps everything classified so far; you can also watch progress live in the OpenObserve Traces UI).
+Per-Golden `force_flush` ensures spans land in OpenObserve as they complete — killing the run mid-flight keeps everything classified so far.
 
 ---
 
@@ -171,9 +170,9 @@ Per-Golden `force_flush` in the runner ensures spans land in OpenObserve as they
 
 - After any edit to `services/skills/activity/task-classifier/SKILL.md` (prompt change)
 - After bumping `MLX_MODEL_ID` or restarting the MLX server with a different model
-- After adding or editing Goldens in `golden_seed/dev_<persona>_sessions.json`
-- After any change to `services/agents/run_task_linker_mlx.py` (FSM schema, sampling defaults, system_prompt composition)
-- Before merging any PR that touches the classifier or its prompt — eyeball the per-tier table for regressions
+- After adding or editing Goldens in `data/seeds/sessions_<persona>.json`
+- After any change to `services/agents/run_task_linker_mlx.py` (FSM schema, sampling, system prompt)
+- Before merging any PR that touches the classifier or its prompt
 
 The dataset is intentionally tilted toward failure modes that matter in production:
 
@@ -183,31 +182,24 @@ The dataset is intentionally tilted toward failure modes that matter in producti
 | `medium` | recent-context block isn't earning its weight |
 | `hard` | model can't discriminate close ticket pairs |
 | `hard-decoy` | model picks decoys when it shouldn't |
-| `overhead` | classifier hallucinates tickets for non-work content (highest-volume prod failure) |
-| `untracked` | classifier hallucinates tickets when none fits (the "confidently wrong" mode) |
+| `overhead` | classifier hallucinates tickets for non-work content |
+| `untracked` | classifier hallucinates tickets when none fits |
 
-A flat accuracy number lies about regressions — look at the per-tier breakdown, not just the headline.
+A flat accuracy number hides regressions — always look at the per-tier breakdown.
 
 ---
 
 ## TODO / planned work
 
-- **Full-pipeline eval mode** — currently the eval only benchmarks the classifier in isolation (it receives pre-stored `session_text` from the seed). The right long-term design is a second eval mode (`--mode=full-pipeline`) that:
-  1. Pulls raw frames from screenpipe DB for a given `frame_id` range (snapshotted at label time alongside the seed)
-  2. Runs `extract_block_context()` / ETL pipeline to produce `session_text` fresh
-  3. Feeds that into the classifier and scores against ground truth
-  
-  This would let you benchmark ETL changes (e.g. raising `SESSION_TEXT_CAP`, prioritising active-file content over file-tree chrome) with the same per-tier accuracy breakdown — not just code-review them. Key prerequisite: the real-session extraction script (task #3) needs to snapshot raw screenpipe frame rows at label time before they are pruned.
-  
-  Until then: use `--mode=classifier` (default) for model/prompt experiments, and rely on integration tests (`cargo test`) for ETL correctness.
+- **Full-pipeline eval mode** — currently benchmarks the classifier in isolation (pre-stored `session_text`). A second mode (`--mode=full-pipeline`) would pull raw frames from screenpipe DB, run `extract_block_context()` / ETL fresh, then score. Key prerequisite: the real-session extraction script (task #3) needs to snapshot raw screenpipe frame rows at label time.
 
 ---
 
 ## Limitations / known issues
 
-- **`metrics.py` imports `OllamaModel` at module load**, so the `ollama` package must be installed even if you're only using the exact-match metrics. Acceptable for now; a lazy-init refactor would remove the dependency for classifier-only eval runs.
-- **Span loss without per-Golden flush** — `smoke_run.py` calls `force_flush` after every Golden. If you write a new runner that doesn't, expect to lose spans (esp. the root `eval.run`) when the BatchSpanProcessor's 5-second shutdown drain can't keep up with a 10-minute run.
-- **deepeval `@observe` ≠ OTel `@observe`** — the deepeval `@observe` in `test_mlx_classifier.py` targets Confident AI cloud; OpenObserve spans need OTel SDK setup via `observability.setup()` (see `smoke_run.py`). The two trace destinations are mutually exclusive within one process.
-- **OSS run-diff still pending** — Confident AI cloud has per-Golden run-over-run diff built in. OSS alternative is the still-pending `compare_runs.py` that would diff two `.synthetic-dataset-*.json` snapshots by `seed_id` (useful for an air-gapped workflow or to back up the Confident AI view).
-- **No prompt versioning** — `SKILL.md` is loaded once at module import. To A/B prompts, restart the MLX server with a different system prompt or wait for the Layer 1 refactor that makes `system_prompt` a per-call override.
-- **Confident AI sends prompt content to a third party** — if your seed `session_text` contains sensitive screen captures, redact before pushing, or stay OpenObserve-only.
+- **`metrics.py` imports `OllamaModel` at module load** — `ollama` package must be installed even for exact-match-only runs.
+- **Span loss without per-Golden flush** — `eval_classifier.py` calls `force_flush` after every Golden. New runners that skip this will lose spans on long runs.
+- **deepeval `@observe` ≠ OTel `@observe`** — `test_classifier.py` targets Confident AI; `eval_classifier.py` targets OpenObserve. Mutually exclusive within one process.
+- **OSS run-diff pending** — Confident AI has per-Golden run-over-run diff built in. OSS alternative (`compare_runs.py`) is not yet built.
+- **No prompt versioning** — `SKILL.md` is loaded once at module import. A/B prompts requires restarting the MLX server.
+- **Confident AI sends prompt content to a third party** — if seed `session_text` contains sensitive screen captures, redact before pushing, or stay OpenObserve-only.

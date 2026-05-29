@@ -17,7 +17,7 @@ Options (env vars):
     OLLAMA_MODEL  Judge + hermes model  (default: gemma4:31b)
     OLLAMA_HOST   Ollama base URL       (default: http://localhost:11434)
 
-Generate / refresh .dataset.json first:
+Generate / refresh data/generated/goldens_real.json first:
     SESSION_IDS=2276,2354,1961,2181,1792,1972,2514 \\
       MERIDIAN_DB=~/.meridian/meridian.db \\
       python tests/evals/build_dataset.py
@@ -47,7 +47,7 @@ from deepeval.tracing import observe, update_current_span
 from metrics import AGENT_E2E_METRICS, CLASSIFIER_METRICS
 
 MERIDIAN_DB = Path(os.environ.get("MERIDIAN_DB", Path.home() / ".meridian/meridian.db"))
-_DATASET_FILE = Path(__file__).parent / ".dataset.json"
+_DATASET_FILE = Path(__file__).parent / "data" / "generated" / "goldens_real.json"
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +106,7 @@ def main() -> None:
 
     if not _DATASET_FILE.exists():
         print(f"ERROR: dataset not found at {_DATASET_FILE}", file=sys.stderr)
-        print("Run build_dataset.py first to generate it.", file=sys.stderr)
+        print("Run tests/evals/build_dataset.py first to generate it.", file=sys.stderr)
         sys.exit(1)
 
     dataset = EvaluationDataset()

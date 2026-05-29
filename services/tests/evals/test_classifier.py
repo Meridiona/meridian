@@ -1,27 +1,26 @@
-"""Eval suite for the MLX direct in-process classifier (run_task_linker_mlx.py).
+"""pytest test suite for the direct classifier (run_task_linker_mlx.py).
 
-MLX is a direct LLM call — not an agent SDK — so evaluation follows the
-DeepEval 4.0 component-level pattern: build LLMTestCase objects from goldens,
-then assert_test (per-case) or evaluate() (batch report).
+CI path — use this for formal assertions and Confident AI reports.
+For interactive experimentation with OTel traces, use eval_classifier.py instead.
 
 Run (from services/, with .venv313 active):
 
-    # Smoke tests only — no model load:
-    pytest tests/evals/test_mlx_classifier.py -m "integration and not slow"
+    # Harness smoke tests — no model load:
+    pytest tests/evals/test_classifier.py -m "integration and not slow"
 
     # End-to-end eval — all goldens in one DeepEval report:
-    MLX_SERVER_URL=http://localhost:7823 \
-        .venv313/bin/deepeval test run tests/evals/test_mlx_classifier.py \
+    EVAL_DATASET_PATH=tests/evals/data/generated/goldens_a_meridian.json \
+        .venv313/bin/deepeval test run tests/evals/test_classifier.py \
         -k "test_mlx_e2e" --identifier "mlx-baseline" --ignore-errors
 
     # Per-golden breakdown — individual pass/fail per session:
-    MLX_SERVER_URL=http://localhost:7823 \
-        .venv313/bin/deepeval test run tests/evals/test_mlx_classifier.py \
+    EVAL_DATASET_PATH=tests/evals/data/generated/goldens_a_meridian.json \
+        .venv313/bin/deepeval test run tests/evals/test_classifier.py \
         -k "test_mlx_per_golden" --identifier "mlx-per-golden" --ignore-errors
 
     # Manual accuracy table (no deepeval runner needed):
     MLX_SERVER_URL=http://localhost:7823 \
-        .venv313/bin/python3.13 tests/evals/test_mlx_classifier.py
+        .venv313/bin/python3.13 tests/evals/test_classifier.py
 
 Marks:
     integration — harness + metric wiring tests, no model call
@@ -61,12 +60,12 @@ os.environ.setdefault("HERMES_HOME", str(_SERVICES_DIR / ".hermes"))
 # expected_output is a JSON string: {"task_key": ..., "session_type": ..., "reasoning": ...}
 # ---------------------------------------------------------------------------
 
-# Dataset path is configurable via EVAL_DATASET_PATH — defaults to .dataset.json
-# (the real-pulled goldens from build_dataset.py). Point at .synthetic-dataset-<persona>.json
-# to run on the hand-authored seed sessions rendered by render_seeds.py.
+# Dataset path is configurable via EVAL_DATASET_PATH.
+# Defaults to data/generated/goldens_real.json (real sessions from build_dataset.py).
+# Point at data/generated/goldens_<persona>.json for hand-authored seed sessions.
 _DATASET_PATH = Path(
     os.environ.get("EVAL_DATASET_PATH")
-    or (Path(__file__).parent / ".dataset.json")
+    or (Path(__file__).parent / "data" / "generated" / "goldens_real.json")
 )
 dataset = EvaluationDataset()
 dataset.add_goldens_from_json_file(file_path=str(_DATASET_PATH))
@@ -177,7 +176,7 @@ def mlx_test_cases(tmp_path_factory: pytest.TempPathFactory) -> list[LLMTestCase
 def test_dataset_loads() -> None:
     """Dataset file exists and has at least one golden."""
     assert len(dataset.goldens) > 0, (
-        "tests/evals/.dataset.json is empty. "
+        "tests/evals/data/generated/goldens_real.json is empty or missing. "
         "Run tests/evals/build_dataset.py to populate it from meridian.db."
     )
 

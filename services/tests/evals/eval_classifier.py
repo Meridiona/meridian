@@ -1,22 +1,29 @@
-"""One-shot smoke runner — runs dev_a synthetic Goldens through the MLX server
-and emits OTel spans to OpenObserve so the run is visible in your existing
-tracing UI (the @observe decorator in test_mlx_classifier.py targets Confident AI
-cloud; this runner uses the OTel SDK directly to land in OpenObserve).
+"""Interactive classifier eval runner — scores Goldens against the MLX server
+and emits OTel spans to OpenObserve.
 
 Each Golden becomes a child span 'eval.classify' under one root span
 'eval.run'. Spans carry: model, persona, seed_id, difficulty, expected_*,
 actual_*, key_ok, type_ok, elapsed_s. Filter in OpenObserve by
 service=meridian-eval to see the full run as a trace tree.
 
+Use this for interactive experimentation (prompt changes, model swaps, new
+Goldens). For CI assertions and Confident AI reports use test_classifier.py.
+
 Pre-reqs:
-    - MLX server on MLX_SERVER_URL (e.g. http://localhost:7823)
+    - MLX server running (auto-discovered on port 7823, or set MLX_SERVER_URL)
     - MERIDIAN_OTLP_ENDPOINT + MERIDIAN_OO_AUTH set (loaded from .env)
     - services/.venv active
 
 Usage:
-    EVAL_DATASET_PATH=services/tests/evals/.synthetic-dataset-a_meridian.json \\
-    MLX_SERVER_URL=http://localhost:7823 \\
-    services/.venv/bin/python services/tests/evals/smoke_run.py
+    # Render Goldens first (once per persona edit):
+    services/.venv/bin/python services/tests/evals/render_seeds.py a_meridian
+
+    # Run eval (server auto-discovered; or set MLX_SERVER_URL explicitly):
+    EVAL_DATASET_PATH=services/tests/evals/data/generated/goldens_a_meridian.json \\
+    services/.venv/bin/python services/tests/evals/eval_classifier.py
+
+    # Validate a specific model is loaded:
+    services/.venv/bin/python services/tests/evals/eval_classifier.py --model phi-4
 
 Strategy selection:
     EVAL_STRATEGY=direct_http (default)  — POST to MLX /classify server
@@ -136,7 +143,7 @@ def main() -> int:
 
     dataset_path = Path(
         os.environ.get("EVAL_DATASET_PATH")
-        or (_EVAL_DIR / ".dataset.json")
+        or (_EVAL_DIR / "data" / "generated" / "goldens_real.json")
     )
     if not dataset_path.exists():
         print(f"ERROR: dataset not found at {dataset_path}", file=sys.stderr)

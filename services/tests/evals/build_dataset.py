@@ -1,4 +1,4 @@
-"""Build tests/evals/.dataset.json from real labeled sessions in meridian.db.
+"""Build data/generated/goldens_real.json from real labeled sessions in meridian.db.
 
 Two modes:
 
@@ -19,8 +19,8 @@ Options (env vars):
     MIN_CONFIDENCE  Minimum confidence for bulk mode (default: 0.85)
     LIMIT           Max sessions for bulk mode (default: 100)
 
-The output overwrites tests/evals/.dataset.json.
-Review and spot-check the exported goldens before committing them.
+Output: tests/evals/data/generated/goldens_real.json (gitignored — regenerate on demand).
+Review and spot-check the exported goldens before using them in eval runs.
 """
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ SESSION_IDS: list[int] = [
 ]
 MIN_CONFIDENCE = float(os.environ.get("MIN_CONFIDENCE", "0.85"))
 LIMIT = int(os.environ.get("LIMIT", "100"))
-OUTPUT = Path(__file__).parent / ".dataset.json"
+OUTPUT = Path(__file__).parent / "data" / "generated" / "goldens_real.json"
 
 _NULL_TASK_KEYS = {"none", "null", "n/a", "nil", "undefined", "hermes_aiagent", ""}
 
