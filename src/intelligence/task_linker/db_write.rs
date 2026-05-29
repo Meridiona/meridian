@@ -53,10 +53,19 @@ pub(super) async fn update_session_task(
     } else {
         Some(&r.reasoning)
     };
+    // The classifier's per-session prose summary feeds the PM-update
+    // workflow downstream. Empty string → NULL so the PM layer's
+    // COALESCE fallback to session_text still works on edge cases.
+    let summary = if r.session_summary.is_empty() {
+        None
+    } else {
+        Some(&r.session_summary)
+    };
     sqlx::query(
         "UPDATE app_sessions
          SET task_key = ?, task_confidence = ?, task_routing = ?,
-             task_method = ?, task_reasoning = ?, task_session_type = ?
+             task_method = ?, task_reasoning = ?, task_session_type = ?,
+             session_summary = ?
          WHERE id = ?",
     )
     .bind(&r.task_key)
@@ -65,6 +74,7 @@ pub(super) async fn update_session_task(
     .bind(&r.method)
     .bind(reasoning)
     .bind(&r.session_type)
+    .bind(summary)
     .bind(r.session_id)
     .execute(pool)
     .await

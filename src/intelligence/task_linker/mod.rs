@@ -77,15 +77,29 @@ pub fn check_classification_ready(cfg: &Config) -> Result<()> {
     let addr: std::net::SocketAddr = format!("127.0.0.1:{port}")
         .parse()
         .context("invalid MLX server address")?;
-    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(5)).with_context(
-        || {
-            format!(
-                "MLX server not running on port {port}\n\
-                 Fix: cd services && .venv313/bin/meridian-server --backend mlx --port {port}"
-            )
-        },
-    )?;
-    Ok(())
+
+    // The MLX server loads a large model in its lifespan startup before it
+    // accepts connections. Retry for up to 120 s to cover first-load time.
+    let timeout = std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        match std::net::TcpStream::connect_timeout(&addr, timeout) {
+            Ok(_) => return Ok(()),
+            Err(_) if std::time::Instant::now() < deadline => {
+                warn!(
+                    port,
+                    "MLX server not yet ready — waiting for model to load (up to 120 s total)"
+                );
+                std::thread::sleep(std::time::Duration::from_secs(5));
+            }
+            Err(_) => {
+                anyhow::bail!(
+                    "MLX server not running on port {port}\n\
+                     Fix: cd services && .venv313/bin/meridian-server --backend mlx --port {port}"
+                );
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +145,11 @@ pub(super) struct SessionClassification {
     pub(super) method: String,
     #[serde(default)]
     pub(super) dimensions: HashMap<String, Vec<String>>,
+    /// Factual prose summary of the session (10-40 sentences, adaptive to
+    /// content). Persisted to `app_sessions.session_summary` and consumed
+    /// by the PM-update workflow as its primary signal.
+    #[serde(default)]
+    pub(super) session_summary: String,
     #[allow(dead_code)]
     pub(super) elapsed_s: f64,
 }

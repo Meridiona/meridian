@@ -11,6 +11,10 @@
       "args": [
         "/Users/akarshhegde/.screenpipe/mcp/dist/index.js"
       ]
+    },
+    "agno-docs": {
+      "type": "http",
+      "url": "https://docs.agno.com/mcp"
     }
   }
 }
