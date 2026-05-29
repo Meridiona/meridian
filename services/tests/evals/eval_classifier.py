@@ -311,6 +311,14 @@ def main() -> int:
     print(f"In OpenObserve: service=meridian-eval, span_name=eval.run, attribute run.id={run_id}")
 
     # ── Flush spans before exit (BatchSpanProcessor is async) ──
+    # Force-flush is required to land the root eval.run span — it only ends when
+    # the `with` block above closes, and obs_shutdown's 5s drain sometimes loses
+    # the race on long runs (15+ min). Without this, the per-Golden eval.classify
+    # children land but the root carrying accuracy.both / dataset_size / strategy
+    # attributes is dropped, leaving an orphan trace in OpenObserve.
+    _provider = trace.get_tracer_provider()
+    if hasattr(_provider, "force_flush"):
+        _provider.force_flush(timeout_millis=5_000)
     obs_shutdown()
 
     return 0
