@@ -646,6 +646,176 @@
         "scoreable": true
       },
       "design_notes": "MEDIUM overhead — developer is sharing technical results (FCP numbers, skeleton animation details, 23x improvement) about PROJ-225 in Slack. A classifier that sees 'React.lazy', 'skeleton', 'FCP', 'chart lazy-load' might map this to PROJ-225 task work. Discriminator: Slack window, message format (sharing results to team), no file edits. The #general sprint check-in also names PROJ-201, PROJ-210, PROJ-225, PROJ-230 and PROJ-215 — maximum ticket vocabulary present, all in a team update context. Overhead is the correct label."
+    },
+    {
+      "id": 21,
+      "app_name": "Google Chrome",
+      "started_at": "2026-05-27T15:17:00+05:30",
+      "ended_at": null,
+      "duration_s": 41,
+      "category": "research",
+      "confidence": 0.72,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "Stack Overflow — React Suspense — Google Chrome",
+          "count": 2
+        },
+        {
+          "window_name": "Stack Overflow — TypeScript const enum — Google Chrome",
+          "count": 2
+        },
+        {
+          "window_name": "Stack Overflow — timingSafeEqual — Google Chrome",
+          "count": 2
+        }
+      ],
+      "session_text": "[15:17:00]\nGoogle Chrome\nTabs:\n  (1) Stack Overflow — React Suspense error boundary  <- ACTIVE\n  (2) Stack Overflow — TypeScript const enum tree shaking\n  (3) Stack Overflow — Node.js crypto timing safe equal length mismatch\n\nURL: https://stackoverflow.com/questions/47038209/react-suspense-error-boundary-render\n\n[15:17:10]\nStack Overflow — React Suspense error boundary\n\nQuestion:\n  How does ErrorBoundary work with React Suspense lazy loading?\n  If a lazy-loaded component throws during loading, does ErrorBoundary catch it?\n  Asked: 2022-11-15  |  Views: 18,432  |  Votes: 67\n\nTop Answer (accepted, 189 votes):  Mia Hoffmann\n  Yes — ErrorBoundary catches errors thrown during React.lazy() loading.\n  This includes network errors (failed to fetch the chunk) and errors\n  thrown by the component itself on first render.\n\n  Correct pattern:\n    <ErrorBoundary fallback={<div>Error loading chart</div>}>\n      <Suspense fallback={<Skeleton />}>\n        <LazyChart />\n      </Suspense>\n    </ErrorBoundary>\n\n  ErrorBoundary must be OUTSIDE Suspense -- if it's inside, Suspense won't\n  suspend correctly because ErrorBoundary catches the Promise that Suspense\n  needs to intercept.\n\n  Important: ErrorBoundary must be a class component (React limitation as of 18.x).\n  Hooks can't catch errors during render. The existing react-error-boundary\n  package wraps this for you if you want a functional component interface.\n\n  Second answer (72 votes):  Luca Ferreira\n  In React 19 there's a new 'use' API that simplifies this. But if you're\n  on React 18, ErrorBoundary+Suspense is the standard pattern.\n\n(developer: confirms the ErrorBoundary-outside-Suspense pattern I already implemented\n in session 10. good -- nothing to change.)\n(quickly checks that the existing ErrorBoundary in the codebase is a class component)\n\n[15:17:55]\nStack Overflow — TypeScript const enum tree shaking\n(developer switches to tab 2)\n\nURL: https://stackoverflow.com/questions/28818849/how-does-typescript-const-enum-work\n\nQuestion:\n  What is the difference between 'enum' and 'const enum' in TypeScript?\n  Does const enum actually improve tree-shaking?\n\nTop Answer (312 votes):\n  Regular enum: compiled to a JavaScript object at runtime.\n    enum Direction { Up = 'UP', Down = 'DOWN' }\n    // compiles to: var Direction; (function(Direction) {...})(Direction = {})\n    // the Direction object exists at runtime, consumes bundle size\n\n  const enum: inlined at compile time, no runtime object.\n    const enum Direction { Up = 'UP', Down = 'DOWN' }\n    // all uses of Direction.Up are replaced with 'UP' at compile time\n    // no runtime object -- zero bundle cost\n\n  For tree-shaking: const enum is better because bundlers (webpack/esbuild)\n  see literal string values, not property accesses on an object.\n  Caveat: const enum doesn't work across module boundaries with isolatedModules.\n\n(developer: confirms the PR #88 const enum fix was correct. Alex was right.)\n\n[15:18:35]\nStack Overflow — timingSafeEqual length mismatch\n(developer switches to tab 3)\n\nURL: https://stackoverflow.com/questions/51581920/node-crypto-timingsafeequal-throws\n\nQuestion:\n  Why does crypto.timingSafeEqual throw when comparing strings of different length?\n  I expected it to return false.\n\nTop Answer (89 votes):\n  timingSafeEqual requires both buffers to have the SAME LENGTH. If they differ,\n  it throws a TypeError. This is by design:\n    - Constant-time comparison only makes sense for same-length inputs\n    - If it returned false for different lengths, the length itself would be\n      a timing oracle (attackers could probe until they find the right length)\n    - So it throws to force callers to handle the case explicitly\n\n  Correct pattern:\n    try {\n      return crypto.timingSafeEqual(\n        Buffer.from(secret1),\n        Buffer.from(secret2)\n      )\n    } catch {\n      return false  // different lengths\n    }\n\n(developer: yes, that's exactly what I implemented in session-store.ts validateCsrf().\n the try/catch pattern is correct. just confirming.)\n(closes all Stack Overflow tabs, closes Chrome)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "none",
+        "session_type": "untracked",
+        "reasoning": "Chrome session reading three Stack Overflow answers for curiosity/confirmation after implementing features (not to unblock a task). Developer confirms the ErrorBoundary pattern they already implemented is correct, confirms const enum fix was right, confirms timingSafeEqual try/catch is correct. Nothing new to implement — pure confirmation reading. The developer already shipped all three features before reading these answers.",
+        "difficulty": "hard-decoy",
+        "scoreable": true
+      },
+      "design_notes": "HARD-DECOY — developer reads Stack Overflow about React Suspense/ErrorBoundary (PROJ-225 related), TypeScript const enum (PROJ-201 related), and timingSafeEqual (PROJ-210 related). All three topics map directly to implemented features. A classifier might split between PROJ-225/210/201 or pick any one of them. The correct label is untracked because: (1) developer already implemented all three features in earlier sessions, (2) they're reading to confirm, not to implement, (3) 'closes all Stack Overflow tabs' indicates curiosity closure, (4) session confidence is 0.72 (real uncertainty in the label). Cross-ticket confirmation reading ≠ task work."
+    },
+    {
+      "id": 22,
+      "app_name": "Google Chrome",
+      "started_at": "2026-05-27T15:20:00+05:30",
+      "ended_at": null,
+      "duration_s": 44,
+      "category": "communication",
+      "confidence": 0.88,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "GitHub — PR #92 — Google Chrome",
+          "count": 5
+        },
+        {
+          "window_name": "GitHub — PR #93 — Google Chrome",
+          "count": 2
+        }
+      ],
+      "session_text": "[15:20:00]\nGoogle Chrome\nTabs:\n  (1) GitHub — PR #92 — feat/proj-210-auth-migration  <- ACTIVE\n  (2) GitHub — PR #93 — feat/proj-210-auth-frontend\n\nURL: https://github.com/zuno-app/zuno/pull/92\n\n[15:20:10]\nGitHub — PR #92 — feat(auth): JWT -> session cookie migration (PROJ-210)\n\nPR Status:\n  Author: Zoe Dev (me)  |  Reviewers: Sarah Chen (requested)\n  Status: Open (Draft -> Ready)  |  CI: All checks passed\n  Commits: 4  |  Files changed: 8  |  +274 -18 lines\n  Labels: PROJ-210, auth, breaking-change\n\nConversation:\n  [15:15] Sarah Chen  (review approved)\n    LGTM! Great implementation. A few inline comments:\n\n  Sarah Chen  [inline comment on src/services/session-store.ts, line 57]\n    pruneExpired() is called on a timer -- but should it also be called\n    on every get()? Avoids stale sessions appearing briefly if the timer\n    hasn't fired yet. Small thing -- not blocking.\n\n  Sarah Chen  [inline comment on src/routes/auth.ts, line 30]\n    The SESSION_TTL_SECS is hardcoded to 30 days. Should this be a config\n    env var? Some enterprise customers might want shorter sessions.\n    Suggestion: add SESSION_TTL_DAYS to config.ts. Not blocking.\n\n  Sarah Chen  [inline comment on src/routes/auth.ts, line 144]\n    TODO(PROJ-210): verify idToken signature against Okta JWKS endpoint.\n    This should be a follow-up ticket, not deferred indefinitely.\n    Creating PROJ-251 to track the JWKS verification.\n\n  [15:16]  Zoe Dev (me)  [reply]\n    All great points! Addressing:\n    1. pruneExpired() on get(): good idea, adding it now\n    2. SESSION_TTL_DAYS config: agreed, adding to config.ts\n    3. JWKS: noted, PROJ-251 created -- that's the right call\n\n[15:20:45]\nGitHub — PR #92  (Files Changed tab)\n(developer reads through the diff to double-check Sarah's inline comments)\n\nFiles changed:\n  src/app.ts                  +9   (pruneExpired scheduler)\n  src/config.ts               +5   (OKTA_* fields)\n  src/middleware/auth.ts      +42  (cookie+CSRF path)\n  src/routes/auth.ts          +57  (login, csrf-token, logout, okta)\n  src/services/session-store.ts  +69  (InMemorySessionStore + PkceStore)\n  package.json                +2   (cookie-parser)\n  package-lock.json           +115\n\nDiff — src/services/session-store.ts  (Sarah's pruneExpired comment)\n  30   get(sessionId: string): Session | null {\n  31     const session = this.sessions.get(sessionId)\n  32     if (!session) return null\n  33     if (session.expiresAt < new Date()) {\n  34       this.sessions.delete(sessionId)\n  35       return null\n  36     }\n  37     return session\n  38   }\n  (developer: actually, the get() already handles expired sessions by\n   deleting them on access at lines 33-35. Sarah's point was about\n   sessions that aren't accessed -- the timer covers those. The current\n   implementation is correct. Will reply to clarify.)\n\n[15:21:30]\nGitHub — PR #92  (adding reply to Sarah's comment)\n\n  [Reply to Sarah's session-store.ts comment]\n    Good catch on the pruneExpired timing! Actually the get() method\n    already lazily expires sessions on access (lines 33-35 -- checks\n    expiresAt and deletes if expired). The timer catches sessions that\n    are never accessed. So both paths are covered. No change needed here!\n\n  [Reply to Sarah's SESSION_TTL_DAYS comment]\n    Agreed -- adding SESSION_TTL_DAYS to config.ts in a follow-up commit\n    before we merge. Good find.\n\n[15:22:00]\nGitHub — PR #93 (switches to tab 2)\n\nGitHub — PR #93 — feat(auth): frontend CSRF token integration (PROJ-210)\n\nPR Status:\n  Author: Alex Rodriguez  |  Reviewers: Sarah Chen (requested)\n  Status: Open  |  CI: All checks passed\n  Commits: 3  |  Files changed: 4  |  +148 -62 lines\n\nSarah's review:\n  LGTM! The setCsrfGetter pattern is clean -- avoids the circular import\n  issue. Approved.\n\n  [inline comment on src/api/client.ts, line 12]\n    The silent catch on CSRF token missing: 'This should only happen during\n    app startup before useEffect runs.' -- can we add a console.warn in dev\n    mode so we catch it early in testing?\n\nAlex Rodriguez  [reply]\n  Good point! Adding: if (process.env.NODE_ENV === 'development') console.warn('[CSRF] ...')\n\n(developer: PR #93 is approved with one small fix from Alex. Both PRs approved.\n Will merge both once Alex adds the dev-mode warning.)\n\n[15:22:40]\nGoogle Chrome\n(developer closes GitHub tabs, returns to VS Code for the SESSION_TTL_DAYS fix)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "PROJ-210",
+        "session_type": "overhead",
+        "reasoning": "Chrome session reviewing PR #92 (PROJ-210 backend) and PR #93 (PROJ-210 frontend). Developer reads Sarah's review comments (pruneExpired, SESSION_TTL_DAYS, JWKS TODO), replies to clarify the lazy-expiry behaviour in get(), reads Alex's frontend PR approved by Sarah with one dev-mode warning fix. Both PRs approved. This is PR review overhead — reading and replying to code review comments, not writing new implementation.",
+        "difficulty": "medium",
+        "scoreable": true
+      },
+      "design_notes": "MEDIUM overhead case. Developer is reading their own PRs (#92 backend, #93 frontend) and writing review replies. The GitHub diff shows auth.ts code (PROJ-210 implementation). A classifier might map this to PROJ-210 task because it sees the auth implementation in the diff. Discriminator: developer is replying to review comments, not editing files in VS Code. Window title is GitHub, not VS Code. Session ends with developer returning to VS Code for a small SESSION_TTL_DAYS fix (overhead -> task handoff). The 'both PRs approved' context suggests this is review coordination rather than implementation."
+    },
+    {
+      "id": 23,
+      "app_name": "Code",
+      "started_at": "2026-05-27T15:23:00+05:30",
+      "ended_at": null,
+      "duration_s": 22,
+      "category": "coding",
+      "confidence": 0.97,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "src/config.ts — zuno-app — Visual Studio Code",
+          "count": 2
+        },
+        {
+          "window_name": "src/routes/auth.ts — zuno-app — Visual Studio Code",
+          "count": 2
+        },
+        {
+          "window_name": "Terminal — zsh — zuno-app",
+          "count": 3
+        }
+      ],
+      "session_text": "[15:23:00]\nVisual Studio Code\nBranch: feat/proj-210-auth-migration\nActive tab: src/config.ts\n\n[15:23:10]\nVS Code — src/config.ts  (adding SESSION_TTL_DAYS)\n\n  export const config = {\n    PORT:                process.env.PORT ?? '3000',\n    NODE_ENV:            process.env.NODE_ENV ?? 'development',\n    JWT_SECRET:          process.env.JWT_SECRET ?? 'dev-secret-change-in-prod',\n    AUTH_COOKIE_ENABLED: process.env.AUTH_COOKIE_ENABLED === 'true',\n    COOKIE_DOMAIN:       process.env.COOKIE_DOMAIN ?? 'localhost',\n    DB_PATH:             process.env.DB_PATH ?? './zuno.db',\n    OKTA_DOMAIN:         process.env.OKTA_DOMAIN ?? '',\n    OKTA_CLIENT_ID:      process.env.OKTA_CLIENT_ID ?? '',\n    OKTA_CLIENT_SECRET:  process.env.OKTA_CLIENT_SECRET ?? '',\n    OKTA_REDIRECT_URI:   process.env.OKTA_REDIRECT_URI ?? '',\n    OKTA_SCOPES:         (process.env.OKTA_SCOPES ?? 'openid profile email').split(' '),\n  +  SESSION_TTL_DAYS:   parseInt(process.env.SESSION_TTL_DAYS ?? '30', 10),\n  }\n\n(developer adds the line, Cmd+S)\n\n[15:23:25]\nVS Code — src/routes/auth.ts  (updating SESSION_TTL_SECS to use config)\n\n  - const SESSION_TTL_SECS = 30 * 24 * 60 * 60  // hardcoded 30 days\n  + const SESSION_TTL_SECS = config.SESSION_TTL_DAYS * 24 * 60 * 60\n\n(Cmd+S)\n\n[15:23:40]\nVS Code — Terminal\n\n$ npx tsc --noEmit\n  (exit 0)\n\n$ npm test -- --testPathPattern=routes/auth\n  PASS tests/routes/auth.test.ts\n  Tests: 18 passed  |  Time: 2.2s\n\n$ git add src/config.ts src/routes/auth.ts\n$ git commit -m 'fix(auth): make session TTL configurable via SESSION_TTL_DAYS env var\n>\n> PROJ-210 review follow-up (Sarah Chen): hardcoded 30 days -> config.SESSION_TTL_DAYS\n> enterprise customers may need shorter session TTLs via env override.'\n\n  [feat/proj-210-auth-migration a1b2c3d]\n  fix(auth): make session TTL configurable via SESSION_TTL_DAYS env var\n  2 files changed, 3 insertions(+), 2 deletions(-)\n\n$ git push\n  Pushed to feat/proj-210-auth-migration\n\n$ gh pr merge 92 --squash --delete-branch\n  Squashing and merging PR #92...\n  PR #92 merged into main!\n  Branch feat/proj-210-auth-migration deleted.\n\n(developer: PR #92 merged! auth backend is in main.)\n(waiting for Alex to push the dev-mode warning fix on PR #93)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "PROJ-210",
+        "session_type": "task",
+        "reasoning": "VS Code session applying Sarah's review feedback from PR #92: adds SESSION_TTL_DAYS to config.ts, updates SESSION_TTL_SECS in routes/auth.ts to use config. Runs tsc (clean), runs auth tests (18/18 pass), commits, pushes, merges PR #92 via squash. PROJ-210 backend is now in main.",
+        "difficulty": "easy",
+        "scoreable": true
+      },
+      "design_notes": "EASY PROJ-210 — small review follow-up commit (2 files, 3 insertions). Commit message explicitly cites 'PROJ-210 review follow-up'. PR #92 merge confirms the ticket is complete on the backend side."
+    },
+    {
+      "id": 24,
+      "app_name": "Code",
+      "started_at": "2026-05-27T15:28:00+05:30",
+      "ended_at": null,
+      "duration_s": 54,
+      "category": "coding",
+      "confidence": 0.97,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "src/components/Reports/Toolbar.tsx — zuno-app — Visual Studio Code",
+          "count": 4
+        },
+        {
+          "window_name": "src/utils/export.ts — zuno-app — Visual Studio Code",
+          "count": 2
+        },
+        {
+          "window_name": "Terminal — zsh — zuno-app",
+          "count": 4
+        }
+      ],
+      "session_text": "[15:28:00]\nVisual Studio Code\nBranch: feat/proj-230-csv-export  (new branch)\nActive tabs:\n  src/components/Reports/Toolbar.tsx  <- ACTIVE\n  src/utils/export.ts  (new file)\n\n$ git checkout -b feat/proj-230-csv-export\n  Switched to new branch 'feat/proj-230-csv-export'\n\n[15:28:15]\nVS Code — src/components/Reports/Toolbar.tsx  (existing)\n\n  1   // zuno-app — reports toolbar\n  2   import React from 'react'\n  3   import { Button } from '../ui/Button'\n  4   import { useReports } from '../../hooks/useReports'\n  5   \n  6   export function ReportsToolbar() {\n  7     const { exportPdf } = useReports()\n  8     return (\n  9       <div className='toolbar'>\n 10         <span className='toolbar-title'>Reports</span>\n 11         <div className='toolbar-actions'>\n 12           <Button onClick={exportPdf} variant='secondary'>\n 13             Export PDF\n 14           </Button>\n 15         </div>\n 16       </div>\n 17     )\n 18   }\n\n(developer: need to add an 'Export CSV' button next to the PDF button)\n\n[15:28:35]\nVS Code — Terminal  (Claude Code)\n\n> PROJ-230: add CSV export to the reports module.\n  1. Create src/utils/export.ts:\n     - exportToCsv(data: Record<string, unknown>[], filename: string): void\n     - Use papaparse (already installed) to serialize\n     - Trigger browser download via URL.createObjectURL(blob) + anchor click\n     - Format numbers: remove trailing .00 from integers\n     - filename: zuno-report-YYYY-MM-DD.csv (use current date)\n  2. Update src/components/Reports/Toolbar.tsx:\n     - Add 'Export CSV' button next to the PDF button\n     - Call exportToCsv with the current report data (from useReports)\n  Check if papaparse is installed first.\n\n● Claude is thinking...\n\n  ✓ Read src/components/Reports/Toolbar.tsx\n  ✓ Read src/hooks/useReports.ts  →  exports: { data, exportPdf, filters }\n  ✓ Read package.json  →  papaparse: '^5.4.1' (installed!)\n  ✓ Read @types/papaparse  →  found in devDependencies\n\n  ✎ Writing src/utils/export.ts\n  ─────────────────────────────────────────\n  // zuno-app — data export utilities\n  import Papa from 'papaparse'\n\n  function formatValue(value: unknown): string {\n    if (typeof value === 'number') {\n      // Remove trailing .00 for whole numbers\n      return Number.isInteger(value) ? String(value) : value.toFixed(2)\n    }\n    if (value instanceof Date) return value.toISOString().slice(0, 10)\n    if (value === null || value === undefined) return ''\n    return String(value)\n  }\n\n  export function exportToCsv(\n    data:     Record<string, unknown>[],\n    filename: string = generateFilename(),\n  ): void {\n    if (data.length === 0) return\n    const formatted = data.map((row) =>\n      Object.fromEntries(\n        Object.entries(row).map(([k, v]) => [k, formatValue(v)])\n      )\n    )\n    const csv = Papa.unparse(formatted)\n    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })\n    const url  = URL.createObjectURL(blob)\n    const link = document.createElement('a')\n    link.href     = url\n    link.download = filename\n    link.click()\n    URL.revokeObjectURL(url)  // cleanup\n  }\n\n  function generateFilename(): string {\n    const date = new Date().toISOString().slice(0, 10)  // YYYY-MM-DD\n    return `zuno-report-${date}.csv`\n  }\n  ─────────────────────────────────────────\n  ✓ Wrote src/utils/export.ts  (36 lines)\n\n  ✎ Editing src/components/Reports/Toolbar.tsx\n  ─────────────────────────────────────────\n  + import { exportToCsv } from '../../utils/export'\n  ...\n  export function ReportsToolbar() {\n  - const { exportPdf } = useReports()\n  + const { data, exportPdf } = useReports()\n    return (\n      <div className='toolbar'>\n        <span className='toolbar-title'>Reports</span>\n        <div className='toolbar-actions'>\n  +       <Button\n  +         onClick={() => exportToCsv(data)}\n  +         variant='secondary'\n  +       >\n  +         Export CSV\n  +       </Button>\n          <Button onClick={exportPdf} variant='secondary'>\n            Export PDF\n          </Button>\n        </div>\n      </div>\n    )\n  }\n  ─────────────────────────────────────────\n  ✓ Wrote src/components/Reports/Toolbar.tsx  (+8 lines)\n\n  Done. papaparse was already installed -- no new dependencies needed.\n\n[15:30:15]\nVS Code — Terminal\n\n$ npx tsc --noEmit\n  (exit 0)\n\n$ npm test -- --testPathPattern=export --verbose\n  PASS src/utils/export.test.ts\n    exportToCsv\n      ✓ generates correct CSV from array of objects  (12ms)\n      ✓ removes trailing .00 from integer values  (4ms)\n      ✓ formats Date objects as YYYY-MM-DD  (3ms)\n      ✓ handles empty data array (no-op)  (2ms)\n      ✓ generates filename with today date  (5ms)\n  Tests: 5 passed  |  Time: 1.1s\n\n$ git add src/utils/export.ts src/components/Reports/Toolbar.tsx\n$ git commit -m 'feat(reports): add CSV export button and exportToCsv utility (PROJ-230)\n>\n> - src/utils/export.ts: exportToCsv() using papaparse + Blob URL download\n>   - formatValue(): strips trailing .00 from integers, ISO date format\n>   - generateFilename(): zuno-report-YYYY-MM-DD.csv\n> - Toolbar.tsx: Export CSV button next to Export PDF\n> - 5/5 export tests passing. No new dependencies (papaparse already installed).'\n\n  [feat/proj-230-csv-export 7e8f9a0]  feat(reports): add CSV export\n  2 files changed, 44 insertions(+), 2 deletions(-)\n  create mode 100644 src/utils/export.ts\n\n(developer: PROJ-230 core implementation done.\n TODO: test with large dataset (10k+ rows), add streaming if needed.)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "PROJ-230",
+        "session_type": "task",
+        "reasoning": "VS Code session implementing PROJ-230 CSV export. Creates feat/proj-230-csv-export branch, opens Toolbar.tsx (existing PDF-only toolbar), prompts Claude Code to add exportToCsv utility (papaparse, Blob URL, formatValue for number/date formatting) and 'Export CSV' button next to PDF. Runs tsc (clean), runs 5 export tests (pass). Commits. Files: src/utils/export.ts (new), Toolbar.tsx (+8 lines).",
+        "difficulty": "easy",
+        "scoreable": true
+      },
+      "design_notes": "EASY PROJ-230 — distinct from PROJ-225 despite both being frontend/dashboard. Discriminators: (1) branch is feat/proj-230-csv-export, (2) files edited are Toolbar.tsx and export.ts (not Dashboard/index.tsx or Skeleton), (3) code uses papaparse (CSV library), not React.lazy/Suspense, (4) commit message names PROJ-230. The PROJ-225 vs PROJ-230 hard discrimination will be tested in session 25 where both tickets appear in the same context."
+    },
+    {
+      "id": 25,
+      "app_name": "Google Chrome",
+      "started_at": "2026-05-27T15:32:00+05:30",
+      "ended_at": null,
+      "duration_s": 34,
+      "category": "communication",
+      "confidence": 0.82,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "Linear — PROJ-225 — Google Chrome",
+          "count": 2
+        },
+        {
+          "window_name": "Linear — PROJ-230 — Google Chrome",
+          "count": 2
+        },
+        {
+          "window_name": "GitHub — PR #94 — Google Chrome",
+          "count": 2
+        },
+        {
+          "window_name": "GitHub — PR #95 — Google Chrome",
+          "count": 2
+        }
+      ],
+      "session_text": "[15:32:00]\nGoogle Chrome\nTabs:\n  (1) Linear — PROJ-225  <- ACTIVE\n  (2) Linear — PROJ-230\n  (3) GitHub — PR #94  (feat/proj-225-dashboard-lazy-load)\n  (4) GitHub — PR #95 (feat/proj-230-csv-export — just opened)\n\n[15:32:10]\nLinear — PROJ-225 Detail\n\nPROJ-225 — Dashboard performance: lazy-load heavy chart components\nStatus: In Review\nAssignee: @me  |  Due: 2026-06-02  |  5 pts\n\n(developer updates PROJ-225 status to 'In Review' now that PR #94 is up)\n(developer adds a comment to PROJ-225:)\n\nComment added:\n  Implementation done! PR #94 is up for review.\n  FCP: 3,111ms -> 135ms (23x improvement, well within <1s target).\n  Full dashboard: ~2.5s (within <4s SLA).\n  Skeleton: neutral-300 pulse (Priya's Figma spec). ErrorBoundary for failures.\n  Pending: Priya's design review + Rachel's product review.\n\n[15:32:55]\nLinear — PROJ-230 Detail\n(developer switches to PROJ-230 tab)\n\nPROJ-230 — Add CSV export to the reports module\nStatus: In Review  (developer just updated)\nAssignee: @me  |  Due: 2026-06-05  |  3 pts\n\n(developer updates PROJ-230 status to 'In Review')\n(developer adds a comment to PROJ-230:)\n\nComment added:\n  Implementation done faster than expected! PR #95 is up.\n  exportToCsv() uses papaparse + Blob URL download.\n  'Export CSV' button added to ReportsToolbar next to PDF button.\n  formatValue handles integer stripping (.00) and Date -> ISO format.\n  TODO: load test with 10k+ rows (Acme Corp use case) before merging.\n\n[15:33:30]\nGitHub — PR #94  (feat/proj-225-dashboard-lazy-load)\n(developer clicks tab 3)\n\nGitHub — PR #94\n  Title: feat(dashboard): lazy-load heavy charts with skeleton (PROJ-225)\n  Status: Open  |  CI: passing  |  Reviews requested: Priya Kapoor, Rachel Kim\n  Commits: 2  |  +119 -22 lines\n\n  Priya Kapoor  (just commented)\n  'LGTM on the skeleton proportions! They match the Figma exactly.\n   One suggestion: can we add a data-testid to the skeleton components\n   so QA can target them in automated tests?\n   Also: the animation stagger delays are a nice touch!'\n\n  (developer notes: add data-testid to skeleton components before merge)\n\n[15:34:00]\nGitHub — PR #95  (feat/proj-230-csv-export)\n(developer clicks tab 4)\n\nGitHub — PR #95\n  Title: feat(reports): add CSV export button and exportToCsv utility (PROJ-230)\n  Status: Open  |  CI: passing  |  Reviews requested: Rachel Kim, Alex Rodriguez\n  Commits: 1  |  +44 -2 lines\n\n  Rachel Kim  (just commented)\n  'This is exactly what Acme Corp needs! Quick question: the current\n   implementation exports all visible columns. Can we add an option\n   to select specific columns? Acme mentioned they only want the\n   3 financial columns in their CSV export.'\n\n  (developer notes: column selection would add scope to PROJ-230.\n   Will reply that column selection can be a follow-up PROJ-231 ticket\n   to keep PROJ-230 scope contained.)\n\n  (developer adds reply:)\n  'Good question Rachel! Column selection would add significant complexity\n   (UI for selecting columns, persisting preferences). I suggest we track\n   that as a follow-up PROJ-231. Current PROJ-230 exports all visible\n   columns (respects current filter state). Acme can filter to the 3\n   financial columns using the existing report filters, then export.\n   Does that work for the near term?'\n\n[15:34:50]\nGoogle Chrome\n(developer closes all tabs, returns to VS Code)\n(thinking: PROJ-225 and PROJ-230 both in review. need to add data-testid\n to PROJ-225 skeleton components per Priya's comment.)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "reasoning": "Chrome session updating Linear status for PROJ-225 and PROJ-230 (both to 'In Review'), adding progress comments to both tickets, reading PR #94 review comments (Priya: add data-testid to skeleton components), reading PR #95 review comments (Rachel: column selection question), replying to Rachel (scope control — column selection = PROJ-231 follow-up). Both tickets and PRs appear in the same session. No new code written — ticket management and PR review overhead.",
+        "difficulty": "hard",
+        "scoreable": true
+      },
+      "design_notes": "HARD case — PROJ-225 and PROJ-230 discrimination. Both tickets appear in the same session with roughly equal weight: developer updates both Linear statuses, reads both PRs, replies to comments on both. The session content mentions React.lazy/skeleton (PROJ-225) and papaparse/CSV/Blob URL (PROJ-230) in interleaved comments. A classifier must recognise this as overhead (browser-based PR review/coordination, no code editing) rather than choosing between the two tickets. The correct label is overhead with no task_key. A classifier that picks either PROJ-225 or PROJ-230 fails this case. Hard difficulty because the session contains implementation-flavoured vocabulary for both tickets."
     }
   ]
 }
