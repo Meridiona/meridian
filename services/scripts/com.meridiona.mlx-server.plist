@@ -52,6 +52,8 @@
         <string>{{MERIDIAN_OO_AUTH}}</string>
         <key>MERIDIAN_OTLP_ENDPOINT</key>
         <string>{{MERIDIAN_OTLP_ENDPOINT}}</string>
+        <key>HF_HUB_OFFLINE</key>
+        <string>1</string>
     </dict>
 
     <key>StandardOutPath</key>

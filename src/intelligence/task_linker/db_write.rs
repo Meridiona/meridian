@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::Local;
 use sqlx::SqlitePool;
 
 use super::SessionClassification;
@@ -114,7 +114,7 @@ pub(super) async fn write_dimensions(
 /// Advance the cursor monotonically — only updates when `session_id` is strictly
 /// greater than the stored value so out-of-order writes are safe.
 pub(super) async fn advance_agent_cursor(pool: &SqlitePool, session_id: i64) -> Result<()> {
-    let now = Utc::now().to_rfc3339();
+    let now = Local::now().to_rfc3339();
     sqlx::query(
         "UPDATE agent_cursor SET last_session_id = ?, updated_at = ? \
          WHERE id = 1 AND ? > last_session_id",
@@ -130,7 +130,7 @@ pub(super) async fn advance_agent_cursor(pool: &SqlitePool, session_id: i64) -> 
 
 /// Insert an `agent_runs` row with `status = 'running'` and return its id.
 pub(super) async fn start_agent_run(pool: &SqlitePool) -> Result<i64> {
-    let now = Utc::now().to_rfc3339();
+    let now = Local::now().to_rfc3339();
     let row = sqlx::query_as::<_, (i64,)>(
         "INSERT INTO agent_runs (started_at, status) VALUES (?, 'running') RETURNING id",
     )
@@ -149,7 +149,7 @@ pub(super) async fn complete_agent_run(
     sessions: i64,
     links: i64,
 ) -> Result<()> {
-    let now = Utc::now().to_rfc3339();
+    let now = Local::now().to_rfc3339();
     sqlx::query(
         "UPDATE agent_runs \
          SET finished_at = ?, status = ?, sessions_processed = ?, links_written = ? \

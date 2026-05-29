@@ -1,29 +1,30 @@
-"""Parse a coding-agent JSONL once and return per-day session slices.
+"""Parse a coding-agent JSONL once and return idle-gap session segments.
 
 A Claude Code or Codex session writes its conversation as an append-only
-.jsonl file that can span many calendar days. We slice it by the user's
-local calendar day so PM-update windowing (`WHERE started_at BETWEEN
-?...`) attributes time correctly — yesterday's work shows up under
-yesterday, today's work under today, etc.
+.jsonl file. A single file can hold several distinct work bursts separated by
+long idle gaps (lunch, a meeting, picking the session back up the next morning
+via `claude --continue` / `codex resume`). We slice the file into SEGMENTS
+split on idle gaps larger than `config.SEGMENT_GAP_SECONDS` (default 1h): each
+continuous burst becomes one `app_sessions` row.
+
+Claude and Codex use different on-disk event schemas, so each record is first
+normalised to a common `_NormRecord` (timestamp, cwd, is_turn, is_user, body).
+Everything downstream — segmentation, active-time, the timestamped transcript —
+is agent-agnostic.
 
 Public surface:
+  * `parse_session_segments()` — single pass; returns the overall `SessionMeta`
+    plus a list of `Segment` (one per work burst). The indexer UPSERTs one row
+    per segment and seals settled ones.
 
-  * `parse_session_slices()` — single pass; returns the overall
-    `SessionMeta` plus a list of `DaySlice` (one per local day that has
-    at least one record). The indexer's UPSERT loops over the slices.
+`start_after_ts` excludes content already captured by a sealed segment: any
+record at or before it is ignored and the first record after it begins a fresh
+segment regardless of gap — the "sealed content is immutable; newer is a new
+segment" invariant.
 
-Deliberately ignored (despite being present on every record):
-  * gitBranch — by product decision
-  * version, parentUuid — not useful for indexing
-  * UI-state types (mode, ai-title, permission-mode, last-prompt,
-    pr-link, file-history-snapshot, attachment, system,
-    queue-operation) — not conversation, would just bloat the
-    transcript
-
-Tolerant: malformed lines, missing fields, files truncated mid-write,
-files with zero meaningful records all degrade gracefully — slices'
-`is_valid` flag tells the caller whether registration should proceed;
-the renderer returns an empty string on a broken file.
+Tolerant: malformed lines, missing fields, files truncated mid-write, and files
+with zero meaningful records all degrade gracefully — each segment's `is_valid`
+flag tells the caller whether to register it.
 """
 from __future__ import annotations
 
@@ -36,34 +37,28 @@ from typing import Iterator, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
-# Record types we *count* as conversational turns. Everything else
-# (mode, ai-title, permission-mode, last-prompt, pr-link, etc.) is
-# ignored for the turn count — it's UI state, not conversation.
-_TURN_TYPES_USER      = frozenset({"user"})
-_TURN_TYPES_ASSISTANT = frozenset({"assistant"})
-
-# Truncation for noisy tool_result bodies (file dumps, large search
-# outputs). Keeps the rendered transcript bounded.
+# Truncation for noisy tool_result bodies (file dumps, large search outputs).
 _TOOL_RESULT_CAP = 800
-_ASSISTANT_LABEL = "claude-code"
+_CLAUDE_ASSISTANT_LABEL = "claude-code"
+_CODEX_ASSISTANT_LABEL = "codex"
 
 
 @dataclass(frozen=True)
 class SessionMeta:
     """Overall metadata for a JSONL — useful for daemon-level cursors.
 
-    For the per-day rows written to app_sessions, use `DaySlice` below.
+    For the per-segment rows written to app_sessions, use `Segment` below.
     """
-    session_uuid:    str             # filename stem; also `sessionId` in every record
+    session_uuid:    str
     agent:           str             # 'claude_code' | 'codex'
-    cwd:             Optional[str]   # working directory the session was launched from
-    started_at:      str             # ISO-8601 UTC; first record's timestamp
-    ended_at:        str             # ISO-8601 UTC; last record's timestamp
-    user_turns:      int             # total non-meta, non-sidechain user messages
-    assistant_turns: int             # total non-meta, non-sidechain assistant messages
-    total_records:   int             # all parseable records (including UI state)
-    jsonl_bytes:     int             # source-file size at parse time
-    active_seconds:  int             # gap-capped active engagement time across ALL days
+    cwd:             Optional[str]
+    started_at:      str
+    ended_at:        str
+    user_turns:      int
+    assistant_turns: int
+    total_records:   int
+    jsonl_bytes:     int
+    active_seconds:  int
 
     @property
     def is_valid(self) -> bool:
@@ -76,30 +71,31 @@ class SessionMeta:
 
 
 @dataclass(frozen=True)
-class DaySlice:
-    """One calendar-day slice of a session, in the user's local TZ.
+class Segment:
+    """One continuous work burst of a session (gaps < SEGMENT_GAP_SECONDS).
 
-    The indexer writes one app_sessions row per slice — `day_utc` is
-    the (local) calendar day key; `started_at` / `ended_at` are the
-    first / last record timestamps WITHIN that day (still emitted as
-    UTC ISO strings because the rest of meridian.db stores UTC).
+    One app_sessions row per segment, keyed on (claude_session_uuid,
+    segment_started_at). `is_last` marks the final segment — the only one that
+    may still be live (unsealed).
     """
-    session_uuid:    str
-    agent:           str
-    cwd:             Optional[str]
-    day_utc:         str             # YYYY-MM-DD in the user's local TZ
-    started_at:      str             # first record ts that fell into this day (ISO UTC)
-    ended_at:        str             # last record ts that fell into this day  (ISO UTC)
-    user_turns:      int             # turns within this day only
-    assistant_turns: int
-    active_seconds:  int             # gap-capped active time, credited to this day
-    transcript:      str             # rendered transcript of just this day's records
+    session_uuid:       str
+    agent:              str
+    cwd:                Optional[str]
+    segment_started_at: str
+    day_utc:            str
+    started_at:         str
+    ended_at:           str
+    user_turns:         int
+    assistant_turns:    int
+    active_seconds:     int
+    transcript:         str
+    is_last:            bool
 
     @property
     def is_valid(self) -> bool:
         return (
             self.user_turns + self.assistant_turns > 0
-            and bool(self.started_at)
+            and bool(self.segment_started_at)
             and bool(self.ended_at)
         )
 
@@ -107,30 +103,33 @@ class DaySlice:
 # ──────────────────────── Public API ───────────────────────────────────────────
 
 
-def parse_session_slices(
+def parse_session_segments(
     jsonl_path: Path,
     *,
     agent: Optional[str] = None,
     active_gap_cap_seconds: Optional[int] = None,
+    segment_gap_seconds: Optional[int] = None,
     local_tz: Optional[tzinfo] = None,
-) -> Tuple[SessionMeta, List[DaySlice]]:
-    """Single pass over the JSONL; returns (overall SessionMeta, sorted DaySlice list).
-
-    `agent` defaults to inferring from the path (claude_code vs codex).
-    `active_gap_cap_seconds` clamps each inter-record gap before adding
-    it to that record's day-bucket active total. Gaps that straddle a
-    day boundary are credited to the day of the LATER record.
-    `local_tz` defaults to `config.LOCAL_TZ` (user's machine TZ).
-    """
-    # Lazy import to avoid circular dep at module load
+    start_after_ts: Optional[str] = None,
+) -> Tuple[SessionMeta, List[Segment]]:
+    """Single pass over the JSONL; returns (overall SessionMeta, Segment list)."""
     from coding_agent_indexer import config
 
     if agent is None:
         agent = _infer_agent(jsonl_path)
     if active_gap_cap_seconds is None:
         active_gap_cap_seconds = config.ACTIVE_TIME_GAP_CAP_SECONDS
+    if segment_gap_seconds is None:
+        segment_gap_seconds = config.SEGMENT_GAP_SECONDS
     if local_tz is None:
         local_tz = config.LOCAL_TZ
+
+    start_after_dt: Optional[datetime] = None
+    if start_after_ts:
+        try:
+            start_after_dt = _parse_iso(start_after_ts)
+        except (ValueError, TypeError):
+            start_after_dt = None
 
     session_uuid = jsonl_path.stem
     cwd: Optional[str] = None
@@ -139,89 +138,88 @@ def parse_session_slices(
     user_turns_overall = 0
     assistant_turns_overall = 0
     total_records = 0
-    prev_dt: Optional[datetime] = None
-    days: dict[str, _DayBuilder] = {}
+    prev_dt: Optional[datetime] = None          # ts of previous KEPT record (gap calc)
+    segments_b: List[_SegBuilder] = []
+    cur: Optional[_SegBuilder] = None
 
     try:
         jsonl_bytes = jsonl_path.stat().st_size
     except OSError:
         jsonl_bytes = 0
 
-    for record in _iter_records(jsonl_path):
+    for rec in _iter_normalised(jsonl_path, agent=agent):
         total_records += 1
-        ts = record.get("timestamp")
-        cur_dt: Optional[datetime] = None
-        cur_day: Optional[str] = None
+        ts = rec.timestamp
+        if cwd is None and rec.cwd:
+            cwd = rec.cwd
 
+        cur_dt: Optional[datetime] = None
         if isinstance(ts, str):
-            if started_overall is None:
-                started_overall = ts
-            ended_overall = ts
             try:
                 cur_dt = _parse_iso(ts)
-                cur_day = cur_dt.astimezone(local_tz).strftime("%Y-%m-%d")
             except (ValueError, TypeError):
-                pass
+                cur_dt = None
 
-        if cwd is None and isinstance(record.get("cwd"), str):
-            cwd = record["cwd"]
+        # Already-sealed content is immutable history — skip it and reset the
+        # gap anchor so the first kept record opens a fresh segment.
+        if cur_dt is not None and start_after_dt is not None and cur_dt <= start_after_dt:
+            prev_dt = None
+            continue
 
-        # Each record lands in exactly one day bucket.
-        slot: Optional[_DayBuilder] = None
-        if cur_day is not None:
-            slot = days.get(cur_day)
-            if slot is None:
-                slot = _DayBuilder(day_utc=cur_day)
-                days[cur_day] = slot
-            if slot.started_at is None and isinstance(ts, str):
-                slot.started_at = ts
-            if isinstance(ts, str):
-                slot.ended_at = ts
+        if cur_dt is not None:
+            local_ts = cur_dt.astimezone(local_tz).isoformat(timespec='milliseconds')
+            if started_overall is None:
+                started_overall = local_ts
+            ended_overall = local_ts
 
-        # Active-time accumulation: cap each inter-record gap at
-        # active_gap_cap_seconds. Gap is credited to the day of the
-        # LATER record (cur_day) — so a gap that straddles midnight
-        # gets clamped and assigned to the new day.
-        if cur_dt is not None and prev_dt is not None and slot is not None:
+        # Records with no usable timestamp can't anchor a segment; attach to the
+        # current one if it exists (so a body isn't lost), else drop.
+        if cur_dt is None:
+            if cur is not None and rec.is_turn:
+                _add_turn(cur, ts, rec)
+            continue
+
+        start_new = (
+            cur is None
+            or prev_dt is None
+            or (cur_dt - prev_dt).total_seconds() > segment_gap_seconds
+        )
+        if start_new:
+            cur = _SegBuilder(
+                segment_started_at=local_ts,
+                day_utc=cur_dt.astimezone(local_tz).strftime("%Y-%m-%d"),
+            )
+            segments_b.append(cur)
+        else:
             gap = (cur_dt - prev_dt).total_seconds()
             if gap > 0:
-                slot.active_seconds += min(gap, active_gap_cap_seconds)
-        if cur_dt is not None:
-            prev_dt = cur_dt
+                cur.active_seconds += min(gap, active_gap_cap_seconds)
 
-        # Turn counting + transcript building — only real conversational
-        # records (no sidechain sub-agents, no meta local-command echoes).
-        if record.get("isSidechain") or record.get("isMeta"):
-            continue
-        rtype = record.get("type")
-        if rtype not in ("user", "assistant"):
-            continue
-        if slot is None:
-            continue                                       # record had no usable timestamp
+        cur.ended_at = local_ts
+        prev_dt = cur_dt
 
-        if rtype == "user":
-            slot.user_turns += 1
-            user_turns_overall += 1
-        else:
-            slot.assistant_turns += 1
-            assistant_turns_overall += 1
-        slot.records.append(record)
+        if rec.is_turn:
+            _add_turn(cur, ts, rec)
+            if rec.is_user:
+                user_turns_overall += 1
+            else:
+                assistant_turns_overall += 1
 
-    # Render transcripts per slice (sorted by day for stable output).
-    slices: List[DaySlice] = []
-    for day_utc in sorted(days):
-        b = days[day_utc]
-        slices.append(DaySlice(
-            session_uuid    = session_uuid,
-            agent           = agent,
-            cwd             = cwd,
-            day_utc         = day_utc,
-            started_at      = b.started_at or "",
-            ended_at        = b.ended_at or "",
-            user_turns      = b.user_turns,
-            assistant_turns = b.assistant_turns,
-            active_seconds  = int(b.active_seconds),
-            transcript      = _render_records(b.records),
+    segments: List[Segment] = []
+    for i, b in enumerate(segments_b):
+        segments.append(Segment(
+            session_uuid       = session_uuid,
+            agent              = agent,
+            cwd                = cwd,
+            segment_started_at = b.segment_started_at,
+            day_utc            = b.day_utc,
+            started_at         = b.segment_started_at,
+            ended_at           = b.ended_at or b.segment_started_at,
+            user_turns         = b.user_turns,
+            assistant_turns    = b.assistant_turns,
+            active_seconds     = int(b.active_seconds),
+            transcript         = _render_records(b.records),
+            is_last            = (i == len(segments_b) - 1),
         ))
 
     meta = SessionMeta(
@@ -234,28 +232,46 @@ def parse_session_slices(
         assistant_turns = assistant_turns_overall,
         total_records   = total_records,
         jsonl_bytes     = jsonl_bytes,
-        active_seconds  = sum(s.active_seconds for s in slices),
+        active_seconds  = sum(s.active_seconds for s in segments),
     )
-    return meta, slices
+    return meta, segments
 
 
-# ──────────────────────── Internals ────────────────────────────────────────────
+# ──────────────────────── Canonical record ─────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class _NormRecord:
+    """One raw JSONL record normalised across Claude and Codex schemas."""
+    timestamp:  Optional[str]
+    cwd:        Optional[str]
+    is_turn:    bool
+    is_user:    bool
+    role_label: Optional[str]
+    body:       str
 
 
 @dataclass
-class _DayBuilder:
-    """Mutable accumulator while parsing — converted into a frozen DaySlice at the end."""
-    day_utc:         str
-    started_at:      Optional[str] = None
-    ended_at:        Optional[str] = None
-    user_turns:      int           = 0
-    assistant_turns: int           = 0
-    active_seconds:  float         = 0.0
-    records:         List[dict]    = field(default_factory=list)
+class _SegBuilder:
+    """Mutable accumulator while parsing — frozen into a Segment at the end."""
+    segment_started_at: str
+    day_utc:            str
+    ended_at:           Optional[str] = None
+    user_turns:         int           = 0
+    assistant_turns:    int           = 0
+    active_seconds:     float         = 0.0
+    records:            List[Tuple[Optional[str], _NormRecord]] = field(default_factory=list)
+
+
+def _add_turn(builder: _SegBuilder, ts: Optional[str], rec: _NormRecord) -> None:
+    if rec.is_user:
+        builder.user_turns += 1
+    else:
+        builder.assistant_turns += 1
+    builder.records.append((ts, rec))
 
 
 def _infer_agent(jsonl_path: Path) -> str:
-    """Heuristic: which agent wrote this JSONL?"""
     parts = {p.name for p in jsonl_path.parents}
     if "projects" in parts and ".claude" in parts:
         return "claude_code"
@@ -270,7 +286,7 @@ def _infer_agent(jsonl_path: Path) -> str:
 
 
 def _iter_records(path: Path) -> Iterator[dict]:
-    """Yield each well-formed JSON record. Silent on partial writes / IO errors."""
+    """Yield each well-formed JSON object. Silent on partial writes / IO errors."""
     try:
         fh = path.open("rb")
     except (FileNotFoundError, PermissionError, OSError) as exc:
@@ -279,9 +295,11 @@ def _iter_records(path: Path) -> Iterator[dict]:
     try:
         for raw in fh:
             try:
-                yield json.loads(raw)
+                obj = json.loads(raw)
             except Exception:
                 continue
+            if isinstance(obj, dict):
+                yield obj
     except OSError as exc:
         log.debug("read error on %s: %s", path, exc)
         return
@@ -292,8 +310,62 @@ def _iter_records(path: Path) -> Iterator[dict]:
             pass
 
 
+def _iter_normalised(path: Path, *, agent: str) -> Iterator[_NormRecord]:
+    """Yield canonical records for one source JSONL (agent-aware)."""
+    if agent == "codex":
+        yield from _iter_codex(path)
+    else:
+        yield from _iter_claude(path)
+
+
+def _iter_claude(path: Path) -> Iterator[_NormRecord]:
+    """Normalise Claude Code records. Sidechain/meta carry a timestamp (so they
+    participate in gap/segment accounting) but are not conversational turns."""
+    for raw in _iter_records(path):
+        ts = raw.get("timestamp") if isinstance(raw.get("timestamp"), str) else None
+        cwd = raw.get("cwd") if isinstance(raw.get("cwd"), str) else None
+        rtype = raw.get("type")
+
+        if raw.get("isSidechain") or raw.get("isMeta") or rtype not in ("user", "assistant"):
+            yield _NormRecord(ts, cwd, is_turn=False, is_user=False, role_label=None, body="")
+            continue
+
+        msg = raw.get("message") or {}
+        role_raw = msg.get("role") or rtype
+        is_user = role_raw == "user"
+        label = role_raw if is_user else _CLAUDE_ASSISTANT_LABEL
+        yield _NormRecord(
+            ts, cwd, is_turn=True, is_user=is_user, role_label=label,
+            body=_format_claude_content(msg.get("content", "")),
+        )
+
+
+def _iter_codex(path: Path) -> Iterator[_NormRecord]:
+    """Normalise Codex rollout records. Conversational turns are the
+    `event_msg` `user_message` / `agent_message` events; everything else
+    (session_meta, response_item, turn_context, token_count, …) is non-turn
+    but still carries a timestamp for gap/segment accounting."""
+    for raw in _iter_records(path):
+        ts = raw.get("timestamp") if isinstance(raw.get("timestamp"), str) else None
+        payload = raw.get("payload") if isinstance(raw.get("payload"), dict) else {}
+        cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else None
+
+        if raw.get("type") != "event_msg":
+            yield _NormRecord(ts, cwd, is_turn=False, is_user=False, role_label=None, body="")
+            continue
+
+        sub = payload.get("type")
+        if sub == "user_message":
+            yield _NormRecord(ts, cwd, is_turn=True, is_user=True, role_label="user",
+                              body=_format_codex_message(payload.get("message", "")))
+        elif sub == "agent_message":
+            yield _NormRecord(ts, cwd, is_turn=True, is_user=False, role_label=_CODEX_ASSISTANT_LABEL,
+                              body=_format_codex_message(payload.get("message", "")))
+        else:
+            yield _NormRecord(ts, cwd, is_turn=False, is_user=False, role_label=None, body="")
+
+
 def _parse_iso(ts: str) -> datetime:
-    """Parse the JSONL's ISO-8601 timestamp (with 'Z' suffix) into an aware datetime."""
     dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
@@ -303,22 +375,19 @@ def _parse_iso(ts: str) -> datetime:
 # ──────────────────────── Transcript rendering ─────────────────────────────────
 
 
-def _render_records(records: List[dict]) -> str:
-    """Flatten a pre-filtered list of user/assistant records to a transcript."""
+def _render_records(records: List[Tuple[Optional[str], _NormRecord]]) -> str:
+    """Flatten (timestamp, record) pairs to a timestamped transcript:
+    `[<ISO ts>] [role] body` per turn, so the summariser can reason about time."""
     blocks: List[str] = []
-    for rec in records:
-        msg = rec.get("message") or {}
-        rtype = rec.get("type")
-        role_raw = msg.get("role") or rtype
-        label = _ASSISTANT_LABEL if role_raw == "assistant" else role_raw
-        body = _format_message_content(msg.get("content", ""))
-        if body.strip():
-            blocks.append(f"[{label}] {body}")
+    for ts, rec in records:
+        if rec.body.strip():
+            prefix = f"[{ts}] " if ts else ""
+            blocks.append(f"{prefix}[{rec.role_label or 'user'}] {rec.body}")
     return "\n\n".join(blocks)
 
 
-def _format_message_content(content) -> str:
-    """Render a single `message.content` (string or list of typed blocks) to text."""
+def _format_claude_content(content) -> str:
+    """Render Claude `message.content` (string or typed blocks) to text."""
     if isinstance(content, str):
         return content
     if not isinstance(content, list):
@@ -340,8 +409,7 @@ def _format_message_content(content) -> str:
             tr = block.get("content", "")
             if isinstance(tr, list):
                 tr = "\n".join(
-                    p.get("text", "") if isinstance(p, dict) else str(p)
-                    for p in tr
+                    p.get("text", "") if isinstance(p, dict) else str(p) for p in tr
                 )
             tr_str = str(tr).strip()
             if len(tr_str) > _TOOL_RESULT_CAP:
@@ -351,4 +419,25 @@ def _format_message_content(content) -> str:
             t = block.get("thinking", "")
             if t:
                 parts.append(f"[thinking] {t}")
+    return "\n".join(p for p in parts if p)
+
+
+def _format_codex_message(content) -> str:
+    """Render a Codex event_msg message payload into plain transcript text."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: List[str] = []
+    for block in content:
+        if isinstance(block, dict):
+            text = block.get("text")
+            if isinstance(text, str) and text:
+                parts.append(text)
+                continue
+            nested = block.get("content")
+            if isinstance(nested, str) and nested:
+                parts.append(nested)
+        elif isinstance(block, str):
+            parts.append(block)
     return "\n".join(p for p in parts if p)

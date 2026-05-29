@@ -1,38 +1,50 @@
 """The single entry point both the hook and the daemon use.
 
-`register_ended_session(jsonl_path)` parses the JSONL into per-day
-slices, resolves the host terminal/IDE once, and UPSERTs one
-`app_sessions` row per slice. Idempotent at the DB layer — duplicate
-calls update mutable fields in place, never raise.
+`register_ended_session(jsonl_path)` parses the JSONL into idle-gap
+segments, resolves the host terminal/IDE once, and UPSERTs one
+`app_sessions` row per segment — sealing the settled ones. Idempotent at
+the DB layer: duplicate calls refresh live rows in place and no-op on
+sealed rows, never raise.
 
-A long-running session that spans multiple calendar days produces
-multiple rows here, one per local day, so PM-update windowing
-attributes time to the day the work actually happened.
+Seal decision per segment:
+  * Every segment EXCEPT the last is sealed — a later segment exists, so
+    the >1h gap that ended it already happened.
+  * The LAST segment is sealed iff the caller says the session ended
+    (`session_ended=True`, the SessionEnd-hook path) OR its last message
+    is already older than `config.SEGMENT_GAP_SECONDS` (settled by idle).
+    Otherwise it stays LIVE and is refreshed on the next poll.
 
-This module deliberately knows nothing about how it was invoked: the
-hook process passes a path it got from Claude Code's SessionEnd payload;
-the poller passes a path it found by scanning. Both go through here.
+Before parsing, we fetch the session's sealed high-water mark and pass it
+as `start_after_ts`, so already-sealed content is excluded and any newer
+record opens a fresh segment — the invariant that keeps a session safe to
+resume shortly after its SessionEnd hook fired.
+
+This module knows nothing about how it was invoked: the hook passes a path
+from Claude Code's SessionEnd payload (session_ended defaults True); the
+poller passes a path it scanned (session_ended=False).
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import List, Optional
 
-from coding_agent_indexer import db, host_app
+from coding_agent_indexer import config, db, host_app
 from coding_agent_indexer.jsonl_meta import (
+    Segment,
     SessionMeta,
-    parse_session_slices,
+    parse_session_segments,
 )
 
 log = logging.getLogger(__name__)
 
 
 class RegisterOutcome(str, Enum):
-    INSERTED      = "inserted"        # at least one slice written (INSERT or UPDATE)
-    SKIPPED_EMPTY = "skipped_empty"   # session has zero turns / no timestamps / no slices
+    INSERTED      = "inserted"        # at least one segment written (INSERT or UPDATE)
+    SKIPPED_EMPTY = "skipped_empty"   # no turns / no timestamps / no segments / all sealed
     SKIPPED_FORK  = "skipped_fork"    # this is one of our summariser forks
     FAILED        = "failed"          # unexpected exception
 
@@ -43,7 +55,8 @@ class RegisterResult:
     session_uuid: str
     host_app:     str
     meta:         Optional[SessionMeta]                    # overall session metadata
-    row_ids:      List[int] = field(default_factory=list)  # one id per day slice written
+    row_ids:      List[int] = field(default_factory=list)  # one id per segment written
+    sealed_ids:   List[int] = field(default_factory=list)  # subset of row_ids that were sealed
     error:        Optional[str] = None
 
     @property
@@ -55,74 +68,113 @@ class RegisterResult:
 def register_ended_session(
     jsonl_path: Path,
     *,
+    session_ended: bool = True,
     fork_skip_list: Optional[set[str]] = None,
+    now: Optional[datetime] = None,
 ) -> RegisterResult:
-    """Parse → resolve host → UPSERT one row per day slice.
+    """Parse → resolve host → UPSERT one row per segment, sealing settled ones.
 
     Idempotent. Always returns a result; never raises.
 
     Args:
         jsonl_path: Path to the session's JSONL file.
-        fork_skip_list: Optional set of session_uuids the caller already
-            knows are summariser forks (don't re-register them as user
-            sessions). The daemon passes its in-memory skip-list here.
+        session_ended: True when the caller knows the session ended (the
+            SessionEnd-hook path; default) → the last segment seals
+            immediately. The poller passes False so an actively-growing
+            last segment stays live until it idles out.
+        fork_skip_list: session_uuids known to be summariser forks — skip.
+        now: reference time for the idle/seal check (default: utcnow).
 
     Returns:
-        `RegisterResult` describing the outcome. `row_ids` contains the
-        id of every (uuid, day) row written or refreshed.
+        `RegisterResult`; `row_ids` = every segment row written/refreshed,
+        `sealed_ids` = the subset that are now sealed.
     """
     session_uuid = jsonl_path.stem
 
     if fork_skip_list and session_uuid in fork_skip_list:
         return _result(RegisterOutcome.SKIPPED_FORK, session_uuid, "", None)
 
+    now_dt = now or datetime.now().astimezone()
+    now_iso = _local_iso(now_dt)
+
     try:
-        meta, slices = parse_session_slices(jsonl_path)
+        start_after = db.sealed_high_water(session_uuid)
+        meta, segments = parse_session_segments(jsonl_path, start_after_ts=start_after)
     except Exception as exc:                                 # noqa: BLE001
         log.exception("parse failed for %s", jsonl_path)
         return _result(RegisterOutcome.FAILED, session_uuid, "", None, error=str(exc))
 
-    if not meta.is_valid or not slices:
-        # Empty / metadata-only JSONLs are normal, especially for Codex
-        # rollout artifacts. Keep this at DEBUG so the daemon log stays
-        # high-signal; operators still get per-tick skipped counts.
+    valid = [s for s in segments if s.is_valid]
+    if not valid:
+        # Empty / metadata-only / fully-sealed-already JSONLs are normal.
+        # DEBUG keeps the daemon log high-signal; per-tick counts still show.
         log.debug(
-            "skip empty session: uuid=%s user_turns=%d asst_turns=%d slices=%d started=%r ended=%r",
+            "skip empty session: uuid=%s user=%d asst=%d segments=%d started=%r ended=%r",
             session_uuid, meta.user_turns, meta.assistant_turns,
-            len(slices), meta.started_at, meta.ended_at,
+            len(segments), meta.started_at, meta.ended_at,
         )
         return _result(RegisterOutcome.SKIPPED_EMPTY, session_uuid, "", meta)
 
     resolved_host = host_app.detect_host_app()
 
-    # One UPSERT per day slice. Per-slice failures don't abort the rest —
-    # we want partial progress on a session even if one day's slice is
-    # malformed. Aggregate written ids for the result.
+    # One UPSERT per segment. Per-segment failures don't abort the rest.
     row_ids: List[int] = []
-    for slice_ in slices:
+    sealed_ids: List[int] = []
+    for seg in valid:
+        sealed = _should_seal(seg, session_ended=session_ended, now_dt=now_dt)
         try:
-            row_id = db.upsert_session_day_slice(slice_)
-        except Exception:                                    # noqa: BLE001
-            log.exception("upsert failed for %s day=%s", session_uuid, slice_.day_utc)
-            continue
-        if row_id is not None:
-            row_ids.append(row_id)
-            log.info(
-                "registered: agent=%s uuid=%s day=%s host=%s started=%s ended=%s "
-                "active=%ds turns=%d/%d transcript_bytes=%d row_id=%d",
-                slice_.agent, slice_.session_uuid, slice_.day_utc, resolved_host,
-                slice_.started_at, slice_.ended_at, slice_.active_seconds,
-                slice_.user_turns, slice_.assistant_turns,
-                len(slice_.transcript), row_id,
+            row_id = db.upsert_segment(
+                seg, sealed=sealed, sealed_at=now_iso if sealed else None,
             )
+        except Exception:                                    # noqa: BLE001
+            log.exception("upsert failed for %s seg=%s", session_uuid, seg.segment_started_at)
+            continue
+        if row_id is None:
+            continue
+        row_ids.append(row_id)
+        if sealed:
+            sealed_ids.append(row_id)
+        log.info(
+            "registered: agent=%s uuid=%s seg=%s day=%s host=%s ended=%s "
+            "active=%ds turns=%d/%d bytes=%d sealed=%s row_id=%d",
+            seg.agent, seg.session_uuid, seg.segment_started_at, seg.day_utc,
+            resolved_host, seg.ended_at, seg.active_seconds,
+            seg.user_turns, seg.assistant_turns, len(seg.transcript),
+            sealed, row_id,
+        )
 
     if not row_ids:
-        # All slices invalid OR all upserts failed — treat as no-op.
+        # Everything we tried was a no-op (e.g. all keys hit already-sealed rows).
         return _result(RegisterOutcome.SKIPPED_EMPTY, session_uuid, resolved_host, meta)
 
     return _result(
-        RegisterOutcome.INSERTED, session_uuid, resolved_host, meta, row_ids=row_ids,
+        RegisterOutcome.INSERTED, session_uuid, resolved_host, meta,
+        row_ids=row_ids, sealed_ids=sealed_ids,
     )
+
+
+# ──────────────────────── Internals ────────────────────────────────────────────
+
+
+def _should_seal(seg: Segment, *, session_ended: bool, now_dt: datetime) -> bool:
+    """A non-last segment is always sealed; the last seals on end-or-idle."""
+    if not seg.is_last:
+        return True
+    if session_ended:
+        return True
+    try:
+        ended = datetime.fromisoformat(seg.ended_at.replace("Z", "+00:00"))
+        if ended.tzinfo is None:
+            ended = ended.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return False                                         # can't determine idleness → keep live
+    idle = (now_dt - ended).total_seconds()
+    return idle > config.SEGMENT_GAP_SECONDS
+
+
+def _local_iso(dt: datetime) -> str:
+    """ISO-8601 local time with milliseconds and UTC offset."""
+    return dt.astimezone().isoformat(timespec='milliseconds')
 
 
 def _result(
@@ -132,6 +184,7 @@ def _result(
     meta:           Optional[SessionMeta],
     *,
     row_ids:        Optional[List[int]] = None,
+    sealed_ids:     Optional[List[int]] = None,
     error:          Optional[str] = None,
 ) -> RegisterResult:
     return RegisterResult(
@@ -140,5 +193,6 @@ def _result(
         host_app     = host_app_name,
         meta         = meta,
         row_ids      = list(row_ids) if row_ids else [],
+        sealed_ids   = list(sealed_ids) if sealed_ids else [],
         error        = error,
     )

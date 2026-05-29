@@ -113,8 +113,8 @@ def load_skill_addendum(name: str, mode: str) -> str:
     return ""
 
 
-def today_start_utc_iso() -> str:
-    """Return today's local-midnight expressed as an ISO-8601 UTC timestamp."""
+def today_start_local_iso() -> str:
+    """Return today's local midnight as a local ISO-8601 timestamp."""
     local_now = datetime.now().astimezone()
     midnight_local = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-    return midnight_local.astimezone(timezone.utc).isoformat()
+    return midnight_local.isoformat()

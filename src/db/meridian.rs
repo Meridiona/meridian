@@ -2,7 +2,7 @@
 // https://github.com/meridiona/meridian
 
 use anyhow::Context;
-use chrono::Utc;
+use chrono::Local;
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteConnectOptions, FromRow, SqlitePool};
 use std::str::FromStr;
@@ -149,7 +149,7 @@ pub async fn update_cursor(
     last_frame_id: i64,
     run_id: i64,
 ) -> anyhow::Result<()> {
-    let now = Utc::now().to_rfc3339();
+    let now = Local::now().to_rfc3339();
     sqlx::query(
         r#"
         INSERT INTO etl_cursor (id, last_frame_id, last_run_at, last_run_id)
@@ -179,7 +179,7 @@ pub async fn insert_etl_run(
     from_frame_id: i64,
     to_frame_id: i64,
 ) -> anyhow::Result<i64> {
-    let now = Utc::now().to_rfc3339();
+    let now = Local::now().to_rfc3339();
     let result = sqlx::query(
         r#"
         INSERT INTO etl_runs (started_at, from_frame_id, to_frame_id, status)
@@ -202,7 +202,7 @@ pub async fn complete_etl_run(
     sessions_closed: i64,
     error: Option<&str>,
 ) -> anyhow::Result<()> {
-    let now = Utc::now().to_rfc3339();
+    let now = Local::now().to_rfc3339();
     let status = if error.is_some() { "failed" } else { "success" };
     sqlx::query(
         r#"
@@ -265,7 +265,7 @@ pub async fn cleanup_incomplete_runs(pool: &SqlitePool) -> anyhow::Result<u64> {
     sqlx::query(
         "UPDATE etl_runs SET status = 'aborted', completed_at = ?1 WHERE status = 'running'",
     )
-    .bind(Utc::now().to_rfc3339())
+    .bind(Local::now().to_rfc3339())
     .execute(pool)
     .await
     .context("cleanup_incomplete_runs: mark aborted")?;

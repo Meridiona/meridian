@@ -1,9 +1,8 @@
 export function localDayBounds(dateStr: string): { start: string; end: string } {
-  const localStart = new Date(`${dateStr}T00:00:00`)
-  const localEnd = new Date(`${dateStr}T23:59:59.999`)
+  // Keep as local ISO strings — do NOT call toISOString() which shifts to UTC.
   return {
-    start: localStart.toISOString(),
-    end: localEnd.toISOString(),
+    start: `${dateStr}T00:00:00`,
+    end: `${dateStr}T23:59:59.999`,
   }
 }
 

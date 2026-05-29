@@ -55,9 +55,13 @@ async fn test_ui_event_refines_session_end() {
             .await
             .unwrap();
 
-    assert!(
-        row.0.starts_with("2026-01-01T10:01:45"),
-        "ended_at should be the ui_event timestamp (10:01:45), got: {}",
+    let stored_ts = chrono::DateTime::parse_from_rfc3339(&row.0)
+        .unwrap_or_else(|_| panic!("ended_at is not valid RFC3339: {}", row.0));
+    let expected_ts = chrono::DateTime::parse_from_rfc3339("2026-01-01T10:01:45+00:00").unwrap();
+    assert_eq!(
+        stored_ts.timestamp(),
+        expected_ts.timestamp(),
+        "ended_at should represent 10:01:45 UTC (ui_event), got: {}",
         row.0
     );
     assert_eq!(
@@ -114,9 +118,13 @@ async fn test_ui_event_before_last_frame_ignored() {
             .await
             .unwrap();
 
-    assert!(
-        row.0.starts_with("2026-01-01T10:02:00"),
-        "ended_at must be next_frame_ts (10:02:00) — Option C did not fire, Option D advanced it; got: {}",
+    let stored_ts = chrono::DateTime::parse_from_rfc3339(&row.0)
+        .unwrap_or_else(|_| panic!("ended_at is not valid RFC3339: {}", row.0));
+    let expected_ts = chrono::DateTime::parse_from_rfc3339("2026-01-01T10:02:00+00:00").unwrap();
+    assert_eq!(
+        stored_ts.timestamp(),
+        expected_ts.timestamp(),
+        "ended_at must be next_frame_ts (10:02:00 UTC) — Option C did not fire, Option D advanced it; got: {}",
         row.0
     );
     assert_eq!(

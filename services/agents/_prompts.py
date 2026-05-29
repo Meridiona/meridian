@@ -27,9 +27,9 @@ def _fmt_dur(duration_s: int | float) -> str:
 
 
 def _fmt_time(ts: str) -> str:
-    """Parse an ISO8601 timestamp and return HH:MM in its original timezone."""
+    """Parse an ISO8601 timestamp and return HH:MM in local timezone."""
     try:
-        return datetime.fromisoformat(ts).strftime("%H:%M")
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone().strftime("%H:%M")
     except Exception:
         return ts[:5] if len(ts) >= 5 else ts
 

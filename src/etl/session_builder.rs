@@ -1,6 +1,7 @@
 // meridian — normalises screenpipe activity into structured app sessions
 
 use anyhow::Result;
+use chrono::Local;
 
 use crate::db::meridian::ActiveSession;
 use crate::db::screenpipe::{AudioSnippet, SignalEvent, WindowTitleCount};
@@ -9,6 +10,15 @@ use crate::etl::text_merge::merge_session_texts;
 use crate::intelligence::session_categorizer::{categorize, SessionSignals};
 
 const AUDIO_SNIPPET_CAP: usize = 50;
+
+/// Convert any RFC3339 timestamp (typically UTC from screenpipe) to the local
+/// timezone RFC3339 string that meridian.db stores. Falls back to the original
+/// string unchanged if parsing fails so we never lose data.
+fn to_local_rfc3339(ts: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(ts)
+        .map(|dt| dt.with_timezone(&Local).to_rfc3339())
+        .unwrap_or_else(|_| ts.to_owned())
+}
 
 struct ClassifyInput<'a> {
     app_name: &'a str,
@@ -55,8 +65,8 @@ pub(super) fn build_active_session(
     Ok(ActiveSession {
         id: 1,
         app_name: ctx.app_name.clone(),
-        started_at: ctx.started_at.clone(),
-        last_seen_at: ctx.ended_at.clone(),
+        started_at: to_local_rfc3339(&ctx.started_at),
+        last_seen_at: to_local_rfc3339(&ctx.ended_at),
         window_titles: serde_json::to_string(&ctx.window_titles)?,
         audio_snippets: Some(serde_json::to_string(&ctx.audio_snippets)?),
         signals: Some(serde_json::to_string(&ctx.signals)?),
@@ -87,7 +97,7 @@ pub(super) fn merge_into_active(
     ctx: &BlockContext,
     new_idle_frame_count: i64,
 ) -> Result<ActiveSession> {
-    let now = ctx.ended_at.clone();
+    let now = to_local_rfc3339(&ctx.ended_at);
 
     let mut merged_titles: Vec<WindowTitleCount> =
         serde_json::from_str(&existing.window_titles).unwrap_or_default();

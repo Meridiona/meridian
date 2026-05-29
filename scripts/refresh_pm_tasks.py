@@ -107,7 +107,7 @@ INSERT INTO pm_tasks (
     updated_at, fetched_at,
     parent_key, epic_title
 ) VALUES (?, 'jira', ?, ?, ?, ?, ?, ?, ?,
-          strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+          strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'),
           ?, ?)
 ON CONFLICT(task_key) DO UPDATE SET
     title            = excluded.title,
@@ -124,7 +124,7 @@ ON CONFLICT(task_key) DO UPDATE SET
 
 SYNC_STATE_SQL = """
 INSERT INTO pm_sync_state (provider, last_synced_at)
-VALUES ('jira', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+VALUES ('jira', strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))
 ON CONFLICT(provider) DO UPDATE SET last_synced_at = excluded.last_synced_at
 """
 
