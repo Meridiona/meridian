@@ -269,30 +269,37 @@ The dataset's value lives in **what it discriminates**, not how many cases it ha
 
 ## Python agent service (`services/`)
 
-A Python service runs alongside the Rust daemon and writes Jira task mappings + multi-label dimension tags into `meridian.db`. The classification engine uses hermes `AIAgent` to match sessions to tasks.
+Three Python services run alongside the Rust daemon:
 
-For installation, ops (launchd daemon, hot-toggle, single-session inspector), see `services/README.md`. For the deep technical reference (classification logic, scoring formulas, recipes for tuning prompts / debugging misclassifications), see `services/agents/README.md`.
+1. **`coding_agent_indexer`** — polls Claude Code (`~/.claude/projects/`) and Codex (`~/.codex/sessions/`) JSONLs and writes them as `app_sessions` rows. Also triggered in real-time by Claude Code's SessionEnd hook.
+2. **MLX classifier** (`run_task_linker_mlx.py`) — called by the Rust intelligence module via HTTP POST to classify `app_sessions` into Jira tasks. Runs as a persistent FastAPI server (`com.meridiona.mlx-server.plist`).
+3. **Jira updater** (`agents/pm_update/`) — agno-powered synthesis workflow that generates Jira comments + worklogs from classified sessions. Runs on an office-hours slot schedule (`com.meridiona.jira-updater.plist`).
+
+For the deep technical reference (classification logic, scoring formulas, recipes for tuning prompts / debugging misclassifications), see `services/agents/README.md`.
 
 ### Hard rules
 
 - **Every `.py` file in `services/agents/` must start with a `"""…"""` module docstring** describing its purpose. The Rust/TS file-header convention does not apply — Python uses docstrings. Match the prose style of existing modules (terse, opinionated).
-- **Don't break the cursor monotonicity invariant in `tagger.run_once`.** `agent_cursor.last_session_id` only advances; the SQL has `WHERE ? > last_session_id`. Cursor advances after EVERY session in the batch, regardless of classification outcome. A SIGTERM mid-batch must lose at most the in-flight session.
-- **`ticket_links` and `session_dimensions` writes must be idempotent.** Both tables have UNIQUE / composite-PK constraints with explicit `ON CONFLICT … DO UPDATE` policies. New writers must use the same UPSERT pattern (see `db.write_ticket_link`, `db.upsert_session_dimension`). Never `DELETE` then `INSERT` from the daemon path.
+- **`ticket_links` and `session_dimensions` writes must be idempotent.** Both tables have UNIQUE / composite-PK constraints with explicit `ON CONFLICT … DO UPDATE` policies. New writers must use the same UPSERT pattern. Never `DELETE` then `INSERT` from the daemon path.
+- **`coding_agent_indexer` cursor monotonicity:** the `(claude_session_uuid, day_utc)` unique index is the idempotency key. The UPSERT updates mutable fields (timestamps, duration, transcript) but never touches classifier-owned fields (`task_method`, `task_key`, `session_summary`).
 
 ### Quick command reference
 
 ```bash
-# Run the daemon manually (default tick = 7s)
-python -m agents.tagger_daemon
+# coding_agent_indexer — register one session or scan all
+.venv/bin/python -m coding_agent_indexer.cli --scan-once
+.venv/bin/python -m coding_agent_indexer.cli --session-uuid <UUID>
+.venv/bin/python -m coding_agent_indexer.cli --jsonl ~/.claude/projects/.../<uuid>.jsonl
 
-# Inspect or re-tag one session, full log dump
-python -m agents.tagger --session <ID>
-python -m agents.tagger --session <ID> --dry-run
+# launchd lifecycle (coding_agent_indexer daemon)
+./services/scripts/install-coding-agent-indexer.sh
+./services/scripts/uninstall-coding-agent-indexer.sh
+tail -f ~/.meridian/logs/coding-agent-indexer.log
 
-# launchd lifecycle
-./services/scripts/install-tagger-daemon.sh
-./services/scripts/uninstall-tagger-daemon.sh
-tail -f ~/.meridian/logs/tagger-daemon.log
+# MLX classifier — call the running server directly
+curl -s -X POST http://127.0.0.1:7823/classify_sessions \
+  -H "Content-Type: application/json" \
+  -d '{"session_ids": [<ID>]}' | jq .
 
 # Classifier eval pipeline (see TESTING.md §9, services/tests/evals/README.md)
 services/.venv/bin/python services/tests/evals/render_seeds.py            # seeds → Goldens
@@ -308,7 +315,7 @@ services/.venv/bin/python services/tests/evals/smoke_run.py               # run,
 - Commit message style: `type(scope): short description` — e.g. `fix(etl): detect sleep gaps that span ETL run boundaries`
 - `commit-msg` hook validates conventional commits format — fix message before retrying
 - `pre-commit` hook runs `cargo fmt --check` and `cargo clippy -- -D warnings`
-- `pre-push` hook runs the full suite: `cargo fmt` + `cargo clippy` + `cargo test` + `cd ui && npm run build` + `cd ui && bun test`
+- `pre-push` hook runs the full suite: `cargo fmt` + `cargo clippy` + UI build + UI tests + security audit (claude CLI) + `cargo test`
 - Never skip hooks with `--no-verify`
 - Install hooks after cloning: `bash scripts/setup-hooks.sh`
 - Never amend a commit that has already been pushed to `main`

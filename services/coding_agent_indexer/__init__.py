@@ -10,7 +10,7 @@ Two entry points trigger registration:
   * **`hook.py`** — invoked by Claude Code's SessionEnd hook the moment a
     session ends gracefully. Real-time, zero polling overhead.
   * **`daemon.py`** — a low-frequency (every ~10 min) sweeper that catches
-    sessions the hook didn't fire for (crashes, kills, Codex sessions
+    sessions the hook didn't fire for (crashes, kills, Codex sessions3
     with no equivalent hook, macOS sleep, etc.).
 
 Both call the same `register.register_ended_session()` function, which is
