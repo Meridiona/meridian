@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Remove the ax-sidecar LaunchAgent.
+# Remove the coding-agent-indexer LaunchAgent.
 
 set -euo pipefail
 
-LABEL="com.meridiona.ax-sidecar"
+LABEL="com.meridiona.coding-agent-indexer"
 PLIST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
 GUI_TARGET="gui/$(id -u)"
 
@@ -17,4 +17,4 @@ if [[ -f "${PLIST}" ]]; then
     echo "✓ removed ${PLIST}"
 fi
 
-echo "✓ ax-sidecar uninstalled"
+echo "✓ coding-agent-indexer uninstalled"

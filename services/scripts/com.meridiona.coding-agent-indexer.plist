@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.meridiona.coding-agent-indexer</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{PYTHON}}</string>
+        <string>-m</string>
+        <string>coding_agent_indexer.daemon</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>{{REPO_ROOT}}/services</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>MERIDIAN_DB</key>
+        <string>{{HOME}}/.meridian/meridian.db</string>
+        <key>CLAUDE_PROJECTS_DIR</key>
+        <string>{{HOME}}/.claude/projects</string>
+        <key>CODEX_SESSIONS_DIR</key>
+        <string>{{HOME}}/.codex/sessions</string>
+        <key>INDEXER_IDLE_THRESHOLD_S</key>
+        <string>300</string>
+        <key>INDEXER_POLL_INTERVAL_S</key>
+        <string>600</string>
+        <key>INDEXER_ACTIVE_GAP_CAP_S</key>
+        <string>300</string>
+        <key>PYTHONPATH</key>
+        <string>{{REPO_ROOT}}/services</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>{{HOME}}/.meridian/logs/coding-agent-indexer.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>{{HOME}}/.meridian/logs/coding-agent-indexer.log</string>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>
