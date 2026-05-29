@@ -62,11 +62,77 @@ from tests.evals.metrics import TaskKeyMatchMetric, SessionTypeMatchMetric  # no
 from tests.evals.strategies import from_env as strategy_from_env  # noqa: E402
 
 
+def _query_model_info(server_url: str) -> dict:
+    """GET /info from the MLX server. Returns {} if the endpoint is unavailable."""
+    url = server_url.rstrip("/") + "/info"
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read())
+    except Exception:
+        return {}
+
+
+def _resolve_server(model_arg: str | None, port: int = 7823) -> "tuple[str, str, str] | None":
+    """Return (server_url, model_id, source) or None if no server is reachable.
+
+    source labels how the server was found: 'env' or 'auto-discovered'.
+    model_id comes from /info — authoritative for span stamping. Falls back to
+    the MLX_MODEL_ID env var if /info is unavailable (e.g. older server build).
+    If model_arg is given, warns when it doesn't match the loaded model.
+    """
+    from agents.llm_selector import discover_mlx_eval_server, resolve_model
+
+    env_url = os.environ.get("MLX_SERVER_URL")
+    if env_url:
+        server_url = env_url.rstrip("/")
+        source = "env"
+    else:
+        discovered = discover_mlx_eval_server(port)
+        if not discovered:
+            print(
+                f"ERROR: no MLX eval server found on port {port}.\n"
+                f"  Start with: python -m agents.server --backend mlx --port {port}\n"
+                f"  Or set:     MLX_SERVER_URL=http://127.0.0.1:{port}",
+                file=sys.stderr,
+            )
+            return None
+        server_url = discovered
+        source = "auto-discovered"
+
+    info = _query_model_info(server_url)
+    model_id: str = info.get("model_id") or os.environ.get("MLX_MODEL_ID", "unknown")
+
+    if model_arg:
+        entry = resolve_model(model_arg)
+        target_hf_id = (entry["hf_id"] if entry else model_arg) or model_arg
+        if target_hf_id != model_id:
+            print(
+                f"WARNING: --model {model_arg!r} ({target_hf_id}) "
+                f"but server has {model_id!r}",
+                file=sys.stderr,
+            )
+
+    return server_url, model_id, source
+
+
 def main() -> int:
-    server_url = os.environ.get("MLX_SERVER_URL")
-    if not server_url:
-        print("ERROR: MLX_SERVER_URL not set", file=sys.stderr)
+    import argparse
+    parser = argparse.ArgumentParser(description="Meridian eval smoke runner")
+    parser.add_argument(
+        "--model", default=None, metavar="NAME",
+        help="Model short name or HF ID to validate against the running server (e.g. phi-4)",
+    )
+    parser.add_argument(
+        "--port", type=int, default=7823, metavar="PORT",
+        help="Port to probe for the MLX eval server when MLX_SERVER_URL is not set (default: 7823)",
+    )
+    args = parser.parse_args()
+
+    resolved = _resolve_server(args.model, args.port)
+    if resolved is None:
         return 1
+    server_url, model_id, server_source = resolved
 
     dataset_path = Path(
         os.environ.get("EVAL_DATASET_PATH")
@@ -94,6 +160,8 @@ def main() -> int:
     dataset = EvaluationDataset()
     dataset.add_goldens_from_json_file(file_path=str(dataset_path))
     print(f"Loaded {len(dataset.goldens)} Goldens from {dataset_path.name}")
+    print(f"Model:    {model_id}")
+    print(f"Server:   {server_url}  [{server_source}]")
     print(f"Strategy: {strategy.name}  config: {hyperparams}")
     print()
 
@@ -112,12 +180,9 @@ def main() -> int:
         root_span.set_attribute("server_url",   server_url)
         root_span.set_attribute("strategy",     strategy.name)
         root_span.set_attribute("dataset_size", len(dataset.goldens))
+        root_span.set_attribute("model_id",     model_id)
         for k, v in hyperparams.items():
             root_span.set_attribute(f"strategy.{k}", str(v))
-        # TODO(task#1): also set `model_id` on this root span by querying the MLX
-        # server's /info endpoint (to be added — server doesn't expose it yet).
-        # Until /info exists, fall back to grepping ~/.meridian/logs/mlx-server.log
-        # for the most recent "loading <model>" line.
 
         print(f"{'seed':>5} {'app':<14} {'diff':<11} {'exp_key':<10} {'act_key':<10} K {'exp_type':<10} {'act_type':<10} T {'s':>4}")
         print("-" * 95)
