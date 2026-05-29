@@ -117,18 +117,91 @@ services/.venv/bin/deepeval test run services/tests/evals/test_classifier.py \
 
 **Identifier conventions:** `<model>-<dataset>-<purpose>` e.g. `qwen35-9b-optiq-4bit-dev_a-baseline`. Repeat to track the same config over time; vary when you change model, prompt, temperature, or dataset.
 
-### Choosing between OpenObserve and Confident AI
+### Choosing between OpenObserve, Confident AI, and local results
 
 | Question | Use |
 |---|---|
+| **"What just happened in the latest run?" (Claude Code loop)** | **`results/run_<id>.json`** — local mirror of the OTel trace, no network |
 | "Did all spans land? Was the root captured?" | OpenObserve — full trace tree with custom attributes |
-| "What did the classifier reason for seed_id=26?" | OpenObserve — `actual_reasoning` event has full text |
+| "What did the classifier reason for seed_id=26?" | OpenObserve OR `results/run_<id>.json` (full reasoning preserved in both) |
 | "Which Goldens flipped between yesterday and today?" | Confident AI — per-Golden regression diff |
-| "How has hard-decoy accuracy trended this week?" | Confident AI — per-tier history charts |
+| "How has hard-decoy accuracy trended this week?" | Confident AI — per-tier history charts; or `jq` over `results/*.json` |
 | "Compare model-A vs model-B across all tiers" | Confident AI — hyperparameter A/B view |
-| "I want everything local, no third-party cloud" | OpenObserve only |
+| "I want everything local, no third-party cloud" | `results/*.json` (+ OpenObserve optional) |
 
-Both can coexist as complementary views, but **not in the same process** — `eval_classifier.py` routes OTel spans to OpenObserve; `deepeval test run` hijacks the global TracerProvider and routes to Confident AI. Run each separately.
+Both telemetry sinks can coexist but **not in the same process** — `eval_classifier.py` routes OTel spans to OpenObserve; `deepeval test run` hijacks the global TracerProvider and routes to Confident AI. Local `results/` is written by `eval_classifier.py` regardless of telemetry destination.
+
+---
+
+## Results schema (`results/run_<run_id>.json`)
+
+`eval_classifier.py` writes one JSON file per run to `services/tests/evals/results/` (gitignored). This file is the **source of truth for the Claude Code feedback loop** — the `eval-feedback` skill reads it directly instead of querying OpenObserve.
+
+Schema (flat, stable):
+
+```json
+{
+  "run_id":    "smoke_20260529T201314",
+  "timestamp": "2026-05-29T14:43:14Z",
+  "trace_id":  "8d1cbb64cd34079b189d34b336ff06af",
+  "config": {
+    "strategy":         "direct_http",
+    "model_id":         "Qwen3.5-9B-OptiQ-4bit",
+    "dataset_path":     "services/tests/evals/data/generated/goldens_b_generic.json",
+    "dataset_name":     "goldens_b_generic.json",
+    "persona":          "b_generic",
+    "server_url":       "http://localhost:7823",
+    "server_source":    "env",
+    "session_text_cap": 2500,
+    "hyperparameters":  { "strategy": "direct_http", "model": "...", "endpoint": "..." }
+  },
+  "metrics": {
+    "total_goldens":         33,
+    "passed_both":           19,
+    "task_key_accuracy":     0.667,
+    "session_type_accuracy": 0.606,
+    "both_accuracy":         0.576,
+    "per_tier": {
+      "easy":       { "total": 16, "passed_both": 13, "task_key_acc": 0.875, "session_type_acc": 0.812, "both_acc": 0.812 },
+      "medium":     { "total": 10, "passed_both": 4,  "task_key_acc": 0.600, "session_type_acc": 0.500, "both_acc": 0.400 },
+      "hard":       { "total": 3,  "passed_both": 1,  "task_key_acc": 0.333, "session_type_acc": 0.333, "both_acc": 0.333 },
+      "hard-decoy": { "total": 4,  "passed_both": 1,  "task_key_acc": 0.250, "session_type_acc": 0.250, "both_acc": 0.250 }
+    },
+    "latency": { "total_s": 941.5, "avg_s": 28.53, "min_s": 21.9, "max_s": 40.0, "p50_s": 25.0, "p95_s": 38.4 }
+  },
+  "per_seed_results": [
+    {
+      "seed_id":    1,
+      "difficulty": "easy",
+      "app_name":   "Google Chrome",
+      "expected":   { "task_key": null,       "session_type": "overhead" },
+      "actual":     { "task_key": "PROJ-210", "session_type": "task", "confidence": 0.95, "reasoning": "<full text>" },
+      "key_ok":     false,
+      "type_ok":    false,
+      "both_ok":    false,
+      "elapsed_s":  24.6,
+      "method":     "http",
+      "error":      null
+    }
+  ]
+}
+```
+
+**Querying patterns:**
+
+```bash
+# Latest run summary
+jq '.metrics | {both_accuracy, per_tier}' services/tests/evals/results/run_smoke_*.json | tail -20
+
+# All failures in a specific run
+jq '.per_seed_results[] | select(.both_ok == false)' services/tests/evals/results/run_smoke_20260529T201314.json
+
+# Compare both_accuracy across the last 5 runs
+ls -t services/tests/evals/results/*.json | head -5 | xargs jq -r '"\(.config.strategy)\t\(.config.model_id)\t\(.metrics.both_accuracy)"'
+
+# Optimism-bias check: how many "overhead → task" failures across all runs?
+jq -r '.per_seed_results[] | select(.expected.session_type=="overhead" and .actual.session_type=="task") | "\(.seed_id) \(.app_name)"' services/tests/evals/results/*.json
+```
 
 ---
 
