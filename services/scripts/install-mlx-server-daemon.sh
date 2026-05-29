@@ -114,3 +114,7 @@ echo "  ${SCRIPT_DIR}/uninstall-mlx-server-daemon.sh          # remove"
 echo
 echo "Set CLASSIFIER_BACKEND=mlx and MLX_SERVER_PORT=${MLX_SERVER_PORT} in your .env"
 echo "then restart the Rust daemon."
+
+echo
+echo "→ installing coding-agent-indexer daemon + Claude Code hook …"
+bash "${SCRIPT_DIR}/install-coding-agent-indexer.sh"
