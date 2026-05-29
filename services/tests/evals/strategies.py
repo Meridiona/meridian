@@ -11,10 +11,10 @@ code. When a strategy proves out in eval and is worth shipping, the logic is
 promoted into services/agents/ as a deliberate productionization step.
 
 Integration points:
-  smoke_run.py            (OpenObserve path)  — strategy.classify_prompt() replaces
-                                                _classify_http; strategy name/config
+  eval_classifier.py      (OpenObserve path)  — strategy.classify_prompt() drives
+                                                the eval loop; strategy name/config
                                                 emitted as span attributes on eval.run.
-  test_mlx_classifier.py  (Confident AI path) — strategy.classify_prompt() replaces
+  test_classifier.py      (Confident AI path) — strategy.classify_prompt() replaces
                                                 the inline HTTP block in _run_mlx;
                                                 strategy.as_hyperparameters() is
                                                 passed to evaluate() so Confident AI
