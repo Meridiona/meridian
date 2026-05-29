@@ -78,3 +78,7 @@ echo "    \"SELECT id, started_at, duration_s, frame_count, claude_session_uuid 
 echo "       FROM app_sessions WHERE claude_session_uuid IS NOT NULL \\"
 echo "       ORDER BY id DESC LIMIT 5;\""
 echo "  ${SCRIPT_DIR}/uninstall-coding-agent-indexer.sh             # remove"
+
+echo
+echo "→ installing Claude Code SessionEnd hook …"
+bash "${SCRIPT_DIR}/install-claude-hook.sh"
