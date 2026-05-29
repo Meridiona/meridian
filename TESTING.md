@@ -148,6 +148,93 @@ They do not assert a specific `task_key` — that is LLM output and varies by mo
 - [ ] **graceful shutdown on SIGTERM** — `kill <pid>`; daemon finishes the current ETL pass and exits cleanly.
 - [ ] **graceful shutdown on Ctrl-C** — same as SIGTERM.
 
+### 9. Classifier eval pipeline (deepeval + golden dataset)
+
+The eval pipeline scores the MLX classifier against a hand-authored golden dataset and emits OTel spans to OpenObserve so each run is inspectable as a trace tree. This is the experimentation harness — every model swap, prompt edit, or temperature tweak goes through it.
+
+**Inputs**
+
+- `services/tests/evals/golden_seed/dev_<persona>_sessions.json` — structured seed sessions with `ground_truth` (task_key, session_type, reasoning, difficulty, scoreable) + `design_notes`. Hand-authored, one persona per file.
+- `services/tests/evals/golden_seed/candidates_<project>.json` — open ticket list (real KAN-* + synthetic decoys) the classifier picks from.
+
+**Run flow**
+
+```bash
+# 1. Render seeds → deepeval Goldens (regenerate after any seed edit)
+services/.venv/bin/python services/tests/evals/render_seeds.py [persona]
+# default persona = a_meridian; valid: a_meridian, b_generic
+# writes: services/tests/evals/.synthetic-dataset-<persona>.json
+
+# 2. Run the eval — needs MLX server running on $MLX_SERVER_URL
+EVAL_DATASET_PATH=services/tests/evals/.synthetic-dataset-a_meridian.json \
+MLX_SERVER_URL=http://localhost:7823 \
+services/.venv/bin/python services/tests/evals/smoke_run.py
+```
+
+**Pre-reqs**
+
+- `services/.venv` with `deepeval`, `python-dotenv`, `ollama` (`pip install -r services/requirements.txt` covers it; `ollama` is needed only because metrics.py imports `OllamaModel` for the unused LLM-judge metric — actual scoring is exact-match).
+- MLX server up on port 7823: `services/.venv/bin/python -m agents.server --backend mlx --port 7823`
+- OTel env vars in `.env` (`MERIDIAN_OTLP_ENDPOINT`, `MERIDIAN_OO_AUTH`) — `smoke_run.py` auto-loads via `python-dotenv`.
+
+**What gets emitted**
+
+Each run produces one trace tree in OpenObserve under `service.name = meridian-eval`:
+
+| Span | Attributes |
+|---|---|
+| `eval.run` (root) | `run.id`, `persona`, `dataset_path`, `server_url`, `dataset_size`, `accuracy.task_key`, `accuracy.session_type`, `accuracy.both` |
+| `eval.classify` (×N children) | `seed_id`, `difficulty`, `app_name`, `persona`, `expected.task_key`, `expected.session_type`, `actual.task_key`, `actual.session_type`, `classifier.confidence`, `key_ok`, `type_ok`, `both_ok`, `elapsed_s`, plus an event `actual_reasoning` with the classifier's rationale |
+
+**Failure-mode taxonomy in the dataset**
+
+Each scoreable Golden targets a specific class of mistake:
+
+| Tier | Tests | Failure if it doesn't pass |
+|---|---|---|
+| `easy` | branch + ticket + activity all line up | classifier fundamentally broken |
+| `medium` | needs recent-context block to disambiguate | context window isn't earning its weight |
+| `hard` | ambiguous between 2 real tickets | model can't discriminate close cases |
+| `hard-decoy` | content adjacent to a decoy ticket | model picks decoys when it shouldn't |
+| `overhead` | text mentions tickets but user isn't working on them | keyword-mention false positive — highest-volume prod failure |
+| `untracked` | work but no candidate fits | model hallucinates a ticket to look productive |
+| `context-only` | timeline density, not scored | n/a (excluded from Goldens via `scoreable=false`) |
+
+A pass-rate of 95% concentrated in `easy` cases is materially worse than 80% with every tier above 50% — the latter exposes a real failure surface to attack, the former hides it. Author Goldens against failure modes, not coverage.
+
+**Useful OpenObserve queries** (paste into Logs panel, traces stream):
+
+```sql
+-- All eval runs, newest first
+SELECT _timestamp, run_id, persona, accuracy_both, dataset_size, duration
+FROM "default"
+WHERE service_name='meridian-eval' AND operation_name='eval.run'
+ORDER BY _timestamp DESC LIMIT 20
+
+-- Failing cases from the most recent run
+SELECT seed_id, difficulty, app_name, expected_task_key, actual_task_key, classifier_confidence
+FROM "default"
+WHERE service_name='meridian-eval' AND operation_name='eval.classify' AND both_ok='false'
+ORDER BY _timestamp DESC LIMIT 30
+
+-- Per-tier accuracy for one trace
+SELECT difficulty,
+       COUNT(DISTINCT seed_id) AS total,
+       COUNT(DISTINCT CASE WHEN both_ok='true' THEN seed_id END) AS passed
+FROM "default"
+WHERE service_name='meridian-eval' AND operation_name='eval.classify' AND trace_id='<TRACE_ID>'
+GROUP BY difficulty ORDER BY difficulty
+```
+
+**When to re-run**
+
+- After editing `services/skills/activity/task-classifier/SKILL.md` (prompt change)
+- After bumping `MLX_MODEL_ID` or restarting the MLX server with a different model
+- After adding / editing Goldens in `dev_<persona>_sessions.json`
+- After any change to `services/agents/run_task_linker_mlx.py` (FSM schema, sampling, system_prompt composition)
+
+See [`services/tests/evals/README.md`](services/tests/evals/README.md) for the file inventory + the rendered Golden schema.
+
 ## Install-package tests
 
 Tests for the install package (`install.sh`, `scripts/meridian-cli.sh`, the daemon installers, and the plist templates) live under `tests/install/`.
