@@ -58,10 +58,12 @@ _app_state: dict[str, Any] = {}
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     if _app_state.get("backend") == "mlx":
+        import datetime
         log.info("server: loading MLX model at startup…")
         import agents.run_task_linker_mlx as _mlx
         _mlx._get_model()
         _app_state["mlx_module"] = _mlx
+        _app_state["loaded_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         log.info("server: MLX model ready")
     yield
 
@@ -80,6 +82,21 @@ async def health() -> dict:
         "backend": _app_state.get("backend", "hermes"),
         "db": str(_DB_PATH),
         "db_exists": _DB_PATH.exists(),
+    }
+
+
+@app.get("/info")
+async def info() -> dict:
+    """Return the identity of the loaded model.
+
+    model_id is None for the hermes backend (no model loaded in-process).
+    loaded_at is an ISO-8601 UTC timestamp set when the model finished loading.
+    """
+    m = _app_state.get("mlx_module")
+    return {
+        "backend":   _app_state.get("backend", "hermes"),
+        "model_id":  m._MLX_MODEL_ID if m else None,
+        "loaded_at": _app_state.get("loaded_at"),
     }
 
 
