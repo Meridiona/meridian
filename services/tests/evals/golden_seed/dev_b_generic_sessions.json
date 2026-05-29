@@ -480,6 +480,172 @@
         "scoreable": true
       },
       "design_notes": "HARD-DECOY — Postman testing webhook endpoints after PROJ-201 circuit breaker implementation. Primary failure mode: classifier sees Postman + webhook testing and maps to overhead (QA is overhead?). Correct label is PROJ-201 task because developer is verifying their own implementation from session 14 — manual verification is part of the task, not a separate overhead activity. The Postman sidebar also shows 'GET /reports/export (CSV, PROJ-230)' which could attract PROJ-230 classification. Discriminator: developer is testing /webhooks endpoints, not /reports. The session is a continuation of session 14's circuit breaker work. Postman-specific difficulty: is manual API testing task work or overhead? For a developer verifying their own implementation immediately after coding it, it's task work."
+    },
+    {
+      "id": 16,
+      "app_name": "Google Chrome",
+      "started_at": "2026-05-27T14:45:00+05:30",
+      "ended_at": null,
+      "duration_s": 46,
+      "category": "research",
+      "confidence": 0.85,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "Datadog Docs — Custom Metrics — Google Chrome",
+          "count": 3
+        },
+        {
+          "window_name": "Datadog Docs — DogStatsD — Google Chrome",
+          "count": 2
+        },
+        {
+          "window_name": "npm — hot-shots — Google Chrome",
+          "count": 2
+        },
+        {
+          "window_name": "GitHub — PR #88 — Google Chrome",
+          "count": 1
+        }
+      ],
+      "session_text": "[14:45:00]\nGoogle Chrome\nTabs:\n  (1) Datadog Docs — Custom Metrics  <- ACTIVE\n  (2) Datadog Docs — StatsD Node.js\n  (3) npm — hot-shots  (Datadog StatsD client)\n  (4) GitHub — Zuno PR #88  (feat/webhook-retry)\n\nURL: https://docs.datadoghq.com/metrics/custom_metrics/\n\n[14:45:12]\nDatadog Docs — Custom Metrics overview\n\nCustom metrics\nCustom metrics allow you to track application-specific KPIs that Datadog\ndoesn't collect automatically. Common use cases:\n  - Business metrics: orders_placed, revenue_per_day\n  - Queue depth: jobs_pending, retry_queue_length\n  - Error rates: webhook_delivery_failed, circuit_breaker_triggered\n\nMetric types:\n  COUNT   — event count since last flush (e.g. webhook_delivery_attempt)\n  GAUGE   — current value (e.g. webhook_retry_queue_depth)\n  HISTOGRAM — distribution (e.g. webhook_delivery_latency_ms)\n  SET     — count of unique values (e.g. unique_webhook_targets)\n\nSubmission methods (Node.js):\n  Using DogStatsD / hot-shots:\n    import StatsD from 'hot-shots'\n    const dogstatsd = new StatsD({ host: 'localhost', port: 8125 })\n    dogstatsd.increment('webhook.delivery.attempt', 1, { target: url })\n    dogstatsd.histogram('webhook.delivery.latency_ms', latencyMs, { target: url })\n    dogstatsd.gauge('webhook.retry_queue.depth', queueDepth)\n\n[14:46:00]\nGoogle Chrome — Datadog Docs StatsD\n(developer clicks tab 2 — StatsD Node.js integration)\n\nURL: https://docs.datadoghq.com/developers/dogstatsd/\n\nDogStatsD Node.js\n  Install: npm install hot-shots\n\n  Configuration:\n    const dogstatsd = new StatsD({\n      host:        process.env.STATSD_HOST ?? 'localhost',\n      port:        8125,\n      prefix:      'zuno.',           // all metrics prefixed zuno.*\n      globalTags:  { env: process.env.NODE_ENV },\n      errorHandler: (err) => logger.error({ event: 'statsd_error', err }),\n    })\n\n  Common patterns:\n    // Count event occurrences\n    dogstatsd.increment('webhook.delivery.attempt', 1, ['target:httpbin.org'])\n    // Record latency distribution\n    dogstatsd.timing('webhook.delivery.latency', endMs - startMs, ['target:httpbin.org'])\n    // Gauge current queue size\n    dogstatsd.gauge('webhook.retry_queue.depth', pendingCount)\n    // Set: count distinct targets that received deliveries\n    dogstatsd.set('webhook.delivery.unique_targets', targetUrl)\n\n  Tags:\n    Pass tags as array ['key:value'] or object { key: 'value' }.\n    Datadog recommends object form for readability.\n    Good tags for webhook metrics: target, status, attempt_num\n\n[14:46:50]\nGoogle Chrome — npm hot-shots\n(developer clicks tab 3 to check hot-shots package)\n\nURL: https://www.npmjs.com/package/hot-shots\n\nhot-shots  v10.0.0\n  Node.js client for Etsy's StatsD server and Datadog DogStatsD\n  Weekly downloads: 1.2M\n  Dependencies: 0\n  TypeScript types: included (bundled)\n\n  API:\n    client.increment(stat, value?, sampleRate?, tags?, callback?)\n    client.decrement(stat, value?, sampleRate?, tags?, callback?)\n    client.gauge(stat, value, sampleRate?, tags?, callback?)\n    client.timing(stat, value, sampleRate?, tags?, callback?)\n    client.histogram(stat, value, sampleRate?, tags?, callback?)\n    client.set(stat, value, sampleRate?, tags?, callback?)\n\n  Tag formats (Datadog style):\n    client.increment('web.request', { method: 'GET', status: '200' })\n    // tags: ['method:GET', 'status:200']\n\n(developer: hot-shots is the right package. zero dependencies, TypeScript included.)\n\n[14:47:20]\nGoogle Chrome — GitHub PR #88\n(developer quickly checks PR #88 status)\n\nGitHub — PR #88 — feat/webhook-retry\n  Title: feat(webhook): implement retry logic with exponential backoff (PROJ-201)\n  Status: Open  |  Reviews: 1 approved (Alex)  |  CI: passing\n  Last commit: d4c7e02 -- test(webhook): full integration test suite for retry logic\n  Reviewer: Alex Rodriguez -- Approved 14:20\n  Comment from Alex: 'LGTM! const enum fix looks good, all tests solid.\n    One thought: once you add the Datadog metrics in the next commit,\n    this PR will be ready to merge. Want to squash before merge?'\n\n(developer: Alex approved PR #88. Need to add Datadog metrics integration\n (PROJ-201 subtask 5) then merge.)\n\n[14:47:50]\nGoogle Chrome\n(developer has gathered everything needed: hot-shots API, metric names, tag format)\n(closes Chrome, opens VS Code to implement PROJ-201 Datadog metrics)\nMetrics to add to webhook-retry.ts:\n  zuno.webhook.delivery.attempt  (count, tags: target, attempt_num)\n  zuno.webhook.delivery.latency  (timing, tags: target, status)\n  zuno.webhook.retry_queue.depth  (gauge, tags: none)\n  zuno.webhook.circuit_breaker.triggered  (count, tags: target)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "PROJ-201",
+        "session_type": "task",
+        "reasoning": "Chrome session reading Datadog custom metrics documentation and npm hot-shots package spec as direct preparation for implementing PROJ-201 subtask 5 (Datadog/observability integration). Developer reads metric types (COUNT, GAUGE, HISTOGRAM), StatsD Node.js patterns, hot-shots API, and checks PR #88 (approved by Alex, waiting on Datadog metrics commit). Session ends with developer noting the exact metric names to implement. This is implementation-prep research, not casual browsing.",
+        "difficulty": "medium",
+        "scoreable": true
+      },
+      "design_notes": "MEDIUM PROJ-201 case — Chrome research session with clear implementation intent. Discriminator from session 7 (Stripe docs, hard-decoy): here the developer ends by listing exact metric names to implement ('zuno.webhook.delivery.attempt', etc.) and notes PR #88 is waiting on this commit. Session 7 ended with 'was just curiosity'. The GitHub PR check (Alex approved, waiting on Datadog metrics) anchors this to PROJ-201 work. Medium difficulty: Chrome sessions default to overhead/research but this one is direct task prep."
+    },
+    {
+      "id": 17,
+      "app_name": "Code",
+      "started_at": "2026-05-27T14:48:20+05:30",
+      "ended_at": null,
+      "duration_s": 58,
+      "category": "coding",
+      "confidence": 0.97,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "src/workers/webhook-retry.ts — zuno-app — Visual Studio Code",
+          "count": 5
+        },
+        {
+          "window_name": "src/utils/metrics.ts — zuno-app — Visual Studio Code",
+          "count": 2
+        },
+        {
+          "window_name": "Terminal — zsh — zuno-app",
+          "count": 4
+        }
+      ],
+      "session_text": "[14:48:20]\nVisual Studio Code\nBranch: feat/webhook-retry\nActive tabs:\n  src/workers/webhook-retry.ts  <- ACTIVE\n  src/utils/metrics.ts          (new file — will create)\n\n[14:48:30]\nVS Code — Terminal  (Claude Code)\n\n> PROJ-201 subtask 5: add Datadog metrics to webhook-retry.ts using hot-shots.\n  First create src/utils/metrics.ts with a singleton StatsD client:\n    - import StatsD from 'hot-shots'\n    - prefix: 'zuno.'\n    - host: process.env.STATSD_HOST ?? 'localhost'\n    - port: 8125\n    - globalTags: { env: config.NODE_ENV }\n    - errorHandler: logger.error\n    - export: dogstatsd singleton\n  Then update src/workers/webhook-retry.ts to emit these metrics:\n    - dogstatsd.increment('webhook.delivery.attempt', { target, attempt_num })\n    - dogstatsd.timing('webhook.delivery.latency', latencyMs, { target, status })\n    - dogstatsd.gauge('webhook.retry_queue.depth', pendingEventCount)\n    - dogstatsd.increment('webhook.circuit_breaker.triggered', { target })\n  Also: npm install hot-shots.\n\n● Claude is thinking...\n\n  ✓ Read src/workers/webhook-retry.ts\n  ✓ Read src/utils/logger.ts\n  ✓ Read src/config.ts\n  ✓ Search: 'hot-shots' in package.json → not found\n\n  Running: npm install hot-shots\n  ✓ hot-shots@10.0.0 installed\n\n  ✎ Writing src/utils/metrics.ts\n  ─────────────────────────────────────────\n  // zuno-app — Datadog StatsD metrics client\n  import StatsD from 'hot-shots'\n  import { config } from '../config'\n  import logger from './logger'\n\n  export const dogstatsd = new StatsD({\n    host:        process.env.STATSD_HOST ?? 'localhost',\n    port:        8125,\n    prefix:      'zuno.',\n    globalTags:  { env: config.NODE_ENV },\n    errorHandler: (err) => {\n      logger.error({ event: 'statsd_error', message: err.message })\n    },\n  })\n  ─────────────────────────────────────────\n  ✓ Wrote src/utils/metrics.ts  (17 lines)\n\n  ✎ Editing src/workers/webhook-retry.ts\n  ─────────────────────────────────────────\n  + import { dogstatsd } from '../utils/metrics'\n  ...\n  export async function processWebhookEvent(event: WebhookEvent): Promise<void> {\n    if (inMemoryWebhookStore.isTargetDead(event.targetUrl)) {\n      ...\n      return\n    }\n    if (event.attemptCount >= MAX_RETRIES) {\n      inMemoryWebhookStore.update(event.id, { status: WebhookStatus.Failed })\n      return\n    }\n  +   const startMs = Date.now()\n  +   const attemptNum = event.attemptCount + 1\n  +   dogstatsd.increment('webhook.delivery.attempt', 1, {\n  +     target:      new URL(event.targetUrl).hostname,\n  +     attempt_num: String(attemptNum),\n  +   })\n    try {\n      const deliveryId = crypto.randomUUID()\n      const res = await fetch(event.targetUrl, { ... })\n  +     const latencyMs = Date.now() - startMs\n      if (res.ok) {\n        inMemoryWebhookStore.resetTargetFailures(event.targetUrl)\n        inMemoryWebhookStore.update(event.id, { status: WebhookStatus.Success })\n  +       dogstatsd.timing('webhook.delivery.latency', latencyMs, {\n  +         target: new URL(event.targetUrl).hostname, status: 'success' })\n        return\n      }\n      if (statusCode >= 400 && statusCode < 500) {\n        inMemoryWebhookStore.update(event.id, { status: WebhookStatus.Failed })\n  +       dogstatsd.timing('webhook.delivery.latency', latencyMs, {\n  +         target: new URL(event.targetUrl).hostname, status: '4xx_permanent' })\n        return\n      }\n  +     dogstatsd.timing('webhook.delivery.latency', latencyMs, {\n  +       target: new URL(event.targetUrl).hostname, status: '5xx_retry' })\n    } catch (err) { ... }\n    const becameDead = inMemoryWebhookStore.recordTargetFailure(event.targetUrl)\n    if (becameDead) {\n      logger.error({ event: 'circuit_breaker_triggered', ... })\n  +     dogstatsd.increment('webhook.circuit_breaker.triggered', 1, {\n  +       target: new URL(event.targetUrl).hostname,\n  +     })\n    }\n    // Emit retry queue depth gauge\n  +   const pendingCount = inMemoryWebhookStore.countByStatus(WebhookStatus.Pending)\n  +   dogstatsd.gauge('webhook.retry_queue.depth', pendingCount)\n  }\n  ─────────────────────────────────────────\n  ✓ Wrote src/workers/webhook-retry.ts  (+18 lines)\n\n  Done. Metrics emitted:\n    zuno.webhook.delivery.attempt   (count, tags: target, attempt_num)\n    zuno.webhook.delivery.latency   (timing, tags: target, status)\n    zuno.webhook.retry_queue.depth  (gauge)\n    zuno.webhook.circuit_breaker.triggered  (count, tags: target)\n\n[14:50:15]\nVS Code — Terminal\n\n$ npm install hot-shots  (already done by Claude Code)\n$ npx tsc --noEmit\n  (exit 0)\n\n$ npm test -- --testPathPattern=webhook-retry\n  PASS tests/workers/webhook-retry.test.ts\n  Tests: 16 passed  |  Time: 3.0s\n\n$ git add src/utils/metrics.ts src/workers/webhook-retry.ts package.json package-lock.json\n$ git commit -m 'feat(webhook): add Datadog StatsD metrics integration (PROJ-201)\n>\n> PROJ-201 subtask 5 (final): observability via hot-shots StatsD client.\n>\n> New: src/utils/metrics.ts — dogstatsd singleton with zuno. prefix\n> Updated: webhook-retry.ts emits:\n>   zuno.webhook.delivery.attempt  (count, tags: target, attempt_num)\n>   zuno.webhook.delivery.latency  (timing ms, tags: target, status)\n>   zuno.webhook.retry_queue.depth  (gauge, pending event count)\n>   zuno.webhook.circuit_breaker.triggered  (count, tags: target)\n> All 16 tests still passing.'\n\n  [feat/webhook-retry 2b4f1c3]  feat(webhook): add Datadog StatsD metrics\n  4 files changed, 42 insertions(+)\n  create mode 100644 src/utils/metrics.ts\n\n$ gh pr ready 88  # mark PR #88 as ready to merge\n  PR #88 is marked as ready for review.\n\n(developer: PROJ-201 is complete. all 5 subtasks done:\n  ✓ schema (migration 0024)\n  ✓ TypeScript model\n  ✓ exponential backoff timer\n  ✓ integration test suite (16/16)\n  ✓ Datadog metrics\n Plus: circuit breaker, idempotency, jitter, retention policy.\n PR #88 ready for Sarah to approve and merge.)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "PROJ-201",
+        "session_type": "task",
+        "reasoning": "VS Code session implementing PROJ-201 subtask 5 (Datadog metrics). Creates src/utils/metrics.ts (dogstatsd singleton, hot-shots), updates webhook-retry.ts to emit 4 metrics (delivery attempt count, delivery latency timing, retry queue depth gauge, circuit_breaker triggered count). Installs hot-shots. Runs tsc (clean), all 16 tests pass. Commits, marks PR #88 as ready. PROJ-201 all 5 subtasks complete.",
+        "difficulty": "easy",
+        "scoreable": true
+      },
+      "design_notes": "EASY PROJ-201 case — wrapping up the last subtask. The commit message explicitly states 'PROJ-201 subtask 5 (final)'. The metric names reference webhook-specific concepts (delivery.attempt, circuit_breaker.triggered) that are unambiguous PROJ-201 work. PR #88 marked ready. The developer's closing note lists all 5 PROJ-201 subtasks as done. No PROJ-242 confusion here because the metrics are emitted from webhook-retry.ts, not a Slack integration."
+    },
+    {
+      "id": 18,
+      "app_name": "Slack",
+      "started_at": "2026-05-27T15:05:00+05:30",
+      "ended_at": null,
+      "duration_s": 23,
+      "category": "communication",
+      "confidence": 0.95,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "Slack — #frontend",
+          "count": 3
+        },
+        {
+          "window_name": "Slack — #backend",
+          "count": 1
+        }
+      ],
+      "session_text": "[15:05:00]\nSlack — Zuno Engineering\nChannel: #frontend  <- ACTIVE\n\n#frontend  recent messages:\n\nToday 14:58  Priya Kapoor (Design)\n  @Zoe -- saw you pushed feat/proj-225-dashboard-lazy-load!\n  Can you share the performance numbers once you run the profiler?\n  Specifically curious about: how long before the first chart appears\n  vs the current 3s blank screen. The product team wants to quote\n  an improvement number for the Q2 review.\n\nToday 14:59  Rachel Kim (PM)\n  Yes please! @Zoe if you have numbers by EOD that would be great.\n  The Q2 dashboard refresh design review is 2026-06-15 and we want\n  to show progress on the load time metric.\n\n[15:05:25]\nSlack — #frontend\n(developer types a reply)\n\nTyping:\n  @Priya @Rachel -- running the React DevTools Profiler now. Will have\n  numbers within the hour. Preliminary results from a quick manual test:\n  current FCP (First Contentful Paint) ~3.1s, lazy-load version ~140ms\n  (KPIs + status appear immediately). Will confirm with Profiler and\n  post numbers in this thread.\n\n(hits Enter -- message sent)\n\nToday 15:05  Zoe Dev  [sent]\n  @Priya @Rachel running the React DevTools Profiler now. Preliminary:\n  current FCP ~3.1s, lazy version ~140ms. Will post confirmed numbers within the hour.\n\nToday 15:05  :tada:  Priya Kapoor  (react)\n\nToday 15:06  Alex Rodriguez\n  Nice work on PROJ-225 Zoe! Also: @Sarah PROJ-210 PR #93 (frontend auth)\n  is up and ready for review. Depends on PR #92 (Zoe's backend). Can you\n  review both together? They're designed to land together.\n\nToday 15:06  Sarah Chen\n  On it! Will review PR #92 + #93 together after the sprint burndown\n  review at 16:00. Should have approval by EOD.\n\n[15:06:40]\nSlack — #backend\n(developer quickly checks #backend)\n\nToday 15:02  John Smith\n  PROJ-180-6 custom metrics are LIVE in Datadog! You can now use:\n    dogstatsd.increment('your.metric', value, { tags })\n  I've set up an empty 'Zuno Custom Metrics' dashboard in Datadog.\n  @Zoe -- your webhook retry metrics will appear there once PR #88 is merged.\n\n(developer: jsmith's Datadog metrics are live! PR #88 with the webhook\n metrics is already marked ready -- just needs Sarah's approval.)\n\n[15:07:10]\nSlack\n(developer closes Slack, opens VS Code to run the React DevTools Profiler)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "reasoning": "Slack session responding to Priya and Rachel's request for PROJ-225 performance numbers. Developer posts a preliminary result (FCP 3.1s -> 140ms) and promises profiler numbers. Reads #backend to see jsmith's Datadog metrics update. No code written — pure team communication and coordination.",
+        "difficulty": "easy",
+        "scoreable": true
+      },
+      "design_notes": "EASY overhead case. Developer is reading and writing Slack messages about PROJ-225 performance numbers. Unlike session 2 (complex standup with technical detail), this session is simpler — a brief reply to a performance question and reading a #backend update. The mention of PROJ-225 FCP numbers might attract PROJ-225 task classification, but this is communication, not implementation."
+    },
+    {
+      "id": 19,
+      "app_name": "Code",
+      "started_at": "2026-05-27T15:08:00+05:30",
+      "ended_at": null,
+      "duration_s": 40,
+      "category": "coding",
+      "confidence": 0.97,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "src/styles/globals.css — zuno-app — Visual Studio Code",
+          "count": 2
+        },
+        {
+          "window_name": "src/components/Dashboard/index.tsx — zuno-app — Visual Studio Code",
+          "count": 2
+        },
+        {
+          "window_name": "Terminal — zsh — zuno-app",
+          "count": 5
+        }
+      ],
+      "session_text": "[15:08:00]\nVisual Studio Code\nBranch: feat/proj-225-dashboard-lazy-load\nActive tabs:\n  src/styles/globals.css  <- ACTIVE\n  src/components/Dashboard/index.tsx\n\n[15:08:12]\nVS Code — src/styles/globals.css\n(adding the chart-fade-in CSS class that Claude Code mentioned in session 10)\n\n  /* ... existing styles ... */\n  \n  /* PROJ-225: fade-in transition for lazy-loaded charts */\n  .chart-fade-in {\n    animation: chartFadeIn 300ms ease-in;\n  }\n  \n  @keyframes chartFadeIn {\n    from { opacity: 0; transform: translateY(4px); }\n    to   { opacity: 1; transform: translateY(0); }\n  }\n\n(developer types and saves: Cmd+S)\n\n[15:08:45]\nVS Code — Terminal\n\n$ npx tsc --noEmit\n  (exit 0)\n\n$ npm run dev  (starts Next.js dev server)\n  ready - started server on 0.0.0.0:3000, url: http://localhost:3000\n\n(developer opens Chrome DevTools for profiling)\n\n[15:09:10]\nVS Code — Terminal  (performance script)\n(developer uses Playwright to measure FCP before and after)\n\n> Write a quick Playwright script to measure First Contentful Paint (FCP)\n  on http://localhost:3000/dashboard. Run it 3 times and average the FCP.\n  Print: average FCP, min FCP, max FCP.\n\n● Claude is thinking...\n\n  ✎ Writing /tmp/measure-fcp.ts  (temporary script)\n  ─────────────────────────────────────────\n  import { chromium } from 'playwright'\n\n  async function measureFcp(url: string): Promise<number> {\n    const browser = await chromium.launch()\n    const page = await browser.newPage()\n    const fcpPromise = page.evaluate(() =>\n      new Promise<number>((resolve) => {\n        new PerformanceObserver((list) => {\n          const fcp = list.getEntriesByName('first-contentful-paint')[0]\n          if (fcp) resolve(fcp.startTime)\n        }).observe({ entryTypes: ['paint'] })\n      })\n    )\n    await page.goto(url)\n    const fcp = await fcpPromise\n    await browser.close()\n    return fcp\n  }\n\n  const results = []\n  for (let i = 0; i < 3; i++) {\n    const fcp = await measureFcp('http://localhost:3000/dashboard')\n    results.push(fcp)\n    console.log(`Run ${i+1}: ${fcp.toFixed(0)}ms`)\n  }\n  const avg = results.reduce((a,b) => a+b, 0) / results.length\n  console.log(`Average FCP: ${avg.toFixed(0)}ms`)\n  console.log(`Min: ${Math.min(...results).toFixed(0)}ms`)\n  console.log(`Max: ${Math.max(...results).toFixed(0)}ms`)\n  ─────────────────────────────────────────\n  ✓ Written /tmp/measure-fcp.ts\n\n[15:09:55]\nVS Code — Terminal  (running the FCP measurement)\n\n$ npx ts-node /tmp/measure-fcp.ts\n  Run 1: 134ms\n  Run 2: 142ms\n  Run 3: 128ms\n  Average FCP: 135ms\n  Min: 128ms\n  Max: 142ms\n\n(developer: FCP is 135ms average! Original was ~3,100ms. That's a 23x improvement.)\n\n$ npx ts-node /tmp/measure-fcp.ts  # run again on the OLD branch to baseline\n  (switches to main branch)\n\n$ git stash && git checkout main\n  Run 1: 3,102ms\n  Run 2: 3,087ms\n  Run 3: 3,143ms\n  Average FCP: 3,111ms\n\n$ git checkout feat/proj-225-dashboard-lazy-load && git stash pop\n\n(developer: confirmed: 3,111ms -> 135ms. 23x improvement. well within <1s target.)\n\n[15:10:45]\nVS Code — Terminal  (commit and push)\n\n$ git add src/styles/globals.css\n$ git commit -m 'feat(dashboard): add chart-fade-in CSS animation (PROJ-225)\n>\n> 300ms ease-in opacity + 4px translateY fade for lazy-loaded charts.\n> FCP measurement: 3,111ms (baseline) -> 135ms (lazy-load) = 23x improvement.\n> Well within the <1s target from PROJ-225 acceptance criteria.'\n\n  [feat/proj-225-dashboard-lazy-load b9c0d1e]\n  feat(dashboard): add chart-fade-in CSS animation\n  1 file changed, 9 insertions(+)\n\n$ git push -u origin feat/proj-225-dashboard-lazy-load\n$ gh pr create --draft --title 'feat(dashboard): lazy-load heavy charts (PROJ-225)'\\\n    --body 'PROJ-225: React.lazy() + Suspense + skeleton for 3 heavy charts.\n    FCP: 3,111ms -> 135ms (23x improvement). Full load: <4s SLA met.\n    chart-fade-in 300ms CSS. ErrorBoundary for error/retry state.\n    4 Dashboard tests passing.'\n  Draft PR #94 created.\n\n(developer: PROJ-225 core done. Will post performance numbers to Slack.)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "PROJ-225",
+        "session_type": "task",
+        "reasoning": "VS Code session wrapping up PROJ-225. Developer adds chart-fade-in CSS (300ms ease-in, translateY), uses Claude Code to write a Playwright FCP measurement script, runs it on both branches (baseline 3,111ms vs lazy 135ms = 23x improvement), commits CSS, pushes branch, opens draft PR #94. PROJ-225 core implementation complete.",
+        "difficulty": "easy",
+        "scoreable": true
+      },
+      "design_notes": "EASY PROJ-225. The FCP measurement (3,111ms -> 135ms) directly addresses the PROJ-225 performance targets. Branch is feat/proj-225-dashboard-lazy-load. The Playwright script is a one-off measurement tool, not PROJ-215 (pagination bug) or PROJ-230 (CSV export). Commit and PR reference PROJ-225 explicitly."
+    },
+    {
+      "id": 20,
+      "app_name": "Slack",
+      "started_at": "2026-05-27T15:12:00+05:30",
+      "ended_at": null,
+      "duration_s": 25,
+      "category": "communication",
+      "confidence": 0.94,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "Slack — #frontend",
+          "count": 3
+        },
+        {
+          "window_name": "Slack — #general",
+          "count": 1
+        }
+      ],
+      "session_text": "[15:12:00]\nSlack — Zuno Engineering\nChannel: #frontend  <- ACTIVE\n\n[15:12:10]\nSlack — #frontend\n(developer types performance results message)\n\nTyping:\n  @Priya @Rachel -- confirmed PROJ-225 performance numbers! :bar_chart:\n\n  Dashboard FCP (First Contentful Paint) measurement:\n    Before (static imports):  3,111ms  (3.1 seconds blank screen)\n    After  (React.lazy):        135ms  (23x improvement)\n\n  How it works:\n    - KPIs, status bars, activity feed load immediately (~140ms)\n    - Revenue chart, forecast chart, analytics grid lazy-load:\n        Revenue:   ~850ms (skeleton shows until loaded)\n        Forecast:  ~780ms\n        Analytics: ~650ms\n    - Full dashboard complete: ~2.5s (well within <4s SLA)\n    - Skeleton uses neutral-300 + pulse animation (from Priya's Figma)\n    - Chart reveals with 300ms fade-in (no jarring pop)\n\n  PR #94 is up: feat/proj-225-dashboard-lazy-load\n  Ready for design review from @Priya and product review from @Rachel!\n\n(hits Enter)\n\nToday 15:12  Zoe Dev  [sent]\n  @Priya @Rachel confirmed PROJ-225 performance numbers!\n  FCP: 3,111ms -> 135ms  (23x improvement).\n  Full dashboard: ~2.5s. PR #94 ready for review.\n\nToday 15:13  :tada:  Priya Kapoor, Rachel Kim, Alex Rodriguez  (react)\n\nToday 15:13  Rachel Kim\n  23x improvement is incredible! I'm quoting this in the Q2 review.\n  Thanks Zoe! :star:\n\nToday 15:14  Priya Kapoor\n  Amazing! Will review PR #94 now. One question: is the skeleton animation\n  smooth on lower-powered devices? We should test on a slower machine.\n\nToday 15:14  Zoe Dev  [reply]\n  Good point @Priya! The CSS animation uses `will-change: opacity` which\n  runs on the compositor (GPU-accelerated). Should be smooth even on slower\n  devices. I'll add a Lighthouse mobile score to the PR description.\n\n[15:15:20]\nSlack — #general\n(developer clicks #general)\n\nToday 15:00  Sarah Chen\n  Sprint check-in: great velocity this week! PROJ-210 backend + frontend\n  both up for review. PROJ-201 all 5 subtasks done. PROJ-225 showing\n  incredible results. Team is crushing it. :rocket:\n\n  Still in flight:\n    - PROJ-210 PR #92 + #93 pending Sarah review (EOD today)\n    - PROJ-225 PR #94 pending design + product review\n    - PROJ-201 PR #88 pending Sarah review\n    - PROJ-230 CSV export: next up for Zoe (after #94 merges)\n    - PROJ-215 pagination bug: still unassigned\n\n(developer reads Sarah's sprint check-in -- everything is on track)\n\n[15:16:00]\nSlack\n(developer closes Slack -- done with comms for now)\n(opens VS Code for remaining work)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "reasoning": "Slack session posting PROJ-225 performance results to #frontend (FCP 3,111ms -> 135ms, 23x improvement, full dashboard 2.5s), replying to Priya about GPU-accelerated animation, reading Sarah's sprint check-in in #general. No code written — team communication and result-sharing.",
+        "difficulty": "medium",
+        "scoreable": true
+      },
+      "design_notes": "MEDIUM overhead — developer is sharing technical results (FCP numbers, skeleton animation details, 23x improvement) about PROJ-225 in Slack. A classifier that sees 'React.lazy', 'skeleton', 'FCP', 'chart lazy-load' might map this to PROJ-225 task work. Discriminator: Slack window, message format (sharing results to team), no file edits. The #general sprint check-in also names PROJ-201, PROJ-210, PROJ-225, PROJ-230 and PROJ-215 — maximum ticket vocabulary present, all in a team update context. Overhead is the correct label."
     }
   ]
 }
