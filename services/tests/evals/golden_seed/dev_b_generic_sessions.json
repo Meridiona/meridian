@@ -816,6 +816,152 @@
         "scoreable": true
       },
       "design_notes": "HARD case — PROJ-225 and PROJ-230 discrimination. Both tickets appear in the same session with roughly equal weight: developer updates both Linear statuses, reads both PRs, replies to comments on both. The session content mentions React.lazy/skeleton (PROJ-225) and papaparse/CSV/Blob URL (PROJ-230) in interleaved comments. A classifier must recognise this as overhead (browser-based PR review/coordination, no code editing) rather than choosing between the two tickets. The correct label is overhead with no task_key. A classifier that picks either PROJ-225 or PROJ-230 fails this case. Hard difficulty because the session contains implementation-flavoured vocabulary for both tickets."
+    },
+    {
+      "id": 26,
+      "app_name": "Code",
+      "started_at": "2026-05-27T15:36:00+05:30",
+      "ended_at": null,
+      "duration_s": 17,
+      "category": "coding",
+      "confidence": 0.97,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "src/components/Skeleton/index.tsx — zuno-app — Visual Studio Code",
+          "count": 3
+        },
+        {
+          "window_name": "Terminal — zsh — zuno-app",
+          "count": 2
+        }
+      ],
+      "session_text": "[15:36:00]\nVisual Studio Code\nBranch: feat/proj-225-dashboard-lazy-load\nActive tab: src/components/Skeleton/index.tsx\n\n[15:36:10]\nVS Code — src/components/Skeleton/index.tsx\n(developer adds data-testid attributes per Priya's PR #94 review comment)\n\nBefore (RevenueChartSkeleton):\n  <div className='w-full h-[400px] bg-neutral-100 rounded-lg p-4'>\n\nAfter:\n  <div className='w-full h-[400px] bg-neutral-100 rounded-lg p-4'\n       data-testid='skeleton-revenue-chart'>\n\nBefore (ForecastChartSkeleton):\n  <div className='w-full h-[380px] bg-neutral-100 rounded-lg p-4 relative'>\n\nAfter:\n  <div className='w-full h-[380px] bg-neutral-100 rounded-lg p-4 relative'\n       data-testid='skeleton-forecast-chart'>\n\nBefore (AnalyticsGridSkeleton):\n  <div className='w-full h-[500px] bg-neutral-100 rounded-lg p-4'>\n\nAfter:\n  <div className='w-full h-[500px] bg-neutral-100 rounded-lg p-4'\n       data-testid='skeleton-analytics-grid'>\n\n(developer saves: Cmd+S)\n\n[15:36:40]\nVS Code — Terminal\n\n$ npx tsc --noEmit\n  (exit 0)\n\n$ npm test -- --testPathPattern=Dashboard\n  PASS src/components/Dashboard/Dashboard.test.tsx\n  Tests: 4 passed  |  Time: 1.8s\n\n$ git add src/components/Skeleton/index.tsx\n$ git commit -m 'fix(dashboard): add data-testid to skeleton components (PROJ-225)\n>\n> PR #94 review follow-up from Priya Kapoor: QA needs data-testid\n> attributes to target skeleton components in automated tests.\n>   skeleton-revenue-chart\n>   skeleton-forecast-chart\n>   skeleton-analytics-grid'\n\n  [feat/proj-225-dashboard-lazy-load c3d4e5f]\n  fix(dashboard): add data-testid to skeleton components\n  1 file changed, 6 insertions(+), 3 deletions(-)\n\n$ git push\n\n(developer: PROJ-225 PR review addressed. PR #94 is ready for final approval.)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "PROJ-225",
+        "session_type": "task",
+        "difficulty": "easy",
+        "reasoning": "VS Code session applying Priya's review comment on PR #94: adds data-testid attributes to 3 skeleton components (skeleton-revenue-chart, skeleton-forecast-chart, skeleton-analytics-grid). Commits and pushes.",
+        "scoreable": true
+      },
+      "design_notes": "EASY PROJ-225 — tiny review follow-up commit. Branch is feat/proj-225-dashboard-lazy-load, file is Skeleton/index.tsx, commit message names PROJ-225. High confidence."
+    },
+    {
+      "id": 27,
+      "app_name": "Notion",
+      "started_at": "2026-05-27T15:38:00+05:30",
+      "ended_at": null,
+      "duration_s": 11,
+      "category": "planning",
+      "confidence": 0.95,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "Notion — May Sprint 2026",
+          "count": 2
+        }
+      ],
+      "session_text": "[15:38:00]\nNotion — Zuno workspace\n  Sidebar:\n    Zuno Engineering\n      Sprint Notes\n        May Sprint 2026  <- ACTIVE\n      Decisions Log\n      Architecture\n\n[15:38:08]\nNotion — May Sprint 2026 sprint notes\n\nMay Sprint 2026 — Sprint Notes\nUpdated: 2026-05-27  15:38\n\nDay 2 highlights (2026-05-27):\n  [x] PROJ-210 backend complete (PR #92 merged to main!)\n  [x] PROJ-210 frontend PR #93 approved, merging once Alex's warning fix is in\n  [x] PROJ-201 all 5 subtasks done, PR #88 approved by Alex\n  [x] PROJ-225 PR #94 in review (23x FCP improvement)\n  [x] PROJ-230 PR #95 in review (papaparse CSV, Acme Corp)\n\nPending reviews:\n  PR #88 (PROJ-201): waiting Sarah\n  PR #93 (PROJ-210 frontend): waiting Sarah + Alex warning fix\n  PR #94 (PROJ-225): waiting Priya + Rachel\n  PR #95 (PROJ-230): waiting Rachel + Alex\n\nOpen questions:\n  - PROJ-230 column selection (Rachel): scope to PROJ-231 follow-up\n  - PROJ-215 pagination: still unassigned, need to pick up\n  - PROJ-210 JWKS verification: created PROJ-251 follow-up ticket\n\n(developer saves Notion page, closes)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "difficulty": "context-only",
+        "reasoning": "Short Notion session updating sprint notes. Lists all PRs by status — no code written.",
+        "scoreable": false
+      },
+      "design_notes": "CONTEXT-ONLY — not scoreable. Sprint notes with all 5 tickets listed. Provides context for the recent-context window of sessions 28+."
+    },
+    {
+      "id": 28,
+      "app_name": "Slack",
+      "started_at": "2026-05-27T15:40:00+05:30",
+      "ended_at": null,
+      "duration_s": 28,
+      "category": "communication",
+      "confidence": 0.88,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "Slack — #backend",
+          "count": 4
+        }
+      ],
+      "session_text": "[15:40:00]\nSlack — Zuno Engineering\nChannel: #backend  <- ACTIVE\n\n#backend\n\nToday 15:38  John Smith\n  Hey @Zoe -- now that PROJ-201 (webhook retry) is wrapping up and PR #88\n  is approved, should we think about PROJ-242 (Slack notification when\n  webhook target is dead)? It was blocked by PROJ-201. The circuit breaker\n  you implemented already detects the 'dead target' condition and logs\n  circuit_breaker_triggered. We'd need to hook a Slack notification\n  into that path.\n\nToday 15:39  Zoe Dev (me)  [reading]\n\n[15:40:20]\nSlack — #backend\n(developer types a reply)\n\nTyping:\n  @jsmith yes! PROJ-242 is definitely unblocked once PR #88 merges.\n  High-level approach:\n    1. In webhook-retry.ts, after logging circuit_breaker_triggered,\n       call a new notificationService.notifyDeadTarget(targetUrl)\n    2. notificationService uses Slack SDK to post to a configured channel\n       (probably #webhook-alerts or a customer-specific channel)\n    3. The Slack message should include: targetUrl, consecutiveFailures count,\n       time since first failure, link to the PATCH /admin/webhook-targets endpoint\n       so ops can re-enable the target\n    4. Rate-limit the notifications: don't spam Slack if a flaky target keeps\n       going dead. One notification per target per hour max.\n  But I think PROJ-242 should be its own sprint item -- it's more scope than\n  just a hook in the retry worker. Slack SDK integration, notification templates,\n  rate limiting, channel configuration... probably 5 points.\n  Should we move it into the current sprint or wait for the next one?\n\n(hits Enter)\n\nToday 15:41  Zoe Dev  [sent]\n  @jsmith yes, PROJ-242 is unblocked! Here is the approach: hook\n  notificationService.notifyDeadTarget() after circuit_breaker_triggered,\n  Slack SDK, rate-limit 1 notification/target/hour. But it is ~5pts --\n  own sprint item. Move to current sprint or wait?\n\nToday 15:42  John Smith\n  Good points on the scope. I'd push it to next sprint -- we're already\n  at velocity limit for this sprint (PROJ-210, 201, 225, 230 all in review).\n  I'll update PROJ-242 status to 'ready' and add it to the next sprint.\n\nToday 15:42  Zoe Dev  [reply]\n  Agreed! Move to next sprint. PROJ-242 will be the first item we pick\n  up once the current sprint closes (2026-06-09). I'll add the\n  notificationService architecture to the ticket description so\n  whoever picks it up has a head start.\n\nToday 15:44  Sarah Chen  (joins thread)\n  Makes sense -- current sprint is full. PROJ-242 into next sprint.\n  Also: @Zoe, just merged PR #88 into main! :tada:\n  PROJ-201 is done. All webhook retry logic is live in main.\n\nToday 15:45  Zoe Dev  [reply]\n  :tada: PROJ-201 is done!!! Thanks Sarah.\n  Going to update PROJ-201 status to Done in Linear now.\n\n[15:45:30]\nSlack\n(developer closes Slack, opens Linear to mark PROJ-201 Done)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "difficulty": "hard",
+        "reasoning": "Slack discussion about PROJ-242 (Slack notification for dead webhook targets). Developer discusses the architecture (notificationService hook in circuit breaker, Slack SDK, rate limiting) and decides to defer PROJ-242 to next sprint. Sarah announces PR #88 merged (PROJ-201 done). No code written — sprint planning and coordination.",
+        "scoreable": true
+      },
+      "design_notes": "HARD overhead case. The message thread contains detailed PROJ-242 architecture (notificationService, Slack SDK, rate-limit 1/hour, channel config) AND a PROJ-201 completion announcement (PR #88 merged). A classifier seeing Slack webhook/notification vocabulary might classify this as PROJ-242 task work. Discriminator: developer explicitly says 'push to next sprint, not implementing now', and session ends with Slack (not VS Code). The PROJ-201 merge announcement could also attract PROJ-201. Correct: overhead/none because no code is written and the developer is doing sprint planning."
+    },
+    {
+      "id": 29,
+      "app_name": "Code",
+      "started_at": "2026-05-27T15:50:00+05:30",
+      "ended_at": null,
+      "duration_s": 44,
+      "category": "coding",
+      "confidence": 0.98,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "src/hooks/usePagination.ts — zuno-app — Visual Studio Code",
+          "count": 4
+        },
+        {
+          "window_name": "Terminal — zsh — zuno-app",
+          "count": 3
+        }
+      ],
+      "session_text": "[15:50:00]\nVisual Studio Code\nBranch: fix/proj-215-pagination  (new)\nActive tabs:\n  src/components/Users/UserList.tsx  <- ACTIVE\n  src/hooks/usePagination.ts\n\n$ git checkout main && git pull\n  Already up to date.\n$ git checkout -b fix/proj-215-pagination\n  Switched to new branch 'fix/proj-215-pagination'\n\n[15:50:15]\nVS Code — src/components/Users/UserList.tsx  (reading bug context)\n\n  1   // zuno-app — users list with pagination\n  2   import React from 'react'\n  3   import { usePagination } from '../../hooks/usePagination'\n  4   import { useUsers } from '../../hooks/useUsers'\n  5   \n  6   export function UserList() {\n  7     const { page, nextPage, prevPage } = usePagination()\n  8     const { users } = useUsers({ page })\n  9     ...\n 20     <button onClick={prevPage}>Prev</button>\n 21     <button onClick={nextPage}>Next</button>\n\n[15:50:35]\nVS Code — src/hooks/usePagination.ts  (reading the hook)\n\n  1   import { useState } from 'react'\n  2   import { useSearchParams } from 'react-router-dom'\n  3   \n  4   export function usePagination(initialPage = 1) {\n  5     const [searchParams, setSearchParams] = useSearchParams()\n  6     const [page, setPage] = useState(initialPage)\n  7   \n  8     const nextPage = () => setPage(p => p + 1)\n  9     const prevPage = () => setPage(p => Math.max(1, p - 1))\n 10   \n 11     return { page, nextPage, prevPage }\n 12   }\n\n(developer spots the bug: page is stored in local React state (useState)\n but NOT synced to the URL (searchParams). So clicking page 3 updates\n the local state but the URL still shows ?page=1. Also prevPage/nextPage\n modify local state but don't update searchParams. Need to remove useState\n and drive page entirely from searchParams.)\n\n[15:51:00]\nVS Code — Terminal  (Claude Code)\n\n> Fix PROJ-215: usePagination hook in src/hooks/usePagination.ts.\n  The bug: page is stored in local React state but not synced to URL\n  search params. Fix: drive page entirely from useSearchParams:\n    - read page from searchParams.get('page') (parse as int, default 1)\n    - nextPage: setSearchParams({ page: String(currentPage + 1) })\n    - prevPage: setSearchParams({ page: String(Math.max(1, currentPage - 1)) })\n  Remove the useState completely.\n\n● Claude is thinking...\n\n  ✓ Read src/hooks/usePagination.ts\n\n  ✎ Writing src/hooks/usePagination.ts\n  ─────────────────────────────────────────\n  import { useSearchParams } from 'react-router-dom'\n\n  export function usePagination() {\n    const [searchParams, setSearchParams] = useSearchParams()\n    const page = parseInt(searchParams.get('page') ?? '1', 10)\n\n    const nextPage = () =>\n      setSearchParams({ page: String(page + 1) })\n\n    const prevPage = () =>\n      setSearchParams({ page: String(Math.max(1, page - 1)) })\n\n    const goToPage = (n: number) =>\n      setSearchParams({ page: String(Math.max(1, n)) })\n\n    return { page, nextPage, prevPage, goToPage }\n  }\n  ─────────────────────────────────────────\n  ✓ Wrote src/hooks/usePagination.ts  (15 lines, was 12)\n\n  Also added goToPage(n) helper for any direct page navigation.\n\n[15:51:45]\nVS Code — Terminal\n\n$ npx tsc --noEmit\n  (exit 0)\n\n$ npm test -- --testPathPattern=pagination --verbose\n  PASS src/hooks/usePagination.test.ts\n    usePagination\n      ✓ reads page from URL search params  (9ms)\n      ✓ nextPage updates URL ?page param  (6ms)\n      ✓ prevPage updates URL ?page param  (5ms)\n      ✓ prevPage does not go below page 1  (4ms)\n      ✓ goToPage sets arbitrary page number  (4ms)\n      ✓ page defaults to 1 when param is missing  (3ms)\n  Tests: 6 passed  |  Time: 1.1s\n\n$ git add src/hooks/usePagination.ts\n$ git commit -m 'fix(users): sync pagination page to URL search params (PROJ-215)\n>\n> Bug: usePagination used local React state instead of useSearchParams.\n> Clicking page 3 updated local state but URL stayed at ?page=1.\n> Fix: drive page entirely from searchParams. Remove useState.\n> Also add goToPage(n) helper for direct navigation.\n> 6/6 pagination tests passing.'\n\n  [fix/proj-215-pagination d5e6f7a]  fix(users): sync pagination to URL\n  1 file changed, 5 insertions(+), 6 deletions(-)\n\n$ gh pr create --title 'fix(users): sync pagination page to URL search params (PROJ-215)'\\\n    --body 'Bug: usePagination used local state instead of useSearchParams.\n    Fix: drive page from searchParams. Add goToPage() helper. 6/6 tests.'\n  PR #96 created.\n\n(developer: PROJ-215 done. Simple bug, quick fix.)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "PROJ-215",
+        "session_type": "task",
+        "difficulty": "easy",
+        "reasoning": "VS Code session fixing PROJ-215 pagination bug. Developer reads usePagination.ts, spots local state not synced to URL, uses Claude Code to rewrite the hook to drive page from useSearchParams. Runs 6 pagination tests (pass). Commits, opens PR #96.",
+        "scoreable": true
+      },
+      "design_notes": "EASY PROJ-215 — quick, unambiguous bug fix. No adjacent ticket confusion. usePagination.ts is the only file touched. Commit message names PROJ-215 with a clear bug description. Establishes baseline for the bug-fix difficulty tier."
+    },
+    {
+      "id": 30,
+      "app_name": "Code",
+      "started_at": "2026-05-27T15:56:00+05:30",
+      "ended_at": null,
+      "duration_s": 61,
+      "category": "coding",
+      "confidence": 0.96,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "src/utils/export.ts — zuno-app — Visual Studio Code",
+          "count": 5
+        },
+        {
+          "window_name": "src/components/Reports/Toolbar.tsx — zuno-app — Visual Studio Code",
+          "count": 2
+        },
+        {
+          "window_name": "Terminal — zsh — zuno-app",
+          "count": 5
+        }
+      ],
+      "session_text": "[15:56:00]\nVisual Studio Code\nBranch: feat/proj-230-csv-export\nActive tabs:\n  src/utils/export.ts  <- ACTIVE\n  tests/utils/export.test.ts\n\n[15:56:10]\nVS Code — Terminal  (testing large dataset export)\n\n> Write a quick benchmark test: generate an array of 10,000 report rows\n  and call exportToCsv(). Measure: (1) time to generate CSV, (2) memory\n  usage before and after, (3) verify the output has 10,000 data rows.\n  Print results to console.\n\n● Claude is thinking...\n\n  ✎ Writing /tmp/bench-csv.ts\n  ─────────────────────────────────────────\n  import { exportToCsv } from '../../src/utils/export'\n  import Papa from 'papaparse'\n\n  function generateRows(count: number) {\n    return Array.from({ length: count }, (_, i) => ({\n      id:          i + 1,\n      date:        new Date(Date.now() - i * 86400000),\n      amount:      Math.round(Math.random() * 100000) / 100,\n      category:    ['Revenue', 'Expense', 'Refund'][i % 3],\n      description: `Transaction ${i + 1} -- sample data`,\n      userId:      `user-${(i % 200) + 1}`,\n    }))\n  }\n\n  const rows = generateRows(10000)\n  const memBefore = process.memoryUsage().heapUsed\n  const t0 = performance.now()\n\n  // Patch document.createElement to capture the CSV blob\n  let capturedCsv = ''\n  const origCreateElement = document.createElement.bind(document)\n  ;(global as any).URL.createObjectURL = (blob: Blob) => {\n    blob.text().then(t => { capturedCsv = t })\n    return 'blob:mock'\n  }\n  ;(global as any).URL.revokeObjectURL = () => {}\n\n  exportToCsv(rows, 'bench-test.csv')\n\n  const elapsed = performance.now() - t0\n  const memAfter = process.memoryUsage().heapUsed\n\n  // Wait for async blob.text()\n  await new Promise(r => setTimeout(r, 100))\n\n  const parsed = Papa.parse(capturedCsv, { header: true })\n  console.log(`Rows:    ${parsed.data.length}`)\n  console.log(`Time:    ${elapsed.toFixed(1)}ms`)\n  console.log(`ΔMemory: ${((memAfter - memBefore) / 1024 / 1024).toFixed(1)} MB`)\n  ─────────────────────────────────────────\n  ✓ Written /tmp/bench-csv.ts\n\n[15:57:15]\nVS Code — Terminal  (running the benchmark)\n\n$ npx ts-node /tmp/bench-csv.ts\n  Rows:    10000\n  Time:    384.2ms\n  ΔMemory: 28.7 MB\n\n(developer: 384ms for 10k rows. Acme Corp's use case is 10k rows.\n 384ms might feel slow for a UI action. target is <1s so it's within limits,\n but could be better.)\n(re-runs with 50k rows to see how it scales)\n\n$ npx ts-node /tmp/bench-csv.ts  # (with count=50000)\n  Rows:    50000\n  Time:    2,103.4ms\n  ΔMemory: 143.2 MB\n\n(developer: 50k rows takes 2.1s and 143MB. that's too slow for a browser.\n need to add ReadableStream or chunked processing for large datasets.)\n\n[15:58:00]\nVS Code — Terminal  (Claude Code — add streaming for large datasets)\n\n> PROJ-230: the current exportToCsv() serializes all rows at once, which\n  is slow for 50k+ rows (2.1s, 143MB). Add a chunked streaming version:\n  exportToCsvStreaming(data, filename, chunkSize = 500):\n    - Slice data into chunks of chunkSize rows\n    - Serialize header from first chunk (includeHeader: true)\n    - Serialize subsequent chunks without header (includeHeader: false)\n    - Concatenate all chunks into one CSV string\n    - Then create the Blob and trigger download as before\n  This avoids serializing all 50k rows in one Papa.unparse() call.\n  Keep the original exportToCsv() for small datasets.\n\n● Claude is thinking...\n\n  ✎ Editing src/utils/export.ts  (adding streaming variant)\n  ─────────────────────────────────────────\n  export function exportToCsvStreaming(\n    data:      Record<string, unknown>[],\n    filename:  string = generateFilename(),\n    chunkSize: number = 500,\n  ): void {\n    if (data.length === 0) return\n    const formatted = data.map(row =>\n      Object.fromEntries(Object.entries(row).map(([k, v]) => [k, formatValue(v)]))\n    )\n    const chunks: string[] = []\n    for (let i = 0; i < formatted.length; i += chunkSize) {\n      const chunk = formatted.slice(i, i + chunkSize)\n      chunks.push(Papa.unparse(chunk, { header: i === 0 }))  // header on first chunk only\n    }\n    const csv  = chunks.join('\\n')\n    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })\n    const url  = URL.createObjectURL(blob)\n    const link = document.createElement('a')\n    link.href = url; link.download = filename; link.click()\n    URL.revokeObjectURL(url)\n  }\n  ─────────────────────────────────────────\n  ✓ Wrote src/utils/export.ts  (+20 lines)\n\n[15:59:10]\nVS Code — Terminal  (re-running benchmark with streaming)\n\n$ npx ts-node /tmp/bench-csv.ts  # (with exportToCsvStreaming, 50000 rows)\n  Rows:    50000\n  Time:    891.3ms  (was 2103ms -- 57% faster)\n  ΔMemory: 62.1 MB  (was 143MB -- 57% less)\n\n$ npx ts-node /tmp/bench-csv.ts  # (10000 rows, streaming)\n  Rows:    10000\n  Time:    167.4ms  (was 384ms -- 56% faster)\n  ΔMemory: 12.3 MB  (was 28.7MB -- 57% less)\n\n(developer: streaming is consistently ~57% faster and ~57% less memory.\n 10k rows at 167ms is acceptable for a UI action. will use streaming\n in the Toolbar and keep exportToCsv for small datasets / tests.)\n\n[15:59:45]\nVS Code — src/components/Reports/Toolbar.tsx  (updating to use streaming)\n\n  - onClick={() => exportToCsv(data)}\n  + onClick={() => data.length > 1000 ? exportToCsvStreaming(data) : exportToCsv(data)}\n\n(Cmd+S)\n\n[16:00:00]\nVS Code — Terminal\n\n$ npx tsc --noEmit\n  (exit 0)\n\n$ npm test -- --testPathPattern=export\n  PASS src/utils/export.test.ts\n  Tests: 5 passed  |  Time: 1.1s\n\n$ git add src/utils/export.ts src/components/Reports/Toolbar.tsx\n$ git commit -m 'perf(reports): add chunked streaming CSV export for large datasets (PROJ-230)\n>\n> Benchmark: 10k rows 384ms -> 167ms (-56%), 50k rows 2103ms -> 891ms (-57%)\n> exportToCsvStreaming(): chunk data into 500-row batches, Papa.unparse each chunk\n> (header on first chunk only), join chunks, then Blob URL download.\n> Toolbar: use streaming for >1000 rows, original for small datasets.'\n\n  [feat/proj-230-csv-export 1c2d3e4]  perf(reports): chunked CSV streaming\n  2 files changed, 22 insertions(+), 2 deletions(-)\n\n$ git push\n(developer: PROJ-230 is solid now. Acme Corp's 10k row export: 167ms.)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "PROJ-230",
+        "session_type": "task",
+        "difficulty": "medium",
+        "reasoning": "VS Code session adding performance optimisation to PROJ-230 CSV export. Developer runs a 10k-row benchmark (384ms, 28.7MB), discovers 50k rows takes 2.1s/143MB. Uses Claude Code to add exportToCsvStreaming() (500-row chunks, header on first chunk only). Re-benchmarks: 10k rows 167ms (-56%), 50k rows 891ms (-57%). Updates Toolbar to use streaming for >1000 rows. Commits.",
+        "scoreable": true
+      },
+      "design_notes": "MEDIUM PROJ-230 — performance optimisation follow-up within the same ticket. Branch is feat/proj-230-csv-export, files are export.ts and Toolbar.tsx. Benchmark results (167ms for 10k rows) directly address the Acme Corp use case from the ticket. Medium difficulty because the streaming implementation is a non-trivial chunk processing pattern, but the ticket context is unambiguous. No PROJ-225 confusion (no React.lazy, no skeleton, no dashboard charts)."
     }
   ]
 }
