@@ -142,6 +142,28 @@
         "experiment_cap_chars": 0
       },
       "notes": "SESSION_TEXT_CAP=0 experiment vs control smoke_20260528T162251 (cap=2500). Both accuracy DROPPED 65.0% → 60.0%; session_type 72.5% → 67.5%; task_key 67.5% → 65.0%. Per-tier: hard +15pp (71% → 86%), but overhead −15pp (29% → 14%), untracked −33pp (33% → 0%), medium −12pp (100% → 88%). Conclusion: the cap is a COVARIATE of optimism-bias, not the bottleneck. More context lets the classifier disambiguate genuine hard cases but also gives it more adjacent signals to misinterpret as 'active work', amplifying false-positives on overhead/untracked. Diff vs prior run: cap=0 FIXED seeds 36 (branch-name-locks) and 42 (dataset-analysis-missed) but BROKE seeds 11, 25, 34, 45. Net: prompt-design fix (anti-optimism rule in SKILL.md v2.1) is the right next move; permanent cap removal is wrong."
+    },
+    {
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "trace_id": "f90248d1ad382081d7d8a6ae0b6c8c28",
+      "confident_ai_run": null,
+      "date": "2026-05-29",
+      "model": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+      "prompt_version": "2.0.0",
+      "prompt_path": "services/skills/activity/task-classifier/SKILL.md",
+      "dataset": "services/tests/evals/golden_seed/dev_b_generic_sessions.json",
+      "dataset_rendered": "services/tests/evals/.synthetic-dataset-b_generic.json",
+      "candidates": "services/tests/evals/golden_seed/candidates_generic.json",
+      "persona": "b_generic",
+      "server_url": "http://localhost:7823",
+      "metrics": {
+        "total_goldens": 33,
+        "passed_both": 19,
+        "task_key_accuracy": 0.667,
+        "session_type_accuracy": 0.606,
+        "both_accuracy": 0.576
+      },
+      "notes": "First run of the Dev B generic persona dataset (Zuno B2B SaaS developer, TypeScript/React, 33 scoreable Goldens). Baseline for this persona+model combination. Session_type accuracy (61%) lower than task_key accuracy (67%), indicating systematic overhead→task overclaiming."
     }
   ],
   "observations": [
@@ -844,6 +866,226 @@
       "type_ok": true,
       "classifier_reasoning": "Session shows active coding in VS Code (app=Code) with OCR text showing editing of scripts/Formula/meridian.rb. The git branch is feat/golden-dataset-kan-139, which directly matches KAN-139's title 'Create golden dataset for task classification'. The work involves adding a SQLite version check to the Homebrew formula, which is part of the implementation for the golden dataset project. Recent context shows prior research and coding on KAN-139, confirming continuity.",
       "failure_class_id": "branch-name-locks-classification"
+    },
+    {
+      "id": "obs-20260529-001",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 12,
+      "tier": "easy",
+      "app_name": "Activity Monitor",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "Activity Monitor is a system utility used to check memory usage and process performance. The user explicitly noted 'Chrome is using too much' and 'quits Figma Desktop' as a system maintenance action, not work on a specific Jira ticket. No evidence of work on any candidate ticket.",
+      "failure_class_id": "overhead-untracked-boundary"
+    },
+    {
+      "id": "obs-20260529-002",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 13,
+      "tier": "medium",
+      "app_name": "Zoom",
+      "expected": {
+        "task_key": "PROJ-210",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-210",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "Zoom meeting explicitly titled 'PROJ-210 auth pair session' with screen share of src/context/AuthContext.tsx on branch 'feat/proj-210-auth-frontend'. Audio confirms discussion of CSRF token handling and axios interceptor wiring, which directly aligns with PROJ-210's migration from JWT to session-co.",
+      "failure_class_id": "meeting-as-ticket-work"
+    },
+    {
+      "id": "obs-20260529-003",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 16,
+      "tier": "medium",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "PROJ-201",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "PROJ-242",
+        "session_type": "task",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "Session shows research on Datadog custom metrics and StatsD Node.js integration, specifically for webhook delivery tracking (webhook.delivery.attempt, webhook.retry_queue.depth). This directly supports PROJ-242 (Slack notification integration for webhook events) which requires webhook event tracking",
+      "failure_class_id": "reading-as-doing"
+    },
+    {
+      "id": "obs-20260529-004",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 18,
+      "tier": "easy",
+      "app_name": "Slack",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-225",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Slack messages explicitly reference PROJ-225 dashboard lazy-load work, including performance metrics (FCP ~3.1s vs ~140ms) and a PR (feat/proj-225-dashboard-lazy-load) that was just pushed. Developer is responding to Priya and Rachel about this specific task, then opening VS Code to run the ReactDev",
+      "failure_class_id": "chat-mention-as-work"
+    },
+    {
+      "id": "obs-20260529-005",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 20,
+      "tier": "medium",
+      "app_name": "Slack",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-225",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Slack message explicitly mentions PROJ-225 performance numbers, PR #94, and dashboard lazy-load work matching the ticket title. Recent session history shows PROJ-225 coding at 15:08, and this Slack session is a direct continuation of that work. OCR content confirms the work is on PROJ-225 dashboard.",
+      "failure_class_id": "chat-mention-as-work"
+    },
+    {
+      "id": "obs-20260529-006",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 21,
+      "tier": "hard-decoy",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "PROJ-225",
+        "session_type": "task",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Stack Overflow research on React Suspense error boundaries and TypeScript const enums directly supports PROJ-225's lazy-load heavy chart components task; developer confirmed existing ErrorBoundary pattern matches implementation; recent session history shows PROJ-225 coding activity 3 minutes prior.",
+      "failure_class_id": "reading-as-doing"
+    },
+    {
+      "id": "obs-20260529-007",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 22,
+      "tier": "medium",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "PROJ-210",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-210",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "Session shows GitHub PR #92 with title 'feat(auth): JWT -> session cookie migration' and labels 'PROJ-210, auth, breaking-change'. OCR confirms PR status, inline review comments from Sarah Chen, and Zoe Dev's replies addressing the review points. This is a direct match to PROJ-210's title 'Migrate'.",
+      "failure_class_id": "pr-review-as-ticket-work"
+    },
+    {
+      "id": "obs-20260529-008",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 25,
+      "tier": "hard",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-225",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Session shows active work on PROJ-225 and PROJ-230 tickets in Linear, with PR #94 (PROJ-225) and PR #95 (PROJ-230) open in GitHub. User updated PROJ-225 status to 'In Review' and added a comment confirming PR #94 is up for review. While PROJ-230 was also updated, the session started with PROJ-225 as",
+      "failure_class_id": "ticket-admin-as-task-work"
+    },
+    {
+      "id": "obs-20260529-009",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 28,
+      "tier": "hard",
+      "app_name": "Slack",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-242",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Slack discussion explicitly references PROJ-242 as the ticket for Slack notification integration when webhook target is dead. The user (Zoe Dev) proposes a detailed technical approach for PROJ-242, including notificationService integration, Slack SDK usage, rate limiting, and sprint planning. The O3",
+      "failure_class_id": "chat-mention-as-work"
+    },
+    {
+      "id": "obs-20260529-010",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 31,
+      "tier": "medium",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-201",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Session shows explicit action of marking PROJ-201 as Done in Linear, with PR #88 already merged. Developer also reviews sprint board and adds EOD comments to PROJ-225 and PROJ-230, but the primary action is closing PROJ-201.",
+      "failure_class_id": "ticket-admin-as-task-work"
+    },
+    {
+      "id": "obs-20260529-011",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 34,
+      "tier": "hard-decoy",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-242",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Session shows developer creating architecture notes specifically for PROJ-242 (Slack notification integration for webhook events), referencing PROJ-201's circuit breaker logic, and explicitly adding notes to PROJ-242 in Linear before closing. OCR content directly matches PROJ-242 title and intent.",
+      "failure_class_id": "planning-as-task-work"
     }
   ],
   "failure_classes": [
@@ -854,15 +1096,19 @@
       "observed_in_runs": [
         "phi4-4bit-dev_a-baseline-20260528",
         "smoke_20260528T162251",
-        "smoke_20260528T180202"
+        "smoke_20260528T180202",
+        "qwen35-9b-optiq-4bit-b_generic-baseline-20260529"
       ],
       "observed_in_seeds": [
         1,
         10,
         40,
-        48
+        48,
+        18,
+        20,
+        28
       ],
-      "occurrence_count": 10,
+      "occurrence_count": 13,
       "proposed_prompt_rule": "Mentions of a ticket key in chat, Slack, email, or comments are *conversation*, not work. To classify a session as `task` for a ticket, the user must be actively editing files, running commands, debugging issues, or otherwise executing on the ticket — not just discussing it. Discriminator question: 'Am I seeing the user DO the work, or DISCUSS the work?'",
       "status": "open",
       "resolved_in": null,
@@ -875,14 +1121,17 @@
       "observed_in_runs": [
         "phi4-4bit-dev_a-baseline-20260528",
         "smoke_20260528T162251",
-        "smoke_20260528T180202"
+        "smoke_20260528T180202",
+        "qwen35-9b-optiq-4bit-b_generic-baseline-20260529"
       ],
       "observed_in_seeds": [
         25,
         26,
-        38
+        38,
+        16,
+        21
       ],
-      "occurrence_count": 6,
+      "occurrence_count": 8,
       "proposed_prompt_rule": "Reading articles, browsing documentation, or watching videos about a topic is research/learning — not active work on a matching ticket, even when the topic and the ticket are an exact match. Classify these as `untracked` or `overhead` unless the user is also actively editing or executing in the same session.",
       "status": "open",
       "resolved_in": null,
@@ -931,7 +1180,8 @@
       "observed_in_runs": [
         "phi4-4bit-dev_a-baseline-20260528",
         "smoke_20260528T162251",
-        "smoke_20260528T180202"
+        "smoke_20260528T180202",
+        "qwen35-9b-optiq-4bit-b_generic-baseline-20260529"
       ],
       "observed_in_seeds": [
         1,
@@ -946,9 +1196,17 @@
         41,
         43,
         48,
-        49
+        49,
+        13,
+        16,
+        18,
+        21,
+        22,
+        25,
+        28,
+        31
       ],
-      "occurrence_count": 27,
+      "occurrence_count": 37,
       "proposed_prompt_rule": "Default to `untracked` or `overhead` when the evidence is *adjacent* rather than *direct*. Adjacent evidence (mentions, related reading, related infra, file-path overlap) is the most common failure mode for this classifier in production — bias toward 'I don't know' over confidently picking a ticket that the user is merely *near*. A confidence-calibration rule may also help: if any of {chat-mention, topical-adjacency, meta-file-edit} signals are present, cap confidence at 0.6 unless paired with direct execution evidence.",
       "status": "open",
       "resolved_in": null,
@@ -1017,12 +1275,14 @@
       "description": "User is reviewing a pull request (own or others') that implements a ticket. Classifier reads the PR title's ticket reference and classifies as `task` for that ticket. But code review/QA is `overhead` — quality control on already-completed work, not active development. Triggered by GitHub/GitLab PR pages with ticket keys in title.",
       "observed_in_runs": [
         "smoke_20260528T162251",
-        "smoke_20260528T180202"
+        "smoke_20260528T180202",
+        "qwen35-9b-optiq-4bit-b_generic-baseline-20260529"
       ],
       "observed_in_seeds": [
-        43
+        43,
+        22
       ],
-      "occurrence_count": 2,
+      "occurrence_count": 3,
       "highest_confidence": 0.95,
       "proposed_prompt_rule": "Reviewing a pull request (GitHub/GitLab PR page, diff view, CI logs for a PR) is *code review overhead*, not active development on the underlying ticket — even when the PR title explicitly mentions the ticket key. The work being reviewed is already complete; review/approval is meta-work. Classify as `overhead`. Exception: when the reviewer IS the implementer and is making revision-pass edits in response to comments, that is active ticket work.",
       "status": "open",
@@ -1034,17 +1294,77 @@
       "description": "Classifier correctly determines no ticket fits (task_key=none) but picks the wrong session_type (overhead vs untracked). The two are close: overhead = communication/admin/meta-activity; untracked = work-like activity that doesn't fit any open ticket. System utilities, exploration, and ambiguous tool use can plausibly be either. Lower priority than the optimism-bias failures because task_key is correct.",
       "observed_in_runs": [
         "smoke_20260528T162251",
-        "smoke_20260528T180202"
+        "smoke_20260528T180202",
+        "qwen35-9b-optiq-4bit-b_generic-baseline-20260529"
       ],
       "observed_in_seeds": [
         41,
-        47
+        47,
+        12
       ],
-      "occurrence_count": 3,
+      "occurrence_count": 4,
       "priority": "lower",
       "proposed_prompt_rule": "Sharpen the overhead-vs-untracked distinction. Overhead = communication (chat, email, calls), admin (planning, scheduling, expense reporting), or context-switching meta-activity. Untracked = focused work-like activity that doesn't fit any open ticket — system inspection (Activity Monitor), exploration, research, learning, maintenance. When in doubt: 'is this productive activity that just isn't ticketed?' → untracked. 'Is this between-work or about-work?' → overhead.",
       "status": "open",
       "resolved_in": null
+    },
+    {
+      "id": "meeting-as-ticket-work",
+      "title": "Video call or pair-programming session with ticket content visible ≠ implementing that ticket",
+      "description": "When a Zoom or similar video call session shows a ticket-related meeting title, screen share of a feature branch, or audio discussing ticket implementation details, the classifier labels it as active task work. A meeting is overhead regardless of what is visible on screen — a pair-programming session or code review call is still a meeting, not a coding session.",
+      "observed_in_runs": [
+        "qwen35-9b-optiq-4bit-b_generic-baseline-20260529"
+      ],
+      "observed_in_seeds": [
+        13
+      ],
+      "occurrence_count": 1,
+      "proposed_prompt_rule": "A session in a video-conferencing app (Zoom, Teams, Google Meet) is always overhead (task_key: null, session_type: overhead), regardless of whether the screen shows code, PRs, or a ticket key in the meeting title. Treat all video call sessions as overhead.",
+      "status": "open",
+      "resolved_in": null,
+      "highest_confidence": 0.95,
+      "priority": "high",
+      "direction": "false-positive",
+      "rationale": "High-confidence failure (0.95) with a simple deterministic fix — app-name guard in the overhead gate."
+    },
+    {
+      "id": "ticket-admin-as-task-work",
+      "title": "Updating ticket status or sprint board in Linear/Jira ≠ development work on that ticket",
+      "description": "When the developer updates ticket statuses (Done, In Review), adds EOD comments to tickets, or reviews the sprint board in Linear or Jira, the classifier treats the session as active implementation work on the referenced ticket. PM admin actions signal that work has finished, not that it is currently in progress.",
+      "observed_in_runs": [
+        "qwen35-9b-optiq-4bit-b_generic-baseline-20260529"
+      ],
+      "observed_in_seeds": [
+        25,
+        31
+      ],
+      "occurrence_count": 2,
+      "proposed_prompt_rule": "A session in a project-management tool (Linear, Jira, GitHub Issues) where the developer is updating ticket statuses, writing ticket comments, closing tickets, or reviewing sprint boards is overhead (task_key: null, session_type: overhead). PM admin actions are not development work — they signal work is already done.",
+      "status": "open",
+      "resolved_in": null,
+      "highest_confidence": 0.95,
+      "priority": "high",
+      "direction": "false-positive",
+      "note": "Related to `chat-mention-as-work` — both trigger when ticket vocabulary appears without code-production evidence. This class is specifically about PM tool sessions (Linear, Jira); chat-mention-as-work covers messaging apps."
+    },
+    {
+      "id": "planning-as-task-work",
+      "title": "Writing planning notes or architecture docs about a future ticket ≠ implementing it",
+      "description": "When a developer writes planning notes, architecture documents, or draft specs about an upcoming or future-sprint ticket in a code editor (e.g., writing to /tmp), the classifier labels it as active task work on that ticket. Pre-implementation planning produces no code artifacts and typically refers to a ticket not yet in the current sprint.",
+      "observed_in_runs": [
+        "qwen35-9b-optiq-4bit-b_generic-baseline-20260529"
+      ],
+      "observed_in_seeds": [
+        34
+      ],
+      "occurrence_count": 1,
+      "proposed_prompt_rule": "A session where the developer writes planning notes, architecture documents, or draft specs ABOUT a ticket is overhead (task_key: null, session_type: overhead). Only classify as task when the session shows active implementation: editing source files in the ticket's domain, running tests, or making commits. Writing to /tmp paths or markdown files without accompanying source edits is a planning signal.",
+      "status": "open",
+      "resolved_in": null,
+      "highest_confidence": 0.95,
+      "priority": "medium",
+      "direction": "false-positive",
+      "note": "Single observation so far. The prompt rule is harder to apply in production because sprint state is not visible to the classifier. Lean on implementation-evidence signals (source file edits, test runs, git commits) rather than ticket-sprint status."
     }
   ]
 }
