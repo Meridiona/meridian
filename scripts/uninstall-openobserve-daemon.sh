@@ -9,6 +9,14 @@ LABEL="com.meridiona.openobserve"
 PLIST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
 GUI_TARGET="gui/$(id -u)"
 
+# Remove legacy agent if still present.
+_legacy="${HOME}/Library/LaunchAgents/ai.openobserve.plist"
+if [[ -f "${_legacy}" ]]; then
+    launchctl bootout "${GUI_TARGET}/ai.openobserve" 2>/dev/null || true
+    rm -f "${_legacy}"
+    echo "✓ legacy ai.openobserve agent removed"
+fi
+
 if [[ ! -f "${PLIST}" ]]; then
     echo "(${LABEL} not installed)"
     exit 0

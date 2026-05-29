@@ -121,6 +121,11 @@ There are no JS/TS test suites yet. When adding them, place them under `ui/__tes
 | `POLL_INTERVAL_SECS` | `60` | ETL poll cadence in seconds |
 | `RUST_LOG` | `meridian=info` | Tracing filter |
 | `SQLX_OFFLINE` | `true` (via `.cargo/config.toml`) | Prevents sqlx from hitting the DB at compile time |
+| `MERIDIAN_OTLP_ENDPOINT` | (unset → no export) | OpenObserve OTLP/HTTP traces endpoint (loaded from `.env`) |
+| `MERIDIAN_OO_AUTH` | (unset → no auth) | Base64 `user:password` for OpenObserve OTLP auth |
+| `MLX_SERVER_URL` | (unset → in-process load) | URL of a running MLX classifier server (eval pipeline) |
+| `EVAL_DATASET_PATH` | `services/tests/evals/.dataset.json` | Override Goldens file for the eval pipeline |
+| `SESSION_TEXT_CAP` | `2500` (chars) | Per-session OCR/a11y excerpt cap in the classifier prompt. Set to `0` to disable truncation for eval experiments (caller is then responsible for not blowing the model's context window — phi-4 = 16k tokens). |
 
 Tilde expansion is handled by `Config::from_env()`. Never hardcode paths.
 
@@ -248,6 +253,18 @@ Read `VISION.md` first.
 2. Edit the TypeScript source in `packages/meridian-mcp/src/`
 3. Run `npm run build` in `packages/meridian-mcp/` and verify `dist/index.js` is updated
 
+### Add a Golden to the classifier eval dataset
+
+Goldens are hand-authored seed sessions that target specific failure modes of the MLX classifier. The eval pipeline scores the classifier against them on every model swap, prompt edit, or temperature change.
+
+1. Open `services/tests/evals/golden_seed/dev_<persona>_sessions.json` (today: `dev_a_sessions.json` for the Meridian project persona; `dev_b_generic_sessions.json` for the placeholder SaaS dev persona once it lands).
+2. Append a new session object inside the `sessions` array. Required fields: `id` (next int), `app_name`, `started_at`, `ended_at`, `duration_s`, `category`, `confidence`, `session_text_source`, `window_titles`, `session_text` (the realistic OCR/a11y capture the classifier will see), `audio_snippets`, and a `ground_truth` block with `task_key`, `session_type`, `reasoning`, `difficulty` (`easy`/`medium`/`hard`/`hard-decoy`/`overhead`/`untracked`/`context-only`), `scoreable` (bool — `false` = timeline density only, excluded from Goldens and the recent-context block).
+3. Add a `design_notes` field explaining the specific failure mode this case targets — required for future maintainers debugging regression diffs.
+4. Re-render the Goldens: `services/.venv/bin/python services/tests/evals/render_seeds.py <persona>`
+5. Re-run the eval (see `TESTING.md` §9): the new Golden appears in the OpenObserve trace tree as one more `eval.classify` child span.
+
+The dataset's value lives in **what it discriminates**, not how many cases it has. Each Golden should target a documented failure mode (keyword-mention false positive, same-app context switch, decoy resistance, untracked-with-tempting-candidate, etc.). 95% on easy cases hides the failures that matter.
+
 ---
 
 ## Python agent service (`services/`)
@@ -276,6 +293,12 @@ python -m agents.tagger --session <ID> --dry-run
 ./services/scripts/install-tagger-daemon.sh
 ./services/scripts/uninstall-tagger-daemon.sh
 tail -f ~/.meridian/logs/tagger-daemon.log
+
+# Classifier eval pipeline (see TESTING.md §9, services/tests/evals/README.md)
+services/.venv/bin/python services/tests/evals/render_seeds.py            # seeds → Goldens
+EVAL_DATASET_PATH=services/tests/evals/.synthetic-dataset-a_meridian.json \
+MLX_SERVER_URL=http://localhost:7823 \
+services/.venv/bin/python services/tests/evals/smoke_run.py               # run, emits traces to OpenObserve
 ```
 
 ---
