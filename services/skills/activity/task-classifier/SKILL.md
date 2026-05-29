@@ -87,7 +87,8 @@ Reply with ONE valid JSON object — no preamble, no markdown fences, no follow-
   "confidence": 0.85,
   "session_type": "task",
   "reasoning": "Editing run_watcher.py with KAN-86 ticket open in adjacent tab; matches the migration task described.",
-  "dimensions": {"activity": ["coding"], "intent": ["implementation"], "tool": ["vscode"]}
+  "dimensions": {"activity": ["coding"], "intent": ["implementation"], "tool": ["vscode"]},
+  "session_summary": "Opened run_watcher.py in VS Code and rewrote the inotify polling loop to use the new ETLConfig path; introduced a 250 ms debounce window and removed the obsolete `_last_tick` global. Ran `cargo check` twice — second attempt clean. Reviewed migration 023 in DBeaver to confirm the pm_sync_state schema matches what the watcher expects. Briefly read the openobserve docs tab for OTLP retry semantics before deciding to defer the retry change to a follow-up. No tests written this session — they are queued behind the watcher refactor."
 }
 ```
 
@@ -97,6 +98,72 @@ Reply with ONE valid JSON object — no preamble, no markdown fences, no follow-
 - `session_type` — `"task"` links to Jira; `"overhead"` is thrown away; `"untracked"` is kept for workload analysis.
 - `reasoning` — must cite specific window titles, OCR snippets, or context clues.
 - `dimensions` — omit keys with no evidence; return `{}` if no clear signals.
+- `session_summary` — see the dedicated section below. This is the SINGLE most important field for downstream PM updates.
+
+## session_summary — THE PM-update payload
+
+This field is what the PM-update workflow consumes to write Jira worklog comments. It REPLACES the raw OCR text downstream — the PM agent will not see the original session_text unless it explicitly asks. So **every SDLC-relevant detail you observe must be captured here, written so a tech-lead reading it understands exactly what happened.**
+
+### Length
+
+**Adaptive to the content.** Match depth to evidence:
+
+| Session shape | Target length |
+|---|---|
+| 12-second session, one terminal command, screen mostly static | ~5-10 sentences, factual |
+| 1-3 minute session, single file edited, no errors | ~10-20 sentences |
+| Content-rich session: multiple files, tests, errors, decisions, research | ~25-80 sentences |
+| Long session (5+ min) with a clear narrative arc — debug → fix → verify | up to ~80 sentences |
+
+Do not pad. If a session was genuinely uninteresting, write the truth in a few sentences. If a session was rich, give the full picture.
+
+### Voice
+
+- Past tense, third person ("edited", "ran", "reviewed", "decided") — never "I" or "you"
+- Concrete, file-name-specific — `"edited services/agents/run_task_linker_mlx.py"`, not `"worked on the classifier"`
+- Cite exact commands, error messages, function names when visible
+- No marketing language ("successfully implemented", "made great progress")
+- No speculation about future work ("will need to…", "next step is…")
+
+### What MUST be in the summary (SDLC checklist)
+
+Capture every category the session shows evidence of:
+
+1. **Files / paths / modules touched** — full paths or recognisable basenames
+2. **Commands / scripts / queries run** — and their outcome (success, error message, exit code)
+3. **Errors hit** — exception names, stack-trace snippets, failing assertions
+4. **Tests** — written, run, passed, failed; specific test names
+5. **Technical decisions** — choice made, alternative considered, reason ("picked process-tree over osascript because…")
+6. **Schema / DB changes** — migrations applied, columns added, queries run in DBeaver
+7. **Commits / branches / PRs** — visible in terminal output or VS Code source control panel
+8. **Blockers / open questions** — explicit "stuck on…", unanswered prompts, missing deps
+9. **External research** — docs read, Stack Overflow visited, Claude/ChatGPT consulted (and which question)
+10. **Validations** — manual smoke tests, UI inspections, screenshot reviews, log tailing
+11. **Design discussions** — architecture sketches, ADR notes, conversations with Claude/Codex about approach
+12. **Time-on-subtask hints** — when the session has clearly distinct phases ("first 2 min reading docs, then 6 min editing")
+
+### What NEVER goes in the summary
+
+- "Worked on KAN-XXX" (vague — say what *specifically*)
+- "Successfully implemented X" (drop "successfully"; just say what was done)
+- "Will continue tomorrow" (no speculation)
+- "User seems frustrated" (no interpretation of mood)
+- "This is important because…" (no editorialising)
+- Repeated content from `reasoning` — `reasoning` is for *why* the session matches the ticket; `session_summary` is for *what happened*
+
+### Examples
+
+**Good — short trivial session (~6 sentences):**
+> Ran `git status` and `git diff` in the meridian repo terminal to review pending edits. Output showed three modified files in `services/agents/pm_update/`. No commands executed beyond the status review. No errors. No tests. The session ended when focus shifted to the VS Code window.
+
+**Good — content-rich session (~30-80 sentences):**
+> Edited `services/agents/pm_update/workflow.py` to remove the chunked-summariser heavy-path; deleted the `_is_heavy_bundle` evaluator, the `Parallel(*chunk_summarisers)` block, and the `merge_chunks` step. Workflow now linear: collect → synthesise → ground → route. Then removed `build_chunk_agent` and `build_merger_agent` from `agents.py` along with their `_CHUNK_NAME` / `_MERGER_NAME` constants. Cleaned up `config.py` — dropped `PM_UPDATE_CHUNK_MAX_TOKENS`, `PM_UPDATE_MERGE_MAX_TOKENS`, `PM_UPDATE_CHUNK_PARALLELISM`, `PM_UPDATE_KNOWLEDGE_DIR`. Decision: removed the heavy path entirely instead of just disabling parallelism, because the 9B model's 262K context fits all bundles comfortably. Ran `python -c "from agents.pm_update.workflow import build_workflow; print([s.name for s in build_workflow().steps])"` to verify; output was `['collect','synthesise','ground','route']`. No new tests written. Confirmed via `rm -rf __pycache__` then re-import that no stale references remain. Briefly considered keeping the chunk/merger factories dormant for future use but chose to delete since the 9B context window makes them strictly unnecessary.
+
+**Bad — too vague:**
+> Made changes to the workflow file. Removed some unused code. Cleaned things up. Ran the workflow and it worked.
+
+**Bad — speculative + marketing:**
+> Successfully refactored the workflow to be more efficient. The new linear design will be much faster. Next steps include adding the worklog poster and testing end-to-end on Jira.
 
 ## Using Context from Previous Sessions
 

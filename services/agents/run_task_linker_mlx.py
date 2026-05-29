@@ -85,7 +85,7 @@ class SessionClassification(BaseModel):
         ),
     )
     reasoning: str = Field(
-        ..., max_length=500,
+        ..., max_length=300,
         description="1–4 sentences citing window titles, OCR text, or context clues.",
     )
     dimensions: dict[str, list[str]] = Field(
@@ -94,6 +94,30 @@ class SessionClassification(BaseModel):
             "Inferred activity tags. Keys: activity, intent, engagement, "
             "collaboration, tool, topic, practice. "
             "Values: lowercase snake_case lists. Omit keys with no evidence."
+        ),
+    )
+    session_summary: str = Field(
+        ..., min_length=100, max_length=1000,
+        description=(
+            "A factual prose summary of EVERYTHING the user did in this "
+            "session, written for downstream project-management updates. "
+            "Length is adaptive: aim for ~10 sentences for short trivial "
+            "sessions and up to ~40-80 sentences for content-rich sessions; "
+            "match depth to the evidence. Past tense, third person. "
+            "PRESERVE every SDLC-relevant signal: "
+            "(1) specific files, paths, modules touched; "
+            "(2) commands, scripts, queries run + their outcome; "
+            "(3) errors hit, stack traces, failing tests; "
+            "(4) technical decisions made and the alternative considered; "
+            "(5) tests written or run + pass/fail; "
+            "(6) commits, branches, PRs opened/merged; "
+            "(7) blockers and unanswered questions; "
+            "(8) external research / docs / Stack Overflow / Claude advice consulted; "
+            "(9) validations, manual QA, screenshots reviewed; "
+            "(10) design choices, schema changes, migrations. "
+            "DO NOT write marketing language, vague claims, or speculation "
+            "about future work. Cite the evidence you saw in the session_text — "
+            "this is the single source of truth the PM updater will compose from."
         ),
     )
 
@@ -210,14 +234,15 @@ def _error_result(
     session_id: int, reason: str, elapsed: float, method: str
 ) -> dict[str, Any]:
     return {
-        "session_id":   session_id,
-        "task_key":     None,
-        "confidence":   0.0,
-        "session_type": "overhead",
-        "reasoning":    reason,
-        "method":       method,
-        "dimensions":   {},
-        "elapsed_s":    elapsed,
+        "session_id":      session_id,
+        "task_key":        None,
+        "confidence":      0.0,
+        "session_type":    "overhead",
+        "reasoning":       reason,
+        "method":          method,
+        "dimensions":      {},
+        "session_summary": "",
+        "elapsed_s":       elapsed,
     }
 
 
@@ -405,14 +430,15 @@ def _classify_one(
         })
 
     return {
-        "session_id":   session_id,
-        "task_key":     task_key,
-        "confidence":   confidence,
-        "session_type": result.session_type,
-        "reasoning":    result.reasoning,
-        "method":       "mlx_direct",
-        "dimensions":   result.dimensions,
-        "elapsed_s":    elapsed,
+        "session_id":      session_id,
+        "task_key":        task_key,
+        "confidence":      confidence,
+        "session_type":    result.session_type,
+        "reasoning":       result.reasoning,
+        "method":          "mlx_direct",
+        "dimensions":      result.dimensions,
+        "session_summary": result.session_summary,
+        "elapsed_s":       elapsed,
     }
 
 
