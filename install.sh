@@ -691,36 +691,32 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
         if [[ "${DRY_RUN}" -eq 0 ]]; then
             _model_cache="${HOME}/.cache/huggingface/hub/models--mlx-community--Qwen3.5-9B-OptiQ-4bit/snapshots"
             if [[ -d "${_model_cache}" && -n "$(ls -A "${_model_cache}" 2>/dev/null)" ]]; then
-                # Model is cached — should be ready within ~60s
                 info "MLX server starting (model cached, loading into Metal)..."
-                for _i in $(seq 1 60); do
-                    if curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; then
-                        ok "MLX server ready on port ${MLX_PORT}"
-                        break
-                    fi
-                    sleep 1
-                    if [[ "${_i}" -eq 60 ]]; then
-                        warn "MLX server did not start within 60s — check: tail -f ~/.meridian/logs/mlx-server.log"
-                    fi
-                done
             else
-                # First run — model needs to download (~6.6 GB). Stream the log so
-                # the user can see the HuggingFace download progress bars.
                 echo
-                info "First run: downloading MLX model (~6.6 GB). Streaming server log below."
-                info "This takes a few minutes on a fast connection. Do not interrupt."
-                echo "  ─────────────────────────────────────────────────────────────"
-                # Ensure log file exists before tailing
-                mkdir -p "${HOME}/.meridian/logs"
-                : >> "${HOME}/.meridian/logs/mlx-server.log"
-                tail -n 0 -f "${HOME}/.meridian/logs/mlx-server.log" &
-                _tail_pid=$!
-                until curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; do
-                    sleep 3
-                done
+                info "First run: downloading MLX model (~6.6 GB). This takes a few minutes on a fast connection. Do not interrupt."
+            fi
+            echo "  ─────────────────────────────────────────────────────────────"
+            mkdir -p "${HOME}/.meridian/logs"
+            : >> "${HOME}/.meridian/logs/mlx-server.log"
+            tail -n 0 -f "${HOME}/.meridian/logs/mlx-server.log" &
+            _tail_pid=$!
+            _mlx_wait=0
+            _mlx_timeout=300
+            until curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; do
+                sleep 3
+                _mlx_wait=$(( _mlx_wait + 3 ))
+                if [[ "${_mlx_wait}" -ge "${_mlx_timeout}" ]]; then
+                    kill "${_tail_pid}" 2>/dev/null || true
+                    echo "  ─────────────────────────────────────────────────────────────"
+                    warn "MLX server did not become ready within ${_mlx_timeout}s — check: tail -f ~/.meridian/logs/mlx-server.log"
+                    break
+                fi
+            done
+            if curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; then
                 kill "${_tail_pid}" 2>/dev/null || true
                 echo "  ─────────────────────────────────────────────────────────────"
-                ok "MLX server ready on port ${MLX_PORT} — model downloaded and loaded"
+                ok "MLX server ready on port ${MLX_PORT} (${_mlx_wait}s)"
             fi
         fi
     fi
