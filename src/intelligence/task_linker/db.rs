@@ -302,6 +302,7 @@ mod tests {
             reasoning: "test".to_string(),
             method: "hermes_aiagent".to_string(),
             dimensions: HashMap::new(),
+            session_summary: String::new(),
             elapsed_s: 0.5,
         };
         update_session_task(&pool, &r).await.unwrap();
@@ -333,6 +334,7 @@ mod tests {
             reasoning: "test".to_string(),
             method: "hermes_aiagent".to_string(),
             dimensions: HashMap::new(),
+            session_summary: String::new(),
             elapsed_s: 0.2,
         };
         update_session_task(&pool, &r).await.unwrap();
@@ -360,6 +362,7 @@ mod tests {
             reasoning: "test".to_string(),
             method: "hermes_aiagent".to_string(),
             dimensions: HashMap::new(),
+            session_summary: String::new(),
             elapsed_s: 0.1,
         };
         update_session_task(&pool, &r).await.unwrap();
