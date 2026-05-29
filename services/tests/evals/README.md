@@ -22,6 +22,29 @@ For the full failure-mode taxonomy and reasoning-about-evals primer, see [`TESTI
 | `test_stage3_classifier.py` | Half-built scaffold for hermes-agent eval. Placeholder for model/prompt sweep (`CANDIDATE_MODELS`, `PROMPT_VARIANTS` unfilled). |
 | `eval_agent.py` | hermes-agent end-to-end eval (uses `AGENT_E2E_METRICS`). Standalone, not in CI. |
 | `smoke_run.py` | One-shot runner that emits OTel spans to OpenObserve (one `eval.run` root + one `eval.classify` per Golden). Use this for experimentation; CI uses `test_mlx_classifier.py`. |
+| `strategies.py` | `EvalStrategy` base class + concrete strategies (`DirectHttpStrategy`, future `ExtractThenClassifyStrategy`, etc.) + `REGISTRY` + `from_env()` factory. Selected via `EVAL_STRATEGY` env var. |
+
+---
+
+## Architecture convention — where strategies live
+
+**Eval strategies live in `services/tests/evals/strategies.py`, NOT in `services/agents/`.**
+
+This is intentional and **must be followed by all coding agents** working on this repo:
+
+- `services/agents/` is for **production code** — the running tagger daemon, the MLX server, the in-process classifier (`run_task_linker_mlx.py`). Code here ships in the production tagger path.
+- `services/tests/evals/strategies.py` is for **eval-only strategies** — pluggable inference approaches the eval harness uses to compare models, sampling params, agentic decompositions, retrieval-augmented variants, etc.
+- A strategy that proves out in eval and is worth shipping is **promoted** into `services/agents/` as a deliberate, separate productionization step. It is NOT silently shared between eval and production.
+
+**Why this matters:**
+1. Production code stays small and auditable. Adding an experimental strategy class to `services/agents/` pollutes the production surface with code the tagger never executes.
+2. Eval experimentation can move fast without "is this production-ready?" overhead.
+3. The promotion step forces a deliberate review: does this strategy meet production constraints (latency, memory, error handling, observability) — not just eval accuracy?
+
+**Common mistakes to avoid:**
+- ❌ Don't add a new `XYZStrategy` to `services/agents/` because "it might be useful in production". Add it here first; promote later.
+- ❌ Don't import from `services/agents/strategies*` — there are no such modules. Production never imports eval strategies.
+- ❌ Don't name eval strategies with an `_eval` suffix once they're inside this directory; the location already implies the scope.
 
 ---
 

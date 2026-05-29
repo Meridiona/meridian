@@ -17,6 +17,10 @@ Usage:
     EVAL_DATASET_PATH=services/tests/evals/.synthetic-dataset-a_meridian.json \\
     MLX_SERVER_URL=http://localhost:7823 \\
     services/.venv/bin/python services/tests/evals/smoke_run.py
+
+Strategy selection:
+    EVAL_STRATEGY=direct_http (default)  — POST to MLX /classify server
+    Future: EVAL_STRATEGY=extract_then_classify, EVAL_STRATEGY=retrieval_augmented, …
 """
 from __future__ import annotations
 
@@ -55,24 +59,7 @@ from deepeval.dataset import EvaluationDataset  # noqa: E402
 from deepeval.test_case import LLMTestCase  # noqa: E402
 
 from tests.evals.metrics import TaskKeyMatchMetric, SessionTypeMatchMetric  # noqa: E402
-
-
-def _classify_http(server_url: str, prompt_input: str, timeout: int = 120) -> tuple[str, dict]:
-    """POST to /classify; return (actual_output JSON string, raw response dict)."""
-    req = urllib.request.Request(
-        f"{server_url.rstrip('/')}/classify",
-        data=json.dumps({"input": prompt_input}).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read())
-    actual = json.dumps({
-        "task_key":     data.get("task_key") or "none",
-        "session_type": data.get("session_type", "overhead"),
-        "reasoning":    data.get("reasoning", ""),
-    }, ensure_ascii=False)
-    return actual, data
+from tests.evals.strategies import from_env as strategy_from_env  # noqa: E402
 
 
 def main() -> int:
@@ -89,6 +76,14 @@ def main() -> int:
         print(f"ERROR: dataset not found at {dataset_path}", file=sys.stderr)
         return 1
 
+    # ── Strategy ──
+    try:
+        strategy = strategy_from_env()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    hyperparams = strategy.as_hyperparameters()
+
     # ── OTel setup ──
     # service.name=meridian-eval so OpenObserve queries can filter on it.
     obs_setup("meridian-eval")
@@ -99,7 +94,7 @@ def main() -> int:
     dataset = EvaluationDataset()
     dataset.add_goldens_from_json_file(file_path=str(dataset_path))
     print(f"Loaded {len(dataset.goldens)} Goldens from {dataset_path.name}")
-    print(f"Classifier: {server_url}")
+    print(f"Strategy: {strategy.name}  config: {hyperparams}")
     print()
 
     key_metric = TaskKeyMatchMetric()
@@ -115,15 +110,12 @@ def main() -> int:
         root_span.set_attribute("persona",      persona)
         root_span.set_attribute("dataset_path", str(dataset_path))
         root_span.set_attribute("server_url",   server_url)
+        root_span.set_attribute("strategy",     strategy.name)
         root_span.set_attribute("dataset_size", len(dataset.goldens))
+        for k, v in hyperparams.items():
+            root_span.set_attribute(f"strategy.{k}", str(v))
         # TODO(task#1): also set `model_id` on this root span by querying the MLX
         # server's /info endpoint (to be added — server doesn't expose it yet).
-        # Falling back to MLX_MODEL_ID env var or the source-code default
-        # (run_task_linker_mlx.py:54) is brittle — both can disagree with the
-        # actually-loaded model. The eval-feedback skill currently has the same
-        # gap and gets the model name from human input or source code, which
-        # is how `phi-4-4bit` ended up labelling 2 runs that actually ran on
-        # Qwen3.5-9B-OptiQ-4bit (see FEEDBACK.json model_label_corrected_on).
         # Until /info exists, fall back to grepping ~/.meridian/logs/mlx-server.log
         # for the most recent "loading <model>" line.
 
@@ -142,20 +134,17 @@ def main() -> int:
                 case_span.set_attribute("difficulty",      difficulty)
                 case_span.set_attribute("app_name",        app_name)
                 case_span.set_attribute("persona",         persona)
+                case_span.set_attribute("strategy",        strategy.name)
                 case_span.set_attribute("expected.task_key",     exp.get("task_key") or "none")
                 case_span.set_attribute("expected.session_type", exp.get("session_type") or "")
 
-                t0 = time.time()
-                try:
-                    actual, raw = _classify_http(server_url, golden.input)
-                    error: str | None = None
-                    case_span.set_attribute("classifier.confidence", float(raw.get("confidence", 0.0)))
-                except Exception as exc:
-                    actual = json.dumps({"task_key": "none", "session_type": "overhead", "reasoning": ""})
-                    error = str(exc)[:200]
+                result = strategy.classify_prompt(golden.input)
+                error: str | None = result.extra.get("error") if result.method.endswith("_error") else None
+                actual = result.as_actual_output()
+                case_span.set_attribute("classifier.confidence", result.confidence)
+                case_span.set_attribute("elapsed_s",             round(result.elapsed_s, 2))
+                if error:
                     case_span.set_attribute("error", error)
-                elapsed = time.time() - t0
-                case_span.set_attribute("elapsed_s", round(elapsed, 2))
 
                 case = LLMTestCase(input=golden.input, actual_output=actual, expected_output=golden.expected_output)
                 key_metric.measure(case)
@@ -184,7 +173,7 @@ def main() -> int:
                 "exp_type":   (exp.get("session_type") or ""),
                 "act_type":   (act.get("session_type") or ""),
                 "type_ok":    type_ok,
-                "elapsed":    elapsed,
+                "elapsed":    result.elapsed_s,
                 "error":      error,
             })
 
@@ -201,7 +190,7 @@ def main() -> int:
             line = (
                 f"{seed_id:>5} {app_name:<14} {difficulty:<11} "
                 f"{(exp.get('task_key') or 'none'):<10} {(act.get('task_key') or 'none'):<10} {k} "
-                f"{(exp.get('session_type') or ''):<10} {(act.get('session_type') or ''):<10} {t} {elapsed:>4.1f}"
+                f"{(exp.get('session_type') or ''):<10} {(act.get('session_type') or ''):<10} {t} {result.elapsed_s:>4.1f}"
             )
             if error:
                 line += f"  ERROR: {error}"

@@ -44,6 +44,7 @@ from deepeval.test_case import LLMTestCase
 from deepeval.tracing import observe, update_current_span, update_current_trace
 
 from metrics import CLASSIFIER_METRICS, TaskKeyMatchMetric, SessionTypeMatchMetric
+from strategies import from_env as strategy_from_env
 
 # ---------------------------------------------------------------------------
 # Path / env setup
@@ -77,6 +78,10 @@ dataset.add_goldens_from_json_file(file_path=str(_DATASET_PATH))
 
 _MLX_MODEL_LABEL = os.environ.get("MLX_MODEL_ID", "Qwen3.5-9B-OptiQ-4bit")
 
+# Strategy selected via EVAL_STRATEGY env var (default: direct_http).
+# Built once at module level so all test cases share the same strategy instance.
+_strategy = strategy_from_env()
+
 
 @observe(type="llm", model=_MLX_MODEL_LABEL, name="mlx_classify")
 def _run_mlx(prompt_input: str) -> str:
@@ -86,50 +91,13 @@ def _run_mlx(prompt_input: str) -> str:
     DeepEval trace tree. update_current_span/trace attach the test case data
     so metrics render inline in the trace view.
 
-    If MLX_SERVER_URL is set, calls the running server's /classify endpoint.
-    Otherwise falls back to in-process load via _get_model().
+    Uses _strategy (set by EVAL_STRATEGY env var) to generate actual_output.
+    Default strategy is DirectHttpStrategy (POST to MLX_SERVER_URL/classify).
+    For in-process inference without a server, set EVAL_STRATEGY=direct_mlx
+    once that strategy is implemented (Task #9 extension).
     """
-    server_url = os.environ.get("MLX_SERVER_URL", "").rstrip("/")
-    if server_url:
-        import urllib.request
-        body = json.dumps({"input": prompt_input}).encode()
-        req = urllib.request.Request(
-            f"{server_url}/classify",
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read())
-        result_json = json.dumps({
-            "task_key":     data.get("task_key") or "none",
-            "session_type": data.get("session_type", "overhead"),
-            "reasoning":    data.get("reasoning", ""),
-        }, ensure_ascii=False)
-    else:
-        # In-process fallback — requires .venv313 with mlx-lm + outlines
-        import agents.run_task_linker_mlx as m
-        from outlines.inputs import Chat
-        from mlx_lm.sample_utils import make_sampler
-
-        model = m._get_model()
-        messages = [
-            {"role": "system", "content": m._SYSTEM_PROMPT},
-            {"role": "user",   "content": prompt_input},
-        ]
-        raw = model(
-            Chat(messages),
-            output_type=m.SessionClassification,
-            max_tokens=m._MAX_TOKENS,
-            sampler=make_sampler(temp=m._TEMPERATURE),
-            verbose=False,
-        )
-        result = m.SessionClassification.model_validate_json(raw)
-        result_json = json.dumps({
-            "task_key":     result.task_key or "none",
-            "session_type": result.session_type,
-            "reasoning":    result.reasoning,
-        }, ensure_ascii=False)
+    result = _strategy.classify_prompt(prompt_input)
+    result_json = result.as_actual_output()
 
     # Attach test case data to the span and trace so DeepEval can render
     # per-call metrics in the trace tree. Include system prompt so it's
@@ -282,7 +250,8 @@ def test_mlx_e2e(mlx_test_cases: list[LLMTestCase]) -> None:
     evaluate(
         test_cases=mlx_test_cases,
         metrics=CLASSIFIER_METRICS,
-        identifier="mlx-direct",
+        hyperparameters=_strategy.as_hyperparameters(),
+        identifier=f"mlx-{_strategy.name}",
     )
 
 
