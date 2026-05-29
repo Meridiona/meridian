@@ -1,0 +1,72 @@
+{
+  "product": "Zuno",
+  "description": "B2B SaaS team productivity platform (Linear + Notion hybrid)",
+  "personas": ["dev_b_generic"],
+  "tickets": [
+    {
+      "id": "PROJ-201",
+      "title": "Implement webhook retry logic with exponential backoff",
+      "description": "Backend feature: add retry handler for webhook delivery failures, with exponential backoff and max 5 retries",
+      "type": "feature",
+      "status": "in_progress",
+      "labels": ["backend", "webhook", "reliability"],
+      "real": true
+    },
+    {
+      "id": "PROJ-210",
+      "title": "Migrate auth from JWT to session cookies",
+      "description": "Cross-cutting change: replace JWT tokens with secure session cookies. Touches frontend middleware, backend auth service, and integration tests.",
+      "type": "feature",
+      "status": "in_progress",
+      "labels": ["auth", "security", "full-stack"],
+      "real": true
+    },
+    {
+      "id": "PROJ-225",
+      "title": "Dashboard performance: lazy-load heavy chart components",
+      "description": "Frontend optimization: implement lazy loading for the dashboard's chart modules using React.lazy() and dynamic imports to reduce initial bundle size",
+      "type": "feature",
+      "status": "in_progress",
+      "labels": ["frontend", "performance", "react"],
+      "real": true
+    },
+    {
+      "id": "PROJ-230",
+      "title": "Add CSV export to the reports module",
+      "description": "Frontend feature: add a download-as-CSV button to the reports view, integrating with the reports API and handling large datasets",
+      "type": "feature",
+      "status": "in_progress",
+      "labels": ["frontend", "reports", "export"],
+      "real": true
+    },
+    {
+      "id": "PROJ-215",
+      "title": "Fix broken pagination on the users list page",
+      "description": "Bug: pagination controls don't update the URL query params correctly; prev/next buttons sometimes skip pages",
+      "type": "bug",
+      "status": "backlog",
+      "labels": ["frontend", "bug", "list-page"],
+      "real": true
+    },
+    {
+      "id": "PROJ-242",
+      "title": "Slack notification integration for webhook events",
+      "description": "Feature: when webhook delivery fails repeatedly, post a notification to a designated Slack channel",
+      "type": "feature",
+      "status": "backlog",
+      "labels": ["webhook", "slack", "integration"],
+      "real": false,
+      "decoy_reason": "Webhook terminology overlaps with PROJ-201; classifier must discriminate based on code/test artifacts"
+    },
+    {
+      "id": "PROJ-248",
+      "title": "Real-time collaboration on dashboard tiles",
+      "description": "Feature: add WebSocket-based real-time updates when multiple users edit dashboard tile configs simultaneously (CRDT conflict resolution)",
+      "type": "feature",
+      "status": "backlog",
+      "labels": ["dashboard", "websocket", "collab"],
+      "real": false,
+      "decoy_reason": "Dashboard terminology overlaps with PROJ-225; classifier must read actual code/package.json changes to distinguish"
+    }
+  ]
+}
