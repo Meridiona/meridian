@@ -962,6 +962,144 @@
         "scoreable": true
       },
       "design_notes": "MEDIUM PROJ-230 — performance optimisation follow-up within the same ticket. Branch is feat/proj-230-csv-export, files are export.ts and Toolbar.tsx. Benchmark results (167ms for 10k rows) directly address the Acme Corp use case from the ticket. Medium difficulty because the streaming implementation is a non-trivial chunk processing pattern, but the ticket context is unambiguous. No PROJ-225 confusion (no React.lazy, no skeleton, no dashboard charts)."
+    },
+    {
+      "id": 31,
+      "app_name": "Google Chrome",
+      "started_at": "2026-05-27T16:05:00+05:30",
+      "ended_at": null,
+      "duration_s": 28,
+      "category": "planning",
+      "confidence": 0.94,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "Linear — Zuno team workspace — Google Chrome",
+          "count": 7
+        }
+      ],
+      "session_text": "[16:05:00]\nGoogle Chrome\nTabs:\n  (1) Linear — My Issues  <- ACTIVE\n  (2) Linear — Sprint Board\n\n[16:05:10]\nLinear — My Issues  (end-of-day review)\nFilter: Assignee = @me, Status != Done\n\nMy open issues (updated statuses):\n\n[PROJ-201]  DONE  :white_check_mark:\nImplement webhook retry logic with exponential backoff\n  Status: Done  (PR #88 merged 15:44 today)\n  All 5 subtasks complete. Circuit breaker, idempotency, jitter, retention, Datadog.\n\n[PROJ-210]  IN REVIEW  (backend done, frontend pending)\nMigrate auth from JWT to session cookies\n  Backend: PR #92 merged to main\n  Frontend: PR #93 approved by Sarah, waiting Alex dev-mode warning fix\n  Due: 2026-05-28 (tomorrow)\n\n[PROJ-225]  IN REVIEW\nDashboard performance: lazy-load heavy chart components\n  PR #94 in review (Priya + Rachel). data-testid added.\n  FCP: 3,111ms -> 135ms (23x improvement)\n\n[PROJ-230]  IN REVIEW\nAdd CSV export to the reports module\n  PR #95 in review (Rachel + Alex). Streaming added for 10k+ rows.\n  Column selection: scoped to follow-up PROJ-231.\n\n[PROJ-215]  IN REVIEW  (PR #96)\nFix broken pagination on the users list page\n  PR #96 up, quick fix: useState -> useSearchParams\n\n(developer: PROJ-201 is done! PROJ-210 backend done, frontend almost.\n PROJ-225 and PROJ-230 both in review. PROJ-215 quick fix in review.)\n\n[16:05:55]\nLinear — PROJ-201  (marking Done)\n\n(developer clicks PROJ-201, changes status to Done)\nStatus: Done  (manually closed, PR #88 already merged)\n\n[16:06:15]\nLinear — Sprint Board\n(developer checks the sprint burndown)\n\nSprint: May Sprint 2026  (Day 2 of 14)\n  Done: 12 issues (was 11 yesterday)\n  In Progress: 17 (was 18, PROJ-201 moved to Done)\n  In Review: 5 (PROJ-210 frontend, 225, 230, 215, 201)\n  Velocity: ahead of track\n\nPoints done today: 21 points\n  PROJ-210 backend (13 pts)\n  PROJ-201 full (8 pts)\n\nPoints in review: 16 points (PROJ-210 frontend 0, PROJ-225 5, PROJ-230 3,\n  PROJ-215 2, PROJ-201 counted in done)\n\n(developer: strong day. PROJ-210 backend, PROJ-201, PROJ-225 core,\n PROJ-230 core, and PROJ-215 bug fix all done in one day.)\n\n[16:06:50]\nLinear — PROJ-225  (adding comment)\n\n(developer opens PROJ-225, adds end-of-day progress comment:)\n  2026-05-27 EOD: PR #94 in review. FCP 135ms. Priya reviewing skeleton\n  proportions. data-testid added per review comment. Performance targets\n  met. Waiting on design + product approval before merge.\n\n[16:07:15]\nLinear — PROJ-230  (adding comment)\n\n(developer opens PROJ-230, adds comment:)\n  2026-05-27 EOD: PR #95 in review. papaparse CSV + streaming (167ms/10k rows).\n  Rachel asked about column selection -> scoping as PROJ-231 follow-up.\n  Waiting on Rachel + Alex approval. Ready to merge once approved.\n\n[16:07:50]\nGoogle Chrome\n(developer closes Linear, opens Slack for end-of-day message)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "difficulty": "medium",
+        "reasoning": "Chrome session doing end-of-day Linear review. Developer scans all open tickets, marks PROJ-201 as Done (PR #88 merged), checks sprint burndown (21 points done today), adds EOD comments to PROJ-225 and PROJ-230. All 5 tickets visible with detailed status. No code written.",
+        "scoreable": true
+      },
+      "design_notes": "MEDIUM overhead — end-of-day board review with all 5 tickets appearing. Similar to session 1 (morning review) but with different states. The failure mode: developer updates PROJ-201 status to Done and adds comments mentioning FCP/streaming/skeleton. A classifier might pick PROJ-225 (FCP comment), PROJ-230 (streaming comment), or PROJ-201 (Done status update). Correct: overhead, no task_key. The session is ticket management, not implementation."
+    },
+    {
+      "id": 32,
+      "app_name": "Slack",
+      "started_at": "2026-05-27T16:08:00+05:30",
+      "ended_at": null,
+      "duration_s": 16,
+      "category": "communication",
+      "confidence": 0.96,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "Slack — #standup",
+          "count": 3
+        }
+      ],
+      "session_text": "[16:08:00]\nSlack — Zuno Engineering\nChannel: #standup  <- ACTIVE\n\n#standup  (EOD update)\n\nToday 16:07  Sarah Chen\n  :wave: EOD check-in: solid day! PROJ-201 done + PR #88 merged.\n  PROJ-210 backend merged. Great work team!\n\n(developer types EOD wrap message)\n\nTyping:\n  :white_check_mark: EOD wrap (2026-05-27):\n\n  Completed today:\n    :rocket: PROJ-201 -- all done! PR #88 merged. Circuit breaker, idempotency,\n      Datadog metrics (hot-shots), 16 integration tests, jitter, retention.\n    :lock: PROJ-210 backend -- PR #92 merged. Cookie auth middleware, CSRF,\n      session store, Okta PKCE callback. Frontend PR #93 up (Alex's work).\n    :chart_with_upwards_trend: PROJ-225 -- PR #94 in review. 23x FCP improvement\n      (3,111ms -> 135ms). Skeleton + ErrorBoundary + fade-in.\n    :page_facing_up: PROJ-230 -- PR #95 in review. CSV export + streaming\n      (167ms for 10k rows). Acme Corp use case covered.\n    :bug: PROJ-215 -- PR #96 in review. Pagination URL-sync bug fixed.\n\n  Tomorrow:\n    - PROJ-210 frontend merge (once Alex adds dev-mode warning)\n    - PROJ-225/230/215 PR reviews -- hoping to merge all 3\n    - Start planning PROJ-242 (Slack webhook notifications) for next sprint\n\n(hits Enter)\n\nToday 16:08  Zoe Dev  [sent]\n  EOD wrap: PROJ-201 done + PR #88 merged! PROJ-210 backend merged!\n  PROJ-225 PR #94 in review (23x FCP). PROJ-230 PR #95 in review.\n  PROJ-215 PR #96 quick bug fix. Great sprint day!\n\nToday 16:08  :tada:  Sarah Chen, Alex Rodriguez, John Smith, Rachel Kim  (react)\n\nToday 16:09  Rachel Kim\n  Amazing output Zoe! Will review PROJ-230 PR #95 first thing tomorrow.\n\n[16:09:30]\nSlack\n(developer closes Slack)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "difficulty": "easy",
+        "reasoning": "End-of-day Slack standup wrap. Developer posts a summary of the day's completions (PROJ-201, PROJ-210, PROJ-225, PROJ-230, PROJ-215) with brief technical notes. Same standup-false-positive risk as session 2, but this is the EOD variant which should be straightforward to classify as overhead.",
+        "scoreable": true
+      },
+      "design_notes": "EASY overhead — EOD standup post. Shorter and more summary-focused than session 2's morning standup. All 5 tickets mentioned with completion notes. The failure mode is standup-about-work ≠ doing work. Easier than session 2 because the message is clearly a wrap-up with celebration reactions, not a detailed technical planning message."
+    },
+    {
+      "id": 33,
+      "app_name": "Terminal",
+      "started_at": "2026-05-27T16:10:00+05:30",
+      "ended_at": null,
+      "duration_s": 9,
+      "category": "maintenance",
+      "confidence": 0.92,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "zsh — zuno-app — iTerm2",
+          "count": 2
+        }
+      ],
+      "session_text": "[16:10:00]\nTerminal — iTerm2\n  zsh -- zuno-app/\n\n[16:10:08]\nTerminal — iTerm2\n\n$ npm audit\n  found 3 vulnerabilities (1 low, 2 moderate)\n\n  # npm audit report\n\n  semver  <7.5.2\n  Severity: moderate\n  Regular Expression Denial of Service in semver\n  fix available via npm audit fix\n  node_modules/semver\n\n  tough-cookie  <4.1.3\n  Severity: moderate\n  Prototype Pollution in tough-cookie\n  fix available via npm audit fix\n  node_modules/tough-cookie\n\n  path-to-regexp  <0.1.10\n  Severity: low\n  Backtracking regular expression in path-to-regexp\n  fix available via npm audit fix\n  node_modules/path-to-regexp\n\n  3 vulnerabilities found. Run npm audit fix to fix them.\n\n$ npm audit fix\n  added 2 packages, updated 4 packages\n  fixed 3 of 3 vulnerabilities\n\n$ npm audit\n  found 0 vulnerabilities\n\n(developer: all clean)\n\n[16:10:55]\nTerminal — iTerm2\n\n$ npx tsc --noEmit\n  (exit 0)  -- no regressions from dependency updates\n\n(developer closes Terminal)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "none",
+        "session_type": "untracked",
+        "difficulty": "easy",
+        "reasoning": "Terminal session running npm audit and npm audit fix to patch 3 dependency vulnerabilities (semver, tough-cookie, path-to-regexp). No ticket context, no task work — routine security housekeeping.",
+        "scoreable": true
+      },
+      "design_notes": "EASY untracked — npm audit is pure maintenance with no ticket anchor. The vulnerability names (semver, tough-cookie, path-to-regexp) have no connection to any open ticket. The developer doesn't mention any PROJ-* ticket. Should be trivially classified as untracked."
+    },
+    {
+      "id": 34,
+      "app_name": "Code",
+      "started_at": "2026-05-27T16:12:00+05:30",
+      "ended_at": null,
+      "duration_s": 22,
+      "category": "planning",
+      "confidence": 0.78,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "Terminal — zsh — zuno-app — Visual Studio Code",
+          "count": 3
+        }
+      ],
+      "session_text": "[16:12:00]\nVisual Studio Code\nBranch: main\nActive tab: (no editor file open)\n\n[16:12:10]\nVS Code — Terminal  (developer opens PROJ-242 ticket in Linear via browser)\n\n(developer remembers they said they'd add architecture notes to PROJ-242\n before leaving for the day)\n\n$ cat > /tmp/proj242-notes.md << 'EOF'\n# PROJ-242 Architecture Notes (for next sprint)\n\n## Context\nPROJ-201 (webhook retry) is now merged. The circuit breaker detection is in\nwebhook-retry.ts: when consecutiveFailures >= 3, the target is marked dead\nand logger.error('circuit_breaker_triggered') fires.\n\nPROJ-242 hooks into this: after circuit_breaker_triggered, send a Slack\nnotification to a configurable channel.\n\n## Proposed design\n\nNew file: src/services/notification-service.ts\n  - notifyDeadTarget(targetUrl: string, consecutiveFailures: number): Promise<void>\n  - Uses @slack/web-api SDK\n  - Posts to config.SLACK_WEBHOOK_ALERT_CHANNEL (env var)\n  - Message format:\n      :red_circle: Webhook target is dead!\n      URL: {targetUrl}\n      Consecutive failures: {consecutiveFailures}\n      Time: {ISO timestamp}\n      Action: PATCH /admin/webhook-targets to re-enable\n\nRate limiting:\n  - Use a Map: targetUrl -> lastNotifiedAt (Date)\n  - Only send if lastNotifiedAt is > 60 minutes ago\n  - Prevents Slack spam during flaky recovery cycles\n\nConfig additions needed:\n  SLACK_BOT_TOKEN (from Slack app OAuth)\n  SLACK_WEBHOOK_ALERT_CHANNEL (#webhook-alerts or customer-specific)\n\nIntegration point:\n  In webhook-retry.ts, after logger.error('circuit_breaker_triggered'):\n    await notificationService.notifyDeadTarget(targetUrl, consecutiveFailures)\n\nEstimate: 5 points (Slack SDK, notif template, rate-limiting, config, tests)\nEOF\n\n(notes file created in /tmp)\n\n[16:13:00]\nVS Code — Terminal  (opening Linear in browser to paste notes)\n\n(developer switches to Chrome to add the notes to the PROJ-242 Linear ticket\n -- but Chrome isn't captured by screenpipe at this moment)\n(adds the notes to Linear PROJ-242 description via the browser)\n(returns to Terminal)\n\n[16:13:30]\nVS Code — Terminal\n\n$ rm /tmp/proj242-notes.md\n\n(developer: architecture notes added to PROJ-242 in Linear. Done for the day.)\n(closes VS Code)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "difficulty": "hard-decoy",
+        "reasoning": "VS Code terminal session writing architecture notes for PROJ-242 (Slack notification for dead webhook targets) in a temporary file, then pasting them into the Linear ticket. Developer is documenting a future ticket, not implementing it. The /tmp file is deleted after pasting. No source files modified, no tests run, no commits made.",
+        "scoreable": true
+      },
+      "design_notes": "HARD-DECOY — developer writes detailed PROJ-242 architecture (notificationService, Slack SDK, rate-limiting Map, config fields, integration point in webhook-retry.ts) in the VS Code terminal. The content reads like implementation notes for PROJ-242 but the developer is documenting a backlog ticket for the next sprint. Key discriminators: (1) file is in /tmp (not src/), (2) file is deleted after pasting to Linear, (3) no imports, no tests, no compilation, (4) VS Code has no editor file open. A classifier that sees Slack SDK + notifyDeadTarget + rate-limiting + SLACK_BOT_TOKEN might misclassify as PROJ-242 task work. Correct: overhead/none."
+    },
+    {
+      "id": 35,
+      "app_name": "Code",
+      "started_at": "2026-05-27T16:15:00+05:30",
+      "ended_at": null,
+      "duration_s": 62,
+      "category": "coding",
+      "confidence": 0.97,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "src/utils/export.ts — zuno-app — Visual Studio Code",
+          "count": 5
+        },
+        {
+          "window_name": "tests/utils/export.test.ts — zuno-app — Visual Studio Code",
+          "count": 2
+        },
+        {
+          "window_name": "Terminal — zsh — zuno-app",
+          "count": 4
+        }
+      ],
+      "session_text": "[16:15:00]\nVisual Studio Code\nBranch: feat/proj-230-csv-export\nActive tabs:\n  src/utils/export.ts  <- ACTIVE\n  tests/utils/export.test.ts\n\nStatus bar: TypeScript  |  Branch: feat/proj-230-csv-export  |  0 errors\n\n[16:15:12]\nVS Code — src/utils/export.ts  (full file review before end of day)\n\n  1   // zuno-app — data export utilities\n  2   import Papa from 'papaparse'\n  3   \n  4   function formatValue(value: unknown): string {\n  5     if (typeof value === 'number') {\n  6       return Number.isInteger(value) ? String(value) : value.toFixed(2)\n  7     }\n  8     if (value instanceof Date) return value.toISOString().slice(0, 10)\n  9     if (value === null || value === undefined) return ''\n 10     return String(value)\n 11   }\n 12   \n 13   export function exportToCsv(\n 14     data:     Record<string, unknown>[],\n 15     filename: string = generateFilename(),\n 16   ): void {\n 17     if (data.length === 0) return\n 18     const formatted = data.map(row =>\n 19       Object.fromEntries(Object.entries(row).map(([k, v]) => [k, formatValue(v)]))\n 20     )\n 21     const csv = Papa.unparse(formatted)\n 22     triggerDownload(csv, filename)\n 23   }\n 24   \n 25   export function exportToCsvStreaming(\n 26     data:      Record<string, unknown>[],\n 27     filename:  string = generateFilename(),\n 28     chunkSize: number = 500,\n 29   ): void {\n 30     if (data.length === 0) return\n 31     const formatted = data.map(row =>\n 32       Object.fromEntries(Object.entries(row).map(([k, v]) => [k, formatValue(v)]))\n 33     )\n 34     const chunks: string[] = []\n 35     for (let i = 0; i < formatted.length; i += chunkSize) {\n 36       const chunk = formatted.slice(i, i + chunkSize)\n 37       chunks.push(Papa.unparse(chunk, { header: i === 0 }))\n 38     }\n 39     const csv = chunks.join('\\n')\n 40     triggerDownload(csv, filename)\n 41   }\n 42   \n 43   function triggerDownload(csv: string, filename: string): void {\n 44     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })\n 45     const url  = URL.createObjectURL(blob)\n 46     const link = document.createElement('a')\n 47     link.href = url; link.download = filename; link.click()\n 48     URL.revokeObjectURL(url)\n 49   }\n 50   \n 51   function generateFilename(): string {\n 52     return `zuno-report-${new Date().toISOString().slice(0, 10)}.csv`\n 53   }\n\n(developer reads through the refactored file -- triggerDownload is now a\n shared helper used by both exportToCsv and exportToCsvStreaming. Clean.)\n\n[16:15:55]\nVS Code — Terminal  (Claude Code — add one final improvement: progress callback)\n\n> Small improvement to exportToCsvStreaming: add an optional onProgress callback\n  parameter. After each chunk is processed, call onProgress(processedRows, totalRows).\n  This lets the UI show a progress bar for very large exports.\n  onProgress is optional (default: undefined) and should not be called if not provided.\n\n● Claude is thinking...\n\n  ✎ Editing src/utils/export.ts (line 25-41)\n  ─────────────────────────────────────────\n  export function exportToCsvStreaming(\n    data:        Record<string, unknown>[],\n    filename:    string = generateFilename(),\n    chunkSize:   number = 500,\n  + onProgress?: (processed: number, total: number) => void,\n  ): void {\n    if (data.length === 0) return\n    const formatted = data.map(row =>\n      Object.fromEntries(Object.entries(row).map(([k, v]) => [k, formatValue(v)]))\n    )\n    const chunks: string[] = []\n    for (let i = 0; i < formatted.length; i += chunkSize) {\n      const chunk = formatted.slice(i, i + chunkSize)\n      chunks.push(Papa.unparse(chunk, { header: i === 0 }))\n  +     onProgress?.(Math.min(i + chunkSize, formatted.length), formatted.length)\n    }\n    const csv = chunks.join('\\n')\n    triggerDownload(csv, filename)\n  +   onProgress?.(formatted.length, formatted.length)  // 100% complete\n  }\n  ─────────────────────────────────────────\n  ✓ Wrote src/utils/export.ts  (+2 lines)\n\n  Done. The onProgress callback fires after each 500-row chunk, allowing\n  the UI to show a progress bar: onProgress(500, 10000) -> onProgress(1000, 10000) etc.\n\n[16:16:40]\nVS Code — tests/utils/export.test.ts  (adding onProgress test)\n(developer opens the test file to add coverage for the new parameter)\n\n  // existing tests ...\n\n  it('calls onProgress after each chunk', () => {\n    const progress: [number, number][] = []\n    const data = Array.from({ length: 1200 }, (_, i) => ({ id: i + 1, value: i * 2.5 }))\n    exportToCsvStreaming(data, 'test.csv', 500,\n      (processed, total) => progress.push([processed, total])\n    )\n    // 1200 rows / 500 chunk = 3 chunks (500, 1000, 1200) + final 100%\n    expect(progress).toEqual([\n      [500,  1200],\n      [1000, 1200],\n      [1200, 1200],  // last chunk\n      [1200, 1200],  // explicit 100%\n    ])\n  })\n\n[16:17:10]\nVS Code — Terminal\n\n$ npx tsc --noEmit\n  (exit 0)\n\n$ npm test -- --testPathPattern=export --verbose\n  PASS src/utils/export.test.ts\n    exportToCsv\n      ✓ generates correct CSV from array of objects  (12ms)\n      ✓ removes trailing .00 from integer values  (4ms)\n      ✓ formats Date objects as YYYY-MM-DD  (3ms)\n      ✓ handles empty data array (no-op)  (2ms)\n      ✓ generates filename with today date  (5ms)\n    exportToCsvStreaming\n      ✓ calls onProgress after each chunk  (7ms)\n  Tests: 6 passed  |  Time: 1.2s\n\n$ git add src/utils/export.ts tests/utils/export.test.ts\n$ git commit -m 'feat(reports): add onProgress callback to exportToCsvStreaming (PROJ-230)\n>\n> Enables progress bar UI for large CSV exports.\n> onProgress(processed, total) fires after each 500-row chunk\n> and once more at 100%% for completion.\n> Optional param -- backward compatible. 6/6 tests passing.'\n\n  [feat/proj-230-csv-export 9a8b7c6]  feat(reports): add onProgress callback\n  2 files changed, 14 insertions(+)\n\n$ git push\n  Pushed feat/proj-230-csv-export\n\n(developer: PROJ-230 is polished now:\n  - exportToCsv(): small datasets\n  - exportToCsvStreaming(): large datasets with 500-row chunking\n  - onProgress callback for progress bar UI\n  - formatValue: integer .00 stripping, Date ISO format\n  PR #95 ready to merge once Rachel and Alex approve.)\n(closes VS Code. Done for the day.)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "PROJ-230",
+        "session_type": "task",
+        "difficulty": "medium",
+        "reasoning": "VS Code session adding onProgress callback to exportToCsvStreaming. Developer reads the current export.ts (53 lines), adds optional onProgress parameter that fires after each 500-row chunk, adds a test covering the 3-chunk + final-100% pattern. Runs 6 tests (pass), commits, pushes. Final polishing commit for PROJ-230 before PR merge.",
+        "scoreable": true
+      },
+      "design_notes": "MEDIUM PROJ-230 — last implementation session of the day. Branch is feat/proj-230-csv-export, file is export.ts (papaparse, chunking, Blob URL). The onProgress callback is a clean extension of the streaming API. No PROJ-225 confusion possible (no React, no skeleton, no dashboard). Medium difficulty: the technique (callback pattern for progress reporting) is non-trivial but the ticket context is unambiguous. Completes the Dev B dataset at 35 sessions."
     }
   ]
 }
