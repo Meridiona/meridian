@@ -144,12 +144,12 @@ function ActiveSessionCard({ active, taskKey }: { active: NonNullable<TodayRespo
 }
 
 // ── Totals strip ─────────────────────────────────────────────────────────────
-function TotalsStrip({ focus_s, idle_s, session_count }: { focus_s: number; idle_s: number; session_count: number }) {
+function TotalsStrip({ focus_s, idle_s, coding_s, session_count }: { focus_s: number; idle_s: number; coding_s: number; session_count: number }) {
   const items = [
-    { k: 'Focus',    v: fmtDur(focus_s),                            note: 'active' },
-    { k: 'Idle',     v: fmtDur(idle_s),                             note: 'away from keyboard' },
-    { k: 'Sessions', v: String(session_count),                      note: 'captured today' },
-    { k: 'Switches', v: String(Math.max(0, session_count - 1)),     note: 'context switches' },
+    { k: 'Focus',        v: fmtDur(focus_s),                        note: 'active' },
+    { k: 'Idle',         v: fmtDur(idle_s),                         note: 'away from keyboard' },
+    { k: 'Coding agent', v: fmtDur(coding_s),                       note: 'Claude Code · Codex' },
+    { k: 'Switches',     v: String(Math.max(0, session_count - 1)), note: 'context switches' },
   ]
   return (
     <div className="grid grid-cols-4 rule-t rule-b" style={{ borderColor: 'var(--rule)' }}>
@@ -322,10 +322,18 @@ function QueuePreviewRow({ session }: { session: { id: number | string; app: str
 // ── Today page ───────────────────────────────────────────────────────────────
 export default function TodayView({ onNavigate }: { onNavigate?: (v: string, key?: string) => void }) {
   const [data, setData] = useState<TodayResponse | null>(null)
+  const [codingS, setCodingS] = useState(0)
 
   useEffect(() => {
     fetch('/api/today').then(r => r.json()).then(setData).catch(() => {})
     const id = setInterval(() => fetch('/api/today').then(r => r.json()).then(setData).catch(() => {}), 30_000)
+    return () => clearInterval(id)
+  }, [])
+
+  useEffect(() => {
+    const load = () => fetch('/api/coding-agents').then(r => r.json()).then(d => setCodingS(d?.total_s ?? 0)).catch(() => {})
+    load()
+    const id = setInterval(load, 30_000)
     return () => clearInterval(id)
   }, [])
 
@@ -410,7 +418,7 @@ export default function TodayView({ onNavigate }: { onNavigate?: (v: string, key
 
       {data.active && <ActiveSessionCard active={data.active} taskKey={data.sessions.filter(s => s.task_key).at(-1)?.task_key} />}
 
-      <TotalsStrip focus_s={data.focus_s} idle_s={data.idle_s} session_count={data.session_count} />
+      <TotalsStrip focus_s={data.focus_s} idle_s={data.idle_s} coding_s={codingS} session_count={data.session_count} />
 
       {buckets.length > 0 && (
         <section>
