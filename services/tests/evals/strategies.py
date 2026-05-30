@@ -209,3 +209,39 @@ def from_env() -> EvalStrategy:
             f"Unknown EVAL_STRATEGY={name!r}. Known strategies: {known}"
         )
     return cls()
+
+
+def from_config(config: dict[str, Any]) -> EvalStrategy:
+    """Instantiate a strategy from an experiment-config dict.
+
+    Required key: 'strategy' (one of REGISTRY keys).
+    All other dict entries are passed to the strategy constructor as its config
+    (each strategy picks the keys it cares about and ignores the rest, so the
+    same flat config can be reused across strategies). Non-string/int/float
+    values like nested dicts are passed through unchanged.
+
+    Reserved top-level keys (NOT forwarded to the strategy — they're consumed
+    by the runner before strategy instantiation):
+        name, description  — experiment identity (recorded in results.json)
+        dataset_path       — Goldens file (runner picks this up directly)
+
+    Everything else (model, endpoint, timeout, temperature, max_tokens,
+    session_text_cap, prompt_version, ...) is passed through to the strategy
+    constructor. Each strategy picks the keys it cares about and ignores the
+    rest; as_hyperparameters() filters non-primitives. This means the config's
+    `model` field flows into the strategy's hyperparameters (and from there
+    into deepeval + OO trace attributes), so a config-declared model overrides
+    the env-var default — even though the runner cannot enforce that the MLX
+    server is actually serving that model (user must restart the server with
+    MLX_MODEL_ID set; see services/scripts/install-mlx-server-daemon.sh).
+    """
+    name = config.get("strategy")
+    if not name:
+        raise ValueError("Config dict missing required 'strategy' key")
+    cls = REGISTRY.get(name)
+    if cls is None:
+        known = ", ".join(REGISTRY)
+        raise ValueError(f"Unknown strategy {name!r}. Known strategies: {known}")
+    runner_keys = {"strategy", "name", "description", "dataset_path"}
+    strategy_cfg = {k: v for k, v in config.items() if k not in runner_keys}
+    return cls(strategy_cfg)

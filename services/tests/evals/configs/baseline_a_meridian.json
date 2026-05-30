@@ -1,0 +1,13 @@
+{
+  "name":             "baseline-a_meridian-qwen35-9b",
+  "description":      "Baseline eval on Dev A (Meridian-project) persona with Qwen3.5-9B-OptiQ-4bit, default temperature/cap.",
+  "strategy":         "direct_http",
+  "dataset_path":     "services/tests/evals/data/generated/goldens_a_meridian.json",
+  "endpoint":         "http://localhost:7823/classify",
+  "timeout":          120,
+  "model":            "Qwen3.5-9B-OptiQ-4bit",
+  "session_text_cap": 2500,
+  "temperature":      0.0,
+  "max_tokens":       1024,
+  "prompt_version":   "v2.0"
+}
