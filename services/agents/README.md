@@ -38,7 +38,7 @@ meridian.db  →  app_sessions
         │    Rust writes ticket_links + session_dimensions, advances cursor.
         │    Cursor advances after every session regardless of outcome.
         │
-        └── pm_update  (agents/pm_update/)
+        └── pm_update  (agents/pm_worklog_update/)
              Agno-powered synthesis workflow. Runs on office-hours slot
              schedule (jira-updater daemon). Reads classified sessions
              grouped by task_key, generates JiraUpdate (comment + worklog
@@ -337,7 +337,7 @@ pip install -e ".[local-llm]"
    ```bash
    cd services
    echo '{"session_ids": [<ID>], "meridian_db": "'"$HOME"'/.meridian/meridian.db"}' \
-     | .venv313/bin/python -m agents.run_task_linker_mlx
+     | .venv/bin/python -m agents.run_task_linker_mlx
    ```
 
 3. **Check the MLX server inference log** for per-session results:

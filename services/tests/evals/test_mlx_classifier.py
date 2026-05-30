@@ -4,28 +4,28 @@ MLX is a direct LLM call — not an agent SDK — so evaluation follows the
 DeepEval 4.0 component-level pattern: build LLMTestCase objects from goldens,
 then assert_test (per-case) or evaluate() (batch report).
 
-Run (from services/, with .venv313 active):
+Run (from services/, with .venv active):
 
     # Smoke tests only — no model load:
     pytest tests/evals/test_mlx_classifier.py -m "integration and not slow"
 
     # End-to-end eval — all goldens in one DeepEval report:
     MLX_SERVER_URL=http://localhost:7823 \
-        .venv313/bin/deepeval test run tests/evals/test_mlx_classifier.py \
+        .venv/bin/deepeval test run tests/evals/test_mlx_classifier.py \
         -k "test_mlx_e2e" --identifier "mlx-baseline" --ignore-errors
 
     # Per-golden breakdown — individual pass/fail per session:
     MLX_SERVER_URL=http://localhost:7823 \
-        .venv313/bin/deepeval test run tests/evals/test_mlx_classifier.py \
+        .venv/bin/deepeval test run tests/evals/test_mlx_classifier.py \
         -k "test_mlx_per_golden" --identifier "mlx-per-golden" --ignore-errors
 
     # Manual accuracy table (no deepeval runner needed):
     MLX_SERVER_URL=http://localhost:7823 \
-        .venv313/bin/python3.13 tests/evals/test_mlx_classifier.py
+        .venv/bin/python3.13 tests/evals/test_mlx_classifier.py
 
 Marks:
     integration — harness + metric wiring tests, no model call
-    slow        — loads the MLX model; requires Apple Silicon + .venv313
+    slow        — loads the MLX model; requires Apple Silicon + .venv
 """
 from __future__ import annotations
 
@@ -107,7 +107,7 @@ def _run_mlx(prompt_input: str) -> str:
             "reasoning":    data.get("reasoning", ""),
         }, ensure_ascii=False)
     else:
-        # In-process fallback — requires .venv313 with mlx-lm + outlines
+        # In-process fallback — requires .venv with mlx-lm + outlines
         import agents.run_task_linker_mlx as m
         from outlines.inputs import Chat
         from mlx_lm.sample_utils import make_sampler

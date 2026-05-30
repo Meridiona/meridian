@@ -21,7 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICES_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Pick the same python the launchd daemon uses so deps resolve identically.
-VENV313_PYTHON="${SERVICES_DIR}/.venv313/bin/python"
+VENV313_PYTHON="${SERVICES_DIR}/.venv/bin/python"
 VENV_PYTHON="${SERVICES_DIR}/.venv/bin/python"
 if [[ -x "${VENV313_PYTHON}" ]]; then
     PYTHON="${VENV313_PYTHON}"

@@ -17,8 +17,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from agents.pm_update import db
-from agents.pm_update.config import MERIDIAN_DB
+from agents.pm_worklog_update import db
+from agents.pm_worklog_update.config import MERIDIAN_DB
 
 log = logging.getLogger(__name__)
 
