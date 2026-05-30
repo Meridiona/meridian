@@ -17,6 +17,8 @@ For the full failure-mode taxonomy and reasoning-about-evals primer, see [`TESTI
 | `data/generated/` | **Gitignored.** All rendered outputs go here — regenerate on demand. |
 | `data/generated/goldens_<persona>.json` | Goldens rendered from hand-authored seeds (output of `render_seeds.py`). |
 | `data/generated/goldens_real.json` | Goldens exported from real labelled sessions in `meridian.db` (output of `build_dataset.py`). |
+| `configs/<name>.json` | **Versioned experiment manifests.** One JSON per experiment declaring strategy, dataset, server/render-side knobs. See § Experiment configs below for the schema. |
+| `results/run_<id>.json` | **Gitignored.** One per eval run — the canonical local mirror of the OTel trace. Source of truth for the eval-feedback skill. |
 
 ### Scripts
 
@@ -72,7 +74,11 @@ For the full failure-mode taxonomy and reasoning-about-evals primer, see [`TESTI
 services/.venv/bin/python services/tests/evals/render_seeds.py a_meridian
 # writes: services/tests/evals/data/generated/goldens_a_meridian.json
 
-# 2. Run eval (server auto-discovered on port 7823)
+# 2a. Run with a versioned experiment-manifest config (preferred for sweeps)
+services/.venv/bin/python services/tests/evals/eval_classifier.py \
+  --config services/tests/evals/configs/baseline_a_meridian.json
+
+# 2b. Or run with env vars (one-off / ad-hoc)
 EVAL_DATASET_PATH=services/tests/evals/data/generated/goldens_a_meridian.json \
 services/.venv/bin/python services/tests/evals/eval_classifier.py
 
@@ -80,7 +86,74 @@ services/.venv/bin/python services/tests/evals/eval_classifier.py
 services/.venv/bin/python services/tests/evals/eval_classifier.py --model phi-4
 ```
 
-Prints a per-tier accuracy table to stdout; pushes a full trace tree to OpenObserve under `service.name = meridian-eval`.
+Prints a per-tier accuracy table to stdout; writes a canonical results JSON to `results/run_<persona>_<strategy>_<timestamp>.json`; pushes a full trace tree to OpenObserve under `service.name = meridian-eval`.
+
+### Experiment configs (`configs/<name>.json`)
+
+A config file is the **declarative manifest of one experiment**. The runner uses it to drive what it controls (strategy, dataset, strategy options) and records what it doesn't (model, sampling params, prompt version) in the results JSON for provenance. Config files are **versioned** (committed to git) so each interesting experiment is reproducible.
+
+Schema (flat JSON; all fields optional except `strategy`):
+
+```json
+{
+  "name":             "baseline-b_generic-qwen35-9b",
+  "description":      "Baseline reference for comparing strategy/model swaps.",
+  "strategy":         "direct_http",
+  "dataset_path":     "services/tests/evals/data/generated/goldens_b_generic.json",
+  "endpoint":         "http://localhost:7823/classify",
+  "timeout":          120,
+  "model":            "Qwen3.5-9B-OptiQ-4bit",
+  "session_text_cap": 2500,
+  "temperature":      0.0,
+  "max_tokens":       1024,
+  "prompt_version":   "v2.0"
+}
+```
+
+**Two field categories:**
+
+| Category | Fields | Behaviour |
+|---|---|---|
+| Runner-controlled | `strategy`, `dataset_path`, `endpoint`, `timeout` (anything in strategy `__init__`) | Runner **applies** these. Strategy is instantiated with the relevant subset. |
+| Recorded-only | `model`, `session_text_cap`, `temperature`, `max_tokens`, `prompt_version` | Runner only **records** these in `results.json`. User must apply them out-of-band (restart MLX server with `MLX_MODEL_ID=...`, set `SESSION_TEXT_CAP=...` + re-run `render_seeds.py`, edit SKILL.md for prompt version). The recorded value is the experiment's **declaration** of what should be true; the user is responsible for matching reality to it. |
+
+**Precedence:** CLI flags > config file > env vars > defaults. So `--model phi-4` overrides `config.model`, which overrides `MLX_MODEL_ID`, which overrides the source-code default.
+
+**Config file metadata appears in results.json:**
+
+```json
+{
+  "experiment": {
+    "name":        "baseline-b_generic-qwen35-9b",
+    "description": "Baseline reference for comparing strategy/model swaps.",
+    "config_file": "services/tests/evals/configs/baseline_b_generic.json"
+  },
+  "config": {
+    "...": "all the runner-applied + recorded-only fields",
+    "recorded_from_config": {
+      "model":            "Qwen3.5-9B-OptiQ-4bit",
+      "session_text_cap": 2500,
+      "temperature":      0.0,
+      "max_tokens":       1024,
+      "prompt_version":   "v2.0"
+    }
+  }
+}
+```
+
+**Common usage patterns:**
+
+```bash
+# Sweep across configs (Claude Code drives this in a loop)
+for cfg in services/tests/evals/configs/*.json; do
+  services/.venv/bin/python services/tests/evals/eval_classifier.py --config "$cfg"
+done
+
+# Override one field per run without editing the config
+services/.venv/bin/python services/tests/evals/eval_classifier.py \
+  --config services/tests/evals/configs/baseline_b_generic.json \
+  --model phi-4
+```
 
 ### Pytest mode (CI / formal gate)
 

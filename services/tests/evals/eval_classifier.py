@@ -67,7 +67,10 @@ from deepeval.dataset import EvaluationDataset  # noqa: E402
 from deepeval.test_case import LLMTestCase  # noqa: E402
 
 from tests.evals.metrics import TaskKeyMatchMetric, SessionTypeMatchMetric  # noqa: E402
-from tests.evals.strategies import from_env as strategy_from_env  # noqa: E402
+from tests.evals.strategies import (  # noqa: E402
+    from_env as strategy_from_env,
+    from_config as strategy_from_config,
+)
 
 
 def _query_model_info(server_url: str) -> dict:
@@ -149,6 +152,8 @@ def _write_results_json(
     strategy_name: str,
     hyperparams: dict,
     out_dir: Path,
+    experiment_config: dict | None = None,
+    config_path: Path | None = None,
 ) -> Path:
     """Write a canonical results JSON file the Claude Code loop can read directly.
 
@@ -236,6 +241,13 @@ def _write_results_json(
         "run_id":       run_id,
         "timestamp":    run_started_at,
         "trace_id":     trace_id_hex,
+        "experiment": {
+            # Experiment-manifest metadata — populated when --config <path> is used.
+            # None when the run was launched from env vars only (no config file).
+            "name":        (experiment_config or {}).get("name"),
+            "description": (experiment_config or {}).get("description"),
+            "config_file": str(config_path) if config_path else None,
+        },
         "config": {
             "strategy":         strategy_name,
             "model_id":         model_id,
@@ -246,6 +258,17 @@ def _write_results_json(
             "server_source":    server_source,
             "session_text_cap": session_text_cap,
             "hyperparameters":  hyperparams,
+            # Server/render-side values recorded for provenance only. The runner
+            # does NOT enforce these — user must set them out-of-band (server
+            # restart for model/temperature/max_tokens, SESSION_TEXT_CAP env +
+            # render_seeds.py re-run for session_text_cap, SKILL.md edit for
+            # prompt_version). The experiment-config block above captures what
+            # the user DECLARED these were; verifying they match is on them.
+            "recorded_from_config": {
+                k: v for k, v in (experiment_config or {}).items()
+                if k in ("model", "session_text_cap", "temperature",
+                         "max_tokens", "prompt_version")
+            } if experiment_config else {},
         },
         "metrics": {
             "total_goldens":         total,
@@ -280,24 +303,60 @@ def main() -> int:
         "--port", type=int, default=7823, metavar="PORT",
         help="Port to probe for the MLX eval server when MLX_SERVER_URL is not set (default: 7823)",
     )
+    parser.add_argument(
+        "--config", type=str, default=None, metavar="PATH",
+        help=(
+            "Path to a JSON experiment-manifest config. SETS what the runner "
+            "controls (strategy, dataset_path, endpoint, strategy options); "
+            "RECORDS server/render-side knobs (model, session_text_cap, "
+            "temperature, max_tokens, prompt_version) in results.json for "
+            "provenance. Overrides env vars. CLI --model overrides config.model."
+        ),
+    )
     args = parser.parse_args()
 
-    resolved = _resolve_server(args.model, args.port)
+    # ── Load experiment config (if provided) ──
+    experiment_config: dict = {}
+    config_path: Path | None = None
+    if args.config:
+        config_path = Path(args.config)
+        if not config_path.exists():
+            print(f"ERROR: config not found at {config_path}", file=sys.stderr)
+            return 1
+        try:
+            experiment_config = json.loads(config_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            print(f"ERROR: config is not valid JSON ({config_path}): {exc}", file=sys.stderr)
+            return 1
+        print(f"Config:   {config_path}")
+        if experiment_config.get("name"):
+            print(f"          name={experiment_config['name']!r}")
+        if experiment_config.get("description"):
+            print(f"          {experiment_config['description']}")
+
+    # ── CLI --model > config.model > env > /info ──
+    cli_or_config_model = args.model or experiment_config.get("model")
+    resolved = _resolve_server(cli_or_config_model, args.port)
     if resolved is None:
         return 1
     server_url, model_id, server_source = resolved
 
+    # ── Dataset: env > config > default ──
     dataset_path = Path(
         os.environ.get("EVAL_DATASET_PATH")
+        or experiment_config.get("dataset_path")
         or (_EVAL_DIR / "data" / "generated" / "goldens_real.json")
     )
     if not dataset_path.exists():
         print(f"ERROR: dataset not found at {dataset_path}", file=sys.stderr)
         return 1
 
-    # ── Strategy ──
+    # ── Strategy: config > env ──
     try:
-        strategy = strategy_from_env()
+        if experiment_config:
+            strategy = strategy_from_config(experiment_config)
+        else:
+            strategy = strategy_from_env()
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
@@ -581,6 +640,8 @@ def main() -> int:
         strategy_name=strategy.name,
         hyperparams=hyperparams,
         out_dir=_EVAL_DIR / "results",
+        experiment_config=experiment_config or None,
+        config_path=config_path,
     )
     print(f"Results written: {results_path.relative_to(_REPO_DIR)}")
 
