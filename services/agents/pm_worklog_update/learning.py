@@ -1,4 +1,4 @@
-"""Self-learning configuration for the pm_update workflow.
+"""Self-learning configuration for the pm_worklog_update workflow.
 
 Agno exposes a `LearningMachine` that wires up five complementary stores:
 
@@ -21,7 +21,7 @@ This gives the agent:
     generalisations ("user prefers terse bullets") that we accept
     explicitly via the feedback table
 
-Combined with the `pm_update_feedback` table (read by the
+Combined with the `pm_worklog_feedback` table (read by the
 `get_feedback_examples` tool), this closes the loop: every admin edit
 becomes a few-shot hint for the next cycle.
 """
@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from agents.pm_update import config
+from agents.pm_worklog_update import config
 
 if TYPE_CHECKING:
     from agno.learn import LearningMachine

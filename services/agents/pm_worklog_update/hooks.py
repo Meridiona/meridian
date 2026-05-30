@@ -55,14 +55,14 @@ except ImportError:                                     # pragma: no cover
     RunInput  = Any                                     # type: ignore[misc]
     RunOutput = Any                                     # type: ignore[misc]
 
-from agents.pm_update.models import (
+from agents.pm_worklog_update.models import (
     BulletWithEvidence,
     GroundedNarrative,
     JiraUpdate,
     RiskFlag,
     SessionBundle,
 )
-from agents.pm_update import config
+from agents.pm_worklog_update import config
 
 log = logging.getLogger(__name__)
 
@@ -174,7 +174,7 @@ def risk_flagger(run_output: RunOutput, *, bundle: SessionBundle) -> None:
 
     flags = set(upd.risk_flags)
 
-    if upd.confidence < config.PM_UPDATE_MIN_CONFIDENCE:
+    if upd.confidence < config.PM_WORKLOG_MIN_CONFIDENCE:
         flags.add(RiskFlag.LOW_CONFIDENCE)
 
     if bundle.pm_task_status == "done":
