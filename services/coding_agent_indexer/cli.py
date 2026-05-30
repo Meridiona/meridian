@@ -12,8 +12,8 @@ Four modes:
     python -m coding_agent_indexer.cli --scan-once
 
     # Wipe all indexer-owned rows and re-register from disk under the
-    # current schema (used once after migration 026 to split legacy
-    # per-(uuid, started_at) rows into per-(uuid, day_utc) rows)
+    # current schema (used after migration 027 to re-split legacy day rows
+    # into per-segment (idle-gap) rows)
     python -m coding_agent_indexer.cli --reseed
 
 All modes except --reseed are idempotent against the DB unique
@@ -26,6 +26,7 @@ import json
 import logging
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -48,8 +49,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Do one daemon-style poll sweep, register everything ready, exit.")
     g.add_argument("--reseed", action="store_true",
                    help="Wipe all indexer-owned app_sessions rows then re-scan from disk. "
-                        "Use after migration 026 to split legacy per-(uuid, started_at) "
-                        "rows into per-(uuid, day_utc) rows. Destructive (rows are recreated).")
+                        "Use after migration 027 to re-split legacy day rows into "
+                        "per-segment (idle-gap) rows. Destructive (rows are recreated).")
     p.add_argument("--json", dest="emit_json", action="store_true",
                    help="Emit machine-readable JSON for each result.")
     return p
@@ -84,7 +85,9 @@ def _do_one(jsonl_path: Path, *, emit_json: bool) -> int:
     if not jsonl_path.exists():
         print(f"file not found: {jsonl_path}", file=sys.stderr)
         return 2
-    result = register.register_ended_session(jsonl_path)
+    # Poll-like: don't force-seal a possibly-active session. register() still
+    # seals the last segment if it has already idled out (>1h since last msg).
+    result = register.register_ended_session(jsonl_path, session_ended=False)
     _print_result(result, jsonl_path, emit_json=emit_json)
     return 0 if result.outcome != register.RegisterOutcome.FAILED else 1
 
@@ -92,8 +95,8 @@ def _do_one(jsonl_path: Path, *, emit_json: bool) -> int:
 def _do_reseed(*, emit_json: bool) -> int:
     """Wipe all indexer-owned rows, then re-scan from disk.
 
-    Destructive: rows are recreated. Use once after migration 026 to
-    split legacy per-(uuid, started_at) rows into per-(uuid, day_utc).
+    Destructive: rows are recreated. Use after migration 027 to re-split
+    legacy day rows into per-segment (idle-gap) rows.
     """
     deleted = db.delete_claude_session_rows()
     log.info("reseed: deleted %d existing rows; re-scanning…", deleted)
@@ -103,10 +106,21 @@ def _do_reseed(*, emit_json: bool) -> int:
 
 
 def _do_scan(*, emit_json: bool) -> int:
+    """One poll sweep, identical to the daemon's tick: seal settled live rows,
+    then register changed files (poll path → session_ended=False)."""
     fork_skip = _load_fork_skip()
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")   # canonical (jsonl_meta.iso_utc)
+
+    sealed = db.seal_stale_open_rows(now_iso=now_iso, idle_seconds=config.SEAL_IDLE_SECONDS)
+    if sealed and not emit_json:
+        print(f"sealed {sealed} settled open row(s)")
+
     wrote = skipped = failed = 0
     for jsonl in _candidate_jsonls(now=time.time()):
-        result = register.register_ended_session(jsonl, fork_skip_list=fork_skip)
+        result = register.register_ended_session(
+            jsonl, session_ended=False, fork_skip_list=fork_skip, now=now_dt,
+        )
         _print_result(result, jsonl, emit_json=emit_json)
         if result.outcome == register.RegisterOutcome.INSERTED:
             wrote += 1
@@ -115,7 +129,7 @@ def _do_scan(*, emit_json: bool) -> int:
         else:
             skipped += 1
     if not emit_json:
-        print(f"\n=== scan complete: wrote={wrote} skipped={skipped} failed={failed} ===")
+        print(f"\n=== scan complete: sealed={sealed} wrote={wrote} skipped={skipped} failed={failed} ===")
     return 0 if failed == 0 else 1
 
 
@@ -149,6 +163,7 @@ def _print_result(result, jsonl_path: Path, *, emit_json: bool) -> None:
             "session_uuid": result.session_uuid,
             "jsonl_path":   str(jsonl_path),
             "row_ids":      list(result.row_ids),
+            "sealed_ids":   list(result.sealed_ids),
             "host_app":     result.host_app,
             "user_turns":   result.meta.user_turns      if result.meta else None,
             "asst_turns":   result.meta.assistant_turns if result.meta else None,

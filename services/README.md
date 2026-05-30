@@ -4,6 +4,8 @@ Python service that runs alongside the Rust daemon. It classifies completed `app
 
 The Rust daemon owns all DDL; this service only does SELECT/INSERT/UPDATE on its agent-side tables.
 
+> **Note:** the coding-agent indexer + summariser now run **inside the Rust daemon** (`src/coding_agent/`). The Python `coding_agent_indexer/` and `coding_agent_summariser/` packages here are kept as the **reference / parity** implementations (their parsers are held byte-for-byte in sync with the Rust ones via tests); their standalone daemons are retired. The MLX server (`agents/server.py`) stays — it serves both `/classify_sessions` and the summariser's `/summarise` fallback.
+
 For the deep technical reference (classification logic, schema, recipes), see [`agents/README.md`](agents/README.md).
 
 ---
@@ -30,16 +32,16 @@ Rust writes ticket_links + session_dimensions → meridian.db
 
 ## Installation
 
-Requires Python 3.13 and Apple Silicon.
+Requires Python 3.11 and Apple Silicon. (outlines/MLX require ≤ 3.13; 3.11 is the supported floor.)
 
 ```bash
 cd services/
 
-# Create a Python 3.13 virtual environment
-python3.13 -m venv .venv313
+# Create a Python 3.11 virtual environment
+python3.11 -m venv .venv
 
 # Install core + MLX inference dependencies
-.venv313/bin/pip install -e ".[local-llm]"
+.venv/bin/pip install -e ".[mlx]"
 ```
 
 The `hermes-agent` package is fetched from GitHub at the pinned tag; an internet connection is needed on first install.
@@ -68,7 +70,7 @@ bash scripts/uninstall-mlx-server-daemon.sh
 
 ```bash
 RUST_LOG=meridian=debug CLASSIFIER_BACKEND=mlx cargo run --bin meridian
-.venv313/bin/meridian-server --backend mlx --port 7823
+.venv/bin/meridian-server --backend mlx --port 7823
 python -m agents.server --backend mlx --port 7823
 ```
 
