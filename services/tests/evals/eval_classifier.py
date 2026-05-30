@@ -61,6 +61,7 @@ except ImportError:
 
 from agents.observability import setup as obs_setup, shutdown as obs_shutdown  # noqa: E402
 from opentelemetry import trace  # noqa: E402
+from opentelemetry.trace import StatusCode  # noqa: E402
 
 from deepeval.dataset import EvaluationDataset  # noqa: E402
 from deepeval.test_case import LLMTestCase  # noqa: E402
@@ -322,7 +323,11 @@ def main() -> int:
     rows: list[dict] = []
 
     persona = dataset.goldens[0].additional_metadata.get("persona", "unknown") if dataset.goldens else "unknown"
-    run_id = f"smoke_{time.strftime('%Y%m%dT%H%M%S')}"
+    # run_id format: <persona>_<strategy>_<YYYYMMDDTHHMMSS>
+    # Identifying enough that `ls results/*b_generic*` or `ls results/*direct_http*`
+    # filters runs without opening files. Used in filename, OTel run.id attribute,
+    # and stdout.
+    run_id = f"{persona}_{strategy.name}_{time.strftime('%Y%m%dT%H%M%S')}"
     run_started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     trace_id_hex: str = ""
 
@@ -334,12 +339,27 @@ def main() -> int:
         root_span.set_attribute("run.id",       run_id)
         root_span.set_attribute("persona",      persona)
         root_span.set_attribute("dataset_path", str(dataset_path))
+        root_span.set_attribute("dataset_name", dataset_path.name)
         root_span.set_attribute("server_url",   server_url)
+        root_span.set_attribute("server_source", server_source)
         root_span.set_attribute("strategy",     strategy.name)
         root_span.set_attribute("dataset_size", len(dataset.goldens))
         root_span.set_attribute("model_id",     model_id)
+        session_text_cap_env = os.environ.get("SESSION_TEXT_CAP", "")
+        if session_text_cap_env:
+            root_span.set_attribute("session_text_cap", session_text_cap_env)
         for k, v in hyperparams.items():
             root_span.set_attribute(f"strategy.{k}", str(v))
+        # Discrete marker for "run started" — useful for OpenObserve search
+        # to find the boundary between configuration and execution.
+        root_span.add_event("run_started", attributes={
+            "run.id":      run_id,
+            "persona":     persona,
+            "strategy":    strategy.name,
+            "model_id":    model_id,
+            "dataset":     dataset_path.name,
+            "started_at":  run_started_at,
+        })
 
         print(f"{'seed':>5} {'app':<14} {'diff':<11} {'exp_key':<10} {'act_key':<10} K {'exp_type':<10} {'act_type':<10} T {'s':>4}")
         print("-" * 95)
@@ -357,16 +377,54 @@ def main() -> int:
                 case_span.set_attribute("app_name",        app_name)
                 case_span.set_attribute("persona",         persona)
                 case_span.set_attribute("strategy",        strategy.name)
+                case_span.set_attribute("prompt_chars",    len(golden.input))
                 case_span.set_attribute("expected.task_key",     exp.get("task_key") or "none")
                 case_span.set_attribute("expected.session_type", exp.get("session_type") or "")
+                # Full rendered prompt as a span event — debuggable in OO without
+                # having to find and open the source Golden file. Truncated to 5000
+                # chars to keep span payloads under OTel size limits.
+                case_span.add_event("prompt_input", attributes={
+                    "text":  golden.input[:5000],
+                    "chars": len(golden.input),
+                    "truncated": len(golden.input) > 5000,
+                })
 
-                result = strategy.classify_prompt(golden.input)
+                # Child span scopes the actual strategy invocation (HTTP call or
+                # in-process inference). Separates pure-strategy time from metric
+                # measurement + bookkeeping. Visible in OO as a distinct child
+                # under eval.classify.
+                with tracer.start_as_current_span("strategy.invoke") as strat_span:
+                    strat_span.set_attribute("strategy.name",     strategy.name)
+                    for k, v in hyperparams.items():
+                        strat_span.set_attribute(f"strategy.{k}", str(v))
+                    result = strategy.classify_prompt(golden.input)
+                    strat_span.set_attribute("strategy.method",   result.method)
+                    strat_span.set_attribute("strategy.elapsed_s", round(result.elapsed_s, 3))
+                    strat_span.set_attribute("classifier.confidence", result.confidence)
+                    if result.method.endswith("_error"):
+                        err = result.extra.get("error", "unknown")
+                        strat_span.set_status(StatusCode.ERROR, str(err)[:200])
+                        strat_span.set_attribute("error", str(err)[:200])
+
                 error: str | None = result.extra.get("error") if result.method.endswith("_error") else None
                 actual = result.as_actual_output()
                 case_span.set_attribute("classifier.confidence", result.confidence)
+                case_span.set_attribute("strategy.method",       result.method)
                 case_span.set_attribute("elapsed_s",             round(result.elapsed_s, 2))
                 if error:
                     case_span.set_attribute("error", error)
+                    case_span.set_status(StatusCode.ERROR, str(error)[:200])
+
+                # Raw classifier response as a span event — what the model
+                # actually returned, before deepeval-metric formatting. Useful
+                # for debugging "why did this fail" without re-running.
+                case_span.add_event("classifier_response", attributes={
+                    "task_key":     str(result.task_key) if result.task_key else "none",
+                    "session_type": result.session_type,
+                    "confidence":   result.confidence,
+                    "method":       result.method,
+                    "elapsed_s":    round(result.elapsed_s, 3),
+                })
 
                 case = LLMTestCase(input=golden.input, actual_output=actual, expected_output=golden.expected_output)
                 key_metric.measure(case)
@@ -380,6 +438,16 @@ def main() -> int:
                 case_span.set_attribute("key_ok",  key_ok)
                 case_span.set_attribute("type_ok", type_ok)
                 case_span.set_attribute("both_ok", key_ok and type_ok)
+                # Mark mismatch as a clear ERROR/INFO event so it stands out in OO
+                if not (key_ok and type_ok):
+                    case_span.add_event("classification_mismatch", attributes={
+                        "expected.task_key":     str(exp.get("task_key") or "none"),
+                        "actual.task_key":       str(act.get("task_key") or "none"),
+                        "expected.session_type": str(exp.get("session_type") or ""),
+                        "actual.session_type":   str(act.get("session_type") or ""),
+                        "key_ok":  key_ok,
+                        "type_ok": type_ok,
+                    })
 
                 # Use span events for the reasoning text (longer, doesn't belong as an attribute)
                 if act.get("reasoning"):
@@ -432,9 +500,37 @@ def main() -> int:
         key_correct  = sum(1 for r in rows if r["key_ok"])
         type_correct = sum(1 for r in rows if r["type_ok"])
         both_correct = sum(1 for r in rows if r["key_ok"] and r["type_ok"])
+        elapsed_total = sum(r["elapsed"] for r in rows)
         root_span.set_attribute("accuracy.task_key",     round(key_correct / total, 3) if total else 0.0)
         root_span.set_attribute("accuracy.session_type", round(type_correct / total, 3) if total else 0.0)
         root_span.set_attribute("accuracy.both",         round(both_correct / total, 3) if total else 0.0)
+        root_span.set_attribute("elapsed_total_s",       round(elapsed_total, 2))
+        root_span.set_attribute("elapsed_avg_s",         round(elapsed_total / total, 2) if total else 0.0)
+
+        # Discrete end-of-run marker — pair with run_started event.
+        root_span.add_event("run_completed", attributes={
+            "total_goldens":         total,
+            "passed_both":           both_correct,
+            "task_key_accuracy":     round(key_correct / total, 3) if total else 0.0,
+            "session_type_accuracy": round(type_correct / total, 3) if total else 0.0,
+            "both_accuracy":         round(both_correct / total, 3) if total else 0.0,
+            "elapsed_total_s":       round(elapsed_total, 2),
+        })
+
+        # Per-tier breakdown as a span event (one event per tier, easy to filter
+        # in OO by event name "per_tier_summary").
+        by_tier_oo: dict[str, list[dict]] = defaultdict(list)
+        for r in rows:
+            by_tier_oo[r["difficulty"]].append(r)
+        for tier, items in sorted(by_tier_oo.items()):
+            n = len(items)
+            b = sum(1 for r in items if r["key_ok"] and r["type_ok"])
+            root_span.add_event("per_tier_summary", attributes={
+                "tier":         tier,
+                "total":        n,
+                "passed_both":  b,
+                "both_acc":     round(b / n, 3) if n else 0.0,
+            })
 
     # ── Per-tier breakdown ──
     print("-" * 95)
@@ -462,7 +558,7 @@ def main() -> int:
         n = len(items)
         print(f"  {tier:<14} {b}/{n}  ({b/n:.0%})    {k}/{n}  ({k/n:.0%})      {t_}/{n}  ({t_/n:.0%})")
 
-    elapsed_total = sum(r["elapsed"] for r in rows)
+    # elapsed_total is already computed inside the eval.run with block above
     print()
     print(f"Total inference time: {elapsed_total:.1f}s  ·  avg per case: {elapsed_total/total:.2f}s")
     print()
