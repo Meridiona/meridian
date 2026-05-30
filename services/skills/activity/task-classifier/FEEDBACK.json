@@ -252,6 +252,86 @@
         }
       },
       "notes": "Baseline eval on Dev B persona with Qwen3.5-9B-OptiQ-4bit. First run using the new --config flag (experiment manifest configs/baseline_b_generic.json). Headline 19/33=58% identical to prior env-var baseline qwen35-9b-optiq-4bit-b_generic-baseline-20260529 — Strategy/config refactor is behaviour-preserving. Failure mix is consistent with optimism-bias being the dominant architectural issue."
+    },
+    {
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "trace_id": "7d85865796211d685eb40ea3bfdd7529",
+      "results_file": "services/tests/evals/results/run_b_generic_extract_then_classify_20260530T190121.json",
+      "date": "2026-05-30",
+      "experiment_name": "extract-then-classify-b_generic-qwen35-9b",
+      "experiment_config": "services/tests/evals/configs/extract_then_classify_b_generic.json",
+      "strategy": "extract_then_classify",
+      "model": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+      "model_declared": "Qwen3.5-9B-OptiQ-4bit",
+      "prompt_version": "etc-v1.0",
+      "prompt_path": "services/skills/activity/task-classifier/SKILL.md",
+      "dataset": "services/tests/evals/data/generated/goldens_b_generic.json",
+      "dataset_name": "goldens_b_generic.json",
+      "persona": "b_generic",
+      "server_url": "http://127.0.0.1:7823",
+      "session_text_cap": 2500,
+      "temperature": 0.0,
+      "max_tokens": 2000,
+      "metrics": {
+        "total_goldens": 40,
+        "passed_both": 18,
+        "task_key_accuracy": 0.625,
+        "session_type_accuracy": 0.5,
+        "both_accuracy": 0.45,
+        "per_tier": {
+          "easy": {
+            "total": 16,
+            "passed_both": 7,
+            "task_key_acc": 0.562,
+            "session_type_acc": 0.438,
+            "both_acc": 0.438
+          },
+          "hard": {
+            "total": 3,
+            "passed_both": 2,
+            "task_key_acc": 0.667,
+            "session_type_acc": 0.667,
+            "both_acc": 0.667
+          },
+          "hard-decoy": {
+            "total": 4,
+            "passed_both": 1,
+            "task_key_acc": 0.75,
+            "session_type_acc": 0.25,
+            "both_acc": 0.25
+          },
+          "medium": {
+            "total": 10,
+            "passed_both": 4,
+            "task_key_acc": 0.4,
+            "session_type_acc": 0.6,
+            "both_acc": 0.4
+          },
+          "overhead": {
+            "total": 4,
+            "passed_both": 4,
+            "task_key_acc": 1.0,
+            "session_type_acc": 1.0,
+            "both_acc": 1.0
+          },
+          "untracked": {
+            "total": 3,
+            "passed_both": 0,
+            "task_key_acc": 1.0,
+            "session_type_acc": 0.0,
+            "both_acc": 0.0
+          }
+        },
+        "latency": {
+          "total_s": 4621.123,
+          "avg_s": 115.528,
+          "min_s": 92.782,
+          "max_s": 168.077,
+          "p50_s": 107.445,
+          "p95_s": 141.127
+        }
+      },
+      "notes": "FIRST eval of the two-stage extract_then_classify strategy. Architectural test of optimism-bias mitigation. Result: HEADLINE 18/40=45% (vs same-day direct_http baseline run_b_generic_direct_http_20260530T183036 19/40=48% — essentially flat). But per-tier reveals the architecture WORKS where designed: overhead 0/4→4/4 (+100pp), untracked task_key 0/3→3/3. Easy tier regressed 13/16→7/16 (−37pp) almost entirely due to JSON-parse failures in stage 1 (Qwen3 thinking-mode burns through max_tokens=5000 on long sessions, or emits unquoted-key JSON). 15 of 22 failures (68%) are implementation bugs in the JSON-parse path; 7 are genuine classifier mistakes (6 pessimism-bias, 1 overhead-untracked-boundary). Architecture validated; implementation needs reliability work."
     }
   ],
   "observations": [
@@ -1754,6 +1834,446 @@
       "type_ok": false,
       "classifier_reasoning": "Session shows developer creating architecture notes specifically for PROJ-242 (Slack notification integration for webhook events), referencing PROJ-201's circuit breaker logic, and explicitly adding notes to PROJ-242 in Linear before closing. OCR content directly matches PROJ-242 title and intent.",
       "failure_class_id": "planning-as-task-work"
+    },
+    {
+      "id": "obs-20260530-030",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 3,
+      "tier": "easy",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "PROJ-210",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "",
+      "failure_class_id": "pessimism-bias"
+    },
+    {
+      "id": "obs-20260530-031",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 4,
+      "tier": "easy",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "PROJ-210",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "",
+      "failure_class_id": "pessimism-bias"
+    },
+    {
+      "id": "obs-20260530-032",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 7,
+      "tier": "hard-decoy",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "stage2 classify: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Input: Structured evidence extraction (from a stage-1 model) and a list of candidate tickets.\\n    *   Co'",
+      "failure_class_id": "stage2-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-033",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 9,
+      "tier": "medium",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "PROJ-225",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "stage1 extract: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Role: Evidence extractor for a session classifier.\\n    *   Input: Session data (OCR text, window titles,'",
+      "failure_class_id": "stage1-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-034",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 10,
+      "tier": "easy",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "PROJ-225",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "",
+      "failure_class_id": "pessimism-bias"
+    },
+    {
+      "id": "obs-20260530-035",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 11,
+      "tier": "medium",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "PROJ-201",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "stage1 extract: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Role: Evidence extractor for a session classifier.\\n    *   Input: Session data (OCR text, window titles,'",
+      "failure_class_id": "stage1-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-036",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 12,
+      "tier": "easy",
+      "app_name": "Activity Monitor",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.92
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "Rule 1 applies. Evidence strength is 'none'. User action 'system_utility' maps to overhead. No ticket mentions found.",
+      "failure_class_id": "overhead-untracked-boundary"
+    },
+    {
+      "id": "obs-20260530-037",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 13,
+      "tier": "medium",
+      "app_name": "Zoom",
+      "expected": {
+        "task_key": "PROJ-210",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "stage2 classify: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Input: Structured evidence extraction (from a stage-1 model) and a list of candidate tickets.\\n    *   Co'",
+      "failure_class_id": "stage2-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-038",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 14,
+      "tier": "hard",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "PROJ-201",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "stage1 extract: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Role: Evidence extractor for a session classifier.\\n    *   Input: Session data (OCR text, window titles,'",
+      "failure_class_id": "stage1-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-039",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 15,
+      "tier": "hard-decoy",
+      "app_name": "Postman",
+      "expected": {
+        "task_key": "PROJ-201",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "stage1 extract: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Role: Evidence extractor for a session classifier.\\n    *   Input: Session data (OCR text, window titles,'",
+      "failure_class_id": "stage1-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-040",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 16,
+      "tier": "medium",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "PROJ-201",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "stage1 extract: JSON parse error: Expecting property name enclosed in double quotes: line 1 column 26 (char 25) — snippet: '{ \"key\": \"<TICKET-NNN>\", ... } ].\\n    *   I need to find explicit ticket keys in the session text.\\n    *   Scanning OCR: \"webhook_delivery_failed\", \"webhook_ret'",
+      "failure_class_id": "stage1-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-041",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 17,
+      "tier": "easy",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "PROJ-201",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "",
+      "failure_class_id": "pessimism-bias"
+    },
+    {
+      "id": "obs-20260530-042",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 19,
+      "tier": "easy",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "PROJ-225",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "stage2 classify: JSON parse error: Expecting property name enclosed in double quotes: line 1 column 2 (char 1) — snippet: '{`.\\n\\n    *   Let\\'s refine the reasoning to be precise.\\n    *   \"Rule 3: Strong evidence strength, branch_name match for PROJ-225, active work signals.\"\\n\\n    *  '",
+      "failure_class_id": "stage2-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-043",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 21,
+      "tier": "hard-decoy",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "stage2 classify: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Input: Structured evidence extraction (from a stage-1 model) and a list of candidate tickets.\\n    *   Co'",
+      "failure_class_id": "stage2-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-044",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 22,
+      "tier": "medium",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "PROJ-210",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "",
+      "failure_class_id": "pessimism-bias"
+    },
+    {
+      "id": "obs-20260530-045",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 24,
+      "tier": "easy",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "PROJ-230",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "",
+      "failure_class_id": "pessimism-bias"
+    },
+    {
+      "id": "obs-20260530-046",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 29,
+      "tier": "easy",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "PROJ-215",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "stage2 classify: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Input: Structured evidence extraction (from a stage-1 model) and a list of candidate tickets.\\n    *   Co'",
+      "failure_class_id": "stage2-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-047",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 33,
+      "tier": "easy",
+      "app_name": "Terminal",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "stage1 extract: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Role: Evidence extractor for a session classifier.\\n    *   Input: Session data (OCR text, window titles,'",
+      "failure_class_id": "stage1-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-048",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 35,
+      "tier": "medium",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "PROJ-230",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "stage1 extract: JSON parse error: Expecting property name enclosed in double quotes: line 1 column 3 (char 2) — snippet: '{ key, evidence_type, context } ]`.\\n    *   I can have multiple entries for PROJ-230.\\n    *   Entry 1: key `PROJ-230`, evidence_type `branch_name`, context `fea'",
+      "failure_class_id": "stage1-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-049",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 36,
+      "tier": "untracked",
+      "app_name": "Terminal",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "stage1 extract: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Role: Evidence extractor for a session classifier.\\n    *   Input: Session data (Terminal, OCR text, time'",
+      "failure_class_id": "stage1-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-050",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 41,
+      "tier": "untracked",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "stage2 classify: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Input: Structured evidence extraction (from a stage-1 model) and a list of candidate tickets.\\n    *   Co'",
+      "failure_class_id": "stage2-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-051",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 42,
+      "tier": "untracked",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "stage1 extract: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Role: Evidence extractor for a session classifier.\\n    *   Input: Session data (OCR text, window titles,'",
+      "failure_class_id": "stage1-json-parse-failure"
     }
   ],
   "failure_classes": [
@@ -1982,14 +2502,15 @@
         "smoke_20260528T180202",
         "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
         "a_meridian_direct_http_20260530T100236",
-        "b_generic_direct_http_20260530T110547"
+        "b_generic_direct_http_20260530T110547",
+        "b_generic_extract_then_classify_20260530T190121"
       ],
       "observed_in_seeds": [
         41,
         47,
         12
       ],
-      "occurrence_count": 6,
+      "occurrence_count": 7,
       "priority": "lower",
       "proposed_prompt_rule": "Sharpen the overhead-vs-untracked distinction. Overhead = communication (chat, email, calls), admin (planning, scheduling, expense reporting), or context-switching meta-activity. Untracked = focused work-like activity that doesn't fit any open ticket — system inspection (Activity Monitor), exploration, research, learning, maintenance. When in doubt: 'is this productive activity that just isn't ticketed?' → untracked. 'Is this between-work or about-work?' → overhead.",
       "status": "open",
@@ -2058,6 +2579,78 @@
       "priority": "medium",
       "direction": "false-positive",
       "note": "Single observation so far. The prompt rule is harder to apply in production because sprint state is not visible to the classifier. Lean on implementation-evidence signals (source file edits, test runs, git commits) rather than ticket-sprint status."
+    },
+    {
+      "id": "pessimism-bias",
+      "title": "Classifier under-labels strong evidence as weak — misses real task work",
+      "description": "The mirror image of optimism-bias. The stage-1 extractor labels evidence as weak/none when there IS strong implementation evidence (Code editor open on the ticket's files, ticket_mentions present), and the classifier then misses the task assignment. First observed in run b_generic_extract_then_classify_20260530T190121 where 6/22 failures were Code/Chrome sessions with PROJ-* tickets that should have classified as task but came back as task_key=none/overhead.",
+      "observed_in_runs": [
+        "b_generic_extract_then_classify_20260530T190121"
+      ],
+      "observed_in_seeds": [
+        3,
+        4,
+        10,
+        17,
+        22,
+        24
+      ],
+      "occurrence_count": 6,
+      "proposed_prompt_rule": "Strengthen the evidence_strength_for_implementation rubric in the EXTRACT system prompt: when ANY of (file path includes ticket-key fragment, branch_name matches ticket_key, active editor focus on .ts/.py/.rs files with code visible, terminal commands tied to ticket workflow) is present, evidence_strength MUST be 'strong'. Currently the rubric only escalates to 'strong' on the strict 'editor open on branch AND active editing' combination, leaving too many genuine task sessions in the 'weak' bucket.",
+      "status": "open",
+      "resolved_in": null,
+      "priority": "highest",
+      "rationale": "Strategy-specific architectural defect — opposite of optimism-bias. If unaddressed, ETC trades one bias for another. Higher priority than optimism-bias because it manifests on the EASY tier (clear-cut task work) while optimism-bias hits decoy tiers.",
+      "direction": "false-negative"
+    },
+    {
+      "id": "stage1-json-parse-failure",
+      "title": "Stage-1 extractor returns unparseable JSON — Qwen3 thinking overflow or malformed structure",
+      "description": "Implementation bug specific to ExtractThenClassifyStrategy. Stage 1 (extraction) on Qwen3.5-9B emits one of two failure modes: (a) chain-of-thought consumes max_tokens=5000 before any JSON is output, leaving only 'Thinking Process:' prose in the response; (b) the JSON is emitted but with unquoted keys ('{key: \"...\", evidence_type: \"...\"}') making it strict-JSON-invalid. Affected 9/22 failures in the first ETC run. Not architectural — symptom of running unconstrained-decoding (/v1/chat/completions) on a thinking-mode model.",
+      "observed_in_runs": [
+        "b_generic_extract_then_classify_20260530T190121"
+      ],
+      "observed_in_seeds": [
+        9,
+        11,
+        14,
+        15,
+        16,
+        33,
+        35,
+        36,
+        42
+      ],
+      "occurrence_count": 9,
+      "proposed_prompt_rule": "Three independent paths to fix: (1) Bump extraction_max_tokens to 8000+ to give Qwen3 thinking headroom on long sessions. (2) Add a server endpoint that accepts a Pydantic schema and uses outlines FSM-constrained decoding (like /classify does) — guarantees schema-valid output regardless of model behaviour. (3) Make the parser tolerant of unquoted keys via a YAML or json5 fallback after strict JSON fails. Option (2) is the production-grade fix; options (1) and (3) are stopgaps.",
+      "status": "open",
+      "resolved_in": null,
+      "priority": "highest",
+      "rationale": "Largest single source of failures in the ETC run (9/22). Until this is fixed, the strategy's accuracy floor is artificially depressed and any per-tier comparison against direct_http is noisy.",
+      "note": "Affects ExtractThenClassifyStrategy only. DirectHttpStrategy uses /classify which has FSM-constrained outputs via outlines and does not exhibit this failure mode."
+    },
+    {
+      "id": "stage2-json-parse-failure",
+      "title": "Stage-2 classifier returns unparseable JSON — same root cause as stage 1",
+      "description": "Same implementation bug as stage1-json-parse-failure but in the classification stage (2). Stage 2 prompt is shorter than stage 1 (extracted_evidence + candidates instead of raw session text) so it fails less often, but still 6/22 failures in the first ETC run. Both failure modes (thinking overflow, malformed JSON) observed. Splitting from stage1 because the fix paths are similar but the diagnostic split is useful (which stage burns the most budget?).",
+      "observed_in_runs": [
+        "b_generic_extract_then_classify_20260530T190121"
+      ],
+      "observed_in_seeds": [
+        7,
+        13,
+        19,
+        21,
+        29,
+        41
+      ],
+      "occurrence_count": 6,
+      "proposed_prompt_rule": "Same three fixes as stage1-json-parse-failure. Stage 2 fix is HIGHER priority for production-readiness because stage 2 is on the critical path of every successful extraction.",
+      "status": "open",
+      "resolved_in": null,
+      "priority": "high",
+      "rationale": "Second-largest source of failures. Same root cause as stage1-json-parse-failure but downstream.",
+      "note": "Affects ExtractThenClassifyStrategy only."
     }
   ]
 }
