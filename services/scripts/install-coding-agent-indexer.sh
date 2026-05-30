@@ -29,9 +29,9 @@ LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
 PLIST_DEST="${LAUNCH_AGENTS}/${LABEL}.plist"
 GUI_TARGET="gui/$(id -u)"
 
-# Prefer the project's venv313 (where agno + sqlite3 deps live), then
+# Prefer the project's venv (where agno + sqlite3 deps live), then
 # any .venv at the services root, then system python3.
-VENV313_PYTHON="${SERVICES_DIR}/.venv313/bin/python"
+VENV313_PYTHON="${SERVICES_DIR}/.venv/bin/python"
 VENV_PYTHON="${SERVICES_DIR}/.venv/bin/python"
 if [[ -x "${VENV313_PYTHON}" ]]; then
     PYTHON="${VENV313_PYTHON}"
