@@ -801,9 +801,44 @@ def select_model_for_hermes(budget_pct: Optional[float] = None) -> Optional[Loca
             raise
 
 
+def resolve_model(name: str) -> "dict | None":
+    """Resolve a short name ('phi-4') or HF ID to its catalog entry.
+
+    Accepts either the short id from _MODELS (e.g. 'phi-4') or the full HF
+    repo ID (e.g. 'mlx-community/phi-4-4bit'). Returns a dict with keys
+    short_name, hf_id, backend, min_ram_gb, quality_score, or None if not found.
+    """
+    for model_id, backend, min_ram, quality, hf_id in _MODELS:
+        if model_id == name or (hf_id and hf_id == name):
+            return {
+                "short_name":    model_id,
+                "hf_id":         hf_id,
+                "backend":       backend,
+                "min_ram_gb":    min_ram,
+                "quality_score": quality,
+            }
+    return None
+
+
+def discover_mlx_eval_server(port: int = 7823) -> "str | None":
+    """Return the base URL of a running MLX eval server, or None.
+
+    Probes localhost:<port> with a TCP check then a /health probe. Only
+    returns a URL if the server responds with backend='mlx'. Does not start
+    or manage any server process.
+    """
+    if not _tcp_open("127.0.0.1", port):
+        return None
+    data, status = _get_json(f"http://127.0.0.1:{port}/health")
+    if status == 200 and data and data.get("backend") == "mlx":
+        return f"http://127.0.0.1:{port}"
+    return None
+
+
 __all__ = ["local_infer", "discover_running_servers", "probe_compute",
            "RunningServer", "ComputeSnapshot", "LocalModelEndpoint",
-           "select_model_for_hermes", "shutdown_managed_server"]
+           "select_model_for_hermes", "shutdown_managed_server",
+           "resolve_model", "discover_mlx_eval_server"]
 
 # Public alias (no underscore) for external callers
 shutdown_managed_server = _shutdown_managed_server

@@ -1,13 +1,12 @@
 """Render hand-authored seed sessions into the deepeval Golden format.
 
-Bridge between golden_seed/dev_<persona>_sessions.json (structured + ground truth)
-and .synthetic-dataset-<persona>.json (the deepeval input/expected_output shape
-that test_mlx_classifier.py consumes).
+Reads data/seeds/sessions_<persona>.json + data/seeds/tickets_<persona>.json
+and writes data/generated/goldens_<persona>.json — the deepeval Golden shape
+consumed by eval_classifier.py and test_classifier.py.
 
-Each scoreable session in the seed file becomes one Golden. The recent-sessions
-block in the rendered prompt is built from the last 5 SCOREABLE prior sessions
-(matches build_dataset.py:_fetch_recent's filter — sub-scoreable sessions are
-treated like duration_s <= 1 / empty session_text and excluded).
+Each scoreable session becomes one Golden. The recent-sessions block in the
+rendered prompt is built from the last 5 SCOREABLE prior sessions (matches
+build_dataset.py's filter — non-scoreable sessions are excluded).
 
 Usage:
     python services/tests/evals/render_seeds.py [persona]
@@ -28,10 +27,10 @@ if str(_SERVICES_DIR) not in sys.path:
 from agents._prompts import build_user_message  # noqa: E402
 
 EVAL_DIR = Path(__file__).parent
-SEED_DIR = EVAL_DIR / "golden_seed"
+SEED_DIR = EVAL_DIR / "data" / "seeds"
 PERSONA_FILES = {
-    "a_meridian": {"sessions": "dev_a_sessions.json",         "candidates": "candidates_meridian.json"},
-    "b_generic":  {"sessions": "dev_b_generic_sessions.json", "candidates": "candidates_generic.json"},
+    "a_meridian": {"sessions": "sessions_a_meridian.json", "tickets": "tickets_meridian.json"},
+    "b_generic":  {"sessions": "sessions_b_generic.json",  "tickets": "tickets_generic.json"},
 }
 
 
@@ -56,16 +55,16 @@ def _project_recent(prior: list[dict]) -> list[dict]:
 def render(persona: str) -> list[dict]:
     if persona not in PERSONA_FILES:
         raise ValueError(f"unknown persona {persona!r}, valid: {list(PERSONA_FILES)}")
-    sessions_path   = SEED_DIR / PERSONA_FILES[persona]["sessions"]
-    candidates_path = SEED_DIR / PERSONA_FILES[persona]["candidates"]
+    sessions_path = SEED_DIR / PERSONA_FILES[persona]["sessions"]
+    tickets_path  = SEED_DIR / PERSONA_FILES[persona]["tickets"]
     if not sessions_path.exists():
         raise FileNotFoundError(f"missing seed file: {sessions_path}")
-    if not candidates_path.exists():
-        raise FileNotFoundError(f"missing candidates file: {candidates_path}")
+    if not tickets_path.exists():
+        raise FileNotFoundError(f"missing tickets file: {tickets_path}")
 
-    sessions   = json.loads(sessions_path.read_text())["sessions"]
-    _candidates_raw = json.loads(candidates_path.read_text())
-    candidates = _candidates_raw.get("tasks") or _candidates_raw.get("tickets", [])
+    sessions        = json.loads(sessions_path.read_text())["sessions"]
+    _tickets_raw    = json.loads(tickets_path.read_text())
+    candidates = _tickets_raw.get("tasks") or _tickets_raw.get("tickets", [])
     # Normalise: some candidate files use 'id' instead of 'task_key'
     candidates = [
         {**c, "task_key": c["task_key"]} if "task_key" in c else {**c, "task_key": c["id"]}
@@ -106,7 +105,9 @@ def render(persona: str) -> list[dict]:
 def main() -> None:
     persona = sys.argv[1] if len(sys.argv) > 1 else "a_meridian"
     goldens = render(persona)
-    output_path = EVAL_DIR / f".synthetic-dataset-{persona}.json"
+    generated_dir = EVAL_DIR / "data" / "generated"
+    generated_dir.mkdir(parents=True, exist_ok=True)
+    output_path = generated_dir / f"goldens_{persona}.json"
     output_path.write_text(json.dumps(goldens, indent=2, ensure_ascii=False))
 
     print(f"Rendered {len(goldens)} scoreable Goldens → {output_path}")

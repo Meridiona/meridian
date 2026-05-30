@@ -1,27 +1,26 @@
-"""Eval suite for the MLX direct in-process classifier (run_task_linker_mlx.py).
+"""pytest test suite for the direct classifier (run_task_linker_mlx.py).
 
-MLX is a direct LLM call — not an agent SDK — so evaluation follows the
-DeepEval 4.0 component-level pattern: build LLMTestCase objects from goldens,
-then assert_test (per-case) or evaluate() (batch report).
+CI path — use this for formal assertions and Confident AI reports.
+For interactive experimentation with OTel traces, use eval_classifier.py instead.
 
 Run (from services/, with .venv313 active):
 
-    # Smoke tests only — no model load:
-    pytest tests/evals/test_mlx_classifier.py -m "integration and not slow"
+    # Harness smoke tests — no model load:
+    pytest tests/evals/test_classifier.py -m "integration and not slow"
 
     # End-to-end eval — all goldens in one DeepEval report:
-    MLX_SERVER_URL=http://localhost:7823 \
-        .venv313/bin/deepeval test run tests/evals/test_mlx_classifier.py \
+    EVAL_DATASET_PATH=tests/evals/data/generated/goldens_a_meridian.json \
+        .venv313/bin/deepeval test run tests/evals/test_classifier.py \
         -k "test_mlx_e2e" --identifier "mlx-baseline" --ignore-errors
 
     # Per-golden breakdown — individual pass/fail per session:
-    MLX_SERVER_URL=http://localhost:7823 \
-        .venv313/bin/deepeval test run tests/evals/test_mlx_classifier.py \
+    EVAL_DATASET_PATH=tests/evals/data/generated/goldens_a_meridian.json \
+        .venv313/bin/deepeval test run tests/evals/test_classifier.py \
         -k "test_mlx_per_golden" --identifier "mlx-per-golden" --ignore-errors
 
     # Manual accuracy table (no deepeval runner needed):
     MLX_SERVER_URL=http://localhost:7823 \
-        .venv313/bin/python3.13 tests/evals/test_mlx_classifier.py
+        .venv313/bin/python3.13 tests/evals/test_classifier.py
 
 Marks:
     integration — harness + metric wiring tests, no model call
@@ -44,6 +43,7 @@ from deepeval.test_case import LLMTestCase
 from deepeval.tracing import observe, update_current_span, update_current_trace
 
 from metrics import CLASSIFIER_METRICS, TaskKeyMatchMetric, SessionTypeMatchMetric
+from strategies import from_env as strategy_from_env
 
 # ---------------------------------------------------------------------------
 # Path / env setup
@@ -60,12 +60,12 @@ os.environ.setdefault("HERMES_HOME", str(_SERVICES_DIR / ".hermes"))
 # expected_output is a JSON string: {"task_key": ..., "session_type": ..., "reasoning": ...}
 # ---------------------------------------------------------------------------
 
-# Dataset path is configurable via EVAL_DATASET_PATH — defaults to .dataset.json
-# (the real-pulled goldens from build_dataset.py). Point at .synthetic-dataset-<persona>.json
-# to run on the hand-authored seed sessions rendered by render_seeds.py.
+# Dataset path is configurable via EVAL_DATASET_PATH.
+# Defaults to data/generated/goldens_real.json (real sessions from build_dataset.py).
+# Point at data/generated/goldens_<persona>.json for hand-authored seed sessions.
 _DATASET_PATH = Path(
     os.environ.get("EVAL_DATASET_PATH")
-    or (Path(__file__).parent / ".dataset.json")
+    or (Path(__file__).parent / "data" / "generated" / "goldens_real.json")
 )
 dataset = EvaluationDataset()
 dataset.add_goldens_from_json_file(file_path=str(_DATASET_PATH))
@@ -77,6 +77,10 @@ dataset.add_goldens_from_json_file(file_path=str(_DATASET_PATH))
 
 _MLX_MODEL_LABEL = os.environ.get("MLX_MODEL_ID", "Qwen3.5-9B-OptiQ-4bit")
 
+# Strategy selected via EVAL_STRATEGY env var (default: direct_http).
+# Built once at module level so all test cases share the same strategy instance.
+_strategy = strategy_from_env()
+
 
 @observe(type="llm", model=_MLX_MODEL_LABEL, name="mlx_classify")
 def _run_mlx(prompt_input: str) -> str:
@@ -86,50 +90,13 @@ def _run_mlx(prompt_input: str) -> str:
     DeepEval trace tree. update_current_span/trace attach the test case data
     so metrics render inline in the trace view.
 
-    If MLX_SERVER_URL is set, calls the running server's /classify endpoint.
-    Otherwise falls back to in-process load via _get_model().
+    Uses _strategy (set by EVAL_STRATEGY env var) to generate actual_output.
+    Default strategy is DirectHttpStrategy (POST to MLX_SERVER_URL/classify).
+    For in-process inference without a server, set EVAL_STRATEGY=direct_mlx
+    once that strategy is implemented (Task #9 extension).
     """
-    server_url = os.environ.get("MLX_SERVER_URL", "").rstrip("/")
-    if server_url:
-        import urllib.request
-        body = json.dumps({"input": prompt_input}).encode()
-        req = urllib.request.Request(
-            f"{server_url}/classify",
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read())
-        result_json = json.dumps({
-            "task_key":     data.get("task_key") or "none",
-            "session_type": data.get("session_type", "overhead"),
-            "reasoning":    data.get("reasoning", ""),
-        }, ensure_ascii=False)
-    else:
-        # In-process fallback — requires .venv313 with mlx-lm + outlines
-        import agents.run_task_linker_mlx as m
-        from outlines.inputs import Chat
-        from mlx_lm.sample_utils import make_sampler
-
-        model = m._get_model()
-        messages = [
-            {"role": "system", "content": m._SYSTEM_PROMPT},
-            {"role": "user",   "content": prompt_input},
-        ]
-        raw = model(
-            Chat(messages),
-            output_type=m.SessionClassification,
-            max_tokens=m._MAX_TOKENS,
-            sampler=make_sampler(temp=m._TEMPERATURE),
-            verbose=False,
-        )
-        result = m.SessionClassification.model_validate_json(raw)
-        result_json = json.dumps({
-            "task_key":     result.task_key or "none",
-            "session_type": result.session_type,
-            "reasoning":    result.reasoning,
-        }, ensure_ascii=False)
+    result = _strategy.classify_prompt(prompt_input)
+    result_json = result.as_actual_output()
 
     # Attach test case data to the span and trace so DeepEval can render
     # per-call metrics in the trace tree. Include system prompt so it's
@@ -209,7 +176,7 @@ def mlx_test_cases(tmp_path_factory: pytest.TempPathFactory) -> list[LLMTestCase
 def test_dataset_loads() -> None:
     """Dataset file exists and has at least one golden."""
     assert len(dataset.goldens) > 0, (
-        "tests/evals/.dataset.json is empty. "
+        "tests/evals/data/generated/goldens_real.json is empty or missing. "
         "Run tests/evals/build_dataset.py to populate it from meridian.db."
     )
 
@@ -282,7 +249,8 @@ def test_mlx_e2e(mlx_test_cases: list[LLMTestCase]) -> None:
     evaluate(
         test_cases=mlx_test_cases,
         metrics=CLASSIFIER_METRICS,
-        identifier="mlx-direct",
+        hyperparameters=_strategy.as_hyperparameters(),
+        identifier=f"mlx-{_strategy.name}",
     )
 
 

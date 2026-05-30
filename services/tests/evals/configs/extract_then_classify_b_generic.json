@@ -1,0 +1,17 @@
+{
+  "name":             "extract-then-classify-b_generic-qwen35-9b",
+  "description":      "First eval of the two-stage extract-then-classify strategy on Dev B with Qwen3.5-9B-OptiQ-4bit. Architectural test of whether forcing structured evidence categorization before classification breaks the optimism-bias reflex (61 occurrences in FEEDBACK as of 2026-05-30). Compare headline + per-tier vs baseline-b_generic-qwen35-9b (19/33=58% on the same dataset).",
+  "strategy":         "extract_then_classify",
+  "dataset_path":     "services/tests/evals/data/generated/goldens_b_generic.json",
+  "endpoint":         "http://localhost:7823/v1/chat/completions",
+  "timeout":          300,
+  "extraction_temperature":     0.0,
+  "classification_temperature": 0.0,
+  "extraction_max_tokens":      5000,
+  "classification_max_tokens":  2000,
+  "model":            "Qwen3.5-9B-OptiQ-4bit",
+  "session_text_cap": 2500,
+  "max_tokens":       2000,
+  "temperature":      0.0,
+  "prompt_version":   "etc-v1.0"
+}

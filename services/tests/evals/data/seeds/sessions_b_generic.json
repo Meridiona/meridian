@@ -1100,6 +1100,220 @@
         "scoreable": true
       },
       "design_notes": "MEDIUM PROJ-230 — last implementation session of the day. Branch is feat/proj-230-csv-export, file is export.ts (papaparse, chunking, Blob URL). The onProgress callback is a clean extension of the streaming API. No PROJ-225 confusion possible (no React, no skeleton, no dashboard). Medium difficulty: the technique (callback pattern for progress reporting) is non-trivial but the ticket context is unambiguous. Completes the Dev B dataset at 35 sessions."
+    },
+    {
+      "id": 36,
+      "app_name": "Terminal",
+      "started_at": "2026-05-28T08:30:00+05:30",
+      "ended_at": null,
+      "duration_s": 280,
+      "category": "maintenance",
+      "confidence": 0.91,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "zsh — zuno-app — iTerm2",
+          "count": 4
+        }
+      ],
+      "session_text": "[08:30:00]\nTerminal — iTerm2\n  zsh -- zuno-app/\n\n[08:30:12]\n$ docker-compose ps\n  zuno-postgres    Up      0.0.0.0:5432->5432/tcp\n  zuno-redis       Up      0.0.0.0:6379->6379/tcp\n\n  (stale volumes from yesterday's migration run — cleaning before work)\n\n$ docker-compose down -v\n  Stopping zuno-postgres ... done\n  Stopping zuno-redis    ... done\n  Removing volume zuno-app_postgres_data\n  Removing volume zuno-app_redis_data\n\n[08:31:00]\n$ docker-compose up -d\n  Creating zuno-postgres ... done\n  Creating zuno-redis    ... done\n\n$ npx prisma migrate reset --force\n  Datasource: PostgreSQL \"zuno_development\" at localhost:5432\n  Applying migration `20260101000001_init`\n  Applying migration `20260115000002_add_webhook_targets`\n  Applying migration `20260201000003_add_auth_sessions`\n  Applying migration `20260310000004_add_reports`\n  Database reset successful\n\n$ npm run db:seed\n  Created 3 workspace records\n  Created 10 user records\n  Created 25 webhook_target records\n  Seeding complete.\n\n[08:32:30]\n$ npx tsc --noEmit\n  (exit 0)\n\n$ npm test -- --passWithNoTests --silent\n  Test Suites: 14 passed, 14 total\n  Tests:       87 passed, 87 total\n  Time: 6.4s\n\n(developer: all green. clean slate for the day)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "none",
+        "session_type": "untracked",
+        "difficulty": "untracked",
+        "reasoning": "Terminal session resetting the local dev environment: docker-compose down -v, fresh volumes, Prisma migrate reset, seed data, tsc + npm test. Pure infrastructure housekeeping. No ticket key mentioned anywhere. No source files modified.",
+        "scoreable": true
+      },
+      "design_notes": "EASY untracked — docker dev env reset at start of day. The migration names (add_webhook_targets, add_auth_sessions, add_reports) overlap with ticket domains (PROJ-201, PROJ-210, PROJ-230) but the session is infrastructure, not implementation. No PROJ-* reference in any command or output."
+    },
+    {
+      "id": 37,
+      "app_name": "Google Chrome",
+      "started_at": "2026-05-28T09:00:00+05:30",
+      "ended_at": null,
+      "duration_s": 780,
+      "category": "review",
+      "confidence": 0.88,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "PR #93: PROJ-210 frontend auth cookie middleware — zuno-app — GitHub · Google Chrome",
+          "count": 8
+        },
+        {
+          "window_name": "src/middleware/auth.ts · feat/proj-210-cookie-auth · GitHub",
+          "count": 3
+        }
+      ],
+      "session_text": "[09:00:00]\nGoogle Chrome\nTabs:\n  (1) Pull Request #93 · PROJ-210 frontend auth cookie middleware — GitHub  <- ACTIVE\n  (2) feat/proj-210-cookie-auth · zuno-app — GitHub\n\n[09:00:15]\nGitHub — Pull Request #93\nbase: main ← compare: feat/proj-210-cookie-auth\nOpened by: Alex Rodriguez\n\nPROJ-210 — Migrate auth from JWT to session cookies (Frontend)\n\nThis PR adds:\n  - Cookie-based session middleware in src/middleware/auth.ts\n  - Drops Authorization: Bearer header from the frontend\n  - Updates src/utils/session.ts: removeJwtFromHeaders(), setSessionCookie()\n  - 12 integration tests in tests/auth/session.test.ts\n\nCI: ✓ (12/12 tests passing, tsc clean)\nReviewers: Zoe Dev, Sarah Chen\n\n[09:02:00]\nGitHub — diff: src/middleware/auth.ts\n\n  -  const token = req.headers.authorization?.replace('Bearer ', '');\n  +  const sessionId = req.cookies['zuno_session_id'];\n  +  if (!sessionId) return res.status(401).json({ error: 'No session' });\n  +  const session = await sessionStore.get(sessionId);\n  +  if (!session || session.expiresAt < Date.now()) {\n  +    return res.status(401).json({ error: 'Session expired' });\n  +  }\n  +  req.user = session.user;\n  +  next();\n\n[09:05:00]\nGitHub — diff: src/utils/session.ts\n\n  + export function setSessionCookie(res: Response, sessionId: string): void {\n  +   res.cookie('zuno_session_id', sessionId, {\n  +     httpOnly: true,\n  +     secure: process.env.NODE_ENV === 'production',\n  +     sameSite: 'strict',\n  +     maxAge: 7 * 24 * 60 * 60 * 1000,\n  +   });\n  + }\n\n[09:09:00]\nGitHub — Add review comment (line 8, auth.ts)\n\nDeveloper types:\n  > @Alex — can we add a comment explaining why we check Date.now() instead of\n  > delegating expiry to Redis TTL? The intent is non-obvious to a future reader.\n(submits comment)\n\n[09:10:00]\nGitHub — Add review comment (line 4, session.ts)\n\nDeveloper types:\n  > Nit: should maxAge come from a config constant rather than inline arithmetic?\n  > Session duration might need to be configurable without a code change.\n(submits comment)\n\n[09:11:00]\nGitHub — Submit review\n  Review type: Request changes\n  Summary:\n    Two nit-level comments. Once Alex adds the dev-mode warning and addresses\n    these nits, this is ready to merge. Session middleware logic is solid.\n  (submits)\n\n[09:12:00]\nGitHub — PR #93\n  1 review requesting changes (Zoe Dev)\n  1 comment from Sarah Chen: 'LGTM on the middleware, waiting on Zoe nits'\n\n(developer closes GitHub)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "difficulty": "overhead",
+        "reasoning": "Chrome session reviewing Alex Rodriguez's PR #93 for PROJ-210 on GitHub. Developer reads three diffs (auth.ts, session.ts, session.test.ts), leaves two 'request changes' comments, submits a review. No local code written — pure code review activity.",
+        "scoreable": true
+      },
+      "design_notes": "EASY overhead — GitHub PR review for PROJ-210 (pr-review-as-ticket-work). The PR is explicitly for PROJ-210 and contains realistic auth cookie diffs. Failure mode: classifier sees PROJ-210 + auth cookie code + session middleware and might classify as PROJ-210 task work. Discriminators: (1) PR diff layout, not an editor, (2) 'Opened by: Alex Rodriguez' — developer is the reviewer, (3) developer submits a review comment, doesn't commit or edit files."
+    },
+    {
+      "id": 38,
+      "app_name": "Zoom",
+      "started_at": "2026-05-28T10:30:00+05:30",
+      "ended_at": null,
+      "duration_s": 1680,
+      "category": "communication",
+      "confidence": 0.92,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "Zoom Meeting — PROJ-225 planning",
+          "count": 12
+        },
+        {
+          "window_name": "Zoom — Screen share: Sarah Chen",
+          "count": 5
+        }
+      ],
+      "session_text": "[10:30:00]\nZoom — Video Call\nParticipants: Sarah Chen (host), Zoe Dev, Priya Kapoor\nMeeting title: PROJ-225 planning — dashboard lazy loading\n\n[10:30:20]\nSarah Chen (screen sharing — Miro board)\n\nSarah's Miro: 'Dashboard performance — PROJ-225'\n  Component tree (current):\n    DashboardPage\n      FocusDonut        (82 KB — lazy candidate)\n      BarChart          (119 KB — lazy candidate)\n      SessionTimeline   (67 KB — lazy candidate)\n      AppTable          (33 KB — borderline)\n\n  Sarah: 'Do we React.lazy() all four, or just the two charts?\n          AppTable might be needed above the fold.'\n\n[10:34:00]\nZoom — Zoe speaking (video on)\n\nZoe: 'I'd lazy all four and use a consistent skeleton pattern.\n      The AppTable re-renders on every URL change — lazy gives\n      us natural debouncing. We show a table skeleton immediately.'\n\nPriya: 'Suspense boundary strategy? One root or per-component?'\n\nZoe: 'Per-component — otherwise a slow BarChart blocks the whole page.\n      Each chart gets its own <Suspense fallback={<ChartSkeleton />}>.'\n\n[10:38:00]\nSarah (screen share — Miro, adding decisions)\n\n  Decision: React.lazy() all 4 heavy components\n  Boundary: per-component Suspense\n  Fallback: ChartSkeleton / TableSkeleton matching real dimensions\n  ErrorBoundary: wrap each Suspense\n\n[10:42:00]\nPriya speaking:\n\nPriya: 'How do we handle data-testid for Playwright? The lazy load\n        breaks existing selectors because the skeleton renders first.'\n\nZoe: 'Add data-testid to both skeleton AND real component with the same\n      value. Playwright waits for the real component to appear.'\n\nPriya: 'Got it. I will update the Playwright selectors in the E2E suite.'\n\n[10:48:00]\nSarah (screen share — action items)\n\n  Action items from PROJ-225 planning call:\n  1. Zoe: implement React.lazy for BarChart + SessionTimeline\n  2. Priya: update Playwright E2E selectors for skeleton-aware testing\n  3. Sarah: update PROJ-225 acceptance criteria to include ErrorBoundary\n  4. All: PR #94 review by EOD tomorrow\n\n[10:58:00]\nZoom — Meeting ends\n  Duration: 28 minutes  |  Participants: 3\n\n(developer switches to VS Code after the call)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "difficulty": "overhead",
+        "reasoning": "Zoom planning call with Sarah and Priya about PROJ-225 dashboard lazy loading. Developer participates verbally — discusses React.lazy strategy, Suspense boundary placement, data-testid for Playwright. No code written, no files modified. Meeting produces action items only.",
+        "scoreable": true
+      },
+      "design_notes": "MEDIUM overhead — Zoom planning call (meeting-as-ticket-work). The call is entirely focused on PROJ-225 implementation details with specific technical decisions (per-component Suspense, ChartSkeleton, ErrorBoundary, Playwright selectors). Failure mode: classifier sees PROJ-225 + React.lazy + ErrorBoundary + FCP and might classify as PROJ-225 task work. Discriminators: (1) Zoom app, (2) session ends with 'action items', (3) Priya says 'I will update the Playwright selectors' — work is planned, not done."
+    },
+    {
+      "id": 39,
+      "app_name": "Slack",
+      "started_at": "2026-05-28T11:30:00+05:30",
+      "ended_at": null,
+      "duration_s": 1140,
+      "category": "communication",
+      "confidence": 0.89,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "Slack — #eng-platform",
+          "count": 8
+        },
+        {
+          "window_name": "Slack — Thread: PROJ-201 idempotency",
+          "count": 5
+        }
+      ],
+      "session_text": "[11:30:00]\nSlack — Zuno Engineering\nChannel: #eng-platform  <- ACTIVE\n\nToday 11:28  Sarah Chen\n  quick question on PROJ-201 idempotency — we're using a hash of\n  (targetUrl + payload + attempt_number). but attempt_number means\n  re-queued jobs get a new key and don't deduplicate against prior attempts.\n  should we drop attempt_number?\n\nToday 11:29  Alex Rodriguez → Thread\n  dropping attempt_number makes the key stable across retries. key should be:\n  sha256(targetUrl + payload_canonical_json)\n\nToday 11:30  Zoe Dev (opens thread)\n\n[11:31:00]\nSlack — Thread: 'PROJ-201 idempotency key strategy'\n\nDeveloper typing in thread:\n\nToday 11:31  Zoe Dev\n  agree with Alex — here is what I would do for the canonical JSON part:\n\n  ```ts\n  function buildIdempotencyKey(targetUrl: string, payload: unknown): string {\n    const canonical = JSON.stringify(\n      payload, Object.keys(payload as object).sort()\n    )\n    const input = `${targetUrl}|${canonical}`\n    return crypto.createHash('sha256').update(input).digest('hex')\n  }\n  ```\n\n  key things:\n  - sorted keys before stringify so field order doesn't matter\n  - pipe-delimiter prevents ambiguity if url ends in json chars\n  - add UNIQUE constraint on webhook_deliveries — postgres rejects\n    duplicate inserts, belt-and-suspenders against double-send\n\n[11:43:00]\nSlack — Thread (continuing)\n\nToday 11:35  Sarah Chen\n  love the sorted-keys approach. does the key need to survive a payload\n  schema change? if we add a field, existing keys are stable but new\n  deliveries get different keys. is that okay?\n\nToday 11:37  Alex Rodriguez\n  yes that is fine — old deliveries are already completed. key only needs\n  to be stable within one delivery lifecycle (enqueue -> retry -> done).\n\nToday 11:40  Zoe Dev\n  exactly. and the UNIQUE constraint means even if a bug enqueues the same\n  delivery twice, postgres rejects the duplicate insert. we catch the\n  UniqueViolation in the retry handler and skip — no double-send.\n\nToday 11:43  Sarah Chen\n  perfect. Alex can you add this to the PROJ-201 PR review thread?\n  I will add the postgres constraint to the migration.\n\nToday 11:44  Zoe Dev\n  sounds good. lmk when the migration is up and I'll review.\n\n[11:49:00]\n(developer closes Slack)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "difficulty": "overhead",
+        "reasoning": "Slack thread in #eng-platform about PROJ-201 idempotency key strategy. Developer writes a TypeScript function in Slack and recommends a postgres UNIQUE constraint. No local files modified, no commits made — the discussion is design review in chat.",
+        "scoreable": true
+      },
+      "design_notes": "HARD overhead — Slack technical thread with pasted TypeScript code (chat-mention-as-work, hard variant). The developer pastes a real buildIdempotencyKey function with crypto.createHash, sorted keys, UNIQUE constraint. Specific to PROJ-201 (webhook_deliveries, retry handler). Failure mode: classifier sees TypeScript + PROJ-201 + webhook + postgres and might classify as PROJ-201 task work. Discriminators: (1) Slack app, (2) code is in backtick blocks in a chat message, (3) Sarah says 'Alex can you add this to the PR review thread' — the code is a design proposal, not a committed change."
+    },
+    {
+      "id": 40,
+      "app_name": "Google Chrome",
+      "started_at": "2026-05-28T14:00:00+05:30",
+      "ended_at": null,
+      "duration_s": 1020,
+      "category": "planning",
+      "confidence": 0.93,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "PROJ-225 — Zuno — Linear · Google Chrome",
+          "count": 7
+        },
+        {
+          "window_name": "Sprint board — Zuno — Linear · Google Chrome",
+          "count": 4
+        }
+      ],
+      "session_text": "[14:00:00]\nGoogle Chrome\nTabs:\n  (1) PROJ-225 — Zuno — Linear  <- ACTIVE\n  (2) Sprint board — Zuno — Linear\n\n[14:00:15]\nLinear — PROJ-225\n  Dashboard performance: lazy-load heavy chart components\n  Status: In Progress → In Review  (developer changes status)\n  Assignee: Zoe Dev  |  Priority: P1  |  Estimate: 8 pts\n  Labels: frontend, performance, react\n\n  Subtasks:\n    [x] Implement React.lazy for FocusDonut\n    [x] Add ChartSkeleton component\n    [x] Per-component Suspense boundaries\n    [ ] React.lazy for BarChart             (in progress)\n    [ ] React.lazy for SessionTimeline      (in progress)\n    [ ] ErrorBoundary wrapper for each chart\n    [ ] Playwright E2E selector updates     (Priya)\n\n  (developer updates BarChart + SessionTimeline subtasks to 'In Progress')\n\n[14:04:00]\nLinear — PROJ-225 (editing acceptance criteria)\n\n  Acceptance criteria (developer adds):\n  - [ ] FCP < 200ms on 3G Fast (Lighthouse)\n  - [ ] Each chart renders skeleton within 50ms of page load\n  - [ ] No FOUC during lazy load\n  - [ ] ErrorBoundary: each chart shows ChartErrorState on throw\n  - [ ] Playwright: all chart selectors use data-testid, not CSS class\n  - [ ] PR #94 approved by Sarah + Priya before merge\n\n  (developer saves updated acceptance criteria)\n\n[14:08:00]\nLinear — Sprint board\n\n  Sprint: May Sprint 2026  (Day 3 of 14)\n  Capacity: 80 pts  |  Done: 31  |  In Review: 29  |  In Progress: 20\n  Velocity: on track (target 6 pts/day, actual 10.3 pts/day)\n\n  In Review:\n    PROJ-225 (8 pts) — Zoe\n    PROJ-230 (5 pts) — Zoe\n    PROJ-210 backend (13 pts) — Zoe\n    PROJ-210 frontend (3 pts) — Alex\n    PROJ-215 (2 pts) — Zoe\n\n[14:12:00]\nLinear — PROJ-225 (adding planning comment)\n\n  Developer types:\n    2026-05-28 14:12 — Planning note\n    FocusDonut lazy load done + skeleton working. BarChart + SessionTimeline\n    still need React.lazy wrap and dynamic import (PR #94 has skeleton stubs).\n    ErrorBoundary pass is last step before merge. Priya handling Playwright selectors.\n    ETA: PR #94 ready for final review tomorrow morning.\n\n  (saves comment, closes Linear)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "difficulty": "overhead",
+        "reasoning": "Chrome session in Linear updating PROJ-225 status to In Review, checking off subtasks, adding acceptance criteria, checking sprint burndown, and adding a planning comment. All ticket management — no code written, no files edited.",
+        "scoreable": true
+      },
+      "design_notes": "HARD overhead — Linear sprint board update for PROJ-225 (ticket-admin-as-task-work). Developer adds detailed acceptance criteria (FCP <200ms, skeleton timing, ErrorBoundary, Playwright selectors) and a planning comment referencing specific files (PR #94, FocusDonut, BarChart, lazy()). Failure mode: classifier might see PROJ-225 + React.lazy + ErrorBoundary + FCP metrics and conclude this is implementation. Discriminators: (1) Google Chrome with Linear layout, (2) status dropdowns and subtask checkboxes in the OCR, (3) planning comment says 'ETA tomorrow morning' — the work is not happening now."
+    },
+    {
+      "id": 41,
+      "app_name": "Google Chrome",
+      "started_at": "2026-05-28T15:30:00+05:30",
+      "ended_at": null,
+      "duration_s": 1380,
+      "category": "maintenance",
+      "confidence": 0.87,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "Datadog — APM — notification-queue-worker · Google Chrome",
+          "count": 6
+        },
+        {
+          "window_name": "Datadog — Logs — notification-queue-worker · Google Chrome",
+          "count": 4
+        },
+        {
+          "window_name": "zsh — zuno-app/services/notification-queue — iTerm2",
+          "count": 3
+        }
+      ],
+      "session_text": "[15:30:00]\nGoogle Chrome — Datadog APM\n  Service: notification-queue-worker\n  Environment: production  |  Time range: Last 2h\n\n  Memory (RSS):\n    14:00: 142 MB\n    15:00: 241 MB  <- sharp climb\n    15:20: 310 MB  <- P99 alert fired (threshold 300 MB)\n    15:30: 318 MB (current)\n\n  Alert: [PROD] notification-queue-worker memory > 300MB  (fired 15:20)\n  (PagerDuty: Zoe Dev on-call, non-critical, investigate before EOD)\n\n[15:33:00]\nDatadog — Logs\n  Service: notification-queue-worker  |  Filter: level:warn OR level:error\n\n  15:04:12  WARN  MaxListenersExceededWarning: EventEmitter 11 listeners on 'message'\n  15:08:45  WARN  MaxListenersExceededWarning: 13 listeners on 'message'\n  15:28:33  WARN  MaxListenersExceededWarning: 20 listeners on 'message'\n\n  (developer: listener leak — growing every 4 min)\n\n[15:37:00]\nTerminal — zuno-app/services/notification-queue\n\n$ git log --oneline -3\n  a3f7c12  feat: add retry with exponential backoff to queue-listener\n  9b2e445  chore: bump @aws-sdk/client-sqs 3.550 -> 3.554\n  7d1cc8f  feat: initial notification queue worker (SQS long-polling)\n\n$ git show a3f7c12 --stat\n  services/notification-queue/src/queue-listener.ts  |  28 +\n\n$ git diff HEAD~1 HEAD -- src/queue-listener.ts | grep 'on('\n  +  this.sqsClient.on('error', this.handleError.bind(this))\n  +  this.sqsClient.on('error', this.handleError.bind(this))  // retry loop\n\n  (developer: retry loop re-registers error handler on every iteration\n   without removing old one — listener accumulates)\n\n[15:42:00]\nTerminal\n\n$ cat > /tmp/oom-notes.md << 'EOF'\n# notification-queue-worker OOM — 2026-05-28\nRoot cause: queue-listener.ts re-registers sqsClient.on('error', handler)\ninside retry loop (commit a3f7c12). Each retry adds a listener without\nremoving old one. After 90min, MaxListenersExceededWarning, RSS +5MB/listener.\nFix: register error handler once at constructor time.\nNo ticket for this — notification-queue-worker is an internal canary service.\nEOF\n\n[15:50:00]\nGoogle Chrome — Linear (new tab)\n\nDeveloper creates issue:\n  Title: Fix event listener leak in notification-queue-worker retry loop\n  Labels: backend, bug, memory\n  Estimate: 2 pts\n  (creates PROJ-255)\n\n(developer: filed PROJ-255. will fix tomorrow. closing Datadog.)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "none",
+        "session_type": "untracked",
+        "difficulty": "untracked",
+        "reasoning": "Developer investigates a production OOM alert for notification-queue-worker via Datadog. Identifies event listener leak in commit a3f7c12 and files a new ticket PROJ-255. The service is unreleased and PROJ-255 is not in the open ticket list — no candidate matches.",
+        "scoreable": true
+      },
+      "design_notes": "MEDIUM untracked — production OOM debugging for an un-ticketed service. notification-queue-worker is adjacent to PROJ-242 (Slack notifications for webhook failures) and PROJ-201 (webhook retry) but is a separate internal service. Developer files PROJ-255 at the end — a new ticket not in the candidate list. Failure mode: classifier might assign PROJ-201 (webhook) or PROJ-242 (notification) due to domain overlap. Discriminators: (1) service is notification-queue-worker, not webhook-retry or Slack integration, (2) PROJ-255 is created at the end and is NOT in the candidate list, (3) no code committed — developer only investigates."
+    },
+    {
+      "id": 42,
+      "app_name": "Code",
+      "started_at": "2026-05-28T16:30:00+05:30",
+      "ended_at": null,
+      "duration_s": 1680,
+      "category": "coding",
+      "confidence": 0.95,
+      "session_text_source": "ocr",
+      "window_titles": [
+        {
+          "window_name": "tests/integration/auth-v2.test.ts — auth-service-v2 — Visual Studio Code",
+          "count": 6
+        },
+        {
+          "window_name": "src/middleware/session.ts — auth-service-v2 — Visual Studio Code",
+          "count": 4
+        },
+        {
+          "window_name": "Terminal — zsh — auth-service-v2 — iTerm2",
+          "count": 3
+        }
+      ],
+      "session_text": "[16:30:00]\nVisual Studio Code\nWorkspace: auth-service-v2  (separate repo, ~/projects/auth-service-v2)\nBranch: main\nActive tab: tests/integration/auth-v2.test.ts  <- ACTIVE\n\n[16:30:15]\nVS Code — tests/integration/auth-v2.test.ts\n\n   1   // auth-service-v2 — stateless session middleware prototype\n   2   import { createSessionMiddleware } from '../src/middleware/session'\n   3   import { MemoryStore } from '../src/stores/memory-store'\n   4   import supertest from 'supertest'\n   5   import express from 'express'\n   6\n   7   describe('session middleware', () => {\n   8     let app: express.Express\n   9     let store: MemoryStore\n  10\n  11     beforeEach(() => {\n  12       store = new MemoryStore({ ttl: 3600 })\n  13       app = express()\n  14       app.use(createSessionMiddleware({ store, cookieName: 'sid', secure: false }))\n  15       app.get('/me', (req, res) => res.json({ user: (req as any).session?.user ?? null }))\n  16     })\n  17\n  18     it('returns null user when no cookie present', async () => {\n  19       const res = await supertest(app).get('/me')\n  20       expect(res.body.user).toBeNull()\n  21     })\n  22\n  23     it('returns user when valid session cookie present', async () => {\n  24       const sessionId = await store.create({ user: { id: 'u1', email: 'zoe@zuno.io' } })\n  25       const res = await supertest(app).get('/me').set('Cookie', `sid=${sessionId}`)\n  26       expect(res.body.user.email).toBe('zoe@zuno.io')\n  27     })\n  28\n  29     it('returns null user when session expired', async () => {\n  30       const store2 = new MemoryStore({ ttl: -1 })\n  31       const sessionId = await store2.create({ user: { id: 'u1', email: 'zoe@zuno.io' } })\n  32       const res = await supertest(expiredApp).get('/me').set('Cookie', `sid=${sessionId}`)\n  33       expect(res.body.user).toBeNull()\n  34     })\n  35   })\n\n[16:35:00]\nVS Code — src/middleware/session.ts\n\n   1   // auth-service-v2 — session middleware\n   2   import type { Request, Response, NextFunction, RequestHandler } from 'express'\n   3\n   4   export interface SessionStore {\n   5     get(id: string): Promise<SessionData | null>\n   6     create(data: SessionData): Promise<string>\n   7     destroy(id: string): Promise<void>\n   8   }\n   9\n  10   export function createSessionMiddleware(\n  11     opts: { store: SessionStore; cookieName: string; secure: boolean }\n  12   ): RequestHandler {\n  13     return async (req, res, next) => {\n  14       const cookieHeader = req.headers.cookie ?? ''\n  15       const cookies = Object.fromEntries(\n  16         cookieHeader.split(';').map(c => c.trim().split('='))\n  17       )\n  18       const sessionId = cookies[opts.cookieName]\n  19       if (!sessionId) { next(); return }\n  20       const session = await opts.store.get(sessionId)\n  21       if (session) (req as any).session = session\n  22       next()\n  23     }\n  24   }\n\n[16:45:00]\nVS Code — Terminal\n\n$ npm test\n  PASS tests/integration/auth-v2.test.ts\n    session middleware\n      v returns null user when no cookie present  (18ms)\n      v returns user when valid session cookie present  (12ms)\n      v returns null user when session expired  (8ms)\n  Tests: 3 passed  |  Time: 1.4s\n\n$ npx tsc --noEmit\n  (exit 0)\n\n$ git commit -am 'feat: session middleware + MemoryStore integration tests'\n  [main 3a4d917] feat: session middleware + MemoryStore integration tests\n  2 files changed, 66 insertions(+)\n\n[16:58:00]\nVS Code — src/stores/memory-store.ts\n  (developer starts stubbing RedisStore interface)\n  (session ends — switches to Slack)\n",
+      "audio_snippets": [],
+      "ground_truth": {
+        "task_key": "none",
+        "session_type": "untracked",
+        "difficulty": "untracked",
+        "reasoning": "VS Code session in a separate repository (auth-service-v2) writing session middleware and MemoryStore integration tests. Developer commits 2 files to auth-service-v2 main branch. This is a separate un-ticketed prototype — not part of zuno-app and not linked to any open ticket.",
+        "scoreable": true
+      },
+      "design_notes": "HARD untracked — real coding session in an unreleased separate repo. Failure mode: session middleware + cookie-based auth + SessionStore are identical terminology to PROJ-210 (migrate auth from JWT to session cookies in zuno-app). A classifier might assign PROJ-210. Discriminators: (1) workspace is auth-service-v2 (not zuno-app) visible in window title and imports, (2) branch is main (not feat/proj-210-cookie-auth), (3) MemoryStore with ttl param is different from PROJ-210's Redis session store, (4) no reference to zuno-app files like src/utils/session.ts or the existing auth.ts middleware."
     }
   ]
 }

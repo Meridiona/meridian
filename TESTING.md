@@ -154,8 +154,8 @@ The eval pipeline scores the MLX classifier against a hand-authored golden datas
 
 **Inputs**
 
-- `services/tests/evals/golden_seed/dev_<persona>_sessions.json` — structured seed sessions with `ground_truth` (task_key, session_type, reasoning, difficulty, scoreable) + `design_notes`. Hand-authored, one persona per file.
-- `services/tests/evals/golden_seed/candidates_<project>.json` — open ticket list (real KAN-* + synthetic decoys) the classifier picks from.
+- `services/tests/evals/data/seeds/sessions_<persona>.json` — structured seed sessions with `ground_truth` (task_key, session_type, reasoning, difficulty, scoreable) + `design_notes`. Hand-authored, one persona per file.
+- `services/tests/evals/data/seeds/tickets_<persona>.json` — open ticket list (real KAN-* / PROJ-* + synthetic decoys) the classifier picks from.
 
 **Run flow**
 
@@ -163,19 +163,18 @@ The eval pipeline scores the MLX classifier against a hand-authored golden datas
 # 1. Render seeds → deepeval Goldens (regenerate after any seed edit)
 services/.venv/bin/python services/tests/evals/render_seeds.py [persona]
 # default persona = a_meridian; valid: a_meridian, b_generic
-# writes: services/tests/evals/.synthetic-dataset-<persona>.json
+# writes: services/tests/evals/data/generated/goldens_<persona>.json
 
-# 2. Run the eval — needs MLX server running on $MLX_SERVER_URL
-EVAL_DATASET_PATH=services/tests/evals/.synthetic-dataset-a_meridian.json \
-MLX_SERVER_URL=http://localhost:7823 \
-services/.venv/bin/python services/tests/evals/smoke_run.py
+# 2. Run the eval (MLX server auto-discovered on port 7823)
+EVAL_DATASET_PATH=services/tests/evals/data/generated/goldens_a_meridian.json \
+services/.venv/bin/python services/tests/evals/eval_classifier.py
 ```
 
 **Pre-reqs**
 
 - `services/.venv` with `deepeval`, `python-dotenv`, `ollama` (`pip install -r services/requirements.txt` covers it; `ollama` is needed only because metrics.py imports `OllamaModel` for the unused LLM-judge metric — actual scoring is exact-match).
 - MLX server up on port 7823: `services/.venv/bin/python -m agents.server --backend mlx --port 7823`
-- OTel env vars in `.env` (`MERIDIAN_OTLP_ENDPOINT`, `MERIDIAN_OO_AUTH`) — `smoke_run.py` auto-loads via `python-dotenv`.
+- OTel env vars in `.env` (`MERIDIAN_OTLP_ENDPOINT`, `MERIDIAN_OO_AUTH`) — `eval_classifier.py` auto-loads via `python-dotenv`.
 
 **What gets emitted**
 

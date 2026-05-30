@@ -60,5 +60,11 @@ swift/vscode-panel-reader
 .latest_test_run.json
 .latest_run_full.json
 
-# Rendered Goldens — regenerate on demand from golden_seed/ via render_seeds.py
+# Generated eval artifacts — regenerate on demand via render_seeds.py or build_dataset.py
+services/tests/evals/data/generated/
+services/tests/evals/.dataset.json
 services/tests/evals/.synthetic-dataset-*.json
+
+# Eval run results — one JSON per eval_classifier.py invocation, source of truth
+# for the eval-feedback skill. Regenerated on every run; never commit.
+services/tests/evals/results/
