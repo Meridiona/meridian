@@ -82,6 +82,38 @@ pub(super) async fn update_session_task(
     Ok(())
 }
 
+/// Persist a classification result for a coding-agent row. Identical to
+/// `update_session_task` EXCEPT it does NOT touch `session_summary`: that column
+/// already holds the summariser's high-quality prose, and the classifier's own
+/// summary (built from that same text) must not clobber it.
+pub(super) async fn update_coding_agent_task(
+    pool: &SqlitePool,
+    r: &SessionClassification,
+) -> Result<()> {
+    let reasoning = if r.reasoning.is_empty() {
+        None
+    } else {
+        Some(&r.reasoning)
+    };
+    sqlx::query(
+        "UPDATE app_sessions
+         SET task_key = ?, task_confidence = ?, task_routing = ?,
+             task_method = ?, task_reasoning = ?, task_session_type = ?
+         WHERE id = ?",
+    )
+    .bind(&r.task_key)
+    .bind(r.confidence)
+    .bind(&r.routing)
+    .bind(&r.method)
+    .bind(reasoning)
+    .bind(&r.session_type)
+    .bind(r.session_id)
+    .execute(pool)
+    .await
+    .with_context(|| format!("updating coding-agent task for session {}", r.session_id))?;
+    Ok(())
+}
+
 /// Persist multi-label dimension tags returned by Python.
 pub(super) async fn write_dimensions(
     pool: &SqlitePool,

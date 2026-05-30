@@ -24,6 +24,29 @@ pub(super) async fn count_pending_sessions(
     Ok(row.0)
 }
 
+/// Fetch up to `limit` sealed coding-agent rows that have been summarised and
+/// are awaiting classification (`task_method = 'pending_classifier'`). This is a
+/// NON-cursor queue: coding-agent rows have low ids the cursor has long passed,
+/// so they are classified by summarised-state, not id order. Oldest-ended first.
+pub(super) async fn fetch_pending_classifier_sessions(
+    pool: &SqlitePool,
+    limit: i64,
+) -> Result<Vec<i64>> {
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM app_sessions
+         WHERE claude_session_uuid IS NOT NULL
+           AND session_summary IS NOT NULL
+           AND task_method = 'pending_classifier'
+         ORDER BY ended_at ASC
+         LIMIT ?",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .context("fetching pending_classifier coding-agent sessions")?;
+    Ok(ids)
+}
+
 /// Returns the max `id` in `app_sessions`, or `None` if the table is empty.
 pub(super) async fn get_max_session_id(pool: &SqlitePool) -> Result<Option<i64>> {
     let row = sqlx::query_as::<_, (Option<i64>,)>("SELECT MAX(id) FROM app_sessions")
@@ -186,8 +209,8 @@ pub(super) async fn fetch_sessions_in_range(
 mod tests {
     use super::*;
     use crate::intelligence::task_linker::db_write::{
-        advance_agent_cursor, complete_agent_run, start_agent_run, update_session_overhead,
-        update_session_task, write_dimensions,
+        advance_agent_cursor, complete_agent_run, start_agent_run, update_coding_agent_task,
+        update_session_overhead, update_session_task, write_dimensions,
     };
     use crate::intelligence::task_linker::SessionClassification;
     use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
@@ -223,6 +246,110 @@ mod tests {
         .await
         .unwrap()
         .last_insert_rowid()
+    }
+
+    /// Insert a sealed, summarised coding-agent row awaiting classification.
+    async fn seed_pending_classifier(pool: &SqlitePool, uuid: &str, summary: &str) -> i64 {
+        sqlx::query(
+            "INSERT INTO etl_runs (started_at, from_frame_id, to_frame_id, status)
+             VALUES ('t', 0, 0, 'success')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO app_sessions (
+                app_name, started_at, ended_at, duration_s,
+                window_titles, audio_snippets, signals,
+                min_frame_id, max_frame_id, frame_count, idle_frame_count, etl_run_id,
+                claude_session_uuid, segment_started_at, sealed_at,
+                session_summary, task_method
+             ) VALUES ('Claude Code',
+                '2026-05-20T08:00:00.000000+00:00', '2026-05-20T08:30:00.000000+00:00', 300,
+                '[]', '[]', '{}', 0, 0, 4, 0, 1,
+                ?, '2026-05-20T08:00:00.000000+00:00', '2026-05-20T09:00:00.000000+00:00',
+                ?, 'pending_classifier')",
+        )
+        .bind(uuid)
+        .bind(summary)
+        .execute(pool)
+        .await
+        .unwrap()
+        .last_insert_rowid()
+    }
+
+    fn classification(session_id: i64) -> SessionClassification {
+        SessionClassification {
+            session_id,
+            task_key: Some("KAN-1".into()),
+            confidence: 0.9,
+            routing: "queue".into(),
+            session_type: "task".into(),
+            reasoning: "did the work".into(),
+            method: "mlx_direct".into(),
+            dimensions: HashMap::new(),
+            session_summary: "CLASSIFIER SUMMARY — must NOT overwrite".into(),
+            elapsed_s: 1.0,
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_classifier_queue_then_classify_preserves_summary() {
+        let pool = fresh_db().await;
+        let id = seed_pending_classifier(&pool, "u1", "GOOD SUMMARISER SUMMARY").await;
+
+        // The non-cursor queue picks it up (independent of agent_cursor).
+        assert_eq!(
+            fetch_pending_classifier_sessions(&pool, 8).await.unwrap(),
+            vec![id]
+        );
+
+        // Classify it — task fields land, session_summary is PRESERVED.
+        update_coding_agent_task(&pool, &classification(id))
+            .await
+            .unwrap();
+        let (method, task_key, summary): (String, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT task_method, task_key, session_summary FROM app_sessions WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(method, "mlx_direct"); // terminal — leaves the queue
+        assert_eq!(task_key.as_deref(), Some("KAN-1"));
+        assert_eq!(
+            summary.as_deref(),
+            Some("GOOD SUMMARISER SUMMARY"),
+            "summary must survive classify"
+        );
+
+        // Drained.
+        assert!(fetch_pending_classifier_sessions(&pool, 8)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn pending_classifier_excludes_unsummarised_rows() {
+        let pool = fresh_db().await;
+        // A coding row still awaiting summary (pending_summariser) → not in this queue.
+        sqlx::query(
+            "INSERT INTO etl_runs (started_at, from_frame_id, to_frame_id, status) VALUES ('t',0,0,'success')",
+        ).execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO app_sessions (
+                app_name, started_at, ended_at, duration_s, window_titles, audio_snippets, signals,
+                min_frame_id, max_frame_id, frame_count, idle_frame_count, etl_run_id,
+                claude_session_uuid, segment_started_at, sealed_at, task_method
+             ) VALUES ('Claude Code','2026-05-20T08:00:00.000000+00:00','2026-05-20T08:30:00.000000+00:00',
+                300,'[]','[]','{}',0,0,4,0,1,'u2','2026-05-20T08:00:00.000000+00:00',
+                '2026-05-20T09:00:00.000000+00:00','pending_summariser')",
+        ).execute(&pool).await.unwrap();
+        assert!(fetch_pending_classifier_sessions(&pool, 8)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     // ── cursor ────────────────────────────────────────────────────────────
