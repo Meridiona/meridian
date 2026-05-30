@@ -2,7 +2,7 @@
 //
 // The coding-agent indexer task: a low-frequency tokio loop that turns Claude
 // Code / Codex JSONLs into app_sessions segment rows. Port of
-// services/coding_agent_indexer/{register,daemon}.py.
+// the former Python indexer/{register,daemon}.py.
 //
 // Per tick: (1) seal settled live rows (the JSONL-free backstop for crashes /
 // force-quits / sleep), then (2) re-parse changed files and refresh their live

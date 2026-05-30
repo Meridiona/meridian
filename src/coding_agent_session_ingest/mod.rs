@@ -1,7 +1,7 @@
 // meridian — normalises screenpipe activity into structured app sessions
 //
 // Coding-agent indexer + summariser, ported from the Python services
-// (services/coding_agent_indexer, services/coding_agent_summariser) into the
+// (the former Python indexer, the former Python summariser) into the
 // daemon. Spawned as gated tokio tasks from main.rs: the indexer turns
 // Claude/Codex JSONLs into app_sessions segment rows; the summariser turns
 // sealed segments into prose summaries; both stay dormant without a coding

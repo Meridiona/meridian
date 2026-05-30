@@ -5,7 +5,7 @@
 // `session-summary` skill (same rules, in SKILL.md); Codex gets
 // SUMMARY_INSTRUCTION as its prompt; MLX gets SUMMARY_RULES as its system
 // message. All three target SUMMARY_SCHEMA. Port of
-// services/coding_agent_summariser/prompts.py.
+// the former Python summariser/prompts.py.
 
 use serde_json::json;
 

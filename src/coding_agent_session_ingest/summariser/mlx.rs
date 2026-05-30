@@ -6,7 +6,7 @@
 // the TAIL of the transcript (most recent activity / outcome) and (2) keep a
 // cheap reasoning-leak filter as defence even though the endpoint's outlines FSM
 // already forces the {summary} shape. Port of
-// services/coding_agent_summariser/mlx_fallback.py.
+// the former Python summariser/mlx_fallback.py.
 
 use std::time::Duration;
 
