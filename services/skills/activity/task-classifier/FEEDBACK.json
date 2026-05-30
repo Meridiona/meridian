@@ -142,6 +142,196 @@
         "experiment_cap_chars": 0
       },
       "notes": "SESSION_TEXT_CAP=0 experiment vs control smoke_20260528T162251 (cap=2500). Both accuracy DROPPED 65.0% → 60.0%; session_type 72.5% → 67.5%; task_key 67.5% → 65.0%. Per-tier: hard +15pp (71% → 86%), but overhead −15pp (29% → 14%), untracked −33pp (33% → 0%), medium −12pp (100% → 88%). Conclusion: the cap is a COVARIATE of optimism-bias, not the bottleneck. More context lets the classifier disambiguate genuine hard cases but also gives it more adjacent signals to misinterpret as 'active work', amplifying false-positives on overhead/untracked. Diff vs prior run: cap=0 FIXED seeds 36 (branch-name-locks) and 42 (dataset-analysis-missed) but BROKE seeds 11, 25, 34, 45. Net: prompt-design fix (anti-optimism rule in SKILL.md v2.1) is the right next move; permanent cap removal is wrong."
+    },
+    {
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "trace_id": "f90248d1ad382081d7d8a6ae0b6c8c28",
+      "confident_ai_run": null,
+      "date": "2026-05-29",
+      "model": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+      "prompt_version": "2.0.0",
+      "prompt_path": "services/skills/activity/task-classifier/SKILL.md",
+      "dataset": "services/tests/evals/golden_seed/dev_b_generic_sessions.json",
+      "dataset_rendered": "services/tests/evals/.synthetic-dataset-b_generic.json",
+      "candidates": "services/tests/evals/golden_seed/candidates_generic.json",
+      "persona": "b_generic",
+      "server_url": "http://localhost:7823",
+      "metrics": {
+        "total_goldens": 33,
+        "passed_both": 19,
+        "task_key_accuracy": 0.667,
+        "session_type_accuracy": 0.606,
+        "both_accuracy": 0.576
+      },
+      "notes": "First run of the Dev B generic persona dataset (Zuno B2B SaaS developer, TypeScript/React, 33 scoreable Goldens). Baseline for this persona+model combination. Session_type accuracy (61%) lower than task_key accuracy (67%), indicating systematic overhead→task overclaiming."
+    },
+    {
+      "run_id": "a_meridian_direct_http_20260530T100236",
+      "trace_id": "ed64779957997ca5f41dfa4fe1b8933c",
+      "confident_ai_run": null,
+      "date": "2026-05-30",
+      "model": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+      "prompt_version": "2.0.0",
+      "prompt_path": "services/skills/activity/task-classifier/SKILL.md",
+      "dataset": "services/tests/evals/data/generated/goldens_a_meridian.json",
+      "dataset_rendered": "services/tests/evals/data/generated/goldens_a_meridian.json",
+      "candidates": "services/tests/evals/data/seeds/tickets_meridian.json",
+      "persona": "a_meridian",
+      "server_url": "http://127.0.0.1:7823",
+      "metrics": {
+        "total_goldens": 40,
+        "passed_both": 25,
+        "task_key_accuracy": 0.65,
+        "session_type_accuracy": 0.7,
+        "both_accuracy": 0.625
+      },
+      "notes": "First a_meridian run on the restructured eval folder (eval_classifier.py, data/seeds/, data/generated/). Model identity now authoritative via /info endpoint — model_id stamped on span. Server auto-discovered, no MLX_SERVER_URL env var required. SESSION_TEXT_CAP=2500 (default)."
+    },
+    {
+      "run_id": "b_generic_direct_http_20260530T110547",
+      "trace_id": "a76dbcca2e0b8c0a2c38e3969348aba9",
+      "results_file": "services/tests/evals/results/run_b_generic_direct_http_20260530T110547.json",
+      "date": "2026-05-30",
+      "experiment_name": "baseline-b_generic-qwen35-9b",
+      "experiment_config": "services/tests/evals/configs/baseline_b_generic.json",
+      "strategy": "direct_http",
+      "model": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+      "model_declared": "Qwen3.5-9B-OptiQ-4bit",
+      "prompt_version": "v2.0",
+      "prompt_path": "services/skills/activity/task-classifier/SKILL.md",
+      "dataset": "services/tests/evals/data/generated/goldens_b_generic.json",
+      "dataset_name": "goldens_b_generic.json",
+      "persona": "b_generic",
+      "server_url": "http://127.0.0.1:7823",
+      "session_text_cap": 2500,
+      "temperature": 0.0,
+      "max_tokens": 1024,
+      "metrics": {
+        "total_goldens": 33,
+        "passed_both": 19,
+        "task_key_accuracy": 0.667,
+        "session_type_accuracy": 0.606,
+        "both_accuracy": 0.576,
+        "per_tier": {
+          "easy": {
+            "total": 16,
+            "passed_both": 13,
+            "task_key_acc": 0.875,
+            "session_type_acc": 0.812,
+            "both_acc": 0.812
+          },
+          "hard": {
+            "total": 3,
+            "passed_both": 1,
+            "task_key_acc": 0.333,
+            "session_type_acc": 0.333,
+            "both_acc": 0.333
+          },
+          "hard-decoy": {
+            "total": 4,
+            "passed_both": 1,
+            "task_key_acc": 0.25,
+            "session_type_acc": 0.25,
+            "both_acc": 0.25
+          },
+          "medium": {
+            "total": 10,
+            "passed_both": 4,
+            "task_key_acc": 0.6,
+            "session_type_acc": 0.5,
+            "both_acc": 0.4
+          }
+        },
+        "latency": {
+          "total_s": 955.497,
+          "avg_s": 28.954,
+          "min_s": 22.682,
+          "max_s": 39.028,
+          "p50_s": 25.743,
+          "p95_s": 37.813
+        }
+      },
+      "notes": "Baseline eval on Dev B persona with Qwen3.5-9B-OptiQ-4bit. First run using the new --config flag (experiment manifest configs/baseline_b_generic.json). Headline 19/33=58% identical to prior env-var baseline qwen35-9b-optiq-4bit-b_generic-baseline-20260529 — Strategy/config refactor is behaviour-preserving. Failure mix is consistent with optimism-bias being the dominant architectural issue."
+    },
+    {
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "trace_id": "7d85865796211d685eb40ea3bfdd7529",
+      "results_file": "services/tests/evals/results/run_b_generic_extract_then_classify_20260530T190121.json",
+      "date": "2026-05-30",
+      "experiment_name": "extract-then-classify-b_generic-qwen35-9b",
+      "experiment_config": "services/tests/evals/configs/extract_then_classify_b_generic.json",
+      "strategy": "extract_then_classify",
+      "model": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+      "model_declared": "Qwen3.5-9B-OptiQ-4bit",
+      "prompt_version": "etc-v1.0",
+      "prompt_path": "services/skills/activity/task-classifier/SKILL.md",
+      "dataset": "services/tests/evals/data/generated/goldens_b_generic.json",
+      "dataset_name": "goldens_b_generic.json",
+      "persona": "b_generic",
+      "server_url": "http://127.0.0.1:7823",
+      "session_text_cap": 2500,
+      "temperature": 0.0,
+      "max_tokens": 2000,
+      "metrics": {
+        "total_goldens": 40,
+        "passed_both": 18,
+        "task_key_accuracy": 0.625,
+        "session_type_accuracy": 0.5,
+        "both_accuracy": 0.45,
+        "per_tier": {
+          "easy": {
+            "total": 16,
+            "passed_both": 7,
+            "task_key_acc": 0.562,
+            "session_type_acc": 0.438,
+            "both_acc": 0.438
+          },
+          "hard": {
+            "total": 3,
+            "passed_both": 2,
+            "task_key_acc": 0.667,
+            "session_type_acc": 0.667,
+            "both_acc": 0.667
+          },
+          "hard-decoy": {
+            "total": 4,
+            "passed_both": 1,
+            "task_key_acc": 0.75,
+            "session_type_acc": 0.25,
+            "both_acc": 0.25
+          },
+          "medium": {
+            "total": 10,
+            "passed_both": 4,
+            "task_key_acc": 0.4,
+            "session_type_acc": 0.6,
+            "both_acc": 0.4
+          },
+          "overhead": {
+            "total": 4,
+            "passed_both": 4,
+            "task_key_acc": 1.0,
+            "session_type_acc": 1.0,
+            "both_acc": 1.0
+          },
+          "untracked": {
+            "total": 3,
+            "passed_both": 0,
+            "task_key_acc": 1.0,
+            "session_type_acc": 0.0,
+            "both_acc": 0.0
+          }
+        },
+        "latency": {
+          "total_s": 4621.123,
+          "avg_s": 115.528,
+          "min_s": 92.782,
+          "max_s": 168.077,
+          "p50_s": 107.445,
+          "p95_s": 141.127
+        }
+      },
+      "notes": "FIRST eval of the two-stage extract_then_classify strategy. Architectural test of optimism-bias mitigation. Result: HEADLINE 18/40=45% (vs same-day direct_http baseline run_b_generic_direct_http_20260530T183036 19/40=48% — essentially flat). But per-tier reveals the architecture WORKS where designed: overhead 0/4→4/4 (+100pp), untracked task_key 0/3→3/3. Easy tier regressed 13/16→7/16 (−37pp) almost entirely due to JSON-parse failures in stage 1 (Qwen3 thinking-mode burns through max_tokens=5000 on long sessions, or emits unquoted-key JSON). 15 of 22 failures (68%) are implementation bugs in the JSON-parse path; 7 are genuine classifier mistakes (6 pessimism-bias, 1 overhead-untracked-boundary). Architecture validated; implementation needs reliability work."
     }
   ],
   "observations": [
@@ -844,6 +1034,1246 @@
       "type_ok": true,
       "classifier_reasoning": "Session shows active coding in VS Code (app=Code) with OCR text showing editing of scripts/Formula/meridian.rb. The git branch is feat/golden-dataset-kan-139, which directly matches KAN-139's title 'Create golden dataset for task classification'. The work involves adding a SQLite version check to the Homebrew formula, which is part of the implementation for the golden dataset project. Recent context shows prior research and coding on KAN-139, confirming continuity.",
       "failure_class_id": "branch-name-locks-classification"
+    },
+    {
+      "id": "obs-20260529-001",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 12,
+      "tier": "easy",
+      "app_name": "Activity Monitor",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "Activity Monitor is a system utility used to check memory usage and process performance. The user explicitly noted 'Chrome is using too much' and 'quits Figma Desktop' as a system maintenance action, not work on a specific Jira ticket. No evidence of work on any candidate ticket.",
+      "failure_class_id": "overhead-untracked-boundary"
+    },
+    {
+      "id": "obs-20260529-002",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 13,
+      "tier": "medium",
+      "app_name": "Zoom",
+      "expected": {
+        "task_key": "PROJ-210",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-210",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "Zoom meeting explicitly titled 'PROJ-210 auth pair session' with screen share of src/context/AuthContext.tsx on branch 'feat/proj-210-auth-frontend'. Audio confirms discussion of CSRF token handling and axios interceptor wiring, which directly aligns with PROJ-210's migration from JWT to session-co.",
+      "failure_class_id": "meeting-as-ticket-work"
+    },
+    {
+      "id": "obs-20260529-003",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 16,
+      "tier": "medium",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "PROJ-201",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "PROJ-242",
+        "session_type": "task",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "Session shows research on Datadog custom metrics and StatsD Node.js integration, specifically for webhook delivery tracking (webhook.delivery.attempt, webhook.retry_queue.depth). This directly supports PROJ-242 (Slack notification integration for webhook events) which requires webhook event tracking",
+      "failure_class_id": "reading-as-doing"
+    },
+    {
+      "id": "obs-20260529-004",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 18,
+      "tier": "easy",
+      "app_name": "Slack",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-225",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Slack messages explicitly reference PROJ-225 dashboard lazy-load work, including performance metrics (FCP ~3.1s vs ~140ms) and a PR (feat/proj-225-dashboard-lazy-load) that was just pushed. Developer is responding to Priya and Rachel about this specific task, then opening VS Code to run the ReactDev",
+      "failure_class_id": "chat-mention-as-work"
+    },
+    {
+      "id": "obs-20260529-005",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 20,
+      "tier": "medium",
+      "app_name": "Slack",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-225",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Slack message explicitly mentions PROJ-225 performance numbers, PR #94, and dashboard lazy-load work matching the ticket title. Recent session history shows PROJ-225 coding at 15:08, and this Slack session is a direct continuation of that work. OCR content confirms the work is on PROJ-225 dashboard.",
+      "failure_class_id": "chat-mention-as-work"
+    },
+    {
+      "id": "obs-20260529-006",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 21,
+      "tier": "hard-decoy",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "PROJ-225",
+        "session_type": "task",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Stack Overflow research on React Suspense error boundaries and TypeScript const enums directly supports PROJ-225's lazy-load heavy chart components task; developer confirmed existing ErrorBoundary pattern matches implementation; recent session history shows PROJ-225 coding activity 3 minutes prior.",
+      "failure_class_id": "reading-as-doing"
+    },
+    {
+      "id": "obs-20260529-007",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 22,
+      "tier": "medium",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "PROJ-210",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-210",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "Session shows GitHub PR #92 with title 'feat(auth): JWT -> session cookie migration' and labels 'PROJ-210, auth, breaking-change'. OCR confirms PR status, inline review comments from Sarah Chen, and Zoe Dev's replies addressing the review points. This is a direct match to PROJ-210's title 'Migrate'.",
+      "failure_class_id": "pr-review-as-ticket-work"
+    },
+    {
+      "id": "obs-20260529-008",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 25,
+      "tier": "hard",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-225",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Session shows active work on PROJ-225 and PROJ-230 tickets in Linear, with PR #94 (PROJ-225) and PR #95 (PROJ-230) open in GitHub. User updated PROJ-225 status to 'In Review' and added a comment confirming PR #94 is up for review. While PROJ-230 was also updated, the session started with PROJ-225 as",
+      "failure_class_id": "ticket-admin-as-task-work"
+    },
+    {
+      "id": "obs-20260529-009",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 28,
+      "tier": "hard",
+      "app_name": "Slack",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-242",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Slack discussion explicitly references PROJ-242 as the ticket for Slack notification integration when webhook target is dead. The user (Zoe Dev) proposes a detailed technical approach for PROJ-242, including notificationService integration, Slack SDK usage, rate limiting, and sprint planning. The O3",
+      "failure_class_id": "chat-mention-as-work"
+    },
+    {
+      "id": "obs-20260529-010",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 31,
+      "tier": "medium",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-201",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Session shows explicit action of marking PROJ-201 as Done in Linear, with PR #88 already merged. Developer also reviews sprint board and adds EOD comments to PROJ-225 and PROJ-230, but the primary action is closing PROJ-201.",
+      "failure_class_id": "ticket-admin-as-task-work"
+    },
+    {
+      "id": "obs-20260529-011",
+      "run_id": "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+      "seed_id": 34,
+      "tier": "hard-decoy",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-242",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Session shows developer creating architecture notes specifically for PROJ-242 (Slack notification integration for webhook events), referencing PROJ-201's circuit breaker logic, and explicitly adding notes to PROJ-242 in Linear before closing. OCR content directly matches PROJ-242 title and intent.",
+      "failure_class_id": "planning-as-task-work"
+    },
+    {
+      "id": "obs-20260530-001",
+      "run_id": "a_meridian_direct_http_20260530T100236",
+      "seed_id": 1,
+      "tier": "overhead",
+      "app_name": "Slack",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "KAN-136",
+        "session_type": "task",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Slack DM from Aditya Harish explicitly references KAN-136 observability work (parenting run_task_linking under poll_tick, pushing observability bits friday eod). The user is in #eng-meridian channel discussing the same observability spans and mlx server OOM issues tied to KAN-136. Context from prior",
+      "failure_class_id": "chat-mention-as-work"
+    },
+    {
+      "id": "obs-20260530-002",
+      "run_id": "a_meridian_direct_http_20260530T100236",
+      "seed_id": 10,
+      "tier": "overhead",
+      "app_name": "Slack",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "KAN-138",
+        "session_type": "task",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Slack DM with Aditya Harish explicitly mentions KAN-138 mlx merge task and user acknowledges it in reply; recent context shows user was on KAN-139 but this is a clear task switch request.",
+      "failure_class_id": "chat-mention-as-work"
+    },
+    {
+      "id": "obs-20260530-003",
+      "run_id": "a_meridian_direct_http_20260530T100236",
+      "seed_id": 20,
+      "tier": "easy",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "KAN-138",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "User is on branch feat/golden-dataset-kan-139, stashing changes with commit message explicitly referencing KAN-139, then switching to merge-add-obs-with-mlx-persistent-server branch. The session shows git operations directly related to the golden dataset work for KAN-139, including modified test and",
+      "failure_class_id": "branch-name-locks-classification"
+    },
+    {
+      "id": "obs-20260530-004",
+      "run_id": "a_meridian_direct_http_20260530T100236",
+      "seed_id": 26,
+      "tier": "hard-decoy",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "User is reading an article about designing golden datasets for LLM classifiers, which directly aligns with the goal of KAN-139 to create a golden dataset for task classification. The article discusses production LLM evaluation and golden datasets, which is the core of the task. Previous sessions (09",
+      "failure_class_id": "reading-as-doing"
+    },
+    {
+      "id": "obs-20260530-005",
+      "run_id": "a_meridian_direct_http_20260530T100236",
+      "seed_id": 33,
+      "tier": "untracked",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "User is editing CLAUDE.md in the meridian repo, specifically searching for and fixing a typo ('refrence' -> 'reference') in the 'Quick command refrence' section. This directly matches KAN-139's goal of writing Claude instructions for the golden dataset. The git branch name 'feat/golden-dataset-kan-1",
+      "failure_class_id": "meta-file-edit-as-ticket-work"
+    },
+    {
+      "id": "obs-20260530-006",
+      "run_id": "a_meridian_direct_http_20260530T100236",
+      "seed_id": 34,
+      "tier": "untracked",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.9
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Session shows cargo fmt and git log on runner.rs/extractor/screenpipe.rs — files directly modified in KAN-139's golden dataset implementation. Git log shows HEAD on feat/golden-dataset-kan-139 branch. Recent sessions (09:34–09:43) were all KAN-139 coding. No evidence of KAN-136 observability work in",
+      "failure_class_id": "branch-name-locks-classification"
+    },
+    {
+      "id": "obs-20260530-007",
+      "run_id": "a_meridian_direct_http_20260530T100236",
+      "seed_id": 36,
+      "tier": "hard",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "KAN-136",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.9
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "The active file is src/observability.rs, which directly matches the title and description of KAN-139 (Create golden dataset for task classification). The git branch is 'feat/golden-dataset-kan-139', and the Explorer shows files related to the golden dataset (candidates_meridian.json, dev_a_sessions,",
+      "failure_class_id": "branch-name-locks-classification"
+    },
+    {
+      "id": "obs-20260530-008",
+      "run_id": "a_meridian_direct_http_20260530T100236",
+      "seed_id": 38,
+      "tier": "hard-decoy",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "User is reading Hamel Husain's article on AI evaluation fallacies and golden dataset problems. This directly aligns with KAN-139's goal of creating a golden dataset for task classification. The article discusses calibration problems, inter-annotator agreement noise, and failure-mode-driven dataset —",
+      "failure_class_id": "reading-as-doing"
+    },
+    {
+      "id": "obs-20260530-009",
+      "run_id": "a_meridian_direct_http_20260530T100236",
+      "seed_id": 40,
+      "tier": "overhead",
+      "app_name": "Slack",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "KAN-105",
+        "session_type": "task",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Slack #standups channel shows Aditya Harish explicitly mentioning 'starting on the KAN-139 golden dataset review pass' and 'reviewing the KAN-105 doc with the team async'. The session is a standup update about KAN-105 progress, directly linking to the ticket. Recent context shows KAN-139 work 5 min,",
+      "failure_class_id": "chat-mention-as-work"
+    },
+    {
+      "id": "obs-20260530-010",
+      "run_id": "a_meridian_direct_http_20260530T100236",
+      "seed_id": 41,
+      "tier": "hard-decoy",
+      "app_name": "LM Studio",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.92
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "User is actively building the golden dataset for task classification (KAN-139). Evidence: 1) Branch name 'feat/golden-dataset-kan-139' visible in GitHub tab. 2) User is testing the 'Task Classifier' system prompt (from SKILL.md) in LM Studio. 3) The first test prompt is 'eval-article reading case' —",
+      "failure_class_id": "dogfooding-as-ticket-work"
+    },
+    {
+      "id": "obs-20260530-011",
+      "run_id": "a_meridian_direct_http_20260530T100236",
+      "seed_id": 42,
+      "tier": "hard",
+      "app_name": "DBeaver",
+      "expected": {
+        "task_key": "KAN-139",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "untracked",
+        "confidence": 0.75
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Session shows DBeaver SQL queries against meridian.db to inspect app_sessions table and join with ticket_links. No specific ticket key is referenced in the SQL or window titles. The work is database exploration/analysis of the classification system itself, not implementation of a specific ticket. No",
+      "failure_class_id": "dataset-analysis-missed-as-ticket-work"
+    },
+    {
+      "id": "obs-20260530-012",
+      "run_id": "a_meridian_direct_http_20260530T100236",
+      "seed_id": 43,
+      "tier": "overhead",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "PR #33 title explicitly references KAN-139 (feat/golden-dataset-kan-139). The commit message matches the ticket description (golden dataset for task classification). The developer is reviewing CI test logs for this PR, which directly relates to the golden dataset implementation. The active tab and 2",
+      "failure_class_id": "pr-review-as-ticket-work"
+    },
+    {
+      "id": "obs-20260530-013",
+      "run_id": "a_meridian_direct_http_20260530T100236",
+      "seed_id": 47,
+      "tier": "untracked",
+      "app_name": "Activity Monitor",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "Activity Monitor is a system utility for monitoring resource usage, not a work task. The developer is inspecting memory usage and quitting Xcode, which is system maintenance/optimization, not work on a specific Jira ticket. No evidence of coding, research, or task-related work.",
+      "failure_class_id": "overhead-untracked-boundary"
+    },
+    {
+      "id": "obs-20260530-014",
+      "run_id": "a_meridian_direct_http_20260530T100236",
+      "seed_id": 48,
+      "tier": "overhead",
+      "app_name": "FaceTime",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "KAN-136",
+        "session_type": "task",
+        "confidence": 0.92
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "FaceTime call with Aditya Harish discussing observability implementation for Rust shutdown flow; screen share shows Rust code with TODO(KAN-136) comment and whiteboard sketch matching KAN-136 description; developer taking notes in Notes.app with KAN-136 reference; recent sessions show KAN-139 and K-",
+      "failure_class_id": "meeting-as-ticket-work"
+    },
+    {
+      "id": "obs-20260530-015",
+      "run_id": "a_meridian_direct_http_20260530T100236",
+      "seed_id": 49,
+      "tier": "easy",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "KAN-137",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "The session shows editing scripts/Formula/meridian.rb with a branch name 'feat/golden-dataset-kan-139' visible in the source control panel. The file content is a Homebrew formula for meridian, and the developer is reading through the caveats block and adding a sqlite version check. This directly KAN",
+      "failure_class_id": "branch-name-locks-classification"
+    },
+    {
+      "id": "obs-20260530-016",
+      "run_id": "b_generic_direct_http_20260530T110547",
+      "seed_id": 1,
+      "tier": "easy",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-210",
+        "session_type": "task",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "User is in Linear 'My Issues' view filtered by assignee, status, and due date. The active tab shows PROJ-210 'Migrate auth from JWT to session cookies' with a HIGH priority and due date tomorrow. The last comment from Alex Rodriguez discusses frontend CSRF protection requirements for cookies, which,",
+      "failure_class_id": "ticket-admin-as-task-work"
+    },
+    {
+      "id": "obs-20260530-017",
+      "run_id": "b_generic_direct_http_20260530T110547",
+      "seed_id": 2,
+      "tier": "medium",
+      "app_name": "Slack",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-210",
+        "session_type": "task",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Slack #engineering channel shows explicit mention of PROJ-210 auth migration due tomorrow with Sarah Chen's reminder; prior context from recent sessions indicates user was working on auth-related code (AuthContext.tsx) for this ticket; current Slack session is catching up on overnight messages that ",
+      "failure_class_id": "chat-mention-as-work"
+    },
+    {
+      "id": "obs-20260530-018",
+      "run_id": "b_generic_direct_http_20260530T110547",
+      "seed_id": 7,
+      "tier": "hard-decoy",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "PROJ-201",
+        "session_type": "task",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Session shows focused research on Stripe webhook retry behavior and idempotency handling, which directly aligns with PROJ-201's title 'Implement webhook retry logic with exponential backoff'. OCR content explicitly mentions Stripe's 72-hour retry schedule with exponential backoff and idempotency, a ",
+      "failure_class_id": "reading-as-doing"
+    },
+    {
+      "id": "obs-20260530-019",
+      "run_id": "b_generic_direct_http_20260530T110547",
+      "seed_id": 12,
+      "tier": "easy",
+      "app_name": "Activity Monitor",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "Activity Monitor is a system utility used to check memory usage and process performance. The user explicitly noted 'Chrome is using too much' and 'quits Figma Desktop' as a system maintenance action, not work on a specific Jira ticket. No evidence of work on any candidate ticket.",
+      "failure_class_id": "overhead-untracked-boundary"
+    },
+    {
+      "id": "obs-20260530-020",
+      "run_id": "b_generic_direct_http_20260530T110547",
+      "seed_id": 13,
+      "tier": "medium",
+      "app_name": "Zoom",
+      "expected": {
+        "task_key": "PROJ-210",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-210",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "Zoom meeting explicitly titled 'PROJ-210 auth pair session' with screen share of src/context/AuthContext.tsx on branch 'feat/proj-210-auth-frontend'. Audio confirms discussion of CSRF token handling and axios interceptor wiring, which directly aligns with PROJ-210's migration from JWT to session-co.",
+      "failure_class_id": "meeting-as-ticket-work"
+    },
+    {
+      "id": "obs-20260530-021",
+      "run_id": "b_generic_direct_http_20260530T110547",
+      "seed_id": 16,
+      "tier": "medium",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "PROJ-201",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "PROJ-242",
+        "session_type": "task",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "Session shows research on Datadog custom metrics and StatsD Node.js integration, specifically for webhook delivery tracking (webhook.delivery.attempt, webhook.retry_queue.depth). This directly supports PROJ-242 (Slack notification integration for webhook events) which requires webhook event tracking",
+      "failure_class_id": "reading-as-doing"
+    },
+    {
+      "id": "obs-20260530-022",
+      "run_id": "b_generic_direct_http_20260530T110547",
+      "seed_id": 18,
+      "tier": "easy",
+      "app_name": "Slack",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-225",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Slack messages explicitly reference PROJ-225 dashboard lazy-load work, including performance metrics (FCP ~3.1s vs ~140ms) and a PR (feat/proj-225-dashboard-lazy-load) that was just pushed. Developer is responding to Priya and Rachel about this specific task, then opening VS Code to run the ReactDev",
+      "failure_class_id": "chat-mention-as-work"
+    },
+    {
+      "id": "obs-20260530-023",
+      "run_id": "b_generic_direct_http_20260530T110547",
+      "seed_id": 20,
+      "tier": "medium",
+      "app_name": "Slack",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-225",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Slack message explicitly mentions PROJ-225 performance numbers, PR #94, and dashboard lazy-load work matching the ticket title. Recent session history shows PROJ-225 coding at 15:08, and this Slack session is a direct continuation of that work. OCR content confirms the work is on PROJ-225 dashboard.",
+      "failure_class_id": "chat-mention-as-work"
+    },
+    {
+      "id": "obs-20260530-024",
+      "run_id": "b_generic_direct_http_20260530T110547",
+      "seed_id": 21,
+      "tier": "hard-decoy",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "PROJ-225",
+        "session_type": "task",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Stack Overflow research on React Suspense error boundaries and TypeScript const enums directly supports PROJ-225's lazy-load heavy chart components task; developer confirmed existing ErrorBoundary pattern matches implementation; recent session history shows PROJ-225 coding activity 3 minutes prior.",
+      "failure_class_id": "reading-as-doing"
+    },
+    {
+      "id": "obs-20260530-025",
+      "run_id": "b_generic_direct_http_20260530T110547",
+      "seed_id": 22,
+      "tier": "medium",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "PROJ-210",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-210",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "Session shows GitHub PR #92 with title 'feat(auth): JWT -> session cookie migration' and labels 'PROJ-210, auth, breaking-change'. OCR confirms PR status, inline review comments from Sarah Chen, and Zoe Dev's replies addressing the review points. This is a direct match to PROJ-210's title 'Migrate'.",
+      "failure_class_id": "pr-review-as-ticket-work"
+    },
+    {
+      "id": "obs-20260530-026",
+      "run_id": "b_generic_direct_http_20260530T110547",
+      "seed_id": 25,
+      "tier": "hard",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-225",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Session shows active work on PROJ-225 and PROJ-230 tickets in Linear, with PR #94 (PROJ-225) and PR #95 (PROJ-230) open in GitHub. User updated PROJ-225 status to 'In Review' and added a comment confirming PR #94 is up for review. While PROJ-230 was also updated, the session started with PROJ-225 as",
+      "failure_class_id": "ticket-admin-as-task-work"
+    },
+    {
+      "id": "obs-20260530-027",
+      "run_id": "b_generic_direct_http_20260530T110547",
+      "seed_id": 28,
+      "tier": "hard",
+      "app_name": "Slack",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-242",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Slack discussion explicitly references PROJ-242 as the ticket for Slack notification integration when webhook target is dead. The user (Zoe Dev) proposes a detailed technical approach for PROJ-242, including notificationService integration, Slack SDK usage, rate limiting, and sprint planning. The O3",
+      "failure_class_id": "chat-mention-as-work"
+    },
+    {
+      "id": "obs-20260530-028",
+      "run_id": "b_generic_direct_http_20260530T110547",
+      "seed_id": 31,
+      "tier": "medium",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-201",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Session shows explicit action of marking PROJ-201 as Done in Linear, with PR #88 already merged. Developer also reviews sprint board and adds EOD comments to PROJ-225 and PROJ-230, but the primary action is closing PROJ-201.",
+      "failure_class_id": "ticket-admin-as-task-work"
+    },
+    {
+      "id": "obs-20260530-029",
+      "run_id": "b_generic_direct_http_20260530T110547",
+      "seed_id": 34,
+      "tier": "hard-decoy",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "PROJ-242",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Session shows developer creating architecture notes specifically for PROJ-242 (Slack notification integration for webhook events), referencing PROJ-201's circuit breaker logic, and explicitly adding notes to PROJ-242 in Linear before closing. OCR content directly matches PROJ-242 title and intent.",
+      "failure_class_id": "planning-as-task-work"
+    },
+    {
+      "id": "obs-20260530-030",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 3,
+      "tier": "easy",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "PROJ-210",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "",
+      "failure_class_id": "pessimism-bias"
+    },
+    {
+      "id": "obs-20260530-031",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 4,
+      "tier": "easy",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "PROJ-210",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "",
+      "failure_class_id": "pessimism-bias"
+    },
+    {
+      "id": "obs-20260530-032",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 7,
+      "tier": "hard-decoy",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "stage2 classify: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Input: Structured evidence extraction (from a stage-1 model) and a list of candidate tickets.\\n    *   Co'",
+      "failure_class_id": "stage2-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-033",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 9,
+      "tier": "medium",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "PROJ-225",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "stage1 extract: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Role: Evidence extractor for a session classifier.\\n    *   Input: Session data (OCR text, window titles,'",
+      "failure_class_id": "stage1-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-034",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 10,
+      "tier": "easy",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "PROJ-225",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "",
+      "failure_class_id": "pessimism-bias"
+    },
+    {
+      "id": "obs-20260530-035",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 11,
+      "tier": "medium",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "PROJ-201",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "stage1 extract: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Role: Evidence extractor for a session classifier.\\n    *   Input: Session data (OCR text, window titles,'",
+      "failure_class_id": "stage1-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-036",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 12,
+      "tier": "easy",
+      "app_name": "Activity Monitor",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.92
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "Rule 1 applies. Evidence strength is 'none'. User action 'system_utility' maps to overhead. No ticket mentions found.",
+      "failure_class_id": "overhead-untracked-boundary"
+    },
+    {
+      "id": "obs-20260530-037",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 13,
+      "tier": "medium",
+      "app_name": "Zoom",
+      "expected": {
+        "task_key": "PROJ-210",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "stage2 classify: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Input: Structured evidence extraction (from a stage-1 model) and a list of candidate tickets.\\n    *   Co'",
+      "failure_class_id": "stage2-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-038",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 14,
+      "tier": "hard",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "PROJ-201",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "stage1 extract: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Role: Evidence extractor for a session classifier.\\n    *   Input: Session data (OCR text, window titles,'",
+      "failure_class_id": "stage1-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-039",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 15,
+      "tier": "hard-decoy",
+      "app_name": "Postman",
+      "expected": {
+        "task_key": "PROJ-201",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "stage1 extract: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Role: Evidence extractor for a session classifier.\\n    *   Input: Session data (OCR text, window titles,'",
+      "failure_class_id": "stage1-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-040",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 16,
+      "tier": "medium",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "PROJ-201",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "stage1 extract: JSON parse error: Expecting property name enclosed in double quotes: line 1 column 26 (char 25) — snippet: '{ \"key\": \"<TICKET-NNN>\", ... } ].\\n    *   I need to find explicit ticket keys in the session text.\\n    *   Scanning OCR: \"webhook_delivery_failed\", \"webhook_ret'",
+      "failure_class_id": "stage1-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-041",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 17,
+      "tier": "easy",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "PROJ-201",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "",
+      "failure_class_id": "pessimism-bias"
+    },
+    {
+      "id": "obs-20260530-042",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 19,
+      "tier": "easy",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "PROJ-225",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "stage2 classify: JSON parse error: Expecting property name enclosed in double quotes: line 1 column 2 (char 1) — snippet: '{`.\\n\\n    *   Let\\'s refine the reasoning to be precise.\\n    *   \"Rule 3: Strong evidence strength, branch_name match for PROJ-225, active work signals.\"\\n\\n    *  '",
+      "failure_class_id": "stage2-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-043",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 21,
+      "tier": "hard-decoy",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "stage2 classify: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Input: Structured evidence extraction (from a stage-1 model) and a list of candidate tickets.\\n    *   Co'",
+      "failure_class_id": "stage2-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-044",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 22,
+      "tier": "medium",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "PROJ-210",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "",
+      "failure_class_id": "pessimism-bias"
+    },
+    {
+      "id": "obs-20260530-045",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 24,
+      "tier": "easy",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "PROJ-230",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "",
+      "failure_class_id": "pessimism-bias"
+    },
+    {
+      "id": "obs-20260530-046",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 29,
+      "tier": "easy",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "PROJ-215",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "stage2 classify: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Input: Structured evidence extraction (from a stage-1 model) and a list of candidate tickets.\\n    *   Co'",
+      "failure_class_id": "stage2-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-047",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 33,
+      "tier": "easy",
+      "app_name": "Terminal",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "stage1 extract: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Role: Evidence extractor for a session classifier.\\n    *   Input: Session data (OCR text, window titles,'",
+      "failure_class_id": "stage1-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-048",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 35,
+      "tier": "medium",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "PROJ-230",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "stage1 extract: JSON parse error: Expecting property name enclosed in double quotes: line 1 column 3 (char 2) — snippet: '{ key, evidence_type, context } ]`.\\n    *   I can have multiple entries for PROJ-230.\\n    *   Entry 1: key `PROJ-230`, evidence_type `branch_name`, context `fea'",
+      "failure_class_id": "stage1-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-049",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 36,
+      "tier": "untracked",
+      "app_name": "Terminal",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "stage1 extract: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Role: Evidence extractor for a session classifier.\\n    *   Input: Session data (Terminal, OCR text, time'",
+      "failure_class_id": "stage1-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-050",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 41,
+      "tier": "untracked",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "stage2 classify: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Input: Structured evidence extraction (from a stage-1 model) and a list of candidate tickets.\\n    *   Co'",
+      "failure_class_id": "stage2-json-parse-failure"
+    },
+    {
+      "id": "obs-20260530-051",
+      "run_id": "b_generic_extract_then_classify_20260530T190121",
+      "seed_id": 42,
+      "tier": "untracked",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "stage1 extract: no JSON object found in response: 'Thinking Process:\\n\\n1.  **Analyze the Request:**\\n    *   Role: Evidence extractor for a session classifier.\\n    *   Input: Session data (OCR text, window titles,'",
+      "failure_class_id": "stage1-json-parse-failure"
     }
   ],
   "failure_classes": [
@@ -854,15 +2284,22 @@
       "observed_in_runs": [
         "phi4-4bit-dev_a-baseline-20260528",
         "smoke_20260528T162251",
-        "smoke_20260528T180202"
+        "smoke_20260528T180202",
+        "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+        "a_meridian_direct_http_20260530T100236",
+        "b_generic_direct_http_20260530T110547"
       ],
       "observed_in_seeds": [
         1,
         10,
         40,
-        48
+        48,
+        18,
+        20,
+        28,
+        2
       ],
-      "occurrence_count": 10,
+      "occurrence_count": 20,
       "proposed_prompt_rule": "Mentions of a ticket key in chat, Slack, email, or comments are *conversation*, not work. To classify a session as `task` for a ticket, the user must be actively editing files, running commands, debugging issues, or otherwise executing on the ticket — not just discussing it. Discriminator question: 'Am I seeing the user DO the work, or DISCUSS the work?'",
       "status": "open",
       "resolved_in": null,
@@ -875,14 +2312,20 @@
       "observed_in_runs": [
         "phi4-4bit-dev_a-baseline-20260528",
         "smoke_20260528T162251",
-        "smoke_20260528T180202"
+        "smoke_20260528T180202",
+        "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+        "a_meridian_direct_http_20260530T100236",
+        "b_generic_direct_http_20260530T110547"
       ],
       "observed_in_seeds": [
         25,
         26,
-        38
+        38,
+        16,
+        21,
+        7
       ],
-      "occurrence_count": 6,
+      "occurrence_count": 13,
       "proposed_prompt_rule": "Reading articles, browsing documentation, or watching videos about a topic is research/learning — not active work on a matching ticket, even when the topic and the ticket are an exact match. Classify these as `untracked` or `overhead` unless the user is also actively editing or executing in the same session.",
       "status": "open",
       "resolved_in": null,
@@ -895,13 +2338,14 @@
       "observed_in_runs": [
         "phi4-4bit-dev_a-baseline-20260528",
         "smoke_20260528T162251",
-        "smoke_20260528T180202"
+        "smoke_20260528T180202",
+        "a_meridian_direct_http_20260530T100236"
       ],
       "observed_in_seeds": [
         33
       ],
-      "occurrence_count": 3,
-      "highest_confidence": 0.9,
+      "occurrence_count": 4,
+      "highest_confidence": 0.95,
       "proposed_prompt_rule": "Editing documentation, configuration, CLAUDE.md, or eval files is *overhead* — not active work on whatever ticket those files describe. Exception: when the active ticket explicitly says 'update docs' or 'edit config' in its description.",
       "status": "open",
       "resolved_in": null
@@ -931,7 +2375,10 @@
       "observed_in_runs": [
         "phi4-4bit-dev_a-baseline-20260528",
         "smoke_20260528T162251",
-        "smoke_20260528T180202"
+        "smoke_20260528T180202",
+        "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+        "a_meridian_direct_http_20260530T100236",
+        "b_generic_direct_http_20260530T110547"
       ],
       "observed_in_seeds": [
         1,
@@ -946,9 +2393,19 @@
         41,
         43,
         48,
-        49
+        49,
+        13,
+        16,
+        18,
+        21,
+        22,
+        25,
+        28,
+        31,
+        2,
+        7
       ],
-      "occurrence_count": 27,
+      "occurrence_count": 61,
       "proposed_prompt_rule": "Default to `untracked` or `overhead` when the evidence is *adjacent* rather than *direct*. Adjacent evidence (mentions, related reading, related infra, file-path overlap) is the most common failure mode for this classifier in production — bias toward 'I don't know' over confidently picking a ticket that the user is merely *near*. A confidence-calibration rule may also help: if any of {chat-mention, topical-adjacency, meta-file-edit} signals are present, cap confidence at 0.6 unless paired with direct execution evidence.",
       "status": "open",
       "resolved_in": null,
@@ -962,14 +2419,16 @@
       "description": "Inverse of filepath-outweighs-branch. When the git branch name encodes a ticket key but the active edit/terminal content clearly belongs to a different ticket's scope, the classifier latches onto the branch name and ignores the in-session content evidence. Triggered when developers open feature branches that host opportunistic cross-ticket work.",
       "observed_in_runs": [
         "smoke_20260528T162251",
-        "smoke_20260528T180202"
+        "smoke_20260528T180202",
+        "a_meridian_direct_http_20260530T100236"
       ],
       "observed_in_seeds": [
         34,
         36,
-        49
+        49,
+        20
       ],
-      "occurrence_count": 4,
+      "occurrence_count": 8,
       "highest_confidence": 0.95,
       "proposed_prompt_rule": "Branch name is a strong but not authoritative signal. When the active session content (file being edited, terminal commands, OCR text) clearly indicates a different ticket's scope than the branch name, prefer the in-session content. A branch named for one ticket may host opportunistic work for another (e.g., a developer fixes a separate issue mid-branch). The most-recent-action signal beats the branch-name signal when they disagree. Note the tension with `filepath-outweighs-branch` — the right rule weighs both signals and prefers the one most clearly tied to the *current* work in the session.",
       "status": "open",
@@ -980,12 +2439,13 @@
       "title": "Testing/evaluating own product ≠ active work on the ticket",
       "description": "User is running, testing, or evaluating the classifier system itself (e.g., pasting SKILL.md into LM Studio to test a prompt variant, running eval scripts, inspecting classifier output). Classifier interprets dogfooding as active development on the ticket that produced the classifier.",
       "observed_in_runs": [
-        "smoke_20260528T162251"
+        "smoke_20260528T162251",
+        "a_meridian_direct_http_20260530T100236"
       ],
       "observed_in_seeds": [
         41
       ],
-      "occurrence_count": 1,
+      "occurrence_count": 2,
       "highest_confidence": 0.92,
       "proposed_prompt_rule": "Testing or evaluating the classifier (pasting prompts into LM Studio, running eval scripts, inspecting model outputs, running smoke_run.py) is *eval/research work*, not active development on the ticket that built the classifier. Discriminator: 'is the user editing the code/config that defines the classifier, or running the classifier to observe its behavior?' The latter is `untracked` or `overhead`, not `task`.",
       "status": "open",
@@ -997,14 +2457,15 @@
       "description": "Inverse direction to optimism-bias. Classifier is too cautious when the user is BUILDING the deliverable (creating golden dataset entries, writing eval seeds), ANALYZING the product's data (querying meridian.db, inspecting eval metrics), or DEBUGGING the eval pipeline (reviewing classifier failures) — all when an open ticket explicitly calls for that activity. Classifier returns `untracked` or `none/task` instead of the matching ticket. False-negative direction — opposite from optimism-bias.",
       "observed_in_runs": [
         "smoke_20260528T162251",
-        "smoke_20260528T180202"
+        "smoke_20260528T180202",
+        "a_meridian_direct_http_20260530T100236"
       ],
       "observed_in_seeds": [
         11,
         42,
         45
       ],
-      "occurrence_count": 3,
+      "occurrence_count": 4,
       "direction": "false-negative",
       "proposed_prompt_rule": "When a user is producing the deliverable for an open ticket — by building test data the ticket asks for, querying/analyzing the product's own data when the ticket calls for that analysis, or debugging the eval pipeline whose construction IS the ticket — classify as `task` for the matching ticket. The output of the session IS the ticket deliverable. Distinguish from pure ops/admin queries (resource monitoring, schema migration) which remain `overhead`, and from research not tied to any open ticket which remains `untracked`.",
       "note": "Bidirectional tension with optimism-bias. Fixing optimism-bias too aggressively (e.g., 'always default to untracked when evidence is adjacent') risks worsening this class. Worth tracking jointly when revising SKILL.md.",
@@ -1017,12 +2478,16 @@
       "description": "User is reviewing a pull request (own or others') that implements a ticket. Classifier reads the PR title's ticket reference and classifies as `task` for that ticket. But code review/QA is `overhead` — quality control on already-completed work, not active development. Triggered by GitHub/GitLab PR pages with ticket keys in title.",
       "observed_in_runs": [
         "smoke_20260528T162251",
-        "smoke_20260528T180202"
+        "smoke_20260528T180202",
+        "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+        "a_meridian_direct_http_20260530T100236",
+        "b_generic_direct_http_20260530T110547"
       ],
       "observed_in_seeds": [
-        43
+        43,
+        22
       ],
-      "occurrence_count": 2,
+      "occurrence_count": 5,
       "highest_confidence": 0.95,
       "proposed_prompt_rule": "Reviewing a pull request (GitHub/GitLab PR page, diff view, CI logs for a PR) is *code review overhead*, not active development on the underlying ticket — even when the PR title explicitly mentions the ticket key. The work being reviewed is already complete; review/approval is meta-work. Classify as `overhead`. Exception: when the reviewer IS the implementer and is making revision-pass edits in response to comments, that is active ticket work.",
       "status": "open",
@@ -1034,17 +2499,158 @@
       "description": "Classifier correctly determines no ticket fits (task_key=none) but picks the wrong session_type (overhead vs untracked). The two are close: overhead = communication/admin/meta-activity; untracked = work-like activity that doesn't fit any open ticket. System utilities, exploration, and ambiguous tool use can plausibly be either. Lower priority than the optimism-bias failures because task_key is correct.",
       "observed_in_runs": [
         "smoke_20260528T162251",
-        "smoke_20260528T180202"
+        "smoke_20260528T180202",
+        "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+        "a_meridian_direct_http_20260530T100236",
+        "b_generic_direct_http_20260530T110547",
+        "b_generic_extract_then_classify_20260530T190121"
       ],
       "observed_in_seeds": [
         41,
-        47
+        47,
+        12
       ],
-      "occurrence_count": 3,
+      "occurrence_count": 7,
       "priority": "lower",
       "proposed_prompt_rule": "Sharpen the overhead-vs-untracked distinction. Overhead = communication (chat, email, calls), admin (planning, scheduling, expense reporting), or context-switching meta-activity. Untracked = focused work-like activity that doesn't fit any open ticket — system inspection (Activity Monitor), exploration, research, learning, maintenance. When in doubt: 'is this productive activity that just isn't ticketed?' → untracked. 'Is this between-work or about-work?' → overhead.",
       "status": "open",
       "resolved_in": null
+    },
+    {
+      "id": "meeting-as-ticket-work",
+      "title": "Video call or pair-programming session with ticket content visible ≠ implementing that ticket",
+      "description": "When a Zoom or similar video call session shows a ticket-related meeting title, screen share of a feature branch, or audio discussing ticket implementation details, the classifier labels it as active task work. A meeting is overhead regardless of what is visible on screen — a pair-programming session or code review call is still a meeting, not a coding session.",
+      "observed_in_runs": [
+        "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+        "a_meridian_direct_http_20260530T100236",
+        "b_generic_direct_http_20260530T110547"
+      ],
+      "observed_in_seeds": [
+        13,
+        48
+      ],
+      "occurrence_count": 3,
+      "proposed_prompt_rule": "A session in a video-conferencing app (Zoom, Teams, Google Meet) is always overhead (task_key: null, session_type: overhead), regardless of whether the screen shows code, PRs, or a ticket key in the meeting title. Treat all video call sessions as overhead.",
+      "status": "open",
+      "resolved_in": null,
+      "highest_confidence": 0.95,
+      "priority": "high",
+      "direction": "false-positive",
+      "rationale": "High-confidence failure (0.95) with a simple deterministic fix — app-name guard in the overhead gate."
+    },
+    {
+      "id": "ticket-admin-as-task-work",
+      "title": "Updating ticket status or sprint board in Linear/Jira ≠ development work on that ticket",
+      "description": "When the developer updates ticket statuses (Done, In Review), adds EOD comments to tickets, or reviews the sprint board in Linear or Jira, the classifier treats the session as active implementation work on the referenced ticket. PM admin actions signal that work has finished, not that it is currently in progress.",
+      "observed_in_runs": [
+        "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+        "b_generic_direct_http_20260530T110547"
+      ],
+      "observed_in_seeds": [
+        25,
+        31,
+        1
+      ],
+      "occurrence_count": 5,
+      "proposed_prompt_rule": "A session in a project-management tool (Linear, Jira, GitHub Issues) where the developer is updating ticket statuses, writing ticket comments, closing tickets, or reviewing sprint boards is overhead (task_key: null, session_type: overhead). PM admin actions are not development work — they signal work is already done.",
+      "status": "open",
+      "resolved_in": null,
+      "highest_confidence": 0.95,
+      "priority": "high",
+      "direction": "false-positive",
+      "note": "Related to `chat-mention-as-work` — both trigger when ticket vocabulary appears without code-production evidence. This class is specifically about PM tool sessions (Linear, Jira); chat-mention-as-work covers messaging apps."
+    },
+    {
+      "id": "planning-as-task-work",
+      "title": "Writing planning notes or architecture docs about a future ticket ≠ implementing it",
+      "description": "When a developer writes planning notes, architecture documents, or draft specs about an upcoming or future-sprint ticket in a code editor (e.g., writing to /tmp), the classifier labels it as active task work on that ticket. Pre-implementation planning produces no code artifacts and typically refers to a ticket not yet in the current sprint.",
+      "observed_in_runs": [
+        "qwen35-9b-optiq-4bit-b_generic-baseline-20260529",
+        "b_generic_direct_http_20260530T110547"
+      ],
+      "observed_in_seeds": [
+        34
+      ],
+      "occurrence_count": 2,
+      "proposed_prompt_rule": "A session where the developer writes planning notes, architecture documents, or draft specs ABOUT a ticket is overhead (task_key: null, session_type: overhead). Only classify as task when the session shows active implementation: editing source files in the ticket's domain, running tests, or making commits. Writing to /tmp paths or markdown files without accompanying source edits is a planning signal.",
+      "status": "open",
+      "resolved_in": null,
+      "highest_confidence": 0.95,
+      "priority": "medium",
+      "direction": "false-positive",
+      "note": "Single observation so far. The prompt rule is harder to apply in production because sprint state is not visible to the classifier. Lean on implementation-evidence signals (source file edits, test runs, git commits) rather than ticket-sprint status."
+    },
+    {
+      "id": "pessimism-bias",
+      "title": "Classifier under-labels strong evidence as weak — misses real task work",
+      "description": "The mirror image of optimism-bias. The stage-1 extractor labels evidence as weak/none when there IS strong implementation evidence (Code editor open on the ticket's files, ticket_mentions present), and the classifier then misses the task assignment. First observed in run b_generic_extract_then_classify_20260530T190121 where 6/22 failures were Code/Chrome sessions with PROJ-* tickets that should have classified as task but came back as task_key=none/overhead.",
+      "observed_in_runs": [
+        "b_generic_extract_then_classify_20260530T190121"
+      ],
+      "observed_in_seeds": [
+        3,
+        4,
+        10,
+        17,
+        22,
+        24
+      ],
+      "occurrence_count": 6,
+      "proposed_prompt_rule": "Strengthen the evidence_strength_for_implementation rubric in the EXTRACT system prompt: when ANY of (file path includes ticket-key fragment, branch_name matches ticket_key, active editor focus on .ts/.py/.rs files with code visible, terminal commands tied to ticket workflow) is present, evidence_strength MUST be 'strong'. Currently the rubric only escalates to 'strong' on the strict 'editor open on branch AND active editing' combination, leaving too many genuine task sessions in the 'weak' bucket.",
+      "status": "open",
+      "resolved_in": null,
+      "priority": "highest",
+      "rationale": "Strategy-specific architectural defect — opposite of optimism-bias. If unaddressed, ETC trades one bias for another. Higher priority than optimism-bias because it manifests on the EASY tier (clear-cut task work) while optimism-bias hits decoy tiers.",
+      "direction": "false-negative"
+    },
+    {
+      "id": "stage1-json-parse-failure",
+      "title": "Stage-1 extractor returns unparseable JSON — Qwen3 thinking overflow or malformed structure",
+      "description": "Implementation bug specific to ExtractThenClassifyStrategy. Stage 1 (extraction) on Qwen3.5-9B emits one of two failure modes: (a) chain-of-thought consumes max_tokens=5000 before any JSON is output, leaving only 'Thinking Process:' prose in the response; (b) the JSON is emitted but with unquoted keys ('{key: \"...\", evidence_type: \"...\"}') making it strict-JSON-invalid. Affected 9/22 failures in the first ETC run. Not architectural — symptom of running unconstrained-decoding (/v1/chat/completions) on a thinking-mode model.",
+      "observed_in_runs": [
+        "b_generic_extract_then_classify_20260530T190121"
+      ],
+      "observed_in_seeds": [
+        9,
+        11,
+        14,
+        15,
+        16,
+        33,
+        35,
+        36,
+        42
+      ],
+      "occurrence_count": 9,
+      "proposed_prompt_rule": "Three independent paths to fix: (1) Bump extraction_max_tokens to 8000+ to give Qwen3 thinking headroom on long sessions. (2) Add a server endpoint that accepts a Pydantic schema and uses outlines FSM-constrained decoding (like /classify does) — guarantees schema-valid output regardless of model behaviour. (3) Make the parser tolerant of unquoted keys via a YAML or json5 fallback after strict JSON fails. Option (2) is the production-grade fix; options (1) and (3) are stopgaps.",
+      "status": "open",
+      "resolved_in": null,
+      "priority": "highest",
+      "rationale": "Largest single source of failures in the ETC run (9/22). Until this is fixed, the strategy's accuracy floor is artificially depressed and any per-tier comparison against direct_http is noisy.",
+      "note": "Affects ExtractThenClassifyStrategy only. DirectHttpStrategy uses /classify which has FSM-constrained outputs via outlines and does not exhibit this failure mode."
+    },
+    {
+      "id": "stage2-json-parse-failure",
+      "title": "Stage-2 classifier returns unparseable JSON — same root cause as stage 1",
+      "description": "Same implementation bug as stage1-json-parse-failure but in the classification stage (2). Stage 2 prompt is shorter than stage 1 (extracted_evidence + candidates instead of raw session text) so it fails less often, but still 6/22 failures in the first ETC run. Both failure modes (thinking overflow, malformed JSON) observed. Splitting from stage1 because the fix paths are similar but the diagnostic split is useful (which stage burns the most budget?).",
+      "observed_in_runs": [
+        "b_generic_extract_then_classify_20260530T190121"
+      ],
+      "observed_in_seeds": [
+        7,
+        13,
+        19,
+        21,
+        29,
+        41
+      ],
+      "occurrence_count": 6,
+      "proposed_prompt_rule": "Same three fixes as stage1-json-parse-failure. Stage 2 fix is HIGHER priority for production-readiness because stage 2 is on the critical path of every successful extraction.",
+      "status": "open",
+      "resolved_in": null,
+      "priority": "high",
+      "rationale": "Second-largest source of failures. Same root cause as stage1-json-parse-failure but downstream.",
+      "note": "Affects ExtractThenClassifyStrategy only."
     }
   ]
 }

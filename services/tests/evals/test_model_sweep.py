@@ -1,22 +1,22 @@
-"""Eval suite for the Stage 3 session→task classifier (KAN-109).
+"""pytest scaffold for sweeping Ollama models and prompt variants.
 
-Use case: Agent — hermes AIAgent classifies a session into a Jira ticket key
-or routes as overhead/untracked. No native DeepEval integration exists for
-hermes, so this uses the no-tracing single-turn template.
+Populate CANDIDATE_MODELS and PROMPT_VARIANTS before activating the
+commented-out test cases. Use this when you want to compare accuracy
+across different local models (Ollama) or prompt configurations.
 
 Run (from services/):
-    deepeval test run tests/evals/test_stage3_classifier.py \\
+    deepeval test run tests/evals/test_model_sweep.py \\
         --identifier "model-comparison-round-1" \\
         --ignore-errors \\
         --skip-on-missing-params
 
-Dataset: tests/evals/.dataset.json
-  Populate with real labeled sessions before running KAN-113/KAN-114.
+Dataset: tests/evals/data/generated/goldens_real.json
+  Populate with real labeled sessions before running.
   See tests/evals/build_dataset.py to generate from meridian.db.
 
 Subtasks:
   KAN-110 — this scaffold
-  KAN-111 — build .dataset.json from meridian.db
+  KAN-111 — build dataset from meridian.db
   KAN-113 — populate CANDIDATE_MODELS and run model comparison
   KAN-114 — populate PROMPT_VARIANTS and run prompt comparison
   KAN-115 — apply winning config
@@ -52,7 +52,7 @@ os.environ.setdefault("HERMES_HOME", str(_SERVICES_DIR / ".hermes"))
 
 dataset = EvaluationDataset()
 dataset.add_goldens_from_json_file(
-    file_path=str(Path(__file__).parent / ".dataset.json")
+    file_path=str(Path(__file__).parent / "data" / "generated" / "goldens_real.json")
 )
 
 # ---------------------------------------------------------------------------
@@ -107,7 +107,7 @@ def _classify(model_name: str, base_url: str, prompt_input: str) -> str:
 def test_dataset_loads():
     """Dataset file exists and loads at least one golden."""
     assert len(dataset.goldens) > 0, (
-        "tests/evals/.dataset.json is empty. "
+        "tests/evals/data/generated/goldens_real.json is empty or missing. "
         "Run tests/evals/build_dataset.py to populate it from meridian.db."
     )
 
