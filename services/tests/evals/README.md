@@ -141,7 +141,7 @@ Schema (flat, stable):
 
 ```json
 {
-  "run_id":    "smoke_20260529T201314",
+  "run_id":    "b_generic_direct_http_20260529T201314",
   "timestamp": "2026-05-29T14:43:14Z",
   "trace_id":  "8d1cbb64cd34079b189d34b336ff06af",
   "config": {
@@ -191,13 +191,16 @@ Schema (flat, stable):
 
 ```bash
 # Latest run summary
-jq '.metrics | {both_accuracy, per_tier}' services/tests/evals/results/run_smoke_*.json | tail -20
+ls -t services/tests/evals/results/run_*.json | head -1 | xargs jq '.metrics | {both_accuracy, per_tier}'
 
 # All failures in a specific run
-jq '.per_seed_results[] | select(.both_ok == false)' services/tests/evals/results/run_smoke_20260529T201314.json
+jq '.per_seed_results[] | select(.both_ok == false)' services/tests/evals/results/run_b_generic_direct_http_20260529T201314.json
+
+# All Dev B runs only
+ls services/tests/evals/results/run_b_generic_*.json
 
 # Compare both_accuracy across the last 5 runs
-ls -t services/tests/evals/results/*.json | head -5 | xargs jq -r '"\(.config.strategy)\t\(.config.model_id)\t\(.metrics.both_accuracy)"'
+ls -t services/tests/evals/results/*.json | head -5 | xargs jq -r '"\(.run_id)\t\(.config.model_id)\t\(.metrics.both_accuracy)"'
 
 # Optimism-bias check: how many "overhead → task" failures across all runs?
 jq -r '.per_seed_results[] | select(.expected.session_type=="overhead" and .actual.session_type=="task") | "\(.seed_id) \(.app_name)"' services/tests/evals/results/*.json
@@ -228,14 +231,29 @@ The recent-context block is built from the last 5 *scoreable* prior seed session
 
 ## OpenObserve trace schema
 
-`eval_classifier.py` emits two span types under `service.name = meridian-eval`:
+`eval_classifier.py` emits three span types under `service.name = meridian-eval`:
 
 | Span | Parent | Key attributes |
 |---|---|---|
-| `eval.run` | root | `run.id`, `persona`, `dataset_path`, `server_url`, `model_id`, `dataset_size`, `accuracy.task_key`, `accuracy.session_type`, `accuracy.both` |
-| `eval.classify` | `eval.run` | `seed_id`, `difficulty`, `app_name`, `persona`, `expected.task_key`, `expected.session_type`, `actual.task_key`, `actual.session_type`, `classifier.confidence`, `key_ok`, `type_ok`, `both_ok`, `elapsed_s`, event `actual_reasoning` |
+| `eval.run` | root | `run.id`, `persona`, `dataset_path`, `dataset_name`, `server_url`, `server_source`, `model_id`, `strategy`, `strategy.*`, `dataset_size`, `session_text_cap`, `accuracy.task_key`, `accuracy.session_type`, `accuracy.both`, `elapsed_total_s`, `elapsed_avg_s` |
+| `eval.classify` | `eval.run` | `seed_id`, `difficulty`, `app_name`, `persona`, `strategy`, `prompt_chars`, `expected.task_key`, `expected.session_type`, `actual.task_key`, `actual.session_type`, `classifier.confidence`, `strategy.method`, `key_ok`, `type_ok`, `both_ok`, `elapsed_s` |
+| `strategy.invoke` | `eval.classify` | `strategy.name`, `strategy.*` (all hyperparameters), `strategy.method`, `strategy.elapsed_s`, `classifier.confidence`, `error` (on failures) |
 
-Per-Golden `force_flush` ensures spans land in OpenObserve as they complete — killing the run mid-flight keeps everything classified so far.
+**Events** (filter by event name in the OO span detail panel):
+
+| Event | Parent span | Attributes | Use |
+|---|---|---|---|
+| `run_started` | `eval.run` | `run.id`, `persona`, `strategy`, `model_id`, `dataset`, `started_at` | Discrete marker at start of run |
+| `run_completed` | `eval.run` | `total_goldens`, `passed_both`, `task_key_accuracy`, `session_type_accuracy`, `both_accuracy`, `elapsed_total_s` | Discrete marker at end of run |
+| `per_tier_summary` | `eval.run` | `tier`, `total`, `passed_both`, `both_acc` | One per tier — easy / medium / hard / hard-decoy |
+| `prompt_input` | `eval.classify` | `text` (≤5000 chars), `chars`, `truncated` | Full rendered Golden prompt — debuggable in OO without opening source files |
+| `classifier_response` | `eval.classify` | `task_key`, `session_type`, `confidence`, `method`, `elapsed_s` | Raw classifier output before deepeval formatting |
+| `classification_mismatch` | `eval.classify` (failures only) | `expected.task_key`, `actual.task_key`, `expected.session_type`, `actual.session_type`, `key_ok`, `type_ok` | Failures stand out — search OO for spans containing this event |
+| `actual_reasoning` | `eval.classify` | `text` (≤1000 chars) | Full reasoning text |
+
+**Span status:** `eval.classify` and `strategy.invoke` set `status = ERROR` on classifier failures, so OO's error count badge surfaces failed runs at a glance.
+
+Per-Golden `force_flush` ensures spans land in OpenObserve as they complete — killing the run mid-flight keeps everything classified so far. A 5s `force_flush` also runs after the root span ends, so `eval.run` attributes always land.
 
 ---
 
