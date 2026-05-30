@@ -1,15 +1,15 @@
--- meridian — pm_update tables
+-- meridian — pm_worklog_update tables
 --
 -- These tables live alongside the rest of meridian.db. They are owned by
--- the Python pm_update package — Rust does not write to them. When this
+-- the Python pm_worklog_update package — Rust does not write to them. When this
 -- module is eventually stitched into the daemon, the DDL here will be
--- migrated into src/migrations/02X_pm_updates.sql; until then,
+-- migrated into src/migrations/02X_pm_worklogs.sql; until then,
 -- `db.init_schema()` applies it idempotently.
 
 -- One row per workflow run. Uniqueness over (task_key, day_utc, cycle_index)
 -- prevents the daemon from double-posting after a restart. Backfill mode
 -- writes rows with cycle_index = -1 so it never collides with live cycles.
-CREATE TABLE IF NOT EXISTS pm_updates (
+CREATE TABLE IF NOT EXISTS pm_worklogs (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
     task_key             TEXT    NOT NULL,
     day_utc              TEXT    NOT NULL,                       -- 'YYYY-MM-DD'
@@ -31,36 +31,36 @@ CREATE TABLE IF NOT EXISTS pm_updates (
     UNIQUE (task_key, day_utc, cycle_index)
 );
 
--- NOTE: the worklog idempotency index `uq_pm_updates_worklog_window`
+-- NOTE: the worklog idempotency index `uq_pm_worklogs_worklog_window`
 -- is created in db.init_schema() so it can run AFTER the additive
 -- column migration adds posted_worklog_id to legacy tables.
 
-CREATE INDEX IF NOT EXISTS idx_pm_updates_task_day
-    ON pm_updates (task_key, day_utc);
+CREATE INDEX IF NOT EXISTS idx_pm_worklogs_task_day
+    ON pm_worklogs (task_key, day_utc);
 
-CREATE INDEX IF NOT EXISTS idx_pm_updates_state
-    ON pm_updates (state);
+CREATE INDEX IF NOT EXISTS idx_pm_worklogs_state
+    ON pm_worklogs (state);
 
 -- One row per bullet — flat shape lets the UI render an evidence panel
 -- without parsing the payload JSON.
-CREATE TABLE IF NOT EXISTS pm_update_evidence (
-    pm_update_id  INTEGER NOT NULL REFERENCES pm_updates(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS pm_worklog_evidence (
+    pm_worklog_id  INTEGER NOT NULL REFERENCES pm_worklogs(id) ON DELETE CASCADE,
     bullet_kind   TEXT    NOT NULL,                              -- 'shipped'|'in_progress'|'blocker'|'decision'
     bullet_index  INTEGER NOT NULL,
     session_id    INTEGER NOT NULL REFERENCES app_sessions(id),
     excerpt       TEXT    NOT NULL DEFAULT '',
-    PRIMARY KEY (pm_update_id, bullet_kind, bullet_index, session_id)
+    PRIMARY KEY (pm_worklog_id, bullet_kind, bullet_index, session_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_pm_update_evidence_session
-    ON pm_update_evidence (session_id);
+CREATE INDEX IF NOT EXISTS idx_pm_worklog_evidence_session
+    ON pm_worklog_evidence (session_id);
 
 -- Self-learning signal: every admin edit / rejection becomes a feedback
 -- row. The Synth agent's pre_hook injects recent feedback as few-shot
 -- guidance, so the system improves without us manually retuning prompts.
-CREATE TABLE IF NOT EXISTS pm_update_feedback (
+CREATE TABLE IF NOT EXISTS pm_worklog_feedback (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    pm_update_id   INTEGER NOT NULL REFERENCES pm_updates(id) ON DELETE CASCADE,
+    pm_worklog_id   INTEGER NOT NULL REFERENCES pm_worklogs(id) ON DELETE CASCADE,
     feedback_kind  TEXT    NOT NULL,                             -- 'edit'|'reject'|'approve'
     original_text  TEXT,                                         -- the synth-generated comment
     edited_text    TEXT,                                         -- the human-edited final, if any
@@ -68,5 +68,5 @@ CREATE TABLE IF NOT EXISTS pm_update_feedback (
     created_at     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_pm_update_feedback_task
-    ON pm_update_feedback (pm_update_id);
+CREATE INDEX IF NOT EXISTS idx_pm_worklog_feedback_task
+    ON pm_worklog_feedback (pm_worklog_id);
