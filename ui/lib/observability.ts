@@ -13,6 +13,12 @@ const _serviceName = "meridian-ui";
 export function initOtel(): void {
   if (_sdk) return;
 
+  // UI trace export is OFF by default — opt in with MERIDIAN_OTEL_ENABLED=1 in
+  // ui/.env.local. This is per-service: the Rust daemon and Python services have
+  // their own exporters and are unaffected. Logging (pino, LOG_LEVEL) is too.
+  const enabled = process.env.MERIDIAN_OTEL_ENABLED;
+  if (enabled !== "1" && enabled !== "true") return;
+
   const endpoint =
     process.env.MERIDIAN_OTLP_TRACES_ENDPOINT ??
     "http://localhost:5080/api/default/v1/traces";
