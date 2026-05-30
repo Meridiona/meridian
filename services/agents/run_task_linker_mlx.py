@@ -53,9 +53,24 @@ _TEMPERATURE = 0.0  # greedy decoding — deterministic classification
 _MLX_MODEL_ID = os.environ.get(
     "MLX_MODEL_ID", "mlx-community/Qwen3.5-9B-OptiQ-4bit"
 )
-_SKILL_PATH = (
-    _SERVICES_DIR / "skills" / "activity" / "task-classifier" / "SKILL.md"
-)
+# The classifier prompt file. Defaults to SKILL.md; override via SKILL_PATH env
+# var to A/B-test prompt revisions (e.g. skill_v1.md) without editing the
+# canonical file. Path may be absolute or relative to services/.
+def _resolve_skill_path() -> Path:
+    override = os.environ.get("SKILL_PATH", "").strip()
+    if override:
+        candidate = Path(override)
+        if not candidate.is_absolute():
+            candidate = _SERVICES_DIR / candidate
+        if candidate.exists():
+            return candidate
+        log.warning(
+            "run_task_linker_mlx: SKILL_PATH=%r does not exist — falling back to default SKILL.md",
+            override,
+        )
+    return _SERVICES_DIR / "skills" / "activity" / "task-classifier" / "SKILL.md"
+
+_SKILL_PATH = _resolve_skill_path()
 
 # If the persistent MLX server is running, use it for inference (avoids cold-load).
 _SERVER_PORT = int(os.environ.get("MLX_SERVER_PORT", "7823"))

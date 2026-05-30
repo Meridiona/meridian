@@ -87,16 +87,20 @@ async def health() -> dict:
 
 @app.get("/info")
 async def info() -> dict:
-    """Return the identity of the loaded model.
+    """Return the identity of the loaded model and classifier prompt.
 
-    model_id is None for the hermes backend (no model loaded in-process).
-    loaded_at is an ISO-8601 UTC timestamp set when the model finished loading.
+    model_id   is None for the hermes backend (no model loaded in-process).
+    skill_path is the resolved SKILL.md (or override) the classifier uses;
+               useful for A/B-testing prompt revisions — clients can verify
+               which prompt the server is actually serving.
+    loaded_at  is an ISO-8601 UTC timestamp set when the model finished loading.
     """
     m = _app_state.get("mlx_module")
     return {
-        "backend":   _app_state.get("backend", "hermes"),
-        "model_id":  m._MLX_MODEL_ID if m else None,
-        "loaded_at": _app_state.get("loaded_at"),
+        "backend":    _app_state.get("backend", "hermes"),
+        "model_id":   m._MLX_MODEL_ID if m else None,
+        "skill_path": str(m._SKILL_PATH) if m else None,
+        "loaded_at":  _app_state.get("loaded_at"),
     }
 
 
