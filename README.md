@@ -32,7 +32,7 @@ to `app_sessions`:
 - macOS with Apple Silicon (the MLX inference server requires Metal)
 - [screenpipe](https://screenpi.pe) running and recording
 - Rust 1.93.1 — install via `rustup` or `rust-toolchain.toml` is picked up automatically
-- Python 3.13 — install via `brew install python@3.13` or `pyenv install 3.13`
+- Python 3.11 — install via `brew install python@3.11` or `pyenv install 3.11` (outlines/MLX require ≤ 3.13; 3.11 is the supported floor)
 
 ## Getting started
 
@@ -74,11 +74,11 @@ Task classification uses a persistent MLX inference server (Qwen3.5-9B). Set it 
 ```bash
 cd services
 
-# Create a Python 3.13 virtual environment
-python3.13 -m venv .venv313
+# Create a Python 3.11 virtual environment
+python3.11 -m venv .venv
 
 # Install core dependencies + MLX inference extras
-.venv313/bin/pip install -e ".[local-llm]"
+.venv/bin/pip install -e ".[mlx]"
 ```
 
 ### Configure
@@ -151,7 +151,7 @@ tail -f ~/.meridian/logs/mlx-server.log
 
 ```bash
 cd services
-.venv313/bin/meridian-server --backend mlx --port 7823
+.venv/bin/meridian-server --backend mlx --port 7823
 ```
 
 The server loads the model once at startup (~30 s on first run while the model downloads). Subsequent starts from cache are ~5 s. You will see `server: MLX model ready` in the log when it is ready.
@@ -270,6 +270,28 @@ screenpipe.db (read-only)
 ```
 
 The MLX server is a long-running FastAPI process managed by launchd. It loads the model once at startup — no cold-load penalty per session. The Rust daemon HTTP-calls it and writes the classification results back to `meridian.db`.
+
+### Coding-agent pipeline
+
+On machines that run a terminal coding agent (Claude Code / Codex), the **same Rust daemon** also turns those sessions into `app_sessions` rows and runs them through summarise → classify. It's gated — dormant if neither agent is present.
+
+```
+~/.claude/projects/*.jsonl                indexer task (≈10 min poll + SessionEnd hook)
+~/.codex/sessions/**/*.jsonl  ──────────► parse → segment (1h time-box, split at a
+                                          user-prompt boundary) → upsert app_sessions
+                                                     │
+                          coding_agent_live ─seal→ pending_summariser
+                                                     │
+   summariser task ──► claude -p / codex exec (2 tries) ─fail→ MLX /summarise ──► session_summary
+                                                     │                            (source: claude|codex|mlx)
+                                          pending_summariser → pending_classifier
+                                                     │
+   classifier (MLX drain) ──► /classify_sessions on the SUMMARY ──► task_key + dimensions
+                                                     │
+                                          pending_classifier → mlx_direct  (terminal)
+```
+
+Each session is sliced into ~1-hour segments (split at a real user-prompt boundary for continuity), sealed, summarised by its own agent (Claude for Claude sessions, Codex for Codex; MLX as the local fallback), then classified against your Jira tasks using the concise summary. The lifecycle is the `task_method` column: `coding_agent_live → pending_summariser → pending_classifier → mlx_direct`. The SessionEnd hook (`meridian coding-agent-hook`) seals a session immediately on `/clear` or stop; the 1-hour idle sweep is the backstop. Manual one-shots: `meridian coding-agent-summarise [--dry-run] [--day D]` and `meridian coding-agent-classify`.
 
 ## MCP Server
 

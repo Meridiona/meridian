@@ -11,8 +11,8 @@ use meridian::db::meridian::{cleanup_incomplete_runs, setup_db};
 use meridian::db::screenpipe::open_screenpipe;
 use meridian::etl::run_etl;
 use meridian::intelligence::{
-    check_classification_ready, mark_session_subprocess_error, run_fm_categorization, run_pm_sync,
-    run_task_linking, TaskLinkOutcome,
+    check_classification_ready, mark_session_subprocess_error, run_coding_agent_classification,
+    run_fm_categorization, run_pm_sync, run_task_linking, TaskLinkOutcome,
 };
 use meridian::observability;
 use tokio::signal::unix::{signal, SignalKind};
@@ -35,6 +35,72 @@ async fn main() -> Result<()> {
     }
     // Override so cwd .env beats any empty values injected by launchd plist.
     let _ = dotenvy::dotenv_override();
+
+    // 1b. Subcommand dispatch. `meridian coding-agent-hook` is the Claude Code
+    //     SessionEnd hook entry point: one-shot, reads a JSON payload on stdin,
+    //     seals that session, exits 0. It must stay light (no daemon init, no
+    //     OTLP) and must never block Claude, so it always exits 0.
+    if std::env::args().nth(1).as_deref() == Some("coding-agent-hook") {
+        meridian::coding_agent::hook::run_hook().await;
+        return Ok(());
+    }
+
+    // `meridian coding-agent-summarise [--dry-run] [--day YYYY-MM-DD] [--limit N]`
+    // — one-shot manual backfill / eval of the summariser queue for one day.
+    if std::env::args().nth(1).as_deref() == Some("coding-agent-summarise") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let dry_run = args.iter().any(|a| a == "--dry-run");
+        let day = flag("--day");
+        let limit: i64 = flag("--limit").and_then(|v| v.parse().ok()).unwrap_or(8);
+        match meridian::coding_agent::open_meridian_pool().await {
+            Ok(pool) => {
+                meridian::coding_agent::summariser::cli_summarise(
+                    &pool,
+                    dry_run,
+                    day.as_deref(),
+                    limit,
+                )
+                .await;
+                pool.close().await;
+            }
+            Err(e) => eprintln!("coding-agent-summarise: open db: {e}"),
+        }
+        return Ok(());
+    }
+
+    // `meridian coding-agent-classify` — one-shot: classify every summarised
+    // coding-agent row (the pending_classifier queue) via the MLX server. Manual
+    // backfill of the last link in seal→summarise→classify.
+    if std::env::args().nth(1).as_deref() == Some("coding-agent-classify") {
+        let cfg = Config::from_env();
+        match meridian::coding_agent::open_meridian_pool().await {
+            Ok(pool) => {
+                let mut total = 0usize;
+                loop {
+                    match run_coding_agent_classification(&pool, &cfg).await {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            total += n;
+                            println!("classified {n} (total {total})");
+                        }
+                        Err(e) => {
+                            eprintln!("coding-agent-classify: {e}");
+                            break;
+                        }
+                    }
+                }
+                println!("coding-agent-classify: {total} classified");
+                pool.close().await;
+            }
+            Err(e) => eprintln!("coding-agent-classify: open db: {e}"),
+        }
+        return Ok(());
+    }
 
     // 2. Tracing — layered subscriber (stdout + JSONL file + OTLP to OpenObserve).
     //    Guard must outlive the program; we shut it down explicitly at the end
@@ -146,6 +212,28 @@ async fn main() -> Result<()> {
     //       - Permanent failure  → sentinel written after MAX_CONSECUTIVE_FAILURES,
     //                              cursor advances, drain continues
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    // 8a-bis. Coding-agent tasks (both gated — dormant if neither agent is
+    //         present). The indexer turns Claude Code / Codex JSONLs into
+    //         app_sessions segment rows; the summariser turns sealed segments
+    //         into prose summaries. They share a Notify so the summariser wakes
+    //         near-instantly on the indexer's own seals (plus its own sweep for
+    //         hook-sealed rows). Decoupled from the ETL tick.
+    {
+        let ca_notify: Arc<Notify> = Arc::new(Notify::new());
+        let pool_idx = meridian.clone();
+        let notify_idx = ca_notify.clone();
+        let rx_idx = shutdown_rx.clone();
+        tokio::spawn(async move {
+            meridian::coding_agent::indexer::run_loop(pool_idx, notify_idx, rx_idx).await;
+        });
+        let pool_sum = meridian.clone();
+        let rx_sum = shutdown_rx.clone();
+        tokio::spawn(async move {
+            meridian::coding_agent::summariser::run_loop(pool_sum, ca_notify, rx_sum).await;
+        });
+    }
+
     if mlx_mode {
         let mut shutdown_rx = shutdown_rx;
         let meridian_linker = meridian.clone();
@@ -186,6 +274,27 @@ async fn main() -> Result<()> {
                             // Loop immediately — more sessions may be waiting.
                         }
                         Ok(TaskLinkOutcome::NoPendingWork) => {
+                            // Cursor work is caught up — now drain the coding-agent
+                            // classify queue (summarised rows → task linking), the
+                            // last link of seal→summarise→classify. Repeat until empty.
+                            loop {
+                                match run_coding_agent_classification(&meridian_linker, &cfg)
+                                    .instrument(parent_span.clone())
+                                    .await
+                                {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        tracing::info!(
+                                            classified = n,
+                                            "coding-agent rows classified"
+                                        )
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(error = %e, "coding-agent classification failed");
+                                        break;
+                                    }
+                                }
+                            }
                             break; // Caught up — go back to waiting for next notify.
                         }
                         Ok(TaskLinkOutcome::SubprocessFailed {
