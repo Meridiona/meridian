@@ -37,7 +37,16 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+from opentelemetry import trace as _otel_trace
+from opentelemetry.trace import StatusCode as _OTelStatusCode
+
 log = logging.getLogger("tests.evals.strategies")
+
+# Strategy-level tracer. Child spans appear under whatever parent the runner
+# established (eval_classifier.py wraps each Golden in eval.classify →
+# strategy.invoke). When no exporter is configured (e.g. unit-test invocation)
+# the tracer is a no-op — strategies remain callable outside the eval harness.
+_tracer = _otel_trace.get_tracer("tests.evals.strategies")
 
 
 # ---------------------------------------------------------------------------
@@ -382,45 +391,108 @@ class ExtractThenClassifyStrategy(EvalStrategy):
         session_block   = rendered_prompt[:sep_idx].rstrip()
         candidate_block = rendered_prompt[sep_idx:].rstrip()
 
-        # Stage 1: extract structured evidence
-        extraction, t1_elapsed, t1_err = self._post_and_parse_json(
-            system_prompt=_EXTRACT_SYSTEM_PROMPT,
-            user_prompt=session_block,
-            temperature=float(self.config["extraction_temperature"]),
-            max_tokens=int(self.config["extraction_max_tokens"]),
-        )
-        if t1_err:
-            return self._error_result(
-                f"stage1 extract: {t1_err}", time.time() - t0
-            )
+        model_label = str(self.config.get("model", ""))
+        extract_temp     = float(self.config["extraction_temperature"])
+        extract_max_tok  = int(self.config["extraction_max_tokens"])
+        classify_temp    = float(self.config["classification_temperature"])
+        classify_max_tok = int(self.config["classification_max_tokens"])
 
-        # Stage 2: classify from extraction + candidates only
+        # ── Stage 1: extract structured evidence ─────────────────────────────
+        with _tracer.start_as_current_span("strategy.extract") as ext_span:
+            ext_span.set_attribute("strategy.name",   self.name)
+            ext_span.set_attribute("stage",           "extract")
+            ext_span.set_attribute("model",           model_label)
+            ext_span.set_attribute("prompt_chars",    len(session_block))
+            ext_span.set_attribute("temperature",     extract_temp)
+            ext_span.set_attribute("max_tokens",      extract_max_tok)
+            ext_span.add_event("extraction_input_preview", attributes={
+                "text":  session_block[:5000],
+                "chars": len(session_block),
+                "truncated": len(session_block) > 5000,
+            })
+
+            extraction, t1_elapsed, t1_err = self._post_and_parse_json(
+                system_prompt=_EXTRACT_SYSTEM_PROMPT,
+                user_prompt=session_block,
+                temperature=extract_temp,
+                max_tokens=extract_max_tok,
+            )
+            ext_span.set_attribute("elapsed_s", round(t1_elapsed, 3))
+            if t1_err:
+                ext_span.set_status(_OTelStatusCode.ERROR, str(t1_err)[:200])
+                ext_span.set_attribute("error", str(t1_err)[:200])
+                return self._error_result(
+                    f"stage1 extract: {t1_err}", time.time() - t0
+                )
+
+            ext_span.set_attribute("user_action",
+                                   str(extraction.get("user_action", "")))
+            ext_span.set_attribute("evidence_strength",
+                                   str(extraction.get("evidence_strength_for_implementation", "")))
+            ext_span.set_attribute("primary_app",
+                                   str(extraction.get("primary_app", "")))
+            ext_span.set_attribute("ticket_mentions_count",
+                                   len(extraction.get("ticket_mentions") or []))
+            ext_span.set_attribute("active_work_signals_count",
+                                   len(extraction.get("active_work_signals") or []))
+            ext_span.add_event("extraction_output", attributes={
+                "json": json.dumps(extraction, ensure_ascii=False)[:5000],
+            })
+
+        # ── Stage 2: classify from extraction + candidates only ──────────────
         classify_user_prompt = (
             "EXTRACTED EVIDENCE:\n"
             f"{json.dumps(extraction, ensure_ascii=False, indent=2)}\n\n"
             f"{candidate_block}\n"
         )
-        classification, t2_elapsed, t2_err = self._post_and_parse_json(
-            system_prompt=_CLASSIFY_SYSTEM_PROMPT,
-            user_prompt=classify_user_prompt,
-            temperature=float(self.config["classification_temperature"]),
-            max_tokens=int(self.config["classification_max_tokens"]),
-        )
-        elapsed = time.time() - t0
-        if t2_err:
-            return self._error_result(
-                f"stage2 classify: {t2_err}", elapsed
-            )
+        with _tracer.start_as_current_span("strategy.classify_stage") as cls_span:
+            cls_span.set_attribute("strategy.name",   self.name)
+            cls_span.set_attribute("stage",           "classify")
+            cls_span.set_attribute("model",           model_label)
+            cls_span.set_attribute("prompt_chars",    len(classify_user_prompt))
+            cls_span.set_attribute("temperature",     classify_temp)
+            cls_span.set_attribute("max_tokens",      classify_max_tok)
+            cls_span.add_event("classification_input_preview", attributes={
+                "text":  classify_user_prompt[:5000],
+                "chars": len(classify_user_prompt),
+                "truncated": len(classify_user_prompt) > 5000,
+            })
 
-        # Validate task_key is in the candidate list (or null). If the model
-        # invented a ticket, drop it back to null + overhead.
-        task_key = classification.get("task_key")
-        if task_key is not None and task_key not in candidate_block:
-            log.warning(
-                "extract_then_classify: model returned task_key=%r not in candidates",
-                task_key,
+            classification, t2_elapsed, t2_err = self._post_and_parse_json(
+                system_prompt=_CLASSIFY_SYSTEM_PROMPT,
+                user_prompt=classify_user_prompt,
+                temperature=classify_temp,
+                max_tokens=classify_max_tok,
             )
-            task_key = None
+            elapsed = time.time() - t0
+            cls_span.set_attribute("elapsed_s", round(t2_elapsed, 3))
+            if t2_err:
+                cls_span.set_status(_OTelStatusCode.ERROR, str(t2_err)[:200])
+                cls_span.set_attribute("error", str(t2_err)[:200])
+                return self._error_result(
+                    f"stage2 classify: {t2_err}", elapsed
+                )
+
+            # Validate task_key is in the candidate list (or null). If the model
+            # invented a ticket, drop it back to null + overhead.
+            task_key = classification.get("task_key")
+            if task_key is not None and task_key not in candidate_block:
+                log.warning(
+                    "extract_then_classify: model returned task_key=%r not in candidates",
+                    task_key,
+                )
+                cls_span.add_event("invalid_task_key", attributes={
+                    "returned_task_key": str(task_key),
+                })
+                task_key = None
+
+            cls_span.set_attribute("task_key",     task_key or "none")
+            cls_span.set_attribute("session_type", str(classification.get("session_type", "")))
+            cls_span.set_attribute("confidence",   float(classification.get("confidence", 0.0)))
+            cls_span.add_event("classification_output", attributes={
+                "json":      json.dumps(classification, ensure_ascii=False)[:5000],
+                "reasoning": str(classification.get("reasoning", ""))[:1000],
+            })
 
         return StrategyResult(
             task_key=task_key,
