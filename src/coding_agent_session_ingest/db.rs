@@ -12,7 +12,7 @@
 //              sealed row is never mutated again. Downstream (summariser /
 //              classifier) only ever reads sealed rows.
 //
-// Faithful port of services/coding_agent_indexer/db.py. Uses the daemon's
+// Faithful port of the former Python indexer/db.py. Uses the daemon's
 // shared meridian RW pool (sqlx) instead of short-lived sqlite3 connections.
 
 use std::collections::HashMap;
@@ -255,7 +255,7 @@ fn shift_iso(iso: &str, delta_seconds: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coding_agent::segment::Segment;
+    use crate::coding_agent_session_ingest::segment::Segment;
     use sqlx::sqlite::SqliteConnectOptions;
     use std::str::FromStr;
 

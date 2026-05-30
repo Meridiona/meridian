@@ -2,7 +2,7 @@
 //
 // Summariser: turn each sealed coding-agent segment into a factual prose summary
 // for the PM work-log, then hand it to the classifier (task_method →
-// 'pending_classifier'). Port of services/coding_agent_summariser.
+// 'pending_classifier'). Port of the former Python summariser.
 //
 // Engine routing per segment: Codex sessions → `codex exec`, else → `claude -p`
 // (both Rust subprocesses on the user's subscription). Each primary engine is
