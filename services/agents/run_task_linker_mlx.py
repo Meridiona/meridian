@@ -19,7 +19,7 @@ OTel span hierarchy (when invoked as a script via main()):
 When imported by server.py the same child spans are emitted under whatever
 parent span the server establishes (propagated via contextvars).
 
-Requires: outlines[mlxlm]>=1.3, mlx-lm>=0.22 (installed in .venv313).
+Requires: outlines[mlxlm]>=1.3, mlx-lm>=0.22 (installed in .venv).
 Method tag in results: "mlx_direct".
 """
 from __future__ import annotations
@@ -189,7 +189,8 @@ def _fetch_session(
 ) -> dict[str, Any] | None:
     row = con.execute(
         "SELECT id, app_name, started_at, ended_at, duration_s, session_text,"
-        "       session_text_source, window_titles, category, confidence"
+        "       session_text_source, window_titles, category, confidence,"
+        "       session_summary, claude_session_uuid"
         " FROM app_sessions WHERE id = ?",
         (session_id,),
     ).fetchone()
@@ -269,6 +270,12 @@ def _classify_one(
         db_span.set_attribute("recent_sessions_count", len(recent))
 
         session_text = session_raw.get("session_text") or ""
+        # Coding-agent rows (Claude Code / Codex) carry the full transcript in
+        # session_text and a concise, high-quality prose summary in
+        # session_summary. Classify on the summary, not the multi-MB transcript:
+        # cheaper, faster, and it's already the distilled "what was done".
+        if session_raw.get("claude_session_uuid") and (session_raw.get("session_summary") or "").strip():
+            session_text = session_raw["session_summary"]
         db_span.add_event("session_loaded", {
             "app_name":           str(session_raw.get("app_name") or ""),
             "duration_s":         float(session_raw.get("duration_s") or 0.0),

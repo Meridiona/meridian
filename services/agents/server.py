@@ -434,6 +434,78 @@ async def openai_chat_completions(req: _OAIChatRequest) -> dict:
     }
 
 
+class _SummariseRequest(BaseModel):
+    transcript: str
+    system: str | None = None
+    max_tokens: int = 2048
+    temperature: float = 0.2
+
+
+class _SummariseResponse(BaseModel):
+    summary: str
+    blockers: list[str] = []
+
+
+class _SummarySchema(BaseModel):
+    """Outlines FSM-constrains generation to this shape, so a reasoning model
+    physically cannot emit chain-of-thought — only the JSON object."""
+    summary: str
+    blockers: list[str] = []
+
+
+_SUMMARISE_DEFAULT_SYSTEM = (
+    "Summarise the coding-session transcript into a factual prose work-log "
+    "summary. Name files edited, commands run, errors hit, decisions made, "
+    "tests/validations, and any rework or blockers. State ONLY what is in the "
+    "transcript — never invent files, commands, or outcomes."
+)
+
+
+@app.post("/summarise", response_model=_SummariseResponse)
+async def summarise(req: _SummariseRequest) -> _SummariseResponse:
+    """Schema-constrained session summary (MLX backend only).
+
+    Unlike /v1/chat/completions, this forces the {summary, blockers} schema via
+    outlines — the fix for reasoning models leaking chain-of-thought into the
+    summary. Used by the coding_agent_summariser's MLX fallback path.
+    """
+    from fastapi.concurrency import run_in_threadpool
+
+    if _app_state.get("backend") != "mlx":
+        raise HTTPException(status_code=503, detail="/summarise requires --backend mlx")
+    m = _app_state.get("mlx_module")
+    if m is None:
+        raise HTTPException(status_code=503, detail="MLX model is still loading")
+
+    from mlx_lm.sample_utils import make_sampler
+    from outlines.inputs import Chat
+
+    messages = [
+        {"role": "system", "content": req.system or _SUMMARISE_DEFAULT_SYSTEM},
+        {"role": "user", "content": req.transcript},
+    ]
+
+    def _generate() -> str:
+        model = m._get_model()
+        return model(
+            Chat(messages),
+            output_type=_SummarySchema,
+            max_tokens=req.max_tokens,
+            sampler=make_sampler(temp=req.temperature),
+            verbose=False,
+        )
+
+    try:
+        raw = await run_in_threadpool(_generate)
+        obj = _SummarySchema.model_validate_json(raw)
+    except Exception as exc:                            # noqa: BLE001
+        log.warning("summarise: inference/parse error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    log.info("summarise: out_chars=%d blockers=%d", len(obj.summary), len(obj.blockers))
+    return _SummariseResponse(summary=obj.summary.strip(), blockers=obj.blockers)
+
+
 @app.get("/v1/models")
 async def openai_models_list() -> dict:
     """OpenAI-style models listing — agno/openai-python probe this on first use."""

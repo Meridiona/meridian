@@ -36,9 +36,7 @@ def _resolve_local_tz() -> tzinfo:
     return timezone.utc
 
 
-# Days for `app_sessions.day_utc` are bucketed in this TZ. A continuous
-# coding session that crosses midnight produces two rows split on this
-# TZ's calendar boundary.
+# Sessions that cross midnight produce two rows split on this TZ's calendar boundary.
 LOCAL_TZ = _resolve_local_tz()
 
 # ── Source dirs to watch ──────────────────────────────────────────────────────
@@ -71,10 +69,48 @@ POLL_INTERVAL_SECONDS = int(os.environ.get("INDEXER_POLL_INTERVAL_S", "600"))   
 # overnight, day off) don't contribute — the user wasn't actively
 # engaged during them.
 #
-# 5 min is the sweet spot: short enough that a coffee break stops
-# counting, long enough that a slow Claude response or a moment of
-# thinking still counts as active time.
-ACTIVE_TIME_GAP_CAP_SECONDS = int(os.environ.get("INDEXER_ACTIVE_GAP_CAP_S", "300"))
+# During AI-assisted coding, active work emits records frequently (prompts,
+# the agent's streamed tool round-trips). A gap with NO record for >2 min
+# almost always means the user stepped away — so capping each gap at 2 min
+# credits the brief transition/think and discards the idle remainder.
+# (Measured: dropping 5min→2min removed mostly genuine 5–60min idle gaps,
+# not real activity.) Env-tunable; raise it if you want longer no-record
+# reading stretches to count in full.
+ACTIVE_TIME_GAP_CAP_SECONDS = int(os.environ.get("INDEXER_ACTIVE_GAP_CAP_S", "120"))
+
+# ── Segmentation + sealing ────────────────────────────────────────────────────
+#
+# A coding-agent session is sliced into SEGMENTS split on idle gaps larger
+# than this between consecutive messages. A new burst of activity after a
+# gap this long becomes a NEW app_sessions row (same claude_session_uuid,
+# later segment_started_at), and the prior segment is sealed.
+#
+# Distinct from ACTIVE_TIME_GAP_CAP_SECONDS: that caps each gap when summing
+# *active* duration_s (so a 50-min think within a segment doesn't inflate
+# work time); this decides where one row ends and the next begins.
+#
+# The threshold is STRICTLY exceeded to split: a gap of exactly
+# SEGMENT_GAP_SECONDS stays in the same segment (mirrors the Rust ETL's
+# "> threshold" gap convention).
+SEGMENT_GAP_SECONDS = int(os.environ.get("INDEXER_SEGMENT_GAP_S", "3600"))      # 1 hour
+
+# A live (unsealed) segment whose last message is older than this is
+# considered settled and gets sealed by the poll sweep — even if its JSONL
+# never changes again (crash, force-quit, macOS sleep, file deleted). Kept
+# equal to SEGMENT_GAP_SECONDS so "settled" and "would start a new segment"
+# mean the same elapsed idleness.
+SEAL_IDLE_SECONDS = int(os.environ.get("INDEXER_SEAL_IDLE_S", str(SEGMENT_GAP_SECONDS)))
+
+# ── Time-box ──────────────────────────────────────────────────────────────────
+#
+# A long CONTINUOUS session (no >1h gap, never ended) would otherwise stay one
+# live row indefinitely — its summary, and the Jira update that depends on it,
+# would wait unpredictably. So we also split a segment once its span reaches
+# this many seconds: the prior chunk immediately becomes a non-last (→ sealed →
+# summarisable) row, giving a fresh Jira-ready summary on a predictable cadence.
+# Boundaries are deterministic (start, start+box, start+2·box, …) so re-parses
+# stay idempotent. Set to 0 to disable time-boxing (gap/end sealing only).
+MAX_SEGMENT_SECONDS = int(os.environ.get("INDEXER_MAX_SEGMENT_S", "3600"))      # 1 hour
 
 # ── Fork skip list ────────────────────────────────────────────────────────────
 #

@@ -267,13 +267,22 @@ The dataset's value lives in **what it discriminates**, not how many cases it ha
 
 ---
 
+## Coding-agent pipeline (`src/coding_agent/`)
+
+The coding-agent indexer + summariser now run **inside the Rust daemon** (`src/coding_agent/`), spawned as gated tokio tasks from `main.rs`. They turn Claude Code / Codex JSONLs into segmented `app_sessions` rows, summarise sealed segments (Claude for Claude sessions, Codex for Codex; MLX as fallback), and hand them to the classifier on their summary. Lifecycle is the `task_method` column: `coding_agent_live → pending_summariser → pending_classifier → mlx_direct`.
+
+- **Indexer** (`indexer.rs`): polls `~/.claude/projects` + `~/.codex/sessions`, parses (`jsonl.rs`) + segments (`segment.rs`, 1h time-box split at a user-prompt boundary), upserts/seals (`db.rs`). Backfill is today-only on startup. `meridian coding-agent-hook` is the SessionEnd entry (seals one session).
+- **Summariser** (`summariser/`): `claude.rs`/`codex.rs` subprocesses (2 attempts) → `mlx.rs` fallback (`/summarise`); writes `session_summary` + `summary_source` and flips `task_method` to `pending_classifier`. CLI: `meridian coding-agent-summarise`.
+- **Classify trigger** (`src/intelligence/task_linker/`): a non-cursor branch classifies `pending_classifier` rows on the **summary** (not the transcript), preserving the summariser's summary. CLI: `meridian coding-agent-classify`.
+
+The Python `services/coding_agent_indexer/` + `coding_agent_summariser/` are the **reference / parity** implementations (parsers kept byte-for-byte in sync, enforced by tests); their daemons are retired. Change both parsers together.
+
 ## Python agent service (`services/`)
 
-Three Python services run alongside the Rust daemon:
+These Python services still run alongside the Rust daemon:
 
-1. **`coding_agent_indexer`** — polls Claude Code (`~/.claude/projects/`) and Codex (`~/.codex/sessions/`) JSONLs and writes them as `app_sessions` rows. Also triggered in real-time by Claude Code's SessionEnd hook.
-2. **MLX classifier** (`run_task_linker_mlx.py`) — called by the Rust intelligence module via HTTP POST to classify `app_sessions` into Jira tasks. Runs as a persistent FastAPI server (`com.meridiona.mlx-server.plist`).
-3. **Jira updater** (`agents/pm_update/`) — agno-powered synthesis workflow that generates Jira comments + worklogs from classified sessions. Runs on an office-hours slot schedule (`com.meridiona.jira-updater.plist`).
+1. **MLX classifier + summariser** (`agents/server.py`, `run_task_linker_mlx.py`) — the persistent FastAPI model server (`com.meridiona.mlx-server.plist`). Exposes `/classify_sessions` (Rust calls it to classify) and `/summarise` (the coding-agent summariser's MLX fallback). The one Python piece the pipeline can't replace (outlines + mlx-lm are Python-only).
+2. **Jira updater** (`agents/pm_worklog_update/`) — agno-powered synthesis workflow that generates Jira comments + worklogs from classified sessions. Runs on an office-hours slot schedule.
 
 For the deep technical reference (classification logic, scoring formulas, recipes for tuning prompts / debugging misclassifications), see `services/agents/README.md`.
 
@@ -281,7 +290,7 @@ For the deep technical reference (classification logic, scoring formulas, recipe
 
 - **Every `.py` file in `services/agents/` must start with a `"""…"""` module docstring** describing its purpose. The Rust/TS file-header convention does not apply — Python uses docstrings. Match the prose style of existing modules (terse, opinionated).
 - **`ticket_links` and `session_dimensions` writes must be idempotent.** Both tables have UNIQUE / composite-PK constraints with explicit `ON CONFLICT … DO UPDATE` policies. New writers must use the same UPSERT pattern. Never `DELETE` then `INSERT` from the daemon path.
-- **`coding_agent_indexer` cursor monotonicity:** the `(claude_session_uuid, day_utc)` unique index is the idempotency key. The UPSERT updates mutable fields (timestamps, duration, transcript) but never touches classifier-owned fields (`task_method`, `task_key`, `session_summary`).
+- **Coding-agent segment idempotency:** the `(claude_session_uuid, segment_started_at)` unique index is the key (migration 027; `day_utc` was dropped in 028). The UPSERT refreshes a LIVE row but carries `WHERE sealed_at IS NULL`, so a SEALED row is immutable — the summariser/classifier only ever read sealed rows.
 
 ### Quick command reference
 

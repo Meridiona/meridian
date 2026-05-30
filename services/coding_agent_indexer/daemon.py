@@ -25,7 +25,7 @@ import logging
 import signal
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -77,12 +77,32 @@ def main() -> int:
 
 
 def _tick(fork_skip: set[str]) -> None:
-    """One sweep — register anything changed since last tick."""
-    now = time.time()
-    wrote = skipped = failed = 0
+    """One sweep: (1) seal settled live rows, (2) register changed files.
 
-    for jsonl in _candidate_jsonls(now=now):
-        result = register.register_ended_session(jsonl, fork_skip_list=fork_skip)
+    Step 1 is the robust backstop that seals rows whose JSONL will never be
+    re-parsed (crash, force-quit, macOS sleep, file deleted) — it touches
+    only the DB. Step 2 re-parses files that grew and refreshes their live
+    last segment (`session_ended=False`, so an actively-growing session
+    stays live until it idles out or its SessionEnd hook fires).
+    """
+    now_epoch = time.time()
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")   # canonical (jsonl_meta.iso_utc)
+
+    try:
+        sealed = db.seal_stale_open_rows(
+            now_iso=now_iso, idle_seconds=config.SEAL_IDLE_SECONDS,
+        )
+        if sealed:
+            log.info("tick: sealed %d settled open row(s)", sealed)
+    except Exception:                                       # noqa: BLE001
+        log.exception("tick: seal sweep failed")
+
+    wrote = skipped = failed = 0
+    for jsonl in _candidate_jsonls(now=now_epoch):
+        result = register.register_ended_session(
+            jsonl, session_ended=False, fork_skip_list=fork_skip, now=now_dt,
+        )
         if result.outcome == register.RegisterOutcome.INSERTED:
             wrote += 1
         elif result.outcome == register.RegisterOutcome.FAILED:

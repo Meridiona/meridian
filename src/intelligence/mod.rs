@@ -7,8 +7,8 @@ pub mod session_categorizer;
 pub mod task_linker;
 
 pub use task_linker::{
-    check_classification_ready, link_range, mark_session_subprocess_error, run_task_linking,
-    TaskLinkOutcome,
+    check_classification_ready, link_range, mark_session_subprocess_error,
+    run_coding_agent_classification, run_task_linking, TaskLinkOutcome,
 };
 
 use anyhow::Result;

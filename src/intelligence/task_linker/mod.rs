@@ -14,12 +14,12 @@ use crate::config::Config;
 use tracing::field;
 
 use db::{
-    count_pending_sessions, fetch_sessions_in_range, fetch_unclassified_sessions, get_agent_cursor,
-    get_max_session_id,
+    count_pending_sessions, fetch_pending_classifier_sessions, fetch_sessions_in_range,
+    fetch_unclassified_sessions, get_agent_cursor, get_max_session_id,
 };
 use db_write::{
-    advance_agent_cursor, complete_agent_run, start_agent_run, update_session_overhead,
-    update_session_task, write_dimensions, write_error_sentinel,
+    advance_agent_cursor, complete_agent_run, start_agent_run, update_coding_agent_task,
+    update_session_overhead, update_session_task, write_dimensions, write_error_sentinel,
 };
 
 // ---------------------------------------------------------------------------
@@ -46,6 +46,11 @@ pub enum TaskLinkOutcome {
 // One session per daemon tick — at 30-60s cadence there is typically one new
 // session. The backfill binary handles bulk catch-up after downtime.
 pub(super) const BATCH_LIMIT: i64 = 1;
+
+// Coding-agent rows are classified in small batches from their (non-cursor)
+// pending_classifier queue. The MLX server classifies the whole batch in one
+// call; the drain loop repeats until the queue is empty.
+const CODING_CLASSIFY_BATCH: i64 = 8;
 
 // ---------------------------------------------------------------------------
 // Sentinel helper
@@ -407,6 +412,50 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<TaskLin
 
     complete_agent_run(pool, run_id, "success", total_sessions, links_written).await?;
     Ok(TaskLinkOutcome::Classified)
+}
+
+// ---------------------------------------------------------------------------
+// Coding-agent classify trigger — the seal→summarise→classify chain's last link
+// ---------------------------------------------------------------------------
+
+/// Classify up to `CODING_CLASSIFY_BATCH` summarised coding-agent rows (the
+/// `pending_classifier` queue). NON-cursor: selected by summarised-state, not id
+/// order, so it never collides with the screen-capture cursor. The MLX server
+/// reasons over each row's `session_summary` (not the transcript); we persist
+/// the task fields WITHOUT touching `session_summary`. Returns rows classified.
+pub async fn run_coding_agent_classification(pool: &SqlitePool, cfg: &Config) -> Result<usize> {
+    if !cfg.classification_enabled {
+        return Ok(0);
+    }
+
+    let ids = fetch_pending_classifier_sessions(pool, CODING_CLASSIFY_BATCH).await?;
+    if ids.is_empty() {
+        return Ok(0);
+    }
+
+    info!(session_ids = ?ids, "classifying summarised coding-agent rows");
+    let input = ClassifyInput {
+        session_ids: ids,
+        meridian_db: cfg.meridian_db.clone(),
+        traceparent: crate::observability::current_traceparent(),
+    };
+
+    let out = call_mlx_server(&input, cfg.mlx_server_port, cfg.classification_timeout_s).await?;
+
+    let mut n = 0usize;
+    for r in &out.results {
+        update_coding_agent_task(pool, r).await?;
+        write_dimensions(pool, r.session_id, &r.dimensions).await?;
+        info!(
+            session_id = r.session_id,
+            task_key = ?r.task_key,
+            session_type = %r.session_type,
+            method = %r.method,
+            "coding-agent session classified",
+        );
+        n += 1;
+    }
+    Ok(n)
 }
 
 // ---------------------------------------------------------------------------
