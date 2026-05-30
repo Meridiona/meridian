@@ -267,15 +267,15 @@ The dataset's value lives in **what it discriminates**, not how many cases it ha
 
 ---
 
-## Coding-agent pipeline (`src/coding_agent/`)
+## Coding-agent pipeline (`src/coding_agent_session_ingest/`)
 
-The coding-agent indexer + summariser now run **inside the Rust daemon** (`src/coding_agent/`), spawned as gated tokio tasks from `main.rs`. They turn Claude Code / Codex JSONLs into segmented `app_sessions` rows, summarise sealed segments (Claude for Claude sessions, Codex for Codex; MLX as fallback), and hand them to the classifier on their summary. Lifecycle is the `task_method` column: `coding_agent_live → pending_summariser → pending_classifier → mlx_direct`.
+The coding-agent indexer + summariser run **inside the Rust daemon** (`src/coding_agent_session_ingest/`), spawned as gated tokio tasks from `main.rs`. They turn Claude Code / Codex JSONLs into segmented `app_sessions` rows, summarise sealed segments (Claude for Claude sessions, Codex for Codex; MLX as fallback), and hand them to the classifier on their summary. Lifecycle is the `task_method` column: `coding_agent_live → pending_summariser → pending_classifier → mlx_direct`.
 
 - **Indexer** (`indexer.rs`): polls `~/.claude/projects` + `~/.codex/sessions`, parses (`jsonl.rs`) + segments (`segment.rs`, 1h time-box split at a user-prompt boundary), upserts/seals (`db.rs`). Backfill is today-only on startup. `meridian coding-agent-hook` is the SessionEnd entry (seals one session).
 - **Summariser** (`summariser/`): `claude.rs`/`codex.rs` subprocesses (2 attempts) → `mlx.rs` fallback (`/summarise`); writes `session_summary` + `summary_source` and flips `task_method` to `pending_classifier`. CLI: `meridian coding-agent-summarise`.
 - **Classify trigger** (`src/intelligence/task_linker/`): a non-cursor branch classifies `pending_classifier` rows on the **summary** (not the transcript), preserving the summariser's summary. CLI: `meridian coding-agent-classify`.
 
-The Python `services/coding_agent_indexer/` + `coding_agent_summariser/` are the **reference / parity** implementations (parsers kept byte-for-byte in sync, enforced by tests); their daemons are retired. Change both parsers together.
+The pipeline is fully ported to Rust; the former Python `coding_agent_indexer` + `coding_agent_summariser` packages have been removed. The MLX server (`agents/server.py`) is the only remaining Python hop (it serves `/summarise` + `/classify_sessions`).
 
 ## Python agent service (`services/`)
 
@@ -296,15 +296,10 @@ For the deep technical reference (classification logic, scoring formulas, recipe
 ### Quick command reference
 
 ```bash
-# coding_agent_indexer — register one session or scan all
-.venv/bin/python -m coding_agent_indexer.cli --scan-once
-.venv/bin/python -m coding_agent_indexer.cli --session-uuid <UUID>
-.venv/bin/python -m coding_agent_indexer.cli --jsonl ~/.claude/projects/.../<uuid>.jsonl
-
-# launchd lifecycle (coding_agent_indexer daemon)
-./services/scripts/install-coding-agent-indexer.sh
-./services/scripts/uninstall-coding-agent-indexer.sh
-tail -f ~/.meridian/logs/coding-agent-indexer.log
+# coding-agent ingest — runs inside the daemon; these are the one-shot CLIs
+echo '{"transcript_path":"~/.claude/projects/.../<uuid>.jsonl"}' | meridian coding-agent-hook  # SessionEnd: seal one session
+meridian coding-agent-summarise [--dry-run] [--day YYYY-MM-DD] [--limit N]                     # summarise the pending queue
+meridian coding-agent-classify                                                                  # classify summarised rows
 
 # MLX classifier — call the running server directly
 curl -s -X POST http://127.0.0.1:7823/classify_sessions \

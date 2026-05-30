@@ -4,7 +4,7 @@
 // side-effect-free, non-interactive: `-s read-only`, `--skip-git-repo-check`,
 // `--ephemeral` (no session file → indexer won't re-pick it), `--output-schema`
 // + `-o FILE` to capture the structured final message. Port of
-// services/coding_agent_summariser/codex_runner.py.
+// the former Python summariser/codex_runner.py.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};

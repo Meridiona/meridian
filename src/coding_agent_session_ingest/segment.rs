@@ -6,9 +6,8 @@
 // predictable cadence. One `app_sessions` row per segment, keyed on
 // (claude_session_uuid, segment_started_at).
 //
-// Faithful port of services/coding_agent_indexer/jsonl_meta.py
-// `parse_session_segments`. Parity is enforced by the tests below; the Python
-// `tests/test_segmentation.py` cases are mirrored here. Change both together.
+// Originally ported from the Python indexer's `parse_session_segments`; the
+// tests below (mirrored from the old `test_segmentation.py`) pin the behaviour.
 
 use std::path::Path;
 
@@ -16,7 +15,7 @@ use chrono::{DateTime, Utc};
 
 use super::jsonl::{infer_agent, iter_normalised, NormRecord};
 
-// Defaults mirror services/coding_agent_indexer/config.py.
+// Defaults mirror the former Python indexer/config.py.
 pub const ACTIVE_TIME_GAP_CAP_SECONDS: i64 = 120;
 pub const SEGMENT_GAP_SECONDS: i64 = 3600;
 pub const MAX_SEGMENT_SECONDS: i64 = 3600;

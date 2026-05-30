@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
     //     seals that session, exits 0. It must stay light (no daemon init, no
     //     OTLP) and must never block Claude, so it always exits 0.
     if std::env::args().nth(1).as_deref() == Some("coding-agent-hook") {
-        meridian::coding_agent::hook::run_hook().await;
+        meridian::coding_agent_session_ingest::hook::run_hook().await;
         return Ok(());
     }
 
@@ -57,9 +57,9 @@ async fn main() -> Result<()> {
         let dry_run = args.iter().any(|a| a == "--dry-run");
         let day = flag("--day");
         let limit: i64 = flag("--limit").and_then(|v| v.parse().ok()).unwrap_or(8);
-        match meridian::coding_agent::open_meridian_pool().await {
+        match meridian::coding_agent_session_ingest::open_meridian_pool().await {
             Ok(pool) => {
-                meridian::coding_agent::summariser::cli_summarise(
+                meridian::coding_agent_session_ingest::summariser::cli_summarise(
                     &pool,
                     dry_run,
                     day.as_deref(),
@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
     // backfill of the last link in seal→summarise→classify.
     if std::env::args().nth(1).as_deref() == Some("coding-agent-classify") {
         let cfg = Config::from_env();
-        match meridian::coding_agent::open_meridian_pool().await {
+        match meridian::coding_agent_session_ingest::open_meridian_pool().await {
             Ok(pool) => {
                 let mut total = 0usize;
                 loop {
@@ -225,12 +225,16 @@ async fn main() -> Result<()> {
         let notify_idx = ca_notify.clone();
         let rx_idx = shutdown_rx.clone();
         tokio::spawn(async move {
-            meridian::coding_agent::indexer::run_loop(pool_idx, notify_idx, rx_idx).await;
+            meridian::coding_agent_session_ingest::indexer::run_loop(pool_idx, notify_idx, rx_idx)
+                .await;
         });
         let pool_sum = meridian.clone();
         let rx_sum = shutdown_rx.clone();
         tokio::spawn(async move {
-            meridian::coding_agent::summariser::run_loop(pool_sum, ca_notify, rx_sum).await;
+            meridian::coding_agent_session_ingest::summariser::run_loop(
+                pool_sum, ca_notify, rx_sum,
+            )
+            .await;
         });
     }
 

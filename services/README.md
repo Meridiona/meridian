@@ -4,7 +4,7 @@ Python service that runs alongside the Rust daemon. It classifies completed `app
 
 The Rust daemon owns all DDL; this service only does SELECT/INSERT/UPDATE on its agent-side tables.
 
-> **Note:** the coding-agent indexer + summariser now run **inside the Rust daemon** (`src/coding_agent/`). The Python `coding_agent_indexer/` and `coding_agent_summariser/` packages here are kept as the **reference / parity** implementations (their parsers are held byte-for-byte in sync with the Rust ones via tests); their standalone daemons are retired. The MLX server (`agents/server.py`) stays — it serves both `/classify_sessions` and the summariser's `/summarise` fallback.
+> **Note:** the coding-agent indexer + summariser run **inside the Rust daemon** (`src/coding_agent_session_ingest/`); the former Python `coding_agent_indexer` / `coding_agent_summariser` packages have been removed. The MLX server (`agents/server.py`) stays — it serves both `/classify_sessions` and the summariser's `/summarise` fallback.
 
 For the deep technical reference (classification logic, schema, recipes), see [`agents/README.md`](agents/README.md).
 

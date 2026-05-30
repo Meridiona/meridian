@@ -5,9 +5,8 @@
 // `NormRecord` (timestamp, cwd, is_turn, is_user, body) so everything
 // downstream (segmentation, active-time, transcript) is agent-agnostic.
 //
-// This is a faithful port of services/coding_agent_indexer/jsonl_meta.py
-// (the `_iter_claude` / `_iter_codex` / `_format_*` helpers). Parity with that
-// module is enforced by tests; change both together.
+// Originally ported from the Python indexer's jsonl_meta.py (the `_iter_claude`
+// / `_iter_codex` / `_format_*` helpers); this is now the sole implementation.
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};

@@ -1,7 +1,7 @@
 // meridian — normalises screenpipe activity into structured app sessions
 //
 // Env-driven config for the summariser. Defaults match
-// services/coding_agent_summariser/config.py; cadence is adapted to the
+// the former Python summariser/config.py; cadence is adapted to the
 // in-daemon model (notify + short sweep instead of a 5-min standalone poll).
 
 use std::path::PathBuf;
