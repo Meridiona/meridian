@@ -3,7 +3,7 @@
 // SQLite layer for the summariser — read the queue, write the summary. The
 // single write path is idempotent (`UPDATE ... WHERE session_summary IS NULL`),
 // so retries / concurrent runs can never double-write. Port of
-// services/coding_agent_summariser/db.py.
+// the former Python summariser/db.py.
 
 use anyhow::{Context, Result};
 use sqlx::SqlitePool;
@@ -166,9 +166,9 @@ pub async fn write_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coding_agent::db as cdb;
-    use crate::coding_agent::segment::Segment;
-    use crate::coding_agent::summariser::config::SummariserConfig;
+    use crate::coding_agent_session_ingest::db as cdb;
+    use crate::coding_agent_session_ingest::segment::Segment;
+    use crate::coding_agent_session_ingest::summariser::config::SummariserConfig;
     use sqlx::sqlite::SqliteConnectOptions;
     use std::str::FromStr;
 

@@ -6,12 +6,12 @@
 // session immediately (sealing it), then exit 0 — a SessionEnd hook must never
 // block Claude, so every failure path still returns cleanly.
 //
-// Port of services/coding_agent_indexer/hook.py. One-shot: opens its own
+// Port of the former Python indexer/hook.py. One-shot: opens its own
 // short-lived pool against MERIDIAN_DB (the daemon already created + migrated
 // it), registers, closes.
 
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use chrono::Utc;
@@ -36,13 +36,27 @@ pub async fn run_hook() {
             return;
         }
     };
-    if !jsonl_path.exists() {
-        eprintln!(
-            "coding-agent-hook: transcript not found: {}",
-            jsonl_path.display()
-        );
-        return;
-    }
+    // Defense-in-depth: the payload arrives on stdin (untrusted), so a crafted
+    // `transcript_path` must never let the hook open arbitrary files. Resolve
+    // the path (collapsing `..`/symlinks) and require it to live under one of
+    // the accepted coding-agent transcript roots before touching it.
+    let jsonl_path = match jsonl_path.canonicalize() {
+        Ok(resolved) if within_accepted_roots(&resolved) => resolved,
+        Ok(resolved) => {
+            eprintln!(
+                "coding-agent-hook: transcript path outside accepted roots: {}",
+                resolved.display()
+            );
+            return;
+        }
+        Err(_) => {
+            eprintln!(
+                "coding-agent-hook: transcript not found: {}",
+                jsonl_path.display()
+            );
+            return;
+        }
+    };
 
     let db_path = meridian_db_path();
     let uri = format!("sqlite://{}", db_path.display());
@@ -100,6 +114,23 @@ fn extract_jsonl_path(payload: &Value) -> Option<PathBuf> {
         return Some(base.join(sanitized).join(format!("{}.jsonl", sid)));
     }
     None
+}
+
+/// The only directories the hook is allowed to read transcripts from. Anything
+/// outside these is rejected (path-traversal / arbitrary-file-read defense).
+fn accepted_roots() -> [PathBuf; 2] {
+    [expand("~/.claude/projects"), expand("~/.codex/sessions")]
+}
+
+/// True iff `resolved` (an already-canonicalised path) lives under an accepted
+/// root. Roots are canonicalised too so symlinked homes compare correctly; a
+/// non-existent root simply never matches.
+fn within_accepted_roots(resolved: &Path) -> bool {
+    accepted_roots().iter().any(|root| {
+        root.canonicalize()
+            .map(|r| resolved.starts_with(r))
+            .unwrap_or(false)
+    })
 }
 
 fn meridian_db_path() -> PathBuf {

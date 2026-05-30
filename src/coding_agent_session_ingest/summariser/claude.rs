@@ -2,7 +2,7 @@
 //
 // Run `claude -p` with the session-summary skill + structured output. Returns
 // the validated {summary, blockers}, or RateLimited (→ MLX fallback) /
-// Failed (→ retry). Port of services/coding_agent_summariser/claude_runner.py.
+// Failed (→ retry). Port of the former Python summariser/claude_runner.py.
 //
 // Auth: the user's Claude subscription. We drop ANTHROPIC_API_KEY from the child
 // env so a stray key can't silently switch to metered API billing, and set
