@@ -20,11 +20,9 @@ Usage:
     python3 scripts/refresh_pm_tasks.py --db /path/to/meridian.db
     python3 scripts/refresh_pm_tasks.py --no-prune
 
-Reads credentials from JIRA_URL / JIRA_EMAIL / JIRA_API_TOKEN. Will pick them
-up from any of these .env files (does not override existing env vars):
-  - $MERIDIAN/.env  (current repo root)
-  - $HOME/Documents/Meridiona/meridian/.env  (legacy repo root)
-  - $HOME/.hermes/.env
+Reads credentials from JIRA_URL / JIRA_EMAIL / JIRA_API_TOKEN, loaded from the
+repo-root .env (does not override existing env vars). Nothing is read from
+outside the repo.
 """
 from __future__ import annotations
 
@@ -173,14 +171,10 @@ def main() -> int:
     log = logging.getLogger("refresh_pm_tasks")
 
     repo_root = Path(__file__).resolve().parents[1]
-    for p in [
-        repo_root / ".env",
-        Path.home() / "Documents/Meridiona/meridian/.env",
-        Path.home() / ".hermes/.env",
-    ]:
-        n = _load_env(p)
-        if n:
-            log.info("loaded %d vars from %s", n, p)
+    # Single source of truth: the repo-root .env (nothing read outside the repo).
+    n = _load_env(repo_root / ".env")
+    if n:
+        log.info("loaded %d vars from %s", n, repo_root / ".env")
 
     base_url = os.environ.get("JIRA_BASE_URL", os.environ.get("JIRA_URL", "")).rstrip("/")
     email = os.environ.get("JIRA_EMAIL", "")
