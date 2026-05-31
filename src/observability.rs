@@ -3,7 +3,7 @@
 // Observability bootstrap.
 //
 // One call to `init(service_name)` builds a layered `tracing` subscriber that:
-//   1. Pretty-prints to stderr (dev ergonomics)
+//   1. Pretty-prints to stdout (so `meridian logs` / daemon.log captures it)
 //   2. Writes JSON Lines to `~/.meridian/logs/<service>.jsonl` with daily rotation
 //   3. Exports OpenTelemetry traces to OpenObserve via OTLP/HTTP
 //   4. Exports OpenTelemetry logs  to OpenObserve via OTLP/HTTP
@@ -88,7 +88,7 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
 
     let fmt_stdout = tracing_subscriber::fmt::layer()
         .with_target(true)
-        .with_writer(std::io::stderr)
+        .with_writer(std::io::stdout)
         .compact();
     let fmt_file = tracing_subscriber::fmt::layer()
         .with_target(true)
