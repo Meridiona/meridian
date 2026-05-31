@@ -85,8 +85,13 @@ class SessionClassification(BaseModel):
         ),
     )
     reasoning: str = Field(
-        ..., max_length=300,
-        description="1–4 sentences citing window titles, OCR text, or context clues.",
+        ...,
+        description=(
+            "Concise justification citing window titles, OCR text, or context "
+            "clues. No hard length cap — outlines must not truncate this field; "
+            "the only ceiling is the server-side _MAX_TOKENS generation budget. "
+            "Store whatever the model produces verbatim."
+        ),
     )
     dimensions: dict[str, list[str]] = Field(
         default_factory=dict,

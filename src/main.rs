@@ -25,15 +25,12 @@ const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 1. Load env files first so MERIDIAN_OO_AUTH / MERIDIAN_OTLP_ENDPOINT are
-    //    visible to observability::init().  Later file wins on conflicts.
-    //    ~/.meridian/.env  — system / user-level defaults
-    //    .env in cwd       — project root, easiest to edit during development
-    if let Ok(home) = std::env::var("HOME") {
-        let env_path = std::path::Path::new(&home).join(".meridian").join(".env");
-        let _ = dotenvy::from_path(env_path);
-    }
-    // Override so cwd .env beats any empty values injected by launchd plist.
+    // 1. Load the repo-local .env — the single source of config, shared by this
+    //    daemon and the Python services. Nothing is read from outside the repo.
+    //    The launchd plist sets WorkingDirectory to the repo root, so
+    //    dotenv_override reads <repo>/.env and its values beat any empty
+    //    defaults injected by the plist. (CLI subcommands invoked from elsewhere
+    //    fall back to built-in defaults, e.g. MERIDIAN_DB → ~/.meridian/meridian.db.)
     let _ = dotenvy::dotenv_override();
 
     // 1b. Subcommand dispatch. `meridian coding-agent-hook` is the Claude Code
@@ -98,6 +95,28 @@ async fn main() -> Result<()> {
                 pool.close().await;
             }
             Err(e) => eprintln!("coding-agent-classify: open db: {e}"),
+        }
+        return Ok(());
+    }
+
+    // `meridian pm-worklog [--day YYYY-MM-DD] [--dry-run]` — one-shot Stage 4:
+    // walk the day's hours and draft (or, when posting is enabled, post) one Jira
+    // worklog per task per ready hour. Opens via setup_db so migrations (incl. the
+    // pm_worklog tables) are applied even when run standalone.
+    if std::env::args().nth(1).as_deref() == Some("pm-worklog") {
+        let args: Vec<String> = std::env::args().collect();
+        let dry_run = args.iter().any(|a| a == "--dry-run");
+        let day = args
+            .iter()
+            .position(|a| a == "--day")
+            .and_then(|i| args.get(i + 1).cloned());
+        let cfg = Config::from_env();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                meridian::pm_worklog::cli_run(&pool, day.as_deref(), dry_run).await;
+                pool.close().await;
+            }
+            Err(e) => eprintln!("pm-worklog: open db: {e}"),
         }
         return Ok(());
     }
@@ -235,6 +254,18 @@ async fn main() -> Result<()> {
                 pool_sum, ca_notify, rx_sum,
             )
             .await;
+        });
+    }
+
+    // 7d. PM-worklog driver (Stage 4): the hour-driven loop that writes one Jira
+    //     worklog per task per settled hour. Gated on the global LLM gate and on
+    //     PM_WORKLOG_POST_ENABLED (defaults to dry-run so it never posts to real
+    //     Jira unattended). Independent of the ETL tick.
+    {
+        let pool_pm = meridian.clone();
+        let rx_pm = shutdown_rx.clone();
+        tokio::spawn(async move {
+            meridian::pm_worklog::run_loop(pool_pm, rx_pm).await;
         });
     }
 
