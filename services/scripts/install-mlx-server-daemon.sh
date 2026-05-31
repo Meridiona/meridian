@@ -98,7 +98,19 @@ fi
 
 echo "→ bootout ${LABEL} (if loaded)"
 launchctl bootout "${GUI_TARGET}/${LABEL}" 2>/dev/null || true
-sleep 1
+# bootout is async. A fixed sleep is unreliable — when the prior MLX process
+# still holds the ~9 GB model in memory it takes seconds to exit, and
+# bootstrapping before the domain entry is gone fails with EIO (errno 5).
+# Wait until launchd confirms the service is actually gone.
+_bootout_wait=0
+while launchctl print "${GUI_TARGET}/${LABEL}" >/dev/null 2>&1; do
+    sleep 1
+    _bootout_wait=$(( _bootout_wait + 1 ))
+    if [[ "${_bootout_wait}" -ge 20 ]]; then
+        echo "⚠ ${LABEL} still in launchd domain after 20s — proceeding anyway" >&2
+        break
+    fi
+done
 
 echo "→ bootstrap ${LABEL}"
 launchctl enable "${GUI_TARGET}/${LABEL}" 2>/dev/null || true
