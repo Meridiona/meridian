@@ -46,13 +46,10 @@ _REPO_DIR = _SERVICES_DIR.parent
 if str(_SERVICES_DIR) not in sys.path:
     sys.path.insert(0, str(_SERVICES_DIR))
 
-# Load .env (repo + ~/.meridian) so OTLP endpoint + auth are visible.
-# Earliest-wins: repo .env first, then ~/.meridian/.env, then existing shell env.
+# Load the repo-root .env so OTLP endpoint + auth are visible. Nothing is read
+# from outside the repo; the existing shell env still wins (override=False).
 try:
     from dotenv import load_dotenv  # noqa: E402
-    home_env = Path.home() / ".meridian" / ".env"
-    if home_env.exists():
-        load_dotenv(home_env, override=False)
     repo_env = _REPO_DIR / ".env"
     if repo_env.exists():
         load_dotenv(repo_env, override=False)
