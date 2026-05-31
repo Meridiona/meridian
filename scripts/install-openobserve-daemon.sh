@@ -8,7 +8,7 @@
 # Re-running is safe — it bootouts the existing agent first, rewrites the
 # plist with current credentials, and reloads it.
 #
-# Requires MERIDIAN_OO_AUTH=<base64(email:password)> in ~/.meridian/.env.
+# Requires MERIDIAN_OO_AUTH=<base64(email:password)> in <repo>/.env.
 #
 # Uninstall:
 #   ./scripts/uninstall-openobserve-daemon.sh
@@ -62,8 +62,8 @@ if [[ -z "${OO_BIN}" ]]; then
     fi
 fi
 
-# Read MERIDIAN_OO_AUTH from ~/.meridian/.env and decode it.
-ENV_FILE="${HOME}/.meridian/.env"
+# Read MERIDIAN_OO_AUTH from the repo-root .env and decode it.
+ENV_FILE="$(cd "${SCRIPT_DIR}/.." && pwd)/.env"
 OO_AUTH=""
 if [[ -f "${ENV_FILE}" ]]; then
     OO_AUTH="$(grep -E '^MERIDIAN_OO_AUTH=' "${ENV_FILE}" | cut -d= -f2- | tr -d '[:space:]')" || true
