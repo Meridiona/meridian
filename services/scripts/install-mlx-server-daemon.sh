@@ -70,8 +70,11 @@ fi
 MERIDIAN_OO_AUTH=""
 MERIDIAN_OTLP_ENDPOINT=""
 if [[ -f "${REPO_ROOT}/.env" ]]; then
-    MERIDIAN_OO_AUTH=$(grep -E '^MERIDIAN_OO_AUTH=' "${REPO_ROOT}/.env" | tail -1 | cut -d= -f2-)
-    MERIDIAN_OTLP_ENDPOINT=$(grep -E '^MERIDIAN_OTLP_ENDPOINT=' "${REPO_ROOT}/.env" | tail -1 | cut -d= -f2-)
+    # `|| true`: grep exits non-zero when the key is absent, which under
+    # `set -o pipefail` + `set -e` would abort the whole installer. These vars
+    # are optional (telemetry off when unset), so never let a missing key fail.
+    MERIDIAN_OO_AUTH=$(grep -E '^MERIDIAN_OO_AUTH=' "${REPO_ROOT}/.env" | tail -1 | cut -d= -f2- || true)
+    MERIDIAN_OTLP_ENDPOINT=$(grep -E '^MERIDIAN_OTLP_ENDPOINT=' "${REPO_ROOT}/.env" | tail -1 | cut -d= -f2- || true)
 fi
 
 mkdir -p "${HOME}/.meridian/logs"
