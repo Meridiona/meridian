@@ -40,7 +40,7 @@
         <string>meridian=info</string>
         <!-- OTLP auth for OpenObserve — must be set here (not just .env)
              because the Rust binary reads env vars before dotenv is loaded.
-             The install script reads MERIDIAN_OO_AUTH from ~/.meridian/.env and
+             The install script reads MERIDIAN_OO_AUTH from the repo-root .env and
              substitutes the {{MERIDIAN_OO_AUTH}} placeholder below. -->
         <key>MERIDIAN_OO_AUTH</key>
         <string>{{MERIDIAN_OO_AUTH}}</string>
