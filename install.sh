@@ -11,7 +11,7 @@ DRY_RUN=0
 NO_DAEMON=0
 SKIP_PERMISSIONS=0
 SKIP_ENV=0
-USE_MLX=0
+USE_MLX=1   # MLX inference server is the default backend (powers classify + PM-worklog synth); --no-mlx opts out
 MLX_PORT=7823
 
 # ---------------------------------------------------------------------------
@@ -144,21 +144,16 @@ prompt_env_vars() {
     echo "    (you can re-run later: meridian config edit)"
     echo
 
-    local root_env="${HOME}/.meridian/.env"
-    local svcs_env="${REPO_ROOT}/services/.env"
-    local hermes_env="${REPO_ROOT}/services/.hermes/.env"
+    local root_env="${REPO_ROOT}/.env"
 
-    # Ensure parent dirs and files exist. services/.hermes/ is created later by
-    # setup-services.sh, but we need it now so env collection can write to it.
-    for f in "$root_env" "$svcs_env" "$hermes_env"; do
-        mkdir -p "$(dirname "$f")"
-        [[ -f "$f" ]] || touch "$f"
-    done
+    # Ensure parent dir and file exist so env collection can write to it.
+    mkdir -p "$(dirname "$root_env")"
+    [[ -f "$root_env" ]] || touch "$root_env"
 
     info "→ LLM for task classification"
     if [[ "${USE_MLX:-0}" -eq 1 ]]; then
         echo "    Using persistent MLX inference server (--mlx). No LLM endpoint needed."
-        echo "    CLASSIFIER_BACKEND=mlx will be written to ~/.meridian/.env automatically."
+        echo "    CLASSIFIER_BACKEND=mlx will be written to <repo>/.env automatically."
         echo
     else
         echo "    Meridian auto-detects running local servers (LM Studio :1234, Ollama :11434,"
@@ -199,13 +194,13 @@ prompt_env_vars() {
     fi
 
     # Always prefer local; LLM_PREFER_LOCAL=1 is the default but we write it
-    # explicitly so the value is visible in services/.env.
-    set_env_value "LLM_PREFER_LOCAL" "1" "$svcs_env"
+    # explicitly so the value is visible in the repo-root .env.
+    set_env_value "LLM_PREFER_LOCAL" "1" "$root_env"
 
     echo
     echo "    Cloud fallback (optional) — only used when no local model is available."
     prompt_env_var "OPENROUTER_API_KEY" "OpenRouter API key (leave blank to skip)" 1 \
-        "$hermes_env" "$svcs_env"
+        "$root_env"
     echo
     fi  # end: non-MLX LLM section
 
@@ -214,9 +209,9 @@ prompt_env_vars() {
         # The python-side variable name is JIRA_URL, not JIRA_BASE_URL — write both.
         local jira_url
         jira_url="$(get_env_value JIRA_BASE_URL "$root_env")"
-        [[ -n "$jira_url" ]] && set_env_value JIRA_URL "$jira_url" "$svcs_env"
-        prompt_env_var "JIRA_EMAIL" "Jira email" 0 "$root_env" "$svcs_env"
-        prompt_env_var "JIRA_API_TOKEN" "Jira API token" 1 "$root_env" "$svcs_env"
+        [[ -n "$jira_url" ]] && set_env_value JIRA_URL "$jira_url" "$root_env"
+        prompt_env_var "JIRA_EMAIL" "Jira email" 0 "$root_env"
+        prompt_env_var "JIRA_API_TOKEN" "Jira API token" 1 "$root_env"
         prompt_env_var "JIRA_PROJECT_KEYS" "Jira project keys (optional, comma-sep, e.g. KAN,ENG)" 0 "$root_env"
     fi
     echo
@@ -235,25 +230,12 @@ prompt_env_vars() {
     echo
 
     if prompt_category "Observability (OpenObserve)"; then
-        # Check if MERIDIAN_OO_AUTH is already set in any target file.
-        local _oo_auth_existing="" _oo_auth_found_in=""
-        for f in "$root_env" "$svcs_env"; do
-            local _existing
-            _existing="$(get_env_value "MERIDIAN_OO_AUTH" "$f")"
-            if [[ -n "$_existing" ]]; then
-                _oo_auth_existing="$_existing"
-                _oo_auth_found_in="$f"
-                break
-            fi
-        done
+        # Check if MERIDIAN_OO_AUTH is already set in the target file.
+        local _oo_auth_existing=""
+        _oo_auth_existing="$(get_env_value "MERIDIAN_OO_AUTH" "$root_env")"
 
         if [[ -n "$_oo_auth_existing" ]]; then
-            ok "MERIDIAN_OO_AUTH already set in $(basename "$(dirname "$_oo_auth_found_in")")/$(basename "$_oo_auth_found_in") — keeping"
-            for f in "$root_env" "$svcs_env"; do
-                if [[ -z "$(get_env_value "MERIDIAN_OO_AUTH" "$f")" ]]; then
-                    set_env_value "MERIDIAN_OO_AUTH" "$_oo_auth_existing" "$f"
-                fi
-            done
+            ok "MERIDIAN_OO_AUTH already set in $(basename "$(dirname "$root_env")")/$(basename "$root_env") — keeping"
         elif [[ "${DRY_RUN:-0}" -eq 1 ]]; then
             info "[DRY-RUN] would prompt: OpenObserve admin email + password"
         else
@@ -268,9 +250,7 @@ prompt_env_vars() {
             if [[ -n "$_oo_email" && -n "$_oo_pass" ]]; then
                 local _oo_auth
                 _oo_auth="$(printf '%s:%s' "$_oo_email" "$_oo_pass" | base64)"
-                for f in "$root_env" "$svcs_env"; do
-                    set_env_value "MERIDIAN_OO_AUTH" "$_oo_auth" "$f"
-                done
+                set_env_value "MERIDIAN_OO_AUTH" "$_oo_auth" "$root_env"
                 ok "MERIDIAN_OO_AUTH written (base64-encoded email:password)"
             else
                 info "  (skipped MERIDIAN_OO_AUTH — run 'meridian config edit' to add later)"
@@ -278,7 +258,7 @@ prompt_env_vars() {
         fi
 
         prompt_env_var "MERIDIAN_OTLP_ENDPOINT" "OTLP HTTP traces endpoint (Rust side, e.g. http://localhost:5080/api/default/v1/traces)" 0 "$root_env"
-        prompt_env_var "MERIDIAN_OTLP_TRACES_ENDPOINT" "OTLP HTTP traces endpoint (Python side; same URL as above is fine)" 0 "$svcs_env"
+        prompt_env_var "MERIDIAN_OTLP_TRACES_ENDPOINT" "OTLP HTTP traces endpoint (Python side; same URL as above is fine)" 0 "$root_env"
     fi
 
     ok "Credential collection complete"
@@ -325,7 +305,8 @@ while [[ $# -gt 0 ]]; do
         --no-daemon)         NO_DAEMON=1 ;;
         --skip-permissions)  SKIP_PERMISSIONS=1 ;;
         --skip-env)          SKIP_ENV=1 ;;
-        --mlx)               USE_MLX=1 ;;
+        --mlx)               USE_MLX=1 ;;   # default; kept for back-compat
+        --no-mlx)            USE_MLX=0 ;;
         --mlx-port)          MLX_PORT="$2"; shift ;;
         --help|-h)
             cat >&2 <<'EOF'
@@ -336,10 +317,13 @@ Usage: bash install.sh [OPTIONS]
   --no-daemon          Build everything but skip launchd registration
   --skip-permissions   Skip the macOS permissions walkthrough (Screen Recording, Accessibility, Microphone)
   --skip-env           Skip the interactive credentials collection step
-  --mlx                Use the persistent MLX inference server for classification (Apple Silicon only).
+  --mlx                Use the persistent MLX inference server (DEFAULT — Apple Silicon only).
                        Installs mlx-lm + outlines + fastapi into .venv, registers the MLX server
-                       LaunchAgent, and writes CLASSIFIER_BACKEND=mlx to ~/.meridian/.env.
-  --mlx-port N         MLX server port (default: 7823). Written to ~/.meridian/.env.
+                       LaunchAgent, and writes CLASSIFIER_BACKEND=mlx to <repo>/.env. The MLX
+                       server powers classification AND the PM-worklog synthesiser.
+  --no-mlx             Skip the MLX server; use the hermes LLM-selector backend instead.
+                       (PM-worklog synthesis is unavailable without the MLX server.)
+  --mlx-port N         MLX server port (default: 7823). Written to <repo>/.env.
   --help, -h           Print this usage and exit
 
 After permissions, install.sh walks you through collecting credentials interactively
@@ -579,26 +563,15 @@ info "Bootstrapping config..."
 
 run mkdir -p "${HOME}/.meridian/logs"
 
-if [[ ! -f "${HOME}/.meridian/.env" ]]; then
+if [[ ! -f "${REPO_ROOT}/.env" ]]; then
     if [[ -f "${REPO_ROOT}/.env.example" ]]; then
-        run cp "${REPO_ROOT}/.env.example" "${HOME}/.meridian/.env"
-        warn "Created ~/.meridian/.env from .env.example — edit it to add your credentials."
+        run cp "${REPO_ROOT}/.env.example" "${REPO_ROOT}/.env"
+        warn "Created <repo>/.env from .env.example — edit it to add your credentials."
     else
-        warn ".env.example not found; skipping ~/.meridian/.env creation."
+        warn ".env.example not found; skipping <repo>/.env creation."
     fi
 else
-    ok "~/.meridian/.env already exists — not overwriting"
-fi
-
-if [[ ! -f "${REPO_ROOT}/services/.env" ]]; then
-    if [[ -f "${REPO_ROOT}/services/.env.example" ]]; then
-        run cp "${REPO_ROOT}/services/.env.example" "${REPO_ROOT}/services/.env"
-        warn "Created services/.env from .env.example — edit it to add your credentials."
-    else
-        warn "services/.env.example not found; skipping services/.env creation."
-    fi
-else
-    ok "services/.env already exists — not overwriting"
+    ok "<repo>/.env already exists — not overwriting"
 fi
 
 # ---------------------------------------------------------------------------
@@ -665,7 +638,7 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
     if [[ "${_oo_installed}" -eq 1 ]]; then
         info "Installing OpenObserve launchd agent..."
         if ! run bash "${REPO_ROOT}/scripts/install-openobserve-daemon.sh"; then
-            warn "OpenObserve daemon install skipped (set MERIDIAN_OO_AUTH in ~/.meridian/.env to enable)"
+            warn "OpenObserve daemon install skipped (set MERIDIAN_OO_AUTH in <repo>/.env to enable)"
         else
             ok "OpenObserve launchd agent installed"
         fi
@@ -678,9 +651,9 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
     # MLX server must be running before the Rust daemon starts — the daemon
     # TCP-connects to it on startup and exits hard if the port is not reachable.
     if [[ "${USE_MLX}" -eq 1 ]]; then
-        info "Writing MLX classification env vars to ~/.meridian/.env..."
-        set_env_value "CLASSIFIER_BACKEND" "mlx"          "${HOME}/.meridian/.env"
-        set_env_value "MLX_SERVER_PORT"    "${MLX_PORT}"  "${HOME}/.meridian/.env"
+        info "Writing MLX classification env vars to <repo>/.env..."
+        set_env_value "CLASSIFIER_BACKEND" "mlx"          "${REPO_ROOT}/.env"
+        set_env_value "MLX_SERVER_PORT"    "${MLX_PORT}"  "${REPO_ROOT}/.env"
         ok "CLASSIFIER_BACKEND=mlx, MLX_SERVER_PORT=${MLX_PORT}"
 
         info "Installing MLX inference server launchd agent..."
@@ -724,17 +697,15 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
     info "Installing Rust daemon launchd agent..."
     run bash "${REPO_ROOT}/scripts/install-daemon.sh"
     ok "Rust daemon launchd agent installed"
+    # Jira worklogs (Stage 4) and coding-agent ingest both run INSIDE the Rust
+    # daemon — no separate launchd agents. Worklog posting stays off until
+    # PM_WORKLOG_POST_ENABLED=true in <repo>/.env.
 
-    info "Installing jira-updater launchd agent..."
-    if ! run bash "${REPO_ROOT}/services/scripts/install-jira-updater-daemon.sh"; then
-        warn "jira-updater install skipped (set MERIDIAN_OO_AUTH in services/.env to enable)"
-    fi
-
-    info "Installing coding-agent-indexer launchd agent..."
-    if ! run bash "${REPO_ROOT}/services/scripts/install-coding-agent-indexer.sh"; then
-        warn "coding-agent-indexer install skipped"
+    info "Installing Claude Code coding-agent SessionEnd hook..."
+    if ! run bash "${REPO_ROOT}/services/scripts/install-claude-hook.sh"; then
+        warn "coding-agent hook install skipped"
     else
-        ok "coding-agent-indexer launchd agent installed"
+        ok "Claude Code coding-agent SessionEnd hook installed"
     fi
 
     info "Installing UI launchd agent..."
@@ -759,17 +730,19 @@ ok "meridian CLI → ${BIN_DIR}/meridian"
 echo ""
 echo "✓ Meridian installed."
 echo ""
-echo "  meridian start          # start all three daemons (screenpipe + daemon + jira-updater)"
+echo "  meridian start          # start all daemons (screenpipe + Rust daemon + MLX server + UI)"
 echo "  meridian permissions    # re-run the permissions walkthrough"
 echo "  meridian status         # check running state"
 echo "  meridian logs           # tail Rust daemon log"
 echo "  meridian doctor         # diagnose"
-echo "  meridian config edit    # open ~/.meridian/.env"
+echo "  meridian config edit    # open <repo>/.env"
 echo ""
 echo "Required before Jira/GitHub/Linear sync:"
-echo "  ~/.meridian/.env             # screenpipe + Rust daemon"
-echo "  services/.env                # Python agents (LLM + Jira)"
-echo "  services/.hermes/.env        # OLLAMA_API_KEY for hermes"
+echo "  <repo>/.env                  # one backend env for the Rust daemon AND Python services"
+echo "  ui/.env.local                # Next.js UI"
+echo ""
+echo "Jira worklog posting is OFF by default — set PM_WORKLOG_POST_ENABLED=true in"
+echo "<repo>/.env when you're ready for the daemon to write worklogs to Jira."
 
 case ":${PATH}:" in
     *":${BIN_DIR}:"*) ;;
