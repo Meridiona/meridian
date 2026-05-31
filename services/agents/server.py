@@ -523,6 +523,123 @@ async def summarise(req: _SummariseRequest) -> _SummariseResponse:
     return _SummariseResponse(summary=obj.summary.strip(), blockers=obj.blockers)
 
 
+# ---------------------------------------------------------------------------
+# MLX backend — pm-worklog synth (Stage 4)
+#
+# Runs the agno Synthesise agent (skill + guardrails + JiraUpdate schema)
+# in-process so the model server is the single LLM host for every stage. The
+# Rust daemon owns Collect/Ground/Route; this endpoint is the ONLY LLM hop for
+# the worklog. Serialisation across stages is guaranteed by the Rust-side global
+# LLM gate — this handler does no locking of its own.
+# ---------------------------------------------------------------------------
+
+class _SynthWorklogRequest(BaseModel):
+    # A SessionBundle.model_dump() — the classified sessions + ticket context
+    # Rust collected for one (task, hour) window.
+    bundle: dict
+    debug: bool = False
+
+
+def _get_synth_agent() -> "Any":
+    """Build the agno Synthesise agent once and cache it on the app state.
+
+    Lazy + cached: agno is a heavy import, and the classify-only use of this
+    server must not pay for it. The agent's model is OpenAILike pointed back at
+    this same server's /v1 endpoint (loopback) — the existing wiring.
+    """
+    agent = _app_state.get("synth_agent")
+    if agent is not None:
+        return agent
+    from agno.db.sqlite import SqliteDb
+
+    from agents.pm_worklog_update import agents as pm_agents
+
+    agno_db = SqliteDb(
+        db_file=str(_DB_PATH),
+        session_table="agno_workflow_sessions",
+        memory_table="agno_pm_worklog_memories",
+        metrics_table="agno_pm_worklog_metrics",
+        eval_table="agno_pm_worklog_eval_runs",
+        approvals_table="agno_pm_worklog_approvals",
+    )
+    agent = pm_agents.build_synth_agent(db=agno_db)
+    _app_state["synth_agent"] = agent
+    log.info("synthesise_worklog: agno synth agent built")
+    return agent
+
+
+@app.post("/synthesise_worklog")
+async def synthesise_worklog(req: _SynthWorklogRequest) -> dict:
+    """Synthesise ONE Jira worklog from a collected session bundle (MLX only).
+
+    Returns a JiraUpdate dict. The authoritative scalar fields (task_key,
+    window, cycle_index, time_spent_seconds) are stamped from the bundle so the
+    LLM can never override them — it only authors the prose + evidence bullets.
+    Rust grounds, routes, and posts.
+    """
+    from fastapi.concurrency import run_in_threadpool
+
+    if _app_state.get("backend") != "mlx":
+        raise HTTPException(
+            status_code=503, detail="/synthesise_worklog requires --backend mlx"
+        )
+
+    from agents.pm_worklog_update import workflow as pm_workflow
+    from agents.pm_worklog_update.models import JiraUpdate, SessionBundle
+
+    try:
+        bundle = SessionBundle.model_validate(req.bundle)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail=f"bad bundle: {exc}") from exc
+
+    agent = _get_synth_agent()
+    user_message = pm_workflow._render_workflow_input(bundle)
+
+    def _run() -> "Any":
+        return agent.run(input=user_message)
+
+    # The local model is non-deterministic (temp > 0) and occasionally emits an
+    # output that doesn't parse into a JiraUpdate. Retry a couple of times before
+    # giving up — a fresh sample almost always parses.
+    update = None
+    last_detail = "no attempt"
+    for attempt in range(1, 4):
+        try:
+            response = await run_in_threadpool(_run)
+        except Exception as exc:  # noqa: BLE001 — never crash the shared server
+            last_detail = f"agent run failed: {exc}"
+            log.warning("synthesise_worklog: attempt %d %s", attempt, last_detail)
+            continue
+        raw = getattr(response, "content", response)
+        update = pm_workflow._coerce_jira(raw)
+        if update is not None:
+            break
+        last_detail = "agent output did not parse into a JiraUpdate"
+        log.warning("synthesise_worklog: attempt %d %s", attempt, last_detail)
+
+    if update is None:
+        raise HTTPException(
+            status_code=500, detail=f"synth produced no JiraUpdate after 3 attempts ({last_detail})"
+        )
+
+    # Stamp authoritative fields from the bundle — never trust the LLM for these.
+    update = update.model_copy(
+        update={
+            "task_key":           bundle.task_key,
+            "window_start":       bundle.window_start,
+            "window_end":         bundle.window_end,
+            "cycle_index":        bundle.cycle_index,
+            "time_spent_seconds": bundle.real_seconds,
+        }
+    )
+    log.info(
+        "synthesise_worklog: task=%s sessions=%d summary_chars=%d bullets=%d conf=%.2f",
+        bundle.task_key, len(bundle.sessions), len(update.summary or ""),
+        len(update.bullets), update.confidence,
+    )
+    return update.model_dump()
+
+
 @app.get("/v1/models")
 async def openai_models_list() -> dict:
     """OpenAI-style models listing — agno/openai-python probe this on first use."""
