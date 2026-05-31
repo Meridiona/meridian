@@ -128,12 +128,24 @@ The server loads the model once at startup (~30 s on first run while the model d
 ```bash
 meridian start          # bring up all daemons (screenpipe + daemon + mlx-server + ui)
 meridian status         # check what's running
-meridian logs           # tail the Rust daemon log
-meridian logs ui        # tail the dashboard log
-meridian logs mlx-server # tail the MLX server log
 meridian doctor         # diagnose missing config / services / permissions
 meridian permissions    # re-run the screenpipe permissions walkthrough
 ```
+
+### Logs
+
+`meridian logs [target] [-f]` tails a log; add `-f` to stream live. Each component has a normal log (everything) and an `-error` log (WARN/ERROR only):
+
+```bash
+meridian logs -f                  # Rust daemon — the whole pipeline (default)
+meridian logs daemon-error -f     # Rust daemon — problems only
+meridian logs mlx-server -f       # MLX inference server — classify/synth requests
+meridian logs mlx-server-error -f # MLX server — problems only
+meridian logs ui -f               # dashboard
+meridian logs screenpipe -f       # capture layer
+```
+
+Targets: `daemon` · `daemon-error` · `mlx-server` · `mlx-server-error` · `ui` · `ui-error` · `screenpipe` · `screenpipe-error`. The Rust daemon also writes structured JSON to `~/.meridian/logs/meridian-rust.jsonl.<date>` for grepping.
 
 Once started, the dashboard is at **http://localhost:3000**. Stop with `meridian stop`. Remove everything with `meridian uninstall`.
 
