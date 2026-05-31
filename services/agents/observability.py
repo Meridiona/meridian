@@ -183,9 +183,18 @@ def _configure_logging(agent_name: str) -> None:
     file_h.setFormatter(formatter)
     file_h.addFilter(_ServiceFilter())
 
-    stream_h = logging.StreamHandler(sys.stderr)
-    stream_h.setFormatter(formatter)
-    stream_h.addFilter(_ServiceFilter())
+    # Split streams by level so the launchd plist can route them to separate
+    # files: INFO/DEBUG → stdout (mlx-server.log), WARNING+ → stderr
+    # (mlx-server-error.log). Errors still appear in the file/JSONL handler too.
+    stdout_h = logging.StreamHandler(sys.stdout)
+    stdout_h.setFormatter(formatter)
+    stdout_h.addFilter(_ServiceFilter())
+    stdout_h.addFilter(lambda r: r.levelno < logging.WARNING)  # below WARNING only
+
+    stderr_h = logging.StreamHandler(sys.stderr)
+    stderr_h.setFormatter(formatter)
+    stderr_h.addFilter(_ServiceFilter())
+    stderr_h.setLevel(logging.WARNING)  # WARNING / ERROR / CRITICAL only
 
     root = logging.getLogger()
     # Clear any pre-existing handlers — long-running daemons that import
@@ -193,7 +202,8 @@ def _configure_logging(agent_name: str) -> None:
     # behind that would duplicate every line.
     root.handlers.clear()
     root.addHandler(file_h)
-    root.addHandler(stream_h)
+    root.addHandler(stdout_h)
+    root.addHandler(stderr_h)
     root.setLevel(level)
 
     for noisy in _NOISY_LOGGERS:
