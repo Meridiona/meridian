@@ -68,3 +68,7 @@ services/tests/evals/.synthetic-dataset-*.json
 # Eval run results — one JSON per eval_classifier.py invocation, source of truth
 # for the eval-feedback skill. Regenerated on every run; never commit.
 services/tests/evals/results/
+
+# Python bytecode
+__pycache__/
+*.pyc
