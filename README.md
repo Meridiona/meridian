@@ -36,33 +36,36 @@ to `app_sessions`:
 
 ## Getting started
 
-### Prerequisites
+**Requirements:** macOS on **Apple Silicon** (M1+). That's it — the installer brings the rest.
 
-- macOS 13+
-- Internet connection (for Homebrew + dependency downloads)
-
-`install.sh` handles everything else — Homebrew, Rust, Node 18+, Python 3.11+, and screenpipe itself.
-
-### Install
+### Install (one command)
 
 ```bash
-git clone https://github.com/meridiona/meridian
+curl -fsSL https://raw.githubusercontent.com/Meridiona/meridian/main/bootstrap.sh | bash
+```
+
+No clone, no build. This downloads the latest prebuilt release to `~/.meridian/app`, installs any missing prerequisites (Homebrew packages, Node, Python 3.11, screenpipe, ffmpeg), sets up the on-device model, and registers four auto-starting services — **screenpipe** (capture), the **daemon** (pipeline), the **MLX server** (on-device model), and the **dashboard** at http://localhost:3000.
+
+Then grant screenpipe its three macOS permissions when prompted (Screen Recording, Accessibility, Microphone), and optionally connect Jira.
+
+👉 **Full walkthrough — permissions, Jira, verifying, logs, updating, troubleshooting: [SETUP.md](SETUP.md).**
+
+```bash
+meridian status      # the four services
+meridian logs -f     # watch the pipeline
+meridian config edit # add your Jira credentials
+meridian update      # update to the latest release
+```
+
+### Build from source (contributors)
+
+```bash
+git clone https://github.com/Meridiona/meridian
 cd meridian
 ./install.sh
 ```
 
-The installer detects and offers to install each missing prerequisite, then builds the Rust daemon, the MCP server, the Next.js UI, sets up the Python services (including the MLX inference server), walks you through granting screenpipe its three macOS permissions (Screen Recording, Accessibility, Microphone), and registers four launchd LaunchAgents: `com.meridiona.screenpipe`, `com.meridiona.daemon`, `com.meridiona.mlx-server`, and `com.meridiona.ui` (the dashboard at http://localhost:3000). All four start automatically once installed.
-
-The **MLX inference server** (Qwen3.5-9B, Apple Silicon) is installed by default — it powers both session classification and the PM-worklog synthesiser. `./install.sh` sets up the Python venv and the `[mlx]` extras for you; no manual steps needed.
-
-Useful flags:
-
-- `./install.sh --no-ui` — skip the dashboard build
-- `./install.sh --dry-run` — preview actions without executing
-- `./install.sh --no-daemon` — build only; don't register launchd agents
-- `./install.sh --skip-permissions` — skip the macOS permissions walkthrough
-- `./install.sh --skip-env` — skip the credential walkthrough
-- `./install.sh --no-mlx` — skip the MLX server and use the hermes LLM-selector backend (PM-worklog synthesis is then unavailable)
+Builds the daemon + UI from source and registers the same services. Flags: `--no-ui`, `--dry-run`, `--no-daemon`, `--skip-permissions`, `--skip-env`, `--no-mlx` (use the hermes LLM-selector backend instead of the MLX server).
 
 ### Configure
 
