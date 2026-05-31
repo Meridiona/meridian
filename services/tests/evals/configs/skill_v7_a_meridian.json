@@ -1,0 +1,13 @@
+{
+  "name":             "skill_v7-a_meridian-qwen35-9b",
+  "description":      "[AUTOLOOP iter 12 FINAL] skill_v7 = skill_v3 + 1 bullet in Doing-vs-Discussing list. Minimally-different from v3 to maximize chance b_generic stays at 72.5%. If a_meridian crosses 70% (need +1 case from v3's 27/40), loop terminates.",
+  "strategy":         "direct_http",
+  "dataset_path":     "services/tests/evals/data/generated/goldens_a_meridian.json",
+  "endpoint":         "http://localhost:7823/classify",
+  "timeout":          120,
+  "model":            "Qwen3.5-9B-OptiQ-4bit",
+  "session_text_cap": 2500,
+  "temperature":      0.0,
+  "max_tokens":       1024,
+  "prompt_version":   "v2.7.0"
+}

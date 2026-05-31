@@ -1,0 +1,13 @@
+{
+  "name":             "skill_v6-b_generic-qwen35-9b",
+  "description":      "[AUTOLOOP iter 10] skill_v6 on b_generic. Hypothesis: the narrow scope guards prevent the rules from firing on b_generic (which has no repo-meta-on-ticket-branch pattern and no file-named-in-ticket-description matches). Should preserve skill_v3's 72.5%.",
+  "strategy":         "direct_http",
+  "dataset_path":     "services/tests/evals/data/generated/goldens_b_generic.json",
+  "endpoint":         "http://localhost:7823/classify",
+  "timeout":          120,
+  "model":            "Qwen3.5-9B-OptiQ-4bit",
+  "session_text_cap": 2500,
+  "temperature":      0.0,
+  "max_tokens":       1024,
+  "prompt_version":   "v2.6.0"
+}

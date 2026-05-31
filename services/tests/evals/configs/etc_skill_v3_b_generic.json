@@ -1,0 +1,18 @@
+{
+  "name":                          "etc-skill_v3-b_generic-qwen35-9b",
+  "description":                   "ExtractThenClassifyStrategy with skill_v3.md injected as stage-2 system prompt (Option A). Compare vs vanilla ETC (18/40=45% on b_generic, but mostly parse failures) and vs skill_v3 direct_http (29/40=72.5% on b_generic).",
+  "strategy":                      "extract_then_classify",
+  "dataset_path":                  "services/tests/evals/data/generated/goldens_b_generic.json",
+  "endpoint":                      "http://localhost:7823/v1/chat/completions",
+  "timeout":                       300,
+  "classify_system_prompt_path":   "skills/activity/task-classifier/skill_v3.md",
+  "extraction_max_tokens":         5000,
+  "classification_max_tokens":     2000,
+  "extraction_temperature":        0.0,
+  "classification_temperature":    0.0,
+  "model":                         "Qwen3.5-9B-OptiQ-4bit",
+  "session_text_cap":              2500,
+  "temperature":                   0.0,
+  "max_tokens":                    2000,
+  "prompt_version":                "etc+skill_v3"
+}
