@@ -116,5 +116,5 @@ echo "Set CLASSIFIER_BACKEND=mlx and MLX_SERVER_PORT=${MLX_SERVER_PORT} in your 
 echo "then restart the Rust daemon."
 
 echo
-echo "→ installing coding-agent-indexer daemon + Claude Code hook …"
-bash "${SCRIPT_DIR}/install-coding-agent-indexer.sh"
+echo "→ installing Claude Code coding-agent SessionEnd hook …"
+bash "${SCRIPT_DIR}/install-claude-hook.sh"
