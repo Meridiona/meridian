@@ -8,6 +8,11 @@ For a higher-level overview (installation, daemon ops, configuration), see [`ser
 
 ## Pipeline
 
+The Rust daemon owns the pipeline (ETL, coding-agent ingest, classification
+trigger, pm-worklog driver) and the database. This service is the **model
+layer**: one persistent MLX server (`server.py`) that the daemon calls over HTTP
+for the three jobs that need a local LLM.
+
 ```
 screenpipe.db (read-only)
         │  raw OCR frames, audio, AX events, window titles
@@ -17,18 +22,16 @@ Rust ETL daemon  (src/etl/)
         ▼
 meridian.db  →  app_sessions
         │
-        ├── coding_agent_indexer  (services/coding_agent_indexer/)
-        │    Polls ~/.claude/projects/ and ~/.codex/sessions/ for
-        │    Claude Code / Codex JSONLs. Inserts sessions with full
-        │    transcript + per-day slicing. Triggered in real time by
-        │    Claude Code's SessionEnd hook; daemon sweeps every 10 min
-        │    for crashes, Codex (no hook), and live-tracking updates.
-        │    Rows land with task_method='pending_summariser' — skipped
-        │    by the MLX classifier, picked up by the pm_update summariser.
+        ├── coding-agent ingest  (src/coding_agent_session_ingest/, Rust)
+        │    Indexes ~/.claude/projects/ + ~/.codex/sessions/ JSONLs into
+        │    segmented rows, seals them, and summarises each sealed segment.
+        │    Claude/Codex subprocesses summarise their own sessions; the
+        │    MLX server's /summarise is the fallback. Rows walk task_method:
+        │    coding_agent_live → pending_summariser → pending_classifier.
         │
-        ├── MLX classifier  (run_task_linker_mlx.py / server.py)
-        │    Rust intelligence module reads rows WHERE task_method IS NULL
-        │    and id > agent_cursor.last_session_id, then sends:
+        ├── classification  (src/intelligence/task_linker/, Rust → MLX)
+        │    Rust reads unclassified rows and the pending_classifier queue,
+        │    then sends:
         │      POST http://127.0.0.1:7823/classify_sessions
         │           {session_ids: [...], meridian_db: ...}
         │    MLX server (Qwen3.5-9B-OptiQ-4bit, FSM-constrained outlines):
@@ -36,16 +39,14 @@ meridian.db  →  app_sessions
         │      → SessionClassification {task_key, session_type, confidence,
         │                               reasoning, method, dimensions}
         │    Rust writes ticket_links + session_dimensions, advances cursor.
-        │    Cursor advances after every session regardless of outcome.
         │
-        └── pm_update  (agents/pm_worklog_update/)
-             Agno-powered synthesis workflow. Runs on office-hours slot
-             schedule (jira-updater daemon). Reads classified sessions
-             grouped by task_key, generates JiraUpdate (comment + worklog
-             + status_proposal), posts to Jira via REST API.
-             Sessions from coding_agent_indexer go through a summariser
-             step first (Claude API → session_summary) before pm_update
-             can use them.
+        └── pm-worklog (Stage 4)  (src/pm_worklog/, Rust → MLX)
+             The Rust hour-driven driver collects each (task, hour) bundle and
+             sends it to the agno worklog synthesiser hosted on the MLX server:
+               POST http://127.0.0.1:7823/synthesise_worklog  {bundle: ...}
+               → JiraUpdate {summary, evidence-bearing bullets, confidence}
+             Rust grounds the result and posts the Jira worklog itself
+             (REST), gated behind PM_WORKLOG_POST_ENABLED.
 ```
 
 ---
@@ -385,8 +386,8 @@ cargo run --bin backfill_task_classification -- --dry-run --today
 
 ## Limitations / known gaps
 
-- **`dispatch_queue` drainer is not implemented.** `run_task_linker.py` enqueues rows with `state='pending'` for write-backs (Jira worklog, GitHub, Linear), but nothing moves them to `'sent'`. The legacy `agents/jira_keeper.py` was the hermes-era equivalent and hasn't been ported to read from the queue. Until the drainer ships, no automatic Jira write-backs from task classification happen — the Jira updater daemon handles Jira separately via its own scheduled path.
+- **Jira write-backs are handled by the pm-worklog (Stage 4) driver, not from classification.** Classification only maps a session to a ticket. Jira worklogs are produced by the Rust hour-driven driver (`src/pm_worklog/`), which synthesises each worklog via the MLX server's `/synthesise_worklog` and posts it itself over REST (gated behind `PM_WORKLOG_POST_ENABLED`). The `dispatch_queue` table is reserved for future GitHub/Linear write-backs and is not yet drained.
 - **`pm_tasks` populated by Rust.** The classifier receives `pm_tasks` as part of the JSON payload from the Rust daemon. If the Rust intelligence module hasn't synced tasks yet (clean install, first run), `pm_tasks` will be empty and every session gets `routing=skip`. Run the Rust daemon for at least one full cycle first.
 - **No re-classification UI.** There is no CLI to re-run classification on a single session — construct the JSON payload manually (see debugging guide above) or trigger the Rust daemon.
-- **`coding_agent_indexer` sessions skip the MLX classifier.** They land with `task_method='pending_summariser'`. The summariser (Claude API, not yet wired into the daemon) must run before pm_update can attribute those sessions to tasks.
+- **Coding-agent sessions are classified on their summary, not their transcript.** The Rust coding-agent ingest (`src/coding_agent_session_ingest/`) seals and summarises each segment first; rows walk `coding_agent_live → pending_summariser → pending_classifier`, and only then does the classification trigger send them to the MLX server. A coding session therefore appears as a worklog candidate only after its summary exists.
 - **The legacy modules (`jira_keeper.py`, `bootstrap.py`) and DB tables (`activity_context`, `context_graph_nodes`, `session_summaries`)** are kept in place for the eventual dispatcher port. They are not exercised by the current pipeline.
