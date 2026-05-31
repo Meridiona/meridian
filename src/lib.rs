@@ -6,4 +6,6 @@ pub mod config;
 pub mod db;
 pub mod etl;
 pub mod intelligence;
+pub mod llm_gate;
 pub mod observability;
+pub mod pm_worklog;

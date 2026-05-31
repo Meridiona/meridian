@@ -1,9 +1,9 @@
-"""CLI entry point for the pm_update workflow.
+"""CLI entry point for the pm_worklog_update workflow.
 
 Run a single PM-update cycle for one ticket from the command line:
 
     cd services
-    .venv313/bin/python -m agents.pm_update.cli \\
+    .venv/bin/python -m agents.pm_worklog_update.cli \\
         --task KAN-64 \\
         --window-start 2026-05-28T09:00:00Z \\
         --window-end   2026-05-28T12:00:00Z
@@ -11,7 +11,7 @@ Run a single PM-update cycle for one ticket from the command line:
 Defaults:
 
     --window-end   = now (UTC)
-    --window-start = (now - PM_UPDATE_INTERVAL_HOURS)
+    --window-start = (now - PM_WORKLOG_INTERVAL_HOURS)
     --cycle-index  = 0
     --dry-run      = true (no Jira post)
 
@@ -28,8 +28,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 from agents import observability
-from agents.pm_update import config
-from agents.pm_update.models import UpdateState
+from agents.pm_worklog_update import config
+from agents.pm_worklog_update.models import UpdateState
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ def _parse_iso(s: str) -> datetime:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="agents.pm_update.cli",
+        prog="agents.pm_worklog_update.cli",
         description="Run one PM-update cycle for one Jira ticket against meridian.db",
     )
     p.add_argument("--task", required=True, help="Jira ticket key, e.g. KAN-64")
@@ -53,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--window-start",
         type=_parse_iso,
         default=None,
-        help="ISO-8601 UTC start of the window. Default: now - PM_UPDATE_INTERVAL_HOURS",
+        help="ISO-8601 UTC start of the window. Default: now - PM_WORKLOG_INTERVAL_HOURS",
     )
     p.add_argument(
         "--window-end",
@@ -96,7 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime]:
     end = args.window_end or datetime.now(timezone.utc)
     start = args.window_start or (
-        end - timedelta(hours=config.PM_UPDATE_INTERVAL_HOURS)
+        end - timedelta(hours=config.PM_WORKLOG_INTERVAL_HOURS)
     )
     if start >= end:
         raise SystemExit(f"window-start ({start}) must be earlier than window-end ({end})")
@@ -105,7 +105,7 @@ def _resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime]:
 
 def main(argv: list[str] | None = None) -> int:
     # Late import so `--help` works even when agno isn't installed.
-    from agents.pm_update.workflow import run_cycle
+    from agents.pm_worklog_update.workflow import run_cycle
 
     observability.setup("meridian-pm-update")
     args = build_parser().parse_args(argv)
@@ -140,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(
             f"\n=== PM update outcome ===\n"
             f"  state:        {outcome.state.value}\n"
-            f"  pm_update_id: {outcome.pm_update_id}\n"
+            f"  pm_worklog_id: {outcome.pm_worklog_id}\n"
             f"  reason:       {outcome.reason}\n"
         )
 
