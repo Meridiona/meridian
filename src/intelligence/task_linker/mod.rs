@@ -172,6 +172,10 @@ async fn call_mlx_server(
     port: u16,
     timeout_s: u64,
 ) -> Result<ClassifyOutput> {
+    // Single global LLM gate: hold one permit for the whole request so no other
+    // stage (summarise fallback, pm-worklog synth) hits the model concurrently.
+    let _llm_permit = crate::llm_gate::acquire().await;
+
     let url = format!("http://127.0.0.1:{port}/classify_sessions");
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
