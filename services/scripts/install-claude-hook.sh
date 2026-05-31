@@ -2,9 +2,9 @@
 # Install a Claude Code SessionEnd hook that registers each ended
 # Claude session as an app_sessions row in meridian.db in real time.
 #
-# Pairs with the coding-agent-indexer daemon: the daemon does a
-# fallback poll every 10 min for crashes / Codex / sleep gaps; this
-# hook handles the 99 % happy path with zero latency.
+# Pairs with the in-daemon coding-agent indexer (Rust): the daemon does
+# a fallback poll for crashes / Codex / sleep gaps; this hook handles the
+# 99 % happy path with zero latency by invoking `meridian coding-agent-hook`.
 #
 # This script MERGES the entry into ~/.claude/settings.json without
 # touching any other hooks you've configured. Re-running is idempotent:
@@ -19,18 +19,25 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICES_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REPO_ROOT="$(cd "${SERVICES_DIR}/.." && pwd)"
 
-# Pick the same python the launchd daemon uses so deps resolve identically.
-VENV313_PYTHON="${SERVICES_DIR}/.venv/bin/python"
-VENV_PYTHON="${SERVICES_DIR}/.venv/bin/python"
-if [[ -x "${VENV313_PYTHON}" ]]; then
-    PYTHON="${VENV313_PYTHON}"
-elif [[ -x "${VENV_PYTHON}" ]]; then
-    PYTHON="${VENV_PYTHON}"
+# Locate the meridian binary that owns the `coding-agent-hook` subcommand.
+# Prefer the release build in this repo; fall back to whatever is on PATH.
+if [[ -x "${REPO_ROOT}/target/release/meridian" ]]; then
+    MERIDIAN_BIN="${REPO_ROOT}/target/release/meridian"
+elif command -v meridian >/dev/null 2>&1; then
+    MERIDIAN_BIN="$(command -v meridian)"
+elif command -v meridian-daemon >/dev/null 2>&1; then
+    MERIDIAN_BIN="$(command -v meridian-daemon)"
 else
-    PYTHON="$(command -v python3)"
+    echo "✗ meridian binary not found — build it first: cargo build --release" >&2
+    exit 1
 fi
-echo "→ using python: ${PYTHON}"
+echo "→ using meridian binary: ${MERIDIAN_BIN}"
+
+# Python is only used here as the install-time settings.json editor (stdlib
+# json); it is NOT part of the installed hook command itself.
+PYTHON="$(command -v python3)"
 
 SETTINGS="${HOME}/.claude/settings.json"
 mkdir -p "$(dirname "${SETTINGS}")"
@@ -39,16 +46,14 @@ mkdir -p "$(dirname "${SETTINGS}")"
 # Marker we use to identify "our" hook entry on re-install / uninstall.
 MARKER="meridian:coding-agent-indexer:SessionEnd"
 
-# The shell command the hook fires. We:
-#   - cd into services/  so `coding_agent_indexer.hook` imports
-#   - set PYTHONPATH defensively in case cd fails
-#   - exec the python module — stdin = the SessionEnd JSON payload from Claude
+# The shell command the hook fires: exec the meridian binary's
+# `coding-agent-hook` subcommand — stdin = the SessionEnd JSON payload
+# from Claude (it reads `transcript_path` off stdin and seals one session).
 #
-# Paths are shell-escaped with `printf %q` so the command survives
+# The path is shell-escaped with `printf %q` so the command survives
 # spaces / shell metacharacters in the repo install location when
 # Claude Code invokes it via `bash -c`.
-HOOK_CMD=$(printf 'cd %q && PYTHONPATH=%q exec %q -m coding_agent_indexer.hook' \
-    "${SERVICES_DIR}" "${SERVICES_DIR}" "${PYTHON}")
+HOOK_CMD=$(printf 'exec %q coding-agent-hook' "${MERIDIAN_BIN}")
 
 echo "→ merging SessionEnd hook into ${SETTINGS}"
 "${PYTHON}" - "${SETTINGS}" "${HOOK_CMD}" "${MARKER}" <<'PYEOF'
@@ -122,7 +127,7 @@ echo
 echo "Verify:"
 echo "  python3 -c \"import json; print(json.dumps(json.load(open('${SETTINGS}'))['hooks']['SessionEnd'], indent=2))\""
 echo
-echo "Live test (will hit the indexer + log):"
+echo "Live test (will seal one session + log):"
 echo "  echo '{\"transcript_path\":\"~/.claude/projects/.../<uuid>.jsonl\",\"hook_event_name\":\"SessionEnd\"}' | bash -c '${HOOK_CMD}'"
 echo
 echo "Uninstall:"
