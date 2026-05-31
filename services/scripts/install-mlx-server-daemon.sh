@@ -65,13 +65,13 @@ if [[ -z "${SITE_PACKAGES}" ]]; then
     exit 1
 fi
 
-# OTel credentials — read from ~/.meridian/.env if set there; fall back to
+# OTel credentials — read from the repo-root .env if set there; fall back to
 # empty string (telemetry silently disabled when both are unset).
 MERIDIAN_OO_AUTH=""
 MERIDIAN_OTLP_ENDPOINT=""
-if [[ -f "${HOME}/.meridian/.env" ]]; then
-    MERIDIAN_OO_AUTH=$(grep -E '^MERIDIAN_OO_AUTH=' "${HOME}/.meridian/.env" | tail -1 | cut -d= -f2-)
-    MERIDIAN_OTLP_ENDPOINT=$(grep -E '^MERIDIAN_OTLP_ENDPOINT=' "${HOME}/.meridian/.env" | tail -1 | cut -d= -f2-)
+if [[ -f "${REPO_ROOT}/.env" ]]; then
+    MERIDIAN_OO_AUTH=$(grep -E '^MERIDIAN_OO_AUTH=' "${REPO_ROOT}/.env" | tail -1 | cut -d= -f2-)
+    MERIDIAN_OTLP_ENDPOINT=$(grep -E '^MERIDIAN_OTLP_ENDPOINT=' "${REPO_ROOT}/.env" | tail -1 | cut -d= -f2-)
 fi
 
 mkdir -p "${HOME}/.meridian/logs"

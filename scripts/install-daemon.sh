@@ -46,9 +46,9 @@ fi
 mkdir -p "${HOME}/.meridian/logs"
 mkdir -p "${LAUNCH_AGENTS}"
 
-# Read MERIDIAN_OO_AUTH and MERIDIAN_OTLP_ENDPOINT from ~/.meridian/.env
+# Read MERIDIAN_OO_AUTH and MERIDIAN_OTLP_ENDPOINT from the repo-root .env
 # (optional — OTLP export is silently disabled when unset).
-ENV_FILE="${HOME}/.meridian/.env"
+ENV_FILE="${REPO_ROOT}/.env"
 MERIDIAN_OO_AUTH=""
 MERIDIAN_OTLP_ENDPOINT=""
 if [[ -f "${ENV_FILE}" ]]; then
@@ -56,7 +56,7 @@ if [[ -f "${ENV_FILE}" ]]; then
     MERIDIAN_OTLP_ENDPOINT="$(grep -E '^MERIDIAN_OTLP_ENDPOINT=' "${ENV_FILE}" | cut -d= -f2- | tr -d '[:space:]')" || true
 fi
 if [[ -z "${MERIDIAN_OO_AUTH}" ]]; then
-    echo "  ⚠ MERIDIAN_OO_AUTH not set in ~/.meridian/.env — OTLP export will be disabled"
+    echo "  ⚠ MERIDIAN_OO_AUTH not set in <repo>/.env — OTLP export will be disabled"
 fi
 
 echo "→ writing ${PLIST_DEST}"
