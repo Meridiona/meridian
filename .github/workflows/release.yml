@@ -1,0 +1,59 @@
+name: Release Build
+
+# When release-please publishes a GitHub Release (tag vX.Y.Z), build the
+# prebuilt macOS arm64 bundle and attach it. The installer downloads this
+# tarball — no cargo/npm build on the user's machine.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-bundle:
+    runs-on: macos-14          # Apple Silicon (arm64) — MLX/Metal target
+    env:
+      SQLX_OFFLINE: "true"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build daemon (release)
+        run: cargo build --release
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Build UI (standalone)
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+
+      - name: Assemble release bundle
+        run: bash scripts/package-release.sh "${{ github.event.release.tag_name }}" dist
+
+      - name: Checksum
+        working-directory: dist
+        run: shasum -a 256 *.tar.gz > SHA256SUMS
+
+      - name: Attach artifacts to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
