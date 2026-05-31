@@ -44,6 +44,8 @@ Commands:
     -f               Follow (stream)
     -n N             Last N lines (default 100)
   doctor             Run environment health checks
+  worklog-status     Show today's PM worklogs (done/pending/drafted/posted + comments)
+                     [--day YYYY-MM-DD]
   config edit        Open the repo-root .env in $EDITOR
   permissions        Open macOS permission panes for screenpipe
   uninstall          Stop daemons and remove CLI symlinks
@@ -355,6 +357,17 @@ cmd_permissions() {
 CMD="${1:-}"
 shift || true
 
+# Subcommands implemented by the daemon binary itself (not the launchd manager).
+# Forward these straight through to `meridian-daemon <cmd> [args]`.
+cmd_daemon_passthrough() {
+    local bin=""
+    for p in /usr/local/bin/meridian-daemon "${HOME}/.local/bin/meridian-daemon"; do
+        [[ -x "$p" ]] && bin="$p" && break
+    done
+    [[ -n "$bin" ]] || { err "meridian-daemon binary not found — run ./install.sh"; exit 1; }
+    exec "$bin" "$@"
+}
+
 case "$CMD" in
     start)            cmd_start ;;
     stop)             cmd_stop ;;
@@ -365,6 +378,7 @@ case "$CMD" in
     config)           cmd_config "$@" ;;
     uninstall)        cmd_uninstall ;;
     permissions)      cmd_permissions ;;
+    worklog-status|pm-worklog) cmd_daemon_passthrough "$CMD" "$@" ;;
     --help|-h|help|"") cmd_help ;;
     *) err "unknown command: ${CMD}"; echo; cmd_help; exit 1 ;;
 esac
