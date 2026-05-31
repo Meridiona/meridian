@@ -76,7 +76,17 @@ fi
 
 echo "→ bootout ${LABEL} (if loaded)"
 launchctl bootout "${GUI_TARGET}/${LABEL}" 2>/dev/null || true
-sleep 1
+# bootout is async — wait until the domain entry actually clears before
+# bootstrapping, otherwise launchctl bootstrap can fail with EIO (errno 5).
+_bootout_wait=0
+while launchctl print "${GUI_TARGET}/${LABEL}" >/dev/null 2>&1; do
+    sleep 1
+    _bootout_wait=$(( _bootout_wait + 1 ))
+    if [[ "${_bootout_wait}" -ge 15 ]]; then
+        echo "⚠ ${LABEL} still in launchd domain after 15s — proceeding anyway" >&2
+        break
+    fi
+done
 
 echo "→ bootstrap ${LABEL}"
 launchctl enable "${GUI_TARGET}/${LABEL}" 2>/dev/null || true
