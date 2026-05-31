@@ -12,22 +12,14 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-REPO_ROOT = Path(__file__).parent.parent
+REPO_ROOT = Path(__file__).parent.parent      # the services/ directory
+PROJECT_ROOT = REPO_ROOT.parent               # the repo root
 
-# Load .env files in priority order (later loads do NOT override earlier ones).
-# 1. services/.env            — service-specific overrides (preferred)
-# 2. services/.hermes/.env    — repo-local hermes home (OLLAMA_API_KEY lives here)
-# 3. <repo>/.env              — repo root, shared with the Rust daemon
-# 4. ~/.hermes/.env           — global fallback
-_ENV_CANDIDATES = [
-    REPO_ROOT / ".env",
-    REPO_ROOT / ".hermes" / ".env",
-    REPO_ROOT.parent / ".env",
-    Path.home() / ".hermes" / ".env",
-]
-for _candidate in _ENV_CANDIDATES:
-    if _candidate.exists():
-        load_dotenv(_candidate, override=False)
+# Single source of truth: the repo-root .env, shared with the Rust daemon.
+# Nothing is read from outside the repo.
+_ENV_FILE = PROJECT_ROOT / ".env"
+if _ENV_FILE.exists():
+    load_dotenv(_ENV_FILE, override=False)
 
 # ── Hermes (AIAgent library) ──────────────────────────────────────────────────
 HERMES_HOME = Path(os.environ.get("HERMES_HOME", str(REPO_ROOT / ".hermes")))
