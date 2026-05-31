@@ -13,6 +13,9 @@ SKIP_PERMISSIONS=0
 SKIP_ENV=0
 USE_MLX=1   # MLX inference server is the default backend (powers classify + PM-worklog synth); --no-mlx opts out
 MLX_PORT=7823
+# Pinned screenpipe version — the launchd plist expects this exact build
+# (`screenpipe record`). Installed via npm only when screenpipe is absent.
+SCREENPIPE_VERSION="0.3.350"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -331,7 +334,7 @@ After permissions, install.sh walks you through collecting credentials interacti
 are never overwritten. Press Enter on any prompt to skip it. Use --skip-env to
 bypass this step entirely (e.g. in CI or when credentials are already in place).
 
-screenpipe is installed automatically via Homebrew if not already present.
+screenpipe is installed automatically via npm (pinned to a known-good version) if not already present.
 EOF
             exit 0
             ;;
@@ -427,9 +430,9 @@ ok "Python 3.11+"
 if ! command -v screenpipe >/dev/null 2>&1; then
     warn "screenpipe not found."
     echo "    Note: Homebrew's screenpipe formula is deprecated (0.2.x). We install the"
-    echo "    current 0.3.x via npm, which is what the launchd plist expects."
-    if prompt_install "Install screenpipe via npm (npm install -g screenpipe@'~0.3')?"; then
-        run npm install -g screenpipe@'~0.3'
+    echo "    pinned ${SCREENPIPE_VERSION} via npm, which is what the launchd plist expects."
+    if prompt_install "Install screenpipe via npm (npm install -g screenpipe@${SCREENPIPE_VERSION})?"; then
+        run npm install -g "screenpipe@${SCREENPIPE_VERSION}"
     else
         err "screenpipe required — install via https://docs.screenpi.pe"
         exit 1
@@ -440,8 +443,8 @@ else
     if [[ -n "${_sp_ver}" && "${_sp_major_minor}" < "0.3" ]]; then
         warn "screenpipe ${_sp_ver} is from the deprecated Homebrew formula."
         echo "    The launchd plist expects 0.3+ (uses 'screenpipe record')."
-        if prompt_install "Upgrade screenpipe via npm (npm install -g screenpipe@'~0.3')?"; then
-            run npm install -g screenpipe@'~0.3'
+        if prompt_install "Upgrade screenpipe via npm (npm install -g screenpipe@${SCREENPIPE_VERSION})?"; then
+            run npm install -g "screenpipe@${SCREENPIPE_VERSION}"
         fi
     fi
 fi
