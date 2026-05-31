@@ -86,10 +86,20 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_ENV_FILTER));
 
+    // stdout: everything (INFO+). This is what `meridian logs` / daemon.log shows.
     let fmt_stdout = tracing_subscriber::fmt::layer()
         .with_target(true)
         .with_writer(std::io::stdout)
         .compact();
+    // stderr: WARN+ERROR only — a filtered view so `meridian logs daemon-error`
+    // surfaces just the problems. Errors still appear in stdout/daemon.log too.
+    use tracing_subscriber::filter::LevelFilter;
+    use tracing_subscriber::Layer as _;
+    let fmt_stderr = tracing_subscriber::fmt::layer()
+        .with_target(true)
+        .with_writer(std::io::stderr)
+        .compact()
+        .with_filter(LevelFilter::WARN);
     let fmt_file = tracing_subscriber::fmt::layer()
         .with_target(true)
         .with_writer(file_writer)
@@ -111,6 +121,7 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
             tracing_subscriber::registry()
                 .with(env_filter)
                 .with(fmt_stdout)
+                .with(fmt_stderr)
                 .with(fmt_file)
                 .with(trace_layer)
                 .with(log_layer)
@@ -122,6 +133,7 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
             tracing_subscriber::registry()
                 .with(env_filter)
                 .with(fmt_stdout)
+                .with(fmt_stderr)
                 .with(fmt_file)
                 .init();
             (false, None)
@@ -131,6 +143,7 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
             tracing_subscriber::registry()
                 .with(env_filter)
                 .with(fmt_stdout)
+                .with(fmt_stderr)
                 .with(fmt_file)
                 .init();
             (false, None)
