@@ -1,9 +1,10 @@
-"""pm_update — agno-powered PM update synthesis for Meridian.
+"""pm_worklog_update — synth-helper layer for the Rust pm-worklog stage.
 
-Generates Jira-ready comments + status proposals + worklog entries from
-classified `app_sessions` rows. Designed as a standalone module: it can be
-run from the CLI (`python -m agents.pm_worklog_update.cli`) before being stitched
-into `jira_updater_daemon` for the 1-hour cadence (see PM_WORKLOG_INTERVAL_HOURS).
+The full PM-worklog pipeline (collect → synth → ground → post) now lives in
+the Rust daemon (`src/pm_worklog/`). This package is reduced to the synth
+helper the MLX server's `/synthesise_worklog` endpoint calls to turn a
+collected `SessionBundle` into a Jira-ready `JiraUpdate`.
 
-Architecture: see `services/agents/pm_worklog_update/workflow.py`.
+See `services/agents/pm_worklog_update/workflow.py` for the two live entry
+points (`_render_workflow_input`, `_coerce_jira`).
 """
