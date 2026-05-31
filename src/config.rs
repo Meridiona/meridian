@@ -4,10 +4,10 @@
 use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
-// RuntimeSettings — hot-reloadable subset of config (~/.meridian/settings.json)
+// RuntimeSettings — hot-reloadable subset of config (repo-local settings.json)
 // ---------------------------------------------------------------------------
 
-/// Settings that can be changed at runtime by editing `~/.meridian/settings.json`.
+/// Settings that can be changed at runtime by editing the repo-local `settings.json`.
 /// The daemon re-reads this file on every poll tick; no restart required.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
@@ -41,15 +41,16 @@ impl Default for RuntimeSettings {
     }
 }
 
-/// Return the path to `~/.meridian/settings.json`.
+/// Return the path to the repo-local `settings.json`, resolved against the
+/// process working directory (the daemon runs with cwd = repo root). Kept inside
+/// the repo so nothing is read from outside it; absent → built-in defaults.
 fn settings_json_path() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_default();
-    std::path::PathBuf::from(home)
-        .join(".meridian")
+    std::env::current_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
         .join("settings.json")
 }
 
-/// Load `~/.meridian/settings.json`, falling back to defaults if the file is
+/// Load the repo-local `settings.json`, falling back to defaults if the file is
 /// absent or cannot be parsed.
 pub fn load_runtime_settings() -> RuntimeSettings {
     let path = settings_json_path();
@@ -178,7 +179,7 @@ pub struct Config {
     pub jira_office_start_hour: u32,
     /// Local hour at which the office day ends (exclusive). OFFICE_END_HOUR — default 17
     pub jira_office_end_hour: u32,
-    /// Hot-reloadable runtime settings loaded from `~/.meridian/settings.json`.
+    /// Hot-reloadable runtime settings loaded from the repo-local `settings.json`.
     /// Values here take precedence over the equivalent env-var defaults.
     pub runtime: RuntimeSettings,
 }
