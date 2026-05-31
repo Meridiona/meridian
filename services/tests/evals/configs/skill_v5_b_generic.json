@@ -1,0 +1,13 @@
+{
+  "name":             "skill_v5-b_generic-qwen35-9b",
+  "description":      "[AUTOLOOP iter 8] skill_v5 surgical merge. Goal: restore skill_v3's 72.5% on b_generic by removing v4's noise additions.",
+  "strategy":         "direct_http",
+  "dataset_path":     "services/tests/evals/data/generated/goldens_b_generic.json",
+  "endpoint":         "http://localhost:7823/classify",
+  "timeout":          120,
+  "model":            "Qwen3.5-9B-OptiQ-4bit",
+  "session_text_cap": 2500,
+  "temperature":      0.0,
+  "max_tokens":       1024,
+  "prompt_version":   "v2.5.0"
+}

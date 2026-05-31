@@ -1,0 +1,13 @@
+{
+  "name":             "skill_v1-a_meridian-qwen35-9b",
+  "description":      "A/B test of SKILL.md v2.1 (skill_v1.md) vs v2.0.0 on the Dev A persona. Server is restarted with SKILL_PATH=services/skills/activity/task-classifier/skill_v1.md before this run. Compare against baseline a_meridian_direct_http_20260530T100236 (25/40 = 62.5%, same 40-Golden dataset, same model, same direct_http strategy — only the SKILL.md content differs).",
+  "strategy":         "direct_http",
+  "dataset_path":     "services/tests/evals/data/generated/goldens_a_meridian.json",
+  "endpoint":         "http://localhost:7823/classify",
+  "timeout":          120,
+  "model":            "Qwen3.5-9B-OptiQ-4bit",
+  "session_text_cap": 2500,
+  "temperature":      0.0,
+  "max_tokens":       1024,
+  "prompt_version":   "v2.1.0"
+}
