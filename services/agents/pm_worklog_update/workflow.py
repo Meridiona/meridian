@@ -1,4 +1,4 @@
-"""The pm_update_cycle Workflow.
+"""The pm_worklog_update_cycle Workflow.
 
 This is the spine of the package. It wires the steps described in the
 architecture doc:
@@ -20,15 +20,17 @@ Status changes stay a human decision.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-from agents.pm_update import agents as pm_agents
-from agents.pm_update import config, db
-from agents.pm_update.hooks import build_grounded_narrative, risk_flagger
-from agents.pm_update.learning import build_learning_machine
-from agents.pm_update.models import (
+from agents.pm_worklog_update import agents as pm_agents
+from agents.pm_worklog_update import config, db
+from agents.pm_worklog_update.hooks import build_grounded_narrative, risk_flagger
+from agents.pm_worklog_update.learning import build_learning_machine
+from agents.pm_worklog_update.models import (
     BulletWithEvidence,
     GroundedNarrative,
     JiraUpdate,
@@ -65,24 +67,23 @@ def build_workflow(*, debug_mode: bool = False, debug_level: int = 1) -> "Workfl
     agno_db = SqliteDb(
         db_file=str(config.MERIDIAN_DB),
         session_table="agno_workflow_sessions",
-        memory_table="agno_pm_memories",
-        metrics_table="agno_pm_metrics",
-        eval_table="agno_pm_eval_runs",
-        approvals_table="agno_pm_approvals",
+        memory_table="agno_pm_worklog_memories",
+        metrics_table="agno_pm_worklog_metrics",
+        eval_table="agno_pm_worklog_eval_runs",
+        approvals_table="agno_pm_worklog_approvals",
     )
 
-    learning = build_learning_machine()
-
     synth = pm_agents.build_synth_agent(
-        db=agno_db, learning=learning,
+        db=agno_db,
         debug_mode=debug_mode, debug_level=debug_level,
     )
 
     workflow = Workflow(
-        name="pm_update_cycle",
+        name="pm_worklog_update_cycle",
         description="Hourly Jira worklog update from classified sessions",
         db=agno_db,
         store_executor_outputs=True,           # full audit per step
+        store_events=True,                     # capture LLM messages for run logs
         debug_mode=debug_mode,
         debug_level=debug_level,
         steps=[
@@ -113,42 +114,48 @@ def run_cycle(
     debug_mode: bool = False,
     debug_level: int = 1,
 ) -> RouteOutcome:
-    """Synchronous one-shot — used by the CLI.
-
-    Boots the schema, builds the workflow, runs one cycle, and returns
-    the routing outcome. `dry_run=True` (the default) prevents any
-    side-effect on Jira even if the routing gate would otherwise post.
-
-    `debug_mode=True` turns on agno's `debug_mode` on the Workflow and
-    every Agent — prompts, model responses, and tool calls are printed.
-    `debug_level=2` is even more verbose.
-    """
+    """Synchronous one-shot — used by the CLI."""
     db.init_schema()
-    workflow = build_workflow(debug_mode=debug_mode, debug_level=debug_level)
-    bundle = db.fetch_session_bundle(
-        task_key=task_key,
-        window_start=window_start,
-        window_end=window_end,
-        cycle_index=cycle_index,
-    )
-    log.info(
-        "pm_update cycle starting — task=%s sessions=%d total_s=%d real_s=%d heavy=%s",
-        task_key, len(bundle.sessions), bundle.total_seconds, bundle.real_seconds, bundle.is_heavy,
-    )
 
-    response = workflow.run(
-        input=_render_workflow_input(bundle),
-        additional_data={
-            "task_key":      task_key,
-            "window_start":  bundle.window_start,
-            "window_end":    bundle.window_end,
-            "cycle_index":   cycle_index,
-            "dry_run":       dry_run,
-            "bundle":        bundle.model_dump(),
-        },
-    )
-    outcome = _extract_outcome(response)
-    log.info("pm_update cycle done — state=%s reason=%s", outcome.state.value, outcome.reason)
+    log_path, fh = _open_run_log(task_key)
+    try:
+        workflow = build_workflow(debug_mode=debug_mode, debug_level=debug_level)
+        bundle = db.fetch_session_bundle(
+            task_key=task_key,
+            window_start=window_start,
+            window_end=window_end,
+            cycle_index=cycle_index,
+        )
+        log.info(
+            "pm_worklog cycle starting — task=%s sessions=%d real_s=%d",
+            task_key, len(bundle.sessions), bundle.real_seconds,
+        )
+
+        user_message = _render_workflow_input(bundle)
+        fh.stream.write(f"\n--- USER MESSAGE ---\n{user_message}\n--- END ---\n")
+        fh.stream.flush()
+
+        response = workflow.run(
+            input=user_message,
+            additional_data={
+                "task_key":     task_key,
+                "window_start": bundle.window_start,
+                "window_end":   bundle.window_end,
+                "cycle_index":  cycle_index,
+                "dry_run":      dry_run,
+                "bundle":       bundle.model_dump(),
+            },
+        )
+        outcome = _extract_outcome(response)
+        log.info("pm_worklog cycle done — state=%s reason=%s", outcome.state.value, outcome.reason)
+        _append_run_summary(fh, response=response, outcome=outcome)
+    finally:
+        logging.getLogger().removeHandler(fh)
+        for name in ("agno", "agno-workflow", "agno-team", "agno-tools"):
+            logging.getLogger(name).removeHandler(fh)
+        fh.close()
+        log.info("pm_worklog run log: %s", log_path)
+
     return outcome
 
 
@@ -223,11 +230,17 @@ def _step_ground(step_input, run_context=None):
         )
 
     bundle = SessionBundle.model_validate((step_input.additional_data or {})["bundle"])
+
+    # Override time_spent_seconds with the Python-computed value — the LLM
+    # is not responsible for calculating time; real_seconds is authoritative.
+    update = update.model_copy(update={"time_spent_seconds": bundle.real_seconds})
+
     grounded = build_grounded_narrative(update)
     risk_flagger(grounded, bundle=bundle)
     log.info(
-        "ground: coverage=%.2f dropped=%d task=%s",
+        "ground: coverage=%.2f dropped=%d task=%s time_spent=%ds",
         grounded.coverage, len(grounded.dropped_bullets), update.task_key,
+        bundle.real_seconds,
     )
     return StepOutput(content=grounded.model_dump_json())
 
@@ -241,7 +254,7 @@ def _step_route(step_input, run_context=None):
           → call jira_poster.post_worklog, stamp the row POSTED
       * any Jira failure → leave the row DRAFTED with a reason; the
         next cycle will retry the same window because of the
-        uq_pm_updates_worklog_window index (only "posted" rows are
+        uq_pm_worklogs_worklog_window index (only "posted" rows are
         unique-constrained, so DRAFTED rows can be replaced).
     """
     from datetime import datetime as _dt
@@ -262,7 +275,7 @@ def _step_route(step_input, run_context=None):
 
     # First-pass decision matrix (might still flip below after a real post).
     state = _decide_state(update, grounded.coverage, bundle)
-    pm_update_id = db.upsert_pm_update(
+    pm_worklog_id = db.upsert_pm_worklog(
         update,
         state=state,
         coverage=grounded.coverage,
@@ -284,7 +297,7 @@ def _step_route(step_input, run_context=None):
                 log.exception("route: jira post failed; row remains %s", state.value)
                 reason = f"{reason}; jira post failed: {exc}"
             else:
-                db.mark_worklog_posted(pm_update_id, posted_worklog_id)
+                db.mark_worklog_posted(pm_worklog_id, posted_worklog_id)
                 state = UpdateState.POSTED
                 reason = f"worklog {posted_worklog_id} posted"
         else:
@@ -293,13 +306,13 @@ def _step_route(step_input, run_context=None):
 
     outcome = RouteOutcome(
         state=state,
-        pm_update_id=pm_update_id,
+        pm_worklog_id=pm_worklog_id,
         posted_comment_id=posted_worklog_id,            # piggyback on field for now
         reason=reason,
     )
     log.info(
-        "route: state=%s pm_update_id=%d worklog_id=%s reason=%s",
-        state.value, pm_update_id, posted_worklog_id or "-", reason,
+        "route: state=%s pm_worklog_id=%d worklog_id=%s reason=%s",
+        state.value, pm_worklog_id, posted_worklog_id or "-", reason,
     )
     return StepOutput(content=outcome.model_dump_json())
 
@@ -332,7 +345,7 @@ def _post_worklog(bundle: SessionBundle, update: JiraUpdate) -> str:
     id without calling Jira again. This is what makes daemon restarts
     and backfill safe.
     """
-    from agents.pm_update import jira_poster
+    from agents.pm_worklog_update import jira_poster
 
     existing = db.find_existing_worklog(
         task_key=bundle.task_key,
@@ -370,6 +383,8 @@ def _parse_iso_utc(iso: str):
 def _render_workflow_input(bundle: SessionBundle) -> str:
     """Compose the user-message blob fed to the Synthesise agent."""
     lines: list[str] = []
+
+    # Ticket context — model uses this to verify sessions belong here.
     lines.append(f"# TICKET: {bundle.task_key}")
     if bundle.pm_task_title:
         lines.append(f"title: {bundle.pm_task_title}")
@@ -377,26 +392,33 @@ def _render_workflow_input(bundle: SessionBundle) -> str:
         lines.append(f"status: {bundle.pm_task_status}")
     if bundle.assignee_name:
         lines.append(f"assignee: {bundle.assignee_name}")
+    if bundle.pm_task_description:
+        lines.append(f"description: {bundle.pm_task_description}")
     lines.append("")
+
     lines.append(f"# WINDOW: {bundle.window_start} → {bundle.window_end}")
-    lines.append(f"cycle_index: {bundle.cycle_index}")
-    lines.append(f"total_seconds: {bundle.total_seconds}")
     lines.append(f"real_seconds: {bundle.real_seconds}")
     lines.append("")
+
     if bundle.earlier_today_summaries:
-        lines.append("# EARLIER TODAY")
+        lines.append("# EARLIER TODAY (already logged — do not repeat)")
         for s in bundle.earlier_today_summaries:
             lines.append(f"- {s}")
         lines.append("")
-    lines.append(f"# SESSIONS ({len(bundle.sessions)})")
+
+    # Session summaries — model must verify each belongs to this ticket.
+    lines.append(f"# SESSION SUMMARIES ({len(bundle.sessions)})")
+    lines.append("Each summary was classified to this ticket by an upstream model.")
+    lines.append("Verify each one actually relates to the ticket before including it.")
+    lines.append("")
     for s in bundle.sessions:
         lines.append(f"## session {s.id} — {s.app_name} — {s.duration_s}s")
         if s.top_titles:
-            lines.append(f"top_titles: {s.top_titles}")
-        if s.dimensions:
-            lines.append(f"dimensions: {s.dimensions}")
+            lines.append(f"windows: {', '.join(s.top_titles)}")
         if s.excerpt:
-            lines.append(f"excerpt:\n{s.excerpt}\n")
+            lines.append(s.excerpt)
+        lines.append("")
+
     return "\n".join(lines)
 
 
@@ -458,29 +480,67 @@ def _extract_outcome(workflow_response) -> RouteOutcome:
 
 
 def _decide_state(update: JiraUpdate, coverage: float, bundle: SessionBundle) -> UpdateState:
-    """Apply the routing matrix that picks the final UpdateState.
-
-    Ticket-closed is NOT a routing input — worklogs land regardless.
-    The flag is still surfaced on the row for the UI, just not acted on.
-    """
-    if not update.bullets:
+    """Apply the routing matrix that picks the final UpdateState."""
+    if not update.summary.strip():
         return UpdateState.SKIPPED
-    if (coverage < config.PM_UPDATE_MIN_COVERAGE
-            or update.confidence < config.PM_UPDATE_MIN_CONFIDENCE):
-        return UpdateState.DRAFTED  # held for review; no review UI yet
-    # If we had a Jira poster wired up, this is where POSTED would happen.
-    # For now, mark DRAFTED — the row sits in the DB awaiting future stitch.
+    if update.confidence < config.PM_WORKLOG_MIN_CONFIDENCE:
+        return UpdateState.DRAFTED
     return UpdateState.DRAFTED
 
 
 def _state_reason(state: UpdateState, update: JiraUpdate, coverage: float) -> str:
     if state == UpdateState.SKIPPED:
-        if not update.bullets:
-            return "no grounded bullets"
-        return "skipped"
+        return "no worklog summary produced"
     if state == UpdateState.DRAFTED:
-        return (
-            f"drafted (coverage={coverage:.2f}, confidence={update.confidence:.2f}); "
-            "Jira posting not yet wired"
-        )
+        return f"drafted (confidence={update.confidence:.2f})"
     return state.value
+
+
+def _open_run_log(task_key: str) -> "tuple[Path, logging.FileHandler]":
+    """Attach a FileHandler to every agno logger and the root logger.
+
+    agno uses RichHandler (rich library) with propagate=False, so patching
+    sys.stderr or root-logger handlers alone misses it. The fix is to add a
+    plain FileHandler directly to each agno logger by name — they'll then
+    write every DEBUG/INFO line to both terminal (via RichHandler) and the
+    file (via our FileHandler) simultaneously.
+
+    Returns (log_path, file_handler). Caller removes the handler on teardown.
+    """
+    log_dir = Path(__file__).parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    log_path = log_dir / f"run_{ts}_{task_key}.log"
+
+    fh = logging.FileHandler(log_path, encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter("%(levelname)s %(name)s — %(message)s"))
+
+    # Root logger catches our structured JSON logs (they propagate up).
+    logging.getLogger().addHandler(fh)
+
+    # agno loggers have propagate=False — add directly.
+    for name in ("agno", "agno-workflow", "agno-team", "agno-tools"):
+        logging.getLogger(name).addHandler(fh)
+
+    return log_path, fh
+
+
+def _append_run_summary(fh: logging.FileHandler, *, response: object, outcome: "RouteOutcome") -> None:
+    """Append final outcome JSON to the log file."""
+    try:
+        events_raw: list = []
+        for ev in (getattr(response, "events", None) or []):
+            try:
+                events_raw.append(ev.model_dump() if hasattr(ev, "model_dump") else str(ev))
+            except Exception:
+                events_raw.append(str(ev))
+        summary = {
+            "outcome_state":  outcome.state.value,
+            "outcome_reason": outcome.reason,
+            "events":         events_raw,
+        }
+        fh.stream.write(f"\n--- OUTCOME ---\n{json.dumps(summary, default=str, indent=2)}\n")
+        fh.stream.flush()
+    except Exception as exc:
+        log.warning("pm_worklog: failed to write run summary: %s", exc)

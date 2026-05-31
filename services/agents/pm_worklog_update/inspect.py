@@ -7,18 +7,18 @@ pretty-prints the bundle.
 Usage:
 
     cd services
-    .venv313/bin/python -m agents.pm_update.inspect --task KAN-64
+    .venv/bin/python -m agents.pm_worklog_update.inspect --task KAN-64
 
     # explicit window
-    .venv313/bin/python -m agents.pm_update.inspect --task KAN-64 \\
+    .venv/bin/python -m agents.pm_worklog_update.inspect --task KAN-64 \\
         --window-start 2026-05-28T09:00:00Z \\
         --window-end   2026-05-28T10:00:00Z
 
     # dump full session_text excerpts (helpful when debugging the prompt)
-    .venv313/bin/python -m agents.pm_update.inspect --task KAN-64 --full-text
+    .venv/bin/python -m agents.pm_worklog_update.inspect --task KAN-64 --full-text
 
     # machine-readable JSON for piping into jq
-    .venv313/bin/python -m agents.pm_update.inspect --task KAN-64 --json
+    .venv/bin/python -m agents.pm_worklog_update.inspect --task KAN-64 --json
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ import sys
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-from agents.pm_update import config, db
+from agents.pm_worklog_update import config, db
 
 
 # ──────────────────────── CLI ──────────────────────────────────────────────────
@@ -44,7 +44,7 @@ def _parse_iso(s: str) -> datetime:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="agents.pm_update.inspect",
+        prog="agents.pm_worklog_update.inspect",
         description="Show classified-session data for one Jira ticket in a window.",
     )
     p.add_argument("--task", required=True, help="Jira ticket key, e.g. KAN-64")
@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--window-start",
         type=_parse_iso,
         default=None,
-        help="ISO-8601 UTC start. Default: now - PM_UPDATE_INTERVAL_HOURS",
+        help="ISO-8601 UTC start. Default: now - PM_WORKLOG_INTERVAL_HOURS",
     )
     p.add_argument(
         "--window-end",
@@ -194,7 +194,7 @@ def render_human(bundle, *, full_text: bool) -> str:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     end = args.window_end or datetime.now(timezone.utc)
-    start = args.window_start or (end - timedelta(hours=config.PM_UPDATE_INTERVAL_HOURS))
+    start = args.window_start or (end - timedelta(hours=config.PM_WORKLOG_INTERVAL_HOURS))
     if start >= end:
         sys.stderr.write(f"window-start ({start}) must be earlier than window-end ({end})\n")
         return 2
