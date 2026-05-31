@@ -51,7 +51,9 @@ cd meridian
 ./install.sh
 ```
 
-The installer detects and offers to install each missing prerequisite, then builds the Rust daemon, the MCP server, the Next.js UI, sets up the Python services, walks you through granting screenpipe its three macOS permissions (Screen Recording, Accessibility, Microphone), and registers four launchd LaunchAgents: `com.meridiona.screenpipe`, `com.meridiona.daemon`, `com.meridiona.jira-updater`, and `com.meridiona.ui` (the dashboard at http://localhost:3000).
+The installer detects and offers to install each missing prerequisite, then builds the Rust daemon, the MCP server, the Next.js UI, sets up the Python services (including the MLX inference server), walks you through granting screenpipe its three macOS permissions (Screen Recording, Accessibility, Microphone), and registers four launchd LaunchAgents: `com.meridiona.screenpipe`, `com.meridiona.daemon`, `com.meridiona.mlx-server`, and `com.meridiona.ui` (the dashboard at http://localhost:3000). All four start automatically once installed.
+
+The **MLX inference server** (Qwen3.5-9B, Apple Silicon) is installed by default — it powers both session classification and the PM-worklog synthesiser. `./install.sh` sets up the Python venv and the `[mlx]` extras for you; no manual steps needed.
 
 Useful flags:
 
@@ -60,26 +62,7 @@ Useful flags:
 - `./install.sh --no-daemon` — build only; don't register launchd agents
 - `./install.sh --skip-permissions` — skip the macOS permissions walkthrough
 - `./install.sh --skip-env` — skip the credential walkthrough
-- `./install.sh --mlx` — use the persistent MLX inference server (Apple Silicon only)
-
-<!-- TODO: expose a stop.sh / `meridian stop` and `meridian start` flow so users don't need to
-     know launchctl commands to start/stop services after install. Currently:
-       stop:  bash scripts/meridian-cli.sh stop
-       start: bash scripts/meridian-cli.sh start   (or re-run install.sh)
-     Goal: single documented command for each action, ideally `meridian start` / `meridian stop`,
-     with clear notes on what each one covers (screenpipe, daemon, jira-updater, ui, mlx-server). -->
-
-Task classification uses a persistent MLX inference server (Qwen3.5-9B). Set it up once after cloning:
-
-```bash
-cd services
-
-# Create a Python 3.11 virtual environment
-python3.11 -m venv .venv
-
-# Install core dependencies + MLX inference extras
-.venv/bin/pip install -e ".[mlx]"
-```
+- `./install.sh --no-mlx` — skip the MLX server and use the hermes LLM-selector backend (PM-worklog synthesis is then unavailable)
 
 ### Configure
 
@@ -91,18 +74,14 @@ python3.11 -m venv .venv
 - **Linear** — API key, team IDs
 - **Observability (OpenObserve)** — base64 auth + OTLP endpoints
 
-Empty input skips that variable. Values already in the relevant .env file are preserved on re-run.
+Empty input skips that variable. Values already in `.env` are preserved on re-run.
 
-The credentials are written to three files under the hood, one per daemon:
-
-- `~/.meridian/.env` — Rust daemon (Jira/GitHub/Linear + observability)
-- `services/.env` — Python agents (LLM endpoint + Jira + observability)
-- `services/.hermes/.env` — hermes-agent library (`OPENROUTER_API_KEY`)
+All credentials are written to a **single repo-root `.env`** — the one config file shared by the Rust daemon and the Python services. Nothing is read from outside the repo (the database and logs still live under `~/.meridian/`). The UI keeps its own `ui/.env.local` (Next.js convention; never put backend secrets there).
 
 Minimum required variables:
 
 ```bash
-# Jira (for task classification and Jira updater)
+# Jira (for task classification and the PM-worklog stage)
 JIRA_BASE_URL=https://your-instance.atlassian.net
 JIRA_EMAIL=you@example.com
 JIRA_API_TOKEN=your-api-token
@@ -116,9 +95,7 @@ CLASSIFICATION_ENABLED=true
 To edit credentials later:
 
 ```bash
-meridian config edit            # opens ~/.meridian/.env in $EDITOR
-$EDITOR services/.env           # Python agents
-$EDITOR services/.hermes/.env   # hermes
+meridian config edit            # opens the repo-root .env in $EDITOR
 ```
 
 To re-run only the credential walkthrough (skipping builds/permissions):
@@ -135,34 +112,25 @@ If you want the prompts off entirely:
 ./install.sh --skip-env
 ```
 
-### Start the MLX inference server
+### The MLX inference server
 
-The Rust daemon calls this server for every session classification. It must be running before the daemon starts.
-
-**Option A — launchd daemon (recommended, survives reboots and crashes):**
-
-```bash
-bash services/scripts/install-mlx-server-daemon.sh
-# Check it started:
-tail -f ~/.meridian/logs/mlx-server.log
-```
-
-**Option B — run manually in a terminal (dev/debugging):**
+`./install.sh` installs and starts the MLX server (`com.meridiona.mlx-server`) for you — it powers both session classification and the PM-worklog synthesiser, and the Rust daemon TCP-connects to it on startup. You normally don't touch it directly. For dev/debugging you can run it manually:
 
 ```bash
 cd services
 .venv/bin/meridian-server --backend mlx --port 7823
 ```
 
-The server loads the model once at startup (~30 s on first run while the model downloads). Subsequent starts from cache are ~5 s. You will see `server: MLX model ready` in the log when it is ready.
+The server loads the model once at startup (~30 s on first run while the model downloads, ~5 s from cache). You will see `server: MLX model ready` in `~/.meridian/logs/mlx-server.log` when it is ready.
 
 ### Run
 
 ```bash
-meridian start          # bring up all four daemons (screenpipe + daemon + jira-updater + ui)
+meridian start          # bring up all daemons (screenpipe + daemon + mlx-server + ui)
 meridian status         # check what's running
 meridian logs           # tail the Rust daemon log
 meridian logs ui        # tail the dashboard log
+meridian logs mlx-server # tail the MLX server log
 meridian doctor         # diagnose missing config / services / permissions
 meridian permissions    # re-run the screenpipe permissions walkthrough
 ```
