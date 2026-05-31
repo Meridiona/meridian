@@ -128,9 +128,12 @@ The server loads the model once at startup (~30 s on first run while the model d
 ```bash
 meridian start          # bring up all daemons (screenpipe + daemon + mlx-server + ui)
 meridian status         # check what's running
+meridian worklog-status # today's PM worklogs: done/pending + per-ticket comments
 meridian doctor         # diagnose missing config / services / permissions
 meridian permissions    # re-run the screenpipe permissions walkthrough
 ```
+
+`meridian worklog-status [--day YYYY-MM-DD]` prints a no-SQL summary of the PM-worklog stage: hours done/pending/stuck, worklogs by state (drafted/posted/skipped/failed), and a per-ticket table with the synthesised Jira comment — plus a "flagged" list of low-confidence or risk-flagged worklogs to inspect before enabling Jira posting.
 
 ### Logs
 

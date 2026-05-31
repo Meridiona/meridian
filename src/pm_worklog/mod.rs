@@ -20,7 +20,9 @@ pub mod ledger;
 pub mod models;
 pub mod route;
 pub mod scheduler;
+pub mod status;
 pub mod synth;
 
 pub use config::PmWorklogConfig;
 pub use scheduler::{cli_run, run_driver, run_loop, DriverSummary};
+pub use status::cli_status;
