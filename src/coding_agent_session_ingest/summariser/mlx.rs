@@ -17,6 +17,9 @@ use super::prompts;
 use super::SummariserError;
 
 pub async fn run_mlx(stdin_text: &str, cfg: &SummariserConfig) -> Result<String, SummariserError> {
+    // Single global LLM gate: one model call in flight across all stages.
+    let _llm_permit = crate::llm_gate::acquire().await;
+
     let url = format!("http://{}:{}/summarise", cfg.mlx_host, cfg.mlx_port);
     let body = json!({
         "transcript": tail_cap(stdin_text, cfg),  // MLX-only: tail of the session
