@@ -1,14 +1,13 @@
 # `src/coding_agent_session_ingest` — Claude Code / Codex pipeline
 
 Turns terminal coding-agent transcripts (Claude Code + Codex JSONLs) into
-classified `app_sessions` rows, entirely inside the Rust daemon. Originally
-ported from the Python `coding_agent_indexer` + `coding_agent_summariser`
-services; the Rust daemon is now the sole runtime implementation.
+classified `app_sessions` rows, entirely inside the Rust daemon.
 
 Spawned as **gated tokio tasks** from `main.rs`: an indexer that segments JSONLs
 into rows, and a summariser that turns sealed rows into prose. Both stay dormant
-unless a coding agent is actually present on the machine (device gate). The only
-remaining Python hop is the MLX server (`/classify_sessions`, `/summarise`).
+unless a coding agent is actually present on the machine (device gate). The
+local MLX model server provides the `/classify_sessions` + `/summarise`
+endpoints the pipeline calls over HTTP.
 
 ---
 
