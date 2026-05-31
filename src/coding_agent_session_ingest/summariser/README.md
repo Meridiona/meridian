@@ -2,8 +2,7 @@
 
 Turns each **sealed** coding-agent segment (`task_method = 'pending_summariser'`)
 into a factual prose summary for the PM work-log, then flips it to the
-classifier's queue (`task_method → 'pending_classifier'`). Originally ported
-from the Python `coding_agent_summariser`; now the sole implementation.
+classifier's queue (`task_method → 'pending_classifier'`).
 
 Why summarise before classifying? A raw transcript is huge and noisy; the
 classifier reasons over the **summary** instead, which is cheaper and sharper.
@@ -34,7 +33,7 @@ else           ──▶  claude -p    ─┘        │
 - **Codex sessions → `codex exec`** (`codex.rs`) — symmetry with claude.rs.
   Side-effect-free: `-s read-only`, `--skip-git-repo-check`, `--ephemeral`,
   `--output-schema` for the structured final message.
-- **Fallback → MLX `/summarise`** (`mlx.rs`) — the only remaining Python hop.
+- **Fallback → MLX `/summarise`** (`mlx.rs`) — the local model server endpoint.
   The local model is a reasoner, so it gets only the **tail** of the transcript
   (most recent activity / outcome) plus a cheap reasoning-leak filter on top of
   the endpoint's outlines FSM.

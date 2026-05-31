@@ -1,10 +1,10 @@
 # meridian-agents
 
-Python service that runs alongside the Rust daemon. It classifies completed `app_sessions` rows to Jira tasks using a persistent MLX inference server, and posts timed progress comments back to Jira. Writes task mappings and multi-label dimension tags into `~/.meridian/meridian.db`.
+The model layer that runs alongside the Rust daemon. A persistent MLX inference server hosts the local-model endpoints the daemon calls: classifying completed `app_sessions` rows to Jira tasks, summarising sealed coding-agent segments, and synthesising hourly Jira worklogs (the agno agent). The daemon owns the database and the Jira write-backs; this service runs the models.
 
 The Rust daemon owns all DDL; this service only does SELECT/INSERT/UPDATE on its agent-side tables.
 
-> **Note:** the coding-agent indexer + summariser run **inside the Rust daemon** (`src/coding_agent_session_ingest/`); the former Python `coding_agent_indexer` / `coding_agent_summariser` packages have been removed. The MLX server (`agents/server.py`) stays — it serves both `/classify_sessions` and the summariser's `/summarise` fallback.
+> **Note:** the coding-agent indexer + summariser, and the pm-worklog (Stage 4) driver, all run **inside the Rust daemon** (`src/coding_agent_session_ingest/`, `src/pm_worklog/`). This service is the model layer: `agents/server.py` is the persistent MLX server, which serves `/classify_sessions` (classification), `/summarise` (the summariser's fallback), and `/synthesise_worklog` (the agno worklog synthesiser). The Rust daemon drives all three over HTTP.
 
 For the deep technical reference (classification logic, schema, recipes), see [`agents/README.md`](agents/README.md).
 
