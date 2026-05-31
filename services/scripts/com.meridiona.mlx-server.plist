@@ -57,7 +57,7 @@
     <key>StandardOutPath</key>
     <string>{{HOME}}/.meridian/logs/mlx-server.log</string>
     <key>StandardErrorPath</key>
-    <string>{{HOME}}/.meridian/logs/mlx-server.log</string>
+    <string>{{HOME}}/.meridian/logs/mlx-server-error.log</string>
 
     <!-- Start immediately when loaded and after every crash. -->
     <key>RunAtLoad</key>

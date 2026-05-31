@@ -40,7 +40,7 @@ Commands:
   restart            Stop, wait 1s, start
   status             Show running state of all daemons
   logs [target]      Tail log files
-                     target: daemon|daemon-error|screenpipe|screenpipe-error|ui|ui-error|mlx-server
+                     target: daemon|daemon-error|screenpipe|screenpipe-error|ui|ui-error|mlx-server|mlx-server-error
     -f               Follow (stream)
     -n N             Last N lines (default 100)
   doctor             Run environment health checks
@@ -158,7 +158,8 @@ cmd_logs() {
         ui)                log_file="${LOG_DIR}/ui.log" ;;
         ui-error)          log_file="${LOG_DIR}/ui-error.log" ;;
         mlx-server)        log_file="${LOG_DIR}/mlx-server.log" ;;
-        *) err "unknown log target: ${target} (daemon|daemon-error|screenpipe|screenpipe-error|ui|ui-error|mlx-server)"; exit 1 ;;
+        mlx-server-error)  log_file="${LOG_DIR}/mlx-server-error.log" ;;
+        *) err "unknown log target: ${target} (daemon|daemon-error|screenpipe|screenpipe-error|ui|ui-error|mlx-server|mlx-server-error)"; exit 1 ;;
     esac
 
     if [[ ! -f "$log_file" ]]; then
