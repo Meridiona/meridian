@@ -89,12 +89,12 @@ echo "Configuring hermes..."
 bash "${SERVICES_DIR}/scripts/setup-hermes.sh"
 
 # 5. Final check — warn if API key is still the placeholder
-HERMES_ENV="${SERVICES_DIR}/.hermes/.env"
-if grep -q "YOUR_API_KEY_HERE\|<your" "${HERMES_ENV}" 2>/dev/null; then
+ROOT_ENV="${REPO_ROOT}/.env"
+if grep -q "YOUR_API_KEY_HERE\|<your" "${ROOT_ENV}" 2>/dev/null; then
     echo ""
-    echo "  ⚠  OLLAMA_API_KEY in services/.hermes/.env is still a placeholder."
+    echo "  ⚠  OLLAMA_API_KEY in <repo>/.env is still a placeholder."
     echo "     Edit it before running the daemon:"
-    echo "       \$EDITOR ${HERMES_ENV}"
+    echo "       \$EDITOR ${ROOT_ENV}"
 fi
 
 echo ""

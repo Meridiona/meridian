@@ -11,10 +11,11 @@ REPO_ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
 # --- constants ---
 LABEL_SCREENPIPE="com.meridiona.screenpipe"
 LABEL_DAEMON="com.meridiona.daemon"
-LABEL_JIRA="com.meridiona.jira-updater"
 LABEL_UI="com.meridiona.ui"
 LABEL_MLX="com.meridiona.mlx-server"
-readonly LABELS=("${LABEL_SCREENPIPE}" "${LABEL_DAEMON}" "${LABEL_JIRA}" "${LABEL_UI}" "${LABEL_MLX}")
+# Jira worklogs and coding-agent ingest run inside the Rust daemon — no
+# separate launchd agents. Only these four are managed.
+readonly LABELS=("${LABEL_SCREENPIPE}" "${LABEL_DAEMON}" "${LABEL_UI}" "${LABEL_MLX}")
 GUI_TARGET="gui/$(id -u)"
 LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
 LOG_DIR="${HOME}/.meridian/logs"
@@ -34,16 +35,16 @@ Usage:
   meridian <command> [options]
 
 Commands:
-  start              Start all daemons (screenpipe, daemon, jira-updater, ui, mlx-server)
+  start              Start all daemons (screenpipe, daemon, ui, mlx-server)
   stop               Stop all daemons (also kills orphaned mlx_lm.server processes)
   restart            Stop, wait 1s, start
   status             Show running state of all daemons
   logs [target]      Tail log files
-                     target: daemon|daemon-error|jira-updater|screenpipe|screenpipe-error|ui|ui-error|mlx-server
+                     target: daemon|daemon-error|screenpipe|screenpipe-error|ui|ui-error|mlx-server
     -f               Follow (stream)
     -n N             Last N lines (default 100)
   doctor             Run environment health checks
-  config edit        Open ~/.meridian/.env in $EDITOR
+  config edit        Open the repo-root .env in $EDITOR
   permissions        Open macOS permission panes for screenpipe
   uninstall          Stop daemons and remove CLI symlinks
   --help | -h        Show this help
@@ -152,13 +153,12 @@ cmd_logs() {
     case "$target" in
         daemon)            log_file="${LOG_DIR}/daemon.log" ;;
         daemon-error)      log_file="${LOG_DIR}/daemon-error.log" ;;
-        jira-updater)      log_file="${LOG_DIR}/jira-updater.log" ;;
         screenpipe)        log_file="${LOG_DIR}/screenpipe.log" ;;
         screenpipe-error)  log_file="${LOG_DIR}/screenpipe-error.log" ;;
         ui)                log_file="${LOG_DIR}/ui.log" ;;
         ui-error)          log_file="${LOG_DIR}/ui-error.log" ;;
         mlx-server)        log_file="${LOG_DIR}/mlx-server.log" ;;
-        *) err "unknown log target: ${target} (daemon|daemon-error|jira-updater|screenpipe|screenpipe-error|ui|ui-error|mlx-server)"; exit 1 ;;
+        *) err "unknown log target: ${target} (daemon|daemon-error|screenpipe|screenpipe-error|ui|ui-error|mlx-server)"; exit 1 ;;
     esac
 
     if [[ ! -f "$log_file" ]]; then
@@ -217,34 +217,14 @@ cmd_doctor() {
         _check "daemon plist installed and valid" "0" "run ./install.sh"
     fi
 
-    # 4. jira-updater plist lints
-    local jplist="${LAUNCH_AGENTS}/${LABEL_JIRA}.plist"
-    if [[ -f "$jplist" ]]; then
-        set +e; plutil -lint "$jplist" >/dev/null 2>&1; local jl=$?; set -e
-        _check "jira-updater plist installed and valid" "$([[ $jl -eq 0 ]] && echo 1 || echo 0)" "plutil -lint ${jplist}"
-    else
-        _check "jira-updater plist installed and valid" "0" "run ./install.sh"
-    fi
-
-    # 5. daemon running
+    # 4. daemon running
     local dpid; dpid="$(_pid_from_print "$LABEL_DAEMON" 2>/dev/null)" || dpid=""
     _check "daemon running (pid ${dpid:-?})" "$([[ -n "$dpid" ]] && echo 1 || echo 0)" "meridian start"
 
-    # 6. jira-updater running (slot-scheduled — loaded-but-no-pid is a pass)
-    local jpid; jpid="$(_pid_from_print "$LABEL_JIRA" 2>/dev/null)" || jpid=""
-    if [[ -n "$jpid" ]]; then
-        ok "jira-updater running (pid ${jpid})"
-    elif [[ -f "$jplist" ]]; then
-        warn "jira-updater not running (slot schedule)"
-    else
-        err "jira-updater not installed — run ./install.sh"
-        DOCTOR_FAILURES=$(( DOCTOR_FAILURES + 1 ))
-    fi
+    # 5. user config
+    _check "user config <repo>/.env exists" "$([[ -f "${REPO_ROOT}/.env" ]] && echo 1 || echo 0)" "run ./install.sh"
 
-    # 7. user config
-    _check "user config ~/.meridian/.env exists" "$([[ -f "${HOME}/.meridian/.env" ]] && echo 1 || echo 0)" "run ./install.sh"
-
-    # 8. screenpipe plist lints
+    # 6. screenpipe plist lints
     local spplist="${LAUNCH_AGENTS}/${LABEL_SCREENPIPE}.plist"
     if [[ -f "$spplist" ]]; then
         set +e; plutil -lint "$spplist" >/dev/null 2>&1; local spl=$?; set -e
@@ -253,25 +233,25 @@ cmd_doctor() {
         _check "screenpipe plist installed and valid" "0" "run ./install.sh"
     fi
 
-    # 9. screenpipe binary in PATH
+    # 7. screenpipe binary in PATH
     set +e; command -v screenpipe >/dev/null 2>&1; local spbin=$?; set -e
     _check "screenpipe binary in PATH" "$([[ $spbin -eq 0 ]] && echo 1 || echo 0)" "install screenpipe (npm install -g screenpipe)"
 
-    # 10. screenpipe DB
+    # 8. screenpipe DB
     _check "screenpipe DB exists" "$([[ -f "${HOME}/.screenpipe/db.sqlite" ]] && echo 1 || echo 0)" "install and run screenpipe"
 
-    # 11. screenpipe running
+    # 9. screenpipe running
     set +e; pgrep -x screenpipe >/dev/null 2>&1; local sp=$?; set -e
     _check "screenpipe running" "$([[ $sp -eq 0 ]] && echo 1 || echo 0)" "start screenpipe"
 
-    # 12. meridian DB
+    # 10. meridian DB
     if [[ -f "${HOME}/.meridian/meridian.db" ]]; then
         ok "meridian DB exists"
     else
         warn "meridian DB not yet created (will be on first run)"
     fi
 
-    # 13. Python venv
+    # 11. Python venv
     local venv_py="${REPO_ROOT}/services/.venv/bin/python"
     local venv_ok=0
     if [[ -x "$venv_py" ]]; then
@@ -280,10 +260,10 @@ cmd_doctor() {
     fi
     _check "Python venv and run_agent importable" "$venv_ok" "bash scripts/setup-services.sh"
 
-    # 14. MCP server built
+    # 12. MCP server built
     _check "MCP server built" "$([[ -f "${REPO_ROOT}/packages/meridian-mcp/dist/index.js" ]] && echo 1 || echo 0)" "cd packages/meridian-mcp && npm run build"
 
-    # 15. UI plist lints
+    # 13. UI plist lints
     local uiplist="${LAUNCH_AGENTS}/${LABEL_UI}.plist"
     if [[ -f "$uiplist" ]]; then
         set +e; plutil -lint "$uiplist" >/dev/null 2>&1; local uil=$?; set -e
@@ -292,7 +272,7 @@ cmd_doctor() {
         _check "UI plist installed and valid" "0" "run ./install.sh"
     fi
 
-    # 16. UI built
+    # 14. UI built
     _check "UI built (ui/.next exists)" "$([[ -d "${REPO_ROOT}/ui/.next" ]] && echo 1 || echo 0)" "cd ui && npm ci && npm run build"
 
     echo
@@ -310,9 +290,9 @@ cmd_config() {
         err "usage: meridian config edit"
         exit 1
     fi
-    local env_file="${HOME}/.meridian/.env"
+    local env_file="${REPO_ROOT}/.env"
     if [[ ! -f "$env_file" ]]; then
-        err "~/.meridian/.env not found — run ./install.sh first"
+        err "${env_file} not found — run ./install.sh first"
         exit 1
     fi
     "${EDITOR:-nano}" "$env_file"
@@ -329,7 +309,6 @@ cmd_uninstall() {
 
     set +e
     bash "${REPO_ROOT}/scripts/uninstall-ui-daemon.sh" 2>/dev/null
-    bash "${REPO_ROOT}/services/scripts/uninstall-jira-updater-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/services/scripts/uninstall-mlx-server-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/scripts/uninstall-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/scripts/uninstall-screenpipe-daemon.sh" 2>/dev/null
