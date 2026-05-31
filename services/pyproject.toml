@@ -53,7 +53,7 @@ meridian-server = "agents.server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["agents", "agents.*", "coding_agent_indexer", "coding_agent_indexer.*", "coding_agent_summariser", "coding_agent_summariser.*"]
+include = ["agents", "agents.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["agents/tests"]
