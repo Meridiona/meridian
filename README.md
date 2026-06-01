@@ -137,7 +137,9 @@ meridian doctor         # diagnose missing config / services / permissions
 meridian permissions    # re-run the screenpipe permissions walkthrough
 ```
 
-`meridian worklog-status [--day YYYY-MM-DD]` prints a no-SQL summary of the PM-worklog stage: hours done/pending/stuck, worklogs by state (drafted/posted/skipped/failed), and a per-ticket table with the synthesised Jira comment — plus a "flagged" list of low-confidence or risk-flagged worklogs to inspect before enabling Jira posting.
+`meridian worklog-status [--day YYYY-MM-DD]` prints a no-SQL summary of the PM-worklog stage: hours done/pending/stuck, worklogs by state (drafted/approved/posted/skipped/failed), and a per-ticket table with the synthesised Jira comment — plus a "flagged" list of low-confidence or risk-flagged worklogs to inspect.
+
+**Nothing posts to Jira automatically.** The daemon only *drafts* worklogs; you review, edit, and approve each one in the dashboard's **Worklogs** view, and the daemon posts approved worklogs to Jira within ~60s (or run `meridian worklog-post-approved` to post them now). Approval is the only gate.
 
 ### Logs
 
