@@ -8,7 +8,7 @@
 // timestamps, and text *presence* — never the captured text itself.
 
 use crate::config::Config;
-use crate::health::{Check, Report};
+use crate::health::Check;
 use sqlx::SqlitePool;
 
 /// Newest frame older than this ⇒ capture likely stopped (or the machine is
@@ -21,7 +21,7 @@ const RECENT_SAMPLE: i64 = 500;
 /// Run all L1 capture checks. `pool` is `None` when the screenpipe DB could not
 /// be opened read-only — the file-level check still runs and the rest report
 /// the open failure.
-pub async fn run(cfg: &Config, pool: Option<&SqlitePool>) -> Report {
+pub async fn checks(cfg: &Config, pool: Option<&SqlitePool>) -> Vec<Check> {
     // Prerequisites first (can capture run at all?), then runtime health.
     let mut checks = vec![screenpipe_installed(), db_present(cfg)];
     match pool {
@@ -54,7 +54,7 @@ pub async fn run(cfg: &Config, pool: Option<&SqlitePool>) -> Report {
             ),
         ),
     }
-    Report { checks }
+    checks
 }
 
 /// Prerequisite: the screenpipe binary is installed (on PATH). Without it there

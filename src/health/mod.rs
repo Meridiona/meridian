@@ -1,16 +1,24 @@
 // meridian — normalises screenpipe activity into structured app sessions
 //
 // System-health / fault-attribution layer. Each check is a content-free probe
-// (counts, timestamps, booleans — never screen content) that attributes a
-// degraded pipeline to the layer that broke (the fault ladder L1..L4), so a
-// misclassification is never silently blamed on the model when the real cause
-// was broken capture, a dead integration, or bad config.
+// (counts, timestamps, booleans, reachability — never screen content) that
+// attributes a degraded pipeline to the layer that broke (the fault ladder
+// L1..L4), so a problem is never silently blamed on the model when the real
+// cause was broken capture, a dead integration, bad config, or a missing
+// dependency.
 //
 // This module hosts the boot preflight and the `meridian doctor` on-demand
-// sweep. L1 (screen capture) checks live in `capture`; further layers are added
-// incrementally.
+// sweep. Checks are grouped by the daemon/subsystem they belong to and rendered
+// as a table; `run_all` is the comprehensive sweep the CLI wrapper delegates to.
 
 pub mod capture;
+pub mod daemon;
+pub mod jira;
+pub mod mlx;
+pub mod platform;
+
+use crate::config::Config;
+use crate::db::screenpipe::open_screenpipe;
 
 /// Severity of a single check. Ordered Ok < Info < Warn < Critical. `Info` is a
 /// non-actionable diagnostic line (e.g. a per-app breakdown) — it never trips a
@@ -27,71 +35,81 @@ impl Severity {
     /// Fixed-width glyph for the doctor report.
     fn glyph(self) -> &'static str {
         match self {
-            Severity::Ok => " ok ",
+            Severity::Ok => "✓",
+            Severity::Info => "·",
+            Severity::Warn => "⊘",
+            Severity::Critical => "✗",
+        }
+    }
+
+    /// ANSI colour code (no reset) for the glyph when stdout is a terminal.
+    fn color(self) -> &'static str {
+        match self {
+            Severity::Ok => "\x1b[32m",       // green
+            Severity::Info => "\x1b[2m",      // dim
+            Severity::Warn => "\x1b[33m",     // yellow
+            Severity::Critical => "\x1b[31m", // red
+        }
+    }
+
+    /// Porcelain status token consumed by the CLI wrapper.
+    fn token(self) -> &'static str {
+        match self {
+            Severity::Ok => "ok",
             Severity::Info => "info",
             Severity::Warn => "warn",
-            Severity::Critical => "FAIL",
+            Severity::Critical => "fail",
         }
     }
 }
 
-/// One probe result. `layer` is the fault-ladder rung (e.g. "L1") this check
-/// attributes a failure to.
+/// One probe result. `group` is the daemon/subsystem this check belongs to (the
+/// table section); `layer` is the fault-ladder rung (e.g. "L1") a failure is
+/// attributed to.
 #[derive(Debug, Clone)]
 pub struct Check {
+    pub group: &'static str,
+    pub layer: &'static str,
     pub name: String,
     pub severity: Severity,
     pub detail: String,
-    pub layer: &'static str,
-    /// The human action that fixes this check, shown as a `→` line in the doctor
-    /// report. Set on prerequisites and actionable faults; `None` otherwise.
+    /// The human action that fixes this check, shown as a `→` line under a
+    /// failing check. Set on prerequisites and actionable faults; `None` else.
     pub remedy: Option<String>,
 }
 
 impl Check {
-    pub fn ok(name: impl Into<String>, layer: &'static str, detail: impl Into<String>) -> Self {
-        Check {
-            name: name.into(),
-            severity: Severity::Ok,
-            detail: detail.into(),
-            layer,
-            remedy: None,
-        }
-    }
-
-    pub fn warn(name: impl Into<String>, layer: &'static str, detail: impl Into<String>) -> Self {
-        Check {
-            name: name.into(),
-            severity: Severity::Warn,
-            detail: detail.into(),
-            layer,
-            remedy: None,
-        }
-    }
-
-    pub fn critical(
+    fn make(
+        severity: Severity,
         name: impl Into<String>,
         layer: &'static str,
         detail: impl Into<String>,
     ) -> Self {
         Check {
-            name: name.into(),
-            severity: Severity::Critical,
-            detail: detail.into(),
+            group: "",
             layer,
+            name: name.into(),
+            severity,
+            detail: detail.into(),
             remedy: None,
         }
     }
 
-    /// A non-actionable diagnostic line (e.g. a per-app breakdown). Never a fault.
+    pub fn ok(name: impl Into<String>, layer: &'static str, detail: impl Into<String>) -> Self {
+        Check::make(Severity::Ok, name, layer, detail)
+    }
     pub fn info(name: impl Into<String>, layer: &'static str, detail: impl Into<String>) -> Self {
-        Check {
-            name: name.into(),
-            severity: Severity::Info,
-            detail: detail.into(),
-            layer,
-            remedy: None,
-        }
+        Check::make(Severity::Info, name, layer, detail)
+    }
+    pub fn warn(name: impl Into<String>, layer: &'static str, detail: impl Into<String>) -> Self {
+        Check::make(Severity::Warn, name, layer, detail)
+    }
+    pub fn critical(
+        name: impl Into<String>,
+        layer: &'static str,
+        detail: impl Into<String>,
+    ) -> Self {
+        Check::make(Severity::Critical, name, layer, detail)
     }
 
     /// Attach the remedy (the fix-it action) shown under a failing check.
@@ -99,14 +117,29 @@ impl Check {
         self.remedy = Some(remedy.into());
         self
     }
+
+    /// Assign this check to a daemon/subsystem group (the table section).
+    pub fn in_group(mut self, group: &'static str) -> Self {
+        self.group = group;
+        self
+    }
 }
 
-/// A group of checks under one subsystem.
+/// Tag every check in a module's output with its daemon group in one call.
+pub fn tag(group: &'static str, checks: Vec<Check>) -> Vec<Check> {
+    checks.into_iter().map(|c| c.in_group(group)).collect()
+}
+
+/// A collection of checks, rendered grouped by daemon.
 pub struct Report {
     pub checks: Vec<Check>,
 }
 
 impl Report {
+    pub fn new(checks: Vec<Check>) -> Self {
+        Report { checks }
+    }
+
     /// The worst severity across all checks (Ok if empty).
     pub fn worst(&self) -> Severity {
         self.checks
@@ -116,49 +149,99 @@ impl Report {
             .unwrap_or(Severity::Ok)
     }
 
-    /// Human-readable report for `meridian doctor`.
-    pub fn render_titled(&self, title: &str) -> String {
-        let rule = "─".repeat(58);
-        let mut s = format!("\n  Meridian doctor — {title}\n  {rule}\n");
+    /// (ok, info, warn, critical) counts.
+    pub fn counts(&self) -> (usize, usize, usize, usize) {
+        let mut c = (0, 0, 0, 0);
+        for chk in &self.checks {
+            match chk.severity {
+                Severity::Ok => c.0 += 1,
+                Severity::Info => c.1 += 1,
+                Severity::Warn => c.2 += 1,
+                Severity::Critical => c.3 += 1,
+            }
+        }
+        c
+    }
+
+    /// Distinct groups in first-appearance order.
+    fn groups(&self) -> Vec<&'static str> {
+        let mut seen = Vec::new();
         for c in &self.checks {
-            s.push_str(&format!(
-                "  [{}] {:<7} {:<26} {}\n",
-                c.severity.glyph(),
-                c.layer,
-                c.name,
-                c.detail
+            if !seen.contains(&c.group) {
+                seen.push(c.group);
+            }
+        }
+        seen
+    }
+
+    /// Rich, optionally-coloured table grouped by daemon. `color` should reflect
+    /// whether stdout is a terminal.
+    pub fn render(&self, color: bool) -> String {
+        let paint = |code: &str, s: &str| -> String {
+            if color {
+                format!("{code}{s}\x1b[0m")
+            } else {
+                s.to_string()
+            }
+        };
+        let dim = |s: &str| paint("\x1b[2m", s);
+        let bold = |s: &str| paint("\x1b[1m", s);
+
+        let mut out = String::new();
+        out.push_str(&format!(
+            "\n  {}\n",
+            bold("Meridian doctor — health by daemon")
+        ));
+        out.push_str(&format!("  {}\n", dim(&"═".repeat(56))));
+
+        for group in self.groups() {
+            let label = if group.is_empty() { "general" } else { group };
+            out.push_str(&format!(
+                "\n  {}\n",
+                paint("\x1b[36m", &format!("▸ {label}"))
             ));
-            // Show the fix-it action under any non-passing check that has one.
-            if c.severity != Severity::Ok {
-                if let Some(remedy) = &c.remedy {
-                    s.push_str(&format!("         → {remedy}\n"));
+            for c in self.checks.iter().filter(|c| c.group == group) {
+                let glyph = paint(c.severity.color(), c.severity.glyph());
+                // Drop a redundant "<group>." prefix from the check name.
+                let name = c.name.strip_prefix(&format!("{group}.")).unwrap_or(&c.name);
+                out.push_str(&format!("    {glyph}  {name:<26} {}\n", dim(&c.detail)));
+                if c.severity >= Severity::Warn {
+                    if let Some(r) = &c.remedy {
+                        out.push_str(&format!("       {} {}\n", dim("→"), dim(r)));
+                    }
                 }
             }
         }
-        let summary = match self.worst() {
-            Severity::Ok | Severity::Info => "all checks passed",
-            Severity::Warn => "completed with warnings",
-            Severity::Critical => "CRITICAL issues found",
+
+        let (ok, info, warn, crit) = self.counts();
+        out.push_str(&format!("\n  {}\n", dim(&"═".repeat(56))));
+        let summary = format!(
+            "{}  {}  {}  {}",
+            paint("\x1b[32m", &format!("✓ {ok} ok")),
+            dim(&format!("· {info} info")),
+            paint("\x1b[33m", &format!("⊘ {warn} warn")),
+            paint("\x1b[31m", &format!("✗ {crit} fail")),
+        );
+        out.push_str(&format!("  {summary}\n"));
+        let verdict = match self.worst() {
+            Severity::Critical => paint("\x1b[31m", "  ✗ critical issues — see remedies above"),
+            Severity::Warn => paint("\x1b[33m", "  ⊘ healthy with warnings"),
+            _ => paint("\x1b[32m", "  ✓ all systems healthy"),
         };
-        s.push_str(&format!("  {rule}\n  {summary}\n"));
-        s
+        out.push_str(&format!("{verdict}\n"));
+        out
     }
 
     /// Machine-readable output for the `meridian` CLI wrapper to ingest and fold
     /// into its by-daemon table. One TSV line per check:
-    /// `status<TAB>name<TAB>detail<TAB>remedy` (status ∈ ok|info|warn|fail).
+    /// `status<TAB>group<TAB>name<TAB>detail<TAB>remedy`.
     pub fn render_porcelain(&self) -> String {
         let mut s = String::new();
         for c in &self.checks {
-            let status = match c.severity {
-                Severity::Ok => "ok",
-                Severity::Info => "info",
-                Severity::Warn => "warn",
-                Severity::Critical => "fail",
-            };
             s.push_str(&format!(
-                "{}\t{}\t{}\t{}\n",
-                status,
+                "{}\t{}\t{}\t{}\t{}\n",
+                c.severity.token(),
+                c.group,
                 c.name,
                 c.detail,
                 c.remedy.as_deref().unwrap_or("")
@@ -173,27 +256,67 @@ impl Report {
         for c in &self.checks {
             match c.severity {
                 Severity::Ok | Severity::Info => tracing::debug!(
-                    stage = stage,
-                    check = %c.name,
-                    layer = c.layer,
-                    detail = %c.detail,
-                    "health check"
+                    stage = stage, check = %c.name, group = c.group, layer = c.layer,
+                    detail = %c.detail, "health check"
                 ),
                 Severity::Warn => tracing::warn!(
-                    stage = stage,
-                    check = %c.name,
-                    layer = c.layer,
-                    detail = %c.detail,
-                    "health check degraded"
+                    stage = stage, check = %c.name, group = c.group, layer = c.layer,
+                    detail = %c.detail, "health check degraded"
                 ),
                 Severity::Critical => tracing::error!(
-                    stage = stage,
-                    check = %c.name,
-                    layer = c.layer,
-                    detail = %c.detail,
-                    "health check failed"
+                    stage = stage, check = %c.name, group = c.group, layer = c.layer,
+                    detail = %c.detail, "health check failed"
                 ),
             }
         }
     }
+}
+
+/// The comprehensive sweep behind `meridian doctor`. Opens what each subsystem
+/// needs (read-only), runs every check module, and returns one grouped report.
+/// Best-effort: a module that cannot open its dependency reports that as a
+/// failing check rather than aborting the sweep.
+pub async fn run_all(cfg: &Config) -> Report {
+    let mut checks: Vec<Check> = Vec::new();
+
+    // system — OS, config, disk, toolchains.
+    checks.extend(tag("system", platform::system_checks(cfg)));
+
+    // meridian daemon — service (binary/plist/process) + ETL liveness/queues.
+    let md = daemon::open_meridian_ro(cfg).await;
+    {
+        let mut g = platform::daemon_service();
+        g.extend(daemon::checks(cfg, md.as_ref()).await);
+        checks.extend(tag("meridian daemon", g));
+    }
+
+    // screenpipe — service + L1 capture content (screenpipe DB, read-only).
+    {
+        let sp = open_screenpipe(&cfg.screenpipe_db_uri()).await.ok();
+        let mut g = platform::screenpipe_service();
+        g.extend(capture::checks(cfg, sp.as_ref()).await);
+        checks.extend(tag("screenpipe", g));
+        if let Some(p) = sp {
+            p.close().await;
+        }
+    }
+
+    // mlx-server — service + HTTP readiness probes.
+    {
+        let mut g = platform::mlx_service(cfg);
+        g.extend(mlx::checks(cfg).await);
+        checks.extend(tag("mlx-server", g));
+    }
+
+    // jira — auth, sync freshness, candidate completeness.
+    checks.extend(tag("jira", jira::checks(cfg, md.as_ref()).await));
+    if let Some(p) = md {
+        p.close().await;
+    }
+
+    // ui + mcp — build/service state.
+    checks.extend(tag("ui", platform::ui_service()));
+    checks.extend(tag("mcp", platform::mcp_service()));
+
+    Report::new(checks)
 }

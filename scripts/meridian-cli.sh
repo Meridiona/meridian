@@ -190,7 +190,11 @@ cmd_logs() {
 }
 
 # --- doctor ---
-# --- table-style doctor output, grouped by daemon ---
+# The daemon binary owns the comprehensive, colourised, by-daemon health table
+# (system, meridian daemon, screenpipe, mlx-server, jira, ui, mcp). The wrapper
+# just delegates to it; if that binary is missing or stale, a minimal bash-only
+# fallback runs so `meridian doctor` always produces something useful.
+
 _group() { printf "\n  ── %s ─────────────────────────────────────────────\n" "$1"; }
 
 _row() {  # status check detail
@@ -213,93 +217,49 @@ _plist_row() {  # label check-label
     fi
 }
 
-# Fold the daemon binary's machine-readable L1 capture checks into the table.
-# Guarded by a perl alarm so a stale binary (one that doesn't know `doctor` and
-# would otherwise start the daemon) can never hang the report.
-_capture_rows() {  # daemon-binary-path
-    local bin="$1" out
-    if [[ ! -x "$bin" ]]; then _row info "capture (L1)" "daemon binary missing"; return; fi
-    set +e
-    out="$(perl -e 'alarm shift @ARGV; exec @ARGV' 8 "$bin" doctor --porcelain 2>/dev/null)"
-    set -e
-    if [[ -z "$out" ]]; then
-        _row info "capture (L1)" "unavailable — run: cargo build --release"
-        return
-    fi
-    # status \t name \t detail \t remedy
-    while IFS=$'\t' read -r st name detail remedy; do
-        [[ -z "$name" ]] && continue
-        # binary/DB presence is already shown by the screenpipe rows above.
-        case "$name" in screenpipe.installed|screenpipe.db_present) continue ;; esac
-        _row "$st" "${name#screenpipe.}" "$detail"
-        if [[ -n "$remedy" && "$st" != "ok" && "$st" != "info" ]]; then
-            printf "       → %s\n" "$remedy"
-        fi
-    done <<< "$out"
-}
-
-_pid_from_print() {
-    local label="$1"
-    local output
-    set +e
-    output="$(launchctl print "${GUI_TARGET}/${label}" 2>/dev/null)"
-    local rc=$?
-    set -e
-    [[ $rc -ne 0 ]] && return 1
-    printf '%s\n' "$output" | grep -E '^\s+pid\s*=' | grep -oE '[0-9]+' | head -1
+_daemon_bin() {
+    local p
+    for p in /usr/local/bin/meridian-daemon "${HOME}/.local/bin/meridian-daemon"; do
+        [[ -x "$p" ]] && { printf '%s\n' "$p"; return 0; }
+    done
+    return 1
 }
 
 cmd_doctor() {
-    DOCTOR_FAILURES=0
-    printf "\n  Meridian doctor — health by daemon\n"
-    printf "  ════════════════════════════════════════════════════════\n"
+    local bin
+    if bin="$(_daemon_bin)"; then
+        # Guard with a perl alarm so a stale binary (one that predates `doctor`
+        # and would fall through to starting the daemon) can never hang the
+        # terminal. The Rust report colourises itself when stdout is a tty.
+        set +e
+        perl -e 'alarm shift @ARGV; exec @ARGV' 30 "$bin" doctor
+        local rc=$?
+        set -e
+        # 0 = healthy, 1 = critical issues found — both are real doctor runs.
+        if [[ $rc -eq 0 || $rc -eq 1 ]]; then return $rc; fi
+        warn "health engine timed out or is stale — rebuild: cargo build --release"
+    fi
+    _doctor_fallback
+}
 
-    # ---- System ----
+# Minimal bash-only checks for when the daemon binary is unavailable.
+_doctor_fallback() {
+    DOCTOR_FAILURES=0
+    printf "\n  Meridian doctor (fallback — daemon binary unavailable)\n"
+    printf "  ════════════════════════════════════════════════════════\n"
     _group "system"
     _row "$([[ "$(uname -s)" == "Darwin" ]] && echo ok || echo fail)" "macOS" ""
-
-    # ---- meridian daemon ----
-    _group "meridian daemon"
-    local binpath=""
-    for p in /usr/local/bin/meridian-daemon "${HOME}/.local/bin/meridian-daemon"; do
-        [[ -x "$p" ]] && binpath="$p" && break
-    done
-    _row "$([[ -n "$binpath" ]] && echo ok || echo fail)" "binary installed" "$binpath"
-    _plist_row "$LABEL_DAEMON" "plist valid"
-    local dpid; dpid="$(_pid_from_print "$LABEL_DAEMON" 2>/dev/null)" || dpid=""
-    _row "$([[ -n "$dpid" ]] && echo ok || echo fail)" "running" "${dpid:+pid $dpid}"
     _row "$([[ -f "${REPO_ROOT}/.env" ]] && echo ok || echo fail)" "config (.env)" ""
-    _row "$([[ -f "${HOME}/.meridian/meridian.db" ]] && echo ok || echo warn)" "meridian DB" ""
-
-    # ---- screenpipe (launchd/process + L1 capture from the daemon binary) ----
-    _group "screenpipe"
-    _plist_row "$LABEL_SCREENPIPE" "plist valid"
-    _row "$(command -v screenpipe >/dev/null 2>&1 && echo ok || echo fail)" "binary in PATH" ""
-    _row "$(pgrep -x screenpipe >/dev/null 2>&1 && echo ok || echo fail)" "running" ""
-    _capture_rows "$binpath"
-
-    # ---- mlx-server ----
-    _group "mlx-server"
-    _plist_row "$LABEL_MLX" "plist valid"
-    local venv_py="${REPO_ROOT}/services/.venv/bin/python" venv_ok=0
-    if [[ -x "$venv_py" ]] && "$venv_py" -c "import run_agent" >/dev/null 2>&1; then venv_ok=1; fi
-    _row "$([[ $venv_ok -eq 1 ]] && echo ok || echo fail)" "python venv + run_agent" ""
-
-    # ---- MCP server ----
-    _group "mcp server"
-    _row "$([[ -f "${REPO_ROOT}/packages/meridian-mcp/dist/index.js" ]] && echo ok || echo fail)" "built" ""
-
-    # ---- UI ----
-    _group "ui"
-    _plist_row "$LABEL_UI" "plist valid"
-    _row "$([[ -d "${REPO_ROOT}/ui/.next" ]] && echo ok || echo fail)" "built (.next)" ""
-
+    _group "services (plists)"
+    _plist_row "$LABEL_DAEMON" "daemon plist"
+    _plist_row "$LABEL_SCREENPIPE" "screenpipe plist"
+    _plist_row "$LABEL_MLX" "mlx plist"
+    _plist_row "$LABEL_UI" "ui plist"
+    _group "builds"
+    _row "$([[ -f "${REPO_ROOT}/packages/meridian-mcp/dist/index.js" ]] && echo ok || echo fail)" "mcp built" ""
+    _row "$([[ -d "${REPO_ROOT}/ui/.next" ]] && echo ok || echo fail)" "ui built" ""
     echo
-    if [[ $DOCTOR_FAILURES -eq 0 ]]; then
-        printf "  ✓ all checks passed\n\n"
-    else
-        printf "  ✗ %d check(s) failed\n\n" "$DOCTOR_FAILURES"
-    fi
+    _row info "next step" "cargo build --release && meridian doctor"
     [[ $DOCTOR_FAILURES -eq 0 ]]
 }
 
