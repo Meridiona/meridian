@@ -1,0 +1,32 @@
+{
+  "name": "@meridiona/meridian",
+  "version": "0.1.0",
+  "description": "Your project management, written by your work \u2014 local-first PM automation from real dev activity (macOS, Apple Silicon).",
+  "homepage": "https://github.com/Meridiona/meridian",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Meridiona/meridian.git"
+  },
+  "license": "MIT",
+  "bin": {
+    "meridian": "bin/meridian.js"
+  },
+  "files": [
+    "bin/"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "@meridiona/meridian-darwin-arm64": "0.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

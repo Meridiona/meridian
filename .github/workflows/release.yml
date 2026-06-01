@@ -1,25 +1,38 @@
-name: Release Build
+name: Release
 
-# When release-please publishes a GitHub Release (tag vX.Y.Z), build the
-# prebuilt macOS arm64 bundle and attach it. The installer downloads this
-# tarball — no cargo/npm build on the user's machine.
+# semantic-release: on every push to main it analyzes conventional commits and,
+# when a release is warranted, bumps the version across all manifests, builds
+# the prebuilt macOS arm64 payload, publishes both npm packages
+# (@meridiona/meridian + @meridiona/meridian-darwin-arm64), creates the GitHub
+# release + tag + CHANGELOG, and commits the version bump back to main.
+#
+# Runs on macos-14 (arm64) because the prepare step compiles the Metal/MLX
+# daemon + the dashboard for that target.
 
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
 
 permissions:
-  contents: write
+  contents: write       # tags, release, the version-bump commit
+  issues: write
+  pull-requests: write
+  id-token: write        # npm provenance (optional)
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  build-bundle:
-    runs-on: macos-14          # Apple Silicon (arm64) — MLX/Metal target
+  release:
+    runs-on: macos-14
     env:
       SQLX_OFFLINE: "true"
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0          # full history — semantic-release needs tags + commits
+          persist-credentials: false
 
       - name: Install Rust 1.93.1
         uses: dtolnay/rust-toolchain@master
@@ -27,33 +40,22 @@ jobs:
           toolchain: "1.93.1"
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build daemon (release)
-        run: cargo build --release
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: ui/package-lock.json
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
 
-      - name: Build UI (standalone)
-        working-directory: ui
-        run: |
-          npm ci
-          npm run build
+      - name: Install release tooling
+        run: npm install --no-audit --no-fund
 
-      - name: Assemble release bundle
-        run: bash scripts/package-release.sh "${{ github.event.release.tag_name }}" dist
-
-      - name: Checksum
-        working-directory: dist
-        run: shasum -a 256 *.tar.gz > SHA256SUMS
-
-      - name: Attach artifacts to the release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.release.tag_name }}
-          files: |
-            dist/*.tar.gz
-            dist/SHA256SUMS
+      - name: semantic-release
+        env:
+          # Use a PAT (GH_TOKEN) with `repo` scope that can push the version
+          # commit to main past branch protection; falls back to GITHUB_TOKEN.
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          # npm automation token — used by @semantic-release/npm AND the direct
+          # `npm publish` of the arch package in the exec publish step.
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npx semantic-release
