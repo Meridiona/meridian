@@ -144,6 +144,29 @@ impl Report {
         s
     }
 
+    /// Machine-readable output for the `meridian` CLI wrapper to ingest and fold
+    /// into its by-daemon table. One TSV line per check:
+    /// `status<TAB>name<TAB>detail<TAB>remedy` (status ∈ ok|info|warn|fail).
+    pub fn render_porcelain(&self) -> String {
+        let mut s = String::new();
+        for c in &self.checks {
+            let status = match c.severity {
+                Severity::Ok => "ok",
+                Severity::Info => "info",
+                Severity::Warn => "warn",
+                Severity::Critical => "fail",
+            };
+            s.push_str(&format!(
+                "{}\t{}\t{}\t{}\n",
+                status,
+                c.name,
+                c.detail,
+                c.remedy.as_deref().unwrap_or("")
+            ));
+        }
+        s
+    }
+
     /// Emit each check to tracing at a level matching its severity. Used by the
     /// boot preflight (non-fatal — the daemon still runs; we surface the fault).
     pub fn log(&self, stage: &str) {

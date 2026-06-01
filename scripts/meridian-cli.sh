@@ -190,14 +190,52 @@ cmd_logs() {
 }
 
 # --- doctor ---
-_check() {
-    local desc="$1" pass="$2" reason="${3:-}"
-    if [[ "$pass" == "1" ]]; then
-        ok "$desc"
+# --- table-style doctor output, grouped by daemon ---
+_group() { printf "\n  ── %s ─────────────────────────────────────────────\n" "$1"; }
+
+_row() {  # status check detail
+    local status="$1" check="$2" detail="${3:-}" glyph
+    case "$status" in
+        ok)   glyph="✓" ;;
+        warn) glyph="⊘" ;;
+        info) glyph="·" ;;
+        *)    glyph="✗"; DOCTOR_FAILURES=$(( DOCTOR_FAILURES + 1 )) ;;
+    esac
+    printf "  %s %-26s %s\n" "$glyph" "$check" "$detail"
+}
+
+_plist_row() {  # label check-label
+    local plist="${LAUNCH_AGENTS}/$1.plist"
+    if [[ -f "$plist" ]] && plutil -lint "$plist" >/dev/null 2>&1; then
+        _row ok "$2" ""
     else
-        err "$desc${reason:+ — ${reason}}"
-        DOCTOR_FAILURES=$(( DOCTOR_FAILURES + 1 ))
+        _row fail "$2" "run ./install.sh"
     fi
+}
+
+# Fold the daemon binary's machine-readable L1 capture checks into the table.
+# Guarded by a perl alarm so a stale binary (one that doesn't know `doctor` and
+# would otherwise start the daemon) can never hang the report.
+_capture_rows() {  # daemon-binary-path
+    local bin="$1" out
+    if [[ ! -x "$bin" ]]; then _row info "capture (L1)" "daemon binary missing"; return; fi
+    set +e
+    out="$(perl -e 'alarm shift @ARGV; exec @ARGV' 8 "$bin" doctor --porcelain 2>/dev/null)"
+    set -e
+    if [[ -z "$out" ]]; then
+        _row info "capture (L1)" "unavailable — run: cargo build --release"
+        return
+    fi
+    # status \t name \t detail \t remedy
+    while IFS=$'\t' read -r st name detail remedy; do
+        [[ -z "$name" ]] && continue
+        # binary/DB presence is already shown by the screenpipe rows above.
+        case "$name" in screenpipe.installed|screenpipe.db_present) continue ;; esac
+        _row "$st" "${name#screenpipe.}" "$detail"
+        if [[ -n "$remedy" && "$st" != "ok" && "$st" != "info" ]]; then
+            printf "       → %s\n" "$remedy"
+        fi
+    done <<< "$out"
 }
 
 _pid_from_print() {
@@ -213,90 +251,56 @@ _pid_from_print() {
 
 cmd_doctor() {
     DOCTOR_FAILURES=0
+    printf "\n  Meridian doctor — health by daemon\n"
+    printf "  ════════════════════════════════════════════════════════\n"
 
-    # 1. macOS
-    _check "macOS" "$([[ "$(uname -s)" == "Darwin" ]] && echo 1 || echo 0)" "run on macOS"
+    # ---- System ----
+    _group "system"
+    _row "$([[ "$(uname -s)" == "Darwin" ]] && echo ok || echo fail)" "macOS" ""
 
-    # 2. daemon binary
-    local bin_ok=0
+    # ---- meridian daemon ----
+    _group "meridian daemon"
+    local binpath=""
     for p in /usr/local/bin/meridian-daemon "${HOME}/.local/bin/meridian-daemon"; do
-        [[ -x "$p" ]] && bin_ok=1 && break
+        [[ -x "$p" ]] && binpath="$p" && break
     done
-    _check "daemon binary exists and is executable" "$bin_ok" "run ./install.sh"
-
-    # 3. daemon plist lints
-    local dplist="${LAUNCH_AGENTS}/${LABEL_DAEMON}.plist"
-    if [[ -f "$dplist" ]]; then
-        set +e; plutil -lint "$dplist" >/dev/null 2>&1; local pl=$?; set -e
-        _check "daemon plist installed and valid" "$([[ $pl -eq 0 ]] && echo 1 || echo 0)" "plutil -lint ${dplist}"
-    else
-        _check "daemon plist installed and valid" "0" "run ./install.sh"
-    fi
-
-    # 4. daemon running
+    _row "$([[ -n "$binpath" ]] && echo ok || echo fail)" "binary installed" "$binpath"
+    _plist_row "$LABEL_DAEMON" "plist valid"
     local dpid; dpid="$(_pid_from_print "$LABEL_DAEMON" 2>/dev/null)" || dpid=""
-    _check "daemon running (pid ${dpid:-?})" "$([[ -n "$dpid" ]] && echo 1 || echo 0)" "meridian start"
+    _row "$([[ -n "$dpid" ]] && echo ok || echo fail)" "running" "${dpid:+pid $dpid}"
+    _row "$([[ -f "${REPO_ROOT}/.env" ]] && echo ok || echo fail)" "config (.env)" ""
+    _row "$([[ -f "${HOME}/.meridian/meridian.db" ]] && echo ok || echo warn)" "meridian DB" ""
 
-    # 5. user config
-    _check "user config <repo>/.env exists" "$([[ -f "${REPO_ROOT}/.env" ]] && echo 1 || echo 0)" "run ./install.sh"
+    # ---- screenpipe (launchd/process + L1 capture from the daemon binary) ----
+    _group "screenpipe"
+    _plist_row "$LABEL_SCREENPIPE" "plist valid"
+    _row "$(command -v screenpipe >/dev/null 2>&1 && echo ok || echo fail)" "binary in PATH" ""
+    _row "$(pgrep -x screenpipe >/dev/null 2>&1 && echo ok || echo fail)" "running" ""
+    _capture_rows "$binpath"
 
-    # 6. screenpipe plist lints
-    local spplist="${LAUNCH_AGENTS}/${LABEL_SCREENPIPE}.plist"
-    if [[ -f "$spplist" ]]; then
-        set +e; plutil -lint "$spplist" >/dev/null 2>&1; local spl=$?; set -e
-        _check "screenpipe plist installed and valid" "$([[ $spl -eq 0 ]] && echo 1 || echo 0)" "plutil -lint ${spplist}"
-    else
-        _check "screenpipe plist installed and valid" "0" "run ./install.sh"
-    fi
+    # ---- mlx-server ----
+    _group "mlx-server"
+    _plist_row "$LABEL_MLX" "plist valid"
+    local venv_py="${REPO_ROOT}/services/.venv/bin/python" venv_ok=0
+    if [[ -x "$venv_py" ]] && "$venv_py" -c "import run_agent" >/dev/null 2>&1; then venv_ok=1; fi
+    _row "$([[ $venv_ok -eq 1 ]] && echo ok || echo fail)" "python venv + run_agent" ""
 
-    # 7. screenpipe binary in PATH
-    set +e; command -v screenpipe >/dev/null 2>&1; local spbin=$?; set -e
-    _check "screenpipe binary in PATH" "$([[ $spbin -eq 0 ]] && echo 1 || echo 0)" "install screenpipe (npm install -g screenpipe)"
+    # ---- MCP server ----
+    _group "mcp server"
+    _row "$([[ -f "${REPO_ROOT}/packages/meridian-mcp/dist/index.js" ]] && echo ok || echo fail)" "built" ""
 
-    # 8. screenpipe DB
-    _check "screenpipe DB exists" "$([[ -f "${HOME}/.screenpipe/db.sqlite" ]] && echo 1 || echo 0)" "install and run screenpipe"
-
-    # 9. screenpipe running
-    set +e; pgrep -x screenpipe >/dev/null 2>&1; local sp=$?; set -e
-    _check "screenpipe running" "$([[ $sp -eq 0 ]] && echo 1 || echo 0)" "start screenpipe"
-
-    # 10. meridian DB
-    if [[ -f "${HOME}/.meridian/meridian.db" ]]; then
-        ok "meridian DB exists"
-    else
-        warn "meridian DB not yet created (will be on first run)"
-    fi
-
-    # 11. Python venv
-    local venv_py="${REPO_ROOT}/services/.venv/bin/python"
-    local venv_ok=0
-    if [[ -x "$venv_py" ]]; then
-        set +e; "$venv_py" -c "import run_agent" 2>/dev/null; local vi=$?; set -e
-        [[ $vi -eq 0 ]] && venv_ok=1
-    fi
-    _check "Python venv and run_agent importable" "$venv_ok" "bash scripts/setup-services.sh"
-
-    # 12. MCP server built
-    _check "MCP server built" "$([[ -f "${REPO_ROOT}/packages/meridian-mcp/dist/index.js" ]] && echo 1 || echo 0)" "cd packages/meridian-mcp && npm run build"
-
-    # 13. UI plist lints
-    local uiplist="${LAUNCH_AGENTS}/${LABEL_UI}.plist"
-    if [[ -f "$uiplist" ]]; then
-        set +e; plutil -lint "$uiplist" >/dev/null 2>&1; local uil=$?; set -e
-        _check "UI plist installed and valid" "$([[ $uil -eq 0 ]] && echo 1 || echo 0)" "plutil -lint ${uiplist}"
-    else
-        _check "UI plist installed and valid" "0" "run ./install.sh"
-    fi
-
-    # 14. UI built
-    _check "UI built (ui/.next exists)" "$([[ -d "${REPO_ROOT}/ui/.next" ]] && echo 1 || echo 0)" "cd ui && npm ci && npm run build"
+    # ---- UI ----
+    _group "ui"
+    _plist_row "$LABEL_UI" "plist valid"
+    _row "$([[ -d "${REPO_ROOT}/ui/.next" ]] && echo ok || echo fail)" "built (.next)" ""
 
     echo
     if [[ $DOCTOR_FAILURES -eq 0 ]]; then
-        ok "all checks passed"
+        printf "  ✓ all checks passed\n\n"
     else
-        printf "  %d check%s failed\n" "$DOCTOR_FAILURES" "$([[ $DOCTOR_FAILURES -ne 1 ]] && echo s || true)"
+        printf "  ✗ %d check(s) failed\n\n" "$DOCTOR_FAILURES"
     fi
+    [[ $DOCTOR_FAILURES -eq 0 ]]
 }
 
 # --- config ---
