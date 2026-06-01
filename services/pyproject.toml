@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "meridian-agents"
-version = "1.4.2"
+version = "1.4.3"
 description = "Meridian agents — hermes task linking and Jira progress updates for meridian.db"
 requires-python = ">=3.11"
 authors = [{ name = "Meridiona" }]
