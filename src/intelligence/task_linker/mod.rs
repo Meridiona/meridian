@@ -461,26 +461,49 @@ pub async fn run_coding_agent_classification(pool: &SqlitePool, cfg: &Config) ->
     }
 
     info!(session_ids = ?ids, "classifying summarised coding-agent rows");
-    let input = ClassifyInput {
-        session_ids: ids,
-        meridian_db: cfg.meridian_db.clone(),
-        traceparent: crate::observability::current_traceparent(),
-    };
 
-    let out = call_mlx_server(&input, cfg.mlx_server_port, cfg.classification_timeout_s).await?;
-
+    // One session per MLX request. The server classifies sequentially (~1 min
+    // per session), so batching N rows into a single call needs N × that
+    // wall-time — far beyond `classification_timeout_s`. The batched call fired
+    // its timeout every time (~130-157 s for 8 rows vs a 120 s ceiling) and the
+    // reqwest timeout surfaced as a misleading "MLX server unreachable", leaving
+    // the rows unwritten so the same oldest batch was retried forever. Sending
+    // one row per call keeps each request well inside the timeout, advances each
+    // row independently, and (via the per-call llm_gate) interleaves fairly with
+    // the live classifier and the summariser instead of holding the model for a
+    // whole batch.
     let mut n = 0usize;
-    for r in &out.results {
-        update_coding_agent_task(pool, r).await?;
-        write_dimensions(pool, r.session_id, &r.dimensions).await?;
-        info!(
-            session_id = r.session_id,
-            task_key = ?r.task_key,
-            session_type = %r.session_type,
-            method = %r.method,
-            "coding-agent session classified",
-        );
-        n += 1;
+    for id in ids {
+        let input = ClassifyInput {
+            session_ids: vec![id],
+            meridian_db: cfg.meridian_db.clone(),
+            traceparent: crate::observability::current_traceparent(),
+        };
+
+        let out = match call_mlx_server(&input, cfg.mlx_server_port, cfg.classification_timeout_s)
+            .await
+        {
+            Ok(out) => out,
+            Err(e) => {
+                // Don't abort the whole batch on one row — log and move on so a
+                // single slow or malformed row can't block the others.
+                warn!(session_id = id, error = %e, "coding-agent classification failed for session");
+                continue;
+            }
+        };
+
+        for r in &out.results {
+            update_coding_agent_task(pool, r).await?;
+            write_dimensions(pool, r.session_id, &r.dimensions).await?;
+            info!(
+                session_id = r.session_id,
+                task_key = ?r.task_key,
+                session_type = %r.session_type,
+                method = %r.method,
+                "coding-agent session classified",
+            );
+            n += 1;
+        }
     }
     Ok(n)
 }
