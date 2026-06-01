@@ -9,6 +9,8 @@ import {
 } from '@/components/atoms'
 import TaskBadge from '@/components/TaskBadge'
 import ShapeOfDay from '@/components/ShapeOfDay'
+import DayTimeline from '@/components/DayTimeline'
+import TodayMetrics from '@/components/TodayMetrics'
 import type { TodayResponse } from '@/app/api/today/route'
 
 interface BucketSession {
@@ -143,29 +145,24 @@ function ActiveSessionCard({ active, taskKey }: { active: NonNullable<TodayRespo
   )
 }
 
-// ── Totals strip ─────────────────────────────────────────────────────────────
-function TotalsStrip({ focus_s, idle_s, coding_s, switch_count }: { focus_s: number; idle_s: number; coding_s: number; switch_count: number }) {
-  // Coding-agent time is a SUBSET of focus (the AI-assisted slice), never an
-  // additive total — surface it as a share of focus so the four tiles can't be
-  // read as summing to more wall-clock than actually elapsed.
-  const codingPct = focus_s > 0 ? Math.round((coding_s / focus_s) * 100) : 0
-  const items = [
-    { k: 'Focus',        v: fmtDur(focus_s),       note: 'active' },
-    { k: 'Idle',         v: fmtDur(idle_s),        note: 'away from keyboard' },
-    { k: 'Coding agent', v: fmtDur(coding_s),      note: `${codingPct}% of focus · AI-assisted` },
-    { k: 'Switches',     v: String(switch_count),  note: 'context switches' },
-  ]
-  return (
-    <div className="grid grid-cols-4 rule-t rule-b" style={{ borderColor: 'var(--rule)' }}>
-      {items.map((it, i) => (
-        <div key={it.k} className={`py-4 px-5 ${i > 0 ? 'rule-l' : ''}`} style={{ borderColor: 'var(--rule)' }}>
-          <p className="text-[10px] uppercase tracking-[0.16em] mb-2" style={{ color: 'var(--ink-3)' }}>{it.k}</p>
-          <p className="font-mono tnum text-[20px] leading-none" style={{ color: 'var(--ink)' }}>{it.v}</p>
-          <p className="text-[11px] mt-1.5" style={{ color: 'var(--ink-3)' }}>{it.note}</p>
-        </div>
-      ))}
-    </div>
-  )
+// ── At-a-glance insight (Layer 1) ────────────────────────────────────────────
+// One pre-computed takeaway, in the Oura "tell me the meaning, not the data"
+// spirit: lead with active focus + how much was AI-assisted, and only mention
+// autonomous agent work or a fragmented day when they're actually notable.
+function buildInsight(data: TodayResponse): string | null {
+  const { focus_s, supervised_s, autonomous_s, switch_count, active } = data
+  if (focus_s < 300 && !active) return null
+
+  const aiPct = focus_s > 0 ? Math.round((supervised_s / focus_s) * 100) : 0
+  let lead = `${fmtDur(focus_s)} focused`
+  if (aiPct >= 5) lead += `, ${aiPct}% of it alongside Claude`
+
+  const extra: string[] = []
+  if (autonomous_s >= 600) extra.push(`plus ${fmtDur(autonomous_s)} of autonomous agent work while you were away`)
+  const focusMin = focus_s / 60
+  if (focusMin > 60 && switch_count > focusMin / 4) extra.push(`a fragmented day — ${switch_count} context switches`)
+
+  return extra.length ? `${lead} — ${extra.join('; ')}.` : `${lead}.`
 }
 
 // ── Task bucket row ──────────────────────────────────────────────────────────
@@ -402,19 +399,40 @@ export default function TodayView({ onNavigate }: { onNavigate?: (v: string, key
         <h1 className="font-serif text-[88px] leading-[0.95] tracking-tight" style={{ color: 'var(--ink)' }}>Today</h1>
       </header>
 
+      {/* Layer 1 — the glance: one insight + the day timeline (overlap shown, not summed) */}
       {(() => {
+        const insight = buildInsight(data)
         const story = buildStory(data)
-        return story ? (
-          <section className="rise">
-            <p className="text-[11px] uppercase tracking-[0.18em] mb-3" style={{ color: 'var(--ink-3)' }}>The story so far</p>
-            <p className="font-serif text-[26px] leading-[1.2]" style={{ color: 'var(--ink)', textWrap: 'pretty' } as React.CSSProperties}>{story}</p>
+        if (!insight && !(data.sessions.length > 0 || data.active)) return null
+        return (
+          <section className="rise space-y-5">
+            {insight && (
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.18em] mb-3" style={{ color: 'var(--ink-3)' }}>Today at a glance</p>
+                <p className="font-serif text-[32px] leading-[1.15]" style={{ color: 'var(--ink)', textWrap: 'pretty' } as React.CSSProperties}>{insight}</p>
+              </div>
+            )}
+            {(data.sessions.length > 0 || data.active) && (
+              <Card className="p-6"><DayTimeline data={data} /></Card>
+            )}
+            {story && (
+              <p className="text-[14px] leading-relaxed" style={{ color: 'var(--ink-2)', textWrap: 'pretty' } as React.CSSProperties}>{story}</p>
+            )}
           </section>
-        ) : null
+        )
       })()}
 
       {data.active && <ActiveSessionCard active={data.active} taskKey={data.sessions.filter(s => s.task_key).at(-1)?.task_key} />}
 
-      <TotalsStrip focus_s={data.focus_s} idle_s={data.idle_s} coding_s={data.coding_s} switch_count={data.switch_count} />
+      {/* Layer 2 + 3 — zoom row with details-on-demand */}
+      <TodayMetrics
+        focus_s={data.focus_s}
+        idle_s={data.idle_s}
+        agent_s={data.agent_s}
+        supervised_s={data.supervised_s}
+        autonomous_s={data.autonomous_s}
+        switch_count={data.switch_count}
+      />
 
       {buckets.length > 0 && (
         <section>
