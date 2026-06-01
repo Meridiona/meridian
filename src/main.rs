@@ -160,10 +160,17 @@ async fn main() -> Result<()> {
     // the model. Currently covers L1 screenpipe capture; more layers TBD. Exits
     // non-zero if any check is critical.
     if std::env::args().nth(1).as_deref() == Some("doctor") {
+        // `--porcelain` emits TSV rows for the `meridian` CLI wrapper to fold into
+        // its by-daemon table; otherwise a human-readable report.
+        let porcelain = std::env::args().any(|a| a == "--porcelain");
         let cfg = Config::from_env();
         let screenpipe = open_screenpipe(&cfg.screenpipe_db_uri()).await.ok();
         let report = meridian::health::capture::run(&cfg, screenpipe.as_ref()).await;
-        println!("{}", report.render_titled("screenpipe capture (L1)"));
+        if porcelain {
+            print!("{}", report.render_porcelain());
+        } else {
+            println!("{}", report.render_titled("screenpipe capture (L1)"));
+        }
         if let Some(pool) = screenpipe {
             pool.close().await;
         }
