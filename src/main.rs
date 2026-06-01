@@ -99,13 +99,12 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // `meridian pm-worklog [--day YYYY-MM-DD] [--dry-run]` — one-shot Stage 4:
-    // walk the day's hours and draft (or, when posting is enabled, post) one Jira
-    // worklog per task per ready hour. Opens via setup_db so migrations (incl. the
-    // pm_worklog tables) are applied even when run standalone.
+    // `meridian pm-worklog [--day YYYY-MM-DD]` — one-shot Stage 4: walk the day's
+    // hours and DRAFT one worklog per task per ready hour (never posts — posting
+    // is approval-gated). Opens via setup_db so migrations (incl. the pm_worklog
+    // tables) are applied even when run standalone.
     if std::env::args().nth(1).as_deref() == Some("pm-worklog") {
         let args: Vec<String> = std::env::args().collect();
-        let dry_run = args.iter().any(|a| a == "--dry-run");
         let day = args
             .iter()
             .position(|a| a == "--day")
@@ -113,10 +112,25 @@ async fn main() -> Result<()> {
         let cfg = Config::from_env();
         match setup_db(&cfg.meridian_db_uri()).await {
             Ok(pool) => {
-                meridian::pm_worklog::cli_run(&pool, day.as_deref(), dry_run).await;
+                meridian::pm_worklog::cli_run(&pool, day.as_deref()).await;
                 pool.close().await;
             }
             Err(e) => eprintln!("pm-worklog: open db: {e}"),
+        }
+        return Ok(());
+    }
+
+    // `meridian worklog-post-approved` — post every worklog the user approved in
+    // the dashboard to Jira now (the same sweep the daemon runs every ~60s). This
+    // is the only path that writes to real Jira.
+    if std::env::args().nth(1).as_deref() == Some("worklog-post-approved") {
+        let cfg = Config::from_env();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                meridian::pm_worklog::cli_post_approved(&pool).await;
+                pool.close().await;
+            }
+            Err(e) => eprintln!("worklog-post-approved: open db: {e}"),
         }
         return Ok(());
     }
@@ -277,15 +291,26 @@ async fn main() -> Result<()> {
         });
     }
 
-    // 7d. PM-worklog driver (Stage 4): the hour-driven loop that writes one Jira
-    //     worklog per task per settled hour. Gated on the global LLM gate and on
-    //     PM_WORKLOG_POST_ENABLED (defaults to dry-run so it never posts to real
-    //     Jira unattended). Independent of the ETL tick.
+    // 7d. PM-worklog driver (Stage 4): the hour-driven loop that DRAFTS one Jira
+    //     worklog per task per settled hour. Never posts — drafted worklogs wait
+    //     for a human to approve them in the dashboard. Independent of the ETL tick.
     {
         let pool_pm = meridian.clone();
         let rx_pm = shutdown_rx.clone();
         tokio::spawn(async move {
             meridian::pm_worklog::run_loop(pool_pm, rx_pm).await;
+        });
+    }
+
+    // 7e. PM-worklog approved-poster: the ~60s sweep that posts worklogs the user
+    //     approved in the dashboard to Jira. This is the SOLE path to real Jira
+    //     (there is no unattended auto-post). Gated on the global LLM gate's
+    //     siblings only — posting itself is a plain HTTP call, not an LLM hop.
+    {
+        let pool_post = meridian.clone();
+        let rx_post = shutdown_rx.clone();
+        tokio::spawn(async move {
+            meridian::pm_worklog::run_post_loop(pool_post, rx_post).await;
         });
     }
 

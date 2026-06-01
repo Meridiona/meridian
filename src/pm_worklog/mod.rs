@@ -6,10 +6,16 @@
 // through the global LLM gate). The hour-driven driver walks each day's hours,
 // processing every hour whose upstream stages have settled.
 //
-//   collect → synthesise (gated LLM) → ground → route (persist + post)
+//   collect → synthesise (gated LLM) → ground → DRAFT
 //
-// Spawned as a gated tokio task from `main.rs`; also runnable one-shot via
-// `meridian pm-worklog [--day YYYY-MM-DD] [--dry-run]`.
+// The driver NEVER posts. Every worklog lands as a `drafted` row for a human to
+// review, edit, and approve in the dashboard; approval flips it to `approved`,
+// and the `post` sweep (the only path to real Jira) posts it. This is the sole
+// post gate — there is no unattended auto-post.
+//
+// Spawned as two gated tokio tasks from `main.rs` (the hourly driver + the
+// ~60s approved-poster); also runnable one-shot via
+// `meridian pm-worklog [--day YYYY-MM-DD]` and `meridian worklog-post-approved`.
 
 pub mod collect;
 pub mod config;
@@ -18,11 +24,13 @@ pub mod ground;
 pub mod jira;
 pub mod ledger;
 pub mod models;
+pub mod post;
 pub mod route;
 pub mod scheduler;
 pub mod status;
 pub mod synth;
 
 pub use config::PmWorklogConfig;
+pub use post::{cli_post_approved, post_approved, run_post_loop};
 pub use scheduler::{cli_run, run_driver, run_loop, DriverSummary};
 pub use status::cli_status;
