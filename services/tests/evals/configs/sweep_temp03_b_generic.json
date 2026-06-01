@@ -1,0 +1,13 @@
+{
+  "name":             "sweep-skill_v3-temp0.3-b_generic",
+  "description":      "[SWEEP iter 1 phase 1] skill_v3 + MLX_TEMPERATURE=0.3 vs baseline. Compare vs skill_v3@temp=0 baseline (29/40 = 72.5% on b_generic).",
+  "strategy":         "direct_http",
+  "dataset_path":     "services/tests/evals/data/generated/goldens_b_generic.json",
+  "endpoint":         "http://localhost:7823/classify",
+  "timeout":          120,
+  "model":            "Qwen3.5-9B-OptiQ-4bit",
+  "session_text_cap": 2500,
+  "temperature":      0.3,
+  "max_tokens":       1024,
+  "prompt_version":   "v2.3.0"
+}

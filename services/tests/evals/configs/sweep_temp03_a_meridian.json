@@ -1,0 +1,13 @@
+{
+  "name":             "sweep-skill_v3-temp0.3-a_meridian",
+  "description":      "[SWEEP iter 1 phase 1] skill_v3 + MLX_TEMPERATURE=0.3 vs baseline (temperature=0.0). Hypothesis: slight randomness might help on ambiguous boundaries where greedy decoding hits a wrong-classification cliff. Compare vs skill_v3@temp=0 baseline (27/40 = 68% on a_meridian).",
+  "strategy":         "direct_http",
+  "dataset_path":     "services/tests/evals/data/generated/goldens_a_meridian.json",
+  "endpoint":         "http://localhost:7823/classify",
+  "timeout":          120,
+  "model":            "Qwen3.5-9B-OptiQ-4bit",
+  "session_text_cap": 2500,
+  "temperature":      0.3,
+  "max_tokens":       1024,
+  "prompt_version":   "v2.3.0"
+}
