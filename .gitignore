@@ -72,3 +72,4 @@ services/tests/evals/results/
 # Python bytecode
 __pycache__/
 *.pyc
+dist/

@@ -44,7 +44,10 @@ Commands:
     -f               Follow (stream)
     -n N             Last N lines (default 100)
   doctor             Run environment health checks
+  worklog-status     Show today's PM worklogs (done/pending/drafted/posted + comments)
+                     [--day YYYY-MM-DD]
   config edit        Open the repo-root .env in $EDITOR
+  update             Update to the latest release (bundle) or pull+rebuild (source)
   permissions        Open macOS permission panes for screenpipe
   uninstall          Stop daemons and remove CLI symlinks
   --help | -h        Show this help
@@ -351,9 +354,37 @@ cmd_permissions() {
     echo "    meridian restart"
 }
 
+# --- update ---
+# Bundle install: re-run the one-line bootstrap (downloads the latest release).
+# Source checkout: git pull + rebuild + restart.
+cmd_update() {
+    if [[ -d "${REPO_ROOT}/.git" ]]; then
+        info "source checkout — pulling + rebuilding"
+        git -C "${REPO_ROOT}" pull --ff-only
+        ( cd "${REPO_ROOT}" && cargo build --release )
+        ( cd "${REPO_ROOT}/ui" && npm ci && npm run build )
+        cmd_restart
+    else
+        info "fetching the latest release…"
+        curl -fsSL "https://raw.githubusercontent.com/Meridiona/meridian/main/bootstrap.sh" \
+            | MERIDIAN_SKIP_PERMISSIONS=1 bash
+    fi
+}
+
 # --- dispatch ---
 CMD="${1:-}"
 shift || true
+
+# Subcommands implemented by the daemon binary itself (not the launchd manager).
+# Forward these straight through to `meridian-daemon <cmd> [args]`.
+cmd_daemon_passthrough() {
+    local bin=""
+    for p in /usr/local/bin/meridian-daemon "${HOME}/.local/bin/meridian-daemon"; do
+        [[ -x "$p" ]] && bin="$p" && break
+    done
+    [[ -n "$bin" ]] || { err "meridian-daemon binary not found — run ./install.sh"; exit 1; }
+    exec "$bin" "$@"
+}
 
 case "$CMD" in
     start)            cmd_start ;;
@@ -363,8 +394,10 @@ case "$CMD" in
     logs)             cmd_logs "$@" ;;
     doctor)           cmd_doctor ;;
     config)           cmd_config "$@" ;;
+    update)           cmd_update ;;
     uninstall)        cmd_uninstall ;;
     permissions)      cmd_permissions ;;
+    worklog-status|pm-worklog) cmd_daemon_passthrough "$CMD" "$@" ;;
     --help|-h|help|"") cmd_help ;;
     *) err "unknown command: ${CMD}"; echo; cmd_help; exit 1 ;;
 esac
