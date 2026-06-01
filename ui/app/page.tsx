@@ -11,11 +11,12 @@ import TweaksPanel from '@/components/TweaksPanel'
 const TodayView    = dynamic(() => import('@/components/views/TodayView'),    { ssr: false })
 const TasksView    = dynamic(() => import('@/components/views/TasksView'),    { ssr: false })
 const QueueView    = dynamic(() => import('@/components/views/QueueView'),    { ssr: false })
+const WorklogsView = dynamic(() => import('@/components/views/WorklogsView'), { ssr: false })
 const SessionsView = dynamic(() => import('@/components/views/SessionsView'), { ssr: false })
 const WeekView     = dynamic(() => import('@/components/views/WeekView'),     { ssr: false })
 const SettingsView = dynamic(() => import('@/components/views/SettingsView'), { ssr: false })
 
-type View = 'today' | 'tasks' | 'queue' | 'sessions' | 'week' | 'settings'
+type View = 'today' | 'tasks' | 'queue' | 'worklogs' | 'sessions' | 'week' | 'settings'
 
 export default function DashboardPage() {
   const [view, setView] = useState<View>('today')
@@ -52,9 +53,10 @@ export default function DashboardPage() {
       if (e.key === '1') navigate('today')
       else if (e.key === '2') navigate('tasks')
       else if (e.key === '3') navigate('queue')
-      else if (e.key === '4') navigate('sessions')
-      else if (e.key === '5') navigate('week')
-      else if (e.key === '6') navigate('settings')
+      else if (e.key === '4') navigate('worklogs')
+      else if (e.key === '5') navigate('sessions')
+      else if (e.key === '6') navigate('week')
+      else if (e.key === '7') navigate('settings')
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -76,6 +78,7 @@ export default function DashboardPage() {
           {view === 'today'    && <TodayView    onNavigate={(v, k) => navigate(v as View, k)} />}
           {view === 'tasks'    && <TasksView    focusKey={focusKey} />}
           {view === 'queue'    && <QueueView    />}
+          {view === 'worklogs' && <WorklogsView />}
           {view === 'sessions' && <SessionsView />}
           {view === 'week'     && <WeekView     />}
           {view === 'settings' && <SettingsView />}
@@ -84,7 +87,7 @@ export default function DashboardPage() {
             style={{ borderTopColor: 'var(--rule)', color: 'var(--ink-4)' }}>
             <span>Meridian · local · {todayDate}</span>
             <span className="font-mono tnum">
-              <span className="kbd">⌘</span> <span className="kbd">K</span> to jump · <span className="kbd">1</span>–<span className="kbd">6</span> to switch view
+              <span className="kbd">⌘</span> <span className="kbd">K</span> to jump · <span className="kbd">1</span>–<span className="kbd">7</span> to switch view
             </span>
           </footer>
         </div>

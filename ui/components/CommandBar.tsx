@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { TaskKey, StatusPill } from '@/components/atoms'
 
-type View = 'today' | 'tasks' | 'queue' | 'sessions' | 'week'
+type View = 'today' | 'tasks' | 'queue' | 'worklogs' | 'sessions' | 'week'
 
 interface Props {
   onClose: () => void
@@ -29,6 +29,7 @@ export default function CommandBar({ onClose, onNavigate }: Props) {
     { kind: 'view', label: 'Go to Today',        v: 'today' },
     { kind: 'view', label: 'Go to Tasks',        v: 'tasks' },
     { kind: 'view', label: 'Go to Review queue', v: 'queue' },
+    { kind: 'view', label: 'Go to Worklogs',     v: 'worklogs' },
     { kind: 'view', label: 'Go to Sessions',     v: 'sessions' },
     { kind: 'view', label: 'Go to Week',         v: 'week' },
   ]
