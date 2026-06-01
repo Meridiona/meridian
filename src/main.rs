@@ -121,6 +121,26 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `meridian worklog-status [--day YYYY-MM-DD]` — a human-readable report of
+    // the day's worklogs (hours done/pending/stuck, rows by state, per-ticket
+    // comments + flagged ones). Read-only; no daemon init.
+    if std::env::args().nth(1).as_deref() == Some("worklog-status") {
+        let args: Vec<String> = std::env::args().collect();
+        let day = args
+            .iter()
+            .position(|a| a == "--day")
+            .and_then(|i| args.get(i + 1).cloned());
+        let cfg = Config::from_env();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                meridian::pm_worklog::cli_status(&pool, day.as_deref()).await;
+                pool.close().await;
+            }
+            Err(e) => eprintln!("worklog-status: open db: {e}"),
+        }
+        return Ok(());
+    }
+
     // 2. Tracing — layered subscriber (stdout + JSONL file + OTLP to OpenObserve).
     //    Guard must outlive the program; we shut it down explicitly at the end
     //    so OTel's blocking flush doesn't run inside tokio's drop path.
