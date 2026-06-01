@@ -1,3 +1,12 @@
+## [1.4.3](https://github.com/Meridiona/meridian/compare/v1.4.2...v1.4.3) (2026-06-01)
+
+
+### Bug Fixes
+
+* **daemon:** add PATH to launchd plist so claude/codex resolve ([#97](https://github.com/Meridiona/meridian/issues/97)) ([e8abab2](https://github.com/Meridiona/meridian/commit/e8abab2a0ce5e847f4b7d39e389bec87d3ee2528))
+* **summariser:** log primary-engine failure on MLX fallback ([#98](https://github.com/Meridiona/meridian/issues/98)) ([0827f01](https://github.com/Meridiona/meridian/commit/0827f01b24dfa8f506602bcb7c2813ac96316eed))
+* **task-linker:** classify coding-agent rows one per MLX call ([#96](https://github.com/Meridiona/meridian/issues/96)) ([69f9e65](https://github.com/Meridiona/meridian/commit/69f9e65febd89efddd7156fb56798ee608018f72))
+
 ## [1.4.2](https://github.com/Meridiona/meridian/compare/v1.4.1...v1.4.2) (2026-06-01)
 
 
