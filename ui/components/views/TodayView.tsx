@@ -35,6 +35,7 @@ interface Bucket {
   cats: Set<string>
   day_total_s: number
   isOverhead: boolean
+  isUntracked: boolean
   isQueue: boolean
 }
 
@@ -186,9 +187,11 @@ function BucketRow({ bucket }: { bucket: Bucket }) {
         style={{ background: open ? 'var(--surface-2)' : 'var(--surface)' }}
       >
         <span className="font-mono tnum text-[12px] w-[72px]" style={{ color: 'var(--ink-2)' }}>
-          {!bucket.isOverhead && !bucket.isQueue
+          {!bucket.isOverhead && !bucket.isUntracked && !bucket.isQueue
             ? <TaskKey keyId={bucket.key} />
-            : <span style={{ color: 'var(--ink-3)' }}>{bucket.isOverhead ? 'overhead' : 'needs review'}</span>}
+            : <span style={{ color: 'var(--ink-3)' }}>
+                {bucket.isOverhead ? 'overhead' : bucket.isUntracked ? 'untracked' : 'needs review'}
+              </span>}
         </span>
         <div className="min-w-0">
           <p className="text-[14px] truncate" style={{ color: 'var(--ink)' }}>{bucket.title}</p>
@@ -254,15 +257,19 @@ function buildStory(data: TodayResponse): string | null {
     if (!e.cats.includes(s.cat)) e.cats.push(s.cat)
   })
 
+  const untracked_filter = (s: typeof sessions[number]) => !s.task_key && s.routing !== 'queue'
   const overhead = sessions
-    .filter(s => !s.task_key && s.routing !== 'queue')
+    .filter(s => untracked_filter(s) && s.session_type === 'overhead')
+    .reduce((a, s) => a + s.dur, 0)
+  const untracked = sessions
+    .filter(s => untracked_filter(s) && s.session_type !== 'overhead')
     .reduce((a, s) => a + s.dur, 0)
 
   const tasks = Array.from(taskMap.entries())
     .sort((a, b) => b[1].dur - a[1].dur)
     .slice(0, 3)
 
-  if (tasks.length === 0 && overhead < 600 && !active) return null
+  if (tasks.length === 0 && overhead + untracked < 600 && !active) return null
 
   const verbFor = (cats: string[], dur: number): string => {
     const c = cats[0]
@@ -286,6 +293,7 @@ function buildStory(data: TodayResponse): string | null {
   })
 
   if (overhead > 900) clauses.push(`${fmtDur(overhead)} of overhead`)
+  if (untracked > 900) clauses.push(`${fmtDur(untracked)} untracked`)
 
   if (active) {
     const catLabel = CATS[active.cat]?.label?.toLowerCase() ?? active.cat
@@ -347,7 +355,7 @@ export default function TodayView({ onNavigate }: { onNavigate?: (v: string, key
 
   function pushToBucket(key: string, session: BucketSession) {
     if (!bucketMap.has(key)) {
-      bucketMap.set(key, { key, title: '', sessions: [], total_s: 0, cats: new Set(), day_total_s: total_s, isOverhead: false, isQueue: false })
+      bucketMap.set(key, { key, title: '', sessions: [], total_s: 0, cats: new Set(), day_total_s: total_s, isOverhead: false, isUntracked: false, isQueue: false })
     }
     const b = bucketMap.get(key)!
     b.sessions.push(session)
@@ -359,7 +367,11 @@ export default function TodayView({ onNavigate }: { onNavigate?: (v: string, key
     const bs: BucketSession = { id: s.id, app: s.app, started_at: s.started_at, dur: s.dur, cat: s.cat, titles: s.titles, task_key: s.task_key, session_type: s.session_type, link_method: s.link_method, link_confidence: s.link_confidence, routing: s.routing }
     if (s.task_key) pushToBucket(s.task_key, bs)
     else if (s.routing === 'queue') pushToBucket('_queue', bs)
-    else pushToBucket('_overhead', bs)
+    // session_type ('task' | 'overhead' | 'unknown') is the classifier's own
+    // call: 'overhead' is work-adjacent (comms, planning, meetings) with no
+    // ticket; everything else untracked (unknown / null / personal / idle).
+    else if (s.session_type === 'overhead') pushToBucket('_overhead', bs)
+    else pushToBucket('_untracked', bs)
   })
 
   if (data.active) {
@@ -370,14 +382,17 @@ export default function TodayView({ onNavigate }: { onNavigate?: (v: string, key
   const buckets = Array.from(bucketMap.values()).map(b => ({
     ...b,
     isOverhead: b.key === '_overhead',
+    isUntracked: b.key === '_untracked',
     isQueue: b.key === '_queue',
-    title: b.key === '_overhead' ? 'Overhead — comms, mail, planning'
-         : b.key === '_queue'    ? 'Sessions waiting to be assigned'
-         : b.key === '_active'   ? 'Current session'
+    title: b.key === '_overhead'  ? 'Overhead — comms, mail, planning'
+         : b.key === '_untracked' ? 'Untracked — personal, idle, unclassified'
+         : b.key === '_queue'     ? 'Sessions waiting to be assigned'
+         : b.key === '_active'    ? 'Current session'
          : b.key,
     day_total_s: total_s,
   })).sort((a, b) => {
-    const ord = (k: string) => k === '_queue' ? 9 : k === '_overhead' ? 8 : k === '_active' ? -1 : 0
+    const ord = (k: string) =>
+      k === '_queue' ? 10 : k === '_untracked' ? 9 : k === '_overhead' ? 8 : k === '_active' ? -1 : 0
     return (ord(a.key) - ord(b.key)) || (b.total_s - a.total_s)
   })
 
