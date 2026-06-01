@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # meridian — normalises screenpipe activity into structured app sessions
 # Install the meridian Next.js dashboard as a launchd LaunchAgent under the
-# current user. Serves on http://localhost:3000. Built artifact must exist
+# current user. Serves on http://localhost:3939. Built artifact must exist
 # at ui/.next/ before this script runs (install.sh handles that).
 #
 #   ./scripts/install-ui-daemon.sh
@@ -79,7 +79,7 @@ launchctl kickstart -k "${GUI_TARGET}/${LABEL}"
 echo
 echo "✓ UI installed and started"
 echo
-echo "  open  http://localhost:3000                # the dashboard"
+echo "  open  http://localhost:3939                # the dashboard"
 echo "  tail -f ~/.meridian/logs/ui.log            # live stdout"
 echo "  tail -f ~/.meridian/logs/ui-error.log      # live stderr"
 echo "  ${SCRIPT_DIR}/uninstall-ui-daemon.sh       # remove"

@@ -23,7 +23,7 @@
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>exec {{SCREENPIPE_BIN}} record</string>
+        <string>exec {{SCREENPIPE_BIN}} record --disable-audio</string>
     </array>
 
     <key>EnvironmentVariables</key>
