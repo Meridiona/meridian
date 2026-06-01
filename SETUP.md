@@ -1,18 +1,19 @@
 # Setting up Meridian
 
-Meridian installs with **one command** — no repo to clone, no compiler to set up. It downloads a prebuilt release, installs the four background services, and starts them.
+Meridian installs from **npm** — no repo to clone, no compiler to set up. The package ships a prebuilt binary; one `meridian setup` wires up the four background services.
 
-> **Platform:** macOS on **Apple Silicon** (M1 or later). The on-device model needs Metal; Intel Macs aren't supported.
+> **Platform:** macOS on **Apple Silicon** (M1 or later). The on-device model needs Metal; Intel Macs aren't supported. (`npm` ships with Node — `brew install node` if you don't have it.)
 
 ---
 
 ## 1. Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Meridiona/meridian/main/bootstrap.sh | bash
+npm install -g @meridiona/meridian
+meridian setup
 ```
 
-This downloads the latest release to `~/.meridian/app`, installs prerequisites it's missing (Homebrew packages, Node, Python 3.11, screenpipe, ffmpeg), creates the Python environment + the on-device model deps, and registers four launchd agents that start automatically:
+`npm install` fetches the prebuilt app. `meridian setup` copies it to `~/.meridian/app`, installs any missing prerequisites (Homebrew packages, Python 3.11, screenpipe, ffmpeg), creates the Python environment + on-device model deps, and registers four launchd agents that start automatically:
 
 | Service | Role |
 |---|---|
@@ -21,9 +22,9 @@ This downloads the latest release to `~/.meridian/app`, installs prerequisites i
 | **MLX server** | the on-device model (classification + worklog synthesis) |
 | **dashboard** | the web UI at http://localhost:3000 |
 
-> First install downloads the ~6 GB model on first MLX start — give it a few minutes (`meridian logs mlx-server -f` shows progress).
+> First setup downloads the ~6 GB model on first MLX start — give it a few minutes (`meridian logs mlx-server -f` shows progress).
 
-Pin a specific version with `MERIDIAN_VERSION=v0.3.0 curl … | bash`.
+Pin a specific version with `npm install -g @meridiona/meridian@0.3.0`.
 
 ---
 
@@ -93,7 +94,7 @@ open http://localhost:3000
 ## Update / uninstall
 
 ```bash
-meridian update      # fetch + install the latest release (keeps your .env)
+meridian update      # npm-install the latest release + re-run setup (keeps your .env)
 meridian uninstall   # stop services + remove the CLI (your data in ~/.meridian/ is kept)
 ```
 
