@@ -1,3 +1,10 @@
+## [1.4.4](https://github.com/Meridiona/meridian/compare/v1.4.3...v1.4.4) (2026-06-01)
+
+
+### Bug Fixes
+
+* **ui:** per-task time = union of total time, consistent across views ([#100](https://github.com/Meridiona/meridian/issues/100)) ([4508c13](https://github.com/Meridiona/meridian/commit/4508c1321720775d50062f3f01c7cabc87b42b91))
+
 ## [1.4.3](https://github.com/Meridiona/meridian/compare/v1.4.2...v1.4.3) (2026-06-01)
 
 
