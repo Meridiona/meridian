@@ -3,8 +3,15 @@
 import { NextResponse } from 'next/server'
 import getDb from '@/lib/db'
 import { localDayBounds, todayString } from '@/lib/date-utils'
+import { unionSeconds, countSwitches } from '@/lib/intervals'
 
 export const dynamic = 'force-dynamic'
+
+/**
+ * Foreground sessions shorter than this are sub-second focus jitter from
+ * screenpipe, not real context switches — excluded from the switch count.
+ */
+const SWITCH_MIN_DURATION_S = 15
 
 interface TodaySession {
   id: number
@@ -47,9 +54,11 @@ export interface TodayResponse {
   sessions: TodaySession[]
   active: TodayActive | null
   gaps: TodayGap[]
-  focus_s: number
+  focus_s: number       // union of all activity (foreground ∪ coding-agent), overlap counted once
+  coding_s: number      // union of coding-agent overlay — a SUBSET of focus_s, not additive
   idle_s: number
-  session_count: number
+  session_count: number // foreground sessions only
+  switch_count: number  // genuine context switches in the foreground stream
 }
 
 export async function GET() {
@@ -68,7 +77,9 @@ export async function GET() {
         s.id,
         s.app_name,
         s.started_at,
+        s.ended_at,
         s.duration_s,
+        s.claude_session_uuid,
         s.category,
         s.confidence,
         s.category_method,
@@ -83,7 +94,16 @@ export async function GET() {
       WHERE s.started_at >= ? AND s.started_at < ?
       ORDER BY s.started_at ASC
     `
-    const rows = db.prepare(sql).all(start, end) as Array<Record<string, unknown>>
+    const allRows = db.prepare(sql).all(start, end) as Array<Record<string, unknown>>
+
+    // Two streams share app_sessions: the foreground screen-capture stream
+    // (claude_session_uuid IS NULL) and the coding-agent transcript overlay
+    // (claude_session_uuid IS NOT NULL). The overlay records the same wall-clock
+    // time from a second angle, so it must NOT appear as its own foreground
+    // session — it drives the unioned focus figure and the coding-agent tile,
+    // never the per-task buckets, timeline, or switch count.
+    const rows = allRows.filter(r => r.claude_session_uuid == null)
+    const codingRows = allRows.filter(r => r.claude_session_uuid != null)
 
     const sessions: TodaySession[] = rows.map(r => {
       const titles: Array<{ window_name?: string; title?: string; count: number }> =
@@ -153,8 +173,23 @@ export async function GET() {
       }))
     } catch { /* gaps table might not exist */ }
 
-    const focus_s = sessions.reduce((a, s) => a + s.dur, 0) + (active?.elapsed_s ?? 0)
+    // Focus = real wall-clock covered by ANY activity, overlap counted once.
+    // Summing durations double-counts every second where the coding-agent
+    // overlay runs concurrently with the foreground capture, so we union the
+    // raw intervals of both streams plus the live session instead.
+    const nowIso = new Date().toISOString()
+    const focus_s = unionSeconds([
+      ...allRows.map(r => ({ started_at: r.started_at as string, ended_at: r.ended_at as string })),
+      ...(active ? [{ started_at: active.started_at, ended_at: nowIso }] : []),
+    ])
+    const coding_s = unionSeconds(
+      codingRows.map(r => ({ started_at: r.started_at as string, ended_at: r.ended_at as string })),
+    )
     const idle_s = gaps.filter(g => g.kind === 'user_idle').reduce((a, g) => a + g.dur, 0)
+    const switch_count = countSwitches(
+      sessions.map(s => ({ app: s.app, started_at: s.started_at, dur: s.dur })),
+      SWITCH_MIN_DURATION_S,
+    )
 
     const resp: TodayResponse = {
       date,
@@ -162,8 +197,10 @@ export async function GET() {
       active,
       gaps,
       focus_s,
+      coding_s,
       idle_s,
       session_count: sessions.length + (active ? 1 : 0),
+      switch_count,
     }
 
     return NextResponse.json(resp)
@@ -171,7 +208,7 @@ export async function GET() {
     console.error('today api error:', e)
     return NextResponse.json({
       date, sessions: [], active: null, gaps: [],
-      focus_s: 0, idle_s: 0, session_count: 0,
-    })
+      focus_s: 0, coding_s: 0, idle_s: 0, session_count: 0, switch_count: 0,
+    } satisfies TodayResponse)
   }
 }

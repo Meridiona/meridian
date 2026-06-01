@@ -3,6 +3,7 @@
 import { NextResponse } from 'next/server'
 import getDb from '@/lib/db'
 import { todayString } from '@/lib/date-utils'
+import { unionSeconds } from '@/lib/intervals'
 
 export const dynamic = 'force-dynamic'
 
@@ -18,28 +19,6 @@ export interface CodingAgentsResponse {
 }
 
 const CODING_AGENTS = ['Claude Code', 'Codex']
-
-/** Union of [start,end] wall intervals, in seconds — dedups parallel overlap. */
-function unionSeconds(rows: Array<{ started_at: string; ended_at: string }>): number {
-  const ivs = rows
-    .map(r => [new Date(r.started_at).getTime(), new Date(r.ended_at).getTime()] as [number, number])
-    .filter(([s, e]) => e > s)
-    .sort((a, b) => a[0] - b[0])
-  let total = 0
-  let curStart = -1
-  let curEnd = -1
-  for (const [s, e] of ivs) {
-    if (s > curEnd) {
-      if (curEnd > curStart) total += curEnd - curStart
-      curStart = s
-      curEnd = e
-    } else if (e > curEnd) {
-      curEnd = e
-    }
-  }
-  if (curEnd > curStart) total += curEnd - curStart
-  return Math.round(total / 1000)
-}
 
 export async function GET() {
   const date = todayString()
