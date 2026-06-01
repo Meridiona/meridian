@@ -1,3 +1,11 @@
+## [1.4.2](https://github.com/Meridiona/meridian/compare/v1.4.1...v1.4.2) (2026-06-01)
+
+
+### Bug Fixes
+
+* **ui:** cache the read-only sqlite handle in production ([#93](https://github.com/Meridiona/meridian/issues/93)) ([a312bcc](https://github.com/Meridiona/meridian/commit/a312bccdfb8a98043743b86412caa245462e8ec2))
+* **ui:** pin turbopack workspace root to ui/ ([#92](https://github.com/Meridiona/meridian/issues/92)) ([c1e2bb7](https://github.com/Meridiona/meridian/commit/c1e2bb7bab936b3b22da7aca201f070c9256c7d8))
+
 ## [1.4.1](https://github.com/Meridiona/meridian/compare/v1.4.0...v1.4.1) (2026-06-01)
 
 
