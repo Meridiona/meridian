@@ -1,0 +1,28 @@
+{
+  "name": "@meridiona/meridian-darwin-arm64",
+  "version": "0.1.0",
+  "description": "Prebuilt Meridian app for macOS arm64 (daemon binary + dashboard + Python services). Installed via @meridiona/meridian.",
+  "homepage": "https://github.com/Meridiona/meridian",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Meridiona/meridian.git"
+  },
+  "license": "MIT",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin/",
+    "ui/",
+    "services/",
+    "scripts/",
+    ".env.example",
+    "VERSION"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
