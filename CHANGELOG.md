@@ -1,3 +1,15 @@
+# [1.3.0](https://github.com/Meridiona/meridian/compare/v1.2.2...v1.3.0) (2026-06-01)
+
+
+### Features
+
+* **pm-worklog:** add approval state + migration for human-in-the-loop posting ([1c84ddc](https://github.com/Meridiona/meridian/commit/1c84ddcfb41a140f78c1baa2677d4a6cb3d419a1))
+* **pm-worklog:** draft-only driver + approved-poster sweep ([d0094b2](https://github.com/Meridiona/meridian/commit/d0094b2921e14de786242f5b82510124c01df568))
+* **ui:** insight-first Today view — presence + agent overlay, progressive disclosure ([92ca7fb](https://github.com/Meridiona/meridian/commit/92ca7fb0cab66fbe90c5ea514900585aa150672e))
+* **ui:** wire Worklogs into the dashboard nav ([fcca5fe](https://github.com/Meridiona/meridian/commit/fcca5febce5288be9acdad4f948b2de43da0a234))
+* **ui:** worklog API — list + edit/approve/reject (DB writes only) ([cdd1af4](https://github.com/Meridiona/meridian/commit/cdd1af48407a9e56296901cec8f57eb879239e04))
+* **ui:** Worklogs review view — approve before it posts ([cc08a3e](https://github.com/Meridiona/meridian/commit/cc08a3e559304a8913028ab22eab4bb17dbc4565))
+
 ## [1.2.2](https://github.com/Meridiona/meridian/compare/v1.2.1...v1.2.2) (2026-06-01)
 
 
