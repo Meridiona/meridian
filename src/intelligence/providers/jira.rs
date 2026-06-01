@@ -102,7 +102,12 @@ fn map_status_category(key: &str) -> &'static str {
 }
 
 const MAX_RESULTS: usize = 100;
-const SYNC_INTERVAL_MINS: i64 = 30;
+// Minimum interval between Jira fetches. Refresh is now triggered on demand at
+// the read boundaries (classification + worklog passes), so this gate exists to
+// dedupe bursts (e.g. the one-session-per-tick classifier drain loop) and bound
+// API load — not to set the freshness cadence. Kept short so the candidate
+// ticket list is at most this stale when a session is classified.
+const SYNC_INTERVAL_MINS: i64 = 5;
 
 // ---------------------------------------------------------------------------
 // Fetch

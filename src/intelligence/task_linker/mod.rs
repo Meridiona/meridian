@@ -133,12 +133,27 @@ fn default_routing() -> String {
     "pending".to_owned()
 }
 
+fn default_category() -> String {
+    "idle_personal".to_owned()
+}
+
 /// Per-session classification result returned by the MLX server.
 #[derive(Deserialize)]
 pub(super) struct SessionClassification {
     pub(super) session_id: i64,
     pub(super) task_key: Option<String>,
     pub(super) confidence: f64,
+    /// Activity category emitted by the classifier (replaces the former
+    /// Foundation Models settler). Defaults keep deserialization backward
+    /// compatible with an older server that omits the field.
+    #[serde(default = "default_category")]
+    pub(super) category: String,
+    #[serde(default)]
+    pub(super) category_confidence: f64,
+    /// One-sentence justification for `category`, surfaced in the dashboard
+    /// (Today view + queue-review) as `explain`. Empty string → NULL on write.
+    #[serde(default)]
+    pub(super) category_explanation: String,
     /// Routing is computed by Rust, not the server. The default "pending" is a
     /// placeholder until routing logic applies.
     #[serde(default = "default_routing")]
@@ -326,6 +341,14 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<TaskLin
         );
         complete_agent_run(pool, run_id, "success", trivial_count, trivial_count).await?;
         return Ok(TaskLinkOutcome::Classified);
+    }
+
+    // Refresh the PM task cache before classifying so the candidate ticket list
+    // the classifier matches against is current. Gated by SYNC_INTERVAL_MINS, so
+    // the one-session-per-tick drain loop does not fetch Jira per session. A
+    // refresh failure is non-fatal — fall through and classify against the cache.
+    if let Err(e) = super::run_pm_sync(pool, cfg).await {
+        warn!(error = %e, "pm_tasks refresh before classification failed — using cached tasks");
     }
 
     // BATCH_LIMIT is 1, so there is exactly one session in classifiable_ids.
@@ -547,4 +570,48 @@ pub async fn link_range(
     }
 
     Ok((total, linked))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ClassifyOutput;
+
+    // Verbatim envelope captured from the live MLX classifier on session 19958.
+    // This is the actual wire shape Rust receives over HTTP — pinning it here
+    // closes the Python→Rust transport seam without needing a running server.
+    const REAL_SERVER_JSON: &str = r#"{"results": [{"session_id": 19958,
+        "task_key": "KAN-64", "confidence": 0.85, "category": "coding",
+        "category_confidence": 0.9,
+        "category_explanation": "Editing meridian-cli.sh in VS Code with terminal showing session classifier logic.",
+        "session_type": "task", "reasoning": "title mentions classifier",
+        "method": "mlx_direct", "dimensions": {"activity": ["coding"]},
+        "session_summary": "Reviewed meridian-cli.sh.", "elapsed_s": 64.4}]}"#;
+
+    #[test]
+    fn deserializes_real_mlx_server_response_with_category_fields() {
+        let out: ClassifyOutput = serde_json::from_str(REAL_SERVER_JSON).unwrap();
+        let r = &out.results[0];
+        assert_eq!(r.session_id, 19958);
+        assert_eq!(r.category, "coding");
+        assert!((r.category_confidence - 0.9).abs() < 1e-9);
+        assert_eq!(
+            r.category_explanation,
+            "Editing meridian-cli.sh in VS Code with terminal showing session classifier logic."
+        );
+        assert_eq!(r.task_key.as_deref(), Some("KAN-64"));
+    }
+
+    #[test]
+    fn old_response_without_category_fields_falls_back_to_defaults() {
+        // A server predating this change omits category/category_confidence/
+        // category_explanation — serde defaults must keep deserialization working.
+        let legacy = r#"{"results": [{"session_id": 7, "task_key": null,
+            "confidence": 0.1, "reasoning": "", "method": "mlx_direct",
+            "session_summary": "", "elapsed_s": 0.0}]}"#;
+        let out: ClassifyOutput = serde_json::from_str(legacy).unwrap();
+        let r = &out.results[0];
+        assert_eq!(r.category, "idle_personal"); // default_category()
+        assert_eq!(r.category_confidence, 0.0);
+        assert_eq!(r.category_explanation, "");
+    }
 }

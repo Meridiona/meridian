@@ -281,6 +281,9 @@ mod tests {
     fn classification(session_id: i64) -> SessionClassification {
         SessionClassification {
             session_id,
+            category: "coding".into(),
+            category_confidence: 0.9,
+            category_explanation: "VS Code, cargo build in terminal".into(),
             task_key: Some("KAN-1".into()),
             confidence: 0.9,
             routing: "queue".into(),
@@ -422,6 +425,9 @@ mod tests {
         let session_id = seed_session(&pool).await;
         let r = SessionClassification {
             session_id,
+            category: "coding".into(),
+            category_confidence: 0.9,
+            category_explanation: "VS Code, cargo build in terminal".into(),
             task_key: Some("KAN-42".to_string()),
             confidence: 0.87,
             routing: "auto".to_string(),
@@ -434,8 +440,9 @@ mod tests {
         };
         update_session_task(&pool, &r).await.unwrap();
 
-        let row = sqlx::query_as::<_, (String, String, f64, String)>(
-            "SELECT task_key, task_method, task_confidence, task_session_type
+        let row = sqlx::query_as::<_, (String, String, f64, String, String, String, f64, String)>(
+            "SELECT task_key, task_method, task_confidence, task_session_type,
+                    category, category_method, confidence, category_explanation
              FROM app_sessions WHERE id = ?",
         )
         .bind(session_id)
@@ -446,6 +453,13 @@ mod tests {
         assert_eq!(row.1, "hermes_aiagent");
         assert!((row.2 - 0.87).abs() < 1e-9);
         assert_eq!(row.3, "task");
+        // Category is now produced by the MLX classifier (replaces the FM settler):
+        // update_session_task must persist it, its confidence + explanation, and
+        // stamp category_method='mlx'.
+        assert_eq!(row.4, "coding");
+        assert_eq!(row.5, "mlx");
+        assert!((row.6 - 0.9).abs() < 1e-9);
+        assert_eq!(row.7, "VS Code, cargo build in terminal");
     }
 
     #[tokio::test]
@@ -454,6 +468,9 @@ mod tests {
         let session_id = seed_session(&pool).await;
         let r = SessionClassification {
             session_id,
+            category: "coding".into(),
+            category_confidence: 0.9,
+            category_explanation: "VS Code, cargo build in terminal".into(),
             task_key: None,
             confidence: 0.1,
             routing: "skip".to_string(),
@@ -482,6 +499,9 @@ mod tests {
         let session_id = seed_session(&pool).await;
         let r = SessionClassification {
             session_id,
+            category: "coding".into(),
+            category_confidence: 0.9,
+            category_explanation: "VS Code, cargo build in terminal".into(),
             task_key: Some("KAN-1".to_string()),
             confidence: 0.9,
             routing: "auto".to_string(),

@@ -117,20 +117,6 @@ impl PmProviderConfig {
     }
 }
 
-/// Which LLM backend to use for session-to-task classification.
-#[derive(Clone, Debug)]
-pub enum LlmBackendConfig {
-    /// Apple Foundation Models via Swift FFI (macOS 26+, Apple Silicon only).
-    /// Zero setup for end users. Developers need: xcode-select --install
-    FoundationModels,
-    /// Any OpenAI-compatible HTTP server (e.g. Ollama at localhost:11434).
-    OpenAiCompat { base_url: String, model: String },
-    /// Anthropic Claude API (requires ANTHROPIC_API_KEY or LLM_API_KEY).
-    Claude { api_key: String, model: String },
-    /// LLM classification disabled — sessions are not mapped to tasks.
-    Disabled,
-}
-
 // ---------------------------------------------------------------------------
 // Top-level config
 // ---------------------------------------------------------------------------
@@ -141,8 +127,7 @@ pub struct Config {
     pub poll_interval_secs: u64,
     /// All configured PM providers. Empty = intelligence silently disabled.
     pub pm_providers: Vec<PmProviderConfig>,
-    pub llm_backend: LlmBackendConfig,
-    /// Whether to run hermes-based task classification after each ETL tick.
+    /// Whether to run MLX task classification after each ETL tick.
     /// CLASSIFICATION_ENABLED — default true
     pub classification_enabled: bool,
     /// Seconds to wait for the Python classification subprocess before killing it.
@@ -157,16 +142,10 @@ pub struct Config {
     /// Whether to classify sessions that existed before the first run.
     /// CLASSIFICATION_BACKFILL — default false (skip historical sessions)
     pub classification_backfill: bool,
-    /// Whether to re-categorize sessions that existed before the first run.
-    /// CATEGORY_BACKFILL — default false (skip historical sessions)
-    pub category_backfill: bool,
     /// Number of recent classified sessions included as temporal context in each prompt.
     /// CLASSIFICATION_CONTEXT_WINDOW — default 5
     pub classification_context_window: usize,
-    /// Which Python classifier subprocess to use.
-    /// CLASSIFIER_BACKEND — "hermes" (default) | "mlx"
-    pub classifier_backend: String,
-    /// Port the persistent MLX server listens on. Only used when CLASSIFIER_BACKEND=mlx.
+    /// Port the persistent MLX classifier server listens on.
     /// MLX_SERVER_PORT — default 7823
     pub mlx_server_port: u16,
     /// Whether to post Jira progress updates. Auto-enabled when JIRA_BASE_URL is set.
@@ -249,43 +228,6 @@ fn parse_providers() -> Vec<PmProviderConfig> {
         .collect()
 }
 
-fn parse_llm_backend() -> LlmBackendConfig {
-    let backend = std::env::var("LLM_BACKEND")
-        .unwrap_or_else(|_| {
-            if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-                "foundation".to_string()
-            } else {
-                "disabled".to_string()
-            }
-        })
-        .to_lowercase();
-
-    match backend.as_str() {
-        "foundation" | "apple" | "apple_intelligence" => LlmBackendConfig::FoundationModels,
-        "ollama" | "openai_compat" | "openai" => {
-            let base_url = std::env::var("LLM_BASE_URL")
-                .unwrap_or_else(|_| "http://localhost:11434".to_string());
-            let model = std::env::var("LLM_MODEL").unwrap_or_else(|_| "qwen2.5:3b".to_string());
-            LlmBackendConfig::OpenAiCompat { base_url, model }
-        }
-        "claude" | "anthropic" => {
-            let api_key = std::env::var("ANTHROPIC_API_KEY")
-                .or_else(|_| std::env::var("LLM_API_KEY"))
-                .unwrap_or_default();
-            if api_key.is_empty() {
-                eprintln!(
-                    "warning: LLM_BACKEND=claude but no ANTHROPIC_API_KEY set — using Disabled"
-                );
-                return LlmBackendConfig::Disabled;
-            }
-            let model = std::env::var("LLM_MODEL")
-                .unwrap_or_else(|_| "claude-haiku-4-5-20251001".to_string());
-            LlmBackendConfig::Claude { api_key, model }
-        }
-        _ => LlmBackendConfig::Disabled,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Config::from_env
 // ---------------------------------------------------------------------------
@@ -309,12 +251,6 @@ impl Config {
     /// Linear provider (required):
     ///   LINEAR_API_KEY
     ///   LINEAR_TEAM_IDS     — optional comma-separated filter
-    ///
-    /// LLM backend:
-    ///   LLM_BACKEND           — 'foundation' (default on Apple Silicon) | 'ollama' | 'claude' | 'disabled'
-    ///   LLM_BASE_URL     — base URL for ollama (default: http://localhost:11434)
-    ///   LLM_MODEL        — model name for ollama or claude
-    ///   ANTHROPIC_API_KEY — API key for Claude backend
     pub fn from_env() -> Self {
         let screenpipe_db = std::env::var("SCREENPIPE_DB")
             .map(|v| expand_tilde(&v))
@@ -362,10 +298,6 @@ impl Config {
             .map(|v| matches!(v.to_lowercase().trim(), "1" | "true" | "yes" | "on"))
             .unwrap_or(false);
 
-        let category_backfill = std::env::var("CATEGORY_BACKFILL")
-            .map(|v| matches!(v.to_lowercase().trim(), "1" | "true" | "yes" | "on"))
-            .unwrap_or(false);
-
         let jira_update_interval_s = std::env::var("JIRA_UPDATE_INTERVAL_HOURS")
             .ok()
             .and_then(|v| v.parse::<f64>().ok())
@@ -387,10 +319,6 @@ impl Config {
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(5);
 
-        let classifier_backend = std::env::var("CLASSIFIER_BACKEND")
-            .unwrap_or_else(|_| "hermes".to_owned())
-            .to_lowercase();
-
         let mlx_server_port = std::env::var("MLX_SERVER_PORT")
             .ok()
             .and_then(|v| v.parse::<u16>().ok())
@@ -401,15 +329,12 @@ impl Config {
             meridian_db,
             poll_interval_secs,
             pm_providers: parse_providers(),
-            llm_backend: parse_llm_backend(),
             classification_enabled,
             classification_timeout_s,
             min_classification_duration_s,
             classification_services_dir,
             classification_backfill,
-            category_backfill,
             classification_context_window,
-            classifier_backend,
             mlx_server_port,
             jira_update_enabled,
             jira_update_interval_s,

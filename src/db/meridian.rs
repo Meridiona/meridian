@@ -454,32 +454,3 @@ pub async fn insert_gap(
     .context("insert_gap failed")?;
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Category update (post-ETL re-classification)
-// ---------------------------------------------------------------------------
-
-/// Overwrites the category and confidence for a completed session and marks it
-/// as re-classified by Foundation Models so the category settler doesn't retry it.
-pub async fn update_session_category(
-    pool: &SqlitePool,
-    session_id: i64,
-    category: &str,
-    confidence: f64,
-    explanation: Option<&str>,
-) -> anyhow::Result<()> {
-    sqlx::query(
-        "UPDATE app_sessions
-            SET category = ?1, confidence = ?2, category_explanation = ?3,
-                category_method = 'foundation_models'
-          WHERE id = ?4",
-    )
-    .bind(category)
-    .bind(confidence)
-    .bind(explanation)
-    .bind(session_id)
-    .execute(pool)
-    .await
-    .context("update_session_category failed")?;
-    Ok(())
-}

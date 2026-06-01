@@ -12,7 +12,7 @@ use meridian::db::screenpipe::open_screenpipe;
 use meridian::etl::run_etl;
 use meridian::intelligence::{
     check_classification_ready, mark_session_subprocess_error, run_coding_agent_classification,
-    run_fm_categorization, run_pm_sync, run_task_linking, TaskLinkOutcome,
+    run_pm_sync, run_task_linking, TaskLinkOutcome,
 };
 use meridian::observability;
 use tokio::signal::unix::{signal, SignalKind};
@@ -214,11 +214,9 @@ async fn main() -> Result<()> {
         Err(e) => tracing::error!("cleanup_incomplete_runs failed: {}", e),
     }
 
-    // 7b. MLX persistent-server mode: a background task drains the classification
-    //     queue without blocking the poll loop (each session can take ~16 s).
-    //     Non-MLX (hermes/subprocess): run_task_linking is called inline, sequentially,
-    //     matching the original flow on main.
-    let mlx_mode = initial_cfg.classifier_backend == "mlx";
+    // 7b. A background task drains the classification queue without blocking the
+    //     poll loop (each session can take ~16 s). The poll loop notifies it after
+    //     every ETL pass; it calls the persistent MLX classifier server.
     let etl_notify: Arc<Notify> = Arc::new(Notify::new());
     // Shared slot: main task clones the current tick span here so the linker task
     // can parent its run_task_linking spans under poll_tick / startup_tick.
@@ -230,27 +228,15 @@ async fn main() -> Result<()> {
     {
         let cfg = Config::from_env();
         let startup_tick = tracing::info_span!("startup_tick");
-        if mlx_mode {
-            *etl_tick_span.lock().unwrap() = Some(startup_tick.clone());
-        }
+        *etl_tick_span.lock().unwrap() = Some(startup_tick.clone());
         let _guard = startup_tick.enter();
         tracing::info!("running initial ETL pass");
         if let Err(e) = run_etl(&screenpipe, &meridian).await {
             tracing::error!("ETL run failed: {}", e);
         }
-        if mlx_mode {
-            etl_notify.notify_one();
-        }
+        etl_notify.notify_one();
         if let Err(e) = run_pm_sync(&meridian, &cfg).await {
             tracing::error!("intelligence run failed: {}", e);
-        }
-        if let Err(e) = run_fm_categorization(&meridian, &cfg).await {
-            tracing::error!("FM categorization run failed: {}", e);
-        }
-        if !mlx_mode {
-            if let Err(e) = run_task_linking(&meridian, &cfg).await {
-                tracing::error!("classification run failed: {}", e);
-            }
         }
     }
 
@@ -314,7 +300,7 @@ async fn main() -> Result<()> {
         });
     }
 
-    if mlx_mode {
+    {
         let mut shutdown_rx = shutdown_rx;
         let meridian_linker = meridian.clone();
         let notify_linker = etl_notify.clone();
@@ -425,8 +411,6 @@ async fn main() -> Result<()> {
             }
             tracing::info!("task linker loop stopped");
         });
-    } else {
-        drop(shutdown_rx);
     }
 
     // 8b. Poll loop — ETL, PM sync, and FM categorization on the configured interval.
@@ -448,28 +432,17 @@ async fn main() -> Result<()> {
                     "poll_tick",
                     poll_interval_secs = cfg.runtime.poll_interval_secs
                 );
-                if cfg.classifier_backend == "mlx" {
-                    *etl_tick_span.lock().unwrap() = Some(poll_tick.clone());
-                }
+                *etl_tick_span.lock().unwrap() = Some(poll_tick.clone());
                 let _guard = poll_tick.enter();
                 tracing::debug!("starting ETL tick");
                 if let Err(e) = run_etl(&screenpipe, &meridian).await {
                     tracing::error!("ETL run failed: {}", e);
                 }
-                if cfg.classifier_backend == "mlx" {
-                    etl_notify.notify_one();
-                }
-                if let Err(e) = run_pm_sync(&meridian, &cfg).await {
-                    tracing::error!("intelligence run failed: {}", e);
-                }
-                if let Err(e) = run_fm_categorization(&meridian, &cfg).await {
-                    tracing::error!("FM categorization run failed: {}", e);
-                }
-                if cfg.classifier_backend != "mlx" {
-                    if let Err(e) = run_task_linking(&meridian, &cfg).await {
-                        tracing::error!("classification run failed: {}", e);
-                    }
-                }
+                // Wake the background task linker to drain newly-created sessions.
+                etl_notify.notify_one();
+                // pm_tasks is refreshed on demand at its read boundaries
+                // (classification in run_task_linking, drafting in the worklog
+                // driver), so no timer-driven refresh is needed here.
             }
         }
     }
