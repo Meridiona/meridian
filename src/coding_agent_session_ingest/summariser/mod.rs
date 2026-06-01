@@ -221,10 +221,26 @@ pub async fn summarise_one(
             }
             Err(SummariserError::RateLimited(m)) => {
                 rate_limited = true;
+                // Log the primary failure even though MLX will likely save the row
+                // — otherwise a degraded-to-MLX state is invisible (this is exactly
+                // how the missing-PATH outage hid: every row silently became mlx).
+                tracing::warn!(
+                    row_id = row.id,
+                    engine = primary_source.as_str(),
+                    error = %m,
+                    "primary summariser rate-limited — falling back to MLX"
+                );
                 errors.push(format!("{} rate-limited: {m}", primary_source.as_str()));
                 break; // retrying a limit is pointless → fall through to MLX
             }
             Err(SummariserError::Failed(m)) => {
+                tracing::warn!(
+                    row_id = row.id,
+                    engine = primary_source.as_str(),
+                    attempt,
+                    error = %m,
+                    "primary summariser attempt failed"
+                );
                 errors.push(format!(
                     "{} attempt {attempt} failed: {m}",
                     primary_source.as_str()
@@ -237,6 +253,11 @@ pub async fn summarise_one(
     if summary.is_none() {
         match mlx::run_mlx(&stdin_text, cfg).await {
             Ok(s) => {
+                tracing::warn!(
+                    row_id = row.id,
+                    primary = primary_source.as_str(),
+                    "summarised via MLX fallback — primary engine unavailable"
+                );
                 summary = Some(s);
                 source = Source::Mlx;
             }
