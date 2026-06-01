@@ -68,6 +68,8 @@ cd meridian
 
 Builds the daemon + UI from source and registers the same services. Flags: `--no-ui`, `--dry-run`, `--no-daemon`, `--skip-permissions`, `--skip-env`, `--no-mlx` (use the hermes LLM-selector backend instead of the MLX server).
 
+Once installed, use `meridian dev …` to rebuild + restart after edits — see [Development](#development).
+
 ### Configure
 
 `./install.sh` walks you through credential prompts grouped by category:
@@ -220,18 +222,36 @@ python3 scripts/refresh_pm_tasks.py --db /path/to/meridian.db
 
 ## Development
 
+After cloning + `./install.sh`, the four services run under launchd (see [Run](#run)). When you change code, rebuild and restart **only what changed** with `meridian dev` — these build from your checkout (the daemon's launchd agent runs `target/release/meridian` via a symlink, so a release build is picked up in place). They are only available in a source checkout.
+
 ```bash
-# Format
-cargo fmt
+meridian dev daemon     # rebuild Rust + restart the daemon          ← backend loop
+meridian dev ui-watch   # Next.js hot-reload dev server (foreground) ← UI loop
+meridian dev ui         # rebuild prod bundle + restart dashboard (:3939)
+meridian dev mlx        # restart only the MLX server (reloads the model, ~30s)
+meridian dev            # build daemon + UI, restart them, start MLX/screenpipe if down
+meridian dev build      # build daemon + UI, no restart
+```
 
-# Lint (warnings are errors)
-cargo clippy -- -D warnings
+`meridian dev` and `meridian dev daemon` **leave the MLX model loaded** (fast). Only `meridian dev mlx` and `meridian restart` reload it — avoid `meridian restart` in a tight loop. Migrations apply automatically on daemon start.
 
-# Tests
-cargo test
+To test one stage without the background daemon (hits the same `~/.meridian/meridian.db`):
 
-# Install git hooks (runs fmt + clippy before each commit)
-bash scripts/setup-hooks.sh
+```bash
+cargo run --release -- worklog-status          # inspect the day's worklogs
+cargo run --release -- pm-worklog --day DATE    # draft worklogs for a day
+cargo run --release -- worklog-post-approved    # post approved worklogs now
+```
+
+> Don't run `cargo run` while the launchd daemon is up — two processes writing the DB. Stop it first (`meridian stop`) or just use `meridian dev daemon`.
+
+### Quality checks (enforced by git hooks)
+
+```bash
+cargo fmt                       # format (pre-commit checks --check)
+cargo clippy -- -D warnings     # lint — warnings are errors (pre-commit)
+meridian dev build && cargo test   # build everything + run tests (pre-push runs the full suite)
+bash scripts/setup-hooks.sh     # install the hooks after cloning
 ```
 
 ## Architecture

@@ -51,6 +51,20 @@ Commands:
   uninstall          Stop daemons and remove CLI symlinks
   --help | -h        Show this help
 EOF
+    # Dev commands only make sense (and only work) in a source checkout.
+    if [[ -f "${REPO_ROOT}/Cargo.toml" ]]; then
+        cat <<'EOF'
+
+Dev (source checkout — builds from this repo, MLX stays loaded):
+  dev                Build daemon + UI, restart them, start MLX/screenpipe if down
+  dev daemon         Rebuild Rust + restart only the daemon   ← main backend loop
+  dev ui             Rebuild UI + restart the dashboard (:3939)
+  dev ui-watch       Next.js hot-reload dev server (foreground)  ← main UI loop
+  dev mlx            Restart only the MLX server (reloads the model)
+  dev screenpipe     Restart only screenpipe
+  dev build          Build daemon + UI, no restart
+EOF
+    fi
 }
 
 # --- start ---
@@ -368,6 +382,73 @@ cmd_daemon_passthrough() {
     exec "$bin" "$@"
 }
 
+# --- dev (source checkout only) ---
+# Build from THIS repo and restart only what changed. The daemon's launchd plist
+# runs ~/.local/bin/meridian-daemon -> target/release/meridian, so a release
+# build is picked up in place. Gated on Cargo.toml: a prebuilt install (bundle at
+# ~/.meridian/app) has no source, so these are hidden/disabled there.
+_is_source_checkout() { [[ -f "${REPO_ROOT}/Cargo.toml" ]]; }
+
+# Restart a service to pick up a new build (no-op-with-warning if not running).
+_dev_kick() {
+    local label="$1"
+    if launchctl kickstart -k "${GUI_TARGET}/${label}" 2>/dev/null; then
+        ok "restarted ${label}"
+    else
+        warn "${label} not running — 'meridian start' or ./install.sh first"
+    fi
+}
+
+# Start a service ONLY if it isn't already up — never reloads a live process
+# (so the ~6 GB MLX model isn't reloaded when it's already serving).
+_dev_ensure() {
+    local label="$1"
+    if launchctl print "${GUI_TARGET}/${label}" >/dev/null 2>&1; then
+        ok "${label} already up (left as-is)"
+    elif [[ -f "${LAUNCH_AGENTS}/${label}.plist" ]]; then
+        set +e
+        launchctl enable "${GUI_TARGET}/${label}" 2>/dev/null
+        launchctl bootstrap "${GUI_TARGET}" "${LAUNCH_AGENTS}/${label}.plist" 2>/dev/null
+        set -e
+        info "started ${label}"
+    else
+        warn "${label} not installed — run ./install.sh"
+    fi
+}
+
+_dev_build_daemon() { info "building daemon (cargo --release)…"; ( cd "${REPO_ROOT}" && cargo build --release ); }
+_dev_build_ui()     { info "building UI (npm run build)…";       ( cd "${REPO_ROOT}/ui" && npm run build ); }
+
+cmd_dev() {
+    if ! _is_source_checkout; then
+        err "'meridian dev' needs a source checkout (no Cargo.toml at ${REPO_ROOT})."
+        err "This is a prebuilt install — use start / stop / restart / status / logs."
+        exit 1
+    fi
+    local target="${1:-all}"
+    case "$target" in
+        all)
+            # Build everything + bring up: rebuild & restart the cheap services,
+            # start MLX/screenpipe only if down (don't reload a live model).
+            _dev_build_daemon; _dev_build_ui
+            _dev_ensure "${LABEL_SCREENPIPE}"
+            _dev_ensure "${LABEL_MLX}"
+            _dev_kick   "${LABEL_DAEMON}"
+            _dev_kick   "${LABEL_UI}"
+            echo; info "dev up (MLX left loaded if it was already running)"; echo
+            cmd_status
+            ;;
+        build)      _dev_build_daemon; _dev_build_ui; ok "built (no restart)" ;;
+        daemon)     _dev_build_daemon; _dev_kick "${LABEL_DAEMON}" ;;
+        ui)         _dev_build_ui;     _dev_kick "${LABEL_UI}" ;;
+        ui-watch)   info "Next.js hot reload (Ctrl-C to stop)…"; ( cd "${REPO_ROOT}/ui" && exec npm run dev ) ;;
+        mlx)        _dev_kick "${LABEL_MLX}" ;;          # python — restart reloads the model
+        screenpipe) _dev_kick "${LABEL_SCREENPIPE}" ;;
+        *) err "unknown dev target: ${target}";
+           echo "  targets: all | build | daemon | ui | ui-watch | mlx | screenpipe"; exit 1 ;;
+    esac
+}
+
 case "$CMD" in
     start)            cmd_start ;;
     stop)             cmd_stop ;;
@@ -376,6 +457,7 @@ case "$CMD" in
     logs)             cmd_logs "$@" ;;
     doctor)           cmd_doctor ;;
     config)           cmd_config "$@" ;;
+    dev)              cmd_dev "$@" ;;
     uninstall)        cmd_uninstall ;;
     permissions)      cmd_permissions ;;
     worklog-status|pm-worklog) cmd_daemon_passthrough "$CMD" "$@" ;;
