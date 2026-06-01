@@ -1452,6 +1452,58 @@
         }
       },
       "notes": "[AUTOLOOP iter 14 FINAL] skill_v7 on b_generic. 28/40=70% — at threshold but DOWN from skill_v3's 72.5% (the 'minimal' bullet still cost 1 case). a_meridian also at 68% on v7 (no improvement). LOOP TERMINATING — dual-target architecturally infeasible with this model/strategy/prompt-engineering scope; skill_v3 remains best single-skill baseline."
+    },
+    {
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "trace_id": "4df131b7514e04265733aae371392112",
+      "results_file": "services/tests/evals/results/run_real_2026-05-28_direct_http_20260531T164541.json",
+      "date": "2026-05-31",
+      "experiment_name": null,
+      "experiment_config": null,
+      "strategy": "direct_http",
+      "model": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+      "model_declared": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+      "prompt_version": "unknown",
+      "prompt_path": "services/skills/activity/task-classifier/SKILL.md",
+      "dataset": "services/tests/evals/data/generated/goldens_real_2026-05-28_scoreable.json",
+      "dataset_name": "goldens_real_2026-05-28_scoreable.json",
+      "persona": "real_2026-05-28",
+      "server_url": "http://127.0.0.1:7823",
+      "session_text_cap": 2500,
+      "temperature": null,
+      "max_tokens": null,
+      "metrics": {
+        "total_goldens": 37,
+        "passed_both": 16,
+        "task_key_accuracy": 0.568,
+        "session_type_accuracy": 0.73,
+        "both_accuracy": 0.432,
+        "per_tier": {
+          "high": {
+            "total": 10,
+            "passed_both": 9,
+            "task_key_acc": 1.0,
+            "session_type_acc": 0.9,
+            "both_acc": 0.9
+          },
+          "medium": {
+            "total": 27,
+            "passed_both": 7,
+            "task_key_acc": 0.407,
+            "session_type_acc": 0.667,
+            "both_acc": 0.259
+          }
+        },
+        "latency": {
+          "total_s": 2360.635,
+          "avg_s": 63.801,
+          "min_s": 26.709,
+          "max_s": 77.098,
+          "p50_s": 61.385,
+          "p95_s": 75.571
+        }
+      },
+      "notes": "First eval against REAL hand-labeled goldens (2026-05-28, fragments merged back into whole blocks). 57% task_key / 73% session_type / 43% both. Striking high vs medium confidence split: high tier 9/10 both (100% key), medium 7/27 (41% key). Merging ETL fragments recovered KAN-136 task_key to 4/9 vs 0/13 in fragmented production. Dominant miss: KAN-136/140/141 work absorbed into KAN-139 via stale 'create golden dataset' transcript bleed matching KAN-139's title."
     }
   ],
   "observations": [
@@ -7014,6 +7066,426 @@
       "type_ok": false,
       "classifier_reasoning": "Active test file editing in tests/integration/auth-v2.test.ts and middleware implementation in src/middleware/session.ts directly implements the auth-service-v2 migration from JWT to session cookies. OCR shows test cases for session cookie validation and middleware implementation. No adjacent-evenue",
       "failure_class_id": "filepath-outweighs-branch"
+    },
+    {
+      "id": "obs-20260531-182",
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "seed_id": 5,
+      "tier": "medium",
+      "app_name": "DBeaver",
+      "expected": {
+        "task_key": "KAN-139",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "untracked",
+        "confidence": 0.7
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Active database inspection in DBeaver on meridian.db tables (app_sessions, pm_tasks, frames) with SQL filtering on video_chunk_id and timestamp; productive data exploration not tied to any candidate ticket → untracked.",
+      "failure_class_id": "dataset-analysis-missed-as-ticket-work"
+    },
+    {
+      "id": "obs-20260531-183",
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "seed_id": 7,
+      "tier": "medium",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "none",
+        "session_type": "overhead"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "untracked",
+        "confidence": 0.65
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "Session is Chrome with multiple tabs (GitHub PRs, Jira board, Confluence, mail) — no active editor or terminal visible. No direct execution evidence (no file edits, commands, commits). Adjacent evidence: PR v#34 mentions 'screenpipe frames' which aligns with KAN-140, and Jira board shows KAN-139/136",
+      "failure_class_id": "overhead-untracked-boundary"
+    },
+    {
+      "id": "obs-20260531-184",
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "seed_id": 14,
+      "tier": "medium",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "KAN-141",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "Active git commit on branch feat/golden-dataset-kan-139 with commit message directly referencing the ticket key. Screen shows 'fix(screenpipe): enhance get_frame_full_texts to fallback on accessibility_text when full_text is NULL' which aligns with the ticket's intent to create a golden dataset for ",
+      "failure_class_id": "branch-name-locks-classification"
+    },
+    {
+      "id": "obs-20260531-185",
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "seed_id": 23,
+      "tier": "medium",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "KAN-141",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "User explicitly asked to create a golden dataset for task classification, which matches KAN-139's title exactly. Active coding session in Code (VS Code) with meridian project open, Claude Code windows for research/implementation, and terminal commands visible. Direct execution evidence on the ticket",
+      "failure_class_id": "stale-transcript-bleed-as-work"
+    },
+    {
+      "id": "obs-20260531-186",
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "seed_id": 28,
+      "tier": "medium",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "KAN-136",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "User explicitly requests help creating a golden dataset for task classification in the project. The session shows Claude Code (AI coding assistant) with meridian project context, matching KAN-139 title exactly. Active conversation about dataset creation directly implements the ticket deliverable.",
+      "failure_class_id": "stale-transcript-bleed-as-work"
+    },
+    {
+      "id": "obs-20260531-187",
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "seed_id": 46,
+      "tier": "medium",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "KAN-136",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "User explicitly asked to create a golden dataset for task classification in the terminal. This matches KAN-139 title exactly. Active terminal command execution + direct request alignment → high confidence task.",
+      "failure_class_id": "stale-transcript-bleed-as-work"
+    },
+    {
+      "id": "obs-20260531-188",
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "seed_id": 51,
+      "tier": "medium",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "KAN-136",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Google Chrome session showing OpenObserve trace details page (localhost:5080) with trace_id d42627dc895d91f503b17cb974564161. This is a monitoring/observability dashboard view, not active code editing. The user is observing traces, not producing artifacts. Per App-Class Hard Rules, browser-based PM/",
+      "failure_class_id": "pessimism-bias"
+    },
+    {
+      "id": "obs-20260531-189",
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "seed_id": 76,
+      "tier": "medium",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "KAN-136",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.9
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "User explicitly requested to create a golden dataset for task classification in the project, which directly matches KAN-139 title. Active coding session in VS Code with Claude Code open for assistance, working on meridian project files. Direct execution evidence on the ticket deliverable.",
+      "failure_class_id": "stale-transcript-bleed-as-work"
+    },
+    {
+      "id": "obs-20260531-190",
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "seed_id": 77,
+      "tier": "medium",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "KAN-136",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "KAN-136",
+        "session_type": "untracked",
+        "confidence": 0.75
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "Session shows active research on OpenObserve traces (localhost:5080) with query editor focused on trace spans and latency metrics. However, the category is 'communication' (0.9) and the user is also viewing Gmail inbox with meeting invites for 'Microsoft Build All XM'. The recent work context shows ",
+      "failure_class_id": "pessimism-bias"
+    },
+    {
+      "id": "obs-20260531-191",
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "seed_id": 79,
+      "tier": "medium",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "KAN-136",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "KAN-136",
+        "session_type": "untracked",
+        "confidence": 0.6
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "Session shows OpenObserve traces dashboard with meridian-rust and meridian-ui spans, but no active editing or direct execution evidence. Previous sessions (06:10-06:29) were on KAN-136 with active coding and Chrome research, but this session is purely observational browsing. Adjacent evidence cap (0",
+      "failure_class_id": "pessimism-bias"
+    },
+    {
+      "id": "obs-20260531-192",
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "seed_id": 87,
+      "tier": "medium",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "KAN-141",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "KAN-136",
+        "session_type": "untracked",
+        "confidence": 0.75
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "Session shows Google Chrome with app.confident-ai.com onboarding and karpathy/autoresearch tabs. Recent context (last 5 sessions) shows active work on KAN-136 (OpenObserve traces/debug) in Code and Chrome. However, current session is purely onboarding a new AI testing tool (Confident AI) with no app",
+      "failure_class_id": "pessimism-bias"
+    },
+    {
+      "id": "obs-20260531-193",
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "seed_id": 95,
+      "tier": "medium",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "KAN-141",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "User explicitly requested help creating a golden dataset for task classification in the project. The session shows active coding in VS Code with meridian project files open. The window title 'Fix CI failure and update PR description' suggests related work. The user's request directly matches KAN-139",
+      "failure_class_id": "stale-transcript-bleed-as-work"
+    },
+    {
+      "id": "obs-20260531-194",
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "seed_id": 96,
+      "tier": "medium",
+      "app_name": "Google Chrome",
+      "expected": {
+        "task_key": "KAN-140",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "App-class hard rule fires: GitHub PR review page (github.com/Meridiona/meridian/pull/39) with user leaving review comments. Even though PR title cites a ticket (KAN-136), the work being reviewed is already complete. This is meta-work, not task execution. No active editing evidence in this session.",
+      "failure_class_id": "pessimism-bias"
+    },
+    {
+      "id": "obs-20260531-195",
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "seed_id": 97,
+      "tier": "medium",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "KAN-136",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.9
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "User explicitly requested 'help me create golden dataset for task classification in this project' in Claude Code window, which directly matches KAN-139 title 'Create golden dataset for task classification'. Active coding session in VS Code with Claude Code open, showing project file structure and E2",
+      "failure_class_id": "stale-transcript-bleed-as-work"
+    },
+    {
+      "id": "obs-20260531-196",
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "seed_id": 99,
+      "tier": "medium",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "KAN-141",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.9
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "User explicitly requests help creating a golden dataset for task classification in the project. This matches KAN-139's title exactly. Session shows active coding in VS Code with Claude Code open, indicating implementation work on the ticket. No adjacent-evidence trap here — this is direct execution.",
+      "failure_class_id": "stale-transcript-bleed-as-work"
+    },
+    {
+      "id": "obs-20260531-197",
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "seed_id": 119,
+      "tier": "medium",
+      "app_name": "DBeaver",
+      "expected": {
+        "task_key": "KAN-139",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "KAN-140",
+        "session_type": "untracked",
+        "confidence": 0.6
+      },
+      "key_ok": false,
+      "type_ok": false,
+      "classifier_reasoning": "DBeaver session shows database schema exploration (app_sessions, frames, pm_tasks tables visible). Recent context shows work on KAN-140 (screenpipe frames) and KAN-136 (observability/tracing) but no direct execution evidence for either. The session is database inspection which could be research for ",
+      "failure_class_id": "dataset-analysis-missed-as-ticket-work"
+    },
+    {
+      "id": "obs-20260531-198",
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "seed_id": 147,
+      "tier": "medium",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "KAN-140",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.85
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "Active editing of test files (test_stage3_classifier.py, test_mlx_classifier.py) and dataset files (.dataset.json, candidates_meridian.json) directly aligns with KAN-139's deliverable of building a golden dataset for the MLX task classifier. The terminal shows the user working on sessions 36-39 and ",
+      "failure_class_id": "stale-transcript-bleed-as-work"
+    },
+    {
+      "id": "obs-20260531-199",
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "seed_id": 161,
+      "tier": "medium",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "KAN-140",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.95
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "User explicitly requested 'help me create golden dataset for task classification in this project' in the terminal. This directly matches KAN-139 title 'Create golden dataset for task classification'. Active coding session in Code app with meridian project open, editing main.rs and related files. No ",
+      "failure_class_id": "stale-transcript-bleed-as-work"
+    },
+    {
+      "id": "obs-20260531-200",
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "seed_id": 163,
+      "tier": "medium",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "KAN-141",
+        "session_type": "task"
+      },
+      "actual": {
+        "task_key": "KAN-139",
+        "session_type": "task",
+        "confidence": 0.9
+      },
+      "key_ok": false,
+      "type_ok": true,
+      "classifier_reasoning": "User explicitly asked to create golden dataset for task classification, which matches KAN-139 title exactly. Active coding session in Code app editing test_mlx_classifier.py (25 window opens) and README.md (8 modifications). Direct execution evidence: user is working on the deliverable specified in ",
+      "failure_class_id": "stale-transcript-bleed-as-work"
+    },
+    {
+      "id": "obs-20260531-201",
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "seed_id": 167,
+      "tier": "high",
+      "app_name": "Arc",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "Arc browser session focused on Chrome Web Store browsing extensions (StayFocusd, Tab Manager, Boomerang, Otto, AI sidebar tools). No active coding, terminal commands, or file editing visible. This is pure extension research/browsing, which is overhead per app-class rules (browser research without a ",
+      "failure_class_id": "overhead-untracked-boundary"
+    },
+    {
+      "id": "obs-20260531-202",
+      "run_id": "real_2026-05-28_direct_http_20260531T164541",
+      "seed_id": 184,
+      "tier": "medium",
+      "app_name": "Code",
+      "expected": {
+        "task_key": "none",
+        "session_type": "untracked"
+      },
+      "actual": {
+        "task_key": "none",
+        "session_type": "overhead",
+        "confidence": 0.0
+      },
+      "key_ok": true,
+      "type_ok": false,
+      "classifier_reasoning": "App is Code but session is 1 minute of idle VS Code welcome page browsing with no active file editing or terminal commands; recent sessions show focused work on KAN-139/140/141 but this session is purely overhead navigation. No evidence of execution on any ticket.",
+      "failure_class_id": "overhead-untracked-boundary"
     }
   ],
   "failure_classes": [
@@ -7182,35 +7654,46 @@
         "a_meridian_direct_http_20260531T093125",
         "b_generic_direct_http_20260531T095212",
         "a_meridian_direct_http_20260531T101503",
-        "b_generic_direct_http_20260531T103518"
+        "b_generic_direct_http_20260531T103518",
+        "real_2026-05-28_direct_http_20260531T164541"
       ],
       "observed_in_seeds": [
         1,
+        2,
+        7,
         10,
+        13,
+        14,
+        16,
+        18,
         20,
+        21,
+        22,
+        23,
+        25,
         26,
+        28,
+        31,
         33,
         34,
         36,
         38,
         40,
         41,
+        42,
         43,
+        46,
         48,
         49,
-        13,
-        16,
-        18,
-        21,
-        22,
-        25,
-        28,
-        31,
-        2,
-        7,
-        42
+        76,
+        95,
+        97,
+        99,
+        147,
+        161,
+        163
       ],
-      "occurrence_count": 88,
+      "occurrence_count": 99,
       "proposed_prompt_rule": "Default to `untracked` or `overhead` when the evidence is *adjacent* rather than *direct*. Adjacent evidence (mentions, related reading, related infra, file-path overlap) is the most common failure mode for this classifier in production — bias toward 'I don't know' over confidently picking a ticket that the user is merely *near*. A confidence-calibration rule may also help: if any of {chat-mention, topical-adjacency, meta-file-edit} signals are present, cap confidence at 0.6 unless paired with direct execution evidence.",
       "status": "open",
       "resolved_in": null,
@@ -7225,15 +7708,17 @@
       "observed_in_runs": [
         "smoke_20260528T162251",
         "smoke_20260528T180202",
-        "a_meridian_direct_http_20260530T100236"
+        "a_meridian_direct_http_20260530T100236",
+        "real_2026-05-28_direct_http_20260531T164541"
       ],
       "observed_in_seeds": [
+        14,
+        20,
         34,
         36,
-        49,
-        20
+        49
       ],
-      "occurrence_count": 8,
+      "occurrence_count": 9,
       "highest_confidence": 0.95,
       "proposed_prompt_rule": "Branch name is a strong but not authoritative signal. When the active session content (file being edited, terminal commands, OCR text) clearly indicates a different ticket's scope than the branch name, prefer the in-session content. A branch named for one ticket may host opportunistic work for another (e.g., a developer fixes a separate issue mid-branch). The most-recent-action signal beats the branch-name signal when they disagree. Note the tension with `filepath-outweighs-branch` — the right rule weighs both signals and prefers the one most clearly tied to the *current* work in the session.",
       "status": "open",
@@ -7263,19 +7748,23 @@
       "observed_in_runs": [
         "smoke_20260528T162251",
         "smoke_20260528T180202",
-        "a_meridian_direct_http_20260530T100236"
+        "a_meridian_direct_http_20260530T100236",
+        "real_2026-05-28_direct_http_20260531T164541"
       ],
       "observed_in_seeds": [
+        5,
         11,
         42,
-        45
+        45,
+        119
       ],
-      "occurrence_count": 4,
+      "occurrence_count": 6,
       "direction": "false-negative",
       "proposed_prompt_rule": "When a user is producing the deliverable for an open ticket — by building test data the ticket asks for, querying/analyzing the product's own data when the ticket calls for that analysis, or debugging the eval pipeline whose construction IS the ticket — classify as `task` for the matching ticket. The output of the session IS the ticket deliverable. Distinguish from pure ops/admin queries (resource monitoring, schema migration) which remain `overhead`, and from research not tied to any open ticket which remains `untracked`.",
       "note": "Bidirectional tension with optimism-bias. Fixing optimism-bias too aggressively (e.g., 'always default to untracked when evidence is adjacent') risks worsening this class. Worth tracking jointly when revising SKILL.md.",
       "status": "open",
-      "resolved_in": null
+      "resolved_in": null,
+      "highest_confidence": 0.7
     },
     {
       "id": "pr-review-as-ticket-work",
@@ -7327,27 +7816,32 @@
         "a_meridian_direct_http_20260531T093125",
         "b_generic_direct_http_20260531T095212",
         "a_meridian_direct_http_20260531T101503",
-        "b_generic_direct_http_20260531T103518"
+        "b_generic_direct_http_20260531T103518",
+        "real_2026-05-28_direct_http_20260531T164541"
       ],
       "observed_in_seeds": [
-        41,
-        47,
+        2,
+        3,
+        7,
+        9,
         12,
-        42,
+        15,
         22,
         33,
         36,
-        3,
-        15,
+        41,
+        42,
         45,
-        9,
-        2
+        47,
+        167,
+        184
       ],
-      "occurrence_count": 75,
+      "occurrence_count": 78,
       "priority": "lower",
       "proposed_prompt_rule": "Sharpen the overhead-vs-untracked distinction. Overhead = communication (chat, email, calls), admin (planning, scheduling, expense reporting), or context-switching meta-activity. Untracked = focused work-like activity that doesn't fit any open ticket — system inspection (Activity Monitor), exploration, research, learning, maintenance. When in doubt: 'is this productive activity that just isn't ticketed?' → untracked. 'Is this between-work or about-work?' → overhead.",
       "status": "open",
-      "resolved_in": null
+      "resolved_in": null,
+      "highest_confidence": 0.65
     },
     {
       "id": "meeting-as-ticket-work",
@@ -7429,7 +7923,8 @@
       "title": "Classifier under-labels strong evidence as weak — misses real task work",
       "description": "The mirror image of optimism-bias. The stage-1 extractor labels evidence as weak/none when there IS strong implementation evidence (Code editor open on the ticket's files, ticket_mentions present), and the classifier then misses the task assignment. First observed in run b_generic_extract_then_classify_20260530T190121 where 6/22 failures were Code/Chrome sessions with PROJ-* tickets that should have classified as task but came back as task_key=none/overhead.",
       "observed_in_runs": [
-        "b_generic_extract_then_classify_20260530T190121"
+        "b_generic_extract_then_classify_20260530T190121",
+        "real_2026-05-28_direct_http_20260531T164541"
       ],
       "observed_in_seeds": [
         3,
@@ -7437,15 +7932,21 @@
         10,
         17,
         22,
-        24
+        24,
+        51,
+        77,
+        79,
+        87,
+        96
       ],
-      "occurrence_count": 6,
+      "occurrence_count": 11,
       "proposed_prompt_rule": "Strengthen the evidence_strength_for_implementation rubric in the EXTRACT system prompt: when ANY of (file path includes ticket-key fragment, branch_name matches ticket_key, active editor focus on .ts/.py/.rs files with code visible, terminal commands tied to ticket workflow) is present, evidence_strength MUST be 'strong'. Currently the rubric only escalates to 'strong' on the strict 'editor open on branch AND active editing' combination, leaving too many genuine task sessions in the 'weak' bucket.",
       "status": "open",
       "resolved_in": null,
       "priority": "highest",
       "rationale": "Strategy-specific architectural defect — opposite of optimism-bias. If unaddressed, ETC trades one bias for another. Higher priority than optimism-bias because it manifests on the EASY tier (clear-cut task work) while optimism-bias hits decoy tiers.",
-      "direction": "false-negative"
+      "direction": "false-negative",
+      "highest_confidence": 0.75
     },
     {
       "id": "stage1-json-parse-failure",
@@ -7495,6 +7996,35 @@
       "priority": "high",
       "rationale": "Second-largest source of failures. Same root cause as stage1-json-parse-failure but downstream.",
       "note": "Affects ExtractThenClassifyStrategy only."
+    },
+    {
+      "id": "stale-transcript-bleed-as-work",
+      "title": "Stale captured conversation bleeds into session_text and is read as current work",
+      "description": "On real screen captures the session text often carries a PRIOR Claude Code / terminal conversation (here an old 'create golden dataset for task classification' exchange) that does not reflect the current block's actual work. The classifier latches onto that bled prose, keyword-matches it to a candidate ticket's TITLE (KAN-139), and assigns that ticket with high confidence even when window_titles and the live activity point to a different ticket (KAN-136/140/141).",
+      "observed_in_runs": [
+        "real_2026-05-28_direct_http_20260531T164541"
+      ],
+      "observed_in_seeds": [
+        23,
+        28,
+        46,
+        76,
+        95,
+        97,
+        99,
+        147,
+        161,
+        163
+      ],
+      "occurrence_count": 10,
+      "proposed_prompt_rule": "The captured session text may contain stale conversation from an earlier task that bled into this capture window. Do NOT treat a request or instruction phrase that merely matches a candidate ticket's TITLE as evidence of work on that ticket. Weight live signals — window_titles, the file/branch currently in focus, terminal commands within this block — over prose that only restates a ticket title. If the strongest evidence for a ticket is that the session text echoes its title, lower confidence and prefer the ticket supported by window_titles.",
+      "status": "open",
+      "resolved_in": null,
+      "highest_confidence": 0.95,
+      "priority": "highest",
+      "direction": "false-positive",
+      "rationale": "Dominant real-data failure (10/21 in the first real-session eval) and the mechanism behind KAN-136/140/141 work being absorbed into KAN-139.",
+      "note": "Coupled to the vscode_project() fragmentation bug and wrong-pane capture (see project_real_session_eval memory): when blocks are whole and window_titles carry the real ticket, the bled title-match should lose. Likely needs a capture/freshness fix beyond the prompt rule. Overlaps branch-name-locks-classification (seed 14 cites the branch instead)."
     }
   ]
 }
