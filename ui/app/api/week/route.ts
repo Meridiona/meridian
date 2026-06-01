@@ -39,10 +39,16 @@ export async function GET() {
       const mmdd = d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })
       const { start, end } = localDayRange(dateStr)
 
+      // Foreground stream only. The coding-agent transcript overlay
+      // (claude_session_uuid IS NOT NULL) records the same wall-clock time a
+      // second time, so including it would double-count each day's total and
+      // inflate the `coding` band. Foreground sessions never overlap each other,
+      // so SUM here already equals the day's true union.
       const rows = db.prepare(`
         SELECT category, SUM(duration_s) AS dur_s
         FROM app_sessions
         WHERE started_at >= ? AND started_at < ?
+          AND claude_session_uuid IS NULL
         GROUP BY category
       `).all(start, end) as Array<{ category: string; dur_s: number }>
 
