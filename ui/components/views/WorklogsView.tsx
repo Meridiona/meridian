@@ -1,0 +1,283 @@
+// meridian — normalises screenpipe activity into structured app sessions
+'use client'
+
+import { useCallback, useEffect, useState } from 'react'
+import { fmtDur, fmtClock, TaskKey, ConfidenceRing } from '@/components/atoms'
+import type { WorklogItem, WorklogsResponse } from '@/app/api/worklogs/route'
+
+// Local YYYY-MM-DD for `d` days from today (negative = past).
+function dayString(offsetDays = 0): string {
+  const d = new Date()
+  d.setDate(d.getDate() + offsetDays)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+const STATE_STYLE: Record<string, { label: string; color: string }> = {
+  drafted:  { label: 'Draft',    color: 'var(--ink-3)' },
+  approved: { label: 'Approved', color: 'var(--accent)' },
+  posted:   { label: 'Posted',   color: '#2F9E44' },
+  skipped:  { label: 'Dismissed', color: 'var(--ink-4)' },
+  failed:   { label: 'Failed',   color: '#E03131' },
+}
+
+export default function WorklogsView() {
+  const [day, setDay] = useState<string>(dayString(0))
+  const [items, setItems] = useState<WorklogItem[]>([])
+  const [counts, setCounts] = useState<Record<string, number>>({})
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState<number | null>(null)
+
+  const load = useCallback((d: string) => {
+    fetch(`/api/worklogs?day=${d}`)
+      .then(r => r.json())
+      .then((res: WorklogsResponse) => { setItems(res.items ?? []); setCounts(res.counts ?? {}); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [])
+
+  useEffect(() => {
+    setLoading(true)
+    load(day)
+    // Poll so approved → posted transitions (driven by the daemon sweep) show up.
+    const id = setInterval(() => load(day), 30_000)
+    return () => clearInterval(id)
+  }, [day, load])
+
+  async function mutate(id: number, fn: () => Promise<Response>) {
+    setBusy(id)
+    try {
+      const res = await fn()
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}))
+        alert(e.error ?? 'Action failed')
+      }
+    } finally {
+      setBusy(null)
+      load(day)
+    }
+  }
+
+  const act = (id: number, action: 'approve' | 'reject' | 'unapprove') =>
+    mutate(id, () => fetch(`/api/worklogs/${id}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    }))
+
+  const saveEdit = (id: number, summary: string) =>
+    mutate(id, () => fetch(`/api/worklogs/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ summary }),
+    }))
+
+  const draftedIds = items.filter(i => i.state === 'drafted' && i.summary.trim()).map(i => i.id)
+  async function approveAll() {
+    setBusy(-1)
+    try { await Promise.all(draftedIds.map(id => fetch(`/api/worklogs/${id}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'approve' }),
+    }))) } finally { setBusy(null); load(day) }
+  }
+
+  const isToday = day === dayString(0)
+
+  return (
+    <div className="space-y-8">
+      <header className="rise flex items-end justify-between gap-4">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Worklog review</p>
+          <h1 className="font-serif text-[56px] leading-[1] tracking-tight mt-1" style={{ color: 'var(--ink)' }}>
+            Approve before it posts
+          </h1>
+          <p className="mt-3 text-[14px] max-w-prose" style={{ color: 'var(--ink-2)' }}>
+            Nothing reaches Jira until you approve it. Edit the comment if it&apos;s off, then approve —
+            the daemon posts approved worklogs within a minute.
+          </p>
+        </div>
+        <div className="text-right shrink-0">
+          <div className="flex items-center gap-1 justify-end">
+            <button onClick={() => setDay(d => shiftDay(d, -1))}
+              className="px-2 py-1 rounded-md text-[13px]" style={{ color: 'var(--ink-3)', border: '1px solid var(--rule-2)' }}>←</button>
+            <span className="font-mono tnum text-[12px] px-2" style={{ color: 'var(--ink-2)' }}>{isToday ? 'Today' : day}</span>
+            <button onClick={() => setDay(d => shiftDay(d, 1))} disabled={isToday}
+              className="px-2 py-1 rounded-md text-[13px]" style={{ color: isToday ? 'var(--ink-4)' : 'var(--ink-3)', border: '1px solid var(--rule-2)' }}>→</button>
+          </div>
+          <p className="text-[11px] mt-2" style={{ color: 'var(--ink-3)' }}>
+            {(counts.drafted ?? 0)} draft · {(counts.approved ?? 0)} approved · {(counts.posted ?? 0)} posted
+          </p>
+        </div>
+      </header>
+
+      {draftedIds.length > 0 && (
+        <div className="flex items-center gap-3">
+          <button onClick={approveAll} disabled={busy === -1}
+            className="px-3 py-1.5 rounded-md text-[12px] transition-colors"
+            style={{ background: 'var(--accent)', color: 'var(--paper)' }}>
+            {busy === -1 ? 'Approving…' : `Approve all ${draftedIds.length} drafts`}
+          </button>
+          <span className="text-[11px]" style={{ color: 'var(--ink-4)' }}>posts everything you haven&apos;t edited away</span>
+        </div>
+      )}
+
+      {loading ? (
+        <p className="text-[13px]" style={{ color: 'var(--ink-3)' }}>Loading…</p>
+      ) : items.length === 0 ? (
+        <div className="py-16 text-center rounded-xl border" style={{ borderColor: 'var(--rule)', background: 'var(--surface)' }}>
+          <p className="font-serif italic text-[24px]" style={{ color: 'var(--ink-2)' }}>No worklogs {isToday ? 'yet today' : 'this day'}.</p>
+          <p className="text-[12px] mt-2" style={{ color: 'var(--ink-3)' }}>
+            They appear here as the daemon drafts them, hour by hour.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {items.map(w => (
+            <WorklogCard key={w.id} w={w} busy={busy === w.id}
+              onApprove={() => act(w.id, 'approve')}
+              onReject={() => act(w.id, 'reject')}
+              onUnapprove={() => act(w.id, 'unapprove')}
+              onSave={(s) => saveEdit(w.id, s)} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function shiftDay(d: string, by: number): string {
+  const dt = new Date(`${d}T12:00:00`)
+  dt.setDate(dt.getDate() + by)
+  const today = new Date(); today.setHours(12, 0, 0, 0)
+  if (dt > today) return d // never go past today
+  const y = dt.getFullYear(); const m = String(dt.getMonth() + 1).padStart(2, '0'); const day = String(dt.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function WorklogCard({ w, busy, onApprove, onReject, onUnapprove, onSave }: {
+  w: WorklogItem
+  busy: boolean
+  onApprove: () => void
+  onReject: () => void
+  onUnapprove: () => void
+  onSave: (summary: string) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(w.summary)
+  const [showEvidence, setShowEvidence] = useState(false)
+  const st = STATE_STYLE[w.state] ?? { label: w.state, color: 'var(--ink-3)' }
+  const posted = w.state === 'posted'
+
+  useEffect(() => { setDraft(w.summary) }, [w.summary])
+
+  return (
+    <div className="rounded-xl border overflow-hidden" style={{ borderColor: 'var(--rule)', background: 'var(--surface)' }}>
+      <div className="px-5 py-4">
+        {/* meta row */}
+        <div className="flex items-center gap-3">
+          <TaskKey keyId={w.task_key} />
+          <span className="font-mono tnum text-[11px]" style={{ color: 'var(--ink-3)' }}>{fmtClock(w.window_start)}</span>
+          <span className="text-[11px]" style={{ color: 'var(--ink-4)' }}>·</span>
+          <span className="font-mono tnum text-[11px]" style={{ color: 'var(--ink-3)' }}>{fmtDur(w.time_spent_seconds)}</span>
+          <ConfidenceRing value={w.confidence} />
+          {w.edited && <span className="text-[10px] uppercase tracking-[0.12em]" style={{ color: 'var(--ink-4)' }}>edited</span>}
+          <span className="ml-auto text-[10px] uppercase tracking-[0.14em] px-2 py-0.5 rounded"
+            style={{ color: st.color, border: `1px solid ${st.color}` }}>{st.label}</span>
+        </div>
+
+        {/* risk flags */}
+        {w.risk_flags.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mt-2">
+            {w.risk_flags.map(f => (
+              <span key={f} className="text-[10px] px-1.5 py-0.5 rounded font-mono"
+                style={{ background: 'var(--tint)', color: '#B45309', border: '1px solid var(--rule-2)' }}>⚑ {f}</span>
+            ))}
+          </div>
+        )}
+
+        {/* comment — editable */}
+        <div className="mt-3">
+          {editing && !posted ? (
+            <div>
+              <textarea value={draft} onChange={e => setDraft(e.target.value)} rows={4}
+                className="w-full px-3 py-2 rounded-md text-[13px] leading-relaxed"
+                style={{ background: 'var(--surface-2)', border: '1px solid var(--rule-2)', color: 'var(--ink)', outline: 'none', resize: 'vertical' }} />
+              <div className="flex items-center gap-2 mt-2">
+                <button onClick={() => { onSave(draft); setEditing(false) }} disabled={busy}
+                  className="px-3 py-1 rounded-md text-[12px]" style={{ background: 'var(--ink)', color: 'var(--paper)' }}>Save</button>
+                <button onClick={() => { setDraft(w.summary); setEditing(false) }}
+                  className="px-3 py-1 rounded-md text-[12px]" style={{ color: 'var(--ink-3)', border: '1px solid var(--rule-2)' }}>Cancel</button>
+                <span className="text-[10px]" style={{ color: 'var(--ink-4)' }}>saving re-drafts an approved worklog</span>
+              </div>
+            </div>
+          ) : (
+            <p className="text-[13px] leading-relaxed whitespace-pre-wrap" style={{ color: w.summary ? 'var(--ink)' : 'var(--ink-4)' }}>
+              {w.summary || '(empty — nothing to post; edit to add a comment)'}
+            </p>
+          )}
+        </div>
+
+        {/* post error */}
+        {w.last_post_error && (
+          <p className="text-[11px] mt-2 font-mono" style={{ color: '#E03131' }}>post error: {w.last_post_error}</p>
+        )}
+        {posted && w.posted_worklog_id && (
+          <p className="text-[11px] mt-2" style={{ color: '#2F9E44' }}>✓ posted to Jira · worklog {w.posted_worklog_id}</p>
+        )}
+
+        {/* evidence toggle */}
+        {(w.bullets.length > 0 || w.next_steps.length > 0) && (
+          <button onClick={() => setShowEvidence(v => !v)} className="text-[11px] mt-3" style={{ color: 'var(--ink-3)' }}>
+            {showEvidence ? '− hide' : '+ show'} supporting detail
+          </button>
+        )}
+        {showEvidence && (
+          <div className="mt-2 pl-3 border-l space-y-1" style={{ borderColor: 'var(--rule-2)' }}>
+            {w.bullets.map((b, i) => (
+              <p key={i} className="text-[12px]" style={{ color: 'var(--ink-2)' }}>
+                <span className="text-[10px] uppercase tracking-[0.1em] mr-1.5" style={{ color: 'var(--ink-4)' }}>{b.kind}</span>
+                {b.text}
+              </p>
+            ))}
+            {w.next_steps.length > 0 && (
+              <p className="text-[12px] pt-1" style={{ color: 'var(--ink-3)' }}>
+                <span className="text-[10px] uppercase tracking-[0.1em] mr-1.5" style={{ color: 'var(--ink-4)' }}>next</span>
+                {w.next_steps.join(' · ')}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* actions */}
+        {!posted && (
+          <div className="flex items-center gap-2 mt-4">
+            {w.state !== 'approved' ? (
+              <button onClick={onApprove} disabled={busy || !w.summary.trim()}
+                className="px-3 py-1.5 rounded-md text-[12px] transition-colors"
+                style={{ background: w.summary.trim() ? 'var(--accent)' : 'var(--rule-2)', color: 'var(--paper)' }}>
+                Approve → post
+              </button>
+            ) : (
+              <button onClick={onUnapprove} disabled={busy}
+                className="px-3 py-1.5 rounded-md text-[12px]"
+                style={{ color: 'var(--ink-2)', border: '1px solid var(--rule-2)' }}>
+                Hold (un-approve)
+              </button>
+            )}
+            {!editing && (
+              <button onClick={() => setEditing(true)} disabled={busy}
+                className="px-3 py-1.5 rounded-md text-[12px]" style={{ color: 'var(--ink-2)', border: '1px solid var(--rule-2)' }}>
+                Edit
+              </button>
+            )}
+            {w.state !== 'skipped' && (
+              <button onClick={onReject} disabled={busy}
+                className="px-3 py-1.5 rounded-md text-[12px] ml-auto" style={{ color: 'var(--ink-3)' }}>
+                Dismiss
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
