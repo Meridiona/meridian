@@ -35,7 +35,7 @@ pub async fn run(cfg: &Config, pool: Option<&SqlitePool>) -> Report {
                 // proxies (blank rate → Screen Recording, a11y share → Accessibility).
                 checks.push(frame_freshness(p).await);
                 checks.push(blank_text_rate(p).await);
-                checks.push(accessibility_share(p).await);
+                checks.extend(accessibility_checks(p).await);
             } else {
                 // Fresh install / nothing captured: the runtime proxies are blind,
                 // so surface the permission prerequisite explicitly.
@@ -226,44 +226,111 @@ async fn blank_text_rate(pool: &SqlitePool) -> Check {
     }
 }
 
-/// Share of recent frames whose text came from the accessibility tree. A near-
-/// zero share is the content-free proxy for Accessibility permission off (or an
-/// Electron-heavy workload, e.g. Cursor/VS Code, that returns an empty a11y
-/// tree). Warn only — OCR-only capture is degraded, not dead.
-async fn accessibility_share(pool: &SqlitePool) -> Check {
-    let row = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT COUNT(*),
+/// Per-app accessibility-tree yield. Accessibility *permission* is global (all
+/// apps lose a11y if it is off), but a11y *yield* is per-app — some apps simply
+/// expose little tree even with permission granted. A single blended average
+/// conflates the two: an app-mix heavy in low-yield apps reads as "permission
+/// off". So we split it:
+///   - permission verdict = "is ANY well-sampled app yielding healthy a11y?"
+///     (a robust oracle, immune to app mix); critical only if none is.
+///   - a per-app breakdown (Info) so the operator sees which apps are OCR-only
+///     — that is itself a fault-attribution signal (those sessions are degraded
+///     input to the classifier, not model errors).
+const A11Y_HEALTHY_PCT: f64 = 30.0;
+const A11Y_MIN_APP_FRAMES: i64 = 20;
+const A11Y_RECENT_WINDOW: i64 = 2000;
+const A11Y_MAX_APPS_SHOWN: usize = 8;
+
+async fn accessibility_checks(pool: &SqlitePool) -> Vec<Check> {
+    let rows = sqlx::query_as::<_, (String, i64, i64)>(
+        "SELECT app_name, COUNT(*) AS n,
                 COALESCE(SUM(CASE WHEN COALESCE(text_source, '') = 'accessibility'
-                                  THEN 1 ELSE 0 END), 0)
-         FROM (SELECT text_source FROM frames ORDER BY id DESC LIMIT ?1)",
+                                  THEN 1 ELSE 0 END), 0) AS a11y
+         FROM (SELECT app_name, text_source FROM frames ORDER BY id DESC LIMIT ?1)
+         WHERE app_name IS NOT NULL AND app_name != ''
+         GROUP BY app_name
+         HAVING n >= ?2
+         ORDER BY n DESC",
     )
-    .bind(RECENT_SAMPLE)
-    .fetch_one(pool)
+    .bind(A11Y_RECENT_WINDOW)
+    .bind(A11Y_MIN_APP_FRAMES)
+    .fetch_all(pool)
     .await;
-    match row {
-        Ok((0, _)) => Check::ok("screenpipe.a11y_tree", "L1", "no recent frames sampled"),
-        Ok((total, a11y)) => {
-            let pct = 100.0 * a11y as f64 / total as f64;
-            let detail = format!("{a11y}/{total} recent frames via a11y ({pct:.0}%)");
-            if pct < 5.0 {
-                Check::warn(
-                    "screenpipe.a11y_tree",
-                    "L1",
-                    format!("{detail} — Accessibility permission off or Electron-heavy apps"),
-                )
-                .with_remedy(
-                    "grant Accessibility to screenpipe (expected to be low for Electron apps like Cursor/VS Code)",
-                )
-            } else {
-                Check::ok("screenpipe.a11y_tree", "L1", detail)
-            }
+
+    let rows = match rows {
+        Ok(r) => r,
+        Err(e) => {
+            return vec![Check::warn(
+                "screenpipe.a11y",
+                "L1",
+                format!("could not sample per-app a11y ({e})"),
+            )]
         }
-        Err(e) => Check::warn(
-            "screenpipe.a11y_tree",
+    };
+    if rows.is_empty() {
+        return vec![Check::ok(
+            "screenpipe.a11y",
             "L1",
-            format!("could not sample text_source ({e})"),
-        ),
+            "no app with a meaningful recent sample",
+        )];
     }
+
+    let share = |n: i64, a11y: i64| {
+        if n > 0 {
+            100.0 * a11y as f64 / n as f64
+        } else {
+            0.0
+        }
+    };
+    let (best_app, best_pct) = rows
+        .iter()
+        .map(|(app, n, a)| (app.as_str(), share(*n, *a)))
+        .fold(("", 0.0_f64), |acc, x| if x.1 > acc.1 { x } else { acc });
+
+    // Permission verdict: driven by the best-yielding app, not the average.
+    let verdict = if best_pct >= A11Y_HEALTHY_PCT {
+        Check::ok(
+            "screenpipe.a11y_permission",
+            "L1",
+            format!("Accessibility granted — best: {best_app} {best_pct:.0}%"),
+        )
+    } else if best_pct > 0.0 {
+        Check::warn(
+            "screenpipe.a11y_permission",
+            "L1",
+            format!("weak a11y across all apps (best {best_app} {best_pct:.0}%) — Accessibility may be off"),
+        )
+        .with_remedy("grant Accessibility to screenpipe in System Settings, then restart it")
+    } else {
+        Check::critical(
+            "screenpipe.a11y_permission",
+            "L1",
+            "no app is yielding any a11y — Accessibility permission likely off",
+        )
+        .with_remedy(
+            "System Settings ▸ Privacy & Security ▸ Accessibility ▸ enable screenpipe, then restart it",
+        )
+    };
+
+    // Per-app breakdown (most-used first) — diagnostic, never a fault.
+    let parts: Vec<String> = rows
+        .iter()
+        .take(A11Y_MAX_APPS_SHOWN)
+        .map(|(app, n, a)| format!("{app} {:.0}%", share(*n, *a)))
+        .collect();
+    let more = rows.len().saturating_sub(A11Y_MAX_APPS_SHOWN);
+    let suffix = if more > 0 {
+        format!(" (+{more} more)")
+    } else {
+        String::new()
+    };
+    let per_app = Check::info(
+        "screenpipe.a11y_per_app",
+        "L1",
+        format!("{}{}", parts.join(" · "), suffix),
+    );
+
+    vec![verdict, per_app]
 }
 
 /// screenpipe's WAL file size. An unbounded WAL (stalled checkpoint) means disk
@@ -315,6 +382,7 @@ mod tests {
 
     async fn insert(
         pool: &SqlitePool,
+        app: &str,
         full: Option<&str>,
         a11y: Option<&str>,
         src: &str,
@@ -323,8 +391,9 @@ mod tests {
         for _ in 0..n {
             sqlx::query(
                 "INSERT INTO frames(app_name, timestamp, full_text, accessibility_text, text_source)
-                 VALUES('A', strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?1, ?2, ?3)",
+                 VALUES(?1, strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?2, ?3, ?4)",
             )
+            .bind(app)
             .bind(full)
             .bind(a11y)
             .bind(src)
@@ -343,20 +412,49 @@ mod tests {
     #[tokio::test]
     async fn all_blank_flags_screen_recording() {
         let pool = mem_pool().await;
-        insert(&pool, Some(""), Some(""), "ocr", 20).await;
+        insert(&pool, "A", Some(""), Some(""), "ocr", 20).await;
         assert_eq!(blank_text_rate(&pool).await.severity, Severity::Critical);
-        // 0% a11y share → warn (perm off or Electron-heavy).
-        assert_eq!(accessibility_share(&pool).await.severity, Severity::Warn);
     }
 
     #[tokio::test]
     async fn healthy_a11y_capture_is_ok() {
         let pool = mem_pool().await;
-        insert(&pool, None, Some("button: Save"), "accessibility", 20).await;
+        insert(&pool, "A", None, Some("button: Save"), "accessibility", 20).await;
         assert_eq!(frames_present(&pool).await.severity, Severity::Ok);
         assert_eq!(blank_text_rate(&pool).await.severity, Severity::Ok);
-        assert_eq!(accessibility_share(&pool).await.severity, Severity::Ok);
         assert_eq!(frame_freshness(&pool).await.severity, Severity::Ok);
+        let checks = accessibility_checks(&pool).await;
+        assert_eq!(checks[0].severity, Severity::Ok); // permission verdict
+    }
+
+    #[tokio::test]
+    async fn permission_ok_when_any_app_has_a11y() {
+        // The whole point of per-app: a low-a11y app (Chrome) must NOT trigger a
+        // false "permission off" when another app (Code) clearly has a11y.
+        let pool = mem_pool().await;
+        insert(
+            &pool,
+            "Code",
+            None,
+            Some("editor tree"),
+            "accessibility",
+            30,
+        )
+        .await;
+        insert(&pool, "Chrome", Some("page text"), None, "ocr", 30).await;
+        let checks = accessibility_checks(&pool).await;
+        assert_eq!(checks[0].severity, Severity::Ok); // best app drives the verdict
+        assert!(checks.iter().any(|c| c.name == "screenpipe.a11y_per_app"));
+    }
+
+    #[tokio::test]
+    async fn no_app_with_a11y_flags_permission_off() {
+        let pool = mem_pool().await;
+        insert(&pool, "Code", Some("text"), None, "ocr", 30).await;
+        insert(&pool, "Chrome", Some("text"), None, "ocr", 30).await;
+        let checks = accessibility_checks(&pool).await;
+        assert_eq!(checks[0].severity, Severity::Critical);
+        assert!(checks[0].remedy.is_some());
     }
 
     #[test]

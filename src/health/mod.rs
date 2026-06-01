@@ -12,10 +12,13 @@
 
 pub mod capture;
 
-/// Severity of a single check. Ordered Ok < Warn < Critical.
+/// Severity of a single check. Ordered Ok < Info < Warn < Critical. `Info` is a
+/// non-actionable diagnostic line (e.g. a per-app breakdown) — it never trips a
+/// warning or a non-zero exit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
     Ok,
+    Info,
     Warn,
     Critical,
 }
@@ -25,6 +28,7 @@ impl Severity {
     fn glyph(self) -> &'static str {
         match self {
             Severity::Ok => " ok ",
+            Severity::Info => "info",
             Severity::Warn => "warn",
             Severity::Critical => "FAIL",
         }
@@ -79,6 +83,17 @@ impl Check {
         }
     }
 
+    /// A non-actionable diagnostic line (e.g. a per-app breakdown). Never a fault.
+    pub fn info(name: impl Into<String>, layer: &'static str, detail: impl Into<String>) -> Self {
+        Check {
+            name: name.into(),
+            severity: Severity::Info,
+            detail: detail.into(),
+            layer,
+            remedy: None,
+        }
+    }
+
     /// Attach the remedy (the fix-it action) shown under a failing check.
     pub fn with_remedy(mut self, remedy: impl Into<String>) -> Self {
         self.remedy = Some(remedy.into());
@@ -121,7 +136,7 @@ impl Report {
             }
         }
         let summary = match self.worst() {
-            Severity::Ok => "all checks passed",
+            Severity::Ok | Severity::Info => "all checks passed",
             Severity::Warn => "completed with warnings",
             Severity::Critical => "CRITICAL issues found",
         };
@@ -134,7 +149,7 @@ impl Report {
     pub fn log(&self, stage: &str) {
         for c in &self.checks {
             match c.severity {
-                Severity::Ok => tracing::debug!(
+                Severity::Ok | Severity::Info => tracing::debug!(
                     stage = stage,
                     check = %c.name,
                     layer = c.layer,
