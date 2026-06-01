@@ -15,6 +15,7 @@ name: Release
 on:
   push:
     branches: [main]
+  workflow_dispatch: {}   # manual re-trigger (e.g. after fixing a secret) without a dummy commit
 
 permissions:
   contents: write       # tags, release, the version-bump commit
