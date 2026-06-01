@@ -22,7 +22,8 @@ const RECENT_SAMPLE: i64 = 500;
 /// be opened read-only — the file-level check still runs and the rest report
 /// the open failure.
 pub async fn run(cfg: &Config, pool: Option<&SqlitePool>) -> Report {
-    let mut checks = vec![db_present(cfg)];
+    // Prerequisites first (can capture run at all?), then runtime health.
+    let mut checks = vec![screenpipe_installed(), db_present(cfg)];
     match pool {
         Some(p) => {
             let frames = frames_present(p).await;
@@ -30,19 +31,64 @@ pub async fn run(cfg: &Config, pool: Option<&SqlitePool>) -> Report {
             let have_frames = frames.severity != crate::health::Severity::Critical;
             checks.push(frames);
             if have_frames {
+                // Runtime capture quality — these also serve as the permission
+                // proxies (blank rate → Screen Recording, a11y share → Accessibility).
                 checks.push(frame_freshness(p).await);
                 checks.push(blank_text_rate(p).await);
                 checks.push(accessibility_share(p).await);
+            } else {
+                // Fresh install / nothing captured: the runtime proxies are blind,
+                // so surface the permission prerequisite explicitly.
+                checks.push(permissions_unverified());
             }
             checks.push(wal_size(cfg));
         }
-        None => checks.push(Check::critical(
-            "screenpipe.pool",
-            "L1",
-            "could not open screenpipe DB read-only (path wrong, locked, or corrupt)",
-        )),
+        None => checks.push(
+            Check::critical(
+                "screenpipe.pool",
+                "L1",
+                "could not open screenpipe DB read-only (path wrong, locked, or corrupt)",
+            )
+            .with_remedy(
+                "check SCREENPIPE_DB points at ~/.screenpipe/db.sqlite and screenpipe is running",
+            ),
+        ),
     }
     Report { checks }
+}
+
+/// Prerequisite: the screenpipe binary is installed (on PATH). Without it there
+/// is no capture at all. Content-free — a filesystem lookup only.
+fn screenpipe_installed() -> Check {
+    match which("screenpipe") {
+        Some(path) => Check::ok("screenpipe.installed", "L1", format!("{}", path.display())),
+        None => Check::critical("screenpipe.installed", "L1", "not found on PATH").with_remedy(
+            "install screenpipe (e.g. brew install screenpipe) and load its launchd service",
+        ),
+    }
+}
+
+/// Find an executable on PATH without pulling in the `which` crate.
+fn which(bin: &str) -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(bin))
+        .find(|cand| cand.is_file())
+}
+
+/// Prerequisite for the fresh-install / no-frames case, where the runtime
+/// blank/a11y proxies cannot run. macOS TCC permission state isn't cleanly
+/// readable from here, so this is an explicit "unverified — grant and re-run"
+/// prompt rather than a false pass.
+fn permissions_unverified() -> Check {
+    Check::warn(
+        "screenpipe.permissions",
+        "L1",
+        "no frames captured yet — Screen Recording / Accessibility may not be granted",
+    )
+    .with_remedy(
+        "System Settings ▸ Privacy & Security ▸ grant Screen Recording AND Accessibility to screenpipe, then restart it and re-run doctor",
+    )
 }
 
 /// The screenpipe DB file exists and is non-empty. File-stat only — no pool.
@@ -58,12 +104,14 @@ fn db_present(cfg: &Config) -> Check {
             "screenpipe.db_present",
             "L1",
             format!("{path} exists but is empty — screenpipe never captured"),
-        ),
+        )
+        .with_remedy("start screenpipe and grant it Screen Recording, then re-run doctor"),
         Err(e) => Check::critical(
             "screenpipe.db_present",
             "L1",
             format!("{path} not found ({e}) — is screenpipe installed/running?"),
-        ),
+        )
+        .with_remedy("install + start screenpipe so it creates ~/.screenpipe/db.sqlite"),
     }
 }
 
@@ -157,6 +205,9 @@ async fn blank_text_rate(pool: &SqlitePool) -> Check {
                     "L1",
                     format!("{detail} — Screen Recording permission likely revoked"),
                 )
+                .with_remedy(
+                    "re-grant Screen Recording to screenpipe in System Settings, then restart it",
+                )
             } else if pct >= 50.0 {
                 Check::warn(
                     "screenpipe.text_present",
@@ -199,6 +250,9 @@ async fn accessibility_share(pool: &SqlitePool) -> Check {
                     "screenpipe.a11y_tree",
                     "L1",
                     format!("{detail} — Accessibility permission off or Electron-heavy apps"),
+                )
+                .with_remedy(
+                    "grant Accessibility to screenpipe (expected to be low for Electron apps like Cursor/VS Code)",
                 )
             } else {
                 Check::ok("screenpipe.a11y_tree", "L1", detail)
@@ -303,5 +357,19 @@ mod tests {
         assert_eq!(blank_text_rate(&pool).await.severity, Severity::Ok);
         assert_eq!(accessibility_share(&pool).await.severity, Severity::Ok);
         assert_eq!(frame_freshness(&pool).await.severity, Severity::Ok);
+    }
+
+    #[test]
+    fn which_resolves_real_and_missing() {
+        assert!(which("sh").is_some());
+        assert!(which("definitely_not_a_real_binary_xyz123").is_none());
+    }
+
+    #[test]
+    fn permissions_prompt_is_actionable() {
+        // The no-frames prerequisite must carry a remedy, not a silent pass.
+        let c = permissions_unverified();
+        assert_eq!(c.severity, Severity::Warn);
+        assert!(c.remedy.is_some());
     }
 }
