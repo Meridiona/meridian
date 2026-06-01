@@ -151,8 +151,8 @@ pub async fn get_window_titles(
 ) -> Result<Vec<WindowTitleCount>> {
     let rows = if is_browser_app(app_name) {
         // Fetch raw URLs grouped by full URL, then aggregate by domain in Rust.
-        // SQLite has no URL-parsing functions, and we want localhost:3000/ and
-        // localhost:3000/sessions to count as one entry, not two.
+        // SQLite has no URL-parsing functions, and we want localhost:3939/ and
+        // localhost:3939/sessions to count as one entry, not two.
         let raw = sqlx::query_as::<_, (String, i64)>(
             "SELECT COALESCE(browser_url, window_name) as context, COUNT(*) as count
              FROM frames
