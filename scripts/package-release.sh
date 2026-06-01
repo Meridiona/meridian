@@ -1,24 +1,20 @@
 #!/usr/bin/env bash
 # meridian — normalises screenpipe activity into structured app sessions
 #
-# Assemble a prebuilt release bundle from an already-built repo, into a single
-# tarball the installer downloads and unpacks to ~/.meridian/app. Run by
-# release.yml on a macOS arm64 runner; also runnable locally to validate.
+# Populate the per-arch npm package (npm/meridian-darwin-arm64) with the
+# prebuilt payload, ready for `npm publish`. Run by semantic-release
+# (@semantic-release/exec prepareCmd) on a macOS arm64 runner; also runnable
+# locally to validate (after building the daemon + UI).
 #
-#   scripts/package-release.sh <version> [out_dir]
+#   scripts/package-release.sh <version>
 #
-# Prerequisites (must already be built before calling):
-#   * target/release/meridian          (cargo build --release)
-#   * ui/.next/standalone              (npm run build, with output:'standalone')
-#
-# Produces: <out_dir>/meridian-<version>-macos-arm64.tar.gz
+# Prerequisites (must already be built):
+#   * target/release/meridian   (cargo build --release)
+#   * ui/.next/standalone        (npm run build, output:'standalone')
 set -euo pipefail
 
-VERSION="${1:?usage: package-release.sh <version> [out_dir]}"
-VERSION="${VERSION#v}"                       # tolerate a leading v
-OUT_DIR="${2:-dist}"
-ARCH="macos-arm64"
-NAME="meridian-${VERSION}-${ARCH}"
+VERSION="${1:?usage: package-release.sh <version>}"
+VERSION="${VERSION#v}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
@@ -28,50 +24,41 @@ UI_STANDALONE="ui/.next/standalone"
 [[ -x "${DAEMON_BIN}" ]]    || { echo "✗ ${DAEMON_BIN} not found — run: cargo build --release" >&2; exit 1; }
 [[ -d "${UI_STANDALONE}" ]] || { echo "✗ ${UI_STANDALONE} not found — run: (cd ui && npm ci && npm run build)" >&2; exit 1; }
 
-STAGE="${OUT_DIR}/${NAME}"
-rm -rf "${STAGE}"
-mkdir -p "${STAGE}/bin" "${STAGE}/ui" "${STAGE}/scripts"
+DEST="npm/meridian-darwin-arm64"
+echo "→ populating ${DEST} (v${VERSION})"
+rm -rf "${DEST}/bin" "${DEST}/ui" "${DEST}/services" "${DEST}/scripts" "${DEST}/.env.example" "${DEST}/VERSION"
+mkdir -p "${DEST}/bin" "${DEST}/ui" "${DEST}/scripts"
 
 echo "→ daemon binary"
-cp "${DAEMON_BIN}" "${STAGE}/bin/meridian"
-chmod +x "${STAGE}/bin/meridian"
+cp "${DAEMON_BIN}" "${DEST}/bin/meridian"
+chmod +x "${DEST}/bin/meridian"
 
 echo "→ UI (Next.js standalone)"
-# standalone/ holds server.js + traced node_modules (incl. the native
-# better-sqlite3 .node). static + public are copied in alongside, per Next docs.
-cp -R "${UI_STANDALONE}/." "${STAGE}/ui/"
-mkdir -p "${STAGE}/ui/.next"
-cp -R "ui/.next/static" "${STAGE}/ui/.next/static"
-[[ -d "ui/public" ]] && cp -R "ui/public" "${STAGE}/ui/public"
+cp -R "${UI_STANDALONE}/." "${DEST}/ui/"
+mkdir -p "${DEST}/ui/.next"
+cp -R "ui/.next/static" "${DEST}/ui/.next/static"
+[[ -d "ui/public" ]] && cp -R "ui/public" "${DEST}/ui/public"
 
 echo "→ Python services (source — venv is created at install)"
-# Source only; the venv + MLX wheels are installed on the user's machine.
-mkdir -p "${STAGE}/services"
+mkdir -p "${DEST}/services"
 tar cf - \
   --exclude='.venv' --exclude='.venv*' --exclude='__pycache__' --exclude='*.pyc' \
   --exclude='logs' --exclude='.hermes' --exclude='.pytest_cache' --exclude='tests/evals/results' \
-  -C services . | tar xf - -C "${STAGE}/services"
-
-echo "→ skills"
-[[ -d "services/skills" ]] || echo "  ⚠ services/skills not found (summariser/classifier prompts)"
+  --exclude='.claude' --exclude='.claude-flow' --exclude='.git' --exclude='node_modules' \
+  --exclude='*.log' --exclude='dist' --exclude='.DS_Store' \
+  -C services . | tar xf - -C "${DEST}/services"
 
 echo "→ scripts + plists + CLI"
-cp scripts/meridian-cli.sh "${STAGE}/scripts/"
-cp scripts/install-from-bundle.sh "${STAGE}/scripts/"
+cp scripts/meridian-cli.sh scripts/install-from-bundle.sh scripts/meridian-npm-setup.sh "${DEST}/scripts/"
 cp scripts/install-daemon.sh scripts/uninstall-daemon.sh \
    scripts/install-ui-daemon.sh scripts/uninstall-ui-daemon.sh \
    scripts/install-screenpipe-daemon.sh scripts/uninstall-screenpipe-daemon.sh \
    scripts/com.meridiona.daemon.plist scripts/com.meridiona.screenpipe.plist \
-   scripts/com.meridiona.ui.plist "${STAGE}/scripts/" 2>/dev/null || true
+   scripts/com.meridiona.ui.plist "${DEST}/scripts/" 2>/dev/null || true
 
 echo "→ config template + version stamp"
-cp .env.example "${STAGE}/.env.example"
-printf '%s\n' "${VERSION}" > "${STAGE}/VERSION"
+cp .env.example "${DEST}/.env.example"
+printf '%s\n' "${VERSION}" > "${DEST}/VERSION"
 
-echo "→ tarball"
-mkdir -p "${OUT_DIR}"
-tar czf "${OUT_DIR}/${NAME}.tar.gz" -C "${OUT_DIR}" "${NAME}"
-rm -rf "${STAGE}"
-
-echo "✓ ${OUT_DIR}/${NAME}.tar.gz"
-du -h "${OUT_DIR}/${NAME}.tar.gz" | awk '{print "  size:", $1}'
+echo "✓ ${DEST} populated"
+du -sh "${DEST}" 2>/dev/null | awk '{print "  payload:", $1}'

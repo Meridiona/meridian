@@ -1,0 +1,8 @@
+# The prebuilt bundle is assembled by scripts/package-release.sh in CI before
+# publish — never committed. Only package.json + README live in git.
+/bin/
+/ui/
+/services/
+/scripts/
+/.env.example
+/VERSION
