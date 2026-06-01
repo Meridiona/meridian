@@ -43,7 +43,7 @@ pub(super) async fn update_session_overhead(pool: &SqlitePool, session_id: i64) 
     Ok(())
 }
 
-/// Persist a hermes classification result into `app_sessions`.
+/// Persist an MLX classification result into `app_sessions`.
 pub(super) async fn update_session_task(
     pool: &SqlitePool,
     r: &SessionClassification,
@@ -136,7 +136,7 @@ pub(super) async fn write_dimensions(
             sqlx::query(
                 "INSERT OR IGNORE INTO session_dimensions \
                  (session_id, dimension, value, confidence, source) \
-                 VALUES (?, ?, ?, 0.75, 'hermes_standalone')",
+                 VALUES (?, ?, ?, 0.75, 'mlx_standalone')",
             )
             .bind(session_id)
             .bind(dimension)
