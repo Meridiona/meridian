@@ -30,6 +30,13 @@
 
     <key>EnvironmentVariables</key>
     <dict>
+        <!-- launchd gives agents a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin).
+             The coding-agent summariser shells out to `claude` (~/.local/bin) and
+             `codex` (/opt/homebrew/bin); without them on PATH every primary
+             summary silently falls back to MLX. Keep ~/.local/bin and Homebrew
+             ahead of the system defaults. -->
+        <key>PATH</key>
+        <string>{{HOME}}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>SCREENPIPE_DB</key>
         <string>{{HOME}}/.screenpipe/db.sqlite</string>
         <key>MERIDIAN_DB</key>
