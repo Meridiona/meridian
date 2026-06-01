@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
     com.meridiona.ui — runs the Next.js dashboard (built by ./install.sh) as
-    a background launchd LaunchAgent. Serves on http://localhost:3000.
+    a background launchd LaunchAgent. Serves on http://localhost:3939.
 
     Install via scripts/install-ui-daemon.sh which copies this file into
     ~/Library/LaunchAgents/ with absolute paths substituted in, then
@@ -39,7 +39,7 @@
         <key>MERIDIAN_DB</key>
         <string>{{HOME}}/.meridian/meridian.db</string>
         <key>PORT</key>
-        <string>3000</string>
+        <string>3939</string>
         <key>NODE_ENV</key>
         <string>production</string>
     </dict>
