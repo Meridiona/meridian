@@ -12,6 +12,7 @@ set -euo pipefail
 APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCREENPIPE_VERSION="0.3.350"
 MLX_PORT="${MLX_PORT:-7823}"
+UI_PORT="${MERIDIAN_UI_PORT:-3939}"   # dashboard port; off the common 3000 to avoid clashes
 SKIP_PERMISSIONS=0
 [[ "${1:-}" == "--skip-permissions" ]] && SKIP_PERMISSIONS=1
 
@@ -42,7 +43,7 @@ install_ui_standalone() {
   <key>WorkingDirectory</key><string>${APP_ROOT}/ui</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PORT</key><string>3000</string>
+    <key>PORT</key><string>${UI_PORT}</string>
     <key>HOSTNAME</key><string>127.0.0.1</string>
     <key>MERIDIAN_DB</key><string>${HOME}/.meridian/meridian.db</string>
   </dict>
@@ -97,7 +98,13 @@ fi
 # MLX is the default backend.
 grep -q '^CLASSIFIER_BACKEND=' "${ENV_FILE}" || echo "CLASSIFIER_BACKEND=mlx" >> "${ENV_FILE}"
 grep -q '^MLX_SERVER_PORT='    "${ENV_FILE}" || echo "MLX_SERVER_PORT=${MLX_PORT}" >> "${ENV_FILE}"
-ok "config at ${ENV_FILE}"
+# Dashboard port — honour an existing .env value, otherwise record the default.
+if grep -q '^MERIDIAN_UI_PORT=' "${ENV_FILE}"; then
+    UI_PORT="$(grep '^MERIDIAN_UI_PORT=' "${ENV_FILE}" | tail -n1 | cut -d= -f2 | tr -d '[:space:]')"
+else
+    echo "MERIDIAN_UI_PORT=${UI_PORT}" >> "${ENV_FILE}"
+fi
+ok "config at ${ENV_FILE} (dashboard port ${UI_PORT})"
 
 # ── 3. Binary + CLI symlinks ─────────────────────────────────────────────────
 mkdir -p "${HOME}/.local/bin"
@@ -115,12 +122,13 @@ ok "Python services ready"
 
 # ── 5. macOS permissions for screenpipe (manual — can't be automated) ────────
 if [[ "${SKIP_PERMISSIONS}" -eq 0 ]]; then
-    echo "→ screenpipe needs 3 macOS permissions: Screen Recording, Accessibility, Microphone."
+    echo "→ screenpipe needs 2 macOS permissions: Screen Recording and Accessibility."
+    echo "  (Audio capture is disabled, so no Microphone permission is required.)"
     read -r -p "  Press Enter to open Screen Recording settings… " _ || true
     open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture" 2>/dev/null || true
     read -r -p "  Press Enter to open Accessibility settings… " _ || true
     open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" 2>/dev/null || true
-    read -r -p "  Press Enter once both are granted (Microphone is requested on first run)… " _ || true
+    read -r -p "  Press Enter once both are granted… " _ || true
 fi
 
 # ── 6. Daemons (reuse the hardened installers; UI runs the standalone server) ─
@@ -151,7 +159,7 @@ echo "✓ Meridian installed at ${APP_ROOT}"
 echo "  meridian status            # check the daemons"
 echo "  meridian logs -f           # watch the pipeline"
 echo "  meridian config edit       # add Jira creds"
-echo "  open http://localhost:3000 # the dashboard"
+echo "  open http://localhost:${UI_PORT} # the dashboard"
 echo ""
 echo "Jira worklog posting is OFF by default — set PM_WORKLOG_POST_ENABLED=true"
 echo "in ${ENV_FILE} when you're ready to write worklogs."

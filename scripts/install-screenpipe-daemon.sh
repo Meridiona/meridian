@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # meridian — normalises screenpipe activity into structured app sessions
 # Install screenpipe as a launchd LaunchAgent under the current user.
-# screenpipe runs continuously, recording screen and audio on its default
-# port 3030 with data stored in ~/.screenpipe.
+# screenpipe runs continuously, recording the screen (audio disabled via
+# --disable-audio) on its default port 3030 with data stored in ~/.screenpipe.
 #
 #   ./scripts/install-screenpipe-daemon.sh
 #
