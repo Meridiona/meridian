@@ -349,8 +349,10 @@ export default function TodayView({ onNavigate }: { onNavigate?: (v: string, key
     )
   }
 
-  // Build buckets
-  const total_s = data.focus_s
+  // Build buckets. The "% of day" denominator is total ENGAGED time (your
+  // foreground presence + autonomous agent time), so a task carrying agent work
+  // never exceeds 100%. Falls back to focus_s on older API responses.
+  const total_s = data.engaged_s || data.focus_s
   const bucketMap = new Map<string, Bucket>()
 
   function pushToBucket(key: string, session: BucketSession) {
@@ -379,18 +381,27 @@ export default function TodayView({ onNavigate }: { onNavigate?: (v: string, key
     pushToBucket('_active', ab)
   }
 
-  const buckets = Array.from(bucketMap.values()).map(b => ({
-    ...b,
-    isOverhead: b.key === '_overhead',
-    isUntracked: b.key === '_untracked',
-    isQueue: b.key === '_queue',
-    title: b.key === '_overhead'  ? 'Overhead — comms, mail, planning'
-         : b.key === '_untracked' ? 'Untracked — personal, idle, unclassified'
-         : b.key === '_queue'     ? 'Sessions waiting to be assigned'
-         : b.key === '_active'    ? 'Current session'
-         : b.key,
-    day_total_s: total_s,
-  })).sort((a, b) => {
+  const buckets = Array.from(bucketMap.values()).map(b => {
+    // For a real task bucket, the headline time is the UNION of total time on
+    // the task (foreground + capped agent overlay) computed server-side — the
+    // same figure the Tasks page shows, so the two views always agree. Pushing
+    // foreground session durs above only filled `b.total_s` as a fallback.
+    const isTask = !b.key.startsWith('_')
+    const total = isTask ? (data.task_totals[b.key] ?? b.total_s) : b.total_s
+    return {
+      ...b,
+      total_s: total,
+      isOverhead: b.key === '_overhead',
+      isUntracked: b.key === '_untracked',
+      isQueue: b.key === '_queue',
+      title: b.key === '_overhead'  ? 'Overhead — comms, mail, planning'
+           : b.key === '_untracked' ? 'Untracked — personal, idle, unclassified'
+           : b.key === '_queue'     ? 'Sessions waiting to be assigned'
+           : b.key === '_active'    ? 'Current session'
+           : b.key,
+      day_total_s: total_s,
+    }
+  }).sort((a, b) => {
     const ord = (k: string) =>
       k === '_queue' ? 10 : k === '_untracked' ? 9 : k === '_overhead' ? 8 : k === '_active' ? -1 : 0
     return (ord(a.key) - ord(b.key)) || (b.total_s - a.total_s)

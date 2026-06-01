@@ -3,7 +3,7 @@
 import { NextResponse } from 'next/server'
 import getDb from '@/lib/db'
 import { localDayBounds, todayString } from '@/lib/date-utils'
-import { unionSeconds, intersectSeconds, mergeIntervals, countSwitches, type Interval } from '@/lib/intervals'
+import { unionSeconds, intersectSeconds, mergeIntervals, countSwitches, sessionInterval, type Interval } from '@/lib/intervals'
 
 export const dynamic = 'force-dynamic'
 
@@ -73,6 +73,14 @@ export interface TodayResponse {
   // ── Counts ───────────────────────────────────────────────────────────────
   session_count: number  // foreground sessions only
   switch_count: number   // genuine context switches in the foreground stream
+  // ── Per-task totals ────────────────────────────────────────────────────────
+  // task_key → UNION of total time on the task across BOTH streams (foreground +
+  // capped coding-agent overlay). This is the authoritative per-task figure the
+  // "By task" buckets and the Tasks page both render, so the two views agree.
+  task_totals: Record<string, number>
+  // engaged_s: focus_s + autonomous agent time — the denominator for the per-task
+  // "% of day" so a task carrying autonomous agent work never exceeds 100%.
+  engaged_s: number
 }
 
 export async function GET() {
@@ -220,6 +228,24 @@ export async function GET() {
       SWITCH_MIN_DURATION_S,
     )
 
+    // ── Per-task union totals (foreground + capped agent overlay) ──────────────
+    // Built from allRows (both streams) so a task's figure matches the Tasks page
+    // exactly. Same filter as /api/tasks: a real task link, session_type = 'task'.
+    const taskIntervals: Record<string, Interval[]> = {}
+    allRows.forEach(r => {
+      if (r.task_key == null || r.session_type !== 'task') return
+      const k = r.task_key as string
+      ;(taskIntervals[k] ??= []).push(sessionInterval({
+        started_at: r.started_at as string,
+        ended_at: r.ended_at as string,
+        duration_s: (r.duration_s as number) ?? 0,
+        claude_session_uuid: (r.claude_session_uuid as string) ?? null,
+      }))
+    })
+    const task_totals: Record<string, number> = {}
+    for (const [k, ivs] of Object.entries(taskIntervals)) task_totals[k] = unionSeconds(ivs)
+    const engaged_s = focus_s + autonomous_s
+
     const resp: TodayResponse = {
       date,
       sessions,
@@ -234,6 +260,8 @@ export async function GET() {
       agent_segments,
       session_count: sessions.length + (active ? 1 : 0),
       switch_count,
+      task_totals,
+      engaged_s,
     }
 
     return NextResponse.json(resp)
@@ -244,6 +272,7 @@ export async function GET() {
       focus_s: 0, idle_s: 0, agent_s: 0, supervised_s: 0, autonomous_s: 0,
       presence_segments: [], agent_segments: [],
       session_count: 0, switch_count: 0,
+      task_totals: {}, engaged_s: 0,
     } satisfies TodayResponse)
   }
 }
