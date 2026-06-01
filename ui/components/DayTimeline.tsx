@@ -1,237 +1,125 @@
-// meridian — AI activity intelligence by Meridiona
-
+// meridian — normalises screenpipe activity into structured app sessions
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
-import type { SessionRow, ActiveSessionRow, TimelineResponse, GapRow } from '@/lib/types'
-import { getCategoryMeta } from '@/lib/category-colors'
-import { formatDuration, formatTime } from '@/lib/format'
+import { useMemo, useState } from 'react'
+import { fmtDur } from '@/components/atoms'
+import type { TodayResponse } from '@/app/api/today/route'
 
-const HOUR_LABELS = [6, 9, 12, 15, 18, 21]
+// The hero visual of the Today view. Two aligned tracks tell the whole story at
+// a glance, with overlap shown rather than summed:
+//   • Presence — solid where you were active, faint where you were idle/away.
+//   • Agent    — a band beneath presence, solid where Claude/Codex was engaged.
+// Where the agent band sits under an IDLE stretch of the presence track, that is
+// autonomous work (agent running while you were away) — visible by alignment, no
+// number needed. Hover any block for its exact span.
 
-function toEpochS(iso: string): number {
-  const t = Math.floor(new Date(iso).getTime() / 1000)
-  return isFinite(t) ? t : 0
+type Band = { startMs: number; endMs: number; label: string; kind: 'active' | 'idle' | 'agent' }
+
+const COLOR = {
+  active: 'var(--ink)',
+  idle: 'var(--rule-2)',
+  agent: '#3B6FE0', // matches the `coding` category hue used across the app
 }
 
-interface Segment {
-  id: number
-  app_name: string
-  started_at: string
-  ended_at?: string
-  duration_s: number
-  window_titles: SessionRow['window_titles']
-  isActive: boolean
-  isGap: boolean
-  gapKind?: GapRow['kind']
-  category?: string
-}
+const ms = (iso: string) => new Date(iso).getTime()
 
-interface TooltipState {
-  segment: Segment
-  x: number
-  y: number
-}
+export default function DayTimeline({ data }: { data: TodayResponse }) {
+  const [hover, setHover] = useState<Band | null>(null)
 
-interface DayTimelineProps {
-  data: TimelineResponse
-  activeSession?: ActiveSessionRow | null
-}
+  const model = useMemo(() => {
+    const active: Band[] = data.presence_segments.map(s => ({
+      startMs: ms(s.started_at), endMs: ms(s.ended_at), kind: 'active' as const, label: 'Active',
+    }))
+    const idle: Band[] = data.gaps
+      .filter(g => g.kind === 'user_idle')
+      .map(g => ({ startMs: ms(g.started_at), endMs: ms(g.ended_at), kind: 'idle' as const, label: 'Idle' }))
+    const agent: Band[] = data.agent_segments.map(s => ({
+      startMs: ms(s.started_at), endMs: ms(s.ended_at), kind: 'agent' as const, label: 'Claude / Codex',
+    }))
 
-const GAP_COLORS: Record<GapRow['kind'], string> = {
-  user_idle: '#D4D1CB',
-  system_sleep: '#C8C6C1',
-}
+    const all = [...active, ...idle, ...agent].filter(b => Number.isFinite(b.startMs) && b.endMs > b.startMs)
+    if (all.length === 0) return null
 
-export default function DayTimeline({ data, activeSession }: DayTimelineProps) {
-  const { sessions, gaps, day_start_s, day_end_s } = data
-  const spanS = Math.max(day_end_s - day_start_s, 1)
-  const containerRef = useRef<HTMLDivElement>(null)
+    // Window: floor to the hour before the first event, ceil to the hour after
+    // the last — so bands never touch the edges and hour ticks line up.
+    const HOUR = 3_600_000
+    const lo = Math.floor(Math.min(...all.map(b => b.startMs)) / HOUR) * HOUR
+    const hi = Math.ceil(Math.max(...all.map(b => b.endMs)) / HOUR) * HOUR
+    const span = Math.max(HOUR, hi - lo)
 
-  // Initialize to 0 on both server and client to avoid hydration mismatch.
-  // useEffect sets the real value after first paint.
-  const [nowS, setNowS] = useState(0)
-  const [tooltip, setTooltip] = useState<TooltipState | null>(null)
+    const ticks: { left: number; label: string }[] = []
+    for (let t = lo; t <= hi; t += HOUR) {
+      ticks.push({ left: ((t - lo) / span) * 100, label: new Date(t).getHours().toString().padStart(2, '0') })
+    }
+    const pos = (b: Band) => ({
+      left: ((b.startMs - lo) / span) * 100,
+      width: Math.max(0.4, ((b.endMs - b.startMs) / span) * 100),
+    })
+    return { active, idle, agent, ticks, pos }
+  }, [data])
 
-  useEffect(() => {
-    setNowS(Math.floor(Date.now() / 1000))
-    const id = setInterval(() => setNowS(Math.floor(Date.now() / 1000)), 1000)
-    return () => clearInterval(id)
-  }, [])
+  if (!model) return null
 
-  const sessionSegments: Segment[] = [
-    ...sessions.map(s => ({
-      id: s.id,
-      app_name: s.app_name,
-      started_at: s.started_at,
-      ended_at: s.ended_at,
-      duration_s: s.duration_s,
-      window_titles: s.window_titles,
-      isActive: false,
-      isGap: false,
-      category: s.category,
-    })),
-    ...(activeSession ? [{
-      id: -1,
-      app_name: activeSession.app_name,
-      started_at: activeSession.started_at,
-      ended_at: undefined,
-      duration_s: Math.max(0, nowS - toEpochS(activeSession.started_at)),
-      window_titles: activeSession.window_titles,
-      isActive: true,
-      isGap: false,
-      category: activeSession.category,
-    }] : []),
-  ]
-
-  const gapSegments: Segment[] = (gaps ?? []).map(g => ({
-    id: g.id * -1000,  // avoid id collisions with session ids
-    app_name: g.kind === 'user_idle' ? 'Idle' : 'Away',
-    started_at: g.started_at,
-    ended_at: g.ended_at,
-    duration_s: g.duration_s,
-    window_titles: [],
-    isActive: false,
-    isGap: true,
-    gapKind: g.kind,
-  }))
-
-  const segments: Segment[] = [...sessionSegments, ...gapSegments]
-
-  function getLeft(startS: number): number {
-    const v = ((startS - day_start_s) / spanS) * 100
-    return isFinite(v) ? Math.max(0, v) : 0
+  const tip = () => {
+    if (!hover) return null
+    const fmt = (t: number) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    return (
+      <div className="text-[11px] font-mono tnum px-2 py-1 rounded-md inline-flex gap-2 items-center"
+        style={{ background: 'var(--ink)', color: 'var(--paper)' }}>
+        <span style={{ opacity: 0.7 }}>{hover.label}</span>
+        <span>{fmt(hover.startMs)}–{fmt(hover.endMs)}</span>
+        <span style={{ opacity: 0.7 }}>· {fmtDur(Math.round((hover.endMs - hover.startMs) / 1000))}</span>
+      </div>
+    )
   }
 
-  function getWidth(durationS: number): number {
-    const v = (durationS / spanS) * 100
-    return isFinite(v) ? Math.max(0, v) : 0
+  const block = (b: Band, top: number, height: number, color: string, rounded = false) => {
+    const { left, width } = model.pos(b)
+    return (
+      <div
+        key={`${b.kind}-${b.startMs}`}
+        onMouseEnter={() => setHover(b)}
+        onMouseLeave={() => setHover(h => (h === b ? null : h))}
+        className="absolute cursor-pointer transition-opacity"
+        style={{
+          left: `${left}%`, width: `${width}%`, top, height,
+          background: color, borderRadius: rounded ? 3 : 2,
+          opacity: hover && hover !== b ? 0.4 : 1,
+        }}
+      />
+    )
   }
-
-  function handleMouseEnter(e: React.MouseEvent, segment: Segment) {
-    const rect = containerRef.current?.getBoundingClientRect()
-    if (!rect) return
-    const x = e.clientX - rect.left
-    const y = e.clientY - rect.top
-    if (!isFinite(x) || !isFinite(y)) return
-    setTooltip({ segment, x, y })
-  }
-
-  function handleMouseMove(e: React.MouseEvent) {
-    if (!tooltip) return
-    const rect = containerRef.current?.getBoundingClientRect()
-    if (!rect) return
-    setTooltip(t => t ? { ...t, x: e.clientX - rect.left, y: e.clientY - rect.top } : null)
-  }
-
-  const totalSessions = sessions.length
-  const hasData = totalSessions > 0 || !!activeSession
 
   return (
-    <div className="flex flex-col gap-3">
-      {/* Hour axis */}
-      <div className="relative h-4 select-none" aria-hidden>
-        {HOUR_LABELS.map(h => (
-          <span
-            key={h}
-            className="absolute text-[10px] font-mono text-[#C8C6C1] -translate-x-1/2 tabular-nums"
-            style={{ left: `${(h / 24) * 100}%` }}
-          >
-            {h < 12 ? `${h}am` : h === 12 ? '12pm' : `${h - 12}pm`}
-          </span>
+    <div className="select-none">
+      {/* tooltip rail keeps height stable whether or not something is hovered */}
+      <div className="h-6 mb-1 flex items-end">{tip()}</div>
+
+      <div className="relative" style={{ height: 54 }}>
+        {/* hour gridlines */}
+        {model.ticks.map((t, i) => (
+          <div key={`g${i}`} className="absolute top-0" style={{ left: `${t.left}%`, height: 40, width: 1, background: 'var(--rule)' }} />
+        ))}
+        {/* presence track: idle baseline first, active on top */}
+        {model.idle.map(b => block(b, 6, 18, COLOR.idle))}
+        {model.active.map(b => block(b, 6, 18, COLOR.active))}
+        {/* agent overlay track, aligned beneath presence */}
+        {model.agent.map(b => block(b, 27, 11, COLOR.agent, true))}
+        {/* hour labels */}
+        {model.ticks.map((t, i) => (
+          <div key={`l${i}`} className="absolute font-mono text-[9px]"
+            style={{ left: `${t.left}%`, top: 42, color: 'var(--ink-4)', transform: 'translateX(-50%)' }}>
+            {t.label}
+          </div>
         ))}
       </div>
 
-      {/* Timeline bar */}
-      <div
-        ref={containerRef}
-        className="relative h-12 rounded-xl overflow-hidden bg-[#E8E6E1] cursor-default"
-        role="img"
-        aria-label={`Activity timeline — ${totalSessions} sessions`}
-        onMouseLeave={() => setTooltip(null)}
-        onMouseMove={handleMouseMove}
-      >
-        {/* Hour grid */}
-        {Array.from({ length: 25 }, (_, i) => (
-          <div
-            key={i}
-            aria-hidden
-            className="absolute top-0 bottom-0 w-px bg-[#F8F7F4]/30 pointer-events-none"
-            style={{ left: `${(i / 24) * 100}%` }}
-          />
-        ))}
-
-        {!hasData && (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <span className="text-xs text-[#C8C6C1] font-mono">no activity</span>
-          </div>
-        )}
-
-        {segments.map(seg => {
-          const startS = toEpochS(seg.started_at)
-          const left = getLeft(startS)
-          const width = getWidth(seg.duration_s)
-          const color = seg.isGap
-            ? GAP_COLORS[seg.gapKind!]
-            : seg.isActive
-              ? getCategoryMeta(seg.category ?? 'idle_personal').color
-              : getCategoryMeta(seg.category ?? 'idle_personal').color
-
-          return (
-            <div
-              key={seg.id}
-              role={seg.isGap ? undefined : 'button'}
-              tabIndex={seg.isGap ? -1 : 0}
-              aria-label={seg.isGap ? undefined : `${seg.app_name}: ${formatDuration(seg.duration_s)}`}
-              aria-hidden={seg.isGap ? true : undefined}
-              className={[
-                'absolute top-0 h-full transition-filter',
-                !seg.isGap && 'hover:brightness-110 cursor-pointer',
-                seg.isActive && 'animate-meridian-pulse',
-              ].filter(Boolean).join(' ')}
-              style={{
-                left: `max(0%, ${left}%)`,
-                width: `max(2px, ${width}%)`,
-                backgroundColor: color,
-              }}
-              onMouseEnter={e => !seg.isGap && handleMouseEnter(e, seg)}
-              onFocus={e => !seg.isGap && handleMouseEnter(e as unknown as React.MouseEvent, seg)}
-              onBlur={() => setTooltip(null)}
-            />
-          )
-        })}
-
-        {/* Tooltip */}
-        {tooltip && (
-          <div
-            className="absolute z-50 pointer-events-none"
-            style={{
-              left: Math.min(tooltip.x + 12, containerRef.current ? containerRef.current.offsetWidth - 200 : tooltip.x),
-              top: -8,
-              transform: 'translateY(-100%)',
-            }}
-          >
-            <div className="bg-[#141414] text-white rounded-xl px-3 py-2.5 shadow-xl text-left min-w-[160px] max-w-[220px]">
-              <p className="font-semibold text-sm leading-tight">{tooltip.segment.app_name}</p>
-              {!tooltip.segment.isGap && tooltip.segment.category && (
-                <p className="text-[11px] mt-1" style={{ color: getCategoryMeta(tooltip.segment.category).color }}>
-                  {getCategoryMeta(tooltip.segment.category).label}
-                </p>
-              )}
-              <p className="font-mono text-[#9B9A97] text-xs mt-0.5">
-                {formatDuration(tooltip.segment.duration_s)}
-                {' · '}
-                {formatTime(tooltip.segment.started_at)}
-                {tooltip.segment.isActive ? ' → now' : tooltip.segment.ended_at ? ` → ${formatTime(tooltip.segment.ended_at)}` : ''}
-              </p>
-              {tooltip.segment.window_titles.slice(0, 2).map(w => (
-                <p key={w.window_name} className="text-[11px] text-[#6B6A67] mt-1 truncate">
-                  {w.window_name}
-                </p>
-              ))}
-            </div>
-          </div>
-        )}
+      {/* legend */}
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]" style={{ color: 'var(--ink-3)' }}>
+        <span className="inline-flex items-center gap-1.5"><i style={{ width: 10, height: 10, background: COLOR.active, borderRadius: 2, display: 'inline-block' }} /> Active</span>
+        <span className="inline-flex items-center gap-1.5"><i style={{ width: 10, height: 10, background: COLOR.idle, borderRadius: 2, display: 'inline-block' }} /> Idle</span>
+        <span className="inline-flex items-center gap-1.5"><i style={{ width: 10, height: 6, background: COLOR.agent, borderRadius: 2, display: 'inline-block' }} /> Claude / Codex</span>
+        <span style={{ color: 'var(--ink-4)' }}>· agent under an idle stretch = autonomous</span>
       </div>
     </div>
   )
