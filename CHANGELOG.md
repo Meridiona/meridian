@@ -1,3 +1,10 @@
+## [1.2.2](https://github.com/Meridiona/meridian/compare/v1.2.1...v1.2.2) (2026-06-01)
+
+
+### Bug Fixes
+
+* **ui:** union overlapping activity for Focus instead of summing streams ([e620f45](https://github.com/Meridiona/meridian/commit/e620f45ca4c16beb6fb26f47993e31ce213a5cdd))
+
 ## [1.2.1](https://github.com/Meridiona/meridian/compare/v1.2.0...v1.2.1) (2026-06-01)
 
 
