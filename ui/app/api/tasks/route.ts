@@ -3,6 +3,7 @@
 import { NextResponse } from 'next/server'
 import getDb from '@/lib/db'
 import { localDayBounds, todayString } from '@/lib/date-utils'
+import { sessionInterval, unionSeconds } from '@/lib/intervals'
 
 export const dynamic = 'force-dynamic'
 
@@ -42,40 +43,58 @@ export async function GET() {
       ORDER BY task_key DESC
     `).all() as Array<Record<string, unknown>>
 
-    // today session + task associations
+    // Per-task time is the UNION of every session linked to the task, across
+    // BOTH recording streams — foreground screen capture AND the coding-agent
+    // transcript overlay. The two streams record the same wall-clock from two
+    // angles, so SUMMING duration_s double-counts every overlapping second
+    // (and lets a parked-open agent window inflate a task to impossible hours).
+    // `sessionInterval` caps agent rows to their engaged duration; `unionSeconds`
+    // then counts overlapping time once and agent-only time still counts.
+    interface SessionRow { started_at: string; ended_at: string; duration_s: number; claude_session_uuid: string | null; category: string | null; task_key: string }
+
     const todaySessions = db.prepare(`
-      SELECT s.id, s.duration_s, s.category, s.task_key
+      SELECT s.started_at, s.ended_at, s.duration_s, s.claude_session_uuid, s.category, s.task_key
       FROM app_sessions s
       WHERE s.started_at >= ? AND s.started_at < ?
         AND s.task_session_type = 'task'
         AND s.task_key IS NOT NULL
-    `).all(todayStart, todayEnd) as Array<Record<string, unknown>>
+    `).all(todayStart, todayEnd) as SessionRow[]
 
-    // week sessions
     const weekSessions = db.prepare(`
-      SELECT s.duration_s, s.task_key
+      SELECT s.started_at, s.ended_at, s.duration_s, s.claude_session_uuid, s.task_key
       FROM app_sessions s
       WHERE s.started_at >= ? AND s.started_at < ?
         AND s.task_session_type = 'task'
         AND s.task_key IS NOT NULL
-    `).all(ws, todayEnd) as Array<Record<string, unknown>>
+    `).all(ws, todayEnd) as SessionRow[]
 
-    // build aggregations
+    // group rows by task, then union each group's intervals
+    const todayRowsByTask: Record<string, SessionRow[]> = {}
+    todaySessions.forEach(s => { (todayRowsByTask[s.task_key] ??= []).push(s) })
+    const weekRowsByTask: Record<string, SessionRow[]> = {}
+    weekSessions.forEach(s => { (weekRowsByTask[s.task_key] ??= []).push(s) })
+
     const todayByTask: Record<string, { dur: number; sessions: number; cats: Record<string, number> }> = {}
-    todaySessions.forEach(s => {
-      const k = s.task_key as string
-      if (!todayByTask[k]) todayByTask[k] = { dur: 0, sessions: 0, cats: {} }
-      todayByTask[k].dur += s.duration_s as number
-      todayByTask[k].sessions++
-      const cat = (s.category as string) || 'idle_personal'
-      todayByTask[k].cats[cat] = (todayByTask[k].cats[cat] ?? 0) + (s.duration_s as number)
-    })
+    for (const [k, rows] of Object.entries(todayRowsByTask)) {
+      // Category split is the FOREGROUND share only — the agent overlay is the
+      // same work from a second angle, so folding its raw duration in here would
+      // re-introduce the double-count the union exists to prevent.
+      const cats: Record<string, number> = {}
+      rows.filter(r => r.claude_session_uuid == null).forEach(r => {
+        const cat = r.category || 'idle_personal'
+        cats[cat] = (cats[cat] ?? 0) + r.duration_s
+      })
+      todayByTask[k] = {
+        dur: unionSeconds(rows.map(sessionInterval)),
+        sessions: rows.length,
+        cats,
+      }
+    }
 
     const weekByTask: Record<string, number> = {}
-    weekSessions.forEach(s => {
-      const k = s.task_key as string
-      weekByTask[k] = (weekByTask[k] ?? 0) + (s.duration_s as number)
-    })
+    for (const [k, rows] of Object.entries(weekRowsByTask)) {
+      weekByTask[k] = unionSeconds(rows.map(sessionInterval))
+    }
 
     // unassigned today
     const unassigned = db.prepare(`
