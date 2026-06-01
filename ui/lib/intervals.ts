@@ -46,6 +46,31 @@ export function unionSeconds(intervals: Interval[]): number {
 }
 
 /**
+ * Wall-clock interval for one `app_sessions` row, normalised across the two
+ * recording streams. A foreground screen-capture row (`claude_session_uuid`
+ * IS NULL) uses its real `[started_at, ended_at]` span. A coding-agent
+ * transcript row is capped to its engaged `duration_s` anchored at the start,
+ * so a parked-open Claude/Codex window can't masquerade as hours of activity.
+ *
+ * Feeding a task's rows from BOTH streams through this and then `unionSeconds`
+ * yields the honest "total time spent on the task" — overlapping foreground and
+ * agent time counted once, agent-only time still counted.
+ */
+export function sessionInterval(row: {
+  started_at: string
+  ended_at: string
+  duration_s: number
+  claude_session_uuid: string | null
+}): Interval {
+  if (row.claude_session_uuid != null) {
+    const startMs = new Date(row.started_at).getTime()
+    const endMs = startMs + Math.max(0, row.duration_s ?? 0) * 1000
+    return { started_at: row.started_at, ended_at: new Date(endMs).toISOString() }
+  }
+  return { started_at: row.started_at, ended_at: row.ended_at }
+}
+
+/**
  * Merge a set of intervals into a disjoint, ascending list — the timeline's
  * presence/agent bands are drawn from these so overlapping rows render as one
  * continuous block rather than stacked duplicates.
