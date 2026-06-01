@@ -155,6 +155,22 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `meridian doctor` — content-free system-health sweep. Read-only, no daemon
+    // init. Surfaces broken capture/config so a misclassification isn't blamed on
+    // the model. Currently covers L1 screenpipe capture; more layers TBD. Exits
+    // non-zero if any check is critical.
+    if std::env::args().nth(1).as_deref() == Some("doctor") {
+        let cfg = Config::from_env();
+        let screenpipe = open_screenpipe(&cfg.screenpipe_db_uri()).await.ok();
+        let report = meridian::health::capture::run(&cfg, screenpipe.as_ref()).await;
+        println!("{}", report.render_titled("screenpipe capture (L1)"));
+        if let Some(pool) = screenpipe {
+            pool.close().await;
+        }
+        let critical = report.worst() == meridian::health::Severity::Critical;
+        std::process::exit(if critical { 1 } else { 0 });
+    }
+
     // 2. Tracing — layered subscriber (stdout + JSONL file + OTLP to OpenObserve).
     //    Guard must outlive the program; we shut it down explicitly at the end
     //    so OTel's blocking flush doesn't run inside tokio's drop path.
@@ -183,6 +199,14 @@ async fn main() -> Result<()> {
 
     // 4. Open screenpipe pool (read-only)
     let screenpipe = open_screenpipe(&initial_cfg.screenpipe_db_uri()).await?;
+
+    // 4c. Capture-layer (L1) preflight: surface degraded screen capture (revoked
+    //     Screen Recording / Accessibility permission, dead screenpipe, stale
+    //     frames) before the poll loop. Non-fatal — the daemon still runs; we log
+    //     the fault so misclassifications aren't blamed on the model.
+    meridian::health::capture::run(&initial_cfg, Some(&screenpipe))
+        .await
+        .log("startup");
 
     // 5. Open / create meridian pool and run migrations
     let meridian = setup_db(&initial_cfg.meridian_db_uri()).await?;
