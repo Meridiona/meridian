@@ -1,3 +1,11 @@
+## [1.4.1](https://github.com/Meridiona/meridian/compare/v1.4.0...v1.4.1) (2026-06-01)
+
+
+### Bug Fixes
+
+* **cli:** meridian dev — hot-reload UI + reliable service bring-up ([#90](https://github.com/Meridiona/meridian/issues/90)) ([153474a](https://github.com/Meridiona/meridian/commit/153474a89dfe93590f49e60882bad1c02baed2ea))
+* **ui:** split untracked time out of the overhead bucket ([#91](https://github.com/Meridiona/meridian/issues/91)) ([8ea9d3a](https://github.com/Meridiona/meridian/commit/8ea9d3aa8da79564ca496a0d5bf13f70ce3be87c))
+
 # [1.4.0](https://github.com/Meridiona/meridian/compare/v1.3.0...v1.4.0) (2026-06-01)
 
 
