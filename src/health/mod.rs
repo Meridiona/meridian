@@ -13,6 +13,7 @@
 
 pub mod capture;
 pub mod codingagent;
+pub mod contracts;
 pub mod daemon;
 pub mod jira;
 pub mod mlx;
@@ -197,6 +198,19 @@ impl Report {
         ));
         out.push_str(&format!("  {}\n", dim(&"═".repeat(56))));
 
+        // Surface the problem count up front so issues aren't missed in a long
+        // mostly-green table.
+        let (_, _, warn_n, crit_n) = self.counts();
+        if warn_n + crit_n > 0 {
+            out.push_str(&format!(
+                "  {}\n",
+                paint(
+                    "\x1b[33m",
+                    &format!("⚠ {} item(s) need attention", warn_n + crit_n)
+                )
+            ));
+        }
+
         for group in self.groups() {
             let label = if group.is_empty() { "general" } else { group };
             out.push_str(&format!(
@@ -329,6 +343,9 @@ pub async fn run_all(cfg: &Config) -> Report {
 
     // observability — OpenObserve sink (the health layer's own eyes).
     checks.extend(tag("observability", observability::checks(cfg).await));
+
+    // config — cross-process contracts (DB path, settings file, dead env).
+    checks.extend(tag("config", contracts::checks(cfg)));
 
     Report::new(checks)
 }
