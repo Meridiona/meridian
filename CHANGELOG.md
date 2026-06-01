@@ -1,3 +1,10 @@
+# [1.4.0](https://github.com/Meridiona/meridian/compare/v1.3.0...v1.4.0) (2026-06-01)
+
+
+### Features
+
+* **cli:** meridian dev commands + dev-workflow docs ([#89](https://github.com/Meridiona/meridian/issues/89)) ([5a09dba](https://github.com/Meridiona/meridian/commit/5a09dba546a877f8192aa769a7b6537d88675752))
+
 # [1.3.0](https://github.com/Meridiona/meridian/compare/v1.2.2...v1.3.0) (2026-06-01)
 
 
