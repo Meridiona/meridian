@@ -59,11 +59,7 @@ Meridian drafts worklogs against your Jira tickets. To enable:
 
 > GitHub and Linear are also supported (`GITHUB_TOKEN`/`GITHUB_ORG`, `LINEAR_API_KEY`/`LINEAR_TEAM_IDS`) — same file.
 
-**Worklog posting is OFF by default** — Meridian *drafts* worklogs but never writes to Jira until you opt in:
-```dotenv
-PM_WORKLOG_POST_ENABLED=true
-```
-Review the drafts first (`meridian worklog-status`), then enable when you're ready.
+**Nothing posts to Jira automatically.** Meridian *drafts* a worklog for each task/hour; you review, edit, and approve each one in the dashboard's **Worklogs** view, and the daemon posts approved worklogs within ~60s. Approval is the only gate — there is no auto-post switch. Check the day's drafts any time with `meridian worklog-status`.
 
 ---
 
@@ -103,7 +99,7 @@ meridian uninstall   # stop services + remove the CLI (your data in ~/.meridian/
 
 ## Privacy
 
-Everything runs **on your machine**. screenpipe records your screen locally into `~/.screenpipe/` (audio capture is disabled); Meridian reads that and writes to `~/.meridian/meridian.db`. There is no telemetry by default and no outbound network — the **only** thing that ever leaves your Mac is a Jira worklog, and only after you set `PM_WORKLOG_POST_ENABLED=true`.
+Everything runs **on your machine**. screenpipe records your screen locally into `~/.screenpipe/` (audio capture is disabled); Meridian reads that and writes to `~/.meridian/meridian.db`. There is no telemetry by default and no outbound network — the **only** thing that ever leaves your Mac is a Jira worklog, and only one you explicitly approved in the dashboard.
 
 ---
 

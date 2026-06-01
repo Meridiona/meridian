@@ -129,12 +129,26 @@ daemon.)
 
 ---
 
-## Safety: posting is off by default
+## Safety: nothing posts without human approval
 
-The daemon driver runs in **dry-run** (drafts rows, never POSTs) until
-`PM_WORKLOG_POST_ENABLED=true`. The CLI `--dry-run` flag forces it independently.
+The daemon driver **only ever drafts** — it never posts to Jira. Every worklog
+lands as a `drafted` row for a human to review, edit, and approve in the dashboard
+(Worklogs view). Approval flips the row to `approved`; the `post` sweep (`post.rs`,
+~60s) is the **sole** path that writes to real Jira. There is no unattended
+auto-post.
+
+State machine:
+
+```
+drafted ──(UI edit)──▶ drafted ──(UI approve)──▶ approved ──(post sweep)──▶ posted
+                                                    │
+                          terminal (empty / < 60s)  └──▶ failed
+```
+
 `time_spent` always comes from `real_seconds` (the idle-discounted figure computed
 in `collect.rs`, capped at one hour) — the LLM never decides how much time to log.
+A driver re-run can never clobber an `approved`/`posted` row (the UPSERT guard in
+`db.rs`), so a human decision is never silently overwritten.
 
 ---
 
@@ -147,24 +161,31 @@ in `collect.rs`, capped at one hour) — the LLM never decides how much time to 
 | `collect.rs` | build the bundle (SQL read) |
 | `synth.rs` | gated POST to `/synthesise_worklog` |
 | `ground.rs` | drop un-evidenced bullets, coverage, risk flags |
-| `db.rs` | `pm_worklogs` + evidence upserts, find/mark for idempotency |
+| `db.rs` | `pm_worklogs` + evidence upserts; approval-guarded upsert; find/mark/fail for idempotency |
 | `ledger.rs` | hour ledger + readiness predicate + per-hour task discovery |
-| `route.rs` | per-task: collect → synth → ground → persist → post |
+| `route.rs` | per-task: collect → synth → ground → **draft** (never posts) |
+| `post.rs` | the approved-poster sweep — the sole path to real Jira |
 | `scheduler.rs` | the hour-driven driver + daemon loop + CLI |
+| `status.rs` | `meridian worklog-status` — human-readable day report |
 
-The agno synth agent itself stays in Python (`services/agents/pm_worklog_update/`
-+ the `/synthesise_worklog` endpoint in `services/agents/server.py`).
+The UI approval surface is `ui/components/views/WorklogsView.tsx` + the
+`ui/app/api/worklogs/` routes (edit / approve / reject; DB writes only — the UI
+never calls Jira). The agno synth agent stays in Python
+(`services/agents/pm_worklog_update/` + the `/synthesise_worklog` endpoint).
 
 ---
 
 ## CLI
 
 ```bash
-# Draft (never post) one day's worklogs — the parity/preview path
-meridian pm-worklog --day 2026-05-30 --dry-run
+# Draft one day's worklogs (never posts — drafts await UI approval)
+meridian pm-worklog --day 2026-05-30
 
-# Real run for today (only posts if PM_WORKLOG_POST_ENABLED=true)
-meridian pm-worklog
+# Post everything approved in the dashboard now (same sweep the daemon runs ~60s)
+meridian worklog-post-approved
+
+# Human-readable day report (hours done/pending, rows by state)
+meridian worklog-status --day 2026-05-30
 ```
 
 ---
@@ -173,7 +194,6 @@ meridian pm-worklog
 
 | Env | Default | Purpose |
 |---|---|---|
-| `PM_WORKLOG_POST_ENABLED` | `false` | Master switch — `true` lets the daemon POST to Jira |
 | `PM_WORKLOG_INTERVAL_HOURS` | `1` | Driver pass cadence |
 | `PM_WORKLOG_MIN_CONFIDENCE` | `0.65` | Below this → `low_confidence` flag |
 | `PM_WORKLOG_READINESS_AGING_MIN` | `90` | Aging escape — max wait for an hour to settle |

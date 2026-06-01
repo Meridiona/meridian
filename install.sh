@@ -701,8 +701,8 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
     run bash "${REPO_ROOT}/scripts/install-daemon.sh"
     ok "Rust daemon launchd agent installed"
     # Jira worklogs (Stage 4) and coding-agent ingest both run INSIDE the Rust
-    # daemon — no separate launchd agents. Worklog posting stays off until
-    # PM_WORKLOG_POST_ENABLED=true in <repo>/.env.
+    # daemon — no separate launchd agents. Worklogs are only DRAFTED; they post
+    # to Jira only after you approve them in the dashboard (Worklogs view).
 
     info "Installing Claude Code coding-agent SessionEnd hook..."
     if ! run bash "${REPO_ROOT}/services/scripts/install-claude-hook.sh"; then
@@ -744,8 +744,8 @@ echo "Required before Jira/GitHub/Linear sync:"
 echo "  <repo>/.env                  # one backend env for the Rust daemon AND Python services"
 echo "  ui/.env.local                # Next.js UI"
 echo ""
-echo "Jira worklog posting is OFF by default — set PM_WORKLOG_POST_ENABLED=true in"
-echo "<repo>/.env when you're ready for the daemon to write worklogs to Jira."
+echo "Jira worklogs are DRAFTED only — review, edit, and approve them in the"
+echo "dashboard (Worklogs view); the daemon posts approved worklogs within ~60s."
 
 case ":${PATH}:" in
     *":${BIN_DIR}:"*) ;;
