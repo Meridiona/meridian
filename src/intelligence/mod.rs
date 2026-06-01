@@ -1,7 +1,5 @@
 // meridian — normalises screenpipe activity into structured app sessions
 
-pub mod category_llm;
-pub mod category_settler;
 pub mod providers;
 pub mod session_categorizer;
 pub mod task_linker;
@@ -13,26 +11,8 @@ pub use task_linker::{
 
 use anyhow::Result;
 use sqlx::SqlitePool;
-use tracing::warn;
 
 use crate::config::{Config, PmProviderConfig};
-
-/// Re-classifies all sessions that still have a rule-based category using Foundation Models.
-#[tracing::instrument(skip_all)]
-pub async fn run_fm_categorization(meridian: &SqlitePool, config: &Config) -> Result<()> {
-    let backend = category_llm::backends::build_backend(&config.llm_backend);
-    if let Err(e) = category_settler::run_fm_categorization(
-        meridian,
-        &backend,
-        config.min_classification_duration_s,
-        config.category_backfill,
-    )
-    .await
-    {
-        warn!(error = %e, "fm categorization failed");
-    }
-    Ok(())
-}
 
 /// Refreshes PM task caches from all configured providers.
 #[tracing::instrument(skip_all)]

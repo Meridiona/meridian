@@ -9,7 +9,7 @@
 
 mod common;
 
-use meridian::config::{Config, LlmBackendConfig, RuntimeSettings};
+use meridian::config::{Config, RuntimeSettings};
 use meridian::intelligence::run_task_linking;
 use serial_test::serial;
 use sqlx::{sqlite::SqliteConnectOptions, Row, SqlitePool};
@@ -92,15 +92,12 @@ fn make_cfg(db_path: &str) -> Config {
         meridian_db: db_path.to_string(),
         poll_interval_secs: 60,
         pm_providers: vec![],
-        llm_backend: LlmBackendConfig::Disabled,
         classification_enabled: true,
         classification_timeout_s: 120,
         min_classification_duration_s: 10,
         classification_services_dir: None,
         classification_backfill: true,
-        category_backfill: false,
         classification_context_window: 5,
-        classifier_backend: "mlx".to_owned(),
         mlx_server_port: 7823,
         jira_update_enabled: false,
         jira_update_interval_s: 14400,
@@ -264,15 +261,12 @@ async fn short_session_is_not_classified() {
         meridian_db: db_path,
         poll_interval_secs: 60,
         pm_providers: vec![],
-        llm_backend: LlmBackendConfig::Disabled,
         classification_enabled: true,
         classification_timeout_s: 30,
         min_classification_duration_s: 10,
         classification_services_dir: None,
         classification_backfill: true,
-        category_backfill: false,
         classification_context_window: 5,
-        classifier_backend: "mlx".to_owned(),
         mlx_server_port: 7823,
         jira_update_enabled: false,
         jira_update_interval_s: 14400,
@@ -306,15 +300,12 @@ async fn trivial_session_is_marked_overhead_without_server() {
         meridian_db: db_path,
         poll_interval_secs: 60,
         pm_providers: vec![],
-        llm_backend: LlmBackendConfig::Disabled,
         classification_enabled: true,
         classification_timeout_s: 30,
         min_classification_duration_s: 10,
         classification_services_dir: None,
         classification_backfill: true,
-        category_backfill: false,
         classification_context_window: 5,
-        classifier_backend: "mlx".to_owned(),
         mlx_server_port: 7823,
         jira_update_enabled: false,
         jira_update_interval_s: 14400,

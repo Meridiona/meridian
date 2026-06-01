@@ -21,18 +21,6 @@ name = "cat_smoke"
 path = "src/bin/cat_smoke.rs"
 
 [[bin]]
-name = "classify_smoke"
-path = "src/bin/classify_smoke.rs"
-
-[[bin]]
-name = "category_smoke"
-path = "src/bin/category_smoke.rs"
-
-[[bin]]
-name = "backfill_session_categories"
-path = "src/bin/backfill_session_categories.rs"
-
-[[bin]]
 name = "backfill_task_classification"
 path = "src/bin/backfill_task_classification.rs"
 

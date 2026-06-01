@@ -11,7 +11,7 @@ DRY_RUN=0
 NO_DAEMON=0
 SKIP_PERMISSIONS=0
 SKIP_ENV=0
-USE_MLX=1   # MLX inference server is the default backend (powers classify + PM-worklog synth); --no-mlx opts out
+USE_MLX=1   # MLX inference server is the only backend (powers classify + PM-worklog synth)
 MLX_PORT=7823
 # Pinned screenpipe version — the launchd plist expects this exact build
 # (`screenpipe record`). Installed via npm only when screenpipe is absent.
@@ -154,58 +154,10 @@ prompt_env_vars() {
     [[ -f "$root_env" ]] || touch "$root_env"
 
     info "→ LLM for task classification"
-    if [[ "${USE_MLX:-0}" -eq 1 ]]; then
-        echo "    Using persistent MLX inference server (--mlx). No LLM endpoint needed."
-        echo "    CLASSIFIER_BACKEND=mlx will be written to <repo>/.env automatically."
-        echo
-    else
-        echo "    Meridian auto-detects running local servers (LM Studio :1234, Ollama :11434,"
-        echo "    llama.cpp/mlx_lm :8080) and uses whichever has a model loaded."
-        echo "    On Apple Silicon with no server running, it selects an MLX model from"
-        echo "    available Metal memory at runtime. No configuration needed for local."
-        echo
-
-    # Probe known LLM server ports and report what's running now.
-    _detected_llm_servers=()
-    if nc -z 127.0.0.1 11434 2>/dev/null; then
-        _ollama_model="$(curl -sf http://127.0.0.1:11434/api/ps 2>/dev/null \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); ms=d.get('models',[]); print(ms[0]['name'] if ms else '')" 2>/dev/null || true)"
-        if [[ -n "$_ollama_model" ]]; then
-            _detected_llm_servers+=("Ollama ($_ollama_model)")
-        else
-            _detected_llm_servers+=("Ollama (running, no model loaded)")
-        fi
-    fi
-    if nc -z 127.0.0.1 1234 2>/dev/null; then
-        _lms_model="$(curl -sf http://127.0.0.1:1234/api/v0/models 2>/dev/null \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); loaded=[m['id'] for m in d.get('data',[]) if m.get('state')=='loaded']; print(loaded[0] if loaded else '')" 2>/dev/null || true)"
-        if [[ -n "$_lms_model" ]]; then
-            _detected_llm_servers+=("LM Studio ($_lms_model)")
-        else
-            _detected_llm_servers+=("LM Studio (running, no model loaded)")
-        fi
-    fi
-    if nc -z 127.0.0.1 8080 2>/dev/null; then
-        _detected_llm_servers+=("llama.cpp/mlx_lm (:8080)")
-    fi
-
-    if [[ ${#_detected_llm_servers[@]} -gt 0 ]]; then
-        ok "Local LLM server detected: ${_detected_llm_servers[*]}"
-        echo "    Task classification will use this server automatically."
-    else
-        echo "    No local server detected — model will be selected from Metal memory at runtime."
-    fi
-
-    # Always prefer local; LLM_PREFER_LOCAL=1 is the default but we write it
-    # explicitly so the value is visible in the repo-root .env.
-    set_env_value "LLM_PREFER_LOCAL" "1" "$root_env"
-
+    echo "    Using the persistent MLX inference server (Apple Silicon). No LLM endpoint"
+    echo "    needed — the daemon always calls the MLX classifier; MLX_SERVER_PORT is"
+    echo "    written to <repo>/.env automatically."
     echo
-    echo "    Cloud fallback (optional) — only used when no local model is available."
-    prompt_env_var "OPENROUTER_API_KEY" "OpenRouter API key (leave blank to skip)" 1 \
-        "$root_env"
-    echo
-    fi  # end: non-MLX LLM section
 
     if prompt_category "Jira"; then
         prompt_env_var "JIRA_BASE_URL" "Jira URL (e.g. https://your-org.atlassian.net)" 0 "$root_env"
@@ -308,8 +260,7 @@ while [[ $# -gt 0 ]]; do
         --no-daemon)         NO_DAEMON=1 ;;
         --skip-permissions)  SKIP_PERMISSIONS=1 ;;
         --skip-env)          SKIP_ENV=1 ;;
-        --mlx)               USE_MLX=1 ;;   # default; kept for back-compat
-        --no-mlx)            USE_MLX=0 ;;
+        --mlx)               : ;;   # accepted no-op (MLX is the only backend); kept for back-compat
         --mlx-port)          MLX_PORT="$2"; shift ;;
         --help|-h)
             cat >&2 <<'EOF'
@@ -320,12 +271,10 @@ Usage: bash install.sh [OPTIONS]
   --no-daemon          Build everything but skip launchd registration
   --skip-permissions   Skip the macOS permissions walkthrough (Screen Recording, Accessibility, Microphone)
   --skip-env           Skip the interactive credentials collection step
-  --mlx                Use the persistent MLX inference server (DEFAULT — Apple Silicon only).
-                       Installs mlx-lm + outlines + fastapi into .venv, registers the MLX server
-                       LaunchAgent, and writes CLASSIFIER_BACKEND=mlx to <repo>/.env. The MLX
-                       server powers classification AND the PM-worklog synthesiser.
-  --no-mlx             Skip the MLX server; use the hermes LLM-selector backend instead.
-                       (PM-worklog synthesis is unavailable without the MLX server.)
+  --mlx                Accepted no-op (the persistent MLX inference server is the only
+                       backend; Apple Silicon only). Installs mlx-lm + outlines + fastapi
+                       into .venv, registers the MLX server LaunchAgent. The MLX server
+                       powers classification AND the PM-worklog synthesiser.
   --mlx-port N         MLX server port (default: 7823). Written to <repo>/.env.
   --help, -h           Print this usage and exit
 
@@ -626,11 +575,7 @@ fi
 # ---------------------------------------------------------------------------
 
 info "Setting up Python services..."
-if [[ "${USE_MLX}" -eq 1 ]]; then
-    run bash "${REPO_ROOT}/scripts/setup-services.sh" --mlx
-else
-    run bash "${REPO_ROOT}/scripts/setup-services.sh"
-fi
+run bash "${REPO_ROOT}/scripts/setup-services.sh" --mlx
 ok "Python services ready"
 
 # ---------------------------------------------------------------------------
@@ -655,9 +600,8 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
     # TCP-connects to it on startup and exits hard if the port is not reachable.
     if [[ "${USE_MLX}" -eq 1 ]]; then
         info "Writing MLX classification env vars to <repo>/.env..."
-        set_env_value "CLASSIFIER_BACKEND" "mlx"          "${REPO_ROOT}/.env"
         set_env_value "MLX_SERVER_PORT"    "${MLX_PORT}"  "${REPO_ROOT}/.env"
-        ok "CLASSIFIER_BACKEND=mlx, MLX_SERVER_PORT=${MLX_PORT}"
+        ok "MLX_SERVER_PORT=${MLX_PORT}"
 
         info "Installing MLX inference server launchd agent..."
         run bash "${REPO_ROOT}/services/scripts/install-mlx-server-daemon.sh" \

@@ -85,6 +85,9 @@ Reply with ONE valid JSON object — no preamble, no markdown fences, no follow-
 {
   "task_key": "KAN-86",
   "confidence": 0.85,
+  "category": "coding",
+  "category_confidence": 0.9,
+  "category_explanation": "VS Code editing run_watcher.py with a cargo build running in the integrated terminal.",
   "session_type": "task",
   "reasoning": "Editing run_watcher.py with KAN-86 ticket open in adjacent tab; matches the migration task described.",
   "dimensions": {"activity": ["coding"], "intent": ["implementation"], "tool": ["vscode"]},
@@ -95,10 +98,32 @@ Reply with ONE valid JSON object — no preamble, no markdown fences, no follow-
 ### Field rules
 - `task_key` — must be one of the supplied candidates, or `null`. Never invent a key.
 - `confidence` — see Scoring heuristics section for exact ranges per outcome type.
+- `category` — the single best activity category (see taxonomy below). The input carries a rule-based guess; confirm it or correct it from the evidence.
+- `category_confidence` — how certain you are about `category`, `0.0`–`1.0`.
+- `category_explanation` — ONE concise sentence justifying the category, citing the app / window titles / OCR evidence. Shown in the dashboard next to the category.
 - `session_type` — `"task"` links to Jira; `"overhead"` is thrown away; `"untracked"` is kept for workload analysis.
 - `reasoning` — must cite specific window titles, OCR snippets, or context clues.
 - `dimensions` — omit keys with no evidence; return `{}` if no clear signals.
 - `session_summary` — see the dedicated section below. This is the SINGLE most important field for downstream PM updates.
+
+### Category taxonomy
+
+Choose exactly ONE `category` from this fixed set. Pick the dominant activity by time-on-screen, not a one-off glance.
+
+| `category` | When |
+|---|---|
+| `coding` | Writing/editing code in an editor or IDE, running builds, debugging |
+| `code_review` | Reviewing PRs/MRs/diffs (GitHub, GitLab, Gerrit) |
+| `meeting` | Live video/audio call (Zoom, Meet, Teams) — audio + call UI |
+| `communication` | Slack, Discord, email, DMs — async messaging |
+| `design` | Figma, Sketch, Adobe XD — visual/UX design work |
+| `documentation` | Reading/writing docs (Notion, Confluence, Google Docs, READMEs) |
+| `planning` | Tickets/boards/issues (Jira, Linear, GitHub Issues), sprint planning |
+| `deployment_devops` | CI/CD, cloud consoles, dashboards, K8s, terraform, monitoring |
+| `research` | Reading docs, Stack Overflow, tutorials, articles to learn/solve |
+| `idle_personal` | YouTube, social media, music, games, system settings — non-work |
+
+`category` is independent of `session_type`: a session can be `category: "coding"` and still be `session_type: "untracked"` (real work, no ticket) or even `overhead`.
 
 ## session_summary — THE PM-update payload
 

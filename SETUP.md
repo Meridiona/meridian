@@ -124,4 +124,4 @@ cd meridian
 bash scripts/setup-hooks.sh   # pre-commit/pre-push hooks
 ```
 
-`./install.sh --no-mlx` uses the hermes LLM-selector backend instead of the MLX server.
+Classification runs on the persistent MLX inference server (Apple Silicon); `install.sh` sets it up automatically. Use `--mlx-port N` to change its port (default 7823).

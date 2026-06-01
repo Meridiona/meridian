@@ -76,6 +76,33 @@ class SessionClassification(BaseModel):
         ..., ge=0.0, le=1.0,
         description="How certain you are. See scoring heuristics for ranges.",
     )
+    category: Literal[
+        "coding", "code_review", "meeting", "communication", "design",
+        "documentation", "planning", "deployment_devops", "research",
+        "idle_personal",
+    ] = Field(
+        ...,
+        description=(
+            "The single best activity category for this session. A rule-based "
+            "guess is supplied in the input — confirm it or correct it from the "
+            "evidence. Declared early in the schema so FSM decoding always emits "
+            "it before the long session_summary field."
+        ),
+    )
+    category_confidence: float = Field(
+        ..., ge=0.0, le=1.0,
+        description="How certain you are about `category` (0.0-1.0).",
+    )
+    category_explanation: str = Field(
+        ..., min_length=1, max_length=300,
+        description=(
+            "One concise sentence justifying the `category` choice, citing the "
+            "app, window titles, or OCR evidence (e.g. 'VS Code editing "
+            "run_watcher.py with a cargo build in the terminal'). Shown in the "
+            "dashboard next to the category. Kept short so FSM decoding emits it "
+            "before the long session_summary."
+        ),
+    )
     session_type: Literal["task", "overhead", "untracked"] = Field(
         ...,
         description=(
@@ -240,15 +267,19 @@ def _error_result(
     session_id: int, reason: str, elapsed: float, method: str
 ) -> dict[str, Any]:
     return {
-        "session_id":      session_id,
-        "task_key":        None,
-        "confidence":      0.0,
-        "session_type":    "overhead",
-        "reasoning":       reason,
-        "method":          method,
-        "dimensions":      {},
-        "session_summary": "",
-        "elapsed_s":       elapsed,
+        "session_id":           session_id,
+        "task_key":             None,
+        "confidence":           0.0,
+        "category":             "idle_personal",
+        "category_confidence":  0.0,
+        "category_explanation": "",
+        "session_type":         "overhead",
+        "reasoning":            reason,
+        "method":              method,
+        "dimensions":          {},
+        "session_summary":     "",
+        "category_explanation": "",
+        "elapsed_s":           elapsed,
     }
 
 
@@ -442,15 +473,18 @@ def _classify_one(
         })
 
     return {
-        "session_id":      session_id,
-        "task_key":        task_key,
-        "confidence":      confidence,
-        "session_type":    result.session_type,
-        "reasoning":       result.reasoning,
-        "method":          "mlx_direct",
-        "dimensions":      result.dimensions,
-        "session_summary": result.session_summary,
-        "elapsed_s":       elapsed,
+        "session_id":           session_id,
+        "task_key":             task_key,
+        "confidence":           confidence,
+        "category":             result.category,
+        "category_confidence":  max(0.0, min(1.0, result.category_confidence)),
+        "category_explanation": result.category_explanation,
+        "session_type":         result.session_type,
+        "reasoning":            result.reasoning,
+        "method":              "mlx_direct",
+        "dimensions":          result.dimensions,
+        "session_summary":     result.session_summary,
+        "elapsed_s":           elapsed,
     }
 
 
