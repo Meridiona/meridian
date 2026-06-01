@@ -45,9 +45,9 @@ npm install -g @meridiona/meridian
 meridian setup
 ```
 
-No clone, no build. The package ships a prebuilt binary; `meridian setup` copies the app to `~/.meridian/app`, installs any missing prerequisites (Homebrew packages, Node, Python 3.11, screenpipe, ffmpeg), sets up the on-device model, and registers four auto-starting services — **screenpipe** (capture), the **daemon** (pipeline), the **MLX server** (on-device model), and the **dashboard** at http://localhost:3000.
+No clone, no build. The package ships a prebuilt binary; `meridian setup` copies the app to `~/.meridian/app`, installs any missing prerequisites (Homebrew packages, Node, Python 3.11, screenpipe, ffmpeg), sets up the on-device model, and registers four auto-starting services — **screenpipe** (capture), the **daemon** (pipeline), the **MLX server** (on-device model), and the **dashboard** at http://localhost:3939.
 
-`meridian setup` then walks you through screenpipe's three macOS permissions (Screen Recording, Accessibility, Microphone). Connect Jira afterwards (optional).
+`meridian setup` then walks you through screenpipe's two macOS permissions (Screen Recording, Accessibility — audio is disabled, so no Microphone). Connect Jira afterwards (optional).
 
 👉 **Full walkthrough — permissions, Jira, verifying, logs, updating, troubleshooting: [SETUP.md](SETUP.md).**
 
@@ -154,7 +154,7 @@ meridian logs screenpipe -f       # capture layer
 
 Targets: `daemon` · `daemon-error` · `mlx-server` · `mlx-server-error` · `ui` · `ui-error` · `screenpipe` · `screenpipe-error`. The Rust daemon also writes structured JSON to `~/.meridian/logs/meridian-rust.jsonl.<date>` for grepping.
 
-Once started, the dashboard is at **http://localhost:3000**. Stop with `meridian stop`. Remove everything with `meridian uninstall`.
+Once started, the dashboard is at **http://localhost:3939** (set `MERIDIAN_UI_PORT` in `~/.meridian/app/.env` to change it). Stop with `meridian stop`. Remove everything with `meridian uninstall`.
 
 On startup the daemon TCP-connects to the MLX server to verify it is reachable before entering the poll loop. If the server is not running it exits immediately with a clear error message. Stop the daemon with `Ctrl-C` or `SIGTERM`.
 
