@@ -1,18 +1,21 @@
 // meridian — normalises screenpipe activity into structured app sessions
 //
 // The hour-driven driver. Walk hours from local-midnight → now; for each hour
-// that is READY, write one worklog per task that had classified work in it, then
+// that is READY, DRAFT one worklog per task that had classified work in it, then
 // mark the hour done. Hours are independent — a not-ready hour is left for the
 // next pass and does NOT block later hours, so a single stuck classification can
 // never freeze the day. The aging escape (config) bounds how long we wait for an
 // hour to settle before processing it best-effort.
+//
+// The driver NEVER posts to Jira. Drafted worklogs wait for a human to approve
+// them in the dashboard; the `post` sweep then posts approved rows. See `mod.rs`.
 
 use anyhow::Result;
 use chrono::{Duration, Local, NaiveDate, TimeZone, Utc};
 use sqlx::SqlitePool;
 use tokio::sync::watch;
 
-use crate::config::{Config, PmProviderConfig};
+use crate::config::Config;
 
 use super::config::PmWorklogConfig;
 use super::models::UpdateState;
@@ -30,19 +33,16 @@ pub struct DriverSummary {
     pub hours_processed: u32,
     pub hours_not_ready: u32,
     pub worklogs_drafted: u32,
-    pub worklogs_posted: u32,
     pub worklogs_skipped: u32,
 }
 
-/// Run one full pass over a day's hours. `day` defaults to today (local).
-/// `dry_run` drafts rows but never POSTs.
+/// Run one full pass over a day's hours, drafting worklogs. `day` defaults to
+/// today (local). Never posts — drafted rows await UI approval.
 pub async fn run_driver(
     pool: &SqlitePool,
-    jira: Option<&crate::config::JiraConfig>,
     cfg: &PmWorklogConfig,
     min_duration_s: i64,
     day: Option<NaiveDate>,
-    dry_run: bool,
 ) -> Result<DriverSummary> {
     let now = Local::now();
     let day = day.unwrap_or_else(|| now.date_naive());
@@ -93,37 +93,21 @@ pub async fn run_driver(
             continue;
         }
 
-        // READY — write one worklog per task with classified work this hour.
+        // READY — draft one worklog per task with classified work this hour.
         let tasks = ledger::tasks_in_hour(pool, &hs, &he).await?;
-        tracing::info!(
-            hour = %hs, tasks = tasks.len(), aged_out, dry_run,
-            "processing ready hour"
-        );
+        tracing::info!(hour = %hs, tasks = tasks.len(), aged_out, "processing ready hour");
 
         let mut hour_had_error = false;
         for task_key in &tasks {
-            match route::process_task(
-                pool,
-                jira,
-                cfg,
-                task_key,
-                &hs,
-                &he,
-                &day_utc,
-                cycle_index,
-                dry_run,
-            )
-            .await
-            {
+            match route::process_task(pool, cfg, task_key, &hs, &he, &day_utc, cycle_index).await {
                 Ok(outcome) => {
                     match outcome.state {
-                        UpdateState::Posted => summary.worklogs_posted += 1,
                         UpdateState::Drafted => summary.worklogs_drafted += 1,
-                        UpdateState::Skipped | UpdateState::Failed => summary.worklogs_skipped += 1,
+                        _ => summary.worklogs_skipped += 1,
                     }
                     tracing::info!(
                         task = %task_key, state = outcome.state.as_str(),
-                        reason = %outcome.reason, "worklog cycle done"
+                        reason = %outcome.reason, "worklog drafted"
                     );
                 }
                 Err(e) => {
@@ -150,52 +134,29 @@ pub async fn run_driver(
     Ok(summary)
 }
 
-/// First Jira provider in the daemon config, if any (worklogs only post to Jira).
-fn jira_from_config(config: &Config) -> Option<crate::config::JiraConfig> {
-    config.pm_providers.iter().find_map(|p| match p {
-        PmProviderConfig::Jira(j) => Some(j.clone()),
-        _ => None,
-    })
-}
-
-/// Daemon task: run the driver on the configured interval until shutdown.
-/// Posts only when `PM_WORKLOG_POST_ENABLED` is set — otherwise dry-run.
+/// Daemon task: run the driver on the configured interval until shutdown. Drafts
+/// only — posting is handled separately by the approved-poster (`post::run_post_loop`).
 pub async fn run_loop(pool: SqlitePool, mut shutdown_rx: watch::Receiver<bool>) {
     let cfg = PmWorklogConfig::from_env();
     let interval = std::time::Duration::from_secs((cfg.interval_hours * 3600.0).max(60.0) as u64);
     tracing::info!(
         interval_s = interval.as_secs(),
-        post_enabled = cfg.post_enabled,
-        "pm-worklog driver starting"
+        "pm-worklog driver starting (drafts only — posting is approval-gated)"
     );
 
     loop {
-        let config = Config::from_env();
-        let jira = jira_from_config(&config);
-        let dry_run = !cfg.post_enabled || jira.is_none();
-
         // Process yesterday AND today every pass. Yesterday's done hours skip
         // instantly via the ledger; this closes the day-rollover gap where the
         // previous day's last hours would otherwise strand at midnight.
         let today = Local::now().date_naive();
         let days: Vec<Option<NaiveDate>> = vec![today.pred_opt(), Some(today)];
-        let min_duration_s = config.min_classification_duration_s;
+        let min_duration_s = Config::from_env().min_classification_duration_s;
         for day in days.into_iter().flatten() {
-            match run_driver(
-                &pool,
-                jira.as_ref(),
-                &cfg,
-                min_duration_s,
-                Some(day),
-                dry_run,
-            )
-            .await
-            {
+            match run_driver(&pool, &cfg, min_duration_s, Some(day)).await {
                 Ok(s) => tracing::info!(
                     day = %day,
                     hours_processed = s.hours_processed,
                     drafted = s.worklogs_drafted,
-                    posted = s.worklogs_posted,
                     not_ready = s.hours_not_ready,
                     "pm-worklog driver pass complete"
                 ),
@@ -211,12 +172,11 @@ pub async fn run_loop(pool: SqlitePool, mut shutdown_rx: watch::Receiver<bool>) 
     tracing::info!("pm-worklog driver stopped");
 }
 
-/// One-shot CLI entry: `meridian pm-worklog [--day YYYY-MM-DD] [--dry-run]`.
-pub async fn cli_run(pool: &SqlitePool, day: Option<&str>, dry_run: bool) {
+/// One-shot CLI entry: `meridian pm-worklog [--day YYYY-MM-DD]`. Drafts worklogs;
+/// posting happens only via approval (`meridian worklog-post-approved` / the UI).
+pub async fn cli_run(pool: &SqlitePool, day: Option<&str>) {
     let cfg = PmWorklogConfig::from_env();
     let config = Config::from_env();
-    let jira = jira_from_config(&config);
-    let effective_dry = dry_run || !cfg.post_enabled || jira.is_none();
 
     let parsed_day = match day {
         Some(d) => match NaiveDate::parse_from_str(d, "%Y-%m-%d") {
@@ -230,29 +190,20 @@ pub async fn cli_run(pool: &SqlitePool, day: Option<&str>, dry_run: bool) {
     };
 
     println!(
-        "pm-worklog: day={} dry_run={} (post_enabled={}, jira={})",
+        "pm-worklog: day={} (drafts only — approve in the dashboard to post)",
         parsed_day
             .map(|d| d.to_string())
             .unwrap_or_else(|| "today".into()),
-        effective_dry,
-        cfg.post_enabled,
-        jira.is_some(),
     );
 
-    match run_driver(
-        pool,
-        jira.as_ref(),
-        &cfg,
-        config.min_classification_duration_s,
-        parsed_day,
-        effective_dry,
-    )
-    .await
-    {
+    match run_driver(pool, &cfg, config.min_classification_duration_s, parsed_day).await {
         Ok(s) => println!(
-            "pm-worklog: hours seen={} processed={} not_ready={} | worklogs drafted={} posted={} skipped={}",
-            s.hours_seen, s.hours_processed, s.hours_not_ready,
-            s.worklogs_drafted, s.worklogs_posted, s.worklogs_skipped,
+            "pm-worklog: hours seen={} processed={} not_ready={} | worklogs drafted={} skipped={}",
+            s.hours_seen,
+            s.hours_processed,
+            s.hours_not_ready,
+            s.worklogs_drafted,
+            s.worklogs_skipped,
         ),
         Err(e) => eprintln!("pm-worklog: driver failed: {e}"),
     }
