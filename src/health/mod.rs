@@ -12,10 +12,13 @@
 // as a table; `run_all` is the comprehensive sweep the CLI wrapper delegates to.
 
 pub mod capture;
+pub mod codingagent;
 pub mod daemon;
 pub mod jira;
 pub mod mlx;
+pub mod observability;
 pub mod platform;
+pub mod worklog;
 
 use crate::config::Config;
 use crate::db::screenpipe::open_screenpipe;
@@ -310,13 +313,75 @@ pub async fn run_all(cfg: &Config) -> Report {
 
     // jira — auth, sync freshness, candidate completeness.
     checks.extend(tag("jira", jira::checks(cfg, md.as_ref()).await));
+
+    // worklog — drafts awaiting review, stuck hours, Jira post failures.
+    checks.extend(tag("worklog", worklog::checks(cfg, md.as_ref()).await));
     if let Some(p) = md {
         p.close().await;
     }
+
+    // coding-agent — Claude/Codex CLI + ingest dirs (and the Cursor gap).
+    checks.extend(tag("coding-agent", codingagent::checks(cfg)));
 
     // ui + mcp — build/service state.
     checks.extend(tag("ui", platform::ui_service()));
     checks.extend(tag("mcp", platform::mcp_service()));
 
+    // observability — OpenObserve sink (the health layer's own eyes).
+    checks.extend(tag("observability", observability::checks(cfg).await));
+
     Report::new(checks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> Report {
+        Report::new(vec![
+            Check::ok("screenpipe.frames", "L1", "100").in_group("screenpipe"),
+            Check::warn("queue", "L2", "deep")
+                .with_remedy("fix it")
+                .in_group("meridian daemon"),
+            Check::info("a11y", "L1", "x").in_group("screenpipe"),
+            Check::critical("auth", "L2", "401").in_group("jira"),
+        ])
+    }
+
+    #[test]
+    fn counts_and_worst() {
+        let r = sample();
+        assert_eq!(r.counts(), (1, 1, 1, 1));
+        assert_eq!(r.worst(), Severity::Critical);
+    }
+
+    #[test]
+    fn porcelain_is_five_tab_columns_with_group() {
+        let out = sample().render_porcelain();
+        let cols: Vec<&str> = out.lines().next().unwrap().split('\t').collect();
+        assert_eq!(cols.len(), 5);
+        assert_eq!(cols[0], "ok"); // status
+        assert_eq!(cols[1], "screenpipe"); // group
+        assert_eq!(cols[2], "screenpipe.frames"); // name (full, not stripped)
+    }
+
+    #[test]
+    fn render_groups_strips_prefix_and_shows_remedy() {
+        let out = sample().render(false);
+        assert!(out.contains("▸ screenpipe"));
+        assert!(out.contains("▸ meridian daemon"));
+        // group prefix stripped in the table
+        assert!(out.contains(" frames "));
+        assert!(!out.contains("screenpipe.frames"));
+        // remedy under the warn
+        assert!(out.contains("→ fix it"));
+        // counts summary present
+        assert!(out.contains("1 ok"));
+    }
+
+    #[test]
+    fn color_flag_gates_ansi() {
+        assert!(!sample().render(false).contains('\x1b'));
+        assert!(sample().render(true).contains('\x1b'));
+    }
 }
