@@ -17,10 +17,10 @@ meridian setup
 
 | Service | Role |
 |---|---|
-| **screenpipe** | captures screen + audio (the data source) |
+| **screenpipe** | captures the screen (the data source; audio disabled) |
 | **meridian daemon** | the pipeline — ETL, classification, coding-agent ingest, PM-worklog |
 | **MLX server** | the on-device model (classification + worklog synthesis) |
-| **dashboard** | the web UI at http://localhost:3000 |
+| **dashboard** | the web UI at http://localhost:3939 (override via `MERIDIAN_UI_PORT`) |
 
 > First setup downloads the ~6 GB model on first MLX start — give it a few minutes (`meridian logs mlx-server -f` shows progress).
 
@@ -30,11 +30,12 @@ Pin a specific version with `npm install -g @meridiona/meridian@0.3.0`.
 
 ## 2. Grant macOS permissions (required, manual)
 
-screenpipe needs three permissions macOS will only let **you** grant. The installer opens each pane; for each:
+screenpipe needs two permissions macOS will only let **you** grant. The installer opens each pane; for each:
 
 1. **Screen Recording** — System Settings → Privacy & Security → Screen Recording → click **+**, add the screenpipe binary, toggle ON.
 2. **Accessibility** — same, under Accessibility.
-3. **Microphone** — screenpipe appears here after it first tries the mic; toggle ON.
+
+(Audio capture is disabled, so no Microphone permission is needed.)
 
 After granting, run `meridian restart`.
 
@@ -72,7 +73,7 @@ Review the drafts first (`meridian worklog-status`), then enable when you're rea
 meridian status          # all four services
 meridian doctor          # diagnose config / services / permissions
 meridian logs -f         # watch the pipeline live
-open http://localhost:3000
+open http://localhost:3939
 ```
 
 ---
@@ -102,7 +103,7 @@ meridian uninstall   # stop services + remove the CLI (your data in ~/.meridian/
 
 ## Privacy
 
-Everything runs **on your machine**. screenpipe records your screen and audio locally into `~/.screenpipe/`; Meridian reads that and writes to `~/.meridian/meridian.db`. There is no telemetry by default and no outbound network — the **only** thing that ever leaves your Mac is a Jira worklog, and only after you set `PM_WORKLOG_POST_ENABLED=true`.
+Everything runs **on your machine**. screenpipe records your screen locally into `~/.screenpipe/` (audio capture is disabled); Meridian reads that and writes to `~/.meridian/meridian.db`. There is no telemetry by default and no outbound network — the **only** thing that ever leaves your Mac is a Jira worklog, and only after you set `PM_WORKLOG_POST_ENABLED=true`.
 
 ---
 
