@@ -1,3 +1,10 @@
+# [1.2.0](https://github.com/Meridiona/meridian/compare/v1.1.0...v1.2.0) (2026-06-01)
+
+
+### Features
+
+* **pm-worklog:** add worklog-status CLI report command ([#78](https://github.com/Meridiona/meridian/issues/78)) ([6cc120c](https://github.com/Meridiona/meridian/commit/6cc120c7f7057eb76f76ff8585724804bc0ae67b))
+
 # [1.1.0](https://github.com/Meridiona/meridian/compare/v1.0.0...v1.1.0) (2026-06-01)
 
 
