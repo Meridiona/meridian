@@ -56,13 +56,12 @@ EOF
         cat <<'EOF'
 
 Dev (source checkout — builds from this repo, MLX stays loaded):
-  dev                Build daemon + UI, restart them, start MLX/screenpipe if down
-  dev daemon         Rebuild Rust + restart only the daemon   ← main backend loop
-  dev ui             Rebuild UI + restart the dashboard (:3939)
-  dev ui-watch       Next.js hot-reload dev server (foreground)  ← main UI loop
+  dev                Backing services up (bg) + UI dev server in foreground (hot reload)
+  dev ui             UI dev server only — hot reload, foreground (Ctrl-C to stop)
+  dev daemon         Rebuild Rust + restart the daemon (bg)   ← backend loop (2nd terminal)
   dev mlx            Restart only the MLX server (reloads the model)
   dev screenpipe     Restart only screenpipe
-  dev build          Build daemon + UI, no restart
+  dev build          Production build of daemon + UI (verify the shipped build; no run)
 EOF
     fi
 }
@@ -389,13 +388,26 @@ cmd_daemon_passthrough() {
 # ~/.meridian/app) has no source, so these are hidden/disabled there.
 _is_source_checkout() { [[ -f "${REPO_ROOT}/Cargo.toml" ]]; }
 
-# Restart a service to pick up a new build (no-op-with-warning if not running).
-_dev_kick() {
+# Bring a service up-to-date: ensure it's loaded (enable + bootstrap), then
+# (re)start it so a fresh build is picked up. Works whether it was stopped,
+# booted out, or already running — the same sequence cmd_start uses.
+_dev_up() {
     local label="$1"
-    if launchctl kickstart -k "${GUI_TARGET}/${label}" 2>/dev/null; then
-        ok "restarted ${label}"
+    local plist="${LAUNCH_AGENTS}/${label}.plist"
+    if [[ ! -f "$plist" ]]; then
+        warn "${label} not installed — run ./install.sh"
+        return 0
+    fi
+    set +e
+    launchctl enable "${GUI_TARGET}/${label}" 2>/dev/null
+    launchctl bootstrap "${GUI_TARGET}" "$plist" 2>/dev/null
+    launchctl kickstart -k "${GUI_TARGET}/${label}" 2>/dev/null
+    local rc=$?
+    set -e
+    if [[ $rc -eq 0 ]]; then
+        ok "(re)started ${label}"
     else
-        warn "${label} not running — 'meridian start' or ./install.sh first"
+        warn "${label} failed to start — check: meridian logs ${label#com.meridiona.}"
     fi
 }
 
@@ -405,19 +417,58 @@ _dev_ensure() {
     local label="$1"
     if launchctl print "${GUI_TARGET}/${label}" >/dev/null 2>&1; then
         ok "${label} already up (left as-is)"
-    elif [[ -f "${LAUNCH_AGENTS}/${label}.plist" ]]; then
-        set +e
-        launchctl enable "${GUI_TARGET}/${label}" 2>/dev/null
-        launchctl bootstrap "${GUI_TARGET}" "${LAUNCH_AGENTS}/${label}.plist" 2>/dev/null
-        set -e
-        info "started ${label}"
     else
-        warn "${label} not installed — run ./install.sh"
+        _dev_up "$label"
     fi
+}
+
+# The daemon hard-exits if the MLX server isn't reachable, so wait for /health
+# before (re)starting it. Returns immediately if MLX is already serving.
+_dev_wait_mlx() {
+    local port="${MLX_SERVER_PORT:-7823}" w=0
+    info "waiting for MLX server (port ${port}) to answer…"
+    until curl -sf "http://127.0.0.1:${port}/health" >/dev/null 2>&1; do
+        sleep 2; w=$((w+2))
+        if [[ $w -ge 120 ]]; then
+            warn "MLX not ready after 120s — daemon will retry on its own (KeepAlive)"
+            return 0
+        fi
+    done
+    ok "MLX ready (${w}s)"
 }
 
 _dev_build_daemon() { info "building daemon (cargo --release)…"; ( cd "${REPO_ROOT}" && cargo build --release ); }
 _dev_build_ui()     { info "building UI (npm run build)…";       ( cd "${REPO_ROOT}/ui" && npm run build ); }
+
+# Stop the launchd (production) dashboard so `next dev` can bind its port.
+# Disable too, so KeepAlive doesn't race to relaunch the prod server.
+_dev_stop_prod_ui() {
+    if launchctl print "${GUI_TARGET}/${LABEL_UI}" >/dev/null 2>&1; then
+        set +e
+        launchctl disable "${GUI_TARGET}/${LABEL_UI}" 2>/dev/null
+        launchctl bootout  "${GUI_TARGET}/${LABEL_UI}" 2>/dev/null
+        set -e
+        info "stopped launchd dashboard (freeing the port for the dev server)"
+    fi
+}
+
+# Run the Next.js dev server in the FOREGROUND (hot reload). Replaces this shell
+# (exec), so Ctrl-C stops just the UI server — backing services keep running.
+# Re-enable the prod dashboard later with `meridian start`.
+_dev_ui_server() {
+    local port="${MERIDIAN_UI_PORT:-3939}"
+    _dev_stop_prod_ui
+    echo
+    info "UI dev server (hot reload) → http://localhost:${port}   ·   Ctrl-C to stop"
+    info "edit-and-save reflects instantly; backing services keep running in the background"
+    echo
+    cd "${REPO_ROOT}/ui" || { err "ui/ not found at ${REPO_ROOT}/ui"; exit 1; }
+    if [[ -x ./node_modules/.bin/next ]]; then
+        exec ./node_modules/.bin/next dev --turbopack -p "${port}"
+    else
+        warn "next not found — run 'cd ui && npm install' first"; exec npm run dev
+    fi
+}
 
 cmd_dev() {
     if ! _is_source_checkout; then
@@ -428,24 +479,24 @@ cmd_dev() {
     local target="${1:-all}"
     case "$target" in
         all)
-            # Build everything + bring up: rebuild & restart the cheap services,
-            # start MLX/screenpipe only if down (don't reload a live model).
-            _dev_build_daemon; _dev_build_ui
+            # Dev session: backing services in the background (start screenpipe/
+            # MLX only if down — don't reload a live model — rebuild & restart the
+            # daemon), then the UI dev server in the FOREGROUND (hot reload). Wait
+            # for MLX before the daemon (it hard-exits if MLX is unreachable).
+            _dev_build_daemon
             _dev_ensure "${LABEL_SCREENPIPE}"
             _dev_ensure "${LABEL_MLX}"
-            _dev_kick   "${LABEL_DAEMON}"
-            _dev_kick   "${LABEL_UI}"
-            echo; info "dev up (MLX left loaded if it was already running)"; echo
-            cmd_status
+            _dev_wait_mlx
+            _dev_up "${LABEL_DAEMON}"
+            _dev_ui_server      # foreground (exec) — runs until Ctrl-C
             ;;
-        build)      _dev_build_daemon; _dev_build_ui; ok "built (no restart)" ;;
-        daemon)     _dev_build_daemon; _dev_kick "${LABEL_DAEMON}" ;;
-        ui)         _dev_build_ui;     _dev_kick "${LABEL_UI}" ;;
-        ui-watch)   info "Next.js hot reload (Ctrl-C to stop)…"; ( cd "${REPO_ROOT}/ui" && exec npm run dev ) ;;
-        mlx)        _dev_kick "${LABEL_MLX}" ;;          # python — restart reloads the model
-        screenpipe) _dev_kick "${LABEL_SCREENPIPE}" ;;
+        ui)         _dev_ui_server ;;                 # UI dev server only (foreground, hot reload)
+        daemon)     _dev_build_daemon; _dev_wait_mlx; _dev_up "${LABEL_DAEMON}" ;;
+        mlx)        _dev_up "${LABEL_MLX}" ;;          # python — restart reloads the model
+        screenpipe) _dev_up "${LABEL_SCREENPIPE}" ;;
+        build)      _dev_build_daemon; _dev_build_ui; ok "built production bundles (no run)" ;;
         *) err "unknown dev target: ${target}";
-           echo "  targets: all | build | daemon | ui | ui-watch | mlx | screenpipe"; exit 1 ;;
+           echo "  targets: all | ui | daemon | mlx | screenpipe | build"; exit 1 ;;
     esac
 }
 

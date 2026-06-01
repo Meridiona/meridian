@@ -222,18 +222,20 @@ python3 scripts/refresh_pm_tasks.py --db /path/to/meridian.db
 
 ## Development
 
-After cloning + `./install.sh`, the four services run under launchd (see [Run](#run)). When you change code, rebuild and restart **only what changed** with `meridian dev` — these build from your checkout (the daemon's launchd agent runs `target/release/meridian` via a symlink, so a release build is picked up in place). They are only available in a source checkout.
+After cloning + `./install.sh`, the four services run under launchd (see [Run](#run)). `meridian dev` starts a dev session from your checkout: backing services in the background, **the UI hot-reloading in your terminal**. (Source-checkout only — hidden on prebuilt installs.)
 
 ```bash
-meridian dev daemon     # rebuild Rust + restart the daemon          ← backend loop
-meridian dev ui-watch   # Next.js hot-reload dev server (foreground) ← UI loop
-meridian dev ui         # rebuild prod bundle + restart dashboard (:3939)
+meridian dev            # backing services up (bg) + UI dev server foreground (hot reload)  ← start here
+meridian dev daemon     # rebuild Rust + restart the daemon (bg)   ← backend loop (2nd terminal)
+meridian dev ui         # UI dev server only — hot reload, foreground
 meridian dev mlx        # restart only the MLX server (reloads the model, ~30s)
-meridian dev            # build daemon + UI, restart them, start MLX/screenpipe if down
-meridian dev build      # build daemon + UI, no restart
+meridian dev screenpipe # restart only screenpipe
+meridian dev build      # production build of daemon + UI (verify the shipped build; no run)
 ```
 
-`meridian dev` and `meridian dev daemon` **leave the MLX model loaded** (fast). Only `meridian dev mlx` and `meridian restart` reload it — avoid `meridian restart` in a tight loop. Migrations apply automatically on daemon start.
+Typical session: run `meridian dev` in one terminal (UI hot-reloads on save at http://localhost:3939, Ctrl-C to stop); when you change Rust, run `meridian dev daemon` in a second terminal. The daemon's launchd agent runs `target/release/meridian` via a symlink, so a release build is picked up in place.
+
+`meridian dev` / `meridian dev daemon` **leave the MLX model loaded** (fast) — only `meridian dev mlx` and `meridian restart` reload it, so avoid `meridian restart` in a tight loop. `meridian dev` waits for the MLX server to be ready before starting the daemon (which hard-exits if MLX is unreachable). Migrations apply automatically on daemon start. Note `meridian dev` stops the launchd dashboard to free the port for the dev server — bring the production dashboard back with `meridian start`.
 
 To test one stage without the background daemon (hits the same `~/.meridian/meridian.db`):
 
