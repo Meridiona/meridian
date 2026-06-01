@@ -3,7 +3,7 @@
 import { NextResponse } from 'next/server'
 import getDb from '@/lib/db'
 import { localDayBounds, todayString } from '@/lib/date-utils'
-import { sessionInterval, unionSeconds } from '@/lib/intervals'
+import { sessionInterval, unionSeconds, intersectSeconds, mergeIntervals, type Interval } from '@/lib/intervals'
 
 export const dynamic = 'force-dynamic'
 
@@ -15,7 +15,7 @@ export interface TaskSummary {
   provider: string
   url: string
   today_s: number
-  today_agent_s: number  // agent-only slice of today_s (today_s − your foreground time)
+  today_autonomous_s: number  // agent time on the task that ran while you were away
   week_s: number
   session_count: number
   cats: Record<string, number>
@@ -44,61 +44,67 @@ export async function GET() {
       ORDER BY task_key DESC
     `).all() as Array<Record<string, unknown>>
 
-    // Per-task time is the UNION of every session linked to the task, across
-    // BOTH recording streams — foreground screen capture AND the coding-agent
-    // transcript overlay. The two streams record the same wall-clock from two
-    // angles, so SUMMING duration_s double-counts every overlapping second
-    // (and lets a parked-open agent window inflate a task to impossible hours).
-    // `sessionInterval` caps agent rows to their engaged duration; `unionSeconds`
-    // then counts overlapping time once and agent-only time still counts.
+    // A task's time = YOUR hands-on time on it + the agent time that ran while
+    // you were AWAY (autonomous). Agent time alongside you (supervised) is not
+    // added — that wall-clock is already your presence, and adding it would
+    // double-count the day and inflate a task past your Focus. So we need your
+    // full presence (every foreground session, task or not) to tell autonomous
+    // from supervised agent time.
     interface SessionRow { started_at: string; ended_at: string; duration_s: number; claude_session_uuid: string | null; category: string | null; task_key: string }
 
-    const todaySessions = db.prepare(`
-      SELECT s.started_at, s.ended_at, s.duration_s, s.claude_session_uuid, s.category, s.task_key
-      FROM app_sessions s
-      WHERE s.started_at >= ? AND s.started_at < ?
-        AND s.task_session_type = 'task'
-        AND s.task_key IS NOT NULL
-    `).all(todayStart, todayEnd) as SessionRow[]
+    const fgPresenceRows = (start: string, end: string) =>
+      (db.prepare(`
+        SELECT s.started_at, s.ended_at, s.duration_s, s.claude_session_uuid, s.category, s.task_key
+        FROM app_sessions s
+        WHERE s.started_at >= ? AND s.started_at < ? AND s.claude_session_uuid IS NULL
+      `).all(start, end) as SessionRow[])
+        .map(r => ({ started_at: r.started_at, ended_at: r.ended_at }))
 
-    const weekSessions = db.prepare(`
-      SELECT s.started_at, s.ended_at, s.duration_s, s.claude_session_uuid, s.task_key
-      FROM app_sessions s
-      WHERE s.started_at >= ? AND s.started_at < ?
-        AND s.task_session_type = 'task'
-        AND s.task_key IS NOT NULL
-    `).all(ws, todayEnd) as SessionRow[]
+    const todayPresence = mergeIntervals(fgPresenceRows(todayStart, todayEnd))
+    const weekPresence = mergeIntervals(fgPresenceRows(ws, todayEnd))
 
-    // group rows by task, then union each group's intervals
+    const taskSessions = (start: string, end: string) =>
+      db.prepare(`
+        SELECT s.started_at, s.ended_at, s.duration_s, s.claude_session_uuid, s.category, s.task_key
+        FROM app_sessions s
+        WHERE s.started_at >= ? AND s.started_at < ?
+          AND s.task_session_type = 'task'
+          AND s.task_key IS NOT NULL
+      `).all(start, end) as SessionRow[]
+
+    const todaySessions = taskSessions(todayStart, todayEnd)
+    const weekSessions = taskSessions(ws, todayEnd)
+
+    // your time on the task + autonomous agent time (agent intervals outside presence)
+    const taskTime = (rows: SessionRow[], presence: Interval[]) => {
+      const fg = rows.filter(r => r.claude_session_uuid == null).map(sessionInterval)
+      const agent = rows.filter(r => r.claude_session_uuid != null).map(sessionInterval)
+      const your_s = unionSeconds(fg)
+      const autonomous_s = Math.max(0, unionSeconds(agent) - intersectSeconds(agent, presence))
+      return { your_s, autonomous_s, total_s: your_s + autonomous_s }
+    }
+
     const todayRowsByTask: Record<string, SessionRow[]> = {}
     todaySessions.forEach(s => { (todayRowsByTask[s.task_key] ??= []).push(s) })
     const weekRowsByTask: Record<string, SessionRow[]> = {}
     weekSessions.forEach(s => { (weekRowsByTask[s.task_key] ??= []).push(s) })
 
-    const todayByTask: Record<string, { dur: number; agent_s: number; sessions: number; cats: Record<string, number> }> = {}
+    const todayByTask: Record<string, { dur: number; autonomous_s: number; sessions: number; cats: Record<string, number> }> = {}
     for (const [k, rows] of Object.entries(todayRowsByTask)) {
-      // Category split is the FOREGROUND share only — the agent overlay is the
-      // same work from a second angle, so folding its raw duration in here would
-      // re-introduce the double-count the union exists to prevent.
+      // Category split is the FOREGROUND share only — proportions for the bar.
       const fgRows = rows.filter(r => r.claude_session_uuid == null)
       const cats: Record<string, number> = {}
       fgRows.forEach(r => {
         const cat = r.category || 'idle_personal'
         cats[cat] = (cats[cat] ?? 0) + r.duration_s
       })
-      const dur = unionSeconds(rows.map(sessionInterval))
-      const fg = unionSeconds(fgRows.map(sessionInterval))
-      todayByTask[k] = {
-        dur,
-        agent_s: Math.max(0, dur - fg),
-        sessions: rows.length,
-        cats,
-      }
+      const t = taskTime(rows, todayPresence)
+      todayByTask[k] = { dur: t.total_s, autonomous_s: t.autonomous_s, sessions: fgRows.length, cats }
     }
 
     const weekByTask: Record<string, number> = {}
     for (const [k, rows] of Object.entries(weekRowsByTask)) {
-      weekByTask[k] = unionSeconds(rows.map(sessionInterval))
+      weekByTask[k] = taskTime(rows, weekPresence).total_s
     }
 
     // unassigned today
@@ -120,7 +126,7 @@ export async function GET() {
         provider: (t.provider as string) || 'jira',
         url: (t.url as string) || '',
         today_s: agg?.dur ?? 0,
-        today_agent_s: agg?.agent_s ?? 0,
+        today_autonomous_s: agg?.autonomous_s ?? 0,
         week_s: weekByTask[k] ?? 0,
         session_count: agg?.sessions ?? 0,
         cats: agg?.cats ?? {},
