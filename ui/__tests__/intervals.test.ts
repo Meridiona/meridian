@@ -1,6 +1,6 @@
 // meridian — normalises screenpipe activity into structured app sessions
 import { describe, it, expect } from 'bun:test'
-import { unionSeconds, countSwitches } from '../lib/intervals'
+import { unionSeconds, countSwitches, mergeIntervals, intersectSeconds } from '../lib/intervals'
 
 // ISO helper: minutes-past-midnight UTC → ISO string, keeps cases readable.
 const at = (min: number) => new Date(Date.UTC(2026, 0, 1, 0, min, 0)).toISOString()
@@ -81,5 +81,69 @@ describe('countSwitches', () => {
 
   it('orders by start time before counting', () => {
     expect(countSwitches([s('Chrome', 20, 600), s('Code', 0, 600)], 15)).toBe(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// mergeIntervals — disjoint bands for the timeline
+// ---------------------------------------------------------------------------
+
+describe('mergeIntervals', () => {
+  it('returns an empty list for no intervals', () => {
+    expect(mergeIntervals([])).toEqual([])
+  })
+
+  it('leaves disjoint intervals untouched (count + span)', () => {
+    const m = mergeIntervals([iv(0, 10), iv(20, 25)])
+    expect(m.length).toBe(2)
+    expect(unionSeconds(m)).toBe(900)
+  })
+
+  it('collapses overlapping intervals into one band', () => {
+    const m = mergeIntervals([iv(0, 30), iv(10, 40)])
+    expect(m.length).toBe(1)
+    expect(unionSeconds(m)).toBe(2400)
+  })
+
+  it('merges touching intervals into one', () => {
+    expect(mergeIntervals([iv(0, 10), iv(10, 20)]).length).toBe(1)
+  })
+
+  it('drops corrupt intervals before merging', () => {
+    const m = mergeIntervals([iv(0, 10), { started_at: at(30), ended_at: at(5) }])
+    expect(m.length).toBe(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// intersectSeconds — agent ∩ active (supervised) vs outside (autonomous)
+// ---------------------------------------------------------------------------
+
+describe('intersectSeconds', () => {
+  it('returns 0 when sets do not overlap', () => {
+    expect(intersectSeconds([iv(0, 10)], [iv(20, 30)])).toBe(0)
+  })
+
+  it('returns the overlapping span of two intervals', () => {
+    // agent 10–40 over active 0–30 → supervised = 10–30 = 20 min
+    expect(intersectSeconds([iv(10, 40)], [iv(0, 30)])).toBe(1200)
+  })
+
+  it('is symmetric', () => {
+    expect(intersectSeconds([iv(10, 40)], [iv(0, 30)])).toBe(intersectSeconds([iv(0, 30)], [iv(10, 40)]))
+  })
+
+  it('sums overlap across multiple disjoint blocks', () => {
+    // active in two blocks 0–10 and 20–30; agent spans 5–25 → overlaps 5–10 (5m) + 20–25 (5m)
+    expect(intersectSeconds([iv(5, 25)], [iv(0, 10), iv(20, 30)])).toBe(600)
+  })
+
+  it('never exceeds either set (autonomous = agent − supervised ≥ 0)', () => {
+    const agent = [iv(0, 60)]
+    const active = [iv(10, 30), iv(40, 50)]
+    const supervised = intersectSeconds(agent, active)
+    const agentTotal = unionSeconds(agent)
+    expect(agentTotal - supervised).toBeGreaterThanOrEqual(0)
+    expect(supervised).toBe(1800) // 20m + 10m
   })
 })
