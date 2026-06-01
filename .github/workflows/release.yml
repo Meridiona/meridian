@@ -6,8 +6,11 @@ name: Release
 # (@meridiona/meridian + @meridiona/meridian-darwin-arm64), creates the GitHub
 # release + tag + CHANGELOG, and commits the version bump back to main.
 #
-# Runs on macos-14 (arm64) because the prepare step compiles the Metal/MLX
-# daemon + the dashboard for that target.
+# Runs on macos-26 (arm64) because the prepare step compiles the Swift
+# Foundation Models bridge — which needs the macOS 26 SDK — plus the
+# Metal/MLX daemon and the dashboard. The bridge is weak-linked, so the
+# resulting binary still launches on older macOS (Foundation Models simply
+# reports unavailable there).
 
 on:
   push:
@@ -25,13 +28,14 @@ concurrency:
 
 jobs:
   release:
-    runs-on: macos-14
+    runs-on: macos-26
     env:
       SQLX_OFFLINE: "true"
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0          # full history — semantic-release needs tags + commits
+          fetch-depth: 0          # full history — semantic-release needs commits
+          fetch-tags: true        # explicitly fetch tags so the v0.0.0 baseline is seen
           persist-credentials: false
 
       - name: Install Rust 1.93.1
