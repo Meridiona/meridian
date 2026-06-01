@@ -46,9 +46,12 @@ from agents._system_context import SYSTEM_CONTEXT
 log = logging.getLogger("agents.run_task_linker_mlx")
 tracer = observability.setup("meridian-task-linker-mlx")
 
-_CONTEXT_WINDOW = 5
-_MAX_TOKENS = 1024
-_TEMPERATURE = 0.0  # greedy decoding — deterministic classification
+# Sampling and context-window knobs — env-overridable so eval-pipeline config
+# sweeps can vary them without editing this file. Defaults preserve historical
+# production behaviour (greedy decoding, 1024 tokens, 5 recent sessions).
+_CONTEXT_WINDOW = int(os.environ.get("MLX_CONTEXT_WINDOW", "5"))
+_MAX_TOKENS     = int(os.environ.get("MLX_MAX_TOKENS",     "1024"))
+_TEMPERATURE    = float(os.environ.get("MLX_TEMPERATURE",  "0.0"))  # 0.0 = greedy
 
 _MLX_MODEL_ID = os.environ.get(
     "MLX_MODEL_ID", "mlx-community/Qwen3.5-9B-OptiQ-4bit"

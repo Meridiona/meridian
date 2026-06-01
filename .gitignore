@@ -83,6 +83,10 @@ services/tests/evals/.loop_procedure.md
 # Versioned manually when promoted; never auto-committed.
 services/skills/activity/task-classifier/skill_v[0-9]*.md
 !services/skills/activity/task-classifier/skill_v1.md
+
+# Autonomous sampling-sweep run logs — high-detail per-iteration narratives
+services/tests/evals/.sweep_logs/
+services/tests/evals/.sweep_state.json
 dist/
 
 # root release-tooling deps
