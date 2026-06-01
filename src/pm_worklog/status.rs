@@ -88,7 +88,8 @@ async fn print_status(pool: &SqlitePool, day_utc: &str) -> Result<()> {
     .await
     .context("read pm_worklogs")?;
 
-    let (mut drafted, mut posted, mut skipped, mut failed) = (0u32, 0u32, 0u32, 0u32);
+    let (mut drafted, mut approved, mut posted, mut skipped, mut failed) =
+        (0u32, 0u32, 0u32, 0u32, 0u32);
     let mut total_secs: i64 = 0;
     struct Line {
         hour: String,
@@ -104,6 +105,7 @@ async fn print_status(pool: &SqlitePool, day_utc: &str) -> Result<()> {
         let state: String = r.get("state");
         match state.as_str() {
             "posted" => posted += 1,
+            "approved" => approved += 1,
             "drafted" => drafted += 1,
             "skipped" => skipped += 1,
             "failed" => failed += 1,
@@ -128,11 +130,6 @@ async fn print_status(pool: &SqlitePool, day_utc: &str) -> Result<()> {
     }
 
     // ── Header ─────────────────────────────────────────────────────────────
-    let posting = if cfg.post_enabled {
-        "ON (posts to Jira)"
-    } else {
-        "OFF (dry-run — drafts only)"
-    };
     println!();
     println!("  PM Worklog Status — {day_utc} (times shown in local tz)");
     println!("  ─────────────────────────────────────────────────────────────");
@@ -143,10 +140,13 @@ async fn print_status(pool: &SqlitePool, day_utc: &str) -> Result<()> {
     };
     println!("  Hours:    {done} done · {pending} pending{stuck_note}");
     println!(
-        "  Worklogs: {drafted} drafted · {posted} posted · {skipped} skipped · {failed} failed   ({} total)",
+        "  Worklogs: {drafted} drafted · {approved} approved · {posted} posted · {skipped} skipped · {failed} failed   ({} total)",
         fmt_secs(total_secs)
     );
-    println!("  Posting:  {posting}");
+    println!("  Posting:  approval-gated — review & approve in the dashboard to post to Jira");
+    if approved > 0 {
+        println!("            ({approved} approved, awaiting the next post sweep ~60s)");
+    }
 
     if lines.is_empty() {
         println!();

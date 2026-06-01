@@ -29,12 +29,6 @@ pub struct PmWorklogConfig {
     /// Jira's hard minimum — worklogs below this many real seconds are not
     /// posted (Jira rejects < 60s).
     pub min_post_seconds: i64,
-
-    /// Master safety switch for the daemon driver. Default `false`: the driver
-    /// runs in dry-run (drafts worklog rows but never POSTs to real Jira) until
-    /// a human flips `PM_WORKLOG_POST_ENABLED=true`. The CLI `--dry-run` flag is
-    /// independent of this.
-    pub post_enabled: bool,
 }
 
 fn env_str(key: &str, default: &str) -> String {
@@ -59,9 +53,6 @@ impl PmWorklogConfig {
             min_coverage: env_parse("PM_WORKLOG_MIN_COVERAGE", 0.80),
             readiness_aging_minutes: env_parse("PM_WORKLOG_READINESS_AGING_MIN", 90),
             min_post_seconds: env_parse("PM_WORKLOG_MIN_POST_SECONDS", 60),
-            post_enabled: std::env::var("PM_WORKLOG_POST_ENABLED")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false),
         }
     }
 }
