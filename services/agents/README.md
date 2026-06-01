@@ -45,8 +45,8 @@ meridian.db  →  app_sessions
              sends it to the agno worklog synthesiser hosted on the MLX server:
                POST http://127.0.0.1:7823/synthesise_worklog  {bundle: ...}
                → JiraUpdate {summary, evidence-bearing bullets, confidence}
-             Rust grounds the result and posts the Jira worklog itself
-             (REST), gated behind PM_WORKLOG_POST_ENABLED.
+             Rust grounds the result and DRAFTS the worklog; it posts to Jira
+             (REST) only after a human approves it in the dashboard.
 ```
 
 ---
@@ -386,7 +386,7 @@ cargo run --bin backfill_task_classification -- --dry-run --today
 
 ## Limitations / known gaps
 
-- **Jira write-backs are handled by the pm-worklog (Stage 4) driver, not from classification.** Classification only maps a session to a ticket. Jira worklogs are produced by the Rust hour-driven driver (`src/pm_worklog/`), which synthesises each worklog via the MLX server's `/synthesise_worklog` and posts it itself over REST (gated behind `PM_WORKLOG_POST_ENABLED`). The `dispatch_queue` table is reserved for future GitHub/Linear write-backs and is not yet drained.
+- **Jira write-backs are handled by the pm-worklog (Stage 4) driver, not from classification.** Classification only maps a session to a ticket. Jira worklogs are produced by the Rust hour-driven driver (`src/pm_worklog/`), which synthesises each worklog via the MLX server's `/synthesise_worklog` and DRAFTS it; it posts to Jira over REST only after a human approves the worklog in the dashboard (Worklogs view). The `dispatch_queue` table is reserved for future GitHub/Linear write-backs and is not yet drained.
 - **`pm_tasks` populated by Rust.** The classifier receives `pm_tasks` as part of the JSON payload from the Rust daemon. If the Rust intelligence module hasn't synced tasks yet (clean install, first run), `pm_tasks` will be empty and every session gets `routing=skip`. Run the Rust daemon for at least one full cycle first.
 - **No re-classification UI.** There is no CLI to re-run classification on a single session — construct the JSON payload manually (see debugging guide above) or trigger the Rust daemon.
 - **Coding-agent sessions are classified on their summary, not their transcript.** The Rust coding-agent ingest (`src/coding_agent_session_ingest/`) seals and summarises each segment first; rows walk `coding_agent_live → pending_summariser → pending_classifier`, and only then does the classification trigger send them to the MLX server. A coding session therefore appears as a worklog candidate only after its summary exists.
