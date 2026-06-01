@@ -1,3 +1,10 @@
+## [1.2.1](https://github.com/Meridiona/meridian/compare/v1.2.0...v1.2.1) (2026-06-01)
+
+
+### Bug Fixes
+
+* **release:** migrate npm publish to OIDC trusted publishing (drop NPM_TOKEN) ([#79](https://github.com/Meridiona/meridian/issues/79)) ([50f6066](https://github.com/Meridiona/meridian/commit/50f606640231e7bd2852993b28fed14b378ee76c))
+
 # [1.2.0](https://github.com/Meridiona/meridian/compare/v1.1.0...v1.2.0) (2026-06-01)
 
 
