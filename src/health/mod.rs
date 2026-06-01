@@ -39,6 +39,9 @@ pub struct Check {
     pub severity: Severity,
     pub detail: String,
     pub layer: &'static str,
+    /// The human action that fixes this check, shown as a `→` line in the doctor
+    /// report. Set on prerequisites and actionable faults; `None` otherwise.
+    pub remedy: Option<String>,
 }
 
 impl Check {
@@ -48,6 +51,7 @@ impl Check {
             severity: Severity::Ok,
             detail: detail.into(),
             layer,
+            remedy: None,
         }
     }
 
@@ -57,6 +61,7 @@ impl Check {
             severity: Severity::Warn,
             detail: detail.into(),
             layer,
+            remedy: None,
         }
     }
 
@@ -70,7 +75,14 @@ impl Check {
             severity: Severity::Critical,
             detail: detail.into(),
             layer,
+            remedy: None,
         }
+    }
+
+    /// Attach the remedy (the fix-it action) shown under a failing check.
+    pub fn with_remedy(mut self, remedy: impl Into<String>) -> Self {
+        self.remedy = Some(remedy.into());
+        self
     }
 }
 
@@ -101,6 +113,12 @@ impl Report {
                 c.name,
                 c.detail
             ));
+            // Show the fix-it action under any non-passing check that has one.
+            if c.severity != Severity::Ok {
+                if let Some(remedy) = &c.remedy {
+                    s.push_str(&format!("         → {remedy}\n"));
+                }
+            }
         }
         let summary = match self.worst() {
             Severity::Ok => "all checks passed",
