@@ -12,7 +12,7 @@ set -euo pipefail
 APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCREENPIPE_VERSION="0.3.350"
 MLX_PORT="${MLX_PORT:-7823}"
-UI_PORT="${MERIDIAN_UI_PORT:-3939}"   # dashboard port; off the common 3000 to avoid clashes
+UI_PORT="${MERIDIAN_UI_PORT:-3939}"   # dashboard port (override via MERIDIAN_UI_PORT)
 SKIP_PERMISSIONS=0
 [[ "${1:-}" == "--skip-permissions" ]] && SKIP_PERMISSIONS=1
 
