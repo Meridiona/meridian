@@ -18,7 +18,12 @@ function expandTilde(filePath: string): string {
 }
 
 function getDb(): Database.Database {
-  if (process.env.NODE_ENV !== 'production' && globalThis.__meridian_db__) {
+  // Cache the connection in ALL environments. In a long-running production
+  // server, opening a fresh connection per request would leak file descriptors
+  // (db + -wal + -shm) and page-cache memory until GC finalizes each handle —
+  // the source of the unbounded RSS growth seen under request load. The
+  // single read-only handle is safe to share across concurrent requests.
+  if (globalThis.__meridian_db__) {
     return globalThis.__meridian_db__
   }
 
@@ -32,9 +37,7 @@ function getDb(): Database.Database {
 
   db.pragma('busy_timeout = 5000')
 
-  if (process.env.NODE_ENV !== 'production') {
-    globalThis.__meridian_db__ = db
-  }
+  globalThis.__meridian_db__ = db
 
   return db
 }
