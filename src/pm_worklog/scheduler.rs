@@ -148,9 +148,17 @@ pub async fn run_loop(pool: SqlitePool, mut shutdown_rx: watch::Receiver<bool>) 
         // Process yesterday AND today every pass. Yesterday's done hours skip
         // instantly via the ledger; this closes the day-rollover gap where the
         // previous day's last hours would otherwise strand at midnight.
+        // Refresh the PM task cache before drafting so worklog prose reflects
+        // current ticket metadata (title/status/assignee). Gated — a no-op if a
+        // classification pass already refreshed it within SYNC_INTERVAL_MINS.
+        let config = Config::from_env();
+        if let Err(e) = crate::intelligence::run_pm_sync(&pool, &config).await {
+            tracing::warn!(error = %e, "pm_tasks refresh before worklog pass failed — using cached tasks");
+        }
+
         let today = Local::now().date_naive();
         let days: Vec<Option<NaiveDate>> = vec![today.pred_opt(), Some(today)];
-        let min_duration_s = Config::from_env().min_classification_duration_s;
+        let min_duration_s = config.min_classification_duration_s;
         for day in days.into_iter().flatten() {
             match run_driver(&pool, &cfg, min_duration_s, Some(day)).await {
                 Ok(s) => tracing::info!(

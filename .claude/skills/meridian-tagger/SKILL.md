@@ -1,6 +1,6 @@
 ---
 name: meridian-tagger
-description: "Debug and work with Meridian's task classification engine. Covers the hermes AIAgent classifier, the long-running daemon, and common misclassification recipes."
+description: "Debug and work with Meridian's task classification engine. Covers the MLX classifier server, the long-running daemon, and common misclassification recipes."
 allowed-tools: Bash, Read, Edit, Grep
 ---
 
@@ -11,7 +11,7 @@ The tagger reads completed `app_sessions` rows that the Rust ETL committed to `m
 ## When to invoke this skill
 
 - Debugging why a session got classified with the wrong ticket
-- Tuning classifier prompts (hermes AIAgent)
+- Tuning classifier prompts (MLX classifier server)
 - Investigating why the dashboard's Today's Tickets tile is empty
 
 ## How the Tagger Works
@@ -26,7 +26,7 @@ new app_sessions row (Rust ETL, every ~60s)
        │     trivial overhead → ticket_links overhead/skip, no agent
        │
        └─ Classification Engine (services/agents/agent_tiebreaker.py)
-             • single-shot via hermes AIAgent (run_agent.py)
+             • single-shot via the MLX classifier server (/classify_sessions)
              • matches session to task based on screen content + history
              • writes ticket_links with task assignment or overhead marker
              • infers session_dimensions (multi-label activity tags)
@@ -186,7 +186,7 @@ cargo run --bin backfill_session_categories -- --from-id 100   # from 100 onward
 cargo run --bin backfill_session_categories -- --dry-run --today
 ```
 
-### Task classification (hermes)
+### Task classification (MLX)
 
 ```bash
 # Re-link sessions to Jira tasks from today or yesterday

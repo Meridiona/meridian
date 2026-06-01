@@ -61,11 +61,19 @@ pub(super) async fn update_session_task(
     } else {
         Some(&r.session_summary)
     };
+    // Empty → NULL so a missing explanation doesn't overwrite with "".
+    let category_explanation = if r.category_explanation.is_empty() {
+        None
+    } else {
+        Some(&r.category_explanation)
+    };
     sqlx::query(
         "UPDATE app_sessions
          SET task_key = ?, task_confidence = ?, task_routing = ?,
              task_method = ?, task_reasoning = ?, task_session_type = ?,
-             session_summary = ?
+             session_summary = ?,
+             category = ?, confidence = ?, category_method = 'mlx',
+             category_explanation = ?
          WHERE id = ?",
     )
     .bind(&r.task_key)
@@ -75,6 +83,9 @@ pub(super) async fn update_session_task(
     .bind(reasoning)
     .bind(&r.session_type)
     .bind(summary)
+    .bind(&r.category)
+    .bind(r.category_confidence)
+    .bind(category_explanation)
     .bind(r.session_id)
     .execute(pool)
     .await

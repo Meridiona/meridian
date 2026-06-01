@@ -66,7 +66,7 @@ cd meridian
 ./install.sh
 ```
 
-Builds the daemon + UI from source and registers the same services. Flags: `--no-ui`, `--dry-run`, `--no-daemon`, `--skip-permissions`, `--skip-env`, `--no-mlx` (use the hermes LLM-selector backend instead of the MLX server).
+Builds the daemon + UI from source and registers the same services. Flags: `--no-ui`, `--dry-run`, `--no-daemon`, `--skip-permissions`, `--skip-env`, `--mlx-port N` (MLX server port, default 7823).
 
 Once installed, use `meridian dev …` to rebuild + restart after edits — see [Development](#development).
 
@@ -175,7 +175,6 @@ All settings are via environment variables; defaults work out of the box.
 | `POLL_INTERVAL_SECS` | `60` | How often to check for new screenpipe frames |
 | `CLASSIFICATION_ENABLED` | `true` | Enable session→task classification via MLX server |
 | `MLX_SERVER_PORT` | `7823` | Port the persistent MLX inference server listens on |
-| `CLASSIFIER_BACKEND` | `mlx` | Classification backend (`mlx` is the only supported value) |
 | `CLASSIFICATION_TIMEOUT_S` | `120` | Per-session inference timeout in seconds |
 
 Example:
