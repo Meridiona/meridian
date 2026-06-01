@@ -1,3 +1,10 @@
+# [1.1.0](https://github.com/Meridiona/meridian/compare/v1.0.0...v1.1.0) (2026-06-01)
+
+
+### Features
+
+* **install:** dashboard on port 3939 (overridable) + disable screenpipe audio ([#77](https://github.com/Meridiona/meridian/issues/77)) ([4182b93](https://github.com/Meridiona/meridian/commit/4182b931611e8428b6705e011ee0955e8edcdd63))
+
 # 1.0.0 (2026-06-01)
 
 
