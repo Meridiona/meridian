@@ -73,3 +73,6 @@ services/tests/evals/results/
 __pycache__/
 *.pyc
 dist/
+
+# root release-tooling deps
+/node_modules/
