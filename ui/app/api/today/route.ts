@@ -78,6 +78,10 @@ export interface TodayResponse {
   // capped coding-agent overlay). This is the authoritative per-task figure the
   // "By task" buckets and the Tasks page both render, so the two views agree.
   task_totals: Record<string, number>
+  // task_key → the agent-only slice of that total (total − your foreground time
+  // on the task). Surfaced as "incl. Xm agent" so a task exceeding Focus reads
+  // as AI-assisted effort, not a miscount.
+  task_agent_s: Record<string, number>
   // engaged_s: focus_s + autonomous agent time — the denominator for the per-task
   // "% of day" so a task carrying autonomous agent work never exceeds 100%.
   engaged_s: number
@@ -231,19 +235,30 @@ export async function GET() {
     // ── Per-task union totals (foreground + capped agent overlay) ──────────────
     // Built from allRows (both streams) so a task's figure matches the Tasks page
     // exactly. Same filter as /api/tasks: a real task link, session_type = 'task'.
+    // We also split out the agent-only portion (total − your foreground time on
+    // the task) so the UI can show why a task can exceed your Focus.
     const taskIntervals: Record<string, Interval[]> = {}
+    const taskFgIntervals: Record<string, Interval[]> = {}
     allRows.forEach(r => {
       if (r.task_key == null || r.session_type !== 'task') return
       const k = r.task_key as string
-      ;(taskIntervals[k] ??= []).push(sessionInterval({
+      const iv = sessionInterval({
         started_at: r.started_at as string,
         ended_at: r.ended_at as string,
         duration_s: (r.duration_s as number) ?? 0,
         claude_session_uuid: (r.claude_session_uuid as string) ?? null,
-      }))
+      })
+      ;(taskIntervals[k] ??= []).push(iv)
+      if (r.claude_session_uuid == null) (taskFgIntervals[k] ??= []).push(iv)
     })
     const task_totals: Record<string, number> = {}
-    for (const [k, ivs] of Object.entries(taskIntervals)) task_totals[k] = unionSeconds(ivs)
+    const task_agent_s: Record<string, number> = {}
+    for (const [k, ivs] of Object.entries(taskIntervals)) {
+      const total = unionSeconds(ivs)
+      const fg = unionSeconds(taskFgIntervals[k] ?? [])
+      task_totals[k] = total
+      task_agent_s[k] = Math.max(0, total - fg)
+    }
     const engaged_s = focus_s + autonomous_s
 
     const resp: TodayResponse = {
@@ -261,6 +276,7 @@ export async function GET() {
       session_count: sessions.length + (active ? 1 : 0),
       switch_count,
       task_totals,
+      task_agent_s,
       engaged_s,
     }
 
@@ -272,7 +288,7 @@ export async function GET() {
       focus_s: 0, idle_s: 0, agent_s: 0, supervised_s: 0, autonomous_s: 0,
       presence_segments: [], agent_segments: [],
       session_count: 0, switch_count: 0,
-      task_totals: {}, engaged_s: 0,
+      task_totals: {}, task_agent_s: {}, engaged_s: 0,
     } satisfies TodayResponse)
   }
 }

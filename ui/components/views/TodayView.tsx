@@ -32,6 +32,7 @@ interface Bucket {
   title: string
   sessions: BucketSession[]
   total_s: number
+  agent_s: number  // agent-only slice of total_s (0 for non-task buckets)
   cats: Set<string>
   day_total_s: number
   isOverhead: boolean
@@ -205,7 +206,14 @@ function BucketRow({ bucket }: { bucket: Bucket }) {
         </div>
         <div className="text-right">
           <p className="font-mono tnum text-[18px] leading-none" style={{ color: 'var(--ink)' }}>{fmtDur(bucket.total_s)}</p>
-          <p className="text-[11px] mt-1.5" style={{ color: 'var(--ink-3)' }}>{pct}% of day</p>
+          <p className="text-[11px] mt-1.5" style={{ color: 'var(--ink-3)' }}>
+            {pct}% of day
+            {bucket.agent_s >= 60 && (
+              <span title="AI agent time on this task beyond your own screen time — included in the total, which is why a task can exceed your Focus">
+                {' · incl. '}{fmtDur(bucket.agent_s)} agent
+              </span>
+            )}
+          </p>
         </div>
       </button>
 
@@ -357,7 +365,7 @@ export default function TodayView({ onNavigate }: { onNavigate?: (v: string, key
 
   function pushToBucket(key: string, session: BucketSession) {
     if (!bucketMap.has(key)) {
-      bucketMap.set(key, { key, title: '', sessions: [], total_s: 0, cats: new Set(), day_total_s: total_s, isOverhead: false, isUntracked: false, isQueue: false })
+      bucketMap.set(key, { key, title: '', sessions: [], total_s: 0, agent_s: 0, cats: new Set(), day_total_s: total_s, isOverhead: false, isUntracked: false, isQueue: false })
     }
     const b = bucketMap.get(key)!
     b.sessions.push(session)
@@ -388,9 +396,11 @@ export default function TodayView({ onNavigate }: { onNavigate?: (v: string, key
     // foreground session durs above only filled `b.total_s` as a fallback.
     const isTask = !b.key.startsWith('_')
     const total = isTask ? (data.task_totals[b.key] ?? b.total_s) : b.total_s
+    const agent_s = isTask ? (data.task_agent_s[b.key] ?? 0) : 0
     return {
       ...b,
       total_s: total,
+      agent_s,
       isOverhead: b.key === '_overhead',
       isUntracked: b.key === '_untracked',
       isQueue: b.key === '_queue',

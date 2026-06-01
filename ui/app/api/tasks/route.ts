@@ -15,6 +15,7 @@ export interface TaskSummary {
   provider: string
   url: string
   today_s: number
+  today_agent_s: number  // agent-only slice of today_s (today_s − your foreground time)
   week_s: number
   session_count: number
   cats: Record<string, number>
@@ -74,18 +75,22 @@ export async function GET() {
     const weekRowsByTask: Record<string, SessionRow[]> = {}
     weekSessions.forEach(s => { (weekRowsByTask[s.task_key] ??= []).push(s) })
 
-    const todayByTask: Record<string, { dur: number; sessions: number; cats: Record<string, number> }> = {}
+    const todayByTask: Record<string, { dur: number; agent_s: number; sessions: number; cats: Record<string, number> }> = {}
     for (const [k, rows] of Object.entries(todayRowsByTask)) {
       // Category split is the FOREGROUND share only — the agent overlay is the
       // same work from a second angle, so folding its raw duration in here would
       // re-introduce the double-count the union exists to prevent.
+      const fgRows = rows.filter(r => r.claude_session_uuid == null)
       const cats: Record<string, number> = {}
-      rows.filter(r => r.claude_session_uuid == null).forEach(r => {
+      fgRows.forEach(r => {
         const cat = r.category || 'idle_personal'
         cats[cat] = (cats[cat] ?? 0) + r.duration_s
       })
+      const dur = unionSeconds(rows.map(sessionInterval))
+      const fg = unionSeconds(fgRows.map(sessionInterval))
       todayByTask[k] = {
-        dur: unionSeconds(rows.map(sessionInterval)),
+        dur,
+        agent_s: Math.max(0, dur - fg),
         sessions: rows.length,
         cats,
       }
@@ -115,6 +120,7 @@ export async function GET() {
         provider: (t.provider as string) || 'jira',
         url: (t.url as string) || '',
         today_s: agg?.dur ?? 0,
+        today_agent_s: agg?.agent_s ?? 0,
         week_s: weekByTask[k] ?? 0,
         session_count: agg?.sessions ?? 0,
         cats: agg?.cats ?? {},

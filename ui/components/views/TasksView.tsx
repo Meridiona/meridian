@@ -141,6 +141,12 @@ function TaskDetail({ task, sessions }: { task: TaskSummary; sessions: TodayResp
         <div className="px-5 py-4">
           <p className="text-[10px] uppercase tracking-[0.16em] mb-2" style={{ color: 'var(--ink-3)' }}>Today</p>
           <p className="font-mono tnum text-[22px] leading-none" style={{ color: 'var(--ink)' }}>{fmtDur(task.today_s)}</p>
+          {task.today_agent_s >= 60 && (
+            <p className="text-[10px] mt-1.5" style={{ color: 'var(--ink-3)' }}
+              title="AI agent time on this task beyond your own screen time — included in the total">
+              incl. {fmtDur(task.today_agent_s)} agent
+            </p>
+          )}
         </div>
         <div className="px-5 py-4 rule-l" style={{ borderLeftColor: 'var(--rule)' }}>
           <p className="text-[10px] uppercase tracking-[0.16em] mb-2" style={{ color: 'var(--ink-3)' }}>This week</p>
