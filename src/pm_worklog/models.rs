@@ -140,10 +140,16 @@ pub struct GroundedNarrative {
     pub dropped_bullets: Vec<String>,
 }
 
-/// Lifecycle state of a worklog row (mirrors Python `UpdateState`).
+/// Lifecycle state of a worklog row.
+///
+///   drafted ──(UI edit)──▶ drafted ──(UI approve)──▶ approved ──(daemon)──▶ posted
+///
+/// `Approved` is set by the dashboard, never by the daemon: the driver only ever
+/// drafts, and the approved-sweep is the sole path that posts to Jira.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateState {
     Drafted,
+    Approved,
     Posted,
     Skipped,
     Failed,
@@ -153,6 +159,7 @@ impl UpdateState {
     pub fn as_str(self) -> &'static str {
         match self {
             UpdateState::Drafted => "drafted",
+            UpdateState::Approved => "approved",
             UpdateState::Posted => "posted",
             UpdateState::Skipped => "skipped",
             UpdateState::Failed => "failed",

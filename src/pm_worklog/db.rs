@@ -25,6 +25,12 @@ pub async fn upsert_pm_worklog(
     let update = &grounded.update;
     let payload_json = serde_json::to_string(update).context("serialise JiraUpdate payload")?;
 
+    // The DO UPDATE guard is the safety net for the human-in-the-loop flow: once
+    // a row is `approved` or `posted`, a later driver re-run (backfill, aging
+    // retry, manual `meridian pm-worklog --day …`) MUST NOT overwrite the user's
+    // edit/approval back to a fresh draft. When the guard blocks the update the
+    // conflict becomes a no-op and `RETURNING` yields nothing, so we fall back to
+    // reading the existing id.
     let row = sqlx::query(
         "INSERT INTO pm_worklogs (\
              task_key, day_utc, cycle_index, window_start, window_end, \
@@ -39,6 +45,7 @@ pub async fn upsert_pm_worklog(
              payload_json       = excluded.payload_json, \
              session_id_min     = excluded.session_id_min, \
              session_id_max     = excluded.session_id_max \
+         WHERE pm_worklogs.state NOT IN ('approved', 'posted') \
          RETURNING id",
     )
     .bind(&update.task_key)
@@ -53,11 +60,34 @@ pub async fn upsert_pm_worklog(
     .bind(&payload_json)
     .bind(session_id_min)
     .bind(session_id_max)
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .await
     .context("upsert pm_worklogs row")?;
 
-    let pm_worklog_id: i64 = row.get("id");
+    let pm_worklog_id: i64 = match row {
+        Some(r) => r.get("id"),
+        None => {
+            // Guard blocked the update — the row is approved/posted and immutable.
+            // Return its id without touching it (and skip the evidence rewrite).
+            let existing = sqlx::query(
+                "SELECT id FROM pm_worklogs \
+                 WHERE task_key = ? AND day_utc = ? AND cycle_index = ?",
+            )
+            .bind(&update.task_key)
+            .bind(day_utc)
+            .bind(update.cycle_index)
+            .fetch_one(pool)
+            .await
+            .context("read existing approved/posted worklog id")?;
+            let id: i64 = existing.get("id");
+            tracing::debug!(
+                pm_worklog_id = id,
+                task_key = %update.task_key,
+                "worklog already approved/posted — draft re-run left it untouched"
+            );
+            return Ok(id);
+        }
+    };
 
     // Rewrite evidence rows for this worklog.
     sqlx::query("DELETE FROM pm_worklog_evidence WHERE pm_worklog_id = ?")
@@ -98,7 +128,7 @@ pub async fn mark_worklog_posted(
 ) -> Result<()> {
     sqlx::query(
         "UPDATE pm_worklogs \
-         SET state = 'posted', posted_worklog_id = ?, \
+         SET state = 'posted', posted_worklog_id = ?, last_post_error = NULL, \
              posted_at = COALESCE(posted_at, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')) \
          WHERE id = ?",
     )
@@ -142,4 +172,82 @@ pub async fn find_existing_worklog(
 /// Convenience: serialise the payload for logging/dry-run.
 pub fn payload_preview(update: &JiraUpdate) -> String {
     serde_json::to_string_pretty(update).unwrap_or_else(|_| "<unserialisable>".to_string())
+}
+
+/// One worklog the user has approved in the dashboard, ready to post to Jira.
+/// `comment` is the (possibly user-edited) summary lifted from `payload_json`.
+#[derive(Debug, Clone)]
+pub struct ApprovedWorklog {
+    pub id: i64,
+    pub task_key: String,
+    pub window_start: String,
+    pub window_end: String,
+    pub time_spent_seconds: i64,
+    pub comment: String,
+}
+
+/// All worklogs awaiting a post (`state = 'approved'`), oldest window first.
+/// The summary text is read straight from the stored payload so any UI edit is
+/// honoured. Rows with an empty summary are skipped — there is nothing to post.
+pub async fn fetch_approved_worklogs(pool: &SqlitePool) -> Result<Vec<ApprovedWorklog>> {
+    let rows = sqlx::query(
+        "SELECT id, task_key, window_start, window_end, time_spent_seconds, payload_json \
+         FROM pm_worklogs WHERE state = 'approved' ORDER BY window_start, task_key",
+    )
+    .fetch_all(pool)
+    .await
+    .context("fetch approved worklogs")?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for r in rows {
+        let payload: String = r.get("payload_json");
+        let comment = serde_json::from_str::<JiraUpdate>(&payload)
+            .map(|u| u.summary)
+            .unwrap_or_default();
+        out.push(ApprovedWorklog {
+            id: r.get("id"),
+            task_key: r.get("task_key"),
+            window_start: r.get("window_start"),
+            window_end: r.get("window_end"),
+            time_spent_seconds: r.try_get("time_spent_seconds").unwrap_or(0),
+            comment,
+        });
+    }
+    Ok(out)
+}
+
+/// Record a TRANSIENT failed post attempt (network/5xx): bump the counter and
+/// stash the error for the UI. The row stays `approved` so the next sweep retries.
+pub async fn mark_post_failed(pool: &SqlitePool, pm_worklog_id: i64, error: &str) -> Result<()> {
+    let truncated: String = error.chars().take(500).collect();
+    sqlx::query(
+        "UPDATE pm_worklogs \
+         SET post_attempt_count = post_attempt_count + 1, last_post_error = ? \
+         WHERE id = ?",
+    )
+    .bind(&truncated)
+    .bind(pm_worklog_id)
+    .execute(pool)
+    .await
+    .context("mark worklog post failed")?;
+    Ok(())
+}
+
+/// Record a TERMINAL post failure (empty comment, below Jira's minimum): flip the
+/// row to `failed` so the sweep stops retrying. The user can edit + re-approve or
+/// dismiss it in the dashboard.
+pub async fn fail_worklog(pool: &SqlitePool, pm_worklog_id: i64, error: &str) -> Result<()> {
+    let truncated: String = error.chars().take(500).collect();
+    sqlx::query(
+        "UPDATE pm_worklogs \
+         SET state = 'failed', last_post_error = ?, \
+             post_attempt_count = post_attempt_count + 1 \
+         WHERE id = ?",
+    )
+    .bind(&truncated)
+    .bind(pm_worklog_id)
+    .execute(pool)
+    .await
+    .context("mark worklog terminally failed")?;
+    Ok(())
 }
