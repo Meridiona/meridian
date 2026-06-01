@@ -78,6 +78,10 @@ export interface TodayResponse {
   // capped coding-agent overlay). This is the authoritative per-task figure the
   // "By task" buckets and the Tasks page both render, so the two views agree.
   task_totals: Record<string, number>
+  // task_key → autonomous agent time on the task (agent ran while you were away).
+  // This is the slice that lifts a task above your own hands-on time; surfaced as
+  // "+ Xm agent while you were away", and only when there is some.
+  task_autonomous_s: Record<string, number>
   // engaged_s: focus_s + autonomous agent time — the denominator for the per-task
   // "% of day" so a task carrying autonomous agent work never exceeds 100%.
   engaged_s: number
@@ -228,22 +232,38 @@ export async function GET() {
       SWITCH_MIN_DURATION_S,
     )
 
-    // ── Per-task union totals (foreground + capped agent overlay) ──────────────
-    // Built from allRows (both streams) so a task's figure matches the Tasks page
-    // exactly. Same filter as /api/tasks: a real task link, session_type = 'task'.
-    const taskIntervals: Record<string, Interval[]> = {}
+    // ── Per-task time = YOUR hands-on time + AUTONOMOUS agent time ─────────────
+    // A task's total is the time it genuinely consumed: your foreground time on
+    // it, PLUS the coding-agent's time that ran while you were away (autonomous).
+    // Agent time that ran while you were active (supervised) is NOT added — that
+    // wall-clock is already your presence, so adding it would double-count the
+    // day and push a single task past your Focus. With this split, per-task
+    // totals + overhead + untracked sum to engaged time, and the only thing that
+    // lifts a task above your own time is autonomous AI — which we surface.
+    const taskFgIntervals: Record<string, Interval[]> = {}
+    const taskAgentIntervals: Record<string, Interval[]> = {}
     allRows.forEach(r => {
       if (r.task_key == null || r.session_type !== 'task') return
       const k = r.task_key as string
-      ;(taskIntervals[k] ??= []).push(sessionInterval({
+      const iv = sessionInterval({
         started_at: r.started_at as string,
         ended_at: r.ended_at as string,
         duration_s: (r.duration_s as number) ?? 0,
         claude_session_uuid: (r.claude_session_uuid as string) ?? null,
-      }))
+      })
+      if (r.claude_session_uuid == null) (taskFgIntervals[k] ??= []).push(iv)
+      else (taskAgentIntervals[k] ??= []).push(iv)
     })
     const task_totals: Record<string, number> = {}
-    for (const [k, ivs] of Object.entries(taskIntervals)) task_totals[k] = unionSeconds(ivs)
+    const task_autonomous_s: Record<string, number> = {}
+    const taskKeys = new Set([...Object.keys(taskFgIntervals), ...Object.keys(taskAgentIntervals)])
+    for (const k of taskKeys) {
+      const yourS = unionSeconds(taskFgIntervals[k] ?? [])
+      const agentIv = taskAgentIntervals[k] ?? []
+      const autoS = Math.max(0, unionSeconds(agentIv) - intersectSeconds(agentIv, presence_segments))
+      task_totals[k] = yourS + autoS
+      task_autonomous_s[k] = autoS
+    }
     const engaged_s = focus_s + autonomous_s
 
     const resp: TodayResponse = {
@@ -261,6 +281,7 @@ export async function GET() {
       session_count: sessions.length + (active ? 1 : 0),
       switch_count,
       task_totals,
+      task_autonomous_s,
       engaged_s,
     }
 
@@ -272,7 +293,7 @@ export async function GET() {
       focus_s: 0, idle_s: 0, agent_s: 0, supervised_s: 0, autonomous_s: 0,
       presence_segments: [], agent_segments: [],
       session_count: 0, switch_count: 0,
-      task_totals: {}, engaged_s: 0,
+      task_totals: {}, task_autonomous_s: {}, engaged_s: 0,
     } satisfies TodayResponse)
   }
 }
