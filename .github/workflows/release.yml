@@ -21,7 +21,7 @@ permissions:
   contents: write       # tags, release, the version-bump commit
   issues: write
   pull-requests: write
-  id-token: write        # npm provenance (optional)
+  id-token: write        # REQUIRED for npm OIDC trusted publishing (no NPM_TOKEN)
 
 concurrency:
   group: release-${{ github.ref }}
@@ -48,19 +48,21 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          registry-url: "https://registry.npmjs.org"
+          # Node 24 satisfies semantic-release v25 (engines: ^22.14 || >=24.10)
+          # and ships npm 11.x (OIDC trusted publishing needs npm >= 11.5.1).
+          # No registry-url: it writes an .npmrc that breaks OIDC auth.
+          node-version: "24"
 
       - name: Install release tooling
         run: npm ci --no-audit --no-fund
 
       - name: semantic-release
         env:
-          # Use a PAT (GH_TOKEN) with `repo` scope that can push the version
-          # commit to main past branch protection; falls back to GITHUB_TOKEN.
+          # GitHub PAT (repo scope) to push the version commit to main past
+          # branch protection; falls back to GITHUB_TOKEN. Unrelated to npm.
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
-          # npm automation token — used by @semantic-release/npm AND the direct
-          # `npm publish` of the arch package in the exec publish step.
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # No NPM_TOKEN — both publishes (the @semantic-release/npm main
+          # package and the exec `npm publish` of the arch package) authenticate
+          # via OIDC trusted publishing using the id-token above. Requires a
+          # Trusted Publisher to be configured on npm for BOTH packages.
         run: npx semantic-release
