@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'react'
 import { fmtDurDecimal, AppGlyph, TaskKey, LiveDot, useTick } from '@/components/atoms'
 
-type View = 'today' | 'tasks' | 'queue' | 'sessions' | 'week' | 'settings'
+type View = 'today' | 'tasks' | 'queue' | 'worklogs' | 'sessions' | 'week' | 'settings'
 
 interface Props {
   view: View
@@ -58,8 +58,9 @@ export default function Sidebar({ view, onNavigate, onOpenCmd, queueCount }: Pro
     { id: 'today',    label: 'Today',    kbd: '1' },
     { id: 'tasks',    label: 'Tasks',    kbd: '2' },
     { id: 'queue',    label: 'Queue',    kbd: '3', badge: queueCount || undefined },
-    { id: 'sessions', label: 'Sessions', kbd: '4' },
-    { id: 'week',     label: 'Week',     kbd: '5' },
+    { id: 'worklogs', label: 'Worklogs', kbd: '4' },
+    { id: 'sessions', label: 'Sessions', kbd: '5' },
+    { id: 'week',     label: 'Week',     kbd: '6' },
   ]
 
   return (
@@ -118,7 +119,7 @@ export default function Sidebar({ view, onNavigate, onOpenCmd, queueCount }: Pro
             <path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3.05 3.05l1.06 1.06M11.89 11.89l1.06 1.06M3.05 12.95l1.06-1.06M11.89 4.11l1.06-1.06"/>
           </svg>
           <span className="text-[13px]">Settings</span>
-          <span className="kbd ml-auto">6</span>
+          <span className="kbd ml-auto">7</span>
         </button>
       </div>
 
