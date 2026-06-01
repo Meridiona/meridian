@@ -1,7 +1,7 @@
 {
   "name": "meridian-mcp",
   "version": "0.1.0",
-  "description": "MCP server for Meridian — query app sessions, focus time, and activity data",
+  "description": "MCP server for Meridian \u2014 query app sessions, focus time, and activity data",
   "main": "dist/index.js",
   "bin": {
     "meridian-mcp": "dist/index.js",

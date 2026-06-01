@@ -38,15 +38,16 @@ to `app_sessions`:
 
 **Requirements:** macOS on **Apple Silicon** (M1+). That's it — the installer brings the rest.
 
-### Install (one command)
+### Install (npm)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Meridiona/meridian/main/bootstrap.sh | bash
+npm install -g @meridiona/meridian
+meridian setup
 ```
 
-No clone, no build. This downloads the latest prebuilt release to `~/.meridian/app`, installs any missing prerequisites (Homebrew packages, Node, Python 3.11, screenpipe, ffmpeg), sets up the on-device model, and registers four auto-starting services — **screenpipe** (capture), the **daemon** (pipeline), the **MLX server** (on-device model), and the **dashboard** at http://localhost:3000.
+No clone, no build. The package ships a prebuilt binary; `meridian setup` copies the app to `~/.meridian/app`, installs any missing prerequisites (Homebrew packages, Node, Python 3.11, screenpipe, ffmpeg), sets up the on-device model, and registers four auto-starting services — **screenpipe** (capture), the **daemon** (pipeline), the **MLX server** (on-device model), and the **dashboard** at http://localhost:3000.
 
-Then grant screenpipe its three macOS permissions when prompted (Screen Recording, Accessibility, Microphone), and optionally connect Jira.
+`meridian setup` then walks you through screenpipe's three macOS permissions (Screen Recording, Accessibility, Microphone). Connect Jira afterwards (optional).
 
 👉 **Full walkthrough — permissions, Jira, verifying, logs, updating, troubleshooting: [SETUP.md](SETUP.md).**
 
