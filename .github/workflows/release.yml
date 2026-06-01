@@ -35,6 +35,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # Release the current tip of the default branch, NOT the commit that
+          # triggered this run. With the concurrency group serialising runs
+          # (cancel-in-progress: false), a burst of merges otherwise has each
+          # run pinned to its own (stale) trigger SHA: the older run releases a
+          # stale snapshot and its `git push HEAD:main` is rejected once a newer
+          # commit lands ("fetch first"). Checking out the tip means the first
+          # queued run releases everything on main and later runs find nothing
+          # new to release (clean no-op) — no failures, npm always == main.
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0          # full history — semantic-release needs commits
           fetch-tags: true        # explicitly fetch tags so the v0.0.0 baseline is seen
           persist-credentials: false
