@@ -1,3 +1,15 @@
+# [1.15.0](https://github.com/Meridiona/meridian/compare/v1.14.2...v1.15.0) (2026-06-02)
+
+
+### Bug Fixes
+
+* **ci:** use brew install uv instead of pip3 in package-release.sh ([#134](https://github.com/Meridiona/meridian/issues/134)) ([c6deb19](https://github.com/Meridiona/meridian/commit/c6deb19f1633c6685b24d37b4d74ff439e3ae3a1))
+
+
+### Features
+
+* **setup:** pre-build Python venv in CI, extract at install (~5s vs 40s) ([#132](https://github.com/Meridiona/meridian/issues/132)) ([5e3e0a8](https://github.com/Meridiona/meridian/commit/5e3e0a8c5a0488cdf9ca9cbf88d754a9465a2ae0))
+
 ## [1.14.2](https://github.com/Meridiona/meridian/compare/v1.14.1...v1.14.2) (2026-06-02)
 
 
