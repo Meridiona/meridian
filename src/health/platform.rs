@@ -10,6 +10,10 @@ use crate::health::Check;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// A daemon pid younger than this, paired with a non-zero last exit, is taken
+/// to be crash-looping (the launchd respawn interval is ~10s).
+const CRASH_LOOP_UPTIME_SECS: u64 = 90;
+
 const LABEL_DAEMON: &str = "com.meridiona.daemon";
 const LABEL_SCREENPIPE: &str = "com.meridiona.screenpipe";
 const LABEL_UI: &str = "com.meridiona.ui";
@@ -49,6 +53,19 @@ pub fn which(bin: &str) -> Option<PathBuf> {
 }
 
 fn launchd_pid(label: &str) -> Option<i64> {
+    launchd_list_field(label, "PID")
+}
+
+/// launchd's last exit status for a job (0 = clean exit). Reflects the
+/// *previous* run, not the live process — a SIGTERM restart leaves it non-zero
+/// for a while — so on its own it is not proof of a crash-loop; the caller
+/// pairs it with pid uptime. None if the field is unavailable.
+fn launchd_last_exit(label: &str) -> Option<i64> {
+    launchd_list_field(label, "LastExitStatus")
+}
+
+/// Parse a single `"<field>" = <int>;` line out of `launchctl list <label>`.
+fn launchd_list_field(label: &str, field: &str) -> Option<i64> {
     let out = Command::new("launchctl")
         .args(["list", label])
         .output()
@@ -56,12 +73,37 @@ fn launchd_pid(label: &str) -> Option<i64> {
     if !out.status.success() {
         return None;
     }
+    let needle = format!("\"{field}\" = ");
     for line in String::from_utf8_lossy(&out.stdout).lines() {
-        if let Some(rest) = line.trim().strip_prefix("\"PID\" = ") {
+        if let Some(rest) = line.trim().strip_prefix(&needle) {
             return rest.trim_end_matches(';').trim().parse().ok();
         }
     }
     None
+}
+
+/// Elapsed seconds since `pid` started, via BSD `ps -o etime` (macOS `ps` has
+/// no `etimes`). None if the pid is gone or the field can't be parsed.
+fn pid_uptime_secs(pid: i64) -> Option<u64> {
+    parse_etime(cmd_output("ps", &["-o", "etime=", "-p", &pid.to_string()])?.trim())
+}
+
+/// Parse BSD `etime` (`[[DD-]HH:]MM:SS`) into seconds.
+fn parse_etime(s: &str) -> Option<u64> {
+    if s.is_empty() {
+        return None;
+    }
+    let (days, hms) = match s.split_once('-') {
+        Some((d, rest)) => (d.parse::<u64>().ok()?, rest),
+        None => (0, s),
+    };
+    let mut secs = 0u64;
+    for part in hms.split(':') {
+        secs = secs
+            .checked_mul(60)?
+            .checked_add(part.parse::<u64>().ok()?)?;
+    }
+    Some(days * 86_400 + secs)
 }
 
 fn plist_valid(label: &str) -> bool {
@@ -124,8 +166,34 @@ pub fn daemon_service() -> Vec<Check> {
         None => Check::critical("daemon binary", "system", "not installed")
             .with_remedy("run ./install.sh"),
     };
+    // A PID alone is not health: during a crash-loop launchd reports the pid of
+    // the process that is about to die, so a daemon failing on startup (e.g. a
+    // modified migration aborting sqlx) reads as a green "running" line. Catch
+    // it by combining two signals — a non-zero LastExitStatus AND a very young
+    // current pid. Either alone is benign: LastExitStatus stays non-zero after a
+    // SIGTERM restart (the value reflects the *previous* run, not the live one),
+    // and a young pid alone is just a fresh start. Only the pair — respawning
+    // fast while exiting non-zero — is a crash-loop.
     let run_check = match launchd_pid(LABEL_DAEMON) {
-        Some(pid) => Check::ok("daemon running", "system", format!("pid {pid}")),
+        Some(pid) => {
+            let exited_badly = launchd_last_exit(LABEL_DAEMON).is_some_and(|c| c != 0);
+            let just_respawned = pid_uptime_secs(pid).is_some_and(|s| s < CRASH_LOOP_UPTIME_SECS);
+            if exited_badly && just_respawned {
+                Check::critical(
+                    "daemon running",
+                    "system",
+                    format!(
+                        "pid {pid} respawned <{CRASH_LOOP_UPTIME_SECS}s ago after a non-zero exit — crash-looping on startup"
+                    ),
+                )
+                .with_remedy(
+                    "inspect ~/.meridian/logs/daemon-error.log for a repeating startup error \
+                     (often a modified migration); then meridian doctor --fix",
+                )
+            } else {
+                Check::ok("daemon running", "system", format!("pid {pid}"))
+            }
+        }
         None => {
             Check::critical("daemon running", "system", "not loaded").with_remedy("meridian start")
         }
@@ -263,5 +331,38 @@ fn disk_check(name: &'static str, path: &Path) -> Check {
             .with_remedy("free disk space"),
         Some(gb) => Check::ok(name, "system", format!("{gb:.0} GB free")),
         None => Check::info(name, "system", "usage unknown"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_etime;
+
+    #[test]
+    fn parses_mm_ss() {
+        assert_eq!(parse_etime("07:47"), Some(7 * 60 + 47));
+        assert_eq!(parse_etime("00:09"), Some(9));
+    }
+
+    #[test]
+    fn parses_hh_mm_ss_and_days() {
+        assert_eq!(parse_etime("01:02:03"), Some(3600 + 120 + 3));
+        assert_eq!(
+            parse_etime("2-03:04:05"),
+            Some(2 * 86_400 + 3 * 3600 + 4 * 60 + 5)
+        );
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        assert_eq!(parse_etime(""), None);
+        assert_eq!(parse_etime("not-a-time"), None);
+    }
+
+    #[test]
+    fn young_pid_under_crash_loop_threshold() {
+        // a 9-second-old pid is "just respawned"; a 7-minute-old one is not
+        assert!(parse_etime("00:09").unwrap() < super::CRASH_LOOP_UPTIME_SECS);
+        assert!(parse_etime("07:47").unwrap() >= super::CRASH_LOOP_UPTIME_SECS);
     }
 }

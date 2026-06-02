@@ -261,6 +261,9 @@ def _get_model() -> Any:
     model_id = _resolve_model_id()
     if model_id in _model_cache:
         return _model_cache[model_id]
+    model_id = _resolve_model_id()
+    if model_id in _model_cache:
+        return _model_cache[model_id]
 
     try:
         import mlx_lm
@@ -276,6 +279,7 @@ def _get_model() -> Any:
     )
     t0 = time.time()
     mlx_model, tokenizer = mlx_lm.load(
+        model_id,
         model_id,
         tokenizer_config={"trust_remote_code": True},
     )
@@ -564,6 +568,7 @@ def _classify_one(
     # ── llm_inference ─────────────────────────────────────────────────────────
     t0 = time.time()
     with tracer.start_as_current_span("llm_inference") as llm_span:
+        llm_span.set_attribute("model", _resolve_model_id())
         llm_span.set_attribute("model", _resolve_model_id())
         llm_span.set_attribute("max_tokens", _MAX_TOKENS)
         llm_span.set_attribute("temperature", _TEMPERATURE)

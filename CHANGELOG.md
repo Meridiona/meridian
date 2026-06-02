@@ -1,3 +1,84 @@
+# [1.13.0](https://github.com/Meridiona/meridian/compare/v1.12.0...v1.13.0) (2026-06-02)
+
+
+### Features
+
+* **setup:** adopt uv for reproducible Python venv (replaces pip lockfile) ([#127](https://github.com/Meridiona/meridian/issues/127)) ([228991c](https://github.com/Meridiona/meridian/commit/228991c6e6a17f2e14f4a658fac62b563e120c94)), closes [#126](https://github.com/Meridiona/meridian/issues/126)
+
+# [1.12.0](https://github.com/Meridiona/meridian/compare/v1.11.0...v1.12.0) (2026-06-02)
+
+
+### Bug Fixes
+
+* **setup:** pin the MLX Python deps with a lockfile for reproducible installs ([#126](https://github.com/Meridiona/meridian/issues/126)) ([73d3f6a](https://github.com/Meridiona/meridian/commit/73d3f6a0161e9217d0cdc32190b288ecac5fdfd8))
+
+
+### Features
+
+* **ui:** in-dashboard update notification + one-click update (Fix B) ([#125](https://github.com/Meridiona/meridian/issues/125)) ([2cf6343](https://github.com/Meridiona/meridian/commit/2cf6343a918dfc6ef84776d3e1cd3ba356308473))
+
+# [1.11.0](https://github.com/Meridiona/meridian/compare/v1.10.1...v1.11.0) (2026-06-02)
+
+
+### Features
+
+* **update:** preserve the Python venv across `meridian update` (seconds, not minutes) ([#124](https://github.com/Meridiona/meridian/issues/124)) ([58a31d7](https://github.com/Meridiona/meridian/commit/58a31d7fa9f402bc30f54f629146fc6f90679dbd))
+
+## [1.10.1](https://github.com/Meridiona/meridian/compare/v1.10.0...v1.10.1) (2026-06-02)
+
+
+### Bug Fixes
+
+* **screenpipe:** launch the real Mach-O so macOS grants attach to screenpipe, not node ([#123](https://github.com/Meridiona/meridian/issues/123)) ([6afa180](https://github.com/Meridiona/meridian/commit/6afa180cff5f0d5089f830af5960fbf803ce8731))
+
+# [1.10.0](https://github.com/Meridiona/meridian/compare/v1.9.2...v1.10.0) (2026-06-02)
+
+
+### Features
+
+* **ui:** ship Turbopack standalone via symlink-preserving tarball (keep Turbopack in prod) ([#122](https://github.com/Meridiona/meridian/issues/122)) ([5c7931c](https://github.com/Meridiona/meridian/commit/5c7931c46b468f0e75611b358acad5462f0df726)), closes [vercel/next.js#87737](https://github.com/vercel/next.js/issues/87737) [#93849](https://github.com/Meridiona/meridian/issues/93849) [#121](https://github.com/Meridiona/meridian/issues/121)
+
+## [1.9.2](https://github.com/Meridiona/meridian/compare/v1.9.1...v1.9.2) (2026-06-02)
+
+
+### Bug Fixes
+
+* **npm:** stop `sudo meridian update` from breaking launchd; elevate only npm ([#120](https://github.com/Meridiona/meridian/issues/120)) ([eb4377b](https://github.com/Meridiona/meridian/commit/eb4377b7f421b39424a526c64615b8cbe958e290))
+
+## [1.9.1](https://github.com/Meridiona/meridian/compare/v1.9.0...v1.9.1) (2026-06-02)
+
+
+### Bug Fixes
+
+* **setup,doctor:** harden a11y-tree capture for VS Code-family editors ([#117](https://github.com/Meridiona/meridian/issues/117)) ([c47cf55](https://github.com/Meridiona/meridian/commit/c47cf55b0bedd9ec4eec2f56f502e33b2d75971c))
+* **ui:** build standalone with webpack — Turbopack ships an unresolvable better-sqlite3 external ([#118](https://github.com/Meridiona/meridian/issues/118)) ([29de7f0](https://github.com/Meridiona/meridian/commit/29de7f0bc694367325170da4b86fbfd6d8b67b89)), closes [vercel/next.js#88844](https://github.com/vercel/next.js/issues/88844) [#87737](https://github.com/Meridiona/meridian/issues/87737)
+
+# [1.9.0](https://github.com/Meridiona/meridian/compare/v1.8.2...v1.9.0) (2026-06-02)
+
+
+### Bug Fixes
+
+* **llm-selector:** correct Apple FoundationModels SDK API usage ([#114](https://github.com/Meridiona/meridian/issues/114)) ([70f71bb](https://github.com/Meridiona/meridian/commit/70f71bb13e917e65da5f394394d23560220d1d5a))
+
+
+### Features
+
+* **agents:** dynamically select the MLX server model via llm_selector ([#112](https://github.com/Meridiona/meridian/issues/112)) ([d77257e](https://github.com/Meridiona/meridian/commit/d77257ea0ac88aa3427dff3bf0d2c920761165e0))
+
+## [1.8.2](https://github.com/Meridiona/meridian/compare/v1.8.1...v1.8.2) (2026-06-02)
+
+
+### Bug Fixes
+
+* **ui:** don't load OpenTelemetry at boot — fixes dashboard 500 in standalone ([#115](https://github.com/Meridiona/meridian/issues/115)) ([a8a7ed1](https://github.com/Meridiona/meridian/commit/a8a7ed1c944cb8b5417966e489469372f77bdb78))
+
+## [1.8.1](https://github.com/Meridiona/meridian/compare/v1.8.0...v1.8.1) (2026-06-02)
+
+
+### Bug Fixes
+
+* **npm:** stop bundle setup shadowing the npm launcher's meridian CLI ([#113](https://github.com/Meridiona/meridian/issues/113)) ([8cb8a63](https://github.com/Meridiona/meridian/commit/8cb8a634ddb06e06703a8aa7006b910b8629b2ac))
+
 # [1.8.0](https://github.com/Meridiona/meridian/compare/v1.7.0...v1.8.0) (2026-06-02)
 
 

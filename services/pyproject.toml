@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "meridian-agents"
-version = "1.8.0"
+version = "1.13.0"
 description = "Meridian agents — hermes task linking and Jira progress updates for meridian.db"
 requires-python = ">=3.11"
 authors = [{ name = "Meridiona" }]
@@ -50,6 +50,11 @@ pm_worklog_update = [
 
 [project.scripts]
 meridian-server = "agents.server:main"
+
+[tool.uv]
+# Lock all extras so `uv lock` produces a complete, reproducible uv.lock.
+# install-from-bundle.sh installs the mlx extra via `uv sync --extra mlx --frozen`.
+constraint-dependencies = []
 
 [tool.setuptools.packages.find]
 where = ["."]

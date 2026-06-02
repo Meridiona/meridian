@@ -31,6 +31,12 @@ pub fn root_causes(report: &Report) -> Vec<Diagnosis> {
             .iter()
             .any(|c| c.severity >= Severity::Warn && c.group == group && c.name.contains(needle))
     };
+    let ok_check = |group: &str, needle: &str| {
+        report
+            .checks
+            .iter()
+            .any(|c| c.severity == Severity::Ok && c.group == group && c.name.contains(needle))
+    };
     let contributing = |pairs: &[(&str, &str)]| -> Vec<String> {
         report
             .checks
@@ -47,6 +53,30 @@ pub fn root_causes(report: &Report) -> Vec<Diagnosis> {
 
     let mut out = Vec::new();
 
+    // 0. Daemon up but not progressing — supersedes every downstream symptom.
+    //    Either launchd can't keep it loaded / it is crash-looping on startup
+    //    (`running` is Critical), or the process is alive yet ETL has gone stale
+    //    (the poll loop is hung). The most common crash-loop cause is a migration
+    //    that was modified or renumbered after it was applied, which fails sqlx's
+    //    checksum — so when the daemon is down the queue/jira/worklog stalls are
+    //    not independent faults, they are this one cause.
+    let daemon_wedged = crit("meridian daemon", "running")
+        || (ok_check("meridian daemon", "running") && bad("meridian daemon", "etl freshness"));
+    if daemon_wedged {
+        out.push(Diagnosis {
+            title: "The meridian daemon isn't making progress".into(),
+            cause: "launchd either can't keep it loaded or it is crash-looping on startup, or it is alive but its poll loop is hung. A frequent crash-loop cause is a migration that was modified or renumbered after it was applied, which fails sqlx's checksum (\"migration N was previously applied but has been modified\"). Nothing advances while it is stuck — ETL, classification, Jira sync, and worklogs all stall behind it.".into(),
+            contributing: contributing(&[
+                ("meridian daemon", "etl"),
+                ("meridian daemon", "queue"),
+                ("meridian daemon", "classify errors"),
+                ("jira", "ticket sync"),
+                ("worklog", "hour ledger"),
+            ]),
+            action: "Inspect ~/.meridian/logs/daemon-error.log for a repeating startup error. A migration checksum mismatch means a migration file changed after it was applied — reconcile the _sqlx_migrations checksums with the current files. Otherwise `meridian start` (or `meridian doctor --fix`).".into(),
+        });
+    }
+
     // 1. MLX server down — the whole classify/summarise cascade.
     if crit("mlx-server", "reachable") {
         out.push(Diagnosis {
@@ -59,7 +89,7 @@ pub fn root_causes(report: &Report) -> Vec<Diagnosis> {
             ]),
             action: "Start it (`meridian start`), then `meridian doctor --fix` to drain the backlog.".into(),
         });
-    } else if bad("meridian daemon", "summariser queue") {
+    } else if !daemon_wedged && bad("meridian daemon", "summariser queue") {
         out.push(Diagnosis {
             title: "Coding-agent summariser is stalled".into(),
             cause: "Sealed sessions aren't being summarised, so they never reach the classifier and the worklog hour-ledger backs up behind them.".into(),
@@ -80,7 +110,7 @@ pub fn root_causes(report: &Report) -> Vec<Diagnosis> {
             contributing: contributing(&[("jira", "ticket sync"), ("jira", "candidate")]),
             action: "Regenerate the Jira API token, update JIRA_API_TOKEN in .env, then `meridian restart`.".into(),
         });
-    } else if bad("jira", "ticket sync") {
+    } else if !daemon_wedged && bad("jira", "ticket sync") {
         out.push(Diagnosis {
             title: "Jira cache is stale (auth OK)".into(),
             cause: "Auth works and the daemon refreshes every 30 min, so this usually means the daemon was down recently and it will self-heal — unless the fetch itself is erroring.".into(),
@@ -89,19 +119,8 @@ pub fn root_causes(report: &Report) -> Vec<Diagnosis> {
         });
     }
 
-    // 3. Daemon down — broad staleness.
-    if crit("meridian daemon", "running") {
-        out.push(Diagnosis {
-            title: "The meridian daemon isn't running".into(),
-            cause: "Nothing advances while it is down — ETL, classification, sync, and worklogs all stall.".into(),
-            contributing: contributing(&[
-                ("meridian daemon", "etl"),
-                ("jira", "ticket sync"),
-                ("worklog", "hour ledger"),
-            ]),
-            action: "`meridian start` (or `meridian doctor --fix`).".into(),
-        });
-    }
+    // (Daemon-down / crash-loop is handled by rule 0 above, which also folds in
+    // the downstream queue/jira/worklog stalls instead of fragmenting them.)
 
     // 4. Capture degraded — garbage-in for the classifier.
     if crit("screenpipe", "text_present") || crit("screenpipe", "service") {
@@ -232,6 +251,45 @@ mod tests {
         ]);
         let dx = root_causes(&report);
         assert!(dx[0].title.contains("MLX"));
+    }
+
+    #[test]
+    fn crash_looping_daemon_is_one_root_cause_not_three() {
+        // The real-world bundle: daemon crash-looping on a modified migration,
+        // with summariser/classify/jira/worklog all stalled behind it. Must
+        // collapse to a single daemon root cause, not three disconnected ones.
+        let report = Report::new(vec![
+            Check::critical("daemon running", "system", "pid 50758 but last exit 256")
+                .in_group("meridian daemon"),
+            Check::warn("etl freshness", "L1", "last run 82m ago").in_group("meridian daemon"),
+            Check::warn("summariser queue", "L2", "293").in_group("meridian daemon"),
+            Check::warn("classify errors", "L2", "10").in_group("meridian daemon"),
+            Check::warn("ticket sync", "L2", "86m stale").in_group("jira"),
+            Check::warn("hour ledger", "L4", "8 stuck").in_group("worklog"),
+            Check::ok("reachable", "L2", "ok").in_group("mlx-server"),
+            Check::ok("auth", "L2", "ok").in_group("jira"),
+        ]);
+        let dx = root_causes(&report);
+        let titles: Vec<&str> = dx.iter().map(|d| d.title.as_str()).collect();
+        assert_eq!(dx.len(), 1, "should be one root cause, got {titles:?}");
+        assert!(dx[0].title.contains("isn't making progress"));
+        // the summariser + jira-stale symptom rules must be suppressed
+        assert!(!dx.iter().any(|d| d.title.contains("summariser")));
+        assert!(!dx.iter().any(|d| d.title.contains("Jira cache")));
+    }
+
+    #[test]
+    fn alive_but_stale_etl_is_flagged_even_with_pid() {
+        // Process is up (pid healthy, exit 0 → "running" Ok) but the poll loop
+        // is hung, so ETL has gone stale. Still a daemon root cause.
+        let report = Report::new(vec![
+            Check::ok("daemon running", "system", "pid 1234").in_group("meridian daemon"),
+            Check::warn("etl freshness", "L1", "last run 82m ago").in_group("meridian daemon"),
+            Check::warn("summariser queue", "L2", "293").in_group("meridian daemon"),
+        ]);
+        let dx = root_causes(&report);
+        assert_eq!(dx.len(), 1);
+        assert!(dx[0].title.contains("isn't making progress"));
     }
 
     #[test]

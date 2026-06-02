@@ -24,6 +24,12 @@ const RECENT_SAMPLE: i64 = 500;
 pub async fn checks(cfg: &Config, pool: Option<&SqlitePool>) -> Vec<Check> {
     // Prerequisites first (can capture run at all?), then runtime health.
     let mut checks = vec![screenpipe_installed(), db_present(cfg)];
+    // Direct Accessibility-grant probe from screenpipe's own log (ground truth,
+    // unlike the DB a11y-yield proxy below). Catches a grant silently dropped by
+    // a reinstall/update before it shows up as OCR-only sessions.
+    if let Some(c) = screenpipe_accessibility_permission(cfg) {
+        checks.push(c);
+    }
     match pool {
         Some(p) => {
             let frames = frames_present(p).await;
@@ -89,6 +95,68 @@ fn permissions_unverified() -> Check {
     .with_remedy(
         "System Settings ▸ Privacy & Security ▸ grant Screen Recording AND Accessibility to screenpipe, then restart it and re-run doctor",
     )
+}
+
+/// Direct Accessibility-permission probe from screenpipe's own log. macOS TCC
+/// state isn't readable from our process, but screenpipe logs
+/// `permission monitor started … accessibility=true|false` on every (re)start,
+/// and that line is ground truth. A reinstall/update can silently drop the grant
+/// (it attaches to a binary path/signature that changes), flipping a11y capture
+/// to OCR-only with no other symptom — this surfaces it loudly. Returns `None`
+/// when the log or the line can't be found (nothing to assert).
+fn screenpipe_accessibility_permission(cfg: &Config) -> Option<Check> {
+    let dir = std::path::Path::new(&cfg.screenpipe_db).parent()?;
+    // Newest screenpipe.<date>.N.log by mtime — that's the live one.
+    let mut newest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let p = entry.path();
+        let is_sp_log = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with("screenpipe.") && n.ends_with(".log"))
+            .unwrap_or(false);
+        if !is_sp_log {
+            continue;
+        }
+        if let Ok(m) = entry.metadata().and_then(|md| md.modified()) {
+            if newest.as_ref().is_none_or(|(t, _)| m > *t) {
+                newest = Some((m, p));
+            }
+        }
+    }
+    let log_path = newest?.1;
+    let content = std::fs::read_to_string(&log_path).ok()?;
+    accessibility_verdict_from_log(&content)
+}
+
+/// Pure verdict from screenpipe log text: scan for the LAST `permission monitor
+/// started …` line (the current state after the most recent restart) and report
+/// the Accessibility grant. Split out from the file I/O so it is unit-testable.
+fn accessibility_verdict_from_log(content: &str) -> Option<Check> {
+    let last = content
+        .lines()
+        .rfind(|l| l.contains("permission monitor started"))?;
+
+    if last.contains("accessibility=false") {
+        Some(
+            Check::critical(
+                "screenpipe.accessibility_grant",
+                "L1",
+                "screenpipe reports accessibility=false — a11y tree capture is OFF (OCR-only); the grant was likely dropped by a reinstall/update",
+            )
+            .with_remedy(
+                "System Settings ▸ Privacy & Security ▸ Accessibility ▸ enable screenpipe, then restart it (meridian restart)",
+            ),
+        )
+    } else if last.contains("accessibility=true") {
+        Some(Check::ok(
+            "screenpipe.accessibility_grant",
+            "L1",
+            "screenpipe reports accessibility=true (a11y capture enabled)",
+        ))
+    } else {
+        None
+    }
 }
 
 /// The screenpipe DB file exists and is non-empty. File-stat only — no pool.
@@ -612,6 +680,27 @@ mod tests {
         insert(&pool, "Code", None, Some("tree"), "accessibility", 60).await;
         insert(&pool, "Code", None, Some("tree"), "accessibility", 30).await;
         let c = a11y_regression(&pool, 30, 60).await;
+        assert_eq!(c.severity, Severity::Ok);
+    }
+
+    #[test]
+    fn accessibility_log_verdict_latest_line_wins() {
+        // No permission-monitor line at all → nothing to assert.
+        assert!(accessibility_verdict_from_log("nothing relevant here").is_none());
+
+        // accessibility=false → critical, with a remedy.
+        let c = accessibility_verdict_from_log(
+            "startup\npermission monitor started screen=true mic=false accessibility=false keychain=true\n",
+        )
+        .expect("verdict");
+        assert_eq!(c.severity, Severity::Critical);
+        assert!(c.remedy.is_some());
+
+        // A later true overrides an earlier false — the most-recent restart wins.
+        let c = accessibility_verdict_from_log(
+            "permission monitor started accessibility=false\nnoise\npermission monitor started accessibility=true\n",
+        )
+        .expect("verdict");
         assert_eq!(c.severity, Severity::Ok);
     }
 }
