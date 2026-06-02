@@ -169,7 +169,15 @@ async fn main() -> Result<()> {
             print!("{}", report.render_porcelain());
         } else {
             use std::io::IsTerminal;
-            print!("{}", report.render(std::io::stdout().is_terminal()));
+            let color = std::io::stdout().is_terminal();
+            print!("{}", report.render(color));
+            // Diagnose + escalate: chain the warnings into root causes, then
+            // point at `--fix` / support / claude.
+            let dx = meridian::health::diagnose::root_causes(&report);
+            print!("{}", meridian::health::diagnose::render(&dx, color));
+            if report.worst() >= meridian::health::Severity::Warn {
+                print!("{}", meridian::health::diagnose::escalation_hint(color));
+            }
         }
         let critical = report.worst() == meridian::health::Severity::Critical;
         std::process::exit(if critical { 1 } else { 0 });
