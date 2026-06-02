@@ -85,15 +85,35 @@ if (typeof process.getuid === 'function' && process.getuid() === 0) {
 if (cmd === 'setup' || cmd === 'install') {
   const bundle = resolveBundle();
   run('bash', [path.join(bundle, 'scripts', 'meridian-npm-setup.sh'), bundle, ...rest]);
-} else if (cmd === 'update') {
-  console.log('meridian update: downloading latest release…');
-  console.log('  The package includes a pre-built Python venv (~160 MB).');
-  console.log('  First update after 1.15.0 will take ~1-3 min; subsequent updates are faster.');
-  const _updateStart = Date.now();
-  const up = npmInstallLatest();
-  if (up.status) process.exit(up.status);
-  const _elapsed = Math.round((Date.now() - _updateStart) / 1000);
-  console.log(`  Downloaded in ${_elapsed}s`);
+} else if (cmd === 'update' || cmd === '_update-continue') {
+  if (cmd === 'update') {
+    // Step 1: install the new thin launcher. The current process is the OLD
+    // launcher running in memory — the fix to also install darwin-arm64 may
+    // only be in the NEW launcher on disk after this step. Re-exec the newly
+    // installed launcher with `_update-continue` so the fix always takes
+    // effect in one `meridian update`, even when invoked by an old launcher.
+    console.log('meridian update: downloading latest release…');
+    console.log('  The package includes a pre-built Python venv (~160 MB).');
+    console.log('  First update after 1.15.0 will take ~1-3 min; subsequent updates are faster.');
+    const _start = Date.now();
+    const up = spawnSync('npm', ['install', '-g', '@meridiona/meridian@latest'], { stdio: 'inherit' });
+    if (up.status) process.exit(up.status);
+    console.log(`  Launcher updated in ${Math.round((Date.now() - _start) / 1000)}s`);
+    // Re-exec the freshly installed launcher to continue with the correct code.
+    const npmRoot = (spawnSync('npm', ['root', '-g'], { encoding: 'utf8' }).stdout || '').trim();
+    const newLauncher = path.join(npmRoot, '@meridiona', 'meridian', 'bin', 'meridian.js');
+    if (fs.existsSync(newLauncher)) {
+      const r = spawnSync(process.execPath, [newLauncher, '_update-continue'], { stdio: 'inherit' });
+      process.exit(r.status ?? 1);
+    }
+    // Fallback if new launcher not found: continue in this process.
+  }
+  // Step 2 (runs in the NEW launcher): install the bundle + run setup.
+  const _bundleStart = Date.now();
+  const bup = spawnSync('npm', ['install', '-g', '@meridiona/meridian-darwin-arm64@latest'],
+    { stdio: 'inherit', env: { ...process.env } });
+  if (bup.status) process.exit(bup.status);
+  console.log(`  Bundle downloaded in ${Math.round((Date.now() - _bundleStart) / 1000)}s`);
   const bundle = resolveBundle();
   run('bash', [path.join(bundle, 'scripts', 'meridian-npm-setup.sh'), bundle, '--skip-permissions']);
 } else {
