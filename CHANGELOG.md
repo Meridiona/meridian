@@ -1,3 +1,11 @@
+# [1.7.0](https://github.com/Meridiona/meridian/compare/v1.6.0...v1.7.0) (2026-06-02)
+
+
+### Features
+
+* **health:** comprehensive multi-daemon meridian doctor (+ settings-path fix) ([#108](https://github.com/Meridiona/meridian/issues/108)) ([5186b29](https://github.com/Meridiona/meridian/commit/5186b29b1dcaf18f2e05f550aa70b99484b088cd))
+* **worklog:** capture review actions + reject attribution for eval feedback ([#107](https://github.com/Meridiona/meridian/issues/107)) ([aec928a](https://github.com/Meridiona/meridian/commit/aec928aba7ae127a64615930efb3012945336697))
+
 # [1.6.0](https://github.com/Meridiona/meridian/compare/v1.5.0...v1.6.0) (2026-06-02)
 
 
