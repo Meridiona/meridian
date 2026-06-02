@@ -73,7 +73,7 @@ if [[ ! -x "${BASE_PYTHON}" ]]; then
 fi
 
 # venv site-packages directory (PYTHONPATH replaces venv activation).
-SITE_PACKAGES=$(ls -d "${VENV}/lib/python"*/site-packages 2>/dev/null | head -1)
+SITE_PACKAGES=$(ls -d "${VENV}/lib/python"*/site-packages 2>/dev/null | head -1 || true)
 if [[ -z "${SITE_PACKAGES}" ]]; then
     echo "✗ site-packages not found under ${VENV}/lib/" >&2
     exit 1

@@ -22,13 +22,17 @@ SERVICES_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${SERVICES_DIR}/.." && pwd)"
 
 # Locate the meridian binary that owns the `coding-agent-hook` subcommand.
-# Prefer the release build in this repo; fall back to whatever is on PATH.
-if [[ -x "${REPO_ROOT}/target/release/meridian" ]]; then
+# In a bundle install the real binary is at REPO_ROOT/bin/meridian (not the
+# Node.js launcher on PATH, which has no `coding-agent-hook` command).
+# Priority: bundle binary → source build → PATH meridian-daemon → PATH meridian.
+if [[ -x "${REPO_ROOT}/bin/meridian" ]]; then
+    MERIDIAN_BIN="${REPO_ROOT}/bin/meridian"
+elif [[ -x "${REPO_ROOT}/target/release/meridian" ]]; then
     MERIDIAN_BIN="${REPO_ROOT}/target/release/meridian"
-elif command -v meridian >/dev/null 2>&1; then
-    MERIDIAN_BIN="$(command -v meridian)"
 elif command -v meridian-daemon >/dev/null 2>&1; then
     MERIDIAN_BIN="$(command -v meridian-daemon)"
+elif command -v meridian >/dev/null 2>&1; then
+    MERIDIAN_BIN="$(command -v meridian)"
 else
     echo "✗ meridian binary not found — build it first: cargo build --release" >&2
     exit 1

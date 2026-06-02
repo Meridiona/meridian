@@ -71,11 +71,14 @@ command -v uv >/dev/null 2>&1 || brew install uv
 # produces cpython-314-darwin.so extensions that Python 3.11 on user machines
 # cannot load (ImportError at startup). uv installs Python 3.11 automatically.
 uv sync --project services --extra mlx --frozen --python 3.11
-# Python version subdir is always python3.11 (we pin above).
-_py_dir="python3.11"
+# Validate the venv was actually built with Python 3.11. If CI's uv defaults
+# change or --python is removed, this guard catches it before shipping a broken tarball.
+_py_dir="$(ls -d services/.venv/lib/python* 2>/dev/null | head -1 | xargs basename 2>/dev/null || true)"
 if [[ -z "${_py_dir}" ]]; then
-    echo "✗ could not find python lib dir under services/.venv/lib/" >&2
-    exit 1
+    echo "✗ could not find python lib dir under services/.venv/lib/" >&2; exit 1
+fi
+if [[ "${_py_dir}" != "python3.11" ]]; then
+    echo "✗ venv was built with ${_py_dir} but must be python3.11 — check --python in uv sync" >&2; exit 1
 fi
 # Pack site-packages only — NOT pyvenv.cfg or bin/ (those are path-specific and
 # are re-created at install time by `uv venv`). The tarball is platform-specific:

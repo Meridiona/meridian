@@ -38,11 +38,20 @@ cp -R "${BUNDLE}/." "${APP}/"
 rm -f "${APP}/package.json" "${APP}/README.md" "${APP}/.gitignore" "${APP}/.npmignore"
 
 [[ -n "${keep}" ]] && { cp "${keep}" "${APP}/.env"; rm -f "${keep}"; }
-# Restore the preserved venv (the bundle ships services/ source but no venv).
+# Restore the preserved venv only when its Python version matches the tarball's
+# target (3.11). A venv from a bad release built with Python 3.14 has
+# cpython-314-darwin.so extensions that Python 3.11 cannot load. Discard it so
+# install-from-bundle.sh does a fresh extraction from the correct tarball.
 if [[ -d "${venv_keep}" ]]; then
-    mkdir -p "${APP}/services"
-    rm -rf "${APP}/services/.venv"
-    mv "${venv_keep}" "${APP}/services/.venv"
+    _venv_py="$("${venv_keep}/bin/python" --version 2>&1 | grep -oE '3\.[0-9]+')"
+    if [[ "${_venv_py}" == "3.11" ]]; then
+        mkdir -p "${APP}/services"
+        rm -rf "${APP}/services/.venv"
+        mv "${venv_keep}" "${APP}/services/.venv"
+    else
+        echo "  ⚠ discarding preserved venv (Python ${_venv_py} ≠ 3.11) — will re-extract from bundle" >&2
+        rm -rf "${venv_keep}"
+    fi
 fi
 
 exec bash "${APP}/scripts/install-from-bundle.sh" "$@"

@@ -288,11 +288,17 @@ if [[ -f "${VENV_TARBALL}" ]]; then
     else
         info "Extracting pre-built Python venv ($(du -sh "${VENV_TARBALL}" | cut -f1) — no PyPI download required)…"
         rm -rf "${VENV}"
-        # Create a fresh venv with correct local paths (pyvenv.cfg points to
-        # PYTHON_BIN, which install-mlx-server-daemon.sh reads for BASE_PYTHON).
-        "${UV_BIN}" venv --python "${PYTHON_BIN}" "${VENV}" 2>/dev/null
-        # Determine the Python version subdirectory (e.g. python3.11).
-        _py_dir="$(ls "${VENV}/lib/" | grep '^python' | head -1)"
+        # The tarball is always built with Python 3.11 (pinned in CI).
+        # Always create the venv with Python 3.11 regardless of PYTHON_BIN so
+        # the cpython-311-darwin.so extensions in the tarball are compatible.
+        # If python3.11 is not on PATH, install it via uv (uv manages its own).
+        if ! command -v python3.11 >/dev/null 2>&1 && ! "${UV_BIN}" python find 3.11 >/dev/null 2>&1; then
+            info "Installing Python 3.11 via uv (required for pre-built venv)…"
+            "${UV_BIN}" python install 3.11
+        fi
+        "${UV_BIN}" venv --python 3.11 "${VENV}" 2>/dev/null
+        # Site-packages subdir is always python3.11 (CI builds with --python 3.11).
+        _py_dir="python3.11"
         mkdir -p "${VENV}/lib/${_py_dir}/site-packages"
         tar -xzf "${VENV_TARBALL}" -C "${VENV}/lib/${_py_dir}/site-packages"
         # Install the local editable package (meridian-agents) — no deps needed,
