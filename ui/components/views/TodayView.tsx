@@ -32,6 +32,7 @@ interface Bucket {
   title: string
   sessions: BucketSession[]
   total_s: number
+  autonomous_s: number  // agent time that ran while you were away (0 for non-task buckets)
   cats: Set<string>
   day_total_s: number
   isOverhead: boolean
@@ -205,7 +206,15 @@ function BucketRow({ bucket }: { bucket: Bucket }) {
         </div>
         <div className="text-right">
           <p className="font-mono tnum text-[18px] leading-none" style={{ color: 'var(--ink)' }}>{fmtDur(bucket.total_s)}</p>
-          <p className="text-[11px] mt-1.5" style={{ color: 'var(--ink-3)' }}>{pct}% of day</p>
+          <p className="text-[11px] mt-1.5" style={{ color: 'var(--ink-3)' }}>
+            {pct}% of day
+            {bucket.autonomous_s >= 60 && (
+              <span style={{ color: 'var(--live)' }}
+                title="Of this total, the agent ran on its own while you were away from the keyboard — the part that adds time beyond your own.">
+                {' · +'}{fmtDur(bucket.autonomous_s)} agent while away
+              </span>
+            )}
+          </p>
         </div>
       </button>
 
@@ -247,13 +256,15 @@ function buildStory(data: TodayResponse): string | null {
   const { sessions, active } = data
   if (sessions.length === 0 && !active) return null
 
-  const taskMap = new Map<string, { dur: number; cats: string[] }>()
+  // Durations come from task_totals (your time + autonomous agent) so the
+  // narrative matches the "By task" buckets exactly; categories come from the
+  // foreground sessions for the verb choice.
+  const taskMap = new Map<string, { dur: number; auto: number; cats: string[] }>()
   sessions.forEach(s => {
     const key = s.task_key
     if (!key) return
-    if (!taskMap.has(key)) taskMap.set(key, { dur: 0, cats: [] })
+    if (!taskMap.has(key)) taskMap.set(key, { dur: data.task_totals[key] ?? 0, auto: data.task_autonomous_s[key] ?? 0, cats: [] })
     const e = taskMap.get(key)!
-    e.dur += s.dur
     if (!e.cats.includes(s.cat)) e.cats.push(s.cat)
   })
 
@@ -288,7 +299,9 @@ function buildStory(data: TodayResponse): string | null {
   const clauses: string[] = []
   tasks.forEach(([key, info], i) => {
     const dur = fmtDur(info.dur)
-    if (i === 0) clauses.push(`${verbFor(info.cats, info.dur)} ${key} for ${dur}`)
+    // Call out autonomous agent help on the lead task — the standout insight.
+    const aside = i === 0 && info.auto >= 600 ? ` (${fmtDur(info.auto)} of it the agent, solo)` : ''
+    if (i === 0) clauses.push(`${verbFor(info.cats, info.dur)} ${key} for ${dur}${aside}`)
     else clauses.push(`${dur} on ${key}`)
   })
 
@@ -357,7 +370,7 @@ export default function TodayView({ onNavigate }: { onNavigate?: (v: string, key
 
   function pushToBucket(key: string, session: BucketSession) {
     if (!bucketMap.has(key)) {
-      bucketMap.set(key, { key, title: '', sessions: [], total_s: 0, cats: new Set(), day_total_s: total_s, isOverhead: false, isUntracked: false, isQueue: false })
+      bucketMap.set(key, { key, title: '', sessions: [], total_s: 0, autonomous_s: 0, cats: new Set(), day_total_s: total_s, isOverhead: false, isUntracked: false, isQueue: false })
     }
     const b = bucketMap.get(key)!
     b.sessions.push(session)
@@ -388,9 +401,11 @@ export default function TodayView({ onNavigate }: { onNavigate?: (v: string, key
     // foreground session durs above only filled `b.total_s` as a fallback.
     const isTask = !b.key.startsWith('_')
     const total = isTask ? (data.task_totals[b.key] ?? b.total_s) : b.total_s
+    const autonomous_s = isTask ? (data.task_autonomous_s[b.key] ?? 0) : 0
     return {
       ...b,
       total_s: total,
+      autonomous_s,
       isOverhead: b.key === '_overhead',
       isUntracked: b.key === '_untracked',
       isQueue: b.key === '_queue',
