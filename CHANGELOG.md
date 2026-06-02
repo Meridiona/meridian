@@ -1,3 +1,10 @@
+## [1.4.5](https://github.com/Meridiona/meridian/compare/v1.4.4...v1.4.5) (2026-06-02)
+
+
+### Bug Fixes
+
+* **ui:** per-task time = your time + autonomous agent, with insight labels ([#101](https://github.com/Meridiona/meridian/issues/101)) ([c2111d0](https://github.com/Meridiona/meridian/commit/c2111d0ccb671ac95c92cf19b79f1ecc867bdcfc))
+
 ## [1.4.4](https://github.com/Meridiona/meridian/compare/v1.4.3...v1.4.4) (2026-06-01)
 
 
