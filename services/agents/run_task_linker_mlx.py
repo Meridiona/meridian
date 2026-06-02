@@ -50,6 +50,21 @@ _CONTEXT_WINDOW = 5
 _MAX_TOKENS = 1024
 _TEMPERATURE = 0.0  # greedy decoding — deterministic classification
 
+# ── Whole-prompt context budget ────────────────────────────────────────────
+# The full prompt (system + session evidence + candidate tickets + recent
+# context) must fit the SELECTED model's context window minus the output
+# reserve. _user_message_char_budget() derives a char budget for the user
+# message from the loaded model's context length; build_user_message() then
+# truncates session_text and the candidate list to fit. Conservative by design:
+# a low chars-per-token estimate truncates slightly early rather than risking
+# the hard ExceededContextWindow error (asymmetric failure — overflow is fatal,
+# under-fill is a mild quality cost).
+_CTX_WINDOW_FLOOR = 4096
+_CTX_WINDOW_CEILING = 131072
+_CTX_WINDOW_FALLBACK = 8192          # used only when config.json can't be read
+_PROMPT_SAFETY_MARGIN_TOKENS = 512   # chat-template markers, role tokens, fudge
+_CHARS_PER_TOKEN = 3.5               # dense code/OCR/JSON skews low — bias safe
+
 # The eval-tuned default classifier model. It lives in the llm_selector catalog
 # (_MODELS) as "qwen3.5-9b-optiq"; llm_selector keeps it on machines where it
 # fits and degrades only when Metal headroom can't accommodate it. The catalog
@@ -235,6 +250,10 @@ _SYSTEM_PROMPT = (
 # ---------------------------------------------------------------------------
 
 _model_cache: dict[str, Any] = {}
+# Raw mlx_lm tokenizer per model — kept so _count_tokens() can measure the
+# system prompt against the real vocabulary (the dominant, constant term in the
+# context budget) instead of a char estimate.
+_tokenizer_cache: dict[str, Any] = {}
 
 
 def _get_model() -> Any:
@@ -264,7 +283,124 @@ def _get_model() -> Any:
     log.info("run_task_linker_mlx: model loaded in %.1fs", time.time() - t0)
 
     _model_cache[model_id] = outlines_model
+    _tokenizer_cache[model_id] = tokenizer
     return outlines_model
+
+
+# ---------------------------------------------------------------------------
+# Context budget — derive a per-model char budget for the user message so the
+# whole prompt fits the selected model's context window (see build_user_message
+# in _prompts.py). Resolved lazily and cached for the process lifetime.
+# ---------------------------------------------------------------------------
+
+_ctx_window_tokens: int | None = None
+_user_msg_char_budget: int | None = None
+_user_msg_budget_resolved = False
+
+
+def _hf_snapshot_dir(hf_id: str) -> "Path | None":
+    """Locate the on-disk HF snapshot dir holding a model's config.json."""
+    hf_home = os.environ.get("HF_HOME")
+    cache = (
+        os.environ.get("HF_HUB_CACHE")
+        or (os.path.join(hf_home, "hub") if hf_home else None)
+        or str(Path.home() / ".cache" / "huggingface" / "hub")
+    )
+    snaps = Path(cache) / ("models--" + hf_id.replace("/", "--")) / "snapshots"
+    if not snaps.is_dir():
+        return None
+    for rev in sorted(snaps.iterdir()):
+        if rev.is_dir() and (rev / "config.json").exists():
+            return rev
+    return None
+
+
+def _context_window_tokens() -> int:
+    """Read the selected model's context length from its config.json.
+
+    Reads max_position_embeddings (the authoritative context length) from the
+    model's config; falls back to a conservative default and clamps to sane
+    bounds. Read from disk rather than a hand-maintained map so it can't drift.
+    """
+    global _ctx_window_tokens
+    if _ctx_window_tokens is not None:
+        return _ctx_window_tokens
+    ctx: Any = None
+    try:
+        model_id = _resolve_model_id()
+        snap = _hf_snapshot_dir(model_id) if "/" in model_id else None
+        cfg_path = (snap / "config.json") if snap else (Path(model_id) / "config.json")
+        if cfg_path.exists():
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            ctx = cfg.get("max_position_embeddings")
+            if ctx is None and isinstance(cfg.get("text_config"), dict):
+                ctx = cfg["text_config"].get("max_position_embeddings")
+    except Exception as exc:  # noqa: BLE001
+        log.debug("run_task_linker_mlx: context-window probe failed: %s", exc)
+    if not isinstance(ctx, int) or ctx <= 0:
+        log.info(
+            "run_task_linker_mlx: context window unknown — using fallback %d",
+            _CTX_WINDOW_FALLBACK,
+        )
+        ctx = _CTX_WINDOW_FALLBACK
+    ctx = max(_CTX_WINDOW_FLOOR, min(_CTX_WINDOW_CEILING, ctx))
+    _ctx_window_tokens = ctx
+    log.info("run_task_linker_mlx: model context window = %d tokens", ctx)
+    return ctx
+
+
+def _count_tokens(text: str) -> int:
+    """Token count via the loaded tokenizer; conservative char estimate if absent.
+
+    The tokenizer is only cached after _get_model() runs. On the server it is
+    preloaded at startup, so the system-prompt measurement is exact; on the CLI
+    first call it falls back to chars/_CHARS_PER_TOKEN (an over-estimate, which
+    is the safe direction for a budget).
+    """
+    tok = _tokenizer_cache.get(_resolve_model_id())
+    if tok is not None:
+        try:
+            return len(tok.encode(text))
+        except Exception:  # noqa: BLE001
+            pass
+    return int(len(text) / _CHARS_PER_TOKEN) + 1
+
+
+def _user_message_char_budget() -> "int | None":
+    """Char budget for the classifier user message, or None to use the static cap.
+
+    Precedence (mirrors _resolve_model_id): an explicit SESSION_TEXT_CAP env
+    (including 0) pins the legacy static behaviour and disables this dynamic
+    budget — eval reproducibility and caller-owns-fit. Otherwise derive it from
+    the model's context window minus the system prompt and output reserve.
+    """
+    global _user_msg_char_budget, _user_msg_budget_resolved
+    if _user_msg_budget_resolved:
+        return _user_msg_char_budget
+    _user_msg_budget_resolved = True
+
+    if os.environ.get("SESSION_TEXT_CAP") is not None:
+        log.info("run_task_linker_mlx: SESSION_TEXT_CAP pinned — dynamic prompt budget off")
+        _user_msg_char_budget = None
+        return None
+
+    try:
+        ctx = _context_window_tokens()
+        system_tokens = _count_tokens(_SYSTEM_PROMPT)
+        user_tokens = ctx - _MAX_TOKENS - system_tokens - _PROMPT_SAFETY_MARGIN_TOKENS
+        _user_msg_char_budget = max(0, int(user_tokens * _CHARS_PER_TOKEN))
+        log.info(
+            "run_task_linker_mlx: user-message char budget=%d "
+            "(ctx=%d system_tok=%d output=%d margin=%d)",
+            _user_msg_char_budget, ctx, system_tokens, _MAX_TOKENS,
+            _PROMPT_SAFETY_MARGIN_TOKENS,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "run_task_linker_mlx: char-budget calc failed (%s) — static cap", exc
+        )
+        _user_msg_char_budget = None
+    return _user_msg_char_budget
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +540,11 @@ def _classify_one(
     with tracer.start_as_current_span("build_prompt") as bp_span:
         bp_span.set_attribute("pm_tasks_count", len(pm_tasks))
         bp_span.set_attribute("recent_sessions_count", len(recent))
-        user_message = build_user_message(session, pm_tasks, recent_sessions=recent)
+        char_budget = _user_message_char_budget()
+        bp_span.set_attribute("char_budget", char_budget if char_budget is not None else -1)
+        user_message = build_user_message(
+            session, pm_tasks, recent_sessions=recent, char_budget=char_budget,
+        )
         bp_span.set_attribute("prompt_chars", len(user_message))
         recent_with_task = sum(1 for r in recent if r.get("task_key"))
         bp_span.add_event("prompt_assembled", {
@@ -591,6 +731,7 @@ def _classify_one_logged(
             },
             pm_tasks,
             recent_sessions=recent,
+            char_budget=_user_message_char_budget(),
         )
     else:
         user_message = ""
