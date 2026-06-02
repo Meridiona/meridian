@@ -1,3 +1,15 @@
+# [1.18.0](https://github.com/Meridiona/meridian/compare/v1.17.1...v1.18.0) (2026-06-02)
+
+
+### Bug Fixes
+
+* **ci:** pin Python 3.11 in venv build to match user machines ([#141](https://github.com/Meridiona/meridian/issues/141)) ([130c0e6](https://github.com/Meridiona/meridian/commit/130c0e689b844c2591d98f669e4292b3f413b730))
+
+
+### Features
+
+* **ci:** cache npm, uv packages and Next.js build in release workflow ([#140](https://github.com/Meridiona/meridian/issues/140)) ([52d6f21](https://github.com/Meridiona/meridian/commit/52d6f211a8051b4bc31ba9343a2ca47498d64d65))
+
 ## [1.17.1](https://github.com/Meridiona/meridian/compare/v1.17.0...v1.17.1) (2026-06-02)
 
 
