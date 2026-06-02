@@ -1,3 +1,10 @@
+## [1.14.1](https://github.com/Meridiona/meridian/compare/v1.14.0...v1.14.1) (2026-06-02)
+
+
+### Bug Fixes
+
+* **bootstrap:** use prefix ownership to detect root-owned npm prefix ([#130](https://github.com/Meridiona/meridian/issues/130)) ([53715f9](https://github.com/Meridiona/meridian/commit/53715f95ca055255bd0428188635a5edeab9548b))
+
 # [1.14.0](https://github.com/Meridiona/meridian/compare/v1.13.0...v1.14.0) (2026-06-02)
 
 
