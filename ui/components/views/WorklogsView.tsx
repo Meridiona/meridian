@@ -25,6 +25,10 @@ function providerLabel(provider: string): string {
   }
 }
 
+// Where the reviewer says the time should have gone, supplied on reject.
+// Empty = plain dismissal. correctedToUntracked wins if both are set server-side.
+type RejectCorrection = { correctedTaskKey?: string; correctedToUntracked?: boolean }
+
 const STATE_STYLE: Record<string, { label: string; color: string }> = {
   drafted:  { label: 'Draft',    color: 'var(--ink-3)' },
   approved: { label: 'Approved', color: 'var(--accent)' },
@@ -69,10 +73,18 @@ export default function WorklogsView() {
     }
   }
 
-  const act = (id: number, action: 'approve' | 'reject' | 'unapprove') =>
+  const act = (id: number, action: 'approve' | 'unapprove') =>
     mutate(id, () => fetch(`/api/worklogs/${id}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action }),
+    }))
+
+  // Reject carries an optional attribution correction: where the time should
+  // have gone. Empty object = a plain dismissal with no target supplied.
+  const reject = (id: number, correction: RejectCorrection) =>
+    mutate(id, () => fetch(`/api/worklogs/${id}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'reject', ...correction }),
     }))
 
   const saveEdit = (id: number, summary: string) =>
@@ -144,7 +156,7 @@ export default function WorklogsView() {
           {items.map(w => (
             <WorklogCard key={w.id} w={w} busy={busy === w.id}
               onApprove={() => act(w.id, 'approve')}
-              onReject={() => act(w.id, 'reject')}
+              onReject={(correction) => reject(w.id, correction)}
               onUnapprove={() => act(w.id, 'unapprove')}
               onSave={(s) => saveEdit(w.id, s)} />
           ))}
@@ -163,21 +175,52 @@ function shiftDay(d: string, by: number): string {
   return `${y}-${m}-${day}`
 }
 
+type Candidate = { key: string; title: string }
+
 function WorklogCard({ w, busy, onApprove, onReject, onUnapprove, onSave }: {
   w: WorklogItem
   busy: boolean
   onApprove: () => void
-  onReject: () => void
+  onReject: (correction: RejectCorrection) => void
   onUnapprove: () => void
   onSave: (summary: string) => void
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(w.summary)
   const [showEvidence, setShowEvidence] = useState(false)
+  // Reject flow: open the picker, choose a target (a task_key, '__untracked__',
+  // or '__unknown__' = dismiss without a target), then confirm.
+  const [rejecting, setRejecting] = useState(false)
+  const [candidates, setCandidates] = useState<Candidate[] | null>(null)
+  const [target, setTarget] = useState<string>('__unknown__')
   const st = STATE_STYLE[w.state] ?? { label: w.state, color: 'var(--ink-3)' }
   const posted = w.state === 'posted'
 
   useEffect(() => { setDraft(w.summary) }, [w.summary])
+
+  async function openReject() {
+    setRejecting(true)
+    setTarget('__unknown__')
+    if (candidates == null) {
+      try {
+        const res = await fetch('/api/tasks')
+        const data = await res.json()
+        // Don't offer the worklog's own ticket as the "should have gone" target.
+        setCandidates((data.tasks ?? [])
+          .map((t: { key: string; title: string }) => ({ key: t.key, title: t.title }))
+          .filter((c: Candidate) => c.key !== w.task_key))
+      } catch { setCandidates([]) }
+    }
+  }
+
+  function confirmReject() {
+    const correction: RejectCorrection =
+      target === '__untracked__' ? { correctedToUntracked: true }
+        : target === '__unknown__' ? {}
+          : { correctedTaskKey: target }
+    onReject(correction)
+    setRejecting(false)
+  }
 
   return (
     <div className="rounded-xl border overflow-hidden" style={{ borderColor: 'var(--rule)', background: 'var(--surface)' }}>
@@ -281,11 +324,53 @@ function WorklogCard({ w, busy, onApprove, onReject, onUnapprove, onSave }: {
               </button>
             )}
             {w.state !== 'skipped' && (
-              <button onClick={onReject} disabled={busy}
+              <button onClick={openReject} disabled={busy || rejecting}
                 className="px-3 py-1.5 rounded-md text-[12px] ml-auto" style={{ color: 'var(--ink-3)' }}>
                 Dismiss
               </button>
             )}
+          </div>
+        )}
+
+        {/* reject → attribution picker: where should this time have gone? */}
+        {rejecting && !posted && (
+          <div className="mt-3 rounded-md p-3" style={{ background: 'var(--surface-2)', border: '1px solid var(--rule-2)' }}>
+            <p className="text-[12px] mb-2" style={{ color: 'var(--ink-2)' }}>
+              Where should this time have gone? <span style={{ color: 'var(--ink-4)' }}>(helps Meridian learn)</span>
+            </p>
+            <div className="space-y-1 max-h-48 overflow-y-auto">
+              {candidates == null ? (
+                <p className="text-[12px]" style={{ color: 'var(--ink-3)' }}>Loading tickets…</p>
+              ) : (
+                <>
+                  {candidates.map(c => (
+                    <label key={c.key} className="flex items-center gap-2 text-[12px] cursor-pointer py-0.5" style={{ color: 'var(--ink)' }}>
+                      <input type="radio" name={`reject-${w.id}`} checked={target === c.key} onChange={() => setTarget(c.key)} />
+                      <span className="font-mono">{c.key}</span>
+                      <span className="truncate" style={{ color: 'var(--ink-2)' }}>{c.title}</span>
+                    </label>
+                  ))}
+                  <label className="flex items-center gap-2 text-[12px] cursor-pointer py-0.5" style={{ color: 'var(--ink)' }}>
+                    <input type="radio" name={`reject-${w.id}`} checked={target === '__untracked__'} onChange={() => setTarget('__untracked__')} />
+                    Untracked / personal
+                  </label>
+                  <label className="flex items-center gap-2 text-[12px] cursor-pointer py-0.5" style={{ color: 'var(--ink-3)' }}>
+                    <input type="radio" name={`reject-${w.id}`} checked={target === '__unknown__'} onChange={() => setTarget('__unknown__')} />
+                    Just dismiss — not sure
+                  </label>
+                </>
+              )}
+            </div>
+            <div className="flex items-center gap-2 mt-3">
+              <button onClick={confirmReject} disabled={busy}
+                className="px-3 py-1 rounded-md text-[12px]" style={{ background: 'var(--ink)', color: 'var(--paper)' }}>
+                Dismiss worklog
+              </button>
+              <button onClick={() => setRejecting(false)} disabled={busy}
+                className="px-3 py-1 rounded-md text-[12px]" style={{ color: 'var(--ink-3)', border: '1px solid var(--rule-2)' }}>
+                Cancel
+              </button>
+            </div>
           </div>
         )}
       </div>
