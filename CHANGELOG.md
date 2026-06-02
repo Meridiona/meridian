@@ -1,3 +1,15 @@
+# [1.8.0](https://github.com/Meridiona/meridian/compare/v1.7.0...v1.8.0) (2026-06-02)
+
+
+### Bug Fixes
+
+* **deps:** patch npm security advisories (next, postcss, protobufjs, qs) ([#111](https://github.com/Meridiona/meridian/issues/111)) ([9350199](https://github.com/Meridiona/meridian/commit/9350199f78b8fea1657eebe3eeaf360324d8c8e9))
+
+
+### Features
+
+* **pm-worklog:** draft worklogs on classify event, fix backfill timer starvation ([1f52958](https://github.com/Meridiona/meridian/commit/1f52958fdd4e77167c1a3d09556eeaabb22868e3))
+
 # [1.7.0](https://github.com/Meridiona/meridian/compare/v1.6.0...v1.7.0) (2026-06-02)
 
 
