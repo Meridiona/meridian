@@ -286,7 +286,7 @@ if [[ -f "${VENV_TARBALL}" ]]; then
     if [[ "${_tarball_hash}" == "${_have_hash}" && -x "${VENV}/bin/python" ]]; then
         ok "Python deps unchanged — reusing existing venv (skipped extraction)"
     else
-        info "Extracting pre-built Python venv (no PyPI download required)…"
+        info "Extracting pre-built Python venv ($(du -sh "${VENV_TARBALL}" | cut -f1) — no PyPI download required)…"
         rm -rf "${VENV}"
         # Create a fresh venv with correct local paths (pyvenv.cfg points to
         # PYTHON_BIN, which install-mlx-server-daemon.sh reads for BASE_PYTHON).
