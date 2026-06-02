@@ -163,8 +163,16 @@ async fn main() -> Result<()> {
         // `--porcelain` emits TSV rows for machine ingestion; otherwise a rich,
         // colour-when-a-tty, by-daemon table. Read-only comprehensive sweep.
         let porcelain = std::env::args().any(|a| a == "--porcelain");
+        let fix = std::env::args().any(|a| a == "--fix");
+        let dry_run = std::env::args().any(|a| a == "--dry-run");
         let cfg = Config::from_env();
         let report = meridian::health::run_all(&cfg).await;
+        if fix {
+            // Attempt repair (auto silently, guided with confirm); exit non-zero
+            // if anything still needs a human.
+            let residual = meridian::health::fix::run(&cfg, &report, dry_run);
+            std::process::exit(if residual { 1 } else { 0 });
+        }
         if porcelain {
             print!("{}", report.render_porcelain());
         } else {
