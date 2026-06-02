@@ -11,12 +11,17 @@ _VSCODE_BANNER_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-# Max chars of session_text included in the prompt. Default 2500 (~625 tokens at
-# 4 chars/token) — enough to identify files, ticket keys, and recent activity
-# without inflating context in production. Override via SESSION_TEXT_CAP env var
-# for eval experiments; set to 0 to disable truncation entirely (caller is then
-# responsible for not blowing the model's context window).
-SESSION_TEXT_CAP = int(os.environ.get("SESSION_TEXT_CAP", "2500"))
+# Max chars of session_text included in the prompt. Default 10000 (~2500 tokens
+# at 4 chars/token). The old 2500 cap kept only the FIRST frames of a multi-frame
+# OCR capture, so when a session spanned more than one window/app the later
+# (often foreground) activity was silently dropped — e.g. a session whose head
+# showed an IDE but whose tail showed the user had moved to a different app/
+# project got misclassified on the stale head. The classifier model has a 128K
+# context window, so 2500 was far too conservative; 10000 comfortably holds a
+# full multi-frame session while staying trivial for the model. Override via
+# SESSION_TEXT_CAP env var; set to 0 to disable truncation entirely (caller is
+# then responsible for not blowing the model's context window).
+SESSION_TEXT_CAP = int(os.environ.get("SESSION_TEXT_CAP", "10000"))
 
 
 def _fmt_dur(duration_s: int | float) -> str:
