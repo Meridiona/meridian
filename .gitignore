@@ -72,6 +72,21 @@ services/tests/evals/results/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Autonomous eval-loop runtime state — restartable, regenerated. Decision log
+# is informational only.
+services/tests/evals/.loop_state.json
+services/tests/evals/.loop_queue.json
+services/tests/evals/.loop_decisions.md
+services/tests/evals/.loop_procedure.md
+# In-progress experimental skill revisions written by the autonomous loop.
+# Versioned manually when promoted; never auto-committed.
+services/skills/activity/task-classifier/skill_v[0-9]*.md
+!services/skills/activity/task-classifier/skill_v1.md
+
+# Autonomous sampling-sweep run logs — high-detail per-iteration narratives
+services/tests/evals/.sweep_logs/
+services/tests/evals/.sweep_state.json
 dist/
 
 # root release-tooling deps

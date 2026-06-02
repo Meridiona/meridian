@@ -87,16 +87,24 @@ async def health() -> dict:
 
 @app.get("/info")
 async def info() -> dict:
-    """Return the identity of the loaded model.
+    """Return the identity of the loaded model, classifier prompt, and sampling.
 
-    model_id is None for the hermes backend (no model loaded in-process).
-    loaded_at is an ISO-8601 UTC timestamp set when the model finished loading.
+    model_id        is None for the hermes backend (no model loaded in-process).
+    skill_path      is the resolved SKILL.md (or override) the classifier uses.
+    temperature/    are the sampling knobs the /classify endpoint will apply on
+    max_tokens/      its next request. Env-overridable at server-start time via
+    context_window   MLX_TEMPERATURE / MLX_MAX_TOKENS / MLX_CONTEXT_WINDOW.
+    loaded_at       is an ISO-8601 UTC timestamp set when the model finished loading.
     """
     m = _app_state.get("mlx_module")
     return {
-        "backend":   _app_state.get("backend", "hermes"),
-        "model_id":  m._MLX_MODEL_ID if m else None,
-        "loaded_at": _app_state.get("loaded_at"),
+        "backend":        _app_state.get("backend", "hermes"),
+        "model_id":       m._MLX_MODEL_ID if m else None,
+        "skill_path":     str(m._SKILL_PATH) if m else None,
+        "temperature":    m._TEMPERATURE if m else None,
+        "max_tokens":     m._MAX_TOKENS if m else None,
+        "context_window": m._CONTEXT_WINDOW if m else None,
+        "loaded_at":      _app_state.get("loaded_at"),
     }
 
 

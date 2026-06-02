@@ -325,6 +325,54 @@ SCHEMA:
 }
 """
 
+# ---------------------------------------------------------------------------
+# Preamble injected when classify_system_prompt_path is set — bridges the
+# external SKILL.md (designed for raw OCR/window-titles) to ETC's stage-2
+# input (a structured-evidence JSON instead of raw text).
+# ---------------------------------------------------------------------------
+
+_SKILL_OVERRIDE_PREAMBLE = """\
+You are a session classifier. You receive (1) a structured evidence \
+extraction from a stage-1 model and (2) a list of candidate Jira tickets. \
+You do NOT see the raw session OCR/window-title text — only the structured \
+extraction.
+
+The stage-1 extraction is a JSON object with:
+  primary_app                              — the app the user was focused on
+  user_action                              — ONE of: actively_implementing,
+                                              reviewing_pr, discussing_in_chat,
+                                              researching_in_browser,
+                                              passively_observing,
+                                              managing_tickets,
+                                              writing_planning_notes,
+                                              system_utility
+  ticket_mentions[].key                    — ticket key seen in session
+  ticket_mentions[].evidence_type          — mentioned_in_chat | mentioned_in_url
+                                              | topic_match | branch_name
+                                              | file_path_match | actively_editing
+  ticket_mentions[].context                — ≤60 chars where the mention appeared
+  active_work_signals[]                    — short phrases of concrete production
+                                              activity (file edits, commits, runs)
+  evidence_strength_for_implementation     — none | weak | moderate | strong
+
+Apply the classification rubric below to this structured evidence — treat the
+extracted fields as the equivalent of the OCR/window-title evidence the rubric
+references. Use ticket_mentions[].evidence_type as the "evidence type" signal,
+user_action as the dominant activity, and active_work_signals as the
+"direct execution evidence" the rubric calls for.
+
+Output ONE valid JSON object — no preamble, no markdown, no code fences:
+  {"task_key": "<KEY>" | null,
+   "session_type": "task" | "overhead" | "untracked",
+   "confidence": <float 0.0-1.0>,
+   "reasoning": "<≤200 chars citing the deciding extracted signals>"}
+
+================================================================
+CLASSIFICATION RUBRIC (from SKILL.md override)
+================================================================
+
+"""
+
 
 class ExtractThenClassifyStrategy(EvalStrategy):
     """Two-stage classification — evidence extraction, then evidence-only classification.
@@ -353,6 +401,14 @@ class ExtractThenClassifyStrategy(EvalStrategy):
                                         Qwen3 chain-of-thought consumes 2-4k
                                         before emitting the answer JSON)
         classification_max_tokens     — max tokens stage 2 (default: 2000)
+        classify_system_prompt_path   — optional path to a custom system prompt
+                                        for stage 2 (e.g. a SKILL.md revision).
+                                        When set, replaces _CLASSIFY_SYSTEM_PROMPT
+                                        with the file's content (frontmatter
+                                        stripped) wrapped by a preamble that
+                                        explains the stage-2 input is structured
+                                        evidence (not raw OCR). Path is absolute
+                                        or relative to services/.
     """
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
@@ -370,10 +426,56 @@ class ExtractThenClassifyStrategy(EvalStrategy):
             # truncate before the JSON closes.
             "extraction_max_tokens":      5000,
             "classification_max_tokens":  2000,
+            "classify_system_prompt_path": None,  # optional SKILL.md override
         }
         if config:
             cfg.update(config)
         super().__init__("extract_then_classify", cfg)
+        self._cached_classify_system_prompt: str | None = None
+
+    def _resolve_classify_system_prompt(self) -> str:
+        """Return the stage-2 system prompt — either the embedded RULE 1-4
+        framework (default) or an external SKILL.md file wrapped with a
+        structured-evidence preamble (when classify_system_prompt_path is set).
+        Cached on first call so we don't re-read the file per Golden."""
+        if self._cached_classify_system_prompt is not None:
+            return self._cached_classify_system_prompt
+
+        override = self.config.get("classify_system_prompt_path")
+        if not override:
+            self._cached_classify_system_prompt = _CLASSIFY_SYSTEM_PROMPT
+            return _CLASSIFY_SYSTEM_PROMPT
+
+        from pathlib import Path as _Path
+        path = _Path(override)
+        if not path.is_absolute():
+            # Resolve relative to services/ (parents[2] of this file).
+            path = _Path(__file__).resolve().parents[2] / override
+        if not path.exists():
+            log.warning(
+                "ExtractThenClassifyStrategy: classify_system_prompt_path=%r not found; "
+                "falling back to embedded _CLASSIFY_SYSTEM_PROMPT",
+                override,
+            )
+            self._cached_classify_system_prompt = _CLASSIFY_SYSTEM_PROMPT
+            return _CLASSIFY_SYSTEM_PROMPT
+
+        body = path.read_text(encoding="utf-8")
+        # Strip YAML frontmatter (between --- markers) if present.
+        if body.startswith("---\n"):
+            end = body.find("\n---\n", 4)
+            if end != -1:
+                body = body[end + 5:]
+        body = body.strip()
+
+        wrapped = _SKILL_OVERRIDE_PREAMBLE + body
+        log.info(
+            "ExtractThenClassifyStrategy: stage-2 system prompt loaded from %s "
+            "(%d chars after frontmatter strip, %d chars total with preamble)",
+            path, len(body), len(wrapped),
+        )
+        self._cached_classify_system_prompt = wrapped
+        return wrapped
 
     def classify_prompt(self, rendered_prompt: str) -> StrategyResult:
         t0 = time.time()
@@ -458,8 +560,14 @@ class ExtractThenClassifyStrategy(EvalStrategy):
                 "truncated": len(classify_user_prompt) > 5000,
             })
 
+            classify_sys = self._resolve_classify_system_prompt()
+            cls_span.set_attribute(
+                "system_prompt_source",
+                self.config.get("classify_system_prompt_path") or "embedded_rule_1_4",
+            )
+            cls_span.set_attribute("system_prompt_chars", len(classify_sys))
             classification, t2_elapsed, t2_err = self._post_and_parse_json(
-                system_prompt=_CLASSIFY_SYSTEM_PROMPT,
+                system_prompt=classify_sys,
                 user_prompt=classify_user_prompt,
                 temperature=classify_temp,
                 max_tokens=classify_max_tok,

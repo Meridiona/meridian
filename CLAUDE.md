@@ -279,10 +279,11 @@ The pipeline is fully ported to Rust; the former Python `coding_agent_indexer` +
 
 ## Python agent service (`services/`)
 
-These Python services still run alongside the Rust daemon:
+Three Python services run alongside the Rust daemon:
 
-1. **MLX classifier + summariser** (`agents/server.py`, `run_task_linker_mlx.py`) — the persistent FastAPI model server (`com.meridiona.mlx-server.plist`). Exposes `/classify_sessions` (Rust calls it to classify) and `/summarise` (the coding-agent summariser's MLX fallback). The one Python piece the pipeline can't replace (outlines + mlx-lm are Python-only).
-2. **Jira updater** (`agents/pm_worklog_update/`) — agno-powered synthesis workflow that generates Jira comments + worklogs from classified sessions. Runs on an office-hours slot schedule.
+1. **`coding_agent_indexer`** — polls Claude Code (`~/.claude/projects/`) and Codex (`~/.codex/sessions/`) JSONLs and writes them as `app_sessions` rows. Also triggered in real-time by Claude Code's SessionEnd hook.
+2. **MLX classifier** (`run_task_linker_mlx.py`) — called by the Rust intelligence module via HTTP POST to classify `app_sessions` into Jira tasks. Runs as a persistent FastAPI server (`com.meridiona.mlx-server.plist`).
+3. **Jira updater** (`agents/pm_update/`) — agno-powered synthesis workflow that generates Jira comments + worklogs from classified sessions. Runs on an office-hours slot schedule (`com.meridiona.jira-updater.plist`).
 
 For the deep technical reference (classification logic, scoring formulas, recipes for tuning prompts / debugging misclassifications), see `services/agents/README.md`.
 
@@ -290,7 +291,7 @@ For the deep technical reference (classification logic, scoring formulas, recipe
 
 - **Every `.py` file in `services/agents/` must start with a `"""…"""` module docstring** describing its purpose. The Rust/TS file-header convention does not apply — Python uses docstrings. Match the prose style of existing modules (terse, opinionated).
 - **`ticket_links` and `session_dimensions` writes must be idempotent.** Both tables have UNIQUE / composite-PK constraints with explicit `ON CONFLICT … DO UPDATE` policies. New writers must use the same UPSERT pattern. Never `DELETE` then `INSERT` from the daemon path.
-- **Coding-agent segment idempotency:** the `(claude_session_uuid, segment_started_at)` unique index is the key (migration 027; `day_utc` was dropped in 028). The UPSERT refreshes a LIVE row but carries `WHERE sealed_at IS NULL`, so a SEALED row is immutable — the summariser/classifier only ever read sealed rows.
+- **`coding_agent_indexer` cursor monotonicity:** the `(claude_session_uuid, day_utc)` unique index is the idempotency key. The UPSERT updates mutable fields (timestamps, duration, transcript) but never touches classifier-owned fields (`task_method`, `task_key`, `session_summary`).
 - **Eval-only strategies live in `services/tests/evals/strategies.py`, NOT in `services/agents/`.** `services/agents/` is for production code (the running daemon, the MLX server, `run_task_linker_mlx.py`). The `EvalStrategy` abstraction + `DirectHttpStrategy` + future `ExtractThenClassifyStrategy` / retrieval-augmented / agentic variants belong with the eval harness. A strategy that proves out in eval is **promoted** into `services/agents/` as a deliberate, separate productionization step — it is NOT silently shared. Adding experimental strategies to `services/agents/` pollutes the production surface with code the tagger never executes. See `services/tests/evals/README.md` § "Architecture convention" for the rationale.
 
 ### Quick command reference
