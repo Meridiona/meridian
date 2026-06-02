@@ -1,3 +1,17 @@
+# [1.6.0](https://github.com/Meridiona/meridian/compare/v1.5.0...v1.6.0) (2026-06-02)
+
+
+### Bug Fixes
+
+* **classifier:** drop category-input reference from output schema ([e0c66b0](https://github.com/Meridiona/meridian/commit/e0c66b055d7f17f4a2254cb458bb18f5c4f4ed31))
+* **classifier:** stop feeding category into task classification ([f0db2bc](https://github.com/Meridiona/meridian/commit/f0db2bc658c2259f24dd2d0e353a8b85f07a5624))
+* **evals:** make the LLM judge optional; add classify_session debug tool ([09393b6](https://github.com/Meridiona/meridian/commit/09393b61ad44a2dca9b12400053281b384628831))
+
+
+### Features
+
+* **classifier:** raise SESSION_TEXT_CAP from 2500 to 10000 ([f248384](https://github.com/Meridiona/meridian/commit/f2483848617fc9ca328fad7a69041cb9ed10e633))
+
 # [1.5.0](https://github.com/Meridiona/meridian/compare/v1.4.5...v1.5.0) (2026-06-02)
 
 
