@@ -1,6 +1,6 @@
 {
   "name": "meridian-ui",
-  "version": "1.10.1",
+  "version": "1.11.0",
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack -p 3939",
