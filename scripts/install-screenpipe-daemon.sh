@@ -31,11 +31,30 @@ if [[ ! -f "${TEMPLATE}" ]]; then
     exit 1
 fi
 
-# Locate the screenpipe binary.
+# Locate the screenpipe binary. The npm package ships a Node *wrapper* at
+# `command -v screenpipe` (a cli.js shim) that spawns the real arm64 Mach-O. If
+# the launchd agent launches that wrapper, macOS attributes Screen Recording /
+# Accessibility to `node` (the responsible process) — a broad, fragile grant
+# (breaks on node upgrades) that also shows a scary "node wants to record your
+# screen" prompt. Resolve the real Mach-O and launch it directly so the grant
+# attaches to a stable binary named `screenpipe` (and survives reinstalls of the
+# same version, since its path is fixed). Falls back to whatever `command -v`
+# found when screenpipe is a native binary (Homebrew) rather than the npm shim.
 SCREENPIPE_BIN="$(command -v screenpipe)" || true
 if [[ -z "${SCREENPIPE_BIN}" ]]; then
     echo "✗ screenpipe binary not found in PATH — install with: npm install -g screenpipe" >&2
     exit 1
+fi
+_npm_root="$(npm root -g 2>/dev/null || true)"
+if [[ -n "${_npm_root}" && -d "${_npm_root}/screenpipe" ]]; then
+    _real=""
+    while IFS= read -r _cand; do
+        if file "${_cand}" 2>/dev/null | grep -q "Mach-O"; then _real="${_cand}"; break; fi
+    done < <(find "${_npm_root}/screenpipe" -type f -name screenpipe -perm +0111 2>/dev/null)
+    if [[ -n "${_real}" ]]; then
+        SCREENPIPE_BIN="${_real}"
+        echo "→ using the real screenpipe binary (not the node wrapper): ${SCREENPIPE_BIN}"
+    fi
 fi
 
 mkdir -p "${HOME}/.meridian/logs"
