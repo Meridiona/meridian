@@ -21,6 +21,14 @@ ok()   { echo "  ✓ $*" >&2; }
 warn() { echo "  ⚠ $*" >&2; }
 err()  { echo "✗ $*" >&2; }
 
+# True when `npm i -g` can write the global prefix without root (Homebrew/user
+# prefix). On a root-owned prefix (e.g. /usr/local) the one npm step is elevated
+# on its own, rather than running this whole script as root.
+npm_global_writable() {
+    local prefix; prefix="$(npm config get prefix 2>/dev/null)"
+    [[ -n "$prefix" && -w "${prefix}/lib/node_modules" ]]
+}
+
 GUI_TARGET="gui/$(id -u)"
 LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
 
@@ -103,6 +111,14 @@ configure_editor_accessibility() {
 [[ "$(uname -s)" == "Darwin" ]]  || { err "Meridian requires macOS."; exit 1; }
 [[ "$(uname -m)" == "arm64" ]]   || { err "Meridian requires Apple Silicon (arm64). This bundle is macOS-arm64 only."; exit 1; }
 
+# Refuse root: this installs per-user launchd agents (gui/$(id -u)) and writes
+# ~/.meridian. As root, launchd bootstrap fails and files end up root-owned. The
+# npm launcher elevates only the steps that need root; the rest stays per-user.
+if [[ "$(id -u)" -eq 0 ]]; then
+    err "Do not run as root / with sudo — run 'meridian setup' as your normal user."
+    exit 1
+fi
+
 echo "→ Installing Meridian $(cat "${APP_ROOT}/VERSION" 2>/dev/null || echo '?') from ${APP_ROOT}"
 
 # ── 1. Prerequisites (no Rust/Node-build toolchain — artifacts are prebuilt) ──
@@ -117,7 +133,12 @@ ok "node + python ($(${PYTHON_BIN} --version 2>&1))"
 
 if ! command -v screenpipe >/dev/null 2>&1; then
     info "Installing screenpipe ${SCREENPIPE_VERSION} via npm…"
-    npm install -g "screenpipe@${SCREENPIPE_VERSION}"
+    if npm_global_writable; then
+        npm install -g "screenpipe@${SCREENPIPE_VERSION}"
+    else
+        warn "global npm prefix needs root — elevating just this install (you may be prompted)…"
+        sudo npm install -g "screenpipe@${SCREENPIPE_VERSION}"
+    fi
 fi
 ok "screenpipe"
 if ! command -v ffmpeg >/dev/null 2>&1; then info "Installing ffmpeg…"; brew install ffmpeg; fi
