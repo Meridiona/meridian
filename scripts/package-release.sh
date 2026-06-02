@@ -53,7 +53,7 @@ tar -czf "${DEST}/ui.tar.gz" -C "${_ui_stage}" .
 rm -rf "${_ui_stage}"
 echo "  · ui.tar.gz ($(du -h "${DEST}/ui.tar.gz" | cut -f1), symlinks preserved)"
 
-echo "→ Python services (source — venv is created at install)"
+echo "→ Python services (source + pre-built site-packages)"
 mkdir -p "${DEST}/services"
 tar cf - \
   --exclude='.venv' --exclude='.venv*' --exclude='__pycache__' --exclude='*.pyc' \
@@ -61,6 +61,25 @@ tar cf - \
   --exclude='.claude' --exclude='.claude-flow' --exclude='.git' --exclude='node_modules' \
   --exclude='*.log' --exclude='dist' --exclude='.DS_Store' \
   -C services . | tar xf - -C "${DEST}/services"
+
+echo "→ Python venv (pre-built site-packages — avoids PyPI at install time)"
+# uv must be available on the CI runner; install via pip if absent.
+command -v uv >/dev/null 2>&1 || pip3 install --quiet uv
+# Build the venv from the committed uv.lock (exact pinned set, no resolution).
+uv sync --project services --extra mlx --frozen
+# Determine the Python version subdirectory (e.g. python3.11).
+_py_dir="$(ls services/.venv/lib/ | grep '^python' | head -1)"
+if [[ -z "${_py_dir}" ]]; then
+    echo "✗ could not find python lib dir under services/.venv/lib/" >&2
+    exit 1
+fi
+# Pack site-packages only — NOT pyvenv.cfg or bin/ (those are path-specific and
+# are re-created at install time by `uv venv`). The tarball is platform-specific:
+# it contains the arm64 native extensions (mlx-metal etc.) built on this runner.
+echo "  · packing services/.venv/lib/${_py_dir}/site-packages → ${DEST}/services-venv.tar.gz"
+tar -czf "${DEST}/services-venv.tar.gz" \
+    -C "services/.venv/lib/${_py_dir}/site-packages" .
+echo "  · $(du -sh "${DEST}/services-venv.tar.gz" | cut -f1) compressed"
 
 echo "→ scripts + plists + CLI"
 cp scripts/meridian-cli.sh scripts/install-from-bundle.sh scripts/meridian-npm-setup.sh \
