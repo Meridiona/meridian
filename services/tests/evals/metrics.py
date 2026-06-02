@@ -23,7 +23,6 @@ from pathlib import Path
 import sys
 
 from deepeval.metrics import BaseMetric, TaskCompletionMetric
-from deepeval.models import OllamaModel
 from deepeval.test_case import LLMTestCase
 
 _SERVICES_DIR = Path(__file__).parent.parent.parent
@@ -33,7 +32,33 @@ if str(_SERVICES_DIR) not in sys.path:
 _MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:31b")
 _HOST  = os.environ.get("OLLAMA_HOST",  "http://localhost:11434")
 
-_judge = OllamaModel(model=_MODEL, base_url=_HOST)
+
+def _make_judge() -> "object | None":
+    """Build the LLM judge — ONLY the agent-e2e TaskCompletionMetric needs it.
+
+    The classifier metrics below (TaskKeyMatch / SessionTypeMatch) are pure
+    exact-match and require no judge. Importing this module must therefore NOT
+    hard-depend on Ollama: if the `ollama` package or server is unavailable we
+    return None and the classifier eval runs unaffected. Construction is inside
+    the function (not at import) because OllamaModel() pulls in `ollama` only
+    when instantiated.
+    """
+    try:
+        from deepeval.models import OllamaModel
+
+        return OllamaModel(model=_MODEL, base_url=_HOST)
+    except Exception as exc:  # noqa: BLE001 — missing pkg, server down, etc.
+        import warnings
+
+        warnings.warn(
+            f"LLM judge unavailable ({exc}); agent-e2e metrics disabled. "
+            "Classifier exact-match metrics are unaffected.",
+            stacklevel=2,
+        )
+        return None
+
+
+_judge = _make_judge()
 
 _NULL_LITERALS = {"none", "null", "n/a", "nil", "undefined", ""}
 
@@ -146,9 +171,13 @@ class SessionTypeMatchMetric(BaseMetric):
 # Metric lists — import these in eval files
 # ---------------------------------------------------------------------------
 
-AGENT_E2E_METRICS = [
-    TaskCompletionMetric(threshold=0.5, model=_judge, include_reason=True),
-]
+# Only built when a judge is available — otherwise empty so importing this module
+# (e.g. for the classifier eval) never requires Ollama.
+AGENT_E2E_METRICS = (
+    [TaskCompletionMetric(threshold=0.5, model=_judge, include_reason=True)]
+    if _judge is not None
+    else []
+)
 
 CLASSIFIER_METRICS = [
     TaskKeyMatchMetric(threshold=1.0),
