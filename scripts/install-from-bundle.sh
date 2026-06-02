@@ -65,6 +65,40 @@ PLIST
     launchctl kickstart -k "${GUI_TARGET}/${label}" 2>/dev/null || true
 }
 
+# Enable accessibility mode in VS Code / Cursor / Antigravity so screenpipe
+# captures their a11y tree instead of falling back to OCR. Chromium/Electron
+# editors only expose their AX tree when editor.accessibilitySupport = "on"
+# (the force-renderer-accessibility argv switch is Linux-only on macOS).
+# Idempotent + JSONC-safe (preserves existing keys/comments). Without this, npm
+# users' editors silently OCR-only until they discover the setting by hand.
+configure_editor_accessibility() {
+    local support_root="${HOME}/Library/Application Support"
+    local editors=("Code" "Cursor" "Antigravity IDE")
+    local any=0 ed dir settings
+    for ed in "${editors[@]}"; do
+        dir="${support_root}/${ed}"
+        [[ -d "$dir" ]] || continue           # editor not installed → skip
+        any=1
+        settings="${dir}/User/settings.json"
+        if [[ -f "$settings" ]] && grep -q '"editor.accessibilitySupport"' "$settings"; then
+            ok "${ed}: editor.accessibilitySupport already set — keeping"
+            continue
+        fi
+        mkdir -p "${dir}/User"
+        if [[ ! -s "$settings" ]]; then
+            printf '{\n\t"editor.accessibilitySupport": "on"\n}\n' > "$settings"
+        else
+            cp "$settings" "${settings}.meridian-bak"
+            # Insert the key after the first `{`. VS Code-family parsers are
+            # JSONC-tolerant, so this preserves existing keys/comments/formatting.
+            perl -0777 -i -pe 's/\{/\{\n\t"editor.accessibilitySupport": "on",/ unless $done++' "$settings"
+        fi
+        ok "${ed}: enabled editor.accessibilitySupport = on (restart the editor)"
+    done
+    [[ "$any" -eq 0 ]] && info "No VS Code / Cursor / Antigravity install found — skipping editor a11y setup"
+    return 0
+}
+
 # ── 0. Platform gate ────────────────────────────────────────────────────────
 [[ "$(uname -s)" == "Darwin" ]]  || { err "Meridian requires macOS."; exit 1; }
 [[ "$(uname -m)" == "arm64" ]]   || { err "Meridian requires Apple Silicon (arm64). This bundle is macOS-arm64 only."; exit 1; }
@@ -143,6 +177,10 @@ if [[ "${SKIP_PERMISSIONS}" -eq 0 ]]; then
     open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" 2>/dev/null || true
     read -r -p "  Press Enter once both are granted… " _ || true
 fi
+
+# Enable a11y mode in installed VS Code-family editors (idempotent). Without
+# this, screenpipe falls back to OCR for those editors instead of their a11y tree.
+configure_editor_accessibility
 
 # ── 6. Daemons (reuse the hardened installers; UI runs the standalone server) ─
 info "Installing screenpipe launchd agent…"
