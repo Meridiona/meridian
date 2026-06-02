@@ -1,3 +1,10 @@
+# [1.16.0](https://github.com/Meridiona/meridian/compare/v1.15.1...v1.16.0) (2026-06-02)
+
+
+### Features
+
+* **update:** show download size + elapsed time during meridian update ([#136](https://github.com/Meridiona/meridian/issues/136)) ([498660b](https://github.com/Meridiona/meridian/commit/498660bfbb7bf22bf0a42295b9520fc60188072c))
+
 ## [1.15.1](https://github.com/Meridiona/meridian/compare/v1.15.0...v1.15.1) (2026-06-02)
 
 
