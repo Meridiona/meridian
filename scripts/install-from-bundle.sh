@@ -109,8 +109,21 @@ ok "config at ${ENV_FILE} (dashboard port ${UI_PORT})"
 # ── 3. Binary + CLI symlinks ─────────────────────────────────────────────────
 mkdir -p "${HOME}/.local/bin"
 ln -sfn "${APP_ROOT}/bin/meridian"        "${HOME}/.local/bin/meridian-daemon"
-ln -sfn "${APP_ROOT}/scripts/meridian-cli.sh" "${HOME}/.local/bin/meridian"
-ok "meridian-daemon + meridian → ~/.local/bin"
+# Do NOT shadow the npm launcher with a second `meridian` on PATH. When installed
+# via npm, /usr/local/bin/meridian (the launcher) owns `setup`/`update` and
+# delegates start/stop/doctor to this bundle's CLI by its real path. ~/.local/bin
+# usually precedes /usr/local/bin on PATH, so a ~/.local/bin/meridian symlink
+# would hide `meridian setup` / `meridian update` (it can't reach the launcher).
+# Only create the CLI symlink as a fallback when no launcher is present (e.g. a
+# standalone bundle install); when the launcher exists, remove any stale shadow
+# so `meridian update` self-heals an install made by an older bundle.
+if [[ -e /usr/local/bin/meridian ]]; then
+    rm -f "${HOME}/.local/bin/meridian"
+    ok "meridian-daemon → ~/.local/bin  (meridian CLI = npm launcher at /usr/local/bin/meridian)"
+else
+    ln -sfn "${APP_ROOT}/scripts/meridian-cli.sh" "${HOME}/.local/bin/meridian"
+    ok "meridian-daemon + meridian → ~/.local/bin"
+fi
 
 # ── 4. Python venv + MLX deps (the one install-time download) ────────────────
 info "Setting up Python venv + MLX inference deps (downloads ~ a few hundred MB)…"
