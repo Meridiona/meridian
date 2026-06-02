@@ -21,6 +21,74 @@ ok()   { echo "  ✓ $*" >&2; }
 warn() { echo "  ⚠ $*" >&2; }
 err()  { echo "✗ $*" >&2; }
 
+# ── .env credential collection (mirrors install.sh's interactive walkthrough) ──
+# Read an uncommented KEY=value from an .env file; empty if missing or commented.
+get_env_value() {
+    local key="$1" file="$2"
+    [[ -f "$file" ]] || return 0
+    grep -E "^${key}=" "$file" 2>/dev/null | tail -1 | cut -d= -f2- || true
+}
+# Set KEY=value in FILE (replace existing uncommented line, else append). Idempotent.
+set_env_value() {
+    local key="$1" value="$2" file="$3"
+    [[ -f "$file" ]] || touch "$file"
+    if grep -qE "^${key}=" "$file" 2>/dev/null; then
+        local tmp; tmp="$(mktemp)"
+        awk -v k="$key" -v v="$value" '
+            BEGIN { FS=OFS="="; replaced=0 }
+            $1==k && !replaced { print k"="v; replaced=1; next }
+            { print }
+        ' "$file" > "$tmp"
+        mv "$tmp" "$file"
+    else
+        printf '%s=%s\n' "$key" "$value" >> "$file"
+    fi
+}
+# Prompt for ONE var; skip silently if already set so re-runs/updates never re-ask.
+# Args: <key> <description> <secret 0|1> <env_file>
+prompt_env_var() {
+    local key="$1" desc="$2" secret="$3" file="$4" value=""
+    if [[ -n "$(get_env_value "$key" "$file")" ]]; then ok "${key} already set — keeping"; return 0; fi
+    if [[ "$secret" == "1" ]]; then read -r -s -p "    ${desc}: " value; echo >&2
+    else read -r -p "    ${desc}: " value; fi
+    [[ -z "$value" ]] && { info "  (skipped ${key})"; return 0; }
+    set_env_value "$key" "$value" "$file"; ok "${key} written"
+}
+# Ask whether to configure a tracker. Returns 0 (yes) / 1 (no/skip).
+prompt_category() {
+    local label="$1" ans
+    read -r -p "  Configure ${label}? [y/N] " ans
+    [[ "$ans" =~ ^[Yy] ]]
+}
+# Interactive tracker-credential walkthrough → writes to the bundle .env.
+collect_credentials() {
+    local env_file="$1"
+    info "Collecting tracker credentials — press Enter to skip any prompt"
+    echo "    (edit later anytime: meridian config edit)" >&2
+    echo >&2
+    if prompt_category "Jira"; then
+        prompt_env_var "JIRA_BASE_URL" "Jira URL (e.g. https://your-org.atlassian.net)" 0 "$env_file"
+        # The Python side reads JIRA_URL, the Rust side JIRA_BASE_URL — keep both in sync.
+        local jira_url; jira_url="$(get_env_value JIRA_BASE_URL "$env_file")"
+        [[ -n "$jira_url" ]] && set_env_value JIRA_URL "$jira_url" "$env_file"
+        prompt_env_var "JIRA_EMAIL" "Jira email" 0 "$env_file"
+        prompt_env_var "JIRA_API_TOKEN" "Jira API token" 1 "$env_file"
+        prompt_env_var "JIRA_PROJECT_KEYS" "Jira project keys (optional, comma-sep, e.g. KAN,ENG)" 0 "$env_file"
+    fi
+    echo >&2
+    if prompt_category "GitHub"; then
+        prompt_env_var "GITHUB_TOKEN" "GitHub personal access token" 1 "$env_file"
+        prompt_env_var "GITHUB_ORG"   "GitHub organization (or your username)" 0 "$env_file"
+        prompt_env_var "GITHUB_REPOS" "GitHub repos (optional, comma-sep owner/repo)" 0 "$env_file"
+    fi
+    echo >&2
+    if prompt_category "Linear"; then
+        prompt_env_var "LINEAR_API_KEY"  "Linear API key" 1 "$env_file"
+        prompt_env_var "LINEAR_TEAM_IDS" "Linear team IDs (optional, comma-sep)" 0 "$env_file"
+    fi
+    ok "Credential collection complete"
+}
+
 GUI_TARGET="gui/$(id -u)"
 LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
 
@@ -139,6 +207,15 @@ else
     echo "MERIDIAN_UI_PORT=${UI_PORT}" >> "${ENV_FILE}"
 fi
 ok "config at ${ENV_FILE} (dashboard port ${UI_PORT})"
+
+# Interactive tracker-credential walkthrough — parity with install.sh. A fresh
+# `meridian setup` collects Jira/GitHub/Linear keys here; `meridian update`
+# passes --skip-permissions and keeps the preserved .env, so it never re-prompts.
+# Each prompt also self-skips when its value is already set. Guarded on a TTY so
+# non-interactive runs (CI, piped) don't block.
+if [[ "${SKIP_PERMISSIONS}" -eq 0 && -t 0 ]]; then
+    collect_credentials "${ENV_FILE}"
+fi
 
 # ── 3. Binary + CLI symlinks ─────────────────────────────────────────────────
 mkdir -p "${HOME}/.local/bin"
