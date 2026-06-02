@@ -50,9 +50,63 @@ _CONTEXT_WINDOW = 5
 _MAX_TOKENS = 1024
 _TEMPERATURE = 0.0  # greedy decoding — deterministic classification
 
-_MLX_MODEL_ID = os.environ.get(
-    "MLX_MODEL_ID", "mlx-community/Qwen3.5-9B-OptiQ-4bit"
-)
+# The eval-tuned default classifier model. It lives in the llm_selector catalog
+# (_MODELS) as "qwen3.5-9b-optiq"; llm_selector keeps it on machines where it
+# fits and degrades only when Metal headroom can't accommodate it. The catalog
+# is the single source of truth for its working-set footprint — the constant
+# below is only the fallback used if the lookup ever fails (~5-6 GB resident for
+# the 9B-4bit weights, plus KV cache at our 1024-token generation budget).
+_DEFAULT_MLX_MODEL_ID = "mlx-community/Qwen3.5-9B-OptiQ-4bit"
+_DEFAULT_MLX_MODEL_MIN_RAM_GB = 6.5
+
+# Explicit pin — set MLX_MODEL_ID to bypass dynamic selection entirely (eval
+# experiments, reproducible benchmarks). When unset, the model is chosen at
+# runtime by llm_selector.select_mlx_model_id() based on available compute.
+_MLX_MODEL_ID_PIN = os.environ.get("MLX_MODEL_ID")
+
+# Resolved lazily and cached for the process lifetime by _resolve_model_id().
+# Kept as a module attribute (not just a function return) so /info, /v1/models,
+# and the llm_inference span all report the same, truthful id.
+_MLX_MODEL_ID: str | None = None
+
+
+def _resolve_model_id() -> str:
+    """Resolve the MLX model id for this process — once, then cached.
+
+    Order: explicit MLX_MODEL_ID pin → dynamic selection via llm_selector →
+    the hardcoded eval-tuned default on any failure. Never returns None so the
+    in-process load always has a concrete id to hand mlx_lm.load.
+    """
+    global _MLX_MODEL_ID
+    if _MLX_MODEL_ID is not None:
+        return _MLX_MODEL_ID
+
+    if _MLX_MODEL_ID_PIN:
+        _MLX_MODEL_ID = _MLX_MODEL_ID_PIN
+        log.info("run_task_linker_mlx: model pinned via MLX_MODEL_ID=%s", _MLX_MODEL_ID)
+        return _MLX_MODEL_ID
+
+    try:
+        from agents.llm_selector import resolve_model, select_mlx_model_id
+        entry = resolve_model(_DEFAULT_MLX_MODEL_ID)
+        preferred_min_ram = (
+            entry["min_ram_gb"] if entry else _DEFAULT_MLX_MODEL_MIN_RAM_GB
+        )
+        _MLX_MODEL_ID = select_mlx_model_id(
+            preferred_hf_id=_DEFAULT_MLX_MODEL_ID,
+            preferred_min_ram_gb=preferred_min_ram,
+        ) or _DEFAULT_MLX_MODEL_ID
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "run_task_linker_mlx: dynamic model selection failed (%s) — "
+            "using default %s", exc, _DEFAULT_MLX_MODEL_ID,
+        )
+        _MLX_MODEL_ID = _DEFAULT_MLX_MODEL_ID
+
+    log.info("run_task_linker_mlx: resolved MLX model=%s", _MLX_MODEL_ID)
+    return _MLX_MODEL_ID
+
+
 _SKILL_PATH = (
     _SERVICES_DIR / "skills" / "activity" / "task-classifier" / "SKILL.md"
 )
@@ -185,8 +239,9 @@ _model_cache: dict[str, Any] = {}
 
 def _get_model() -> Any:
     """Return an outlines-wrapped model, loading from disk on the first call."""
-    if _MLX_MODEL_ID in _model_cache:
-        return _model_cache[_MLX_MODEL_ID]
+    model_id = _resolve_model_id()
+    if model_id in _model_cache:
+        return _model_cache[model_id]
 
     try:
         import mlx_lm
@@ -198,17 +253,17 @@ def _get_model() -> Any:
         ) from exc
 
     log.info(
-        "run_task_linker_mlx: loading %s (first call this process)", _MLX_MODEL_ID
+        "run_task_linker_mlx: loading %s (first call this process)", model_id
     )
     t0 = time.time()
     mlx_model, tokenizer = mlx_lm.load(
-        _MLX_MODEL_ID,
+        model_id,
         tokenizer_config={"trust_remote_code": True},
     )
     outlines_model = outlines.from_mlxlm(mlx_model, tokenizer)
     log.info("run_task_linker_mlx: model loaded in %.1fs", time.time() - t0)
 
-    _model_cache[_MLX_MODEL_ID] = outlines_model
+    _model_cache[model_id] = outlines_model
     return outlines_model
 
 
@@ -369,7 +424,7 @@ def _classify_one(
     # ── llm_inference ─────────────────────────────────────────────────────────
     t0 = time.time()
     with tracer.start_as_current_span("llm_inference") as llm_span:
-        llm_span.set_attribute("model", _MLX_MODEL_ID)
+        llm_span.set_attribute("model", _resolve_model_id())
         llm_span.set_attribute("max_tokens", _MAX_TOKENS)
         llm_span.set_attribute("temperature", _TEMPERATURE)
         llm_span.add_event("inference_started", {"session_id": session_id})
