@@ -113,7 +113,17 @@ pub fn root_causes(report: &Report) -> Vec<Diagnosis> {
         });
     }
 
-    // 5. Settings split-brain (standalone config issue).
+    // 5. Dashboard serving a broken build — up but blank.
+    if crit("ui", "ui assets") || crit("ui", "ui serve mode") {
+        out.push(Diagnosis {
+            title: "Dashboard is serving a broken build".into(),
+            cause: "The UI process is up and `/` returns 200, but its _next/static assets 404/500 — usually a stale build or an output:'standalone' build served with `next start`. The page loads blank.".into(),
+            contributing: contributing(&[("ui", "ui assets"), ("ui", "ui serve mode")]),
+            action: "Rebuild the UI (cd ui && npm run build) and restart; if standalone, serve via `node .next/standalone/server.js`.".into(),
+        });
+    }
+
+    // 6. Settings split-brain (standalone config issue).
     if bad("config", "settings file") {
         out.push(Diagnosis {
             title: "UI settings aren't reaching the daemon".into(),

@@ -21,6 +21,7 @@ pub mod jira;
 pub mod mlx;
 pub mod observability;
 pub mod platform;
+pub mod ui;
 pub mod worklog;
 
 use crate::config::Config;
@@ -339,8 +340,12 @@ pub async fn run_all(cfg: &Config) -> Report {
     // coding-agent — Claude/Codex CLI + ingest dirs (and the Cursor gap).
     checks.extend(tag("coding-agent", codingagent::checks(cfg)));
 
-    // ui + mcp — build/service state.
-    checks.extend(tag("ui", platform::ui_service()));
+    // ui — service/build presence + functional serve-health (assets actually load).
+    {
+        let mut g = platform::ui_service();
+        g.extend(ui::checks(cfg).await);
+        checks.extend(tag("ui", g));
+    }
     checks.extend(tag("mcp", platform::mcp_service()));
 
     // observability — OpenObserve sink (the health layer's own eyes).
