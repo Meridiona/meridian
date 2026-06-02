@@ -51,6 +51,11 @@ pm_worklog_update = [
 [project.scripts]
 meridian-server = "agents.server:main"
 
+[tool.uv]
+# Lock all extras so `uv lock` produces a complete, reproducible uv.lock.
+# install-from-bundle.sh installs the mlx extra via `uv sync --extra mlx --frozen`.
+constraint-dependencies = []
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["agents", "agents.*"]
