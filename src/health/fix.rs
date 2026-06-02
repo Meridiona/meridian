@@ -77,6 +77,14 @@ pub fn fix_for(c: &Check) -> Option<FixAction> {
             "build the UI",
             &["bash", "-lc", "cd ui && npm ci && npm run build"],
         ),
+        // a11y regression — re-establishing capture often fixes it (guided).
+        ("screenpipe", name) if name.contains("a11y_regression") => {
+            guided("restart screenpipe to re-establish a11y capture", &["meridian", "restart"])
+        }
+        // a11y permission off — a human must grant it in System Settings.
+        ("screenpipe", name) if name.contains("a11y_permission") => manual(
+            "System Settings ▸ Privacy & Security ▸ Accessibility ▸ enable screenpipe, then restart it",
+        ),
         // Token/permission/config — a human must act.
         ("jira", name) if name.contains("auth") => {
             manual("regenerate the Jira API token and update JIRA_API_TOKEN in .env")

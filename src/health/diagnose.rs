@@ -113,6 +113,16 @@ pub fn root_causes(report: &Report) -> Vec<Diagnosis> {
         });
     }
 
+    // 4b. a11y capture regressed for specific apps.
+    if bad("screenpipe", "a11y_regression") {
+        out.push(Diagnosis {
+            title: "Accessibility capture regressed for some apps".into(),
+            cause: "Apps that used to yield structured a11y text dropped to OCR-only — capture broke for them, or the app updated and stopped exposing a tree. Their sessions now feed the classifier lower-fidelity input.".into(),
+            contributing: contributing(&[("screenpipe", "a11y_regression")]),
+            action: "Restart screenpipe; if it persists, the app changed its a11y support.".into(),
+        });
+    }
+
     // 5. Dashboard serving a broken build — up but blank.
     if crit("ui", "ui assets") || crit("ui", "ui serve mode") {
         out.push(Diagnosis {

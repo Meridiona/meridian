@@ -240,6 +240,25 @@ const A11Y_HEALTHY_PCT: f64 = 30.0;
 const A11Y_MIN_APP_FRAMES: i64 = 20;
 const A11Y_RECENT_WINDOW: i64 = 2000;
 const A11Y_MAX_APPS_SHOWN: usize = 8;
+/// (a) Degraded-capture note: an app at/under this a11y share is OCR-dominant.
+const A11Y_OCR_DOMINANT_PCT: f64 = 20.0;
+/// ...and needs this many frames in the window to count as high-usage (you
+/// actually spend time there, so its OCR-only sessions matter).
+const A11Y_SIGNIFICANT_FRAMES: i64 = 50;
+/// (b) Regression: baseline window of older frames to compare the recent one to.
+const A11Y_BASELINE_WINDOW: i64 = 30000;
+/// An app whose a11y was at least this healthy in the baseline...
+const A11Y_BASELINE_HEALTHY_PCT: f64 = 50.0;
+/// ...but has fallen under this recently ⇒ a regression worth a warning.
+const A11Y_REGRESSED_PCT: f64 = 20.0;
+
+fn share_pct(n: i64, a11y: i64) -> f64 {
+    if n > 0 {
+        100.0 * a11y as f64 / n as f64
+    } else {
+        0.0
+    }
+}
 
 async fn accessibility_checks(pool: &SqlitePool) -> Vec<Check> {
     let rows = sqlx::query_as::<_, (String, i64, i64)>(
@@ -330,7 +349,99 @@ async fn accessibility_checks(pool: &SqlitePool) -> Vec<Check> {
         format!("{}{}", parts.join(" · "), suffix),
     );
 
-    vec![verdict, per_app]
+    // (a) Degraded-capture note: high-usage apps that are OCR-dominant. Info,
+    // not a fault — it's expected — but it tells you which sessions feed the
+    // classifier lower-fidelity input (relevant when attributing a miss).
+    let degraded = degraded_apps(&rows);
+    let degraded_check = if degraded.is_empty() {
+        Check::ok(
+            "screenpipe.a11y_degraded",
+            "L1",
+            "active apps yield usable text",
+        )
+    } else {
+        Check::info(
+            "screenpipe.a11y_degraded",
+            "L1",
+            format!("OCR-only (degraded input): {}", degraded.join(" · ")),
+        )
+    };
+
+    // (b) Regression: an app that *used to* yield a11y but recently dropped to
+    // OCR-only — a real change (capture broke / app updated), unlike an
+    // always-low app. Needs the baseline window, so it queries again.
+    let regression = a11y_regression(pool, A11Y_RECENT_WINDOW, A11Y_BASELINE_WINDOW).await;
+
+    vec![verdict, per_app, degraded_check, regression]
+}
+
+/// High-usage apps whose recent capture is OCR-dominant. Returns "App pct%".
+fn degraded_apps(rows: &[(String, i64, i64)]) -> Vec<String> {
+    rows.iter()
+        .filter(|(_, n, a)| {
+            *n >= A11Y_SIGNIFICANT_FRAMES && share_pct(*n, *a) < A11Y_OCR_DOMINANT_PCT
+        })
+        .map(|(app, n, a)| format!("{app} {:.0}%", share_pct(*n, *a)))
+        .collect()
+}
+
+/// Compare each app's a11y share in the recent window against an older baseline;
+/// flag apps that were healthy then but OCR-only now. `recent_window`/
+/// `base_window` are frame counts (parameterised for testing).
+async fn a11y_regression(pool: &SqlitePool, recent_window: i64, base_window: i64) -> Check {
+    let max_id = sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM frames")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    let recent_start = max_id - recent_window;
+    let base_start = max_id - recent_window - base_window;
+
+    let rows = sqlx::query_as::<_, (String, i64, i64, i64, i64)>(
+        "SELECT app_name,
+                SUM(CASE WHEN id > ?1 THEN 1 ELSE 0 END) AS recent_n,
+                SUM(CASE WHEN id > ?1 AND COALESCE(text_source,'')='accessibility' THEN 1 ELSE 0 END) AS recent_a,
+                SUM(CASE WHEN id <= ?1 THEN 1 ELSE 0 END) AS base_n,
+                SUM(CASE WHEN id <= ?1 AND COALESCE(text_source,'')='accessibility' THEN 1 ELSE 0 END) AS base_a
+         FROM frames
+         WHERE id > ?2 AND app_name IS NOT NULL AND app_name != ''
+         GROUP BY app_name
+         HAVING recent_n >= ?3 AND base_n >= 50",
+    )
+    .bind(recent_start)
+    .bind(base_start)
+    .bind(A11Y_MIN_APP_FRAMES)
+    .fetch_all(pool)
+    .await;
+
+    let rows = match rows {
+        Ok(r) => r,
+        Err(e) => {
+            return Check::info(
+                "screenpipe.a11y_regression",
+                "L1",
+                format!("not available ({e})"),
+            )
+        }
+    };
+    let regressed: Vec<String> = rows
+        .iter()
+        .filter_map(|(app, rn, ra, bn, ba)| {
+            let recent = share_pct(*rn, *ra);
+            let base = share_pct(*bn, *ba);
+            (base >= A11Y_BASELINE_HEALTHY_PCT && recent < A11Y_REGRESSED_PCT)
+                .then(|| format!("{app} {base:.0}%→{recent:.0}%"))
+        })
+        .collect();
+    if regressed.is_empty() {
+        Check::ok("screenpipe.a11y_regression", "L1", "no a11y regressions")
+    } else {
+        Check::warn(
+            "screenpipe.a11y_regression",
+            "L1",
+            format!("a11y dropped for: {}", regressed.join(" · ")),
+        )
+        .with_remedy("restart screenpipe to re-establish a11y capture; if the app updated it may have dropped a11y support")
+    }
 }
 
 /// screenpipe's WAL file size. An unbounded WAL (stalled checkpoint) means disk
@@ -469,5 +580,38 @@ mod tests {
         let c = permissions_unverified();
         assert_eq!(c.severity, Severity::Warn);
         assert!(c.remedy.is_some());
+    }
+
+    #[test]
+    fn degraded_apps_flags_high_usage_ocr_only() {
+        let rows = vec![
+            ("Code".to_string(), 100, 95),  // 95% a11y → not degraded
+            ("DBeaver".to_string(), 80, 8), // 10% a11y, high usage → degraded
+            ("Quick".to_string(), 10, 0),   // 0% but < 50 frames → excluded
+        ];
+        let d = degraded_apps(&rows);
+        assert_eq!(d.len(), 1);
+        assert!(d[0].contains("DBeaver"));
+    }
+
+    #[tokio::test]
+    async fn a11y_regression_flags_a_drop_from_baseline() {
+        let pool = mem_pool().await;
+        // 60 older frames with a11y, then 30 recent frames OCR-only — same app.
+        insert(&pool, "Code", None, Some("tree"), "accessibility", 60).await;
+        insert(&pool, "Code", Some("pixels"), None, "ocr", 30).await;
+        // small windows so the recent 30 vs older 60 split cleanly
+        let c = a11y_regression(&pool, 30, 60).await;
+        assert_eq!(c.severity, Severity::Warn);
+        assert!(c.remedy.is_some());
+    }
+
+    #[tokio::test]
+    async fn a11y_regression_quiet_when_stable() {
+        let pool = mem_pool().await;
+        insert(&pool, "Code", None, Some("tree"), "accessibility", 60).await;
+        insert(&pool, "Code", None, Some("tree"), "accessibility", 30).await;
+        let c = a11y_regression(&pool, 30, 60).await;
+        assert_eq!(c.severity, Severity::Ok);
     }
 }
