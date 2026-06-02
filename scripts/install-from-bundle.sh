@@ -265,7 +265,15 @@ fi
 # fresh venv was created or the hash differs (a release that bumped Python deps).
 VENV="${APP_ROOT}/services/.venv"
 DEPS_STAMP="${VENV}/.meridian-deps-hash"
-deps_hash() { shasum -a 256 "${APP_ROOT}/services/pyproject.toml" 2>/dev/null | cut -d' ' -f1; }
+# Reproducible runtime: install the exact pinned set from requirements-mlx.lock,
+# not the [mlx] extra resolved fresh from PyPI within version ranges (where a new
+# upstream release could break a fresh install). Hash the lock (its source of
+# truth) so a changed lock re-pips; fall back to pyproject when no lock shipped.
+MLX_LOCK="${APP_ROOT}/services/requirements-mlx.lock"
+deps_hash() {
+    local f="${MLX_LOCK}"; [[ -f "$f" ]] || f="${APP_ROOT}/services/pyproject.toml"
+    shasum -a 256 "$f" 2>/dev/null | cut -d' ' -f1
+}
 want_hash="$(deps_hash)"
 
 fresh_venv=0
@@ -282,7 +290,17 @@ have_hash=""
 if [[ "${fresh_venv}" -eq 1 || "${want_hash}" != "${have_hash}" || -z "${want_hash}" ]]; then
     info "Installing Python + MLX deps (mlx-lm/outlines/fastapi; downloads ~ a few hundred MB on first run)…"
     "${VENV}/bin/pip" install --quiet --upgrade pip
-    if "${VENV}/bin/pip" install --quiet -e "${APP_ROOT}/services[mlx]"; then
+    _deps_ok=0
+    if [[ -f "${MLX_LOCK}" ]]; then
+        # Pinned lock + the local package WITHOUT re-resolving its deps.
+        "${VENV}/bin/pip" install --quiet -r "${MLX_LOCK}" \
+            && "${VENV}/bin/pip" install --quiet --no-deps -e "${APP_ROOT}/services" \
+            && _deps_ok=1
+    else
+        warn "no requirements-mlx.lock in bundle — resolving [mlx] from version ranges (not pinned)"
+        "${VENV}/bin/pip" install --quiet -e "${APP_ROOT}/services[mlx]" && _deps_ok=1
+    fi
+    if [[ "${_deps_ok}" -eq 1 ]]; then
         [[ -n "${want_hash}" ]] && printf '%s\n' "${want_hash}" > "${DEPS_STAMP}"
         ok "Python services ready"
     else
