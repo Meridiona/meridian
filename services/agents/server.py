@@ -95,7 +95,7 @@ async def info() -> dict:
     m = _app_state.get("mlx_module")
     return {
         "backend":   _app_state.get("backend", "hermes"),
-        "model_id":  m._MLX_MODEL_ID if m else None,
+        "model_id":  m._resolve_model_id() if m else None,
         "loaded_at": _app_state.get("loaded_at"),
     }
 
@@ -646,8 +646,8 @@ async def openai_models_list() -> dict:
     model_id = "qwen3.5-9b-instruct"
     if _app_state.get("backend") == "mlx":
         m = _app_state.get("mlx_module")
-        if m is not None and hasattr(m, "_MLX_MODEL_ID"):
-            model_id = m._MLX_MODEL_ID
+        if m is not None and hasattr(m, "_resolve_model_id"):
+            model_id = m._resolve_model_id()
     return {
         "object": "list",
         "data": [
