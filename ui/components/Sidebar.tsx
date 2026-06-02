@@ -42,8 +42,16 @@ function ActiveSessionPill({ info, onClick }: { info: ActiveInfo; onClick: () =>
   )
 }
 
+interface VersionInfo {
+  current: string
+  latest: string | null
+  updateAvailable: boolean
+}
+
 export default function Sidebar({ view, onNavigate, onOpenCmd, queueCount }: Props) {
   const [active, setActive] = useState<ActiveInfo | null>(null)
+  const [ver, setVer] = useState<VersionInfo | null>(null)
+  const [updating, setUpdating] = useState(false)
 
   useEffect(() => {
     function load() {
@@ -53,6 +61,19 @@ export default function Sidebar({ view, onNavigate, onOpenCmd, queueCount }: Pro
     const id = setInterval(load, 30_000)
     return () => clearInterval(id)
   }, [])
+
+  useEffect(() => {
+    fetch('/api/version').then(r => r.json()).then((d: VersionInfo) => setVer(d)).catch(() => {})
+  }, [])
+
+  async function runUpdate() {
+    setUpdating(true)
+    try {
+      await fetch('/api/update', { method: 'POST' })
+    } catch {
+      /* ignore — banner keeps the copyable command as fallback */
+    }
+  }
 
   const items: Array<{ id: View; label: string; kbd: string; badge?: number }> = [
     { id: 'today',    label: 'Today',    kbd: '1' },
@@ -72,8 +93,36 @@ export default function Sidebar({ view, onNavigate, onOpenCmd, queueCount }: Pro
           <span className="inline-block w-2.5 h-2.5 rounded-full live-dot" style={{ background: 'var(--accent)' }} />
           <span className="font-serif italic text-[22px] leading-none tracking-tight" style={{ color: 'var(--ink)' }}>meridian</span>
         </div>
-        <p className="text-[10px] uppercase tracking-[0.2em] mt-2" style={{ color: 'var(--ink-3)' }}>local · v0.3</p>
+        <p className="text-[10px] uppercase tracking-[0.2em] mt-2" style={{ color: 'var(--ink-3)' }}>
+          local · v{ver?.current ?? '…'}
+        </p>
       </div>
+
+      {/* Update-available banner — notify + one-click (opens Terminal running `meridian update`) */}
+      {ver?.updateAvailable && ver.latest && (
+        <div className="mx-3 mb-1 p-3 rounded-lg"
+          style={{ background: 'var(--surface)', border: '1px solid var(--accent)' }}>
+          <div className="flex items-center gap-2">
+            <span className="text-[12px]" style={{ color: 'var(--accent)' }}>↑</span>
+            <span className="text-[11px]" style={{ color: 'var(--ink)' }}>
+              Update available
+            </span>
+            <span className="ml-auto font-mono tnum text-[10px]" style={{ color: 'var(--ink-3)' }}>
+              v{ver.current} → v{ver.latest}
+            </span>
+          </div>
+          <button onClick={runUpdate} disabled={updating}
+            className="w-full mt-2 px-2 py-1.5 rounded-md text-[11px] transition-colors"
+            style={{ background: 'var(--accent)', color: 'var(--paper)', opacity: updating ? 0.6 : 1 }}>
+            {updating ? 'Opening Terminal…' : 'Update now'}
+          </button>
+          {updating && (
+            <p className="text-[10px] mt-1.5 font-mono" style={{ color: 'var(--ink-3)' }}>
+              or run <span style={{ color: 'var(--ink-2)' }}>meridian update</span>
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Nav */}
       <nav className="flex-1 px-3">
