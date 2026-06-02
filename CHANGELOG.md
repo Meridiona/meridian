@@ -1,3 +1,10 @@
+## [1.10.1](https://github.com/Meridiona/meridian/compare/v1.10.0...v1.10.1) (2026-06-02)
+
+
+### Bug Fixes
+
+* **screenpipe:** launch the real Mach-O so macOS grants attach to screenpipe, not node ([#123](https://github.com/Meridiona/meridian/issues/123)) ([6afa180](https://github.com/Meridiona/meridian/commit/6afa180cff5f0d5089f830af5960fbf803ce8731))
+
 # [1.10.0](https://github.com/Meridiona/meridian/compare/v1.9.2...v1.10.0) (2026-06-02)
 
 
