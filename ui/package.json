@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev --turbopack -p 3939",
     "build": "next build",
+    "postbuild": "bash ../scripts/restart-ui-if-running.sh",
     "start": "next start -p 3939",
     "lint": "next lint",
     "typecheck": "tsc --noEmit"

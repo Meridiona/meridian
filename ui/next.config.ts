@@ -9,10 +9,17 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: path.join(__dirname),
   },
-  // Emit a self-contained server bundle (`.next/standalone/`) so the dashboard
-  // ships prebuilt in the release tarball and runs with `node server.js` — no
-  // `npm ci` / native rebuild of better-sqlite3 on the user's machine.
-  output: 'standalone',
+  // Emit the self-contained server bundle (`.next/standalone/`) ONLY for the
+  // release tarball — gated on MERIDIAN_BUILD_STANDALONE, which .releaserc.json
+  // sets for the packaged build. The bundle ships prebuilt and runs with
+  // `node server.js` (install-from-bundle.sh) — no `npm ci` / native rebuild of
+  // better-sqlite3 on the user's machine.
+  //
+  // A plain `npm run build` in a source checkout deliberately leaves this unset
+  // so it produces a normal build that the launchd dashboard serves with
+  // `next start`. Emitting 'standalone' in that path makes `next start` an
+  // unsupported combo (noisy startup warning + fragile static-asset serving).
+  output: process.env.MERIDIAN_BUILD_STANDALONE ? 'standalone' : undefined,
   serverExternalPackages: [
     'better-sqlite3',
     '@opentelemetry/sdk-node',
