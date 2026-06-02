@@ -1,3 +1,10 @@
+# [1.14.0](https://github.com/Meridiona/meridian/compare/v1.13.0...v1.14.0) (2026-06-02)
+
+
+### Features
+
+* **setup:** add bootstrap.sh — fixes npm prefix so no sudo is needed ([#128](https://github.com/Meridiona/meridian/issues/128)) ([d41060e](https://github.com/Meridiona/meridian/commit/d41060e48d07fa63181f2156af0f82c801ddf522))
+
 # [1.13.0](https://github.com/Meridiona/meridian/compare/v1.12.0...v1.13.0) (2026-06-02)
 
 
