@@ -15,6 +15,16 @@ function dayString(offsetDays = 0): string {
   return `${y}-${m}-${day}`
 }
 
+// Human label for a worklog's tracker (provider snapshot on the row).
+function providerLabel(provider: string): string {
+  switch (provider) {
+    case 'jira': return 'Jira'
+    case 'linear': return 'Linear'
+    case 'github': return 'GitHub'
+    default: return provider || 'Jira'
+  }
+}
+
 const STATE_STYLE: Record<string, { label: string; color: string }> = {
   drafted:  { label: 'Draft',    color: 'var(--ink-3)' },
   approved: { label: 'Approved', color: 'var(--accent)' },
@@ -91,7 +101,7 @@ export default function WorklogsView() {
             Approve before it posts
           </h1>
           <p className="mt-3 text-[14px] max-w-prose" style={{ color: 'var(--ink-2)' }}>
-            Nothing reaches Jira until you approve it. Edit the comment if it&apos;s off, then approve —
+            Nothing reaches your tracker until you approve it. Edit the comment if it&apos;s off, then approve —
             the daemon posts approved worklogs within a minute.
           </p>
         </div>
@@ -175,6 +185,7 @@ function WorklogCard({ w, busy, onApprove, onReject, onUnapprove, onSave }: {
         {/* meta row */}
         <div className="flex items-center gap-3">
           <TaskKey keyId={w.task_key} />
+          <span className="text-[10px] uppercase tracking-[0.12em]" style={{ color: 'var(--ink-4)' }}>{providerLabel(w.provider)}</span>
           <span className="font-mono tnum text-[11px]" style={{ color: 'var(--ink-3)' }}>{fmtClock(w.window_start)}</span>
           <span className="text-[11px]" style={{ color: 'var(--ink-4)' }}>·</span>
           <span className="font-mono tnum text-[11px]" style={{ color: 'var(--ink-3)' }}>{fmtDur(w.time_spent_seconds)}</span>
@@ -221,7 +232,7 @@ function WorklogCard({ w, busy, onApprove, onReject, onUnapprove, onSave }: {
           <p className="text-[11px] mt-2 font-mono" style={{ color: '#E03131' }}>post error: {w.last_post_error}</p>
         )}
         {posted && w.posted_worklog_id && (
-          <p className="text-[11px] mt-2" style={{ color: '#2F9E44' }}>✓ posted to Jira · worklog {w.posted_worklog_id}</p>
+          <p className="text-[11px] mt-2" style={{ color: '#2F9E44' }}>✓ posted to {providerLabel(w.provider)} · {w.posted_worklog_id}</p>
         )}
 
         {/* evidence toggle */}

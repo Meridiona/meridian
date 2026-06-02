@@ -41,25 +41,49 @@ After granting, run `meridian restart`.
 
 ---
 
-## 3. Connect Jira (optional, but it's the point)
+## 3. Connect your issue tracker (optional, but it's the point)
 
-Meridian drafts worklogs against your Jira tickets. To enable:
+Meridian drafts worklogs against the tickets you're assigned. It supports **Jira, Linear, and GitHub** — pick the one you use (you can configure more than one, but most people use a single tracker). Open the config with `meridian config edit` and add the block for your tracker, then `meridian restart`.
+
+### Jira
 
 1. Create an API token at **https://id.atlassian.com/manage-profile/security/api-tokens**.
-2. Open the config and add three lines:
-   ```bash
-   meridian config edit
-   ```
+2. Add:
    ```dotenv
    JIRA_BASE_URL=https://your-org.atlassian.net
    JIRA_EMAIL=you@your-org.com
    JIRA_API_TOKEN=your-api-token
+   # JIRA_PROJECT_KEYS=KAN,ENG   # optional filter; empty = all projects
    ```
-3. Restart: `meridian restart`.
 
-> GitHub and Linear are also supported (`GITHUB_TOKEN`/`GITHUB_ORG`, `LINEAR_API_KEY`/`LINEAR_TEAM_IDS`) — same file.
+Meridian syncs the issues assigned to you (`assignee = currentUser()`, not Done) and logs time via Jira's native **worklog** API (time spent + a comment), the way Jira time tracking is meant to work.
 
-**Nothing posts to Jira automatically.** Meridian *drafts* a worklog for each task/hour; you review, edit, and approve each one in the dashboard's **Worklogs** view, and the daemon posts approved worklogs within ~60s. Approval is the only gate — there is no auto-post switch. Check the day's drafts any time with `meridian worklog-status`.
+### Linear
+
+1. Create a **personal API key** at **https://linear.app/settings/account/security** → *Personal API keys*.
+2. Add:
+   ```dotenv
+   LINEAR_API_KEY=lin_api_your_key_here
+   # LINEAR_TEAM_IDS=ENG,DESIGN   # optional filter by team key or id; empty = all teams
+   ```
+
+Meridian syncs the issues assigned to you. **Linear has no native time-tracking API**, so a worklog is posted as a structured comment on the issue — a "⏱ Worklog — 1h 30m" line plus the synthesised narrative — which is Linear's only first-class, per-issue, timestamped record.
+
+### GitHub
+
+1. Create a token at **Settings → Developer settings → Personal access tokens**. A classic token with the **`repo`** scope is the simplest and works for both personal and org issues. (Fine-grained tokens work too: grant **Issues: Read and write** on the repos you care about.)
+2. Add:
+   ```dotenv
+   GITHUB_TOKEN=ghp_your_token
+   GITHUB_ORG=your-org          # the owner whose issues to track (org or your username)
+   # GITHUB_REPOS=your-org/api,your-org/web   # optional filter; empty = all repos under the owner
+   ```
+
+Meridian syncs the open issues assigned to you under that owner. **GitHub has no native time tracking**, so a worklog is posted as a structured comment on the issue (an append-only "⏱ Worklog" ledger entry), which is visible on the issue and on any Project board it belongs to.
+
+---
+
+**Nothing posts automatically — for any tracker.** Meridian *drafts* a worklog for each task/hour; you review, edit, and approve each one in the dashboard's **Worklogs** view, and the daemon posts approved worklogs within ~60s. Approval is the only gate — there is no auto-post switch. Check the day's drafts any time with `meridian worklog-status`.
 
 ---
 
@@ -99,7 +123,7 @@ meridian uninstall   # stop services + remove the CLI (your data in ~/.meridian/
 
 ## Privacy
 
-Everything runs **on your machine**. screenpipe records your screen locally into `~/.screenpipe/` (audio capture is disabled); Meridian reads that and writes to `~/.meridian/meridian.db`. There is no telemetry by default and no outbound network — the **only** thing that ever leaves your Mac is a Jira worklog, and only one you explicitly approved in the dashboard.
+Everything runs **on your machine**. screenpipe records your screen locally into `~/.screenpipe/` (audio capture is disabled); Meridian reads that and writes to `~/.meridian/meridian.db`. There is no telemetry by default and no outbound network — the **only** thing that ever leaves your Mac is a worklog (to Jira, Linear, or GitHub), and only one you explicitly approved in the dashboard.
 
 ---
 

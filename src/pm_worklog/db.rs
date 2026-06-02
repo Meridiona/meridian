@@ -31,12 +31,16 @@ pub async fn upsert_pm_worklog(
     // edit/approval back to a fresh draft. When the guard blocks the update the
     // conflict becomes a no-op and `RETURNING` yields nothing, so we fall back to
     // reading the existing id.
+    // `provider` is snapshotted from pm_tasks so the poster can route this
+    // worklog to the right backend even if the ticket is later pruned. Falls
+    // back to 'jira' for safety (the only provider before multi-provider support).
     let row = sqlx::query(
         "INSERT INTO pm_worklogs (\
              task_key, day_utc, cycle_index, window_start, window_end, \
              state, confidence, coverage, time_spent_seconds, \
-             payload_json, session_id_min, session_id_max) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             payload_json, session_id_min, session_id_max, provider) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
+                 COALESCE((SELECT provider FROM pm_tasks WHERE task_key = ?), 'jira')) \
          ON CONFLICT (task_key, day_utc, cycle_index) DO UPDATE SET \
              state              = excluded.state, \
              confidence         = excluded.confidence, \
@@ -44,7 +48,8 @@ pub async fn upsert_pm_worklog(
              time_spent_seconds = excluded.time_spent_seconds, \
              payload_json       = excluded.payload_json, \
              session_id_min     = excluded.session_id_min, \
-             session_id_max     = excluded.session_id_max \
+             session_id_max     = excluded.session_id_max, \
+             provider           = excluded.provider \
          WHERE pm_worklogs.state NOT IN ('approved', 'posted') \
          RETURNING id",
     )
@@ -60,6 +65,7 @@ pub async fn upsert_pm_worklog(
     .bind(&payload_json)
     .bind(session_id_min)
     .bind(session_id_max)
+    .bind(&update.task_key)
     .fetch_optional(pool)
     .await
     .context("upsert pm_worklogs row")?;
@@ -184,6 +190,8 @@ pub struct ApprovedWorklog {
     pub window_end: String,
     pub time_spent_seconds: i64,
     pub comment: String,
+    /// Which tracker this worklog posts to ('jira' | 'github' | 'linear').
+    pub provider: String,
 }
 
 /// All worklogs awaiting a post (`state = 'approved'`), oldest window first.
@@ -191,7 +199,8 @@ pub struct ApprovedWorklog {
 /// honoured. Rows with an empty summary are skipped — there is nothing to post.
 pub async fn fetch_approved_worklogs(pool: &SqlitePool) -> Result<Vec<ApprovedWorklog>> {
     let rows = sqlx::query(
-        "SELECT id, task_key, window_start, window_end, time_spent_seconds, payload_json \
+        "SELECT id, task_key, window_start, window_end, time_spent_seconds, payload_json, \
+                COALESCE(provider, 'jira') AS provider \
          FROM pm_worklogs WHERE state = 'approved' ORDER BY window_start, task_key",
     )
     .fetch_all(pool)
@@ -211,6 +220,7 @@ pub async fn fetch_approved_worklogs(pool: &SqlitePool) -> Result<Vec<ApprovedWo
             window_end: r.get("window_end"),
             time_spent_seconds: r.try_get("time_spent_seconds").unwrap_or(0),
             comment,
+            provider: r.try_get("provider").unwrap_or_else(|_| "jira".to_string()),
         });
     }
     Ok(out)
