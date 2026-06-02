@@ -18,6 +18,7 @@
     "bin/",
     "ui.tar.gz",
     "services/",
+    "services-venv.tar.gz",
     "scripts/",
     ".env.example",
     "VERSION"
