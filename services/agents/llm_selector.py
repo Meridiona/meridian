@@ -79,6 +79,7 @@ _MODELS = [
     ("phi-4",           "mlx",  8.5, 80, "mlx-community/phi-4-4bit"),
     ("r1-14b",          "mlx",  8.5, 78, "mlx-community/DeepSeek-R1-Distill-Qwen-14B-4bit"),
     ("gemma3-12b",      "mlx",  7.0, 75, "mlx-community/gemma-3-12b-it-qat-4bit"),
+    ("qwen3.5-9b-optiq","mlx",  6.5, 74, "mlx-community/Qwen3.5-9B-OptiQ-4bit"),  # eval-tuned classifier default
     ("qwen3.5-4b",      "mlx",  2.5, 65, "mlx-community/Qwen3.5-4B-MLX-4bit"),
     ("llama3.2-3b",     "mlx",  1.8, 62, "mlx-community/Llama-3.2-3B-Instruct-4bit"),
     ("apple-intelligence", "apple_fm", 0.0, 60, None),
@@ -801,6 +802,156 @@ def select_model_for_hermes(budget_pct: Optional[float] = None) -> Optional[Loca
             raise
 
 
+def _hf_model_cached(hf_id: "str | None") -> bool:
+    """True when a HuggingFace repo's weights are already in the local cache.
+
+    A best-effort filesystem check so dynamic selection never picks a catalog
+    model that would trigger a multi-GB ``snapshot_download`` (online) or raise
+    (offline) inside ``mlx_lm.load`` at server startup. Honours HF_HUB_CACHE /
+    HF_HOME, falling back to ~/.cache/huggingface/hub. Mirrors the
+    "best among what's present" philosophy of discover_running_servers().
+    """
+    if not hf_id:
+        return False
+    hf_home = os.environ.get("HF_HOME")
+    cache = (
+        os.environ.get("HF_HUB_CACHE")
+        or (os.path.join(hf_home, "hub") if hf_home else None)
+        or str(Path.home() / ".cache" / "huggingface" / "hub")
+    )
+    snapshots = Path(cache) / ("models--" + hf_id.replace("/", "--")) / "snapshots"
+    if not snapshots.is_dir():
+        return False
+    # A revision directory that actually contains files (not just an empty shell).
+    for rev in snapshots.iterdir():
+        if rev.is_dir() and any(rev.iterdir()):
+            return True
+    return False
+
+
+def select_mlx_model_id(
+    preferred_hf_id: "str | None" = None,
+    preferred_min_ram_gb: float = 0.0,
+    budget_pct: "float | None" = None,
+) -> "str | None":
+    """Pick the best **in-process** MLX model id for this machine.
+
+    Selection-only sibling of select_model_for_hermes(): returns a HuggingFace
+    repo id the caller loads directly via mlx_lm + outlines (FSM-constrained
+    decoding). It deliberately does NOT discover external servers
+    (Ollama / LM Studio / Apple Intelligence give no constrained decoding) and
+    does NOT spawn a managed mlx_lm.server — the MLX classifier server loads the
+    chosen model in-process and is the single LLM host for every stage.
+
+    Priority:
+      1. ``preferred_hf_id`` when it fits the Metal headroom budget — the
+         eval-tuned classifier model. Keep it on capable machines; degrade only
+         when it physically won't fit, so a generic catalog ``quality_score``
+         never silently swaps out the tuned model on a big box.
+      2. The largest catalog model that fits (``_select_mlx_entry``).
+      3. ``preferred_hf_id`` as a best-effort fallback when nothing in the
+         catalog fits — let ``mlx_lm.load`` try rather than returning None and
+         breaking the load.
+
+    Returns None only when no ``preferred_hf_id`` is given and nothing fits.
+    """
+    if budget_pct is None:
+        try:
+            from agents.config import LLM_BUDGET_PCT
+            budget_pct = LLM_BUDGET_PCT
+        except Exception:
+            budget_pct = 0.5
+
+    with _tracer.start_as_current_span("llm_selector.select_mlx_model_id") as span:
+        span.set_attribute("llm.preferred_hf_id", preferred_hf_id or "")
+        span.set_attribute("llm.preferred_min_ram_gb", preferred_min_ram_gb)
+        span.set_attribute("llm.budget_pct", budget_pct)
+
+        # Non-Apple-Silicon: no MLX runtime — return the preferred default so the
+        # caller's behaviour is unchanged (the load path no-ops/fails as before).
+        if platform.system() != "Darwin":
+            span.set_attribute("llm.reason", "not_darwin")
+            span.set_attribute("llm.selected_model", preferred_hf_id or "")
+            return preferred_hf_id
+        brand = _sysctl("machdep.cpu.brand_string") or ""
+        if not brand.startswith("Apple M"):
+            span.set_attribute("llm.reason", "not_apple_silicon")
+            span.set_attribute("llm.selected_model", preferred_hf_id or "")
+            return preferred_hf_id
+
+        try:
+            snap = probe_compute()
+        except Exception as exc:  # noqa: BLE001
+            span.record_exception(exc)
+            span.set_attribute("llm.reason", "compute_probe_failed")
+            span.set_attribute("llm.selected_model", preferred_hf_id or "")
+            log.warning("llm_selector: compute probe failed (%s) — using %s",
+                        exc, preferred_hf_id)
+            return preferred_hf_id
+
+        # Relax the budget when the screen is locked — the user won't feel the
+        # latency — and mirror _select_mlx_entry's heavy-throttle cap so the
+        # preferred-fit check sees the same budget the catalog ladder does.
+        effective_pct = (
+            min(0.8, budget_pct * 1.5) if snap.screen_locked else budget_pct
+        )
+        budget = snap.metal_headroom_gb * effective_pct
+        if snap.thermal_level >= 2:
+            budget = min(budget, 9.0)
+
+        span.set_attribute("llm.headroom_gb",   round(snap.metal_headroom_gb, 2))
+        span.set_attribute("llm.effective_pct", round(effective_pct, 3))
+        span.set_attribute("llm.budget_gb",     round(budget, 2))
+        span.set_attribute("llm.thermal_level", snap.thermal_level)
+        span.set_attribute("llm.screen_locked", snap.screen_locked)
+
+        # 1. Keep the tuned classifier model when it fits.
+        if preferred_hf_id and preferred_min_ram_gb <= budget:
+            span.set_attribute("llm.reason", "preferred_fits")
+            span.set_attribute("llm.selected_model", preferred_hf_id)
+            log.info(
+                "llm_selector: MLX in-process model=%s (preferred — min_ram=%.1f GB "
+                "fits budget=%.1f GB)",
+                preferred_hf_id, preferred_min_ram_gb, budget,
+            )
+            return preferred_hf_id
+
+        # 2. Largest catalog model that BOTH fits the budget AND is already in
+        #    the HF cache. Gating on the cache keeps "dynamic" meaning "best
+        #    among what's present" — never a surprise multi-GB download (or an
+        #    offline load failure that would kill server startup) on exactly the
+        #    constrained machines this degradation path targets. The `budget`
+        #    here is already thermal-capped, matching _select_mlx_entry.
+        for model_id, backend, min_ram, quality, hf_id in _MODELS:
+            if backend != "mlx" or min_ram > budget:
+                continue
+            if not _hf_model_cached(hf_id):
+                log.debug(
+                    "llm_selector: skip %s — fits budget=%.1f GB but not in HF cache",
+                    hf_id, budget,
+                )
+                continue
+            span.set_attribute("llm.reason", "catalog_fit_cached")
+            span.set_attribute("llm.selected_model", hf_id)
+            log.info(
+                "llm_selector: MLX in-process model=%s hf=%s min_ram=%.1f GB "
+                "quality=%d cached (preferred=%s did not fit budget=%.1f GB)",
+                model_id, hf_id, min_ram, quality, preferred_hf_id, budget,
+            )
+            return hf_id
+
+        # 3. Nothing cached fits the budget — best effort with the preferred id.
+        #    (Loading preferred-when-absent is the pre-existing single-model
+        #    behaviour, not a regression introduced by dynamic selection.)
+        span.set_attribute("llm.reason", "nothing_cached_fits_use_preferred")
+        span.set_attribute("llm.selected_model", preferred_hf_id or "")
+        log.warning(
+            "llm_selector: no cached MLX model fits budget=%.1f GB — falling back to %s",
+            budget, preferred_hf_id,
+        )
+        return preferred_hf_id
+
+
 def resolve_model(name: str) -> "dict | None":
     """Resolve a short name ('phi-4') or HF ID to its catalog entry.
 
@@ -837,7 +988,8 @@ def discover_mlx_eval_server(port: int = 7823) -> "str | None":
 
 __all__ = ["local_infer", "discover_running_servers", "probe_compute",
            "RunningServer", "ComputeSnapshot", "LocalModelEndpoint",
-           "select_model_for_hermes", "shutdown_managed_server",
+           "select_model_for_hermes", "select_mlx_model_id",
+           "shutdown_managed_server",
            "resolve_model", "discover_mlx_eval_server"]
 
 # Public alias (no underscore) for external callers
