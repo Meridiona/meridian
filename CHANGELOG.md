@@ -1,3 +1,10 @@
+# [1.11.0](https://github.com/Meridiona/meridian/compare/v1.10.1...v1.11.0) (2026-06-02)
+
+
+### Features
+
+* **update:** preserve the Python venv across `meridian update` (seconds, not minutes) ([#124](https://github.com/Meridiona/meridian/issues/124)) ([58a31d7](https://github.com/Meridiona/meridian/commit/58a31d7fa9f402bc30f54f629146fc6f90679dbd))
+
 ## [1.10.1](https://github.com/Meridiona/meridian/compare/v1.10.0...v1.10.1) (2026-06-02)
 
 
