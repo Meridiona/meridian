@@ -54,7 +54,9 @@ function npmGlobalWritable() {
 // root. The rest of `update` (setup: per-user launchd agents, venv) must NOT run
 // as root, so we never sudo the whole command — just this one install.
 function npmInstallLatest() {
-  const args = ['install', '-g', '@meridiona/meridian@latest'];
+  // Install both packages explicitly — npm won't always upgrade the optional
+  // arch package when only the main package is requested.
+  const args = ['install', '-g', '@meridiona/meridian@latest', '@meridiona/meridian-darwin-arm64@latest'];
   if (npmGlobalWritable()) {
     return spawnSync('npm', args, { stdio: 'inherit' });
   }
