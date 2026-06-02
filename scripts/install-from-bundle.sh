@@ -257,13 +257,40 @@ else
     ok "meridian-daemon + meridian → ~/.local/bin"
 fi
 
-# ── 4. Python venv + MLX deps (the one install-time download) ────────────────
-info "Setting up Python venv + MLX inference deps (downloads ~ a few hundred MB)…"
+# ── 4. Python venv + MLX deps ────────────────────────────────────────────────
+# meridian-npm-setup.sh preserves an existing venv across updates, so on a normal
+# update the venv is already here. The pip install (mlx-lm/outlines/fastapi) costs
+# minutes, so we skip it when the dependency spec is unchanged: hash the parts of
+# pyproject.toml that define the deps and stamp it in the venv. Re-pip only when a
+# fresh venv was created or the hash differs (a release that bumped Python deps).
 VENV="${APP_ROOT}/services/.venv"
-[[ -d "${VENV}" ]] || "${PYTHON_BIN}" -m venv "${VENV}"
-"${VENV}/bin/pip" install --quiet --upgrade pip
-"${VENV}/bin/pip" install --quiet -e "${APP_ROOT}/services[mlx]"
-ok "Python services ready"
+DEPS_STAMP="${VENV}/.meridian-deps-hash"
+deps_hash() { shasum -a 256 "${APP_ROOT}/services/pyproject.toml" 2>/dev/null | cut -d' ' -f1; }
+want_hash="$(deps_hash)"
+
+fresh_venv=0
+if [[ ! -x "${VENV}/bin/python" ]]; then
+    info "Creating Python venv…"
+    rm -rf "${VENV}"
+    "${PYTHON_BIN}" -m venv "${VENV}"
+    fresh_venv=1
+fi
+
+have_hash=""
+[[ -f "${DEPS_STAMP}" ]] && have_hash="$(cat "${DEPS_STAMP}" 2>/dev/null)"
+
+if [[ "${fresh_venv}" -eq 1 || "${want_hash}" != "${have_hash}" || -z "${want_hash}" ]]; then
+    info "Installing Python + MLX deps (mlx-lm/outlines/fastapi; downloads ~ a few hundred MB on first run)…"
+    "${VENV}/bin/pip" install --quiet --upgrade pip
+    if "${VENV}/bin/pip" install --quiet -e "${APP_ROOT}/services[mlx]"; then
+        [[ -n "${want_hash}" ]] && printf '%s\n' "${want_hash}" > "${DEPS_STAMP}"
+        ok "Python services ready"
+    else
+        warn "pip install failed — leaving venv as-is; re-run 'meridian setup' to retry"
+    fi
+else
+    ok "Python deps unchanged — reusing existing venv (skipped pip install)"
+fi
 
 # ── 5. macOS permissions for screenpipe (manual — can't be automated) ────────
 if [[ "${SKIP_PERMISSIONS}" -eq 0 ]]; then
