@@ -2,9 +2,11 @@
 //
 // UI *readiness* — not just liveness. `ui service` (a launchd PID) and `ui
 // built` (`.next` exists) both pass for a running-but-broken dashboard: a stale
-// build or an output:'standalone' / `next start` mismatch serves HTML whose
-// _next/static assets 404/500, blanking the page. So we functionally probe what
-// is actually served, and flag the serve-mode mismatch that causes it.
+// build serves HTML whose _next/static assets 404/500, blanking the page. So we
+// functionally probe what is actually served (the ground truth). We also flag a
+// latent serve-mode smell — a standalone bundle being served by `next start`
+// instead of `node server.js` — as a *warning*, not a failure: `next start`
+// still serves `.next/static`, so it is not what blanks the page.
 
 use crate::config::Config;
 use crate::health::platform::repo_root;
@@ -31,34 +33,45 @@ pub async fn checks(_cfg: &Config) -> Vec<Check> {
     out
 }
 
-/// Static config contract: an `output: 'standalone'` build must be served with
-/// `node .next/standalone/server.js`, NOT `next start` — the latter serves a
-/// manifest pointing at assets that aren't where `next start` looks for them.
+/// Serve-mode smell (warning, not failure). Detect the real build *artifact* —
+/// a standalone server bundle at `.next/standalone/server.js` — not the config
+/// source text: `next.config.ts` may mention "standalone" in a comment or a
+/// build-gated conditional (`MERIDIAN_BUILD_STANDALONE ? 'standalone' : …`)
+/// without the build actually emitting one. If a standalone bundle exists but
+/// the service runs `next start`, the bundle is simply unused — `next start`
+/// still serves `.next/static` correctly, so the functional `ui assets` probe,
+/// not this check, is the ground truth for an actually-broken page.
 fn serve_mode_check() -> Check {
     let Some(root) = repo_root() else {
         return Check::info("ui serve mode", "ui", "repo root not found");
     };
-    let standalone = ["ts", "js", "mjs"].iter().any(|ext| {
-        std::fs::read_to_string(root.join(format!("ui/next.config.{ext}")))
-            .map(|s| s.contains("standalone"))
-            .unwrap_or(false)
-    });
-    if !standalone {
-        return Check::ok("ui serve mode", "ui", "not standalone");
+    let standalone_built = root.join("ui/.next/standalone/server.js").exists();
+    if !standalone_built {
+        return Check::ok(
+            "ui serve mode",
+            "ui",
+            "normal build, served by `next start`",
+        );
     }
     let plist = home().join("Library/LaunchAgents/com.meridiona.ui.plist");
     let runs_next_start = std::fs::read_to_string(&plist)
         .map(|s| s.contains("next start") || s.contains("<string>start</string>"))
         .unwrap_or(false);
     if runs_next_start {
-        Check::critical(
+        Check::warn(
             "ui serve mode",
             "ui",
-            "output:'standalone' build but the service runs `next start`",
+            "standalone bundle built but the service runs `next start` (the bundle is unused)",
         )
-        .with_remedy("serve via `node .next/standalone/server.js` in com.meridiona.ui.plist")
+        .with_remedy(
+            "serve via `node .next/standalone/server.js`, or rebuild without output:'standalone'",
+        )
     } else {
-        Check::ok("ui serve mode", "ui", "standalone, served correctly")
+        Check::ok(
+            "ui serve mode",
+            "ui",
+            "standalone bundle, served via `node server.js`",
+        )
     }
 }
 
