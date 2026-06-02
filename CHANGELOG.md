@@ -1,3 +1,10 @@
+# [1.10.0](https://github.com/Meridiona/meridian/compare/v1.9.2...v1.10.0) (2026-06-02)
+
+
+### Features
+
+* **ui:** ship Turbopack standalone via symlink-preserving tarball (keep Turbopack in prod) ([#122](https://github.com/Meridiona/meridian/issues/122)) ([5c7931c](https://github.com/Meridiona/meridian/commit/5c7931c46b468f0e75611b358acad5462f0df726)), closes [vercel/next.js#87737](https://github.com/vercel/next.js/issues/87737) [#93849](https://github.com/Meridiona/meridian/issues/93849) [#121](https://github.com/Meridiona/meridian/issues/121)
+
 ## [1.9.2](https://github.com/Meridiona/meridian/compare/v1.9.1...v1.9.2) (2026-06-02)
 
 
