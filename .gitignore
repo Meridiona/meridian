@@ -41,6 +41,10 @@ data/memory/
 .claude/memory.db
 .claude/settings.json
 
+# Repo-local runtime settings (hot-reloaded by the daemon, written by the UI) —
+# user/machine specific, must never be committed.
+/settings.json
+
 # Python virtual environments (.venv313 merged into .venv via --mlx extra)
 services/.venv/
 

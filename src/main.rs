@@ -155,6 +155,42 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `meridian doctor` — content-free system-health sweep. Read-only, no daemon
+    // init. Surfaces broken capture/config so a misclassification isn't blamed on
+    // the model. Currently covers L1 screenpipe capture; more layers TBD. Exits
+    // non-zero if any check is critical.
+    if std::env::args().nth(1).as_deref() == Some("doctor") {
+        // `--porcelain` emits TSV rows for machine ingestion; otherwise a rich,
+        // colour-when-a-tty, by-daemon table. Read-only comprehensive sweep.
+        let porcelain = std::env::args().any(|a| a == "--porcelain");
+        let fix = std::env::args().any(|a| a == "--fix");
+        let dry_run = std::env::args().any(|a| a == "--dry-run");
+        let cfg = Config::from_env();
+        let report = meridian::health::run_all(&cfg).await;
+        if fix {
+            // Attempt repair (auto silently, guided with confirm); exit non-zero
+            // if anything still needs a human.
+            let residual = meridian::health::fix::run(&cfg, &report, dry_run);
+            std::process::exit(if residual { 1 } else { 0 });
+        }
+        if porcelain {
+            print!("{}", report.render_porcelain());
+        } else {
+            use std::io::IsTerminal;
+            let color = std::io::stdout().is_terminal();
+            print!("{}", report.render(color));
+            // Diagnose + escalate: chain the warnings into root causes, then
+            // point at `--fix` / support / claude.
+            let dx = meridian::health::diagnose::root_causes(&report);
+            print!("{}", meridian::health::diagnose::render(&dx, color));
+            if report.worst() >= meridian::health::Severity::Warn {
+                print!("{}", meridian::health::diagnose::escalation_hint(color));
+            }
+        }
+        let critical = report.worst() == meridian::health::Severity::Critical;
+        std::process::exit(if critical { 1 } else { 0 });
+    }
+
     // 2. Tracing — layered subscriber (stdout + JSONL file + OTLP to OpenObserve).
     //    Guard must outlive the program; we shut it down explicitly at the end
     //    so OTel's blocking flush doesn't run inside tokio's drop path.
@@ -183,6 +219,15 @@ async fn main() -> Result<()> {
 
     // 4. Open screenpipe pool (read-only)
     let screenpipe = open_screenpipe(&initial_cfg.screenpipe_db_uri()).await?;
+
+    // 4c. Capture-layer (L1) preflight: surface degraded screen capture (revoked
+    //     Screen Recording / Accessibility permission, dead screenpipe, stale
+    //     frames) before the poll loop. Non-fatal — the daemon still runs; we log
+    //     the fault so misclassifications aren't blamed on the model.
+    meridian::health::Report::new(
+        meridian::health::capture::checks(&initial_cfg, Some(&screenpipe)).await,
+    )
+    .log("startup");
 
     // 5. Open / create meridian pool and run migrations
     let meridian = setup_db(&initial_cfg.meridian_db_uri()).await?;
