@@ -268,23 +268,51 @@ else
 fi
 
 # ── 4. Python venv + MLX deps ────────────────────────────────────────────────
-# uv reads services/uv.lock (hashed, cross-platform, committed) and installs the
-# exact pinned set with no PyPI resolution at install time. On subsequent runs
-# `uv sync --frozen` is a no-op when the venv is already up-to-date — faster than
-# the old DEPS_STAMP approach and handles cross-version upgrades correctly.
-# PYTHON_BIN is the brew-installed Python we know runs MLX/Metal; --python pins
-# the interpreter used when uv creates a fresh venv (existing venvs are unchanged).
+# Two paths:
+#   A) Pre-built tarball (release bundle): services-venv.tar.gz ships with the
+#      package. Extract site-packages into a freshly-created venv (correct local
+#      paths) — ~5s, no PyPI, no internet. Stamp the tarball hash so re-runs and
+#      `meridian update` skip extraction when the deps haven't changed.
+#   B) Dev fallback: no tarball present → `uv sync --frozen` from uv.lock.
+#      Downloads from PyPI the first time (~40s); subsequent runs are a no-op.
 VENV="${APP_ROOT}/services/.venv"
+VENV_TARBALL="${APP_ROOT}/services-venv.tar.gz"
+VENV_STAMP="${VENV}/.meridian-venv-hash"
 
-info "Installing Python + MLX deps (mlx-lm/outlines/fastapi; first run may download a few hundred MB)…"
-if "${UV_BIN}" sync \
-        --project "${APP_ROOT}/services" \
-        --extra mlx \
-        --frozen \
-        --python "${PYTHON_BIN}"; then
-    ok "Python services ready ($(${VENV}/bin/python --version 2>&1))"
+if [[ -f "${VENV_TARBALL}" ]]; then
+    _tarball_hash="$(shasum -a 256 "${VENV_TARBALL}" | cut -d' ' -f1)"
+    _have_hash=""; [[ -f "${VENV_STAMP}" ]] && _have_hash="$(cat "${VENV_STAMP}" 2>/dev/null)"
+
+    if [[ "${_tarball_hash}" == "${_have_hash}" && -x "${VENV}/bin/python" ]]; then
+        ok "Python deps unchanged — reusing existing venv (skipped extraction)"
+    else
+        info "Extracting pre-built Python venv (no PyPI download required)…"
+        rm -rf "${VENV}"
+        # Create a fresh venv with correct local paths (pyvenv.cfg points to
+        # PYTHON_BIN, which install-mlx-server-daemon.sh reads for BASE_PYTHON).
+        "${UV_BIN}" venv --python "${PYTHON_BIN}" "${VENV}" 2>/dev/null
+        # Determine the Python version subdirectory (e.g. python3.11).
+        _py_dir="$(ls "${VENV}/lib/" | grep '^python' | head -1)"
+        mkdir -p "${VENV}/lib/${_py_dir}/site-packages"
+        tar -xzf "${VENV_TARBALL}" -C "${VENV}/lib/${_py_dir}/site-packages"
+        # Install the local editable package (meridian-agents) — no deps needed,
+        # everything is already in site-packages from the tarball.
+        "${UV_BIN}" pip install --quiet --no-deps -e "${APP_ROOT}/services"
+        printf '%s\n' "${_tarball_hash}" > "${VENV_STAMP}"
+        ok "Python services ready ($(${VENV}/bin/python --version 2>&1))"
+    fi
 else
-    warn "uv sync failed — leaving venv as-is; re-run 'meridian setup' to retry"
+    # Dev / source install — no pre-built tarball. Resolve from uv.lock.
+    info "Installing Python + MLX deps (mlx-lm/outlines/fastapi; first run may download a few hundred MB)…"
+    if "${UV_BIN}" sync \
+            --project "${APP_ROOT}/services" \
+            --extra mlx \
+            --frozen \
+            --python "${PYTHON_BIN}"; then
+        ok "Python services ready ($(${VENV}/bin/python --version 2>&1))"
+    else
+        warn "uv sync failed — leaving venv as-is; re-run 'meridian setup' to retry"
+    fi
 fi
 
 # ── 5. macOS permissions for screenpipe (manual — can't be automated) ────────
