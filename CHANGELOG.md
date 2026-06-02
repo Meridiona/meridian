@@ -1,3 +1,10 @@
+# [1.13.0](https://github.com/Meridiona/meridian/compare/v1.12.0...v1.13.0) (2026-06-02)
+
+
+### Features
+
+* **setup:** adopt uv for reproducible Python venv (replaces pip lockfile) ([#127](https://github.com/Meridiona/meridian/issues/127)) ([228991c](https://github.com/Meridiona/meridian/commit/228991c6e6a17f2e14f4a658fac62b563e120c94)), closes [#126](https://github.com/Meridiona/meridian/issues/126)
+
 # [1.12.0](https://github.com/Meridiona/meridian/compare/v1.11.0...v1.12.0) (2026-06-02)
 
 
