@@ -1,3 +1,10 @@
+## [1.8.1](https://github.com/Meridiona/meridian/compare/v1.8.0...v1.8.1) (2026-06-02)
+
+
+### Bug Fixes
+
+* **npm:** stop bundle setup shadowing the npm launcher's meridian CLI ([#113](https://github.com/Meridiona/meridian/issues/113)) ([8cb8a63](https://github.com/Meridiona/meridian/commit/8cb8a634ddb06e06703a8aa7006b910b8629b2ac))
+
 # [1.8.0](https://github.com/Meridiona/meridian/compare/v1.7.0...v1.8.0) (2026-06-02)
 
 
