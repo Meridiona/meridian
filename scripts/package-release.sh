@@ -33,11 +33,25 @@ echo "→ daemon binary"
 cp "${DAEMON_BIN}" "${DEST}/bin/meridian"
 chmod +x "${DEST}/bin/meridian"
 
-echo "→ UI (Next.js standalone)"
-cp -R "${UI_STANDALONE}/." "${DEST}/ui/"
-mkdir -p "${DEST}/ui/.next"
-cp -R "ui/.next/static" "${DEST}/ui/.next/static"
-[[ -d "ui/public" ]] && cp -R "ui/public" "${DEST}/ui/public"
+echo "→ UI (Next.js standalone, packed as a tarball)"
+# Assemble the runnable standalone tree (server + static + public), then pack it
+# into a single tarball. WHY a tarball and not a plain ui/ dir: the Turbopack
+# production build references serverExternalPackages (better-sqlite3, pino,
+# @opentelemetry/*) via relative SYMLINKS under .next/node_modules. `npm publish`
+# strips symlinks, which crash-loops the standalone server on the user's machine
+# (vercel/next.js#87737, #93849). tar preserves symlinks and npm ships the .tgz
+# as one opaque file, so the exact built tree round-trips intact;
+# install-from-bundle.sh extracts it back into ~/.meridian/app/ui. This is what
+# lets the production build stay on Turbopack despite our npm distribution.
+_ui_stage="${DEST}/ui"
+cp -R "${UI_STANDALONE}/." "${_ui_stage}/"        # cp -R preserves symlinks (BSD/macOS default)
+mkdir -p "${_ui_stage}/.next"
+cp -R "ui/.next/static" "${_ui_stage}/.next/static"
+[[ -d "ui/public" ]] && cp -R "ui/public" "${_ui_stage}/public"
+# Pack (preserving symlinks — no -h) and drop the expanded dir so npm ships only the tarball.
+tar -czf "${DEST}/ui.tar.gz" -C "${_ui_stage}" .
+rm -rf "${_ui_stage}"
+echo "  · ui.tar.gz ($(du -h "${DEST}/ui.tar.gz" | cut -f1), symlinks preserved)"
 
 echo "→ Python services (source — venv is created at install)"
 mkdir -p "${DEST}/services"
