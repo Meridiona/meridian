@@ -1,3 +1,10 @@
+## [1.17.1](https://github.com/Meridiona/meridian/compare/v1.17.0...v1.17.1) (2026-06-02)
+
+
+### Bug Fixes
+
+* **update:** re-exec new launcher to self-heal old launchers in one step ([#138](https://github.com/Meridiona/meridian/issues/138)) ([e72f3fc](https://github.com/Meridiona/meridian/commit/e72f3fc84a4fe6aea86c106b4a92ca422f9ac509))
+
 # [1.17.0](https://github.com/Meridiona/meridian/compare/v1.16.0...v1.17.0) (2026-06-02)
 
 
