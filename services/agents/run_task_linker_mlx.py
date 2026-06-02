@@ -83,10 +83,10 @@ class SessionClassification(BaseModel):
     ] = Field(
         ...,
         description=(
-            "The single best activity category for this session. A rule-based "
-            "guess is supplied in the input — confirm it or correct it from the "
-            "evidence. Declared early in the schema so FSM decoding always emits "
-            "it before the long session_summary field."
+            "The single best activity category for this session. Derive it from "
+            "the evidence (app, window titles, screen content); no category is "
+            "supplied in the input. Declared early in the schema so FSM decoding "
+            "always emits it before the long session_summary field."
         ),
     )
     category_confidence: float = Field(
