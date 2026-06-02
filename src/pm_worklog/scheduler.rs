@@ -10,10 +10,12 @@
 // The driver NEVER posts to Jira. Drafted worklogs wait for a human to approve
 // them in the dashboard; the `post` sweep then posts approved rows. See `mod.rs`.
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use chrono::{Duration, Local, NaiveDate, TimeZone, Utc};
 use sqlx::SqlitePool;
-use tokio::sync::watch;
+use tokio::sync::{watch, Notify};
 
 use crate::config::Config;
 
@@ -134,50 +136,98 @@ pub async fn run_driver(
     Ok(summary)
 }
 
-/// Daemon task: run the driver on the configured interval until shutdown. Drafts
-/// only — posting is handled separately by the approved-poster (`post::run_post_loop`).
-pub async fn run_loop(pool: SqlitePool, mut shutdown_rx: watch::Receiver<bool>) {
+/// Daemon task: run the driver until shutdown. Drafts only — posting is handled
+/// separately by the approved-poster (`post::run_post_loop`).
+///
+/// Woken by EITHER `classify_notify` (the classifier fires it after settling a
+/// session, so an hour drafts the instant its last in-flight session is
+/// classified) OR the interval timer (the fallback that still covers the aging
+/// escape and the midnight day-rollover, which are inherently time-based).
+pub async fn run_loop(
+    pool: SqlitePool,
+    mut shutdown_rx: watch::Receiver<bool>,
+    classify_notify: Arc<Notify>,
+) {
     let cfg = PmWorklogConfig::from_env();
     let interval = std::time::Duration::from_secs((cfg.interval_hours * 3600.0).max(60.0) as u64);
     tracing::info!(
         interval_s = interval.as_secs(),
-        "pm-worklog driver starting (drafts only — posting is approval-gated)"
+        "pm-worklog driver starting (drafts only — posting is approval-gated; \
+         wakes on classifier notify or interval)"
     );
 
+    // Startup catch-up: a full bounded backfill (yesterday-leftover + today) so a
+    // restart re-drafts any hour that settled while the daemon was down.
+    run_pass(&pool, &cfg, Scope::Backfill).await;
+
+    // The backfill cadence is a PERSISTENT interval, not a fresh `sleep` per loop
+    // iteration: a `sleep` future is recreated (and thus reset) every time the
+    // select wakes, so frequent classify events would perpetually starve it and
+    // the periodic safety net would only ever run at startup. An `Interval` keeps
+    // its own deadline across select cancellations, so it fires on a fixed cadence
+    // regardless of how often the event path wakes us. Delay (not Burst) missed-
+    // tick behaviour avoids a catch-up storm after a long-running pass.
+    let mut backfill_timer = tokio::time::interval(interval);
+    backfill_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    backfill_timer.tick().await; // consume the immediate first tick (startup backfill already ran)
+
     loop {
-        // Process yesterday AND today every pass. Yesterday's done hours skip
-        // instantly via the ledger; this closes the day-rollover gap where the
-        // previous day's last hours would otherwise strand at midnight.
-        // Refresh the PM task cache before drafting so worklog prose reflects
-        // current ticket metadata (title/status/assignee). Gated — a no-op if a
-        // classification pass already refreshed it within SYNC_INTERVAL_MINS.
-        let config = Config::from_env();
-        if let Err(e) = crate::intelligence::run_pm_sync(&pool, &config).await {
-            tracing::warn!(error = %e, "pm_tasks refresh before worklog pass failed — using cached tasks");
-        }
-
-        let today = Local::now().date_naive();
-        let days: Vec<Option<NaiveDate>> = vec![today.pred_opt(), Some(today)];
-        let min_duration_s = config.min_classification_duration_s;
-        for day in days.into_iter().flatten() {
-            match run_driver(&pool, &cfg, min_duration_s, Some(day)).await {
-                Ok(s) => tracing::info!(
-                    day = %day,
-                    hours_processed = s.hours_processed,
-                    drafted = s.worklogs_drafted,
-                    not_ready = s.hours_not_ready,
-                    "pm-worklog driver pass complete"
-                ),
-                Err(e) => tracing::error!(day = %day, error = %e, "pm-worklog driver pass failed"),
-            }
-        }
-
-        tokio::select! {
+        let scope = tokio::select! {
             _ = shutdown_rx.changed() => break,
-            _ = tokio::time::sleep(interval) => {}
-        }
+            // Event path: the classifier just settled a session, so an hour may
+            // have just become complete. Draft TODAY's now-ready hours at once.
+            // Today only — live work is always today, so we skip re-scanning
+            // yesterday on every classify wake (that's the backfill's job).
+            _ = classify_notify.notified() => Scope::Today,
+            // Bounded same-day backfill + rollover safety net: retries hours that
+            // didn't draft on the event path (LLM down, daemon down, aged-out)
+            // across yesterday-leftover + today. Time-based, so timer-driven.
+            _ = backfill_timer.tick() => Scope::Backfill,
+        };
+        run_pass(&pool, &cfg, scope).await;
     }
     tracing::info!("pm-worklog driver stopped");
+}
+
+/// Which days a driver pass covers.
+#[derive(Clone, Copy, PartialEq)]
+enum Scope {
+    /// Live/event path — today only.
+    Today,
+    /// Recovery path — yesterday-leftover + today (bounded; never older).
+    Backfill,
+}
+
+/// Run one driver pass over the days in `scope`. Refreshes the PM task cache
+/// first (gated — a no-op within the sync window).
+async fn run_pass(pool: &SqlitePool, cfg: &PmWorklogConfig, scope: Scope) {
+    let config = Config::from_env();
+    if let Err(e) = crate::intelligence::run_pm_sync(pool, &config).await {
+        tracing::warn!(error = %e, "pm_tasks refresh before worklog pass failed — using cached tasks");
+    }
+
+    let today = Local::now().date_naive();
+    let days: Vec<NaiveDate> = match scope {
+        Scope::Today => vec![today],
+        Scope::Backfill => vec![today.pred_opt(), Some(today)]
+            .into_iter()
+            .flatten()
+            .collect(),
+    };
+    let min_duration_s = config.min_classification_duration_s;
+    for day in days {
+        match run_driver(pool, cfg, min_duration_s, Some(day)).await {
+            Ok(s) => tracing::info!(
+                day = %day,
+                hours_processed = s.hours_processed,
+                drafted = s.worklogs_drafted,
+                not_ready = s.hours_not_ready,
+                scope = if scope == Scope::Backfill { "backfill" } else { "event" },
+                "pm-worklog driver pass complete"
+            ),
+            Err(e) => tracing::error!(day = %day, error = %e, "pm-worklog driver pass failed"),
+        }
+    }
 }
 
 /// One-shot CLI entry: `meridian pm-worklog [--day YYYY-MM-DD]`. Drafts worklogs;

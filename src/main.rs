@@ -268,6 +268,12 @@ async fn main() -> Result<()> {
     let etl_tick_span: Arc<std::sync::Mutex<Option<tracing::Span>>> =
         Arc::new(std::sync::Mutex::new(None));
 
+    // Wakes the PM-worklog driver the moment the classifier settles a session: an
+    // hour becomes draftable exactly when its last in-flight session is classified,
+    // so the driver reacts in seconds instead of waiting up to a full interval. The
+    // driver's interval timer is kept as a fallback (aging escape + day rollover).
+    let worklog_notify: Arc<Notify> = Arc::new(Notify::new());
+
     // 7c. Run ETL once immediately before entering the loop.
     //     Re-read config so that any settings.json present at startup takes effect.
     {
@@ -328,8 +334,9 @@ async fn main() -> Result<()> {
     {
         let pool_pm = meridian.clone();
         let rx_pm = shutdown_rx.clone();
+        let notify_pm = worklog_notify.clone();
         tokio::spawn(async move {
-            meridian::pm_worklog::run_loop(pool_pm, rx_pm).await;
+            meridian::pm_worklog::run_loop(pool_pm, rx_pm, notify_pm).await;
         });
     }
 
@@ -350,6 +357,7 @@ async fn main() -> Result<()> {
         let meridian_linker = meridian.clone();
         let notify_linker = etl_notify.clone();
         let tick_span_linker = etl_tick_span.clone();
+        let notify_worklog = worklog_notify.clone();
         tokio::spawn(async move {
             // Tracks consecutive subprocess failures per session_id.
             // Reset to zero whenever any session is successfully classified.
@@ -369,6 +377,10 @@ async fn main() -> Result<()> {
                     _ = tokio::time::sleep(Duration::from_secs(300)) => tracing::Span::none(),
                 };
 
+                // Whether this wake settled at least one session — if so, wake the
+                // PM-worklog driver afterwards so a now-complete hour drafts at once.
+                let mut classified_any = false;
+
                 // Drain: classify oldest-first until nothing is left or a failure stops us.
                 loop {
                     let cfg = Config::from_env();
@@ -382,6 +394,7 @@ async fn main() -> Result<()> {
                     {
                         Ok(TaskLinkOutcome::Classified) => {
                             failure_counts.clear();
+                            classified_any = true;
                             // Loop immediately — more sessions may be waiting.
                         }
                         Ok(TaskLinkOutcome::NoPendingWork) => {
@@ -395,6 +408,7 @@ async fn main() -> Result<()> {
                                 {
                                     Ok(0) => break,
                                     Ok(n) => {
+                                        classified_any = true;
                                         tracing::info!(
                                             classified = n,
                                             "coding-agent rows classified"
@@ -452,6 +466,13 @@ async fn main() -> Result<()> {
                             break;
                         }
                     }
+                }
+
+                // This wake settled at least one session — nudge the PM-worklog
+                // driver so an hour that just became complete drafts immediately
+                // instead of waiting for the next interval tick.
+                if classified_any {
+                    notify_worklog.notify_one();
                 }
             }
             tracing::info!("task linker loop stopped");
