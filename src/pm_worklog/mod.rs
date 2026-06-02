@@ -18,11 +18,14 @@
 // `meridian pm-worklog [--day YYYY-MM-DD]` and `meridian worklog-post-approved`.
 
 pub mod collect;
+pub mod comment;
 pub mod config;
 pub mod db;
+pub mod github;
 pub mod ground;
 pub mod jira;
 pub mod ledger;
+pub mod linear;
 pub mod models;
 pub mod post;
 pub mod route;

@@ -19,6 +19,7 @@ export interface WorklogBullet {
 export interface WorklogItem {
   id: number
   task_key: string
+  provider: string
   window_start: string
   state: string
   confidence: number
@@ -43,6 +44,7 @@ export interface WorklogsResponse {
 interface RawRow {
   id: number
   task_key: string
+  provider: string
   window_start: string
   state: string
   confidence: number
@@ -80,7 +82,8 @@ export async function GET(req: Request) {
   try {
     const db = getDb()
     const rows = db.prepare(`
-      SELECT id, task_key, window_start, state, confidence, coverage,
+      SELECT id, task_key, COALESCE(provider, 'jira') AS provider, window_start,
+             state, confidence, coverage,
              time_spent_seconds, payload_json, posted_worklog_id,
              last_post_error, edited_at
       FROM pm_worklogs
@@ -106,6 +109,7 @@ export async function GET(req: Request) {
       return {
         id: r.id,
         task_key: r.task_key,
+        provider: r.provider ?? 'jira',
         window_start: r.window_start,
         state: r.state,
         confidence: r.confidence ?? 0,
