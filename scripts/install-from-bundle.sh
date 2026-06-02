@@ -259,6 +259,20 @@ fi
 # this, screenpipe falls back to OCR for those editors instead of their a11y tree.
 configure_editor_accessibility
 
+# ── 5b. Unpack the dashboard (Turbopack standalone, shipped as a tarball) ─────
+# The UI ships as ui.tar.gz rather than an expanded ui/ dir so that Turbopack's
+# relative symlinks under .next/node_modules (serverExternalPackages: better-
+# sqlite3, pino, @opentelemetry/*) survive `npm publish`, which strips symlinks.
+# Extract the exact built tree into place before the UI agent starts.
+if [[ -f "${APP_ROOT}/ui.tar.gz" ]]; then
+    info "Unpacking dashboard…"
+    rm -rf "${APP_ROOT}/ui"
+    mkdir -p "${APP_ROOT}/ui"
+    tar -xzf "${APP_ROOT}/ui.tar.gz" -C "${APP_ROOT}/ui"
+    rm -f "${APP_ROOT}/ui.tar.gz"
+    ok "dashboard unpacked ($(find "${APP_ROOT}/ui/.next/node_modules" -type l 2>/dev/null | wc -l | tr -d ' ') external symlink(s) restored)"
+fi
+
 # ── 6. Daemons (reuse the hardened installers; UI runs the standalone server) ─
 info "Installing screenpipe launchd agent…"
 bash "${APP_ROOT}/scripts/install-screenpipe-daemon.sh" || warn "screenpipe agent install failed"
