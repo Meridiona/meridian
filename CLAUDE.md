@@ -14,6 +14,7 @@ Meridian is a single-process Rust daemon that reads screenpipe's SQLite database
 - Keep files under 500 lines; split when a file grows beyond that
 - Validate all input at system boundaries (config load, DB open, frame parsing)
 - NEVER run `git reset`, `git push --force`, or delete local code — other agents may be working on the codebase in parallel
+- NEVER merge a PR automatically — open/update PRs as needed, but leave the actual merge to a human reviewer
 
 ---
 
