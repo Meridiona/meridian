@@ -1,3 +1,15 @@
+# [1.9.0](https://github.com/Meridiona/meridian/compare/v1.8.2...v1.9.0) (2026-06-02)
+
+
+### Bug Fixes
+
+* **llm-selector:** correct Apple FoundationModels SDK API usage ([#114](https://github.com/Meridiona/meridian/issues/114)) ([70f71bb](https://github.com/Meridiona/meridian/commit/70f71bb13e917e65da5f394394d23560220d1d5a))
+
+
+### Features
+
+* **agents:** dynamically select the MLX server model via llm_selector ([#112](https://github.com/Meridiona/meridian/issues/112)) ([d77257e](https://github.com/Meridiona/meridian/commit/d77257ea0ac88aa3427dff3bf0d2c920761165e0))
+
 ## [1.8.2](https://github.com/Meridiona/meridian/compare/v1.8.1...v1.8.2) (2026-06-02)
 
 
