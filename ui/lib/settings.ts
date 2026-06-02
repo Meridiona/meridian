@@ -34,15 +34,37 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   jira_update_enabled: true,
 }
 
-const SETTINGS_PATH = path.join(os.homedir(), '.meridian', 'settings.json')
+// The daemon reads the repo-local settings.json (cwd = repo root). The UI must
+// write the SAME file or its toggles never reach the daemon. The UI runs with
+// cwd = <repo>/ui (launchd WorkingDirectory and `next dev`/`start`), so the repo
+// root is the nearest ancestor containing Cargo.toml.
+function repoRoot(): string {
+  let dir = process.cwd()
+  for (let i = 0; i < 6; i++) {
+    if (fs.existsSync(path.join(dir, 'Cargo.toml'))) return dir
+    const parent = path.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  // Fallback: cwd is typically <repo>/ui, so the repo root is its parent.
+  return path.basename(process.cwd()) === 'ui' ? path.dirname(process.cwd()) : process.cwd()
+}
+
+const SETTINGS_PATH = path.join(repoRoot(), 'settings.json')
+// Pre-fix location — read as a fallback so existing settings aren't lost; the
+// next write migrates them to SETTINGS_PATH.
+const LEGACY_SETTINGS_PATH = path.join(os.homedir(), '.meridian', 'settings.json')
 
 export function readSettings(): RuntimeSettings {
-  try {
-    const raw = fs.readFileSync(SETTINGS_PATH, 'utf-8')
-    return { ...SETTINGS_DEFAULTS, ...JSON.parse(raw) }
-  } catch {
-    return { ...SETTINGS_DEFAULTS }
+  for (const p of [SETTINGS_PATH, LEGACY_SETTINGS_PATH]) {
+    try {
+      const raw = fs.readFileSync(p, 'utf-8')
+      return { ...SETTINGS_DEFAULTS, ...JSON.parse(raw) }
+    } catch {
+      // not at this location — try the next
+    }
   }
+  return { ...SETTINGS_DEFAULTS }
 }
 
 export function writeSettings(settings: RuntimeSettings): void {
