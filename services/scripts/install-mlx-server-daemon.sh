@@ -57,9 +57,10 @@ fi
 #   python -m venv  → "executable = /path/to/python3.11"
 #   uv sync         → "home = /path/to/bin"  (no `executable` key)
 # Try `executable` first, fall back to `home` + python3.11/python3/python.
-BASE_PYTHON=$(grep '^executable' "${VENV_CFG}" | awk '{print $3}')
+# `|| true` prevents set -e from exiting when grep finds no match (exit 1).
+BASE_PYTHON=$(grep '^executable' "${VENV_CFG}" 2>/dev/null | awk '{print $3}' || true)
 if [[ -z "${BASE_PYTHON}" || ! -x "${BASE_PYTHON}" ]]; then
-    _home=$(grep '^home ' "${VENV_CFG}" | awk '{print $3}')
+    _home=$(grep '^home ' "${VENV_CFG}" 2>/dev/null | awk '{print $3}' || true)
     if [[ -n "${_home}" ]]; then
         for _py in python3.11 python3 python; do
             if [[ -x "${_home}/${_py}" ]]; then BASE_PYTHON="${_home}/${_py}"; break; fi
