@@ -1,3 +1,15 @@
+# [1.12.0](https://github.com/Meridiona/meridian/compare/v1.11.0...v1.12.0) (2026-06-02)
+
+
+### Bug Fixes
+
+* **setup:** pin the MLX Python deps with a lockfile for reproducible installs ([#126](https://github.com/Meridiona/meridian/issues/126)) ([73d3f6a](https://github.com/Meridiona/meridian/commit/73d3f6a0161e9217d0cdc32190b288ecac5fdfd8))
+
+
+### Features
+
+* **ui:** in-dashboard update notification + one-click update (Fix B) ([#125](https://github.com/Meridiona/meridian/issues/125)) ([2cf6343](https://github.com/Meridiona/meridian/commit/2cf6343a918dfc6ef84776d3e1cd3ba356308473))
+
 # [1.11.0](https://github.com/Meridiona/meridian/compare/v1.10.1...v1.11.0) (2026-06-02)
 
 
