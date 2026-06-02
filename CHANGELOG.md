@@ -1,3 +1,15 @@
+# [1.17.0](https://github.com/Meridiona/meridian/compare/v1.16.0...v1.17.0) (2026-06-02)
+
+
+### Bug Fixes
+
+* **update:** explicitly install darwin-arm64 bundle in meridian update ([#137](https://github.com/Meridiona/meridian/issues/137)) ([4cdf8b4](https://github.com/Meridiona/meridian/commit/4cdf8b4b0a2bf695cce9d27b1727990b511c0086))
+
+
+### Features
+
+* **classifier:** compact Apple Intelligence system prompt (SKILL.applefm.md) ([#133](https://github.com/Meridiona/meridian/issues/133)) ([0c77f17](https://github.com/Meridiona/meridian/commit/0c77f176921ba0c8e02388d9e5187205475f3236)), closes [114/#116](https://github.com/Meridiona/meridian/issues/116)
+
 # [1.16.0](https://github.com/Meridiona/meridian/compare/v1.15.1...v1.16.0) (2026-06-02)
 
 
