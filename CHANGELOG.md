@@ -1,3 +1,10 @@
+## [1.14.2](https://github.com/Meridiona/meridian/compare/v1.14.1...v1.14.2) (2026-06-02)
+
+
+### Bug Fixes
+
+* **mlx-server:** parse uv pyvenv.cfg format for BASE_PYTHON resolution ([#131](https://github.com/Meridiona/meridian/issues/131)) ([802c429](https://github.com/Meridiona/meridian/commit/802c42951e2aecd32985b3e4056651e55dd64718))
+
 ## [1.14.1](https://github.com/Meridiona/meridian/compare/v1.14.0...v1.14.1) (2026-06-02)
 
 
