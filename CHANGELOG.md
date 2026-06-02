@@ -1,3 +1,10 @@
+## [1.8.2](https://github.com/Meridiona/meridian/compare/v1.8.1...v1.8.2) (2026-06-02)
+
+
+### Bug Fixes
+
+* **ui:** don't load OpenTelemetry at boot — fixes dashboard 500 in standalone ([#115](https://github.com/Meridiona/meridian/issues/115)) ([a8a7ed1](https://github.com/Meridiona/meridian/commit/a8a7ed1c944cb8b5417966e489469372f77bdb78))
+
 ## [1.8.1](https://github.com/Meridiona/meridian/compare/v1.8.0...v1.8.1) (2026-06-02)
 
 
