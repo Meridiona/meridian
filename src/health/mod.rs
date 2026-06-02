@@ -16,6 +16,7 @@ pub mod codingagent;
 pub mod contracts;
 pub mod daemon;
 pub mod diagnose;
+pub mod fix;
 pub mod jira;
 pub mod mlx;
 pub mod observability;

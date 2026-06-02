@@ -228,11 +228,17 @@ _daemon_bin() {
 cmd_doctor() {
     local bin
     if bin="$(_daemon_bin)"; then
-        # Guard with a perl alarm so a stale binary (one that predates `doctor`
-        # and would fall through to starting the daemon) can never hang the
-        # terminal. The Rust report colourises itself when stdout is a tty.
         set +e
-        perl -e 'alarm shift @ARGV; exec @ARGV' 30 "$bin" doctor
+        if [[ "$*" == *--fix* ]]; then
+            # --fix has interactive guided prompts — the user is present, so run
+            # without the alarm (which would kill a prompt waiting for input).
+            "$bin" doctor "$@"
+        else
+            # Guard with a perl alarm so a stale binary (one that predates
+            # `doctor` and would fall through to starting the daemon) can never
+            # hang the terminal. The Rust report colourises itself on a tty.
+            perl -e 'alarm shift @ARGV; exec @ARGV' 30 "$bin" doctor "$@"
+        fi
         local rc=$?
         set -e
         # 0 = healthy, 1 = critical issues found — both are real doctor runs.
@@ -470,7 +476,7 @@ case "$CMD" in
     restart)          cmd_restart ;;
     status)           cmd_status ;;
     logs)             cmd_logs "$@" ;;
-    doctor)           cmd_doctor ;;
+    doctor)           cmd_doctor "$@" ;;
     config)           cmd_config "$@" ;;
     dev)              cmd_dev "$@" ;;
     uninstall)        cmd_uninstall ;;
