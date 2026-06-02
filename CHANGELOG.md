@@ -1,3 +1,10 @@
+## [1.15.1](https://github.com/Meridiona/meridian/compare/v1.15.0...v1.15.1) (2026-06-02)
+
+
+### Bug Fixes
+
+* **setup:** add services-venv.tar.gz to npm files; fix grep set -e exit ([#135](https://github.com/Meridiona/meridian/issues/135)) ([7e5faf2](https://github.com/Meridiona/meridian/commit/7e5faf264508eb0bd2140481caf566fae09842a1))
+
 # [1.15.0](https://github.com/Meridiona/meridian/compare/v1.14.2...v1.15.0) (2026-06-02)
 
 
