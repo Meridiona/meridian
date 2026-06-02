@@ -52,9 +52,22 @@ fi
 # than through the venv wrapper. The wrapper shebang causes Python to read
 # pyvenv.cfg at startup, which EPERM-fails when launchd launches the process
 # on macOS 15 (launchd inherits no TCC Documents permission).
+#
+# pyvenv.cfg format differs by creator:
+#   python -m venv  → "executable = /path/to/python3.11"
+#   uv sync         → "home = /path/to/bin"  (no `executable` key)
+# Try `executable` first, fall back to `home` + python3.11/python3/python.
 BASE_PYTHON=$(grep '^executable' "${VENV_CFG}" | awk '{print $3}')
+if [[ -z "${BASE_PYTHON}" || ! -x "${BASE_PYTHON}" ]]; then
+    _home=$(grep '^home ' "${VENV_CFG}" | awk '{print $3}')
+    if [[ -n "${_home}" ]]; then
+        for _py in python3.11 python3 python; do
+            if [[ -x "${_home}/${_py}" ]]; then BASE_PYTHON="${_home}/${_py}"; break; fi
+        done
+    fi
+fi
 if [[ ! -x "${BASE_PYTHON}" ]]; then
-    echo "✗ base Python not found at ${BASE_PYTHON} (from ${VENV_CFG})" >&2
+    echo "✗ base Python not found (checked pyvenv.cfg executable + home keys in ${VENV_CFG})" >&2
     exit 1
 fi
 
