@@ -63,8 +63,9 @@ tar cf - \
   -C services . | tar xf - -C "${DEST}/services"
 
 echo "→ Python venv (pre-built site-packages — avoids PyPI at install time)"
-# uv must be available on the CI runner; install via pip if absent.
-command -v uv >/dev/null 2>&1 || pip3 install --quiet uv
+# uv must be available on the CI runner. pip3 install is blocked on macOS 26
+# by PEP 668 (externally-managed-environment). Install via Homebrew instead.
+command -v uv >/dev/null 2>&1 || brew install uv
 # Build the venv from the committed uv.lock (exact pinned set, no resolution).
 uv sync --project services --extra mlx --frozen
 # Determine the Python version subdirectory (e.g. python3.11).
