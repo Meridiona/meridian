@@ -1,3 +1,10 @@
+# [1.5.0](https://github.com/Meridiona/meridian/compare/v1.4.5...v1.5.0) (2026-06-02)
+
+
+### Features
+
+* **worklog:** add Linear and GitHub worklog providers alongside Jira ([#102](https://github.com/Meridiona/meridian/issues/102)) ([fb030e2](https://github.com/Meridiona/meridian/commit/fb030e2e9fc475f2dd6495931fbad3cacfa84321))
+
 ## [1.4.5](https://github.com/Meridiona/meridian/compare/v1.4.4...v1.4.5) (2026-06-02)
 
 
