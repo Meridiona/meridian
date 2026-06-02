@@ -40,6 +40,8 @@ htmlcov/
 
 # uv.lock is committed — it is the reproducible install source for the MLX server.
 # Do NOT add uv.lock here; it must be tracked so the installer gets the pinned set.
+# requirements-mlx.lock was the predecessor (pip lockfile, PR #126) — now deleted.
+requirements-mlx.lock
 
 # Local hermes runtime state (state lives in ~/.hermes/, but just in case)
 .hermes/
