@@ -1,3 +1,10 @@
+## [1.9.2](https://github.com/Meridiona/meridian/compare/v1.9.1...v1.9.2) (2026-06-02)
+
+
+### Bug Fixes
+
+* **npm:** stop `sudo meridian update` from breaking launchd; elevate only npm ([#120](https://github.com/Meridiona/meridian/issues/120)) ([eb4377b](https://github.com/Meridiona/meridian/commit/eb4377b7f421b39424a526c64615b8cbe958e290))
+
 ## [1.9.1](https://github.com/Meridiona/meridian/compare/v1.9.0...v1.9.1) (2026-06-02)
 
 
