@@ -286,7 +286,7 @@ if [[ -f "${VENV_TARBALL}" ]]; then
     if [[ "${_tarball_hash}" == "${_have_hash}" && -x "${VENV}/bin/python" ]]; then
         ok "Python deps unchanged — reusing existing venv (skipped extraction)"
     else
-        info "Extracting pre-built Python venv (no PyPI download required)…"
+        info "Extracting pre-built Python venv ($(du -sh "${VENV_TARBALL}" | cut -f1) — no PyPI download required)…"
         rm -rf "${VENV}"
         # Create a fresh venv with correct local paths (pyvenv.cfg points to
         # PYTHON_BIN, which install-mlx-server-daemon.sh reads for BASE_PYTHON).
@@ -297,7 +297,7 @@ if [[ -f "${VENV_TARBALL}" ]]; then
         tar -xzf "${VENV_TARBALL}" -C "${VENV}/lib/${_py_dir}/site-packages"
         # Install the local editable package (meridian-agents) — no deps needed,
         # everything is already in site-packages from the tarball.
-        "${UV_BIN}" pip install --quiet --no-deps -e "${APP_ROOT}/services"
+        "${UV_BIN}" pip install --quiet --no-deps --python "${VENV}/bin/python" -e "${APP_ROOT}/services"
         printf '%s\n' "${_tarball_hash}" > "${VENV_STAMP}"
         ok "Python services ready ($(${VENV}/bin/python --version 2>&1))"
     fi

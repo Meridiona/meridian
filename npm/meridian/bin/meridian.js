@@ -84,8 +84,14 @@ if (cmd === 'setup' || cmd === 'install') {
   const bundle = resolveBundle();
   run('bash', [path.join(bundle, 'scripts', 'meridian-npm-setup.sh'), bundle, ...rest]);
 } else if (cmd === 'update') {
+  console.log('meridian update: downloading latest release…');
+  console.log('  The package includes a pre-built Python venv (~160 MB).');
+  console.log('  First update after 1.15.0 will take ~1-3 min; subsequent updates are faster.');
+  const _updateStart = Date.now();
   const up = npmInstallLatest();
   if (up.status) process.exit(up.status);
+  const _elapsed = Math.round((Date.now() - _updateStart) / 1000);
+  console.log(`  Downloaded in ${_elapsed}s`);
   const bundle = resolveBundle();
   run('bash', [path.join(bundle, 'scripts', 'meridian-npm-setup.sh'), bundle, '--skip-permissions']);
 } else {
