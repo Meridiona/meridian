@@ -1,3 +1,11 @@
+## [1.9.1](https://github.com/Meridiona/meridian/compare/v1.9.0...v1.9.1) (2026-06-02)
+
+
+### Bug Fixes
+
+* **setup,doctor:** harden a11y-tree capture for VS Code-family editors ([#117](https://github.com/Meridiona/meridian/issues/117)) ([c47cf55](https://github.com/Meridiona/meridian/commit/c47cf55b0bedd9ec4eec2f56f502e33b2d75971c))
+* **ui:** build standalone with webpack — Turbopack ships an unresolvable better-sqlite3 external ([#118](https://github.com/Meridiona/meridian/issues/118)) ([29de7f0](https://github.com/Meridiona/meridian/commit/29de7f0bc694367325170da4b86fbfd6d8b67b89)), closes [vercel/next.js#88844](https://github.com/vercel/next.js/issues/88844) [#87737](https://github.com/Meridiona/meridian/issues/87737)
+
 # [1.9.0](https://github.com/Meridiona/meridian/compare/v1.8.2...v1.9.0) (2026-06-02)
 
 
