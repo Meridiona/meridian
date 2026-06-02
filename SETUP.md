@@ -13,7 +13,12 @@ npm install -g @meridiona/meridian
 meridian setup
 ```
 
-`npm install` fetches the prebuilt app. `meridian setup` copies it to `~/.meridian/app`, installs any missing prerequisites (Homebrew packages, Python 3.11, screenpipe, ffmpeg), creates the Python environment + on-device model deps, and registers four launchd agents that start automatically:
+`npm install` downloads the prebuilt app (~170 MB — includes a pre-built Python environment so setup is fast). `meridian setup` copies it to `~/.meridian/app`, installs any missing prerequisites (Homebrew packages, Python 3.11, screenpipe, ffmpeg), extracts the pre-built Python environment, and registers four launchd agents that start automatically:
+
+> **EACCES error on `npm install`?** Your npm prefix is root-owned (stock macOS Node). Use the one-line installer instead — it fixes the prefix automatically:
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/Meridiona/meridian/main/scripts/bootstrap.sh | bash
+> ```
 
 | Service | Role |
 |---|---|
@@ -115,7 +120,7 @@ open http://localhost:3939
 ## Update / uninstall
 
 ```bash
-meridian update      # npm-install the latest release + re-run setup (keeps your .env)
+meridian update      # download latest release (~170 MB) + re-run setup (keeps your .env and database)
 meridian uninstall   # stop services + remove the CLI (your data in ~/.meridian/ is kept)
 ```
 
@@ -131,7 +136,7 @@ Everything runs **on your machine**. screenpipe records your screen locally into
 
 - **Dashboard not loading** — give it ~15 s after start; check `meridian logs ui-error -n 50`.
 - **No worklogs / classifications** — confirm the model is up: `meridian logs mlx-server -f` should show `MLX model ready`; `curl -s localhost:7823/health`.
-- **`meridian: command not found`** — ensure `~/.local/bin` is on your `PATH`.
+- **`meridian: command not found`** — ensure the npm bin directory is on your `PATH`. With Homebrew Node: `~/.local/bin`. With the bootstrap installer (system Node): `~/.npm-global/bin`. Add the missing path to `~/.zshrc` and run `source ~/.zshrc`.
 - **Gatekeeper blocks the binary** (unsigned builds) — `xattr -dr com.apple.quarantine ~/.meridian/app`, then `meridian restart`.
 - **Moved the install?** — the services point at `~/.meridian/app`; don't move it. Re-run the installer if you must relocate.
 
