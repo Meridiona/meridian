@@ -203,16 +203,23 @@ def discover_running_servers() -> list[RunningServer]:
             else:
                 log.debug("llm_selector: no server on port 8080")
 
-            # 4. Apple FoundationModels — in-process, no port, macOS 26+
+            # 4. Apple FoundationModels — in-process, no port, macOS 26+.
+            #    is_available() is an INSTANCE method returning (bool, reason).
+            #    Catch broadly (not just ImportError): an absent OR API-skewed
+            #    apple_fm_sdk must degrade to "not found", never crash the whole
+            #    discovery sweep (which would push every caller to cloud).
             try:
                 from apple_fm_sdk import SystemLanguageModel  # type: ignore[import]
-                if SystemLanguageModel.default.is_available()[0]:
+                available, reason = SystemLanguageModel().is_available()
+                if available:
                     found.append(RunningServer(
                         "apple_fm", "", ["apple-intelligence"], "apple-intelligence"))
                     log.info("llm_selector: Apple Intelligence available")
                     span.add_event("apple_fm_found")
-            except ImportError:
-                pass
+                else:
+                    log.debug("llm_selector: Apple Intelligence unavailable: %s", reason)
+            except Exception as exc:  # noqa: BLE001 — SDK absent or version-skewed
+                log.debug("llm_selector: Apple FM probe skipped: %s", exc)
 
             span.set_attribute("servers.found", len(found))
             span.set_attribute("servers.names", str([s.runtime for s in found]))
@@ -457,9 +464,13 @@ def _infer_apple_intelligence(system: str, user: str, max_tokens: int) -> Option
         import asyncio
         from apple_fm_sdk import LanguageModelSession  # type: ignore[import]
         async def _run() -> str:
-            session = LanguageModelSession(system_prompt=system)
-            r = await session.respond(prompt=user)
-            return r.content
+            # Constructor kwarg is `instructions` (the system prompt). respond()
+            # is a coroutine; in free-form mode it resolves to a plain str, while
+            # guided modes return a GeneratedContent with a .content attr — handle
+            # both. (max_tokens is governed by the SDK's own GenerationOptions.)
+            session = LanguageModelSession(instructions=system)
+            r = await session.respond(user)
+            return getattr(r, "content", r)
         return asyncio.run(_run())
     except Exception as exc:
         log.warning("llm_selector: apple_fm failed: %s", exc)
