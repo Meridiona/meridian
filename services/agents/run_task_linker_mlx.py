@@ -83,10 +83,10 @@ class SessionClassification(BaseModel):
     ] = Field(
         ...,
         description=(
-            "The single best activity category for this session. A rule-based "
-            "guess is supplied in the input — confirm it or correct it from the "
-            "evidence. Declared early in the schema so FSM decoding always emits "
-            "it before the long session_summary field."
+            "The single best activity category for this session. Derive it from "
+            "the evidence (app, window titles, screen content); no category is "
+            "supplied in the input. Declared early in the schema so FSM decoding "
+            "always emits it before the long session_summary field."
         ),
     )
     category_confidence: float = Field(
@@ -232,9 +232,13 @@ def _fetch_session(
 def _fetch_recent_sessions(
     con: _sqlite3.Connection, before_id: int
 ) -> list[dict[str, Any]]:
+    # Recent context is a task-continuity signal only: app, time, duration and
+    # which ticket each recent session mapped to. We deliberately do NOT select
+    # session_text/excerpt or category — recent OCR is noise here and a category
+    # tag would feed a prior back into classification. (session_text is still
+    # referenced in WHERE only to skip empty-capture rows.)
     rows = con.execute(
-        "SELECT app_name, started_at, duration_s, task_key, task_routing, category,"
-        "       COALESCE(SUBSTR(session_text, 1, 200), '') AS text_excerpt"
+        "SELECT app_name, started_at, duration_s, task_key, task_routing"
         " FROM app_sessions"
         " WHERE id < ? AND duration_s > 1 AND COALESCE(session_text,'') != ''"
         " ORDER BY id DESC LIMIT ?",
