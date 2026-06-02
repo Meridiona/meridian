@@ -13,6 +13,12 @@ const nextConfig: NextConfig = {
   // ships prebuilt in the release tarball and runs with `node server.js` — no
   // `npm ci` / native rebuild of better-sqlite3 on the user's machine.
   output: 'standalone',
+  // Pin the standalone file-tracing root to this `ui/` dir. The repo root also
+  // has a package-lock.json, so Next otherwise infers the monorepo root and
+  // nests the output as `.next/standalone/ui/server.js` — which breaks the
+  // launchd plist + package-release.sh (both expect `ui/server.js` at the top).
+  // Mirrors the `turbopack.root` pin above for the webpack production build.
+  outputFileTracingRoot: path.join(__dirname),
   serverExternalPackages: [
     'better-sqlite3',
     '@opentelemetry/sdk-node',
