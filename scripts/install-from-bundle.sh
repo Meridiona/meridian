@@ -197,7 +197,17 @@ command -v node >/dev/null 2>&1 || { info "Installing Node.js…"; brew install 
 PYTHON_BIN=""
 for p in python3.11 python3; do command -v "$p" >/dev/null 2>&1 && { PYTHON_BIN="$(command -v "$p")"; break; }; done
 [[ -n "${PYTHON_BIN}" ]] || { info "Installing Python 3.11…"; brew install python@3.11; PYTHON_BIN="$(command -v python3.11)"; }
-ok "node + python ($(${PYTHON_BIN} --version 2>&1))"
+# uv is the package/venv manager for Python services. Install via Homebrew (already
+# required by this installer) rather than the astral curl|sh installer.
+UV_BIN=""
+if command -v uv >/dev/null 2>&1; then
+    UV_BIN="$(command -v uv)"
+else
+    info "Installing uv (Python package manager)…"
+    brew install uv
+    UV_BIN="$(command -v uv)"
+fi
+ok "node + python ($(${PYTHON_BIN} --version 2>&1)) + uv ($(${UV_BIN} --version 2>&1))"
 
 if ! command -v screenpipe >/dev/null 2>&1; then
     info "Installing screenpipe ${SCREENPIPE_VERSION} via npm…"
@@ -258,38 +268,23 @@ else
 fi
 
 # ── 4. Python venv + MLX deps ────────────────────────────────────────────────
-# meridian-npm-setup.sh preserves an existing venv across updates, so on a normal
-# update the venv is already here. The pip install (mlx-lm/outlines/fastapi) costs
-# minutes, so we skip it when the dependency spec is unchanged: hash the parts of
-# pyproject.toml that define the deps and stamp it in the venv. Re-pip only when a
-# fresh venv was created or the hash differs (a release that bumped Python deps).
+# uv reads services/uv.lock (hashed, cross-platform, committed) and installs the
+# exact pinned set with no PyPI resolution at install time. On subsequent runs
+# `uv sync --frozen` is a no-op when the venv is already up-to-date — faster than
+# the old DEPS_STAMP approach and handles cross-version upgrades correctly.
+# PYTHON_BIN is the brew-installed Python we know runs MLX/Metal; --python pins
+# the interpreter used when uv creates a fresh venv (existing venvs are unchanged).
 VENV="${APP_ROOT}/services/.venv"
-DEPS_STAMP="${VENV}/.meridian-deps-hash"
-deps_hash() { shasum -a 256 "${APP_ROOT}/services/pyproject.toml" 2>/dev/null | cut -d' ' -f1; }
-want_hash="$(deps_hash)"
 
-fresh_venv=0
-if [[ ! -x "${VENV}/bin/python" ]]; then
-    info "Creating Python venv…"
-    rm -rf "${VENV}"
-    "${PYTHON_BIN}" -m venv "${VENV}"
-    fresh_venv=1
-fi
-
-have_hash=""
-[[ -f "${DEPS_STAMP}" ]] && have_hash="$(cat "${DEPS_STAMP}" 2>/dev/null)"
-
-if [[ "${fresh_venv}" -eq 1 || "${want_hash}" != "${have_hash}" || -z "${want_hash}" ]]; then
-    info "Installing Python + MLX deps (mlx-lm/outlines/fastapi; downloads ~ a few hundred MB on first run)…"
-    "${VENV}/bin/pip" install --quiet --upgrade pip
-    if "${VENV}/bin/pip" install --quiet -e "${APP_ROOT}/services[mlx]"; then
-        [[ -n "${want_hash}" ]] && printf '%s\n' "${want_hash}" > "${DEPS_STAMP}"
-        ok "Python services ready"
-    else
-        warn "pip install failed — leaving venv as-is; re-run 'meridian setup' to retry"
-    fi
+info "Installing Python + MLX deps (mlx-lm/outlines/fastapi; first run may download a few hundred MB)…"
+if "${UV_BIN}" sync \
+        --project "${APP_ROOT}/services" \
+        --extra mlx \
+        --frozen \
+        --python "${PYTHON_BIN}"; then
+    ok "Python services ready ($(${VENV}/bin/python --version 2>&1))"
 else
-    ok "Python deps unchanged — reusing existing venv (skipped pip install)"
+    warn "uv sync failed — leaving venv as-is; re-run 'meridian setup' to retry"
 fi
 
 # ── 5. macOS permissions for screenpipe (manual — can't be automated) ────────

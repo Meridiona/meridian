@@ -38,8 +38,8 @@ Thumbs.db
 .coverage
 htmlcov/
 
-# Lockfiles regenerated locally
-uv.lock
+# uv.lock is committed — it is the reproducible install source for the MLX server.
+# Do NOT add uv.lock here; it must be tracked so the installer gets the pinned set.
 
 # Local hermes runtime state (state lives in ~/.hermes/, but just in case)
 .hermes/
