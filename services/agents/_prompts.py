@@ -11,12 +11,17 @@ _VSCODE_BANNER_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-# Max chars of session_text included in the prompt. Default 2500 (~625 tokens at
-# 4 chars/token) — enough to identify files, ticket keys, and recent activity
-# without inflating context in production. Override via SESSION_TEXT_CAP env var
-# for eval experiments; set to 0 to disable truncation entirely (caller is then
-# responsible for not blowing the model's context window).
-SESSION_TEXT_CAP = int(os.environ.get("SESSION_TEXT_CAP", "2500"))
+# Max chars of session_text included in the prompt. Default 10000 (~2500 tokens
+# at 4 chars/token). The old 2500 cap kept only the FIRST frames of a multi-frame
+# OCR capture, so when a session spanned more than one window/app the later
+# (often foreground) activity was silently dropped — e.g. a session whose head
+# showed an IDE but whose tail showed the user had moved to a different app/
+# project got misclassified on the stale head. The classifier model has a 128K
+# context window, so 2500 was far too conservative; 10000 comfortably holds a
+# full multi-frame session while staying trivial for the model. Override via
+# SESSION_TEXT_CAP env var; set to 0 to disable truncation entirely (caller is
+# then responsible for not blowing the model's context window).
+SESSION_TEXT_CAP = int(os.environ.get("SESSION_TEXT_CAP", "10000"))
 
 
 def _fmt_dur(duration_s: int | float) -> str:
@@ -51,10 +56,12 @@ def _format_session(session: dict) -> str:
         parts.append(f"time: {time_range}{dur_str}")
     elif dur is not None:
         parts.append(f"duration: {_fmt_dur(dur)}")
-    cat = session.get("category")
-    cat_conf = session.get("confidence")
-    if cat:
-        parts.append(f"category: {cat} (confidence {round(cat_conf or 0.0, 2)})")
+    # NOTE: the rule-based ETL category is intentionally NOT included here. It is
+    # a cheap heuristic derived from the SAME app/window/OCR signals the LLM
+    # already sees, so feeding it in only injects a correlated prior — when the
+    # heuristic is wrong (e.g. background-window OCR bleed), it biases the LLM
+    # toward the same mistake. The classifier re-derives category from the raw
+    # evidence and its output overwrites the rule-based value anyway.
     titles = session.get("window_titles") or []
     if titles:
         parts.append("top windows:")
@@ -116,7 +123,6 @@ def _format_recent_sessions(sessions: list[dict]) -> str:
         dur_str = _fmt_dur(s.get("duration_s") or 0)
         task_key = s.get("task_key")
         routing = s.get("task_routing")  # None means unclassified
-        category = (s.get("category") or "").strip()
         if task_key:
             target = f"→ {task_key}"
         elif routing == "untracked":
@@ -126,8 +132,10 @@ def _format_recent_sessions(sessions: list[dict]) -> str:
             target = "→ [pending]"
         else:
             target = "→ [overhead]"
-        cat_tag = f"  [{category}]" if category else ""
-        rows.append(f"  {time_str}  {app:<14}  {dur_str:<7}  {target}{cat_tag}")
+        # Category is intentionally omitted — recent-context is a task-continuity
+        # signal only; carrying the (rule-based or prior-LLM) category tag would
+        # feed a category prior back into classification.
+        rows.append(f"  {time_str}  {app:<14}  {dur_str:<7}  {target}")
     return "\n".join(rows)
 
 
