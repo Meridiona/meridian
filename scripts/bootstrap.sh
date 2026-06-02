@@ -45,13 +45,18 @@ ok "Node $(node --version)"
 # `meridian update`) just work without sudo.
 npm_global_writable() {
     local prefix; prefix="$(npm config get prefix 2>/dev/null || true)"
-    [[ -n "$prefix" && -w "${prefix}/lib/node_modules" ]]
+    [[ -n "$prefix" ]] || return 1
+    # Use ownership of the prefix itself — more reliable than -w on the
+    # node_modules dir. -w returns true even when ACLs or missing @scope
+    # subdirs prevent mkdir, as seen on /usr/local with system Node.
+    local owner; owner="$(stat -f '%Su' "${prefix}" 2>/dev/null || true)"
+    [[ -n "$owner" && "$owner" == "$(id -un)" ]]
 }
 
 NPM_GLOBAL="${HOME}/.npm-global"
 
 if npm_global_writable; then
-    ok "npm prefix already user-writable — no fix needed"
+    ok "npm prefix ($(npm config get prefix)) is user-writable — no fix needed"
 else
     _old_prefix="$(npm config get prefix 2>/dev/null || true)"
     info "npm prefix (${_old_prefix}) is root-owned — redirecting to ${NPM_GLOBAL}…"
