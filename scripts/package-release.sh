@@ -67,9 +67,12 @@ echo "→ Python venv (pre-built site-packages — avoids PyPI at install time)"
 # by PEP 668 (externally-managed-environment). Install via Homebrew instead.
 command -v uv >/dev/null 2>&1 || brew install uv
 # Build the venv from the committed uv.lock (exact pinned set, no resolution).
-uv sync --project services --extra mlx --frozen
-# Determine the Python version subdirectory (e.g. python3.11).
-_py_dir="$(ls services/.venv/lib/ | grep '^python' | head -1)"
+# Pin Python 3.11 explicitly: the macos-26 runner defaults to Python 3.14 which
+# produces cpython-314-darwin.so extensions that Python 3.11 on user machines
+# cannot load (ImportError at startup). uv installs Python 3.11 automatically.
+uv sync --project services --extra mlx --frozen --python 3.11
+# Python version subdir is always python3.11 (we pin above).
+_py_dir="python3.11"
 if [[ -z "${_py_dir}" ]]; then
     echo "✗ could not find python lib dir under services/.venv/lib/" >&2
     exit 1
