@@ -63,15 +63,18 @@ tar cf - \
   -C services . | tar xf - -C "${DEST}/services"
 
 echo "→ Python venv (pre-built site-packages)"
-# Only rebuild and ship the venv tarball when services/uv.lock has changed since
-# the previous git tag. Shipping it on every release forces all users to download
-# ~160 MB even when only the Rust binary or UI changed. When uv.lock is unchanged
-# the installer falls back to `uv sync --frozen` which is a 3ms no-op from the
-# warm uv cache on updates, and downloads from PyPI only on a fresh machine.
+# Only rebuild and ship the venv tarball when the venv's contents could have
+# changed since the previous git tag — i.e. when services/uv.lock OR this script
+# changed. The extras installed (--extra mlx --extra pm_worklog_update) live in
+# THIS script, so a change to which extras ship must force a rebuild even when
+# uv.lock is untouched — otherwise an extras fix would ship a stale tarball.
+# Shipping on every release would force all users to download ~160 MB even when
+# only the Rust binary or UI changed; when neither input changed the installer
+# falls back to `uv sync --frozen` (a no-op from the warm uv cache on updates).
 _prev_tag="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)"
 _lock_changed=1
 if [[ -n "${_prev_tag}" ]]; then
-    if git diff --quiet "${_prev_tag}" HEAD -- services/uv.lock 2>/dev/null; then
+    if git diff --quiet "${_prev_tag}" HEAD -- services/uv.lock scripts/package-release.sh 2>/dev/null; then
         _lock_changed=0
     fi
 fi
@@ -83,7 +86,10 @@ if [[ "${_lock_changed}" -eq 1 ]]; then
     command -v uv >/dev/null 2>&1 || brew install uv
     # Pin Python 3.11: macos-26 defaults to Python 3.14 which produces
     # cpython-314-darwin.so that Python 3.11 on user machines cannot load.
-    uv sync --project services --extra mlx --frozen --python 3.11
+    # Both extras: mlx (classifier) AND pm_worklog_update (agno) — the shipped
+    # MLX server serves /synthesise_worklog too, which imports agno; without it
+    # worklog synthesis 500s with ModuleNotFoundError on every install.
+    uv sync --project services --extra mlx --extra pm_worklog_update --frozen --python 3.11
     # Validate the venv is actually Python 3.11.
     _py_dir="$(ls -d services/.venv/lib/python* 2>/dev/null | head -1 | xargs basename 2>/dev/null || true)"
     if [[ -z "${_py_dir}" ]]; then

@@ -53,7 +53,9 @@ meridian-server = "agents.server:main"
 
 [tool.uv]
 # Lock all extras so `uv lock` produces a complete, reproducible uv.lock.
-# install-from-bundle.sh installs the mlx extra via `uv sync --extra mlx --frozen`.
+# The shipped venv installs BOTH server-side extras — `uv sync --extra mlx
+# --extra pm_worklog_update` — because the one MLX server serves
+# /classify_sessions (mlx) AND /synthesise_worklog (agno, pm_worklog_update).
 constraint-dependencies = []
 
 [tool.setuptools.packages.find]
