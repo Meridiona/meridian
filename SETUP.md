@@ -48,7 +48,11 @@ After granting, run `meridian restart`.
 
 ## 3. Connect your issue tracker (optional, but it's the point)
 
-Meridian drafts worklogs against the tickets you're assigned. It supports **Jira, Linear, and GitHub** — pick the one you use (you can configure more than one, but most people use a single tracker). Open the config with `meridian config edit` and add the block for your tracker, then `meridian restart`.
+**What works without a tracker:** the activity timeline, app breakdown, and session categories all populate from your screen activity alone — connect nothing and the dashboard still shows how you spent your day.
+
+**What a tracker unlocks:** the **Tasks** board (your assigned tickets, with time mapped to each) and **worklog drafting**. This is the reason Meridian exists.
+
+Meridian drafts worklogs against the tickets you're assigned. It supports **Jira, Linear, and GitHub** — pick the one you use (you can configure more than one, but most people use a single tracker). Open the config with `meridian config edit` and add the block for your tracker, then `meridian restart`. The dashboard's Tasks tab also shows a per-tracker "connect" guide with these same steps.
 
 ### Jira
 
@@ -96,10 +100,18 @@ Meridian syncs the open issues assigned to you under that owner. **GitHub has no
 
 ```bash
 meridian status          # all four services
+meridian version         # installed version
 meridian doctor          # diagnose config / services / permissions
 meridian logs -f         # watch the pipeline live
 open http://localhost:3939
 ```
+
+### What to expect on first run
+
+1. **Model download (~6 GB, once).** The first MLX start pulls the model — a few minutes. `meridian logs mlx-server -f` ends with `server: MLX model ready`. Until then, classification just waits.
+2. **Activity shows within a couple of minutes.** screenpipe captures continuously and the daemon runs ETL every 60 s, so the timeline and app breakdown fill in shortly after setup. Categories appear once the model is ready and a session has enough content to classify.
+3. **Tasks & worklogs need a tracker.** The Tasks board stays empty until you complete step 3; the dashboard's Tasks tab shows exactly what to add.
+4. **Nothing posts on its own** — worklogs are drafted for you to review and approve (see below).
 
 ---
 
@@ -135,8 +147,10 @@ Everything runs **on your machine**. screenpipe records your screen locally into
 ## Troubleshooting
 
 - **Dashboard not loading** — give it ~15 s after start; check `meridian logs ui-error -n 50`.
-- **No worklogs / classifications** — confirm the model is up: `meridian logs mlx-server -f` should show `MLX model ready`; `curl -s localhost:7823/health`.
-- **`meridian: command not found`** — ensure the npm bin directory is on your `PATH`. With Homebrew Node: `~/.local/bin`. With the bootstrap installer (system Node): `~/.npm-global/bin`. Add the missing path to `~/.zshrc` and run `source ~/.zshrc`.
+- **Empty Tasks board / no worklogs** — you need a connected tracker (§3). Confirm with `meridian doctor`; the dashboard's Tasks tab also shows what's missing.
+- **No classifications / categories** — confirm the model is up: `meridian logs mlx-server -f` should end with `server: MLX model ready`; `curl -s localhost:7823/health`.
+- **`meridian: command not found`** — ensure the npm bin directory is on your `PATH`. With Homebrew Node: `~/.local/bin`. With the bootstrap installer (system Node): `~/.npm-global/bin`. Add the missing path to `~/.zshrc` and run `source ~/.zshrc` (or open a new terminal).
+- **`meridian update` says "unknown command"** — an older install left the CLI ahead of the launcher on your `PATH`. `source ~/.zshrc` (or open a new terminal); if it persists, reinstall with `npm install -g @meridiona/meridian`.
 - **Gatekeeper blocks the binary** (unsigned builds) — `xattr -dr com.apple.quarantine ~/.meridian/app`, then `meridian restart`.
 - **Moved the install?** — the services point at `~/.meridian/app`; don't move it. Re-run the installer if you must relocate.
 
@@ -144,13 +158,31 @@ Everything runs **on your machine**. screenpipe records your screen locally into
 
 ## Build from source (contributors)
 
-Developers working on Meridian itself clone and build instead:
+Developers working on Meridian itself clone and build instead of installing from npm:
 
 ```bash
 git clone https://github.com/Meridiona/meridian
 cd meridian
-./install.sh          # builds the daemon + UI, sets up services
-bash scripts/setup-hooks.sh   # pre-commit/pre-push hooks
+cp .env.example .env          # then fill in tracker creds (see §3) — one config for Rust + Python
+./install.sh                  # builds the daemon + UI, sets up the four launchd services
+bash scripts/setup-hooks.sh   # install the pre-commit / pre-push git hooks (required)
 ```
 
 Classification runs on the persistent MLX inference server (Apple Silicon); `install.sh` sets it up automatically. Use `--mlx-port N` to change its port (default 7823).
+
+### Day-to-day
+
+```bash
+cargo build --release                 # daemon (SQLX_OFFLINE is set automatically)
+cargo test                            # Rust tests — must pass before committing
+cargo clippy -- -D warnings           # lint — warnings are errors
+cargo fmt                             # format
+(cd ui && npm install && npm run dev) # dashboard in dev mode
+```
+
+The git hooks enforce the rules so CI doesn't have to: `pre-commit` runs fmt + clippy, `pre-push` runs the full suite (fmt + clippy + `cargo test` + UI build + UI tests). Never skip them with `--no-verify`.
+
+- **`CLAUDE.md`** — repository layout, architecture, coding conventions, and the common-task recipes (add a DB query, an ETL signal, a UI route, an MCP tool, a classifier eval golden).
+- **`TESTING.md`** — the ETL/DB invariants the integration tests enforce; read it before touching ETL logic, schema, or migrations.
+- **`VISION.md`** — product decisions and the "why".
+- **`services/agents/README.md`** — the classifier/worklog deep reference (classification logic, scoring, prompt-tuning recipes).
