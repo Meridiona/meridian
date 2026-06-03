@@ -202,8 +202,21 @@ enum Scope {
 /// first (gated — a no-op within the sync window).
 async fn run_pass(pool: &SqlitePool, cfg: &PmWorklogConfig, scope: Scope) {
     let config = Config::from_env();
+    // Sync first so a newly-configured tracker populates pm_tasks and the gate
+    // below can open without a daemon restart (run_pm_sync is interval-gated).
     if let Err(e) = crate::intelligence::run_pm_sync(pool, &config).await {
         tracing::warn!(error = %e, "pm_tasks refresh before worklog pass failed — using cached tasks");
+    }
+
+    // Gate: only draft worklogs when the whole pipeline is WORKING — the MLX
+    // synthesiser loaded AND a PM tracker that has synced tasks. With no tracker
+    // there is nothing to draft against; with the LLM down every /synthesise call
+    // would just 500. Skipping leaves the day pending — the next pass retries.
+    if !crate::intelligence::pipeline_ready(pool, &config).await {
+        tracing::debug!(
+            "pm-worklog pass skipped — the MLX synthesiser and a synced PM tracker must both be working"
+        );
+        return;
     }
 
     let today = Local::now().date_naive();
