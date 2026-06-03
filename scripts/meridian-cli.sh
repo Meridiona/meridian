@@ -49,6 +49,7 @@ Commands:
   config edit        Open the repo-root .env in $EDITOR
   permissions        Open macOS permission panes for screenpipe
   uninstall          Stop daemons and remove CLI symlinks
+  version            Print installed version
   --help | -h        Show this help
 EOF
     # Dev commands only make sense (and only work) in a source checkout.
@@ -481,6 +482,7 @@ case "$CMD" in
     dev)              cmd_dev "$@" ;;
     uninstall)        cmd_uninstall ;;
     permissions)      cmd_permissions ;;
+    version|--version|-v) cat "${REPO_ROOT}/VERSION" 2>/dev/null || echo "unknown" ;;
     worklog-status|pm-worklog) cmd_daemon_passthrough "$CMD" "$@" ;;
     --help|-h|help|"") cmd_help ;;
     *) err "unknown command: ${CMD}"; echo; cmd_help; exit 1 ;;
