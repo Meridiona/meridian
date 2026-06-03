@@ -251,22 +251,23 @@ fi
 # ── 3. Binary + CLI symlinks ─────────────────────────────────────────────────
 mkdir -p "${HOME}/.local/bin"
 ln -sfn "${APP_ROOT}/bin/meridian"        "${HOME}/.local/bin/meridian-daemon"
-# Do NOT shadow the npm launcher with a second `meridian` on PATH. When installed
-# via npm, the launcher (`meridian.js`) owns `setup`/`update` and delegates
-# start/stop/doctor to this bundle's CLI by its real path. ~/.local/bin usually
-# precedes the npm bin dir on PATH, so a ~/.local/bin/meridian symlink would hide
-# `meridian setup` / `meridian update` (it can't reach the launcher).
+# Put a single `meridian` on PATH that owns every command. The npm launcher
+# (`meridian.js`) owns `setup`/`update` and delegates start/stop/doctor to this
+# bundle's CLI; the CLI alone does NOT know `setup`/`update`. So we point
+# ~/.local/bin/meridian AT the launcher (not the CLI) whenever a launcher exists.
 #
-# The launcher's location depends on the npm prefix: /usr/local/bin on a default
-# prefix, but ~/.npm-global/bin when the EACCES bootstrap redirected the prefix to
-# a user-writable dir. Resolve the prefix from npm rather than assuming
-# /usr/local — otherwise the launcher is missed and the CLI shadow hides `update`.
-# Only create the CLI symlink as a fallback when no launcher is present (e.g. a
-# standalone bundle install); when the launcher exists, remove any stale shadow
-# so `meridian update` self-heals an install made by an older bundle.
+# Why ~/.local/bin and not rely on the npm bin dir being on PATH: the launcher's
+# own bin dir depends on the npm prefix (/usr/local/bin by default, but
+# ~/.npm-global/bin when the EACCES bootstrap redirected the prefix). That dir is
+# only added to PATH via a shell-rc patch, which doesn't apply to already-open
+# shells and may never apply for bash users. ~/.local/bin is a standard user bin
+# dir that is reliably on PATH already, so pointing it at the launcher makes
+# `meridian update` work in every shell immediately — no rc reload required, no
+# CLI shadow hiding `update`. Fall back to the CLI only for a standalone bundle
+# install where no npm launcher is present.
 _launcher=""
 _npm_prefix="$(npm config get prefix 2>/dev/null || true)"
-for _cand in "/usr/local/bin/meridian" ${_npm_prefix:+"${_npm_prefix}/bin/meridian"}; do
+for _cand in ${_npm_prefix:+"${_npm_prefix}/bin/meridian"} "/usr/local/bin/meridian"; do
     [[ -e "${_cand}" ]] || continue
     # Distinguish the launcher (node shim) from a self-referential CLI symlink:
     # the launcher never resolves to meridian-cli.sh.
@@ -275,11 +276,11 @@ for _cand in "/usr/local/bin/meridian" ${_npm_prefix:+"${_npm_prefix}/bin/meridi
     fi
 done
 if [[ -n "${_launcher}" ]]; then
-    rm -f "${HOME}/.local/bin/meridian"
-    ok "meridian-daemon → ~/.local/bin  (meridian CLI = npm launcher at ${_launcher})"
+    ln -sfn "${_launcher}" "${HOME}/.local/bin/meridian"
+    ok "meridian-daemon + meridian → ~/.local/bin  (meridian → npm launcher at ${_launcher})"
 else
     ln -sfn "${APP_ROOT}/scripts/meridian-cli.sh" "${HOME}/.local/bin/meridian"
-    ok "meridian-daemon + meridian → ~/.local/bin"
+    ok "meridian-daemon + meridian → ~/.local/bin  (CLI; no npm launcher found)"
 fi
 
 # ── 4. Python venv + MLX deps ────────────────────────────────────────────────
