@@ -274,6 +274,9 @@ class LocalModelEndpoint:
 _MANAGED_SERVER_PORT = 8765
 _MANAGED_SERVER_PID_FILE = Path.home() / ".meridian" / "mlx_lm_server.pid"
 
+# Sentinel returned by select_mlx_model_id() when Apple Intelligence is chosen.
+APPLE_INTELLIGENCE_ID = "apple-intelligence"
+
 
 def _metal_headroom_gb() -> tuple[float, str]:
     """Primary memory signal — headroom within Metal's recommended working set.
@@ -890,6 +893,9 @@ def select_mlx_model_id(
             span.set_attribute("llm.selected_model", preferred_hf_id or "")
             return preferred_hf_id
 
+        macos_major = int(platform.mac_ver()[0].split(".")[0] or "0")
+        apple_intelligence = macos_major >= 26
+
         try:
             snap = probe_compute()
         except Exception as exc:  # noqa: BLE001
@@ -928,13 +934,24 @@ def select_mlx_model_id(
             return preferred_hf_id
 
         # 2. Largest catalog model that BOTH fits the budget AND is already in
-        #    the HF cache. Gating on the cache keeps "dynamic" meaning "best
-        #    among what's present" — never a surprise multi-GB download (or an
-        #    offline load failure that would kill server startup) on exactly the
-        #    constrained machines this degradation path targets. The `budget`
-        #    here is already thermal-capped, matching _select_mlx_entry.
+        #    the HF cache. Apple Intelligence (apple_fm, min_ram=0) is always
+        #    "available" on supported machines — no HF cache check needed.
+        #    Gating MLX entries on the cache keeps "dynamic" meaning "best
+        #    among what's present" — never a surprise multi-GB download on
+        #    constrained machines. The `budget` here is already thermal-capped.
         for model_id, backend, min_ram, quality, hf_id in _MODELS:
-            if backend != "mlx" or min_ram > budget:
+            if backend == "apple_fm":
+                if apple_intelligence:
+                    span.set_attribute("llm.reason", "apple_intelligence_catalog")
+                    span.set_attribute("llm.selected_model", APPLE_INTELLIGENCE_ID)
+                    log.info(
+                        "llm_selector: MLX in-process fallback=Apple Intelligence "
+                        "(no cached MLX model fits budget=%.1f GB)",
+                        budget,
+                    )
+                    return APPLE_INTELLIGENCE_ID
+                continue
+            if min_ram > budget:
                 continue
             if not _hf_model_cached(hf_id):
                 log.debug(
@@ -951,9 +968,9 @@ def select_mlx_model_id(
             )
             return hf_id
 
-        # 3. Nothing cached fits the budget — best effort with the preferred id.
-        #    (Loading preferred-when-absent is the pre-existing single-model
-        #    behaviour, not a regression introduced by dynamic selection.)
+        # 3. Nothing cached fits and Apple Intelligence is unavailable (macOS < 26) —
+        #    best effort with the preferred id. (This preserves the pre-existing
+        #    single-model behaviour on older macOS; the load may trigger a download.)
         span.set_attribute("llm.reason", "nothing_cached_fits_use_preferred")
         span.set_attribute("llm.selected_model", preferred_hf_id or "")
         log.warning(

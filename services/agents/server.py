@@ -40,7 +40,7 @@ os.environ.setdefault("HERMES_HOME", str(_SERVICES_DIR / ".hermes"))
 import opentelemetry.context as _otel_context
 from fastapi import FastAPI, HTTPException
 from opentelemetry import trace
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agents import observability
 
@@ -59,12 +59,16 @@ _app_state: dict[str, Any] = {}
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     if _app_state.get("backend") == "mlx":
         import datetime
-        log.info("server: loading MLX model at startup…")
         import agents.run_task_linker_mlx as _mlx
-        _mlx._get_model()
         _app_state["mlx_module"] = _mlx
         _app_state["loaded_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        log.info("server: MLX model ready")
+        from agents.llm_selector import APPLE_INTELLIGENCE_ID
+        if _mlx._resolve_model_id() == APPLE_INTELLIGENCE_ID:
+            log.info("server: 8 GB machine — Apple Intelligence backend, no MLX model to pre-load")
+        else:
+            log.info("server: loading MLX model at startup…")
+            _mlx._get_model()
+            log.info("server: MLX model ready")
     yield
 
 
@@ -148,8 +152,11 @@ async def chat(req: ChatRequest) -> ChatResponse:
 # MLX backend — direct in-process inference, model pre-loaded at startup
 # ---------------------------------------------------------------------------
 
+_MAX_INPUT_CHARS = 128_000  # ~32k tokens; hard ceiling to prevent resource exhaustion
+
+
 class ClassifyRequest(BaseModel):
-    input: str  # fully-formatted user_message string (from build_user_message)
+    input: str = Field(..., max_length=_MAX_INPUT_CHARS)  # fully-formatted user_message string
 
 
 class ClassifyResponse(BaseModel):
@@ -341,7 +348,7 @@ class _OAIChatRequest(BaseModel):
     model: str | None = None
     messages: list[_OAIMessage]
     temperature: float | None = None
-    max_tokens: int | None = None
+    max_tokens: int | None = Field(None, ge=1, le=8192)
     top_p: float | None = None
     stop: list[str] | str | None = None
     stream: bool = False
@@ -452,9 +459,9 @@ async def openai_chat_completions(req: _OAIChatRequest) -> dict:
 
 
 class _SummariseRequest(BaseModel):
-    transcript: str
+    transcript: str = Field(..., max_length=_MAX_INPUT_CHARS)
     system: str | None = None
-    max_tokens: int = 2048
+    max_tokens: int = Field(2048, ge=1, le=8192)
     temperature: float = 0.2
 
 
