@@ -11,8 +11,67 @@ pub use task_linker::{
 
 use anyhow::Result;
 use sqlx::SqlitePool;
+use std::time::Duration;
 
 use crate::config::{Config, PmProviderConfig};
+
+/// True once at least one PM task is cached. Rows only land in `pm_tasks` after a
+/// provider authenticated and fetched successfully, so a non-zero count is proof
+/// a tracker actually WORKS (not merely that keys are present — bad creds 401 and
+/// leave the table empty). A DB error is treated as "not present" (fail closed).
+pub async fn pm_tasks_present(pool: &SqlitePool) -> bool {
+    match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pm_tasks")
+        .fetch_one(pool)
+        .await
+    {
+        Ok(n) => n > 0,
+        Err(e) => {
+            tracing::warn!(error = %e, "pm_tasks count failed — treating tracker as not ready");
+            false
+        }
+    }
+}
+
+/// True when the MLX classifier is actually WORKING: reachable AND, if it reports
+/// model-load status, the model is loaded. This is a POSITIVE readiness probe
+/// (short timeout) — never inferred from a failed classify call, and never the
+/// 120 s startup wait of `check_classification_ready`. Safe to call every cycle.
+pub async fn mlx_ready(cfg: &Config) -> bool {
+    let base = format!("http://127.0.0.1:{}", cfg.mlx_server_port);
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    // Liveness: the port must answer /health.
+    if client.get(format!("{base}/health")).send().await.is_err() {
+        return false;
+    }
+    // Readiness: /info reports `loaded_at`. If this build exposes it, require the
+    // model to be loaded; if /info is absent (older build), liveness is enough.
+    match client.get(format!("{base}/info")).send().await {
+        Ok(resp) => match resp.json::<serde_json::Value>().await {
+            Ok(body) => match body.get("loaded_at") {
+                Some(v) => !v.is_null(),
+                None => true,
+            },
+            Err(_) => true,
+        },
+        Err(_) => true,
+    }
+}
+
+/// The gate for the whole task-linking + worklog pipeline: BOTH halves must be
+/// working before any session is classified or any worklog drafted — the LLM
+/// classifier loaded AND a PM tracker that has synced tasks. Either side failing
+/// pauses the pipeline; it resumes automatically once both recover, because the
+/// driving loops re-check each cycle and the classification cursor is held while
+/// paused (so the backlog links retroactively rather than being skipped).
+pub async fn pipeline_ready(pool: &SqlitePool, cfg: &Config) -> bool {
+    mlx_ready(cfg).await && pm_tasks_present(pool).await
+}
 
 /// Refreshes PM task caches from all configured providers.
 #[tracing::instrument(skip_all)]

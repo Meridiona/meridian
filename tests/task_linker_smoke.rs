@@ -247,6 +247,53 @@ async fn real_classification_does_not_reprocess_classified_session() {
     );
 }
 
+/// A classifiable session must NOT be classified while the pipeline is paused —
+/// i.e. when no PM tracker has synced tasks (and/or the MLX server is down). The
+/// cursor must stay put so the session links retroactively once both work. Runs
+/// in CI without an MLX server: no pm_tasks are seeded, so the readiness gate
+/// trips regardless of whether a classifier is reachable.
+#[tokio::test]
+#[serial]
+async fn classifiable_session_paused_until_pipeline_ready() {
+    let (_tmp, pool, db_path) = make_file_db().await;
+
+    // A real, classifiable session (non-empty text, over the duration floor).
+    let id = seed_session(
+        &pool,
+        "Cursor",
+        120,
+        "Editing src/etl/runner.rs — gap detection across ETL run boundaries.",
+    )
+    .await;
+
+    // No pm_tasks seeded → pm_tasks_present() is false → pipeline is paused.
+    let cfg = make_cfg(&db_path);
+    run_task_linking(&pool, &cfg).await.unwrap();
+
+    // Session must remain unclassified (task_method still NULL).
+    let method: Option<String> =
+        sqlx::query_scalar("SELECT task_method FROM app_sessions WHERE id = ?")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        method.is_none(),
+        "session must not be classified while the pipeline is paused"
+    );
+
+    // Cursor must NOT have advanced past the paused session — it drains later.
+    let cursor: Option<(i64,)> =
+        sqlx::query_as("SELECT last_session_id FROM agent_cursor WHERE id = 1")
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+    assert!(
+        cursor.map(|c| c.0).unwrap_or(0) < id,
+        "cursor must not advance past a session held by the readiness gate"
+    );
+}
+
 /// A session below the minimum duration threshold is not sent to the MLX server.
 /// This does not require the server — verifies the prefilter without any LLM.
 #[tokio::test]

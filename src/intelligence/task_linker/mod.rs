@@ -343,6 +343,24 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<TaskLin
         return Ok(TaskLinkOutcome::Classified);
     }
 
+    // Gate: a classifiable session reaches the LLM only when the whole pipeline
+    // is WORKING — the MLX classifier loaded AND a PM tracker that has synced
+    // tasks. If either is down we pause WITHOUT advancing the cursor, so this
+    // session (and any that accumulate behind it) is classified retroactively the
+    // moment both recover, rather than being skipped. Placed after the trivial/
+    // short prefilter so those local no-LLM paths still run while paused. Trivial
+    // sessions never reach here (BATCH_LIMIT = 1 → this batch is one classifiable
+    // session), so the held cursor cannot strand a sibling.
+    if !super::pipeline_ready(pool, cfg).await {
+        span.record("outcome", "paused_not_ready");
+        info!(
+            "task linking paused — the MLX classifier and a synced PM tracker must \
+             both be working; the backlog will drain automatically once they are"
+        );
+        complete_agent_run(pool, run_id, "success", trivial_count, trivial_count).await?;
+        return Ok(TaskLinkOutcome::NoPendingWork);
+    }
+
     // Refresh the PM task cache before classifying so the candidate ticket list
     // the classifier matches against is current. Gated by SYNC_INTERVAL_MINS, so
     // the one-session-per-tick drain loop does not fetch Jira per session. A
