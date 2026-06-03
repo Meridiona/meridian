@@ -1,3 +1,10 @@
+# [1.20.0](https://github.com/Meridiona/meridian/compare/v1.19.0...v1.20.0) (2026-06-03)
+
+
+### Features
+
+* **ui:** flag unconnected trackers in the Tasks empty state ([#143](https://github.com/Meridiona/meridian/issues/143)) ([df4b836](https://github.com/Meridiona/meridian/commit/df4b8363200662858f092732a2690fb522be2339))
+
 # [1.19.0](https://github.com/Meridiona/meridian/compare/v1.18.0...v1.19.0) (2026-06-03)
 
 
