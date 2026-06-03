@@ -25,13 +25,13 @@ session_end = settings.get("hooks", {}).get("SessionEnd", []) or []
 filtered = []
 removed = 0
 for group in session_end:
-    is_ours = False
-    for h in group.get("hooks", []):
-        if h.get("_meridian") == marker:
-            is_ours = True
-            removed += 1
-            break
-    if not is_ours:
+    is_ours = any(
+        "coding-agent-hook" in h.get("command", "")
+        for h in group.get("hooks", [])
+    )
+    if is_ours:
+        removed += 1
+    else:
         filtered.append(group)
 
 if removed == 0:
