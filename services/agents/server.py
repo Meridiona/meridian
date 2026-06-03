@@ -59,12 +59,16 @@ _app_state: dict[str, Any] = {}
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     if _app_state.get("backend") == "mlx":
         import datetime
-        log.info("server: loading MLX model at startup…")
         import agents.run_task_linker_mlx as _mlx
-        _mlx._get_model()
         _app_state["mlx_module"] = _mlx
         _app_state["loaded_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        log.info("server: MLX model ready")
+        from agents.llm_selector import APPLE_INTELLIGENCE_ID
+        if _mlx._resolve_model_id() == APPLE_INTELLIGENCE_ID:
+            log.info("server: 8 GB machine — Apple Intelligence backend, no MLX model to pre-load")
+        else:
+            log.info("server: loading MLX model at startup…")
+            _mlx._get_model()
+            log.info("server: MLX model ready")
     yield
 
 

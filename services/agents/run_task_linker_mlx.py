@@ -87,15 +87,20 @@ def _resolve_model_id() -> str:
         return _MLX_MODEL_ID
 
     try:
-        from agents.llm_selector import resolve_model, select_mlx_model_id
+        from agents.llm_selector import (
+            APPLE_INTELLIGENCE_ID, resolve_model, select_mlx_model_id,
+        )
         entry = resolve_model(_DEFAULT_MLX_MODEL_ID)
         preferred_min_ram = (
             entry["min_ram_gb"] if entry else _DEFAULT_MLX_MODEL_MIN_RAM_GB
         )
-        _MLX_MODEL_ID = select_mlx_model_id(
+        selected = select_mlx_model_id(
             preferred_hf_id=_DEFAULT_MLX_MODEL_ID,
             preferred_min_ram_gb=preferred_min_ram,
-        ) or _DEFAULT_MLX_MODEL_ID
+        )
+        # Propagate the Apple Intelligence sentinel as-is; fall back to the
+        # default MLX model only when nothing at all was selected (None).
+        _MLX_MODEL_ID = selected if selected is not None else _DEFAULT_MLX_MODEL_ID
     except Exception as exc:  # noqa: BLE001
         log.warning(
             "run_task_linker_mlx: dynamic model selection failed (%s) — "
@@ -267,6 +272,44 @@ def _get_model() -> Any:
     return outlines_model
 
 
+def _classify_apple_fm(messages: list[dict[str, str]]) -> "SessionClassification":
+    """Classify via Apple Foundation Models (non-FSM, JSON parsing with one retry)."""
+    import asyncio
+
+    from apple_fm_sdk import LanguageModelSession  # type: ignore[import]
+
+    system = next((m["content"] for m in messages if m["role"] == "system"), "")
+    user   = next((m["content"] for m in messages if m["role"] == "user"),   "")
+    user_with_hint = (
+        user
+        + "\n\nRespond with a JSON object matching the SessionClassification schema. "
+        "Output only valid JSON — no markdown fences, no extra text."
+    )
+
+    async def _run(prompt: str) -> str:
+        session = LanguageModelSession(instructions=system)
+        r = await session.respond(prompt)
+        return getattr(r, "content", r)
+
+    raw = asyncio.run(_run(user_with_hint))
+    try:
+        text = raw.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        return SessionClassification.model_validate_json(text)
+    except Exception:
+        # One retry: ask the model to fix the JSON it produced.
+        fix_prompt = (
+            "The JSON you produced was invalid. Fix it and return only valid JSON:\n"
+            + raw
+        )
+        raw2 = asyncio.run(_run(fix_prompt))
+        text2 = raw2.strip()
+        if text2.startswith("```"):
+            text2 = text2.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        return SessionClassification.model_validate_json(text2)
+
+
 # ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
@@ -424,25 +467,39 @@ def _classify_one(
     # ── llm_inference ─────────────────────────────────────────────────────────
     t0 = time.time()
     with tracer.start_as_current_span("llm_inference") as llm_span:
-        llm_span.set_attribute("model", _resolve_model_id())
+        model_id = _resolve_model_id()
+        llm_span.set_attribute("model", model_id)
         llm_span.set_attribute("max_tokens", _MAX_TOKENS)
         llm_span.set_attribute("temperature", _TEMPERATURE)
         llm_span.add_event("inference_started", {"session_id": session_id})
-        try:
-            from mlx_lm.sample_utils import make_sampler
-            from outlines.inputs import Chat
 
-            model = _get_model()
-            raw = model(
-                Chat(messages),
-                output_type=SessionClassification,
-                max_tokens=_MAX_TOKENS,
-                sampler=make_sampler(temp=_TEMPERATURE),
-                verbose=False,
-            )
+        # Apple Intelligence path — no in-process MLX model; JSON parsing with retry.
+        try:
+            from agents.llm_selector import APPLE_INTELLIGENCE_ID
+            _use_apple_fm = model_id == APPLE_INTELLIGENCE_ID
+        except Exception:
+            _use_apple_fm = False
+
+        try:
+            if _use_apple_fm:
+                result = _classify_apple_fm(messages)
+                raw = result.model_dump_json()
+            else:
+                from mlx_lm.sample_utils import make_sampler
+                from outlines.inputs import Chat
+
+                model = _get_model()
+                raw = model(
+                    Chat(messages),
+                    output_type=SessionClassification,
+                    max_tokens=_MAX_TOKENS,
+                    sampler=make_sampler(temp=_TEMPERATURE),
+                    verbose=False,
+                )
         except Exception as exc:
             elapsed = time.time() - t0
-            llm_span.set_attribute("outcome", "mlx_error")
+            outcome = "apple_fm_error" if _use_apple_fm else "mlx_error"
+            llm_span.set_attribute("outcome", outcome)
             llm_span.set_attribute("elapsed_s", elapsed)
             llm_span.set_status(StatusCode.ERROR, str(exc))
             llm_span.add_event("inference_error", {
@@ -455,11 +512,12 @@ def _classify_one(
                 session_id, exc,
             )
             return _error_result(
-                session_id, f"mlx inference error: {exc}", elapsed, "mlx_error"
+                session_id, f"inference error: {exc}", elapsed, outcome
             )
 
         elapsed = time.time() - t0
-        llm_span.set_attribute("outcome", "mlx_direct")
+        outcome = "apple_fm" if _use_apple_fm else "mlx_direct"
+        llm_span.set_attribute("outcome", outcome)
         llm_span.set_attribute("elapsed_s", elapsed)
         llm_span.set_attribute("response_chars", len(raw))
         llm_span.add_event("inference_complete", {
@@ -480,7 +538,9 @@ def _classify_one(
             "preview": raw[:500],
         })
 
-        # outlines guarantees schema validity; model_validate_json rarely fails.
+        # Both paths converge on a JSON string in `raw`; parse to SessionClassification.
+        # Apple FM already validated once inside _classify_apple_fm; re-parsing from
+        # model_dump_json() is a no-op that keeps the two paths uniform.
         try:
             result = SessionClassification.model_validate_json(raw)
         except Exception as exc:
@@ -540,7 +600,7 @@ def _classify_one(
         "category_explanation": result.category_explanation,
         "session_type":         result.session_type,
         "reasoning":            result.reasoning,
-        "method":              "mlx_direct",
+        "method":              outcome,
         "dimensions":          result.dimensions,
         "session_summary":     result.session_summary,
         "elapsed_s":           elapsed,
