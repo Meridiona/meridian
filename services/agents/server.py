@@ -40,7 +40,7 @@ os.environ.setdefault("HERMES_HOME", str(_SERVICES_DIR / ".hermes"))
 import opentelemetry.context as _otel_context
 from fastapi import FastAPI, HTTPException
 from opentelemetry import trace
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agents import observability
 
@@ -152,8 +152,11 @@ async def chat(req: ChatRequest) -> ChatResponse:
 # MLX backend — direct in-process inference, model pre-loaded at startup
 # ---------------------------------------------------------------------------
 
+_MAX_INPUT_CHARS = 128_000  # ~32k tokens; hard ceiling to prevent resource exhaustion
+
+
 class ClassifyRequest(BaseModel):
-    input: str  # fully-formatted user_message string (from build_user_message)
+    input: str = Field(..., max_length=_MAX_INPUT_CHARS)  # fully-formatted user_message string
 
 
 class ClassifyResponse(BaseModel):
@@ -345,7 +348,7 @@ class _OAIChatRequest(BaseModel):
     model: str | None = None
     messages: list[_OAIMessage]
     temperature: float | None = None
-    max_tokens: int | None = None
+    max_tokens: int | None = Field(None, ge=1, le=8192)
     top_p: float | None = None
     stop: list[str] | str | None = None
     stream: bool = False
@@ -456,9 +459,9 @@ async def openai_chat_completions(req: _OAIChatRequest) -> dict:
 
 
 class _SummariseRequest(BaseModel):
-    transcript: str
+    transcript: str = Field(..., max_length=_MAX_INPUT_CHARS)
     system: str | None = None
-    max_tokens: int = 2048
+    max_tokens: int = Field(2048, ge=1, le=8192)
     temperature: float = 0.2
 
 

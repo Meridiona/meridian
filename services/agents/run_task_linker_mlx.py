@@ -692,6 +692,21 @@ def main() -> None:
         log.error("run_task_linker_mlx: meridian_db path is empty")
         sys.exit(1)
 
+    # Canonicalize and restrict to ~/.meridian/ to prevent path traversal.
+    try:
+        canonical = Path(db_path).expanduser().resolve()
+    except (OSError, ValueError) as exc:
+        log.error("run_task_linker_mlx: invalid db path: %s", exc)
+        sys.exit(1)
+    allowed_root = Path.home() / ".meridian"
+    if not str(canonical).startswith(str(allowed_root) + "/") and canonical != allowed_root:
+        log.error(
+            "run_task_linker_mlx: db path %s is outside allowed directory %s",
+            canonical, allowed_root,
+        )
+        sys.exit(1)
+    db_path = str(canonical)
+
     if not Path(db_path).exists():
         log.error("run_task_linker_mlx: db file does not exist: %s", db_path)
         sys.exit(1)
