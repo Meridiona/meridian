@@ -62,28 +62,43 @@ tar cf - \
   --exclude='*.log' --exclude='dist' --exclude='.DS_Store' \
   -C services . | tar xf - -C "${DEST}/services"
 
-echo "→ Python venv (pre-built site-packages — avoids PyPI at install time)"
-# uv must be available on the CI runner. pip3 install is blocked on macOS 26
-# by PEP 668 (externally-managed-environment). Install via Homebrew instead.
-command -v uv >/dev/null 2>&1 || brew install uv
-# Build the venv from the committed uv.lock (exact pinned set, no resolution).
-# Pin Python 3.11 explicitly: the macos-26 runner defaults to Python 3.14 which
-# produces cpython-314-darwin.so extensions that Python 3.11 on user machines
-# cannot load (ImportError at startup). uv installs Python 3.11 automatically.
-uv sync --project services --extra mlx --frozen --python 3.11
-# Python version subdir is always python3.11 (we pin above).
-_py_dir="python3.11"
-if [[ -z "${_py_dir}" ]]; then
-    echo "✗ could not find python lib dir under services/.venv/lib/" >&2
-    exit 1
+echo "→ Python venv (pre-built site-packages)"
+# Only rebuild and ship the venv tarball when services/uv.lock has changed since
+# the previous git tag. Shipping it on every release forces all users to download
+# ~160 MB even when only the Rust binary or UI changed. When uv.lock is unchanged
+# the installer falls back to `uv sync --frozen` which is a 3ms no-op from the
+# warm uv cache on updates, and downloads from PyPI only on a fresh machine.
+_prev_tag="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)"
+_lock_changed=1
+if [[ -n "${_prev_tag}" ]]; then
+    if git diff --quiet "${_prev_tag}" HEAD -- services/uv.lock 2>/dev/null; then
+        _lock_changed=0
+    fi
 fi
-# Pack site-packages only — NOT pyvenv.cfg or bin/ (those are path-specific and
-# are re-created at install time by `uv venv`). The tarball is platform-specific:
-# it contains the arm64 native extensions (mlx-metal etc.) built on this runner.
-echo "  · packing services/.venv/lib/${_py_dir}/site-packages → ${DEST}/services-venv.tar.gz"
-tar -czf "${DEST}/services-venv.tar.gz" \
-    -C "services/.venv/lib/${_py_dir}/site-packages" .
-echo "  · $(du -sh "${DEST}/services-venv.tar.gz" | cut -f1) compressed"
+
+if [[ "${_lock_changed}" -eq 1 ]]; then
+    echo "  uv.lock changed since ${_prev_tag:-beginning} — building and shipping venv tarball (~160 MB)"
+    # uv must be available on the CI runner. pip3 install is blocked on macOS 26
+    # by PEP 668 (externally-managed-environment). Install via Homebrew instead.
+    command -v uv >/dev/null 2>&1 || brew install uv
+    # Pin Python 3.11: macos-26 defaults to Python 3.14 which produces
+    # cpython-314-darwin.so that Python 3.11 on user machines cannot load.
+    uv sync --project services --extra mlx --frozen --python 3.11
+    # Validate the venv is actually Python 3.11.
+    _py_dir="$(ls -d services/.venv/lib/python* 2>/dev/null | head -1 | xargs basename 2>/dev/null || true)"
+    if [[ -z "${_py_dir}" ]]; then
+        echo "✗ could not find python lib dir under services/.venv/lib/" >&2; exit 1
+    fi
+    if [[ "${_py_dir}" != "python3.11" ]]; then
+        echo "✗ venv was built with ${_py_dir} but must be python3.11" >&2; exit 1
+    fi
+    tar -czf "${DEST}/services-venv.tar.gz" \
+        -C "services/.venv/lib/${_py_dir}/site-packages" .
+    echo "  · $(du -sh "${DEST}/services-venv.tar.gz" | cut -f1) compressed — included in bundle"
+else
+    echo "  uv.lock unchanged since ${_prev_tag} — skipping venv tarball (~160 MB saved per update)"
+    echo "  Installers fall back to uv sync (3ms no-op from warm cache on updates)"
+fi
 
 echo "→ scripts + plists + CLI"
 cp scripts/meridian-cli.sh scripts/install-from-bundle.sh scripts/meridian-npm-setup.sh \
