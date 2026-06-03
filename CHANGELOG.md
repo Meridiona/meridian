@@ -1,3 +1,10 @@
+# [1.23.0](https://github.com/Meridiona/meridian/compare/v1.22.1...v1.23.0) (2026-06-03)
+
+
+### Features
+
+* **intelligence:** route 8 GB machines to Apple Intelligence for MLX classify ([#151](https://github.com/Meridiona/meridian/issues/151)) ([7880bc0](https://github.com/Meridiona/meridian/commit/7880bc0e1dc20cd58f0f34c157c7b7f09e3e90d7))
+
 ## [1.22.1](https://github.com/Meridiona/meridian/compare/v1.22.0...v1.22.1) (2026-06-03)
 
 
