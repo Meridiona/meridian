@@ -1,3 +1,10 @@
+# [1.22.0](https://github.com/Meridiona/meridian/compare/v1.21.0...v1.22.0) (2026-06-03)
+
+
+### Features
+
+* **intelligence:** gate task-linking + worklog on a working pipeline ([#147](https://github.com/Meridiona/meridian/issues/147)) ([b99c0dc](https://github.com/Meridiona/meridian/commit/b99c0dcd317af2c09894eaddf1090a05830572b5))
+
 # [1.21.0](https://github.com/Meridiona/meridian/compare/v1.20.1...v1.21.0) (2026-06-03)
 
 
