@@ -66,36 +66,32 @@ with open(settings_path) as f:
 hooks = settings.setdefault("hooks", {})
 session_end = hooks.setdefault("SessionEnd", [])
 
-# SessionEnd doesn't support `matcher` — each entry is just a list of
-# hooks. We use an unmatched group whose first command carries our
-# marker as a comment so we can find + replace it later.
 new_entry = {
     "hooks": [
         {
             "type":    "command",
             "command": hook_cmd,
-            # Claude Code reads `timeout` in milliseconds (matching the
-            # existing entries already in this settings.json). 30s ceiling
+            # Claude Code reads `timeout` in milliseconds. 30s ceiling
             # — the hook itself returns in <100 ms.
             "timeout": 30000,
-            # Comment field that Claude Code preserves but doesn't act on
-            # — gives us a robust idempotency / uninstall handle.
-            "_meridian": marker,
         }
     ]
 }
 
-# Replace any prior meridian entry, leave all others untouched.
+# Replace any prior meridian entry by matching on the command substring
+# "coding-agent-hook". Claude Code strips unknown JSON fields (like the
+# former "_meridian" marker) on every save, so command-string matching
+# is the only reliable idempotency mechanism.
 filtered = []
 removed = 0
 for group in session_end:
-    is_ours = False
-    for h in group.get("hooks", []):
-        if h.get("_meridian") == marker:
-            is_ours = True
-            removed += 1
-            break
-    if not is_ours:
+    is_ours = any(
+        "coding-agent-hook" in h.get("command", "")
+        for h in group.get("hooks", [])
+    )
+    if is_ours:
+        removed += 1
+    else:
         filtered.append(group)
 
 filtered.append(new_entry)
