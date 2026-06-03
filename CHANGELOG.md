@@ -1,3 +1,10 @@
+## [1.20.1](https://github.com/Meridiona/meridian/compare/v1.20.0...v1.20.1) (2026-06-03)
+
+
+### Bug Fixes
+
+* **install:** detect npm launcher at the real prefix, not just /usr/local ([#144](https://github.com/Meridiona/meridian/issues/144)) ([e1cfb3b](https://github.com/Meridiona/meridian/commit/e1cfb3bdea81171918f2fad792b592e9e5c2e90f))
+
 # [1.20.0](https://github.com/Meridiona/meridian/compare/v1.19.0...v1.20.0) (2026-06-03)
 
 
