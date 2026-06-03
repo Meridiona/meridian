@@ -319,10 +319,14 @@ if [[ -f "${VENV_TARBALL}" ]]; then
     fi
 else
     # Dev / source install — no pre-built tarball. Resolve from uv.lock.
-    info "Installing Python + MLX deps (mlx-lm/outlines/fastapi; first run may download a few hundred MB)…"
+    # Both extras: mlx (classifier + server) AND pm_worklog_update (agno) — the
+    # one MLX server process serves /classify_sessions AND /synthesise_worklog,
+    # so the venv needs agno or worklog synthesis 500s with ModuleNotFoundError.
+    info "Installing Python + MLX deps (mlx-lm/outlines/fastapi/agno; first run may download a few hundred MB)…"
     if "${UV_BIN}" sync \
             --project "${APP_ROOT}/services" \
             --extra mlx \
+            --extra pm_worklog_update \
             --frozen \
             --python "${PYTHON_BIN}"; then
         ok "Python services ready ($(${VENV}/bin/python --version 2>&1))"
