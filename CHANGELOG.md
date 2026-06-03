@@ -1,3 +1,16 @@
+# [1.19.0](https://github.com/Meridiona/meridian/compare/v1.18.0...v1.19.0) (2026-06-03)
+
+
+### Bug Fixes
+
+* **cli:** correct misleading update time message; add version command ([70c742a](https://github.com/Meridiona/meridian/commit/70c742a49b8be4ac6cce6db1e98c8108e24f09b5))
+
+
+### Features
+
+* **cli:** add meridian version / --version / -v command ([a712fb3](https://github.com/Meridiona/meridian/commit/a712fb33620e5bee99c2828fc2e16acbf37cb85f))
+* **release:** only ship venv tarball when uv.lock changes ([#142](https://github.com/Meridiona/meridian/issues/142)) ([e83203b](https://github.com/Meridiona/meridian/commit/e83203be4da6b5b99149c1f817656b8f95fe18ea))
+
 # [1.18.0](https://github.com/Meridiona/meridian/compare/v1.17.1...v1.18.0) (2026-06-02)
 
 
