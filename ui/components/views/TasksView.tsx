@@ -5,10 +5,12 @@ import { useEffect, useState } from 'react'
 import { fmtDur, fmtClock, AppGlyph, CatDot, TaskKey, StatusPill, SegBar, SectionHead, Card, CATS } from '@/components/atoms'
 import type { TaskSummary, TasksResponse } from '@/app/api/tasks/route'
 import type { TodayResponse } from '@/app/api/today/route'
+import type { IntegrationsResponse } from '@/app/api/integrations/route'
 
 export default function TasksView({ focusKey }: { focusKey?: string | null }) {
   const [data, setData] = useState<TasksResponse | null>(null)
   const [todaySessions, setTodaySessions] = useState<TodayResponse['sessions']>([])
+  const [integrations, setIntegrations] = useState<IntegrationsResponse | null>(null)
   const [selected, setSelected] = useState<string | null>(focusKey ?? null)
 
   useEffect(() => {
@@ -21,6 +23,9 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
     }).catch(() => {})
     fetch('/api/today').then(r => r.json()).then((d: TodayResponse) => {
       setTodaySessions(d.sessions ?? [])
+    }).catch(() => {})
+    fetch('/api/integrations').then(r => r.json()).then((d: IntegrationsResponse) => {
+      setIntegrations(d)
     }).catch(() => {})
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -43,10 +48,7 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
           <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Tasks</p>
           <h1 className="font-serif text-[56px] leading-[1] tracking-tight mt-1" style={{ color: 'var(--ink)' }}>What you&apos;re working on</h1>
         </header>
-        <div className="py-16 text-center rounded-xl border" style={{ borderColor: 'var(--rule)', background: 'var(--surface)' }}>
-          <p className="text-[13px]" style={{ color: 'var(--ink-3)' }}>No tasks synced yet.</p>
-          <p className="text-[11px] mt-1" style={{ color: 'var(--ink-4)' }}>Connect Jira, Linear, or GitHub to see your tasks here.</p>
-        </div>
+        <ConnectTrackers integrations={integrations} />
       </div>
     )
   }
@@ -200,6 +202,182 @@ function TaskDetail({ task, sessions }: { task: TaskSummary; sessions: TodayResp
           </div>
         </Card>
       )}
+    </div>
+  )
+}
+
+// ── Connect-a-tracker onboarding (empty state) ───────────────────────────────
+// Shown when no tasks are on the board. Tells the user which trackers are wired
+// up and, on click, expands the exact steps to connect one. Deliberately quiet:
+// a single status line per tracker, details only when asked for.
+
+type TrackerId = 'jira' | 'linear' | 'github'
+
+const TRACKERS: Array<{
+  id: TrackerId
+  name: string
+  glyph: string
+  color: string
+  tokenHint: string
+  tokenUrl: string
+  env: string
+}> = [
+  {
+    id: 'jira',
+    name: 'Jira',
+    glyph: 'Ji',
+    color: '#2684FF',
+    tokenHint: 'Create an API token (Atlassian → Manage profile → Security → API tokens).',
+    tokenUrl: 'https://id.atlassian.com/manage-profile/security/api-tokens',
+    env: 'JIRA_BASE_URL=https://your-org.atlassian.net\nJIRA_EMAIL=you@your-org.com\nJIRA_API_TOKEN=your-api-token',
+  },
+  {
+    id: 'linear',
+    name: 'Linear',
+    glyph: 'Li',
+    color: '#5E6AD2',
+    tokenHint: 'Create a personal API key (Linear → Settings → Account → Security & access).',
+    tokenUrl: 'https://linear.app/settings/account/security',
+    env: 'LINEAR_API_KEY=lin_api_your_key',
+  },
+  {
+    id: 'github',
+    name: 'GitHub',
+    glyph: 'Gh',
+    color: '#24292F',
+    tokenHint: 'Create a personal access token with Issues read/write scope.',
+    tokenUrl: 'https://github.com/settings/tokens',
+    env: 'GITHUB_TOKEN=ghp_your_token\nGITHUB_ORG=your-org-or-username',
+  },
+]
+
+function ConnectTrackers({ integrations }: { integrations: IntegrationsResponse | null }) {
+  const [open, setOpen] = useState<TrackerId | null>(null)
+  const anyConnected = !!integrations && (integrations.jira || integrations.linear || integrations.github)
+
+  return (
+    <div className="max-w-[560px]">
+      <p className="text-[14px]" style={{ color: 'var(--ink-2)' }}>
+        {anyConnected ? 'No tasks synced yet.' : 'No tracker connected yet.'}
+      </p>
+      <p className="text-[12px] mt-1" style={{ color: 'var(--ink-3)' }}>
+        {anyConnected
+          ? 'Tasks appear here once your tracker has issues assigned to you. Connect another below.'
+          : 'Connect a tracker and Meridian maps your captured work to its tasks.'}
+      </p>
+
+      <div className="mt-5 rounded-xl border overflow-hidden" style={{ borderColor: 'var(--rule)' }}>
+        {TRACKERS.map((t, i) => {
+          const connected = !!integrations?.[t.id]
+          const isOpen = open === t.id
+          return (
+            <div key={t.id} className={i > 0 ? 'rule-t' : ''} style={{ borderTopColor: 'var(--rule)' }}>
+              <button
+                onClick={() => setOpen(isOpen ? null : t.id)}
+                disabled={connected}
+                className="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors"
+                style={{ background: isOpen ? 'var(--surface-2)' : 'var(--surface)', cursor: connected ? 'default' : 'pointer' }}
+              >
+                <span
+                  className="inline-flex items-center justify-center rounded-md font-mono shrink-0"
+                  style={{ width: 22, height: 22, background: t.color + '1A', color: t.color, fontSize: 10, fontWeight: 600 }}
+                >
+                  {t.glyph}
+                </span>
+                <span className="text-[13px]" style={{ color: 'var(--ink)' }}>{t.name}</span>
+                {connected ? (
+                  <span className="ml-auto inline-flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--ink-2)' }}>
+                    <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: 'var(--success)' }} />
+                    Connected
+                  </span>
+                ) : (
+                  <span className="ml-auto inline-flex items-center gap-2 text-[11px]" style={{ color: 'var(--ink-3)' }}>
+                    Not connected
+                    <span className="inline-block transition-transform" style={{ transform: isOpen ? 'rotate(90deg)' : 'none', color: 'var(--ink-4)' }}>›</span>
+                  </span>
+                )}
+              </button>
+              {isOpen && !connected && <TrackerSetup tracker={t} />}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function TrackerSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
+  return (
+    <div className="px-4 pb-4 pt-1" style={{ background: 'var(--surface-2)' }}>
+      <ol className="space-y-3">
+        <li className="flex gap-3">
+          <StepNum n={1} />
+          <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
+            {tracker.tokenHint}{' '}
+            <a href={tracker.tokenUrl} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>
+              Open ↗
+            </a>
+          </p>
+        </li>
+        <li className="flex gap-3">
+          <StepNum n={2} />
+          <div className="min-w-0 flex-1">
+            <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
+              In a terminal, run <CodeChip text="meridian config edit" /> and add:
+            </p>
+            <CopyBlock text={tracker.env} />
+          </div>
+        </li>
+        <li className="flex gap-3">
+          <StepNum n={3} />
+          <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
+            Save, then run <CodeChip text="meridian restart" />. Your tasks appear here within a minute.
+          </p>
+        </li>
+      </ol>
+    </div>
+  )
+}
+
+function StepNum({ n }: { n: number }) {
+  return (
+    <span
+      className="shrink-0 inline-flex items-center justify-center rounded-full font-mono text-[10px] tnum"
+      style={{ width: 18, height: 18, color: 'var(--ink-3)', background: 'var(--tint)', border: '1px solid var(--rule-2)' }}
+    >
+      {n}
+    </span>
+  )
+}
+
+function CodeChip({ text }: { text: string }) {
+  return (
+    <code className="font-mono text-[11px] px-1.5 py-px rounded-[4px]" style={{ color: 'var(--ink)', background: 'var(--tint)', borderBottom: '1px solid var(--rule-2)' }}>
+      {text}
+    </code>
+  )
+}
+
+function CopyBlock({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  const copy = () => {
+    navigator.clipboard?.writeText(text).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    }).catch(() => {})
+  }
+  return (
+    <div className="relative mt-2 rounded-lg border overflow-hidden" style={{ borderColor: 'var(--rule)', background: 'var(--surface)' }}>
+      <button
+        onClick={copy}
+        className="absolute top-2 right-2 text-[10px] uppercase tracking-[0.1em] px-2 py-1 rounded-md"
+        style={{ color: copied ? 'var(--success)' : 'var(--ink-3)', background: 'var(--tint)' }}
+      >
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+      <pre className="font-mono text-[11px] leading-relaxed p-3 pr-16 overflow-x-auto whitespace-pre" style={{ color: 'var(--ink-2)' }}>
+        {text}
+      </pre>
     </div>
   )
 }
