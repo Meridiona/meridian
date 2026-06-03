@@ -1,3 +1,11 @@
+## [1.22.1](https://github.com/Meridiona/meridian/compare/v1.22.0...v1.22.1) (2026-06-03)
+
+
+### Bug Fixes
+
+* **hooks:** fix claude hook idempotency and add coding-agent passthrough ([#150](https://github.com/Meridiona/meridian/issues/150)) ([911b743](https://github.com/Meridiona/meridian/commit/911b743283683d1df92475e9fe2d67ddd9ae6a57))
+* **setup:** ship agno in the venv so /synthesise_worklog stops 500ing ([#149](https://github.com/Meridiona/meridian/issues/149)) ([bfef781](https://github.com/Meridiona/meridian/commit/bfef781cfcbb8f8d96ab3e1d7c8ac6f5d96c6dcd))
+
 # [1.22.0](https://github.com/Meridiona/meridian/compare/v1.21.0...v1.22.0) (2026-06-03)
 
 
