@@ -252,16 +252,31 @@ fi
 mkdir -p "${HOME}/.local/bin"
 ln -sfn "${APP_ROOT}/bin/meridian"        "${HOME}/.local/bin/meridian-daemon"
 # Do NOT shadow the npm launcher with a second `meridian` on PATH. When installed
-# via npm, /usr/local/bin/meridian (the launcher) owns `setup`/`update` and
-# delegates start/stop/doctor to this bundle's CLI by its real path. ~/.local/bin
-# usually precedes /usr/local/bin on PATH, so a ~/.local/bin/meridian symlink
-# would hide `meridian setup` / `meridian update` (it can't reach the launcher).
+# via npm, the launcher (`meridian.js`) owns `setup`/`update` and delegates
+# start/stop/doctor to this bundle's CLI by its real path. ~/.local/bin usually
+# precedes the npm bin dir on PATH, so a ~/.local/bin/meridian symlink would hide
+# `meridian setup` / `meridian update` (it can't reach the launcher).
+#
+# The launcher's location depends on the npm prefix: /usr/local/bin on a default
+# prefix, but ~/.npm-global/bin when the EACCES bootstrap redirected the prefix to
+# a user-writable dir. Resolve the prefix from npm rather than assuming
+# /usr/local — otherwise the launcher is missed and the CLI shadow hides `update`.
 # Only create the CLI symlink as a fallback when no launcher is present (e.g. a
 # standalone bundle install); when the launcher exists, remove any stale shadow
 # so `meridian update` self-heals an install made by an older bundle.
-if [[ -e /usr/local/bin/meridian ]]; then
+_launcher=""
+_npm_prefix="$(npm config get prefix 2>/dev/null || true)"
+for _cand in "/usr/local/bin/meridian" ${_npm_prefix:+"${_npm_prefix}/bin/meridian"}; do
+    [[ -e "${_cand}" ]] || continue
+    # Distinguish the launcher (node shim) from a self-referential CLI symlink:
+    # the launcher never resolves to meridian-cli.sh.
+    if [[ "$(readlink "${_cand}" 2>/dev/null || echo "${_cand}")" != *meridian-cli.sh ]]; then
+        _launcher="${_cand}"; break
+    fi
+done
+if [[ -n "${_launcher}" ]]; then
     rm -f "${HOME}/.local/bin/meridian"
-    ok "meridian-daemon → ~/.local/bin  (meridian CLI = npm launcher at /usr/local/bin/meridian)"
+    ok "meridian-daemon → ~/.local/bin  (meridian CLI = npm launcher at ${_launcher})"
 else
     ln -sfn "${APP_ROOT}/scripts/meridian-cli.sh" "${HOME}/.local/bin/meridian"
     ok "meridian-daemon + meridian → ~/.local/bin"
