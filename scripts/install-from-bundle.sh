@@ -304,9 +304,21 @@ if [[ -f "${VENV_TARBALL}" ]]; then
     else
         info "Extracting pre-built Python venv ($(du -sh "${VENV_TARBALL}" | cut -f1) — no PyPI download required)…"
         rm -rf "${VENV}"
-        # Create a fresh venv with correct local paths (pyvenv.cfg points to
-        # PYTHON_BIN, which install-mlx-server-daemon.sh reads for BASE_PYTHON).
-        "${UV_BIN}" venv --python "${PYTHON_BIN}" "${VENV}" 2>/dev/null
+        # The tarball is compiled for Python 3.11 (package-release.sh enforces this).
+        # The venv MUST use exactly Python 3.11 or compiled extensions (.so files with
+        # cpython-311 ABI tags) will fail to import on any other interpreter version.
+        # Prefer the system python3.11, then uv-managed 3.11, then install it via uv.
+        _tarball_python=""
+        if command -v python3.11 >/dev/null 2>&1; then
+            _tarball_python="$(command -v python3.11)"
+        elif "${UV_BIN}" python find 3.11 >/dev/null 2>&1; then
+            _tarball_python="$("${UV_BIN}" python find 3.11)"
+        else
+            info "Installing Python 3.11 (pre-built venv requires it — one-time download)…"
+            "${UV_BIN}" python install 3.11
+            _tarball_python="$("${UV_BIN}" python find 3.11)"
+        fi
+        "${UV_BIN}" venv --python "${_tarball_python}" "${VENV}" 2>/dev/null
         # Determine the Python version subdirectory (e.g. python3.11).
         _py_dir="$(ls "${VENV}/lib/" | grep '^python' | head -1)"
         mkdir -p "${VENV}/lib/${_py_dir}/site-packages"
