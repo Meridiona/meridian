@@ -1,3 +1,10 @@
+## [1.23.5](https://github.com/Meridiona/meridian/compare/v1.23.4...v1.23.5) (2026-06-04)
+
+
+### Bug Fixes
+
+* **intelligence:** enforce Python 3.11 venv when extracting pre-built tarball ([#160](https://github.com/Meridiona/meridian/issues/160)) ([a22881d](https://github.com/Meridiona/meridian/commit/a22881d098122d5a3ae7acc50c4fbe0c7a0e5240))
+
 ## [1.23.4](https://github.com/Meridiona/meridian/compare/v1.23.3...v1.23.4) (2026-06-04)
 
 
