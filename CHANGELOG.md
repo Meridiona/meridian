@@ -1,3 +1,10 @@
+## [1.23.1](https://github.com/Meridiona/meridian/compare/v1.23.0...v1.23.1) (2026-06-03)
+
+
+### Bug Fixes
+
+* **hooks:** fix uninstall-claude-hook.sh idempotency detection ([#152](https://github.com/Meridiona/meridian/issues/152)) ([45a16e8](https://github.com/Meridiona/meridian/commit/45a16e833e1ecbb12e42291d9a69d6591498dff7))
+
 # [1.23.0](https://github.com/Meridiona/meridian/compare/v1.22.1...v1.23.0) (2026-06-03)
 
 
