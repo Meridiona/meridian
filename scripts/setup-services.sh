@@ -74,6 +74,23 @@ elif [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]]; then
     echo "Apple Silicon detected — installing mlx-lm for local inference..."
     "${SERVICES_DIR}/.venv/bin/pip" install --quiet "mlx-lm>=0.22,<1"
     echo "  ✓ mlx-lm installed"
+
+    # On macOS 26+, install the Apple Foundation Models Python SDK so
+    # llm_selector can use Apple Intelligence on 8 GB machines (no MLX model
+    # download needed). Building the wheel requires Xcode.app (full, not CLT) —
+    # it compiles a Swift/C bridge. Runtime only needs macOS 26 system frameworks.
+    # npm users get a pre-built wheel from the release bundle and never need Xcode.
+    _macos_major="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
+    if [[ "${_macos_major:-0}" -ge 26 ]]; then
+        if [[ ! -d /Applications/Xcode.app ]]; then
+            echo "  ⚠ Xcode.app not found — skipping apple-fm-sdk (requires full Xcode to build)."
+            echo "    Install Xcode 26+ from the App Store, open it once to accept the license, then re-run."
+        else
+            echo "macOS ${_macos_major} detected — installing apple-fm-sdk for Apple Intelligence..."
+            "${SERVICES_DIR}/.venv/bin/pip" install --quiet "apple-fm-sdk"
+            echo "  ✓ apple-fm-sdk installed"
+        fi
+    fi
 fi
 
 # 3b. Verify hermes is importable
