@@ -1,3 +1,10 @@
+## [1.23.7](https://github.com/Meridiona/meridian/compare/v1.23.6...v1.23.7) (2026-06-04)
+
+
+### Bug Fixes
+
+* **intelligence:** always ship venv tarball on macOS 26+ to preserve apple-fm-sdk ([#162](https://github.com/Meridiona/meridian/issues/162)) ([724e1ed](https://github.com/Meridiona/meridian/commit/724e1eddff2844870053379c2cc62623f7423bca))
+
 ## [1.23.6](https://github.com/Meridiona/meridian/compare/v1.23.5...v1.23.6) (2026-06-04)
 
 
