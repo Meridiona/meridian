@@ -1,3 +1,10 @@
+## [1.23.3](https://github.com/Meridiona/meridian/compare/v1.23.2...v1.23.3) (2026-06-04)
+
+
+### Bug Fixes
+
+* **intelligence:** install apple-fm-sdk in npm bundle path on macOS 26+ ([#157](https://github.com/Meridiona/meridian/issues/157)) ([096cdec](https://github.com/Meridiona/meridian/commit/096cdec8999c2cbddddf45ecc495972614f5988f))
+
 ## [1.23.2](https://github.com/Meridiona/meridian/compare/v1.23.1...v1.23.2) (2026-06-04)
 
 
