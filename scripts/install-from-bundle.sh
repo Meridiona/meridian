@@ -346,7 +346,7 @@ if [[ "${_macos_major:-0}" -ge 26 ]]; then
         ok "apple-fm-sdk already installed — Apple Intelligence will be used"
     else
         info "macOS ${_macos_major} detected — installing apple-fm-sdk for Apple Intelligence (no MLX model download needed)…"
-        if "${VENV}/bin/pip" install --quiet "apple-fm-sdk" 2>/dev/null; then
+        if "${UV_BIN}" pip install --python "${VENV}/bin/python" --quiet "apple-fm-sdk" 2>/dev/null; then
             ok "apple-fm-sdk installed — Apple Intelligence will be used"
         else
             warn "apple-fm-sdk install failed — MLX model download will be used instead"
