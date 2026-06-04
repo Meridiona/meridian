@@ -107,6 +107,8 @@ install_ui_standalone() {
     local label="com.meridiona.ui"
     local plist="${LAUNCH_AGENTS}/${label}.plist"
     local node_bin; node_bin="$(command -v node)"
+    local start_script="${APP_ROOT}/scripts/ui-start.sh"
+    chmod +x "${start_script}" 2>/dev/null || true
     mkdir -p "${HOME}/.meridian/logs" "${LAUNCH_AGENTS}"
     cat > "${plist}" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -114,14 +116,14 @@ install_ui_standalone() {
 <plist version="1.0"><dict>
   <key>Label</key><string>${label}</string>
   <key>ProgramArguments</key>
-  <array><string>/bin/sh</string><string>-c</string>
-    <string>exec '${node_bin}' '${APP_ROOT}/ui/server.js'</string></array>
+  <array><string>${start_script}</string></array>
   <key>WorkingDirectory</key><string>${APP_ROOT}/ui</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PORT</key><string>${UI_PORT}</string>
     <key>HOSTNAME</key><string>127.0.0.1</string>
-    <key>MERIDIAN_DB</key><string>${HOME}/.meridian/meridian.db</string>
+    <key>MERIDIAN_DB_PATH</key><string>${HOME}/.meridian/meridian.db</string>
+    <key>MERIDIAN_NODE_BIN</key><string>${node_bin}</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -400,14 +402,17 @@ fi
 # (binding.gyp is absent), so `npm rebuild` can't compile from source — instead
 # we install the same version into a temp dir (which runs prebuild-install and
 # downloads the right binary from GitHub) then copy just the .node file across.
+# ui-start.sh runs the same check at every daemon startup as a safety net.
 _sqlite3_dir="${APP_ROOT}/ui/node_modules/better-sqlite3"
-if [[ -d "${_sqlite3_dir}" ]] && ! node -e "require('${_sqlite3_dir}')" 2>/dev/null; then
-    info "Re-fetching better-sqlite3 binary for Node $(node --version) (ABI mismatch with CI build)…"
-    _bsv="$(node -e "process.stdout.write(require('${_sqlite3_dir}/package.json').version)" 2>/dev/null || echo "")"
+_node_bin="$(command -v node 2>/dev/null || true)"
+_npm_bin="${_node_bin%node}npm"; [[ -x "${_npm_bin}" ]] || _npm_bin="$(command -v npm 2>/dev/null || true)"
+if [[ -n "${_node_bin}" ]] && [[ -d "${_sqlite3_dir}" ]] && ! "${_node_bin}" -e "require('${_sqlite3_dir}')" 2>/dev/null; then
+    info "Re-fetching better-sqlite3 binary for Node $("${_node_bin}" --version) (ABI mismatch with CI build)…"
+    _bsv="$("${_node_bin}" -e "process.stdout.write(require('${_sqlite3_dir}/package.json').version)" 2>/dev/null || echo "")"
     _bstmp="$(mktemp -d)"
     _bsok=0
-    if [[ -n "${_bsv}" ]] && \
-       (cd "${_bstmp}" && npm install --no-save "better-sqlite3@${_bsv}" 2>/dev/null) && \
+    if [[ -n "${_bsv}" ]] && [[ -x "${_npm_bin:-}" ]] && \
+       (cd "${_bstmp}" && "${_npm_bin}" install --no-save "better-sqlite3@${_bsv}" 2>/dev/null) && \
        [[ -f "${_bstmp}/node_modules/better-sqlite3/build/Release/better_sqlite3.node" ]]; then
         cp "${_bstmp}/node_modules/better-sqlite3/build/Release/better_sqlite3.node" \
            "${_sqlite3_dir}/build/Release/better_sqlite3.node"
@@ -415,10 +420,9 @@ if [[ -d "${_sqlite3_dir}" ]] && ! node -e "require('${_sqlite3_dir}')" 2>/dev/n
     fi
     rm -rf "${_bstmp}"
     if [[ "${_bsok}" -eq 1 ]]; then
-        ok "better-sqlite3 binary updated for Node $(node --version)"
+        ok "better-sqlite3 binary updated for Node $("${_node_bin}" --version)"
     else
-        warn "better-sqlite3 binary update failed — dashboard will show empty data"
-        warn "  manual fix: V=\$(node -e \"process.stdout.write(require('${_sqlite3_dir}/package.json').version)\"); T=\$(mktemp -d); cd \$T && npm install better-sqlite3@\$V && cp \$T/node_modules/better-sqlite3/build/Release/better_sqlite3.node '${_sqlite3_dir}/build/Release/better_sqlite3.node'; rm -rf \$T"
+        warn "better-sqlite3 binary update failed — ui-start.sh will retry on first launch"
     fi
 fi
 
