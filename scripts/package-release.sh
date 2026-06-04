@@ -79,6 +79,16 @@ if [[ -n "${_prev_tag}" ]]; then
     fi
 fi
 
+# On macOS 26+, always ship the tarball regardless of lock changes.
+# apple-fm-sdk (Apple Intelligence) is source-only on PyPI — it can only be
+# compiled here (CI has full Xcode). If we skip the tarball, the installer falls
+# back to `uv sync --frozen` which removes apple-fm-sdk (not in the lockfile),
+# breaking Apple Intelligence for every update where only non-Python files changed.
+_ci_macos_major="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
+if [[ "${_ci_macos_major:-0}" -ge 26 ]]; then
+    _lock_changed=1
+fi
+
 if [[ "${_lock_changed}" -eq 1 ]]; then
     echo "  uv.lock changed since ${_prev_tag:-beginning} — building and shipping venv tarball (~160 MB)"
     # uv must be available on the CI runner. pip3 install is blocked on macOS 26
