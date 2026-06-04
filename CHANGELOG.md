@@ -1,3 +1,10 @@
+## [1.23.4](https://github.com/Meridiona/meridian/compare/v1.23.3...v1.23.4) (2026-06-04)
+
+
+### Bug Fixes
+
+* **intelligence:** use uv pip instead of pip binary for apple-fm-sdk install ([#159](https://github.com/Meridiona/meridian/issues/159)) ([bfe4a88](https://github.com/Meridiona/meridian/commit/bfe4a8880917df7fff841d7761bafe4daa6f2f16))
+
 ## [1.23.3](https://github.com/Meridiona/meridian/compare/v1.23.2...v1.23.3) (2026-06-04)
 
 
