@@ -395,6 +395,33 @@ if [[ -f "${APP_ROOT}/ui.tar.gz" ]]; then
     ok "dashboard unpacked ($(find "${APP_ROOT}/ui/.next/node_modules" -type l 2>/dev/null | wc -l | tr -d ' ') external symlink(s) restored)"
 fi
 
+# Re-fetch the correct better-sqlite3 binary when the pre-built addon ABI
+# doesn't match the local Node.js. The Next.js standalone strips source files
+# (binding.gyp is absent), so `npm rebuild` can't compile from source — instead
+# we install the same version into a temp dir (which runs prebuild-install and
+# downloads the right binary from GitHub) then copy just the .node file across.
+_sqlite3_dir="${APP_ROOT}/ui/node_modules/better-sqlite3"
+if [[ -d "${_sqlite3_dir}" ]] && ! node -e "require('${_sqlite3_dir}')" 2>/dev/null; then
+    info "Re-fetching better-sqlite3 binary for Node $(node --version) (ABI mismatch with CI build)…"
+    _bsv="$(node -e "process.stdout.write(require('${_sqlite3_dir}/package.json').version)" 2>/dev/null || echo "")"
+    _bstmp="$(mktemp -d)"
+    _bsok=0
+    if [[ -n "${_bsv}" ]] && \
+       (cd "${_bstmp}" && npm install --no-save "better-sqlite3@${_bsv}" 2>/dev/null) && \
+       [[ -f "${_bstmp}/node_modules/better-sqlite3/build/Release/better_sqlite3.node" ]]; then
+        cp "${_bstmp}/node_modules/better-sqlite3/build/Release/better_sqlite3.node" \
+           "${_sqlite3_dir}/build/Release/better_sqlite3.node"
+        _bsok=1
+    fi
+    rm -rf "${_bstmp}"
+    if [[ "${_bsok}" -eq 1 ]]; then
+        ok "better-sqlite3 binary updated for Node $(node --version)"
+    else
+        warn "better-sqlite3 binary update failed — dashboard will show empty data"
+        warn "  manual fix: V=\$(node -e \"process.stdout.write(require('${_sqlite3_dir}/package.json').version)\"); T=\$(mktemp -d); cd \$T && npm install better-sqlite3@\$V && cp \$T/node_modules/better-sqlite3/build/Release/better_sqlite3.node '${_sqlite3_dir}/build/Release/better_sqlite3.node'; rm -rf \$T"
+    fi
+fi
+
 # ── 6. Daemons (reuse the hardened installers; UI runs the standalone server) ─
 info "Installing screenpipe launchd agent…"
 bash "${APP_ROOT}/scripts/install-screenpipe-daemon.sh" || warn "screenpipe agent install failed"
