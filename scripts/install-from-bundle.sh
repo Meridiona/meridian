@@ -383,6 +383,21 @@ if [[ -f "${APP_ROOT}/ui.tar.gz" ]]; then
     ok "dashboard unpacked ($(find "${APP_ROOT}/ui/.next/node_modules" -type l 2>/dev/null | wc -l | tr -d ' ') external symlink(s) restored)"
 fi
 
+# Rebuild better-sqlite3 if its native addon ABI doesn't match the local Node.
+# The CI runner compiles the bundle against a specific Node version; users may
+# have a different major installed (e.g. brew install node gives whatever stable
+# is current). A mismatch makes every DB query fail silently → blank dashboard.
+# npm rebuild downloads/compiles the right binary for the running Node version.
+_sqlite3_dir="${APP_ROOT}/ui/node_modules/better-sqlite3"
+if [[ -d "${_sqlite3_dir}" ]] && ! node -e "require('${_sqlite3_dir}')" 2>/dev/null; then
+    info "Rebuilding better-sqlite3 for Node $(node --version) (ABI mismatch with CI build)…"
+    if (cd "${APP_ROOT}/ui" && npm rebuild better-sqlite3 2>/dev/null); then
+        ok "better-sqlite3 rebuilt for Node $(node --version)"
+    else
+        warn "better-sqlite3 rebuild failed — dashboard will show empty data; run: cd ${APP_ROOT}/ui && npm rebuild better-sqlite3"
+    fi
+fi
+
 # ── 6. Daemons (reuse the hardened installers; UI runs the standalone server) ─
 info "Installing screenpipe launchd agent…"
 bash "${APP_ROOT}/scripts/install-screenpipe-daemon.sh" || warn "screenpipe agent install failed"
