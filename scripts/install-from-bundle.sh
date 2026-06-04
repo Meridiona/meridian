@@ -335,6 +335,25 @@ else
     fi
 fi
 
+# On macOS 26+, install apple-fm-sdk so Apple Intelligence is used instead of
+# downloading a large MLX model. This runs after both venv paths (tarball or uv
+# sync) so the package is available regardless of how the venv was built.
+# apple-fm-sdk only installs on macOS 26+ (links against system frameworks);
+# on older macOS pip will fail gracefully and MLX is used as the fallback.
+_macos_major="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
+if [[ "${_macos_major:-0}" -ge 26 ]]; then
+    if "${VENV}/bin/python" -c "import apple_fm_sdk" 2>/dev/null; then
+        ok "apple-fm-sdk already installed — Apple Intelligence will be used"
+    else
+        info "macOS ${_macos_major} detected — installing apple-fm-sdk for Apple Intelligence (no MLX model download needed)…"
+        if "${VENV}/bin/pip" install --quiet "apple-fm-sdk" 2>/dev/null; then
+            ok "apple-fm-sdk installed — Apple Intelligence will be used"
+        else
+            warn "apple-fm-sdk install failed — MLX model download will be used instead"
+        fi
+    fi
+fi
+
 # ── 5. macOS permissions for screenpipe (manual — can't be automated) ────────
 if [[ "${SKIP_PERMISSIONS}" -eq 0 ]]; then
     echo "→ screenpipe needs 2 macOS permissions: Screen Recording and Accessibility."
