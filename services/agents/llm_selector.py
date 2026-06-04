@@ -278,6 +278,31 @@ _MANAGED_SERVER_PID_FILE = Path.home() / ".meridian" / "mlx_lm_server.pid"
 APPLE_INTELLIGENCE_ID = "apple-intelligence"
 
 
+def _apple_intelligence_available() -> bool:
+    """Return True only when Apple Intelligence is genuinely usable.
+
+    Checks three things in order (fail-fast):
+      1. macOS 26+ (the minimum for the Foundation Models API)
+      2. apple_fm_sdk is importable (installed in the venv)
+      3. SystemLanguageModel().is_available() — the on-device model is downloaded
+         and Apple Intelligence is enabled in System Settings
+
+    Any failure → False (graceful degradation to smaller MLX or cloud).
+    """
+    try:
+        macos_major = int(platform.mac_ver()[0].split(".")[0] or "0")
+        if macos_major < 26:
+            return False
+        from apple_fm_sdk import SystemLanguageModel  # type: ignore[import]
+        available, reason = SystemLanguageModel().is_available()
+        if not available:
+            log.debug("llm_selector: Apple Intelligence unavailable: %s", reason)
+        return bool(available)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("llm_selector: Apple Intelligence probe skipped: %s", exc)
+        return False
+
+
 def _metal_headroom_gb() -> tuple[float, str]:
     """Primary memory signal — headroom within Metal's recommended working set.
 
@@ -448,8 +473,7 @@ def local_infer(system_prompt: str, user_message: str,
     # Relax budget when screen is locked — user won't feel the latency
     effective_pct = min(0.8, budget_pct * 1.5) if snap.screen_locked else budget_pct
 
-    macos_major = int(platform.mac_ver()[0].split(".")[0] or "0")
-    apple_intelligence = macos_major >= 26
+    apple_intelligence = _apple_intelligence_available()
 
     entry = _select_mlx_entry(snap.metal_headroom_gb, effective_pct,
                               snap.thermal_level, apple_intelligence)
@@ -893,8 +917,7 @@ def select_mlx_model_id(
             span.set_attribute("llm.selected_model", preferred_hf_id or "")
             return preferred_hf_id
 
-        macos_major = int(platform.mac_ver()[0].split(".")[0] or "0")
-        apple_intelligence = macos_major >= 26
+        apple_intelligence = _apple_intelligence_available()
 
         try:
             snap = probe_compute()
