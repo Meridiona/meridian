@@ -201,12 +201,17 @@ sqlite3 ~/.meridian/meridian.db \
 |---|---|
 | `services/scripts/install-mlx-server-daemon.sh` | Install the MLX server as a launchd daemon (KeepAlive, auto-restart). |
 | `services/scripts/uninstall-mlx-server-daemon.sh` | Stop and remove the MLX server daemon. |
+| `scripts/install-openobserve-daemon.sh` | Install the OpenObserve trace backend as a launchd daemon (source-checkout / observability only). |
+| `scripts/uninstall-openobserve-daemon.sh` | Stop and remove the OpenObserve daemon (run by `meridian uninstall`; trace data at `~/.openobserve/data/` is preserved). |
 | `scripts/refresh_pm_tasks.py` | Force-refresh `pm_tasks` from Jira without restarting the daemon. |
 | `scripts/setup-hooks.sh` | Install git hooks (fmt + clippy pre-commit, full suite pre-push). |
 
 ```bash
 # Install MLX server as a background daemon
 bash services/scripts/install-mlx-server-daemon.sh [--port 7823]
+
+# Install / restart the OpenObserve trace backend (source checkout)
+bash scripts/install-openobserve-daemon.sh
 
 # MLX server logs
 tail -f ~/.meridian/logs/mlx-server.log
