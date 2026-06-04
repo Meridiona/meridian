@@ -299,6 +299,7 @@ cmd_uninstall() {
     bash "${REPO_ROOT}/services/scripts/uninstall-mlx-server-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/scripts/uninstall-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/scripts/uninstall-screenpipe-daemon.sh" 2>/dev/null
+    bash "${REPO_ROOT}/scripts/uninstall-openobserve-daemon.sh" 2>/dev/null
     pkill -f "mlx_lm.server" 2>/dev/null || true
     rm -f /usr/local/bin/meridian /usr/local/bin/meridian-daemon \
           "${HOME}/.local/bin/meridian" "${HOME}/.local/bin/meridian-daemon"

@@ -112,6 +112,7 @@ cp scripts/meridian-cli.sh scripts/install-from-bundle.sh scripts/meridian-npm-s
 cp scripts/install-daemon.sh scripts/uninstall-daemon.sh \
    scripts/install-ui-daemon.sh scripts/uninstall-ui-daemon.sh \
    scripts/install-screenpipe-daemon.sh scripts/uninstall-screenpipe-daemon.sh \
+   scripts/uninstall-openobserve-daemon.sh \
    scripts/com.meridiona.daemon.plist scripts/com.meridiona.screenpipe.plist \
    scripts/com.meridiona.ui.plist "${DEST}/scripts/" 2>/dev/null || true
 
