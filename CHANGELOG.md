@@ -1,3 +1,10 @@
+## [1.23.6](https://github.com/Meridiona/meridian/compare/v1.23.5...v1.23.6) (2026-06-04)
+
+
+### Bug Fixes
+
+* **ui:** rebuild better-sqlite3 when Node ABI mismatches CI build ([#161](https://github.com/Meridiona/meridian/issues/161)) ([9471bd9](https://github.com/Meridiona/meridian/commit/9471bd94df08fda13fd6a26102d4a17b767400ee))
+
 ## [1.23.5](https://github.com/Meridiona/meridian/compare/v1.23.4...v1.23.5) (2026-06-04)
 
 
