@@ -376,6 +376,19 @@ if [[ "${_py_ok}" -eq 0 ]]; then
 fi
 ok "Python 3.11+"
 
+# On macOS 26+, Apple Intelligence is used as the on-device model on 8 GB machines.
+# It requires Xcode 26+ (full app, not just CLT) and the license accepted.
+_macos_major="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
+if [[ "${_macos_major:-0}" -ge 26 ]]; then
+    if [[ ! -d /Applications/Xcode.app ]]; then
+        warn "Xcode.app not found — required for Apple Intelligence (Foundation Models API)."
+        echo "    Install Xcode 26+ from the App Store, open it once to accept the license, then re-run."
+        echo "    If you don't want Apple Intelligence, install a larger MLX model instead."
+    else
+        ok "Xcode.app (Apple Intelligence / Foundation Models)"
+    fi
+fi
+
 if ! command -v screenpipe >/dev/null 2>&1; then
     warn "screenpipe not found."
     echo "    Note: Homebrew's screenpipe formula is deprecated (0.2.x). We install the"

@@ -272,6 +272,12 @@ def _get_model() -> Any:
     return outlines_model
 
 
+# Apple Foundation Models has a 4096-token combined context window (input + output).
+# Reserve _MAX_TOKENS (1024) for the response; leave ~3072 tokens for the prompt.
+# At ~4 chars/token that is ~12 000 chars. Cap the user message to stay inside it.
+_APPLE_FM_USER_CHARS = 11_000
+
+
 def _classify_apple_fm(messages: list[dict[str, str]]) -> "SessionClassification":
     """Classify via Apple Foundation Models (non-FSM, JSON parsing with one retry)."""
     import asyncio
@@ -280,6 +286,15 @@ def _classify_apple_fm(messages: list[dict[str, str]]) -> "SessionClassification
 
     system = next((m["content"] for m in messages if m["role"] == "system"), "")
     user   = next((m["content"] for m in messages if m["role"] == "user"),   "")
+
+    # Truncate to stay within the 4096-token context window.
+    if len(user) > _APPLE_FM_USER_CHARS:
+        log.debug(
+            "run_task_linker_mlx: truncating Apple FM user message %d → %d chars",
+            len(user), _APPLE_FM_USER_CHARS,
+        )
+        user = user[:_APPLE_FM_USER_CHARS]
+
     user_with_hint = (
         user
         + "\n\nRespond with a JSON object matching the SessionClassification schema. "

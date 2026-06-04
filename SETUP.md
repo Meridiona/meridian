@@ -106,7 +106,9 @@ meridian uninstall          # stop services and remove the CLI
 | **MLX server** | on-device model for classification and worklog synthesis |
 | **dashboard** | web UI at http://localhost:3939 |
 
-> **8 GB M1/M2 Air:** the MLX server uses Apple Intelligence — no model download needed.
+> **8 GB M1/M2 Air (macOS 26+):** the MLX server uses Apple Intelligence — no model download needed.
+> Requires: Xcode 26+ installed from the App Store, opened once to accept the license, and Apple Intelligence enabled in System Settings.
+>
 > **16 GB+:** the first MLX start downloads the classifier model (~6 GB). Follow progress with `meridian logs mlx-server -f`.
 
 ---
