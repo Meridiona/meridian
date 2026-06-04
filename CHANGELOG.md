@@ -1,3 +1,11 @@
+## [1.23.2](https://github.com/Meridiona/meridian/compare/v1.23.1...v1.23.2) (2026-06-04)
+
+
+### Bug Fixes
+
+* **intelligence:** gate Apple Intelligence on actual availability, not just macOS version ([#155](https://github.com/Meridiona/meridian/issues/155)) ([5de2787](https://github.com/Meridiona/meridian/commit/5de278728772dab1acf53dc7cc70cc7d679a33d7))
+* **intelligence:** install apple-fm-sdk, check Xcode, cap prompt for Apple FM ([#156](https://github.com/Meridiona/meridian/issues/156)) ([02632b3](https://github.com/Meridiona/meridian/commit/02632b398e5ffc5e91a0269574129d9437fab676))
+
 ## [1.23.1](https://github.com/Meridiona/meridian/compare/v1.23.0...v1.23.1) (2026-06-03)
 
 
