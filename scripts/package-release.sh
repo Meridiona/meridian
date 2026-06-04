@@ -98,6 +98,15 @@ if [[ "${_lock_changed}" -eq 1 ]]; then
     if [[ "${_py_dir}" != "python3.11" ]]; then
         echo "✗ venv was built with ${_py_dir} but must be python3.11" >&2; exit 1
     fi
+    # On macOS 26+, install apple-fm-sdk into the venv so end users get Apple
+    # Intelligence without needing Xcode. The CI runner (macos-26) has Xcode;
+    # the package is source-only (no PyPI wheels) so must be compiled here.
+    _pkg_macos_major="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
+    if [[ "${_pkg_macos_major:-0}" -ge 26 ]]; then
+        echo "  macOS ${_pkg_macos_major}: compiling apple-fm-sdk for Apple Intelligence…"
+        uv pip install --python "services/.venv/bin/python" "apple-fm-sdk"
+        echo "  · apple-fm-sdk compiled and included in bundle"
+    fi
     tar -czf "${DEST}/services-venv.tar.gz" \
         -C "services/.venv/lib/${_py_dir}/site-packages" .
     echo "  · $(du -sh "${DEST}/services-venv.tar.gz" | cut -f1) compressed — included in bundle"
