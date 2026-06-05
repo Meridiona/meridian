@@ -91,11 +91,20 @@ if [[ "${_ui_changed}" -eq 1 ]]; then
     _bs_version="$("${_NODE22_BIN}" -e "process.stdout.write(require('./ui/node_modules/better-sqlite3/package.json').version)")"
     echo "  · building better-sqlite3@${_bs_version} for Node 22 (ABI 127)…"
     _bs_tmp="$(mktemp -d)"
-    # Prepend Node 22's bin dir to PATH so npm lifecycle scripts (prebuild-install,
-    # node-gyp rebuild) use Node 22 — not the CI's system node (Node 24, ABI 137).
-    PATH="${_NODE22_DIR}/bin:${PATH}" HOME="${_bs_tmp}" "${_NODE22_BIN}" "${_NODE22_NPM_CLI}" install \
-        --prefix "${_bs_tmp}" \
-        --no-save --prefer-offline=false "better-sqlite3@${_bs_version}" 2>&1 | tail -20 || true
+    # Install better-sqlite3 source files WITHOUT running lifecycle scripts.
+    # npm lifecycle scripts inherit npm_config_* from the outer CI session (Node 24,
+    # ABI 137); prebuild-install reads npm_config_target and downloads the wrong ABI.
+    # Instead we install source-only, then drive node-gyp explicitly with Node 22.
+    HOME="${_bs_tmp}" "${_NODE22_BIN}" "${_NODE22_NPM_CLI}" install \
+        --prefix "${_bs_tmp}" --ignore-scripts \
+        --no-save "better-sqlite3@${_bs_version}" 2>&1 | tail -10 || true
+
+    # Compile from source using Node 22's bundled node-gyp — ABI is 127 by construction.
+    _bs_pkg="${_bs_tmp}/node_modules/better-sqlite3"
+    _NODE22_GYP="${_NODE22_DIR}/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js"
+    echo "  · compiling better-sqlite3 from source with Node 22 node-gyp…"
+    (cd "${_bs_pkg}" && PATH="${_NODE22_DIR}/bin:${PATH}" \
+        "${_NODE22_BIN}" "${_NODE22_GYP}" rebuild) 2>&1 | tail -30 || true
     _bs_node="$(find "${_bs_tmp}" -name "better_sqlite3.node" -path "*/Release/*" 2>/dev/null | head -1)"
     [[ -n "${_bs_node}" && -f "${_bs_node}" ]] || {
         echo "✗ better-sqlite3@${_bs_version} Node 22 build produced no binary" >&2
