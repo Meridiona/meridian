@@ -103,8 +103,17 @@ if [[ "${_ui_changed}" -eq 1 ]]; then
     _bs_pkg="${_bs_tmp}/node_modules/better-sqlite3"
     _NODE22_GYP="${_NODE22_DIR}/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js"
     echo "  · compiling better-sqlite3 from source with Node 22 node-gyp…"
-    (cd "${_bs_pkg}" && PATH="${_NODE22_DIR}/bin:${PATH}" \
-        "${_NODE22_BIN}" "${_NODE22_GYP}" rebuild) 2>&1 | tail -30 || true
+    # Unset all npm_config_* vars that the outer `npm ci` session (Node 24) leaves
+    # in the environment. node-gyp reads npm_config_nodedir / npm_config_target to
+    # choose which Node headers to compile against — if left set they point at Node 24
+    # headers and produce an ABI 137 binary even when the running node is Node 22.
+    # Passing --target and --nodedir explicitly makes the ABI unconditional.
+    (cd "${_bs_pkg}" && \
+        env -u npm_config_nodedir -u npm_config_target -u npm_config_node_root \
+        PATH="${_NODE22_DIR}/bin:${PATH}" \
+        "${_NODE22_BIN}" "${_NODE22_GYP}" rebuild \
+            --target="${_NODE22_VERSION}" \
+            --nodedir="${_NODE22_DIR}") 2>&1 | tail -30 || true
     _bs_node="$(find "${_bs_tmp}" -name "better_sqlite3.node" -path "*/Release/*" 2>/dev/null | head -1)"
     [[ -n "${_bs_node}" && -f "${_bs_node}" ]] || {
         echo "✗ better-sqlite3@${_bs_version} Node 22 build produced no binary" >&2
