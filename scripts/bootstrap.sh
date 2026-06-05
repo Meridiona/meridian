@@ -85,8 +85,9 @@ else
 fi
 
 # ── 4. Install @meridiona/meridian ───────────────────────────────────────────
-info "Installing @meridiona/meridian@latest (~170 MB including pre-built Python venv)…"
-info "  This takes 1–3 min on a typical connection — npm will show a spinner."
+info "Installing @meridiona/meridian@latest…"
+info "  The npm package is small; the Python venv + Node runtime (~200 MB) download"
+info "  once during 'meridian setup' below. Budget 2–4 min on a typical connection."
 npm install -g @meridiona/meridian@latest
 ok "meridian installed ($(meridian --version 2>/dev/null || echo 'version unknown'))"
 

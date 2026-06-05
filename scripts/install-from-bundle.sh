@@ -108,21 +108,70 @@ collect_credentials() {
 GUI_TARGET="gui/$(id -u)"
 LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
 
+# Resolve the Node runtime the dashboard must run on. The better-sqlite3 addon in
+# ui.tar.gz is built against one exact Node version (recorded in
+# bin/node-runtime.meta by package-release.sh); running any other Node major
+# triggers a NODE_MODULE_VERSION (ABI) mismatch and the dashboard crash-loops.
+# The 113 MB Node binary is NOT shipped through npm (it would blow the registry
+# payload limit), so we download that exact official build from nodejs.org once,
+# verify the pinned SHA-256, and cache it under ~/.meridian (survives the APP_ROOT
+# rm-rf on `meridian update`). Echoes the node path on stdout. Failure fallbacks
+# to system node are LOUD because they may not match the addon's ABI.
+resolve_node_runtime() {
+    local meta="${APP_ROOT}/bin/node-runtime.meta"
+    # Dev/source install (no meta file): use system/Homebrew node as-is. Such a
+    # build compiles its own better-sqlite3 against that node, so ABI matches.
+    if [[ ! -f "${meta}" ]]; then
+        local _n
+        for _n in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+            [[ -x "${_n}" ]] && { echo "${_n}"; return 0; }
+        done
+        return 1
+    fi
+    local ver sha
+    ver="$(grep '^NODE_RUNTIME_VERSION=' "${meta}" | cut -d= -f2 | tr -d '[:space:]')"
+    sha="$(grep '^NODE_RUNTIME_SHA=' "${meta}" | cut -d= -f2 | tr -d '[:space:]')"
+    local cache_dir="${HOME}/.meridian/node-runtime/v${ver}"
+    local cache_bin="${cache_dir}/bin/node"
+    if [[ -x "${cache_bin}" ]]; then echo "${cache_bin}"; return 0; fi
+    local tmp tgz url got
+    tmp="$(mktemp -d)"; tgz="${tmp}/node.tar.gz"
+    url="https://nodejs.org/dist/v${ver}/node-v${ver}-darwin-arm64.tar.gz"
+    info "Downloading Node ${ver} runtime for the dashboard (one-time, ~40 MB)…"
+    if curl -fsSL --retry 3 "${url}" -o "${tgz}"; then
+        got="$(shasum -a 256 "${tgz}" | cut -d' ' -f1)"
+        if [[ "${got}" == "${sha}" ]]; then
+            tar -xzf "${tgz}" -C "${tmp}"
+            rm -rf "${cache_dir}"; mkdir -p "$(dirname "${cache_dir}")"
+            mv "${tmp}/node-v${ver}-darwin-arm64" "${cache_dir}"
+            rm -rf "${tmp}"
+            ok "Node ${ver} runtime cached (ABI-matched to the dashboard)"
+            echo "${cache_bin}"; return 0
+        fi
+        warn "Node ${ver} SHA-256 mismatch (expected ${sha}, got ${got}) — not using it"
+    else
+        warn "Node ${ver} download failed (offline?) — the dashboard needs it to match better-sqlite3's ABI"
+    fi
+    rm -rf "${tmp}"
+    local _n
+    for _n in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+        if [[ -x "${_n}" ]]; then
+            warn "Falling back to ${_n} — if the dashboard fails to load, re-run 'meridian update' with a connection"
+            echo "${_n}"; return 0
+        fi
+    done
+    return 1
+}
+
 # Register the dashboard as a launchd agent that runs the prebuilt Next.js
 # standalone server (`node ui/server.js`) — no `npm start`, no node_modules
 # install. Mirrors the EIO-safe bootout/bootstrap pattern of the other agents.
 install_ui_standalone() {
     local label="com.meridiona.ui"
     local plist="${LAUNCH_AGENTS}/${label}.plist"
-    # Prefer a bundled Node runtime (ABI-matched to the better-sqlite3 addon in
-    # ui.tar.gz). Fall back to system/Homebrew Node when not included in this package.
-    local node_bin="${APP_ROOT}/bin/node-runtime"
-    if [[ ! -x "${node_bin}" ]]; then
-        for _n in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
-            [[ -x "${_n}" ]] && { node_bin="${_n}"; break; }
-        done
-    fi
-    [[ -x "${node_bin}" ]] || { err "node not found — install Node.js: brew install node"; return 1; }
+    # Resolve the ABI-matched Node runtime (downloads + caches it on first use).
+    local node_bin
+    node_bin="$(resolve_node_runtime)" || { err "node not found — install Node.js: brew install node"; return 1; }
     local start_script="${APP_ROOT}/scripts/ui-start.sh"
     chmod +x "${start_script}" 2>/dev/null || true
     mkdir -p "${HOME}/.meridian/logs" "${LAUNCH_AGENTS}"
@@ -313,70 +362,104 @@ _mlx_was_healthy=0
 curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1 && _mlx_was_healthy=1
 
 # ── 4. Python venv + MLX deps ────────────────────────────────────────────────
-# Two paths:
-#   A) Pre-built tarball (release bundle): services-venv.tar.gz ships with the
-#      package. Extract site-packages into a freshly-created venv (correct local
-#      paths) — ~5s, no PyPI, no internet. Stamp the tarball hash so re-runs and
-#      `meridian update` skip extraction when the deps haven't changed.
-#   B) Dev fallback: no tarball present → `uv sync --frozen` from uv.lock.
-#      Downloads from PyPI the first time (~40s); subsequent runs are a no-op.
+# The venv (~160 MB) is too large for the npm registry, so release builds attach
+# it to the GitHub Release and we download it here. Three paths:
+#   A) Already current: the installed venv's stamp matches the shipped uv.lock
+#      hash → skip the 160 MB download entirely (differential update). uv.lock is
+#      the deterministic source of truth for the deps and travels in the npm
+#      package, so this makes most `meridian update` runs touch zero network.
+#   B) Deps changed / fresh install: download services-venv-<ver>.tar.gz, verify
+#      it against the remote .sha256, extract site-packages into a fresh Python
+#      3.11 venv. No PyPI. Stamp the uv.lock hash for next time.
+#   C) Dev/source install (no VERSION, or download/verify failed): `uv sync
+#      --frozen` from uv.lock — downloads from PyPI the first time (~40s).
+# NOTE the differential key is the uv.lock hash, NOT the tarball hash: BSD tar
+# embeds mtimes so the tarball hash differs on every CI build even when deps are
+# identical, which would defeat the skip. The remote .sha256 is used only to
+# verify download integrity, never for the change decision.
 VENV="${APP_ROOT}/services/.venv"
-VENV_TARBALL="${APP_ROOT}/services-venv.tar.gz"
 VENV_STAMP="${VENV}/.meridian-venv-hash"
+_VERSION="$(cat "${APP_ROOT}/VERSION" 2>/dev/null | tr -d '[:space:]' || true)"
+_VENV_URL="https://github.com/Meridiona/meridian/releases/download/v${_VERSION}/services-venv-${_VERSION}.tar.gz"
+_LOCK_HASH="$(shasum -a 256 "${APP_ROOT}/services/uv.lock" 2>/dev/null | cut -d' ' -f1 || true)"
 
-if [[ -f "${VENV_TARBALL}" ]]; then
-    _tarball_hash="$(shasum -a 256 "${VENV_TARBALL}" | cut -d' ' -f1)"
-    _have_hash=""; [[ -f "${VENV_STAMP}" ]] && _have_hash="$(cat "${VENV_STAMP}" 2>/dev/null)"
-
-    _venv_changed=1
-    if [[ "${_tarball_hash}" == "${_have_hash}" && -x "${VENV}/bin/python" ]]; then
-        ok "Python deps unchanged — reusing existing venv (skipped extraction)"
-        _venv_changed=0
+# Extract a downloaded venv tarball ($1) into a fresh Python 3.11 venv, then stamp
+# the dependency hash ($2). The tarball is compiled for Python 3.11 (package-release.sh
+# enforces this); the venv MUST use exactly 3.11 or the cpython-311 .so files fail
+# to import. Prefer system python3.11, then uv-managed 3.11, then install it via uv.
+_extract_venv() {
+    local tgz="$1" stamp_hash="$2" tarball_python="" py_dir=""
+    rm -rf "${VENV}"
+    if command -v python3.11 >/dev/null 2>&1; then
+        tarball_python="$(command -v python3.11)"
+    elif "${UV_BIN}" python find 3.11 >/dev/null 2>&1; then
+        tarball_python="$("${UV_BIN}" python find 3.11)"
     else
-        info "Extracting pre-built Python venv ($(du -sh "${VENV_TARBALL}" | cut -f1) — no PyPI download required)…"
-        rm -rf "${VENV}"
-        # The tarball is compiled for Python 3.11 (package-release.sh enforces this).
-        # The venv MUST use exactly Python 3.11 or compiled extensions (.so files with
-        # cpython-311 ABI tags) will fail to import on any other interpreter version.
-        # Prefer the system python3.11, then uv-managed 3.11, then install it via uv.
-        _tarball_python=""
-        if command -v python3.11 >/dev/null 2>&1; then
-            _tarball_python="$(command -v python3.11)"
-        elif "${UV_BIN}" python find 3.11 >/dev/null 2>&1; then
-            _tarball_python="$("${UV_BIN}" python find 3.11)"
-        else
-            info "Installing Python 3.11 (pre-built venv requires it — one-time download)…"
-            "${UV_BIN}" python install 3.11
-            _tarball_python="$("${UV_BIN}" python find 3.11)"
-        fi
-        "${UV_BIN}" venv --python "${_tarball_python}" "${VENV}" 2>/dev/null
-        # Determine the Python version subdirectory (e.g. python3.11).
-        _py_dir="$(ls "${VENV}/lib/" | grep '^python' | head -1)"
-        mkdir -p "${VENV}/lib/${_py_dir}/site-packages"
-        tar -xzf "${VENV_TARBALL}" -C "${VENV}/lib/${_py_dir}/site-packages"
-        # Install the local editable package (meridian-agents) — no deps needed,
-        # everything is already in site-packages from the tarball.
-        "${UV_BIN}" pip install --quiet --no-deps --python "${VENV}/bin/python" -e "${APP_ROOT}/services"
-        printf '%s\n' "${_tarball_hash}" > "${VENV_STAMP}"
-        ok "Python services ready ($(${VENV}/bin/python --version 2>&1))"
+        info "Installing Python 3.11 (pre-built venv requires it — one-time download)…"
+        "${UV_BIN}" python install 3.11
+        tarball_python="$("${UV_BIN}" python find 3.11)"
     fi
-else
-    # Dev / source install — no pre-built tarball. Resolve from uv.lock.
-    # Both extras: mlx (classifier + server) AND pm_worklog_update (agno) — the
-    # one MLX server process serves /classify_sessions AND /synthesise_worklog,
-    # so the venv needs agno or worklog synthesis 500s with ModuleNotFoundError.
-    _venv_changed=1
-    info "Installing Python + MLX deps (mlx-lm/outlines/fastapi/agno; first run may download a few hundred MB)…"
+    "${UV_BIN}" venv --python "${tarball_python}" "${VENV}" 2>/dev/null
+    py_dir="$(ls "${VENV}/lib/" | grep '^python' | head -1)"
+    mkdir -p "${VENV}/lib/${py_dir}/site-packages"
+    tar -xzf "${tgz}" -C "${VENV}/lib/${py_dir}/site-packages"
+    # Install the local editable package (meridian-agents) — no deps needed,
+    # everything is already in site-packages from the tarball.
+    "${UV_BIN}" pip install --quiet --no-deps --python "${VENV}/bin/python" -e "${APP_ROOT}/services"
+    printf '%s\n' "${stamp_hash}" > "${VENV_STAMP}"
+    ok "Python services ready ($(${VENV}/bin/python --version 2>&1))"
+}
+
+# uv sync fallback (Path C) — used for dev/source installs and as the offline
+# failure path. Both extras: mlx (classifier + server) AND pm_worklog_update
+# (agno) — the one MLX server serves /classify_sessions AND /synthesise_worklog,
+# so without agno worklog synthesis 500s with ModuleNotFoundError. Stamp the
+# uv.lock hash on success so subsequent runs can skip.
+_venv_uv_sync() {
+    info "Building Python venv from uv.lock (mlx-lm/outlines/fastapi/agno; first run may download a few hundred MB)…"
     if "${UV_BIN}" sync \
             --project "${APP_ROOT}/services" \
             --extra mlx \
             --extra pm_worklog_update \
             --frozen \
             --python "${PYTHON_BIN}"; then
+        [[ -n "${_LOCK_HASH}" ]] && printf '%s\n' "${_LOCK_HASH}" > "${VENV_STAMP}"
         ok "Python services ready ($(${VENV}/bin/python --version 2>&1))"
     else
         warn "uv sync failed — leaving venv as-is; re-run 'meridian setup' to retry"
     fi
+}
+
+_venv_changed=1
+_have_hash=""; [[ -f "${VENV_STAMP}" ]] && _have_hash="$(cat "${VENV_STAMP}" 2>/dev/null)"
+
+if [[ -n "${_LOCK_HASH}" && "${_LOCK_HASH}" == "${_have_hash}" && -x "${VENV}/bin/python" ]]; then
+    # Path A — deps unchanged since this venv was built. No network, no rebuild.
+    ok "Python deps unchanged — reusing existing venv (skipped 160 MB download)"
+    _venv_changed=0
+elif [[ -n "${_VERSION}" ]]; then
+    # Path B — release install/update: fetch the integrity hash, then the tarball.
+    _remote_sha="$(curl -fsSL --retry 3 "${_VENV_URL}.sha256" 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ -n "${_remote_sha}" ]]; then
+        info "Downloading pre-built Python venv (~160 MB, one-time per dependency change)…"
+        _venv_tmp="$(mktemp -d)"; _venv_tgz="${_venv_tmp}/services-venv.tar.gz"
+        if curl -fsSL --retry 3 "${_VENV_URL}" -o "${_venv_tgz}" \
+           && [[ "$(shasum -a 256 "${_venv_tgz}" | cut -d' ' -f1)" == "${_remote_sha}" ]]; then
+            # Stamp the uv.lock hash (deterministic) so future updates can skip.
+            _extract_venv "${_venv_tgz}" "${_LOCK_HASH:-${_remote_sha}}"
+            rm -rf "${_venv_tmp}"
+        else
+            warn "venv download or SHA-256 verification failed — falling back to uv sync"
+            rm -rf "${_venv_tmp}"
+            _venv_uv_sync
+        fi
+    else
+        warn "venv release asset unreachable for v${_VERSION} — falling back to uv sync"
+        _venv_uv_sync
+    fi
+else
+    # Path C — dev/source install (no VERSION stamp).
+    _venv_uv_sync
 fi
 
 # On macOS 26+, install apple-fm-sdk so Apple Intelligence is used instead of

@@ -3,9 +3,10 @@
 #
 # Startup wrapper for the Next.js UI daemon.
 #
-# MERIDIAN_NODE_BIN is set by the launchd plist to the bundled Node 22 runtime
-# at APP_ROOT/bin/node-runtime. That binary was used in CI to build the
-# better-sqlite3 addon shipped in ui.tar.gz, so ABI is always correct.
+# MERIDIAN_NODE_BIN is set by the launchd plist to the ABI-matched Node 22 runtime
+# that install-from-bundle.sh downloaded and cached under ~/.meridian/node-runtime.
+# That is the exact Node version CI built the better-sqlite3 addon in ui.tar.gz
+# against, so the ABI always matches. Fall back to system node only if unset.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
