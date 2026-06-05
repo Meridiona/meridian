@@ -372,11 +372,10 @@ pub async fn run_loop(
     tracing::info!("coding-agent summariser stopped");
 }
 
-/// One drain pass: summarise today's pending rows, oldest-first. Returns true if
+/// One drain pass: summarise pending rows (all days), oldest-first. Returns true if
 /// we should back off (primary rate-limited AND MLX also failed).
 async fn drain(pool: &SqlitePool, cfg: &SummariserConfig) -> bool {
-    let today = Local::now().format("%Y-%m-%d").to_string();
-    let rows = match db::fetch_pending(pool, cfg, cfg.batch_per_tick, Some(&today)).await {
+    let rows = match db::fetch_pending(pool, cfg, cfg.batch_per_tick, None).await {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(error = %e, "summariser: fetch_pending failed");
