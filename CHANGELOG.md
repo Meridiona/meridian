@@ -1,3 +1,10 @@
+## [1.24.5](https://github.com/Meridiona/meridian/compare/v1.24.4...v1.24.5) (2026-06-05)
+
+
+### Bug Fixes
+
+* **release:** revert parallel build step that regressed total time by 57s ([2d03164](https://github.com/Meridiona/meridian/commit/2d03164de35898692d245cf18c5cb1878d773286))
+
 ## [1.24.4](https://github.com/Meridiona/meridian/compare/v1.24.3...v1.24.4) (2026-06-05)
 
 
