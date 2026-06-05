@@ -22,6 +22,16 @@ pub async fn run_cursor_agent(
     stdin_text: &str,
     cfg: &SummariserConfig,
 ) -> Result<EngineOutput, SummariserError> {
+    // Lazy init: on first use of Cursor Agent, check if cursor-agent is available.
+    // If not, attempt auto-install and auto-login. Cached after first attempt.
+    crate::coding_agent_session_ingest::cursor_agent_init::ensure_ready()
+        .await
+        .map_err(|e| {
+            SummariserError::Failed(format!(
+                "cursor-agent init failed (falling back to MLX): {}",
+                e
+            ))
+        })?;
     let prompt = format!(
         "{} Summarise the coding-session transcript below.\n\n{}",
         prompts::summary_instruction(),
