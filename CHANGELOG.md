@@ -1,3 +1,10 @@
+## [1.23.8](https://github.com/Meridiona/meridian/compare/v1.23.7...v1.23.8) (2026-06-05)
+
+
+### Bug Fixes
+
+* **ui:** self-heal better-sqlite3 ABI mismatch at daemon startup ([#163](https://github.com/Meridiona/meridian/issues/163)) ([f0e0ddf](https://github.com/Meridiona/meridian/commit/f0e0ddf8bd7480e64709f1eaddbee1a0d05bde05))
+
 ## [1.23.7](https://github.com/Meridiona/meridian/compare/v1.23.6...v1.23.7) (2026-06-04)
 
 
