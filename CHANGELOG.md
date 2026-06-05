@@ -1,3 +1,10 @@
+## [1.24.3](https://github.com/Meridiona/meridian/compare/v1.24.2...v1.24.3) (2026-06-05)
+
+
+### Bug Fixes
+
+* **mlx-server:** compact Apple FM prompt to fix context-window overflow on /classify ([#170](https://github.com/Meridiona/meridian/issues/170)) ([0cf0a37](https://github.com/Meridiona/meridian/commit/0cf0a37cca2cbf4387b774064e39b78139782e98))
+
 ## [1.24.2](https://github.com/Meridiona/meridian/compare/v1.24.1...v1.24.2) (2026-06-05)
 
 
