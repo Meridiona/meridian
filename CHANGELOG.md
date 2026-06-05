@@ -1,3 +1,18 @@
+## [1.23.10](https://github.com/Meridiona/meridian/compare/v1.23.9...v1.23.10) (2026-06-05)
+
+
+### Bug Fixes
+
+* **install:** fall back to system node when bundled node-runtime absent ([#166](https://github.com/Meridiona/meridian/issues/166)) ([70a03fd](https://github.com/Meridiona/meridian/commit/70a03fd6c3fbcb66fec90e4b661629a66a53cdcc))
+* **release:** add --prefix to better-sqlite3 Node 22 build so binary is findable ([#167](https://github.com/Meridiona/meridian/issues/167)) ([248fb32](https://github.com/Meridiona/meridian/commit/248fb32b5966f947325b5d762c658755a619f052))
+* **release:** compile better-sqlite3 with node-gyp directly, skip npm lifecycle ([585ce6a](https://github.com/Meridiona/meridian/commit/585ce6acec4422258a269311118b0ac2ee232b6a))
+* **release:** download better-sqlite3 prebuilt directly, skip compilation ([63ffab4](https://github.com/Meridiona/meridian/commit/63ffab4339abc0f26d1443b0c30c60d0a0fc1217))
+* **release:** prepend Node 22 bin to PATH so prebuild-install uses ABI 127 ([f2a78bd](https://github.com/Meridiona/meridian/commit/f2a78bdc05a071c1d4434f925def8395261d39d6))
+* **release:** require .node binary directly in ABI checks, not the package ([4b36173](https://github.com/Meridiona/meridian/commit/4b36173ef4ea2c07712cd74c03c9da90420366f1))
+* **release:** unset npm_config_nodedir so node-gyp uses Node 22 headers ([af324d1](https://github.com/Meridiona/meridian/commit/af324d1bfad9c60dd7f90685961d994aa86ca102))
+* **release:** use absolute path for better-sqlite3 require() load check ([6dbf299](https://github.com/Meridiona/meridian/commit/6dbf2994d9df1aff519c1a4d6219861a68af8998))
+* **ui:** bundle Node 22 runtime so better-sqlite3 ABI never mismatches ([#165](https://github.com/Meridiona/meridian/issues/165)) ([a9fa2f1](https://github.com/Meridiona/meridian/commit/a9fa2f18ba5cd37f3d8cf3776cdebdbc9f6f0314))
+
 ## [1.23.9](https://github.com/Meridiona/meridian/compare/v1.23.8...v1.23.9) (2026-06-05)
 
 
