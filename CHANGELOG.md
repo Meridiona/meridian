@@ -1,3 +1,10 @@
+## [1.26.1](https://github.com/Meridiona/meridian/compare/v1.26.0...v1.26.1) (2026-06-05)
+
+
+### Bug Fixes
+
+* handle database schema mismatches and improve health monitoring ([8b4ab51](https://github.com/Meridiona/meridian/commit/8b4ab512c638b4bdfccc2f8cc281b715b356e92d))
+
 # [1.26.0](https://github.com/Meridiona/meridian/compare/v1.25.0...v1.26.0) (2026-06-05)
 
 
