@@ -59,6 +59,13 @@ pub fn root_causes(report: &Report) -> Vec<Diagnosis> {
             ]),
             action: "Start it (`meridian start`), then `meridian doctor --fix` to drain the backlog.".into(),
         });
+    } else if bad("coding-agent", "session-summary skill") {
+        out.push(Diagnosis {
+            title: "session-summary Claude Code command is missing".into(),
+            cause: "The `claude -p /session-summary` invocation that produces transcript summaries returns 'Unknown command' because ~/.claude/commands/session-summary.md doesn't exist. Every Claude Code session silently falls back to the local MLX model instead of the subscription claude CLI.".into(),
+            contributing: contributing(&[("coding-agent", "session-summary skill")]),
+            action: "`meridian doctor --fix`  (or: `meridian coding-agent-install-skill`)".into(),
+        });
     } else if bad("meridian daemon", "summariser queue") {
         out.push(Diagnosis {
             title: "Coding-agent summariser is stalled".into(),

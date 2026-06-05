@@ -99,6 +99,50 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `meridian coding-agent-install-skill` — write the session-summary Claude
+    // Code command file so `claude -p /session-summary` works. Idempotent; safe
+    // to run any number of times. Also called by `meridian doctor --fix`.
+    if std::env::args().nth(1).as_deref() == Some("coding-agent-install-skill") {
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let commands_dir = home.join(".claude/commands");
+        let skill_path = commands_dir.join("session-summary.md");
+        // Keep rules in sync with src/coding_agent_session_ingest/summariser/prompts.rs
+        let content = concat!(
+            "---\n",
+            "description: Summarise a coding-agent session transcript for a Jira work-log.\n",
+            "---\n\n",
+            "You summarise ONE work-burst of a developer's coding-agent session for a Jira ",
+            "work-log. The transcript is timestamped as `[<ISO ts>] [role] <message>`. Write ",
+            "a factual prose summary of 10-40 sentences: name the files edited, commands run, ",
+            "errors hit, decisions made, tests/validations performed, and any rework or ",
+            "blockers (an approach abandoned, a failed build/test, something deleted and ",
+            "rebuilt). State ONLY what is in the transcript — never invent files, tickets, ",
+            "commands, or outcomes. No preamble, no markdown headings, no bullet lists — just ",
+            "clear paragraphs. If an 'EARLIER IN THIS SESSION' section is present, do not ",
+            "repeat it; summarise only this burst.\n\n",
+            "Return JSON with `summary` (the prose) and `blockers` (a list of distinct ",
+            "blockers / failures / rework, possibly empty).\n"
+        );
+        if let Err(e) = std::fs::create_dir_all(&commands_dir) {
+            eprintln!("coding-agent-install-skill: create dir: {e}");
+            return Ok(());
+        }
+        if skill_path.exists() {
+            println!(
+                "coding-agent-install-skill: already present at {}",
+                skill_path.display()
+            );
+        } else {
+            match std::fs::write(&skill_path, content) {
+                Ok(()) => println!("coding-agent-install-skill: wrote {}", skill_path.display()),
+                Err(e) => eprintln!("coding-agent-install-skill: write: {e}"),
+            }
+        }
+        return Ok(());
+    }
+
     // `meridian pm-worklog [--day YYYY-MM-DD]` — one-shot Stage 4: walk the day's
     // hours and DRAFT one worklog per task per ready hour (never posts — posting
     // is approval-gated). Opens via setup_db so migrations (incl. the pm_worklog
