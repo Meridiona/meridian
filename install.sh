@@ -672,7 +672,19 @@ run ln -sfn "${REPO_ROOT}/scripts/meridian-cli.sh" "${BIN_DIR}/meridian"
 ok "meridian CLI → ${BIN_DIR}/meridian"
 
 # ---------------------------------------------------------------------------
-# Step 9: Final instructions
+# Step 9: Pipeline smoke test — verify both LLM stages work (no DB writes)
+# ---------------------------------------------------------------------------
+
+echo ""
+info "Running pipeline smoke test (this exercises the model — may take ~30s)..."
+if bash "${REPO_ROOT}/scripts/meridian-cli.sh" smoke; then
+    ok "pipeline smoke passed — classification and worklog synthesis are working"
+else
+    warn "pipeline smoke found issues — run 'meridian doctor' for remedies"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 10: Final instructions
 # ---------------------------------------------------------------------------
 
 echo ""

@@ -43,7 +43,8 @@ Commands:
                      target: daemon|daemon-error|screenpipe|screenpipe-error|ui|ui-error|mlx-server|mlx-server-error
     -f               Follow (stream)
     -n N             Last N lines (default 100)
-  doctor             Run environment health checks
+  doctor             Run environment health checks (includes pipeline smoke)
+  smoke              Dry-run both LLM pipeline stages — no DB writes
   worklog-status     Show today's PM worklogs (done/pending/drafted/posted + comments)
                      [--day YYYY-MM-DD]
   config edit        Open the repo-root .env in $EDITOR
@@ -227,26 +228,34 @@ _daemon_bin() {
 }
 
 cmd_doctor() {
-    local bin
+    local bin rc=0
     if bin="$(_daemon_bin)"; then
         set +e
         if [[ "$*" == *--fix* ]]; then
             # --fix has interactive guided prompts — the user is present, so run
             # without the alarm (which would kill a prompt waiting for input).
             "$bin" doctor "$@"
+            rc=$?
         else
             # Guard with a perl alarm so a stale binary (one that predates
             # `doctor` and would fall through to starting the daemon) can never
             # hang the terminal. The Rust report colourises itself on a tty.
             perl -e 'alarm shift @ARGV; exec @ARGV' 30 "$bin" doctor "$@"
+            rc=$?
         fi
-        local rc=$?
         set -e
         # 0 = healthy, 1 = critical issues found — both are real doctor runs.
-        if [[ $rc -eq 0 || $rc -eq 1 ]]; then return $rc; fi
+        if [[ $rc -eq 0 || $rc -eq 1 ]]; then
+            # Append classification smoke (fast path, ~30s max). Failures are
+            # informational — they don't override the doctor exit code, since the
+            # doctor already surfaces the MLX health state.
+            cmd_smoke --classify-only || true
+            return $rc
+        fi
         warn "health engine timed out or is stale — rebuild: cargo build --release"
     fi
     _doctor_fallback
+    cmd_smoke --classify-only || true
 }
 
 # Minimal bash-only checks for when the daemon binary is unavailable.
@@ -268,6 +277,161 @@ _doctor_fallback() {
     echo
     _row info "next step" "cargo build --release && meridian doctor"
     [[ $DOCTOR_FAILURES -eq 0 ]]
+}
+
+# --- smoke (pipeline dry run) ---
+# Sends synthetic requests (no DB writes) to both LLM stages:
+#   --classify-only  fast path (~30s max) called automatically from cmd_doctor
+#   (no flag)        full run: classification + worklog synthesis
+
+_smoke_read_env() {
+    local key="$1" env_file="${REPO_ROOT}/.env"
+    [[ -f "$env_file" ]] || return 0
+    grep -E "^${key}=" "$env_file" 2>/dev/null | tail -1 | cut -d= -f2- || true
+}
+
+_smoke_row() {  # glyph ansi-color label detail
+    local glyph="$1" color="$2" label="$3" detail="${4:-}"
+    if [[ -t 1 ]]; then
+        printf "    \033[%sm%s\033[0m  %-26s \033[2m%s\033[0m\n" "$color" "$glyph" "$label" "$detail"
+    else
+        printf "    %s  %-26s %s\n" "$glyph" "$label" "$detail"
+    fi
+}
+
+_smoke_remedy() {
+    local msg="$1"
+    if [[ -t 1 ]]; then printf "       \033[2m→ %s\033[0m\n" "$msg"
+    else printf "       → %s\n" "$msg"; fi
+}
+
+cmd_smoke() {
+    local classify_only=0
+    [[ "${1:-}" == "--classify-only" ]] && classify_only=1
+
+    local mlx_port
+    mlx_port="$(_smoke_read_env MLX_SERVER_PORT)"
+    mlx_port="${mlx_port:-7823}"
+    local base="http://127.0.0.1:${mlx_port}"
+    local classify_timeout=60
+    [[ $classify_only -eq 1 ]] && classify_timeout=30
+    local all_ok=1
+
+    if [[ -t 1 ]]; then
+        printf "\n  \033[36m▸ smoke (pipeline dry run)\033[0m\n"
+        printf "  \033[2m%s\033[0m\n" "════════════════════════════════════════════════════════"
+    else
+        printf "\n  ▸ smoke (pipeline dry run)\n"
+        printf "  %s\n" "════════════════════════════════════════════════════════"
+    fi
+
+    # Quick reachability probe — if the server isn't up, nothing else can run.
+    local reach_ok=0
+    set +e
+    curl -sf --max-time 5 "${base}/health" >/dev/null 2>&1 && reach_ok=1
+    set -e
+    if [[ $reach_ok -eq 0 ]]; then
+        _smoke_row "✗" "31" "mlx reachable" "server not responding at ${base}"
+        _smoke_remedy "meridian start  (or: meridian logs mlx-server)"
+        echo ""
+        return 1
+    fi
+
+    # Stage 1: classification smoke.
+    # POST /classify takes {"input":"..."} — pure model inference, zero DB access.
+    local t0 classify_resp classify_ok=0
+    t0=$SECONDS
+    set +e
+    classify_resp="$(curl -sf --max-time "${classify_timeout}" \
+        -X POST "${base}/classify" \
+        -H "Content-Type: application/json" \
+        -d '{"input":"App: Xcode\nWindow: ContentView.swift — MyApp\nOCR: func body: some View { Text(\"Hello World\") }\nDuration: 600s"}' \
+        2>/dev/null)"
+    local classify_curl_rc=$?
+    set -e
+    local classify_elapsed=$(( SECONDS - t0 ))
+
+    if [[ $classify_curl_rc -ne 0 || -z "$classify_resp" ]]; then
+        _smoke_row "✗" "31" "classification" "no response from /classify (timeout or error)"
+        _smoke_remedy "check: meridian logs mlx-server"
+        all_ok=0
+    else
+        local stype conf
+        stype="$(printf '%s' "$classify_resp" | grep -o '"session_type":"[^"]*"' | cut -d'"' -f4)" || stype=""
+        conf="$(printf '%s' "$classify_resp" | grep -o '"confidence":[0-9.]*' | cut -d: -f2)" || conf="?"
+        if [[ -n "$stype" ]]; then
+            _smoke_row "✓" "32" "classification" "${classify_elapsed}s  session_type=${stype}  conf=${conf}"
+            classify_ok=1
+        else
+            _smoke_row "✗" "31" "classification" "response did not parse — got: ${classify_resp:0:80}"
+            _smoke_remedy "restart MLX server: meridian dev mlx  (or: meridian restart)"
+            all_ok=0
+        fi
+    fi
+
+    # Fast path (called from cmd_doctor): stop here.
+    if [[ $classify_only -eq 1 ]]; then
+        echo ""
+        [[ $classify_ok -eq 1 ]]
+        return
+    fi
+
+    # Stage 2: worklog synthesis smoke.
+    # POST /synthesise_worklog with a synthetic bundle — the agno agent runs the model
+    # and returns a JiraUpdate. Nothing is written to the DB; Rust never sees this call.
+    local jira_url jira_token linear_key github_token has_pm=0
+    jira_url="$(_smoke_read_env JIRA_BASE_URL)"
+    [[ -z "$jira_url" ]] && jira_url="$(_smoke_read_env JIRA_URL)"
+    jira_token="$(_smoke_read_env JIRA_API_TOKEN)"
+    linear_key="$(_smoke_read_env LINEAR_API_KEY)"
+    github_token="$(_smoke_read_env GITHUB_TOKEN)"
+    [[ -n "$jira_url" && -n "$jira_token" ]] && has_pm=1
+    [[ -n "$linear_key" ]] && has_pm=1
+    [[ -n "$github_token" ]] && has_pm=1
+
+    if [[ $has_pm -eq 0 ]]; then
+        _smoke_row "·" "2" "worklog synthesis" "skipped — no PM credentials in .env"
+        echo ""
+        [[ $all_ok -eq 1 ]]
+        return
+    fi
+
+    # Dates are fixed to 2024-01-01 so the output is obviously synthetic.
+    local synth_bundle
+    synth_bundle='{"bundle":{"task_key":"SMOKE-1","window_start":"2024-01-01T09:00:00","window_end":"2024-01-01T09:30:00","cycle_index":0,"sessions":[{"id":1,"app_name":"Xcode","started_at":"2024-01-01T09:00:00","ended_at":"2024-01-01T09:30:00","duration_s":1800,"idle_frame_s":0,"top_titles":["ContentView.swift — MyApp"],"excerpt":"Implementing SwiftUI body layout. func body: some View { Text(\"Hello World\") }","category":"coding"}],"total_seconds":1800,"real_seconds":1800,"pm_task_title":"Implement ContentView layout"}}'
+
+    local t1 synth_resp synth_ok=0
+    t1=$SECONDS
+    set +e
+    synth_resp="$(curl -sf --max-time 120 \
+        -X POST "${base}/synthesise_worklog" \
+        -H "Content-Type: application/json" \
+        -d "$synth_bundle" \
+        2>/dev/null)"
+    local synth_curl_rc=$?
+    set -e
+    local synth_elapsed=$(( SECONDS - t1 ))
+
+    if [[ $synth_curl_rc -ne 0 || -z "$synth_resp" ]]; then
+        _smoke_row "✗" "31" "worklog synthesis" "no response from /synthesise_worklog (timeout or error)"
+        _smoke_remedy "check: meridian logs mlx-server"
+        all_ok=0
+    elif printf '%s' "$synth_resp" | grep -q '"summary"'; then
+        local bullets conf2
+        bullets="$(printf '%s' "$synth_resp" | grep -o '"text":' | wc -l | tr -d ' ')" || bullets="?"
+        conf2="$(printf '%s' "$synth_resp" | grep -o '"confidence":[0-9.]*' | cut -d: -f2)" || conf2="?"
+        _smoke_row "✓" "32" "worklog synthesis" "${synth_elapsed}s  bullets=${bullets}  conf=${conf2}"
+        synth_ok=1
+    else
+        _smoke_row "✗" "31" "worklog synthesis" "response missing summary — got: ${synth_resp:0:80}"
+        _smoke_remedy "restart MLX server: meridian dev mlx  (or: meridian restart)"
+        all_ok=0
+        synth_ok=0  # explicitly mark unused var for clarity
+        : "$synth_ok"
+    fi
+
+    echo ""
+    [[ $all_ok -eq 1 ]]
 }
 
 # --- config ---
@@ -478,6 +642,7 @@ case "$CMD" in
     status)           cmd_status ;;
     logs)             cmd_logs "$@" ;;
     doctor)           cmd_doctor "$@" ;;
+    smoke)            cmd_smoke "$@" ;;
     config)           cmd_config "$@" ;;
     dev)              cmd_dev "$@" ;;
     uninstall)        cmd_uninstall ;;
