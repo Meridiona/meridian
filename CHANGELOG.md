@@ -1,3 +1,10 @@
+## [1.24.6](https://github.com/Meridiona/meridian/compare/v1.24.5...v1.24.6) (2026-06-05)
+
+
+### Bug Fixes
+
+* **mlx-server:** use fresh OS thread for Apple FM to escape anyio event loop ([#174](https://github.com/Meridiona/meridian/issues/174)) ([7ea6519](https://github.com/Meridiona/meridian/commit/7ea6519517997afa040b61702e61924596612356))
+
 ## [1.24.5](https://github.com/Meridiona/meridian/compare/v1.24.4...v1.24.5) (2026-06-05)
 
 
