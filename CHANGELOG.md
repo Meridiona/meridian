@@ -1,3 +1,10 @@
+# [1.24.0](https://github.com/Meridiona/meridian/compare/v1.23.11...v1.24.0) (2026-06-05)
+
+
+### Features
+
+* **smoke:** add pipeline dry-run check to doctor and install ([e285d6e](https://github.com/Meridiona/meridian/commit/e285d6e664ef5fe8af894c13fed281df2cb97dcb))
+
 ## [1.23.11](https://github.com/Meridiona/meridian/compare/v1.23.10...v1.23.11) (2026-06-05)
 
 
