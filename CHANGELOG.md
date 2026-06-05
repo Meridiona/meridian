@@ -1,3 +1,10 @@
+## [1.23.9](https://github.com/Meridiona/meridian/compare/v1.23.8...v1.23.9) (2026-06-05)
+
+
+### Performance Improvements
+
+* **release:** conditional UI tarball — skip ~10 MB download when dashboard unchanged ([#164](https://github.com/Meridiona/meridian/issues/164)) ([f241f95](https://github.com/Meridiona/meridian/commit/f241f959cc0e1d807126d1dd3dcd571d69b7a62a))
+
 ## [1.23.8](https://github.com/Meridiona/meridian/compare/v1.23.7...v1.23.8) (2026-06-05)
 
 
