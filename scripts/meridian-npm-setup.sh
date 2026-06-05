@@ -36,10 +36,16 @@ if [[ -d "${APP}/services/.venv" ]]; then mv "${APP}/services/.venv" "${venv_kee
 _hash_file="${HOME}/.meridian/.component-hashes"
 _ui_keep="${HOME}/.meridian/.ui-update-keep"
 rm -rf "${_ui_keep}"
-if [[ -f "${BUNDLE}/ui.tar.gz" ]] && [[ -d "${APP}/ui" ]] && [[ -f "${_hash_file}" ]]; then
-    _old_ui_hash="$(grep '^ui_tarball=' "${_hash_file}" 2>/dev/null | cut -d= -f2 || true)"
-    _new_ui_hash="$(shasum -a 256 "${BUNDLE}/ui.tar.gz" | cut -d' ' -f1)"
-    if [[ -n "${_old_ui_hash}" && "${_new_ui_hash}" == "${_old_ui_hash}" ]]; then
+if [[ -d "${APP}/ui" ]]; then
+    if [[ -f "${BUNDLE}/ui.tar.gz" ]] && [[ -f "${_hash_file}" ]]; then
+        # Tarball present: preserve existing ui/ only when hash matches (unchanged build).
+        _old_ui_hash="$(grep '^ui_tarball=' "${_hash_file}" 2>/dev/null | cut -d= -f2 || true)"
+        _new_ui_hash="$(shasum -a 256 "${BUNDLE}/ui.tar.gz" | cut -d' ' -f1)"
+        if [[ -n "${_old_ui_hash}" && "${_new_ui_hash}" == "${_old_ui_hash}" ]]; then
+            mv "${APP}/ui" "${_ui_keep}"
+        fi
+    elif [[ ! -f "${BUNDLE}/ui.tar.gz" ]]; then
+        # No tarball in bundle = UI unchanged since last release; keep existing build.
         mv "${APP}/ui" "${_ui_keep}"
     fi
 fi
