@@ -113,6 +113,14 @@ pub async fn sweep(pool: &SqlitePool, now: DateTime<Utc>) -> (u64, u64) {
             if records.is_empty() {
                 continue;
             }
+            // Trailing non-turn events (Copilot's session.shutdown, late
+            // session.info, …) keep the file's mtime ahead of the stored
+            // ended_at forever. Without this check every settled session
+            // would re-register — and spuriously wake the summariser — on
+            // every tick. Only genuinely new TURNS count as a change.
+            if !has_new_turns(&records, endpoints.get(&uuid).map(String::as_str)) {
+                continue;
+            }
             match register_records(pool, &uuid, agent, records, false, now).await {
                 Outcome::Inserted => wrote += 1,
                 Outcome::Failed => failed += 1,
@@ -125,6 +133,64 @@ pub async fn sweep(pool: &SqlitePool, now: DateTime<Utc>) -> (u64, u64) {
         tracing::info!(wrote, failed, "coding-agent source sweep");
     }
     (wrote, failed)
+}
+
+/// True iff the record stream contains a TURN newer than the stored endpoint
+/// (canonical-ISO lexicographic compare). No stored endpoint → any turn is new.
+fn has_new_turns(records: &[NormRecord], stored_end: Option<&str>) -> bool {
+    let last_turn = records
+        .iter()
+        .rev()
+        .find(|r| r.is_turn && r.timestamp.is_some())
+        .and_then(|r| r.timestamp.as_deref());
+    match (last_turn, stored_end) {
+        (None, _) => false, // no turns at all → nothing to register
+        (Some(_), None) => true,
+        (Some(lt), Some(end)) => super::segment::norm_iso(lt).as_str() > end,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rec(ts: Option<&str>, is_turn: bool) -> NormRecord {
+        NormRecord {
+            timestamp: ts.map(String::from),
+            cwd: None,
+            is_turn,
+            is_user: false,
+            is_user_prompt: false,
+            role_label: None,
+            body: String::new(),
+        }
+    }
+
+    #[test]
+    fn has_new_turns_ignores_trailing_non_turn_events() {
+        // Turn at 06:18, then a session.shutdown 3h later. Stored endpoint
+        // covers the turn → the shutdown alone must NOT count as a change.
+        let records = vec![
+            rec(Some("2026-05-29T06:18:55.697Z"), true),
+            rec(Some("2026-05-29T09:31:22.703Z"), false),
+        ];
+        let stored = "2026-05-29T06:18:55.697000+00:00";
+        assert!(!has_new_turns(&records, Some(stored)));
+
+        // A turn AFTER the endpoint is a real change.
+        let records2 = vec![
+            rec(Some("2026-05-29T06:18:55.697Z"), true),
+            rec(Some("2026-05-29T09:31:22.703Z"), true),
+        ];
+        assert!(has_new_turns(&records2, Some(stored)));
+
+        // Never-seen session with any turn → change; turn-less stream → not.
+        assert!(has_new_turns(&records, None));
+        assert!(!has_new_turns(
+            &[rec(Some("2026-05-29T09:31:22.703Z"), false)],
+            None
+        ));
+    }
 }
 
 // ──────────────────────── Shared helpers ───────────────────────────────────
