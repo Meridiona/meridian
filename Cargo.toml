@@ -1,6 +1,6 @@
 [package]
 name = "meridian"
-version = "1.23.9"
+version = "1.23.10"
 edition = "2021"
 description = "Meridian — normalises screenpipe activity into structured app sessions"
 authors = ["Meridiona"]
