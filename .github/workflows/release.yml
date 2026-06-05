@@ -95,19 +95,6 @@ jobs:
           # Key matches _NODE22_VERSION in scripts/package-release.sh — update both together.
           key: node22-22.22.3-darwin-arm64
 
-      - name: Build (Rust daemon + UI dashboard in parallel)
-        run: |
-          cargo build --release &
-          CARGO_PID=$!
-          (cd ui && npm ci --no-audit --no-fund && npm run build) &
-          UI_PID=$!
-          wait $CARGO_PID; CARGO_RC=$?
-          wait $UI_PID;   UI_RC=$?
-          if [ $CARGO_RC -ne 0 ] || [ $UI_RC -ne 0 ]; then
-            echo "Build failed — cargo_rc=${CARGO_RC} ui_rc=${UI_RC}" >&2
-            exit 1
-          fi
-
       - name: semantic-release
         env:
           # GitHub PAT (repo scope) to push the version commit to main past
