@@ -13,6 +13,7 @@ pub mod hook;
 pub mod indexer;
 pub mod jsonl;
 pub mod segment;
+pub mod sources;
 pub mod summariser;
 
 use std::path::PathBuf;

@@ -38,10 +38,15 @@ pub const TASK_METHOD_PENDING: &str = "pending_summariser";
 
 /// Agent flavour → app_name. We use the agent's product name, not the host
 /// terminal/IDE: a Claude Code session is `Claude Code` whether run inside VS
-/// Code, iTerm2, or any other terminal.
+/// Code, iTerm2, or any other terminal. Agent products that share a name with
+/// a screen-captured app (Cursor the IDE vs Cursor's agent) get a distinct
+/// suffix so transcript rows don't mix with screen-ETL rows in dashboards.
 fn app_name_for(agent: &str) -> &'static str {
     match agent {
         "codex" => "Codex",
+        "copilot_cli" | "copilot_vscode" => "GitHub Copilot",
+        "cursor" => "Cursor Agent",
+        "antigravity" => "Antigravity Agent",
         _ => "Claude Code",
     }
 }
@@ -50,6 +55,10 @@ fn text_source_for(agent: &str) -> Option<&'static str> {
     match agent {
         "claude_code" => Some("claude_jsonl"),
         "codex" => Some("codex_jsonl"),
+        "copilot_cli" => Some("copilot_events_jsonl"),
+        "copilot_vscode" => Some("copilot_chat_jsonl"),
+        "cursor" => Some("cursor_vscdb"),
+        "antigravity" => Some("antigravity"),
         _ => None,
     }
 }

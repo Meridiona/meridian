@@ -21,6 +21,8 @@ pub struct SummariserConfig {
     pub codex_model: String,
     pub codex_timeout_s: u64,
 
+    pub copilot_timeout_s: u64,
+
     /// How many times to attempt the primary engine before falling back to MLX
     /// (the user's "try 2 times, then MLX" rule). Rate-limit short-circuits.
     pub primary_attempts: u32,
@@ -67,6 +69,7 @@ impl SummariserConfig {
             claude_timeout_s: n("SUMMARISER_CLAUDE_TIMEOUT_S", 240),
             codex_model: s("SUMMARISER_CODEX_MODEL", ""),
             codex_timeout_s: n("SUMMARISER_CODEX_TIMEOUT_S", 240),
+            copilot_timeout_s: n("SUMMARISER_COPILOT_TIMEOUT_S", 240),
             primary_attempts: n("SUMMARISER_PRIMARY_ATTEMPTS", 2),
             transcript_cap_chars: n("SUMMARISER_TRANSCRIPT_CAP", 500_000),
             mlx_host: s("MLX_SERVER_HOST", "127.0.0.1"),

@@ -62,13 +62,15 @@ impl IndexerConfig {
     }
 }
 
-/// Device gate: a terminal coding agent is present iff its data dir exists OR
-/// its binary resolves on PATH. When false, the indexer task stays dormant.
+/// Device gate: a coding agent is present iff its data dir exists OR its
+/// binary resolves on PATH, for the JSONL agents (claude/codex) or any source
+/// adapter (Copilot CLI, …). When false, the indexer task stays dormant.
 pub fn coding_agents_present(cfg: &IndexerConfig) -> bool {
     cfg.claude_projects_dir.exists()
         || cfg.codex_sessions_dir.exists()
         || binary_on_path("claude")
         || binary_on_path("codex")
+        || super::sources::any_source_present()
 }
 
 fn binary_on_path(bin: &str) -> bool {
@@ -101,7 +103,6 @@ pub async fn register_session(
         Some(u) => u.to_string(),
         None => return Outcome::SkippedEmpty,
     };
-    let now_iso = iso_utc(now);
 
     // Exclude already-sealed content so any newer record opens a fresh segment.
     let start_after = match db::sealed_high_water(pool, &uuid).await {
@@ -131,6 +132,18 @@ pub async fn register_session(
         }
     };
 
+    register_segments(pool, &segments, session_ended, now).await
+}
+
+/// Upsert a parsed segment list, sealing settled ones — the shared tail of
+/// `register_session` (JSONL path) and the source adapters (`sources/`).
+pub async fn register_segments(
+    pool: &SqlitePool,
+    segments: &[Segment],
+    session_ended: bool,
+    now: DateTime<Utc>,
+) -> Outcome {
+    let now_iso = iso_utc(now);
     let valid: Vec<&Segment> = segments.iter().filter(|s| s.is_valid()).collect();
     if valid.is_empty() {
         return Outcome::SkippedEmpty;
@@ -162,6 +175,34 @@ pub async fn register_session(
     } else {
         Outcome::Inserted
     }
+}
+
+/// Register one session from an already-normalised record stream — the
+/// source-adapter twin of `register_session`. Excludes already-sealed content
+/// via the sealed high-water mark, segments, and upserts.
+pub async fn register_records(
+    pool: &SqlitePool,
+    session_uuid: &str,
+    agent: &str,
+    records: Vec<super::jsonl::NormRecord>,
+    session_ended: bool,
+    now: DateTime<Utc>,
+) -> Outcome {
+    let start_after = match db::sealed_high_water(pool, session_uuid).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(uuid = %session_uuid, error = %e, "sealed_high_water failed");
+            return Outcome::Failed;
+        }
+    };
+    let params = SegmentParams {
+        agent: Some(agent.to_string()),
+        start_after_ts: start_after,
+        ..Default::default()
+    };
+    let (_meta, segments) =
+        super::segment::segment_records(records, session_uuid, agent, 0, &params);
+    register_segments(pool, &segments, session_ended, now).await
 }
 
 /// A non-last segment is always sealed (its >1h gap already happened). The last
@@ -205,6 +246,11 @@ pub async fn run_tick(pool: &SqlitePool, cfg: &IndexerConfig, now: DateTime<Utc>
             Outcome::SkippedEmpty => {}
         }
     }
+
+    // Non-JSONL sources (Copilot CLI, …) sweep through the adapter seam.
+    let (src_wrote, src_failed) = super::sources::sweep(pool, now).await;
+    wrote += src_wrote;
+    failed += src_failed;
 
     if sealed > 0 || wrote > 0 || failed > 0 {
         tracing::info!(sealed, wrote, failed, "coding-agent indexer tick");
@@ -314,7 +360,7 @@ pub async fn run_loop(
 ) {
     let cfg = IndexerConfig::from_env();
     if !coding_agents_present(&cfg) {
-        tracing::info!("coding-agent indexer dormant — no claude/codex detected");
+        tracing::info!("coding-agent indexer dormant — no coding agent detected");
         return;
     }
     tracing::info!(

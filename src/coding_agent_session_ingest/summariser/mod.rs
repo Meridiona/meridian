@@ -16,6 +16,7 @@
 pub mod claude;
 pub mod codex;
 pub mod config;
+pub mod copilot;
 pub mod db;
 pub mod mlx;
 pub mod prompts;
@@ -141,6 +142,7 @@ pub(super) async fn run_capture(
 pub enum Source {
     Claude,
     Codex,
+    Copilot,
     Mlx,
     None,
 }
@@ -150,6 +152,7 @@ impl Source {
         match self {
             Source::Claude => "claude",
             Source::Codex => "codex",
+            Source::Copilot => "copilot",
             Source::Mlx => "mlx",
             Source::None => "none",
         }
@@ -201,17 +204,21 @@ pub async fn summarise_one(
     let mut errors: Vec<String> = Vec::new();
 
     // 1. Primary: the session's own agent, up to `primary_attempts` tries.
-    let is_codex = row.agent.trim().eq_ignore_ascii_case("codex");
-    let primary_source = if is_codex {
+    // Each agent's transcripts go to its own CLI (codex→codex, copilot→copilot,
+    // claude/unknown→claude); MLX is the shared fallback for all of them.
+    let agent = row.agent.trim();
+    let primary_source = if agent.eq_ignore_ascii_case("codex") {
         Source::Codex
+    } else if agent.eq_ignore_ascii_case("github copilot") {
+        Source::Copilot
     } else {
         Source::Claude
     };
     for attempt in 1..=cfg.primary_attempts.max(1) {
-        let res = if is_codex {
-            codex::run_codex(&stdin_text, cfg).await
-        } else {
-            claude::run_claude(&stdin_text, cfg).await
+        let res = match primary_source {
+            Source::Codex => codex::run_codex(&stdin_text, cfg).await,
+            Source::Copilot => copilot::run_copilot(&stdin_text, cfg).await,
+            _ => claude::run_claude(&stdin_text, cfg).await,
         };
         match res {
             Ok(out) => {
@@ -318,6 +325,7 @@ fn build_prompt(transcript: &str, prior: Option<&str>, cap: usize) -> String {
 
 /// Bound transcript size: keep the head (task setup) and tail (outcome). Most
 /// bursts pass through untouched. Char-counted to match the Python original.
+/// Also used by copilot.rs to re-cap for argv embedding (no stdin support).
 fn cap_transcript(transcript: &str, cap: usize) -> String {
     let chars: Vec<char> = transcript.chars().collect();
     if chars.len() <= cap {
@@ -343,7 +351,7 @@ pub async fn run_loop(
 ) {
     use super::indexer::{coding_agents_present, IndexerConfig};
     if !coding_agents_present(&IndexerConfig::from_env()) {
-        tracing::info!("coding-agent summariser dormant — no claude/codex detected");
+        tracing::info!("coding-agent summariser dormant — no coding agent detected");
         return;
     }
     let cfg = SummariserConfig::from_env();
