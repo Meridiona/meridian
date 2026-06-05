@@ -114,8 +114,15 @@ LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
 install_ui_standalone() {
     local label="com.meridiona.ui"
     local plist="${LAUNCH_AGENTS}/${label}.plist"
+    # Prefer a bundled Node runtime (ABI-matched to the better-sqlite3 addon in
+    # ui.tar.gz). Fall back to system/Homebrew Node when not included in this package.
     local node_bin="${APP_ROOT}/bin/node-runtime"
-    [[ -x "${node_bin}" ]] || { err "bundled node runtime missing — re-install: npm install -g @meridiona/meridian"; return 1; }
+    if [[ ! -x "${node_bin}" ]]; then
+        for _n in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+            [[ -x "${_n}" ]] && { node_bin="${_n}"; break; }
+        done
+    fi
+    [[ -x "${node_bin}" ]] || { err "node not found — install Node.js: brew install node"; return 1; }
     local start_script="${APP_ROOT}/scripts/ui-start.sh"
     chmod +x "${start_script}" 2>/dev/null || true
     mkdir -p "${HOME}/.meridian/logs" "${LAUNCH_AGENTS}"
