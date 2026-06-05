@@ -91,7 +91,9 @@ if [[ "${_ui_changed}" -eq 1 ]]; then
     _bs_version="$("${_NODE22_BIN}" -e "process.stdout.write(require('./ui/node_modules/better-sqlite3/package.json').version)")"
     echo "  · building better-sqlite3@${_bs_version} for Node 22 (ABI 127)…"
     _bs_tmp="$(mktemp -d)"
-    HOME="${_bs_tmp}" "${_NODE22_BIN}" "${_NODE22_NPM_CLI}" install \
+    # Prepend Node 22's bin dir to PATH so npm lifecycle scripts (prebuild-install,
+    # node-gyp rebuild) use Node 22 — not the CI's system node (Node 24, ABI 137).
+    PATH="${_NODE22_DIR}/bin:${PATH}" HOME="${_bs_tmp}" "${_NODE22_BIN}" "${_NODE22_NPM_CLI}" install \
         --prefix "${_bs_tmp}" \
         --no-save --prefer-offline=false "better-sqlite3@${_bs_version}" 2>&1 | tail -20 || true
     _bs_node="$(find "${_bs_tmp}" -name "better_sqlite3.node" -path "*/Release/*" 2>/dev/null | head -1)"
