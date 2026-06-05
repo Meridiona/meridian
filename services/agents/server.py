@@ -190,6 +190,7 @@ async def classify(req: ClassifyRequest) -> ClassifyResponse:
 
     import json as _json
     import time as _time
+    from fastapi.concurrency import run_in_threadpool
     from outlines.inputs import Chat
     from mlx_lm.sample_utils import make_sampler
 
@@ -201,19 +202,24 @@ async def classify(req: ClassifyRequest) -> ClassifyResponse:
         {"role": "user",   "content": req.input},
     ]
     t0 = _time.time()
-    try:
+
+    def _run_classify() -> "m.SessionClassification":
         if m._resolve_model_id() == APPLE_INTELLIGENCE_ID:
-            result = m._classify_apple_fm(messages)
-        else:
-            model = m._get_model()
-            raw = model(
-                Chat(messages),
-                output_type=m.SessionClassification,
-                max_tokens=m._MAX_TOKENS,
-                sampler=make_sampler(temp=m._TEMPERATURE),
-                verbose=False,
-            )
-            result = m.SessionClassification.model_validate_json(raw)
+            # _classify_apple_fm uses asyncio.new_event_loop() internally;
+            # must run in a thread (no existing loop) not in the async handler.
+            return m._classify_apple_fm(messages)
+        model = m._get_model()
+        raw = model(
+            Chat(messages),
+            output_type=m.SessionClassification,
+            max_tokens=m._MAX_TOKENS,
+            sampler=make_sampler(temp=m._TEMPERATURE),
+            verbose=False,
+        )
+        return m.SessionClassification.model_validate_json(raw)
+
+    try:
+        result = await run_in_threadpool(_run_classify)
     except Exception as exc:
         log.warning("classify: inference error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
