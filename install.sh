@@ -250,6 +250,96 @@ prompt_permissions() {
     ok "Microphone acknowledged"
 }
 
+# Check if a11y-helper has accessibility permission granted by reading its log
+is_a11y_helper_trusted() {
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+        return 0
+    fi
+    # Check the a11y-helper log file for the latest trust state
+    local log_file="${HOME}/.meridian/logs/a11y-helper.log"
+    if [[ ! -f "${log_file}" ]]; then
+        # Log doesn't exist yet, assume not trusted
+        return 1
+    fi
+    # Get the LAST occurrence of "AX trusted:" line (most recent state)
+    local last_line
+    last_line="$(grep "AX trusted:" "${log_file}" | tail -1)"
+    if [[ -z "${last_line}" ]]; then
+        # No trust state logged yet
+        return 1
+    fi
+    # Check if the last line says "true"
+    if echo "${last_line}" | grep -q "AX trusted: true"; then
+        return 0
+    fi
+    return 1
+}
+
+# Prompt user to grant accessibility permission to a11y-helper
+prompt_a11y_helper_permission() {
+    if [[ "${SKIP_PERMISSIONS:-0}" == "1" ]]; then
+        return 0
+    fi
+
+    local a11y_helper_path="${HOME}/.meridian/bin/meridian-a11y-helper"
+
+    # If already trusted, skip
+    if is_a11y_helper_trusted; then
+        ok "a11y-helper accessibility permission already granted"
+        return 0
+    fi
+
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+        info "[DRY-RUN] would prompt: Grant accessibility to a11y-helper"
+        return 0
+    fi
+
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  Electron apps (Claude, Codex, VS Code, …) need one more permission"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo "  The a11y-helper daemon enables accessibility on Electron apps so"
+    echo "  screenpipe can capture them. This requires a one-time macOS permission."
+    echo ""
+
+    read -r -p "  Press Enter to open System Settings → Accessibility… " _
+    run open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+
+    echo ""
+    echo "  Steps:"
+    echo "    1. Click '+' to add an app"
+    echo "    2. Navigate to and select: ${a11y_helper_path}"
+    echo "    3. Toggle the switch ON (to the right)"
+    echo ""
+
+    read -r -p "  Press Enter when the toggle is ON… " _
+
+    # Auto-restart the daemon to pick up the new permission
+    if [[ -n "$(command -v launchctl)" ]]; then
+        local gui_target="gui/$(id -u)"
+        local label="com.meridiona.a11y-helper"
+
+        info "Restarting a11y-helper daemon to activate permission…"
+        launchctl kickstart -k "${gui_target}/${label}" 2>/dev/null || true
+        sleep 1
+    fi
+
+    # Verify the permission was granted
+    if is_a11y_helper_trusted; then
+        echo ""
+        echo "  ✓ Success! a11y-helper is now trusted."
+        echo "    Electron apps will be captured on your next focus."
+        echo ""
+        ok "a11y-helper accessibility permission granted"
+    else
+        echo ""
+        warn "a11y-helper still not trusted — ensure the toggle is fully ON"
+        echo "    Then run: meridian doctor"
+        echo ""
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Arg parsing
 # ---------------------------------------------------------------------------
@@ -622,6 +712,9 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
     info "Installing a11y-helper launchd agent..."
     run bash "${REPO_ROOT}/scripts/install-a11y-helper-daemon.sh"
     ok "a11y-helper launchd agent installed"
+
+    # Prompt user to grant accessibility permission if not already done
+    prompt_a11y_helper_permission
 
     # MLX server must be running before the Rust daemon starts — the daemon
     # TCP-connects to it on startup and exits hard if the port is not reachable.
