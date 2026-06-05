@@ -229,6 +229,10 @@ async fn main() -> Result<()> {
     )
     .log("startup");
 
+    // 4d. Cursor agent preflight: check if cursor-agent is installed and attempt
+    //     auto-login. Non-fatal — summariser falls back to MLX if unavailable.
+    meridian::coding_agent_session_ingest::cursor_agent_init::check_and_init().await;
+
     // 5. Open / create meridian pool and run migrations
     let meridian = setup_db(&initial_cfg.meridian_db_uri()).await?;
 

@@ -8,6 +8,7 @@
 // agent present. CLI subcommands (`coding-agent-hook`, `coding-agent-summarise`)
 // run one-shot against the same DB.
 
+pub mod cursor_agent_init;
 pub mod db;
 pub mod hook;
 pub mod indexer;
