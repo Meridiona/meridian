@@ -121,7 +121,9 @@ if [[ "${_ui_changed}" -eq 1 ]]; then
     cp "${_bs_node}" "${_staged_nodes}"
     rm -rf "${_bs_tmp}"
     # Positive check: Node 22 must load the replaced binary.
-    _staged_pkg="$(dirname "$(dirname "$(dirname "${_staged_nodes}")")")"
+    # Use an absolute path — find returns a relative path and require() treats
+    # bare paths (no leading / ./ ../) as module names, not file paths.
+    _staged_pkg="${REPO_ROOT}/$(dirname "$(dirname "$(dirname "${_staged_nodes}")")")"
     "${_NODE22_BIN}" -e "require('${_staged_pkg}')" 2>/dev/null || {
         echo "✗ Node 22 failed to load rebuilt better-sqlite3 — aborting" >&2
         rm -rf "${_node22_tmp}"; exit 1
