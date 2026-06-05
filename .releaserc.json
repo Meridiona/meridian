@@ -5,17 +5,17 @@
     "@semantic-release/commit-analyzer",
     "@semantic-release/release-notes-generator",
     ["@semantic-release/changelog", { "changelogFile": "CHANGELOG.md" }],
-    ["@semantic-release/exec", {
-      "prepareCmd": "bash scripts/set-version.sh ${nextRelease.version} && cargo build --release && (cd ui && npm ci && npm run build) && bash scripts/package-release.sh ${nextRelease.version}",
-      "publishCmd": "npm publish ./npm/meridian-darwin-arm64 --access public"
-    }],
-    ["@semantic-release/npm", { "pkgRoot": "npm/meridian" }],
     ["@semantic-release/github", {
       "assets": [
         { "path": "release-assets/services-venv-*.tar.gz", "label": "Python venv (pre-built site-packages, macOS arm64)" },
         { "path": "release-assets/services-venv-*.tar.gz.sha256", "label": "Python venv SHA-256" }
       ]
     }],
+    ["@semantic-release/exec", {
+      "prepareCmd": "bash scripts/set-version.sh ${nextRelease.version} && cargo build --release && (cd ui && npm ci && npm run build) && bash scripts/package-release.sh ${nextRelease.version} && bash scripts/verify-release-bundle.sh ${nextRelease.version}",
+      "publishCmd": "npm publish ./npm/meridian-darwin-arm64 --access public"
+    }],
+    ["@semantic-release/npm", { "pkgRoot": "npm/meridian" }],
     ["@semantic-release/git", {
       "assets": [
         "CHANGELOG.md",
