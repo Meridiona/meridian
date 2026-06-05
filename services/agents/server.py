@@ -193,22 +193,27 @@ async def classify(req: ClassifyRequest) -> ClassifyResponse:
     from outlines.inputs import Chat
     from mlx_lm.sample_utils import make_sampler
 
+    from agents.llm_selector import APPLE_INTELLIGENCE_ID
+
     m = _app_state["mlx_module"]
-    model = m._get_model()
     messages = [
         {"role": "system", "content": m._SYSTEM_PROMPT},
         {"role": "user",   "content": req.input},
     ]
     t0 = _time.time()
     try:
-        raw = model(
-            Chat(messages),
-            output_type=m.SessionClassification,
-            max_tokens=m._MAX_TOKENS,
-            sampler=make_sampler(temp=m._TEMPERATURE),
-            verbose=False,
-        )
-        result = m.SessionClassification.model_validate_json(raw)
+        if m._resolve_model_id() == APPLE_INTELLIGENCE_ID:
+            result = m._classify_apple_fm(messages)
+        else:
+            model = m._get_model()
+            raw = model(
+                Chat(messages),
+                output_type=m.SessionClassification,
+                max_tokens=m._MAX_TOKENS,
+                sampler=make_sampler(temp=m._TEMPERATURE),
+                verbose=False,
+            )
+            result = m.SessionClassification.model_validate_json(raw)
     except Exception as exc:
         log.warning("classify: inference error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc

@@ -523,9 +523,17 @@ fi
 info "Installing screenpipe launchd agent…"
 bash "${APP_ROOT}/scripts/install-screenpipe-daemon.sh" || warn "screenpipe agent install failed"
 
-# MLX: skip restart + model-load wait when server was already healthy and the
-# Python services/venv didn't change — saves ~9 s on every non-Python update.
-if [[ "${_mlx_was_healthy}" -eq 1 && "${_venv_changed}" -eq 0 ]]; then
+# MLX: skip restart + model-load wait when server was already healthy and
+# neither the venv nor the Python source files changed.
+_PY_SRC_STAMP="${HOME}/.meridian/py-src.sha256"
+_py_src_hash="$(find "${APP_ROOT}/services/agents" -name '*.py' | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256 | cut -d' ' -f1 || true)"
+_py_src_changed=1
+if [[ -f "${_PY_SRC_STAMP}" && "$(cat "${_PY_SRC_STAMP}")" == "${_py_src_hash}" ]]; then
+    _py_src_changed=0
+fi
+echo "${_py_src_hash}" > "${_PY_SRC_STAMP}"
+
+if [[ "${_mlx_was_healthy}" -eq 1 && "${_venv_changed}" -eq 0 && "${_py_src_changed}" -eq 0 ]]; then
     ok "Python services unchanged — MLX server kept running"
 else
     info "Installing MLX inference server launchd agent…"
