@@ -95,6 +95,12 @@ pub(crate) async fn collect_from_pool(
     endpoints: &HashMap<String, String>,
     now: DateTime<Utc>,
 ) -> Vec<(String, Vec<NormRecord>)> {
+    // Skip if we're running inside a summariser subprocess (avoid indexing
+    // conversations created by cursor-agent during summary runs).
+    if std::env::var("MERIDIAN_SUMMARISER").is_ok() {
+        return Vec::new();
+    }
+
     let rows: Vec<(String, String)> =
         match sqlx::query_as("SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'")
             .fetch_all(pool)
