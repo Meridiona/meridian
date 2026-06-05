@@ -217,8 +217,12 @@ PLIST
 configure_editor_accessibility() {
     local support_root="${HOME}/Library/Application Support"
     local editors=("Code" "Cursor" "Antigravity IDE")
-    local any=0 ed dir settings
-    for ed in "${editors[@]}"; do
+    # App bundles, index-matched to `editors`, for running-process detection.
+    local app_bundles=("Visual Studio Code.app" "Cursor.app" "Antigravity IDE.app")
+    local any=0 i ed dir settings
+    local needs_restart=()
+    for i in "${!editors[@]}"; do
+        ed="${editors[$i]}"
         dir="${support_root}/${ed}"
         [[ -d "$dir" ]] || continue           # editor not installed → skip
         any=1
@@ -236,8 +240,21 @@ configure_editor_accessibility() {
             # JSONC-tolerant, so this preserves existing keys/comments/formatting.
             perl -0777 -i -pe 's/\{/\{\n\t"editor.accessibilitySupport": "on",/ unless $done++' "$settings"
         fi
-        ok "${ed}: enabled editor.accessibilitySupport = on (restart the editor)"
+        ok "${ed}: enabled editor.accessibilitySupport = on"
+        # The setting is read ONCE at editor boot. If the editor is running
+        # right now, it booted before this write and will keep capturing
+        # nothing until relaunched — these apps routinely run for days, so
+        # without an explicit restart the setting sits inert on disk and the
+        # editor's activity is silently invisible to screenpipe.
+        if pgrep -qf "/Applications/${app_bundles[$i]}/" 2>/dev/null; then
+            needs_restart+=("${ed}")
+        fi
     done
+    if [[ ${#needs_restart[@]} -gt 0 ]]; then
+        warn "RESTART REQUIRED: ${needs_restart[*]} — running editors only read"
+        warn "editor.accessibilitySupport at launch. Quit and reopen them now, or"
+        warn "their activity will NOT be captured until the next relaunch."
+    fi
     [[ "$any" -eq 0 ]] && info "No VS Code / Cursor / Antigravity install found — skipping editor a11y setup"
     return 0
 }
