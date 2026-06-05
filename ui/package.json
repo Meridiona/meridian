@@ -11,10 +11,8 @@
   },
   "dependencies": {
     "@opentelemetry/api": "1.9",
-    "@opentelemetry/exporter-trace-otlp-http": "0.55",
-    "@opentelemetry/resources": "1.28",
+    "@opentelemetry/exporter-trace-otlp-http": "0.217",
     "@opentelemetry/sdk-node": "0.217",
-    "@opentelemetry/semantic-conventions": "1.28",
     "@radix-ui/react-collapsible": "1.1.11",
     "@radix-ui/react-select": "^2.2.6",
     "@radix-ui/react-switch": "^1.2.6",

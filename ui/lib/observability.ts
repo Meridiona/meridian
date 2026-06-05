@@ -2,8 +2,6 @@
 
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
-import { Resource } from "@opentelemetry/resources";
-import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
 import { trace, SpanStatusCode, Span, Attributes } from "@opentelemetry/api";
 import pino from "pino";
 
@@ -30,8 +28,11 @@ export function initOtel(): void {
 
   const exporter = new OTLPTraceExporter({ url: endpoint, headers });
 
+  // serviceName lets NodeSDK build the resource internally — avoids a direct
+  // @opentelemetry/resources dep whose version can drift from sdk-node's own
+  // (the dual-package type clash that broke the v1.24.6 release build).
   _sdk = new NodeSDK({
-    resource: new Resource({ [ATTR_SERVICE_NAME]: _serviceName }),
+    serviceName: _serviceName,
     traceExporter: exporter,
   });
 
