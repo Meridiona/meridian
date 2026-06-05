@@ -16,6 +16,14 @@ UI_PORT="${MERIDIAN_UI_PORT:-3939}"   # dashboard port (override via MERIDIAN_UI
 SKIP_PERMISSIONS=0
 [[ "${1:-}" == "--skip-permissions" ]] && SKIP_PERMISSIONS=1
 
+# Component-hash file lives OUTSIDE APP_ROOT so it survives `rm -rf` on updates.
+# Used for differential installs: only restart daemons / re-extract assets that
+# actually changed since the previous release.
+_HASH_FILE="${HOME}/.meridian/.component-hashes"
+_load_old_hash() { grep "^$1=" "${_HASH_FILE}" 2>/dev/null | cut -d= -f2 || true; }
+_OLD_DAEMON_HASH="$(_load_old_hash daemon_bin)"
+_OLD_UI_HASH="$(_load_old_hash ui_tarball)"
+
 info() { echo "→ $*" >&2; }
 ok()   { echo "  ✓ $*" >&2; }
 warn() { echo "  ⚠ $*" >&2; }
@@ -107,6 +115,8 @@ install_ui_standalone() {
     local label="com.meridiona.ui"
     local plist="${LAUNCH_AGENTS}/${label}.plist"
     local node_bin; node_bin="$(command -v node)"
+    local start_script="${APP_ROOT}/scripts/ui-start.sh"
+    chmod +x "${start_script}" 2>/dev/null || true
     mkdir -p "${HOME}/.meridian/logs" "${LAUNCH_AGENTS}"
     cat > "${plist}" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -114,14 +124,14 @@ install_ui_standalone() {
 <plist version="1.0"><dict>
   <key>Label</key><string>${label}</string>
   <key>ProgramArguments</key>
-  <array><string>/bin/sh</string><string>-c</string>
-    <string>exec '${node_bin}' '${APP_ROOT}/ui/server.js'</string></array>
+  <array><string>${start_script}</string></array>
   <key>WorkingDirectory</key><string>${APP_ROOT}/ui</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PORT</key><string>${UI_PORT}</string>
     <key>HOSTNAME</key><string>127.0.0.1</string>
-    <key>MERIDIAN_DB</key><string>${HOME}/.meridian/meridian.db</string>
+    <key>MERIDIAN_DB_PATH</key><string>${HOME}/.meridian/meridian.db</string>
+    <key>MERIDIAN_NODE_BIN</key><string>${node_bin}</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -283,6 +293,17 @@ else
     ok "meridian-daemon + meridian → ~/.local/bin  (CLI; no npm launcher found)"
 fi
 
+# ── 3b. Detect component changes for differential restart ────────────────────
+_new_daemon_hash="$(shasum -a 256 "${APP_ROOT}/bin/meridian" 2>/dev/null | cut -d' ' -f1 || true)"
+_daemon_changed=1
+[[ -n "${_OLD_DAEMON_HASH}" && -n "${_new_daemon_hash}" && \
+   "${_new_daemon_hash}" == "${_OLD_DAEMON_HASH}" ]] && _daemon_changed=0
+
+# Snapshot MLX health before any venv work — if already healthy and services
+# don't change we skip the restart + model-load wait entirely.
+_mlx_was_healthy=0
+curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1 && _mlx_was_healthy=1
+
 # ── 4. Python venv + MLX deps ────────────────────────────────────────────────
 # Two paths:
 #   A) Pre-built tarball (release bundle): services-venv.tar.gz ships with the
@@ -299,8 +320,10 @@ if [[ -f "${VENV_TARBALL}" ]]; then
     _tarball_hash="$(shasum -a 256 "${VENV_TARBALL}" | cut -d' ' -f1)"
     _have_hash=""; [[ -f "${VENV_STAMP}" ]] && _have_hash="$(cat "${VENV_STAMP}" 2>/dev/null)"
 
+    _venv_changed=1
     if [[ "${_tarball_hash}" == "${_have_hash}" && -x "${VENV}/bin/python" ]]; then
         ok "Python deps unchanged — reusing existing venv (skipped extraction)"
+        _venv_changed=0
     else
         info "Extracting pre-built Python venv ($(du -sh "${VENV_TARBALL}" | cut -f1) — no PyPI download required)…"
         rm -rf "${VENV}"
@@ -334,6 +357,7 @@ else
     # Both extras: mlx (classifier + server) AND pm_worklog_update (agno) — the
     # one MLX server process serves /classify_sessions AND /synthesise_worklog,
     # so the venv needs agno or worklog synthesis 500s with ModuleNotFoundError.
+    _venv_changed=1
     info "Installing Python + MLX deps (mlx-lm/outlines/fastapi/agno; first run may download a few hundred MB)…"
     if "${UV_BIN}" sync \
             --project "${APP_ROOT}/services" \
@@ -385,14 +409,22 @@ configure_editor_accessibility
 # The UI ships as ui.tar.gz rather than an expanded ui/ dir so that Turbopack's
 # relative symlinks under .next/node_modules (serverExternalPackages: better-
 # sqlite3, pino, @opentelemetry/*) survive `npm publish`, which strips symlinks.
-# Extract the exact built tree into place before the UI agent starts.
+# When meridian-npm-setup.sh detected the tarball hash was unchanged it preserved
+# the existing ui/ dir and deleted ui.tar.gz — in that case skip extraction too.
+_ui_changed=1
+_new_ui_hash=""
 if [[ -f "${APP_ROOT}/ui.tar.gz" ]]; then
+    _new_ui_hash="$(shasum -a 256 "${APP_ROOT}/ui.tar.gz" | cut -d' ' -f1)"
     info "Unpacking dashboard…"
     rm -rf "${APP_ROOT}/ui"
     mkdir -p "${APP_ROOT}/ui"
     tar -xzf "${APP_ROOT}/ui.tar.gz" -C "${APP_ROOT}/ui"
     rm -f "${APP_ROOT}/ui.tar.gz"
     ok "dashboard unpacked ($(find "${APP_ROOT}/ui/.next/node_modules" -type l 2>/dev/null | wc -l | tr -d ' ') external symlink(s) restored)"
+elif [[ -d "${APP_ROOT}/ui" ]]; then
+    # ui/ was preserved by meridian-npm-setup.sh — hash matched, no re-extraction needed
+    ok "dashboard unchanged — reusing existing build"
+    _ui_changed=0
 fi
 
 # Re-fetch the correct better-sqlite3 binary when the pre-built addon ABI
@@ -400,14 +432,17 @@ fi
 # (binding.gyp is absent), so `npm rebuild` can't compile from source — instead
 # we install the same version into a temp dir (which runs prebuild-install and
 # downloads the right binary from GitHub) then copy just the .node file across.
+# ui-start.sh runs the same check at every daemon startup as a safety net.
 _sqlite3_dir="${APP_ROOT}/ui/node_modules/better-sqlite3"
-if [[ -d "${_sqlite3_dir}" ]] && ! node -e "require('${_sqlite3_dir}')" 2>/dev/null; then
-    info "Re-fetching better-sqlite3 binary for Node $(node --version) (ABI mismatch with CI build)…"
-    _bsv="$(node -e "process.stdout.write(require('${_sqlite3_dir}/package.json').version)" 2>/dev/null || echo "")"
+_node_bin="$(command -v node 2>/dev/null || true)"
+_npm_bin="${_node_bin%node}npm"; [[ -x "${_npm_bin}" ]] || _npm_bin="$(command -v npm 2>/dev/null || true)"
+if [[ -n "${_node_bin}" ]] && [[ -d "${_sqlite3_dir}" ]] && ! "${_node_bin}" -e "require('${_sqlite3_dir}')" 2>/dev/null; then
+    info "Re-fetching better-sqlite3 binary for Node $("${_node_bin}" --version) (ABI mismatch with CI build)…"
+    _bsv="$("${_node_bin}" -e "process.stdout.write(require('${_sqlite3_dir}/package.json').version)" 2>/dev/null || echo "")"
     _bstmp="$(mktemp -d)"
     _bsok=0
-    if [[ -n "${_bsv}" ]] && \
-       (cd "${_bstmp}" && npm install --no-save "better-sqlite3@${_bsv}" 2>/dev/null) && \
+    if [[ -n "${_bsv}" ]] && [[ -x "${_npm_bin:-}" ]] && \
+       (cd "${_bstmp}" && "${_npm_bin}" install --no-save "better-sqlite3@${_bsv}" 2>/dev/null) && \
        [[ -f "${_bstmp}/node_modules/better-sqlite3/build/Release/better_sqlite3.node" ]]; then
         cp "${_bstmp}/node_modules/better-sqlite3/build/Release/better_sqlite3.node" \
            "${_sqlite3_dir}/build/Release/better_sqlite3.node"
@@ -415,33 +450,54 @@ if [[ -d "${_sqlite3_dir}" ]] && ! node -e "require('${_sqlite3_dir}')" 2>/dev/n
     fi
     rm -rf "${_bstmp}"
     if [[ "${_bsok}" -eq 1 ]]; then
-        ok "better-sqlite3 binary updated for Node $(node --version)"
+        ok "better-sqlite3 binary updated for Node $("${_node_bin}" --version)"
     else
-        warn "better-sqlite3 binary update failed — dashboard will show empty data"
-        warn "  manual fix: V=\$(node -e \"process.stdout.write(require('${_sqlite3_dir}/package.json').version)\"); T=\$(mktemp -d); cd \$T && npm install better-sqlite3@\$V && cp \$T/node_modules/better-sqlite3/build/Release/better_sqlite3.node '${_sqlite3_dir}/build/Release/better_sqlite3.node'; rm -rf \$T"
+        warn "better-sqlite3 binary update failed — ui-start.sh will retry on first launch"
     fi
 fi
 
-# ── 6. Daemons (reuse the hardened installers; UI runs the standalone server) ─
+# ── 6. Daemons — restart only what changed ───────────────────────────────────
+# screenpipe: external npm binary, plist may have changed → always refresh.
 info "Installing screenpipe launchd agent…"
 bash "${APP_ROOT}/scripts/install-screenpipe-daemon.sh" || warn "screenpipe agent install failed"
 
-info "Installing MLX inference server launchd agent…"
-bash "${APP_ROOT}/services/scripts/install-mlx-server-daemon.sh" --port "${MLX_PORT}" || warn "MLX agent install failed"
+# MLX: skip restart + model-load wait when server was already healthy and the
+# Python services/venv didn't change — saves ~9 s on every non-Python update.
+if [[ "${_mlx_was_healthy}" -eq 1 && "${_venv_changed}" -eq 0 ]]; then
+    ok "Python services unchanged — MLX server kept running"
+else
+    info "Installing MLX inference server launchd agent…"
+    bash "${APP_ROOT}/services/scripts/install-mlx-server-daemon.sh" --port "${MLX_PORT}" || warn "MLX agent install failed"
+    info "Waiting for the MLX server to load the model…"
+    _w=0
+    until curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; do
+        sleep 3; _w=$((_w+3)); [[ $_w -ge 300 ]] && { warn "MLX not ready after 300s — check: meridian logs mlx-server"; break; }
+    done
+    curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1 && ok "MLX server ready (${_w}s)"
+fi
 
-# Wait for MLX to answer before starting the daemon (it hard-exits if MLX is down).
-info "Waiting for the MLX server to load the model…"
-_w=0
-until curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; do
-    sleep 3; _w=$((_w+3)); [[ $_w -ge 300 ]] && { warn "MLX not ready after 300s — check: meridian logs mlx-server"; break; }
-done
-curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1 && ok "MLX server ready (${_w}s)"
+# Rust daemon: skip restart when binary is identical.
+if [[ "${_daemon_changed}" -eq 0 ]]; then
+    ok "Rust daemon unchanged — skipping restart"
+else
+    info "Installing Rust daemon launchd agent…"
+    bash "${APP_ROOT}/scripts/install-daemon.sh" || warn "daemon agent install failed"
+fi
 
-info "Installing Rust daemon launchd agent…"
-bash "${APP_ROOT}/scripts/install-daemon.sh" || warn "daemon agent install failed"
+# UI: skip daemon restart when the build didn't change (tarball hash matched).
+if [[ "${_ui_changed}" -eq 0 ]]; then
+    ok "Dashboard unchanged — skipping restart"
+else
+    info "Installing the dashboard (UI) launchd agent…"
+    install_ui_standalone
+fi
 
-info "Installing the dashboard (UI) launchd agent…"
-install_ui_standalone
+# Persist component hashes for the next update's differential check.
+_final_ui_hash="${_new_ui_hash:-${_OLD_UI_HASH}}"
+{
+    [[ -n "${_new_daemon_hash}" ]] && printf 'daemon_bin=%s\n' "${_new_daemon_hash}"
+    [[ -n "${_final_ui_hash}" ]] && printf 'ui_tarball=%s\n' "${_final_ui_hash}"
+} > "${_HASH_FILE}"
 
 ok "all daemons installed"
 

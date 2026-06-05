@@ -127,7 +127,7 @@ fi
 
 echo "→ scripts + plists + CLI"
 cp scripts/meridian-cli.sh scripts/install-from-bundle.sh scripts/meridian-npm-setup.sh \
-   scripts/bootstrap.sh "${DEST}/scripts/"
+   scripts/bootstrap.sh scripts/ui-start.sh "${DEST}/scripts/"
 cp scripts/install-daemon.sh scripts/uninstall-daemon.sh \
    scripts/install-ui-daemon.sh scripts/uninstall-ui-daemon.sh \
    scripts/install-screenpipe-daemon.sh scripts/uninstall-screenpipe-daemon.sh \
