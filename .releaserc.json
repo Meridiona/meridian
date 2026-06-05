@@ -12,7 +12,7 @@
       ]
     }],
     ["@semantic-release/exec", {
-      "prepareCmd": "bash scripts/set-version.sh ${nextRelease.version} && bash scripts/package-release.sh ${nextRelease.version} && bash scripts/verify-release-bundle.sh ${nextRelease.version}",
+      "prepareCmd": "cargo build --release && (cd ui && npm ci --no-audit --no-fund && npm run build) && bash scripts/set-version.sh ${nextRelease.version} && bash scripts/package-release.sh ${nextRelease.version} && bash scripts/verify-release-bundle.sh ${nextRelease.version}",
       "publishCmd": "npm publish ./npm/meridian-darwin-arm64 --access public"
     }],
     ["@semantic-release/npm", { "pkgRoot": "npm/meridian" }],
