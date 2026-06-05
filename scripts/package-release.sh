@@ -36,12 +36,12 @@ echo "→ daemon binary"
 cp "${DAEMON_BIN}" "${DEST}/bin/meridian"
 chmod +x "${DEST}/bin/meridian"
 
-echo "→ Node.js 22 LTS runtime (bundled — UI daemon uses this, not system node)"
-# Download the official Node 22 LTS binary and verify its SHA-256.
-# This binary is later exec'd by ui-start.sh (via MERIDIAN_NODE_BIN in the
-# launchd plist). Because the better-sqlite3 addon is also built against this
-# exact Node version below, ABI is always correct regardless of what node
-# the user has installed.
+echo "→ Node.js 22 LTS runtime (used here to build the ABI-127 better-sqlite3 addon)"
+# Download the official Node 22 LTS binary and verify its SHA-256. We build the
+# better-sqlite3 addon shipped in ui.tar.gz against THIS exact Node version, so
+# the UI daemon's runtime must match it. The version + SHA are recorded in
+# bin/node-runtime.meta (below); install-from-bundle.sh re-downloads this same
+# official build on the user's machine — we don't ship the 113 MB binary itself.
 _NODE22_VERSION="22.22.3"
 _NODE22_SHA="0da7ff74ef8611328c8212f17943368713a2ad953fb7d89a8c8a0eae87c23207"
 _node22_tmp="$(mktemp -d)"
@@ -140,13 +140,18 @@ else
     echo "  UI unchanged since ${_prev_tag} — skipping UI tarball (~10 MB saved per update)"
 fi
 
-# Copy the bundled node binary into the package — always, regardless of whether
-# the UI tarball was skipped. Every release must include bin/node-runtime so
-# ui-start.sh never falls back to a user-installed node with a different ABI.
-cp "${_NODE22_BIN}" "${DEST}/bin/node-runtime"
-chmod +x "${DEST}/bin/node-runtime"
+# Record the exact Node version + SHA-256 that the better-sqlite3 addon in
+# ui.tar.gz was built against — but do NOT ship the 113 MB binary through npm
+# (the package would exceed the registry's payload limit, E413). Instead
+# install-from-bundle.sh downloads this exact official build from nodejs.org,
+# verifies this SHA, and caches it under ~/.meridian. ABI stays 127 by
+# construction (same source, same version) without bloating the npm tarball.
+cat > "${DEST}/bin/node-runtime.meta" <<META
+NODE_RUNTIME_VERSION=${_NODE22_VERSION}
+NODE_RUNTIME_SHA=${_NODE22_SHA}
+META
 rm -rf "${_node22_tmp}"
-echo "  · node-runtime bundled ($(du -h "${DEST}/bin/node-runtime" | cut -f1))"
+echo "  · node-runtime pinned v${_NODE22_VERSION} (downloaded at install — not bundled)"
 
 echo "→ Python services (source + pre-built site-packages)"
 mkdir -p "${DEST}/services"
@@ -157,67 +162,51 @@ tar cf - \
   --exclude='*.log' --exclude='dist' --exclude='.DS_Store' \
   -C services . | tar xf - -C "${DEST}/services"
 
-echo "→ Python venv (pre-built site-packages)"
-# Only rebuild and ship the venv tarball when the venv's contents could have
-# changed since the previous git tag — i.e. when services/uv.lock OR this script
-# changed. The extras installed (--extra mlx --extra pm_worklog_update) live in
-# THIS script, so a change to which extras ship must force a rebuild even when
-# uv.lock is untouched — otherwise an extras fix would ship a stale tarball.
-# Shipping on every release would force all users to download ~160 MB even when
-# only the Rust binary or UI changed; when neither input changed the installer
-# falls back to `uv sync --frozen` (a no-op from the warm uv cache on updates).
-_lock_changed=1
-if [[ -n "${_prev_tag}" ]]; then
-    if git diff --quiet "${_prev_tag}" HEAD -- services/uv.lock scripts/package-release.sh 2>/dev/null; then
-        _lock_changed=0
-    fi
+echo "→ Python venv (pre-built site-packages → GitHub Release asset)"
+# The venv (~160 MB compressed) is far too large to ship through the npm
+# registry (npm rejects the publish with 413 Payload Too Large). It is built
+# here on EVERY release and attached to the GitHub Release instead (see
+# .releaserc.json → @semantic-release/github "assets"). install-from-bundle.sh
+# downloads it by version and verifies the companion .sha256; when the local
+# venv's hash already matches, the 160 MB download is skipped entirely — so the
+# differential-update win is preserved via the tiny .sha256, not by conditionally
+# omitting the asset (which would strand a release with no venv on its own tag).
+# apple-fm-sdk (Apple Intelligence) is source-only on PyPI and needs Xcode, so it
+# is compiled here on macOS 26+ — end users never need a build toolchain.
+_ASSET_DIR="${REPO_ROOT}/release-assets"
+mkdir -p "${_ASSET_DIR}"
+rm -f "${_ASSET_DIR}"/services-venv-*.tar.gz "${_ASSET_DIR}"/services-venv-*.tar.gz.sha256
+# uv must be available on the CI runner. pip3 install is blocked on macOS 26
+# by PEP 668 (externally-managed-environment). Install via Homebrew instead.
+command -v uv >/dev/null 2>&1 || brew install uv
+# Pin Python 3.11: macos-26 defaults to Python 3.14 which produces
+# cpython-314-darwin.so that Python 3.11 on user machines cannot load.
+# Both extras: mlx (classifier) AND pm_worklog_update (agno) — the shipped
+# MLX server serves /synthesise_worklog too, which imports agno; without it
+# worklog synthesis 500s with ModuleNotFoundError on every install.
+uv sync --project services --extra mlx --extra pm_worklog_update --frozen --python 3.11
+# Validate the venv is actually Python 3.11.
+_py_dir="$(ls -d services/.venv/lib/python* 2>/dev/null | head -1 | xargs basename 2>/dev/null || true)"
+if [[ -z "${_py_dir}" ]]; then
+    echo "✗ could not find python lib dir under services/.venv/lib/" >&2; exit 1
 fi
-
-# On macOS 26+, always ship the tarball regardless of lock changes.
-# apple-fm-sdk (Apple Intelligence) is source-only on PyPI — it can only be
-# compiled here (CI has full Xcode). If we skip the tarball, the installer falls
-# back to `uv sync --frozen` which removes apple-fm-sdk (not in the lockfile),
-# breaking Apple Intelligence for every update where only non-Python files changed.
-_ci_macos_major="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
-if [[ "${_ci_macos_major:-0}" -ge 26 ]]; then
-    _lock_changed=1
+if [[ "${_py_dir}" != "python3.11" ]]; then
+    echo "✗ venv was built with ${_py_dir} but must be python3.11" >&2; exit 1
 fi
-
-if [[ "${_lock_changed}" -eq 1 ]]; then
-    echo "  uv.lock changed since ${_prev_tag:-beginning} — building and shipping venv tarball (~160 MB)"
-    # uv must be available on the CI runner. pip3 install is blocked on macOS 26
-    # by PEP 668 (externally-managed-environment). Install via Homebrew instead.
-    command -v uv >/dev/null 2>&1 || brew install uv
-    # Pin Python 3.11: macos-26 defaults to Python 3.14 which produces
-    # cpython-314-darwin.so that Python 3.11 on user machines cannot load.
-    # Both extras: mlx (classifier) AND pm_worklog_update (agno) — the shipped
-    # MLX server serves /synthesise_worklog too, which imports agno; without it
-    # worklog synthesis 500s with ModuleNotFoundError on every install.
-    uv sync --project services --extra mlx --extra pm_worklog_update --frozen --python 3.11
-    # Validate the venv is actually Python 3.11.
-    _py_dir="$(ls -d services/.venv/lib/python* 2>/dev/null | head -1 | xargs basename 2>/dev/null || true)"
-    if [[ -z "${_py_dir}" ]]; then
-        echo "✗ could not find python lib dir under services/.venv/lib/" >&2; exit 1
-    fi
-    if [[ "${_py_dir}" != "python3.11" ]]; then
-        echo "✗ venv was built with ${_py_dir} but must be python3.11" >&2; exit 1
-    fi
-    # On macOS 26+, install apple-fm-sdk into the venv so end users get Apple
-    # Intelligence without needing Xcode. The CI runner (macos-26) has Xcode;
-    # the package is source-only (no PyPI wheels) so must be compiled here.
-    _pkg_macos_major="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
-    if [[ "${_pkg_macos_major:-0}" -ge 26 ]]; then
-        echo "  macOS ${_pkg_macos_major}: compiling apple-fm-sdk for Apple Intelligence…"
-        uv pip install --python "services/.venv/bin/python" "apple-fm-sdk"
-        echo "  · apple-fm-sdk compiled and included in bundle"
-    fi
-    tar -czf "${DEST}/services-venv.tar.gz" \
-        -C "services/.venv/lib/${_py_dir}/site-packages" .
-    echo "  · $(du -sh "${DEST}/services-venv.tar.gz" | cut -f1) compressed — included in bundle"
-else
-    echo "  uv.lock unchanged since ${_prev_tag} — skipping venv tarball (~160 MB saved per update)"
-    echo "  Installers fall back to uv sync (3ms no-op from warm cache on updates)"
+# On macOS 26+, install apple-fm-sdk into the venv so end users get Apple
+# Intelligence without needing Xcode. The CI runner (macos-26) has Xcode;
+# the package is source-only (no PyPI wheels) so must be compiled here.
+_pkg_macos_major="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
+if [[ "${_pkg_macos_major:-0}" -ge 26 ]]; then
+    echo "  macOS ${_pkg_macos_major}: compiling apple-fm-sdk for Apple Intelligence…"
+    uv pip install --python "services/.venv/bin/python" "apple-fm-sdk"
+    echo "  · apple-fm-sdk compiled and included in venv"
 fi
+_VENV_ASSET="${_ASSET_DIR}/services-venv-${VERSION}.tar.gz"
+tar -czf "${_VENV_ASSET}" -C "services/.venv/lib/${_py_dir}/site-packages" .
+shasum -a 256 "${_VENV_ASSET}" | cut -d' ' -f1 > "${_VENV_ASSET}.sha256"
+echo "  · $(du -sh "${_VENV_ASSET}" | cut -f1) → release-assets/$(basename "${_VENV_ASSET}") (GitHub Release asset)"
+echo "  · sha256 $(cat "${_VENV_ASSET}.sha256")"
 
 echo "→ scripts + plists + CLI"
 cp scripts/meridian-cli.sh scripts/install-from-bundle.sh scripts/meridian-npm-setup.sh \

@@ -10,7 +10,12 @@
       "publishCmd": "npm publish ./npm/meridian-darwin-arm64 --access public"
     }],
     ["@semantic-release/npm", { "pkgRoot": "npm/meridian" }],
-    ["@semantic-release/github", {}],
+    ["@semantic-release/github", {
+      "assets": [
+        { "path": "release-assets/services-venv-*.tar.gz", "label": "Python venv (pre-built site-packages, macOS arm64)" },
+        { "path": "release-assets/services-venv-*.tar.gz.sha256", "label": "Python venv SHA-256" }
+      ]
+    }],
     ["@semantic-release/git", {
       "assets": [
         "CHANGELOG.md",
