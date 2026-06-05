@@ -1,3 +1,10 @@
+## [1.24.1](https://github.com/Meridiona/meridian/compare/v1.24.0...v1.24.1) (2026-06-05)
+
+
+### Bug Fixes
+
+* **mlx-server:** route /v1/chat/completions + /summarise through Apple FM on 8 GB machines ([#168](https://github.com/Meridiona/meridian/issues/168)) ([99df470](https://github.com/Meridiona/meridian/commit/99df4704345694efa5d1713b7520f84655b6c6e0))
+
 # [1.24.0](https://github.com/Meridiona/meridian/compare/v1.23.11...v1.24.0) (2026-06-05)
 
 
