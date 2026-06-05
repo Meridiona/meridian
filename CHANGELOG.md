@@ -1,3 +1,10 @@
+## [1.24.4](https://github.com/Meridiona/meridian/compare/v1.24.3...v1.24.4) (2026-06-05)
+
+
+### Bug Fixes
+
+* **mlx-server:** wrap Apple FM /classify in run_in_threadpool ([#172](https://github.com/Meridiona/meridian/issues/172)) ([9808d65](https://github.com/Meridiona/meridian/commit/9808d659adfcec9eea1dd3e73d936095af42a7d3))
+
 ## [1.24.3](https://github.com/Meridiona/meridian/compare/v1.24.2...v1.24.3) (2026-06-05)
 
 
