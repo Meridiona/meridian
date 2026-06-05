@@ -30,6 +30,7 @@ pub async fn checks(cfg: &Config, pool: Option<&SqlitePool>) -> Vec<Check> {
     if let Some(c) = screenpipe_accessibility_permission(cfg) {
         checks.push(c);
     }
+    checks.push(a11y_helper_status(cfg));
     match pool {
         Some(p) => {
             let frames = frames_present(p).await;
@@ -513,6 +514,56 @@ async fn a11y_regression(pool: &SqlitePool, recent_window: i64, base_window: i64
     }
 }
 
+/// State of the meridian a11y-helper — the agent that enables accessibility on
+/// Electron/Chromium apps (Claude, Codex, Slack, …) so screenpipe can capture
+/// them. Without a working helper those apps are invisible to capture: they
+/// ship with their AX tree disabled, never register with the AX focus tracker,
+/// and their frames get misattributed or dedup-dropped. The helper logs its
+/// trust state on every start/change; the last `AX trusted:` line is ground
+/// truth (macOS TCC state isn't readable from this process).
+fn a11y_helper_status(cfg: &Config) -> Check {
+    let logs = std::path::Path::new(&cfg.meridian_db)
+        .parent()
+        .map(|d| d.join("logs/a11y-helper.log"));
+    let content = logs.as_ref().and_then(|p| std::fs::read_to_string(p).ok());
+    match content {
+        None => Check::warn(
+            "a11y_helper.installed",
+            "L1",
+            "a11y-helper log not found — Electron apps (Claude, Codex, …) may be invisible to capture",
+        )
+        .with_remedy("run scripts/install-a11y-helper-daemon.sh, then grant ~/.meridian/bin/meridian-a11y-helper Accessibility in System Settings"),
+        Some(content) => a11y_helper_verdict_from_log(&content),
+    }
+}
+
+/// Pure verdict from the helper log: the LAST `AX trusted:` line wins (the
+/// helper re-logs on every state change). Split from the file I/O for tests.
+fn a11y_helper_verdict_from_log(content: &str) -> Check {
+    let last = content.lines().rfind(|l| l.contains("AX trusted:"));
+    match last {
+        Some(l) if l.contains("AX trusted: false") => Check::critical(
+            "a11y_helper.trusted",
+            "L1",
+            "a11y-helper is running but NOT granted Accessibility — Electron apps (Claude, Codex, …) are invisible to capture",
+        )
+        .with_remedy(
+            "System Settings ▸ Privacy & Security ▸ Accessibility ▸ add ~/.meridian/bin/meridian-a11y-helper and toggle it on",
+        ),
+        Some(_) => Check::ok(
+            "a11y_helper.trusted",
+            "L1",
+            "a11y-helper trusted — Electron apps get their accessibility enabled on focus",
+        ),
+        None => Check::warn(
+            "a11y_helper.trusted",
+            "L1",
+            "a11y-helper log has no trust-state line — helper may not be running",
+        )
+        .with_remedy("launchctl kickstart -k gui/$(id -u)/com.meridiona.a11y-helper, then re-run doctor"),
+    }
+}
+
 /// Capture-coverage cross-check: every app the user focuses must produce
 /// frames. `ui_events` records `app_switch`/`window_focus` with app names from
 /// screenpipe's notification observer (a fresh, push-based source), so it keeps
@@ -846,6 +897,26 @@ mod tests {
         insert_focus(&pool, "loginwindow", 10).await;
         let c = capture_coverage(&pool, "-1 day").await;
         assert_eq!(c.severity, Severity::Ok);
+    }
+
+    #[test]
+    fn a11y_helper_verdict_parses_trust_states() {
+        // Untrusted → critical with remedy.
+        let c = a11y_helper_verdict_from_log(
+            "2026-06-05T20:00:00Z a11y-helper: started (poll 3.0s)\n2026-06-05T20:00:00Z a11y-helper: AX trusted: false — grant Accessibility…\n",
+        );
+        assert_eq!(c.severity, Severity::Critical);
+        assert!(c.remedy.is_some());
+
+        // A later trusted:true overrides an earlier false — grants arrive mid-run.
+        let c = a11y_helper_verdict_from_log(
+            "a11y-helper: AX trusted: false — grant…\na11y-helper: AX trusted: true — poking enabled\n",
+        );
+        assert_eq!(c.severity, Severity::Ok);
+
+        // No trust line at all → helper likely not running.
+        let c = a11y_helper_verdict_from_log("unrelated noise\n");
+        assert_eq!(c.severity, Severity::Warn);
     }
 
     #[test]

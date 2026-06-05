@@ -615,6 +615,14 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
     run bash "${REPO_ROOT}/scripts/install-screenpipe-daemon.sh"
     ok "screenpipe launchd agent installed"
 
+    # a11y-helper: enables accessibility on Electron apps (Claude, Codex,
+    # Slack, …) so screenpipe can capture their a11y tree — without it those
+    # apps are invisible to capture. Needs a one-time Accessibility grant for
+    # ~/.meridian/bin/meridian-a11y-helper (the script prints the reminder).
+    info "Installing a11y-helper launchd agent..."
+    run bash "${REPO_ROOT}/scripts/install-a11y-helper-daemon.sh"
+    ok "a11y-helper launchd agent installed"
+
     # MLX server must be running before the Rust daemon starts — the daemon
     # TCP-connects to it on startup and exits hard if the port is not reachable.
     if [[ "${USE_MLX}" -eq 1 ]]; then
