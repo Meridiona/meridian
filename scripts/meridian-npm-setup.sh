@@ -30,6 +30,20 @@ venv_keep="${HOME}/.meridian/.venv-update-keep"
 rm -rf "${venv_keep}"
 if [[ -d "${APP}/services/.venv" ]]; then mv "${APP}/services/.venv" "${venv_keep}"; fi
 
+# Preserve the UI dir when the new ui.tar.gz hash matches the installed one.
+# install-from-bundle.sh detects the absent tarball + present ui/ dir and skips
+# re-extraction and the daemon restart, making non-UI updates instant.
+_hash_file="${HOME}/.meridian/.component-hashes"
+_ui_keep="${HOME}/.meridian/.ui-update-keep"
+rm -rf "${_ui_keep}"
+if [[ -f "${BUNDLE}/ui.tar.gz" ]] && [[ -d "${APP}/ui" ]] && [[ -f "${_hash_file}" ]]; then
+    _old_ui_hash="$(grep '^ui_tarball=' "${_hash_file}" 2>/dev/null | cut -d= -f2 || true)"
+    _new_ui_hash="$(shasum -a 256 "${BUNDLE}/ui.tar.gz" | cut -d' ' -f1)"
+    if [[ -n "${_old_ui_hash}" && "${_new_ui_hash}" == "${_old_ui_hash}" ]]; then
+        mv "${APP}/ui" "${_ui_keep}"
+    fi
+fi
+
 rm -rf "${APP}"
 mkdir -p "${APP}"
 # Copy the prebuilt payload (bin/ ui.tar.gz services/ scripts/ .env.example VERSION).
@@ -43,6 +57,13 @@ if [[ -d "${venv_keep}" ]]; then
     mkdir -p "${APP}/services"
     rm -rf "${APP}/services/.venv"
     mv "${venv_keep}" "${APP}/services/.venv"
+fi
+# Restore the preserved UI dir; delete the new tarball so install-from-bundle.sh
+# skips extraction and the daemon restart.
+if [[ -d "${_ui_keep}" ]]; then
+    rm -rf "${APP}/ui"
+    mv "${_ui_keep}" "${APP}/ui"
+    rm -f "${APP}/ui.tar.gz"
 fi
 
 exec bash "${APP}/scripts/install-from-bundle.sh" "$@"
