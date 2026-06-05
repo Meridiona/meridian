@@ -11,6 +11,7 @@ DRY_RUN=0
 NO_DAEMON=0
 SKIP_PERMISSIONS=0
 SKIP_ENV=0
+DEV_MODE=0  # --dev: debug binary + npm ci only; background services (MLX, screenpipe) still use launchd
 USE_MLX=1   # MLX inference server is the only backend (powers classify + PM-worklog synth)
 MLX_PORT=7823
 # Pinned screenpipe version — the launchd plist expects this exact build
@@ -260,13 +261,17 @@ while [[ $# -gt 0 ]]; do
         --no-daemon)         NO_DAEMON=1 ;;
         --skip-permissions)  SKIP_PERMISSIONS=1 ;;
         --skip-env)          SKIP_ENV=1 ;;
+        --dev)               DEV_MODE=1 ;;
         --mlx)               : ;;   # accepted no-op (MLX is the only backend); kept for back-compat
         --mlx-port)          MLX_PORT="$2"; shift ;;
         --help|-h)
             cat >&2 <<'EOF'
 Usage: bash install.sh [OPTIONS]
 
-  --no-ui              Skip the Next.js build step
+  --dev                Dev mode: debug Rust binary (faster builds), npm ci only for UI
+                       (no next build). screenpipe + MLX server + Rust daemon run via
+                       launchd as usual; UI runs manually (cd ui && npm run dev).
+  --no-ui              Skip the Next.js build/install step entirely
   --dry-run            Print every action with [DRY-RUN] prefix; create/run nothing
   --no-daemon          Build everything but skip launchd registration
   --skip-permissions   Skip the macOS permissions walkthrough (Screen Recording, Accessibility, Microphone)
@@ -530,9 +535,17 @@ fi
 # Step 3: Rust daemon build + symlink
 # ---------------------------------------------------------------------------
 
-info "Building Rust daemon..."
-run cargo build --release --manifest-path "${REPO_ROOT}/Cargo.toml"
-ok "cargo build --release"
+if [[ "${DEV_MODE}" -eq 1 ]]; then
+    info "Building Rust daemon (debug — dev mode)..."
+    run cargo build --manifest-path "${REPO_ROOT}/Cargo.toml"
+    ok "cargo build (debug)"
+    MERIDIAN_BIN="${REPO_ROOT}/target/debug/meridian"
+else
+    info "Building Rust daemon..."
+    run cargo build --release --manifest-path "${REPO_ROOT}/Cargo.toml"
+    ok "cargo build --release"
+    MERIDIAN_BIN="${REPO_ROOT}/target/release/meridian"
+fi
 
 if [[ -w "/usr/local/bin" ]]; then
     BIN_DIR="/usr/local/bin"
@@ -547,7 +560,7 @@ else
     esac
 fi
 
-run ln -sfn "${REPO_ROOT}/target/release/meridian" "${BIN_DIR}/meridian-daemon"
+run ln -sfn "${MERIDIAN_BIN}" "${BIN_DIR}/meridian-daemon"
 ok "meridian-daemon → ${BIN_DIR}/meridian-daemon"
 
 # ---------------------------------------------------------------------------
@@ -563,9 +576,15 @@ ok "MCP server built"
 # ---------------------------------------------------------------------------
 
 if [[ "${NO_UI}" -eq 0 ]]; then
-    info "Building Next.js UI..."
-    run bash -c "cd '${REPO_ROOT}/ui' && npm ci && npm run build"
-    ok "UI built"
+    if [[ "${DEV_MODE}" -eq 1 ]]; then
+        info "Installing UI dependencies (dev mode — skipping production build)..."
+        run bash -c "cd '${REPO_ROOT}/ui' && npm ci"
+        ok "UI dependencies installed (run manually: cd ui && npm run dev)"
+    else
+        info "Building Next.js UI..."
+        run bash -c "cd '${REPO_ROOT}/ui' && npm ci && npm run build"
+        ok "UI built"
+    fi
 else
     info "Skipping UI build (--no-ui)"
 fi
@@ -656,9 +675,13 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
         ok "Claude Code coding-agent SessionEnd hook installed"
     fi
 
-    info "Installing UI launchd agent..."
-    run bash "${REPO_ROOT}/scripts/install-ui-daemon.sh"
-    ok "UI launchd agent installed"
+    if [[ "${DEV_MODE}" -eq 1 ]]; then
+        info "Dev mode — skipping UI launchd agent (run: cd ui && npm run dev)"
+    else
+        info "Installing UI launchd agent..."
+        run bash "${REPO_ROOT}/scripts/install-ui-daemon.sh"
+        ok "UI launchd agent installed"
+    fi
 else
     info "Skipping daemon install (--no-daemon)"
 fi
@@ -688,22 +711,40 @@ fi
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "✓ Meridian installed."
-echo ""
-echo "  meridian start          # start all daemons (screenpipe + Rust daemon + MLX server + UI)"
-echo "  meridian permissions    # re-run the permissions walkthrough"
-echo "  meridian status         # check running state"
-echo "  meridian logs           # tail Rust daemon log"
-echo "  meridian doctor         # diagnose"
-echo "  meridian config edit    # open <repo>/.env"
-echo ""
-echo "Required before Jira/GitHub/Linear sync:"
-echo "  <repo>/.env                  # one backend env for the Rust daemon AND Python services"
-echo "  ui/.env.local                # Next.js UI"
-echo ""
-echo "Worklogs (Jira/Linear/GitHub) are DRAFTED only — review, edit, and approve"
-echo "them in the dashboard (Worklogs view); the daemon posts approved worklogs"
-echo "within ~60s of approval."
+if [[ "${DEV_MODE}" -eq 1 ]]; then
+    echo "✓ Meridian installed (dev mode)."
+    echo ""
+    echo "Background services are running via launchd:"
+    echo "  screenpipe + MLX server + Rust daemon (debug binary)"
+    echo ""
+    echo "Start the UI dev server in a separate terminal:"
+    echo "  cd ui && npm run dev          # hot-reload dashboard at http://localhost:3939"
+    echo ""
+    echo "Useful commands:"
+    echo "  meridian status         # check running daemons"
+    echo "  meridian logs           # tail Rust daemon log"
+    echo "  meridian logs -f        # follow live"
+    echo "  cargo build && meridian restart  # rebuild + restart daemon after Rust changes"
+    echo "  meridian doctor         # diagnose"
+    echo "  meridian config edit    # open <repo>/.env"
+else
+    echo "✓ Meridian installed."
+    echo ""
+    echo "  meridian start          # start all daemons (screenpipe + Rust daemon + MLX server + UI)"
+    echo "  meridian permissions    # re-run the permissions walkthrough"
+    echo "  meridian status         # check running state"
+    echo "  meridian logs           # tail Rust daemon log"
+    echo "  meridian doctor         # diagnose"
+    echo "  meridian config edit    # open <repo>/.env"
+    echo ""
+    echo "Required before Jira/GitHub/Linear sync:"
+    echo "  <repo>/.env                  # one backend env for the Rust daemon AND Python services"
+    echo "  ui/.env.local                # Next.js UI"
+    echo ""
+    echo "Worklogs (Jira/Linear/GitHub) are DRAFTED only — review, edit, and approve"
+    echo "them in the dashboard (Worklogs view); the daemon posts approved worklogs"
+    echo "within ~60s of approval."
+fi
 
 case ":${PATH}:" in
     *":${BIN_DIR}:"*) ;;
