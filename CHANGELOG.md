@@ -1,3 +1,15 @@
+## [1.24.2](https://github.com/Meridiona/meridian/compare/v1.24.1...v1.24.2) (2026-06-05)
+
+
+### Bug Fixes
+
+* **mlx-server:** guard /classify against Apple FM sentinel + restart server on py-src change ([#169](https://github.com/Meridiona/meridian/issues/169)) ([bde48c3](https://github.com/Meridiona/meridian/commit/bde48c3d4adf5795f45e558fa1bacafbb7c780f8))
+
+
+### Performance Improvements
+
+* **release:** parallelize builds, cache Node 22 tarball, split named steps ([5299a05](https://github.com/Meridiona/meridian/commit/5299a05f679aac2c9076209069e8e1f1c388d00b))
+
 ## [1.24.1](https://github.com/Meridiona/meridian/compare/v1.24.0...v1.24.1) (2026-06-05)
 
 
