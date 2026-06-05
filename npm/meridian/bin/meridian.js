@@ -92,7 +92,7 @@ if (cmd === 'setup' || cmd === 'install') {
     // NEW launcher on disk. Re-exec the newly installed launcher so step 2 always
     // uses the latest code, even when invoked by an old launcher.
     console.log('meridian update: downloading latest release…');
-    console.log('  The package includes a pre-built Python venv (~160 MB) — expect ~1-3 min.');
+    console.log('  Size varies: ~5 MB (binary-only) → ~165 MB (Python deps changed). May take 1-3 min if large.');
     const _start = Date.now();
     const up = spawnSync('npm', ['install', '-g', '@meridiona/meridian@latest'], { stdio: 'inherit' });
     if (up.status) process.exit(up.status);
