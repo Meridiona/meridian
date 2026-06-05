@@ -45,14 +45,24 @@ echo "→ Node.js 22 LTS runtime (used here to build the ABI-127 better-sqlite3 
 _NODE22_VERSION="22.22.3"
 _NODE22_SHA="0da7ff74ef8611328c8212f17943368713a2ad953fb7d89a8c8a0eae87c23207"
 _node22_tmp="$(mktemp -d)"
-curl -fsSL --retry 3 \
-    "https://nodejs.org/dist/v${_NODE22_VERSION}/node-v${_NODE22_VERSION}-darwin-arm64.tar.gz" \
-    -o "${_node22_tmp}/node22.tar.gz"
+_node22_cache_dir="${HOME}/.cache/node22-arm64"
+_node22_cache_tgz="${_node22_cache_dir}/node-v${_NODE22_VERSION}-darwin-arm64.tar.gz"
+if [[ -f "${_node22_cache_tgz}" ]]; then
+    echo "  · using cached Node.js ${_NODE22_VERSION} tarball"
+    cp "${_node22_cache_tgz}" "${_node22_tmp}/node22.tar.gz"
+else
+    curl -fsSL --retry 3 \
+        "https://nodejs.org/dist/v${_NODE22_VERSION}/node-v${_NODE22_VERSION}-darwin-arm64.tar.gz" \
+        -o "${_node22_tmp}/node22.tar.gz"
+    mkdir -p "${_node22_cache_dir}"
+    cp "${_node22_tmp}/node22.tar.gz" "${_node22_cache_tgz}"
+fi
 _actual_sha="$(shasum -a 256 "${_node22_tmp}/node22.tar.gz" | cut -d' ' -f1)"
 if [[ "${_actual_sha}" != "${_NODE22_SHA}" ]]; then
     echo "✗ node-v${_NODE22_VERSION} SHA-256 mismatch" >&2
     echo "  expected: ${_NODE22_SHA}" >&2
     echo "  got:      ${_actual_sha}" >&2
+    rm -f "${_node22_cache_tgz}"  # evict corrupt cache entry
     rm -rf "${_node22_tmp}"; exit 1
 fi
 tar -xzf "${_node22_tmp}/node22.tar.gz" -C "${_node22_tmp}"
