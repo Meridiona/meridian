@@ -563,6 +563,15 @@ _final_ui_hash="${_new_ui_hash:-${_OLD_UI_HASH}}"
 
 ok "all daemons installed"
 
+# Pipeline smoke test — verify both LLM stages return valid output (no DB writes).
+echo ""
+info "Running pipeline smoke test (this exercises the model — may take ~30s)…"
+if bash "${APP_ROOT}/scripts/meridian-cli.sh" smoke; then
+    ok "pipeline smoke passed — classification and worklog synthesis are working"
+else
+    warn "pipeline smoke found issues — run 'meridian doctor' for remedies"
+fi
+
 echo ""
 echo "✓ Meridian installed at ${APP_ROOT}"
 echo "  meridian status            # check the daemons"
