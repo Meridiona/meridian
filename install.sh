@@ -814,6 +814,19 @@ else
     warn "pipeline smoke found issues — run 'meridian doctor' for remedies"
 fi
 
+# Verify database schema has all migrations applied
+if [[ "${DRY_RUN}" -eq 0 ]]; then
+    _db="${HOME}/.meridian/meridian.db"
+    _has_claude_uuid=$(sqlite3 "${_db}" ".schema app_sessions" 2>/dev/null | grep -c "claude_session_uuid" || echo "0")
+    if [[ "${_has_claude_uuid}" -lt 1 ]]; then
+        warn "Database schema incomplete — migrations may not have run yet"
+        echo "  → The daemon is running migrations on startup. If this persists after 30s, run:"
+        echo "    bash scripts/migrate-db.sh"
+    else
+        ok "database schema verified"
+    fi
+fi
+
 # ---------------------------------------------------------------------------
 # Step 10: Final instructions
 # ---------------------------------------------------------------------------
