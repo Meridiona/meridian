@@ -36,6 +36,31 @@ echo "→ daemon binary"
 cp "${DAEMON_BIN}" "${DEST}/bin/meridian"
 chmod +x "${DEST}/bin/meridian"
 
+echo "→ Node.js 22 LTS runtime (bundled — UI daemon uses this, not system node)"
+# Download the official Node 22 LTS binary and verify its SHA-256.
+# This binary is later exec'd by ui-start.sh (via MERIDIAN_NODE_BIN in the
+# launchd plist). Because the better-sqlite3 addon is also built against this
+# exact Node version below, ABI is always correct regardless of what node
+# the user has installed.
+_NODE22_VERSION="22.22.3"
+_NODE22_SHA="0da7ff74ef8611328c8212f17943368713a2ad953fb7d89a8c8a0eae87c23207"
+_node22_tmp="$(mktemp -d)"
+curl -fsSL --retry 3 \
+    "https://nodejs.org/dist/v${_NODE22_VERSION}/node-v${_NODE22_VERSION}-darwin-arm64.tar.gz" \
+    -o "${_node22_tmp}/node22.tar.gz"
+_actual_sha="$(shasum -a 256 "${_node22_tmp}/node22.tar.gz" | cut -d' ' -f1)"
+if [[ "${_actual_sha}" != "${_NODE22_SHA}" ]]; then
+    echo "✗ node-v${_NODE22_VERSION} SHA-256 mismatch" >&2
+    echo "  expected: ${_NODE22_SHA}" >&2
+    echo "  got:      ${_actual_sha}" >&2
+    rm -rf "${_node22_tmp}"; exit 1
+fi
+tar -xzf "${_node22_tmp}/node22.tar.gz" -C "${_node22_tmp}"
+_NODE22_DIR="${_node22_tmp}/node-v${_NODE22_VERSION}-darwin-arm64"
+_NODE22_BIN="${_NODE22_DIR}/bin/node"
+_NODE22_NPM_CLI="${_NODE22_DIR}/lib/node_modules/npm/bin/npm-cli.js"
+echo "  · $("${_NODE22_BIN}" --version) — ABI $("${_NODE22_BIN}" -e 'process.stdout.write(String(process.versions.modules))') ✓"
+
 echo "→ UI (Next.js standalone, packed as a tarball)"
 # Only rebuild and ship the UI tarball when the dashboard has actually changed
 # since the previous release tag. Most releases change only the Rust binary or
@@ -48,7 +73,7 @@ echo "→ UI (Next.js standalone, packed as a tarball)"
 # the server (vercel/next.js#87737, #93849); tar preserves them intact.
 _ui_changed=1
 if [[ -n "${_prev_tag}" ]]; then
-    if git diff --quiet "${_prev_tag}" HEAD -- ui/ 2>/dev/null; then
+    if git diff --quiet "${_prev_tag}" HEAD -- ui/ scripts/package-release.sh 2>/dev/null; then
         _ui_changed=0
     fi
 fi
@@ -59,6 +84,50 @@ if [[ "${_ui_changed}" -eq 1 ]]; then
     mkdir -p "${_ui_stage}/.next"
     cp -R "ui/.next/static" "${_ui_stage}/.next/static"
     [[ -d "ui/public" ]] && cp -R "ui/public" "${_ui_stage}/public"
+    # Swap the better-sqlite3 native addon for one built against Node 22 (ABI 127).
+    # CI runs with Node 24 (ABI 137) for semantic-release/npm OIDC; the binary
+    # produced by `npm ci && npm run build` loads only on Node 24. The bundled
+    # node-runtime is Node 22, so we must ship a matching binary.
+    _bs_version="$("${_NODE22_BIN}" -e "process.stdout.write(require('./ui/node_modules/better-sqlite3/package.json').version)")"
+    echo "  · building better-sqlite3@${_bs_version} for Node 22 (ABI 127)…"
+    _bs_tmp="$(mktemp -d)"
+    HOME="${_bs_tmp}" "${_NODE22_BIN}" "${_NODE22_NPM_CLI}" install \
+        --no-save --prefer-offline=false "better-sqlite3@${_bs_version}" 2>&1 | tail -5 || true
+    _bs_node="$(find "${_bs_tmp}" -name "better_sqlite3.node" -path "*/Release/*" 2>/dev/null | head -1)"
+    [[ -n "${_bs_node}" && -f "${_bs_node}" ]] || {
+        echo "✗ better-sqlite3@${_bs_version} Node 22 build produced no binary" >&2
+        rm -rf "${_bs_tmp}" "${_node22_tmp}"; exit 1
+    }
+    # Confirm the staged tree has exactly one .node file, then replace it.
+    _staged_nodes="$(find "${_ui_stage}" -name "better_sqlite3.node" 2>/dev/null)"
+    _staged_count="$(echo "${_staged_nodes}" | grep -c 'better_sqlite3' 2>/dev/null || echo 0)"
+    [[ "${_staged_count}" -eq 1 ]] || {
+        echo "✗ expected 1 better_sqlite3.node in staged tree, found ${_staged_count}:" >&2
+        echo "${_staged_nodes}" >&2
+        rm -rf "${_bs_tmp}" "${_node22_tmp}"; exit 1
+    }
+    cp "${_bs_node}" "${_staged_nodes}"
+    rm -rf "${_bs_tmp}"
+    # Positive check: Node 22 must load the replaced binary.
+    _staged_pkg="$(dirname "$(dirname "$(dirname "${_staged_nodes}")")")"
+    "${_NODE22_BIN}" -e "require('${_staged_pkg}')" 2>/dev/null || {
+        echo "✗ Node 22 failed to load rebuilt better-sqlite3 — aborting" >&2
+        rm -rf "${_node22_tmp}"; exit 1
+    }
+    # Negative check: system node (CI = Node 24, ABI 137) must NOT load it.
+    _sys_node="$(command -v node 2>/dev/null || true)"
+    if [[ -x "${_sys_node}" ]]; then
+        _sys_abi="$("${_sys_node}" -e 'process.stdout.write(String(process.versions.modules))' 2>/dev/null || echo 0)"
+        if [[ "${_sys_abi}" != "127" ]]; then
+            "${_sys_node}" -e "require('${_staged_pkg}')" 2>/dev/null && {
+                echo "✗ system node (ABI ${_sys_abi}) loaded the Node 22 binary — swap did not take effect" >&2
+                rm -rf "${_node22_tmp}"; exit 1
+            }
+            echo "  · ABI isolation: $(${_sys_node} --version) (ABI ${_sys_abi}) correctly rejects binary ✓"
+        fi
+    fi
+    echo "  · better-sqlite3 → Node 22 ABI 127 ($(du -h "${_staged_nodes}" | cut -f1)) ✓"
+
     # Pack (preserving symlinks — no -h) and drop the expanded dir so npm ships only the tarball.
     tar -czf "${DEST}/ui.tar.gz" -C "${_ui_stage}" .
     rm -rf "${_ui_stage}"
@@ -66,6 +135,14 @@ if [[ "${_ui_changed}" -eq 1 ]]; then
 else
     echo "  UI unchanged since ${_prev_tag} — skipping UI tarball (~10 MB saved per update)"
 fi
+
+# Copy the bundled node binary into the package — always, regardless of whether
+# the UI tarball was skipped. Every release must include bin/node-runtime so
+# ui-start.sh never falls back to a user-installed node with a different ABI.
+cp "${_NODE22_BIN}" "${DEST}/bin/node-runtime"
+chmod +x "${DEST}/bin/node-runtime"
+rm -rf "${_node22_tmp}"
+echo "  · node-runtime bundled ($(du -h "${DEST}/bin/node-runtime" | cut -f1))"
 
 echo "→ Python services (source + pre-built site-packages)"
 mkdir -p "${DEST}/services"
