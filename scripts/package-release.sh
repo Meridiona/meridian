@@ -108,21 +108,23 @@ if [[ "${_ui_changed}" -eq 1 ]]; then
     }
     cp "${_bs_node}" "${_staged_nodes}"
     rm -rf "${_bs_tmp}"
-    # Positive check: Node 22 must load the replaced binary.
-    # Use an absolute path — find returns a relative path and require() treats
-    # bare paths (no leading / ./ ../) as module names, not file paths.
-    _staged_pkg="${REPO_ROOT}/$(dirname "$(dirname "$(dirname "${_staged_nodes}")")")"
-    "${_NODE22_BIN}" -e "require('${_staged_pkg}')" 2>/dev/null || {
+    # Require the .node BINARY directly (absolute path) so Node's dlopen enforces
+    # NODE_MODULE_VERSION. require(package_dir) is wrong here: better-sqlite3 lazy-
+    # loads its native addon inside Database() — a bare package require never calls
+    # dlopen at all, so both the positive and negative checks would always succeed.
+    _staged_node_abs="${REPO_ROOT}/${_staged_nodes}"
+    "${_NODE22_BIN}" -e "require('${_staged_node_abs}')" 2>/dev/null || {
         echo "✗ Node 22 failed to load rebuilt better-sqlite3 — aborting" >&2
         rm -rf "${_node22_tmp}"; exit 1
     }
+    echo "  · Node 22 loads ABI 127 binary ✓"
     # Negative check: system node (CI = Node 24, ABI 137) must NOT load it.
     _sys_node="$(command -v node 2>/dev/null || true)"
     if [[ -x "${_sys_node}" ]]; then
         _sys_abi="$("${_sys_node}" -e 'process.stdout.write(String(process.versions.modules))' 2>/dev/null || echo 0)"
         if [[ "${_sys_abi}" != "127" ]]; then
-            "${_sys_node}" -e "require('${_staged_pkg}')" 2>/dev/null && {
-                echo "✗ system node (ABI ${_sys_abi}) loaded the Node 22 binary — swap did not take effect" >&2
+            "${_sys_node}" -e "require('${_staged_node_abs}')" 2>/dev/null && {
+                echo "✗ system node (ABI ${_sys_abi}) loaded the ABI 127 binary — swap did not take effect" >&2
                 rm -rf "${_node22_tmp}"; exit 1
             }
             echo "  · ABI isolation: $(${_sys_node} --version) (ABI ${_sys_abi}) correctly rejects binary ✓"
