@@ -1,3 +1,10 @@
+## [1.26.2](https://github.com/Meridiona/meridian/compare/v1.26.1...v1.26.2) (2026-06-05)
+
+
+### Bug Fixes
+
+* add meridian migrate-db CLI command for npm users ([d3b11fe](https://github.com/Meridiona/meridian/commit/d3b11fe4f0a6a0531f655e9e53d61f1e9c540ab9))
+
 ## [1.26.1](https://github.com/Meridiona/meridian/compare/v1.26.0...v1.26.1) (2026-06-05)
 
 
