@@ -92,7 +92,8 @@ if [[ "${_ui_changed}" -eq 1 ]]; then
     echo "  · building better-sqlite3@${_bs_version} for Node 22 (ABI 127)…"
     _bs_tmp="$(mktemp -d)"
     HOME="${_bs_tmp}" "${_NODE22_BIN}" "${_NODE22_NPM_CLI}" install \
-        --no-save --prefer-offline=false "better-sqlite3@${_bs_version}" 2>&1 | tail -5 || true
+        --prefix "${_bs_tmp}" \
+        --no-save --prefer-offline=false "better-sqlite3@${_bs_version}" 2>&1 | tail -20 || true
     _bs_node="$(find "${_bs_tmp}" -name "better_sqlite3.node" -path "*/Release/*" 2>/dev/null | head -1)"
     [[ -n "${_bs_node}" && -f "${_bs_node}" ]] || {
         echo "✗ better-sqlite3@${_bs_version} Node 22 build produced no binary" >&2
