@@ -1,3 +1,10 @@
+# [1.26.0](https://github.com/Meridiona/meridian/compare/v1.25.0...v1.26.0) (2026-06-05)
+
+
+### Features
+
+* **a11y-helper:** automate accessibility permission flow for Electron app capture ([46b0e97](https://github.com/Meridiona/meridian/commit/46b0e97869143f6d4b398c53acd49bbd9836b0aa))
+
 # [1.25.0](https://github.com/Meridiona/meridian/compare/v1.24.6...v1.25.0) (2026-06-05)
 
 
