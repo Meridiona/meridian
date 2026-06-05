@@ -30,6 +30,7 @@ pub async fn checks(cfg: &Config, pool: Option<&SqlitePool>) -> Vec<Check> {
     if let Some(c) = screenpipe_accessibility_permission(cfg) {
         checks.push(c);
     }
+    checks.push(a11y_helper_status(cfg));
     match pool {
         Some(p) => {
             let frames = frames_present(p).await;
@@ -42,6 +43,7 @@ pub async fn checks(cfg: &Config, pool: Option<&SqlitePool>) -> Vec<Check> {
                 checks.push(frame_freshness(p).await);
                 checks.push(blank_text_rate(p).await);
                 checks.extend(accessibility_checks(p).await);
+                checks.push(capture_coverage(p, "-1 day").await);
             } else {
                 // Fresh install / nothing captured: the runtime proxies are blind,
                 // so surface the permission prerequisite explicitly.
@@ -512,6 +514,161 @@ async fn a11y_regression(pool: &SqlitePool, recent_window: i64, base_window: i64
     }
 }
 
+/// State of the meridian a11y-helper — the agent that enables accessibility on
+/// Electron/Chromium apps (Claude, Codex, Slack, …) so screenpipe can capture
+/// them. Without a working helper those apps are invisible to capture: they
+/// ship with their AX tree disabled, never register with the AX focus tracker,
+/// and their frames get misattributed or dedup-dropped. The helper logs its
+/// trust state on every start/change; the last `AX trusted:` line is ground
+/// truth (macOS TCC state isn't readable from this process).
+fn a11y_helper_status(cfg: &Config) -> Check {
+    let logs = std::path::Path::new(&cfg.meridian_db)
+        .parent()
+        .map(|d| d.join("logs/a11y-helper.log"));
+    let content = logs.as_ref().and_then(|p| std::fs::read_to_string(p).ok());
+    match content {
+        None => Check::warn(
+            "a11y_helper.installed",
+            "L1",
+            "a11y-helper log not found — Electron apps (Claude, Codex, …) may be invisible to capture",
+        )
+        .with_remedy("run scripts/install-a11y-helper-daemon.sh, then grant ~/.meridian/bin/meridian-a11y-helper Accessibility in System Settings"),
+        Some(content) => a11y_helper_verdict_from_log(&content),
+    }
+}
+
+/// Pure verdict from the helper log: the LAST `AX trusted:` line wins (the
+/// helper re-logs on every state change). Split from the file I/O for tests.
+fn a11y_helper_verdict_from_log(content: &str) -> Check {
+    let last = content.lines().rfind(|l| l.contains("AX trusted:"));
+    match last {
+        Some(l) if l.contains("AX trusted: false") => Check::critical(
+            "a11y_helper.trusted",
+            "L1",
+            "a11y-helper is running but NOT granted Accessibility — Electron apps (Claude, Codex, …) are invisible to capture",
+        )
+        .with_remedy(
+            "System Settings ▸ Privacy & Security ▸ Accessibility ▸ add ~/.meridian/bin/meridian-a11y-helper and toggle it on",
+        ),
+        Some(_) => Check::ok(
+            "a11y_helper.trusted",
+            "L1",
+            "a11y-helper trusted — Electron apps get their accessibility enabled on focus",
+        ),
+        None => Check::warn(
+            "a11y_helper.trusted",
+            "L1",
+            "a11y-helper log has no trust-state line — helper may not be running",
+        )
+        .with_remedy("launchctl kickstart -k gui/$(id -u)/com.meridiona.a11y-helper, then re-run doctor"),
+    }
+}
+
+/// Capture-coverage cross-check: every app the user focuses must produce
+/// frames. `ui_events` records `app_switch`/`window_focus` with app names from
+/// screenpipe's notification observer (a fresh, push-based source), so it keeps
+/// seeing an app even when the frame pipeline has gone blind to it — exactly
+/// the Electron "ghost app" failure: a Chromium/Electron app with accessibility
+/// disabled never registers with the AX focus tracker, the walker attributes
+/// its frames to the previously focused app (or dedup drops them), and the
+/// app's activity silently vanishes from the timeline. Focused-but-frameless is
+/// the content-free signature of that whole failure class.
+///
+/// Calibration (live data): healthy apps run ≥ 1 frame per focus event (each
+/// window_focus trigger writes a frame, plus click/typing captures); ghosted
+/// apps sit at ~0. Apps with fewer than `COVERAGE_MIN_FOCUS` focus events are
+/// skipped — too little usage to judge.
+const COVERAGE_MIN_FOCUS: i64 = 5;
+const COVERAGE_WARN_RATIO: f64 = 0.5;
+/// System processes that legitimately take focus without producing frames
+/// (lock screen, permission dialogs, notification banners).
+const COVERAGE_IGNORE_APPS: &[&str] = &[
+    "loginwindow",
+    "ScreenSaverEngine",
+    "UserNotificationCenter",
+    "universalAccessAuthWarn",
+    "Dock",
+    "Spotlight",
+    "Control Center",
+    "Notification Center",
+    "CoreServicesUIAgent",
+];
+
+async fn capture_coverage(pool: &SqlitePool, window: &str) -> Check {
+    let rows = sqlx::query_as::<_, (String, i64, i64)>(
+        "SELECT u.app_name, u.f, COALESCE(fr.n, 0)
+         FROM (SELECT app_name, COUNT(*) AS f
+               FROM ui_events
+               WHERE event_type IN ('app_switch', 'window_focus')
+                 AND timestamp > datetime('now', ?1)
+                 AND app_name IS NOT NULL AND app_name != ''
+               GROUP BY app_name
+               HAVING f >= ?2) u
+         LEFT JOIN (SELECT app_name, COUNT(*) AS n
+                    FROM frames
+                    WHERE timestamp > datetime('now', ?1)
+                    GROUP BY app_name) fr
+           ON fr.app_name = u.app_name",
+    )
+    .bind(window)
+    .bind(COVERAGE_MIN_FOCUS)
+    .fetch_all(pool)
+    .await;
+
+    let rows = match rows {
+        Ok(r) => r,
+        // ui_events may not exist on older screenpipe versions — nothing to
+        // assert, not a fault.
+        Err(_) => {
+            return Check::info(
+                "screenpipe.capture_coverage",
+                "L1",
+                "ui_events not available — coverage cross-check skipped",
+            )
+        }
+    };
+
+    let mut ghosted: Vec<String> = Vec::new();
+    let mut degraded: Vec<String> = Vec::new();
+    for (app, focus, frames) in &rows {
+        if COVERAGE_IGNORE_APPS.contains(&app.as_str()) {
+            continue;
+        }
+        if *frames == 0 {
+            ghosted.push(format!("{app} ({focus} focus events, 0 frames)"));
+        } else if (*frames as f64) < (*focus as f64) * COVERAGE_WARN_RATIO {
+            degraded.push(format!("{app} ({focus} focus → {frames} frames)"));
+        }
+    }
+
+    if !ghosted.is_empty() {
+        Check::critical(
+            "screenpipe.capture_coverage",
+            "L1",
+            format!(
+                "focused but producing NO frames: {} — their activity is invisible to the timeline",
+                ghosted.join(" · ")
+            ),
+        )
+        .with_remedy(
+            "quit and reopen the affected app (Electron apps build their accessibility tree only at launch); if it persists, restart screenpipe (meridian restart) and re-run doctor",
+        )
+    } else if !degraded.is_empty() {
+        Check::warn(
+            "screenpipe.capture_coverage",
+            "L1",
+            format!("low frame yield for: {}", degraded.join(" · ")),
+        )
+        .with_remedy("restart the affected app, then re-run doctor; persistent low yield means captures are being dropped or misattributed")
+    } else {
+        Check::ok(
+            "screenpipe.capture_coverage",
+            "L1",
+            format!("all {} actively-used apps are producing frames", rows.len()),
+        )
+    }
+}
+
 /// screenpipe's WAL file size. An unbounded WAL (stalled checkpoint) means disk
 /// pressure and slow reads. Absent WAL is healthy (checkpointed).
 fn wal_size(cfg: &Config) -> Check {
@@ -556,7 +713,28 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        sqlx::query(
+            "CREATE TABLE ui_events(
+                id INTEGER PRIMARY KEY,
+                timestamp TEXT, event_type TEXT, app_name TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         pool
+    }
+
+    async fn insert_focus(pool: &SqlitePool, app: &str, n: usize) {
+        for _ in 0..n {
+            sqlx::query(
+                "INSERT INTO ui_events(timestamp, event_type, app_name)
+                 VALUES(strftime('%Y-%m-%dT%H:%M:%SZ','now'), 'window_focus', ?1)",
+            )
+            .bind(app)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
     }
 
     async fn insert(
@@ -681,6 +859,64 @@ mod tests {
         insert(&pool, "Code", None, Some("tree"), "accessibility", 30).await;
         let c = a11y_regression(&pool, 30, 60).await;
         assert_eq!(c.severity, Severity::Ok);
+    }
+
+    #[tokio::test]
+    async fn coverage_flags_focused_but_frameless_app() {
+        // The Electron ghost signature: the user focuses the app (ui_events
+        // sees it) but no frames carry its name.
+        let pool = mem_pool().await;
+        insert_focus(&pool, "Codex", 10).await;
+        insert(&pool, "Code", None, Some("tree"), "accessibility", 30).await;
+        insert_focus(&pool, "Code", 10).await;
+        let c = capture_coverage(&pool, "-1 day").await;
+        assert_eq!(c.severity, Severity::Critical);
+        assert!(c.detail.contains("Codex"));
+        assert!(c.remedy.is_some());
+    }
+
+    #[tokio::test]
+    async fn coverage_warns_on_low_frame_yield() {
+        let pool = mem_pool().await;
+        insert_focus(&pool, "Claude", 10).await;
+        insert(&pool, "Claude", None, Some("t"), "accessibility", 2).await; // 0.2 < 0.5
+        let c = capture_coverage(&pool, "-1 day").await;
+        assert_eq!(c.severity, Severity::Warn);
+        assert!(c.detail.contains("Claude"));
+    }
+
+    #[tokio::test]
+    async fn coverage_quiet_when_healthy_and_below_threshold() {
+        let pool = mem_pool().await;
+        // Healthy app: frames ≥ focus events.
+        insert_focus(&pool, "Code", 10).await;
+        insert(&pool, "Code", None, Some("t"), "accessibility", 30).await;
+        // Frameless but under COVERAGE_MIN_FOCUS — too little usage to judge.
+        insert_focus(&pool, "Briefly", 2).await;
+        // Frameless but a known system process — ignored.
+        insert_focus(&pool, "loginwindow", 10).await;
+        let c = capture_coverage(&pool, "-1 day").await;
+        assert_eq!(c.severity, Severity::Ok);
+    }
+
+    #[test]
+    fn a11y_helper_verdict_parses_trust_states() {
+        // Untrusted → critical with remedy.
+        let c = a11y_helper_verdict_from_log(
+            "2026-06-05T20:00:00Z a11y-helper: started (poll 3.0s)\n2026-06-05T20:00:00Z a11y-helper: AX trusted: false — grant Accessibility…\n",
+        );
+        assert_eq!(c.severity, Severity::Critical);
+        assert!(c.remedy.is_some());
+
+        // A later trusted:true overrides an earlier false — grants arrive mid-run.
+        let c = a11y_helper_verdict_from_log(
+            "a11y-helper: AX trusted: false — grant…\na11y-helper: AX trusted: true — poking enabled\n",
+        );
+        assert_eq!(c.severity, Severity::Ok);
+
+        // No trust line at all → helper likely not running.
+        let c = a11y_helper_verdict_from_log("unrelated noise\n");
+        assert_eq!(c.severity, Severity::Warn);
     }
 
     #[test]
