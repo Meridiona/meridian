@@ -1,3 +1,18 @@
+# [1.25.0](https://github.com/Meridiona/meridian/compare/v1.24.6...v1.25.0) (2026-06-05)
+
+
+### Bug Fixes
+
+* **coding-agent:** ship session-summary skill file and install it during setup ([2c1161b](https://github.com/Meridiona/meridian/commit/2c1161be8f26a40086bf1d1f8d44773327289dda))
+* **ui:** align OpenTelemetry packages after sdk-node 0.217 bump ([#179](https://github.com/Meridiona/meridian/issues/179)) ([96f4076](https://github.com/Meridiona/meridian/commit/96f4076afa72494de05d25b9ead1697552958f75)), closes [#173](https://github.com/Meridiona/meridian/issues/173)
+
+
+### Features
+
+* **capture:** make Electron apps visible to screenpipe (a11y-helper + doctor coverage) ([#178](https://github.com/Meridiona/meridian/issues/178)) ([9d722c9](https://github.com/Meridiona/meridian/commit/9d722c96c00e0c1525440eb587865b4bc26bf06f))
+* **coding-agent:** add install-skill command and health check for session-summary ([#177](https://github.com/Meridiona/meridian/issues/177)) ([2f8cb1d](https://github.com/Meridiona/meridian/commit/2f8cb1d7fc2bab9575b900d90629d989c9928cf2))
+* **install:** add --dev flag for development installs ([#175](https://github.com/Meridiona/meridian/issues/175)) ([a69ee75](https://github.com/Meridiona/meridian/commit/a69ee75418ab637b2a84e83d6b4aa534fc79d1a8))
+
 ## [1.24.6](https://github.com/Meridiona/meridian/compare/v1.24.5...v1.24.6) (2026-06-05)
 
 
