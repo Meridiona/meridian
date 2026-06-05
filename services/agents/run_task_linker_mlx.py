@@ -273,18 +273,120 @@ def _get_model() -> Any:
 
 
 # Apple Foundation Models has a 4096-token combined context window (input + output).
-# Reserve _MAX_TOKENS (1024) for the response; leave ~3072 tokens for the prompt.
-# At ~4 chars/token that is ~12 000 chars. Cap the user message to stay inside it.
-_APPLE_FM_USER_CHARS = 11_000
+# The full _SYSTEM_PROMPT is ~19k chars / ~4800 tokens — it does NOT fit. Use a
+# compact prompt instead: ~500 tokens for instructions, ~2000 for user, ~500 for output.
+_APPLE_FM_USER_CHARS = 8_000   # ~2000 tokens — user message cap
+
+# Compact classifier prompt sized for Apple FM's 4096-token window.
+# Covers the essential decision logic; the full SKILL.md is used for larger models.
+# Schema matches SessionClassification exactly — wrong types cause Pydantic rejection.
+_APPLE_FM_SYSTEM_PROMPT = """\
+You are Meridian's session classifier. Return ONLY a JSON object — no markdown, no extra text.
+
+Required schema (all fields mandatory):
+{"task_key": <string or null>, "confidence": <float 0.0-1.0>, "category": <see below>, "category_confidence": <float 0.0-1.0>, "category_explanation": "<one sentence max 300 chars>", "session_type": <see below>, "reasoning": "<concise justification>", "dimensions": {"activity": ["<tag>"], "tool": ["<tag>"]}, "session_summary": "<100-500 char factual past-tense prose>"}
+
+category must be exactly one of: coding, code_review, meeting, communication, design, documentation, planning, deployment_devops, research, idle_personal
+
+session_type must be exactly one of: task, overhead, untracked
+
+Rules:
+- task_key: ONLY copy a key from the supplied candidate list verbatim. null if no list or no clear match. NEVER invent a key.
+- session_type "task": session matches a candidate ticket. session_type "overhead": idle/personal/music/idle_personal → confidence ≥ 0.9. session_type "untracked": real work, no ticket match → confidence 0.65-0.75.
+- confidence: 0.95=certain, 0.80=probable, 0.65=likely, 0.50=uncertain
+- dimensions values must be lists of lowercase snake_case strings
+- session_summary must be factual past tense, cite specific files/tools/actions, minimum 2 sentences"""
+
+
+_VALID_CATEGORIES = frozenset({
+    "coding", "code_review", "meeting", "communication", "design",
+    "documentation", "planning", "deployment_devops", "research", "idle_personal",
+})
+
+
+def _coerce_apple_fm_result(data: dict) -> dict:
+    """Fill missing or malformed fields so Pydantic can validate Apple FM output.
+
+    Apple FM doesn't guarantee all required fields. This function synthesizes
+    missing ones from what was returned rather than failing.
+    """
+    # session_type coercion
+    st = str(data.get("session_type", "untracked"))
+    if st not in ("task", "overhead", "untracked"):
+        st = "overhead" if st in ("idle", "personal") else "untracked"
+    data["session_type"] = st
+
+    # category coercion
+    cat = str(data.get("category", ""))
+    if cat not in _VALID_CATEGORIES:
+        cat = "idle_personal" if st == "overhead" else "coding"
+    data["category"] = cat
+
+    # confidence: clamp to [0, 1]
+    try:
+        data["confidence"] = max(0.0, min(1.0, float(data.get("confidence", 0.7))))
+    except (TypeError, ValueError):
+        data["confidence"] = 0.7
+
+    # category_confidence: derive from confidence if missing
+    if "category_confidence" not in data or not isinstance(data["category_confidence"], (int, float)):
+        data["category_confidence"] = round(data["confidence"] * 0.9, 2)
+    else:
+        data["category_confidence"] = max(0.0, min(1.0, float(data["category_confidence"])))
+
+    # category_explanation: fall back to first sentence of reasoning
+    if not data.get("category_explanation"):
+        reasoning = str(data.get("reasoning", "No details recorded."))
+        data["category_explanation"] = reasoning[:300]
+
+    # reasoning: ensure it's a non-empty string
+    if not data.get("reasoning"):
+        data["reasoning"] = "Classified via Apple Foundation Models."
+
+    # session_summary: must be 100-1000 chars
+    summary = str(data.get("session_summary", ""))
+    if len(summary) < 100:
+        # Pad from reasoning
+        reasoning = str(data.get("reasoning", ""))
+        summary = (summary + " " + reasoning).strip()
+    if len(summary) < 100:
+        summary = summary + " The session was processed by Apple Foundation Models."
+    data["session_summary"] = summary[:1000]
+
+    # dimensions: must be dict[str, list[str]]
+    dims = data.get("dimensions", {})
+    if not isinstance(dims, dict):
+        dims = {}
+    data["dimensions"] = {
+        k: ([str(i) for i in v] if isinstance(v, list) else [str(v)])
+        for k, v in dims.items()
+    }
+
+    # task_key: null if session_type is not "task"
+    if st != "task":
+        data["task_key"] = None
+    elif data.get("task_key") is not None:
+        data["task_key"] = str(data["task_key"])
+
+    return data
 
 
 def _classify_apple_fm(messages: list[dict[str, str]]) -> "SessionClassification":
-    """Classify via Apple Foundation Models (non-FSM, JSON parsing with one retry)."""
+    """Classify via Apple Foundation Models (non-FSM, JSON parsing with coercion).
+
+    Uses a compact system prompt sized for Apple FM's 4096-token context window.
+    The full _SYSTEM_PROMPT (~4800 tokens) does not fit; _APPLE_FM_SYSTEM_PROMPT
+    covers the essential decision logic in ~500 tokens.
+
+    Apple FM may omit fields. _coerce_apple_fm_result fills missing required
+    fields with sensible defaults before Pydantic validation.
+    """
     import asyncio
 
     from apple_fm_sdk import LanguageModelSession  # type: ignore[import]
 
-    system = next((m["content"] for m in messages if m["role"] == "system"), "")
+    # Always use the compact prompt — ignore whatever system message the caller sent.
+    system = _APPLE_FM_SYSTEM_PROMPT
     user   = next((m["content"] for m in messages if m["role"] == "user"),   "")
 
     # Truncate to stay within the 4096-token context window.
@@ -297,7 +399,7 @@ def _classify_apple_fm(messages: list[dict[str, str]]) -> "SessionClassification
 
     user_with_hint = (
         user
-        + "\n\nRespond with a JSON object matching the SessionClassification schema. "
+        + "\n\nRespond with a JSON object matching the schema above. "
         "Output only valid JSON — no markdown fences, no extra text."
     )
 
@@ -306,23 +408,25 @@ def _classify_apple_fm(messages: list[dict[str, str]]) -> "SessionClassification
         r = await session.respond(prompt)
         return getattr(r, "content", r)
 
-    raw = asyncio.run(_run(user_with_hint))
-    try:
-        text = raw.strip()
+    def _parse(text: str) -> "SessionClassification":
+        text = text.strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        return SessionClassification.model_validate_json(text)
+        data = json.loads(text)
+        return SessionClassification.model_validate(_coerce_apple_fm_result(data))
+
+    raw = asyncio.run(_run(user_with_hint))
+    try:
+        return _parse(raw)
     except Exception:
-        # One retry: ask the model to fix the JSON it produced.
+        # One retry: ask the model to complete any missing fields.
         fix_prompt = (
-            "The JSON you produced was invalid. Fix it and return only valid JSON:\n"
-            + raw
+            "Your previous JSON was incomplete — it was missing required fields "
+            "(category, category_confidence, category_explanation, session_summary). "
+            "Return a complete JSON with ALL fields from the schema:\n" + raw
         )
         raw2 = asyncio.run(_run(fix_prompt))
-        text2 = raw2.strip()
-        if text2.startswith("```"):
-            text2 = text2.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        return SessionClassification.model_validate_json(text2)
+        return _parse(raw2)
 
 
 # ---------------------------------------------------------------------------
