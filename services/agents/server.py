@@ -373,6 +373,40 @@ def _flatten_message_content(content: Any) -> str:
     return str(content)
 
 
+# Apple FM context cap: 4096-token combined context window (input + output).
+# Reserve ~1024 tokens for the response; ~3072 for the prompt → ~12 000 chars.
+_APPLE_FM_USER_CHARS = 12_000
+
+
+def _infer_apple_fm(msgs: list[dict], max_tokens: int) -> str:  # noqa: ARG001
+    """Infer via Apple Foundation Models from an OpenAI-style messages list.
+
+    Extracts the last system message and joins all user/assistant turns.
+    Raises on failure — callers must handle and return 500.
+    """
+    import asyncio
+    from apple_fm_sdk import LanguageModelSession  # type: ignore[import]
+
+    system = next(
+        (m["content"] for m in reversed(msgs) if m.get("role") == "system"), ""
+    )
+    user_parts = [m["content"] for m in msgs if m.get("role") in ("user", "assistant")]
+    user = "\n".join(user_parts)
+    if len(user) > _APPLE_FM_USER_CHARS:
+        user = user[:_APPLE_FM_USER_CHARS]
+
+    async def _run() -> str:
+        session = LanguageModelSession(instructions=system)
+        result = await session.respond(user)
+        return result.content if hasattr(result, "content") else str(result)
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_run())
+    finally:
+        loop.close()
+
+
 @app.post("/v1/chat/completions")
 async def openai_chat_completions(req: _OAIChatRequest) -> dict:
     """OpenAI ChatCompletions-shaped wrapper around the MLX model.
@@ -409,7 +443,11 @@ async def openai_chat_completions(req: _OAIChatRequest) -> dict:
     temperature = req.temperature if req.temperature is not None else 0.3
     max_tokens  = req.max_tokens if req.max_tokens else 2048
 
+    from agents.llm_selector import APPLE_INTELLIGENCE_ID
+
     def _generate() -> str:
+        if m._resolve_model_id() == APPLE_INTELLIGENCE_ID:
+            return _infer_apple_fm(msgs, max_tokens)
         model = m._get_model()
         return model(
             Chat(msgs),
@@ -501,13 +539,44 @@ async def summarise(req: _SummariseRequest) -> _SummariseResponse:
     if m is None:
         raise HTTPException(status_code=503, detail="MLX model is still loading")
 
-    from mlx_lm.sample_utils import make_sampler
-    from outlines.inputs import Chat
+    from agents.llm_selector import APPLE_INTELLIGENCE_ID
 
     messages = [
         {"role": "system", "content": req.system or _SUMMARISE_DEFAULT_SYSTEM},
         {"role": "user", "content": req.transcript},
     ]
+
+    if m._resolve_model_id() == APPLE_INTELLIGENCE_ID:
+        # outlines FSM decoding is incompatible with Foundation Models.
+        # Ask Apple FM for JSON directly; strip fences and retry once on parse error.
+        _JSON_HINT = (
+            "\n\nRespond ONLY with a JSON object — no markdown, no explanation: "
+            '{"summary": "<string>", "blockers": ["<string>", ...]}'
+        )
+
+        def _generate_fm() -> _SummarySchema:
+            fm_msgs = [
+                {"role": "system", "content": messages[0]["content"] + _JSON_HINT},
+                {"role": "user",   "content": messages[1]["content"]},
+            ]
+            raw = _infer_apple_fm(fm_msgs, req.max_tokens)
+            try:
+                return _SummarySchema.model_validate_json(raw)
+            except Exception:
+                stripped = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+                return _SummarySchema.model_validate_json(stripped)
+
+        from fastapi.concurrency import run_in_threadpool as _rtp
+        try:
+            obj = await _rtp(_generate_fm)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("summarise(apple_fm): parse error: %s", exc)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        log.info("summarise(apple_fm): out_chars=%d blockers=%d", len(obj.summary), len(obj.blockers))
+        return _SummariseResponse(summary=obj.summary.strip(), blockers=obj.blockers)
+
+    from mlx_lm.sample_utils import make_sampler
+    from outlines.inputs import Chat
 
     def _generate() -> str:
         model = m._get_model()
