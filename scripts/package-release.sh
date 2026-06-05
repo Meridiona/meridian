@@ -27,31 +27,45 @@ UI_STANDALONE="ui/.next/standalone"
 DEST="npm/meridian-darwin-arm64"
 echo "→ populating ${DEST} (v${VERSION})"
 rm -rf "${DEST}/bin" "${DEST}/ui" "${DEST}/services" "${DEST}/scripts" "${DEST}/.env.example" "${DEST}/VERSION"
-mkdir -p "${DEST}/bin" "${DEST}/ui" "${DEST}/scripts"
+mkdir -p "${DEST}/bin" "${DEST}/scripts"
+
+# Compute _prev_tag once — used by both the UI and venv conditional-ship logic.
+_prev_tag="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)"
 
 echo "→ daemon binary"
 cp "${DAEMON_BIN}" "${DEST}/bin/meridian"
 chmod +x "${DEST}/bin/meridian"
 
 echo "→ UI (Next.js standalone, packed as a tarball)"
-# Assemble the runnable standalone tree (server + static + public), then pack it
-# into a single tarball. WHY a tarball and not a plain ui/ dir: the Turbopack
-# production build references serverExternalPackages (better-sqlite3, pino,
-# @opentelemetry/*) via relative SYMLINKS under .next/node_modules. `npm publish`
-# strips symlinks, which crash-loops the standalone server on the user's machine
-# (vercel/next.js#87737, #93849). tar preserves symlinks and npm ships the .tgz
-# as one opaque file, so the exact built tree round-trips intact;
-# install-from-bundle.sh extracts it back into ~/.meridian/app/ui. This is what
-# lets the production build stay on Turbopack despite our npm distribution.
-_ui_stage="${DEST}/ui"
-cp -R "${UI_STANDALONE}/." "${_ui_stage}/"        # cp -R preserves symlinks (BSD/macOS default)
-mkdir -p "${_ui_stage}/.next"
-cp -R "ui/.next/static" "${_ui_stage}/.next/static"
-[[ -d "ui/public" ]] && cp -R "ui/public" "${_ui_stage}/public"
-# Pack (preserving symlinks — no -h) and drop the expanded dir so npm ships only the tarball.
-tar -czf "${DEST}/ui.tar.gz" -C "${_ui_stage}" .
-rm -rf "${_ui_stage}"
-echo "  · ui.tar.gz ($(du -h "${DEST}/ui.tar.gz" | cut -f1), symlinks preserved)"
+# Only rebuild and ship the UI tarball when the dashboard has actually changed
+# since the previous release tag. Most releases change only the Rust binary or
+# Python services; skipping the tarball saves ~10 MB per update download for
+# those users. When absent, meridian-npm-setup.sh preserves the existing ui/ dir
+# and install-from-bundle.sh skips extraction + UI daemon restart entirely.
+# WHY a tarball (not a plain ui/ dir): Turbopack's production build references
+# serverExternalPackages (better-sqlite3, pino, @opentelemetry/*) via relative
+# SYMLINKS under .next/node_modules. npm publish strips symlinks which crash-loops
+# the server (vercel/next.js#87737, #93849); tar preserves them intact.
+_ui_changed=1
+if [[ -n "${_prev_tag}" ]]; then
+    if git diff --quiet "${_prev_tag}" HEAD -- ui/ 2>/dev/null; then
+        _ui_changed=0
+    fi
+fi
+if [[ "${_ui_changed}" -eq 1 ]]; then
+    mkdir -p "${DEST}/ui"
+    _ui_stage="${DEST}/ui"
+    cp -R "${UI_STANDALONE}/." "${_ui_stage}/"        # cp -R preserves symlinks (BSD/macOS default)
+    mkdir -p "${_ui_stage}/.next"
+    cp -R "ui/.next/static" "${_ui_stage}/.next/static"
+    [[ -d "ui/public" ]] && cp -R "ui/public" "${_ui_stage}/public"
+    # Pack (preserving symlinks — no -h) and drop the expanded dir so npm ships only the tarball.
+    tar -czf "${DEST}/ui.tar.gz" -C "${_ui_stage}" .
+    rm -rf "${_ui_stage}"
+    echo "  · ui.tar.gz ($(du -h "${DEST}/ui.tar.gz" | cut -f1), symlinks preserved)"
+else
+    echo "  UI unchanged since ${_prev_tag} — skipping UI tarball (~10 MB saved per update)"
+fi
 
 echo "→ Python services (source + pre-built site-packages)"
 mkdir -p "${DEST}/services"
@@ -71,7 +85,6 @@ echo "→ Python venv (pre-built site-packages)"
 # Shipping on every release would force all users to download ~160 MB even when
 # only the Rust binary or UI changed; when neither input changed the installer
 # falls back to `uv sync --frozen` (a no-op from the warm uv cache on updates).
-_prev_tag="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)"
 _lock_changed=1
 if [[ -n "${_prev_tag}" ]]; then
     if git diff --quiet "${_prev_tag}" HEAD -- services/uv.lock scripts/package-release.sh 2>/dev/null; then
