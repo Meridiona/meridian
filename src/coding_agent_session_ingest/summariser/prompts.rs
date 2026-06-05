@@ -76,3 +76,65 @@ pub fn first_line(text: &str) -> String {
     }
     String::new()
 }
+
+/// Pull (summary, blockers) from an engine's final message. Schema-less
+/// engines (codex prose mode, copilot, cursor-agent) may return the JSON
+/// bare, ```fenced```, or wrapped in prose; if no `summary` key is found the
+/// whole text is treated as the summary.
+pub fn extract_summary(text: &str) -> (String, Vec<String>) {
+    if let Some(obj) = try_json_object(text) {
+        if let Some(summary) = obj.get("summary").and_then(serde_json::Value::as_str) {
+            let blockers = obj
+                .get("blockers")
+                .and_then(serde_json::Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|b| b.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            return (summary.trim().to_string(), blockers);
+        }
+    }
+    (text.trim().to_string(), Vec::new())
+}
+
+fn try_json_object(text: &str) -> Option<serde_json::Value> {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+        return Some(v);
+    }
+    // Tolerate a JSON object embedded in fences or surrounding prose.
+    let (start, end) = (text.find('{')?, text.rfind('}')?);
+    if start < end {
+        serde_json::from_str::<serde_json::Value>(&text[start..=end]).ok()
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_bare_json() {
+        let (s, b) =
+            extract_summary(r#"{"summary": "Fixed the login bug.", "blockers": ["CI was red"]}"#);
+        assert_eq!(s, "Fixed the login bug.");
+        assert_eq!(b, vec!["CI was red"]);
+    }
+
+    #[test]
+    fn extract_fenced_json() {
+        let (s, b) = extract_summary("```json\n{\"summary\": \"Did the thing.\"}\n```");
+        assert_eq!(s, "Did the thing.");
+        assert!(b.is_empty());
+    }
+
+    #[test]
+    fn extract_prose_falls_back_to_full_text() {
+        let (s, b) = extract_summary("The developer fixed auth.ts and reran the tests.");
+        assert_eq!(s, "The developer fixed auth.ts and reran the tests.");
+        assert!(b.is_empty());
+    }
+}

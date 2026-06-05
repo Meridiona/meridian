@@ -15,8 +15,6 @@
 // * No `--json-schema`, so the JSON contract rides in the prompt and
 //   `extract` tolerates fenced/prose-wrapped objects (codex pattern).
 
-use serde_json::Value;
-
 use super::config::SummariserConfig;
 use super::prompts;
 use super::{cap_transcript, run_capture, EngineOutput, SummariserError};
@@ -78,72 +76,11 @@ pub async fn run_copilot(
         return Err(SummariserError::Failed("copilot produced no output".into()));
     }
 
-    let (summary, blockers) = extract(text);
+    let (summary, blockers) = prompts::extract_summary(text);
     if summary.is_empty() {
         return Err(SummariserError::Failed(
             "copilot output had no usable summary".into(),
         ));
     }
     Ok(EngineOutput { summary, blockers })
-}
-
-/// Pull (summary, blockers) from copilot's response. Without schema
-/// enforcement the JSON may arrive bare, fenced, or wrapped in prose; fall
-/// back to treating the whole text as the summary (same policy as codex).
-fn extract(text: &str) -> (String, Vec<String>) {
-    if let Some(obj) = try_json_object(text) {
-        if let Some(summary) = obj.get("summary").and_then(Value::as_str) {
-            let blockers = obj
-                .get("blockers")
-                .and_then(Value::as_array)
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|b| b.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-            return (summary.trim().to_string(), blockers);
-        }
-    }
-    (text.trim().to_string(), Vec::new())
-}
-
-fn try_json_object(text: &str) -> Option<Value> {
-    if let Ok(v) = serde_json::from_str::<Value>(text) {
-        return Some(v);
-    }
-    let (start, end) = (text.find('{')?, text.rfind('}')?);
-    if start < end {
-        serde_json::from_str::<Value>(&text[start..=end]).ok()
-    } else {
-        None
-    }
-}
-
-// ──────────────────────── Tests ─────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extract_bare_json() {
-        let (s, b) = extract(r#"{"summary": "Fixed the login bug.", "blockers": ["CI was red"]}"#);
-        assert_eq!(s, "Fixed the login bug.");
-        assert_eq!(b, vec!["CI was red"]);
-    }
-
-    #[test]
-    fn extract_fenced_json() {
-        let (s, b) = extract("```json\n{\"summary\": \"Did the thing.\"}\n```");
-        assert_eq!(s, "Did the thing.");
-        assert!(b.is_empty());
-    }
-
-    #[test]
-    fn extract_prose_falls_back_to_full_text() {
-        let (s, b) = extract("The developer fixed auth.ts and reran the tests.");
-        assert_eq!(s, "The developer fixed auth.ts and reran the tests.");
-        assert!(b.is_empty());
-    }
 }

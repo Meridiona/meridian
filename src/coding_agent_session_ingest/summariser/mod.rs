@@ -17,6 +17,7 @@ pub mod claude;
 pub mod codex;
 pub mod config;
 pub mod copilot;
+pub mod cursor_agent;
 pub mod db;
 pub mod mlx;
 pub mod prompts;
@@ -143,6 +144,7 @@ pub enum Source {
     Claude,
     Codex,
     Copilot,
+    CursorAgent,
     Mlx,
     None,
 }
@@ -153,6 +155,7 @@ impl Source {
             Source::Claude => "claude",
             Source::Codex => "codex",
             Source::Copilot => "copilot",
+            Source::CursorAgent => "cursor",
             Source::Mlx => "mlx",
             Source::None => "none",
         }
@@ -205,12 +208,15 @@ pub async fn summarise_one(
 
     // 1. Primary: the session's own agent, up to `primary_attempts` tries.
     // Each agent's transcripts go to its own CLI (codex→codex, copilot→copilot,
-    // claude/unknown→claude); MLX is the shared fallback for all of them.
+    // cursor→cursor-agent, claude/unknown→claude); MLX is the shared fallback
+    // for all of them.
     let agent = row.agent.trim();
     let primary_source = if agent.eq_ignore_ascii_case("codex") {
         Source::Codex
     } else if agent.eq_ignore_ascii_case("github copilot") {
         Source::Copilot
+    } else if agent.eq_ignore_ascii_case("cursor agent") {
+        Source::CursorAgent
     } else {
         Source::Claude
     };
@@ -218,6 +224,7 @@ pub async fn summarise_one(
         let res = match primary_source {
             Source::Codex => codex::run_codex(&stdin_text, cfg).await,
             Source::Copilot => copilot::run_copilot(&stdin_text, cfg).await,
+            Source::CursorAgent => cursor_agent::run_cursor_agent(&stdin_text, cfg).await,
             _ => claude::run_claude(&stdin_text, cfg).await,
         };
         match res {

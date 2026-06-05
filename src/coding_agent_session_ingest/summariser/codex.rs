@@ -9,8 +9,6 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use serde_json::Value;
-
 use super::config::SummariserConfig;
 use super::prompts;
 use super::{run_capture, EngineOutput, SummariserError};
@@ -96,47 +94,13 @@ pub async fn run_codex(
         return Err(SummariserError::Failed("codex produced no output".into()));
     }
 
-    let (summary, blockers) = extract(text);
+    let (summary, blockers) = prompts::extract_summary(text);
     if summary.is_empty() {
         return Err(SummariserError::Failed(
             "codex output had no usable summary".into(),
         ));
     }
     Ok(EngineOutput { summary, blockers })
-}
-
-/// Pull (summary, blockers) from codex's final message. With --output-schema it
-/// should be a JSON object; if codex returns prose, treat the whole text as the
-/// summary.
-fn extract(text: &str) -> (String, Vec<String>) {
-    if let Some(obj) = try_json_object(text) {
-        if let Some(summary) = obj.get("summary").and_then(Value::as_str) {
-            let blockers = obj
-                .get("blockers")
-                .and_then(Value::as_array)
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|b| b.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-            return (summary.trim().to_string(), blockers);
-        }
-    }
-    (text.trim().to_string(), Vec::new())
-}
-
-fn try_json_object(text: &str) -> Option<Value> {
-    if let Ok(v) = serde_json::from_str::<Value>(text) {
-        return Some(v);
-    }
-    // Tolerate a JSON object embedded in surrounding prose.
-    let (start, end) = (text.find('{')?, text.rfind('}')?);
-    if start < end {
-        serde_json::from_str::<Value>(&text[start..=end]).ok()
-    } else {
-        None
-    }
 }
 
 /// Best-effort recursive cleanup of the scratch dir on scope exit.

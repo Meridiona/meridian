@@ -23,12 +23,13 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-use super::{file_is_candidate, SessionSource, SourceSessionRef};
+use super::file_is_candidate;
 use crate::coding_agent_session_ingest::jsonl::NormRecord;
 
 pub const AGENT: &str = "copilot_cli";
 const ASSISTANT_LABEL: &str = "copilot";
 
+#[derive(Clone)]
 pub struct CopilotCliSource {
     pub session_state_dir: PathBuf,
 }
@@ -41,27 +42,23 @@ impl CopilotCliSource {
             session_state_dir: PathBuf::from(shellexpand::tilde(&raw).into_owned()),
         }
     }
-}
 
-impl SessionSource for CopilotCliSource {
-    fn agent(&self) -> &'static str {
-        AGENT
-    }
-
-    fn present(&self) -> bool {
+    pub fn present(&self) -> bool {
         self.session_state_dir.is_dir()
     }
 
-    fn changed_sessions(
+    /// Sessions whose events.jsonl mtime moved past the stored endpoint, as
+    /// (session_uuid, events.jsonl path) pairs, oldest-changed first.
+    pub fn changed_sessions(
         &self,
         endpoints: &HashMap<String, String>,
         now: DateTime<Utc>,
-    ) -> Vec<SourceSessionRef> {
+    ) -> Vec<(String, PathBuf)> {
         let entries = match std::fs::read_dir(&self.session_state_dir) {
             Ok(e) => e,
             Err(_) => return Vec::new(),
         };
-        let mut out: Vec<(f64, SourceSessionRef)> = Vec::new();
+        let mut out: Vec<(f64, String, PathBuf)> = Vec::new();
         for entry in entries.flatten() {
             let dir = entry.path();
             if !dir.is_dir() {
@@ -84,27 +81,17 @@ impl SessionSource for CopilotCliSource {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs_f64())
                 .unwrap_or(0.0);
-            out.push((
-                epoch,
-                SourceSessionRef {
-                    session_uuid: uuid,
-                    locator: events,
-                },
-            ));
+            out.push((epoch, uuid, events));
         }
         // Oldest-changed first, matching the JSONL indexer's ordering.
         out.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        out.into_iter().map(|(_, r)| r).collect()
-    }
-
-    fn load(&self, sref: &SourceSessionRef) -> Vec<NormRecord> {
-        parse_events_jsonl(&sref.locator)
+        out.into_iter().map(|(_, u, p)| (u, p)).collect()
     }
 }
 
 /// Parse one events.jsonl into normalised records. Tolerant of partial writes
 /// and malformed lines (skipped), mirroring the Claude/Codex JSONL readers.
-fn parse_events_jsonl(path: &Path) -> Vec<NormRecord> {
+pub(crate) fn parse_events_jsonl(path: &Path) -> Vec<NormRecord> {
     let file = match File::open(path) {
         Ok(f) => f,
         Err(_) => return Vec::new(),
@@ -345,7 +332,7 @@ mod tests {
         // backfill-today rule even with no stored endpoint.
         let refs = src.changed_sessions(&HashMap::new(), Utc::now());
         assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].session_uuid, "11111111-aaaa-bbbb-cccc-000000000001");
+        assert_eq!(refs[0].0, "11111111-aaaa-bbbb-cccc-000000000001");
 
         // With a stored endpoint ahead of the file's mtime → not a candidate.
         let mut eps = HashMap::new();

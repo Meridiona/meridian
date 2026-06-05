@@ -2,18 +2,23 @@
 //
 // Source adapters: each coding agent stores conversations in its own on-disk
 // format (Claude/Codex append JSONLs, Copilot CLI writes an event log, Cursor
-// keeps bubbles in a SQLite KV store). A `SessionSource` normalises one such
+// keeps bubbles in a SQLite KV store). Each `AgentSource` normalises one such
 // store into `NormRecord` streams keyed by session uuid; everything downstream
 // (segmentation, sealing, summarising, classifying) is shared and agent-blind.
 //
-// The legacy Claude/Codex JSONL path predates this trait and still runs
+// Dispatch is an enum, not a trait object: file-backed sources do blocking IO
+// (wrapped in spawn_blocking), DB-backed sources (Cursor's vscdb) need async
+// sqlx — an enum lets each variant own its IO model without `dyn`-compatible
+// async gymnastics or a second SQLite dependency.
+//
+// The legacy Claude/Codex JSONL path predates this seam and still runs
 // through `indexer::candidate_jsonls` + `register_session`; new sources plug
 // in here and are swept by `sweep()` from the same indexer tick.
 
 pub mod copilot_cli;
+pub mod cursor;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Local, Utc};
@@ -27,40 +32,70 @@ use super::segment::parse_iso;
 /// indexer's `CHANGE_SLACK_SECS` (clock skew + ISO truncation absorption).
 const CHANGE_SLACK_SECS: f64 = 5.0;
 
-/// One discovered session within a source: a stable uuid plus a
-/// source-specific locator (a file path for event logs; for DB-backed sources
-/// the store path, with `session_uuid` as the in-store key).
-#[derive(Debug, Clone)]
-pub struct SourceSessionRef {
-    pub session_uuid: String,
-    pub locator: PathBuf,
+/// One coding-agent conversation store.
+pub enum AgentSource {
+    CopilotCli(copilot_cli::CopilotCliSource),
+    Cursor(cursor::CursorSource),
 }
 
-/// A coding-agent conversation store. All methods may do blocking IO — the
-/// sweep calls them inside `spawn_blocking`.
-pub trait SessionSource: Send + Sync {
+impl AgentSource {
     /// Agent tag stored on segments (drives app_name / session_text_source).
-    fn agent(&self) -> &'static str;
+    pub fn agent(&self) -> &'static str {
+        match self {
+            AgentSource::CopilotCli(_) => copilot_cli::AGENT,
+            AgentSource::Cursor(_) => cursor::AGENT,
+        }
+    }
 
     /// Device gate: the store exists on this machine.
-    fn present(&self) -> bool;
+    pub fn present(&self) -> bool {
+        match self {
+            AgentSource::CopilotCli(s) => s.present(),
+            AgentSource::Cursor(s) => s.present(),
+        }
+    }
 
-    /// Sessions whose content moved past the stored endpoint. `endpoints` is
+    /// Discover sessions whose content moved past the stored endpoint and
+    /// load their full record streams, oldest-changed first. `endpoints` is
     /// {session_uuid: latest stored ended_at}; a never-seen session follows
     /// the backfill-only-today rule (same as the JSONL indexer).
-    fn changed_sessions(
+    pub async fn collect_changed(
         &self,
         endpoints: &HashMap<String, String>,
         now: DateTime<Utc>,
-    ) -> Vec<SourceSessionRef>;
-
-    /// Load + normalise every record of one session, oldest-first.
-    fn load(&self, sref: &SourceSessionRef) -> Vec<NormRecord>;
+    ) -> Vec<(String, Vec<NormRecord>)> {
+        match self {
+            // File-backed: blocking IO off the async runtime.
+            AgentSource::CopilotCli(s) => {
+                let src = s.clone();
+                let eps = endpoints.clone();
+                tokio::task::spawn_blocking(move || {
+                    src.changed_sessions(&eps, now)
+                        .into_iter()
+                        .map(|(uuid, path)| {
+                            let records = copilot_cli::parse_events_jsonl(&path);
+                            (uuid, records)
+                        })
+                        .collect()
+                })
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "copilot_cli collect task panicked");
+                    Vec::new()
+                })
+            }
+            // DB-backed: async sqlx against the (read-only) vscdb.
+            AgentSource::Cursor(s) => s.collect_changed(endpoints, now).await,
+        }
+    }
 }
 
 /// All registered source adapters (present or not — the sweep gates).
-pub fn all_sources() -> Vec<Box<dyn SessionSource>> {
-    vec![Box::new(copilot_cli::CopilotCliSource::from_env())]
+pub fn all_sources() -> Vec<AgentSource> {
+    vec![
+        AgentSource::CopilotCli(copilot_cli::CopilotCliSource::from_env()),
+        AgentSource::Cursor(cursor::CursorSource::from_env()),
+    ]
 }
 
 /// True if any source adapter has data on this device (extends the indexer's
@@ -88,36 +123,17 @@ pub async fn sweep(pool: &SqlitePool, now: DateTime<Utc>) -> (u64, u64) {
             continue;
         }
         let agent = source.agent();
-
-        // Discovery + load are blocking IO → off the async runtime. The
-        // source is moved into the task and yields (uuid, records) pairs.
-        let eps = endpoints.clone();
-        let loaded: Vec<(String, Vec<NormRecord>)> = match tokio::task::spawn_blocking(move || {
-            source
-                .changed_sessions(&eps, now)
-                .into_iter()
-                .map(|sref| (sref.session_uuid.clone(), source.load(&sref)))
-                .collect()
-        })
-        .await
-        {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(agent, error = %e, "source sweep task panicked");
-                failed += 1;
-                continue;
-            }
-        };
+        let loaded = source.collect_changed(&endpoints, now).await;
 
         for (uuid, records) in loaded {
             if records.is_empty() {
                 continue;
             }
             // Trailing non-turn events (Copilot's session.shutdown, late
-            // session.info, …) keep the file's mtime ahead of the stored
-            // ended_at forever. Without this check every settled session
-            // would re-register — and spuriously wake the summariser — on
-            // every tick. Only genuinely new TURNS count as a change.
+            // session.info, …) keep the store's change signal ahead of the
+            // stored ended_at forever. Without this check every settled
+            // session would re-register — and spuriously wake the summariser
+            // — on every tick. Only genuinely new TURNS count as a change.
             if !has_new_turns(&records, endpoints.get(&uuid).map(String::as_str)) {
                 continue;
             }
@@ -195,10 +211,10 @@ mod tests {
 
 // ──────────────────────── Shared helpers ───────────────────────────────────
 
-/// The JSONL indexer's change-detection rule, reusable by file-backed sources:
-/// changed iff mtime moved past the stored `ended_at` (+slack); a never-seen
-/// session is a candidate only if touched TODAY (local) — so a fresh DB does
-/// not re-index weeks of history.
+/// The JSONL indexer's change-detection rule, reusable by any source with a
+/// change timestamp: changed iff it moved past the stored `ended_at` (+slack);
+/// a never-seen session is a candidate only if touched TODAY (local) — so a
+/// fresh DB does not re-index weeks of history.
 pub(crate) fn file_is_candidate(
     mtime: SystemTime,
     stored_end: Option<&str>,
@@ -208,19 +224,34 @@ pub(crate) fn file_is_candidate(
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0);
+    epoch_is_candidate(mtime_epoch, stored_end, now)
+}
+
+/// Epoch-seconds flavour of `file_is_candidate` (Cursor's lastUpdatedAt is
+/// epoch milliseconds, not a file mtime).
+pub(crate) fn epoch_is_candidate(
+    changed_epoch: f64,
+    stored_end: Option<&str>,
+    now: DateTime<Utc>,
+) -> bool {
     match stored_end {
         Some(end_iso) => match parse_iso(end_iso) {
             Some(end) => {
                 let end_epoch = end.timestamp_millis() as f64 / 1000.0;
-                mtime_epoch > end_epoch + CHANGE_SLACK_SECS
+                changed_epoch > end_epoch + CHANGE_SLACK_SECS
             }
             None => true, // unparseable endpoint → re-register to repair
         },
         None => {
-            let mdate = DateTime::<Utc>::from(mtime)
-                .with_timezone(&Local)
-                .date_naive();
-            mdate == now.with_timezone(&Local).date_naive()
+            let secs = changed_epoch as i64;
+            let nanos = ((changed_epoch - secs as f64) * 1e9) as u32;
+            match DateTime::<Utc>::from_timestamp(secs, nanos) {
+                Some(changed) => {
+                    changed.with_timezone(&Local).date_naive()
+                        == now.with_timezone(&Local).date_naive()
+                }
+                None => false,
+            }
         }
     }
 }
