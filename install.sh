@@ -16,7 +16,7 @@ USE_MLX=1   # MLX inference server is the only backend (powers classify + PM-wor
 MLX_PORT=7823
 # Pinned screenpipe version — the launchd plist expects this exact build
 # (`screenpipe record`). Installed via npm only when screenpipe is absent.
-SCREENPIPE_VERSION="0.3.350"
+SCREENPIPE_VERSION="0.4.6"
 
 # ---------------------------------------------------------------------------
 # Helpers
