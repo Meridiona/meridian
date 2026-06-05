@@ -108,7 +108,9 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         let commands_dir = home.join(".claude/commands");
         let skill_path = commands_dir.join("session-summary.md");
-        // Keep rules in sync with src/coding_agent_session_ingest/summariser/prompts.rs
+        // Keep in sync with services/skills/coding-agent/session-summary/SKILL.md
+        // (install.sh and install-from-bundle.sh copy that file directly; this
+        // path is the fallback for `meridian doctor --fix` and `meridian coding-agent-install-skill`)
         let content = concat!(
             "---\n",
             "description: Summarise a coding-agent session transcript for a Jira work-log.\n",

@@ -604,6 +604,13 @@ _final_ui_hash="${_new_ui_hash:-${_OLD_UI_HASH}}"
 
 ok "all daemons installed"
 
+# Install session-summary Claude Code command so `claude -p /session-summary` resolves.
+_skill_src="${APP_ROOT}/services/skills/coding-agent/session-summary/SKILL.md"
+_skill_dst="${HOME}/.claude/commands/session-summary.md"
+mkdir -p "${HOME}/.claude/commands"
+cp "${_skill_src}" "${_skill_dst}"
+ok "session-summary command → ~/.claude/commands/session-summary.md"
+
 # Pipeline smoke test — verify both LLM stages return valid output (no DB writes).
 echo ""
 info "Running pipeline smoke test (this exercises the model — may take ~30s)…"

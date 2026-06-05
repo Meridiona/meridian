@@ -683,6 +683,13 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
         ok "Claude Code coding-agent SessionEnd hook installed"
     fi
 
+    info "Installing session-summary Claude Code command..."
+    _skill_src="${REPO_ROOT}/services/skills/coding-agent/session-summary/SKILL.md"
+    _skill_dst="${HOME}/.claude/commands/session-summary.md"
+    mkdir -p "${HOME}/.claude/commands"
+    cp "${_skill_src}" "${_skill_dst}"
+    ok "session-summary command → ~/.claude/commands/session-summary.md"
+
     if [[ "${DEV_MODE}" -eq 1 ]]; then
         info "Dev mode — skipping UI launchd agent (run: cd ui && npm run dev)"
     else
