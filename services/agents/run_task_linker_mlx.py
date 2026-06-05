@@ -415,7 +415,25 @@ def _classify_apple_fm(messages: list[dict[str, str]]) -> "SessionClassification
         data = json.loads(text)
         return SessionClassification.model_validate(_coerce_apple_fm_result(data))
 
-    raw = asyncio.run(_run(user_with_hint))
+    def _call_apple_fm(prompt: str) -> str:
+        # anyio (used by FastAPI's run_in_threadpool) sets up its own event loop
+        # machinery in its worker threads. asyncio.run() raises
+        # "cannot be called from a running event loop" even inside a threadpool
+        # thread. Spawning a genuinely fresh OS thread with its own event loop
+        # avoids anyio's loop entirely.
+        import concurrent.futures
+        def _in_fresh_thread() -> str:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(_run(prompt))
+            finally:
+                loop.close()
+                asyncio.set_event_loop(None)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            return ex.submit(_in_fresh_thread).result(timeout=60)
+
+    raw = _call_apple_fm(user_with_hint)
     try:
         return _parse(raw)
     except Exception:
@@ -425,7 +443,7 @@ def _classify_apple_fm(messages: list[dict[str, str]]) -> "SessionClassification
             "(category, category_confidence, category_explanation, session_summary). "
             "Return a complete JSON with ALL fields from the schema:\n" + raw
         )
-        raw2 = asyncio.run(_run(fix_prompt))
+        raw2 = _call_apple_fm(fix_prompt)
         return _parse(raw2)
 
 
