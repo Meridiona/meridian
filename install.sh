@@ -821,7 +821,7 @@ if [[ "${DRY_RUN}" -eq 0 ]]; then
     if [[ "${_has_claude_uuid}" -lt 1 ]]; then
         warn "Database schema incomplete — migrations may not have run yet"
         echo "  → The daemon is running migrations on startup. If this persists after 30s, run:"
-        echo "    bash scripts/migrate-db.sh"
+        echo "    meridian migrate-db"
     else
         ok "database schema verified"
     fi
