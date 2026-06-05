@@ -23,7 +23,7 @@
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>exec {{SCREENPIPE_BIN}} record --disable-audio</string>
+        <string>exec {{SCREENPIPE_BIN}} record --disable-audio --use-pii-removal</string>
     </array>
 
     <key>EnvironmentVariables</key>
