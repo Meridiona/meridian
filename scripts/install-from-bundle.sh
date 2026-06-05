@@ -114,7 +114,8 @@ LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
 install_ui_standalone() {
     local label="com.meridiona.ui"
     local plist="${LAUNCH_AGENTS}/${label}.plist"
-    local node_bin; node_bin="$(command -v node)"
+    local node_bin="${APP_ROOT}/bin/node-runtime"
+    [[ -x "${node_bin}" ]] || { err "bundled node runtime missing — re-install: npm install -g @meridiona/meridian"; return 1; }
     local start_script="${APP_ROOT}/scripts/ui-start.sh"
     chmod +x "${start_script}" 2>/dev/null || true
     mkdir -p "${HOME}/.meridian/logs" "${LAUNCH_AGENTS}"
@@ -425,35 +426,6 @@ elif [[ -d "${APP_ROOT}/ui" ]]; then
     # ui/ was preserved by meridian-npm-setup.sh — hash matched, no re-extraction needed
     ok "dashboard unchanged — reusing existing build"
     _ui_changed=0
-fi
-
-# Re-fetch the correct better-sqlite3 binary when the pre-built addon ABI
-# doesn't match the local Node.js. The Next.js standalone strips source files
-# (binding.gyp is absent), so `npm rebuild` can't compile from source — instead
-# we install the same version into a temp dir (which runs prebuild-install and
-# downloads the right binary from GitHub) then copy just the .node file across.
-# ui-start.sh runs the same check at every daemon startup as a safety net.
-_sqlite3_dir="${APP_ROOT}/ui/node_modules/better-sqlite3"
-_node_bin="$(command -v node 2>/dev/null || true)"
-_npm_bin="${_node_bin%node}npm"; [[ -x "${_npm_bin}" ]] || _npm_bin="$(command -v npm 2>/dev/null || true)"
-if [[ -n "${_node_bin}" ]] && [[ -d "${_sqlite3_dir}" ]] && ! "${_node_bin}" -e "require('${_sqlite3_dir}')" 2>/dev/null; then
-    info "Re-fetching better-sqlite3 binary for Node $("${_node_bin}" --version) (ABI mismatch with CI build)…"
-    _bsv="$("${_node_bin}" -e "process.stdout.write(require('${_sqlite3_dir}/package.json').version)" 2>/dev/null || echo "")"
-    _bstmp="$(mktemp -d)"
-    _bsok=0
-    if [[ -n "${_bsv}" ]] && [[ -x "${_npm_bin:-}" ]] && \
-       (cd "${_bstmp}" && "${_npm_bin}" install --no-save "better-sqlite3@${_bsv}" 2>/dev/null) && \
-       [[ -f "${_bstmp}/node_modules/better-sqlite3/build/Release/better_sqlite3.node" ]]; then
-        cp "${_bstmp}/node_modules/better-sqlite3/build/Release/better_sqlite3.node" \
-           "${_sqlite3_dir}/build/Release/better_sqlite3.node"
-        _bsok=1
-    fi
-    rm -rf "${_bstmp}"
-    if [[ "${_bsok}" -eq 1 ]]; then
-        ok "better-sqlite3 binary updated for Node $("${_node_bin}" --version)"
-    else
-        warn "better-sqlite3 binary update failed — ui-start.sh will retry on first launch"
-    fi
 fi
 
 # ── 6. Daemons — restart only what changed ───────────────────────────────────
