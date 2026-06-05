@@ -56,7 +56,13 @@ impl CursorSource {
     }
 
     pub fn present(&self) -> bool {
-        self.vscdb_path.is_file()
+        let exists = self.vscdb_path.is_file();
+        tracing::debug!(
+            path = %self.vscdb_path.display(),
+            exists,
+            "cursor vscdb device gate check"
+        );
+        exists
     }
 
     /// Discover + load changed sessions in one pass (one short-lived read-only
@@ -98,15 +104,20 @@ pub(crate) async fn collect_from_pool(
     // Skip if we're running inside a summariser subprocess (avoid indexing
     // conversations created by cursor-agent during summary runs).
     if std::env::var("MERIDIAN_SUMMARISER").is_ok() {
+        tracing::debug!("cursor collect_from_pool: skipped (MERIDIAN_SUMMARISER set)");
         return Vec::new();
     }
 
+    tracing::debug!("cursor collect_from_pool: scanning composerData entries");
     let rows: Vec<(String, String)> =
         match sqlx::query_as("SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'")
             .fetch_all(pool)
             .await
         {
-            Ok(r) => r,
+            Ok(r) => {
+                tracing::debug!(count = r.len(), "cursor found composerData rows");
+                r
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "cursor composerData scan failed");
                 return Vec::new();
@@ -118,11 +129,17 @@ pub(crate) async fn collect_from_pool(
     for (key, value) in rows {
         let uuid = match key.strip_prefix("composerData:") {
             Some(u) if !u.is_empty() => u.to_string(),
-            _ => continue,
+            _ => {
+                tracing::debug!("cursor: skipping row with invalid key");
+                continue;
+            }
         };
         let data: Value = match serde_json::from_str(&value) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(_) => {
+                tracing::debug!(uuid = %uuid, "cursor: skipping row with invalid JSON");
+                continue;
+            }
         };
         // lastUpdatedAt is None until the first reply lands; fall back to
         // createdAt so a brand-new conversation is still picked up.
@@ -132,10 +149,14 @@ pub(crate) async fn collect_from_pool(
             .or_else(|| data.get("createdAt").and_then(Value::as_f64));
         let updated_epoch = match updated_ms {
             Some(ms) => ms / 1000.0,
-            None => continue,
+            None => {
+                tracing::debug!(uuid = %uuid, "cursor: skipping row with no timestamp");
+                continue;
+            }
         };
         let stored = endpoints.get(&uuid).map(String::as_str);
         if !epoch_is_candidate(updated_epoch, stored, now) {
+            tracing::debug!(uuid = %uuid, updated_epoch = updated_epoch, "cursor: not a candidate (already processed or too old)");
             continue;
         }
         // Draft composers carry no conversation yet.
@@ -145,17 +166,22 @@ pub(crate) async fn collect_from_pool(
             .map(|a| !a.is_empty())
             .unwrap_or(false);
         if !has_headers {
+            tracing::debug!(uuid = %uuid, "cursor: skipping draft composer (no headers)");
             continue;
         }
+        tracing::debug!(uuid = %uuid, "cursor: composer is a candidate");
         changed.push((updated_epoch, uuid, data));
     }
     changed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    tracing::debug!(candidates = changed.len(), "cursor: filtered to candidates");
 
     let mut out: Vec<(String, Vec<NormRecord>)> = Vec::new();
     for (_, uuid, data) in changed {
         let records = load_composer(pool, &uuid, &data).await;
+        tracing::debug!(uuid = %uuid, record_count = records.len(), "cursor: loaded composer");
         out.push((uuid, records));
     }
+    tracing::debug!(loaded = out.len(), "cursor collect_from_pool complete");
     out
 }
 
