@@ -58,7 +58,6 @@ fi
 tar -xzf "${_node22_tmp}/node22.tar.gz" -C "${_node22_tmp}"
 _NODE22_DIR="${_node22_tmp}/node-v${_NODE22_VERSION}-darwin-arm64"
 _NODE22_BIN="${_NODE22_DIR}/bin/node"
-_NODE22_NPM_CLI="${_NODE22_DIR}/lib/node_modules/npm/bin/npm-cli.js"
 echo "  · $("${_NODE22_BIN}" --version) — ABI $("${_NODE22_BIN}" -e 'process.stdout.write(String(process.versions.modules))') ✓"
 
 echo "→ UI (Next.js standalone, packed as a tarball)"
@@ -84,39 +83,19 @@ if [[ "${_ui_changed}" -eq 1 ]]; then
     mkdir -p "${_ui_stage}/.next"
     cp -R "ui/.next/static" "${_ui_stage}/.next/static"
     [[ -d "ui/public" ]] && cp -R "ui/public" "${_ui_stage}/public"
-    # Swap the better-sqlite3 native addon for one built against Node 22 (ABI 127).
-    # CI runs with Node 24 (ABI 137) for semantic-release/npm OIDC; the binary
-    # produced by `npm ci && npm run build` loads only on Node 24. The bundled
-    # node-runtime is Node 22, so we must ship a matching binary.
+    # Swap the better-sqlite3 native addon for the official prebuilt for Node 22 (ABI 127).
+    # CI runs with Node 24 (ABI 137); the binary from `npm ci && npm run build` only loads
+    # on Node 24. Download the matching prebuilt directly from GitHub Releases by ABI
+    # number — no npm lifecycle, no node-gyp, no env var contamination possible.
     _bs_version="$("${_NODE22_BIN}" -e "process.stdout.write(require('./ui/node_modules/better-sqlite3/package.json').version)")"
-    echo "  · building better-sqlite3@${_bs_version} for Node 22 (ABI 127)…"
+    _bs_abi="$("${_NODE22_BIN}" -e 'process.stdout.write(String(process.versions.modules))')"
+    _bs_url="https://github.com/WiseLibs/better-sqlite3/releases/download/v${_bs_version}/better-sqlite3-v${_bs_version}-node-v${_bs_abi}-darwin-arm64.tar.gz"
+    echo "  · fetching better-sqlite3@${_bs_version} prebuilt for Node 22 (ABI ${_bs_abi})…"
     _bs_tmp="$(mktemp -d)"
-    # Install better-sqlite3 source files WITHOUT running lifecycle scripts.
-    # npm lifecycle scripts inherit npm_config_* from the outer CI session (Node 24,
-    # ABI 137); prebuild-install reads npm_config_target and downloads the wrong ABI.
-    # Instead we install source-only, then drive node-gyp explicitly with Node 22.
-    HOME="${_bs_tmp}" "${_NODE22_BIN}" "${_NODE22_NPM_CLI}" install \
-        --prefix "${_bs_tmp}" --ignore-scripts \
-        --no-save "better-sqlite3@${_bs_version}" 2>&1 | tail -10 || true
-
-    # Compile from source using Node 22's bundled node-gyp — ABI is 127 by construction.
-    _bs_pkg="${_bs_tmp}/node_modules/better-sqlite3"
-    _NODE22_GYP="${_NODE22_DIR}/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js"
-    echo "  · compiling better-sqlite3 from source with Node 22 node-gyp…"
-    # Unset all npm_config_* vars that the outer `npm ci` session (Node 24) leaves
-    # in the environment. node-gyp reads npm_config_nodedir / npm_config_target to
-    # choose which Node headers to compile against — if left set they point at Node 24
-    # headers and produce an ABI 137 binary even when the running node is Node 22.
-    # Passing --target and --nodedir explicitly makes the ABI unconditional.
-    (cd "${_bs_pkg}" && \
-        env -u npm_config_nodedir -u npm_config_target -u npm_config_node_root \
-        PATH="${_NODE22_DIR}/bin:${PATH}" \
-        "${_NODE22_BIN}" "${_NODE22_GYP}" rebuild \
-            --target="${_NODE22_VERSION}" \
-            --nodedir="${_NODE22_DIR}") 2>&1 | tail -30 || true
+    curl -fsSL --retry 3 "${_bs_url}" | tar -xzf - -C "${_bs_tmp}"
     _bs_node="$(find "${_bs_tmp}" -name "better_sqlite3.node" -path "*/Release/*" 2>/dev/null | head -1)"
     [[ -n "${_bs_node}" && -f "${_bs_node}" ]] || {
-        echo "✗ better-sqlite3@${_bs_version} Node 22 build produced no binary" >&2
+        echo "✗ better-sqlite3@${_bs_version} prebuilt for ABI ${_bs_abi} not found at ${_bs_url}" >&2
         rm -rf "${_bs_tmp}" "${_node22_tmp}"; exit 1
     }
     # Confirm the staged tree has exactly one .node file, then replace it.
