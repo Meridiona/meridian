@@ -264,14 +264,22 @@ pub async fn run_tick(pool: &SqlitePool, cfg: &IndexerConfig, now: DateTime<Utc>
     (sealed, wrote)
 }
 
-/// CLI-backed sources with their process fingerprints. IDE-resident sources
-/// (cursor vscdb sidebar, VS Code chatSessions) and Claude (SessionEnd hook)
-/// are deliberately absent — their lifecycles are handled elsewhere.
-const CLI_SOURCES: &[(&str, &[&str])] = &[
-    ("codex_jsonl", &["-x", "codex"]),
+/// CLI-backed sources with their process fingerprints: a loose `pgrep -fl`
+/// pattern plus argv substrings that DISQUALIFY a match. Needed because the
+/// obvious names collide: VS Code's ChatGPT extension runs a binary literally
+/// named `codex` (`codex app-server`, always alive) which is NOT the codex
+/// CLI. IDE-resident sources (cursor vscdb sidebar, VS Code chatSessions) and
+/// Claude (SessionEnd hook) are deliberately absent — their lifecycles are
+/// handled elsewhere.
+const CLI_SOURCES: &[(&str, &str, &[&str])] = &[
+    (
+        "codex_jsonl",
+        "codex",
+        &["app-server", ".vscode/extensions"],
+    ),
     // copilot is a node script: comm is `node`, must match argv.
-    ("copilot_events_jsonl", &["-f", "bin/copilot( |$)"]),
-    ("cursor_cli_store", &["-x", "cursor-agent"]),
+    ("copilot_events_jsonl", "bin/copilot", &[]),
+    ("cursor_cli_store", "cursor-agent", &["login"]),
 ];
 
 /// Prompt session completion for CLI agents — /clear and Ctrl+C, which write
@@ -282,8 +290,8 @@ const CLI_SOURCES: &[(&str, &[&str])] = &[
 ///    of the same source exists → the older conversation ended.
 async fn seal_finished_cli_sessions(pool: &SqlitePool, now_iso: &str) -> u64 {
     let mut sealed = 0_u64;
-    for (source, pgrep_args) in CLI_SOURCES {
-        if !cli_process_running(pgrep_args).await {
+    for (source, pattern, excludes) in CLI_SOURCES {
+        if !cli_process_running(pattern, excludes).await {
             match db::seal_live_rows_of_source(pool, now_iso, source).await {
                 Ok(n) => {
                     if n > 0 {
@@ -308,23 +316,30 @@ async fn seal_finished_cli_sessions(pool: &SqlitePool, now_iso: &str) -> u64 {
     sealed
 }
 
-/// `pgrep` probe for a CLI agent. On any pgrep failure (missing binary, …)
-/// assume RUNNING — the safe direction: a false "running" merely defers the
-/// seal to the idle backstop, a false "gone" would seal mid-session.
-async fn cli_process_running(pgrep_args: &[&str]) -> bool {
-    match tokio::process::Command::new("pgrep")
-        .args(pgrep_args)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+/// `pgrep -fl` probe for a CLI agent: list every argv matching `pattern`,
+/// drop lines carrying an exclude substring (name collisions — see
+/// CLI_SOURCES), and report whether anything genuine remains. On any pgrep
+/// failure assume RUNNING — the safe direction: a false "running" merely
+/// defers the seal to the idle backstop, a false "gone" would seal
+/// mid-session.
+async fn cli_process_running(pattern: &str, excludes: &[&str]) -> bool {
+    let output = match tokio::process::Command::new("pgrep")
+        .args(["-fl", pattern])
+        .output()
         .await
     {
-        Ok(status) => status.success(),
+        Ok(o) => o,
         Err(e) => {
             tracing::warn!(error = %e, "pgrep probe failed — assuming process running");
-            true
+            return true;
         }
+    };
+    if !output.status.success() {
+        return false; // pgrep exit 1 = no matches at all
     }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| !excludes.iter().any(|ex| line.contains(ex)))
 }
 
 /// Files whose mtime moved past their stored `ended_at` (+slack). A never-seen
