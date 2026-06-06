@@ -1,3 +1,10 @@
+## [1.27.1](https://github.com/Meridiona/meridian/compare/v1.27.0...v1.27.1) (2026-06-06)
+
+
+### Bug Fixes
+
+* **health:** correct DB status string matching — stops false schema-mismatch banner ([#182](https://github.com/Meridiona/meridian/issues/182)) ([7229540](https://github.com/Meridiona/meridian/commit/72295401d3a4597b58612bde6d83325308a165f4))
+
 # [1.27.0](https://github.com/Meridiona/meridian/compare/v1.26.2...v1.27.0) (2026-06-06)
 
 
