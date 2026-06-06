@@ -1,3 +1,10 @@
+# [1.27.0](https://github.com/Meridiona/meridian/compare/v1.26.2...v1.27.0) (2026-06-06)
+
+
+### Features
+
+* **cli:** add meridian update command for source checkouts ([#180](https://github.com/Meridiona/meridian/issues/180)) ([ebebd4a](https://github.com/Meridiona/meridian/commit/ebebd4a2dc9980a39975369d67790d7c5a602336))
+
 ## [1.26.2](https://github.com/Meridiona/meridian/compare/v1.26.1...v1.26.2) (2026-06-05)
 
 
