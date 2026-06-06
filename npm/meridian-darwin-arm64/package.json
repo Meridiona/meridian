@@ -1,6 +1,6 @@
 {
   "name": "@meridiona/meridian-darwin-arm64",
-  "version": "1.27.5",
+  "version": "1.27.6",
   "description": "Prebuilt Meridian app for macOS arm64 (daemon binary + dashboard + Python services). Installed via @meridiona/meridian.",
   "homepage": "https://github.com/Meridiona/meridian",
   "repository": {

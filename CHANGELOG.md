@@ -1,3 +1,10 @@
+## [1.27.6](https://github.com/Meridiona/meridian/compare/v1.27.5...v1.27.6) (2026-06-06)
+
+
+### Bug Fixes
+
+* **health:** suppress banners when doctor times out or has partial output ([354765e](https://github.com/Meridiona/meridian/commit/354765e5fbb2faa88dcbda2a96e4d878b89a91ba))
+
 ## [1.27.5](https://github.com/Meridiona/meridian/compare/v1.27.4...v1.27.5) (2026-06-06)
 
 
