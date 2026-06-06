@@ -35,7 +35,7 @@ export default function HealthBanner() {
   const showDatabaseError = health && health.database_ready === false
   const showA11yWarning = health && health.a11y_helper_trusted === false && health.database_ready !== false
 
-  if (!health || (health.a11y_helper_trusted && health.database_ready !== false) || dismissed) {
+  if (!health || (health.a11y_helper_trusted !== false && health.database_ready !== false) || dismissed) {
     return null
   }
 
