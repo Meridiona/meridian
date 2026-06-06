@@ -14,8 +14,9 @@ use super::config::SummariserConfig;
 use super::prompts;
 use super::{cap_transcript, run_capture, EngineOutput, SummariserError};
 
-/// Argv-embedding budget (chars) — same rationale as copilot.rs: stay clear
-/// of the per-arg exec limit (~256 KiB on macOS).
+/// Argv-embedding budget (chars) — see copilot.rs for the limit analysis
+/// (macOS: no per-arg limit, ~1 MiB total ARG_MAX, 256 k single arg verified;
+/// Linux would cap a single string at 128 KiB).
 const ARG_TRANSCRIPT_CAP: usize = 180_000;
 
 pub async fn run_cursor_agent(

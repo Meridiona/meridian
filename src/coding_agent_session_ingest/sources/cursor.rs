@@ -101,13 +101,10 @@ pub(crate) async fn collect_from_pool(
     endpoints: &HashMap<String, String>,
     now: DateTime<Utc>,
 ) -> Vec<(String, Vec<NormRecord>)> {
-    // Skip if we're running inside a summariser subprocess (avoid indexing
-    // conversations created by cursor-agent during summary runs).
-    if std::env::var("MERIDIAN_SUMMARISER").is_ok() {
-        tracing::debug!("cursor collect_from_pool: skipped (MERIDIAN_SUMMARISER set)");
-        return Vec::new();
-    }
-
+    // Self-ingest protection (cursor-agent persisting its own summary runs)
+    // lives in `sources::sweep()` via SUMMARY_PROMPT_MARKER — not here. An env
+    // check would be dead code: MERIDIAN_SUMMARISER is set on summariser
+    // CHILD processes, never on the daemon process this runs in.
     tracing::debug!("cursor collect_from_pool: scanning composerData entries");
     let rows: Vec<(String, String)> =
         match sqlx::query_as("SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'")

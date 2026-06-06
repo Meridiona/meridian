@@ -17,13 +17,17 @@
 // login child kept the one-shot CLI process alive forever).
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use tokio::process::Command;
+use tokio::sync::OnceCell;
 
-// Cache state: 0 = unchecked, 1 = ready, 2 = failed
-static INIT_STATE: AtomicU8 = AtomicU8::new(0);
+/// One-shot init result, cached for the daemon's lifetime. `OnceCell` (not a
+/// raw atomic) so concurrent first callers serialize on a single
+/// `try_install_and_login` run instead of racing into duplicate installs —
+/// the drain is sequential today, but the cache must not rely on that.
+/// Err is stored as String because anyhow::Error is not Clone.
+static INIT_RESULT: OnceCell<Result<(), String>> = OnceCell::const_new();
 
 /// Hard ceilings — the daemon runs unattended; neither the installer (network
 /// fetch) nor auth probes may hang the summariser. On timeout the init fails
@@ -33,22 +37,14 @@ const STATUS_TIMEOUT: Duration = Duration::from_secs(30);
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Ensure cursor-agent is installed and logged in. Call this before attempting
-/// to use cursor-agent for summarisation. On first call, attempts install +
-/// auth if needed; subsequent calls return the cached result.
+/// to use cursor-agent for summarisation. The first caller runs install +
+/// auth; concurrent and subsequent callers get the same cached result.
 pub async fn ensure_ready() -> anyhow::Result<()> {
-    match INIT_STATE.load(Ordering::Relaxed) {
-        1 => return Ok(()), // Already ready
-        2 => return Err(anyhow::anyhow!("cursor-agent init failed on prior attempt")),
-        _ => {}
-    }
-
-    let result = try_install_and_login().await;
-
-    // Cache the result for future calls
-    let state = if result.is_ok() { 1 } else { 2 };
-    INIT_STATE.store(state, Ordering::Relaxed);
-
-    result
+    INIT_RESULT
+        .get_or_init(|| async { try_install_and_login().await.map_err(|e| format!("{e:#}")) })
+        .await
+        .clone()
+        .map_err(|e| anyhow::anyhow!("cursor-agent init failed: {e}"))
 }
 
 /// Main flow: find (or install) cursor-agent, then make sure it's authed —
