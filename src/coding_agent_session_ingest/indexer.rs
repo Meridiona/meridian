@@ -264,23 +264,11 @@ pub async fn run_tick(pool: &SqlitePool, cfg: &IndexerConfig, now: DateTime<Utc>
     (sealed, wrote)
 }
 
-/// CLI-backed sources with their process fingerprints: a loose `pgrep -fl`
-/// pattern plus argv substrings that DISQUALIFY a match. Needed because the
-/// obvious names collide: VS Code's ChatGPT extension runs a binary literally
-/// named `codex` (`codex app-server`, always alive) which is NOT the codex
-/// CLI. IDE-resident sources (cursor vscdb sidebar, VS Code chatSessions) and
-/// Claude (SessionEnd hook) are deliberately absent — their lifecycles are
-/// handled elsewhere.
-const CLI_SOURCES: &[(&str, &str, &[&str])] = &[
-    (
-        "codex_jsonl",
-        "codex",
-        &["app-server", ".vscode/extensions"],
-    ),
-    // copilot is a node script: comm is `node`, must match argv.
-    ("copilot_events_jsonl", "bin/copilot", &[]),
-    ("cursor_cli_store", "cursor-agent", &["login"]),
-];
+/// CLI-backed sources eligible for end-of-session acceleration. IDE-resident
+/// sources (cursor vscdb sidebar, VS Code chatSessions) and Claude
+/// (SessionEnd hook) are deliberately absent — their lifecycles are handled
+/// elsewhere.
+const CLI_SOURCES: &[&str] = &["codex_jsonl", "copilot_events_jsonl", "cursor_cli_store"];
 
 /// Prompt session completion for CLI agents — /clear and Ctrl+C, which write
 /// no end marker in most stores:
@@ -289,9 +277,18 @@ const CLI_SOURCES: &[(&str, &str, &[&str])] = &[
 /// 2. Superseded (/clear, /new with the CLI still running): a NEWER session
 ///    of the same source exists → the older conversation ended.
 async fn seal_finished_cli_sessions(pool: &SqlitePool, now_iso: &str) -> u64 {
+    // One process listing per tick, shared by all sources. None = listing
+    // failed → treat every CLI as running (the safe direction: a false
+    // "running" merely defers to the idle backstop; a false "gone" would
+    // seal mid-session).
+    let argvs = list_process_argvs().await;
     let mut sealed = 0_u64;
-    for (source, pattern, excludes) in CLI_SOURCES {
-        if !cli_process_running(pattern, excludes).await {
+    for source in CLI_SOURCES {
+        let running = match &argvs {
+            Some(list) => cli_running(list, source),
+            None => true,
+        };
+        if !running {
             match db::seal_live_rows_of_source(pool, now_iso, source).await {
                 Ok(n) => {
                     if n > 0 {
@@ -316,30 +313,52 @@ async fn seal_finished_cli_sessions(pool: &SqlitePool, now_iso: &str) -> u64 {
     sealed
 }
 
-/// `pgrep -fl` probe for a CLI agent: list every argv matching `pattern`,
-/// drop lines carrying an exclude substring (name collisions — see
-/// CLI_SOURCES), and report whether anything genuine remains. On any pgrep
-/// failure assume RUNNING — the safe direction: a false "running" merely
-/// defers the seal to the idle backstop, a false "gone" would seal
-/// mid-session.
-async fn cli_process_running(pattern: &str, excludes: &[&str]) -> bool {
-    let output = match tokio::process::Command::new("pgrep")
-        .args(["-fl", pattern])
+/// Snapshot every process's argv (`ps -axo args=` — argv ONLY). pgrep -f is
+/// useless here: on macOS it matches the environment block too, and PATH /
+/// CODEX_* env vars put agent names into half the processes on the box.
+async fn list_process_argvs() -> Option<Vec<String>> {
+    let output = tokio::process::Command::new("ps")
+        .args(["-axo", "args="])
         .output()
         .await
-    {
-        Ok(o) => o,
-        Err(e) => {
-            tracing::warn!(error = %e, "pgrep probe failed — assuming process running");
-            return true;
-        }
-    };
+        .ok()?;
     if !output.status.success() {
-        return false; // pgrep exit 1 = no matches at all
+        return None;
     }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .any(|line| !excludes.iter().any(|ex| line.contains(ex)))
+    Some(
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+fn basename(token: &str) -> &str {
+    token.rsplit('/').next().unwrap_or(token)
+}
+
+/// Does any process argv look like this source's CLI? Matched on the argv[0]
+/// basename so env noise can't false-positive, with the known collisions
+/// excluded: VS Code's ChatGPT extension ships a binary literally named
+/// `codex` (runs as `codex app-server`), copilot is a node script (argv[0] is
+/// `node`, the script path is argv[1]), and a `cursor-agent login` child is
+/// auth plumbing, not a chat session.
+fn cli_running(argvs: &[String], source: &str) -> bool {
+    argvs.iter().any(|line| {
+        let mut toks = line.split_whitespace();
+        let Some(first) = toks.next() else {
+            return false;
+        };
+        let bn0 = basename(first);
+        match source {
+            "codex_jsonl" => bn0 == "codex" && !line.contains("app-server"),
+            "copilot_events_jsonl" => {
+                bn0 == "copilot" || (bn0 == "node" && toks.next().map(basename) == Some("copilot"))
+            }
+            "cursor_cli_store" => bn0 == "cursor-agent" && !line.contains(" login"),
+            _ => false,
+        }
+    })
 }
 
 /// Files whose mtime moved past their stored `ended_at` (+slack). A never-seen
@@ -617,5 +636,39 @@ mod tests {
         // Only false if neither dir exists AND no binary on PATH; binaries may be
         // installed on the dev box, so just assert the dir-absence branch is wired.
         let _ = coding_agents_present(&cfg_absent);
+    }
+
+    #[test]
+    fn cli_running_matches_real_argv_shapes() {
+        let argvs: Vec<String> = [
+            // VS Code's ChatGPT extension — NOT the codex CLI.
+            "/Users/u/.vscode/extensions/openai.chatgpt-1/bin/codex app-server --analytics",
+            // Copilot CLI (node script) + the codex CLI typed bare.
+            "node /opt/homebrew/bin/copilot",
+            "codex exec --skip-git-repo-check say hi",
+            // cursor-agent auth plumbing — not a chat session.
+            "/Users/u/.local/bin/cursor-agent --use-system-ca /idx.js login",
+            // Env noise that pgrep -f used to false-match must NOT match here.
+            "npm exec ruflo PATH=/Users/u/.codex/bin:/usr/bin",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        assert!(cli_running(&argvs, "codex_jsonl"), "bare codex CLI matches");
+        assert!(cli_running(&argvs, "copilot_events_jsonl"));
+        assert!(
+            !cli_running(&argvs, "cursor_cli_store"),
+            "login child is not a session"
+        );
+
+        // Remove the genuine CLIs — only collisions/noise left → all gone.
+        let noise: Vec<String> = argvs
+            .iter()
+            .filter(|l| !l.starts_with("codex exec") && !l.starts_with("node /opt"))
+            .cloned()
+            .collect();
+        assert!(!cli_running(&noise, "codex_jsonl"), "app-server excluded");
+        assert!(!cli_running(&noise, "copilot_events_jsonl"));
     }
 }
