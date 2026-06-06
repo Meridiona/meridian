@@ -11,14 +11,34 @@ interface HealthStatus {
 
 export async function GET(request: NextRequest): Promise<NextResponse<HealthStatus>> {
   try {
-    // Run meridian doctor and parse for a11y_helper.trusted status
+    // The UI daemon runs under launchd whose default PATH (/usr/bin:/bin:…) does not
+    // include ~/.local/bin where meridian lives. Without augmenting PATH, execSync
+    // gets "sh: meridian: command not found" — a non-empty string that falsely
+    // triggers the DB-error branch below.
+    const home = process.env.HOME ?? ''
+    const augmentedPath = [
+      `${home}/.local/bin`,
+      `${home}/.npm-global/bin`,
+      '/usr/local/bin',
+      process.env.PATH ?? '',
+    ]
+      .filter(Boolean)
+      .join(':')
+
     let doctorOutput = ''
     try {
-      doctorOutput = execSync('meridian doctor 2>&1', { encoding: 'utf-8', timeout: 5000 })
+      doctorOutput = execSync('meridian doctor 2>&1', {
+        encoding: 'utf-8',
+        timeout: 5000,
+        env: { ...process.env, PATH: augmentedPath },
+      })
     } catch (e) {
-      // doctor command might fail if database is not ready — that's ok, we detect it below
+      // doctor exits 1 on critical issues — that's a real run; capture stdout.
       doctorOutput = e instanceof Error && 'stdout' in e ? String(e.stdout) : ''
     }
+
+    // Guard: only trust the output if doctor actually ran (vs "command not found").
+    const doctorRan = doctorOutput.includes('meridian DB') || doctorOutput.includes('Meridian doctor')
 
     // Check if a11y_helper is trusted
     const isTrusted = doctorOutput.includes('a11y_helper.trusted') && doctorOutput.includes('✓  a11y_helper.trusted')
@@ -27,7 +47,7 @@ export async function GET(request: NextRequest): Promise<NextResponse<HealthStat
     // Rendered (no color, non-TTY): "    ✓  meridian DB              readable"
     const databaseReady = doctorOutput.includes('✓  meridian DB')
 
-    if (!databaseReady && doctorOutput.length > 0) {
+    if (doctorRan && !databaseReady) {
       // Distinguish "db not created yet" (fresh install) from "schema too old" (upgrade).
       const dbMissing =
         doctorOutput.includes('not yet created') ||
