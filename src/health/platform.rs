@@ -183,14 +183,24 @@ pub fn ui_service() -> Vec<Check> {
         None => Check::warn("ui service", "system", "not loaded — dashboard unavailable")
             .with_remedy("meridian start"),
     };
-    let built = repo_root()
-        .map(|r| r.join("ui/.next").is_dir())
-        .unwrap_or(false);
-    let build_check = if built {
-        Check::ok("ui built", "system", ".next present")
+    let build_check = if let Some(root) = repo_root() {
+        // Dev / source-checkout install: ui/.next must exist.
+        if root.join("ui/.next").is_dir() {
+            Check::ok("ui built", "system", ".next present")
+        } else {
+            Check::warn("ui built", "system", "not built")
+                .with_remedy("cd ui && npm ci && npm run build")
+        }
     } else {
-        Check::warn("ui built", "system", "not built")
-            .with_remedy("cd ui && npm ci && npm run build")
+        // Bundle install: the standalone server.js is extracted from ui.tar.gz
+        // into ~/.meridian/app/ui/ — no Cargo.toml, so repo_root() is None.
+        let bundle_server = home().join(".meridian/app/ui/server.js");
+        if bundle_server.is_file() {
+            Check::ok("ui built", "system", "bundle server.js present")
+        } else {
+            Check::warn("ui built", "system", "bundle not extracted")
+                .with_remedy("re-run the installer: curl -fsSL https://raw.githubusercontent.com/Meridiona/meridian/main/scripts/bootstrap.sh | bash")
+        }
     };
     vec![plist_check(LABEL_UI, "ui plist"), run, build_check]
 }
