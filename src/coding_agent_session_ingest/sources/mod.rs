@@ -81,7 +81,7 @@ impl AgentSource {
         &self,
         endpoints: &HashMap<String, String>,
         now: DateTime<Utc>,
-    ) -> Vec<(String, Vec<NormRecord>)> {
+    ) -> Vec<(String, Vec<NormRecord>, Option<String>)> {
         match self {
             // Detection-only stub: logs once, ingests nothing.
             AgentSource::Antigravity(s) => s.collect_changed(endpoints, now),
@@ -93,8 +93,9 @@ impl AgentSource {
                     src.changed_sessions(&eps, now)
                         .into_iter()
                         .map(|(uuid, path)| {
+                            // Copilot CLI events carry no session name.
                             let records = copilot_cli::parse_events_jsonl(&path);
-                            (uuid, records)
+                            (uuid, records, None)
                         })
                         .collect()
                 })
@@ -112,8 +113,8 @@ impl AgentSource {
                     src.changed_sessions(&eps, now)
                         .into_iter()
                         .map(|(uuid, path)| {
-                            let records = copilot_vscode::parse_chat_jsonl(&path);
-                            (uuid, records)
+                            let (records, title) = copilot_vscode::parse_chat_jsonl(&path);
+                            (uuid, records, title)
                         })
                         .collect()
                 })
@@ -170,7 +171,7 @@ pub async fn sweep(pool: &SqlitePool, now: DateTime<Utc>) -> (u64, u64) {
         let agent = source.agent();
         let loaded = source.collect_changed(&endpoints, now).await;
 
-        for (uuid, records) in loaded {
+        for (uuid, records, title) in loaded {
             if records.is_empty() {
                 continue;
             }
@@ -201,7 +202,8 @@ pub async fn sweep(pool: &SqlitePool, now: DateTime<Utc>) -> (u64, u64) {
             if ended {
                 tracing::info!(agent, uuid = %uuid, "session carries end-of-session marker — sealing on register");
             }
-            match register_records(pool, &uuid, agent, records, ended, now).await {
+            match register_records(pool, &uuid, agent, records, title.as_deref(), ended, now).await
+            {
                 Outcome::Inserted => wrote += 1,
                 Outcome::Failed => failed += 1,
                 Outcome::SkippedEmpty => {}

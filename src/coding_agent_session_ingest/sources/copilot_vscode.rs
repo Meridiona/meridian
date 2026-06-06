@@ -124,13 +124,21 @@ impl CopilotVscodeSource {
 /// then walk the rebuilt requests[]. Tolerant of malformed lines (skipped)
 /// and unknown op kinds (ignored) — a partially-written log still yields the
 /// turns recorded so far.
-pub(crate) fn parse_chat_jsonl(path: &Path) -> Vec<NormRecord> {
+pub(crate) fn parse_chat_jsonl(path: &Path) -> (Vec<NormRecord>, Option<String>) {
     let raw = match fs::read_to_string(path) {
         Ok(s) => s,
-        Err(_) => return Vec::new(),
+        Err(_) => return (Vec::new(), None),
     };
     let session = replay_ops(&raw);
-    norm_requests(&session)
+    // `customTitle` is the session's name (user rename or VS Code's
+    // auto-title); it arrives as a kind-1 set-op which replay_ops folds in.
+    let title = session
+        .get("customTitle")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(String::from);
+    (norm_requests(&session), title)
 }
 
 /// Replay the op-log into the final session state.
@@ -444,7 +452,12 @@ mod tests {
     fn replays_oplog_into_full_conversation() {
         let d = tmpdir();
         let p = write_session(&d, "ws1", "11111111-aaaa", &sample_oplog());
-        let recs = parse_chat_jsonl(&p);
+        let (recs, title) = parse_chat_jsonl(&p);
+        assert_eq!(
+            title.as_deref(),
+            Some("fix the bug"),
+            "customTitle survives the replay"
+        );
         assert_eq!(recs.len(), 4, "2 requests → 2 user + 2 assistant records");
 
         // Request 0: user prompt at T0, assistant completed at T0+30s.
@@ -498,7 +511,8 @@ mod tests {
             json!({"kind": 9, "v": "future op kind"}),
         );
         let p = write_session(&d, "ws1", "22222222-bbbb", &content);
-        let recs = parse_chat_jsonl(&p);
+        let (recs, title) = parse_chat_jsonl(&p);
+        assert!(title.is_none(), "no customTitle op → no title");
         assert_eq!(recs.len(), 2);
         assert_eq!(recs[0].body, "hello copilot");
         // No response yet → assistant record is a timing-only placeholder.
@@ -516,7 +530,7 @@ mod tests {
             json!({"kind": 2, "k": ["requests", 5, "response"], "v": [{"value": "lost"}]}),
         );
         let p = write_session(&d, "ws1", "33333333-cccc", &content);
-        let recs = parse_chat_jsonl(&p);
+        let (recs, _) = parse_chat_jsonl(&p);
         assert_eq!(recs.len(), 2, "the one real request survives");
         assert!(!recs.iter().any(|r| r.body.contains("lost")));
     }

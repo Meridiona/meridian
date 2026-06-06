@@ -71,7 +71,7 @@ impl CursorSource {
         &self,
         endpoints: &HashMap<String, String>,
         now: DateTime<Utc>,
-    ) -> Vec<(String, Vec<NormRecord>)> {
+    ) -> Vec<(String, Vec<NormRecord>, Option<String>)> {
         let pool = match self.open_ro().await {
             Ok(p) => p,
             Err(e) => {
@@ -100,7 +100,7 @@ pub(crate) async fn collect_from_pool(
     pool: &SqlitePool,
     endpoints: &HashMap<String, String>,
     now: DateTime<Utc>,
-) -> Vec<(String, Vec<NormRecord>)> {
+) -> Vec<(String, Vec<NormRecord>, Option<String>)> {
     // Self-ingest protection (cursor-agent persisting its own summary runs)
     // lives in `sources::sweep()` via SUMMARY_PROMPT_MARKER — not here. An env
     // check would be dead code: MERIDIAN_SUMMARISER is set on summariser
@@ -172,11 +172,19 @@ pub(crate) async fn collect_from_pool(
     changed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     tracing::debug!(candidates = changed.len(), "cursor: filtered to candidates");
 
-    let mut out: Vec<(String, Vec<NormRecord>)> = Vec::new();
+    let mut out: Vec<(String, Vec<NormRecord>, Option<String>)> = Vec::new();
     for (_, uuid, data) in changed {
         let records = load_composer(pool, &uuid, &data).await;
+        // Cursor auto-names conversations after the first exchange
+        // (composerData.name); absent on drafts and some IDE-agent runs.
+        let title = data
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(String::from);
         tracing::debug!(uuid = %uuid, record_count = records.len(), "cursor: loaded composer");
-        out.push((uuid, records));
+        out.push((uuid, records, title));
     }
     tracing::debug!(loaded = out.len(), "cursor collect_from_pool complete");
     out
@@ -423,8 +431,13 @@ mod tests {
         let now = base() + chrono::Duration::hours(1);
         let got = collect_from_pool(&pool, &HashMap::new(), now).await;
         assert_eq!(got.len(), 1, "draft skipped, real session collected");
-        let (uuid, records) = &got[0];
+        let (uuid, records, title) = &got[0];
         assert_eq!(uuid, "c1");
+        assert_eq!(
+            title.as_deref(),
+            Some("fix the bug"),
+            "composerData.name becomes the title"
+        );
         assert_eq!(records.len(), 4);
 
         // Header order preserved; roles + prompt flags right.

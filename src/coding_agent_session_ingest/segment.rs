@@ -58,6 +58,11 @@ pub struct Segment {
     pub active_seconds: i64,
     pub transcript: String,
     pub is_last: bool,
+    /// The agent's own session name, when its store has one (Cursor
+    /// `composerData.name`, VS Code chat `customTitle`, cursor-agent meta
+    /// `name`, Claude `summary` records). Written to `window_titles` as a
+    /// single-entry `[{"window_name": …, "count": 1}]`; None → `[]`.
+    pub title: Option<String>,
 }
 
 impl Segment {
@@ -300,6 +305,7 @@ pub fn segment_records(
             active_seconds: active,
             transcript: render_records(&b.records),
             is_last: i == n - 1,
+            title: None,
         });
     }
 

@@ -48,7 +48,7 @@ impl AntigravitySource {
         &self,
         _endpoints: &HashMap<String, String>,
         _now: DateTime<Utc>,
-    ) -> Vec<(String, Vec<NormRecord>)> {
+    ) -> Vec<(String, Vec<NormRecord>, Option<String>)> {
         DORMANT_NOTICE.call_once(|| {
             tracing::info!(
                 app_dir = %self.app_dir.display(),
