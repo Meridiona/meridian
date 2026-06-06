@@ -790,6 +790,29 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
     cp "${_skill_src}" "${_skill_dst}"
     ok "session-summary command → ~/.claude/commands/session-summary.md"
 
+    # Coding-agent summariser engines (informational): each agent's sessions
+    # are summarised by its OWN CLI when present; a missing CLI is never fatal
+    # — those sessions fall back to the local MLX model. Surface what the
+    # daemon will use so users know why a summary came from MLX.
+    # `meridian doctor` re-checks all of this any time.
+    info "Coding-agent summariser engines:"
+    for _eng in claude codex copilot; do
+        if command -v "${_eng}" >/dev/null 2>&1; then
+            ok "${_eng} CLI found — those sessions summarise natively"
+        else
+            info "  ${_eng} CLI not found — those sessions will use the local model (MLX)"
+        fi
+    done
+    if command -v cursor >/dev/null 2>&1 || [[ -d "${HOME}/Library/Application Support/Cursor" ]]; then
+        if command -v cursor-agent >/dev/null 2>&1; then
+            ok "cursor-agent CLI found — verify auth with: cursor-agent status"
+        else
+            info "  Cursor detected but the cursor-agent CLI is missing — Cursor summaries will use the local model (MLX)."
+            info "  To summarise with Cursor's own CLI:  curl https://cursor.com/install -fsS | bash  then: cursor-agent login"
+            info "  Or let the daemon install it on demand: add CURSOR_AGENT_AUTO_INSTALL=1 to your .env"
+        fi
+    fi
+
     if [[ "${DEV_MODE}" -eq 1 ]]; then
         info "Dev mode — skipping UI launchd agent (run: cd ui && npm run dev)"
     else

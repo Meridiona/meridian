@@ -83,7 +83,12 @@ if command -v claude &>/dev/null; then
 
   if [ -n "$CHANGED" ]; then
     echo "  Running security audit on pushed files..."
-    claude --print "Security audit of changes in the Meridian project. Files: $CHANGED. Check only: SQL injection, command injection, path traversal, hardcoded credentials, missing input validation at API boundaries, unsafe subprocess calls (shell=True, unvalidated exec paths). Report only HIGH and CRITICAL severity findings as a compact bulleted list with file:line. If none found, output exactly: NO_HIGH_FINDINGS" >"$AUDIT_LOG" 2>/dev/null &
+    AUDIT_PROMPT="Security audit of changes in the Meridian project. Files: $CHANGED. Check only: SQL injection, command injection, path traversal, hardcoded credentials, missing input validation at API boundaries, unsafe subprocess calls (shell=True, unvalidated exec paths). Report only HIGH and CRITICAL severity findings as a compact bulleted list with file:line. If none found, output exactly: NO_HIGH_FINDINGS"
+    # 'haiku' is a CLI alias that always resolves to the newest (lightest)
+    # Haiku model, so a snapshot deprecation can't break the hook. If the
+    # alias itself ever fails, retry on the CLI's default model.
+    { claude --model haiku --print "$AUDIT_PROMPT" >"$AUDIT_LOG" 2>/dev/null \
+      || claude --print "$AUDIT_PROMPT" >"$AUDIT_LOG" 2>/dev/null; } &
     AUDIT_PID=$!
   else
     echo "  ✓ security audit (no auditable files changed)"
