@@ -1,3 +1,10 @@
+## [1.27.2](https://github.com/Meridiona/meridian/compare/v1.27.1...v1.27.2) (2026-06-06)
+
+
+### Bug Fixes
+
+* **doctor:** detect bundle UI install in ui-built check ([#183](https://github.com/Meridiona/meridian/issues/183)) ([ebc8e33](https://github.com/Meridiona/meridian/commit/ebc8e337e70449c48cc73f511f441c5f27d0dfdb))
+
 ## [1.27.1](https://github.com/Meridiona/meridian/compare/v1.27.0...v1.27.1) (2026-06-06)
 
 
