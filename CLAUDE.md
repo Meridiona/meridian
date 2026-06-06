@@ -270,11 +270,31 @@ The dataset's value lives in **what it discriminates**, not how many cases it ha
 
 ## Coding-agent pipeline (`src/coding_agent_session_ingest/`)
 
-The coding-agent indexer + summariser run **inside the Rust daemon** (`src/coding_agent_session_ingest/`), spawned as gated tokio tasks from `main.rs`. They turn Claude Code / Codex JSONLs into segmented `app_sessions` rows, summarise sealed segments (Claude for Claude sessions, Codex for Codex; MLX as fallback), and hand them to the classifier on their summary. Lifecycle is the `task_method` column: `coding_agent_live → pending_summariser → pending_classifier → mlx_direct`.
+The coding-agent indexer + summariser run **inside the Rust daemon** (`src/coding_agent_session_ingest/`), spawned as gated tokio tasks from `main.rs`. They turn coding-agent conversations into segmented `app_sessions` rows, summarise sealed segments **with each agent's own CLI** (MLX as the shared fallback), and hand them to the classifier on their summary. Lifecycle is the `task_method` column: `coding_agent_live → pending_summariser → pending_classifier → mlx_direct`.
 
-- **Indexer** (`indexer.rs`): polls `~/.claude/projects` + `~/.codex/sessions`, parses (`jsonl.rs`) + segments (`segment.rs`, 1h time-box split at a user-prompt boundary), upserts/seals (`db.rs`). Backfill is today-only on startup. `meridian coding-agent-hook` is the SessionEnd entry (seals one session).
-- **Summariser** (`summariser/`): `claude.rs`/`codex.rs` subprocesses (2 attempts) → `mlx.rs` fallback (`/summarise`); writes `session_summary` + `summary_source` and flips `task_method` to `pending_classifier`. CLI: `meridian coding-agent-summarise`.
+### Ingested agents
+
+| Agent | Store | Adapter | `app_name` / `session_text_source` |
+|---|---|---|---|
+| Claude Code | `~/.claude/projects/**/<uuid>.jsonl` | `jsonl.rs` (legacy path) | `Claude Code` / `claude_jsonl` |
+| Codex | `~/.codex/sessions/**/rollout-*.jsonl` | `jsonl.rs` (legacy path) | `Codex` / `codex_jsonl` |
+| GitHub Copilot CLI | `~/.copilot/session-state/<uuid>/events.jsonl` | `sources/copilot_cli.rs` | `GitHub Copilot` / `copilot_events_jsonl` |
+| Copilot VS Code chat | `…/Code/User/**/chatSessions/*.jsonl` (op-log: kind 0 snapshot / 1 set / 2 append) | `sources/copilot_vscode.rs` | `GitHub Copilot` / `copilot_chat_jsonl` |
+| Cursor (sidebar + IDE agent) | `state.vscdb` → `cursorDiskKV` (`composerData:` + `bubbleId:`) | `sources/cursor.rs` | `Cursor Agent` / `cursor_vscdb` |
+| cursor-agent CLI | `~/.cursor/chats/<ws>/<uuid>/store.db` (content-addressed blobs) | `sources/cursor_cli.rs` | `Cursor Agent` / `cursor_cli_store` |
+| Antigravity | detection-only stub (store format unpinned) | `sources/antigravity.rs` | — (logs presence, ingests nothing) |
+
+New sources plug into the `AgentSource` enum in `sources/mod.rs` and are swept by the same indexer tick; everything downstream (segmentation, sealing, summarising, classifying) is agent-blind `NormRecord`s.
+
+- **Indexer** (`indexer.rs`): per tick (`INDEXER_POLL_INTERVAL_S`, 600 s) seals settled rows, re-parses changed stores, sweeps the source adapters. Backfill is today-only. `meridian coding-agent-hook` is the Claude SessionEnd entry (seals one session immediately).
+- **Session completion**: Claude seals via hook; CLI agents (codex / copilot / cursor-agent) seal promptly on **Ctrl+C / exit** (Copilot's `session.shutdown` marker force-seals at registration; otherwise a per-tick `ps -axo args=` probe seals every live row of a CLI whose process is gone) and on **/clear · /new** (a newer session of the same source supersedes older live rows). IDE chats and crashes fall back to the idle seal (`INDEXER_SEAL_IDLE_S`, 1 h). All acceleration paths only hasten what the idle backstop would do — a wrong call costs a segment split, never data.
+- **Summariser** (`summariser/`): routes each row to its own agent CLI — `claude.rs` / `codex.rs` / `copilot.rs` / `cursor_agent.rs` (2 attempts) → `mlx.rs` fallback (`/summarise`); writes `session_summary` + `summary_source`, flips `task_method` to `pending_classifier`. cursor-agent is lazily auto-installed + auth-probed on first use (`cursor_agent_init.rs`). CLI: `meridian coding-agent-summarise`. See `summariser/README.md`.
+- **Self-ingest guard**: copilot/cursor-agent persist their own summary runs into stores we ingest; `sources::sweep()` drops any conversation whose first user prompt carries `SUMMARY_PROMPT_MARKER` (log: `skipping summariser-artifact session`). This is the loop cut — do not remove it.
 - **Classify trigger** (`src/intelligence/task_linker/`): a non-cursor branch classifies `pending_classifier` rows on the **summary** (not the transcript), preserving the summariser's summary. CLI: `meridian coding-agent-classify`.
+
+Source-adapter env overrides: `COPILOT_SESSION_STATE_DIR`, `VSCODE_USER_DIR`, `CURSOR_STATE_VSCDB`, `CURSOR_CLI_CHATS_DIR`, `ANTIGRAVITY_APP_DIR`.
+
+> **Daemon config gotcha:** on a bundle install the daemon's `WorkingDirectory` is `~/.meridian/app`, and dotenvy stops at the FIRST `.env` walking up — so the daemon reads **`~/.meridian/app/.env`**, not the repo `.env`. Edit that file (then `meridian restart`) when tuning daemon env on an installed system.
 
 The pipeline is fully ported to Rust; the former Python `coding_agent_indexer` + `coding_agent_summariser` packages have been removed. The MLX server (`agents/server.py`) is the only remaining Python hop (it serves `/summarise` + `/classify_sessions`).
 

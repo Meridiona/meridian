@@ -13,16 +13,18 @@ The summary is also what the Jira updater quotes as evidence.
 ## Engine routing
 
 One transcript in flight at a time (sequential → flat memory, no rate-limit
-bursts). Per segment:
+bursts). **Each agent's transcripts go to its own CLI** (routed on the row's
+`app_name`); MLX is the shared fallback:
 
 ```
-Codex session  ──▶  codex exec   ─┐
-                                  ├─ try primary up to `primary_attempts` (2) times
-else           ──▶  claude -p    ─┘        │
-                                            ├─ rate-limited?  ──▶  short-circuit to MLX
-                                            └─ all attempts failed?  ──▶  MLX
-                                                                          │
-                                                            still down ──▶ leave row pending, retry next sweep
+Codex session          ──▶  codex exec    ─┐
+GitHub Copilot session ──▶  copilot -p    ─┤
+Cursor Agent session   ──▶  cursor-agent  ─┼─ try primary up to `primary_attempts` (2) times
+else (Claude/unknown)  ──▶  claude -p     ─┘        │
+                                                     ├─ rate-limited?  ──▶  short-circuit to MLX
+                                                     └─ all attempts failed?  ──▶  MLX
+                                                                                   │
+                                                     still down ──▶ leave row pending, retry next sweep
 ```
 
 - **Claude sessions → `claude -p`** (`claude.rs`) — loads the `session-summary`
@@ -33,14 +35,35 @@ else           ──▶  claude -p    ─┘        │
 - **Codex sessions → `codex exec`** (`codex.rs`) — symmetry with claude.rs.
   Side-effect-free: `-s read-only`, `--skip-git-repo-check`, `--ephemeral`,
   `--output-schema` for the structured final message.
+- **Copilot sessions → `copilot -p`** (`copilot.rs`) — transcript rides in the
+  prompt argument (no stdin support). Covers both Copilot CLI and Copilot
+  VS Code chat rows (same `app_name`). No no-persist flag exists: its runs DO
+  land in `~/.copilot/session-state/` — see "Self-ingest guard" below.
+- **Cursor sessions → `cursor-agent`** (`cursor_agent.rs`) — `-p
+  --output-format text --trust` (without `--trust` headless runs die with
+  "Workspace Trust Required"). First use runs `cursor_agent_init::ensure_ready()`:
+  auto-install via the official script if missing, `status`-probe the auth, and
+  only `login` (NO_OPEN_BROWSER, 120 s timeout, kill-on-drop) when actually
+  unauthenticated. Any init failure degrades to MLX. Its runs persist to
+  `~/.cursor/chats/` — see "Self-ingest guard" below.
 - **Fallback → MLX `/summarise`** (`mlx.rs`) — the local model server endpoint.
   The local model is a reasoner, so it gets only the **tail** of the transcript
   (most recent activity / outcome) plus a cheap reasoning-leak filter on top of
   the endpoint's outlines FSM.
 
-All three target the same `SUMMARY_SCHEMA` and share `SUMMARY_RULES`
-(`prompts.rs`): Claude via the skill's `SKILL.md`, Codex via the prompt, MLX via
-its system message — kept in one place so they can't drift.
+All engines target the same `SUMMARY_SCHEMA` and share `SUMMARY_RULES`
+(`prompts.rs`): Claude via the skill's `SKILL.md`, the others via the prompt,
+MLX via its system message — kept in one place so they can't drift.
+
+### Self-ingest guard
+
+claude/codex can be told not to persist their summary runs; copilot and
+cursor-agent cannot — their runs land in the very stores the indexer ingests,
+which would loop (summarise → new session → ingest → summarise). The loop is
+cut at ingest: `sources::sweep()` refuses any conversation whose first user
+prompt carries `SUMMARY_PROMPT_MARKER` (`prompts.rs`, pinned to
+`SUMMARY_RULES` by a unit test). Log line: `skipping summariser-artifact
+session`.
 
 ---
 
@@ -48,13 +71,16 @@ its system message — kept in one place so they can't drift.
 
 | File | Role |
 |---|---|
-| `mod.rs` | `run_loop`, `drain`, `summarise_one`, `run_capture` (subprocess w/ `kill_on_drop` + concurrent stdin), `build_prompt` / `cap_transcript`, `cli_summarise`, `SummariserError` |
+| `mod.rs` | `run_loop`, `drain`, `summarise_one` (per-agent routing), `run_capture` (subprocess w/ `kill_on_drop` + concurrent stdin), `build_prompt` / `cap_transcript`, `cli_summarise`, `SummariserError` |
 | `config.rs` | `SummariserConfig::from_env()` — all tunables |
 | `db.rs` | `fetch_pending`, `fetch_transcript`, `fetch_prior_summary`, `write_summary` (idempotent) |
 | `claude.rs` | `claude -p` engine |
 | `codex.rs` | `codex exec` engine |
+| `copilot.rs` | `copilot -p` engine |
+| `cursor_agent.rs` | `cursor-agent -p --trust` engine |
+| `../cursor_agent_init.rs` | lazy cursor-agent install + auth probe (timeouts, kill-on-drop) |
 | `mlx.rs` | MLX `/summarise` fallback |
-| `prompts.rs` | shared rules, schema, rate-limit detection |
+| `prompts.rs` | shared rules, schema, rate-limit detection, `SUMMARY_PROMPT_MARKER`, `extract_summary` (bare/fenced/prose JSON tolerance) |
 
 ---
 
@@ -91,7 +117,7 @@ On every successful write:
 INFO summarised coding-agent segment {row_id, uuid, source, written, chars}
 ```
 
-`source` = `claude` / `codex` / `mlx`; `written: true` confirms it persisted.
+`source` = `claude` / `codex` / `copilot` / `cursor` / `mlx`; `written: true` confirms it persisted.
 Then the batch roll-up `INFO summariser drain {summarised: N}`. Transient
 failures are logged (`summarise failed — leaving pending for retry`), never
 silent. Tail it:
@@ -117,6 +143,9 @@ standalone poll).
 | `SUMMARISER_CLAUDE_TIMEOUT_S` | `240` | `claude -p` timeout |
 | `SUMMARISER_CODEX_MODEL` | (empty → codex default) | Codex model |
 | `SUMMARISER_CODEX_TIMEOUT_S` | `240` | `codex exec` timeout |
+| `SUMMARISER_COPILOT_TIMEOUT_S` | `240` | `copilot -p` timeout |
+| `SUMMARISER_CURSOR_MODEL` | (empty → cursor default) | cursor-agent model |
+| `SUMMARISER_CURSOR_TIMEOUT_S` | `240` | `cursor-agent` timeout |
 | `SUMMARISER_PRIMARY_ATTEMPTS` | `2` | primary tries before MLX |
 | `SUMMARISER_TRANSCRIPT_CAP` | `500000` | primary-engine transcript char cap |
 | `SUMMARISER_MIN_TURNS` | `2` | min `frame_count` to summarise |
