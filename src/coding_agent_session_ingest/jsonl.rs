@@ -22,7 +22,7 @@ const CLAUDE_ASSISTANT_LABEL: &str = "claude-code";
 const CODEX_ASSISTANT_LABEL: &str = "codex";
 
 /// One raw JSONL record normalised across Claude and Codex schemas.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct NormRecord {
     pub timestamp: Option<String>,
     pub cwd: Option<String>,
@@ -35,6 +35,11 @@ pub struct NormRecord {
     pub is_user_prompt: bool,
     pub role_label: Option<String>,
     pub body: String,
+    /// True for an explicit end-of-session event in the agent's store
+    /// (Copilot CLI's `session.shutdown`; most agents write none). A record
+    /// stream whose TAIL carries this is force-sealed at registration instead
+    /// of waiting out the idle window — /clear and Ctrl+C land promptly.
+    pub is_session_end: bool,
 }
 
 /// Is this user `content` a genuine prompt (has text), vs a tool-result-only
@@ -137,11 +142,7 @@ fn norm_claude(raw: &Value) -> NormRecord {
         return NormRecord {
             timestamp: ts,
             cwd,
-            is_turn: false,
-            is_user: false,
-            is_user_prompt: false,
-            role_label: None,
-            body: String::new(),
+            ..Default::default()
         };
     }
 
@@ -169,6 +170,7 @@ fn norm_claude(raw: &Value) -> NormRecord {
         is_user_prompt,
         role_label: Some(label),
         body: format_claude_content(&content),
+        is_session_end: false,
     }
 }
 
@@ -182,11 +184,7 @@ fn norm_codex(raw: &Value) -> NormRecord {
         return NormRecord {
             timestamp: ts,
             cwd,
-            is_turn: false,
-            is_user: false,
-            is_user_prompt: false,
-            role_label: None,
-            body: String::new(),
+            ..Default::default()
         };
     }
 
@@ -204,6 +202,7 @@ fn norm_codex(raw: &Value) -> NormRecord {
             is_user_prompt: true, // codex user_message is always a real prompt
             role_label: Some("user".to_string()),
             body: format_codex_message(&message),
+            is_session_end: false,
         },
         Some("agent_message") => NormRecord {
             timestamp: ts,
@@ -213,15 +212,12 @@ fn norm_codex(raw: &Value) -> NormRecord {
             is_user_prompt: false,
             role_label: Some(CODEX_ASSISTANT_LABEL.to_string()),
             body: format_codex_message(&message),
+            is_session_end: false,
         },
         _ => NormRecord {
             timestamp: ts,
             cwd,
-            is_turn: false,
-            is_user: false,
-            is_user_prompt: false,
-            role_label: None,
-            body: String::new(),
+            ..Default::default()
         },
     }
 }

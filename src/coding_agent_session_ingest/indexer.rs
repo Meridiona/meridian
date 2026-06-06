@@ -252,10 +252,79 @@ pub async fn run_tick(pool: &SqlitePool, cfg: &IndexerConfig, now: DateTime<Utc>
     wrote += src_wrote;
     failed += src_failed;
 
+    // CLI end-of-session acceleration (runs AFTER the sweep so a /clear's
+    // fresh session is already registered and supersedes the old one this
+    // same tick). Both passes only ACCELERATE what the idle backstop above
+    // would do anyway — a wrong call costs a segment split, never data.
+    let sealed = sealed + seal_finished_cli_sessions(pool, &now_iso).await;
+
     if sealed > 0 || wrote > 0 || failed > 0 {
         tracing::info!(sealed, wrote, failed, "coding-agent indexer tick");
     }
     (sealed, wrote)
+}
+
+/// CLI-backed sources with their process fingerprints. IDE-resident sources
+/// (cursor vscdb sidebar, VS Code chatSessions) and Claude (SessionEnd hook)
+/// are deliberately absent — their lifecycles are handled elsewhere.
+const CLI_SOURCES: &[(&str, &[&str])] = &[
+    ("codex_jsonl", &["-x", "codex"]),
+    // copilot is a node script: comm is `node`, must match argv.
+    ("copilot_events_jsonl", &["-f", "bin/copilot( |$)"]),
+    ("cursor_cli_store", &["-x", "cursor-agent"]),
+];
+
+/// Prompt session completion for CLI agents — /clear and Ctrl+C, which write
+/// no end marker in most stores:
+/// 1. Process gone (Ctrl+C, exit): no process → the store cannot grow → every
+///    live row of that source is finished.
+/// 2. Superseded (/clear, /new with the CLI still running): a NEWER session
+///    of the same source exists → the older conversation ended.
+async fn seal_finished_cli_sessions(pool: &SqlitePool, now_iso: &str) -> u64 {
+    let mut sealed = 0_u64;
+    for (source, pgrep_args) in CLI_SOURCES {
+        if !cli_process_running(pgrep_args).await {
+            match db::seal_live_rows_of_source(pool, now_iso, source).await {
+                Ok(n) => {
+                    if n > 0 {
+                        tracing::info!(source, sealed = n, "sealed rows of exited CLI");
+                    }
+                    sealed += n;
+                }
+                Err(e) => tracing::warn!(source, error = %e, "exited-CLI seal failed"),
+            }
+            continue; // nothing left live; superseded pass would be a no-op
+        }
+        match db::seal_superseded_rows_of_source(pool, now_iso, source).await {
+            Ok(n) => {
+                if n > 0 {
+                    tracing::info!(source, sealed = n, "sealed superseded CLI sessions");
+                }
+                sealed += n;
+            }
+            Err(e) => tracing::warn!(source, error = %e, "superseded seal failed"),
+        }
+    }
+    sealed
+}
+
+/// `pgrep` probe for a CLI agent. On any pgrep failure (missing binary, …)
+/// assume RUNNING — the safe direction: a false "running" merely defers the
+/// seal to the idle backstop, a false "gone" would seal mid-session.
+async fn cli_process_running(pgrep_args: &[&str]) -> bool {
+    match tokio::process::Command::new("pgrep")
+        .args(pgrep_args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+    {
+        Ok(status) => status.success(),
+        Err(e) => {
+            tracing::warn!(error = %e, "pgrep probe failed — assuming process running");
+            true
+        }
+    }
 }
 
 /// Files whose mtime moved past their stored `ended_at` (+slack). A never-seen

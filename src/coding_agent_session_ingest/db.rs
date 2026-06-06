@@ -201,6 +201,67 @@ pub async fn seal_stale_open_rows(
     Ok(res.rows_affected())
 }
 
+/// Seal every LIVE row of one `session_text_source`, regardless of idle time.
+/// Used when the source's CLI process is GONE (Ctrl+C, window closed): with no
+/// process running the store cannot grow, so its live rows are finished —
+/// sealing now instead of waiting out the idle window. Returns rows sealed.
+pub async fn seal_live_rows_of_source(
+    pool: &SqlitePool,
+    now_iso: &str,
+    text_source: &str,
+) -> Result<u64> {
+    let res = sqlx::query(
+        r#"
+        UPDATE app_sessions
+        SET    sealed_at = ?, task_method = ?
+        WHERE  claude_session_uuid IS NOT NULL
+          AND  sealed_at IS NULL
+          AND  session_text_source = ?
+        "#,
+    )
+    .bind(now_iso)
+    .bind(TASK_METHOD_PENDING)
+    .bind(text_source)
+    .execute(pool)
+    .await
+    .context("seal live rows of exited CLI source")?;
+    Ok(res.rows_affected())
+}
+
+/// Seal LIVE rows of one source that were SUPERSEDED by a newer session of
+/// the same source — the /clear (or /new) case: the CLI keeps running but the
+/// user started a fresh conversation, so the previous one is over. A parallel
+/// still-active session that gets sealed merely splits into a new segment on
+/// its next turn (the sealed high-water rule), so acceleration is safe.
+pub async fn seal_superseded_rows_of_source(
+    pool: &SqlitePool,
+    now_iso: &str,
+    text_source: &str,
+) -> Result<u64> {
+    let res = sqlx::query(
+        r#"
+        UPDATE app_sessions
+        SET    sealed_at = ?1, task_method = ?2
+        WHERE  claude_session_uuid IS NOT NULL
+          AND  sealed_at IS NULL
+          AND  session_text_source = ?3
+          AND  EXISTS (
+                 SELECT 1 FROM app_sessions n
+                 WHERE  n.session_text_source = ?3
+                   AND  n.claude_session_uuid <> app_sessions.claude_session_uuid
+                   AND  n.started_at > app_sessions.ended_at
+               )
+        "#,
+    )
+    .bind(now_iso)
+    .bind(TASK_METHOD_PENDING)
+    .bind(text_source)
+    .execute(pool)
+    .await
+    .context("seal superseded rows of CLI source")?;
+    Ok(res.rows_affected())
+}
+
 /// Delete every Claude/Codex-owned app_sessions row (reseed). Only touches rows
 /// the indexer owns (`claude_session_uuid IS NOT NULL`); never screen-frame
 /// rows. Returns rows deleted.
@@ -372,6 +433,65 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn cli_source_seals_are_scoped_and_supersede_correctly() {
+        let pool = fresh_db().await;
+        // Two codex sessions: A ended before B started (the /clear shape).
+        let mut a = seg(
+            "codex-a",
+            "2026-05-20T05:00:00.000000+00:00",
+            "2026-05-20T05:30:00.000000+00:00",
+            2,
+        );
+        a.agent = "codex".to_string();
+        let a_id = upsert_segment(&pool, &a, false, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut b = seg(
+            "codex-b",
+            "2026-05-20T06:00:00.000000+00:00",
+            "2026-05-20T06:10:00.000000+00:00",
+            2,
+        );
+        b.agent = "codex".to_string();
+        let b_id = upsert_segment(&pool, &b, false, None)
+            .await
+            .unwrap()
+            .unwrap();
+        // A claude row in the same shape must be untouched by codex seals.
+        let c = seg(
+            "claude-c",
+            "2026-05-20T05:00:00.000000+00:00",
+            "2026-05-20T05:30:00.000000+00:00",
+            2,
+        );
+        let c_id = upsert_segment(&pool, &c, false, None)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let now = "2026-05-20T08:00:00.000000+00:00";
+        // Superseded pass: A (older, superseded by B) seals; B stays live.
+        let n = seal_superseded_rows_of_source(&pool, now, "codex_jsonl")
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
+        assert!(row_fields(&pool, a_id).await.0.is_some(), "A sealed");
+        assert!(row_fields(&pool, b_id).await.0.is_none(), "B still live");
+
+        // Process-gone pass: every remaining live codex row seals.
+        let n = seal_live_rows_of_source(&pool, now, "codex_jsonl")
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
+        assert!(row_fields(&pool, b_id).await.0.is_some(), "B sealed");
+        assert!(
+            row_fields(&pool, c_id).await.0.is_none(),
+            "claude row untouched by codex-scoped seals"
+        );
     }
 
     #[tokio::test]

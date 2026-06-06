@@ -253,6 +253,7 @@ fn norm_requests(session: &Value) -> Vec<NormRecord> {
             is_user_prompt: has_prompt,
             role_label: has_prompt.then(|| "user".to_string()),
             body: user_text,
+            is_session_end: false,
         });
 
         let body = render_response(req.get("response").and_then(Value::as_array));
@@ -273,6 +274,7 @@ fn norm_requests(session: &Value) -> Vec<NormRecord> {
             is_user_prompt: false,
             role_label: has_body.then(|| ASSISTANT_LABEL.to_string()),
             body,
+            is_session_end: false,
         });
     }
     out

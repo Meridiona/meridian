@@ -301,6 +301,7 @@ fn norm_bubble(raw: &Value) -> NormRecord {
             None
         },
         body,
+        is_session_end: false,
     }
 }
 

@@ -293,6 +293,7 @@ fn norm_message(msg: &Value, ts: Option<String>) -> Option<NormRecord> {
             ASSISTANT_LABEL.to_string()
         }),
         body,
+        is_session_end: false,
     })
 }
 

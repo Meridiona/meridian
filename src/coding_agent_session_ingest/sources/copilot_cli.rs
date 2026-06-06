@@ -150,6 +150,7 @@ fn norm_event(raw: &Value) -> NormRecord {
                 is_user_prompt: !body.trim().is_empty(),
                 role_label: Some("user".to_string()),
                 body,
+                is_session_end: false,
             }
         }
         "assistant.message" => NormRecord {
@@ -160,18 +161,18 @@ fn norm_event(raw: &Value) -> NormRecord {
             is_user_prompt: false,
             role_label: Some(ASSISTANT_LABEL.to_string()),
             body: content(&data),
+            is_session_end: false,
         },
         // Every other event (session.*, assistant.turn_*, tool activity, …)
         // anchors timing only: its timestamp extends the segment and feeds
-        // active-time, but it contributes no transcript body.
+        // active-time, but it contributes no transcript body. session.shutdown
+        // — written on exit AND Ctrl+C — additionally marks the session ended,
+        // so registration force-seals instead of waiting out the idle window.
         _ => NormRecord {
             timestamp: ts,
             cwd,
-            is_turn: false,
-            is_user: false,
-            is_user_prompt: false,
-            role_label: None,
-            body: String::new(),
+            is_session_end: etype == "session.shutdown" || etype == "session.end",
+            ..Default::default()
         },
     }
 }
@@ -315,6 +316,23 @@ mod tests {
         assert_eq!(app, "GitHub Copilot");
         assert_eq!(src, "copilot_events_jsonl");
         assert_eq!(method, "pending_summariser"); // sealed by idle
+    }
+
+    #[test]
+    fn session_shutdown_marks_end_of_session() {
+        let d = tmpdir();
+        let mut lines = sample_lines();
+        lines.push(ev(
+            "session.shutdown",
+            "2026-05-29T06:14:21.000Z",
+            serde_json::json!({}),
+        ));
+        let p = write_events(&d, "u4", &lines);
+        let recs = parse_events_jsonl(&p);
+        assert!(recs.last().unwrap().is_session_end);
+        assert!(!recs.last().unwrap().is_turn);
+        // Turn records never carry the end flag.
+        assert!(recs.iter().filter(|r| r.is_turn).all(|r| !r.is_session_end));
     }
 
     #[test]

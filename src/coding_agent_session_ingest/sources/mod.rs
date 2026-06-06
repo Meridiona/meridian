@@ -192,7 +192,16 @@ pub async fn sweep(pool: &SqlitePool, now: DateTime<Utc>) -> (u64, u64) {
                 tracing::info!(agent, uuid = %uuid, "skipping summariser-artifact session");
                 continue;
             }
-            match register_records(pool, &uuid, agent, records, false, now).await {
+            // An explicit end-of-session marker AFTER the last turn (Copilot
+            // CLI's session.shutdown — written on exit and Ctrl+C alike)
+            // force-seals at registration: the conversation is over, no need
+            // to wait out the idle window. A shutdown buried BEFORE newer
+            // turns is a resumed session and does not seal.
+            let ended = session_ended(&records);
+            if ended {
+                tracing::info!(agent, uuid = %uuid, "session carries end-of-session marker — sealing on register");
+            }
+            match register_records(pool, &uuid, agent, records, ended, now).await {
                 Outcome::Inserted => wrote += 1,
                 Outcome::Failed => failed += 1,
                 Outcome::SkippedEmpty => {}
@@ -204,6 +213,17 @@ pub async fn sweep(pool: &SqlitePool, now: DateTime<Utc>) -> (u64, u64) {
         tracing::info!(wrote, failed, "coding-agent source sweep");
     }
     (wrote, failed)
+}
+
+/// True iff the stream's TAIL (everything after the last turn) carries an
+/// end-of-session marker — the agent exited (/exit, Ctrl+C, end of a `-p`
+/// run) after its final turn, so the segment can seal immediately.
+fn session_ended(records: &[NormRecord]) -> bool {
+    records
+        .iter()
+        .rev()
+        .take_while(|r| !r.is_turn)
+        .any(|r| r.is_session_end)
 }
 
 /// True iff the conversation was started by the summariser itself: the first
@@ -240,12 +260,8 @@ mod tests {
     fn rec(ts: Option<&str>, is_turn: bool) -> NormRecord {
         NormRecord {
             timestamp: ts.map(String::from),
-            cwd: None,
             is_turn,
-            is_user: false,
-            is_user_prompt: false,
-            role_label: None,
-            body: String::new(),
+            ..Default::default()
         }
     }
 
@@ -276,17 +292,44 @@ mod tests {
     }
 
     #[test]
+    fn session_ended_only_for_trailing_end_marker() {
+        let end = |ts: &str| NormRecord {
+            timestamp: Some(ts.to_string()),
+            is_session_end: true,
+            ..Default::default()
+        };
+        // Trailing shutdown after the last turn → ended.
+        let ended = vec![
+            rec(Some("2026-06-06T08:00:00Z"), true),
+            end("2026-06-06T08:00:05Z"),
+        ];
+        assert!(session_ended(&ended));
+
+        // Shutdown buried before newer turns = a RESUMED session → not ended.
+        let resumed = vec![
+            rec(Some("2026-06-06T08:00:00Z"), true),
+            end("2026-06-06T08:00:05Z"),
+            rec(Some("2026-06-06T09:00:00Z"), true),
+        ];
+        assert!(!session_ended(&resumed));
+
+        // No marker at all → not ended.
+        assert!(!session_ended(&[rec(Some("2026-06-06T08:00:00Z"), true)]));
+        assert!(!session_ended(&[]));
+    }
+
+    #[test]
     fn summariser_artifact_sessions_are_detected() {
         use crate::coding_agent_session_ingest::summariser::prompts;
 
         let prompt_rec = |body: &str| NormRecord {
             timestamp: Some("2026-06-06T08:00:00.000Z".to_string()),
-            cwd: None,
             is_turn: true,
             is_user: true,
             is_user_prompt: true,
             role_label: Some("user".to_string()),
             body: body.to_string(),
+            ..Default::default()
         };
 
         // A session opened by the summariser's own prompt is an artifact —
