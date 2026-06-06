@@ -32,7 +32,7 @@ export default function HealthBanner() {
   }, [])
 
   // Show banner if database is not ready (critical), or a11y-helper is not trusted, and not dismissed
-  const showDatabaseError = health && !health.database_ready
+  const showDatabaseError = health && health.database_ready === false
   const showA11yWarning = health && health.a11y_helper_trusted === false && health.database_ready !== false
 
   if (!health || (health.a11y_helper_trusted && health.database_ready !== false) || dismissed) {
