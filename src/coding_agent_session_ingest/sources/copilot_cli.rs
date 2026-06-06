@@ -304,7 +304,7 @@ mod tests {
         let recs = parse_events_jsonl(&p);
         // now = well after the last event → the (last) segment settles + seals.
         let now = chrono::Utc.with_ymd_and_hms(2026, 5, 29, 9, 0, 0).unwrap();
-        register_records(&pool, "u3", AGENT, recs, false, now).await;
+        register_records(&pool, "u3", AGENT, recs, None, false, now).await;
 
         let (app, src, method): (String, String, String) = sqlx::query_as(
             "SELECT app_name, session_text_source, task_method FROM app_sessions \

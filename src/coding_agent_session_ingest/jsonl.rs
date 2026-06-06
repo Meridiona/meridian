@@ -121,6 +121,24 @@ pub fn iter_normalised(path: &Path, agent: &str) -> Vec<NormRecord> {
     }
 }
 
+/// The session's own title, when the store carries one. Claude Code writes
+/// `{"type":"summary","summary":"<title>"}` records into the session JSONL
+/// (continuation chains / compaction); the LAST one is the current title.
+/// Codex rollouts carry no title. Best-effort: None when absent.
+pub fn extract_session_title(path: &Path, agent: &str) -> Option<String> {
+    if agent == "codex" {
+        return None;
+    }
+    iter_records(path)
+        .iter()
+        .rev()
+        .find(|r| str_field(r, "type") == Some("summary"))
+        .and_then(|r| str_field(r, "summary"))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
 fn str_field<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(|x| x.as_str())
 }

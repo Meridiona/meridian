@@ -196,6 +196,7 @@ mod tests {
             active_seconds: 300,
             transcript: "x".repeat(900), // > MIN_TEXT_BYTES
             is_last: false,
+            title: None,
         }
     }
 

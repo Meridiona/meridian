@@ -120,7 +120,12 @@ pub async fn register_session(
     };
     let path_owned = jsonl_path.to_path_buf();
     let segments: Vec<Segment> = match tokio::task::spawn_blocking(move || {
-        let (_meta, segs) = parse_session_segments(&path_owned, &params);
+        let (_meta, mut segs) = parse_session_segments(&path_owned, &params);
+        // Same pass that read the file: pick up the session's own title
+        // (Claude `summary` records; codex has none) for window_titles.
+        let agent = segs.first().map(|s| s.agent.clone()).unwrap_or_default();
+        let title = super::jsonl::extract_session_title(&path_owned, &agent);
+        stamp_title(&mut segs, title.as_deref());
         segs
     })
     .await
@@ -133,6 +138,22 @@ pub async fn register_session(
     };
 
     register_segments(pool, &segments, session_ended, now).await
+}
+
+/// Stamp the conversation's title onto every segment (each becomes one
+/// app_sessions row; all rows of a conversation share its name). Trimmed and
+/// capped so a runaway store value can't bloat the row.
+fn stamp_title(segments: &mut [Segment], title: Option<&str>) {
+    const TITLE_CAP: usize = 200;
+    let cleaned = title
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| t.chars().take(TITLE_CAP).collect::<String>());
+    if let Some(t) = cleaned {
+        for seg in segments.iter_mut() {
+            seg.title = Some(t.clone());
+        }
+    }
 }
 
 /// Upsert a parsed segment list, sealing settled ones — the shared tail of
@@ -185,6 +206,7 @@ pub async fn register_records(
     session_uuid: &str,
     agent: &str,
     records: Vec<super::jsonl::NormRecord>,
+    title: Option<&str>,
     session_ended: bool,
     now: DateTime<Utc>,
 ) -> Outcome {
@@ -200,8 +222,9 @@ pub async fn register_records(
         start_after_ts: start_after,
         ..Default::default()
     };
-    let (_meta, segments) =
+    let (_meta, mut segments) =
         super::segment::segment_records(records, session_uuid, agent, 0, &params);
+    stamp_title(&mut segments, title);
     register_segments(pool, &segments, session_ended, now).await
 }
 
