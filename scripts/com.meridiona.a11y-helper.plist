@@ -31,6 +31,14 @@
         <string>{{HELPER_BIN}}</string>
     </array>
 
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>{{HOME}}</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
     <key>StandardOutPath</key>
     <string>{{HOME}}/.meridian/logs/a11y-helper.log</string>
     <key>StandardErrorPath</key>
@@ -41,7 +49,7 @@
     <key>KeepAlive</key>
     <true/>
     <key>ThrottleInterval</key>
-    <integer>10</integer>
+    <integer>30</integer>
     <key>ProcessType</key>
     <string>Background</string>
 </dict>

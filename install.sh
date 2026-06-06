@@ -25,7 +25,7 @@ SCREENPIPE_VERSION="0.4.6"
 info()  { echo "→ $*" >&2; }
 ok()    { echo "  ✓ $*" >&2; }
 warn()  { echo "  ⚠ $*" >&2; }
-err()   { echo "✗ $*" >&2; }
+err()   { echo "✗ $*" >&2; exit 1; }
 
 run() {
     if [[ "${DRY_RUN}" -eq 1 ]]; then
