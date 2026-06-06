@@ -7,9 +7,17 @@
 
 use std::process::Command;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::time::Duration;
 
 // Cache state: 0 = unchecked, 1 = ready, 2 = failed
 static INIT_STATE: AtomicU8 = AtomicU8::new(0);
+
+/// Hard ceilings — the daemon runs unattended; neither the installer (network
+/// fetch) nor `cursor-agent login` (may wait on a browser round-trip that no
+/// one is present to complete) may hang the summariser. On timeout the init
+/// fails → cached as failed → every Cursor segment falls back to MLX.
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Ensure cursor-agent is installed and logged in. Call this before attempting
 /// to use cursor-agent for summarisation. On first call, attempts install + login
@@ -70,13 +78,22 @@ fn find_cursor_agent() -> std::io::Result<std::path::PathBuf> {
 /// should only run once per daemon lifetime (cached by ensure_ready).
 async fn try_auto_install() -> anyhow::Result<std::path::PathBuf> {
     tracing::info!("running cursor-agent installer: curl https://cursor.com/install -fsS | bash");
-    let output = tokio::task::spawn_blocking(|| {
-        Command::new("bash")
-            .arg("-c")
-            .arg("curl https://cursor.com/install -fsS | bash")
-            .output()
-    })
-    .await??;
+    let output = tokio::time::timeout(
+        INSTALL_TIMEOUT,
+        tokio::task::spawn_blocking(|| {
+            Command::new("bash")
+                .arg("-c")
+                .arg("curl https://cursor.com/install -fsS | bash")
+                .output()
+        }),
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "cursor-agent install timed out after {}s",
+            INSTALL_TIMEOUT.as_secs()
+        )
+    })???;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -91,15 +108,26 @@ async fn try_auto_install() -> anyhow::Result<std::path::PathBuf> {
         .map_err(|e| anyhow::anyhow!("cursor-agent installed but not in PATH: {}", e))
 }
 
-/// Attempt auto-login to cursor-agent. This runs cursor-agent with no stdin,
-/// hoping it auto-detects Cursor's auth from the IDE. If Cursor is authenticated,
-/// this should succeed; if not, login is deferred to manual `cursor-agent login`.
+/// Attempt auto-login to cursor-agent. This runs cursor-agent with no stdin
+/// (`Command::output()` gives the child a closed stdin), hoping it auto-detects
+/// Cursor's auth from the IDE. A browser-based login flow that nobody is
+/// present to complete hits LOGIN_TIMEOUT and fails the init → MLX fallback;
+/// login is then deferred to a manual `cursor-agent login`.
 async fn try_auto_login(cursor_agent_path: &std::path::Path) -> anyhow::Result<()> {
-    let output = tokio::task::spawn_blocking({
-        let path = cursor_agent_path.to_path_buf();
-        move || Command::new(&path).arg("login").output()
-    })
-    .await??;
+    let output = tokio::time::timeout(
+        LOGIN_TIMEOUT,
+        tokio::task::spawn_blocking({
+            let path = cursor_agent_path.to_path_buf();
+            move || Command::new(&path).arg("login").output()
+        }),
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "cursor-agent login timed out after {}s (browser flow unattended?)",
+            LOGIN_TIMEOUT.as_secs()
+        )
+    })???;
 
     if output.status.success() {
         Ok(())

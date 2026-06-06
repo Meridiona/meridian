@@ -9,6 +9,15 @@
 
 use serde_json::json;
 
+/// Fingerprint of the summariser's own prompt. The source sweep refuses to
+/// ingest any conversation whose first user message carries this marker, so a
+/// summariser engine that PERSISTS its sessions (cursor-agent's behaviour is
+/// unprobed; a future engine may too) can never feed its own runs back into
+/// app_sessions — the loop is cut at ingest regardless of engine flags.
+/// A unit test pins this to SUMMARY_RULES so the two can't drift apart.
+pub const SUMMARY_PROMPT_MARKER: &str =
+    "You summarise ONE work-burst of a developer's coding-agent session";
+
 /// The shared rules, without an output-format clause (engines append their own).
 pub const SUMMARY_RULES: &str =
     "You summarise ONE work-burst of a developer's coding-agent session for a \
@@ -136,5 +145,13 @@ mod tests {
         let (s, b) = extract_summary("The developer fixed auth.ts and reran the tests.");
         assert_eq!(s, "The developer fixed auth.ts and reran the tests.");
         assert!(b.is_empty());
+    }
+
+    /// The ingest-side circular-dependency guard matches on this marker; if
+    /// SUMMARY_RULES is reworded the marker (and this pin) must move with it.
+    #[test]
+    fn summary_prompt_marker_pins_summary_rules() {
+        assert!(SUMMARY_RULES.starts_with(SUMMARY_PROMPT_MARKER));
+        assert!(summary_instruction().starts_with(SUMMARY_PROMPT_MARKER));
     }
 }

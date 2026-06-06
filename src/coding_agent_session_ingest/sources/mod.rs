@@ -137,6 +137,16 @@ pub async fn sweep(pool: &SqlitePool, now: DateTime<Utc>) -> (u64, u64) {
             if !has_new_turns(&records, endpoints.get(&uuid).map(String::as_str)) {
                 continue;
             }
+            // Circular-dependency cut: a summariser engine that persists its
+            // own sessions into the store it is summarised FROM (cursor-agent
+            // is unprobed; future engines may) would otherwise loop —
+            // summarise → new session → ingest → summarise. Any conversation
+            // opening with our own summary prompt is a summariser artifact,
+            // never developer activity. Applies to every source uniformly.
+            if is_summariser_artifact(&records) {
+                tracing::info!(agent, uuid = %uuid, "skipping summariser-artifact session");
+                continue;
+            }
             match register_records(pool, &uuid, agent, records, false, now).await {
                 Outcome::Inserted => wrote += 1,
                 Outcome::Failed => failed += 1,
@@ -149,6 +159,18 @@ pub async fn sweep(pool: &SqlitePool, now: DateTime<Utc>) -> (u64, u64) {
         tracing::info!(wrote, failed, "coding-agent source sweep");
     }
     (wrote, failed)
+}
+
+/// True iff the conversation was started by the summariser itself: the first
+/// user prompt carries the summary-prompt fingerprint. Such sessions are the
+/// engine's own runs, not developer activity — ingesting them would loop.
+fn is_summariser_artifact(records: &[NormRecord]) -> bool {
+    use crate::coding_agent_session_ingest::summariser::prompts::SUMMARY_PROMPT_MARKER;
+    records
+        .iter()
+        .find(|r| r.is_user_prompt)
+        .map(|r| r.body.contains(SUMMARY_PROMPT_MARKER))
+        .unwrap_or(false)
 }
 
 /// True iff the record stream contains a TURN newer than the stored endpoint
@@ -206,6 +228,42 @@ mod tests {
             &[rec(Some("2026-05-29T09:31:22.703Z"), false)],
             None
         ));
+    }
+
+    #[test]
+    fn summariser_artifact_sessions_are_detected() {
+        use crate::coding_agent_session_ingest::summariser::prompts;
+
+        let prompt_rec = |body: &str| NormRecord {
+            timestamp: Some("2026-06-06T08:00:00.000Z".to_string()),
+            cwd: None,
+            is_turn: true,
+            is_user: true,
+            is_user_prompt: true,
+            role_label: Some("user".to_string()),
+            body: body.to_string(),
+        };
+
+        // A session opened by the summariser's own prompt is an artifact —
+        // whether the marker leads (codex/mlx style) or is prefixed by the
+        // skill preamble (cursor-agent embeds the instruction mid-prompt).
+        let own = vec![prompt_rec(&prompts::summary_instruction())];
+        assert!(is_summariser_artifact(&own));
+        let embedded = vec![prompt_rec(&format!(
+            "{} Summarise the coding-session transcript below.\n\n[transcript]",
+            prompts::summary_instruction()
+        ))];
+        assert!(is_summariser_artifact(&embedded));
+
+        // A developer merely DISCUSSING the summariser prompt in a later turn
+        // is not an artifact — only the FIRST user prompt is fingerprinted.
+        let mut discussion = vec![prompt_rec("why does the summariser loop?")];
+        discussion.push(prompt_rec(&prompts::summary_instruction()));
+        assert!(!is_summariser_artifact(&discussion));
+
+        // Ordinary sessions pass through.
+        assert!(!is_summariser_artifact(&[prompt_rec("fix the login bug")]));
+        assert!(!is_summariser_artifact(&[]));
     }
 }
 
