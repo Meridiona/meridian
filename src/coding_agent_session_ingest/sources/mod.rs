@@ -15,7 +15,9 @@
 // through `indexer::candidate_jsonls` + `register_session`; new sources plug
 // in here and are swept by `sweep()` from the same indexer tick.
 
+pub mod antigravity;
 pub mod copilot_cli;
+pub mod copilot_vscode;
 pub mod cursor;
 
 use std::collections::HashMap;
@@ -34,7 +36,9 @@ const CHANGE_SLACK_SECS: f64 = 5.0;
 
 /// One coding-agent conversation store.
 pub enum AgentSource {
+    Antigravity(antigravity::AntigravitySource),
     CopilotCli(copilot_cli::CopilotCliSource),
+    CopilotVscode(copilot_vscode::CopilotVscodeSource),
     Cursor(cursor::CursorSource),
 }
 
@@ -42,7 +46,9 @@ impl AgentSource {
     /// Agent tag stored on segments (drives app_name / session_text_source).
     pub fn agent(&self) -> &'static str {
         match self {
+            AgentSource::Antigravity(_) => antigravity::AGENT,
             AgentSource::CopilotCli(_) => copilot_cli::AGENT,
+            AgentSource::CopilotVscode(_) => copilot_vscode::AGENT,
             AgentSource::Cursor(_) => cursor::AGENT,
         }
     }
@@ -50,9 +56,17 @@ impl AgentSource {
     /// Device gate: the store exists on this machine.
     pub fn present(&self) -> bool {
         match self {
+            AgentSource::Antigravity(s) => s.present(),
             AgentSource::CopilotCli(s) => s.present(),
+            AgentSource::CopilotVscode(s) => s.present(),
             AgentSource::Cursor(s) => s.present(),
         }
+    }
+
+    /// False for detection-only stubs: they may log presence but never yield
+    /// sessions, so they must not activate the indexer/summariser on their own.
+    pub fn ingests(&self) -> bool {
+        !matches!(self, AgentSource::Antigravity(_))
     }
 
     /// Discover sessions whose content moved past the stored endpoint and
@@ -65,6 +79,8 @@ impl AgentSource {
         now: DateTime<Utc>,
     ) -> Vec<(String, Vec<NormRecord>)> {
         match self {
+            // Detection-only stub: logs once, ingests nothing.
+            AgentSource::Antigravity(s) => s.collect_changed(endpoints, now),
             // File-backed: blocking IO off the async runtime.
             AgentSource::CopilotCli(s) => {
                 let src = s.clone();
@@ -84,6 +100,25 @@ impl AgentSource {
                     Vec::new()
                 })
             }
+            // File-backed: same blocking-IO pattern as Copilot CLI.
+            AgentSource::CopilotVscode(s) => {
+                let src = s.clone();
+                let eps = endpoints.clone();
+                tokio::task::spawn_blocking(move || {
+                    src.changed_sessions(&eps, now)
+                        .into_iter()
+                        .map(|(uuid, path)| {
+                            let records = copilot_vscode::parse_chat_jsonl(&path);
+                            (uuid, records)
+                        })
+                        .collect()
+                })
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "copilot_vscode collect task panicked");
+                    Vec::new()
+                })
+            }
             // DB-backed: async sqlx against the (read-only) vscdb.
             AgentSource::Cursor(s) => s.collect_changed(endpoints, now).await,
         }
@@ -93,15 +128,18 @@ impl AgentSource {
 /// All registered source adapters (present or not — the sweep gates).
 pub fn all_sources() -> Vec<AgentSource> {
     vec![
+        AgentSource::Antigravity(antigravity::AntigravitySource::from_env()),
         AgentSource::CopilotCli(copilot_cli::CopilotCliSource::from_env()),
+        AgentSource::CopilotVscode(copilot_vscode::CopilotVscodeSource::from_env()),
         AgentSource::Cursor(cursor::CursorSource::from_env()),
     ]
 }
 
-/// True if any source adapter has data on this device (extends the indexer's
-/// claude/codex device gate).
+/// True if any INGESTING source adapter has data on this device (extends the
+/// indexer's claude/codex device gate). Detection-only stubs don't count —
+/// they'd wake the pipeline with nothing to feed it.
 pub fn any_source_present() -> bool {
-    all_sources().iter().any(|s| s.present())
+    all_sources().iter().any(|s| s.ingests() && s.present())
 }
 
 /// One sweep across every present source: discover changed sessions, load,
