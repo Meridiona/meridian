@@ -87,24 +87,29 @@ if (cmd === 'setup' || cmd === 'install') {
   run('bash', [path.join(bundle, 'scripts', 'meridian-npm-setup.sh'), bundle, ...rest]);
 } else if (cmd === 'update' || cmd === '_update-continue') {
   if (cmd === 'update') {
-    // Step 1: update the thin launcher only. The current process runs the OLD
-    // launcher in memory — fixes to also install darwin-arm64 may only be in the
-    // NEW launcher on disk. Re-exec the newly installed launcher so step 2 always
-    // uses the latest code, even when invoked by an old launcher.
+    // Step 1: install both packages atomically so the new launcher and the
+    // darwin-arm64 bundle are always in sync. Using npmInstallLatest() here
+    // instead of installing only the thin launcher prevents a race where the old
+    // launcher re-execs itself if the npm root moves between installs.
     console.log('meridian update: downloading latest release…');
     console.log('  Size varies: ~5 MB (binary-only) → ~165 MB (Python deps changed). May take 1-3 min if large.');
     const _start = Date.now();
-    const up = spawnSync('npm', ['install', '-g', '@meridiona/meridian@latest'], { stdio: 'inherit' });
+    const up = npmInstallLatest();
     if (up.status) process.exit(up.status);
-    console.log(`  Launcher updated in ${Math.round((Date.now() - _start) / 1000)}s`);
-    // Re-exec the freshly installed launcher to continue with the correct code.
+    console.log(`  Packages updated in ${Math.round((Date.now() - _start) / 1000)}s`);
+    // Re-exec the freshly installed launcher so step 2 always runs the latest code.
     const npmRoot = (spawnSync('npm', ['root', '-g'], { encoding: 'utf8' }).stdout || '').trim();
     const newLauncher = path.join(npmRoot, '@meridiona', 'meridian', 'bin', 'meridian.js');
     if (fs.existsSync(newLauncher)) {
       const r = spawnSync(process.execPath, [newLauncher, '_update-continue'], { stdio: 'inherit' });
       process.exit(r.status ?? 1);
     }
-    // Fallback: new launcher not found, continue in this process.
+    // New launcher not found after a successful install — fail loudly; do NOT
+    // silently continue in the old process (which may run stale setup code).
+    console.error('meridian update: new launcher not found at', newLauncher);
+    console.error('  The npm install appeared to succeed but the expected file is missing.');
+    console.error('  Try: npm install -g @meridiona/meridian && meridian update');
+    process.exit(1);
   }
   // Step 2 (runs in new launcher): install bundle + run setup.
   const _bundleStart = Date.now();

@@ -419,6 +419,11 @@ if ! command -v cargo >/dev/null 2>&1; then
         run curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
         # shellcheck source=/dev/null
         [[ "${DRY_RUN}" -eq 0 ]] && source "${HOME}/.cargo/env"
+        # Verify cargo is actually on PATH — the source above only works when
+        # ~/.cargo/env exists and this is an interactive-style shell invocation.
+        if [[ "${DRY_RUN}" -eq 0 ]] && ! command -v cargo >/dev/null 2>&1; then
+            err "cargo not found after sourcing ~/.cargo/env. Open a new terminal and re-run install.sh."
+        fi
     else
         err "Rust is required. Install from https://rustup.rs and re-run."
         exit 1
@@ -483,8 +488,9 @@ if ! command -v screenpipe >/dev/null 2>&1; then
     fi
 else
     _sp_ver="$(screenpipe --version 2>/dev/null | awk '{print $2}' || true)"
-    _sp_major_minor="${_sp_ver%.*}"
-    if [[ -n "${_sp_ver}" && "${_sp_major_minor}" < "0.3" ]]; then
+    _sp_major="$(echo "${_sp_ver}" | cut -d. -f1)"
+    _sp_minor="$(echo "${_sp_ver}" | cut -d. -f2)"
+    if [[ -n "${_sp_ver}" && "${_sp_major:-0}" -eq 0 && "${_sp_minor:-0}" -lt 3 ]]; then
         warn "screenpipe ${_sp_ver} is from the deprecated Homebrew formula."
         echo "    The launchd plist expects 0.3+ (uses 'screenpipe record')."
         if prompt_install "Upgrade screenpipe via npm (npm install -g screenpipe@${SCREENPIPE_VERSION})?"; then
@@ -741,6 +747,7 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
             : >> "${HOME}/.meridian/logs/mlx-server.log"
             tail -n 0 -f "${HOME}/.meridian/logs/mlx-server.log" &
             _tail_pid=$!
+            trap 'kill "${_tail_pid}" 2>/dev/null || true' EXIT
             _mlx_wait=0
             _mlx_timeout=300
             until curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; do
