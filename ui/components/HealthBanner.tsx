@@ -55,8 +55,9 @@ export default function HealthBanner() {
               <strong>Database schema mismatch</strong>
             </p>
             <p className="text-xs mt-0.5" style={{ color: 'var(--ink-3)' }}>
-              The database needs migration: <code className="text-xs font-mono">meridian migrate-db</code>
-              {health.error && <>, or see error: {health.error}</>}
+              {health.error ?? (
+                <>The database needs migration: <code className="text-xs font-mono">meridian migrate-db</code></>
+              )}
             </p>
           </div>
         </div>
