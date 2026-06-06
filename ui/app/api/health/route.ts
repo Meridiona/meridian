@@ -4,7 +4,7 @@ import { execSync } from 'child_process'
 import { NextRequest, NextResponse } from 'next/server'
 
 interface HealthStatus {
-  a11y_helper_trusted: boolean
+  a11y_helper_trusted?: boolean
   database_ready?: boolean
   error?: string
 }
@@ -29,7 +29,7 @@ export async function GET(request: NextRequest): Promise<NextResponse<HealthStat
     try {
       doctorOutput = execSync('meridian doctor 2>&1', {
         encoding: 'utf-8',
-        timeout: 5000,
+        timeout: 15000,
         env: { ...process.env, PATH: augmentedPath },
       })
     } catch (e) {
@@ -64,10 +64,11 @@ export async function GET(request: NextRequest): Promise<NextResponse<HealthStat
       )
     }
 
+    // Only report status when doctor actually ran. When it didn't run (binary not in
+    // PATH) or timed out with partial output, omit the fields so the UI treats the
+    // state as unknown and shows no banner.
     return NextResponse.json({
-      a11y_helper_trusted: isTrusted,
-      // Only report database_ready when doctor actually ran — omit (undefined) when
-      // the binary was not found so the UI does not misinterpret "can't check" as "broken".
+      a11y_helper_trusted: doctorRan ? isTrusted : undefined,
       database_ready: doctorRan ? databaseReady : undefined,
     })
   } catch (error) {
