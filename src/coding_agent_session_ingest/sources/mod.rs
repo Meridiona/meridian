@@ -19,6 +19,7 @@ pub mod antigravity;
 pub mod copilot_cli;
 pub mod copilot_vscode;
 pub mod cursor;
+pub mod cursor_cli;
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -40,6 +41,7 @@ pub enum AgentSource {
     CopilotCli(copilot_cli::CopilotCliSource),
     CopilotVscode(copilot_vscode::CopilotVscodeSource),
     Cursor(cursor::CursorSource),
+    CursorCli(cursor_cli::CursorCliSource),
 }
 
 impl AgentSource {
@@ -50,6 +52,7 @@ impl AgentSource {
             AgentSource::CopilotCli(_) => copilot_cli::AGENT,
             AgentSource::CopilotVscode(_) => copilot_vscode::AGENT,
             AgentSource::Cursor(_) => cursor::AGENT,
+            AgentSource::CursorCli(_) => cursor_cli::AGENT,
         }
     }
 
@@ -60,6 +63,7 @@ impl AgentSource {
             AgentSource::CopilotCli(s) => s.present(),
             AgentSource::CopilotVscode(s) => s.present(),
             AgentSource::Cursor(s) => s.present(),
+            AgentSource::CursorCli(s) => s.present(),
         }
     }
 
@@ -121,6 +125,8 @@ impl AgentSource {
             }
             // DB-backed: async sqlx against the (read-only) vscdb.
             AgentSource::Cursor(s) => s.collect_changed(endpoints, now).await,
+            // DB-backed: one tiny store.db per CLI chat.
+            AgentSource::CursorCli(s) => s.collect_changed(endpoints, now).await,
         }
     }
 }
@@ -132,6 +138,7 @@ pub fn all_sources() -> Vec<AgentSource> {
         AgentSource::CopilotCli(copilot_cli::CopilotCliSource::from_env()),
         AgentSource::CopilotVscode(copilot_vscode::CopilotVscodeSource::from_env()),
         AgentSource::Cursor(cursor::CursorSource::from_env()),
+        AgentSource::CursorCli(cursor_cli::CursorCliSource::from_env()),
     ]
 }
 

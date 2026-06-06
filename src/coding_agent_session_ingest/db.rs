@@ -45,7 +45,7 @@ fn app_name_for(agent: &str) -> &'static str {
     match agent {
         "codex" => "Codex",
         "copilot_cli" | "copilot_vscode" => "GitHub Copilot",
-        "cursor" => "Cursor Agent",
+        "cursor" | "cursor_cli" => "Cursor Agent",
         "antigravity" => "Antigravity Agent",
         _ => "Claude Code",
     }
@@ -58,6 +58,7 @@ fn text_source_for(agent: &str) -> Option<&'static str> {
         "copilot_cli" => Some("copilot_events_jsonl"),
         "copilot_vscode" => Some("copilot_chat_jsonl"),
         "cursor" => Some("cursor_vscdb"),
+        "cursor_cli" => Some("cursor_cli_store"),
         "antigravity" => Some("antigravity"),
         _ => None,
     }
