@@ -66,7 +66,9 @@ export async function GET(request: NextRequest): Promise<NextResponse<HealthStat
 
     return NextResponse.json({
       a11y_helper_trusted: isTrusted,
-      database_ready: databaseReady,
+      // Only report database_ready when doctor actually ran — omit (undefined) when
+      // the binary was not found so the UI does not misinterpret "can't check" as "broken".
+      database_ready: doctorRan ? databaseReady : undefined,
     })
   } catch (error) {
     // Unexpected error — default to safe state
