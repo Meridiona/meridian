@@ -50,6 +50,7 @@ Commands:
                      [--day YYYY-MM-DD]
   config edit        Open the repo-root .env in $EDITOR
   permissions        Open macOS permission panes for screenpipe
+  update             Pull latest changes, rebuild, and restart (source checkout only)
   uninstall          Stop daemons and remove CLI symlinks
   version            Print installed version
   --help | -h        Show this help
@@ -450,6 +451,28 @@ cmd_config() {
     "${EDITOR:-nano}" "$env_file"
 }
 
+# --- update ---
+cmd_update() {
+    if _is_source_checkout; then
+        info "pulling latest changes…"
+        git -C "${REPO_ROOT}" pull --ff-only || {
+            err "git pull failed — resolve conflicts manually, then run 'meridian dev build' and 'meridian restart'"
+            exit 1
+        }
+        info "rebuilding daemon (cargo --release)…"
+        ( cd "${REPO_ROOT}" && cargo build --release )
+        info "rebuilding UI…"
+        ( cd "${REPO_ROOT}/ui" && npm run build )
+        info "restarting daemons…"
+        cmd_restart
+        ok "updated to $(cat "${REPO_ROOT}/VERSION" 2>/dev/null || git -C "${REPO_ROOT}" rev-parse --short HEAD)"
+    else
+        err "meridian update is not available in a source checkout context."
+        err "Run: npm install -g @meridiona/meridian@latest"
+        exit 1
+    fi
+}
+
 # --- uninstall ---
 cmd_uninstall() {
     local ans
@@ -704,6 +727,7 @@ case "$CMD" in
     migrate-db)       cmd_migrate_db "$@" ;;
     config)           cmd_config "$@" ;;
     dev)              cmd_dev "$@" ;;
+    update)           cmd_update ;;
     uninstall)        cmd_uninstall ;;
     permissions)      cmd_permissions ;;
     version|--version|-v) cat "${REPO_ROOT}/VERSION" 2>/dev/null || echo "unknown" ;;
