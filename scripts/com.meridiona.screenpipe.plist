@@ -21,9 +21,10 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/sh</string>
-        <string>-c</string>
-        <string>exec {{SCREENPIPE_BIN}} record --disable-audio --use-pii-removal</string>
+        <string>{{SCREENPIPE_BIN}}</string>
+        <string>record</string>
+        <string>--disable-audio</string>
+        <string>--use-pii-removal</string>
     </array>
 
     <key>EnvironmentVariables</key>

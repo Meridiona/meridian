@@ -224,10 +224,11 @@ cp scripts/meridian-cli.sh scripts/install-from-bundle.sh scripts/meridian-npm-s
 cp scripts/install-daemon.sh scripts/uninstall-daemon.sh \
    scripts/install-ui-daemon.sh scripts/uninstall-ui-daemon.sh \
    scripts/install-screenpipe-daemon.sh scripts/uninstall-screenpipe-daemon.sh \
-   scripts/install-a11y-helper-daemon.sh \
-   scripts/com.meridiona.daemon.plist scripts/com.meridiona.screenpipe.plist \
+   scripts/install-a11y-helper-daemon.sh "${DEST}/scripts/"
+cp scripts/com.meridiona.daemon.plist \
+   scripts/com.meridiona.screenpipe.plist \
    scripts/com.meridiona.a11y-helper.plist \
-   scripts/com.meridiona.ui.plist "${DEST}/scripts/" 2>/dev/null || true
+   scripts/com.meridiona.ui.plist "${DEST}/scripts/"
 
 # a11y-helper: ship the COMMITTED prebuilt binary byte-for-byte. Never rebuild
 # it here — users' Accessibility grants are keyed to its code hash (CDHash);
