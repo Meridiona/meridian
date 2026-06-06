@@ -2,9 +2,12 @@
 //
 // Cursor agent lazy initialization: when a Cursor Agent session needs
 // summarisation, check that the cursor-agent CLI is available and
-// authenticated. If missing, auto-install; if unauthenticated, auto-login.
-// Runs on-demand (only when Cursor Agent sessions are summarised); non-fatal
-// (the summariser falls back to MLX if any step fails).
+// authenticated. If missing, install it — but ONLY behind the explicit
+// CURSOR_AGENT_AUTO_INSTALL=1 opt-in (the installer is unpinned remote code;
+// a daemon must not run that as an automatic side effect). If
+// unauthenticated, auto-login (status-probed, non-interactive). Runs
+// on-demand (only when Cursor Agent sessions are summarised); non-fatal —
+// the summariser falls back to MLX if any step fails.
 //
 // Field-tested 2026-06-06: `cursor-agent login` returned in ~16s when it
 // could adopt the IDE's auth, but a SECOND login while already authenticated
@@ -57,9 +60,19 @@ async fn try_install_and_login() -> anyhow::Result<()> {
             tracing::info!(cursor_agent_path = %p.display(), "cursor-agent found");
             p
         }
-        Err(_) => {
-            tracing::info!("cursor-agent not in PATH; attempting auto-install");
+        Err(_) if auto_install_enabled() => {
+            tracing::info!("cursor-agent not in PATH; auto-install opted in — installing");
             try_auto_install().await?
+        }
+        Err(_) => {
+            // Running a remote install script must be an explicit user
+            // decision, never an automatic daemon side effect (the installer
+            // is `curl https://cursor.com/install | bash` — unpinned remote
+            // code). Without the opt-in, Cursor summaries fall back to MLX.
+            anyhow::bail!(
+                "cursor-agent not in PATH; install it (`curl https://cursor.com/install -fsS | bash`) \
+                 or set CURSOR_AGENT_AUTO_INSTALL=1 to let the daemon install it"
+            )
         }
     };
 
@@ -90,8 +103,18 @@ async fn find_cursor_agent() -> anyhow::Result<PathBuf> {
     }
 }
 
-/// Auto-install cursor-agent via the official installer script. Runs once per
-/// daemon lifetime (cached by ensure_ready).
+/// The auto-install opt-in: CURSOR_AGENT_AUTO_INSTALL=1|true|yes. Default OFF
+/// — the daemon must not execute unverified remote code without the user
+/// having explicitly turned that on.
+fn auto_install_enabled() -> bool {
+    std::env::var("CURSOR_AGENT_AUTO_INSTALL")
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
+/// Install cursor-agent via the official installer script (opt-in only — see
+/// `auto_install_enabled`). Runs once per daemon lifetime (cached by
+/// ensure_ready).
 async fn try_auto_install() -> anyhow::Result<PathBuf> {
     tracing::info!("running cursor-agent installer: curl https://cursor.com/install -fsS | bash");
     let output = run_with_timeout(

@@ -42,7 +42,7 @@ else (Claude/unknown)  ──▶  claude -p     ─┘        │
 - **Cursor sessions → `cursor-agent`** (`cursor_agent.rs`) — `-p
   --output-format text --trust` (without `--trust` headless runs die with
   "Workspace Trust Required"). First use runs `cursor_agent_init::ensure_ready()`:
-  auto-install via the official script if missing, `status`-probe the auth, and
+  install via the official script if missing (ONLY when `CURSOR_AGENT_AUTO_INSTALL=1` — unpinned remote code needs an explicit opt-in), `status`-probe the auth, and
   only `login` (NO_OPEN_BROWSER, 120 s timeout, kill-on-drop) when actually
   unauthenticated. Any init failure degrades to MLX. Its runs persist to
   `~/.cursor/chats/` — see "Self-ingest guard" below.
@@ -156,6 +156,7 @@ standalone poll).
 | `SUMMARISER_MLX_MAX_TOKENS` | `2048` | MLX output cap |
 | `SUMMARISER_MLX_INPUT_TOKENS` | `5000` | MLX input tail cap (× chars/token) |
 | `SUMMARISER_MLX_CHARS_PER_TOKEN` | `4` | tail-cap char estimate |
+| `CURSOR_AGENT_AUTO_INSTALL` | (unset → off) | opt-in: let the daemon run the cursor-agent installer |
 | `MERIDIAN_HOME` | `~/.meridian` | neutral cwd for subprocesses |
 
 ---
