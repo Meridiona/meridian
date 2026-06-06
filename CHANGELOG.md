@@ -1,3 +1,10 @@
+## [1.27.5](https://github.com/Meridiona/meridian/compare/v1.27.4...v1.27.5) (2026-06-06)
+
+
+### Bug Fixes
+
+* **health:** suppress DB-error banner when meridian binary cannot be found ([97622d7](https://github.com/Meridiona/meridian/commit/97622d7e35b0e51a84155d55cb8736046a831a55))
+
 ## [1.27.4](https://github.com/Meridiona/meridian/compare/v1.27.3...v1.27.4) (2026-06-06)
 
 
