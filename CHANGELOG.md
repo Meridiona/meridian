@@ -1,3 +1,10 @@
+## [1.27.3](https://github.com/Meridiona/meridian/compare/v1.27.2...v1.27.3) (2026-06-06)
+
+
+### Bug Fixes
+
+* **install:** harden installer against partial-install and crash-loop failure modes ([#185](https://github.com/Meridiona/meridian/issues/185)) ([ee3159c](https://github.com/Meridiona/meridian/commit/ee3159c43d93b5ce3134caefefabef6bbc20943c))
+
 ## [1.27.2](https://github.com/Meridiona/meridian/compare/v1.27.1...v1.27.2) (2026-06-06)
 
 
