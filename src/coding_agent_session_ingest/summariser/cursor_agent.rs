@@ -2,13 +2,13 @@
 //
 // Run `cursor-agent` to summarise a Cursor session (symmetry with claude.rs /
 // codex.rs / copilot.rs — each agent's transcripts go to its own CLI, MLX as
-// the shared fallback). Flags follow Cursor's public CLI docs (`-p` print
-// mode + `--output-format text`); the binary was NOT present on the dev
-// machine to probe, so this engine is deliberately conservative: the
-// transcript rides in the prompt argument (the one channel guaranteed to
-// reach the model), and a missing binary or rejected flag degrades cleanly —
-// Failed → primary_attempts → MLX. If `cursor-agent` is installed later the
-// engine starts working without a config change.
+// the shared fallback). Flags pinned against cursor-agent 2026.06.04 live:
+// `-p --output-format text --trust` (without --trust headless runs die with
+// "Workspace Trust Required"). The transcript rides in the prompt argument,
+// and any failure degrades cleanly — Failed → primary_attempts → MLX.
+// Persistence probed: `-p` runs write to ~/.cursor/chats/, NOT the vscdb we
+// ingest from — so a summariser run cannot re-enter the indexer (the
+// SUMMARY_PROMPT_MARKER guard in sources/mod.rs backstops this anyway).
 
 use super::config::SummariserConfig;
 use super::prompts;
@@ -37,7 +37,17 @@ pub async fn run_cursor_agent(
         prompts::summary_instruction(),
         cap_transcript(stdin_text, ARG_TRANSCRIPT_CAP),
     );
-    let mut args: Vec<String> = vec!["-p".into(), prompt, "--output-format".into(), "text".into()];
+    // --trust: cursor-agent refuses untrusted workspaces even in print mode
+    // ("Workspace Trust Required", exit 1 — observed live 2026-06-06 running
+    // under cfg.meridian_home). Trusting is safe here: the prompt is our own
+    // summary instruction, not repo code execution.
+    let mut args: Vec<String> = vec![
+        "-p".into(),
+        prompt,
+        "--output-format".into(),
+        "text".into(),
+        "--trust".into(),
+    ];
     if !cfg.cursor_model.is_empty() {
         args.push("--model".into());
         args.push(cfg.cursor_model.clone());
