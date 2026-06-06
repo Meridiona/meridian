@@ -246,6 +246,13 @@ configure_editor_accessibility() {
             # Insert the key after the first `{`. VS Code-family parsers are
             # JSONC-tolerant, so this preserves existing keys/comments/formatting.
             perl -0777 -i -pe 's/\{/\{\n\t"editor.accessibilitySupport": "on",/ unless $done++' "$settings"
+            # Sanity check: the key must appear in the file; if not, the regex
+            # found no `{` (unusual) or perl silently failed — restore backup.
+            if ! grep -q '"editor.accessibilitySupport"' "$settings" 2>/dev/null; then
+                warn "${ed}: settings.json edit failed — restoring backup"
+                cp "${settings}.meridian-bak" "$settings"
+                continue
+            fi
         fi
         ok "${ed}: enabled editor.accessibilitySupport = on"
         # The setting is read ONCE at editor boot. If the editor is running
@@ -287,7 +294,15 @@ fi
 command -v node >/dev/null 2>&1 || { info "Installing Node.js…"; brew install node; }
 PYTHON_BIN=""
 for p in python3.11 python3; do command -v "$p" >/dev/null 2>&1 && { PYTHON_BIN="$(command -v "$p")"; break; }; done
-[[ -n "${PYTHON_BIN}" ]] || { info "Installing Python 3.11…"; brew install python@3.11; PYTHON_BIN="$(command -v python3.11)"; }
+if [[ -z "${PYTHON_BIN}" ]]; then
+    info "Installing Python 3.11…"
+    brew install python@3.11
+    # `command -v` may return empty in a non-interactive shell immediately after
+    # `brew install` because the formula's bin dir isn't in launchd's PATH yet.
+    # Resolve via `brew --prefix` which is always accurate.
+    PYTHON_BIN="$(brew --prefix python@3.11)/bin/python3.11"
+    [[ -x "${PYTHON_BIN}" ]] || PYTHON_BIN="$(command -v python3.11 2>/dev/null || true)"
+fi
 # uv is the package/venv manager for Python services. Install via Homebrew (already
 # required by this installer) rather than the astral curl|sh installer.
 UV_BIN=""
@@ -296,7 +311,8 @@ if command -v uv >/dev/null 2>&1; then
 else
     info "Installing uv (Python package manager)…"
     brew install uv
-    UV_BIN="$(command -v uv)"
+    UV_BIN="$(brew --prefix uv)/bin/uv"
+    [[ -x "${UV_BIN}" ]] || UV_BIN="$(command -v uv 2>/dev/null || true)"
 fi
 ok "node + python ($(${PYTHON_BIN} --version 2>&1)) + uv ($(${UV_BIN} --version 2>&1))"
 
@@ -558,7 +574,8 @@ elif [[ -d "${APP_ROOT}/ui" ]]; then
     ok "dashboard unchanged — reusing existing build"
     _ui_changed=0
 else
-    err "Dashboard bundle missing: neither ui.tar.gz nor ui/ found in ${APP_ROOT}. Re-run the installer."
+    err "Dashboard bundle missing from ${APP_ROOT} — re-run the installer: curl -fsSL https://raw.githubusercontent.com/Meridiona/meridian/main/scripts/bootstrap.sh | bash"
+    exit 1
 fi
 
 # ── 6. Daemons — restart only what changed ───────────────────────────────────
@@ -579,10 +596,10 @@ _py_src_changed=1
 if [[ -f "${_PY_SRC_STAMP}" && "$(cat "${_PY_SRC_STAMP}")" == "${_py_src_hash}" ]]; then
     _py_src_changed=0
 fi
-echo "${_py_src_hash}" > "${_PY_SRC_STAMP}"
-
 if [[ "${_mlx_was_healthy}" -eq 1 && "${_venv_changed}" -eq 0 && "${_py_src_changed}" -eq 0 ]]; then
     ok "Python services unchanged — MLX server kept running"
+    # Stamp only when the server is confirmed healthy (skip case = already healthy).
+    echo "${_py_src_hash}" > "${_PY_SRC_STAMP}"
 else
     info "Installing MLX inference server launchd agent…"
     bash "${APP_ROOT}/services/scripts/install-mlx-server-daemon.sh" --port "${MLX_PORT}" || warn "MLX agent install failed"
@@ -591,7 +608,11 @@ else
     until curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; do
         sleep 3; _w=$((_w+3)); [[ $_w -ge 300 ]] && { warn "MLX not ready after 300s — check: meridian logs mlx-server"; break; }
     done
-    curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1 && ok "MLX server ready (${_w}s)"
+    # Only stamp after confirmed ready — prevents stale stamp on a failed restart.
+    if curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; then
+        ok "MLX server ready (${_w}s)"
+        echo "${_py_src_hash}" > "${_PY_SRC_STAMP}"
+    fi
 fi
 
 # Rust daemon: skip restart when binary is identical.
@@ -611,6 +632,8 @@ else
 fi
 
 # Persist component hashes for the next update's differential check.
+# Write to a temp file and rename atomically so a crash mid-write never leaves
+# a half-written or empty hash file (which would force a full reinstall).
 _final_ui_hash="${_new_ui_hash:-${_OLD_UI_HASH}}"
 {
     [[ -n "${_new_daemon_hash}" ]] && printf 'daemon_bin=%s\n' "${_new_daemon_hash}"
@@ -627,7 +650,7 @@ if [[ -f "${_skill_src}" ]]; then
     cp "${_skill_src}" "${_skill_dst}"
     ok "session-summary command → ~/.claude/commands/session-summary.md"
 else
-    warn "session-summary skill not found in bundle (${_skill_src}) — skipping"
+    warn "session-summary skill not found in bundle — skipping (${_skill_src})"
 fi
 
 # Pipeline smoke test — verify both LLM stages return valid output (no DB writes).

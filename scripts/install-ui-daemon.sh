@@ -34,6 +34,15 @@ if [[ -z "${NPM_BIN}" ]]; then
     echo "✗ npm not found in PATH — install Node.js 18+ and re-run" >&2
     exit 1
 fi
+# Capture the node binary directory so launchd's restricted PATH includes it.
+# `npm run start` invokes `next start` whose shebang resolves `node` via PATH;
+# NVM / fnm / asdf install node outside /opt/homebrew and /usr/local, so the
+# standard launchd PATH misses it. Injecting NODE_BIN_DIR fixes this.
+NODE_BIN="$(command -v node 2>/dev/null || true)"
+NODE_BIN_DIR_PREFIX=""
+if [[ -n "${NODE_BIN}" ]]; then
+    NODE_BIN_DIR_PREFIX="$(dirname "${NODE_BIN}"):"
+fi
 
 if [[ ! -d "${REPO_ROOT}/ui/.next" ]]; then
     echo "✗ ui/.next not found — run \`cd ui && npm ci && npm run build\` first" >&2
@@ -49,6 +58,7 @@ sed \
     -e "s|{{REPO_ROOT}}|${REPO_ROOT}|g" \
     -e "s|{{HOME}}|${HOME}|g" \
     -e "s|{{NPM_BIN}}|${NPM_BIN}|g" \
+    -e "s|{{NODE_BIN_DIR}}|${NODE_BIN_DIR_PREFIX}|g" \
     "${TEMPLATE}" > "${PLIST_DEST}"
 
 if ! plutil -lint "${PLIST_DEST}" >/dev/null; then
