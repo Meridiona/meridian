@@ -23,16 +23,22 @@ export async function GET(request: NextRequest): Promise<NextResponse<HealthStat
     // Check if a11y_helper is trusted
     const isTrusted = doctorOutput.includes('a11y_helper.trusted') && doctorOutput.includes('✓  a11y_helper.trusted')
 
-    // Check if database is ready (has app_sessions table with recent migrations)
-    const databaseReady = doctorOutput.includes('meridian.db_present') && doctorOutput.includes('✓  meridian.db')
+    // Check if database is ready. The doctor check is named "meridian DB" (daemon.rs).
+    // Rendered (no color, non-TTY): "    ✓  meridian DB              readable"
+    const databaseReady = doctorOutput.includes('✓  meridian DB')
 
-    // If database schema is broken, provide helpful guidance
-    if (!databaseReady && doctorOutput.includes('SQLITE_ERROR')) {
+    if (!databaseReady && doctorOutput.length > 0) {
+      // Distinguish "db not created yet" (fresh install) from "schema too old" (upgrade).
+      const dbMissing =
+        doctorOutput.includes('not yet created') ||
+        doctorOutput.includes('not readable')
       return NextResponse.json(
         {
           a11y_helper_trusted: false,
           database_ready: false,
-          error: 'Database schema mismatch — run: bash scripts/migrate-db.sh',
+          error: dbMissing
+            ? 'Database not found — start the daemon: launchctl load ~/Library/LaunchAgents/com.meridiona.daemon.plist'
+            : 'Database schema mismatch — run: meridian migrate-db',
         },
         { status: 200 },
       )
@@ -40,7 +46,7 @@ export async function GET(request: NextRequest): Promise<NextResponse<HealthStat
 
     return NextResponse.json({
       a11y_helper_trusted: isTrusted,
-      database_ready: databaseReady !== false,
+      database_ready: databaseReady,
     })
   } catch (error) {
     // Unexpected error — default to safe state
