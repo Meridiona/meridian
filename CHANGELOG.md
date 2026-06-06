@@ -1,3 +1,11 @@
+## [1.27.4](https://github.com/Meridiona/meridian/compare/v1.27.3...v1.27.4) (2026-06-06)
+
+
+### Bug Fixes
+
+* **health:** inject PATH for launchd and guard against command-not-found ([2dcc2b5](https://github.com/Meridiona/meridian/commit/2dcc2b5f7640fc316f01b3fab25fd26c4481a62f)), closes [#192](https://github.com/Meridiona/meridian/issues/192)
+* **install:** production-harden installation scripts across all audit findings ([#192](https://github.com/Meridiona/meridian/issues/192)) ([d254ded](https://github.com/Meridiona/meridian/commit/d254ded473c1ee0bde11785e63b00f561404fc1d))
+
 ## [1.27.3](https://github.com/Meridiona/meridian/compare/v1.27.2...v1.27.3) (2026-06-06)
 
 
