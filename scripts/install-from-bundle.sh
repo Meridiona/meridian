@@ -554,6 +554,17 @@ else
     bash "${APP_ROOT}/scripts/install-daemon.sh" || warn "daemon agent install failed"
 fi
 
+# Claude Code SessionEnd hook: seals each Claude session into app_sessions the
+# instant it ends (the indexer sweep + 1 h idle seal are only the fallback).
+# Idempotent merge into ~/.claude/settings.json; also purges retired Python
+# hook entries on upgrade. Pin the binary to the installed bundle copy.
+info "Installing Claude Code coding-agent SessionEnd hook…"
+if MERIDIAN_BIN="${APP_ROOT}/bin/meridian" bash "${APP_ROOT}/services/scripts/install-claude-hook.sh" >/dev/null 2>&1; then
+    ok "Claude Code SessionEnd hook installed"
+else
+    warn "coding-agent hook install skipped (Claude sessions still seal via the idle backstop)"
+fi
+
 # UI: skip daemon restart when the build didn't change (tarball hash matched).
 if [[ "${_ui_changed}" -eq 0 ]]; then
     ok "Dashboard unchanged — skipping restart"
