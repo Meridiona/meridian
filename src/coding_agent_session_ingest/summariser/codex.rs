@@ -74,7 +74,8 @@ pub async fn run_codex(
     if !cap.success {
         let blob = format!("{}\n{}", cap.stderr, cap.stdout);
         if prompts::looks_rate_limited(&blob) {
-            let msg = prompts::first_line(&cap.stderr);
+            let msg = prompts::rate_limited_line(&blob)
+                .unwrap_or_else(|| prompts::first_line(&cap.stderr));
             return Err(SummariserError::RateLimited(if msg.is_empty() {
                 "codex usage limit".into()
             } else {

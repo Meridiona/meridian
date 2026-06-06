@@ -75,6 +75,17 @@ pub fn looks_rate_limited(text: &str) -> bool {
     RATE_LIMIT_MARKERS.iter().any(|m| low.contains(m))
 }
 
+/// The first line that actually matched a rate-limit marker, capped to 200
+/// chars. Engines' stderr often opens with informational banners ("Reading
+/// additional input from stdin..."), so quoting `first_line` puts the wrong
+/// text in the fallback WARN log — quote the matching line instead.
+pub fn rate_limited_line(text: &str) -> Option<String> {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && looks_rate_limited(line))
+        .map(|line| line.chars().take(200).collect())
+}
+
 /// First non-empty line, capped to 200 chars (for compact error messages).
 pub fn first_line(text: &str) -> String {
     for line in text.lines() {
@@ -153,5 +164,18 @@ mod tests {
     fn summary_prompt_marker_pins_summary_rules() {
         assert!(SUMMARY_RULES.starts_with(SUMMARY_PROMPT_MARKER));
         assert!(summary_instruction().starts_with(SUMMARY_PROMPT_MARKER));
+    }
+
+    /// Regression: codex stderr opens with an informational banner; the
+    /// fallback WARN must quote the line that matched the rate-limit marker,
+    /// not the banner (observed live 2026-06-06, row 32162).
+    #[test]
+    fn rate_limited_line_skips_informational_banner() {
+        let stderr = "Reading additional input from stdin...\n\
+                      ERROR: You've hit your usage limit. Upgrade to Plus to continue using Codex, or try again at Jul 5th, 2026 1:16 PM.";
+        assert!(looks_rate_limited(stderr));
+        let line = rate_limited_line(stderr).unwrap();
+        assert!(line.starts_with("ERROR: You've hit your usage limit"));
+        assert!(rate_limited_line("all good, no errors here").is_none());
     }
 }
