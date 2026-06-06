@@ -131,6 +131,13 @@ resolve_node_runtime() {
     local ver sha
     ver="$(grep '^NODE_RUNTIME_VERSION=' "${meta}" | cut -d= -f2 | tr -d '[:space:]')"
     sha="$(grep '^NODE_RUNTIME_SHA=' "${meta}" | cut -d= -f2 | tr -d '[:space:]')"
+    if [[ -z "${ver}" || -z "${sha}" ]]; then
+        warn "node-runtime.meta is malformed (missing VERSION or SHA) — falling back to system node"
+        for _n in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+            [[ -x "${_n}" ]] && { echo "${_n}"; return 0; }
+        done
+        return 1
+    fi
     local cache_dir="${HOME}/.meridian/node-runtime/v${ver}"
     local cache_bin="${cache_dir}/bin/node"
     if [[ -x "${cache_bin}" ]]; then echo "${cache_bin}"; return 0; fi
@@ -405,8 +412,11 @@ _LOCK_HASH="$(shasum -a 256 "${APP_ROOT}/services/uv.lock" 2>/dev/null | cut -d'
 # enforces this); the venv MUST use exactly 3.11 or the cpython-311 .so files fail
 # to import. Prefer system python3.11, then uv-managed 3.11, then install it via uv.
 _extract_venv() {
-    local tgz="$1" stamp_hash="$2" tarball_python="" py_dir=""
-    rm -rf "${VENV}"
+    local tgz="$1" stamp_hash="$2" tarball_python="" py_dir="" venv_tmp=""
+    # Stage the new venv to a temp path; swap atomically only on success so a
+    # failed extraction (disk full, corrupt archive) never destroys the live venv.
+    venv_tmp="${VENV}.tmp.$$"
+    rm -rf "${venv_tmp}"
     if command -v python3.11 >/dev/null 2>&1; then
         tarball_python="$(command -v python3.11)"
     elif "${UV_BIN}" python find 3.11 >/dev/null 2>&1; then
@@ -416,13 +426,16 @@ _extract_venv() {
         "${UV_BIN}" python install 3.11
         tarball_python="$("${UV_BIN}" python find 3.11)"
     fi
-    "${UV_BIN}" venv --python "${tarball_python}" "${VENV}" 2>/dev/null
-    py_dir="$(ls "${VENV}/lib/" | grep '^python' | head -1)"
-    mkdir -p "${VENV}/lib/${py_dir}/site-packages"
-    tar -xzf "${tgz}" -C "${VENV}/lib/${py_dir}/site-packages"
+    "${UV_BIN}" venv --python "${tarball_python}" "${venv_tmp}" 2>/dev/null
+    py_dir="$(ls "${venv_tmp}/lib/" | grep '^python' | head -1)"
+    mkdir -p "${venv_tmp}/lib/${py_dir}/site-packages"
+    tar -xzf "${tgz}" -C "${venv_tmp}/lib/${py_dir}/site-packages"
     # Install the local editable package (meridian-agents) — no deps needed,
     # everything is already in site-packages from the tarball.
-    "${UV_BIN}" pip install --quiet --no-deps --python "${VENV}/bin/python" -e "${APP_ROOT}/services"
+    "${UV_BIN}" pip install --quiet --no-deps --python "${venv_tmp}/bin/python" -e "${APP_ROOT}/services"
+    # All steps succeeded — atomically replace the live venv.
+    rm -rf "${VENV}"
+    mv "${venv_tmp}" "${VENV}"
     printf '%s\n' "${stamp_hash}" > "${VENV_STAMP}"
     ok "Python services ready ($(${VENV}/bin/python --version 2>&1))"
 }
@@ -544,6 +557,8 @@ elif [[ -d "${APP_ROOT}/ui" ]]; then
     # ui/ was preserved by meridian-npm-setup.sh — hash matched, no re-extraction needed
     ok "dashboard unchanged — reusing existing build"
     _ui_changed=0
+else
+    err "Dashboard bundle missing: neither ui.tar.gz nor ui/ found in ${APP_ROOT}. Re-run the installer."
 fi
 
 # ── 6. Daemons — restart only what changed ───────────────────────────────────
@@ -600,7 +615,7 @@ _final_ui_hash="${_new_ui_hash:-${_OLD_UI_HASH}}"
 {
     [[ -n "${_new_daemon_hash}" ]] && printf 'daemon_bin=%s\n' "${_new_daemon_hash}"
     [[ -n "${_final_ui_hash}" ]] && printf 'ui_tarball=%s\n' "${_final_ui_hash}"
-} > "${_HASH_FILE}"
+} > "${_HASH_FILE}.tmp" && mv "${_HASH_FILE}.tmp" "${_HASH_FILE}"
 
 ok "all daemons installed"
 
@@ -608,8 +623,12 @@ ok "all daemons installed"
 _skill_src="${APP_ROOT}/services/skills/coding-agent/session-summary/SKILL.md"
 _skill_dst="${HOME}/.claude/commands/session-summary.md"
 mkdir -p "${HOME}/.claude/commands"
-cp "${_skill_src}" "${_skill_dst}"
-ok "session-summary command → ~/.claude/commands/session-summary.md"
+if [[ -f "${_skill_src}" ]]; then
+    cp "${_skill_src}" "${_skill_dst}"
+    ok "session-summary command → ~/.claude/commands/session-summary.md"
+else
+    warn "session-summary skill not found in bundle (${_skill_src}) — skipping"
+fi
 
 # Pipeline smoke test — verify both LLM stages return valid output (no DB writes).
 echo ""
