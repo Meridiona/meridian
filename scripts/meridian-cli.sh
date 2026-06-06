@@ -45,10 +45,12 @@ Commands:
     -n N             Last N lines (default 100)
   doctor             Run environment health checks (includes pipeline smoke)
   smoke              Dry-run both LLM pipeline stages — no DB writes
+  migrate-db         Apply pending database migrations (if UI shows schema errors)
   worklog-status     Show today's PM worklogs (done/pending/drafted/posted + comments)
                      [--day YYYY-MM-DD]
   config edit        Open the repo-root .env in $EDITOR
   permissions        Open macOS permission panes for screenpipe
+  update             Pull latest changes, rebuild, and restart (source checkout only)
   uninstall          Stop daemons and remove CLI symlinks
   version            Print installed version
   --help | -h        Show this help
@@ -449,6 +451,28 @@ cmd_config() {
     "${EDITOR:-nano}" "$env_file"
 }
 
+# --- update ---
+cmd_update() {
+    if _is_source_checkout; then
+        info "pulling latest changes…"
+        git -C "${REPO_ROOT}" pull --ff-only || {
+            err "git pull failed — resolve conflicts manually, then run 'meridian dev build' and 'meridian restart'"
+            exit 1
+        }
+        info "rebuilding daemon (cargo --release)…"
+        ( cd "${REPO_ROOT}" && cargo build --release )
+        info "rebuilding UI…"
+        ( cd "${REPO_ROOT}/ui" && npm run build )
+        info "restarting daemons…"
+        cmd_restart
+        ok "updated to $(cat "${REPO_ROOT}/VERSION" 2>/dev/null || git -C "${REPO_ROOT}" rev-parse --short HEAD)"
+    else
+        err "meridian update is not available in a source checkout context."
+        err "Run: npm install -g @meridiona/meridian@latest"
+        exit 1
+    fi
+}
+
 # --- uninstall ---
 cmd_uninstall() {
     local ans
@@ -605,6 +629,63 @@ _dev_ui_server() {
     fi
 }
 
+cmd_migrate_db() {
+    local db="${HOME}/.meridian/meridian.db"
+
+    if [[ ! -f "${db}" ]]; then
+        err "database not found at ${db}"
+        exit 1
+    fi
+
+    info "Checking database schema…"
+    local has_claude_uuid
+    has_claude_uuid=$(sqlite3 "${db}" ".schema app_sessions" 2>/dev/null | grep -c "claude_session_uuid" || echo "0")
+
+    if [[ "${has_claude_uuid}" -gt 0 ]]; then
+        ok "database schema is up-to-date"
+        exit 0
+    fi
+
+    info "Database schema is incomplete — applying migrations…"
+    info "Stopping daemon (to prevent locks)…"
+    launchctl bootout "${GUI_TARGET}/${LABEL_DAEMON}" 2>/dev/null || true
+    sleep 2
+
+    local backup="${db}.backup.$(date +%s)"
+    info "Backing up database to ${backup}…"
+    cp "${db}" "${backup}"
+    ok "Backup created"
+
+    info "Running daemon to apply migrations (this may take 10-30 seconds)…"
+    local daemon_bin
+    daemon_bin="$(_daemon_bin)" || { err "daemon binary not found"; exit 1; }
+
+    # Run the daemon in the background; it will apply migrations on startup
+    set +e
+    timeout 60 "${daemon_bin}" >/dev/null 2>&1 &
+    local daemon_pid=$!
+    sleep 15  # Give it time to initialize and apply migrations
+    kill $daemon_pid 2>/dev/null || true
+    set -e
+
+    # Verify migrations applied
+    info "Verifying schema…"
+    has_claude_uuid=$(sqlite3 "${db}" ".schema app_sessions" 2>/dev/null | grep -c "claude_session_uuid" || echo "0")
+
+    if [[ "${has_claude_uuid}" -gt 0 ]]; then
+        ok "migrations applied successfully"
+        info "Restarting daemon…"
+        launchctl enable "${GUI_TARGET}/${LABEL_DAEMON}" 2>/dev/null || true
+        launchctl kickstart -k "${GUI_TARGET}/${LABEL_DAEMON}" 2>/dev/null || true
+        ok "Done. The UI should now work."
+        exit 0
+    else
+        err "migrations failed — database not updated"
+        info "To restore the backup: cp ${backup} ${db}"
+        exit 1
+    fi
+}
+
 cmd_dev() {
     if ! _is_source_checkout; then
         err "'meridian dev' needs a source checkout (no Cargo.toml at ${REPO_ROOT})."
@@ -643,12 +724,14 @@ case "$CMD" in
     logs)             cmd_logs "$@" ;;
     doctor)           cmd_doctor "$@" ;;
     smoke)            cmd_smoke "$@" ;;
+    migrate-db)       cmd_migrate_db "$@" ;;
     config)           cmd_config "$@" ;;
     dev)              cmd_dev "$@" ;;
+    update)           cmd_update ;;
     uninstall)        cmd_uninstall ;;
     permissions)      cmd_permissions ;;
     version|--version|-v) cat "${REPO_ROOT}/VERSION" 2>/dev/null || echo "unknown" ;;
-    worklog-status|pm-worklog|coding-agent-hook|coding-agent-summarise|coding-agent-classify) cmd_daemon_passthrough "$CMD" "$@" ;;
+    worklog-status|pm-worklog|coding-agent-hook|coding-agent-summarise|coding-agent-classify|coding-agent-install-skill) cmd_daemon_passthrough "$CMD" "$@" ;;
     --help|-h|help|"") cmd_help ;;
     *) err "unknown command: ${CMD}"; echo; cmd_help; exit 1 ;;
 esac

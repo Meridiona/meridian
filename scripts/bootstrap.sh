@@ -111,6 +111,7 @@ else
     echo ""
     echo "    meridian setup"
     echo ""
-    echo "  This grants macOS Screen Recording + Accessibility to screenpipe"
+    echo "  This grants macOS Screen Recording + Accessibility to screenpipe,"
+    echo "  enables Accessibility for the a11y-helper daemon (for Electron apps),"
     echo "  and collects your Jira / GitHub / Linear credentials."
 fi

@@ -25,7 +25,7 @@ SCREENPIPE_VERSION="0.4.6"
 info()  { echo "→ $*" >&2; }
 ok()    { echo "  ✓ $*" >&2; }
 warn()  { echo "  ⚠ $*" >&2; }
-err()   { echo "✗ $*" >&2; }
+err()   { echo "✗ $*" >&2; exit 1; }
 
 run() {
     if [[ "${DRY_RUN}" -eq 1 ]]; then
@@ -250,6 +250,96 @@ prompt_permissions() {
     ok "Microphone acknowledged"
 }
 
+# Check if a11y-helper has accessibility permission granted by reading its log
+is_a11y_helper_trusted() {
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+        return 0
+    fi
+    # Check the a11y-helper log file for the latest trust state
+    local log_file="${HOME}/.meridian/logs/a11y-helper.log"
+    if [[ ! -f "${log_file}" ]]; then
+        # Log doesn't exist yet, assume not trusted
+        return 1
+    fi
+    # Get the LAST occurrence of "AX trusted:" line (most recent state)
+    local last_line
+    last_line="$(grep "AX trusted:" "${log_file}" | tail -1)"
+    if [[ -z "${last_line}" ]]; then
+        # No trust state logged yet
+        return 1
+    fi
+    # Check if the last line says "true"
+    if echo "${last_line}" | grep -q "AX trusted: true"; then
+        return 0
+    fi
+    return 1
+}
+
+# Prompt user to grant accessibility permission to a11y-helper
+prompt_a11y_helper_permission() {
+    if [[ "${SKIP_PERMISSIONS:-0}" == "1" ]]; then
+        return 0
+    fi
+
+    local a11y_helper_path="${HOME}/.meridian/bin/meridian-a11y-helper"
+
+    # If already trusted, skip
+    if is_a11y_helper_trusted; then
+        ok "a11y-helper accessibility permission already granted"
+        return 0
+    fi
+
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+        info "[DRY-RUN] would prompt: Grant accessibility to a11y-helper"
+        return 0
+    fi
+
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  Electron apps (Claude, Codex, VS Code, …) need one more permission"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo "  The a11y-helper daemon enables accessibility on Electron apps so"
+    echo "  screenpipe can capture them. This requires a one-time macOS permission."
+    echo ""
+
+    read -r -p "  Press Enter to open System Settings → Accessibility… " _
+    run open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+
+    echo ""
+    echo "  Steps:"
+    echo "    1. Click '+' to add an app"
+    echo "    2. Navigate to and select: ${a11y_helper_path}"
+    echo "    3. Toggle the switch ON (to the right)"
+    echo ""
+
+    read -r -p "  Press Enter when the toggle is ON… " _
+
+    # Auto-restart the daemon to pick up the new permission
+    if [[ -n "$(command -v launchctl)" ]]; then
+        local gui_target="gui/$(id -u)"
+        local label="com.meridiona.a11y-helper"
+
+        info "Restarting a11y-helper daemon to activate permission…"
+        launchctl kickstart -k "${gui_target}/${label}" 2>/dev/null || true
+        sleep 1
+    fi
+
+    # Verify the permission was granted
+    if is_a11y_helper_trusted; then
+        echo ""
+        echo "  ✓ Success! a11y-helper is now trusted."
+        echo "    Electron apps will be captured on your next focus."
+        echo ""
+        ok "a11y-helper accessibility permission granted"
+    else
+        echo ""
+        warn "a11y-helper still not trusted — ensure the toggle is fully ON"
+        echo "    Then run: meridian doctor"
+        echo ""
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Arg parsing
 # ---------------------------------------------------------------------------
@@ -329,6 +419,11 @@ if ! command -v cargo >/dev/null 2>&1; then
         run curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
         # shellcheck source=/dev/null
         [[ "${DRY_RUN}" -eq 0 ]] && source "${HOME}/.cargo/env"
+        # Verify cargo is actually on PATH — the source above only works when
+        # ~/.cargo/env exists and this is an interactive-style shell invocation.
+        if [[ "${DRY_RUN}" -eq 0 ]] && ! command -v cargo >/dev/null 2>&1; then
+            err "cargo not found after sourcing ~/.cargo/env. Open a new terminal and re-run install.sh."
+        fi
     else
         err "Rust is required. Install from https://rustup.rs and re-run."
         exit 1
@@ -393,8 +488,9 @@ if ! command -v screenpipe >/dev/null 2>&1; then
     fi
 else
     _sp_ver="$(screenpipe --version 2>/dev/null | awk '{print $2}' || true)"
-    _sp_major_minor="${_sp_ver%.*}"
-    if [[ -n "${_sp_ver}" && "${_sp_major_minor}" < "0.3" ]]; then
+    _sp_major="$(echo "${_sp_ver}" | cut -d. -f1)"
+    _sp_minor="$(echo "${_sp_ver}" | cut -d. -f2)"
+    if [[ -n "${_sp_ver}" && "${_sp_major:-0}" -eq 0 && "${_sp_minor:-0}" -lt 3 ]]; then
         warn "screenpipe ${_sp_ver} is from the deprecated Homebrew formula."
         echo "    The launchd plist expects 0.3+ (uses 'screenpipe record')."
         if prompt_install "Upgrade screenpipe via npm (npm install -g screenpipe@${SCREENPIPE_VERSION})?"; then
@@ -615,6 +711,17 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
     run bash "${REPO_ROOT}/scripts/install-screenpipe-daemon.sh"
     ok "screenpipe launchd agent installed"
 
+    # a11y-helper: enables accessibility on Electron apps (Claude, Codex,
+    # Slack, …) so screenpipe can capture their a11y tree — without it those
+    # apps are invisible to capture. Needs a one-time Accessibility grant for
+    # ~/.meridian/bin/meridian-a11y-helper (the script prints the reminder).
+    info "Installing a11y-helper launchd agent..."
+    run bash "${REPO_ROOT}/scripts/install-a11y-helper-daemon.sh"
+    ok "a11y-helper launchd agent installed"
+
+    # Prompt user to grant accessibility permission if not already done
+    prompt_a11y_helper_permission
+
     # MLX server must be running before the Rust daemon starts — the daemon
     # TCP-connects to it on startup and exits hard if the port is not reachable.
     if [[ "${USE_MLX}" -eq 1 ]]; then
@@ -640,6 +747,7 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
             : >> "${HOME}/.meridian/logs/mlx-server.log"
             tail -n 0 -f "${HOME}/.meridian/logs/mlx-server.log" &
             _tail_pid=$!
+            trap 'kill "${_tail_pid}" 2>/dev/null || true' EXIT
             _mlx_wait=0
             _mlx_timeout=300
             until curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; do
@@ -675,6 +783,13 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
         ok "Claude Code coding-agent SessionEnd hook installed"
     fi
 
+    info "Installing session-summary Claude Code command..."
+    _skill_src="${REPO_ROOT}/services/skills/coding-agent/session-summary/SKILL.md"
+    _skill_dst="${HOME}/.claude/commands/session-summary.md"
+    mkdir -p "${HOME}/.claude/commands"
+    cp "${_skill_src}" "${_skill_dst}"
+    ok "session-summary command → ~/.claude/commands/session-summary.md"
+
     if [[ "${DEV_MODE}" -eq 1 ]]; then
         info "Dev mode — skipping UI launchd agent (run: cd ui && npm run dev)"
     else
@@ -704,6 +819,19 @@ if bash "${REPO_ROOT}/scripts/meridian-cli.sh" smoke; then
     ok "pipeline smoke passed — classification and worklog synthesis are working"
 else
     warn "pipeline smoke found issues — run 'meridian doctor' for remedies"
+fi
+
+# Verify database schema has all migrations applied
+if [[ "${DRY_RUN}" -eq 0 ]]; then
+    _db="${HOME}/.meridian/meridian.db"
+    _has_claude_uuid=$(sqlite3 "${_db}" ".schema app_sessions" 2>/dev/null | grep -c "claude_session_uuid" || echo "0")
+    if [[ "${_has_claude_uuid}" -lt 1 ]]; then
+        warn "Database schema incomplete — migrations may not have run yet"
+        echo "  → The daemon is running migrations on startup. If this persists after 30s, run:"
+        echo "    meridian migrate-db"
+    else
+        ok "database schema verified"
+    fi
 fi
 
 # ---------------------------------------------------------------------------

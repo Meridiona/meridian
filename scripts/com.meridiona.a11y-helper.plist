@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    com.meridiona.a11y-helper — runs meridian-a11y-helper as a launchd
+    LaunchAgent. The helper enables macOS accessibility on Electron/Chromium
+    apps (Claude, Codex, Slack, …) by setting AXManualAccessibility on the
+    frontmost app, so screenpipe can capture their a11y tree instead of the
+    app staying invisible (see scripts/a11y-helper/main.swift for the full
+    story).
+
+    Runs as its OWN agent (not a meridian-daemon child) on purpose: macOS
+    attributes a child's TCC permissions to its parent, and the daemon binary
+    changes on every release — the Accessibility grant must key to this
+    stable helper binary instead.
+
+    Install via scripts/install-a11y-helper-daemon.sh which copies the
+    committed helper binary to ~/.meridian/bin/, substitutes the placeholders
+    below, and bootstraps the agent.
+
+    Uninstall:
+        launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.meridiona.a11y-helper.plist
+        rm ~/Library/LaunchAgents/com.meridiona.a11y-helper.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.meridiona.a11y-helper</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{HELPER_BIN}}</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>{{HOME}}</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>{{HOME}}/.meridian/logs/a11y-helper.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{HOME}}/.meridian/logs/a11y-helper-error.log</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

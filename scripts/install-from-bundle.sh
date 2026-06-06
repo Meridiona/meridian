@@ -131,6 +131,13 @@ resolve_node_runtime() {
     local ver sha
     ver="$(grep '^NODE_RUNTIME_VERSION=' "${meta}" | cut -d= -f2 | tr -d '[:space:]')"
     sha="$(grep '^NODE_RUNTIME_SHA=' "${meta}" | cut -d= -f2 | tr -d '[:space:]')"
+    if [[ -z "${ver}" || -z "${sha}" ]]; then
+        warn "node-runtime.meta is malformed (missing VERSION or SHA) — falling back to system node"
+        for _n in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+            [[ -x "${_n}" ]] && { echo "${_n}"; return 0; }
+        done
+        return 1
+    fi
     local cache_dir="${HOME}/.meridian/node-runtime/v${ver}"
     local cache_bin="${cache_dir}/bin/node"
     if [[ -x "${cache_bin}" ]]; then echo "${cache_bin}"; return 0; fi
@@ -217,8 +224,12 @@ PLIST
 configure_editor_accessibility() {
     local support_root="${HOME}/Library/Application Support"
     local editors=("Code" "Cursor" "Antigravity IDE")
-    local any=0 ed dir settings
-    for ed in "${editors[@]}"; do
+    # App bundles, index-matched to `editors`, for running-process detection.
+    local app_bundles=("Visual Studio Code.app" "Cursor.app" "Antigravity IDE.app")
+    local any=0 i ed dir settings
+    local needs_restart=()
+    for i in "${!editors[@]}"; do
+        ed="${editors[$i]}"
         dir="${support_root}/${ed}"
         [[ -d "$dir" ]] || continue           # editor not installed → skip
         any=1
@@ -235,9 +246,29 @@ configure_editor_accessibility() {
             # Insert the key after the first `{`. VS Code-family parsers are
             # JSONC-tolerant, so this preserves existing keys/comments/formatting.
             perl -0777 -i -pe 's/\{/\{\n\t"editor.accessibilitySupport": "on",/ unless $done++' "$settings"
+            # Sanity check: the key must appear in the file; if not, the regex
+            # found no `{` (unusual) or perl silently failed — restore backup.
+            if ! grep -q '"editor.accessibilitySupport"' "$settings" 2>/dev/null; then
+                warn "${ed}: settings.json edit failed — restoring backup"
+                cp "${settings}.meridian-bak" "$settings"
+                continue
+            fi
         fi
-        ok "${ed}: enabled editor.accessibilitySupport = on (restart the editor)"
+        ok "${ed}: enabled editor.accessibilitySupport = on"
+        # The setting is read ONCE at editor boot. If the editor is running
+        # right now, it booted before this write and will keep capturing
+        # nothing until relaunched — these apps routinely run for days, so
+        # without an explicit restart the setting sits inert on disk and the
+        # editor's activity is silently invisible to screenpipe.
+        if pgrep -qf "/Applications/${app_bundles[$i]}/" 2>/dev/null; then
+            needs_restart+=("${ed}")
+        fi
     done
+    if [[ ${#needs_restart[@]} -gt 0 ]]; then
+        warn "RESTART REQUIRED: ${needs_restart[*]} — running editors only read"
+        warn "editor.accessibilitySupport at launch. Quit and reopen them now, or"
+        warn "their activity will NOT be captured until the next relaunch."
+    fi
     [[ "$any" -eq 0 ]] && info "No VS Code / Cursor / Antigravity install found — skipping editor a11y setup"
     return 0
 }
@@ -263,7 +294,15 @@ fi
 command -v node >/dev/null 2>&1 || { info "Installing Node.js…"; brew install node; }
 PYTHON_BIN=""
 for p in python3.11 python3; do command -v "$p" >/dev/null 2>&1 && { PYTHON_BIN="$(command -v "$p")"; break; }; done
-[[ -n "${PYTHON_BIN}" ]] || { info "Installing Python 3.11…"; brew install python@3.11; PYTHON_BIN="$(command -v python3.11)"; }
+if [[ -z "${PYTHON_BIN}" ]]; then
+    info "Installing Python 3.11…"
+    brew install python@3.11
+    # `command -v` may return empty in a non-interactive shell immediately after
+    # `brew install` because the formula's bin dir isn't in launchd's PATH yet.
+    # Resolve via `brew --prefix` which is always accurate.
+    PYTHON_BIN="$(brew --prefix python@3.11)/bin/python3.11"
+    [[ -x "${PYTHON_BIN}" ]] || PYTHON_BIN="$(command -v python3.11 2>/dev/null || true)"
+fi
 # uv is the package/venv manager for Python services. Install via Homebrew (already
 # required by this installer) rather than the astral curl|sh installer.
 UV_BIN=""
@@ -272,7 +311,8 @@ if command -v uv >/dev/null 2>&1; then
 else
     info "Installing uv (Python package manager)…"
     brew install uv
-    UV_BIN="$(command -v uv)"
+    UV_BIN="$(brew --prefix uv)/bin/uv"
+    [[ -x "${UV_BIN}" ]] || UV_BIN="$(command -v uv 2>/dev/null || true)"
 fi
 ok "node + python ($(${PYTHON_BIN} --version 2>&1)) + uv ($(${UV_BIN} --version 2>&1))"
 
@@ -388,8 +428,11 @@ _LOCK_HASH="$(shasum -a 256 "${APP_ROOT}/services/uv.lock" 2>/dev/null | cut -d'
 # enforces this); the venv MUST use exactly 3.11 or the cpython-311 .so files fail
 # to import. Prefer system python3.11, then uv-managed 3.11, then install it via uv.
 _extract_venv() {
-    local tgz="$1" stamp_hash="$2" tarball_python="" py_dir=""
-    rm -rf "${VENV}"
+    local tgz="$1" stamp_hash="$2" tarball_python="" py_dir="" venv_tmp=""
+    # Stage the new venv to a temp path; swap atomically only on success so a
+    # failed extraction (disk full, corrupt archive) never destroys the live venv.
+    venv_tmp="${VENV}.tmp.$$"
+    rm -rf "${venv_tmp}"
     if command -v python3.11 >/dev/null 2>&1; then
         tarball_python="$(command -v python3.11)"
     elif "${UV_BIN}" python find 3.11 >/dev/null 2>&1; then
@@ -399,13 +442,16 @@ _extract_venv() {
         "${UV_BIN}" python install 3.11
         tarball_python="$("${UV_BIN}" python find 3.11)"
     fi
-    "${UV_BIN}" venv --python "${tarball_python}" "${VENV}" 2>/dev/null
-    py_dir="$(ls "${VENV}/lib/" | grep '^python' | head -1)"
-    mkdir -p "${VENV}/lib/${py_dir}/site-packages"
-    tar -xzf "${tgz}" -C "${VENV}/lib/${py_dir}/site-packages"
+    "${UV_BIN}" venv --python "${tarball_python}" "${venv_tmp}" 2>/dev/null
+    py_dir="$(ls "${venv_tmp}/lib/" | grep '^python' | head -1)"
+    mkdir -p "${venv_tmp}/lib/${py_dir}/site-packages"
+    tar -xzf "${tgz}" -C "${venv_tmp}/lib/${py_dir}/site-packages"
     # Install the local editable package (meridian-agents) — no deps needed,
     # everything is already in site-packages from the tarball.
-    "${UV_BIN}" pip install --quiet --no-deps --python "${VENV}/bin/python" -e "${APP_ROOT}/services"
+    "${UV_BIN}" pip install --quiet --no-deps --python "${venv_tmp}/bin/python" -e "${APP_ROOT}/services"
+    # All steps succeeded — atomically replace the live venv.
+    rm -rf "${VENV}"
+    mv "${venv_tmp}" "${VENV}"
     printf '%s\n' "${stamp_hash}" > "${VENV_STAMP}"
     ok "Python services ready ($(${VENV}/bin/python --version 2>&1))"
 }
@@ -482,6 +528,14 @@ if [[ "${_macos_major:-0}" -ge 26 ]]; then
 fi
 
 # ── 5. macOS permissions for screenpipe (manual — can't be automated) ────────
+# Stage the a11y helper binary first so its path exists when the user adds it
+# in the Accessibility pane below (the agent itself is installed in §6).
+if [[ -f "${APP_ROOT}/scripts/a11y-helper/meridian-a11y-helper" ]]; then
+    mkdir -p "${HOME}/.meridian/bin"
+    cmp -s "${APP_ROOT}/scripts/a11y-helper/meridian-a11y-helper" "${HOME}/.meridian/bin/meridian-a11y-helper" 2>/dev/null \
+        || cp "${APP_ROOT}/scripts/a11y-helper/meridian-a11y-helper" "${HOME}/.meridian/bin/meridian-a11y-helper"
+    chmod +x "${HOME}/.meridian/bin/meridian-a11y-helper"
+fi
 if [[ "${SKIP_PERMISSIONS}" -eq 0 ]]; then
     echo "→ screenpipe needs 2 macOS permissions: Screen Recording and Accessibility."
     echo "  (Audio capture is disabled, so no Microphone permission is required.)"
@@ -489,7 +543,10 @@ if [[ "${SKIP_PERMISSIONS}" -eq 0 ]]; then
     open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture" 2>/dev/null || true
     read -r -p "  Press Enter to open Accessibility settings… " _ || true
     open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" 2>/dev/null || true
-    read -r -p "  Press Enter once both are granted… " _ || true
+    echo "  In the SAME Accessibility pane, also add the a11y helper (+ → ⌘⇧G → paste):"
+    echo "      ${HOME}/.meridian/bin/meridian-a11y-helper"
+    echo "  Without it, Electron apps (Claude, Codex, Slack, …) stay invisible to capture."
+    read -r -p "  Press Enter once all are granted… " _ || true
 fi
 
 # Enable a11y mode in installed VS Code-family editors (idempotent). Without
@@ -516,12 +573,20 @@ elif [[ -d "${APP_ROOT}/ui" ]]; then
     # ui/ was preserved by meridian-npm-setup.sh — hash matched, no re-extraction needed
     ok "dashboard unchanged — reusing existing build"
     _ui_changed=0
+else
+    err "Dashboard bundle missing from ${APP_ROOT} — re-run the installer: curl -fsSL https://raw.githubusercontent.com/Meridiona/meridian/main/scripts/bootstrap.sh | bash"
+    exit 1
 fi
 
 # ── 6. Daemons — restart only what changed ───────────────────────────────────
 # screenpipe: external npm binary, plist may have changed → always refresh.
 info "Installing screenpipe launchd agent…"
 bash "${APP_ROOT}/scripts/install-screenpipe-daemon.sh" || warn "screenpipe agent install failed"
+
+# a11y-helper: enables accessibility on Electron apps so screenpipe can
+# capture them (Claude, Codex, Slack, …) — see scripts/a11y-helper/main.swift.
+info "Installing a11y-helper launchd agent…"
+bash "${APP_ROOT}/scripts/install-a11y-helper-daemon.sh" || warn "a11y-helper agent install failed"
 
 # MLX: skip restart + model-load wait when server was already healthy and
 # neither the venv nor the Python source files changed.
@@ -531,10 +596,10 @@ _py_src_changed=1
 if [[ -f "${_PY_SRC_STAMP}" && "$(cat "${_PY_SRC_STAMP}")" == "${_py_src_hash}" ]]; then
     _py_src_changed=0
 fi
-echo "${_py_src_hash}" > "${_PY_SRC_STAMP}"
-
 if [[ "${_mlx_was_healthy}" -eq 1 && "${_venv_changed}" -eq 0 && "${_py_src_changed}" -eq 0 ]]; then
     ok "Python services unchanged — MLX server kept running"
+    # Stamp only when the server is confirmed healthy (skip case = already healthy).
+    echo "${_py_src_hash}" > "${_PY_SRC_STAMP}"
 else
     info "Installing MLX inference server launchd agent…"
     bash "${APP_ROOT}/services/scripts/install-mlx-server-daemon.sh" --port "${MLX_PORT}" || warn "MLX agent install failed"
@@ -543,7 +608,11 @@ else
     until curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; do
         sleep 3; _w=$((_w+3)); [[ $_w -ge 300 ]] && { warn "MLX not ready after 300s — check: meridian logs mlx-server"; break; }
     done
-    curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1 && ok "MLX server ready (${_w}s)"
+    # Only stamp after confirmed ready — prevents stale stamp on a failed restart.
+    if curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; then
+        ok "MLX server ready (${_w}s)"
+        echo "${_py_src_hash}" > "${_PY_SRC_STAMP}"
+    fi
 fi
 
 # Rust daemon: skip restart when binary is identical.
@@ -574,13 +643,26 @@ else
 fi
 
 # Persist component hashes for the next update's differential check.
+# Write to a temp file and rename atomically so a crash mid-write never leaves
+# a half-written or empty hash file (which would force a full reinstall).
 _final_ui_hash="${_new_ui_hash:-${_OLD_UI_HASH}}"
 {
     [[ -n "${_new_daemon_hash}" ]] && printf 'daemon_bin=%s\n' "${_new_daemon_hash}"
     [[ -n "${_final_ui_hash}" ]] && printf 'ui_tarball=%s\n' "${_final_ui_hash}"
-} > "${_HASH_FILE}"
+} > "${_HASH_FILE}.tmp" && mv "${_HASH_FILE}.tmp" "${_HASH_FILE}"
 
 ok "all daemons installed"
+
+# Install session-summary Claude Code command so `claude -p /session-summary` resolves.
+_skill_src="${APP_ROOT}/services/skills/coding-agent/session-summary/SKILL.md"
+_skill_dst="${HOME}/.claude/commands/session-summary.md"
+mkdir -p "${HOME}/.claude/commands"
+if [[ -f "${_skill_src}" ]]; then
+    cp "${_skill_src}" "${_skill_dst}"
+    ok "session-summary command → ~/.claude/commands/session-summary.md"
+else
+    warn "session-summary skill not found in bundle — skipping (${_skill_src})"
+fi
 
 # Pipeline smoke test — verify both LLM stages return valid output (no DB writes).
 echo ""

@@ -33,7 +33,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>{{NODE_BIN_DIR}}/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>HOME</key>
         <string>{{HOME}}</string>
         <key>MERIDIAN_DB</key>
@@ -55,7 +55,7 @@
     <key>KeepAlive</key>
     <true/>
     <key>ThrottleInterval</key>
-    <integer>10</integer>
+    <integer>30</integer>
     <key>ProcessType</key>
     <string>Background</string>
 </dict>

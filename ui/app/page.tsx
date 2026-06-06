@@ -6,6 +6,7 @@ import dynamic from 'next/dynamic'
 import Sidebar from '@/components/Sidebar'
 import CommandBar from '@/components/CommandBar'
 import TweaksPanel from '@/components/TweaksPanel'
+import HealthBanner from '@/components/HealthBanner'
 
 // Lazy-load heavy views
 const TodayView    = dynamic(() => import('@/components/views/TodayView'),    { ssr: false })
@@ -65,15 +66,17 @@ export default function DashboardPage() {
   const todayDate = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
 
   return (
-    <div className="min-h-screen flex" style={{ background: 'var(--paper)' }}>
-      <Sidebar
-        view={view}
-        onNavigate={navigate}
-        onOpenCmd={() => setCmdOpen(true)}
-        queueCount={queueCount}
-      />
+    <div className="min-h-screen flex flex-col" style={{ background: 'var(--paper)' }}>
+      <HealthBanner />
+      <div className="flex flex-1">
+        <Sidebar
+          view={view}
+          onNavigate={navigate}
+          onOpenCmd={() => setCmdOpen(true)}
+          queueCount={queueCount}
+        />
 
-      <main className="flex-1 min-w-0" data-screen-label={view}>
+        <main className="flex-1 min-w-0" data-screen-label={view}>
         <div className="max-w-[1080px] mx-auto px-10 py-14">
           {view === 'today'    && <TodayView    onNavigate={(v, k) => navigate(v as View, k)} />}
           {view === 'tasks'    && <TasksView    focusKey={focusKey} />}
@@ -93,14 +96,15 @@ export default function DashboardPage() {
         </div>
       </main>
 
-      {cmdOpen && (
-        <CommandBar
-          onClose={() => setCmdOpen(false)}
-          onNavigate={(v, k) => { navigate(v, k); setCmdOpen(false) }}
-        />
-      )}
+        {cmdOpen && (
+          <CommandBar
+            onClose={() => setCmdOpen(false)}
+            onNavigate={(v, k) => { navigate(v, k); setCmdOpen(false) }}
+          />
+        )}
 
-      <TweaksPanel />
+        <TweaksPanel />
+      </div>
     </div>
   )
 }

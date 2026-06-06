@@ -1,3 +1,82 @@
+## [1.27.5](https://github.com/Meridiona/meridian/compare/v1.27.4...v1.27.5) (2026-06-06)
+
+
+### Bug Fixes
+
+* **health:** suppress DB-error banner when meridian binary cannot be found ([97622d7](https://github.com/Meridiona/meridian/commit/97622d7e35b0e51a84155d55cb8736046a831a55))
+
+## [1.27.4](https://github.com/Meridiona/meridian/compare/v1.27.3...v1.27.4) (2026-06-06)
+
+
+### Bug Fixes
+
+* **health:** inject PATH for launchd and guard against command-not-found ([2dcc2b5](https://github.com/Meridiona/meridian/commit/2dcc2b5f7640fc316f01b3fab25fd26c4481a62f)), closes [#192](https://github.com/Meridiona/meridian/issues/192)
+* **install:** production-harden installation scripts across all audit findings ([#192](https://github.com/Meridiona/meridian/issues/192)) ([d254ded](https://github.com/Meridiona/meridian/commit/d254ded473c1ee0bde11785e63b00f561404fc1d))
+
+## [1.27.3](https://github.com/Meridiona/meridian/compare/v1.27.2...v1.27.3) (2026-06-06)
+
+
+### Bug Fixes
+
+* **install:** harden installer against partial-install and crash-loop failure modes ([#185](https://github.com/Meridiona/meridian/issues/185)) ([ee3159c](https://github.com/Meridiona/meridian/commit/ee3159c43d93b5ce3134caefefabef6bbc20943c))
+
+## [1.27.2](https://github.com/Meridiona/meridian/compare/v1.27.1...v1.27.2) (2026-06-06)
+
+
+### Bug Fixes
+
+* **doctor:** detect bundle UI install in ui-built check ([#183](https://github.com/Meridiona/meridian/issues/183)) ([ebc8e33](https://github.com/Meridiona/meridian/commit/ebc8e337e70449c48cc73f511f441c5f27d0dfdb))
+
+## [1.27.1](https://github.com/Meridiona/meridian/compare/v1.27.0...v1.27.1) (2026-06-06)
+
+
+### Bug Fixes
+
+* **health:** correct DB status string matching — stops false schema-mismatch banner ([#182](https://github.com/Meridiona/meridian/issues/182)) ([7229540](https://github.com/Meridiona/meridian/commit/72295401d3a4597b58612bde6d83325308a165f4))
+
+# [1.27.0](https://github.com/Meridiona/meridian/compare/v1.26.2...v1.27.0) (2026-06-06)
+
+
+### Features
+
+* **cli:** add meridian update command for source checkouts ([#180](https://github.com/Meridiona/meridian/issues/180)) ([ebebd4a](https://github.com/Meridiona/meridian/commit/ebebd4a2dc9980a39975369d67790d7c5a602336))
+
+## [1.26.2](https://github.com/Meridiona/meridian/compare/v1.26.1...v1.26.2) (2026-06-05)
+
+
+### Bug Fixes
+
+* add meridian migrate-db CLI command for npm users ([d3b11fe](https://github.com/Meridiona/meridian/commit/d3b11fe4f0a6a0531f655e9e53d61f1e9c540ab9))
+
+## [1.26.1](https://github.com/Meridiona/meridian/compare/v1.26.0...v1.26.1) (2026-06-05)
+
+
+### Bug Fixes
+
+* handle database schema mismatches and improve health monitoring ([8b4ab51](https://github.com/Meridiona/meridian/commit/8b4ab512c638b4bdfccc2f8cc281b715b356e92d))
+
+# [1.26.0](https://github.com/Meridiona/meridian/compare/v1.25.0...v1.26.0) (2026-06-05)
+
+
+### Features
+
+* **a11y-helper:** automate accessibility permission flow for Electron app capture ([46b0e97](https://github.com/Meridiona/meridian/commit/46b0e97869143f6d4b398c53acd49bbd9836b0aa))
+
+# [1.25.0](https://github.com/Meridiona/meridian/compare/v1.24.6...v1.25.0) (2026-06-05)
+
+
+### Bug Fixes
+
+* **coding-agent:** ship session-summary skill file and install it during setup ([2c1161b](https://github.com/Meridiona/meridian/commit/2c1161be8f26a40086bf1d1f8d44773327289dda))
+* **ui:** align OpenTelemetry packages after sdk-node 0.217 bump ([#179](https://github.com/Meridiona/meridian/issues/179)) ([96f4076](https://github.com/Meridiona/meridian/commit/96f4076afa72494de05d25b9ead1697552958f75)), closes [#173](https://github.com/Meridiona/meridian/issues/173)
+
+
+### Features
+
+* **capture:** make Electron apps visible to screenpipe (a11y-helper + doctor coverage) ([#178](https://github.com/Meridiona/meridian/issues/178)) ([9d722c9](https://github.com/Meridiona/meridian/commit/9d722c96c00e0c1525440eb587865b4bc26bf06f))
+* **coding-agent:** add install-skill command and health check for session-summary ([#177](https://github.com/Meridiona/meridian/issues/177)) ([2f8cb1d](https://github.com/Meridiona/meridian/commit/2f8cb1d7fc2bab9575b900d90629d989c9928cf2))
+* **install:** add --dev flag for development installs ([#175](https://github.com/Meridiona/meridian/issues/175)) ([a69ee75](https://github.com/Meridiona/meridian/commit/a69ee75418ab637b2a84e83d6b4aa534fc79d1a8))
+
 ## [1.24.6](https://github.com/Meridiona/meridian/compare/v1.24.5...v1.24.6) (2026-06-05)
 
 
