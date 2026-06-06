@@ -22,9 +22,15 @@ SERVICES_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${SERVICES_DIR}/.." && pwd)"
 
 # Locate the meridian binary that owns the `coding-agent-hook` subcommand.
-# Prefer the release build in this repo; fall back to whatever is on PATH.
-if [[ -x "${REPO_ROOT}/target/release/meridian" ]]; then
+# Resolution order: explicit MERIDIAN_BIN override (bundle installer passes
+# the installed binary), the release build in this repo, the bundle install
+# location, then whatever is on PATH.
+if [[ -n "${MERIDIAN_BIN:-}" && -x "${MERIDIAN_BIN}" ]]; then
+    : # caller pinned the binary
+elif [[ -x "${REPO_ROOT}/target/release/meridian" ]]; then
     MERIDIAN_BIN="${REPO_ROOT}/target/release/meridian"
+elif [[ -x "${HOME}/.meridian/app/bin/meridian" ]]; then
+    MERIDIAN_BIN="${HOME}/.meridian/app/bin/meridian"
 elif command -v meridian >/dev/null 2>&1; then
     MERIDIAN_BIN="$(command -v meridian)"
 elif command -v meridian-daemon >/dev/null 2>&1; then
@@ -82,12 +88,19 @@ new_entry = {
 # "coding-agent-hook". Claude Code strips unknown JSON fields (like the
 # former "_meridian" marker) on every save, so command-string matching
 # is the only reliable idempotency mechanism.
+#
+# "coding_agent_indexer" matches the retired Python hook (`python -m
+# coding_agent_indexer.hook`) — the package was removed when the indexer
+# moved into the Rust daemon, so stale entries just error on every
+# SessionEnd. Purge them on upgrade.
+OUR_MARKERS = ("coding-agent-hook", "coding_agent_indexer")
 filtered = []
 removed = 0
 for group in session_end:
     is_ours = any(
-        "coding-agent-hook" in h.get("command", "")
+        marker in h.get("command", "")
         for h in group.get("hooks", [])
+        for marker in OUR_MARKERS
     )
     if is_ours:
         removed += 1

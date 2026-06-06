@@ -9,6 +9,15 @@
 
 use serde_json::json;
 
+/// Fingerprint of the summariser's own prompt. The source sweep refuses to
+/// ingest any conversation whose first user message carries this marker, so a
+/// summariser engine that PERSISTS its sessions (cursor-agent's behaviour is
+/// unprobed; a future engine may too) can never feed its own runs back into
+/// app_sessions — the loop is cut at ingest regardless of engine flags.
+/// A unit test pins this to SUMMARY_RULES so the two can't drift apart.
+pub const SUMMARY_PROMPT_MARKER: &str =
+    "You summarise ONE work-burst of a developer's coding-agent session";
+
 /// The shared rules, without an output-format clause (engines append their own).
 pub const SUMMARY_RULES: &str =
     "You summarise ONE work-burst of a developer's coding-agent session for a \
@@ -66,6 +75,17 @@ pub fn looks_rate_limited(text: &str) -> bool {
     RATE_LIMIT_MARKERS.iter().any(|m| low.contains(m))
 }
 
+/// The first line that actually matched a rate-limit marker, capped to 200
+/// chars. Engines' stderr often opens with informational banners ("Reading
+/// additional input from stdin..."), so quoting `first_line` puts the wrong
+/// text in the fallback WARN log — quote the matching line instead.
+pub fn rate_limited_line(text: &str) -> Option<String> {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && looks_rate_limited(line))
+        .map(|line| line.chars().take(200).collect())
+}
+
 /// First non-empty line, capped to 200 chars (for compact error messages).
 pub fn first_line(text: &str) -> String {
     for line in text.lines() {
@@ -75,4 +95,87 @@ pub fn first_line(text: &str) -> String {
         }
     }
     String::new()
+}
+
+/// Pull (summary, blockers) from an engine's final message. Schema-less
+/// engines (codex prose mode, copilot, cursor-agent) may return the JSON
+/// bare, ```fenced```, or wrapped in prose; if no `summary` key is found the
+/// whole text is treated as the summary.
+pub fn extract_summary(text: &str) -> (String, Vec<String>) {
+    if let Some(obj) = try_json_object(text) {
+        if let Some(summary) = obj.get("summary").and_then(serde_json::Value::as_str) {
+            let blockers = obj
+                .get("blockers")
+                .and_then(serde_json::Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|b| b.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            return (summary.trim().to_string(), blockers);
+        }
+    }
+    (text.trim().to_string(), Vec::new())
+}
+
+fn try_json_object(text: &str) -> Option<serde_json::Value> {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+        return Some(v);
+    }
+    // Tolerate a JSON object embedded in fences or surrounding prose.
+    let (start, end) = (text.find('{')?, text.rfind('}')?);
+    if start < end {
+        serde_json::from_str::<serde_json::Value>(&text[start..=end]).ok()
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_bare_json() {
+        let (s, b) =
+            extract_summary(r#"{"summary": "Fixed the login bug.", "blockers": ["CI was red"]}"#);
+        assert_eq!(s, "Fixed the login bug.");
+        assert_eq!(b, vec!["CI was red"]);
+    }
+
+    #[test]
+    fn extract_fenced_json() {
+        let (s, b) = extract_summary("```json\n{\"summary\": \"Did the thing.\"}\n```");
+        assert_eq!(s, "Did the thing.");
+        assert!(b.is_empty());
+    }
+
+    #[test]
+    fn extract_prose_falls_back_to_full_text() {
+        let (s, b) = extract_summary("The developer fixed auth.ts and reran the tests.");
+        assert_eq!(s, "The developer fixed auth.ts and reran the tests.");
+        assert!(b.is_empty());
+    }
+
+    /// The ingest-side circular-dependency guard matches on this marker; if
+    /// SUMMARY_RULES is reworded the marker (and this pin) must move with it.
+    #[test]
+    fn summary_prompt_marker_pins_summary_rules() {
+        assert!(SUMMARY_RULES.starts_with(SUMMARY_PROMPT_MARKER));
+        assert!(summary_instruction().starts_with(SUMMARY_PROMPT_MARKER));
+    }
+
+    /// Regression: codex stderr opens with an informational banner; the
+    /// fallback WARN must quote the line that matched the rate-limit marker,
+    /// not the banner (observed live 2026-06-06, row 32162).
+    #[test]
+    fn rate_limited_line_skips_informational_banner() {
+        let stderr = "Reading additional input from stdin...\n\
+                      ERROR: You've hit your usage limit. Upgrade to Plus to continue using Codex, or try again at Jul 5th, 2026 1:16 PM.";
+        assert!(looks_rate_limited(stderr));
+        let line = rate_limited_line(stderr).unwrap();
+        assert!(line.starts_with("ERROR: You've hit your usage limit"));
+        assert!(rate_limited_line("all good, no errors here").is_none());
+    }
 }

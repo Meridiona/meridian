@@ -623,6 +623,40 @@ else
     bash "${APP_ROOT}/scripts/install-daemon.sh" || warn "daemon agent install failed"
 fi
 
+# Claude Code SessionEnd hook: seals each Claude session into app_sessions the
+# instant it ends (the indexer sweep + 1 h idle seal are only the fallback).
+# Idempotent merge into ~/.claude/settings.json; also purges retired Python
+# hook entries on upgrade. Pin the binary to the installed bundle copy.
+info "Installing Claude Code coding-agent SessionEnd hook…"
+if MERIDIAN_BIN="${APP_ROOT}/bin/meridian" bash "${APP_ROOT}/services/scripts/install-claude-hook.sh" >/dev/null 2>&1; then
+    ok "Claude Code SessionEnd hook installed"
+else
+    warn "coding-agent hook install skipped (Claude sessions still seal via the idle backstop)"
+fi
+
+# Coding-agent summariser engines (informational): each agent's sessions are
+# summarised by its OWN CLI when present; a missing CLI is never fatal — those
+# sessions fall back to the local MLX model. Surface what the daemon will use
+# so users know why a summary came from MLX. `meridian doctor` re-checks all
+# of this any time.
+info "Coding-agent summariser engines:"
+for _eng in claude codex copilot; do
+    if command -v "${_eng}" >/dev/null 2>&1; then
+        ok "${_eng} CLI found — those sessions summarise natively"
+    else
+        info "  ${_eng} CLI not found — those sessions will use the local model (MLX)"
+    fi
+done
+if command -v cursor >/dev/null 2>&1 || [[ -d "${HOME}/Library/Application Support/Cursor" ]]; then
+    if command -v cursor-agent >/dev/null 2>&1; then
+        ok "cursor-agent CLI found — verify auth with: cursor-agent status"
+    else
+        info "  Cursor detected but the cursor-agent CLI is missing — Cursor summaries will use the local model (MLX)."
+        info "  To summarise with Cursor's own CLI:  curl https://cursor.com/install -fsS | bash  then: cursor-agent login"
+        info "  Or let the daemon install it on demand: add CURSOR_AGENT_AUTO_INSTALL=1 to ${HOME}/.meridian/app/.env"
+    fi
+fi
+
 # UI: skip daemon restart when the build didn't change (tarball hash matched).
 if [[ "${_ui_changed}" -eq 0 ]]; then
     ok "Dashboard unchanged — skipping restart"

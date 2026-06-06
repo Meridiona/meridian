@@ -162,14 +162,29 @@ impl SegBuilder {
 pub fn parse_session_segments(path: &Path, params: &SegmentParams) -> (SessionMeta, Vec<Segment>) {
     let agent = params.agent.clone().unwrap_or_else(|| infer_agent(path));
 
-    let start_after_dt: Option<DateTime<Utc>> =
-        params.start_after_ts.as_deref().and_then(parse_iso);
-
     let session_uuid = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     let jsonl_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let records = iter_normalised(path, &agent);
+    segment_records(records, &session_uuid, &agent, jsonl_bytes, params)
+}
+
+/// Segment an already-normalised record stream — the source-agnostic core of
+/// `parse_session_segments`. Non-JSONL sources (Cursor's vscdb, Copilot's
+/// event log) normalise their on-disk format into `NormRecord`s and feed them
+/// here, so segmentation, active-time, and transcript rendering stay identical
+/// across every agent.
+pub fn segment_records(
+    records: Vec<NormRecord>,
+    session_uuid: &str,
+    agent: &str,
+    jsonl_bytes: u64,
+    params: &SegmentParams,
+) -> (SessionMeta, Vec<Segment>) {
+    let start_after_dt: Option<DateTime<Utc>> =
+        params.start_after_ts.as_deref().and_then(parse_iso);
 
     let mut cwd: Option<String> = None;
     let mut started_overall: Option<String> = None;
@@ -182,7 +197,7 @@ pub fn parse_session_segments(path: &Path, params: &SegmentParams) -> (SessionMe
     let mut builders: Vec<SegBuilder> = Vec::new();
     let mut cur: Option<usize> = None; // index into `builders`
 
-    for rec in iter_normalised(path, &agent) {
+    for rec in records {
         total_records += 1;
         let ts = rec.timestamp.clone();
         if cwd.is_none() {
@@ -274,8 +289,8 @@ pub fn parse_session_segments(path: &Path, params: &SegmentParams) -> (SessionMe
         let seg_start = norm_iso(&b.segment_started_at);
         let ended = norm_iso(b.ended_at.as_deref().unwrap_or(&b.segment_started_at));
         segments.push(Segment {
-            session_uuid: session_uuid.clone(),
-            agent: agent.clone(),
+            session_uuid: session_uuid.to_string(),
+            agent: agent.to_string(),
             cwd: cwd.clone(),
             segment_started_at: seg_start.clone(),
             started_at: seg_start,
@@ -289,8 +304,8 @@ pub fn parse_session_segments(path: &Path, params: &SegmentParams) -> (SessionMe
     }
 
     let meta = SessionMeta {
-        session_uuid,
-        agent,
+        session_uuid: session_uuid.to_string(),
+        agent: agent.to_string(),
         cwd,
         started_at: started_overall.as_deref().map(norm_iso).unwrap_or_default(),
         ended_at: ended_overall.as_deref().map(norm_iso).unwrap_or_default(),
