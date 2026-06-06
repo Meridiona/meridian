@@ -1,3 +1,10 @@
+# [1.28.0](https://github.com/Meridiona/meridian/compare/v1.27.6...v1.28.0) (2026-06-06)
+
+
+### Features
+
+* **coding-agent:** multi-agent conversation ingest + per-agent summarisation ([#184](https://github.com/Meridiona/meridian/issues/184)) ([15b000b](https://github.com/Meridiona/meridian/commit/15b000b2edc6bc3280ad217de491db8f152bfdb4))
+
 ## [1.27.6](https://github.com/Meridiona/meridian/compare/v1.27.5...v1.27.6) (2026-06-06)
 
 
