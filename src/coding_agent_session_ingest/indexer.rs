@@ -120,12 +120,9 @@ pub async fn register_session(
     };
     let path_owned = jsonl_path.to_path_buf();
     let segments: Vec<Segment> = match tokio::task::spawn_blocking(move || {
-        let (_meta, mut segs) = parse_session_segments(&path_owned, &params);
-        // Same pass that read the file: pick up the session's own title
-        // (Claude `summary` records; codex has none) for window_titles.
-        let agent = segs.first().map(|s| s.agent.clone()).unwrap_or_default();
-        let title = super::jsonl::extract_session_title(&path_owned, &agent);
-        stamp_title(&mut segs, title.as_deref());
+        // parse_session_segments stamps the session's own title (Claude
+        // `summary` records) in the same single read.
+        let (_meta, segs) = parse_session_segments(&path_owned, &params);
         segs
     })
     .await

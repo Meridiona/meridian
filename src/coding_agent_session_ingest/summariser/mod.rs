@@ -22,6 +22,7 @@ pub mod db;
 pub mod mlx;
 pub mod prompts;
 
+use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 use std::process::Stdio;
@@ -371,8 +372,10 @@ pub async fn run_loop(
         "coding-agent summariser starting"
     );
 
+    // Failure ledger for the dead-letter cap (see MAX_ROW_ATTEMPTS).
+    let mut attempts: HashMap<i64, u32> = HashMap::new();
     loop {
-        let backoff = drain(&pool, &cfg).await;
+        let backoff = drain(&pool, &cfg, &mut attempts).await;
         let wait = if backoff {
             cfg.rate_limit_backoff_secs
         } else {
@@ -387,18 +390,38 @@ pub async fn run_loop(
     tracing::info!("coding-agent summariser stopped");
 }
 
-/// One drain pass: summarise TODAY's pending rows, oldest-first. Returns true
-/// if we should back off (primary rate-limited AND MLX also failed).
+/// Per-daemon-lifetime failure ledger: a row that fails this many drain
+/// passes is dead-lettered (skipped with a warn) instead of retried forever.
+/// The churn this prevents was observed live 2026-06-07: rows whose capped
+/// prompt exceeds claude's 200k context AND whose MLX answer is empty cycled
+/// every drain, each burning 2 claude calls + 1 MLX call, indefinitely. The
+/// ledger is in-memory by design: a daemon restart (or `--day` backfill after
+/// fixing the engine) retries cleanly.
+const MAX_ROW_ATTEMPTS: u32 = 3;
+
+/// One drain pass: summarise pending rows from a bounded recent window
+/// (yesterday + today), oldest-first. Returns true if we should back off
+/// (primary rate-limited AND MLX also failed).
 ///
-/// The day scope is deliberate (regression in #177 silently widened it to all
-/// days; restored): an unscoped drain walks the full historical backlog —
-/// observed live 2026-06-07 churning 127 rows back to May, including
-/// megabyte transcripts that exceed every engine's context and therefore
-/// retry forever. Backfill is an explicit operator action:
+/// Why the window: today-only strands rows sealed just before midnight that
+/// drain after it (observed: row 32019 needed a manual `--day` backfill);
+/// all-days (#177) walks the full historical backlog — observed churning 127
+/// rows back to May. Yesterday+today catches the rollover without the
+/// backlog. Older days stay an explicit operator action:
 /// `meridian coding-agent-summarise --day <YYYY-MM-DD>`.
-async fn drain(pool: &SqlitePool, cfg: &SummariserConfig) -> bool {
-    let today = Local::now().format("%Y-%m-%d").to_string();
-    let rows = match db::fetch_pending(pool, cfg, cfg.batch_per_tick, Some(&today)).await {
+async fn drain(
+    pool: &SqlitePool,
+    cfg: &SummariserConfig,
+    attempts: &mut HashMap<i64, u32>,
+) -> bool {
+    let now = Local::now();
+    let days = [
+        (now - chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string(),
+        now.format("%Y-%m-%d").to_string(),
+    ];
+    let rows = match db::fetch_pending(pool, cfg, cfg.batch_per_tick, &days).await {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(error = %e, "summariser: fetch_pending failed");
@@ -407,6 +430,10 @@ async fn drain(pool: &SqlitePool, cfg: &SummariserConfig) -> bool {
     };
     let mut summarised = 0u32;
     for row in rows {
+        let tries = attempts.get(&row.id).copied().unwrap_or(0);
+        if tries >= MAX_ROW_ATTEMPTS {
+            continue; // dead-lettered this daemon lifetime (warned at cap)
+        }
         let outcome = summarise_one(pool, &row, cfg, true).await;
         if outcome.written {
             summarised += 1;
@@ -424,11 +451,23 @@ async fn drain(pool: &SqlitePool, cfg: &SummariserConfig) -> bool {
             // Transient failure (primary failed all attempts + MLX failed/down,
             // or empty/unreadable transcript). Leave the row NULL for a later
             // retry — but log WHY so it isn't a silent stall.
-            tracing::warn!(
-                row_id = outcome.row_id,
-                error = outcome.error.as_deref().unwrap_or("unknown"),
-                "summarise failed — leaving pending for retry"
-            );
+            let tries = tries + 1;
+            attempts.insert(row.id, tries);
+            if tries >= MAX_ROW_ATTEMPTS {
+                tracing::warn!(
+                    row_id = outcome.row_id,
+                    error = outcome.error.as_deref().unwrap_or("unknown"),
+                    attempts = tries,
+                    "summarise failed repeatedly — dead-lettering for this daemon run                      (restart or `coding-agent-summarise --day` retries it)"
+                );
+            } else {
+                tracing::warn!(
+                    row_id = outcome.row_id,
+                    error = outcome.error.as_deref().unwrap_or("unknown"),
+                    attempts = tries,
+                    "summarise failed — leaving pending for retry"
+                );
+            }
         }
     }
     if summarised > 0 {
@@ -448,7 +487,7 @@ pub async fn cli_summarise(pool: &SqlitePool, dry_run: bool, day: Option<&str>, 
     let day = day
         .map(str::to_string)
         .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
-    let rows = match db::fetch_pending(pool, &cfg, limit, Some(&day)).await {
+    let rows = match db::fetch_pending(pool, &cfg, limit, std::slice::from_ref(&day)).await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("summarise: fetch_pending: {e}");
