@@ -387,10 +387,18 @@ pub async fn run_loop(
     tracing::info!("coding-agent summariser stopped");
 }
 
-/// One drain pass: summarise pending rows (all days), oldest-first. Returns true if
-/// we should back off (primary rate-limited AND MLX also failed).
+/// One drain pass: summarise TODAY's pending rows, oldest-first. Returns true
+/// if we should back off (primary rate-limited AND MLX also failed).
+///
+/// The day scope is deliberate (regression in #177 silently widened it to all
+/// days; restored): an unscoped drain walks the full historical backlog —
+/// observed live 2026-06-07 churning 127 rows back to May, including
+/// megabyte transcripts that exceed every engine's context and therefore
+/// retry forever. Backfill is an explicit operator action:
+/// `meridian coding-agent-summarise --day <YYYY-MM-DD>`.
 async fn drain(pool: &SqlitePool, cfg: &SummariserConfig) -> bool {
-    let rows = match db::fetch_pending(pool, cfg, cfg.batch_per_tick, None).await {
+    let today = Local::now().format("%Y-%m-%d").to_string();
+    let rows = match db::fetch_pending(pool, cfg, cfg.batch_per_tick, Some(&today)).await {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(error = %e, "summariser: fetch_pending failed");
