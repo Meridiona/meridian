@@ -13,7 +13,7 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 
-use super::jsonl::{infer_agent, iter_normalised, NormRecord};
+use super::jsonl::{infer_agent, iter_normalised_with_title, NormRecord};
 
 // Defaults mirror the former Python indexer/config.py.
 pub const ACTIVE_TIME_GAP_CAP_SECONDS: i64 = 120;
@@ -172,8 +172,15 @@ pub fn parse_session_segments(path: &Path, params: &SegmentParams) -> (SessionMe
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     let jsonl_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    let records = iter_normalised(path, &agent);
-    segment_records(records, &session_uuid, &agent, jsonl_bytes, params)
+    let (records, title) = iter_normalised_with_title(path, &agent);
+    let (meta, mut segments) = segment_records(records, &session_uuid, &agent, jsonl_bytes, params);
+    // Stamp the session's own name on every segment (one read produced both).
+    if let Some(t) = title {
+        for seg in segments.iter_mut() {
+            seg.title = Some(t.clone());
+        }
+    }
+    (meta, segments)
 }
 
 /// Segment an already-normalised record stream — the source-agnostic core of
@@ -427,6 +434,35 @@ mod tests {
         assert_eq!(segs[0].assistant_turns, 1);
         assert!(segs[0].is_last);
         assert_eq!(segs[0].segment_started_at, iso_utc(base()));
+    }
+
+    #[test]
+    fn claude_summary_record_becomes_segment_title() {
+        let d = tmp();
+        // Two summary records (continuation chain) — the LAST is the title.
+        let p = write_claude_jsonl(
+            &d,
+            "u_title",
+            &[
+                r#"{"type":"summary","summary":"Old chain title","leafUuid":"x"}"#.to_string(),
+                r#"{"type":"summary","summary":"Fix the ingest pipeline","leafUuid":"y"}"#
+                    .to_string(),
+                rec(0, "user", "first"),
+                rec(60, "assistant", "working"),
+            ],
+        );
+        let (_m, segs) = parse_session_segments(&p, &SegmentParams::default());
+        assert_eq!(segs.len(), 1);
+        assert_eq!(
+            segs[0].title.as_deref(),
+            Some("Fix the ingest pipeline"),
+            "last summary record wins"
+        );
+
+        // No summary record → no title.
+        let p2 = write_claude_jsonl(&d, "u_untitled", &[rec(0, "user", "hello")]);
+        let (_m2, segs2) = parse_session_segments(&p2, &SegmentParams::default());
+        assert!(segs2[0].title.is_none());
     }
 
     #[test]

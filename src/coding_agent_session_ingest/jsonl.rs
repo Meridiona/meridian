@@ -113,30 +113,31 @@ fn iter_records(path: &Path) -> Vec<Value> {
 
 /// Yield canonical records for one source JSONL (agent-aware).
 pub fn iter_normalised(path: &Path, agent: &str) -> Vec<NormRecord> {
-    let records = iter_records(path);
-    if agent == "codex" {
-        records.iter().map(norm_codex).collect()
-    } else {
-        records.iter().map(norm_claude).collect()
-    }
+    let (records, _) = iter_normalised_with_title(path, agent);
+    records
 }
 
-/// The session's own title, when the store carries one. Claude Code writes
-/// `{"type":"summary","summary":"<title>"}` records into the session JSONL
-/// (continuation chains / compaction); the LAST one is the current title.
-/// Codex rollouts carry no title. Best-effort: None when absent.
-pub fn extract_session_title(path: &Path, agent: &str) -> Option<String> {
-    if agent == "codex" {
-        return None;
-    }
-    iter_records(path)
-        .iter()
-        .rev()
-        .find(|r| str_field(r, "type") == Some("summary"))
-        .and_then(|r| str_field(r, "summary"))
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(String::from)
+/// One read, two products: canonical records AND the session's own title.
+/// Claude Code writes `{"type":"summary","summary":"<title>"}` records into
+/// the session JSONL (continuation chains / compaction); the LAST one is the
+/// current title. Codex rollouts carry no title. Single pass so the (multi-MB,
+/// re-parsed every tick) active session file is never read twice.
+pub fn iter_normalised_with_title(path: &Path, agent: &str) -> (Vec<NormRecord>, Option<String>) {
+    let records = iter_records(path);
+    let (normalised, title) = if agent == "codex" {
+        (records.iter().map(norm_codex).collect(), None)
+    } else {
+        let title = records
+            .iter()
+            .rev()
+            .find(|r| str_field(r, "type") == Some("summary"))
+            .and_then(|r| str_field(r, "summary"))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+        (records.iter().map(norm_claude).collect(), title)
+    };
+    (normalised, title)
 }
 
 fn str_field<'a>(v: &'a Value, key: &str) -> Option<&'a str> {

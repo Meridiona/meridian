@@ -60,19 +60,21 @@ const ROW_COLS: &str = "id, claude_session_uuid, app_name, segment_started_at, \
                         started_at, ended_at, duration_s";
 
 /// Sealed coding segments needing a summary, oldest-ended first. `day`
-/// (`YYYY-MM-DD`, matched against `substr(started_at,1,10)`) scopes the queue to
-/// one calendar day so a tick never drains all history at once. Oldest-first so
+/// (`YYYY-MM-DD`, matched against `substr(started_at,1,10)`) scope the queue to
+/// specific calendar days so a tick never drains all history at once. Oldest-first so
 /// a session's earlier bursts summarise before later ones (prior-burst context).
 pub async fn fetch_pending(
     pool: &SqlitePool,
     cfg: &SummariserConfig,
     limit: i64,
-    day: Option<&str>,
+    days: &[String],
 ) -> Result<Vec<PendingRow>> {
-    let day_clause = if day.is_some() {
-        "AND substr(started_at, 1, 10) = ?"
-    } else {
-        ""
+    let day_clause = match days.len() {
+        0 => String::new(),
+        n => format!(
+            "AND substr(started_at, 1, 10) IN ({})",
+            vec!["?"; n].join(", ")
+        ),
     };
     let sql = format!(
         "SELECT {cols}
@@ -96,7 +98,7 @@ pub async fn fetch_pending(
         .bind(TASK_METHOD_PENDING)
         .bind(cfg.min_turns)
         .bind(cfg.min_text_bytes);
-    if let Some(d) = day {
+    for d in days {
         q = q.bind(d);
     }
     q = q.bind(limit);
@@ -215,7 +217,7 @@ mod tests {
             .unwrap();
 
         // Appears in the queue (day-scoped to its started_at date).
-        let rows = fetch_pending(&pool, &cfg, 10, Some("2026-05-20"))
+        let rows = fetch_pending(&pool, &cfg, 10, &["2026-05-20".to_string()])
             .await
             .unwrap();
         assert_eq!(rows.len(), 1);
@@ -238,7 +240,7 @@ mod tests {
         assert_eq!(summ.as_deref(), Some("did the work"));
 
         // No longer pending; second write is a no-op (idempotent).
-        assert!(fetch_pending(&pool, &cfg, 10, None)
+        assert!(fetch_pending(&pool, &cfg, 10, &[])
             .await
             .unwrap()
             .is_empty());
@@ -271,7 +273,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(fetch_pending(&pool, &cfg, 10, None)
+        assert!(fetch_pending(&pool, &cfg, 10, &[])
             .await
             .unwrap()
             .is_empty());
