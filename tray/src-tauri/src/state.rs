@@ -69,7 +69,11 @@ impl Default for AppState {
 
 impl AppState {
     pub fn to_payload(&self) -> StatusPayload {
-        let elapsed_s = self.active_session.as_ref().map(|a| a.elapsed_s).unwrap_or(0);
+        let elapsed_s = self
+            .active_session
+            .as_ref()
+            .map(|a| a.elapsed_s)
+            .unwrap_or(0);
         let active_desc = self
             .active_session
             .as_ref()

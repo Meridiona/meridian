@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "tray/src-tauri"]
+resolver = "2"
+
 [package]
 name = "meridian"
 version = "1.28.1"

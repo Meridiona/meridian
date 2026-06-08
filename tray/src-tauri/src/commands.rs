@@ -84,12 +84,7 @@ pub async fn toggle_daemon(app: tauri::AppHandle, is_running: bool) -> Result<()
 
 fn notify_user(app: &tauri::AppHandle, title: &str, body: &str) {
     use tauri_plugin_notification::NotificationExt;
-    let _ = app
-        .notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show();
+    let _ = app.notification().builder().title(title).body(body).show();
 }
 
 fn uid_str() -> String {

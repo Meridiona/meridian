@@ -99,12 +99,16 @@ async fn refresh_health(app: &tauri::AppHandle, client: &Client, state: &Arc<Mut
     let (ui_reachable, db_ready, daemon_running) = match resp {
         None => (false, false, false),
         Some(r) => {
-            let hr: HealthResp = r
-                .json()
-                .await
-                .unwrap_or(HealthResp { database_ready: None, daemon_running: None });
+            let hr: HealthResp = r.json().await.unwrap_or(HealthResp {
+                database_ready: None,
+                daemon_running: None,
+            });
             // daemon_running defaults to true when the field is absent (older UI build).
-            (true, hr.database_ready.unwrap_or(false), hr.daemon_running.unwrap_or(true))
+            (
+                true,
+                hr.database_ready.unwrap_or(false),
+                hr.daemon_running.unwrap_or(true),
+            )
         }
     };
 
@@ -157,12 +161,14 @@ async fn refresh_active(client: &Client, state: &Arc<Mutex<AppState>>) {
         None => None,
         Some(r) if !r.status().is_success() => None,
         Some(r) => {
-            let ar: ActiveResp = r
-                .json()
-                .await
-                .unwrap_or(ActiveResp { app_name: None, elapsed_s: None });
-            ar.app_name
-                .map(|app_name| ActiveSession { app_name, elapsed_s: ar.elapsed_s.unwrap_or(0) })
+            let ar: ActiveResp = r.json().await.unwrap_or(ActiveResp {
+                app_name: None,
+                elapsed_s: None,
+            });
+            ar.app_name.map(|app_name| ActiveSession {
+                app_name,
+                elapsed_s: ar.elapsed_s.unwrap_or(0),
+            })
         }
     };
 
@@ -189,11 +195,7 @@ async fn refresh_today(client: &Client, state: &Arc<Mutex<AppState>>) {
     }
 }
 
-async fn refresh_worklogs(
-    app: &tauri::AppHandle,
-    client: &Client,
-    state: &Arc<Mutex<AppState>>,
-) {
+async fn refresh_worklogs(app: &tauri::AppHandle, client: &Client, state: &Arc<Mutex<AppState>>) {
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let resp = client
         .get(format!("{}/api/worklogs?day={}", ui_base(), today))
@@ -249,7 +251,11 @@ fn update_tray_icon(app: &tauri::AppHandle, state: &Arc<Mutex<AppState>>) {
 
     let tooltip = match &health {
         HealthStatus::Healthy if drafts > 0 => {
-            format!("Meridian — {} draft{} waiting", drafts, if drafts == 1 { "" } else { "s" })
+            format!(
+                "Meridian — {} draft{} waiting",
+                drafts,
+                if drafts == 1 { "" } else { "s" }
+            )
         }
         HealthStatus::Healthy => "Meridian — everything's running.".to_string(),
         HealthStatus::Unhealthy => "Meridian — gone quiet.".to_string(),
@@ -264,12 +270,7 @@ fn update_tray_icon(app: &tauri::AppHandle, state: &Arc<Mutex<AppState>>) {
 }
 
 fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
-    let _ = app
-        .notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show();
+    let _ = app.notification().builder().title(title).body(body).show();
 }
 
 fn update_toggle_menu(app: &tauri::AppHandle, state: &Arc<Mutex<AppState>>) {
@@ -278,7 +279,11 @@ fn update_toggle_menu(app: &tauri::AppHandle, state: &Arc<Mutex<AppState>>) {
 
     let (health, tray_id, last_menu_state) = {
         let s = state.lock().unwrap();
-        (s.health.clone(), s.tray_id.clone(), s.last_menu_state.clone())
+        (
+            s.health.clone(),
+            s.tray_id.clone(),
+            s.last_menu_state.clone(),
+        )
     };
 
     if health == last_menu_state {
@@ -293,12 +298,26 @@ fn update_toggle_menu(app: &tauri::AppHandle, state: &Arc<Mutex<AppState>>) {
     if let Some(id) = tray_id {
         if let Some(tray) = app.tray_by_id(&id) {
             if let Ok(toggle_item) = MenuItemBuilder::with_id("toggle_daemon", label).build(app) {
-                if let Ok(open_item) = MenuItemBuilder::with_id("open_dashboard", "Open Dashboard").build(app) {
-                    if let Ok(worklogs_item) = MenuItemBuilder::with_id("open_worklogs", "Review Drafts").build(app) {
-                        if let Ok(restart_item) = MenuItemBuilder::with_id("restart_daemon", "Restart Daemon").build(app) {
-                            if let Ok(quit_item) = MenuItemBuilder::with_id("quit", "Quit Meridian Tray").build(app) {
+                if let Ok(open_item) =
+                    MenuItemBuilder::with_id("open_dashboard", "Open Dashboard").build(app)
+                {
+                    if let Ok(worklogs_item) =
+                        MenuItemBuilder::with_id("open_worklogs", "Review Drafts").build(app)
+                    {
+                        if let Ok(restart_item) =
+                            MenuItemBuilder::with_id("restart_daemon", "Restart Daemon").build(app)
+                        {
+                            if let Ok(quit_item) =
+                                MenuItemBuilder::with_id("quit", "Quit Meridian Tray").build(app)
+                            {
                                 if let Ok(menu) = MenuBuilder::new(app)
-                                    .items(&[&toggle_item, &open_item, &worklogs_item, &restart_item, &quit_item])
+                                    .items(&[
+                                        &toggle_item,
+                                        &open_item,
+                                        &worklogs_item,
+                                        &restart_item,
+                                        &quit_item,
+                                    ])
                                     .build()
                                 {
                                     let _ = tray.set_menu(Some(menu));

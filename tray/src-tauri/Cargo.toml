@@ -23,10 +23,3 @@ serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["time", "rt-multi-thread"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 chrono = { version = "0.4", features = ["clock"] }
-
-[profile.release]
-panic = "abort"
-codegen-units = 1
-lto = true
-opt-level = "s"
-strip = true
