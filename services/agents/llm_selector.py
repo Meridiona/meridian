@@ -991,13 +991,29 @@ def select_mlx_model_id(
             )
             return hf_id
 
-        # 3. Nothing cached fits and Apple Intelligence is unavailable (macOS < 26) —
-        #    best effort with the preferred id. (This preserves the pre-existing
-        #    single-model behaviour on older macOS; the load may trigger a download.)
-        span.set_attribute("llm.reason", "nothing_cached_fits_use_preferred")
+        # 3. Nothing cached fits and Apple Intelligence is unavailable (macOS < 26).
+        #    Pick the largest catalog model that fits the budget, ignoring the cache
+        #    (it will trigger a one-time download). This prevents returning an
+        #    oversized preferred model (e.g. 6.5 GB Qwen3.5-9B on an 8 GB machine
+        #    whose Metal budget is ~2.7 GB) that would exceed available memory.
+        #    Only fall back to preferred_hf_id when nothing in the catalog fits.
+        entry = _select_mlx_entry(snap.metal_headroom_gb, effective_pct,
+                                  snap.thermal_level, apple_intelligence)
+        if entry is not None:
+            _, _, min_ram, _, hf_id = entry
+            span.set_attribute("llm.reason", "catalog_fit_uncached")
+            span.set_attribute("llm.selected_model", hf_id or "")
+            log.warning(
+                "llm_selector: no cached MLX model fits budget=%.1f GB — "
+                "selecting %s (min_ram=%.1f GB fits; will download)",
+                budget, hf_id, min_ram,
+            )
+            return hf_id
+        span.set_attribute("llm.reason", "nothing_fits_use_preferred")
         span.set_attribute("llm.selected_model", preferred_hf_id or "")
         log.warning(
-            "llm_selector: no cached MLX model fits budget=%.1f GB — falling back to %s",
+            "llm_selector: no catalog model fits budget=%.1f GB — "
+            "last-resort fallback to preferred %s",
             budget, preferred_hf_id,
         )
         return preferred_hf_id
