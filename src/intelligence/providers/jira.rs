@@ -540,12 +540,8 @@ mod tests {
         insert_jira_task(&pool, "KAN-30").await;
 
         // An empty IN-list is syntactically invalid in SQLite; callers must
-        // gate on non-empty fetched_keys before calling prune. This test
-        // confirms the empty case is safe when guarded.
-        if ![""; 0].is_empty() {
-            // unreachable: satisfies the borrow-checker while documenting intent
-            run_prune_sql(&pool, &[]).await;
-        }
+        // gate on non-empty fetched_keys before calling prune — so prune is
+        // intentionally NOT called here. The task must survive untouched.
 
         // Task must still be present — no prune was called.
         assert_eq!(
