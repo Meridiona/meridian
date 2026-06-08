@@ -113,12 +113,48 @@ fn iter_records(path: &Path) -> Vec<Value> {
 
 /// Yield canonical records for one source JSONL (agent-aware).
 pub fn iter_normalised(path: &Path, agent: &str) -> Vec<NormRecord> {
+    let (records, _) = iter_normalised_with_title(path, agent);
+    records
+}
+
+/// One read, two products: canonical records AND the session's own title.
+/// Claude Code names a session with `{"type":"custom-title","customTitle":…}`
+/// records (the title shown in `claude --resume`; rewritten on each rename, so
+/// the LAST one wins). Older/compacted sessions instead carry
+/// `{"type":"summary","summary":…}` — accepted as a fallback. Codex rollouts
+/// carry no title. Single pass so the (multi-MB, re-parsed every tick) active
+/// session file is never read twice.
+pub fn iter_normalised_with_title(path: &Path, agent: &str) -> (Vec<NormRecord>, Option<String>) {
     let records = iter_records(path);
-    if agent == "codex" {
-        records.iter().map(norm_codex).collect()
+    let (normalised, title) = if agent == "codex" {
+        (records.iter().map(norm_codex).collect(), None)
     } else {
-        records.iter().map(norm_claude).collect()
-    }
+        (
+            records.iter().map(norm_claude).collect(),
+            claude_title(&records),
+        )
+    };
+    (normalised, title)
+}
+
+/// The session's current title from a Claude JSONL: the last `ai-title`'s
+/// `aiTitle` (clean AI-generated name), else the last `custom-title`'s
+/// `customTitle`, else the last `summary`'s `summary`. Trimmed; None if absent
+/// or blank.
+fn claude_title(records: &[Value]) -> Option<String> {
+    let pick = |rtype: &str, field: &str| {
+        records
+            .iter()
+            .rev()
+            .find(|r| str_field(r, "type") == Some(rtype))
+            .and_then(|r| str_field(r, field))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+    };
+    pick("ai-title", "aiTitle")
+        .or_else(|| pick("custom-title", "customTitle"))
+        .or_else(|| pick("summary", "summary"))
 }
 
 fn str_field<'a>(v: &'a Value, key: &str) -> Option<&'a str> {

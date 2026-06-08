@@ -13,7 +13,7 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 
-use super::jsonl::{infer_agent, iter_normalised, NormRecord};
+use super::jsonl::{infer_agent, iter_normalised_with_title, NormRecord};
 
 // Defaults mirror the former Python indexer/config.py.
 pub const ACTIVE_TIME_GAP_CAP_SECONDS: i64 = 120;
@@ -58,6 +58,11 @@ pub struct Segment {
     pub active_seconds: i64,
     pub transcript: String,
     pub is_last: bool,
+    /// The agent's own session name, when its store has one (Cursor
+    /// `composerData.name`, VS Code chat `customTitle`, cursor-agent meta
+    /// `name`, Claude `summary` records). Written to `window_titles` as a
+    /// single-entry `[{"window_name": …, "count": 1}]`; None → `[]`.
+    pub title: Option<String>,
 }
 
 impl Segment {
@@ -167,8 +172,17 @@ pub fn parse_session_segments(path: &Path, params: &SegmentParams) -> (SessionMe
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     let jsonl_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    let records = iter_normalised(path, &agent);
-    segment_records(records, &session_uuid, &agent, jsonl_bytes, params)
+    let (records, title) = iter_normalised_with_title(path, &agent);
+    let (meta, mut segments) = segment_records(records, &session_uuid, &agent, jsonl_bytes, params);
+    // Stamp the session's own name on every segment (one read produced both).
+    if let Some(t) = title {
+        const TITLE_CAP: usize = 200;
+        let cleaned = t.chars().take(TITLE_CAP).collect::<String>();
+        for seg in segments.iter_mut() {
+            seg.title = Some(cleaned.clone());
+        }
+    }
+    (meta, segments)
 }
 
 /// Segment an already-normalised record stream — the source-agnostic core of
@@ -300,6 +314,7 @@ pub fn segment_records(
             active_seconds: active,
             transcript: render_records(&b.records),
             is_last: i == n - 1,
+            title: None,
         });
     }
 
@@ -421,6 +436,49 @@ mod tests {
         assert_eq!(segs[0].assistant_turns, 1);
         assert!(segs[0].is_last);
         assert_eq!(segs[0].segment_started_at, iso_utc(base()));
+    }
+
+    #[test]
+    fn claude_custom_title_record_becomes_segment_title() {
+        let d = tmp();
+        // Real Claude format: `custom-title` records, rewritten on rename —
+        // the LAST one wins. (Verified against a live session JSONL 2026-06-07.)
+        let p = write_claude_jsonl(
+            &d,
+            "u_title",
+            &[
+                r#"{"type":"custom-title","customTitle":"old name","sessionId":"u_title"}"#
+                    .to_string(),
+                rec(0, "user", "first"),
+                r#"{"type":"custom-title","customTitle":"multi-agent-ingest","sessionId":"u_title"}"#
+                    .to_string(),
+                rec(60, "assistant", "working"),
+            ],
+        );
+        let (_m, segs) = parse_session_segments(&p, &SegmentParams::default());
+        assert_eq!(segs.len(), 1);
+        assert_eq!(
+            segs[0].title.as_deref(),
+            Some("multi-agent-ingest"),
+            "last custom-title record wins"
+        );
+
+        // Fallback: older/compacted sessions use `summary` records.
+        let p2 = write_claude_jsonl(
+            &d,
+            "u_summary",
+            &[
+                r#"{"type":"summary","summary":"Compacted title","leafUuid":"y"}"#.to_string(),
+                rec(0, "user", "hi"),
+            ],
+        );
+        let (_m2, segs2) = parse_session_segments(&p2, &SegmentParams::default());
+        assert_eq!(segs2[0].title.as_deref(), Some("Compacted title"));
+
+        // Neither record → no title.
+        let p3 = write_claude_jsonl(&d, "u_untitled", &[rec(0, "user", "hello")]);
+        let (_m3, segs3) = parse_session_segments(&p3, &SegmentParams::default());
+        assert!(segs3[0].title.is_none());
     }
 
     #[test]

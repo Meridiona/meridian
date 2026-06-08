@@ -120,6 +120,8 @@ pub async fn register_session(
     };
     let path_owned = jsonl_path.to_path_buf();
     let segments: Vec<Segment> = match tokio::task::spawn_blocking(move || {
+        // parse_session_segments stamps the session's own title (Claude
+        // `summary` records) in the same single read.
         let (_meta, segs) = parse_session_segments(&path_owned, &params);
         segs
     })
@@ -133,6 +135,22 @@ pub async fn register_session(
     };
 
     register_segments(pool, &segments, session_ended, now).await
+}
+
+/// Stamp the conversation's title onto every segment (each becomes one
+/// app_sessions row; all rows of a conversation share its name). Trimmed and
+/// capped so a runaway store value can't bloat the row.
+fn stamp_title(segments: &mut [Segment], title: Option<&str>) {
+    const TITLE_CAP: usize = 200;
+    let cleaned = title
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| t.chars().take(TITLE_CAP).collect::<String>());
+    if let Some(t) = cleaned {
+        for seg in segments.iter_mut() {
+            seg.title = Some(t.clone());
+        }
+    }
 }
 
 /// Upsert a parsed segment list, sealing settled ones — the shared tail of
@@ -185,6 +203,7 @@ pub async fn register_records(
     session_uuid: &str,
     agent: &str,
     records: Vec<super::jsonl::NormRecord>,
+    title: Option<&str>,
     session_ended: bool,
     now: DateTime<Utc>,
 ) -> Outcome {
@@ -200,8 +219,9 @@ pub async fn register_records(
         start_after_ts: start_after,
         ..Default::default()
     };
-    let (_meta, segments) =
+    let (_meta, mut segments) =
         super::segment::segment_records(records, session_uuid, agent, 0, &params);
+    stamp_title(&mut segments, title);
     register_segments(pool, &segments, session_ended, now).await
 }
 
@@ -317,10 +337,16 @@ async fn seal_finished_cli_sessions(pool: &SqlitePool, now_iso: &str) -> u64 {
 /// useless here: on macOS it matches the environment block too, and PATH /
 /// CODEX_* env vars put agent names into half the processes on the box.
 async fn list_process_argvs() -> Option<Vec<String>> {
-    let output = tokio::process::Command::new("ps")
-        .args(["-axo", "args="])
-        .output()
+    // Hard timeout + kill_on_drop: `ps` reading proc info can wedge in the
+    // kernel on a stuck process. An un-timed await here parks the whole
+    // indexer loop forever (observed live 2026-06-06 18:23 UTC: ticks stopped
+    // dead mid-tick right at this step until the process was kicked). None →
+    // every CLI is treated as running, which only defers to the idle backstop.
+    let mut cmd = tokio::process::Command::new("ps");
+    cmd.args(["-axo", "args="]).kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(15), cmd.output())
         .await
+        .ok()?
         .ok()?;
     if !output.status.success() {
         return None;
@@ -479,19 +505,37 @@ pub async fn run_loop(
         }
     };
 
-    let (sealed, wrote) = run_tick(&pool, &cfg, Utc::now()).await; // backfill-today on startup
+    let (sealed, wrote) = guarded_tick(&pool, &cfg).await; // backfill-today on startup
     notify_if_work(sealed, wrote);
 
     loop {
         tokio::select! {
             _ = shutdown_rx.changed() => break,
             _ = tokio::time::sleep(Duration::from_secs(cfg.poll_interval_secs)) => {
-                let (sealed, wrote) = run_tick(&pool, &cfg, Utc::now()).await;
+                let (sealed, wrote) = guarded_tick(&pool, &cfg).await;
                 notify_if_work(sealed, wrote);
             }
         }
     }
     tracing::info!("coding-agent indexer stopped");
+}
+
+/// run_tick with a hard ceiling. A tick that exceeds it is abandoned (warn,
+/// not fatal) so a single wedged await — a hung subprocess, a locked store —
+/// costs one tick, never the loop. The ceiling is generous: a healthy tick is
+/// seconds; only a genuine hang crosses minutes.
+async fn guarded_tick(pool: &SqlitePool, cfg: &IndexerConfig) -> (u64, u64) {
+    const TICK_CEILING: Duration = Duration::from_secs(480);
+    match tokio::time::timeout(TICK_CEILING, run_tick(pool, cfg, Utc::now())).await {
+        Ok(result) => result,
+        Err(_) => {
+            tracing::warn!(
+                ceiling_s = TICK_CEILING.as_secs(),
+                "indexer tick exceeded ceiling — abandoned (state is tick-idempotent; next tick re-covers)"
+            );
+            (0, 0)
+        }
+    }
 }
 
 // ──────────────────────── Helpers ──────────────────────────────────────────
