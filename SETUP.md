@@ -66,8 +66,8 @@ LINEAR_API_KEY=lin_api_your_key_here
 **Easiest:** if you have the `gh` CLI installed and authenticated, `meridian setup` extracts the token automatically and shows a list of your GitHub Projects to pick from.
 
 **Manual:** create a personal access token (classic) at https://github.com/settings/tokens/new
-- Required scopes: `repo`, `read:org`, `project`
-- `project` scope (not `read:project`) is required to read and update GitHub Projects
+- Required scopes: `repo`, `read:org`, `read:project`
+- `read:project` lets meridian read your GitHub Projects; `repo` posts worklog comments on issues
 
 Add to config:
 ```dotenv

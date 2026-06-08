@@ -418,6 +418,48 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_github_reads_token_and_project_ids() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("GITHUB_TOKEN", "gho_testtoken");
+        std::env::set_var("GITHUB_PROJECT_IDS", "PVT_aaa, PVT_bbb");
+        let parsed = parse_github();
+        assert!(matches!(parsed, Some(PmProviderConfig::GitHub(_))));
+        if let Some(PmProviderConfig::GitHub(gh)) = parsed {
+            assert_eq!(gh.token, "gho_testtoken");
+            // env_list splits on commas and trims surrounding whitespace.
+            assert_eq!(gh.project_ids, vec!["PVT_aaa", "PVT_bbb"]);
+        }
+        std::env::remove_var("GITHUB_TOKEN");
+        std::env::remove_var("GITHUB_PROJECT_IDS");
+    }
+
+    #[test]
+    fn test_parse_github_requires_token() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::remove_var("GITHUB_TOKEN");
+        std::env::set_var("GITHUB_PROJECT_IDS", "PVT_aaa");
+        assert!(
+            parse_github().is_none(),
+            "no GITHUB_TOKEN → no GitHub provider"
+        );
+        std::env::remove_var("GITHUB_PROJECT_IDS");
+    }
+
+    #[test]
+    fn test_parse_github_token_only_empty_project_ids() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("GITHUB_TOKEN", "gho_x");
+        std::env::remove_var("GITHUB_PROJECT_IDS");
+        let parsed = parse_github();
+        assert!(matches!(parsed, Some(PmProviderConfig::GitHub(_))));
+        if let Some(PmProviderConfig::GitHub(gh)) = parsed {
+            // Unset GITHUB_PROJECT_IDS → empty vec; refresh_if_stale skips the sync.
+            assert!(gh.project_ids.is_empty());
+        }
+        std::env::remove_var("GITHUB_TOKEN");
+    }
+
+    #[test]
     fn test_uri_prefix() {
         let _guard = env_lock().lock().unwrap();
         std::env::set_var("SCREENPIPE_DB", "/some/path/db.sqlite");
