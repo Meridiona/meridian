@@ -1,3 +1,54 @@
+## [1.31.1](https://github.com/Meridiona/meridian/compare/v1.31.0...v1.31.1) (2026-06-08)
+
+
+### Bug Fixes
+
+* **install:** update tray binary path in launchd installer script ([671fd0a](https://github.com/Meridiona/meridian/commit/671fd0a45d1d5f3a76f572158944ceeeeef32081))
+
+# [1.31.0](https://github.com/Meridiona/meridian/compare/v1.30.0...v1.31.0) (2026-06-08)
+
+
+### Features
+
+* **coding-agent:** session titles + custom-title fix + summariser reliability ([#193](https://github.com/Meridiona/meridian/issues/193)) ([0d4732f](https://github.com/Meridiona/meridian/commit/0d4732f1dc2a23367926134491bd01ed10c1e0ff)), closes [#177](https://github.com/Meridiona/meridian/issues/177)
+
+# [1.30.0](https://github.com/Meridiona/meridian/compare/v1.29.0...v1.30.0) (2026-06-08)
+
+
+### Bug Fixes
+
+* **release:** update tray binary path to root target dir for workspace ([7608d4d](https://github.com/Meridiona/meridian/commit/7608d4d3d2dd566d5cc178e21e0a67dc97c8202b))
+* **tray:** address reviewer comments from PR [#196](https://github.com/Meridiona/meridian/issues/196) ([4c79dcf](https://github.com/Meridiona/meridian/commit/4c79dcf07ec49409abd83c6b0f4834684876723b))
+* **tray:** use MERIDIAN_UI_PORT env var instead of hardcoding 3939 ([35bdcdb](https://github.com/Meridiona/meridian/commit/35bdcdb016beb9f4ec5930a6d5d7cf3ea50b77e4))
+* **ui:** add missing exec import in health route ([41965a2](https://github.com/Meridiona/meridian/commit/41965a25de27e7d0e416c43255521ccaf80993f3))
+
+
+### Features
+
+* **tray:** macOS menu bar app + daemon_running health signal ([f148b12](https://github.com/Meridiona/meridian/commit/f148b12012f1af40c4206454c3dab948ab037b49))
+* **workspace:** add tray app to root Cargo workspace ([341d263](https://github.com/Meridiona/meridian/commit/341d26341ba24ea134e3a8c65b18c084b09e5bc7))
+
+# [1.29.0](https://github.com/Meridiona/meridian/compare/v1.28.2...v1.29.0) (2026-06-08)
+
+
+### Features
+
+* **ui:** SSE health banner replaces 30s polling ([#195](https://github.com/Meridiona/meridian/issues/195)) ([4066ca9](https://github.com/Meridiona/meridian/commit/4066ca9ff6962a6fb3eefd92f91c35dc781a5e9d))
+
+## [1.28.2](https://github.com/Meridiona/meridian/compare/v1.28.1...v1.28.2) (2026-06-08)
+
+
+### Bug Fixes
+
+* **ui:** replace blocking execSync in health route with async + cache ([12cb613](https://github.com/Meridiona/meridian/commit/12cb6134031ed5ed71e4fa23146b63a655a08cbf))
+
+## [1.28.1](https://github.com/Meridiona/meridian/compare/v1.28.0...v1.28.1) (2026-06-08)
+
+
+### Bug Fixes
+
+* **release:** always ship ui.tar.gz so fresh installs work ([3759d49](https://github.com/Meridiona/meridian/commit/3759d494034397961b99b496f1775370e7d04cee))
+
 # [1.28.0](https://github.com/Meridiona/meridian/compare/v1.27.6...v1.28.0) (2026-06-06)
 
 

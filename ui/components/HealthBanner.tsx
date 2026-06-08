@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'react'
 
 interface HealthStatus {
-  a11y_helper_trusted: boolean
+  a11y_helper_trusted?: boolean
   database_ready?: boolean
   error?: string
 }
@@ -14,21 +14,18 @@ export default function HealthBanner() {
   const [dismissed, setDismissed] = useState(false)
 
   useEffect(() => {
-    // Fetch health status on mount and every 30 seconds
-    const fetchHealth = async () => {
+    const source = new EventSource('/api/health/stream')
+    source.onmessage = (e) => {
       try {
-        const res = await fetch('/api/health')
-        const data = await res.json()
-        setHealth(data)
-      } catch (e) {
-        // Silently fail if health check unavailable
-      }
+        const data = JSON.parse(e.data) as HealthStatus
+        // Ignore empty objects ({}) sent on first call before data arrives
+        if (Object.keys(data).length > 0) setHealth(data)
+      } catch { /* malformed event */ }
     }
-
-    fetchHealth()
-    const interval = setInterval(fetchHealth, 30000)
-
-    return () => clearInterval(interval)
+    source.onerror = () => {
+      // SSE auto-reconnects on error; no action needed
+    }
+    return () => source.close()
   }, [])
 
   // Show banner if database is not ready (critical), or a11y-helper is not trusted, and not dismissed

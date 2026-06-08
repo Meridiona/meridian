@@ -610,26 +610,35 @@ if [[ "${_py_ok}" -eq 0 ]]; then
 fi
 ok "Python 3.11+"
 
+_sp_npm_ver="$(npm list -g --depth=0 screenpipe 2>/dev/null | grep -o 'screenpipe@[^ ]*' | cut -d@ -f2 || true)"
 if ! command -v screenpipe >/dev/null 2>&1; then
-    warn "screenpipe not found."
-    echo "    Note: Homebrew's screenpipe formula is deprecated (0.2.x). We install the"
-    echo "    pinned ${SCREENPIPE_VERSION} via npm, which is what the launchd plist expects."
-    if prompt_install "Install screenpipe via npm (npm install -g screenpipe@${SCREENPIPE_VERSION})?"; then
-        run npm install -g "screenpipe@${SCREENPIPE_VERSION}"
+    if [[ "${_sp_npm_ver}" == "${SCREENPIPE_VERSION}" ]]; then
+        ok "screenpipe ${SCREENPIPE_VERSION} already installed via npm (restart shell if 'screenpipe' is not on PATH)"
     else
-        err "screenpipe required — install via https://docs.screenpi.pe"
-        exit 1
+        warn "screenpipe not found."
+        echo "    Note: Homebrew's screenpipe formula is deprecated (0.2.x). We install the"
+        echo "    pinned ${SCREENPIPE_VERSION} via npm, which is what the launchd plist expects."
+        if prompt_install "Install screenpipe via npm (npm install -g screenpipe@${SCREENPIPE_VERSION})?"; then
+            run npm install -g "screenpipe@${SCREENPIPE_VERSION}"
+        else
+            err "screenpipe required — install via https://docs.screenpi.pe"
+            exit 1
+        fi
     fi
 else
     _sp_ver="$(screenpipe --version 2>/dev/null | awk '{print $2}' || true)"
     _sp_major="$(echo "${_sp_ver}" | cut -d. -f1)"
     _sp_minor="$(echo "${_sp_ver}" | cut -d. -f2)"
-    if [[ -n "${_sp_ver}" && "${_sp_major:-0}" -eq 0 && "${_sp_minor:-0}" -lt 3 ]]; then
+    if [[ "${_sp_ver}" == "${SCREENPIPE_VERSION}" ]]; then
+        : # exact pinned version — nothing to do
+    elif [[ -n "${_sp_ver}" && "${_sp_major:-0}" -eq 0 && "${_sp_minor:-0}" -lt 3 ]]; then
         warn "screenpipe ${_sp_ver} is from the deprecated Homebrew formula."
         echo "    The launchd plist expects 0.3+ (uses 'screenpipe record')."
         if prompt_install "Upgrade screenpipe via npm (npm install -g screenpipe@${SCREENPIPE_VERSION})?"; then
             run npm install -g "screenpipe@${SCREENPIPE_VERSION}"
         fi
+    elif [[ "${_sp_npm_ver}" == "${SCREENPIPE_VERSION}" ]]; then
+        : # pinned version installed via npm, different binary on PATH — fine
     fi
 fi
 ok "screenpipe"
@@ -820,6 +829,24 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Step 5.5: Tray app build
+# ---------------------------------------------------------------------------
+
+if [[ "${NO_UI}" -eq 0 ]]; then
+    if [[ "${DEV_MODE}" -eq 1 ]]; then
+        info "Installing tray app dependencies (dev mode — skipping build)..."
+        run bash -c "cd '${REPO_ROOT}/tray' && npm install"
+        ok "Tray dependencies installed (run manually: cd tray && npm run tauri dev)"
+    else
+        info "Building tray app..."
+        run bash -c "cd '${REPO_ROOT}/tray' && bash create-icons.sh && npm install && npm run build"
+        ok "Tray app built"
+    fi
+else
+    info "Skipping tray build (--no-ui)"
+fi
+
+# ---------------------------------------------------------------------------
 # Step 6: Python services setup
 # ---------------------------------------------------------------------------
 
@@ -953,6 +980,21 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
         info "Installing UI launchd agent..."
         run bash "${REPO_ROOT}/scripts/install-ui-daemon.sh"
         ok "UI launchd agent installed"
+    fi
+
+    if [[ "${NO_UI}" -eq 0 ]]; then
+        if [[ "${DEV_MODE}" -eq 1 ]]; then
+            info "Dev mode — skipping tray launchd agent (run: cd tray && npm run tauri dev)"
+        else
+            _tray_bin="${REPO_ROOT}/tray/src-tauri/target/release/meridian-tray"
+            if [[ -x "${_tray_bin}" ]]; then
+                info "Installing tray app launchd agent..."
+                run bash "${REPO_ROOT}/scripts/install-tray-daemon.sh"
+                ok "Tray app launchd agent installed"
+            else
+                warn "meridian-tray binary not found — tray app not installed"
+            fi
+        fi
     fi
 else
     info "Skipping daemon install (--no-daemon)"

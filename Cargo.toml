@@ -1,6 +1,10 @@
+[workspace]
+members = [".", "tray/src-tauri"]
+resolver = "2"
+
 [package]
 name = "meridian"
-version = "1.28.0"
+version = "1.31.1"
 edition = "2021"
 description = "Meridian — normalises screenpipe activity into structured app sessions"
 authors = ["Meridiona"]
