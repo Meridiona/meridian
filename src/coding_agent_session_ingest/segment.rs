@@ -175,14 +175,25 @@ pub fn parse_session_segments(path: &Path, params: &SegmentParams) -> (SessionMe
     let (records, title) = iter_normalised_with_title(path, &agent);
     let (meta, mut segments) = segment_records(records, &session_uuid, &agent, jsonl_bytes, params);
     // Stamp the session's own name on every segment (one read produced both).
-    if let Some(t) = title {
-        const TITLE_CAP: usize = 200;
-        let cleaned = t.chars().take(TITLE_CAP).collect::<String>();
+    if let Some(t) = title.as_deref().and_then(clean_title) {
         for seg in segments.iter_mut() {
-            seg.title = Some(cleaned.clone());
+            seg.title = Some(t.clone());
         }
     }
     (meta, segments)
+}
+
+/// Normalise a raw session title for storage: trim, drop when empty, cap length.
+/// Shared by both title-stamping sites — `parse_session_segments` (the Claude
+/// JSONL path) and `indexer::stamp_title` (the source-adapter path) — so the two
+/// cannot diverge on trimming, empty-filtering, or the length cap.
+pub(crate) fn clean_title(raw: &str) -> Option<String> {
+    const TITLE_CAP: usize = 200;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.chars().take(TITLE_CAP).collect())
 }
 
 /// Segment an already-normalised record stream — the source-agnostic core of
@@ -358,6 +369,19 @@ mod tests {
     use super::*;
     use chrono::{Duration, TimeZone};
     use std::io::Write;
+
+    #[test]
+    fn clean_title_trims_filters_and_caps() {
+        assert_eq!(clean_title("  hello  ").as_deref(), Some("hello"));
+        assert_eq!(clean_title("   ").as_deref(), None);
+        assert_eq!(clean_title("").as_deref(), None);
+        // Capped at 200 chars (counts chars, not bytes).
+        let long = "x".repeat(250);
+        assert_eq!(clean_title(&long).map(|t| t.chars().count()), Some(200));
+        // Multibyte stays char-correct (no panic on a byte boundary).
+        let emoji = "🚀".repeat(250);
+        assert_eq!(clean_title(&emoji).map(|t| t.chars().count()), Some(200));
+    }
 
     fn base() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 5, 20, 8, 0, 0).unwrap()

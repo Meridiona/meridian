@@ -25,7 +25,8 @@ use tokio::sync::{watch, Notify};
 
 use super::db;
 use super::segment::{
-    iso_utc, parse_iso, parse_session_segments, Segment, SegmentParams, SEGMENT_GAP_SECONDS,
+    clean_title, iso_utc, parse_iso, parse_session_segments, Segment, SegmentParams,
+    SEGMENT_GAP_SECONDS,
 };
 
 const DEFAULT_POLL_INTERVAL_S: u64 = 600;
@@ -141,12 +142,7 @@ pub async fn register_session(
 /// app_sessions row; all rows of a conversation share its name). Trimmed and
 /// capped so a runaway store value can't bloat the row.
 fn stamp_title(segments: &mut [Segment], title: Option<&str>) {
-    const TITLE_CAP: usize = 200;
-    let cleaned = title
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .map(|t| t.chars().take(TITLE_CAP).collect::<String>());
-    if let Some(t) = cleaned {
+    if let Some(t) = title.and_then(clean_title) {
         for seg in segments.iter_mut() {
             seg.title = Some(t.clone());
         }
