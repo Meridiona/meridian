@@ -437,17 +437,19 @@ mod tests {
     }
 
     #[test]
-    fn claude_summary_record_becomes_segment_title() {
+    fn claude_custom_title_record_becomes_segment_title() {
         let d = tmp();
-        // Two summary records (continuation chain) — the LAST is the title.
+        // Real Claude format: `custom-title` records, rewritten on rename —
+        // the LAST one wins. (Verified against a live session JSONL 2026-06-07.)
         let p = write_claude_jsonl(
             &d,
             "u_title",
             &[
-                r#"{"type":"summary","summary":"Old chain title","leafUuid":"x"}"#.to_string(),
-                r#"{"type":"summary","summary":"Fix the ingest pipeline","leafUuid":"y"}"#
+                r#"{"type":"custom-title","customTitle":"old name","sessionId":"u_title"}"#
                     .to_string(),
                 rec(0, "user", "first"),
+                r#"{"type":"custom-title","customTitle":"multi-agent-ingest","sessionId":"u_title"}"#
+                    .to_string(),
                 rec(60, "assistant", "working"),
             ],
         );
@@ -455,14 +457,26 @@ mod tests {
         assert_eq!(segs.len(), 1);
         assert_eq!(
             segs[0].title.as_deref(),
-            Some("Fix the ingest pipeline"),
-            "last summary record wins"
+            Some("multi-agent-ingest"),
+            "last custom-title record wins"
         );
 
-        // No summary record → no title.
-        let p2 = write_claude_jsonl(&d, "u_untitled", &[rec(0, "user", "hello")]);
+        // Fallback: older/compacted sessions use `summary` records.
+        let p2 = write_claude_jsonl(
+            &d,
+            "u_summary",
+            &[
+                r#"{"type":"summary","summary":"Compacted title","leafUuid":"y"}"#.to_string(),
+                rec(0, "user", "hi"),
+            ],
+        );
         let (_m2, segs2) = parse_session_segments(&p2, &SegmentParams::default());
-        assert!(segs2[0].title.is_none());
+        assert_eq!(segs2[0].title.as_deref(), Some("Compacted title"));
+
+        // Neither record → no title.
+        let p3 = write_claude_jsonl(&d, "u_untitled", &[rec(0, "user", "hello")]);
+        let (_m3, segs3) = parse_session_segments(&p3, &SegmentParams::default());
+        assert!(segs3[0].title.is_none());
     }
 
     #[test]
