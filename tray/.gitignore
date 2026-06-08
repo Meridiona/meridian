@@ -1,0 +1,14 @@
+node_modules/
+src-tauri/target/
+src-tauri/icons/source-1024.png
+src-tauri/icons/*.ico
+src-tauri/icons/*.icns
+src-tauri/icons/icon.png
+src-tauri/icons/32x32.png
+src-tauri/icons/128x128.png
+src-tauri/icons/256x256.png
+src-tauri/icons/512x512.png
+src-tauri/icons/32x32@2x.png
+src-tauri/icons/128x128@2x.png
+src-tauri/icons/tray.png
+src-tauri/gen/

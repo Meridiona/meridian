@@ -1,0 +1,59 @@
+<!doctype html>
+<!-- meridian — normalises screenpipe activity into structured app sessions -->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Meridian</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="popover" id="popover">
+    <header class="popover-header">
+      <span class="wordmark">meridian</span>
+      <div class="toggle-container">
+        <span class="toggle-status" id="toggle-status">Connected</span>
+        <button class="toggle-btn" id="toggle-btn" title="Toggle Meridian connection">
+          <span class="toggle-switch"></span>
+        </button>
+      </div>
+    </header>
+
+    <section class="session-section" id="session-section">
+      <div class="session-line shimmer-wrap">
+        <p class="session-app" id="session-app">
+          <span class="shimmer"></span>
+        </p>
+        <p class="session-elapsed" id="session-elapsed"></p>
+      </div>
+    </section>
+
+    <div class="rule"></div>
+
+    <section class="stats-section">
+      <p class="stat-primary" id="stat-focus">
+        <span class="shimmer"></span>
+      </p>
+      <p class="stat-secondary" id="stat-switches">
+        <span class="shimmer"></span>
+      </p>
+    </section>
+
+    <div class="rule" id="worklogs-rule" style="display:none"></div>
+
+    <section class="worklogs-section" id="worklogs-section" style="display:none">
+      <button class="worklogs-btn" id="worklogs-btn">
+        <span id="worklogs-label">Loading…</span>
+        <span class="arrow">→</span>
+      </button>
+    </section>
+
+    <footer class="popover-footer">
+      <button class="btn-secondary" id="btn-open">Open Dashboard</button>
+      <button class="btn-primary" id="btn-worklogs">Review Drafts</button>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
