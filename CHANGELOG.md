@@ -1,3 +1,10 @@
+## [1.31.1](https://github.com/Meridiona/meridian/compare/v1.31.0...v1.31.1) (2026-06-08)
+
+
+### Bug Fixes
+
+* **install:** update tray binary path in launchd installer script ([671fd0a](https://github.com/Meridiona/meridian/commit/671fd0a45d1d5f3a76f572158944ceeeeef32081))
+
 # [1.31.0](https://github.com/Meridiona/meridian/compare/v1.30.0...v1.31.0) (2026-06-08)
 
 
