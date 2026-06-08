@@ -172,7 +172,12 @@ pub async fn write_summary(
 }
 
 /// Mark a row as permanently dead-lettered (failed MAX_ROW_ATTEMPTS times).
-/// Idempotent: the row is only updated once.
+/// Sets task_method = 'subprocess_error' so the row is permanently excluded from
+/// auto-drain (run loop) and from `--day` backfill. Idempotent: the row is only
+/// updated once.
+///
+/// To un-dead-letter a row (e.g. if the underlying issue is fixed):
+///   UPDATE app_sessions SET task_method = 'pending_summariser' WHERE id = <id>;
 pub async fn write_dead_letter(pool: &SqlitePool, row_id: i64) -> Result<()> {
     sqlx::query("UPDATE app_sessions SET task_method = ? WHERE id = ?")
         .bind(TASK_METHOD_DEAD_LETTER)

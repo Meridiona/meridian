@@ -139,6 +139,9 @@ prompt_category() {
     [[ "$ans" =~ ^[Yy] ]]
 }
 
+# GitHub setup helpers — shared with scripts/install-from-bundle.sh.
+source "${REPO_ROOT}/scripts/lib-github-setup.sh"
+
 prompt_env_vars() {
     if [[ "${SKIP_ENV:-0}" == "1" ]]; then
         info "Skipping env-var prompts (--skip-env)"
@@ -173,9 +176,16 @@ prompt_env_vars() {
     echo
 
     if prompt_category "GitHub"; then
-        prompt_env_var "GITHUB_TOKEN" "GitHub personal access token" 1 "$root_env"
-        prompt_env_var "GITHUB_ORG" "GitHub organization" 0 "$root_env"
-        prompt_env_var "GITHUB_REPOS" "GitHub repos (optional, comma-sep, e.g. org/repo1,org/repo2)" 0 "$root_env"
+        if ! _try_gh_token "$root_env"; then
+            echo
+            echo "    Alternatively, create a personal access token (classic) at:"
+            echo "      https://github.com/settings/tokens/new"
+            echo "    Required scopes: repo, read:org, read:project"
+            echo "    (read:project lets meridian read your GitHub Projects; repo posts worklog comments)"
+            echo
+            prompt_env_var "GITHUB_TOKEN" "GitHub personal access token" 1 "$root_env"
+        fi
+        _pick_github_projects "$root_env"
     fi
     echo
 
@@ -830,14 +840,12 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
             info "  ${_eng} CLI not found — those sessions will use the local model (MLX)"
         fi
     done
-    if command -v cursor >/dev/null 2>&1 || [[ -d "${HOME}/Library/Application Support/Cursor" ]]; then
-        if command -v cursor-agent >/dev/null 2>&1; then
-            ok "cursor-agent CLI found — verify auth with: cursor-agent status"
-        else
-            info "  Cursor detected but the cursor-agent CLI is missing — Cursor summaries will use the local model (MLX)."
-            info "  To summarise with Cursor's own CLI:  curl https://cursor.com/install -fsS | bash  then: cursor-agent login"
-            info "  Or let the daemon install it on demand: add CURSOR_AGENT_AUTO_INSTALL=1 to your .env"
-        fi
+    if command -v cursor-agent >/dev/null 2>&1; then
+        ok "cursor-agent CLI found — Cursor sessions summarise natively"
+    elif command -v cursor >/dev/null 2>&1 || [[ -d "${HOME}/Library/Application Support/Cursor" ]]; then
+        info "  cursor-agent CLI not found — Cursor sessions will use the local model (MLX)."
+        info "  To summarise with Cursor's own CLI:  curl https://cursor.com/install -fsS | bash  then: cursor-agent login"
+        info "  Or let the daemon install it on demand: add CURSOR_AGENT_AUTO_INSTALL=1 to your .env"
     fi
 
     if [[ "${DEV_MODE}" -eq 1 ]]; then

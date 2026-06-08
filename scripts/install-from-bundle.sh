@@ -94,9 +94,16 @@ collect_credentials() {
     fi
     echo >&2
     if prompt_category "GitHub"; then
-        prompt_env_var "GITHUB_TOKEN" "GitHub personal access token" 1 "$env_file"
-        prompt_env_var "GITHUB_ORG"   "GitHub organization (or your username)" 0 "$env_file"
-        prompt_env_var "GITHUB_REPOS" "GitHub repos (optional, comma-sep owner/repo)" 0 "$env_file"
+        if ! _try_gh_token "$env_file"; then
+            echo >&2
+            echo "    Alternatively, create a personal access token (classic) at:" >&2
+            echo "      https://github.com/settings/tokens/new" >&2
+            echo "    Required scopes: repo, read:org, read:project" >&2
+            echo "    (read:project lets meridian read your GitHub Projects; repo posts worklog comments)" >&2
+            echo >&2
+            prompt_env_var "GITHUB_TOKEN" "GitHub personal access token" 1 "$env_file"
+        fi
+        _pick_github_projects "$env_file"
     fi
     echo >&2
     if prompt_category "Linear"; then
@@ -105,6 +112,9 @@ collect_credentials() {
     fi
     ok "Credential collection complete"
 }
+
+# GitHub setup helpers — shared with install.sh.
+source "${APP_ROOT}/scripts/lib-github-setup.sh"
 
 GUI_TARGET="gui/$(id -u)"
 LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
