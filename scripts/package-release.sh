@@ -98,14 +98,25 @@ cp -R "ui/.next/static" "${_ui_stage}/.next/static"
 _bs_version="$("${_NODE22_BIN}" -e "process.stdout.write(require('./ui/node_modules/better-sqlite3/package.json').version)")"
 _bs_abi="$("${_NODE22_BIN}" -e 'process.stdout.write(String(process.versions.modules))')"
 _bs_url="https://github.com/WiseLibs/better-sqlite3/releases/download/v${_bs_version}/better-sqlite3-v${_bs_version}-node-v${_bs_abi}-darwin-arm64.tar.gz"
-echo "  · fetching better-sqlite3@${_bs_version} prebuilt for Node 22 (ABI ${_bs_abi})…"
+_bs_cache_dir="${HOME}/.cache/better-sqlite3-abi${_bs_abi}"
+_bs_cached_node="${_bs_cache_dir}/better_sqlite3.node"
 _bs_tmp="$(mktemp -d)"
-curl -fsSL --retry 3 "${_bs_url}" | tar -xzf - -C "${_bs_tmp}"
-_bs_node="$(find "${_bs_tmp}" -name "better_sqlite3.node" -path "*/Release/*" 2>/dev/null | head -1)"
-[[ -n "${_bs_node}" && -f "${_bs_node}" ]] || {
-    echo "✗ better-sqlite3@${_bs_version} prebuilt for ABI ${_bs_abi} not found at ${_bs_url}" >&2
-    rm -rf "${_bs_tmp}" "${_node22_tmp}"; exit 1
-}
+
+if [[ -f "${_bs_cached_node}" ]]; then
+    echo "  · using cached better-sqlite3@${_bs_version} (ABI ${_bs_abi})"
+    _bs_node="${_bs_cached_node}"
+else
+    echo "  · fetching better-sqlite3@${_bs_version} prebuilt for Node 22 (ABI ${_bs_abi})…"
+    curl -fsSL --retry 3 "${_bs_url}" | tar -xzf - -C "${_bs_tmp}"
+    _bs_node="$(find "${_bs_tmp}" -name "better_sqlite3.node" -path "*/Release/*" 2>/dev/null | head -1)"
+    [[ -n "${_bs_node}" && -f "${_bs_node}" ]] || {
+        echo "✗ better-sqlite3@${_bs_version} prebuilt for ABI ${_bs_abi} not found at ${_bs_url}" >&2
+        rm -rf "${_bs_tmp}" "${_node22_tmp}"; exit 1
+    }
+    mkdir -p "${_bs_cache_dir}"
+    cp "${_bs_node}" "${_bs_cached_node}"
+    _bs_node="${_bs_cached_node}"
+fi
 # Confirm the staged tree has exactly one .node file, then replace it.
 _staged_nodes="$(find "${_ui_stage}" -name "better_sqlite3.node" 2>/dev/null)"
 _staged_count="$(echo "${_staged_nodes}" | grep -c 'better_sqlite3' 2>/dev/null || echo 0)"
@@ -184,29 +195,45 @@ rm -f "${_ASSET_DIR}"/services-venv-*.tar.gz "${_ASSET_DIR}"/services-venv-*.tar
 # uv must be available on the CI runner. pip3 install is blocked on macOS 26
 # by PEP 668 (externally-managed-environment). Install via Homebrew instead.
 command -v uv >/dev/null 2>&1 || brew install uv
-# Pin Python 3.11: macos-26 defaults to Python 3.14 which produces
-# cpython-314-darwin.so that Python 3.11 on user machines cannot load.
-# Both extras: mlx (classifier) AND pm_worklog_update (agno) — the shipped
-# MLX server serves /synthesise_worklog too, which imports agno; without it
-# worklog synthesis 500s with ModuleNotFoundError on every install.
-uv sync --project services --extra mlx --extra pm_worklog_update --frozen --python 3.11
-# Validate the venv is actually Python 3.11.
+
+# Skip venv rebuild if services/ source files unchanged from previous release
+_services_changed=true
+_prev_release_tag="$(git describe --tags --abbrev=0 2>/dev/null || echo '')"
+if [[ -n "${_prev_release_tag}" ]] && [[ -d "services/.venv" ]]; then
+    _changed_files="$(git diff "${_prev_release_tag}..HEAD" --name-only -- services 2>/dev/null | wc -l)"
+    if [[ "${_changed_files}" -eq 0 ]]; then
+        _services_changed=false
+        echo "  · services/ source unchanged from ${_prev_release_tag} — reusing venv"
+    fi
+fi
+
+if [[ "${_services_changed}" == true ]]; then
+    # Pin Python 3.11: macos-26 defaults to Python 3.14 which produces
+    # cpython-314-darwin.so that Python 3.11 on user machines cannot load.
+    # Both extras: mlx (classifier) AND pm_worklog_update (agno) — the shipped
+    # MLX server serves /synthesise_worklog too, which imports agno; without it
+    # worklog synthesis 500s with ModuleNotFoundError on every install.
+    uv sync --project services --extra mlx --extra pm_worklog_update --frozen --python 3.11
+    # Validate the venv is actually Python 3.11.
+    _py_dir="$(ls -d services/.venv/lib/python* 2>/dev/null | head -1 | xargs basename 2>/dev/null || true)"
+    if [[ -z "${_py_dir}" ]]; then
+        echo "✗ could not find python lib dir under services/.venv/lib/" >&2; exit 1
+    fi
+    if [[ "${_py_dir}" != "python3.11" ]]; then
+        echo "✗ venv was built with ${_py_dir} but must be python3.11" >&2; exit 1
+    fi
+    # On macOS 26+, install apple-fm-sdk into the venv so end users get Apple
+    # Intelligence without needing Xcode. The CI runner (macos-26) has Xcode;
+    # the package is source-only (no PyPI wheels) so must be compiled here.
+    _pkg_macos_major="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
+    if [[ "${_pkg_macos_major:-0}" -ge 26 ]]; then
+        echo "  macOS ${_pkg_macos_major}: compiling apple-fm-sdk for Apple Intelligence…"
+        uv pip install --python "services/.venv/bin/python" "apple-fm-sdk"
+        echo "  · apple-fm-sdk compiled and included in venv"
+    fi
+fi
+
 _py_dir="$(ls -d services/.venv/lib/python* 2>/dev/null | head -1 | xargs basename 2>/dev/null || true)"
-if [[ -z "${_py_dir}" ]]; then
-    echo "✗ could not find python lib dir under services/.venv/lib/" >&2; exit 1
-fi
-if [[ "${_py_dir}" != "python3.11" ]]; then
-    echo "✗ venv was built with ${_py_dir} but must be python3.11" >&2; exit 1
-fi
-# On macOS 26+, install apple-fm-sdk into the venv so end users get Apple
-# Intelligence without needing Xcode. The CI runner (macos-26) has Xcode;
-# the package is source-only (no PyPI wheels) so must be compiled here.
-_pkg_macos_major="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
-if [[ "${_pkg_macos_major:-0}" -ge 26 ]]; then
-    echo "  macOS ${_pkg_macos_major}: compiling apple-fm-sdk for Apple Intelligence…"
-    uv pip install --python "services/.venv/bin/python" "apple-fm-sdk"
-    echo "  · apple-fm-sdk compiled and included in venv"
-fi
 _VENV_ASSET="${_ASSET_DIR}/services-venv-${VERSION}.tar.gz"
 tar -czf "${_VENV_ASSET}" -C "services/.venv/lib/${_py_dir}/site-packages" .
 shasum -a 256 "${_VENV_ASSET}" | cut -d' ' -f1 > "${_VENV_ASSET}.sha256"

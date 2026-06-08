@@ -44,7 +44,7 @@ pub fn run() {
                 ])
                 .build()?;
 
-            let tray_icon_bytes = include_bytes!("../icons/tray.png");
+            let tray_icon_bytes = include_bytes!("../icons/meridiana-mark.png");
             let tray_icon = Image::from_bytes(tray_icon_bytes)?;
 
             let tray = TrayIconBuilder::new()
