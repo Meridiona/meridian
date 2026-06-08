@@ -63,7 +63,10 @@ struct ProjectItem {
     item_type: Option<String>,
     #[serde(rename = "fieldValues")]
     field_values: FieldValueConnection,
-    content: Option<IssueContent>,
+    // Raw JSON, parsed into IssueContent per ISSUE item. GitHub returns an empty
+    // `{}` for non-Issue content (PRs, draft issues), which would fail a typed
+    // Option<IssueContent> on the whole response and skip the entire project.
+    content: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -244,7 +247,13 @@ async fn fetch_project_items(
             if item.item_type.as_deref() != Some("ISSUE") {
                 continue;
             }
-            let content = match &item.content {
+            // Parse the raw content per ISSUE item; a PR/draft `{}` simply yields
+            // None here instead of failing the whole project's deserialisation.
+            let content: IssueContent = match item
+                .content
+                .as_ref()
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+            {
                 Some(c) => c,
                 None => continue,
             };
@@ -394,6 +403,7 @@ pub async fn refresh_if_stale(
     let client = reqwest::Client::new();
     let mut all_tasks: Vec<GhTask> = Vec::new();
     let mut any_ok = false;
+    let mut all_ok = true;
 
     for project_id in &github.project_ids {
         match fetch_project_items(&client, github, project_id, &viewer_login).await {
@@ -404,6 +414,7 @@ pub async fn refresh_if_stale(
             }
             Err(e) => {
                 tracing::warn!(project_id, error = %e, "github project fetch failed — skipping");
+                all_ok = false;
             }
         }
     }
@@ -425,7 +436,15 @@ pub async fn refresh_if_stale(
     .await
     .context("updating github sync state")?;
 
-    if !keys.is_empty() {
+    // Prune only when EVERY project fetched successfully. On a partial failure
+    // the fetched keys cover just the projects that succeeded, so pruning to
+    // them would delete a failed project's still-valid tasks (a transient 500 /
+    // rate-limit would wipe unrelated tasks until the next clean sync).
+    if !all_ok {
+        tracing::warn!(
+            "partial github fetch — skipping prune to preserve tasks from failed project(s)"
+        );
+    } else if !keys.is_empty() {
         match prune(pool, &keys).await {
             Ok(0) => {}
             Ok(p) => tracing::info!(pruned_count = p, "pruned stale github tasks"),
@@ -451,6 +470,42 @@ mod tests {
             "name": value,
             "field": { "name": "Status" }
         })
+    }
+
+    #[test]
+    fn mixed_content_project_deserialises() {
+        // A real Projects v2 board mixes Issues with PRs and draft items. GitHub
+        // returns `content: {}` for a PR/draft under our `... on Issue` selection
+        // and `null` for a redacted item. Before the fix these broke the whole
+        // ProjectData parse (typed Option<IssueContent>), skipping the project.
+        let json = r#"{
+          "data": { "node": { "items": {
+            "pageInfo": { "hasNextPage": false, "endCursor": null },
+            "nodes": [
+              { "type": "ISSUE", "fieldValues": { "nodes": [] },
+                "content": { "number": 5, "title": "real issue", "state": "OPEN",
+                             "url": "https://x/5", "updatedAt": "2026-01-01T00:00:00Z",
+                             "repository": { "nameWithOwner": "org/repo" },
+                             "assignees": { "nodes": [{ "login": "me" }] } } },
+              { "type": "PULL_REQUEST", "fieldValues": { "nodes": [] }, "content": {} },
+              { "type": "DRAFT_ISSUE", "fieldValues": { "nodes": [] }, "content": null }
+            ]
+          } } }
+        }"#;
+        let parsed: GqlResponse<ProjectData> =
+            serde_json::from_str(json).expect("mixed-content response must deserialise");
+        let nodes = parsed.data.unwrap().node.unwrap().items.nodes;
+        assert_eq!(nodes.len(), 3);
+
+        // The ISSUE item's raw content parses into IssueContent…
+        let issue: IssueContent =
+            serde_json::from_value(nodes[0].content.clone().unwrap()).unwrap();
+        assert_eq!(issue.number, 5);
+        assert_eq!(issue.repository.name_with_owner, "org/repo");
+
+        // …while the PR's `{}` does not — so the loop skips it instead of failing.
+        assert!(serde_json::from_value::<IssueContent>(nodes[1].content.clone().unwrap()).is_err());
+        assert!(nodes[2].content.is_none());
     }
 
     #[test]
