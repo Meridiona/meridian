@@ -76,7 +76,7 @@ Once installed, use `meridian dev …` to rebuild + restart after edits — see 
 
 - **Cloud LLM** — `OPENROUTER_API_KEY` (skip if you're running a local LLM)
 - **Jira** — URL, email, API token, project keys (gated by `[y/N]`)
-- **GitHub** — personal access token, org, repos
+- **GitHub** — token (auto-extracted from the `gh` CLI, no PAT needed) + GitHub Projects to sync
 - **Linear** — API key, team IDs
 - **Observability (OpenObserve)** — base64 auth + OTLP endpoints
 

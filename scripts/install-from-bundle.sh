@@ -97,8 +97,8 @@ collect_credentials() {
             echo >&2
             echo "    Alternatively, create a personal access token (classic) at:" >&2
             echo "      https://github.com/settings/tokens/new" >&2
-            echo "    Required scopes: repo, read:org, project" >&2
-            echo "    (project scope is required to read and update GitHub Projects)" >&2
+            echo "    Required scopes: repo, read:org, read:project" >&2
+            echo "    (read:project lets meridian read your GitHub Projects; repo posts worklog comments)" >&2
             echo >&2
             prompt_env_var "GITHUB_TOKEN" "GitHub personal access token" 1 "$env_file"
         fi
@@ -110,6 +110,45 @@ collect_credentials() {
         prompt_env_var "LINEAR_TEAM_IDS" "Linear team IDs (optional, comma-sep)" 0 "$env_file"
     fi
     ok "Credential collection complete"
+}
+
+# NOTE: _try_gh_token + _pick_github_projects are duplicated verbatim in
+# install.sh — keep both copies in sync when editing.
+# Obtain a GitHub token from the gh CLI — no PAT needed. meridian needs two
+# scopes: `repo` (post worklog / task-update issue comments) and `read:project`
+# (read Projects v2 via GraphQL). gh's default web-login grants repo + read:org
+# but not read:project, so add whatever is missing through the same browser flow,
+# then write the OAuth token to GITHUB_TOKEN. Returns non-zero if gh is missing,
+# unauthenticated, or the scope refresh fails, so the caller can fall back to a
+# manual PAT prompt. An existing GITHUB_TOKEN is kept untouched.
+_try_gh_token() {
+    local env_file="$1"
+    [[ -n "$(get_env_value GITHUB_TOKEN "$env_file")" ]] && {
+        ok "GITHUB_TOKEN already set — keeping"; return 0
+    }
+    command -v gh >/dev/null 2>&1 || return 1
+    gh auth status >/dev/null 2>&1 || return 1
+
+    # Add any missing scope through gh's browser flow. `project` (write) satisfies
+    # the read:project requirement too, so accept either.
+    local status; status="$(gh auth status 2>&1)"
+    local want=()
+    grep -q "'repo'" <<< "$status" || want+=("repo")
+    grep -qE "'read:project'|'project'" <<< "$status" || want+=("read:project")
+    if (( ${#want[@]} > 0 )); then
+        local joined; printf -v joined '%s,' "${want[@]}"; joined="${joined%,}"
+        info "  Granting the ${joined} scope(s) to your gh login (opens a browser)…"
+        gh auth refresh -h github.com -s "$joined" >&2 || {
+            warn "  Could not extend gh scopes — use a personal access token instead"
+            return 1
+        }
+    fi
+
+    local token
+    token="$(gh auth token 2>/dev/null)" || return 1
+    [[ -z "$token" ]] && return 1
+    set_env_value GITHUB_TOKEN "$token" "$env_file"
+    ok "GITHUB_TOKEN set from gh CLI (no PAT needed)"
 }
 
 # Interactively pick GitHub Projects and write their node IDs to GITHUB_PROJECT_IDS.

@@ -475,6 +475,15 @@ mod tests {
     }
 
     #[test]
+    fn project_status_unknown_defaults_todo() {
+        // Columns that aren't clearly "in progress" or "done" fall back to todo,
+        // so a Backlog / In Review / Blocked issue still surfaces as an open task.
+        assert_eq!(map_project_status(&[status_field("Backlog")]), "todo");
+        assert_eq!(map_project_status(&[status_field("In Review")]), "todo");
+        assert_eq!(map_project_status(&[status_field("Blocked")]), "todo");
+    }
+
+    #[test]
     fn non_status_field_ignored() {
         let priority_field = serde_json::json!({
             "name": "High",
