@@ -44,6 +44,48 @@ pub async fn restart_daemon() -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+pub async fn toggle_daemon(app: tauri::AppHandle, is_running: bool) -> Result<(), String> {
+    let uid = uid_str();
+    let service = format!("gui/{}/com.meridiona.daemon", uid);
+
+    let status = if is_running {
+        std::process::Command::new("launchctl")
+            .args(["stop", &service])
+            .status()
+    } else {
+        std::process::Command::new("launchctl")
+            .args(["start", &service])
+            .status()
+    }
+    .map_err(|e| format!("launchctl failed: {}", e))?;
+
+    if status.success() {
+        let (title, body) = if is_running {
+            ("Paused", "Meridian is paused. Click to resume.")
+        } else {
+            ("Resumed", "Meridian is back tracking.")
+        };
+        notify_user(&app, title, body);
+        Ok(())
+    } else {
+        Err(format!(
+            "launchctl {} returned non-zero",
+            if is_running { "stop" } else { "start" }
+        ))
+    }
+}
+
+fn notify_user(app: &tauri::AppHandle, title: &str, body: &str) {
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app
+        .notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show();
+}
+
 fn uid_str() -> String {
     std::process::Command::new("id")
         .arg("-u")

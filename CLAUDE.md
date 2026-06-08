@@ -68,6 +68,22 @@ meridian/
   packages/
     meridian-mcp/        # TypeScript MCP server — exposes meridian.db to AI clients
       dist/index.js      # compiled output (committed)
+  tray/
+    src-tauri/           # Tauri shell (Rust + Tauri framework)
+      src/
+        main.rs          # Tauri entry point
+        lib.rs           # Tauri library root
+        poll.rs          # polling loop for /api/health, /api/today
+        commands.rs      # Tauri commands (get_status, open_dashboard, etc.)
+        format.rs        # duration formatting helpers (with unit tests)
+        state.rs         # app state and health tracking
+      Cargo.toml         # Tauri dependencies
+    src/
+      index.html         # popover UI template
+      app.js             # event listeners, UI rendering
+      style.css          # popover styling
+    package.json         # npm/Node build config
+    create-icons.sh      # icon generation script
 ```
 
 ---
@@ -109,7 +125,28 @@ npm install
 npm run build  # compiles TypeScript → dist/index.js
 ```
 
-There are no JS/TS test suites yet. When adding them, place them under `ui/__tests__/` or `packages/meridian-mcp/src/__tests__/`.
+### Tauri tray app (`tray/`)
+
+```bash
+cd tray
+
+# Development (hot reload)
+npm install
+npm run tauri dev
+
+# Production build
+bash create-icons.sh
+npm install
+npm run tauri build  # outputs binary to src-tauri/target/release/meridian-tray
+
+# Rust linting & testing (src-tauri/)
+cd src-tauri
+cargo fmt --check
+cargo clippy -- -D warnings
+cargo test
+```
+
+There are no JS/TS test suites yet. When adding them, place them under `ui/__tests__/`, `packages/meridian-mcp/src/__tests__/`, or `tray/src-tauri/src/__tests__/`.
 
 ---
 

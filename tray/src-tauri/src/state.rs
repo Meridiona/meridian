@@ -45,6 +45,7 @@ pub struct AppState {
     pub last_notified_drafts: u32,
     pub daemon_was_healthy: bool,
     pub consecutive_health_failures: u32,
+    pub last_menu_state: HealthStatus,
 }
 
 impl Default for AppState {
@@ -61,6 +62,7 @@ impl Default for AppState {
             last_notified_drafts: 0,
             daemon_was_healthy: false,
             consecutive_health_failures: 0,
+            last_menu_state: HealthStatus::Unknown,
         }
     }
 }
