@@ -255,6 +255,53 @@ fn has_new_turns(records: &[NormRecord], stored_end: Option<&str>) -> bool {
     }
 }
 
+// ──────────────────────── Shared helpers ───────────────────────────────────
+
+/// The JSONL indexer's change-detection rule, reusable by any source with a
+/// change timestamp: changed iff it moved past the stored `ended_at` (+slack);
+/// a never-seen session is a candidate only if touched TODAY (local) — so a
+/// fresh DB does not re-index weeks of history.
+pub(crate) fn file_is_candidate(
+    mtime: SystemTime,
+    stored_end: Option<&str>,
+    now: DateTime<Utc>,
+) -> bool {
+    let mtime_epoch = mtime
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    epoch_is_candidate(mtime_epoch, stored_end, now)
+}
+
+/// Epoch-seconds flavour of `file_is_candidate` (Cursor's lastUpdatedAt is
+/// epoch milliseconds, not a file mtime).
+pub(crate) fn epoch_is_candidate(
+    changed_epoch: f64,
+    stored_end: Option<&str>,
+    now: DateTime<Utc>,
+) -> bool {
+    match stored_end {
+        Some(end_iso) => match parse_iso(end_iso) {
+            Some(end) => {
+                let end_epoch = end.timestamp_millis() as f64 / 1000.0;
+                changed_epoch > end_epoch + CHANGE_SLACK_SECS
+            }
+            None => true, // unparseable endpoint → re-register to repair
+        },
+        None => {
+            let secs = changed_epoch as i64;
+            let nanos = ((changed_epoch - secs as f64) * 1e9) as u32;
+            match DateTime::<Utc>::from_timestamp(secs, nanos) {
+                Some(changed) => {
+                    changed.with_timezone(&Local).date_naive()
+                        == now.with_timezone(&Local).date_naive()
+                }
+                None => false,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,52 +401,5 @@ mod tests {
         // Ordinary sessions pass through.
         assert!(!is_summariser_artifact(&[prompt_rec("fix the login bug")]));
         assert!(!is_summariser_artifact(&[]));
-    }
-}
-
-// ──────────────────────── Shared helpers ───────────────────────────────────
-
-/// The JSONL indexer's change-detection rule, reusable by any source with a
-/// change timestamp: changed iff it moved past the stored `ended_at` (+slack);
-/// a never-seen session is a candidate only if touched TODAY (local) — so a
-/// fresh DB does not re-index weeks of history.
-pub(crate) fn file_is_candidate(
-    mtime: SystemTime,
-    stored_end: Option<&str>,
-    now: DateTime<Utc>,
-) -> bool {
-    let mtime_epoch = mtime
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0);
-    epoch_is_candidate(mtime_epoch, stored_end, now)
-}
-
-/// Epoch-seconds flavour of `file_is_candidate` (Cursor's lastUpdatedAt is
-/// epoch milliseconds, not a file mtime).
-pub(crate) fn epoch_is_candidate(
-    changed_epoch: f64,
-    stored_end: Option<&str>,
-    now: DateTime<Utc>,
-) -> bool {
-    match stored_end {
-        Some(end_iso) => match parse_iso(end_iso) {
-            Some(end) => {
-                let end_epoch = end.timestamp_millis() as f64 / 1000.0;
-                changed_epoch > end_epoch + CHANGE_SLACK_SECS
-            }
-            None => true, // unparseable endpoint → re-register to repair
-        },
-        None => {
-            let secs = changed_epoch as i64;
-            let nanos = ((changed_epoch - secs as f64) * 1e9) as u32;
-            match DateTime::<Utc>::from_timestamp(secs, nanos) {
-                Some(changed) => {
-                    changed.with_timezone(&Local).date_naive()
-                        == now.with_timezone(&Local).date_naive()
-                }
-                None => false,
-            }
-        }
     }
 }
