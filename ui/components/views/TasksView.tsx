@@ -245,9 +245,9 @@ const TRACKERS: Array<{
     name: 'GitHub',
     glyph: 'Gh',
     color: '#24292F',
-    tokenHint: 'Create a personal access token with Issues read/write scope.',
-    tokenUrl: 'https://github.com/settings/tokens',
-    env: 'GITHUB_TOKEN=ghp_your_token\nGITHUB_ORG=your-org-or-username',
+    tokenHint: 'Use your gh CLI token (gh auth token) or create a classic PAT with repo, read:org, project scopes.',
+    tokenUrl: 'https://github.com/settings/tokens/new',
+    env: 'GITHUB_TOKEN=ghp_your_token\nGITHUB_PROJECT_IDS=PVT_your_project_id',
   },
 ]
 

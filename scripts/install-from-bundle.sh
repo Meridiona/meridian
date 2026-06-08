@@ -93,9 +93,16 @@ collect_credentials() {
     fi
     echo >&2
     if prompt_category "GitHub"; then
-        prompt_env_var "GITHUB_TOKEN" "GitHub personal access token" 1 "$env_file"
-        prompt_env_var "GITHUB_ORG"   "GitHub organization (or your username)" 0 "$env_file"
-        prompt_env_var "GITHUB_REPOS" "GitHub repos (optional, comma-sep owner/repo)" 0 "$env_file"
+        if ! _try_gh_token "$env_file"; then
+            echo >&2
+            echo "    Alternatively, create a personal access token (classic) at:" >&2
+            echo "      https://github.com/settings/tokens/new" >&2
+            echo "    Required scopes: repo, read:org, project" >&2
+            echo "    (project scope is required to read and update GitHub Projects)" >&2
+            echo >&2
+            prompt_env_var "GITHUB_TOKEN" "GitHub personal access token" 1 "$env_file"
+        fi
+        _pick_github_projects "$env_file"
     fi
     echo >&2
     if prompt_category "Linear"; then
@@ -103,6 +110,94 @@ collect_credentials() {
         prompt_env_var "LINEAR_TEAM_IDS" "Linear team IDs (optional, comma-sep)" 0 "$env_file"
     fi
     ok "Credential collection complete"
+}
+
+# Interactively pick GitHub Projects and write their node IDs to GITHUB_PROJECT_IDS.
+# Lists both personal and org projects via GraphQL. No-op if already set or if
+# the gh CLI is unavailable or unauthenticated.
+_pick_github_projects() {
+    local env_file="$1"
+    [[ -n "$(get_env_value GITHUB_PROJECT_IDS "$env_file")" ]] && {
+        ok "GITHUB_PROJECT_IDS already set — keeping"; return 0
+    }
+    command -v gh >/dev/null 2>&1 || return 0
+    gh auth status >/dev/null 2>&1 || return 0
+
+    local raw
+    raw="$(gh api graphql -f query='
+      { viewer {
+          projectsV2(first: 20) { nodes { id title } }
+          organizations(first: 20) {
+            nodes { login projectsV2(first: 20) { nodes { id title } } }
+          }
+      } }' 2>/dev/null)" || {
+        warn "Could not list GitHub Projects — add GITHUB_PROJECT_IDS to the config manually if needed"
+        return 0
+    }
+
+    # Extract ids and labels into newline-delimited strings using python3 (always on macOS)
+    local ids_raw labels_raw
+    ids_raw="$(printf '%s' "$raw" | python3 -c "
+import json, sys
+d = json.load(sys.stdin).get('data', {}).get('viewer', {})
+for n in d.get('projectsV2', {}).get('nodes', []):
+    print(n['id'])
+for org in d.get('organizations', {}).get('nodes', []):
+    for n in org.get('projectsV2', {}).get('nodes', []):
+        print(n['id'])
+" 2>/dev/null)" || true
+
+    labels_raw="$(printf '%s' "$raw" | python3 -c "
+import json, sys
+d = json.load(sys.stdin).get('data', {}).get('viewer', {})
+for n in d.get('projectsV2', {}).get('nodes', []):
+    print(n['title'])
+for org in d.get('organizations', {}).get('nodes', []):
+    for n in org.get('projectsV2', {}).get('nodes', []):
+        print('%s / %s' % (org['login'], n['title']))
+" 2>/dev/null)" || true
+
+    [[ -z "$ids_raw" ]] && { warn "No GitHub Projects found for your account"; return 0; }
+
+    # Read into arrays (bash 3.2 compatible — no mapfile)
+    local _ids=() _labels=()
+    while IFS= read -r line; do _ids+=("$line"); done <<< "$ids_raw"
+    while IFS= read -r line; do _labels+=("$line"); done <<< "$labels_raw"
+    local count=${#_ids[@]}
+
+    echo >&2
+    echo "    Your GitHub Projects:" >&2
+    local i=0
+    while (( i < count )); do
+        printf "      %d. %s\n" "$((i+1))" "${_labels[$i]}" >&2
+        i=$((i+1))
+    done
+    echo >&2
+
+    local selection
+    read -r -p "    Enter project numbers (comma-sep, e.g. 1,2) or Enter to skip: " selection
+    [[ -z "$selection" ]] && { info "  (skipped GITHUB_PROJECT_IDS)"; return 0; }
+
+    local selected_ids=()
+    local IFS_save="$IFS"
+    IFS=',' read -ra nums <<< "$selection"
+    IFS="$IFS_save"
+    local n
+    for n in "${nums[@]}"; do
+        n="${n//[[:space:]]/}"
+        if [[ "$n" =~ ^[0-9]+$ ]] && (( n >= 1 && n <= count )); then
+            selected_ids+=("${_ids[$((n-1))]}")
+        fi
+    done
+
+    if [[ ${#selected_ids[@]} -eq 0 ]]; then
+        info "  (no valid selection — skipped GITHUB_PROJECT_IDS)"; return 0
+    fi
+
+    local joined
+    printf -v joined '%s,' "${selected_ids[@]}"
+    set_env_value GITHUB_PROJECT_IDS "${joined%,}" "$env_file"
+    ok "GITHUB_PROJECT_IDS set (${#selected_ids[@]} project(s))"
 }
 
 GUI_TARGET="gui/$(id -u)"
