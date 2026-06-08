@@ -1,0 +1,11 @@
+{
+  "identifier": "default",
+  "description": "Main window capability — tray popover",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "positioner:default",
+    "notification:default",
+    "opener:default"
+  ]
+}

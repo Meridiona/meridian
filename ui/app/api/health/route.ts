@@ -4,7 +4,7 @@
 // instead of `meridian doctor` — never blocks the event loop, responds in <5ms.
 
 import { access, constants, readFile } from 'fs/promises'
-import { exec } from 'child_process'
+import net from 'net'
 import { NextResponse } from 'next/server'
 import os from 'os'
 import path from 'path'
@@ -12,10 +12,11 @@ import path from 'path'
 interface HealthStatus {
   a11y_helper_trusted?: boolean
   database_ready?: boolean
+  daemon_running?: boolean
   error?: string
 }
 
-const CACHE_TTL_MS = 60_000
+const CACHE_TTL_MS = 15_000
 let cache: { result: HealthStatus; at: number } | null = null
 let inFlight: Promise<void> | null = null
 
@@ -80,8 +81,42 @@ function launchctlA11yTrusted(): Promise<boolean | undefined> {
   })
 }
 
+// Check whether the Meridian daemon is running by connecting to its Unix socket.
+// The daemon binds ~/.meridian/daemon.sock on startup and removes it on clean shutdown.
+// ENOENT  = socket file absent (daemon never started or clean shutdown)
+// ECONNREFUSED = socket file exists but nothing is listening (crash remnant, will be
+//                cleaned up by the daemon on its next start via remove_file)
+// Any successful connect = daemon is alive.
+function checkDaemonRunning(): Promise<boolean | undefined> {
+  return new Promise((resolve) => {
+    const sockPath = path.join(os.homedir(), '.meridian', 'daemon.sock')
+    const socket = net.connect(sockPath)
+    const timer = setTimeout(() => {
+      socket.destroy()
+      resolve(false)
+    }, 500)
+    socket.on('connect', () => {
+      clearTimeout(timer)
+      socket.destroy()
+      resolve(true)
+    })
+    socket.on('error', (err: NodeJS.ErrnoException) => {
+      clearTimeout(timer)
+      if (err.code === 'ENOENT' || err.code === 'ECONNREFUSED') {
+        resolve(false)
+      } else {
+        resolve(undefined) // unexpected error — don't assume either way
+      }
+    })
+  })
+}
+
 async function refresh(): Promise<void> {
-  const [db, logTrust] = await Promise.all([checkDatabase(), checkA11yTrusted()])
+  const [db, logTrust, daemonRunning] = await Promise.all([
+    checkDatabase(),
+    checkA11yTrusted(),
+    checkDaemonRunning(),
+  ])
   const trusted = logTrust !== undefined ? logTrust : await launchctlA11yTrusted()
 
   cache = {
@@ -89,6 +124,7 @@ async function refresh(): Promise<void> {
       database_ready: db.ready,
       ...(db.error ? { error: db.error } : {}),
       ...(trusted !== undefined ? { a11y_helper_trusted: trusted } : {}),
+      ...(daemonRunning !== undefined ? { daemon_running: daemonRunning } : {}),
     },
     at: Date.now(),
   }
