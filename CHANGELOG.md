@@ -1,3 +1,10 @@
+## [1.28.2](https://github.com/Meridiona/meridian/compare/v1.28.1...v1.28.2) (2026-06-08)
+
+
+### Bug Fixes
+
+* **ui:** replace blocking execSync in health route with async + cache ([12cb613](https://github.com/Meridiona/meridian/commit/12cb6134031ed5ed71e4fa23146b63a655a08cbf))
+
 ## [1.28.1](https://github.com/Meridiona/meridian/compare/v1.28.0...v1.28.1) (2026-06-08)
 
 
