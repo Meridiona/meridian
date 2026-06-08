@@ -252,6 +252,29 @@ Example: 28 GB headroom, `LLM_BUDGET_PCT=0.5` → budget = 14 GB → **phi-4** (
 
 When the screen is locked the selector uses `min(0.8, budget_pct × 1.5)` as the effective budget, allowing a larger model to load while the machine is idle.
 
+### In-process MLX model selection (`select_mlx_model_id`)
+
+`select_mlx_model_id` is called by the MLX server (`server.py`) at startup to pick which model to load directly into the process (via mlx_lm + outlines). It uses the same catalog but applies a three-stage priority:
+
+1. **Preferred fits** — return the caller-supplied `preferred_hf_id` if `preferred_min_ram_gb ≤ budget`. This keeps the eval-tuned classifier model on capable machines.
+2. **Largest cached model fits** — if the preferred is too large, return the largest catalog model whose files are already in the HF cache and whose `min_ram_gb ≤ budget`. Avoids surprising multi-GB downloads on constrained machines.
+3. **Largest catalog model that fits (may download)** — if nothing cached fits, return the largest catalog entry where `min_ram_gb ≤ budget`, regardless of cache. This triggers a one-time download of the best available model rather than loading an oversized one that exceeds available memory. Falls back to `preferred_hf_id` only when **no catalog model fits** at all (budget so low even the 1.8 GB model won't load).
+
+**Why stage 3 matters on low-RAM machines:** an M1 Air (8 GB) has Metal headroom ≈ 5.4 GB. At `LLM_BUDGET_PCT=0.5` the budget is ~2.7 GB. The default preferred model is 6.5 GB (`Qwen3.5-9B-OptiQ-4bit`). Without the fix, stage 3 returned the preferred unconditionally — the server then attempted to load a 6.5 GB model into a 2.7 GB budget, causing memory pressure or an outright load failure. With the fix, stage 3 selects `Qwen3.5-4B-MLX-4bit` (2.5 GB) or `Llama-3.2-3B-Instruct-4bit` (1.8 GB) — whichever is largest and fits — and downloads it on first use.
+
+**Check what would be selected:**
+
+```bash
+cd services
+.venv/bin/python -c "
+from agents.llm_selector import select_mlx_model_id, probe_compute
+snap = probe_compute()
+print(f'Headroom: {snap.metal_headroom_gb:.1f} GB  thermal: {snap.thermal_level}')
+model = select_mlx_model_id('mlx-community/Qwen3.5-9B-OptiQ-4bit', 6.5, 0.5)
+print(f'Would load: {model}')
+"
+```
+
 ### Persistent MLX server
 
 `_ensure_mlx_server()` manages a subprocess tracked in `~/.meridian/mlx_lm_server.pid` (JSON: pid, model, port). The model loads once and persists between `run_task_linker.py` invocations (which are fresh subprocesses each tick). If the budget changes and a different model is selected, the old server is killed and the new model loads automatically.

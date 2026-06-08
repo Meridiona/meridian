@@ -6,14 +6,21 @@ set -euo pipefail
 IFS=$'\n\t'
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TRAY_BIN="${REPO_ROOT}/target/release/meridian-tray"
-PLIST="${HOME}/Library/LaunchAgents/com.meridiona.tray.plist"
-
-if [[ ! -x "${TRAY_BIN}" ]]; then
-    echo "✗ meridian-tray binary not found at ${TRAY_BIN}" >&2
-    echo "  Build it first: cd tray && npm run build" >&2
+# Support both dev mode (target/release) and bundle mode (bin/)
+TRAY_BIN=""
+if [[ -x "${REPO_ROOT}/target/release/meridian-tray" ]]; then
+    # Dev mode: built locally to target/release
+    TRAY_BIN="${REPO_ROOT}/target/release/meridian-tray"
+elif [[ -x "${REPO_ROOT}/bin/meridian-tray" ]]; then
+    # Bundle mode: installed to ~/.meridian/app/bin
+    TRAY_BIN="${REPO_ROOT}/bin/meridian-tray"
+else
+    echo "✗ meridian-tray binary not found" >&2
+    echo "  Dev: build it with: cd tray && npm run tauri build" >&2
+    echo "  Bundle: already included via: meridian update" >&2
     exit 1
 fi
+PLIST="${HOME}/Library/LaunchAgents/com.meridiona.tray.plist"
 
 mkdir -p "$(dirname "${PLIST}")"
 
