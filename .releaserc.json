@@ -12,7 +12,7 @@
       ]
     }],
     ["@semantic-release/exec", {
-      "prepareCmd": "cargo build --release && (cd ui && npm ci --no-audit --no-fund && npm run build) && (git diff $(git describe --tags --abbrev=0 2>/dev/null || echo HEAD~1)..HEAD --name-only -- tray/src-tauri/src tray/src-tauri/Cargo.* tray/create-icons.sh 2>/dev/null | grep -q . && (cd tray && bash create-icons.sh) || echo '  · tray source unchanged since last release — skipping icon generation') && (cd tray && npm ci --no-audit --no-fund && npm run build) && bash scripts/set-version.sh ${nextRelease.version} && bash scripts/package-release.sh ${nextRelease.version} && bash scripts/verify-release-bundle.sh ${nextRelease.version}",
+      "prepareCmd": "cargo build --release && (cd ui && npm ci --no-audit --no-fund && npm run build) && (cd tray && bash create-icons.sh && npm ci --no-audit --no-fund && npm run build) && bash scripts/set-version.sh ${nextRelease.version} && bash scripts/package-release.sh ${nextRelease.version} && bash scripts/verify-release-bundle.sh ${nextRelease.version}",
       "publishCmd": "npm publish ./npm/meridian-darwin-arm64 --access public"
     }],
     ["@semantic-release/npm", { "pkgRoot": "npm/meridian" }],
