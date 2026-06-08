@@ -1,3 +1,24 @@
+# [1.29.0](https://github.com/Meridiona/meridian/compare/v1.28.2...v1.29.0) (2026-06-08)
+
+
+### Features
+
+* **ui:** SSE health banner replaces 30s polling ([#195](https://github.com/Meridiona/meridian/issues/195)) ([4066ca9](https://github.com/Meridiona/meridian/commit/4066ca9ff6962a6fb3eefd92f91c35dc781a5e9d))
+
+## [1.28.2](https://github.com/Meridiona/meridian/compare/v1.28.1...v1.28.2) (2026-06-08)
+
+
+### Bug Fixes
+
+* **ui:** replace blocking execSync in health route with async + cache ([12cb613](https://github.com/Meridiona/meridian/commit/12cb6134031ed5ed71e4fa23146b63a655a08cbf))
+
+## [1.28.1](https://github.com/Meridiona/meridian/compare/v1.28.0...v1.28.1) (2026-06-08)
+
+
+### Bug Fixes
+
+* **release:** always ship ui.tar.gz so fresh installs work ([3759d49](https://github.com/Meridiona/meridian/commit/3759d494034397961b99b496f1775370e7d04cee))
+
 # [1.28.0](https://github.com/Meridiona/meridian/compare/v1.27.6...v1.28.0) (2026-06-06)
 
 
