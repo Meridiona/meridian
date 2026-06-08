@@ -20,7 +20,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 
 DAEMON_BIN="target/release/meridian"
-TRAY_BIN="tray/src-tauri/target/release/meridian-tray"
+TRAY_BIN="target/release/meridian-tray"
 UI_STANDALONE="ui/.next/standalone"
 [[ -x "${DAEMON_BIN}" ]]    || { echo "✗ ${DAEMON_BIN} not found — run: cargo build --release" >&2; exit 1; }
 [[ -x "${TRAY_BIN}" ]]      || { echo "✗ ${TRAY_BIN} not found — run: (cd tray && bash create-icons.sh && npm install && npm run tauri build)" >&2; exit 1; }
