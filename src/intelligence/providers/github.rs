@@ -401,12 +401,22 @@ pub async fn refresh_if_stale(
     };
 
     let client = reqwest::Client::new();
+
+    // Each project is an independent paginated GraphQL walk — fetch them all
+    // concurrently, then fold the results preserving any_ok/all_ok semantics.
+    let results = futures::future::join_all(
+        github
+            .project_ids
+            .iter()
+            .map(|id| fetch_project_items(&client, github, id, &viewer_login)),
+    )
+    .await;
+
     let mut all_tasks: Vec<GhTask> = Vec::new();
     let mut any_ok = false;
     let mut all_ok = true;
-
-    for project_id in &github.project_ids {
-        match fetch_project_items(&client, github, project_id, &viewer_login).await {
+    for (project_id, result) in github.project_ids.iter().zip(results) {
+        match result {
             Ok(tasks) => {
                 tracing::debug!(project_id, count = tasks.len(), "fetched project items");
                 all_tasks.extend(tasks);
