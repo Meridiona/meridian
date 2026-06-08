@@ -41,24 +41,29 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
 function repoRoot(): string {
   let dir = process.cwd()
   for (let i = 0; i < 6; i++) {
-    if (fs.existsSync(path.join(dir, 'Cargo.toml'))) return dir
-    const parent = path.dirname(dir)
+    if (fs.existsSync(path.join(/*turbopackIgnore: true*/ dir, 'Cargo.toml'))) return dir
+    const parent = path.dirname(/*turbopackIgnore: true*/ dir)
     if (parent === dir) break
     dir = parent
   }
   // Fallback: cwd is typically <repo>/ui, so the repo root is its parent.
-  return path.basename(process.cwd()) === 'ui' ? path.dirname(process.cwd()) : process.cwd()
+  return path.basename(process.cwd()) === 'ui' ? path.dirname(/*turbopackIgnore: true*/ process.cwd()) : process.cwd()
 }
 
-const SETTINGS_PATH = path.join(repoRoot(), 'settings.json')
-// Pre-fix location — read as a fallback so existing settings aren't lost; the
-// next write migrates them to SETTINGS_PATH.
-const LEGACY_SETTINGS_PATH = path.join(os.homedir(), '.meridian', 'settings.json')
+// Lazy getters to avoid tracing filesystem ops at build time (Turbopack NFT issue).
+// These are only called at runtime when API routes execute.
+function getSettingsPath(): string {
+  return path.join(/*turbopackIgnore: true*/ repoRoot(), 'settings.json')
+}
+
+function getLegacySettingsPath(): string {
+  return path.join(/*turbopackIgnore: true*/ os.homedir(), '.meridian', 'settings.json')
+}
 
 export function readSettings(): RuntimeSettings {
-  for (const p of [SETTINGS_PATH, LEGACY_SETTINGS_PATH]) {
+  for (const p of [getSettingsPath(), getLegacySettingsPath()]) {
     try {
-      const raw = fs.readFileSync(p, 'utf-8')
+      const raw = fs.readFileSync(/*turbopackIgnore: true*/ p, 'utf-8')
       return { ...SETTINGS_DEFAULTS, ...JSON.parse(raw) }
     } catch {
       // not at this location — try the next
@@ -68,6 +73,7 @@ export function readSettings(): RuntimeSettings {
 }
 
 export function writeSettings(settings: RuntimeSettings): void {
-  fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true })
-  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2), 'utf-8')
+  const settingsPath = getSettingsPath()
+  fs.mkdirSync(/*turbopackIgnore: true*/ path.dirname(settingsPath), { recursive: true })
+  fs.writeFileSync(/*turbopackIgnore: true*/ settingsPath, JSON.stringify(settings, null, 2), 'utf-8')
 }
