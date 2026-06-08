@@ -42,5 +42,25 @@ for path, pin_optdep in targets.items():
     with open(path, "w") as fh:
         json.dump(d, fh, indent=2)
         fh.write("\n")
-print(f"set version {ver} across all manifests")
+
+# Sync Cargo.lock's own [[package]] entry for "meridian" so the lockfile never
+# drifts from Cargo.toml. Without this the committed lock lags the manifest
+# (cargo silently rewrites it on an unlocked build, but a future
+# `cargo build --locked` would fail the release). "meridian" is a workspace path
+# crate, so only its own version line changes — the dependency graph is untouched,
+# leaving rust-cache's restore behaviour the same as the Cargo.toml bump already is.
+import re
+with open("Cargo.lock") as fh:
+    lock = fh.read()
+lock, n = re.subn(
+    r'(?ms)^(\[\[package\]\]\nname = "meridian"\nversion = ")[^"]*(")',
+    lambda m: m.group(1) + ver + m.group(2),
+    lock,
+    count=1,
+)
+if n != 1:
+    sys.exit(f"set-version: expected exactly one [[package]] meridian in Cargo.lock, patched {n}")
+with open("Cargo.lock", "w") as fh:
+    fh.write(lock)
+print(f"set version {ver} across all manifests + Cargo.lock")
 PY
