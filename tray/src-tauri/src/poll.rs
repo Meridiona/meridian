@@ -7,8 +7,12 @@ use std::time::{Duration, Instant};
 use tauri::Emitter;
 use tauri_plugin_notification::NotificationExt;
 
-const UI_BASE: &str = "http://127.0.0.1:3939";
 const TICK: Duration = Duration::from_secs(30);
+
+fn ui_base() -> String {
+    let port = std::env::var("MERIDIAN_UI_PORT").unwrap_or_else(|_| "3939".to_string());
+    format!("http://127.0.0.1:{}", port)
+}
 
 #[derive(Deserialize)]
 struct HealthResp {
@@ -80,7 +84,7 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
 
 async fn refresh_health(app: &tauri::AppHandle, client: &Client, state: &Arc<Mutex<AppState>>) {
     let resp = client
-        .get(format!("{}/api/health", UI_BASE))
+        .get(format!("{}/api/health", ui_base()))
         .send()
         .await
         .ok()
@@ -144,7 +148,7 @@ async fn refresh_health(app: &tauri::AppHandle, client: &Client, state: &Arc<Mut
 
 async fn refresh_active(client: &Client, state: &Arc<Mutex<AppState>>) {
     let resp = client
-        .get(format!("{}/api/active", UI_BASE))
+        .get(format!("{}/api/active", ui_base()))
         .send()
         .await
         .ok();
@@ -167,7 +171,7 @@ async fn refresh_active(client: &Client, state: &Arc<Mutex<AppState>>) {
 
 async fn refresh_today(client: &Client, state: &Arc<Mutex<AppState>>) {
     let resp = client
-        .get(format!("{}/api/today", UI_BASE))
+        .get(format!("{}/api/today", ui_base()))
         .send()
         .await
         .ok();
@@ -192,7 +196,7 @@ async fn refresh_worklogs(
 ) {
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let resp = client
-        .get(format!("{}/api/worklogs?day={}", UI_BASE, today))
+        .get(format!("{}/api/worklogs?day={}", ui_base(), today))
         .send()
         .await
         .ok();

@@ -4,6 +4,11 @@ use std::sync::{Arc, Mutex};
 use tauri::State;
 use tauri_plugin_opener::OpenerExt;
 
+fn ui_base() -> String {
+    let port = std::env::var("MERIDIAN_UI_PORT").unwrap_or_else(|_| "3939".to_string());
+    format!("http://127.0.0.1:{}", port)
+}
+
 #[tauri::command]
 pub fn get_status(state: State<'_, Arc<Mutex<AppState>>>) -> Result<StatusPayload, String> {
     state
@@ -15,14 +20,15 @@ pub fn get_status(state: State<'_, Arc<Mutex<AppState>>>) -> Result<StatusPayloa
 #[tauri::command]
 pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
     app.opener()
-        .open_url("http://localhost:3939", None::<&str>)
+        .open_url(&ui_base(), None::<&str>)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn open_worklogs(app: tauri::AppHandle) -> Result<(), String> {
+    let url = format!("{}/worklogs", ui_base());
     app.opener()
-        .open_url("http://localhost:3939/worklogs", None::<&str>)
+        .open_url(&url, None::<&str>)
         .map_err(|e| e.to_string())
 }
 

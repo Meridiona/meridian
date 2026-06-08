@@ -49,10 +49,10 @@ pub fn run() {
                     let app_clone = app.clone();
                     match event.id.as_ref() {
                         "open_dashboard" => {
-                            open_in_browser(app, "http://127.0.0.1:3939");
+                            open_in_browser(app, &ui_base());
                         }
                         "open_worklogs" => {
-                            open_in_browser(app, "http://127.0.0.1:3939/worklogs");
+                            open_in_browser(app, &format!("{}/worklogs", ui_base()));
                         }
                         "toggle_daemon" => {
                             if let Ok(state_guard) = app_clone.state::<Arc<Mutex<AppState>>>().lock() {
@@ -113,6 +113,11 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error running meridian tray");
+}
+
+fn ui_base() -> String {
+    let port = std::env::var("MERIDIAN_UI_PORT").unwrap_or_else(|_| "3939".to_string());
+    format!("http://127.0.0.1:{}", port)
 }
 
 fn open_in_browser(app: &tauri::AppHandle, url: &str) {
