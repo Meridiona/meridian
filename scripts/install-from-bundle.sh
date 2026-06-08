@@ -23,6 +23,7 @@ _HASH_FILE="${HOME}/.meridian/.component-hashes"
 _load_old_hash() { grep "^$1=" "${_HASH_FILE}" 2>/dev/null | cut -d= -f2 || true; }
 _OLD_DAEMON_HASH="$(_load_old_hash daemon_bin)"
 _OLD_UI_HASH="$(_load_old_hash ui_tarball)"
+_OLD_TRAY_HASH="$(_load_old_hash tray_bin)"
 
 info() { echo "→ $*" >&2; }
 ok()   { echo "  ✓ $*" >&2; }
@@ -396,6 +397,11 @@ _daemon_changed=1
 [[ -n "${_OLD_DAEMON_HASH}" && -n "${_new_daemon_hash}" && \
    "${_new_daemon_hash}" == "${_OLD_DAEMON_HASH}" ]] && _daemon_changed=0
 
+_new_tray_hash="$(shasum -a 256 "${APP_ROOT}/bin/meridian-tray" 2>/dev/null | cut -d' ' -f1 || true)"
+_tray_changed=1
+[[ -n "${_OLD_TRAY_HASH}" && -n "${_new_tray_hash}" && \
+   "${_new_tray_hash}" == "${_OLD_TRAY_HASH}" ]] && _tray_changed=0
+
 # Snapshot MLX health before any venv work — if already healthy and services
 # don't change we skip the restart + model-load wait entirely.
 _mlx_was_healthy=0
@@ -623,6 +629,18 @@ else
     bash "${APP_ROOT}/scripts/install-daemon.sh" || warn "daemon agent install failed"
 fi
 
+# Tray app: skip restart when the binary is identical.
+if [[ -x "${APP_ROOT}/bin/meridian-tray" ]]; then
+    if [[ "${_tray_changed}" -eq 0 ]]; then
+        ok "Tray app unchanged — skipping restart"
+    else
+        info "Installing Meridian Tray launchd agent…"
+        bash "${APP_ROOT}/scripts/install-tray-daemon.sh" || warn "tray agent install failed"
+    fi
+else
+    warn "meridian-tray binary not found — tray app not installed (not yet in this release)"
+fi
+
 # Claude Code SessionEnd hook: seals each Claude session into app_sessions the
 # instant it ends (the indexer sweep + 1 h idle seal are only the fallback).
 # Idempotent merge into ~/.claude/settings.json; also purges retired Python
@@ -669,9 +687,11 @@ fi
 # Write to a temp file and rename atomically so a crash mid-write never leaves
 # a half-written or empty hash file (which would force a full reinstall).
 _final_ui_hash="${_new_ui_hash:-${_OLD_UI_HASH}}"
+_final_tray_hash="${_new_tray_hash:-${_OLD_TRAY_HASH}}"
 {
     [[ -n "${_new_daemon_hash}" ]] && printf 'daemon_bin=%s\n' "${_new_daemon_hash}"
     [[ -n "${_final_ui_hash}" ]] && printf 'ui_tarball=%s\n' "${_final_ui_hash}"
+    [[ -n "${_final_tray_hash}" ]] && printf 'tray_bin=%s\n' "${_final_tray_hash}"
 } > "${_HASH_FILE}.tmp" && mv "${_HASH_FILE}.tmp" "${_HASH_FILE}"
 
 ok "all daemons installed"
