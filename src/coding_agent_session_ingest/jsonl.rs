@@ -137,7 +137,8 @@ pub fn iter_normalised_with_title(path: &Path, agent: &str) -> (Vec<NormRecord>,
     (normalised, title)
 }
 
-/// The session's current title from a Claude JSONL: the last `custom-title`'s
+/// The session's current title from a Claude JSONL: the last `ai-title`'s
+/// `aiTitle` (clean AI-generated name), else the last `custom-title`'s
 /// `customTitle`, else the last `summary`'s `summary`. Trimmed; None if absent
 /// or blank.
 fn claude_title(records: &[Value]) -> Option<String> {
@@ -151,7 +152,9 @@ fn claude_title(records: &[Value]) -> Option<String> {
             .filter(|s| !s.is_empty())
             .map(String::from)
     };
-    pick("custom-title", "customTitle").or_else(|| pick("summary", "summary"))
+    pick("ai-title", "aiTitle")
+        .or_else(|| pick("custom-title", "customTitle"))
+        .or_else(|| pick("summary", "summary"))
 }
 
 fn str_field<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
