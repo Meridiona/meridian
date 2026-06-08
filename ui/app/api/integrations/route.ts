@@ -68,7 +68,7 @@ export async function GET() {
   const result: IntegrationsResponse = {
     jira: isSet(env, 'JIRA_BASE_URL') && isSet(env, 'JIRA_EMAIL') && isSet(env, 'JIRA_API_TOKEN'),
     linear: isSet(env, 'LINEAR_API_KEY'),
-    github: isSet(env, 'GITHUB_TOKEN') && isSet(env, 'GITHUB_ORG'),
+    github: isSet(env, 'GITHUB_TOKEN'),
   }
 
   return NextResponse.json(result)

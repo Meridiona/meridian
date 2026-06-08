@@ -221,6 +221,7 @@ const TRACKERS: Array<{
   tokenHint: string
   tokenUrl: string
   env: string
+  note?: string
 }> = [
   {
     id: 'jira',
@@ -245,9 +246,10 @@ const TRACKERS: Array<{
     name: 'GitHub',
     glyph: 'Gh',
     color: '#24292F',
-    tokenHint: 'Create a personal access token with Issues read/write scope.',
-    tokenUrl: 'https://github.com/settings/tokens',
-    env: 'GITHUB_TOKEN=ghp_your_token\nGITHUB_ORG=your-org-or-username',
+    tokenHint: 'Easiest: run meridian setup — it pulls your token from the gh CLI (no PAT) and adds the read:project scope. Or create a classic PAT with repo, read:org, read:project scopes.',
+    tokenUrl: 'https://github.com/settings/tokens/new',
+    env: 'GITHUB_TOKEN=ghp_your_token\nGITHUB_PROJECT_IDS=PVT_your_project_id',
+    note: 'GITHUB_PROJECT_IDS is a comma-separated list of GitHub Projects v2 node IDs. meridian setup lists your projects to pick from, or find them with: gh api graphql -f query=\'{ viewer { projectsV2(first:10){nodes{id title}} } }\'',
   },
 ]
 
@@ -326,6 +328,11 @@ function TrackerSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
               In a terminal, run <CodeChip text="meridian config edit" /> and add:
             </p>
             <CopyBlock text={tracker.env} />
+            {tracker.note && (
+              <p className="mt-2 text-[11px] leading-relaxed" style={{ color: 'var(--ink-3)' }}>
+                {tracker.note}
+              </p>
+            )}
           </div>
         </li>
         <li className="flex gap-3">

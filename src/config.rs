@@ -83,12 +83,10 @@ pub struct JiraConfig {
 
 #[derive(Clone, Debug)]
 pub struct GitHubConfig {
-    /// Personal access token with `repo` scope.
+    /// Personal access token or gh CLI OAuth token with `repo`, `read:org`, `project` scopes.
     pub token: String,
-    /// GitHub organisation slug.
-    pub org: String,
-    /// Optional list of "org/repo" slugs to restrict fetching. Empty = all org repos.
-    pub repos: Vec<String>,
+    /// GitHub Projects v2 node IDs (PVT_xxx). Empty → no tasks synced.
+    pub project_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -205,11 +203,9 @@ fn parse_jira() -> Option<PmProviderConfig> {
 
 fn parse_github() -> Option<PmProviderConfig> {
     let token = std::env::var("GITHUB_TOKEN").ok()?;
-    let org = std::env::var("GITHUB_ORG").ok()?;
     Some(PmProviderConfig::GitHub(GitHubConfig {
         token,
-        org,
-        repos: env_list("GITHUB_REPOS"),
+        project_ids: env_list("GITHUB_PROJECT_IDS"),
     }))
 }
 
@@ -244,9 +240,9 @@ impl Config {
     ///   JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN
     ///   JIRA_PROJECT_KEYS   — optional comma-separated filter, e.g. "KAN,ENG"
     ///
-    /// GitHub provider (all two required):
-    ///   GITHUB_TOKEN, GITHUB_ORG
-    ///   GITHUB_REPOS        — optional comma-separated filter, e.g. "org/api,org/web"
+    /// GitHub provider (required):
+    ///   GITHUB_TOKEN
+    ///   GITHUB_PROJECT_IDS  — optional comma-separated Projects v2 node IDs (PVT_xxx)
     ///
     /// Linear provider (required):
     ///   LINEAR_API_KEY
@@ -419,6 +415,48 @@ mod tests {
         assert_eq!(cfg.screenpipe_db, "/Users/testuser/custom/db.sqlite");
         std::env::remove_var("HOME");
         std::env::remove_var("SCREENPIPE_DB");
+    }
+
+    #[test]
+    fn test_parse_github_reads_token_and_project_ids() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("GITHUB_TOKEN", "gho_testtoken");
+        std::env::set_var("GITHUB_PROJECT_IDS", "PVT_aaa, PVT_bbb");
+        let parsed = parse_github();
+        assert!(matches!(parsed, Some(PmProviderConfig::GitHub(_))));
+        if let Some(PmProviderConfig::GitHub(gh)) = parsed {
+            assert_eq!(gh.token, "gho_testtoken");
+            // env_list splits on commas and trims surrounding whitespace.
+            assert_eq!(gh.project_ids, vec!["PVT_aaa", "PVT_bbb"]);
+        }
+        std::env::remove_var("GITHUB_TOKEN");
+        std::env::remove_var("GITHUB_PROJECT_IDS");
+    }
+
+    #[test]
+    fn test_parse_github_requires_token() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::remove_var("GITHUB_TOKEN");
+        std::env::set_var("GITHUB_PROJECT_IDS", "PVT_aaa");
+        assert!(
+            parse_github().is_none(),
+            "no GITHUB_TOKEN → no GitHub provider"
+        );
+        std::env::remove_var("GITHUB_PROJECT_IDS");
+    }
+
+    #[test]
+    fn test_parse_github_token_only_empty_project_ids() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("GITHUB_TOKEN", "gho_x");
+        std::env::remove_var("GITHUB_PROJECT_IDS");
+        let parsed = parse_github();
+        assert!(matches!(parsed, Some(PmProviderConfig::GitHub(_))));
+        if let Some(PmProviderConfig::GitHub(gh)) = parsed {
+            // Unset GITHUB_PROJECT_IDS → empty vec; refresh_if_stale skips the sync.
+            assert!(gh.project_ids.is_empty());
+        }
+        std::env::remove_var("GITHUB_TOKEN");
     }
 
     #[test]
