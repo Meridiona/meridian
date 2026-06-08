@@ -1,3 +1,10 @@
+## [1.28.1](https://github.com/Meridiona/meridian/compare/v1.28.0...v1.28.1) (2026-06-08)
+
+
+### Bug Fixes
+
+* **release:** always ship ui.tar.gz so fresh installs work ([3759d49](https://github.com/Meridiona/meridian/commit/3759d494034397961b99b496f1775370e7d04cee))
+
 # [1.28.0](https://github.com/Meridiona/meridian/compare/v1.27.6...v1.28.0) (2026-06-06)
 
 
