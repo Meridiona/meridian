@@ -15,6 +15,9 @@ pub const TASK_METHOD_PENDING: &str = "pending_summariser";
 /// task_method we set after summarising — the classifier's queue (P3). NOT the
 /// Python terminal 'summarised': summarising is no longer the end of the line.
 pub const TASK_METHOD_PENDING_CLASSIFIER: &str = "pending_classifier";
+/// task_method we set when a row fails MAX_ROW_ATTEMPTS — permanently excluded
+/// from auto-drain across daemon restarts.
+pub const TASK_METHOD_DEAD_LETTER: &str = "subprocess_error";
 
 /// A sealed coding-agent segment awaiting a summary (metadata only;
 /// `session_text` is fetched separately, one at a time, to keep memory flat).
@@ -93,6 +96,9 @@ pub async fn fetch_pending(
         cols = ROW_COLS,
         day = day_clause,
     );
+    // Note: dead-lettered rows have task_method != TASK_METHOD_PENDING, so the
+    // WHERE task_method = ? filter naturally excludes them from this query.
+    // This comment documents that invariant for future maintainers.
 
     let mut q = sqlx::query_as::<_, PendingRow>(&sql)
         .bind(TASK_METHOD_PENDING)
@@ -163,6 +169,18 @@ pub async fn write_summary(
     .await
     .context("write summary")?;
     Ok(res.rows_affected() > 0)
+}
+
+/// Mark a row as permanently dead-lettered (failed MAX_ROW_ATTEMPTS times).
+/// Idempotent: the row is only updated once.
+pub async fn write_dead_letter(pool: &SqlitePool, row_id: i64) -> Result<()> {
+    sqlx::query("UPDATE app_sessions SET task_method = ? WHERE id = ?")
+        .bind(TASK_METHOD_DEAD_LETTER)
+        .bind(row_id)
+        .execute(pool)
+        .await
+        .context("write dead letter")?;
+    Ok(())
 }
 
 #[cfg(test)]

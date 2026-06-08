@@ -176,8 +176,10 @@ pub fn parse_session_segments(path: &Path, params: &SegmentParams) -> (SessionMe
     let (meta, mut segments) = segment_records(records, &session_uuid, &agent, jsonl_bytes, params);
     // Stamp the session's own name on every segment (one read produced both).
     if let Some(t) = title {
+        const TITLE_CAP: usize = 200;
+        let cleaned = t.chars().take(TITLE_CAP).collect::<String>();
         for seg in segments.iter_mut() {
-            seg.title = Some(t.clone());
+            seg.title = Some(cleaned.clone());
         }
     }
     (meta, segments)

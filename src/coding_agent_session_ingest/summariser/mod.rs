@@ -29,7 +29,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Local;
+use chrono::Utc;
 use sqlx::SqlitePool;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -414,7 +414,7 @@ async fn drain(
     cfg: &SummariserConfig,
     attempts: &mut HashMap<i64, u32>,
 ) -> bool {
-    let now = Local::now();
+    let now = Utc::now();
     let days = [
         (now - chrono::Duration::days(1))
             .format("%Y-%m-%d")
@@ -454,11 +454,14 @@ async fn drain(
             let tries = tries + 1;
             attempts.insert(row.id, tries);
             if tries >= MAX_ROW_ATTEMPTS {
+                if let Err(e) = db::write_dead_letter(pool, row.id).await {
+                    tracing::error!(row_id = row.id, error = %e, "failed to dead-letter row");
+                }
                 tracing::warn!(
                     row_id = outcome.row_id,
                     error = outcome.error.as_deref().unwrap_or("unknown"),
                     attempts = tries,
-                    "summarise failed repeatedly — dead-lettering for this daemon run                      (restart or `coding-agent-summarise --day` retries it)"
+                    "summarise failed repeatedly — dead-lettering for this daemon run (restart or `coding-agent-summarise --day` retries it)"
                 );
             } else {
                 tracing::warn!(
@@ -486,7 +489,7 @@ pub async fn cli_summarise(pool: &SqlitePool, dry_run: bool, day: Option<&str>, 
     }
     let day = day
         .map(str::to_string)
-        .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
+        .unwrap_or_else(|| Utc::now().format("%Y-%m-%d").to_string());
     let rows = match db::fetch_pending(pool, &cfg, limit, std::slice::from_ref(&day)).await {
         Ok(r) => r,
         Err(e) => {

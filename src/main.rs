@@ -278,6 +278,38 @@ async fn main() -> Result<()> {
     // 5. Open / create meridian pool and run migrations
     let meridian = setup_db(&initial_cfg.meridian_db_uri()).await?;
 
+    // 5b. Unix domain socket — health endpoint for the tray / UI.
+    //     ~/.meridian/daemon.sock: connecting succeeds = daemon is running.
+    //     Stale socket from a previous crash is removed before binding.
+    let sock_path = {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
+        std::path::PathBuf::from(format!("{}/.meridian/daemon.sock", home))
+    };
+    let _ = std::fs::remove_file(&sock_path);
+    let sock_path_cleanup = sock_path.clone();
+    {
+        use tokio::io::AsyncWriteExt as _;
+        let listener = tokio::net::UnixListener::bind(&sock_path)?;
+        tokio::spawn(async move {
+            loop {
+                match listener.accept().await {
+                    Ok((mut stream, _)) => {
+                        let pid = std::process::id();
+                        tokio::spawn(async move {
+                            let msg = format!("{{\"running\":true,\"pid\":{}}}\n", pid);
+                            let _ = stream.write_all(msg.as_bytes()).await;
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "daemon.sock accept error");
+                        break;
+                    }
+                }
+            }
+        });
+    }
+    tracing::info!(path = %sock_path.display(), "daemon.sock ready");
+
     // 6. Graceful shutdown: listen for SIGINT and SIGTERM
     let mut sigint = signal(SignalKind::interrupt())?;
     let mut sigterm = signal(SignalKind::terminate())?;
@@ -564,6 +596,7 @@ async fn main() -> Result<()> {
 
     // 9. Shutdown
     tracing::info!("shutting down");
+    let _ = std::fs::remove_file(&sock_path_cleanup);
     screenpipe.close().await;
     meridian.close().await;
 
