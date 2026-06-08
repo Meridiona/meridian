@@ -61,11 +61,12 @@ jobs:
           # and ships npm 11.x (OIDC trusted publishing needs npm >= 11.5.1).
           # No registry-url: it writes an .npmrc that breaks OIDC auth.
           node-version: "24"
-          # Cache ~/.npm for both the root npm ci and the ui/ npm ci inside prepareCmd.
+          # Cache ~/.npm for the root npm ci plus the ui/ and tray/ npm ci inside prepareCmd.
           cache: "npm"
           cache-dependency-path: |
             package-lock.json
             ui/package-lock.json
+            tray/package-lock.json
 
       - name: Cache uv packages
         uses: actions/cache@v4
