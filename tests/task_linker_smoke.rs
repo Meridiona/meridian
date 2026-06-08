@@ -174,10 +174,7 @@ async fn real_classification_writes_task_and_advances_cursor() {
     );
     // task_key may be None if classified as overhead — that is valid
     let confidence = row.get::<Option<f64>, _>(3).unwrap_or(0.0);
-    assert!(
-        confidence >= 0.0 && confidence <= 1.0,
-        "confidence out of range"
-    );
+    assert!((0.0..=1.0).contains(&confidence), "confidence out of range");
 
     // cursor advanced to this session
     let cursor: (i64,) = sqlx::query_as("SELECT last_session_id FROM agent_cursor WHERE id = 1")
