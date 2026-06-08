@@ -1,3 +1,23 @@
+# [1.32.0](https://github.com/Meridiona/meridian/compare/v1.31.3...v1.32.0) (2026-06-08)
+
+
+### Bug Fixes
+
+* **coding-agent:** address PR [#193](https://github.com/Meridiona/meridian/issues/193) review findings ([333da23](https://github.com/Meridiona/meridian/commit/333da23e77b5d04bdc977517f1d719d0bb6b4ccb))
+* **coding-agent:** read custom-title record type for Claude Code session names ([f1a8040](https://github.com/Meridiona/meridian/commit/f1a804078518083ff83bd275ce1679839d4fd0da))
+* **coding-agent:** tick ceiling, ps probe timeout, restore today-only drain ([5641267](https://github.com/Meridiona/meridian/commit/56412673195e460cf7f1eee325c5de2908f945d9)), closes [#177](https://github.com/Meridiona/meridian/issues/177)
+* **github:** address PR [#198](https://github.com/Meridiona/meridian/issues/198) review — non-Issue items + partial-fetch prune ([b5df2c0](https://github.com/Meridiona/meridian/commit/b5df2c082b73b94af024b84e3838185a06ceed1f))
+* **install:** fix cursor-agent summariser check and messaging ([9901626](https://github.com/Meridiona/meridian/commit/9901626e3ad1511d053f60844b64359438a2844b))
+* **setup:** no-PAT GitHub auth via gh CLI + correct read:project scope ([384c8de](https://github.com/Meridiona/meridian/commit/384c8de501a38f9bcd465a5ba7909cd2f0fc5443))
+* **summariser:** dead-letter cap + two-day drain window; single-read titles ([23a608c](https://github.com/Meridiona/meridian/commit/23a608cbdf95b119dbbad23c6cdbb0325345b7f4))
+* **ui:** resolve Turbopack NFT warning by lazily-initializing settings paths ([46b8305](https://github.com/Meridiona/meridian/commit/46b83057b95dd8f85ab5efe74d306a7275364146))
+
+
+### Features
+
+* **coding-agent:** populate window_titles from each agent's session name ([47f14db](https://github.com/Meridiona/meridian/commit/47f14dbafa66b06ff9f1ff30ebdd12bd14669332))
+* **github:** replace Issues Search API with Projects v2 GraphQL ([35cbae9](https://github.com/Meridiona/meridian/commit/35cbae977890d610d65e54ca85ccb7b576edaf35))
+
 ## [1.31.3](https://github.com/Meridiona/meridian/compare/v1.31.2...v1.31.3) (2026-06-08)
 
 
