@@ -71,6 +71,7 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
 
         emit_update(&app, &state);
         update_tray_icon(&app, &state);
+        update_toggle_menu(&app, &state);
 
         tokio::time::sleep(TICK).await;
         tick = tick.wrapping_add(1);
@@ -207,7 +208,7 @@ async fn refresh_worklogs(
 
     let notify_new = {
         let mut s = state.lock().unwrap();
-        let changed = draft_count > 0 && draft_count != s.last_notified_drafts;
+        let changed = draft_count > s.last_notified_drafts;
         if draft_count == 0 {
             s.last_notified_drafts = 0;
         }
@@ -265,4 +266,49 @@ fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
         .title(title)
         .body(body)
         .show();
+}
+
+fn update_toggle_menu(app: &tauri::AppHandle, state: &Arc<Mutex<AppState>>) {
+    use tauri::menu::MenuBuilder;
+    use tauri::menu::MenuItemBuilder;
+
+    let (health, tray_id, last_menu_state) = {
+        let s = state.lock().unwrap();
+        (s.health.clone(), s.tray_id.clone(), s.last_menu_state.clone())
+    };
+
+    if health == last_menu_state {
+        return;
+    }
+
+    let label = match &health {
+        HealthStatus::Healthy => "Connected ●",
+        HealthStatus::Unhealthy | HealthStatus::Unknown => "Disconnected ○",
+    };
+
+    if let Some(id) = tray_id {
+        if let Some(tray) = app.tray_by_id(&id) {
+            if let Ok(toggle_item) = MenuItemBuilder::with_id("toggle_daemon", label).build(app) {
+                if let Ok(open_item) = MenuItemBuilder::with_id("open_dashboard", "Open Dashboard").build(app) {
+                    if let Ok(worklogs_item) = MenuItemBuilder::with_id("open_worklogs", "Review Drafts").build(app) {
+                        if let Ok(restart_item) = MenuItemBuilder::with_id("restart_daemon", "Restart Daemon").build(app) {
+                            if let Ok(quit_item) = MenuItemBuilder::with_id("quit", "Quit Meridian Tray").build(app) {
+                                if let Ok(menu) = MenuBuilder::new(app)
+                                    .items(&[&toggle_item, &open_item, &worklogs_item, &restart_item, &quit_item])
+                                    .build()
+                                {
+                                    let _ = tray.set_menu(Some(menu));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    {
+        let mut s = state.lock().unwrap();
+        s.last_menu_state = health;
+    }
 }

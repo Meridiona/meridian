@@ -11,6 +11,8 @@ let elapsedTimerId = null
 
 // ── Elements ────────────────────────────────────────────────────────────────
 const dot          = document.getElementById('status-dot')
+const toggleBtn    = document.getElementById('toggle-btn')
+const toggleStatus = document.getElementById('toggle-status')
 const sessionApp   = document.getElementById('session-app')
 const sessionElapsed = document.getElementById('session-elapsed')
 const statFocus    = document.getElementById('stat-focus')
@@ -67,6 +69,11 @@ function fmtSwitches(count) {
 
 // ── Render ───────────────────────────────────────────────────────────────────
 function render(status) {
+  // Toggle button and status
+  const isHealthy = status.ui_reachable && status.healthy
+  toggleBtn.className = isHealthy ? 'toggle-btn active' : 'toggle-btn'
+  toggleStatus.textContent = isHealthy ? 'Connected' : 'Disconnected'
+
   // Status dot
   dot.className = 'status-dot'
   if (!status.ui_reachable) {
@@ -148,6 +155,11 @@ function clearShimmer(el) {
 // ── Events ───────────────────────────────────────────────────────────────────
 listen('status-update', (event) => {
   render(event.payload)
+})
+
+toggleBtn.addEventListener('click', () => {
+  const isCurrentlyActive = toggleBtn.classList.contains('active')
+  invoke('toggle_daemon', { is_running: isCurrentlyActive }).catch(console.error)
 })
 
 btnOpen.addEventListener('click', () => invoke('open_dashboard'))

@@ -4,7 +4,7 @@
 // instead of `meridian doctor` — never blocks the event loop, responds in <5ms.
 
 import { access, constants, readFile } from 'fs/promises'
-import { exec } from 'child_process'
+import net from 'net'
 import { NextResponse } from 'next/server'
 import os from 'os'
 import path from 'path'
@@ -16,7 +16,7 @@ interface HealthStatus {
   error?: string
 }
 
-const CACHE_TTL_MS = 60_000
+const CACHE_TTL_MS = 15_000
 let cache: { result: HealthStatus; at: number } | null = null
 let inFlight: Promise<void> | null = null
 
@@ -81,20 +81,33 @@ function launchctlA11yTrusted(): Promise<boolean | undefined> {
   })
 }
 
-// Check whether the Meridian daemon launchd job is currently running.
-// Returns undefined when launchctl is unavailable (non-macOS future).
+// Check whether the Meridian daemon is running by connecting to its Unix socket.
+// The daemon binds ~/.meridian/daemon.sock on startup and removes it on clean shutdown.
+// ENOENT  = socket file absent (daemon never started or clean shutdown)
+// ECONNREFUSED = socket file exists but nothing is listening (crash remnant, will be
+//                cleaned up by the daemon on its next start via remove_file)
+// Any successful connect = daemon is alive.
 function checkDaemonRunning(): Promise<boolean | undefined> {
   return new Promise((resolve) => {
-    const uid = process.getuid?.() ?? 501
-    exec(
-      `launchctl print gui/${uid}/com.meridiona.daemon`,
-      { timeout: 3000 },
-      (_err, stdout) => {
-        if (!stdout) { resolve(undefined); return }
-        // launchctl print shows "state = running" when live, "state = not running" otherwise.
-        resolve(stdout.includes('state = running'))
-      },
-    )
+    const sockPath = path.join(os.homedir(), '.meridian', 'daemon.sock')
+    const socket = net.connect(sockPath)
+    const timer = setTimeout(() => {
+      socket.destroy()
+      resolve(false)
+    }, 500)
+    socket.on('connect', () => {
+      clearTimeout(timer)
+      socket.destroy()
+      resolve(true)
+    })
+    socket.on('error', (err: NodeJS.ErrnoException) => {
+      clearTimeout(timer)
+      if (err.code === 'ENOENT' || err.code === 'ECONNREFUSED') {
+        resolve(false)
+      } else {
+        resolve(undefined) // unexpected error — don't assume either way
+      }
+    })
   })
 }
 

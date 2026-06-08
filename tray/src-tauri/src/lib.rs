@@ -9,10 +9,9 @@ use std::sync::{Arc, Mutex};
 use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    tray::TrayIconBuilder,
     Manager, WindowEvent,
 };
-use tauri_plugin_positioner::{Position, WindowExt};
 
 pub fn run() {
     let app_state = Arc::new(Mutex::new(AppState::default()));
@@ -26,12 +25,13 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
+            let toggle_item = MenuItemBuilder::with_id("toggle_daemon", "Connected ●").build(app)?;
             let open_item = MenuItemBuilder::with_id("open_dashboard", "Open Dashboard").build(app)?;
             let worklogs_item = MenuItemBuilder::with_id("open_worklogs", "Review Drafts").build(app)?;
             let restart_item = MenuItemBuilder::with_id("restart_daemon", "Restart Daemon").build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "Quit Meridian Tray").build(app)?;
             let menu = MenuBuilder::new(app)
-                .items(&[&open_item, &worklogs_item, &restart_item, &quit_item])
+                .items(&[&toggle_item, &open_item, &worklogs_item, &restart_item, &quit_item])
                 .build()?;
 
             let tray_icon_bytes = include_bytes!("../icons/tray.png");
@@ -39,40 +39,44 @@ pub fn run() {
 
             let tray = TrayIconBuilder::new()
                 .menu(&menu)
-                .show_menu_on_left_click(false)
+                .show_menu_on_left_click(true)
                 .icon(tray_icon)
                 .tooltip("Meridian")
                 .on_tray_icon_event(|tray_handle, event| {
                     tauri_plugin_positioner::on_tray_event(tray_handle.app_handle(), &event);
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        let app = tray_handle.app_handle();
-                        toggle_popover(app);
-                    }
                 })
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open_dashboard" => {
-                        open_in_browser(app, "http://localhost:3939");
+                .on_menu_event(|app, event| {
+                    let app_clone = app.clone();
+                    match event.id.as_ref() {
+                        "open_dashboard" => {
+                            open_in_browser(app, "http://127.0.0.1:3939");
+                        }
+                        "open_worklogs" => {
+                            open_in_browser(app, "http://127.0.0.1:3939/worklogs");
+                        }
+                        "toggle_daemon" => {
+                            if let Ok(state_guard) = app_clone.state::<Arc<Mutex<AppState>>>().lock() {
+                                let is_running = state_guard.health == crate::state::HealthStatus::Healthy;
+                                drop(state_guard);
+                                let app_for_notify = app_clone.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    let _ = commands::toggle_daemon(app_for_notify, is_running).await;
+                                });
+                            }
+                        }
+                        "restart_daemon" => {
+                            let uid = uid_str();
+                            let _ = std::process::Command::new("launchctl")
+                                .args([
+                                    "kickstart",
+                                    "-k",
+                                    &format!("gui/{}/com.meridiona.daemon", uid),
+                                ])
+                                .spawn();
+                        }
+                        "quit" => app.exit(0),
+                        _ => {}
                     }
-                    "open_worklogs" => {
-                        open_in_browser(app, "http://localhost:3939/worklogs");
-                    }
-                    "restart_daemon" => {
-                        let uid = uid_str();
-                        let _ = std::process::Command::new("launchctl")
-                            .args([
-                                "kickstart",
-                                "-k",
-                                &format!("gui/{}/com.meridiona.daemon", uid),
-                            ])
-                            .spawn();
-                    }
-                    "quit" => app.exit(0),
-                    _ => {}
                 })
                 .build(app)?;
 
@@ -105,22 +109,10 @@ pub fn run() {
             commands::open_dashboard,
             commands::open_worklogs,
             commands::restart_daemon,
+            commands::toggle_daemon,
         ])
         .run(tauri::generate_context!())
         .expect("error running meridian tray");
-}
-
-fn toggle_popover(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.move_window(Position::TrayBottomCenter);
-        let visible = window.is_visible().unwrap_or(false);
-        if visible {
-            let _ = window.hide();
-        } else {
-            let _ = window.show();
-            let _ = window.set_focus();
-        }
-    }
 }
 
 fn open_in_browser(app: &tauri::AppHandle, url: &str) {

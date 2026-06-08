@@ -1,58 +1,50 @@
 #!/usr/bin/env bash
 # meridian — normalises screenpipe activity into structured app sessions
-# Install the Meridian Tray app as a launchd LaunchAgent.
-# Follows the same pattern as install-daemon.sh.
-#
-#   bash scripts/install-tray-daemon.sh
+# Install the tray app as a launchd agent to start on login
+
 set -euo pipefail
+IFS=$'\n\t'
 
-LABEL="com.meridiona.tray"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TEMPLATE="${SCRIPT_DIR}/${LABEL}.plist"
-LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
-PLIST_DEST="${LAUNCH_AGENTS}/${LABEL}.plist"
-GUI_TARGET="gui/$(id -u)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TRAY_BIN="${REPO_ROOT}/tray/src-tauri/target/release/meridian-tray"
+PLIST="${HOME}/Library/LaunchAgents/com.meridiona.tray.plist"
 
-[[ -f "${TEMPLATE}" ]] || { echo "✗ plist template not found: ${TEMPLATE}" >&2; exit 1; }
-
-# Locate the tray binary — always lives in the bundle's bin/ alongside meridian.
-APP_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-TRAY_BIN="${APP_ROOT}/bin/meridian-tray"
-
-[[ -x "${TRAY_BIN}" ]] || {
+if [[ ! -x "${TRAY_BIN}" ]]; then
     echo "✗ meridian-tray binary not found at ${TRAY_BIN}" >&2
+    echo "  Build it first: cd tray && npm run build" >&2
     exit 1
-}
+fi
 
-mkdir -p "${HOME}/.meridian/logs" "${LAUNCH_AGENTS}"
+mkdir -p "$(dirname "${PLIST}")"
 
-echo "→ writing ${PLIST_DEST}"
-sed \
-    -e "s|{{TRAY_BIN}}|${TRAY_BIN}|g" \
-    -e "s|{{HOME}}|${HOME}|g" \
-    "${TEMPLATE}" > "${PLIST_DEST}"
+cat > "${PLIST}" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.meridiona.tray</string>
+    <key>Program</key>
+    <string>TRAY_BIN_PLACEHOLDER</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>LOGS_PLACEHOLDER/tray.log</string>
+    <key>StandardErrorPath</key>
+    <string>LOGS_PLACEHOLDER/tray.log</string>
+</dict>
+</plist>
+EOF
 
-plutil -lint "${PLIST_DEST}" >/dev/null || { echo "✗ plist failed validation" >&2; exit 1; }
+# Replace placeholders
+sed -i '' "s|TRAY_BIN_PLACEHOLDER|${TRAY_BIN}|g" "${PLIST}"
+sed -i '' "s|LOGS_PLACEHOLDER|${HOME}/.meridian/logs|g" "${PLIST}"
 
-echo "→ bootout ${LABEL} (if loaded)"
-launchctl bootout "${GUI_TARGET}/${LABEL}" 2>/dev/null || true
-_wait=0
-while launchctl print "${GUI_TARGET}/${LABEL}" >/dev/null 2>&1; do
-    sleep 1; _wait=$((_wait+1))
-    [[ "${_wait}" -ge 15 ]] && { echo "⚠ ${LABEL} still in domain after 15s — proceeding" >&2; break; }
-done
+mkdir -p "${HOME}/.meridian/logs"
+chmod 644 "${PLIST}"
 
-echo "→ bootstrap ${LABEL}"
-launchctl enable "${GUI_TARGET}/${LABEL}" 2>/dev/null || true
-launchctl bootstrap "${GUI_TARGET}" "${PLIST_DEST}"
-launchctl enable "${GUI_TARGET}/${LABEL}"
-launchctl kickstart -k "${GUI_TARGET}/${LABEL}"
+launchctl load "${PLIST}" 2>/dev/null || launchctl load -F "${PLIST}"
 
-echo
-echo "✓ tray app installed — it will appear in the menu bar shortly"
-echo
-echo "Useful follow-ups:"
-echo "  launchctl print  ${GUI_TARGET}/${LABEL}"
-echo "  tail -f ~/.meridian/logs/tray.log"
-echo "  tail -f ~/.meridian/logs/tray-error.log"
-echo "  ${SCRIPT_DIR}/uninstall-tray-daemon.sh"
+echo "✓ Tray app registered as com.meridiona.tray — will start on next login"
