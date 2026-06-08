@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    com.meridiona.tray — menu bar tray app for Meridian.
+    Shows daemon health, active session, focus stats, and worklog badges.
+    Runs as the user's own LaunchAgent so it has display server access.
+
+    Install:   scripts/install-tray-daemon.sh
+    Uninstall: scripts/uninstall-tray-daemon.sh
+    Logs:      ~/.meridian/logs/tray.log  (stdout)
+               ~/.meridian/logs/tray-error.log  (stderr)
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.meridiona.tray</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{TRAY_BIN}}</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>{{HOME}}</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>{{HOME}}/.meridian/logs/tray.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{HOME}}/.meridian/logs/tray-error.log</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+</dict>
+</plist>
