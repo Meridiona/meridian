@@ -1,3 +1,10 @@
+# [1.31.0](https://github.com/Meridiona/meridian/compare/v1.30.0...v1.31.0) (2026-06-08)
+
+
+### Features
+
+* **coding-agent:** session titles + custom-title fix + summariser reliability ([#193](https://github.com/Meridiona/meridian/issues/193)) ([0d4732f](https://github.com/Meridiona/meridian/commit/0d4732f1dc2a23367926134491bd01ed10c1e0ff)), closes [#177](https://github.com/Meridiona/meridian/issues/177)
+
 # [1.30.0](https://github.com/Meridiona/meridian/compare/v1.29.0...v1.30.0) (2026-06-08)
 
 
