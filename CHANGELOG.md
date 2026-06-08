@@ -1,3 +1,10 @@
+# [1.29.0](https://github.com/Meridiona/meridian/compare/v1.28.2...v1.29.0) (2026-06-08)
+
+
+### Features
+
+* **ui:** SSE health banner replaces 30s polling ([#195](https://github.com/Meridiona/meridian/issues/195)) ([4066ca9](https://github.com/Meridiona/meridian/commit/4066ca9ff6962a6fb3eefd92f91c35dc781a5e9d))
+
 ## [1.28.2](https://github.com/Meridiona/meridian/compare/v1.28.1...v1.28.2) (2026-06-08)
 
 
