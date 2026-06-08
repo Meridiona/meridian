@@ -25,13 +25,23 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            let toggle_item = MenuItemBuilder::with_id("toggle_daemon", "Connected ●").build(app)?;
-            let open_item = MenuItemBuilder::with_id("open_dashboard", "Open Dashboard").build(app)?;
-            let worklogs_item = MenuItemBuilder::with_id("open_worklogs", "Review Drafts").build(app)?;
-            let restart_item = MenuItemBuilder::with_id("restart_daemon", "Restart Daemon").build(app)?;
+            let toggle_item =
+                MenuItemBuilder::with_id("toggle_daemon", "Connected ●").build(app)?;
+            let open_item =
+                MenuItemBuilder::with_id("open_dashboard", "Open Dashboard").build(app)?;
+            let worklogs_item =
+                MenuItemBuilder::with_id("open_worklogs", "Review Drafts").build(app)?;
+            let restart_item =
+                MenuItemBuilder::with_id("restart_daemon", "Restart Daemon").build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "Quit Meridian Tray").build(app)?;
             let menu = MenuBuilder::new(app)
-                .items(&[&toggle_item, &open_item, &worklogs_item, &restart_item, &quit_item])
+                .items(&[
+                    &toggle_item,
+                    &open_item,
+                    &worklogs_item,
+                    &restart_item,
+                    &quit_item,
+                ])
                 .build()?;
 
             let tray_icon_bytes = include_bytes!("../icons/tray.png");
@@ -55,12 +65,16 @@ pub fn run() {
                             open_in_browser(app, &format!("{}/worklogs", ui_base()));
                         }
                         "toggle_daemon" => {
-                            if let Ok(state_guard) = app_clone.state::<Arc<Mutex<AppState>>>().lock() {
-                                let is_running = state_guard.health == crate::state::HealthStatus::Healthy;
+                            if let Ok(state_guard) =
+                                app_clone.state::<Arc<Mutex<AppState>>>().lock()
+                            {
+                                let is_running =
+                                    state_guard.health == crate::state::HealthStatus::Healthy;
                                 drop(state_guard);
                                 let app_for_notify = app_clone.clone();
                                 tauri::async_runtime::spawn(async move {
-                                    let _ = commands::toggle_daemon(app_for_notify, is_running).await;
+                                    let _ =
+                                        commands::toggle_daemon(app_for_notify, is_running).await;
                                 });
                             }
                         }
