@@ -1,3 +1,19 @@
+# [1.30.0](https://github.com/Meridiona/meridian/compare/v1.29.0...v1.30.0) (2026-06-08)
+
+
+### Bug Fixes
+
+* **release:** update tray binary path to root target dir for workspace ([7608d4d](https://github.com/Meridiona/meridian/commit/7608d4d3d2dd566d5cc178e21e0a67dc97c8202b))
+* **tray:** address reviewer comments from PR [#196](https://github.com/Meridiona/meridian/issues/196) ([4c79dcf](https://github.com/Meridiona/meridian/commit/4c79dcf07ec49409abd83c6b0f4834684876723b))
+* **tray:** use MERIDIAN_UI_PORT env var instead of hardcoding 3939 ([35bdcdb](https://github.com/Meridiona/meridian/commit/35bdcdb016beb9f4ec5930a6d5d7cf3ea50b77e4))
+* **ui:** add missing exec import in health route ([41965a2](https://github.com/Meridiona/meridian/commit/41965a25de27e7d0e416c43255521ccaf80993f3))
+
+
+### Features
+
+* **tray:** macOS menu bar app + daemon_running health signal ([f148b12](https://github.com/Meridiona/meridian/commit/f148b12012f1af40c4206454c3dab948ab037b49))
+* **workspace:** add tray app to root Cargo workspace ([341d263](https://github.com/Meridiona/meridian/commit/341d26341ba24ea134e3a8c65b18c084b09e5bc7))
+
 # [1.29.0](https://github.com/Meridiona/meridian/compare/v1.28.2...v1.29.0) (2026-06-08)
 
 
