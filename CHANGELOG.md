@@ -1,3 +1,11 @@
+## [1.31.2](https://github.com/Meridiona/meridian/compare/v1.31.1...v1.31.2) (2026-06-08)
+
+
+### Bug Fixes
+
+* **tray:** support both dev and bundle binary paths in install script ([2be9204](https://github.com/Meridiona/meridian/commit/2be9204ccc075b3bc2d56d9ef421e275f740b28c))
+* **tray:** use meridiana-mark logo instead of generic placeholder ([1a2fac4](https://github.com/Meridiona/meridian/commit/1a2fac41cc7435235fd860caa2c1e314bf4ea90f))
+
 ## [1.31.1](https://github.com/Meridiona/meridian/compare/v1.31.0...v1.31.1) (2026-06-08)
 
 
