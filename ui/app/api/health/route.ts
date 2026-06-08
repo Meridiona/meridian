@@ -3,6 +3,7 @@
 // Health check for the status banner. Uses direct fast checks (fs + launchctl)
 // instead of `meridian doctor` — never blocks the event loop, responds in <5ms.
 
+import { exec } from 'child_process'
 import { access, constants, readFile } from 'fs/promises'
 import net from 'net'
 import { NextResponse } from 'next/server'
