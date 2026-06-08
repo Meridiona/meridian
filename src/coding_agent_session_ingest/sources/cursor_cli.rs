@@ -112,24 +112,27 @@ impl CursorCliSource {
         &self,
         endpoints: &HashMap<String, String>,
         now: DateTime<Utc>,
-    ) -> Vec<(String, Vec<NormRecord>)> {
+    ) -> Vec<(String, Vec<NormRecord>, Option<String>)> {
         let mut out = Vec::new();
         for (uuid, store, mtime_epoch) in self.changed_stores(endpoints, now) {
-            let records = match load_store(&store, mtime_epoch).await {
+            let (records, title) = match load_store(&store, mtime_epoch).await {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::warn!(error = %e, store = %store.display(), "cursor_cli store load failed");
                     continue;
                 }
             };
-            out.push((uuid, records));
+            out.push((uuid, records, title));
         }
         out
     }
 }
 
 /// Load one store.db into normalised records.
-async fn load_store(store: &std::path::Path, mtime_epoch: f64) -> anyhow::Result<Vec<NormRecord>> {
+async fn load_store(
+    store: &std::path::Path,
+    mtime_epoch: f64,
+) -> anyhow::Result<(Vec<NormRecord>, Option<String>)> {
     let uri = format!("sqlite://{}?mode=ro", store.display());
     let opts = SqliteConnectOptions::from_str(&uri)?.read_only(true);
     let pool = sqlx::pool::PoolOptions::new()
@@ -144,7 +147,7 @@ async fn load_store(store: &std::path::Path, mtime_epoch: f64) -> anyhow::Result
 pub(crate) async fn load_from_pool(
     pool: &SqlitePool,
     mtime_epoch: f64,
-) -> anyhow::Result<Vec<NormRecord>> {
+) -> anyhow::Result<(Vec<NormRecord>, Option<String>)> {
     // meta '0' → {createdAt, latestRootBlobId}. The value is hex-encoded JSON
     // (observed); tolerate plain JSON too in case a future version drops the
     // hex wrapping.
@@ -200,7 +203,14 @@ pub(crate) async fn load_from_pool(
     if let Some(last) = records.last_mut() {
         last.timestamp = mtime_iso;
     }
-    Ok(records)
+    // meta.name is the chat's title; 'New Agent' is the unnamed placeholder.
+    let title = meta
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|t| !t.is_empty() && *t != "New Agent")
+        .map(String::from);
+    Ok((records, title))
 }
 
 /// The root blob's leading repeated field 1 (32-byte sha256 ids) is the
@@ -428,7 +438,8 @@ mod tests {
         let pool = fake_store().await;
         seed_conversation(&pool).await;
 
-        let recs = load_from_pool(&pool, MTIME_EPOCH).await.unwrap();
+        let (recs, title) = load_from_pool(&pool, MTIME_EPOCH).await.unwrap();
+        assert!(title.is_none(), "'New Agent' placeholder is not a title");
         assert_eq!(recs.len(), 2, "system + scaffolding dropped");
 
         assert!(recs[0].is_user && recs[0].is_user_prompt);
@@ -481,7 +492,7 @@ mod tests {
         let root = encode_root(&[&id(6), &id(7), &id(8)]);
         put_blob(&pool, &id(0xBB), &root).await;
 
-        let recs = load_from_pool(&pool, MTIME_EPOCH).await.unwrap();
+        let (recs, _) = load_from_pool(&pool, MTIME_EPOCH).await.unwrap();
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0].body, "hi");
     }

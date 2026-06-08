@@ -111,6 +111,13 @@ pub async fn upsert_segment(
         TASK_METHOD_LIVE
     };
     let sealed_stamp: Option<&str> = if sealed { sealed_at } else { None };
+    // The agent's own session name rides in window_titles using the canonical
+    // ETL shape ([{"window_name", "count"}]) so the dashboard and classifier
+    // read coding-agent rows exactly like screen-capture rows. No name → [].
+    let window_titles: String = match &segment.title {
+        Some(t) => serde_json::json!([{ "window_name": t, "count": 1 }]).to_string(),
+        None => EMPTY_JSON_LIST.to_string(),
+    };
 
     sqlx::query(
         r#"
@@ -133,6 +140,7 @@ pub async fn upsert_segment(
             frame_count         = excluded.frame_count,
             session_text        = excluded.session_text,
             session_text_source = excluded.session_text_source,
+            window_titles       = excluded.window_titles,
             task_method         = excluded.task_method,
             sealed_at           = excluded.sealed_at
         WHERE app_sessions.sealed_at IS NULL
@@ -142,7 +150,7 @@ pub async fn upsert_segment(
     .bind(&segment.started_at)
     .bind(&segment.ended_at)
     .bind(segment.active_seconds)
-    .bind(EMPTY_JSON_LIST)
+    .bind(&window_titles)
     .bind(0_i64) // min_frame_id (sentinel)
     .bind(0_i64) // max_frame_id (sentinel)
     .bind(frame_count)
@@ -352,6 +360,7 @@ mod tests {
             active_seconds: 100,
             transcript: "[user] hi\n\n[claude-code] yo".to_string(),
             is_last: true,
+            title: None,
         }
     }
 
@@ -415,6 +424,63 @@ mod tests {
         assert_eq!(
             frozen, "2026-05-20T08:20:00.000000+00:00",
             "sealed row must not mutate"
+        );
+    }
+
+    #[tokio::test]
+    async fn title_written_as_window_titles_and_refreshed_while_live() {
+        let pool = fresh_db().await;
+        let wt = |pool: &SqlitePool, id: i64| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, String>(
+                    "SELECT window_titles FROM app_sessions WHERE id = ?",
+                )
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+
+        // No title → the [] sentinel.
+        let s1 = seg(
+            "t1",
+            "2026-05-20T08:00:00.000000+00:00",
+            "2026-05-20T08:10:00.000000+00:00",
+            2,
+        );
+        let id = upsert_segment(&pool, &s1, false, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(wt(&pool, id).await, "[]");
+
+        // Title appearing later (Cursor names after the first reply) refreshes
+        // the LIVE row in the canonical ETL shape.
+        let mut s2 = s1.clone();
+        s2.title = Some("Fix the login bug".into());
+        let id2 = upsert_segment(&pool, &s2, false, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(id, id2);
+        assert_eq!(
+            wt(&pool, id).await,
+            r#"[{"count":1,"window_name":"Fix the login bug"}]"#
+        );
+
+        // Sealed rows stay immutable — a title change after sealing is a no-op.
+        upsert_segment(&pool, &s2, true, Some("2026-05-20T09:00:00.000000+00:00"))
+            .await
+            .unwrap();
+        let mut s3 = s2.clone();
+        s3.title = Some("Renamed later".into());
+        upsert_segment(&pool, &s3, false, None).await.unwrap();
+        assert_eq!(
+            wt(&pool, id).await,
+            r#"[{"count":1,"window_name":"Fix the login bug"}]"#,
+            "sealed row keeps its title"
         );
     }
 
