@@ -6,7 +6,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TRAY_BIN="${REPO_ROOT}/tray/src-tauri/target/release/meridian-tray"
+TRAY_BIN="${REPO_ROOT}/target/release/meridian-tray"
 PLIST="${HOME}/Library/LaunchAgents/com.meridiona.tray.plist"
 
 if [[ ! -x "${TRAY_BIN}" ]]; then
