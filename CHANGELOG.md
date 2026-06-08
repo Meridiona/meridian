@@ -1,3 +1,17 @@
+## [1.31.3](https://github.com/Meridiona/meridian/compare/v1.31.2...v1.31.3) (2026-06-08)
+
+
+### Bug Fixes
+
+* **llm-selector:** pick largest fitting catalog model on low-RAM machines ([#197](https://github.com/Meridiona/meridian/issues/197)) ([7072106](https://github.com/Meridiona/meridian/commit/70721067a751738ade659a13ec40bf0df8ff5f89)), closes [#177](https://github.com/Meridiona/meridian/issues/177)
+* **release:** always generate tray icons before build ([1ed15fc](https://github.com/Meridiona/meridian/commit/1ed15fce08363e2a341a10c16ac14aef2e768ccf))
+* **release:** correct tray change-detection, sync Cargo.lock, cache tray npm ([9ec41e9](https://github.com/Meridiona/meridian/commit/9ec41e967d7bcb5377214b804139fd61d7c614aa))
+
+
+### Performance Improvements
+
+* **release:** optimize semantic-release build time by 1-2 minutes ([ad8c7a8](https://github.com/Meridiona/meridian/commit/ad8c7a8ce88ca5b7850b0e9d617ed587d2a207c8))
+
 ## [1.31.2](https://github.com/Meridiona/meridian/compare/v1.31.1...v1.31.2) (2026-06-08)
 
 
