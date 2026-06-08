@@ -20,8 +20,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 
 DAEMON_BIN="target/release/meridian"
+TRAY_BIN="tray/src-tauri/target/release/meridian-tray"
 UI_STANDALONE="ui/.next/standalone"
 [[ -x "${DAEMON_BIN}" ]]    || { echo "✗ ${DAEMON_BIN} not found — run: cargo build --release" >&2; exit 1; }
+[[ -x "${TRAY_BIN}" ]]      || { echo "✗ ${TRAY_BIN} not found — run: (cd tray && bash create-icons.sh && npm install && npm run tauri build)" >&2; exit 1; }
 [[ -d "${UI_STANDALONE}" ]] || { echo "✗ ${UI_STANDALONE} not found — run: (cd ui && npm ci && npm run build)" >&2; exit 1; }
 
 DEST="npm/meridian-darwin-arm64"
@@ -32,6 +34,10 @@ mkdir -p "${DEST}/bin" "${DEST}/scripts"
 echo "→ daemon binary"
 cp "${DAEMON_BIN}" "${DEST}/bin/meridian"
 chmod +x "${DEST}/bin/meridian"
+
+echo "→ tray app binary"
+cp "${TRAY_BIN}" "${DEST}/bin/meridian-tray"
+chmod +x "${DEST}/bin/meridian-tray"
 
 echo "→ Node.js 22 LTS runtime (used here to build the ABI-127 better-sqlite3 addon)"
 # Download the official Node 22 LTS binary and verify its SHA-256. We build the
@@ -217,7 +223,9 @@ cp scripts/install-daemon.sh scripts/uninstall-daemon.sh \
 cp scripts/com.meridiona.daemon.plist \
    scripts/com.meridiona.screenpipe.plist \
    scripts/com.meridiona.a11y-helper.plist \
-   scripts/com.meridiona.ui.plist "${DEST}/scripts/"
+   scripts/com.meridiona.ui.plist \
+   scripts/com.meridiona.tray.plist "${DEST}/scripts/"
+cp scripts/install-tray-daemon.sh scripts/uninstall-tray-daemon.sh "${DEST}/scripts/"
 
 # a11y-helper: ship the COMMITTED prebuilt binary byte-for-byte. Never rebuild
 # it here — users' Accessibility grants are keyed to its code hash (CDHash);

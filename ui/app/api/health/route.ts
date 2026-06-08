@@ -12,6 +12,7 @@ import path from 'path'
 interface HealthStatus {
   a11y_helper_trusted?: boolean
   database_ready?: boolean
+  daemon_running?: boolean
   error?: string
 }
 
@@ -80,8 +81,29 @@ function launchctlA11yTrusted(): Promise<boolean | undefined> {
   })
 }
 
+// Check whether the Meridian daemon launchd job is currently running.
+// Returns undefined when launchctl is unavailable (non-macOS future).
+function checkDaemonRunning(): Promise<boolean | undefined> {
+  return new Promise((resolve) => {
+    const uid = process.getuid?.() ?? 501
+    exec(
+      `launchctl print gui/${uid}/com.meridiona.daemon`,
+      { timeout: 3000 },
+      (_err, stdout) => {
+        if (!stdout) { resolve(undefined); return }
+        // launchctl print shows "state = running" when live, "state = not running" otherwise.
+        resolve(stdout.includes('state = running'))
+      },
+    )
+  })
+}
+
 async function refresh(): Promise<void> {
-  const [db, logTrust] = await Promise.all([checkDatabase(), checkA11yTrusted()])
+  const [db, logTrust, daemonRunning] = await Promise.all([
+    checkDatabase(),
+    checkA11yTrusted(),
+    checkDaemonRunning(),
+  ])
   const trusted = logTrust !== undefined ? logTrust : await launchctlA11yTrusted()
 
   cache = {
@@ -89,6 +111,7 @@ async function refresh(): Promise<void> {
       database_ready: db.ready,
       ...(db.error ? { error: db.error } : {}),
       ...(trusted !== undefined ? { a11y_helper_trusted: trusted } : {}),
+      ...(daemonRunning !== undefined ? { daemon_running: daemonRunning } : {}),
     },
     at: Date.now(),
   }
