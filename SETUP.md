@@ -63,12 +63,19 @@ LINEAR_API_KEY=lin_api_your_key_here
 
 ### GitHub
 
-1. Create a token at Settings → Developer settings → Personal access tokens (classic, `repo` scope)
-2. Add to config:
+**Easiest:** if you have the `gh` CLI installed and authenticated, `meridian setup` extracts the token automatically and shows a list of your GitHub Projects to pick from.
+
+**Manual:** create a personal access token (classic) at https://github.com/settings/tokens/new
+- Required scopes: `repo`, `read:org`, `project`
+- `project` scope (not `read:project`) is required to read and update GitHub Projects
+
+Add to config:
 ```dotenv
 GITHUB_TOKEN=ghp_your_token
-GITHUB_ORG=your-org
+GITHUB_PROJECT_IDS=PVT_xxx,PVT_yyy
 ```
+
+To find your project node ID: `gh api graphql -f query='{ viewer { projectsV2(first: 10) { nodes { id title } } } }'`
 
 Worklogs are **never posted automatically** — Meridian drafts them for you to review and approve in the dashboard.
 

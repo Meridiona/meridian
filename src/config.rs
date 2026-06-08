@@ -83,12 +83,10 @@ pub struct JiraConfig {
 
 #[derive(Clone, Debug)]
 pub struct GitHubConfig {
-    /// Personal access token with `repo` scope.
+    /// Personal access token or gh CLI OAuth token with `repo`, `read:org`, `project` scopes.
     pub token: String,
-    /// GitHub organisation slug.
-    pub org: String,
-    /// Optional list of "org/repo" slugs to restrict fetching. Empty = all org repos.
-    pub repos: Vec<String>,
+    /// GitHub Projects v2 node IDs (PVT_xxx). Empty → no tasks synced.
+    pub project_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -205,11 +203,9 @@ fn parse_jira() -> Option<PmProviderConfig> {
 
 fn parse_github() -> Option<PmProviderConfig> {
     let token = std::env::var("GITHUB_TOKEN").ok()?;
-    let org = std::env::var("GITHUB_ORG").ok()?;
     Some(PmProviderConfig::GitHub(GitHubConfig {
         token,
-        org,
-        repos: env_list("GITHUB_REPOS"),
+        project_ids: env_list("GITHUB_PROJECT_IDS"),
     }))
 }
 
@@ -244,9 +240,9 @@ impl Config {
     ///   JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN
     ///   JIRA_PROJECT_KEYS   — optional comma-separated filter, e.g. "KAN,ENG"
     ///
-    /// GitHub provider (all two required):
-    ///   GITHUB_TOKEN, GITHUB_ORG
-    ///   GITHUB_REPOS        — optional comma-separated filter, e.g. "org/api,org/web"
+    /// GitHub provider (required):
+    ///   GITHUB_TOKEN
+    ///   GITHUB_PROJECT_IDS  — optional comma-separated Projects v2 node IDs (PVT_xxx)
     ///
     /// Linear provider (required):
     ///   LINEAR_API_KEY

@@ -1,65 +1,107 @@
 // meridian — normalises screenpipe activity into structured app sessions
 //
-// GitHub task connector. Pulls the OPEN issues assigned to the authenticated
-// user into `pm_tasks` so the classifier can link sessions to them and the
-// worklog driver can draft against them. Mirrors the Jira/Linear connectors:
-// fetch → filter → upsert → prune, gated by `pm_sync_state`.
-//
-// We use the REST search API (`GET /search/issues?q=assignee:@me is:issue
-// is:open`) which returns the user's assigned issues across every repo they can
-// see, then scope in Rust to the configured org (or the explicit repo list) by
-// parsing each item's `repository_url`. This sidesteps the org-vs-user search
-// qualifier ambiguity (a configured owner may be a personal account or an org).
-//
-// task_key is `owner/repo#number` — the worklog poster parses it back to hit the
-// issue-comments endpoint. GitHub issues have no native time tracking, so a
-// "worklog" is posted as a structured issue comment (see pm_worklog/github.rs).
+// GitHub task connector. Fetches open issues assigned to the viewer from
+// configured GitHub Projects v2 (GraphQL API). task_key is `owner/repo#number`.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use serde_json::json;
 use sqlx::SqlitePool;
 
 use crate::config::GitHubConfig;
 
-const SEARCH_URL: &str = "https://api.github.com/search/issues";
-const MAX_RESULTS: usize = 100;
+const GRAPHQL_URL: &str = "https://api.github.com/graphql";
 const SYNC_INTERVAL_MINS: i64 = 5;
 
 // ---------------------------------------------------------------------------
-// REST search response shapes
+// GraphQL response shapes
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
-struct SearchResponse {
-    items: Vec<SearchItem>,
+struct GqlResponse<T> {
+    data: Option<T>,
 }
 
 #[derive(Deserialize)]
-struct SearchItem {
+struct ViewerData {
+    viewer: Viewer,
+}
+
+#[derive(Deserialize)]
+struct Viewer {
+    login: String,
+}
+
+#[derive(Deserialize)]
+struct ProjectData {
+    node: Option<ProjectNode>,
+}
+
+#[derive(Deserialize)]
+struct ProjectNode {
+    items: ProjectItemConnection,
+}
+
+#[derive(Deserialize)]
+struct ProjectItemConnection {
+    #[serde(rename = "pageInfo")]
+    page_info: PageInfo,
+    nodes: Vec<ProjectItem>,
+}
+
+#[derive(Deserialize)]
+struct PageInfo {
+    #[serde(rename = "hasNextPage")]
+    has_next_page: bool,
+    #[serde(rename = "endCursor")]
+    end_cursor: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ProjectItem {
+    #[serde(rename = "type")]
+    item_type: Option<String>,
+    #[serde(rename = "fieldValues")]
+    field_values: FieldValueConnection,
+    content: Option<IssueContent>,
+}
+
+#[derive(Deserialize)]
+struct FieldValueConnection {
+    nodes: Vec<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct IssueContent {
     number: u64,
     title: String,
     #[serde(default)]
     body: Option<String>,
-    #[serde(default)]
-    state: Option<String>,
-    #[serde(default)]
-    html_url: Option<String>,
-    repository_url: String,
+    state: String,
+    url: String,
+    #[serde(rename = "updatedAt")]
     updated_at: String,
-    #[serde(default)]
-    assignee: Option<GhUser>,
-    /// Present only on pull requests — used to skip PRs defensively.
-    #[serde(default)]
-    pull_request: Option<serde_json::Value>,
+    repository: Repo,
+    assignees: AssigneeConnection,
 }
 
 #[derive(Deserialize)]
-struct GhUser {
-    #[serde(default)]
-    login: Option<String>,
+struct Repo {
+    #[serde(rename = "nameWithOwner")]
+    name_with_owner: String,
 }
 
-/// One normalised, in-scope issue ready to upsert.
+#[derive(Deserialize)]
+struct AssigneeConnection {
+    nodes: Vec<LoginNode>,
+}
+
+#[derive(Deserialize)]
+struct LoginNode {
+    login: String,
+}
+
+/// One normalised issue ready to upsert.
 struct GhTask {
     task_key: String,
     repo_slug: String,
@@ -68,108 +110,174 @@ struct GhTask {
     status: &'static str,
     url: String,
     updated_at: String,
-    assignee: Option<String>,
+    assignee: String,
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Extract `owner/repo` from a `https://api.github.com/repos/owner/repo` URL.
-fn repo_slug_from_url(repository_url: &str) -> Option<String> {
-    let tail = repository_url.split("/repos/").nth(1)?;
-    let mut parts = tail.split('/');
-    let owner = parts.next()?;
-    let repo = parts.next()?;
-    if owner.is_empty() || repo.is_empty() {
-        return None;
+/// Map a GitHub Project Status field value to meridian's status_category.
+fn map_project_status(field_values: &[serde_json::Value]) -> &'static str {
+    for fv in field_values {
+        let field_name = fv.pointer("/field/name").and_then(|v| v.as_str());
+        let value_name = fv.get("name").and_then(|v| v.as_str());
+        if let (Some(f), Some(v)) = (field_name, value_name) {
+            if f.eq_ignore_ascii_case("status") {
+                let lower = v.to_lowercase();
+                return if lower.contains("progress") || lower.contains("doing") {
+                    "in_progress"
+                } else if lower.contains("done")
+                    || lower.contains("complete")
+                    || lower.contains("closed")
+                {
+                    "done"
+                } else {
+                    "todo"
+                };
+            }
+        }
     }
-    Some(format!("{owner}/{repo}"))
+    "todo"
 }
 
-/// Decide whether an in-scope item belongs to this connector's configuration.
-/// If explicit repos are configured, the slug must be one of them; otherwise the
-/// repo owner must equal the configured org/user.
-fn in_scope(repo_slug: &str, github: &GitHubConfig) -> bool {
-    if !github.repos.is_empty() {
-        return github.repos.iter().any(|r| r == repo_slug);
-    }
-    repo_slug
-        .split_once('/')
-        .map(|(owner, _)| owner.eq_ignore_ascii_case(&github.org))
-        .unwrap_or(false)
-}
-
-/// Map a GitHub issue state to meridian's status_category. Issues are open or
-/// closed; finer status only exists inside a Project board (not modelled here).
-fn map_state(state: Option<&str>) -> &'static str {
-    match state {
-        Some("closed") => "done",
-        _ => "todo",
-    }
-}
-
-/// Normalise a raw search item into a `GhTask`, or `None` if it is a PR / out of
-/// scope / malformed.
-fn normalise(item: &SearchItem, github: &GitHubConfig) -> Option<GhTask> {
-    if item.pull_request.is_some() {
-        return None; // PRs are not tasks
-    }
-    let repo_slug = repo_slug_from_url(&item.repository_url)?;
-    if !in_scope(&repo_slug, github) {
-        return None;
-    }
-    Some(GhTask {
-        task_key: format!("{repo_slug}#{}", item.number),
-        repo_slug: repo_slug.clone(),
-        title: item.title.clone(),
-        body: item.body.clone().unwrap_or_default(),
-        status: map_state(item.state.as_deref()),
-        url: item
-            .html_url
-            .clone()
-            .unwrap_or_else(|| format!("https://github.com/{repo_slug}/issues/{}", item.number)),
-        updated_at: item.updated_at.clone(),
-        assignee: item.assignee.as_ref().and_then(|u| u.login.clone()),
-    })
+fn post_graphql(
+    client: &reqwest::Client,
+    github: &GitHubConfig,
+    body: serde_json::Value,
+) -> reqwest::RequestBuilder {
+    client
+        .post(GRAPHQL_URL)
+        .header("Authorization", format!("Bearer {}", github.token))
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header("User-Agent", "meridian")
+        .json(&body)
 }
 
 // ---------------------------------------------------------------------------
 // Fetch
 // ---------------------------------------------------------------------------
 
-#[tracing::instrument(
-    skip(github),
-    fields(provider = "github", status_code = tracing::field::Empty)
-)]
-async fn fetch(github: &GitHubConfig) -> Result<Vec<SearchItem>> {
+async fn fetch_viewer_login(github: &GitHubConfig) -> Result<String> {
     let client = reqwest::Client::new();
-    let resp = client
-        .get(SEARCH_URL)
-        .query(&[
-            ("q", "assignee:@me is:issue is:open archived:false"),
-            ("per_page", "100"),
-            ("sort", "updated"),
-            ("order", "desc"),
-        ])
-        .header("Authorization", format!("Bearer {}", github.token))
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
-        .header("User-Agent", "meridian")
+    let resp = post_graphql(&client, github, json!({ "query": "{ viewer { login } }" }))
         .send()
         .await
-        .context("GET /search/issues")?;
-
-    let status = resp.status();
-    tracing::Span::current().record("status_code", status.as_u16() as i64);
+        .context("POST /graphql viewer")?;
     let text = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        anyhow::bail!("GitHub /search/issues → {}: {}", status, text);
+    let parsed: GqlResponse<ViewerData> =
+        serde_json::from_str(&text).context("deserialising viewer response")?;
+    parsed
+        .data
+        .map(|d| d.viewer.login)
+        .ok_or_else(|| anyhow::anyhow!("GraphQL viewer response missing data"))
+}
+
+const PROJECT_ITEMS_QUERY: &str = "query($id: ID!, $cursor: String) {
+  node(id: $id) {
+    ... on ProjectV2 {
+      items(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          type
+          fieldValues(first: 8) {
+            nodes {
+              ... on ProjectV2ItemFieldSingleSelectValue {
+                name
+                field { ... on ProjectV2SingleSelectField { name } }
+              }
+            }
+          }
+          content {
+            ... on Issue {
+              number title body state url updatedAt
+              repository { nameWithOwner }
+              assignees(first: 10) { nodes { login } }
+            }
+          }
+        }
+      }
     }
-    let parsed: SearchResponse =
-        serde_json::from_str(&text).context("deserialising GitHub search")?;
-    tracing::debug!(count = parsed.items.len(), "parsed GitHub search response");
-    Ok(parsed.items)
+  }
+}";
+
+#[tracing::instrument(skip(client, github), fields(project_id))]
+async fn fetch_project_items(
+    client: &reqwest::Client,
+    github: &GitHubConfig,
+    project_id: &str,
+    viewer_login: &str,
+) -> Result<Vec<GhTask>> {
+    let mut tasks = Vec::new();
+    let mut cursor: Option<String> = None;
+
+    loop {
+        let body = json!({
+            "query": PROJECT_ITEMS_QUERY,
+            "variables": { "id": project_id, "cursor": cursor }
+        });
+        let resp = post_graphql(client, github, body)
+            .send()
+            .await
+            .context("POST /graphql project items")?;
+
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            anyhow::bail!("GitHub GraphQL → {}: {}", status, text);
+        }
+
+        let parsed: GqlResponse<ProjectData> =
+            serde_json::from_str(&text).context("deserialising project items")?;
+
+        let project = match parsed.data.and_then(|d| d.node) {
+            Some(p) => p,
+            None => {
+                tracing::warn!(project_id, "GitHub project not found or inaccessible");
+                break;
+            }
+        };
+
+        for item in &project.items.nodes {
+            if item.item_type.as_deref() != Some("ISSUE") {
+                continue;
+            }
+            let content = match &item.content {
+                Some(c) => c,
+                None => continue,
+            };
+            if content.state != "OPEN" {
+                continue;
+            }
+            if !content
+                .assignees
+                .nodes
+                .iter()
+                .any(|a| a.login.eq_ignore_ascii_case(viewer_login))
+            {
+                continue;
+            }
+            tasks.push(GhTask {
+                task_key: format!("{}#{}", content.repository.name_with_owner, content.number),
+                repo_slug: content.repository.name_with_owner.clone(),
+                title: content.title.clone(),
+                body: content.body.clone().unwrap_or_default(),
+                status: map_project_status(&item.field_values.nodes),
+                url: content.url.clone(),
+                updated_at: content.updated_at.clone(),
+                assignee: viewer_login.to_string(),
+            });
+        }
+
+        if !project.items.page_info.has_next_page {
+            break;
+        }
+        cursor = project.items.page_info.end_cursor;
+    }
+
+    Ok(tasks)
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +361,11 @@ pub async fn refresh_if_stale(
     pool: &SqlitePool,
     github: &GitHubConfig,
 ) -> Result<Option<Vec<String>>> {
+    if github.project_ids.is_empty() {
+        tracing::debug!("no GITHUB_PROJECT_IDS configured — skipping github sync");
+        return Ok(None);
+    }
+
     let threshold = format!("-{SYNC_INTERVAL_MINS} minutes");
     let (is_fresh,): (i64,) = sqlx::query_as(
         "SELECT EXISTS(
@@ -270,109 +383,103 @@ pub async fn refresh_if_stale(
         return Ok(None);
     }
 
-    match fetch(github).await {
-        Ok(items) => {
-            let raw_count = items.len();
-            let tasks: Vec<GhTask> = items.iter().filter_map(|i| normalise(i, github)).collect();
-            let keys: Vec<String> = tasks.iter().map(|t| t.task_key.clone()).collect();
-            upsert(pool, &tasks).await?;
-            sqlx::query(
-                "INSERT INTO pm_sync_state (provider, last_synced_at)
-                 VALUES ('github', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-                 ON CONFLICT(provider) DO UPDATE SET last_synced_at = excluded.last_synced_at",
-            )
-            .execute(pool)
-            .await
-            .context("updating github sync state")?;
-
-            if raw_count < MAX_RESULTS {
-                if !keys.is_empty() {
-                    match prune(pool, &keys).await {
-                        Ok(0) => {}
-                        Ok(p) => tracing::info!(pruned_count = p, "pruned stale github tasks"),
-                        Err(e) => tracing::warn!(error = %e, "github prune failed"),
-                    }
-                } else if let Err(e) = sqlx::query("DELETE FROM pm_tasks WHERE provider = 'github'")
-                    .execute(pool)
-                    .await
-                {
-                    tracing::warn!(error = %e, "github full-clear failed");
-                }
-            }
-            tracing::info!(upserted_count = keys.len(), "github tasks refreshed");
-            Ok(Some(keys))
-        }
+    let viewer_login = match fetch_viewer_login(github).await {
+        Ok(l) => l,
         Err(e) => {
-            tracing::warn!(error = %e, "github fetch failed — keeping stale cache");
-            Ok(None)
+            tracing::warn!(error = %e, "github viewer fetch failed — keeping stale cache");
+            return Ok(None);
+        }
+    };
+
+    let client = reqwest::Client::new();
+    let mut all_tasks: Vec<GhTask> = Vec::new();
+    let mut any_ok = false;
+
+    for project_id in &github.project_ids {
+        match fetch_project_items(&client, github, project_id, &viewer_login).await {
+            Ok(tasks) => {
+                tracing::debug!(project_id, count = tasks.len(), "fetched project items");
+                all_tasks.extend(tasks);
+                any_ok = true;
+            }
+            Err(e) => {
+                tracing::warn!(project_id, error = %e, "github project fetch failed — skipping");
+            }
         }
     }
+
+    if !any_ok {
+        tracing::warn!("all github project fetches failed — keeping stale cache");
+        return Ok(None);
+    }
+
+    let keys: Vec<String> = all_tasks.iter().map(|t| t.task_key.clone()).collect();
+    upsert(pool, &all_tasks).await?;
+
+    sqlx::query(
+        "INSERT INTO pm_sync_state (provider, last_synced_at)
+         VALUES ('github', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+         ON CONFLICT(provider) DO UPDATE SET last_synced_at = excluded.last_synced_at",
+    )
+    .execute(pool)
+    .await
+    .context("updating github sync state")?;
+
+    if !keys.is_empty() {
+        match prune(pool, &keys).await {
+            Ok(0) => {}
+            Ok(p) => tracing::info!(pruned_count = p, "pruned stale github tasks"),
+            Err(e) => tracing::warn!(error = %e, "github prune failed"),
+        }
+    } else if let Err(e) = sqlx::query("DELETE FROM pm_tasks WHERE provider = 'github'")
+        .execute(pool)
+        .await
+    {
+        tracing::warn!(error = %e, "github full-clear failed");
+    }
+
+    tracing::info!(upserted_count = keys.len(), "github tasks refreshed");
+    Ok(Some(keys))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn cfg(org: &str, repos: &[&str]) -> GitHubConfig {
-        GitHubConfig {
-            token: "x".into(),
-            org: org.into(),
-            repos: repos.iter().map(|s| s.to_string()).collect(),
-        }
+    fn status_field(value: &str) -> serde_json::Value {
+        serde_json::json!({
+            "name": value,
+            "field": { "name": "Status" }
+        })
     }
 
     #[test]
-    fn slug_parsing() {
+    fn project_status_todo() {
+        assert_eq!(map_project_status(&[status_field("Todo")]), "todo");
+        assert_eq!(map_project_status(&[]), "todo");
+    }
+
+    #[test]
+    fn project_status_in_progress() {
         assert_eq!(
-            repo_slug_from_url("https://api.github.com/repos/acme/api").as_deref(),
-            Some("acme/api")
+            map_project_status(&[status_field("In Progress")]),
+            "in_progress"
         );
-        assert_eq!(
-            repo_slug_from_url("https://api.github.com/repos/acme").as_deref(),
-            None
-        );
-        assert_eq!(repo_slug_from_url("garbage").as_deref(), None);
+        assert_eq!(map_project_status(&[status_field("Doing")]), "in_progress");
     }
 
     #[test]
-    fn scope_by_org_case_insensitive() {
-        assert!(in_scope("Acme/api", &cfg("acme", &[])));
-        assert!(!in_scope("other/api", &cfg("acme", &[])));
+    fn project_status_done() {
+        assert_eq!(map_project_status(&[status_field("Done")]), "done");
+        assert_eq!(map_project_status(&[status_field("Completed")]), "done");
     }
 
     #[test]
-    fn scope_by_explicit_repos() {
-        let c = cfg("acme", &["acme/api", "acme/web"]);
-        assert!(in_scope("acme/api", &c));
-        assert!(!in_scope("acme/infra", &c)); // not in the list, even though same org
-    }
-
-    #[test]
-    fn state_mapping() {
-        assert_eq!(map_state(Some("open")), "todo");
-        assert_eq!(map_state(Some("closed")), "done");
-        assert_eq!(map_state(None), "todo");
-    }
-
-    #[test]
-    fn normalise_builds_task_key_and_skips_prs() {
-        let item: SearchItem = serde_json::from_str(
-            r#"{"number":42,"title":"Fix it","body":"do x","state":"open",
-                "html_url":"https://github.com/acme/api/issues/42",
-                "repository_url":"https://api.github.com/repos/acme/api",
-                "updated_at":"2026-06-01T00:00:00Z","assignee":{"login":"sam"}}"#,
-        )
-        .unwrap();
-        let t = normalise(&item, &cfg("acme", &[])).unwrap();
-        assert_eq!(t.task_key, "acme/api#42");
-        assert_eq!(t.repo_slug, "acme/api");
-        assert_eq!(t.assignee.as_deref(), Some("sam"));
-
-        let pr: SearchItem = serde_json::from_str(
-            r#"{"number":7,"title":"PR","repository_url":"https://api.github.com/repos/acme/api",
-                "updated_at":"2026-06-01T00:00:00Z","pull_request":{"url":"x"}}"#,
-        )
-        .unwrap();
-        assert!(normalise(&pr, &cfg("acme", &[])).is_none());
+    fn non_status_field_ignored() {
+        let priority_field = serde_json::json!({
+            "name": "High",
+            "field": { "name": "Priority" }
+        });
+        assert_eq!(map_project_status(&[priority_field]), "todo");
     }
 }
