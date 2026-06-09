@@ -15,6 +15,8 @@ Meridian is a single-process Rust daemon that reads screenpipe's SQLite database
 - Validate all input at system boundaries (config load, DB open, frame parsing)
 - NEVER run `git reset`, `git push --force`, or delete local code — other agents may be working on the codebase in parallel
 - NEVER merge a PR automatically — open/update PRs as needed, but leave the actual merge to a human reviewer
+- NEVER push directly to `main` — always create a separate feature branch, commit there, and raise a PR to `main`
+- ALWAYS use a separate branch per feature/fix — branch name format: `type/short-description` (e.g. `feat/trello-oauth`, `fix/ui-disconnect`)
 
 ---
 
