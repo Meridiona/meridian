@@ -1,3 +1,19 @@
+# [1.36.0](https://github.com/Meridiona/meridian/compare/v1.35.1...v1.36.0) (2026-06-09)
+
+
+### Bug Fixes
+
+* **oauth:** force recompile when the baked-in client_secret changes ([825f1f5](https://github.com/Meridiona/meridian/commit/825f1f5923fd6dca4b44a83ca36fa98ad43c4b1d))
+* **oauth:** send Atlassian client_secret at token exchange ([6a0f3a0](https://github.com/Meridiona/meridian/commit/6a0f3a0278a0c6a4f6854f59d96e765973712898))
+* **smoke:** raise classify timeout to 180s for M1 machines ([5c3a62d](https://github.com/Meridiona/meridian/commit/5c3a62d21c656dff0acaca8b91cd93324fc2e63a))
+* **uninstall:** also remove downloaded MLX model weights from HF cache ([7f88f81](https://github.com/Meridiona/meridian/commit/7f88f8137862ef54f1edc48596bcf370b4d98e08))
+* **uninstall:** remove app bundle, venv, npm package, and hooks on uninstall ([1747183](https://github.com/Meridiona/meridian/commit/17471837aa4a2b3debc75f6064a2628d2168328b))
+
+
+### Features
+
+* **trello:** full Trello integration — OAuth, task sync, worklog, UI connect/disconnect ([835cd02](https://github.com/Meridiona/meridian/commit/835cd02ea01cc53c8eea7731d6a5859f4a1b8946))
+
 ## [1.35.1](https://github.com/Meridiona/meridian/compare/v1.35.0...v1.35.1) (2026-06-09)
 
 
