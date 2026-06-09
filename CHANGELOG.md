@@ -1,3 +1,10 @@
+## [1.34.6](https://github.com/Meridiona/meridian/compare/v1.34.5...v1.34.6) (2026-06-09)
+
+
+### Bug Fixes
+
+* **install:** suppress stale mlx-server log lines during update wait ([7fddebe](https://github.com/Meridiona/meridian/commit/7fddebe62f8e3d454f7e585df12ad04451404a6f))
+
 ## [1.34.5](https://github.com/Meridiona/meridian/compare/v1.34.4...v1.34.5) (2026-06-09)
 
 
