@@ -53,8 +53,6 @@ _SERVICES_DIR = Path(__file__).parent.parent.parent
 if str(_SERVICES_DIR) not in sys.path:
     sys.path.insert(0, str(_SERVICES_DIR))
 
-os.environ.setdefault("HERMES_HOME", str(_SERVICES_DIR / ".hermes"))
-
 # ---------------------------------------------------------------------------
 # Dataset — goldens loaded from .dataset.json
 # expected_output is a JSON string: {"task_key": ..., "session_type": ..., "reasoning": ...}

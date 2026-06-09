@@ -28,7 +28,6 @@ import logging
 import os
 import platform
 import re
-import signal
 import socket
 import subprocess
 import sys
@@ -263,17 +262,6 @@ class ComputeSnapshot:
     mem_bw_gbs: int
 
 
-@dataclass
-class LocalModelEndpoint:
-    model: str       # model name to pass to AIAgent
-    base_url: str    # OpenAI-compatible base URL
-    api_key: str     # typically "local"
-    runtime: str     # "ollama" | "lmstudio" | "llamacpp" | "mlxlm" | "mlx_managed"
-
-
-_MANAGED_SERVER_PORT = 8765
-_MANAGED_SERVER_PID_FILE = Path.home() / ".meridian" / "mlx_lm_server.pid"
-
 # Sentinel returned by select_mlx_model_id() when Apple Intelligence is chosen.
 APPLE_INTELLIGENCE_ID = "apple-intelligence"
 
@@ -438,7 +426,7 @@ def local_infer(system_prompt: str, user_message: str,
     """Run inference on the best available local model.
 
     Returns the model's text response, or None if nothing is available
-    (caller falls back to the cloud AIAgent path).
+    (caller falls back to the cloud path).
 
     Priority:
       1. Already-running server with a model in memory (zero load cost)
@@ -521,325 +509,6 @@ def _infer_mlx(model_id: str, system: str, user: str, max_tokens: int) -> Option
         return None
 
 
-def _shutdown_managed_server() -> None:
-    """Kill the managed mlx_lm.server if it is running and remove the PID file."""
-    pid_file = _MANAGED_SERVER_PID_FILE
-    if not pid_file.exists():
-        return
-    try:
-        meta = json.loads(pid_file.read_text())
-        pid = meta["pid"]
-        try:
-            os.kill(pid, 0)
-            os.kill(pid, signal.SIGTERM)
-            log.info("llm_selector: unloaded managed mlx_lm.server pid=%d model=%s",
-                     pid, meta.get("model", "?"))
-        except OSError:
-            pass
-    except Exception:
-        pass
-    pid_file.unlink(missing_ok=True)
-
-
-def _wait_for_process_exit(pid: int, timeout: float = 10.0) -> None:
-    """Wait for a process to exit; SIGKILL after timeout."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except OSError:
-            return  # dead
-        time.sleep(0.3)
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except OSError:
-        pass
-    time.sleep(0.5)
-
-
-def _wait_for_port_free(port: int, timeout: float = 5.0) -> None:
-    """Wait until a local TCP port stops accepting connections."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if not _tcp_open("127.0.0.1", port, timeout=0.3):
-            return
-        time.sleep(0.3)
-
-
-def _ensure_mlx_server(model_id: str, port: int = _MANAGED_SERVER_PORT) -> bool:
-    with _tracer.start_as_current_span("llm_selector.ensure_server") as span:
-        span.set_attribute("server.model",      model_id)
-        span.set_attribute("server.port",       port)
-        t0 = time.monotonic()
-
-        pid_file = _MANAGED_SERVER_PID_FILE
-        if pid_file.exists():
-            try:
-                meta = json.loads(pid_file.read_text())
-                pid, existing_model, existing_port = meta["pid"], meta["model"], meta["port"]
-                try:
-                    os.kill(pid, 0)
-                    alive = True
-                except OSError:
-                    alive = False
-
-                if alive and existing_model == model_id and existing_port == port:
-                    log.info(
-                        "llm_selector: managed server already running model=%s pid=%d port=%d",
-                        model_id, pid, port,
-                    )
-                    span.set_attribute("server.action", "reused")
-                    span.set_attribute("server.pid",    pid)
-                    span.add_event("server_reused", {"pid": pid, "model": model_id})
-                    return True
-
-                if alive:
-                    log.info(
-                        "llm_selector: model switch %s → %s — stopping pid=%d",
-                        existing_model, model_id, pid,
-                    )
-                    span.set_attribute("server.previous_model", existing_model)
-                    span.add_event("model_switch", {
-                        "from_model": existing_model,
-                        "to_model":   model_id,
-                        "pid":        pid,
-                    })
-                    os.kill(pid, signal.SIGTERM)
-                    _wait_for_process_exit(pid)
-                    _wait_for_port_free(port)
-                    stop_ms = int((time.monotonic() - t0) * 1000)
-                    log.info(
-                        "llm_selector: stopped old managed server pid=%d model=%s elapsed_ms=%d",
-                        pid, existing_model, stop_ms,
-                    )
-                    span.add_event("old_server_stopped", {"elapsed_ms": stop_ms})
-                else:
-                    log.debug("llm_selector: stale pid file (pid=%d dead) — starting fresh", pid)
-                    span.add_event("stale_pid_file", {"pid": pid})
-            except Exception:
-                pass
-
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "mlx_lm.server",
-             "--model", model_id, "--port", str(port), "--max-tokens", "4096"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        pid_file.parent.mkdir(parents=True, exist_ok=True)
-        pid_file.write_text(json.dumps({"pid": proc.pid, "model": model_id, "port": port}))
-        log.info(
-            "llm_selector: started mlx_lm.server model=%s pid=%d port=%d — waiting for ready",
-            model_id, proc.pid, port,
-        )
-        span.set_attribute("server.action", "started")
-        span.set_attribute("server.pid",    proc.pid)
-        span.add_event("server_started", {"pid": proc.pid, "model": model_id})
-
-        url = f"http://127.0.0.1:{port}/v1/models"
-        deadline = time.monotonic() + 90.0
-        while time.monotonic() < deadline:
-            if proc.poll() is not None:
-                elapsed_ms = int((time.monotonic() - t0) * 1000)
-                log.warning(
-                    "llm_selector: mlx_lm.server exited early exit=%d model=%s elapsed_ms=%d"
-                    " — is mlx_lm installed?",
-                    proc.returncode, model_id, elapsed_ms,
-                )
-                span.set_attribute("server.action",     "failed")
-                span.set_attribute("server.exit_code",  proc.returncode)
-                span.add_event("server_exited_early", {"exit_code": proc.returncode})
-                pid_file.unlink(missing_ok=True)
-                return False
-            _, status = _get_json(url, timeout=1.0)
-            if status == 200:
-                elapsed_ms = int((time.monotonic() - t0) * 1000)
-                log.info(
-                    "llm_selector: mlx_lm.server ready model=%s port=%d startup_ms=%d",
-                    model_id, port, elapsed_ms,
-                )
-                span.set_attribute("server.startup_ms", elapsed_ms)
-                span.add_event("server_ready", {"startup_ms": elapsed_ms})
-                return True
-            time.sleep(1)
-
-        elapsed_ms = int((time.monotonic() - t0) * 1000)
-        log.warning(
-            "llm_selector: mlx_lm.server startup timeout model=%s elapsed_ms=%d",
-            model_id, elapsed_ms,
-        )
-        span.set_attribute("server.action",  "timeout")
-        span.add_event("server_timeout", {"elapsed_ms": elapsed_ms})
-        return False
-
-
-def select_model_for_hermes(budget_pct: Optional[float] = None) -> Optional[LocalModelEndpoint]:
-    """Return the best available local endpoint for AIAgent, or None to use cloud."""
-    if budget_pct is None:
-        from agents.config import LLM_BUDGET_PCT
-        budget_pct = LLM_BUDGET_PCT
-    with _tracer.start_as_current_span("llm_selector.select_model") as span:
-        try:
-            result: Optional[LocalModelEndpoint] = None
-
-            if platform.system() != "Darwin":
-                span.set_attribute("llm.budget_pct", budget_pct)
-                span.set_attribute("llm.selected_model", "cloud_fallback")
-                span.set_attribute("llm.selected_runtime", "cloud")
-                span.set_attribute("llm.is_local", False)
-                return None
-            brand = _sysctl("machdep.cpu.brand_string") or ""
-            if not brand.startswith("Apple M"):
-                span.set_attribute("llm.budget_pct", budget_pct)
-                span.set_attribute("llm.selected_model", "cloud_fallback")
-                span.set_attribute("llm.selected_runtime", "cloud")
-                span.set_attribute("llm.is_local", False)
-                return None
-
-            servers = discover_running_servers()
-            if not servers:
-                log.debug("llm_selector: no external servers found — will compute budget")
-
-            for server in servers:
-                if server.runtime == "apple_fm":
-                    continue
-                _shutdown_managed_server()
-                log.info("llm_selector: using external server runtime=%s model=%s",
-                         server.runtime, server.best_model)
-                result = LocalModelEndpoint(
-                    model=server.best_model,
-                    base_url=server.base_url,
-                    api_key="local",
-                    runtime=server.runtime,
-                )
-                break
-
-            _reason = "cloud_fallback"
-            _headroom_gb = 0.0
-            _adj_headroom_gb = 0.0
-            _budget_gb = 0.0
-            _thermal = 0
-            _screen_locked_val = False
-            _effective_pct = budget_pct
-
-            if result is None:
-                try:
-                    snap = probe_compute()
-                except Exception as exc:
-                    log.warning("llm_selector: compute probe failed: %s", exc)
-                    _reason = "compute_probe_failed"
-                    span.set_attribute("llm.budget_pct",       budget_pct)
-                    span.set_attribute("llm.selected_model",   "cloud_fallback")
-                    span.set_attribute("llm.selected_runtime", "cloud")
-                    span.set_attribute("llm.is_local",         False)
-                    span.set_attribute("llm.reason",           _reason)
-                    return None
-
-                _headroom_gb      = snap.metal_headroom_gb
-                _thermal          = snap.thermal_level
-                _screen_locked_val = snap.screen_locked
-
-                # If a managed server is already running, its model weight is
-                # included in Metal's "used" accounting, which shrinks headroom.
-                # Add that weight back so the selection sees the true system-wide
-                # budget rather than headroom-minus-current-model.  Without this
-                # the selected model changes on every tick as headroom shifts,
-                # causing an oscillation loop (Qwen3.5 → phi-4 → gemma → …).
-                _adj_headroom_gb = _headroom_gb
-                if _MANAGED_SERVER_PID_FILE.exists():
-                    try:
-                        meta = json.loads(_MANAGED_SERVER_PID_FILE.read_text())
-                        os.kill(meta["pid"], 0)  # raises OSError if dead
-                        current_ram = next(
-                            (min_ram for _, _, min_ram, _, hf in _MODELS
-                             if hf == meta["model"]),
-                            0.0,
-                        )
-                        _adj_headroom_gb = _headroom_gb + current_ram
-                        log.info(
-                            "llm_selector: headroom adjusted %.1f→%.1f GB "
-                            "(managed model=%s uses %.1f GB)",
-                            _headroom_gb, _adj_headroom_gb,
-                            meta["model"], current_ram,
-                        )
-                    except (OSError, Exception):
-                        pass
-
-                _effective_pct = min(0.8, budget_pct * 1.5) if snap.screen_locked else budget_pct
-                _budget_gb = _adj_headroom_gb * _effective_pct
-
-                entry = _select_mlx_entry(_adj_headroom_gb, _effective_pct,
-                                          snap.thermal_level, apple_intelligence=False)
-                if entry is None:
-                    _reason = "no_model_fits"
-                    log.info(
-                        "llm_selector: no local model fits "
-                        "headroom=%.1f GB adj=%.1f GB budget=%.1f GB pct=%.2f → cloud fallback",
-                        _headroom_gb, _adj_headroom_gb, _budget_gb, _effective_pct,
-                    )
-                else:
-                    model_id, _, min_ram, quality, hf_id = entry
-                    log.info(
-                        "llm_selector: selected model=%s hf=%s min_ram=%.1f GB quality=%d "
-                        "headroom=%.1f GB adj=%.1f GB budget=%.1f GB pct=%.2f",
-                        model_id, hf_id, min_ram, quality,
-                        _headroom_gb, _adj_headroom_gb, _budget_gb, _effective_pct,
-                    )
-                    if _ensure_mlx_server(hf_id, _MANAGED_SERVER_PORT):
-                        _reason = "mlx_managed"
-                        result = LocalModelEndpoint(
-                            model=hf_id,
-                            base_url=f"http://127.0.0.1:{_MANAGED_SERVER_PORT}/v1",
-                            api_key="local",
-                            runtime="mlx_managed",
-                        )
-                    else:
-                        _reason = "mlx_server_failed"
-                        log.warning(
-                            "llm_selector: mlx_lm.server failed to start for model=%s — cloud fallback",
-                            hf_id,
-                        )
-            else:
-                _reason = result.runtime
-
-            _selected_model   = result.model   if result else "cloud_fallback"
-            _selected_runtime = result.runtime if result else "cloud"
-            _is_local         = result is not None
-
-            span.set_attribute("llm.budget_pct",         budget_pct)
-            span.set_attribute("llm.effective_pct",      round(_effective_pct, 3))
-            span.set_attribute("llm.headroom_gb",        round(_headroom_gb, 2))
-            span.set_attribute("llm.adj_headroom_gb",    round(_adj_headroom_gb, 2))
-            span.set_attribute("llm.budget_gb",          round(_budget_gb, 2))
-            span.set_attribute("llm.thermal_level",      _thermal)
-            span.set_attribute("llm.screen_locked",      _screen_locked_val)
-            span.set_attribute("llm.reason",             _reason)
-            span.set_attribute("llm.selected_model",     _selected_model)
-            span.set_attribute("llm.selected_runtime",   _selected_runtime)
-            span.set_attribute("llm.is_local",           _is_local)
-
-            log.info(
-                "llm_selector: decision reason=%s model=%s runtime=%s "
-                "budget_pct=%.2f headroom_gb=%.1f budget_gb=%.1f thermal=%d",
-                _reason, _selected_model, _selected_runtime,
-                budget_pct, _adj_headroom_gb, _budget_gb, _thermal,
-                extra={
-                    "llm_selector_reason":       _reason,
-                    "llm_selector_model":        _selected_model,
-                    "llm_selector_runtime":      _selected_runtime,
-                    "llm_selector_budget_pct":   budget_pct,
-                    "llm_selector_headroom_gb":  round(_adj_headroom_gb, 2),
-                    "llm_selector_budget_gb":    round(_budget_gb, 2),
-                    "llm_selector_thermal":      _thermal,
-                    "llm_selector_screen_locked": _screen_locked_val,
-                    "llm_selector_is_local":     _is_local,
-                },
-            )
-            return result
-        except Exception as exc:
-            span.record_exception(exc)
-            raise
-
-
 def _hf_model_cached(hf_id: "str | None") -> bool:
     """True when a HuggingFace repo's weights are already in the local cache.
 
@@ -874,7 +543,7 @@ def select_mlx_model_id(
 ) -> "str | None":
     """Pick the best **in-process** MLX model id for this machine.
 
-    Selection-only sibling of select_model_for_hermes(): returns a HuggingFace
+    Returns a HuggingFace
     repo id the caller loads directly via mlx_lm + outlines (FSM-constrained
     decoding). It deliberately does NOT discover external servers
     (Ollama / LM Studio / Apple Intelligence give no constrained decoding) and
@@ -1054,10 +723,6 @@ def discover_mlx_eval_server(port: int = 7823) -> "str | None":
 
 
 __all__ = ["local_infer", "discover_running_servers", "probe_compute",
-           "RunningServer", "ComputeSnapshot", "LocalModelEndpoint",
-           "select_model_for_hermes", "select_mlx_model_id",
-           "shutdown_managed_server",
+           "RunningServer", "ComputeSnapshot",
+           "select_mlx_model_id",
            "resolve_model", "discover_mlx_eval_server"]
-
-# Public alias (no underscore) for external callers
-shutdown_managed_server = _shutdown_managed_server
