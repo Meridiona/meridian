@@ -595,8 +595,14 @@ for line in sys.stdin:
 ') &
     _log_pid=$!
     (tail -F -n 0 "${_MLX_ERR}" 2>/dev/null | while IFS= read -r _eline; do
-        printf '  %s\n' "${_eline}"
-    done) &
+        # tqdm progress lines contain '%' — update in-place with \r so users
+        # see a live download bar instead of a flood of static lines.
+        if [[ "${_eline}" == *%* && "${_eline}" == *it/s* || "${_eline}" == *Fetching* ]]; then
+            printf '\r  %-80s' "${_eline}"
+        else
+            printf '\n  %s' "${_eline}"
+        fi
+    done; printf '\n') &
     _err_pid=$!
 
     until curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; do
