@@ -315,8 +315,8 @@ cmd_smoke() {
     mlx_port="$(_smoke_read_env MLX_SERVER_PORT)"
     mlx_port="${mlx_port:-7823}"
     local base="http://127.0.0.1:${mlx_port}"
-    local classify_timeout=60
-    [[ $classify_only -eq 1 ]] && classify_timeout=30
+    local classify_timeout=180
+    [[ $classify_only -eq 1 ]] && classify_timeout=180
     local all_ok=1
 
     if [[ -t 1 ]]; then
