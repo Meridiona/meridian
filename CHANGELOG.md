@@ -1,3 +1,10 @@
+# [1.35.0](https://github.com/Meridiona/meridian/compare/v1.34.6...v1.35.0) (2026-06-09)
+
+
+### Features
+
+* **oauth:** browser OAuth for Jira, tasks sync, health improvements ([aec7365](https://github.com/Meridiona/meridian/commit/aec7365087caceadb8fa3cf7e6ecd397f2f3fe29)), closes [#213](https://github.com/Meridiona/meridian/issues/213)
+
 ## [1.34.6](https://github.com/Meridiona/meridian/compare/v1.34.5...v1.34.6) (2026-06-09)
 
 
