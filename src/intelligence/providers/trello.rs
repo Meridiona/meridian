@@ -166,10 +166,7 @@ async fn prune(pool: &SqlitePool, fetched_keys: &[String]) -> Result<usize> {
     for key in fetched_keys {
         q = q.bind(key.as_str());
     }
-    let result = q
-        .execute(pool)
-        .await
-        .context("pruning trello pm_tasks")?;
+    let result = q.execute(pool).await.context("pruning trello pm_tasks")?;
     Ok(result.rows_affected() as usize)
 }
 
@@ -221,8 +218,8 @@ pub async fn refresh_if_stale(
                         Err(e) => tracing::warn!(error = %e, "trello prune failed"),
                     }
                 } else if let Err(e) = sqlx::query("DELETE FROM pm_tasks WHERE provider = 'trello'")
-                        .execute(pool)
-                        .await
+                    .execute(pool)
+                    .await
                 {
                     tracing::warn!(error = %e, "trello full-clear failed");
                 }

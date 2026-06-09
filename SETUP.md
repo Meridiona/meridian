@@ -156,6 +156,44 @@ meridian uninstall          # stop services and remove the CLI
 
 ---
 
+## Configuration
+
+All settings are environment variables in `~/.meridian/app/.env`; defaults work out of the box. The installer collects the credential-bearing ones interactively.
+
+| Variable | Default | Description |
+|---|---|---|
+| `MERIDIAN_DB` | `~/.meridian/meridian.db` | Where Meridian writes its database |
+| `POLL_INTERVAL_SECS` | `60` | How often to check for new activity |
+| `CLASSIFICATION_ENABLED` | `true` | Enable session → task classification (set `false` to run capture + categorisation only, no model needed) |
+| `MLX_SERVER_PORT` | `7823` | Port the on-device model server listens on |
+| `CLASSIFICATION_TIMEOUT_S` | `120` | Per-session inference timeout |
+| `MERIDIAN_UI_PORT` | `3939` | Dashboard port |
+
+Edit with `meridian config edit`, then `meridian restart`.
+
+---
+
+## MCP server
+
+Meridian ships a TypeScript MCP server that exposes your session data to any MCP-compatible AI tool (Claude Code, Claude Desktop, Cursor, …). It's built into `packages/meridian-mcp/dist/index.js` during install.
+
+Add it to your MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "meridian": {
+      "command": "node",
+      "args": ["/path/to/meridian/packages/meridian-mcp/dist/index.js"]
+    }
+  }
+}
+```
+
+Tools: `get-sessions`, `get-timeline`, `get-stats`, `get-active-session`, `get-apps`, `search-sessions`, `get-session-detail`, `health-check`. It uses [sql.js](https://github.com/sql-js/sql.js) (pure-WASM SQLite), so it works with any Node.js version.
+
+---
+
 ## Build from source
 
 ```bash
@@ -165,5 +203,19 @@ cp .env.example .env
 ./install.sh
 bash scripts/setup-hooks.sh
 ```
+
+### Development
+
+After `./install.sh`, the services run under launchd. `meridian dev` starts a dev session from your checkout — backing services in the background, the UI hot-reloading in your terminal (source-checkout only).
+
+```bash
+meridian dev            # backing services (bg) + UI dev server foreground (hot reload)
+meridian dev daemon     # rebuild Rust + restart the daemon (bg)
+meridian dev ui         # UI dev server only — hot reload
+meridian dev mlx        # restart only the model server (reloads the model, ~30s)
+meridian dev build      # production build of daemon + UI (no run)
+```
+
+Typical loop: `meridian dev` in one terminal; when you change Rust, `meridian dev daemon` in a second. Avoid `meridian restart` in a tight loop — it reloads the model.
 
 See `CLAUDE.md` for architecture, conventions, and common-task recipes.
