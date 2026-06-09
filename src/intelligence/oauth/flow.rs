@@ -142,7 +142,9 @@ async fn exchange_code(
 }
 
 async fn post_token(token_url: &str, body: &serde_json::Value) -> Result<TokenResponse> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(6))
+        .build()?;
     let resp = client
         .post(token_url)
         .header("Accept", "application/json")

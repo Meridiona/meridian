@@ -30,6 +30,11 @@ function runTasksSync(): Promise<{ ok: boolean; stdout: string; stderr: string }
     child.stdout?.on('data', (d: Buffer) => { stdout += d.toString() })
     child.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
 
+    child.on('error', (err) => {
+      clearTimeout(timer)
+      resolve({ ok: false, stdout, stderr: `spawn error: ${err.message}` })
+    })
+
     const timer = setTimeout(() => {
       child.kill()
       resolve({ ok: false, stdout, stderr: stderr + '\ntasks-sync timed out after 30s' })

@@ -296,9 +296,11 @@ impl Config {
         let classification_enabled = runtime.classification_enabled && classification_enabled_env;
 
         // Jira is "configured" for update-gating purposes under either auth path:
-        // legacy basic auth (JIRA_BASE_URL) or browser OAuth (JIRA_OAUTH_CLIENT_ID).
-        let jira_configured =
-            std::env::var("JIRA_BASE_URL").is_ok() || std::env::var("JIRA_OAUTH_CLIENT_ID").is_ok();
+        // legacy basic auth (JIRA_BASE_URL), browser OAuth env var (JIRA_OAUTH_CLIENT_ID),
+        // or OAuth token store (zero-config path).
+        let jira_configured = std::env::var("JIRA_BASE_URL").is_ok()
+            || std::env::var("JIRA_OAUTH_CLIENT_ID").is_ok()
+            || crate::intelligence::oauth::store::exists("jira");
         let jira_update_enabled_env = std::env::var("JIRA_UPDATE_ENABLED")
             .map(|v| !matches!(v.to_lowercase().trim(), "0" | "false" | "no" | "off"))
             .unwrap_or(jira_configured);
