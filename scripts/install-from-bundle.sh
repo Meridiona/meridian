@@ -105,12 +105,17 @@ collect_credentials() {
         prompt_env_var "LINEAR_API_KEY"  "Linear API key" 1 "$env_file"
         prompt_env_var "LINEAR_TEAM_IDS" "Linear team IDs (optional, comma-sep)" 0 "$env_file"
     fi
+    echo >&2
+    if prompt_category "Trello"; then
+        _connect_trello "$env_file" "${APP_ROOT}/bin/meridian"
+    fi
     ok "Credential collection complete"
 }
 
 # GitHub + Jira setup helpers — shared with install.sh.
 source "${APP_ROOT}/scripts/lib-github-setup.sh"
 source "${APP_ROOT}/scripts/lib-jira-setup.sh"
+source "${APP_ROOT}/scripts/lib-trello-setup.sh"
 
 GUI_TARGET="gui/$(id -u)"
 LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"

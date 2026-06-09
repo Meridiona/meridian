@@ -13,6 +13,7 @@ const PROVIDER_META: Record<string, { label: string; color: string; glyph: strin
   jira:   { label: 'Jira',   color: '#2684FF', glyph: 'Ji' },
   linear: { label: 'Linear', color: '#5E6AD2', glyph: 'Li' },
   github: { label: 'GitHub', color: '#24292F', glyph: 'Gh' },
+  trello: { label: 'Trello', color: '#0052CC', glyph: 'Tr' },
 }
 
 export default function TasksView({ focusKey }: { focusKey?: string | null }) {
@@ -23,6 +24,7 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
   const [syncing, setSyncing] = useState(false)
   const [lastSynced, setLastSynced] = useState<Date | null>(null)
   const [providerFilter, setProviderFilter] = useState<string>('all')
+  const [showIntegrations, setShowIntegrations] = useState(false)
 
   const fetchTasks = () => {
     fetch('/api/tasks').then(r => r.json()).then((d: TasksResponse) => {
@@ -31,6 +33,12 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
         const first = d.tasks.find(t => t.today_s > 0) ?? d.tasks[0]
         setSelected(first.key)
       }
+    }).catch(() => {})
+  }
+
+  const fetchIntegrations = () => {
+    fetch('/api/integrations').then(r => r.json()).then((d: IntegrationsResponse) => {
+      setIntegrations(d)
     }).catch(() => {})
   }
 
@@ -51,9 +59,7 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
     fetch('/api/today').then(r => r.json()).then((d: TodayResponse) => {
       setTodaySessions(d.sessions ?? [])
     }).catch(() => {})
-    fetch('/api/integrations').then(r => r.json()).then((d: IntegrationsResponse) => {
-      setIntegrations(d)
-    }).catch(() => {})
+    fetchIntegrations()
 
     const timer = setInterval(fetchTasks, TASKS_POLL_INTERVAL_MS)
     return () => clearInterval(timer)
@@ -78,7 +84,7 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
           <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Tasks</p>
           <h1 className="font-serif text-[56px] leading-[1] tracking-tight mt-1" style={{ color: 'var(--ink)' }}>What you&apos;re working on</h1>
         </header>
-        <ConnectTrackers integrations={integrations} />
+        <ConnectTrackers integrations={integrations} onDisconnect={fetchIntegrations} />
       </div>
     )
   }
@@ -131,57 +137,73 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
             <span style={{ display: 'inline-block', animation: syncing ? 'spin 1s linear infinite' : 'none' }}>↻</span>
             {syncing ? 'Syncing…' : 'Sync'}
           </button>
+          <button
+            onClick={() => setShowIntegrations(s => !s)}
+            className="flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md transition-colors"
+            style={{
+              color: showIntegrations ? 'var(--ink)' : 'var(--ink-3)',
+              background: showIntegrations ? 'var(--surface-2)' : 'var(--surface)',
+              border: '1px solid var(--rule)',
+              cursor: 'pointer',
+            }}
+          >
+            Integrations
+          </button>
         </div>
       </header>
 
-      {showProviderTabs && (
-        <div className="flex items-center gap-1">
-          <ProviderTab id="all" active={providerFilter === 'all'} onClick={() => setProviderFilter('all')} />
-          {presentProviders.map(p => (
-            <ProviderTab key={p} id={p} active={providerFilter === p} onClick={() => setProviderFilter(p)} />
-          ))}
-        </div>
+      {showIntegrations ? (
+        <ConnectTrackers integrations={integrations} onDisconnect={fetchIntegrations} />
+      ) : (
+        <>
+          {showProviderTabs && (
+            <div className="flex items-center gap-1">
+              <ProviderTab id="all" active={providerFilter === 'all'} onClick={() => setProviderFilter('all')} />
+              {presentProviders.map(p => (
+                <ProviderTab key={p} id={p} active={providerFilter === p} onClick={() => setProviderFilter(p)} />
+              ))}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,300px)_minmax(0,1fr)] gap-8">
+            <div className="rounded-xl overflow-hidden border" style={{ borderColor: 'var(--rule)' }}>
+              {providerFilter === 'all' && showProviderTabs
+                ? presentProviders.map((provider, pi) => {
+                    const group = tasksByProvider[provider] ?? []
+                    const meta = PROVIDER_META[provider]
+                    return (
+                      <div key={provider}>
+                        <div
+                          className="flex items-center gap-2 px-4 py-2"
+                          style={{ background: 'var(--surface-2)', borderTop: pi > 0 ? '1px solid var(--rule)' : undefined }}
+                        >
+                          <span
+                            className="inline-flex items-center justify-center rounded shrink-0 font-mono"
+                            style={{ width: 16, height: 16, fontSize: 9, fontWeight: 700, background: (meta?.color ?? '#888') + '1A', color: meta?.color ?? '#888' }}
+                          >
+                            {meta?.glyph ?? provider[0].toUpperCase()}
+                          </span>
+                          <span className="text-[10px] uppercase tracking-[0.15em]" style={{ color: 'var(--ink-3)' }}>
+                            {meta?.label ?? provider}
+                          </span>
+                          <span className="ml-auto font-mono tnum text-[10px]" style={{ color: 'var(--ink-4)' }}>{group.length}</span>
+                        </div>
+                        {group.map(t => (
+                          <TaskRow key={t.key} task={t} selected={t.key === selected} onSelect={() => setSelected(t.key)} />
+                        ))}
+                      </div>
+                    )
+                  })
+                : visibleTasks.map(t => (
+                    <TaskRow key={t.key} task={t} selected={t.key === selected} onSelect={() => setSelected(t.key)} />
+                  ))
+              }
+            </div>
+
+            {sel && <TaskDetail task={sel} sessions={todaySessions.filter(s => s.task_key === sel.key)} />}
+          </div>
+        </>
       )}
-
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,300px)_minmax(0,1fr)] gap-8">
-        {/* Task list — sectioned when showing all providers, flat when filtered */}
-        <div className="rounded-xl overflow-hidden border" style={{ borderColor: 'var(--rule)' }}>
-          {providerFilter === 'all' && showProviderTabs
-            ? presentProviders.map((provider, pi) => {
-                const group = tasksByProvider[provider] ?? []
-                const meta = PROVIDER_META[provider]
-                return (
-                  <div key={provider}>
-                    <div
-                      className="flex items-center gap-2 px-4 py-2"
-                      style={{ background: 'var(--surface-2)', borderTop: pi > 0 ? '1px solid var(--rule)' : undefined }}
-                    >
-                      <span
-                        className="inline-flex items-center justify-center rounded shrink-0 font-mono"
-                        style={{ width: 16, height: 16, fontSize: 9, fontWeight: 700, background: (meta?.color ?? '#888') + '1A', color: meta?.color ?? '#888' }}
-                      >
-                        {meta?.glyph ?? provider[0].toUpperCase()}
-                      </span>
-                      <span className="text-[10px] uppercase tracking-[0.15em]" style={{ color: 'var(--ink-3)' }}>
-                        {meta?.label ?? provider}
-                      </span>
-                      <span className="ml-auto font-mono tnum text-[10px]" style={{ color: 'var(--ink-4)' }}>{group.length}</span>
-                    </div>
-                    {group.map(t => (
-                      <TaskRow key={t.key} task={t} selected={t.key === selected} onSelect={() => setSelected(t.key)} />
-                    ))}
-                  </div>
-                )
-              })
-            : visibleTasks.map(t => (
-                <TaskRow key={t.key} task={t} selected={t.key === selected} onSelect={() => setSelected(t.key)} />
-              ))
-          }
-        </div>
-
-        {/* Task detail */}
-        {sel && <TaskDetail task={sel} sessions={todaySessions.filter(s => s.task_key === sel.key)} />}
-      </div>
     </div>
   )
 }
@@ -338,7 +360,7 @@ function TaskDetail({ task, sessions }: { task: TaskSummary; sessions: TodayResp
 // up and, on click, expands the exact steps to connect one. Deliberately quiet:
 // a single status line per tracker, details only when asked for.
 
-type TrackerId = 'jira' | 'linear' | 'github'
+type TrackerId = 'jira' | 'linear' | 'github' | 'trello'
 
 const TRACKERS: Array<{
   id: TrackerId
@@ -381,20 +403,36 @@ const TRACKERS: Array<{
     env: 'GITHUB_TOKEN=ghp_your_token\nGITHUB_PROJECT_IDS=PVT_your_project_id',
     note: 'GITHUB_PROJECT_IDS is a comma-separated list of GitHub Projects v2 node IDs. meridian setup lists your projects to pick from, or find them with: gh api graphql -f query=\'{ viewer { projectsV2(first:10){nodes{id title}} } }\'',
   },
+  {
+    id: 'trello',
+    name: 'Trello',
+    glyph: 'Tr',
+    color: '#0052CC',
+    oauth: {
+      command: 'meridian oauth-login trello',
+      hint: 'Connect with your browser — no API token to create.',
+    },
+  },
 ]
 
-function ConnectTrackers({ integrations }: { integrations: IntegrationsResponse | null }) {
+function ConnectTrackers({ integrations, onDisconnect }: { integrations: IntegrationsResponse | null; onDisconnect?: () => void }) {
   const [open, setOpen] = useState<TrackerId | null>(null)
-  const anyConnected = !!integrations && (integrations.jira || integrations.linear || integrations.github)
+  const [disconnecting, setDisconnecting] = useState<TrackerId | null>(null)
+  const anyConnected = !!integrations && (integrations.jira || integrations.linear || integrations.github || integrations.trello)
+
+  const handleDisconnect = (id: TrackerId) => {
+    setDisconnecting(id)
+    fetch(`/api/integrations?provider=${id}`, { method: 'DELETE' })
+      .then(() => { onDisconnect?.(); setOpen(null) })
+      .catch(() => {})
+      .finally(() => setDisconnecting(null))
+  }
 
   return (
     <div className="max-w-[560px]">
-      <p className="text-[14px]" style={{ color: 'var(--ink-2)' }}>
-        {anyConnected ? 'No tasks synced yet.' : 'No tracker connected yet.'}
-      </p>
       <p className="text-[12px] mt-1" style={{ color: 'var(--ink-3)' }}>
         {anyConnected
-          ? 'Tasks appear here once your tracker has issues assigned to you. Connect another below.'
+          ? 'Manage your tracker connections below.'
           : 'Connect a tracker and Meridian maps your captured work to its tasks.'}
       </p>
 
@@ -406,9 +444,8 @@ function ConnectTrackers({ integrations }: { integrations: IntegrationsResponse 
             <div key={t.id} className={i > 0 ? 'rule-t' : ''} style={{ borderTopColor: 'var(--rule)' }}>
               <button
                 onClick={() => setOpen(isOpen ? null : t.id)}
-                disabled={connected}
                 className="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors"
-                style={{ background: isOpen ? 'var(--surface-2)' : 'var(--surface)', cursor: connected ? 'default' : 'pointer' }}
+                style={{ background: isOpen ? 'var(--surface-2)' : 'var(--surface)', cursor: 'pointer' }}
               >
                 <span
                   className="inline-flex items-center justify-center rounded-md font-mono shrink-0"
@@ -421,6 +458,7 @@ function ConnectTrackers({ integrations }: { integrations: IntegrationsResponse 
                   <span className="ml-auto inline-flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--ink-2)' }}>
                     <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: 'var(--success)' }} />
                     Connected
+                    <span className="inline-block transition-transform" style={{ transform: isOpen ? 'rotate(90deg)' : 'none', color: 'var(--ink-4)' }}>›</span>
                   </span>
                 ) : (
                   <span className="ml-auto inline-flex items-center gap-2 text-[11px]" style={{ color: 'var(--ink-3)' }}>
@@ -429,6 +467,21 @@ function ConnectTrackers({ integrations }: { integrations: IntegrationsResponse 
                   </span>
                 )}
               </button>
+              {isOpen && connected && (
+                <div className="px-4 pb-4 pt-2" style={{ background: 'var(--surface-2)' }}>
+                  <p className="text-[12px] leading-relaxed mb-3" style={{ color: 'var(--ink-3)' }}>
+                    After disconnecting, run <CodeChip text="meridian restart" /> for the change to take effect.
+                  </p>
+                  <button
+                    onClick={() => handleDisconnect(t.id)}
+                    disabled={disconnecting === t.id}
+                    className="text-[12px] px-3 py-1.5 rounded-md transition-opacity"
+                    style={{ color: '#e53e3e', border: '1px solid #e53e3e', opacity: disconnecting === t.id ? 0.5 : 1, cursor: disconnecting === t.id ? 'default' : 'pointer', background: 'transparent' }}
+                  >
+                    {disconnecting === t.id ? 'Disconnecting…' : `Disconnect ${t.name}`}
+                  </button>
+                </div>
+              )}
               {isOpen && !connected && <TrackerSetup tracker={t} />}
             </div>
           )

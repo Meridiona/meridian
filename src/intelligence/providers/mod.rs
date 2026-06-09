@@ -3,3 +3,4 @@
 pub mod github;
 pub mod jira;
 pub mod linear;
+pub mod trello;

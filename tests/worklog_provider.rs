@@ -108,6 +108,25 @@ async fn defaults_to_jira_when_task_absent() {
 }
 
 #[tokio::test]
+async fn snapshots_trello_provider() {
+    let pool = make_db().await;
+    insert_task(&pool, "HSkL1pnj", "trello").await;
+
+    let id = upsert_pm_worklog(
+        &pool,
+        &narrative("HSkL1pnj"),
+        UpdateState::Drafted,
+        "2026-06-01",
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(provider_of(&pool, id).await, "trello");
+}
+
+#[tokio::test]
 async fn approved_worklogs_carry_provider_for_routing() {
     let pool = make_db().await;
     insert_task(&pool, "ENG-7", "linear").await;

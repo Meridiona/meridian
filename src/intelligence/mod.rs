@@ -85,6 +85,7 @@ pub async fn run_pm_force_sync(meridian: &SqlitePool, config: &Config) -> Result
             PmProviderConfig::Jira(cfg) => providers::jira::force_refresh(meridian, cfg).await,
             PmProviderConfig::GitHub(cfg) => providers::github::force_refresh(meridian, cfg).await,
             PmProviderConfig::Linear(cfg) => providers::linear::force_refresh(meridian, cfg).await,
+            PmProviderConfig::Trello(cfg) => providers::trello::force_refresh(meridian, cfg).await,
         };
         match result {
             Ok(None) => tracing::info!(provider = name, "force sync: auth unavailable or no tasks"),
@@ -120,6 +121,9 @@ pub async fn run_pm_sync(meridian: &SqlitePool, config: &Config) -> Result<()> {
             }
             PmProviderConfig::Linear(cfg) => {
                 providers::linear::refresh_if_stale(meridian, cfg).await
+            }
+            PmProviderConfig::Trello(cfg) => {
+                providers::trello::refresh_if_stale(meridian, cfg).await
             }
         };
         match result {

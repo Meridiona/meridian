@@ -32,6 +32,7 @@ pub mod route;
 pub mod scheduler;
 pub mod status;
 pub mod synth;
+pub mod trello;
 
 pub use config::PmWorklogConfig;
 pub use post::{cli_post_approved, post_approved, run_post_loop};

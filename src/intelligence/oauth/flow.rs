@@ -244,6 +244,10 @@ async fn respond(socket: &mut tokio::net::TcpStream, message: &str) -> Result<()
          <body style=\"font-family:system-ui;text-align:center;padding-top:4rem\">\
          <h2>{message}</h2></body></html>"
     );
+    respond_raw(socket, &html).await
+}
+
+async fn respond_raw(socket: &mut tokio::net::TcpStream, html: &str) -> Result<()> {
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         html.len(),
@@ -252,6 +256,97 @@ async fn respond(socket: &mut tokio::net::TcpStream, message: &str) -> Result<()
     socket.write_all(response.as_bytes()).await?;
     socket.flush().await?;
     Ok(())
+}
+
+/// Run the Trello fragment-relay flow. Trello delivers the token in the URL
+/// fragment (`#token=...`) which the HTTP server cannot read directly. This
+/// serves a small JS relay page at `/callback` that reads the hash and fetches
+/// `/capture?t=TOKEN`, which the server captures.
+pub async fn run_fragment_relay_flow(authorize_url: &str, port: u16) -> Result<String> {
+    let listener = TcpListener::bind(("127.0.0.1", port))
+        .await
+        .with_context(|| {
+            format!("binding loopback :{port} for the Trello token relay — is the port free?")
+        })?;
+    eprintln!("\nOpening your browser to authorize…");
+    eprintln!("If it doesn't open, paste this URL:\n\n{authorize_url}\n");
+    open_browser(authorize_url);
+    tokio::time::timeout(CONSENT_TIMEOUT, accept_fragment_relay(&listener))
+        .await
+        .map_err(|_| anyhow!("timed out after 5 min waiting for browser authorization"))?
+}
+
+/// Accept the two-request fragment relay sequence:
+///   1. GET /callback          → serve JS relay page (reads hash, fetches /capture)
+///   2. GET /capture?t=TOKEN   → extract token, confirm success, return token
+async fn accept_fragment_relay(listener: &TcpListener) -> Result<String> {
+    loop {
+        let (mut socket, _) = listener
+            .accept()
+            .await
+            .context("accepting Trello relay connection")?;
+        let mut buf = vec![0u8; 8192];
+        let n = socket
+            .read(&mut buf)
+            .await
+            .context("reading Trello relay request")?;
+        let req = String::from_utf8_lossy(&buf[..n]);
+        let Some(first_line) = req.lines().next() else {
+            continue;
+        };
+        let Some(target) = first_line.split_whitespace().nth(1) else {
+            continue;
+        };
+
+        if target.starts_with("/capture") {
+            // Second request: JS relayed the token as ?t=TOKEN
+            let token = target
+                .split('?')
+                .nth(1)
+                .and_then(|q| {
+                    q.split('&').find_map(|pair| {
+                        let mut it = pair.splitn(2, '=');
+                        match (it.next(), it.next()) {
+                            (Some("t"), Some(v)) => Some(decode(v)),
+                            _ => None,
+                        }
+                    })
+                });
+            match token {
+                Some(t) if !t.is_empty() => {
+                    let _ = respond(
+                        &mut socket,
+                        "Trello connected! You can close this tab.",
+                    )
+                    .await;
+                    return Ok(t);
+                }
+                _ => {
+                    let _ = respond(&mut socket, "Token missing. You can close this tab.").await;
+                    bail!("Trello relay /capture received no token");
+                }
+            }
+        } else if target.starts_with("/callback") {
+            // First request: serve the JS relay page that reads the URL fragment
+            // and fetches /capture?t={token}. The fragment is never sent to the
+            // server by the browser, so JS must relay it.
+            let relay_html = "\
+<!doctype html><html><head><meta charset=utf-8><title>Meridian</title></head>\
+<body style=\"font-family:system-ui;text-align:center;padding-top:4rem\">\
+<h2>Connecting Trello\u{2026}</h2>\
+<script>\
+var h=window.location.hash;\
+var t=h&&h.startsWith('#token=')?h.slice(7):'';\
+if(t){fetch('/capture?t='+encodeURIComponent(t)).then(function(){document.querySelector('h2').textContent='Trello connected! You can close this tab.';});}\
+else{document.querySelector('h2').textContent='No token in URL. Try again.';}\
+</script></body></html>";
+            let _ = respond_raw(&mut socket, relay_html).await;
+            // Keep listening — the JS relay will arrive on the next connection.
+        } else {
+            // Ignore stray probes (favicon, etc.)
+            let _ = respond(&mut socket, "Waiting for authorization\u{2026}").await;
+        }
+    }
 }
 
 /// Open `url` in the system browser. macOS-only (`open`); non-fatal if it fails —
