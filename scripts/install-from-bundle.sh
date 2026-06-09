@@ -671,13 +671,18 @@ if command -v cursor >/dev/null 2>&1 || [[ -d "${HOME}/Library/Application Suppo
     fi
 fi
 
-# UI: skip daemon restart when the build didn't change (tarball hash matched).
+# UI: even when the build is unchanged we ALWAYS re-pin the Node runtime and
+# reload the launchd job. The better-sqlite3 addon is ABI-locked to one Node
+# version; skipping this reload is how a stale UI job survives `update` and ends
+# up running a mismatched system Node (NODE_MODULE_VERSION crash-loop). The
+# expensive re-extraction is already skipped above when unchanged, so this is
+# cheap — resolve_node_runtime hits the cache, then bootout/bootstrap reloads.
 if [[ "${_ui_changed}" -eq 0 ]]; then
-    ok "Dashboard unchanged — skipping restart"
+    info "Dashboard build unchanged — re-pinning Node runtime and reloading UI agent…"
 else
     info "Installing the dashboard (UI) launchd agent…"
-    install_ui_standalone
 fi
+install_ui_standalone
 
 # Persist component hashes for the next update's differential check.
 # Write to a temp file and rename atomically so a crash mid-write never leaves
