@@ -476,24 +476,65 @@ cmd_update() {
 # --- uninstall ---
 cmd_uninstall() {
     local ans
-    read -r -p "This will stop all daemons and remove /usr/local/bin/meridian. Continue? [y/N] " ans
+    read -r -p "This will stop all daemons, remove the app bundle, venv, npm package, and CLI symlinks. Your data (~/.meridian/*.db, logs) will NOT be deleted. Continue? [y/N] " ans
     if [[ "$ans" != "y" && "$ans" != "Y" ]]; then
         printf "(cancelled)\n"
         exit 0
     fi
 
     set +e
+
+    # 1. Stop and remove all launchd agents
     bash "${REPO_ROOT}/scripts/uninstall-ui-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/services/scripts/uninstall-mlx-server-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/scripts/uninstall-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/scripts/uninstall-screenpipe-daemon.sh" 2>/dev/null
+    bash "${REPO_ROOT}/scripts/uninstall-tray-daemon.sh" 2>/dev/null
+    # a11y-helper plist
+    launchctl bootout "${GUI_TARGET}/com.meridiona.a11y-helper" 2>/dev/null || true
+    rm -f "${HOME}/Library/LaunchAgents/com.meridiona.a11y-helper.plist"
+
+    # 2. Kill any orphaned processes
     pkill -f "mlx_lm.server" 2>/dev/null || true
+
+    # 3. Remove CLI symlinks
     rm -f /usr/local/bin/meridian /usr/local/bin/meridian-daemon \
           "${HOME}/.local/bin/meridian" "${HOME}/.local/bin/meridian-daemon"
+
+    # 4. Remove the app bundle (binaries, venv, scripts, UI build)
+    rm -rf "${HOME}/.meridian/app"
+
+    # 5. Remove staged binaries
+    rm -f "${HOME}/.meridian/bin/meridian" \
+          "${HOME}/.meridian/bin/meridian-daemon" \
+          "${HOME}/.meridian/bin/meridian-tray" \
+          "${HOME}/.meridian/bin/screenpipe" \
+          "${HOME}/.meridian/bin/meridian-a11y-helper"
+
+    # 6. Uninstall the npm package
+    npm uninstall -g @meridiona/meridian 2>/dev/null || true
+
+    # 7. Remove the Claude Code SessionEnd hook
+    local settings="${HOME}/.claude/settings.json"
+    if [[ -f "${settings}" ]] && command -v python3 >/dev/null 2>&1; then
+        python3 - "${settings}" <<'PYEOF' 2>/dev/null || true
+import json, sys
+path = sys.argv[1]
+with open(path) as f: d = json.load(f)
+hooks = d.get("hooks", {})
+se = hooks.get("SessionEnd", [])
+hooks["SessionEnd"] = [e for e in se if "meridian" not in str(e)]
+d["hooks"] = hooks
+with open(path, "w") as f: json.dump(d, f, indent=2)
+PYEOF
+        info "Claude Code SessionEnd hook removed"
+    fi
+
     set -e
 
-    ok "uninstalled"
-    printf "  Data at ~/.meridian/ was not removed. Delete it manually if desired.\n"
+    ok "Meridian uninstalled"
+    printf "  Kept: ~/.meridian/*.db, ~/.meridian/logs/ (your data)\n"
+    printf "  Kept: screenpipe itself (uninstall separately if desired: brew uninstall screenpipe)\n"
 }
 
 # --- permissions ---
