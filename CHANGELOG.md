@@ -1,3 +1,10 @@
+## [1.32.1](https://github.com/Meridiona/meridian/compare/v1.32.0...v1.32.1) (2026-06-09)
+
+
+### Bug Fixes
+
+* **installer:** install Python venv from PyPI at install time, drop pre-built tarball ([#201](https://github.com/Meridiona/meridian/issues/201)) ([9612cfb](https://github.com/Meridiona/meridian/commit/9612cfbd1ee963b28a28765f45d70c31ccbd2da6)), closes [#3](https://github.com/Meridiona/meridian/issues/3)
+
 # [1.32.0](https://github.com/Meridiona/meridian/compare/v1.31.3...v1.32.0) (2026-06-08)
 
 
