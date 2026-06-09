@@ -1,3 +1,10 @@
+## [1.37.1](https://github.com/Meridiona/meridian/compare/v1.37.0...v1.37.1) (2026-06-09)
+
+
+### Bug Fixes
+
+* **packaging:** include lib-trello-setup.sh in release bundle ([#221](https://github.com/Meridiona/meridian/issues/221)) ([e5cb6cf](https://github.com/Meridiona/meridian/commit/e5cb6cf3ac0212d2df1ebb0a435c56220e211112))
+
 # [1.37.0](https://github.com/Meridiona/meridian/compare/v1.36.0...v1.37.0) (2026-06-09)
 
 
