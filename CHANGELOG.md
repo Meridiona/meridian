@@ -1,3 +1,11 @@
+## [1.34.1](https://github.com/Meridiona/meridian/compare/v1.34.0...v1.34.1) (2026-06-09)
+
+
+### Bug Fixes
+
+* **screenpipe:** prefer staged Mach-O binary over nvm-versioned npm shim ([#205](https://github.com/Meridiona/meridian/issues/205)) ([23e1db8](https://github.com/Meridiona/meridian/commit/23e1db8cab6470577019cd4fce4bbf048b728c83))
+* **smoke:** raise classify timeout to 180s for M1 machines ([#204](https://github.com/Meridiona/meridian/issues/204)) ([b92cce0](https://github.com/Meridiona/meridian/commit/b92cce059135ae16c14af35f031eaedfa653b636))
+
 # [1.34.0](https://github.com/Meridiona/meridian/compare/v1.33.0...v1.34.0) (2026-06-09)
 
 
