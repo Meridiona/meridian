@@ -37,8 +37,6 @@
         <string>python</string>
         <string>-m</string>
         <string>agents.server</string>
-        <string>--backend</string>
-        <string>mlx</string>
         <string>--port</string>
         <string>{{MLX_SERVER_PORT}}</string>
     </array>
