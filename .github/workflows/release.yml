@@ -32,6 +32,13 @@ jobs:
     runs-on: macos-26
     env:
       SQLX_OFFLINE: "true"
+      # Baked into the release binary at compile time (consumed by option_env! in
+      # src/intelligence/oauth/jira.rs). Atlassian Cloud's 3LO token endpoint
+      # requires a confidential client_secret even for desktop apps, so the shipped
+      # binary must carry one — but it never lives in source. Set the
+      # JIRA_OAUTH_CLIENT_SECRET repo secret; rotate it together with the value in
+      # the Atlassian developer console.
+      MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
     steps:
       - uses: actions/checkout@v4
         with:
