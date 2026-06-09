@@ -37,7 +37,6 @@ from opentelemetry.trace import StatusCode
 from pydantic import BaseModel, Field
 
 _SERVICES_DIR = Path(__file__).parent.parent
-os.environ.setdefault("HERMES_HOME", str(_SERVICES_DIR / ".hermes"))
 
 from agents import observability
 from agents._prompts import build_user_message

@@ -21,15 +21,6 @@ _ENV_FILE = PROJECT_ROOT / ".env"
 if _ENV_FILE.exists():
     load_dotenv(_ENV_FILE, override=False)
 
-# ── Hermes (AIAgent library) ──────────────────────────────────────────────────
-HERMES_HOME = Path(os.environ.get("HERMES_HOME", str(REPO_ROOT / ".hermes")))
-
-# Directories searched for skill files (SKILL.md, SKILL-*.md).
-SKILLS_SEARCH_PATHS: list[Path] = [
-    REPO_ROOT / "skills" / "activity",
-    HERMES_HOME / "skills",
-]
-
 # ── LLM ───────────────────────────────────────────────────────────────────────
 MODEL            = os.environ.get("OLLAMA_MODEL")
 BASE_URL         = os.environ.get("OLLAMA_HOST")
@@ -43,7 +34,7 @@ if not API_KEY:
     )
 
 # Local model selection — Apple Silicon only.
-# LLM_PREFER_LOCAL=1 tries a local model before the cloud AIAgent path.
+# LLM_PREFER_LOCAL=1 tries a local model before the cloud path.
 # LLM_BUDGET_PCT controls the fraction of available Metal headroom to allocate
 # (0.5 = 50% of free GPU memory). Set to 0 or LLM_PREFER_LOCAL=0 to disable.
 
@@ -57,10 +48,6 @@ def _env_bool(name: str, default: bool) -> bool:
 
 LLM_PREFER_LOCAL = _env_bool("LLM_PREFER_LOCAL", True)
 LLM_BUDGET_PCT   = float(os.environ.get("LLM_BUDGET_PCT", "0.5"))
-
-# When true, _hermes_setup.ensure_hermes_importable() prepends services/.hermes/
-# to sys.path so the local source checkout shadows the installed hermes-agent package.
-HERMES_DEV_MODE = os.environ.get("HERMES_DEV_MODE", "0") == "1"
 
 # ── DB / runtime paths ────────────────────────────────────────────────────────
 MERIDIAN_HOME = Path(os.environ.get("MERIDIAN_HOME", str(Path.home() / ".meridian")))
