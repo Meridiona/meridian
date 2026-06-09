@@ -40,21 +40,37 @@ fi
 # attaches to a stable binary named `screenpipe` (and survives reinstalls of the
 # same version, since its path is fixed). Falls back to whatever `command -v`
 # found when screenpipe is a native binary (Homebrew) rather than the npm shim.
-SCREENPIPE_BIN="$(command -v screenpipe)" || true
-if [[ -z "${SCREENPIPE_BIN}" ]]; then
-    echo "✗ screenpipe binary not found in PATH — install with: npm install -g screenpipe" >&2
-    exit 1
-fi
-_npm_root="$(npm root -g 2>/dev/null || true)"
-if [[ -n "${_npm_root}" && -d "${_npm_root}/screenpipe" ]]; then
-    _real=""
-    while IFS= read -r _cand; do
-        if file "${_cand}" 2>/dev/null | grep -q "Mach-O"; then _real="${_cand}"; break; fi
-    done < <(find "${_npm_root}/screenpipe" -type f -name screenpipe -perm +0111 2>/dev/null)
-    if [[ -n "${_real}" ]]; then
-        SCREENPIPE_BIN="${_real}"
-        echo "→ using the real screenpipe binary (not the node wrapper): ${SCREENPIPE_BIN}"
+STAGED_BIN="${HOME}/.meridian/bin/screenpipe"
+
+# Prefer the already-staged stable binary (written by install-from-bundle.sh).
+# On a standalone re-run of this script (e.g. `meridian repair`) resolve the
+# real Mach-O from the npm tree and stage it so the launchd plist is immune to
+# nvm version changes — the npm shim path under ~/.nvm is version-specific and
+# breaks silently when the user runs `nvm use` or upgrades Node.
+if [[ -x "${STAGED_BIN}" ]] && file "${STAGED_BIN}" 2>/dev/null | grep -q "Mach-O"; then
+    SCREENPIPE_BIN="${STAGED_BIN}"
+    echo "→ using staged screenpipe binary: ${SCREENPIPE_BIN}"
+else
+    SCREENPIPE_BIN="$(command -v screenpipe 2>/dev/null || true)"
+    if [[ -z "${SCREENPIPE_BIN}" ]]; then
+        echo "✗ screenpipe not found in PATH — install with: npm install -g screenpipe" >&2
+        exit 1
     fi
+    _npm_root="$(npm root -g 2>/dev/null || true)"
+    if [[ -n "${_npm_root}" && -d "${_npm_root}/screenpipe" ]]; then
+        _real=""
+        while IFS= read -r _cand; do
+            if file "${_cand}" 2>/dev/null | grep -q "Mach-O"; then _real="${_cand}"; break; fi
+        done < <(find "${_npm_root}/screenpipe" -type f -name screenpipe -perm +0111 2>/dev/null)
+        if [[ -n "${_real}" ]]; then
+            SCREENPIPE_BIN="${_real}"
+        fi
+    fi
+    mkdir -p "${HOME}/.meridian/bin"
+    cp "${SCREENPIPE_BIN}" "${STAGED_BIN}"
+    chmod +x "${STAGED_BIN}"
+    SCREENPIPE_BIN="${STAGED_BIN}"
+    echo "→ staged screenpipe binary: ${SCREENPIPE_BIN}"
 fi
 
 mkdir -p "${HOME}/.meridian/logs"
