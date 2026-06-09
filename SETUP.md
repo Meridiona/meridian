@@ -47,6 +47,8 @@ Add the block for your tracker, then `meridian restart`.
 
 The installer now connects Jira for you (it offers browser sign-in during `meridian setup` / `./install.sh`). To connect manually or re-connect:
 
+> **Maintainers:** the browser flow depends on a one-time Atlassian app registration — including the **Distributable** toggle that gates all non-Meridiona users. Runbook: [`docs/jira-oauth-app.md`](docs/jira-oauth-app.md).
+
 **Easiest — browser OAuth (no API token):**
 ```bash
 meridian oauth-login jira    # opens your browser → click Accept

@@ -28,6 +28,10 @@ pub const DEFAULT_REDIRECT_PORT: u16 = 9123;
 /// have NO secret, so this is safe to ship — every install uses it, so
 /// `meridian oauth-login jira` needs zero config. Override (e.g. for a different
 /// app or Jira Data Center) with `JIRA_OAUTH_CLIENT_ID`.
+///
+/// Registering / maintaining this app — scopes, the `127.0.0.1:9123` callback,
+/// and the **Distribution → Distributable** toggle that gates all non-Meridiona
+/// users — is documented in `docs/jira-oauth-app.md`. Update both together.
 pub const DEFAULT_CLIENT_ID: &str = "sXRB5rwKFX53DUgb9u5LO7gr0pRMwNDS";
 
 /// Resolve the client id to use for `oauth-login`: `JIRA_OAUTH_CLIENT_ID` env
