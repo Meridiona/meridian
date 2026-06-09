@@ -45,6 +45,15 @@ Add the block for your tracker, then `meridian restart`.
 
 ### Jira
 
+**Easiest — browser OAuth (no API token):**
+```bash
+meridian oauth-login jira    # opens your browser → click Accept
+meridian restart
+```
+Tokens are saved to `~/.meridian/oauth/jira.json` and auto-refresh; the site is discovered automatically. Nothing to put in `.env`.
+
+**Legacy — static API token** (use this *instead* of the OAuth login):
+
 1. Create an API token at https://id.atlassian.com/manage-profile/security/api-tokens
 2. Add to config:
 ```dotenv

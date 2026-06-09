@@ -73,9 +73,12 @@ pub fn load_runtime_settings() -> RuntimeSettings {
 
 #[derive(Clone, Debug)]
 pub struct JiraConfig {
-    /// e.g. "https://acme.atlassian.net"
+    /// e.g. "https://acme.atlassian.net". Empty in OAuth-only setups (the site
+    /// URL then comes from the OAuth token store's `accessible-resources` result).
     pub base_url: String,
+    /// Basic-auth email; empty under OAuth.
     pub email: String,
+    /// Basic-auth API token; empty under OAuth.
     pub api_token: String,
     /// Filter to specific project keys. Empty = accept all.
     pub project_keys: Vec<String>,
@@ -190,9 +193,21 @@ fn env_list(key: &str) -> Vec<String> {
 fn parse_jira() -> Option<PmProviderConfig> {
     let base_url = std::env::var("JIRA_URL")
         .or_else(|_| std::env::var("JIRA_BASE_URL"))
-        .ok()?;
-    let email = std::env::var("JIRA_EMAIL").ok()?;
-    let api_token = std::env::var("JIRA_API_TOKEN").ok()?;
+        .unwrap_or_default();
+    let email = std::env::var("JIRA_EMAIL").unwrap_or_default();
+    let api_token = std::env::var("JIRA_API_TOKEN").unwrap_or_default();
+
+    // Configured if EITHER auth path is viable:
+    //   * browser OAuth — the user has run `meridian oauth-login jira`, so a token
+    //     store exists (client id is baked in / env-overridable, not required here);
+    //   * static basic auth — all three legacy vars present.
+    // The store check is what makes zero-config OAuth work with no env at all.
+    let basic_complete = !base_url.is_empty() && !email.is_empty() && !api_token.is_empty();
+    let oauth_active = crate::intelligence::oauth::store::exists("jira");
+    if !basic_complete && !oauth_active {
+        return None;
+    }
+
     Some(PmProviderConfig::Jira(JiraConfig {
         base_url,
         email,
@@ -280,7 +295,10 @@ impl Config {
             .unwrap_or(true);
         let classification_enabled = runtime.classification_enabled && classification_enabled_env;
 
-        let jira_configured = std::env::var("JIRA_BASE_URL").is_ok();
+        // Jira is "configured" for update-gating purposes under either auth path:
+        // legacy basic auth (JIRA_BASE_URL) or browser OAuth (JIRA_OAUTH_CLIENT_ID).
+        let jira_configured =
+            std::env::var("JIRA_BASE_URL").is_ok() || std::env::var("JIRA_OAUTH_CLIENT_ID").is_ok();
         let jira_update_enabled_env = std::env::var("JIRA_UPDATE_ENABLED")
             .map(|v| !matches!(v.to_lowercase().trim(), "0" | "false" | "no" | "off"))
             .unwrap_or(jira_configured);
@@ -457,6 +475,93 @@ mod tests {
             assert!(gh.project_ids.is_empty());
         }
         std::env::remove_var("GITHUB_TOKEN");
+    }
+
+    /// Clear every Jira-related env var and isolate HOME to a clean temp dir so a
+    /// real `~/.meridian/oauth/jira.json` on the dev machine can't make parse_jira
+    /// see an OAuth login the test never set up. Returns the isolated HOME.
+    fn clear_jira_env() -> std::path::PathBuf {
+        for k in [
+            "JIRA_URL",
+            "JIRA_BASE_URL",
+            "JIRA_EMAIL",
+            "JIRA_API_TOKEN",
+            "JIRA_OAUTH_CLIENT_ID",
+            "JIRA_PROJECT_KEYS",
+        ] {
+            std::env::remove_var(k);
+        }
+        let home = std::env::temp_dir().join(format!("merid_jira_cfg_{}", std::process::id()));
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::create_dir_all(&home).ok();
+        std::env::set_var("HOME", &home);
+        home
+    }
+
+    #[test]
+    fn test_parse_jira_basic_auth_complete() {
+        let _guard = env_lock().lock().unwrap();
+        let home = clear_jira_env();
+        std::env::set_var("JIRA_BASE_URL", "https://acme.atlassian.net");
+        std::env::set_var("JIRA_EMAIL", "a@b.com");
+        std::env::set_var("JIRA_API_TOKEN", "tok");
+        let parsed = parse_jira();
+        assert!(matches!(parsed, Some(PmProviderConfig::Jira(_))));
+        if let Some(PmProviderConfig::Jira(j)) = parsed {
+            assert_eq!(j.base_url, "https://acme.atlassian.net");
+            assert_eq!(j.api_token, "tok");
+        }
+        std::fs::remove_dir_all(&home).ok();
+        clear_jira_env();
+    }
+
+    #[test]
+    fn test_parse_jira_oauth_store_configures() {
+        let _guard = env_lock().lock().unwrap();
+        let home = clear_jira_env();
+        // No basic creds at all — a present OAuth token store alone configures Jira.
+        crate::intelligence::oauth::store::save(&crate::intelligence::oauth::store::OAuthTokens {
+            provider: "jira".into(),
+            client_id: "cid".into(),
+            access_token: "a".into(),
+            refresh_token: "r".into(),
+            expires_at: 9_999_999_999,
+            scopes: String::new(),
+            cloud_id: "c".into(),
+            site_url: "https://acme.atlassian.net".into(),
+        })
+        .unwrap();
+        assert!(
+            matches!(parse_jira(), Some(PmProviderConfig::Jira(_))),
+            "an OAuth token store alone must yield a Jira provider"
+        );
+        std::fs::remove_dir_all(&home).ok();
+        clear_jira_env();
+    }
+
+    #[test]
+    fn test_parse_jira_incomplete_basic_is_none() {
+        let _guard = env_lock().lock().unwrap();
+        let home = clear_jira_env();
+        // base_url + email but NO token, and no OAuth login → not configured.
+        std::env::set_var("JIRA_BASE_URL", "https://acme.atlassian.net");
+        std::env::set_var("JIRA_EMAIL", "a@b.com");
+        assert!(
+            parse_jira().is_none(),
+            "incomplete basic creds with no OAuth login must yield no provider"
+        );
+        std::fs::remove_dir_all(&home).ok();
+        clear_jira_env();
+    }
+
+    #[test]
+    fn test_parse_jira_nothing_configured_is_none() {
+        let _guard = env_lock().lock().unwrap();
+        let home = clear_jira_env();
+        // No creds, no token store → no Jira provider (no per-tick auth-fail spam).
+        assert!(parse_jira().is_none());
+        std::fs::remove_dir_all(&home).ok();
+        clear_jira_env();
     }
 
     #[test]

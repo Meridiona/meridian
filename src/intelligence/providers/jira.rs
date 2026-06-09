@@ -5,6 +5,7 @@ use serde::Deserialize;
 use sqlx::SqlitePool;
 
 use crate::config::JiraConfig;
+use crate::intelligence::oauth::jira::JiraReqCtx;
 
 // ---------------------------------------------------------------------------
 // Jira REST response shapes
@@ -114,16 +115,16 @@ const SYNC_INTERVAL_MINS: i64 = 5;
 // ---------------------------------------------------------------------------
 
 #[tracing::instrument(
-    skip(jira),
+    skip(ctx),
     fields(
         provider = "jira",
         latency_ms = tracing::field::Empty,
         status_code = tracing::field::Empty,
     )
 )]
-async fn fetch(jira: &JiraConfig) -> Result<Vec<JiraIssue>> {
+async fn fetch(ctx: &JiraReqCtx) -> Result<Vec<JiraIssue>> {
     let client = reqwest::Client::new();
-    let url = format!("{}/rest/api/3/search/jql", jira.base_url);
+    let url = ctx.api_url("/rest/api/3/search/jql");
 
     let body = serde_json::json!({
         "jql": "assignee = currentUser() AND statusCategory != Done AND type IN (Task, Feature) ORDER BY updated DESC",
@@ -132,9 +133,8 @@ async fn fetch(jira: &JiraConfig) -> Result<Vec<JiraIssue>> {
     });
 
     let start = std::time::Instant::now();
-    let resp = client
-        .post(&url)
-        .basic_auth(&jira.email, Some(&jira.api_token))
+    let resp = ctx
+        .apply(client.post(&url))
         .json(&body)
         .send()
         .await
@@ -161,7 +161,12 @@ async fn fetch(jira: &JiraConfig) -> Result<Vec<JiraIssue>> {
 // Upsert
 // ---------------------------------------------------------------------------
 
-async fn upsert(pool: &SqlitePool, issues: &[JiraIssue], jira: &JiraConfig) -> Result<()> {
+async fn upsert(
+    pool: &SqlitePool,
+    issues: &[JiraIssue],
+    jira: &JiraConfig,
+    ctx: &JiraReqCtx,
+) -> Result<()> {
     for issue in issues {
         if !jira.project_keys.is_empty() && !jira.project_keys.contains(&issue.fields.project.key) {
             continue;
@@ -175,7 +180,7 @@ async fn upsert(pool: &SqlitePool, issues: &[JiraIssue], jira: &JiraConfig) -> R
             .unwrap_or_default();
 
         let cat = map_status_category(&issue.fields.status.status_category.key);
-        let url = format!("{}/browse/{}", jira.base_url, issue.key);
+        let url = ctx.browse_url(&issue.key);
 
         let (parent_key, epic_title) = issue
             .fields
@@ -301,12 +306,23 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
 
     tracing::debug!("jira task cache is stale — refreshing");
 
-    match fetch(jira).await {
+    // Resolve auth once per refresh: OAuth (with refresh-before-use) if a token
+    // store exists, else static basic auth. A resolve failure means no usable
+    // creds — keep the stale cache rather than erroring the whole tick.
+    let ctx = match crate::intelligence::oauth::jira::resolve(jira).await {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            tracing::warn!(error = %e, "jira auth unavailable — keeping stale cache");
+            return Ok(None);
+        }
+    };
+
+    match fetch(&ctx).await {
         Ok(issues) => {
             let keys: Vec<String> = issues.iter().map(|i| i.key.clone()).collect();
             let n = keys.len();
             tracing::debug!(fetched_count = n, "jira fetch completed");
-            upsert(pool, &issues, jira).await?;
+            upsert(pool, &issues, jira, &ctx).await?;
             sqlx::query(
                 "INSERT INTO pm_sync_state (provider, last_synced_at)
                  VALUES ('jira', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))

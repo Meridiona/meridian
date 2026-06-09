@@ -8,6 +8,7 @@
 
 use crate::config::Config;
 use crate::health::Check;
+use crate::intelligence::oauth::{jira as oauth_jira, store as oauth_store};
 use sqlx::SqlitePool;
 use std::time::Duration;
 
@@ -17,22 +18,27 @@ const SYNC_STALE_SECS: f64 = 3600.0;
 pub async fn checks(_cfg: &Config, pool: Option<&SqlitePool>) -> Vec<Check> {
     let mut out = Vec::new();
 
-    let base = std::env::var("JIRA_BASE_URL")
-        .or_else(|_| std::env::var("JIRA_URL"))
-        .ok()
-        .filter(|s| !s.is_empty());
-    let email = std::env::var("JIRA_EMAIL").ok().filter(|s| !s.is_empty());
-    let token = std::env::var("JIRA_API_TOKEN")
-        .ok()
-        .filter(|s| !s.is_empty());
+    // OAuth takes precedence over basic auth (same order the daemon resolves).
+    if oauth_store::exists("jira") {
+        out.push(auth_oauth().await);
+    } else {
+        let base = std::env::var("JIRA_BASE_URL")
+            .or_else(|_| std::env::var("JIRA_URL"))
+            .ok()
+            .filter(|s| !s.is_empty());
+        let email = std::env::var("JIRA_EMAIL").ok().filter(|s| !s.is_empty());
+        let token = std::env::var("JIRA_API_TOKEN")
+            .ok()
+            .filter(|s| !s.is_empty());
 
-    match (base, email, token) {
-        (Some(b), Some(e), Some(t)) => out.push(auth(&b, &e, &t).await),
-        _ => out.push(Check::info(
-            "auth",
-            "L2",
-            "Jira not configured (no JIRA_BASE_URL / EMAIL / API_TOKEN)",
-        )),
+        match (base, email, token) {
+            (Some(b), Some(e), Some(t)) => out.push(auth_basic(&b, &e, &t).await),
+            _ => out.push(Check::info(
+                "auth",
+                "L2",
+                "Jira not configured (no OAuth login, no JIRA_BASE_URL / EMAIL / API_TOKEN)",
+            )),
+        }
     }
 
     if let Some(p) = pool {
@@ -42,18 +48,54 @@ pub async fn checks(_cfg: &Config, pool: Option<&SqlitePool>) -> Vec<Check> {
     out
 }
 
-async fn auth(base: &str, email: &str, token: &str) -> Check {
-    let url = format!("{}/rest/api/3/myself", base.trim_end_matches('/'));
-    let client = match reqwest::Client::builder()
+fn http_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
         .timeout(Duration::from_secs(6))
         .build()
-    {
+}
+
+/// Probe `/myself` with a static API token (legacy basic auth).
+async fn auth_basic(base: &str, email: &str, token: &str) -> Check {
+    let url = format!("{}/rest/api/3/myself", base.trim_end_matches('/'));
+    let client = match http_client() {
         Ok(c) => c,
         Err(e) => return Check::warn("auth", "L2", format!("http client error ({e})")),
     };
-    match client.get(&url).basic_auth(email, Some(token)).send().await {
+    classify_auth(client.get(&url).basic_auth(email, Some(token)).send().await).await
+}
+
+/// Probe `/myself` via the OAuth gateway, refreshing the access token first.
+async fn auth_oauth() -> Check {
+    let tokens = match oauth_jira::ensure_fresh().await {
+        Ok(t) => t,
+        Err(e) => {
+            return Check::critical("auth", "L2", format!("OAuth token refresh failed ({e})"))
+                .with_remedy("re-run `meridian oauth-login jira`")
+        }
+    };
+    let url = format!(
+        "https://api.atlassian.com/ex/jira/{}/rest/api/3/myself",
+        tokens.cloud_id
+    );
+    let client = match http_client() {
+        Ok(c) => c,
+        Err(e) => return Check::warn("auth", "L2", format!("http client error ({e})")),
+    };
+    classify_auth(
+        client
+            .get(&url)
+            .bearer_auth(&tokens.access_token)
+            .send()
+            .await,
+    )
+    .await
+}
+
+/// Map a `/myself` response into a health `Check`, shared by both auth paths.
+async fn classify_auth(send: reqwest::Result<reqwest::Response>) -> Check {
+    match send {
         Err(_) => Check::critical("auth", "L2", "Jira API unreachable")
-            .with_remedy("check network connectivity and JIRA_BASE_URL"),
+            .with_remedy("check network connectivity and Jira base URL"),
         Ok(resp) => match resp.status().as_u16() {
             200 => {
                 let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
@@ -62,12 +104,13 @@ async fn auth(base: &str, email: &str, token: &str) -> Check {
                     .and_then(|v| v.as_str())
                     .or_else(|| body.get("displayName").and_then(|v| v.as_str()))
                     .unwrap_or("ok");
-                Check::ok("auth", "L2", format!("token valid ({who})"))
+                Check::ok("auth", "L2", format!("credentials valid ({who})"))
             }
-            401 => Check::critical("auth", "L2", "401 — API token expired or invalid")
-                .with_remedy("regenerate the Jira API token and update JIRA_API_TOKEN in .env"),
+            401 => Check::critical("auth", "L2", "401 — token expired or invalid").with_remedy(
+                "regenerate JIRA_API_TOKEN, or re-run `meridian oauth-login jira` for OAuth",
+            ),
             403 => Check::critical("auth", "L2", "403 — token lacks required scope")
-                .with_remedy("grant the token read:jira-work (and write:jira-work for worklogs)"),
+                .with_remedy("grant read:jira-work (and write:jira-work for worklogs)"),
             429 => {
                 Check::warn("auth", "L2", "429 — rate limited").with_remedy("back off and retry")
             }

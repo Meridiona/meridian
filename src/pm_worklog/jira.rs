@@ -2,15 +2,17 @@
 //
 // Jira worklog poster — a faithful Rust port of `pm_worklog_update/jira_poster.py`.
 // Turns (task_key, real_seconds, started_utc, comment) into a POST to
-// `{base_url}/rest/api/3/issue/{key}/worklog` and returns the new worklog id.
-// Reuses the daemon's existing `JiraConfig` (base_url / email / api_token) and
-// reqwest basic-auth — the same auth the Jira provider already uses.
+// `/rest/api/3/issue/{key}/worklog` and returns the new worklog id. Auth + the
+// API base are resolved through `oauth::jira::resolve` — OAuth (Bearer, via the
+// api.atlassian.com gateway) when a token store exists, else the legacy basic
+// auth against the site URL.
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Local, Utc};
 use serde_json::{json, Value};
 
 use crate::config::JiraConfig;
+use crate::intelligence::oauth::jira::resolve;
 
 /// Result of a successful worklog POST.
 #[derive(Debug, Clone)]
@@ -41,11 +43,10 @@ pub async fn post_worklog(
         "comment": build_adf_comment(comment),
     });
 
-    let url = format!(
-        "{}/rest/api/3/issue/{}/worklog",
-        jira.base_url.trim_end_matches('/'),
-        task_key
-    );
+    let ctx = resolve(jira)
+        .await
+        .context("resolving Jira auth for worklog POST")?;
+    let url = ctx.api_url(&format!("/rest/api/3/issue/{task_key}/worklog"));
 
     tracing::info!(
         task_key,
@@ -56,9 +57,8 @@ pub async fn post_worklog(
     );
 
     let client = reqwest::Client::new();
-    let resp = client
-        .post(&url)
-        .basic_auth(&jira.email, Some(&jira.api_token))
+    let resp = ctx
+        .apply(client.post(&url))
         .header("Accept", "application/json")
         .json(&payload)
         .send()

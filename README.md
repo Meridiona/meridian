@@ -75,7 +75,7 @@ Once installed, use `meridian dev …` to rebuild + restart after edits — see 
 `./install.sh` walks you through credential prompts grouped by category:
 
 - **Cloud LLM** — `OPENROUTER_API_KEY` (skip if you're running a local LLM)
-- **Jira** — URL, email, API token, project keys (gated by `[y/N]`)
+- **Jira** — easiest is browser OAuth: run `meridian oauth-login jira` (no API token needed). Legacy path: URL, email, API token, project keys (gated by `[y/N]`)
 - **GitHub** — token (auto-extracted from the `gh` CLI, no PAT needed) + GitHub Projects to sync
 - **Linear** — API key, team IDs
 - **Observability (OpenObserve)** — base64 auth + OTLP endpoints
@@ -88,6 +88,8 @@ Minimum required variables:
 
 ```bash
 # Jira (for task classification and the PM-worklog stage)
+# Recommended: no env vars — just run `meridian oauth-login jira` (browser OAuth).
+# Legacy static-token path (use INSTEAD of the OAuth login):
 JIRA_BASE_URL=https://your-instance.atlassian.net
 JIRA_EMAIL=you@example.com
 JIRA_API_TOKEN=your-api-token

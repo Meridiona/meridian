@@ -67,6 +67,11 @@ once_cell = "1.19"
 dotenvy = "0.15"
 shellexpand = "3"
 
+# OAuth (PKCE) — browser-based auth for PM providers (Jira, Linear)
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+
 [dev-dependencies]
 tokio       = { version = "1.15", features = ["full", "test-util"] }
 tempfile    = "3"
