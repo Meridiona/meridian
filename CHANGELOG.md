@@ -1,3 +1,10 @@
+## [1.34.2](https://github.com/Meridiona/meridian/compare/v1.34.1...v1.34.2) (2026-06-09)
+
+
+### Bug Fixes
+
+* **uninstall:** remove app bundle, venv, npm package, and hooks on uninstall ([#207](https://github.com/Meridiona/meridian/issues/207)) ([9b5cacf](https://github.com/Meridiona/meridian/commit/9b5cacf7d594a47058f7b39c5a960bd945d6b153))
+
 ## [1.34.1](https://github.com/Meridiona/meridian/compare/v1.34.0...v1.34.1) (2026-06-09)
 
 
