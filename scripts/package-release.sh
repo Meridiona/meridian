@@ -181,7 +181,7 @@ tar cf - \
 echo "→ scripts + plists + CLI"
 cp scripts/meridian-cli.sh scripts/install-from-bundle.sh scripts/meridian-npm-setup.sh \
    scripts/bootstrap.sh scripts/ui-start.sh scripts/lib-github-setup.sh \
-   scripts/lib-jira-setup.sh "${DEST}/scripts/"
+   scripts/lib-jira-setup.sh scripts/lib-trello-setup.sh "${DEST}/scripts/"
 cp scripts/install-daemon.sh scripts/uninstall-daemon.sh \
    scripts/install-ui-daemon.sh scripts/uninstall-ui-daemon.sh \
    scripts/install-screenpipe-daemon.sh scripts/uninstall-screenpipe-daemon.sh \
