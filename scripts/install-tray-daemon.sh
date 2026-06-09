@@ -52,6 +52,19 @@ sed -i '' "s|LOGS_PLACEHOLDER|${HOME}/.meridian/logs|g" "${PLIST}"
 mkdir -p "${HOME}/.meridian/logs"
 chmod 644 "${PLIST}"
 
-launchctl load "${PLIST}" 2>/dev/null || launchctl load -F "${PLIST}"
+GUI_TARGET="gui/$(id -u)"
+LABEL="com.meridiona.tray"
 
-echo "✓ Tray app registered as com.meridiona.tray — will start on next login"
+launchctl bootout "${GUI_TARGET}/${LABEL}" 2>/dev/null || true
+# Wait for bootout to complete before bootstrapping
+while launchctl print "${GUI_TARGET}/${LABEL}" >/dev/null 2>&1; do
+    sleep 0.2
+done
+launchctl enable "${GUI_TARGET}/${LABEL}" 2>/dev/null || true
+launchctl bootstrap "${GUI_TARGET}" "${PLIST}"
+launchctl enable "${GUI_TARGET}/${LABEL}"
+launchctl kickstart -k "${GUI_TARGET}/${LABEL}"
+
+echo "✓ Tray app installed and started (com.meridiona.tray)"
+echo "  launchctl print ${GUI_TARGET}/${LABEL}    # status"
+echo "  tail -f ~/.meridian/logs/tray.log         # logs"
