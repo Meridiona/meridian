@@ -505,12 +505,23 @@ cmd_uninstall() {
     # 4. Remove the app bundle (binaries, venv, scripts, UI build)
     rm -rf "${HOME}/.meridian/app"
 
-    # 5. Remove staged binaries
+    # 5. Remove staged binaries and the bin dir if empty afterwards
     rm -f "${HOME}/.meridian/bin/meridian" \
           "${HOME}/.meridian/bin/meridian-daemon" \
           "${HOME}/.meridian/bin/meridian-tray" \
           "${HOME}/.meridian/bin/screenpipe" \
           "${HOME}/.meridian/bin/meridian-a11y-helper"
+    rmdir "${HOME}/.meridian/bin" 2>/dev/null || true
+
+    # 5a. Remove runtime assets (venv, Node runtime, node-runtime meta)
+    rm -rf "${HOME}/.meridian/mlx-server-venv"
+    rm -rf "${HOME}/.meridian/node-runtime"
+    rm -f  "${HOME}/.meridian/py-src.sha256" \
+           "${HOME}/.meridian/doctor-bundle.txt" \
+           "${HOME}/.meridian/.component-hashes"
+
+    # 5b. Remove OAuth token store (user credentials — deleted on uninstall)
+    rm -rf "${HOME}/.meridian/oauth"
 
     # 6. Uninstall the npm package
     npm uninstall -g @meridiona/meridian 2>/dev/null || true
@@ -558,7 +569,8 @@ PYEOF
     set -e
 
     ok "Meridian uninstalled"
-    printf "  Kept: ~/.meridian/*.db, ~/.meridian/logs/ (your data)\n"
+    printf "  Kept: ~/.meridian/meridian.db, ~/.meridian/logs/ (your data)\n"
+    printf "  Removed: app bundle, venv, Node runtime, OAuth tokens, CLI\n"
     printf "  Kept: screenpipe itself (uninstall separately if desired: brew uninstall screenpipe)\n"
 }
 
