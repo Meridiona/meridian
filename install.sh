@@ -164,6 +164,9 @@ prompt_env_vars() {
     echo
 
     if prompt_category "Jira"; then
+        info "Easiest: skip the token prompts below and, after install, run"
+        info "  meridian oauth-login jira   — connect in your browser, no API token."
+        info "Or fill these in for the legacy API-token path:"
         prompt_env_var "JIRA_BASE_URL" "Jira URL (e.g. https://your-org.atlassian.net)" 0 "$root_env"
         # The python-side variable name is JIRA_URL, not JIRA_BASE_URL — write both.
         local jira_url

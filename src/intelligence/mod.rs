@@ -1,5 +1,6 @@
 // meridian — normalises screenpipe activity into structured app sessions
 
+pub mod oauth;
 pub mod providers;
 pub mod session_categorizer;
 pub mod task_linker;
