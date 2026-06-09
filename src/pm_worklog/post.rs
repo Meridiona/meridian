@@ -21,7 +21,9 @@ use anyhow::Result;
 use sqlx::SqlitePool;
 use tokio::sync::watch;
 
-use crate::config::{Config, GitHubConfig, JiraConfig, LinearConfig, PmProviderConfig, TrelloConfig};
+use crate::config::{
+    Config, GitHubConfig, JiraConfig, LinearConfig, PmProviderConfig, TrelloConfig,
+};
 
 use super::config::PmWorklogConfig;
 use super::{db, github, jira, linear, trello};
