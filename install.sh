@@ -238,13 +238,12 @@ prompt_permissions() {
         info "Skipping permissions walkthrough (--skip-permissions)"
         return 0
     fi
-    local sp_bin
-    sp_bin="$(command -v screenpipe 2>/dev/null || echo "/opt/homebrew/bin/screenpipe")"
+    local sp_bin="${HOME}/.meridian/bin/screenpipe"
     info "screenpipe needs three macOS permissions to record activity"
     echo "    binary path: ${sp_bin}"
     echo
-    echo "    Screen Recording + Accessibility panes: click '+', navigate to the"
-    echo "    binary path above, add it to the list, and toggle it ON."
+    echo "    Screen Recording + Accessibility panes: click '+' → ⌘⇧G → paste"
+    echo "    the path above → Open → toggle ON."
     echo "    Microphone pane has no '+'. screenpipe will appear there only after"
     echo "    it tries to use the mic — then toggle it ON. If it isn't listed yet,"
     echo "    grant Screen Recording first and screenpipe will request mic access."
@@ -521,6 +520,23 @@ else
     fi
 fi
 ok "screenpipe"
+# Stage the real screenpipe Mach-O to ~/.meridian/bin/screenpipe — stable path
+# independent of npm prefix (nvm users have a version-specific path that breaks
+# on `nvm use` and is too deep to navigate in System Settings).
+mkdir -p "${HOME}/.meridian/bin"
+_sp_npm_root="$(npm root -g 2>/dev/null || true)"
+_sp_real=""
+if [[ -n "${_sp_npm_root}" && -d "${_sp_npm_root}/screenpipe" ]]; then
+    while IFS= read -r _sp_cand; do
+        if file "${_sp_cand}" 2>/dev/null | grep -q "Mach-O"; then _sp_real="${_sp_cand}"; break; fi
+    done < <(find "${_sp_npm_root}/screenpipe" -type f -name screenpipe -perm +0111 2>/dev/null)
+fi
+if [[ -n "${_sp_real}" ]]; then
+    cmp -s "${_sp_real}" "${HOME}/.meridian/bin/screenpipe" 2>/dev/null \
+        || cp "${_sp_real}" "${HOME}/.meridian/bin/screenpipe"
+    chmod +x "${HOME}/.meridian/bin/screenpipe"
+    ok "screenpipe staged → ${HOME}/.meridian/bin/screenpipe"
+fi
 
 if ! command -v ffmpeg >/dev/null 2>&1 || [[ ! -x /opt/homebrew/bin/ffmpeg && ! -x /usr/local/bin/ffmpeg ]]; then
     warn "ffmpeg not found on the launchd PATH (screenpipe can't auto-install it from a daemon context)."
