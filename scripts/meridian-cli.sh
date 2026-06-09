@@ -498,13 +498,12 @@ cmd_uninstall() {
 
 # --- permissions ---
 cmd_permissions() {
-    local sp_bin
-    sp_bin="$(command -v screenpipe 2>/dev/null || echo "/opt/homebrew/bin/screenpipe")"
+    local sp_bin="${HOME}/.meridian/bin/screenpipe"
     info "screenpipe needs three macOS permissions to record activity"
     echo "    binary path: ${sp_bin}"
     echo
-    echo "    Screen Recording + Accessibility panes: click '+', navigate to the"
-    echo "    binary path above, add it to the list, and toggle it ON."
+    echo "    Screen Recording + Accessibility panes: click '+' → ⌘⇧G → paste"
+    echo "    the path above → Open → toggle ON."
     echo "    Microphone pane has no '+'. screenpipe will appear there only after"
     echo "    it tries to use the mic — then toggle it ON. If it isn't listed yet,"
     echo "    grant Screen Recording first and screenpipe will request mic access."
