@@ -33,6 +33,8 @@ _connect_jira() {
     local env_file="$1" bin="${2:-}"
     local ans
 
+    info "Jira sign-in opens your browser — you'll log in to your own Jira site."
+    info "  (If your org requires admin approval for third-party apps, choose n and use an API token instead.)"
     read -r -p "  Connect Jira in your browser? (recommended — no API token) [Y/n] " ans
     if [[ "$ans" =~ ^[Nn] ]]; then
         _jira_token_fallback "$env_file"
