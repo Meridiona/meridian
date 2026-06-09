@@ -145,6 +145,48 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `meridian oauth-login <provider> [--client-id ID] [--port N]` — interactive
+    // browser OAuth (Authorization Code + PKCE) for a PM provider. Opens the
+    // system browser, captures the loopback redirect, and persists tokens to
+    // ~/.meridian/oauth/<provider>.json. Currently supports: jira.
+    if std::env::args().nth(1).as_deref() == Some("oauth-login") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let provider = std::env::args().nth(2).unwrap_or_default();
+        match provider.as_str() {
+            "jira" => {
+                // --client-id flag > JIRA_OAUTH_CLIENT_ID env > baked-in default.
+                let client_id = flag("--client-id")
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(meridian::intelligence::oauth::jira::client_id);
+                let port = flag("--port")
+                    .and_then(|v| v.parse::<u16>().ok())
+                    .unwrap_or_else(meridian::intelligence::oauth::jira::redirect_port);
+                println!(
+                    "Starting Jira browser authorization (redirect http://127.0.0.1:{port}/callback)…"
+                );
+                match meridian::intelligence::oauth::jira::login(&client_id, port).await {
+                    Ok(site) => println!(
+                        "\n✓ Jira connected: {site}\n  Tokens saved to ~/.meridian/oauth/jira.json — run `meridian restart` to pick them up."
+                    ),
+                    Err(e) => {
+                        eprintln!("oauth-login jira failed: {e:#}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            other => {
+                eprintln!("oauth-login: unknown provider {other:?} (supported: jira)");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
     // `meridian pm-worklog [--day YYYY-MM-DD]` — one-shot Stage 4: walk the day's
     // hours and DRAFT one worklog per task per ready hour (never posts — posting
     // is approval-gated). Opens via setup_db so migrations (incl. the pm_worklog

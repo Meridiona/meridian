@@ -65,8 +65,16 @@ export async function GET() {
     if (Object.keys(parsed).length > 0) { env = parsed; break }
   }
 
+  // Jira connects two ways: browser OAuth (a token store written by
+  // `meridian oauth-login jira`) OR the legacy basic-auth env trio. Either counts.
+  const jiraOAuth = fs.existsSync(
+    path.join(os.homedir(), '.meridian', 'oauth', 'jira.json'),
+  )
+  const jiraBasic =
+    isSet(env, 'JIRA_BASE_URL') && isSet(env, 'JIRA_EMAIL') && isSet(env, 'JIRA_API_TOKEN')
+
   const result: IntegrationsResponse = {
-    jira: isSet(env, 'JIRA_BASE_URL') && isSet(env, 'JIRA_EMAIL') && isSet(env, 'JIRA_API_TOKEN'),
+    jira: jiraOAuth || jiraBasic,
     linear: isSet(env, 'LINEAR_API_KEY'),
     github: isSet(env, 'GITHUB_TOKEN'),
   }

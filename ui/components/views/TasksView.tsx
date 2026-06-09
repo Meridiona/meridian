@@ -218,9 +218,11 @@ const TRACKERS: Array<{
   name: string
   glyph: string
   color: string
-  tokenHint: string
-  tokenUrl: string
-  env: string
+  // Browser-OAuth trackers use `oauth`; static-token trackers use the token* fields.
+  oauth?: { command: string; hint: string }
+  tokenHint?: string
+  tokenUrl?: string
+  env?: string
   note?: string
 }> = [
   {
@@ -228,9 +230,10 @@ const TRACKERS: Array<{
     name: 'Jira',
     glyph: 'Ji',
     color: '#2684FF',
-    tokenHint: 'Create an API token (Atlassian → Manage profile → Security → API tokens).',
-    tokenUrl: 'https://id.atlassian.com/manage-profile/security/api-tokens',
-    env: 'JIRA_BASE_URL=https://your-org.atlassian.net\nJIRA_EMAIL=you@your-org.com\nJIRA_API_TOKEN=your-api-token',
+    oauth: {
+      command: 'meridian oauth-login jira',
+      hint: 'Connect with your browser — no API token to create.',
+    },
   },
   {
     id: 'linear',
@@ -309,6 +312,39 @@ function ConnectTrackers({ integrations }: { integrations: IntegrationsResponse 
 }
 
 function TrackerSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
+  // Browser-OAuth trackers (Jira) get the one-command flow; everyone else gets
+  // the get-a-token / paste-env / restart flow.
+  return tracker.oauth ? <OAuthSetup oauth={tracker.oauth} /> : <TokenSetup tracker={tracker} />
+}
+
+function OAuthSetup({ oauth }: { oauth: { command: string; hint: string } }) {
+  return (
+    <div className="px-4 pb-4 pt-1" style={{ background: 'var(--surface-2)' }}>
+      <ol className="space-y-3">
+        <li className="flex gap-3">
+          <StepNum n={1} />
+          <div className="min-w-0 flex-1">
+            <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
+              {oauth.hint} In a terminal, run:
+            </p>
+            <CopyBlock text={oauth.command} />
+            <p className="mt-2 text-[11px] leading-relaxed" style={{ color: 'var(--ink-3)' }}>
+              Your browser opens — pick your site and click Accept.
+            </p>
+          </div>
+        </li>
+        <li className="flex gap-3">
+          <StepNum n={2} />
+          <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
+            Run <CodeChip text="meridian restart" />. Your tasks appear here within a minute.
+          </p>
+        </li>
+      </ol>
+    </div>
+  )
+}
+
+function TokenSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
   return (
     <div className="px-4 pb-4 pt-1" style={{ background: 'var(--surface-2)' }}>
       <ol className="space-y-3">
@@ -327,7 +363,7 @@ function TrackerSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
             <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
               In a terminal, run <CodeChip text="meridian config edit" /> and add:
             </p>
-            <CopyBlock text={tracker.env} />
+            <CopyBlock text={tracker.env ?? ''} />
             {tracker.note && (
               <p className="mt-2 text-[11px] leading-relaxed" style={{ color: 'var(--ink-3)' }}>
                 {tracker.note}

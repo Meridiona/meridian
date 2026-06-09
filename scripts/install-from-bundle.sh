@@ -84,6 +84,9 @@ collect_credentials() {
     echo "    (edit later anytime: meridian config edit)" >&2
     echo >&2
     if prompt_category "Jira"; then
+        info "Easiest: skip the token prompts below and, after install, run"
+        info "  meridian oauth-login jira   — connect in your browser, no API token."
+        info "Or fill these in for the legacy API-token path:"
         prompt_env_var "JIRA_BASE_URL" "Jira URL (e.g. https://your-org.atlassian.net)" 0 "$env_file"
         # The Python side reads JIRA_URL, the Rust side JIRA_BASE_URL — keep both in sync.
         local jira_url; jira_url="$(get_env_value JIRA_BASE_URL "$env_file")"
