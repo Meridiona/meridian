@@ -14,10 +14,18 @@
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
+use std::sync::OnceLock;
+use tokio::sync::Mutex;
 
 use super::flow::{self, ProviderSpec};
 use super::store::{self, OAuthTokens};
 use crate::config::JiraConfig;
+
+// Static mutex serializes concurrent token refreshes to avoid race conditions.
+fn refresh_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 /// Default fixed loopback port for the redirect. Atlassian requires an exact
 /// redirect-URI match, so this port (and `http://127.0.0.1:<port>/callback`) must
@@ -28,6 +36,10 @@ pub const DEFAULT_REDIRECT_PORT: u16 = 9123;
 /// have NO secret, so this is safe to ship — every install uses it, so
 /// `meridian oauth-login jira` needs zero config. Override (e.g. for a different
 /// app or Jira Data Center) with `JIRA_OAUTH_CLIENT_ID`.
+///
+/// Registering / maintaining this app — scopes, the `127.0.0.1:9123` callback,
+/// and the **Distribution → Distributable** toggle that gates all non-Meridiona
+/// users — is documented in `docs/jira-oauth-app.md`. Update both together.
 pub const DEFAULT_CLIENT_ID: &str = "sXRB5rwKFX53DUgb9u5LO7gr0pRMwNDS";
 
 /// Resolve the client id to use for `oauth-login`: `JIRA_OAUTH_CLIENT_ID` env
@@ -85,7 +97,9 @@ struct AccessibleResource {
 /// cloud-id and site URL to address the REST gateway; if several are returned we
 /// take the first and log the rest.
 async fn discover_cloud(access_token: &str) -> Result<(String, String)> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(6))
+        .build()?;
     let resp = client
         .get(ACCESSIBLE_RESOURCES_URL)
         .bearer_auth(access_token)
@@ -148,7 +162,10 @@ pub async fn login(client_id: &str, port: u16) -> Result<String> {
 
 /// Load the stored tokens, refreshing the access token if it's within 120 s of
 /// expiry. Persists the rotated refresh token. Returns ready-to-use tokens.
+/// Serializes concurrent refresh requests via a static mutex to avoid
+/// double-refreshing and losing the rotated refresh token.
 pub async fn ensure_fresh() -> Result<OAuthTokens> {
+    let _guard = refresh_lock().lock().await;
     let mut t = store::load("jira")?;
     if !t.is_expired(now_unix(), 120) {
         return Ok(t);

@@ -31,6 +31,35 @@ pub async fn checks(_cfg: &Config) -> Vec<Check> {
     out
 }
 
+/// Probe the UI's own /api/health endpoint so `doctor` catches the
+/// "database not found" banner that the UI shows when the DB is missing.
+pub async fn api_health_check(port: u16) -> Option<Check> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(4))
+        .build()
+        .ok()?;
+    let url = format!("http://localhost:{port}/api/health");
+    let body: serde_json::Value = client.get(&url).send().await.ok()?.json().await.ok()?;
+    // {} is the first-call placeholder — treat as unknown, skip.
+    if body.as_object().map(|m| m.is_empty()).unwrap_or(true) {
+        return None;
+    }
+    if body.get("database_ready") == Some(&serde_json::Value::Bool(false)) {
+        let msg = body
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("database not accessible from UI");
+        return Some(Check::critical("ui db access", "ui", msg).with_remedy(
+            "start the daemon: launchctl load ~/Library/LaunchAgents/com.meridiona.daemon.plist",
+        ));
+    }
+    Some(Check::ok(
+        "ui db access",
+        "ui",
+        "database accessible from UI",
+    ))
+}
+
 /// Static config contract: an `output: 'standalone'` build must be served with
 /// `node .next/standalone/server.js`, NOT `next start` — the latter serves a
 /// manifest pointing at assets that aren't where `next start` looks for them.

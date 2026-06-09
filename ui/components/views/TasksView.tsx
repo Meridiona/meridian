@@ -7,32 +7,24 @@ import type { TaskSummary, TasksResponse } from '@/app/api/tasks/route'
 import type { TodayResponse } from '@/app/api/today/route'
 import type { IntegrationsResponse } from '@/app/api/integrations/route'
 
+const TASKS_POLL_INTERVAL_MS = 60_000
+
+const PROVIDER_META: Record<string, { label: string; color: string; glyph: string }> = {
+  jira:   { label: 'Jira',   color: '#2684FF', glyph: 'Ji' },
+  linear: { label: 'Linear', color: '#5E6AD2', glyph: 'Li' },
+  github: { label: 'GitHub', color: '#24292F', glyph: 'Gh' },
+}
+
 export default function TasksView({ focusKey }: { focusKey?: string | null }) {
   const [data, setData] = useState<TasksResponse | null>(null)
   const [todaySessions, setTodaySessions] = useState<TodayResponse['sessions']>([])
   const [integrations, setIntegrations] = useState<IntegrationsResponse | null>(null)
   const [selected, setSelected] = useState<string | null>(focusKey ?? null)
-  const [refreshing, setRefreshing] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [lastSynced, setLastSynced] = useState<Date | null>(null)
+  const [providerFilter, setProviderFilter] = useState<string>('all')
 
-  async function handleRefresh() {
-    setRefreshing(true)
-    try {
-      const [tasksRes, todayRes, intRes] = await Promise.all([
-        fetch('/api/tasks').then(r => r.json()),
-        fetch('/api/today').then(r => r.json()),
-        fetch('/api/integrations').then(r => r.json()),
-      ])
-      setData(tasksRes)
-      setTodaySessions(todayRes.sessions ?? [])
-      setIntegrations(intRes)
-    } catch {
-      /* ignore */
-    } finally {
-      setRefreshing(false)
-    }
-  }
-
-  useEffect(() => {
+  const fetchTasks = () => {
     fetch('/api/tasks').then(r => r.json()).then((d: TasksResponse) => {
       setData(d)
       if (!selected && d.tasks.length > 0) {
@@ -40,12 +32,31 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
         setSelected(first.key)
       }
     }).catch(() => {})
+  }
+
+  const handleSync = () => {
+    if (syncing) return
+    setSyncing(true)
+    fetch('/api/tasks/sync', { method: 'POST' })
+      .then(() => fetchTasks())
+      .catch(() => {})
+      .finally(() => {
+        setSyncing(false)
+        setLastSynced(new Date())
+      })
+  }
+
+  useEffect(() => {
+    fetchTasks()
     fetch('/api/today').then(r => r.json()).then((d: TodayResponse) => {
       setTodaySessions(d.sessions ?? [])
     }).catch(() => {})
     fetch('/api/integrations').then(r => r.json()).then((d: IntegrationsResponse) => {
       setIntegrations(d)
     }).catch(() => {})
+
+    const timer = setInterval(fetchTasks, TASKS_POLL_INTERVAL_MS)
+    return () => clearInterval(timer)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!data) {
@@ -72,8 +83,23 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
     )
   }
 
-  const sel = data.tasks.find(t => t.key === selected) ?? data.tasks[0]
   const touched = data.tasks.filter(t => t.today_s > 0).length
+
+  // Derive the set of providers actually present in the task list.
+  const presentProviders = Array.from(new Set(data.tasks.map(t => t.provider))).sort()
+  const showProviderTabs = presentProviders.length > 1
+
+  const visibleTasks = providerFilter === 'all'
+    ? data.tasks
+    : data.tasks.filter(t => t.provider === providerFilter)
+
+  const sel = visibleTasks.find(t => t.key === selected) ?? visibleTasks[0] ?? data.tasks[0]
+
+  // Group tasks by provider for the "All" sectioned view.
+  const tasksByProvider: Record<string, TaskSummary[]> = {}
+  for (const t of visibleTasks) {
+    ;(tasksByProvider[t.provider] ??= []).push(t)
+  }
 
   return (
     <div className="space-y-8">
@@ -91,32 +117,100 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
             <span className="font-mono tnum">{data.tasks.length}</span> on board
           </p>
           <button
-            onClick={handleRefresh}
-            disabled={refreshing}
-            className="text-[12px] px-3 py-1.5 rounded-md transition-colors"
+            onClick={handleSync}
+            disabled={syncing}
+            className="flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md transition-colors"
             style={{
-              color: refreshing ? 'var(--ink-4)' : 'var(--ink-3)',
+              color: syncing ? 'var(--ink-4)' : 'var(--ink-3)',
               background: 'var(--surface)',
               border: '1px solid var(--rule)',
+              cursor: syncing ? 'default' : 'pointer',
             }}
+            title={lastSynced ? `Last synced ${lastSynced.toLocaleTimeString()}` : 'Sync tasks from Jira / Linear / GitHub'}
           >
-            {refreshing ? 'Syncing…' : '↻ Sync'}
+            <span style={{ display: 'inline-block', animation: syncing ? 'spin 1s linear infinite' : 'none' }}>↻</span>
+            {syncing ? 'Syncing…' : 'Sync'}
           </button>
         </div>
       </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,300px)_minmax(0,1fr)] gap-8">
-        {/* Task list */}
-        <div className="space-y-px rule rounded-xl overflow-hidden border" style={{ borderColor: 'var(--rule)' }}>
-          {data.tasks.map(t => (
-            <TaskRow key={t.key} task={t} selected={t.key === selected} onSelect={() => setSelected(t.key)} />
+      {showProviderTabs && (
+        <div className="flex items-center gap-1">
+          <ProviderTab id="all" active={providerFilter === 'all'} onClick={() => setProviderFilter('all')} />
+          {presentProviders.map(p => (
+            <ProviderTab key={p} id={p} active={providerFilter === p} onClick={() => setProviderFilter(p)} />
           ))}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,300px)_minmax(0,1fr)] gap-8">
+        {/* Task list — sectioned when showing all providers, flat when filtered */}
+        <div className="rounded-xl overflow-hidden border" style={{ borderColor: 'var(--rule)' }}>
+          {providerFilter === 'all' && showProviderTabs
+            ? presentProviders.map((provider, pi) => {
+                const group = tasksByProvider[provider] ?? []
+                const meta = PROVIDER_META[provider]
+                return (
+                  <div key={provider}>
+                    <div
+                      className="flex items-center gap-2 px-4 py-2"
+                      style={{ background: 'var(--surface-2)', borderTop: pi > 0 ? '1px solid var(--rule)' : undefined }}
+                    >
+                      <span
+                        className="inline-flex items-center justify-center rounded shrink-0 font-mono"
+                        style={{ width: 16, height: 16, fontSize: 9, fontWeight: 700, background: (meta?.color ?? '#888') + '1A', color: meta?.color ?? '#888' }}
+                      >
+                        {meta?.glyph ?? provider[0].toUpperCase()}
+                      </span>
+                      <span className="text-[10px] uppercase tracking-[0.15em]" style={{ color: 'var(--ink-3)' }}>
+                        {meta?.label ?? provider}
+                      </span>
+                      <span className="ml-auto font-mono tnum text-[10px]" style={{ color: 'var(--ink-4)' }}>{group.length}</span>
+                    </div>
+                    {group.map(t => (
+                      <TaskRow key={t.key} task={t} selected={t.key === selected} onSelect={() => setSelected(t.key)} />
+                    ))}
+                  </div>
+                )
+              })
+            : visibleTasks.map(t => (
+                <TaskRow key={t.key} task={t} selected={t.key === selected} onSelect={() => setSelected(t.key)} />
+              ))
+          }
         </div>
 
         {/* Task detail */}
         {sel && <TaskDetail task={sel} sessions={todaySessions.filter(s => s.task_key === sel.key)} />}
       </div>
     </div>
+  )
+}
+
+function ProviderTab({ id, active, onClick }: { id: string; active: boolean; onClick: () => void }) {
+  const meta = PROVIDER_META[id]
+  const label = id === 'all' ? 'All' : (meta?.label ?? id)
+  const color = meta?.color
+  return (
+    <button
+      onClick={onClick}
+      className="flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md transition-colors"
+      style={{
+        background: active ? 'var(--surface-2)' : 'transparent',
+        border: active ? '1px solid var(--rule)' : '1px solid transparent',
+        color: active ? (color ?? 'var(--ink)') : 'var(--ink-3)',
+        fontWeight: active ? 500 : 400,
+      }}
+    >
+      {id !== 'all' && meta && (
+        <span
+          className="inline-flex items-center justify-center rounded shrink-0 font-mono"
+          style={{ width: 14, height: 14, fontSize: 8, fontWeight: 700, background: meta.color + '1A', color: meta.color }}
+        >
+          {meta.glyph}
+        </span>
+      )}
+      {label}
+    </button>
   )
 }
 

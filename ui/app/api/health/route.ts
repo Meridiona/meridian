@@ -21,9 +21,13 @@ const CACHE_TTL_MS = 15_000
 let cache: { result: HealthStatus; at: number } | null = null
 let inFlight: Promise<void> | null = null
 
+function expandTilde(p: string): string {
+  return p.startsWith('~/') ? path.join(os.homedir(), p.slice(2)) : p
+}
+
 function dbPath(): string {
   const fromEnv = process.env.MERIDIAN_DB_PATH
-  return fromEnv ?? path.join(os.homedir(), '.meridian', 'meridian.db')
+  return fromEnv ? expandTilde(fromEnv) : path.join(os.homedir(), '.meridian', 'meridian.db')
 }
 
 function a11yLogPath(): string {
