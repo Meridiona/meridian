@@ -1,3 +1,10 @@
+# [1.34.0](https://github.com/Meridiona/meridian/compare/v1.33.0...v1.34.0) (2026-06-09)
+
+
+### Features
+
+* **jira:** browser OAuth (PKCE) auth, additive to API-token fallback ([#203](https://github.com/Meridiona/meridian/issues/203)) ([9da291d](https://github.com/Meridiona/meridian/commit/9da291d5d9eadf4f040e0b26a5858092fd6aabdb))
+
 # [1.33.0](https://github.com/Meridiona/meridian/compare/v1.32.1...v1.33.0) (2026-06-09)
 
 
