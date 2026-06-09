@@ -605,7 +605,12 @@ for line in sys.stdin:
         sleep 3; _w=$((_w+3))
         [[ $_w -ge 300 ]] && { warn "MLX not ready after 300s — check: meridian logs mlx-server"; break; }
     done
-    { kill "${_log_pid}" "${_err_pid}" 2>/dev/null; wait "${_log_pid}" "${_err_pid}" 2>/dev/null; } || true
+    # kill python3/bash first, then explicitly kill the tail processes —
+    # tail -F ignores SIGPIPE and survives as an orphan if only the reader dies.
+    { kill "${_log_pid}" "${_err_pid}" 2>/dev/null; \
+      pkill -f "tail.*mlx-server\\.log" 2>/dev/null; \
+      pkill -f "tail.*mlx-server-error\\.log" 2>/dev/null; \
+      wait "${_log_pid}" "${_err_pid}" 2>/dev/null; } || true
 
     # Only stamp after confirmed ready — prevents stale stamp on a failed restart.
     if curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; then
