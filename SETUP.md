@@ -33,7 +33,7 @@ meridian restart
 
 ---
 
-## Connect your tracker (Jira, Linear, or GitHub)
+## Connect your tracker (Jira, Linear, GitHub, or Trello)
 
 Edit the config file:
 
@@ -91,6 +91,17 @@ GITHUB_PROJECT_IDS=PVT_xxx,PVT_yyy
 ```
 
 To find your project node ID: `gh api graphql -f query='{ viewer { projectsV2(first: 10) { nodes { id title } } } }'`
+
+### Trello
+
+The installer offers Trello browser sign-in during `meridian setup`. To connect manually or re-connect:
+
+```bash
+meridian oauth-login trello    # opens your browser → click Allow
+meridian restart
+```
+
+Your token is saved to `~/.meridian/oauth/trello.json`. Meridian syncs open cards assigned to you across all your boards.
 
 Worklogs are **never posted automatically** — Meridian drafts them for you to review and approve in the dashboard.
 
