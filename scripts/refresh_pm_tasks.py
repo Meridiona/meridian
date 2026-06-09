@@ -179,9 +179,8 @@ def main() -> int:
     base_url = os.environ.get("JIRA_BASE_URL", os.environ.get("JIRA_URL", "")).rstrip("/")
     email = os.environ.get("JIRA_EMAIL", "")
     token = os.environ.get("JIRA_API_TOKEN", "")
-    missing = [k for k, v in (("JIRA_BASE_URL or JIRA_URL", base_url), ("JIRA_EMAIL", email), ("JIRA_API_TOKEN", token)) if not v]
-    if missing:
-        log.error("missing env: %s", ", ".join(missing))
+    if not (base_url and email and token):
+        log.error("missing required Jira credentials/configuration in environment")
         return 2
 
     log.info("jira: %s  jql=%r  limit=%d", base_url, args.jql, args.limit)
