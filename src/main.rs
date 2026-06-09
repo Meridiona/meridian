@@ -12,7 +12,7 @@ use meridian::db::screenpipe::open_screenpipe;
 use meridian::etl::run_etl;
 use meridian::intelligence::{
     check_classification_ready, mark_session_subprocess_error, run_coding_agent_classification,
-    run_pm_sync, run_task_linking, TaskLinkOutcome,
+    run_pm_force_sync, run_pm_sync, run_task_linking, TaskLinkOutcome,
 };
 use meridian::observability;
 use tokio::signal::unix::{signal, SignalKind};
@@ -225,6 +225,26 @@ async fn main() -> Result<()> {
                 pool.close().await;
             }
             Err(e) => eprintln!("worklog-post-approved: open db: {e}"),
+        }
+        return Ok(());
+    }
+
+    // `meridian tasks-sync` — force an immediate sync of all configured PM
+    // providers (Jira, Linear, GitHub), bypassing the 5-minute staleness gate.
+    // Exits 0 on success, non-zero if the DB cannot be opened.
+    if std::env::args().nth(1).as_deref() == Some("tasks-sync") {
+        let cfg = Config::from_env();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                if let Err(e) = run_pm_force_sync(&pool, &cfg).await {
+                    eprintln!("tasks-sync: {e}");
+                }
+                pool.close().await;
+            }
+            Err(e) => {
+                eprintln!("tasks-sync: open db: {e}");
+                std::process::exit(1);
+            }
         }
         return Ok(());
     }

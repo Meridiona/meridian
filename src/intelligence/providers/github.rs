@@ -471,6 +471,18 @@ pub async fn refresh_if_stale(
     Ok(Some(keys))
 }
 
+/// Force an immediate GitHub sync regardless of the staleness gate.
+pub async fn force_refresh(
+    pool: &SqlitePool,
+    github: &GitHubConfig,
+) -> Result<Option<Vec<String>>> {
+    sqlx::query("DELETE FROM pm_sync_state WHERE provider = 'github'")
+        .execute(pool)
+        .await
+        .context("clearing github sync state for force refresh")?;
+    refresh_if_stale(pool, github).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

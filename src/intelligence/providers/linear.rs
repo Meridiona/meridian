@@ -353,6 +353,18 @@ pub async fn refresh_if_stale(
     }
 }
 
+/// Force an immediate Linear sync regardless of the staleness gate.
+pub async fn force_refresh(
+    pool: &SqlitePool,
+    linear: &LinearConfig,
+) -> Result<Option<Vec<String>>> {
+    sqlx::query("DELETE FROM pm_sync_state WHERE provider = 'linear'")
+        .execute(pool)
+        .await
+        .context("clearing linear sync state for force refresh")?;
+    refresh_if_stale(pool, linear).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

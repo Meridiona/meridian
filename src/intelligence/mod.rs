@@ -74,6 +74,33 @@ pub async fn pipeline_ready(pool: &SqlitePool, cfg: &Config) -> bool {
     mlx_ready(cfg).await && pm_tasks_present(pool).await
 }
 
+/// Forces an immediate refresh of all configured PM providers, bypassing the staleness gate.
+pub async fn run_pm_force_sync(meridian: &SqlitePool, config: &Config) -> Result<()> {
+    if config.pm_providers.is_empty() {
+        return Ok(());
+    }
+    for provider in &config.pm_providers {
+        let name = provider.provider_name();
+        let result = match provider {
+            PmProviderConfig::Jira(cfg) => providers::jira::force_refresh(meridian, cfg).await,
+            PmProviderConfig::GitHub(cfg) => providers::github::force_refresh(meridian, cfg).await,
+            PmProviderConfig::Linear(cfg) => providers::linear::force_refresh(meridian, cfg).await,
+        };
+        match result {
+            Ok(None) => tracing::info!(provider = name, "force sync: auth unavailable or no tasks"),
+            Ok(Some(ref keys)) => {
+                tracing::info!(provider = name, count = keys.len(), "force sync: refreshed");
+                println!("{name}: synced {} task(s)", keys.len());
+            }
+            Err(e) => {
+                tracing::warn!(provider = name, error = %e, "force sync failed");
+                eprintln!("{name}: sync failed: {e}");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Refreshes PM task caches from all configured providers.
 #[tracing::instrument(skip_all)]
 pub async fn run_pm_sync(meridian: &SqlitePool, config: &Config) -> Result<()> {
