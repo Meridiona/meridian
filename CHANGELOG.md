@@ -1,3 +1,10 @@
+## [1.34.5](https://github.com/Meridiona/meridian/compare/v1.34.4...v1.34.5) (2026-06-09)
+
+
+### Bug Fixes
+
+* **mlx-server:** remove --backend mlx flag that server.py never accepted ([905fcbe](https://github.com/Meridiona/meridian/commit/905fcbeffa111d97a1e634bea78d90b21eeba9c9))
+
 ## [1.34.4](https://github.com/Meridiona/meridian/compare/v1.34.3...v1.34.4) (2026-06-09)
 
 
