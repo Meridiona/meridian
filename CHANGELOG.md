@@ -1,3 +1,10 @@
+## [1.37.3](https://github.com/Meridiona/meridian/compare/v1.37.2...v1.37.3) (2026-06-09)
+
+
+### Bug Fixes
+
+* **tray:** use launchctl bootstrap instead of deprecated load ([#224](https://github.com/Meridiona/meridian/issues/224)) ([1c1f171](https://github.com/Meridiona/meridian/commit/1c1f171335e25d47a3cf27850cdf5622c143e4ec))
+
 ## [1.37.2](https://github.com/Meridiona/meridian/compare/v1.37.1...v1.37.2) (2026-06-09)
 
 
