@@ -339,6 +339,29 @@ mod tests {
     }
 
     #[test]
+    fn with_client_secret_injects_when_present() {
+        let mut body = serde_json::json!({ "grant_type": "authorization_code" });
+        let mut s = spec();
+        s.client_secret = Some("sek".to_string());
+        with_client_secret(&mut body, &s);
+        assert_eq!(body["client_secret"], "sek");
+    }
+
+    #[test]
+    fn with_client_secret_skips_when_absent_or_blank() {
+        // None → no field added.
+        let mut body = serde_json::json!({ "grant_type": "authorization_code" });
+        with_client_secret(&mut body, &spec());
+        assert!(body.get("client_secret").is_none());
+
+        // Blank → still no field (Atlassian would reject an empty secret anyway).
+        let mut blank = spec();
+        blank.client_secret = Some("   ".to_string());
+        with_client_secret(&mut body, &blank);
+        assert!(body.get("client_secret").is_none());
+    }
+
+    #[test]
     fn authorize_url_has_pkce_and_scope_params() {
         let pkce = pkce::generate();
         let url = build_authorize_url(
