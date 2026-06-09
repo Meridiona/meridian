@@ -1,3 +1,10 @@
+# [1.33.0](https://github.com/Meridiona/meridian/compare/v1.32.1...v1.33.0) (2026-06-09)
+
+
+### Features
+
+* **installer:** stream MLX server logs during model load wait ([#202](https://github.com/Meridiona/meridian/issues/202)) ([e369be7](https://github.com/Meridiona/meridian/commit/e369be7d8e6dc1432926b34c79f913c9162ead9c))
+
 ## [1.32.1](https://github.com/Meridiona/meridian/compare/v1.32.0...v1.32.1) (2026-06-09)
 
 

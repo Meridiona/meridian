@@ -1,6 +1,6 @@
 {
   "name": "@meridiona/meridian",
-  "version": "1.32.1",
+  "version": "1.33.0",
   "description": "Your project management, written by your work — local-first PM automation from real dev activity (macOS, Apple Silicon).",
   "homepage": "https://github.com/Meridiona/meridian",
   "repository": {
@@ -24,7 +24,7 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "@meridiona/meridian-darwin-arm64": "1.32.1"
+    "@meridiona/meridian-darwin-arm64": "1.33.0"
   },
   "publishConfig": {
     "access": "public"
