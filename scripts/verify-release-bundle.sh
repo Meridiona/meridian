@@ -10,16 +10,13 @@
 # It independently re-checks the exact failure modes that have shipped broken
 # releases to production:
 #   1. npm package size  — catches the 413 Payload Too Large (a re-bundled Node
-#      runtime or venv tarball balloons the package past the registry limit).
+#      runtime balloons the package past the registry limit).
 #   2. better-sqlite3 ABI — extracts ui.tar.gz, downloads the pinned Node from
 #      nodejs.org, and require()s the actual .node binary by absolute path. This
 #      is INDEPENDENT of the check inside package-release.sh, so a bug in that
 #      check (e.g. require(package_dir) never loading the addon) is still caught.
-#   3. venv asset integrity — the staged services-venv tarball matches its
-#      companion .sha256 and is a valid gzip of Python site-packages.
-#   4. payload hygiene — the npm package must NOT contain the 113 MB node binary
-#      or the 154 MB venv tarball (those belong off-registry); it MUST carry the
-#      tiny bin/node-runtime.meta the installer needs.
+#   3. payload hygiene — the npm package must NOT contain the 113 MB node binary;
+#      it MUST carry the tiny bin/node-runtime.meta the installer needs.
 #
 #   scripts/verify-release-bundle.sh <version>
 set -euo pipefail
@@ -30,10 +27,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 
 DEST="npm/meridian-darwin-arm64"
-ASSET_DIR="release-assets"
 # Packed-tarball ceiling. The healthy package is ~25 MB packed (daemon + ui.tar.gz);
 # the registry rejects ~200 MB. 75 MB sits far above normal yet trips instantly if
-# the Node runtime (113 MB) or venv tarball (154 MB) ever leaks back into the package.
+# the Node runtime (113 MB) ever leaks back into the package.
 MAX_PACKED_MB=75
 
 pass() { echo "  ✓ $*"; }
@@ -53,22 +49,10 @@ pass "npm package ${_packed_mb} MB packed (≤ ${MAX_PACKED_MB} MB) — under th
 # ── 2. payload hygiene — large blobs must be OFF the package ──────────────────
 _files="$(printf '%s' "${_pack_json}" | python3 -c 'import json,sys; [print(f["path"]) for f in json.load(sys.stdin)[0]["files"]]')"
 grep -qx 'bin/node-runtime' <<<"${_files}" && fail "bin/node-runtime (113 MB binary) is in the npm package — it must be downloaded at install, not bundled"
-grep -q 'services-venv' <<<"${_files}"      && fail "a services-venv tarball is in the npm package — it must be a GitHub Release asset"
 grep -qx 'bin/node-runtime.meta' <<<"${_files}" || fail "bin/node-runtime.meta is missing from the npm package — the installer needs it to resolve the Node runtime"
-pass "payload hygiene: node-runtime.meta present; no bundled Node binary or venv tarball"
+pass "payload hygiene: node-runtime.meta present; no bundled Node binary"
 
-# ── 3. venv asset integrity ──────────────────────────────────────────────────
-_venv="${ASSET_DIR}/services-venv-${VERSION}.tar.gz"
-[[ -f "${_venv}" ]]          || fail "venv asset ${_venv} not found — package-release.sh did not stage it"
-[[ -f "${_venv}.sha256" ]]   || fail "venv .sha256 companion not found next to ${_venv}"
-_want="$(tr -d '[:space:]' < "${_venv}.sha256")"
-_got="$(shasum -a 256 "${_venv}" | cut -d' ' -f1)"
-[[ "${_got}" == "${_want}" ]] || fail "venv asset SHA-256 mismatch (file ${_got} vs .sha256 ${_want})"
-tar -tzf "${_venv}" >/dev/null 2>&1 || fail "venv asset is not a valid gzip tarball"
-tar -tzf "${_venv}" 2>/dev/null | grep -q 'mlx' || fail "venv asset is missing expected site-packages (no mlx) — likely an incomplete build"
-pass "venv asset valid, SHA-256 matches its companion, contains site-packages"
-
-# ── 4. better-sqlite3 ABI — the independent dlopen check ──────────────────────
+# ── 3. better-sqlite3 ABI — the independent dlopen check ──────────────────────
 # Only when ui.tar.gz shipped this release (UI unchanged → no new addon to test;
 # the installed dashboard keeps running on its existing ABI-matched runtime).
 if [[ -f "${DEST}/ui.tar.gz" ]]; then

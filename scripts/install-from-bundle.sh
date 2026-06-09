@@ -3,8 +3,8 @@
 #
 # Install a PREBUILT release bundle (no cargo/npm build). Run from inside an
 # unpacked bundle at ~/.meridian/app — bootstrap.sh downloads + unpacks the
-# release tarball and execs this. Installs prerequisites, the Python venv + MLX
-# deps, and registers the four launchd daemons pointing at this bundle.
+# release tarball and execs this. Installs prerequisites, builds the Python venv
+# from PyPI via uv sync, and registers the four launchd daemons pointing at this bundle.
 #
 #   bash ~/.meridian/app/scripts/install-from-bundle.sh [--skip-permissions]
 set -euo pipefail
@@ -337,6 +337,24 @@ if ! command -v screenpipe >/dev/null 2>&1; then
     fi
 fi
 ok "screenpipe"
+# Stage the real screenpipe Mach-O to ~/.meridian/bin/screenpipe — a stable path
+# that is independent of the npm prefix (nvm users get a version-specific path
+# under ~/.nvm that breaks on `nvm use` and is too deep to navigate in System
+# Settings). The launchd plist and TCC grants are written against this path.
+mkdir -p "${HOME}/.meridian/bin"
+_sp_npm_root="$(npm root -g 2>/dev/null || true)"
+_sp_real=""
+if [[ -n "${_sp_npm_root}" && -d "${_sp_npm_root}/screenpipe" ]]; then
+    while IFS= read -r _sp_cand; do
+        if file "${_sp_cand}" 2>/dev/null | grep -q "Mach-O"; then _sp_real="${_sp_cand}"; break; fi
+    done < <(find "${_sp_npm_root}/screenpipe" -type f -name screenpipe -perm +0111 2>/dev/null)
+fi
+if [[ -n "${_sp_real}" ]]; then
+    cmp -s "${_sp_real}" "${HOME}/.meridian/bin/screenpipe" 2>/dev/null \
+        || cp "${_sp_real}" "${HOME}/.meridian/bin/screenpipe"
+    chmod +x "${HOME}/.meridian/bin/screenpipe"
+    ok "screenpipe staged → ${HOME}/.meridian/bin/screenpipe"
+fi
 if ! command -v ffmpeg >/dev/null 2>&1; then info "Installing ffmpeg…"; brew install ffmpeg; fi
 ok "ffmpeg"
 
@@ -418,115 +436,39 @@ _mlx_was_healthy=0
 curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1 && _mlx_was_healthy=1
 
 # ── 4. Python venv + MLX deps ────────────────────────────────────────────────
-# The venv (~160 MB) is too large for the npm registry, so release builds attach
-# it to the GitHub Release and we download it here. Three paths:
-#   A) Already current: the installed venv's stamp matches the shipped uv.lock
-#      hash → skip the 160 MB download entirely (differential update). uv.lock is
-#      the deterministic source of truth for the deps and travels in the npm
-#      package, so this makes most `meridian update` runs touch zero network.
-#   B) Deps changed / fresh install: download services-venv-<ver>.tar.gz, verify
-#      it against the remote .sha256, extract site-packages into a fresh Python
-#      3.11 venv. No PyPI. Stamp the uv.lock hash for next time.
-#   C) Dev/source install (no VERSION, or download/verify failed): `uv sync
-#      --frozen` from uv.lock — downloads from PyPI the first time (~40s).
-# NOTE the differential key is the uv.lock hash, NOT the tarball hash: BSD tar
-# embeds mtimes so the tarball hash differs on every CI build even when deps are
-# identical, which would defeat the skip. The remote .sha256 is used only to
-# verify download integrity, never for the change decision.
+# Installed from PyPI via uv sync at install time — no pre-built venv shipped.
+# PyPI MLX wheels are tagged macosx_13_0_arm64 / macosx_14_0_arm64 so pip's
+# platform tag filter guarantees the correct ABI for the user's macOS version.
+# Differential skip: if uv.lock hasn't changed and mlx.core imports cleanly,
+# the venv is already correct — no network round-trip needed.
 VENV="${APP_ROOT}/services/.venv"
 VENV_STAMP="${VENV}/.meridian-venv-hash"
-_VERSION="$(cat "${APP_ROOT}/VERSION" 2>/dev/null | tr -d '[:space:]' || true)"
-_VENV_URL="https://github.com/Meridiona/meridian/releases/download/v${_VERSION}/services-venv-${_VERSION}.tar.gz"
 _LOCK_HASH="$(shasum -a 256 "${APP_ROOT}/services/uv.lock" 2>/dev/null | cut -d' ' -f1 || true)"
 
-# Extract a downloaded venv tarball ($1) into a fresh Python 3.11 venv, then stamp
-# the dependency hash ($2). The tarball is compiled for Python 3.11 (package-release.sh
-# enforces this); the venv MUST use exactly 3.11 or the cpython-311 .so files fail
-# to import. Prefer system python3.11, then uv-managed 3.11, then install it via uv.
-_extract_venv() {
-    local tgz="$1" stamp_hash="$2" tarball_python="" py_dir="" venv_tmp=""
-    # Stage the new venv to a temp path; swap atomically only on success so a
-    # failed extraction (disk full, corrupt archive) never destroys the live venv.
-    venv_tmp="${VENV}.tmp.$$"
-    rm -rf "${venv_tmp}"
-    if command -v python3.11 >/dev/null 2>&1; then
-        tarball_python="$(command -v python3.11)"
-    elif "${UV_BIN}" python find 3.11 >/dev/null 2>&1; then
-        tarball_python="$("${UV_BIN}" python find 3.11)"
-    else
-        info "Installing Python 3.11 (pre-built venv requires it — one-time download)…"
-        "${UV_BIN}" python install 3.11
-        tarball_python="$("${UV_BIN}" python find 3.11)"
-    fi
-    "${UV_BIN}" venv --python "${tarball_python}" "${venv_tmp}" 2>/dev/null
-    py_dir="$(ls "${venv_tmp}/lib/" | grep '^python' | head -1)"
-    mkdir -p "${venv_tmp}/lib/${py_dir}/site-packages"
-    tar -xzf "${tgz}" -C "${venv_tmp}/lib/${py_dir}/site-packages"
-    # Install the local editable package (meridian-agents) — no deps needed,
-    # everything is already in site-packages from the tarball.
-    "${UV_BIN}" pip install --quiet --no-deps --python "${venv_tmp}/bin/python" -e "${APP_ROOT}/services"
-    # All steps succeeded — atomically replace the live venv.
-    rm -rf "${VENV}"
-    mv "${venv_tmp}" "${VENV}"
-    printf '%s\n' "${stamp_hash}" > "${VENV_STAMP}"
-    ok "Python services ready ($(${VENV}/bin/python --version 2>&1))"
-}
+_venv_changed=1
+_have_hash=""; [[ -f "${VENV_STAMP}" ]] && _have_hash="$(cat "${VENV_STAMP}" 2>/dev/null)"
 
-# uv sync fallback (Path C) — used for dev/source installs and as the offline
-# failure path. Both extras: mlx (classifier + server) AND pm_worklog_update
-# (agno) — the one MLX server serves /classify_sessions AND /synthesise_worklog,
-# so without agno worklog synthesis 500s with ModuleNotFoundError. Stamp the
-# uv.lock hash on success so subsequent runs can skip.
-_venv_uv_sync() {
-    info "Building Python venv from uv.lock (mlx-lm/outlines/fastapi/agno; first run may download a few hundred MB)…"
+if [[ -n "${_LOCK_HASH}" && "${_LOCK_HASH}" == "${_have_hash}" && -x "${VENV}/bin/python" ]] \
+   && "${VENV}/bin/python" -c "import mlx.core" 2>/dev/null; then
+    ok "Python deps unchanged — skipping uv sync"
+    _venv_changed=0
+else
+    info "Installing Python services from PyPI (mlx-lm/outlines/fastapi/agno; first run ~40–120s)…"
     if "${UV_BIN}" sync \
             --project "${APP_ROOT}/services" \
             --extra mlx \
             --extra pm_worklog_update \
             --frozen \
-            --python "${PYTHON_BIN}"; then
+            --python 3.11; then
         [[ -n "${_LOCK_HASH}" ]] && printf '%s\n' "${_LOCK_HASH}" > "${VENV_STAMP}"
         ok "Python services ready ($(${VENV}/bin/python --version 2>&1))"
     else
         warn "uv sync failed — leaving venv as-is; re-run 'meridian setup' to retry"
     fi
-}
-
-_venv_changed=1
-_have_hash=""; [[ -f "${VENV_STAMP}" ]] && _have_hash="$(cat "${VENV_STAMP}" 2>/dev/null)"
-
-if [[ -n "${_LOCK_HASH}" && "${_LOCK_HASH}" == "${_have_hash}" && -x "${VENV}/bin/python" ]]; then
-    # Path A — deps unchanged since this venv was built. No network, no rebuild.
-    ok "Python deps unchanged — reusing existing venv (skipped 160 MB download)"
-    _venv_changed=0
-elif [[ -n "${_VERSION}" ]]; then
-    # Path B — release install/update: fetch the integrity hash, then the tarball.
-    _remote_sha="$(curl -fsSL --retry 3 "${_VENV_URL}.sha256" 2>/dev/null | tr -d '[:space:]' || true)"
-    if [[ -n "${_remote_sha}" ]]; then
-        info "Downloading pre-built Python venv (~160 MB, one-time per dependency change)…"
-        _venv_tmp="$(mktemp -d)"; _venv_tgz="${_venv_tmp}/services-venv.tar.gz"
-        if curl -fsSL --retry 3 "${_VENV_URL}" -o "${_venv_tgz}" \
-           && [[ "$(shasum -a 256 "${_venv_tgz}" | cut -d' ' -f1)" == "${_remote_sha}" ]]; then
-            # Stamp the uv.lock hash (deterministic) so future updates can skip.
-            _extract_venv "${_venv_tgz}" "${_LOCK_HASH:-${_remote_sha}}"
-            rm -rf "${_venv_tmp}"
-        else
-            warn "venv download or SHA-256 verification failed — falling back to uv sync"
-            rm -rf "${_venv_tmp}"
-            _venv_uv_sync
-        fi
-    else
-        warn "venv release asset unreachable for v${_VERSION} — falling back to uv sync"
-        _venv_uv_sync
-    fi
-else
-    # Path C — dev/source install (no VERSION stamp).
-    _venv_uv_sync
 fi
 
 # On macOS 26+, install apple-fm-sdk so Apple Intelligence is used instead of
-# downloading a large MLX model. This runs after both venv paths (tarball or uv
-# sync) so the package is available regardless of how the venv was built.
+# downloading a large MLX model. Runs after uv sync so the venv exists.
 # apple-fm-sdk only installs on macOS 26+ (links against system frameworks);
 # on older macOS pip will fail gracefully and MLX is used as the fallback.
 _macos_major="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
@@ -555,13 +497,19 @@ fi
 if [[ "${SKIP_PERMISSIONS}" -eq 0 ]]; then
     echo "→ screenpipe needs 2 macOS permissions: Screen Recording and Accessibility."
     echo "  (Audio capture is disabled, so no Microphone permission is required.)"
+    echo "  You will add these 2 binaries — both live at the same stable path:"
+    echo "      ${HOME}/.meridian/bin/screenpipe          ← Screen Recording + Accessibility"
+    echo "      ${HOME}/.meridian/bin/meridian-a11y-helper ← Accessibility only"
+    echo "  In each pane: click '+' → press ⌘⇧G → paste the path above → Open → toggle ON."
     read -r -p "  Press Enter to open Screen Recording settings… " _ || true
     open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture" 2>/dev/null || true
+    echo "  Add: ${HOME}/.meridian/bin/screenpipe"
     read -r -p "  Press Enter to open Accessibility settings… " _ || true
     open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" 2>/dev/null || true
-    echo "  In the SAME Accessibility pane, also add the a11y helper (+ → ⌘⇧G → paste):"
+    echo "  Add both:"
+    echo "      ${HOME}/.meridian/bin/screenpipe"
     echo "      ${HOME}/.meridian/bin/meridian-a11y-helper"
-    echo "  Without it, Electron apps (Claude, Codex, Slack, …) stay invisible to capture."
+    echo "  Without the a11y helper, Electron apps (Claude, Codex, Slack, …) stay invisible to capture."
     read -r -p "  Press Enter once all are granted… " _ || true
 fi
 
