@@ -340,10 +340,18 @@ pub async fn run_all(cfg: &Config) -> Report {
     // coding-agent — Claude/Codex CLI + ingest dirs (and the Cursor gap).
     checks.extend(tag("coding-agent", codingagent::checks(cfg)));
 
-    // ui — service/build presence + functional serve-health (assets actually load).
+    // ui — service/build presence + functional serve-health (assets actually load),
+    // plus the UI's own /api/health probe (catches "DB not found" banner state).
     {
+        let port = std::env::var("MERIDIAN_UI_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3939u16);
         let mut g = platform::ui_service();
         g.extend(ui::checks(cfg).await);
+        if let Some(c) = ui::api_health_check(port).await {
+            g.push(c);
+        }
         checks.extend(tag("ui", g));
     }
     checks.extend(tag("mcp", platform::mcp_service()));

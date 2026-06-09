@@ -37,6 +37,11 @@ export default function HealthBanner() {
   }
 
   if (showDatabaseError) {
+    const isNotFound = health.error?.toLowerCase().includes('not found') ?? false
+    const bannerTitle = isNotFound ? 'Database not found' : 'Database schema mismatch'
+    const defaultDetail = isNotFound
+      ? <>Start the daemon: <code className="text-xs font-mono">launchctl load ~/Library/LaunchAgents/com.meridiona.daemon.plist</code></>
+      : <>The database needs migration: <code className="text-xs font-mono">meridian migrate-db</code></>
     return (
       <div
         className="w-full px-4 py-3 flex items-center justify-between border-b"
@@ -49,12 +54,10 @@ export default function HealthBanner() {
           <span className="text-lg">🚨</span>
           <div className="flex-1">
             <p className="text-sm" style={{ color: 'var(--ink-2)' }}>
-              <strong>Database schema mismatch</strong>
+              <strong>{bannerTitle}</strong>
             </p>
             <p className="text-xs mt-0.5" style={{ color: 'var(--ink-3)' }}>
-              {health.error ?? (
-                <>The database needs migration: <code className="text-xs font-mono">meridian migrate-db</code></>
-              )}
+              {isNotFound ? defaultDetail : (health.error ?? defaultDetail)}
             </p>
           </div>
         </div>
