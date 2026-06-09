@@ -1,3 +1,11 @@
+## [1.34.3](https://github.com/Meridiona/meridian/compare/v1.34.2...v1.34.3) (2026-06-09)
+
+
+### Bug Fixes
+
+* **installer:** kill tail processes after MLX model-load wait ([#208](https://github.com/Meridiona/meridian/issues/208)) ([079eb11](https://github.com/Meridiona/meridian/commit/079eb118759ada8c14411403603baba551b73f91))
+* **install:** stage screenpipe binary to ~/.meridian/bin for stable TCC path ([#209](https://github.com/Meridiona/meridian/issues/209)) ([0a52120](https://github.com/Meridiona/meridian/commit/0a521205a250ebdd3458dbbf59945115fbac6d64))
+
 ## [1.34.2](https://github.com/Meridiona/meridian/compare/v1.34.1...v1.34.2) (2026-06-09)
 
 
