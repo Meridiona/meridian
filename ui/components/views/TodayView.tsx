@@ -2,6 +2,7 @@
 'use client'
 
 import { useState, useMemo, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import {
   fmtDur, fmtDurDecimal, fmtClock,
   CATS, AppGlyph, CatDot, LiveDot,
@@ -342,7 +343,8 @@ function QueuePreviewRow({ session }: { session: { id: number | string; app: str
 }
 
 // ── Today page ───────────────────────────────────────────────────────────────
-export default function TodayView({ onNavigate }: { onNavigate?: (v: string, key?: string) => void }) {
+export default function TodayView() {
+  const router = useRouter()
   const [data, setData] = useState<TodayResponse | null>(null)
 
   useEffect(() => {
@@ -478,7 +480,7 @@ export default function TodayView({ onNavigate }: { onNavigate?: (v: string, key
       {buckets.length > 0 && (
         <section>
           <SectionHead kicker="By task" title="Where your time went"
-            right={<button onClick={() => onNavigate?.('tasks')} className="text-[12px]" style={{ color: 'var(--ink-3)' }}>Open Tasks →</button>}
+            right={<button onClick={() => router.push('/tasks')} className="text-[12px]" style={{ color: 'var(--ink-3)' }}>Open Tasks →</button>}
           />
           <div className="space-y-px rule rounded-xl overflow-hidden border" style={{ borderColor: 'var(--rule)' }}>
             {buckets.map(b => <BucketRow key={b.key} bucket={b} />)}
@@ -498,7 +500,7 @@ export default function TodayView({ onNavigate }: { onNavigate?: (v: string, key
           <SectionHead
             kicker="Needs review"
             title={<>Unassigned sessions <span className="ml-2 font-mono tnum text-[15px]" style={{ color: 'var(--accent)' }}>{queueCount}</span></>}
-            right={<button onClick={() => onNavigate?.('queue')} className="text-[12px]" style={{ color: 'var(--ink-3)' }}>Review queue →</button>}
+            right={<button onClick={() => router.push('/queue')} className="text-[12px]" style={{ color: 'var(--ink-3)' }}>Review queue →</button>}
           />
           <Card>
             {data.sessions

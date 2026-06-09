@@ -12,6 +12,25 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
   const [todaySessions, setTodaySessions] = useState<TodayResponse['sessions']>([])
   const [integrations, setIntegrations] = useState<IntegrationsResponse | null>(null)
   const [selected, setSelected] = useState<string | null>(focusKey ?? null)
+  const [refreshing, setRefreshing] = useState(false)
+
+  async function handleRefresh() {
+    setRefreshing(true)
+    try {
+      const [tasksRes, todayRes, intRes] = await Promise.all([
+        fetch('/api/tasks').then(r => r.json()),
+        fetch('/api/today').then(r => r.json()),
+        fetch('/api/integrations').then(r => r.json()),
+      ])
+      setData(tasksRes)
+      setTodaySessions(todayRes.sessions ?? [])
+      setIntegrations(intRes)
+    } catch {
+      /* ignore */
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   useEffect(() => {
     fetch('/api/tasks').then(r => r.json()).then((d: TasksResponse) => {
@@ -65,11 +84,25 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
             What you&apos;re working on
           </h1>
         </div>
-        <p className="text-[12px]" style={{ color: 'var(--ink-3)' }}>
-          <span className="font-mono tnum">{touched}</span> touched today
-          <span className="mx-2">·</span>
-          <span className="font-mono tnum">{data.tasks.length}</span> on board
-        </p>
+        <div className="flex items-center gap-4">
+          <p className="text-[12px]" style={{ color: 'var(--ink-3)' }}>
+            <span className="font-mono tnum">{touched}</span> touched today
+            <span className="mx-2">·</span>
+            <span className="font-mono tnum">{data.tasks.length}</span> on board
+          </p>
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="text-[12px] px-3 py-1.5 rounded-md transition-colors"
+            style={{
+              color: refreshing ? 'var(--ink-4)' : 'var(--ink-3)',
+              background: 'var(--surface)',
+              border: '1px solid var(--rule)',
+            }}
+          >
+            {refreshing ? 'Syncing…' : '↻ Sync'}
+          </button>
+        </div>
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,300px)_minmax(0,1fr)] gap-8">
