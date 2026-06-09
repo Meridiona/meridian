@@ -20,12 +20,11 @@ mkdir -p "$(dirname "${APP}")"
 keep=""
 if [[ -f "${APP}/.env" ]]; then keep="$(mktemp)"; cp "${APP}/.env" "${keep}"; fi
 
-# Preserve the Python venv across updates. Rebuilding it (python -m venv + pip
-# install mlx-lm/outlines/…) costs minutes; most releases don't change Python
-# deps, so move it aside and restore it to the SAME absolute path (its baked-in
-# shebangs stay valid). install-from-bundle.sh then only re-pips when the deps
-# hash actually changes. Kept in a sibling dir under ~/.meridian so the move is
-# an instant rename (same filesystem), never a cross-volume copy.
+# Preserve the Python venv across updates. The venv is built from PyPI via
+# uv sync at install time; preserving it means install-from-bundle.sh only
+# re-syncs when uv.lock actually changed. Kept in a sibling dir under
+# ~/.meridian so the move is an instant rename (same filesystem), never a
+# cross-volume copy.
 venv_keep="${HOME}/.meridian/.venv-update-keep"
 rm -rf "${venv_keep}"
 if [[ -d "${APP}/services/.venv" ]]; then mv "${APP}/services/.venv" "${venv_keep}"; fi

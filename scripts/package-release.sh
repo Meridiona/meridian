@@ -169,7 +169,7 @@ META
 rm -rf "${_node22_tmp}"
 echo "  · node-runtime pinned v${_NODE22_VERSION} (downloaded at install — not bundled)"
 
-echo "→ Python services (source + pre-built site-packages)"
+echo "→ Python services (source only — venv built from PyPI at install time)"
 mkdir -p "${DEST}/services"
 tar cf - \
   --exclude='.venv' --exclude='.venv*' --exclude='__pycache__' --exclude='*.pyc' \
@@ -177,68 +177,6 @@ tar cf - \
   --exclude='.claude' --exclude='.claude-flow' --exclude='.git' --exclude='node_modules' \
   --exclude='*.log' --exclude='dist' --exclude='.DS_Store' \
   -C services . | tar xf - -C "${DEST}/services"
-
-echo "→ Python venv (pre-built site-packages → GitHub Release asset)"
-# The venv (~160 MB compressed) is far too large to ship through the npm
-# registry (npm rejects the publish with 413 Payload Too Large). It is built
-# here on EVERY release and attached to the GitHub Release instead (see
-# .releaserc.json → @semantic-release/github "assets"). install-from-bundle.sh
-# downloads it by version and verifies the companion .sha256; when the local
-# venv's hash already matches, the 160 MB download is skipped entirely — so the
-# differential-update win is preserved via the tiny .sha256, not by conditionally
-# omitting the asset (which would strand a release with no venv on its own tag).
-# apple-fm-sdk (Apple Intelligence) is source-only on PyPI and needs Xcode, so it
-# is compiled here on macOS 26+ — end users never need a build toolchain.
-_ASSET_DIR="${REPO_ROOT}/release-assets"
-mkdir -p "${_ASSET_DIR}"
-rm -f "${_ASSET_DIR}"/services-venv-*.tar.gz "${_ASSET_DIR}"/services-venv-*.tar.gz.sha256
-# uv must be available on the CI runner. pip3 install is blocked on macOS 26
-# by PEP 668 (externally-managed-environment). Install via Homebrew instead.
-command -v uv >/dev/null 2>&1 || brew install uv
-
-# Skip venv rebuild if services/ source files unchanged from previous release
-_services_changed=true
-_prev_release_tag="$(git describe --tags --abbrev=0 2>/dev/null || echo '')"
-if [[ -n "${_prev_release_tag}" ]] && [[ -d "services/.venv" ]]; then
-    _changed_files="$(git diff "${_prev_release_tag}..HEAD" --name-only -- services 2>/dev/null | wc -l)"
-    if [[ "${_changed_files}" -eq 0 ]]; then
-        _services_changed=false
-        echo "  · services/ source unchanged from ${_prev_release_tag} — reusing venv"
-    fi
-fi
-
-if [[ "${_services_changed}" == true ]]; then
-    # Pin Python 3.11: macos-26 defaults to Python 3.14 which produces
-    # cpython-314-darwin.so that Python 3.11 on user machines cannot load.
-    # Both extras: mlx (classifier) AND pm_worklog_update (agno) — the shipped
-    # MLX server serves /synthesise_worklog too, which imports agno; without it
-    # worklog synthesis 500s with ModuleNotFoundError on every install.
-    uv sync --project services --extra mlx --extra pm_worklog_update --frozen --python 3.11
-    # Validate the venv is actually Python 3.11.
-    _py_dir="$(ls -d services/.venv/lib/python* 2>/dev/null | head -1 | xargs basename 2>/dev/null || true)"
-    if [[ -z "${_py_dir}" ]]; then
-        echo "✗ could not find python lib dir under services/.venv/lib/" >&2; exit 1
-    fi
-    if [[ "${_py_dir}" != "python3.11" ]]; then
-        echo "✗ venv was built with ${_py_dir} but must be python3.11" >&2; exit 1
-    fi
-    # On macOS 26+, install apple-fm-sdk into the venv so end users get Apple
-    # Intelligence without needing Xcode. The CI runner (macos-26) has Xcode;
-    # the package is source-only (no PyPI wheels) so must be compiled here.
-    _pkg_macos_major="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
-    if [[ "${_pkg_macos_major:-0}" -ge 26 ]]; then
-        echo "  macOS ${_pkg_macos_major}: compiling apple-fm-sdk for Apple Intelligence…"
-        uv pip install --python "services/.venv/bin/python" "apple-fm-sdk"
-        echo "  · apple-fm-sdk compiled and included in venv"
-    fi
-fi
-
-_py_dir="$(ls -d services/.venv/lib/python* 2>/dev/null | head -1 | xargs basename 2>/dev/null || true)"
-_VENV_ASSET="${_ASSET_DIR}/services-venv-${VERSION}.tar.gz"
-tar -czf "${_VENV_ASSET}" -C "services/.venv/lib/${_py_dir}/site-packages" .
-shasum -a 256 "${_VENV_ASSET}" | cut -d' ' -f1 > "${_VENV_ASSET}.sha256"
-echo "  · $(du -sh "${_VENV_ASSET}" | cut -f1) → release-assets/$(basename "${_VENV_ASSET}") (GitHub Release asset)"
-echo "  · sha256 $(cat "${_VENV_ASSET}.sha256")"
 
 echo "→ scripts + plists + CLI"
 cp scripts/meridian-cli.sh scripts/install-from-bundle.sh scripts/meridian-npm-setup.sh \

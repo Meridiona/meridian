@@ -5,12 +5,7 @@
     "@semantic-release/commit-analyzer",
     "@semantic-release/release-notes-generator",
     ["@semantic-release/changelog", { "changelogFile": "CHANGELOG.md" }],
-    ["@semantic-release/github", {
-      "assets": [
-        { "path": "release-assets/services-venv-*.tar.gz", "label": "Python venv (pre-built site-packages, macOS arm64)" },
-        { "path": "release-assets/services-venv-*.tar.gz.sha256", "label": "Python venv SHA-256" }
-      ]
-    }],
+    "@semantic-release/github",
     ["@semantic-release/exec", {
       "prepareCmd": "cargo build --release && (cd ui && npm ci --no-audit --no-fund && npm run build) && (cd tray && bash create-icons.sh && npm ci --no-audit --no-fund && npm run build) && bash scripts/set-version.sh ${nextRelease.version} && bash scripts/package-release.sh ${nextRelease.version} && bash scripts/verify-release-bundle.sh ${nextRelease.version}",
       "publishCmd": "npm publish ./npm/meridian-darwin-arm64 --access public"
