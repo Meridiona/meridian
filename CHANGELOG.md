@@ -1,3 +1,10 @@
+## [1.37.4](https://github.com/Meridiona/meridian/compare/v1.37.3...v1.37.4) (2026-06-09)
+
+
+### Bug Fixes
+
+* **setup:** show live MLX model download progress ([#225](https://github.com/Meridiona/meridian/issues/225)) ([268dff0](https://github.com/Meridiona/meridian/commit/268dff016246e15ab146031b807fb1161ce26383))
+
 ## [1.37.3](https://github.com/Meridiona/meridian/compare/v1.37.2...v1.37.3) (2026-06-09)
 
 
