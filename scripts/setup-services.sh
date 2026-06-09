@@ -8,6 +8,11 @@
 #   bash scripts/setup-services.sh --mlx
 #
 # Safe to re-run. Only overwrites hermes config.yaml, never .env.
+#
+# NOTE: this creates services/.venv inside the repo — for your interactive
+# dev work (running scripts, evals, etc. in the terminal). The launchd daemon
+# uses a separate venv at ~/.meridian/mlx-server-venv (created automatically
+# by install-mlx-server-daemon.sh) to avoid macOS 15 TCC/EPERM restrictions.
 
 set -euo pipefail
 
@@ -26,86 +31,68 @@ done
 echo "=== meridian services setup ==="
 echo ""
 
-# 1. Python venv — prefer python3.11 so hermes-agent installs cleanly
-if command -v python3.11 >/dev/null 2>&1; then
-    PYTHON_BIN="python3.11"
-elif command -v python3 >/dev/null 2>&1; then
-    PYTHON_BIN="python3"
-else
-    echo "✗ No python3 found on PATH"
-    exit 1
+# 1. Find or install uv (Astral's Rust-based Python package manager).
+UV_BIN=""
+for _uv_candidate in "${HOME}/.local/bin/uv" /opt/homebrew/bin/uv /usr/local/bin/uv; do
+    if [[ -x "${_uv_candidate}" ]]; then UV_BIN="${_uv_candidate}"; break; fi
+done
+[[ -z "${UV_BIN}" ]] && UV_BIN="$(command -v uv 2>/dev/null || true)"
+if [[ -z "${UV_BIN}" ]]; then
+    echo "Installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    UV_BIN="${HOME}/.local/bin/uv"
+    echo "  ✓ uv installed"
 fi
-if [ ! -d "${SERVICES_DIR}/.venv" ]; then
-    echo "Creating Python venv (using ${PYTHON_BIN})..."
-    "${PYTHON_BIN}" -m venv "${SERVICES_DIR}/.venv"
-    echo "  ✓ .venv created"
-else
-    echo "  ✓ .venv already exists"
-fi
+echo "  ✓ uv $("${UV_BIN}" --version | awk '{print $2}')"
 
-# 2. Install core dependencies
-echo "Installing Python dependencies..."
-"${SERVICES_DIR}/.venv/bin/pip" install --quiet -r "${SERVICES_DIR}/requirements.txt"
-echo "  ✓ requirements installed"
-
-# 2b. Install the services package itself in editable mode so that
-#     `python -m agents.*` modules are importable by the launchd daemons.
-echo "Installing meridian-agents package..."
-"${SERVICES_DIR}/.venv/bin/pip" install --quiet -e "${SERVICES_DIR}"
-echo "  ✓ meridian-agents installed"
-
-# 3a. MLX inference server extras — only on Apple Silicon, only when --mlx is set.
-#     Installs mlx-lm, outlines, fastapi, uvicorn and the meridian-server script.
+# 2. Install Python services into services/.venv (standard uv default — inside repo).
+#    This venv is for interactive dev use (terminal, evals, scripts).
+#    The launchd daemon uses ~/.meridian/mlx-server-venv instead (see above).
 if [[ "${USE_MLX}" -eq 1 ]]; then
     if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
         echo "✗ --mlx requires Apple Silicon (arm64 macOS)" >&2
         exit 1
     fi
-    echo "Installing MLX inference + server extras (.[mlx])..."
-    "${SERVICES_DIR}/.venv/bin/pip" install --quiet -e "${SERVICES_DIR}[mlx]"
-    echo "  ✓ MLX extras installed"
-    if ! "${SERVICES_DIR}/.venv/bin/meridian-server" --help >/dev/null 2>&1; then
+    echo "Installing Python services (mlx + pm_worklog_update) to services/.venv..."
+    "${UV_BIN}" sync --project "${SERVICES_DIR}" \
+        --extra mlx --extra pm_worklog_update --python 3.11
+    echo "  ✓ mlx + pm_worklog_update extras installed"
+
+    if ! "${UV_BIN}" run --no-sync --project "${SERVICES_DIR}" \
+            meridian-server --help >/dev/null 2>&1; then
         echo "  ✗ meridian-server not available after install" >&2
         exit 1
     fi
     echo "  ✓ meridian-server script available"
-elif [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]]; then
-    # Without --mlx, install just mlx-lm so llm_selector can detect local models.
-    echo "Apple Silicon detected — installing mlx-lm for local inference..."
-    "${SERVICES_DIR}/.venv/bin/pip" install --quiet "mlx-lm>=0.22,<1"
-    echo "  ✓ mlx-lm installed"
+else
+    echo "Installing Python services to services/.venv..."
+    "${UV_BIN}" sync --project "${SERVICES_DIR}" --python 3.11
+    echo "  ✓ core dependencies installed"
 
-    # On macOS 26+, install the Apple Foundation Models Python SDK so
-    # llm_selector can use Apple Intelligence on 8 GB machines (no MLX model
-    # download needed). Building the wheel requires Xcode.app (full, not CLT) —
-    # it compiles a Swift/C bridge. Runtime only needs macOS 26 system frameworks.
-    # npm users get a pre-built wheel from the release bundle and never need Xcode.
-    _macos_major="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
-    if [[ "${_macos_major:-0}" -ge 26 ]]; then
-        if [[ ! -d /Applications/Xcode.app ]]; then
-            echo "  ⚠ Xcode.app not found — skipping apple-fm-sdk (requires full Xcode to build)."
-            echo "    Install Xcode 26+ from the App Store, open it once to accept the license, then re-run."
-        else
-            echo "macOS ${_macos_major} detected — installing apple-fm-sdk for Apple Intelligence..."
-            "${SERVICES_DIR}/.venv/bin/pip" install --quiet "apple-fm-sdk"
-            echo "  ✓ apple-fm-sdk installed"
+    if [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]]; then
+        echo "Apple Silicon detected — installing mlx-lm for local inference..."
+        "${UV_BIN}" pip install --python "${SERVICES_DIR}/.venv/bin/python" "mlx-lm>=0.22,<1"
+        echo "  ✓ mlx-lm installed"
+
+        _macos_major="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
+        if [[ "${_macos_major:-0}" -ge 26 ]]; then
+            if [[ ! -d /Applications/Xcode.app ]]; then
+                echo "  ⚠ Xcode.app not found — skipping apple-fm-sdk (requires full Xcode to build)."
+                echo "    Install Xcode 26+ from the App Store, open it once to accept the license, then re-run."
+            else
+                echo "macOS ${_macos_major} detected — installing apple-fm-sdk for Apple Intelligence..."
+                "${UV_BIN}" pip install --python "${SERVICES_DIR}/.venv/bin/python" apple-fm-sdk
+                echo "  ✓ apple-fm-sdk installed"
+            fi
         fi
     fi
 fi
 
-# 3b. Verify hermes is importable
-echo "Verifying hermes install..."
-if ! "${SERVICES_DIR}/.venv/bin/python3" -c "import run_agent" 2>/dev/null; then
-    echo "  ERROR: 'run_agent' not importable — check requirements.txt includes hermes"
-    exit 1
-fi
-echo "  ✓ hermes (run_agent) importable"
-
-# 4. Hermes config setup
+# 3. Hermes config setup (creates services/.hermes/config.yaml if absent).
 echo "Configuring hermes..."
 bash "${SERVICES_DIR}/scripts/setup-hermes.sh"
 
-# 5. Final check — warn if API key is still the placeholder
+# 4. Final check — warn if API key is still the placeholder.
 ROOT_ENV="${REPO_ROOT}/.env"
 if grep -q "YOUR_API_KEY_HERE\|<your" "${ROOT_ENV}" 2>/dev/null; then
     echo ""
@@ -118,8 +105,9 @@ echo ""
 echo "=== setup complete ==="
 echo ""
 if [[ "${USE_MLX}" -eq 1 ]]; then
-    echo "Next: start the MLX server, then cargo build --release && ./target/release/meridian"
-    echo "  ${SERVICES_DIR}/.venv/bin/meridian-server --backend mlx --port 7823"
+    echo "Next: install the MLX launchd agent, then start the Rust daemon"
+    echo "  bash ${REPO_ROOT}/services/scripts/install-mlx-server-daemon.sh"
+    echo "  cargo build --release && ./target/release/meridian"
 else
     echo "Next: cargo build --release && ./target/release/meridian"
 fi

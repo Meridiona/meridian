@@ -23,29 +23,34 @@
     <key>WorkingDirectory</key>
     <string>{{REPO_ROOT}}/services</string>
 
-    <!-- Use the base Python binary directly (not the venv wrapper script) so
-         Python never reads pyvenv.cfg — which triggers EPERM from launchd on
-         macOS 15 even at Standard ProcessType.  PYTHONPATH gives the venv's
-         site-packages without triggering venv-detection. -->
+    <!-- uv resolves the managed Python and activates the venv before exec.
+         UV_PROJECT_ENVIRONMENT points to services/.venv (prepared by
+         setup-services.sh for dev, or install-from-bundle.sh for npm installs).
+         --no-sync skips lockfile resolution at daemon startup. -->
     <key>ProgramArguments</key>
     <array>
-        <string>{{BASE_PYTHON}}</string>
+        <string>{{UV_BIN}}</string>
+        <string>run</string>
+        <string>--no-sync</string>
+        <string>--project</string>
+        <string>{{REPO_ROOT}}/services</string>
+        <string>python</string>
         <string>-m</string>
         <string>agents.server</string>
-        <string>--backend</string>
-        <string>mlx</string>
         <string>--port</string>
         <string>{{MLX_SERVER_PORT}}</string>
     </array>
 
     <key>EnvironmentVariables</key>
     <dict>
+        <key>HOME</key>
+        <string>{{HOME}}</string>
+        <key>UV_PROJECT_ENVIRONMENT</key>
+        <string>{{SERVICES_VENV}}</string>
         <key>MERIDIAN_DB</key>
         <string>{{HOME}}/.meridian/meridian.db</string>
         <key>PYTHONUNBUFFERED</key>
         <string>1</string>
-        <key>PYTHONPATH</key>
-        <string>{{SITE_PACKAGES}}</string>
         <key>MLX_SERVER_PORT</key>
         <string>{{MLX_SERVER_PORT}}</string>
         <key>MERIDIAN_OO_AUTH</key>

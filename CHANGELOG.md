@@ -1,3 +1,40 @@
+## [1.34.5](https://github.com/Meridiona/meridian/compare/v1.34.4...v1.34.5) (2026-06-09)
+
+
+### Bug Fixes
+
+* **mlx-server:** remove --backend mlx flag that server.py never accepted ([905fcbe](https://github.com/Meridiona/meridian/commit/905fcbeffa111d97a1e634bea78d90b21eeba9c9))
+
+## [1.34.4](https://github.com/Meridiona/meridian/compare/v1.34.3...v1.34.4) (2026-06-09)
+
+
+### Bug Fixes
+
+* **install:** preserve existing plist path on update to avoid TCC grant invalidation ([#210](https://github.com/Meridiona/meridian/issues/210)) ([ee4569e](https://github.com/Meridiona/meridian/commit/ee4569ea631b9f1e7edfa8ad24711f559f0581bb))
+
+## [1.34.3](https://github.com/Meridiona/meridian/compare/v1.34.2...v1.34.3) (2026-06-09)
+
+
+### Bug Fixes
+
+* **installer:** kill tail processes after MLX model-load wait ([#208](https://github.com/Meridiona/meridian/issues/208)) ([079eb11](https://github.com/Meridiona/meridian/commit/079eb118759ada8c14411403603baba551b73f91))
+* **install:** stage screenpipe binary to ~/.meridian/bin for stable TCC path ([#209](https://github.com/Meridiona/meridian/issues/209)) ([0a52120](https://github.com/Meridiona/meridian/commit/0a521205a250ebdd3458dbbf59945115fbac6d64))
+
+## [1.34.2](https://github.com/Meridiona/meridian/compare/v1.34.1...v1.34.2) (2026-06-09)
+
+
+### Bug Fixes
+
+* **uninstall:** remove app bundle, venv, npm package, and hooks on uninstall ([#207](https://github.com/Meridiona/meridian/issues/207)) ([9b5cacf](https://github.com/Meridiona/meridian/commit/9b5cacf7d594a47058f7b39c5a960bd945d6b153))
+
+## [1.34.1](https://github.com/Meridiona/meridian/compare/v1.34.0...v1.34.1) (2026-06-09)
+
+
+### Bug Fixes
+
+* **screenpipe:** prefer staged Mach-O binary over nvm-versioned npm shim ([#205](https://github.com/Meridiona/meridian/issues/205)) ([23e1db8](https://github.com/Meridiona/meridian/commit/23e1db8cab6470577019cd4fce4bbf048b728c83))
+* **smoke:** raise classify timeout to 180s for M1 machines ([#204](https://github.com/Meridiona/meridian/issues/204)) ([b92cce0](https://github.com/Meridiona/meridian/commit/b92cce059135ae16c14af35f031eaedfa653b636))
+
 # [1.34.0](https://github.com/Meridiona/meridian/compare/v1.33.0...v1.34.0) (2026-06-09)
 
 

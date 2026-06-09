@@ -1,21 +1,11 @@
 # meridian — normalises screenpipe activity into structured app sessions
-"""Conversational agent server (FastAPI).
-
-Supports two backends selected via --backend:
-
-  hermes (default) — wraps the hermes AIAgent for conversational classification
-  mlx              — loads the MLX model once at startup for direct inference
+"""MLX agent server (FastAPI).
 
 Usage:
-    python -m agents.server                    # hermes backend, port 7823
-    python -m agents.server --backend mlx      # MLX backend, port 7823
-    python -m agents.server --backend mlx --port 7824
+    python -m agents.server           # port 7823
+    python -m agents.server --port 7824
 
-hermes endpoints:
-    GET  /health
-    POST /chat       {"message": "classify session id 80"}
-
-mlx endpoints:
+Endpoints:
     GET  /health
     POST /classify   {"input": "<fully-formatted user_message string>"}
                      → {"task_key": ..., "session_type": ..., "reasoning": ...,
@@ -24,18 +14,14 @@ mlx endpoints:
 from __future__ import annotations
 
 import argparse
-import contextlib
 import logging
 import os
 import sqlite3 as _sqlite3
-import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-# Must be set before any hermes import.
 _SERVICES_DIR = Path(__file__).parent.parent
-os.environ.setdefault("HERMES_HOME", str(_SERVICES_DIR / ".hermes"))
 
 import opentelemetry.context as _otel_context
 from fastapi import FastAPI, HTTPException
@@ -49,7 +35,7 @@ log = logging.getLogger("agents.server")
 _DB_PATH = Path(os.environ.get("MERIDIAN_DB", Path.home() / ".meridian/meridian.db"))
 
 # ---------------------------------------------------------------------------
-# Lifespan — model loaded once for MLX backend, no-op for hermes
+# Lifespan — model loaded once at startup
 # ---------------------------------------------------------------------------
 
 _app_state: dict[str, Any] = {}
@@ -57,18 +43,17 @@ _app_state: dict[str, Any] = {}
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    if _app_state.get("backend") == "mlx":
-        import datetime
-        import agents.run_task_linker_mlx as _mlx
-        _app_state["mlx_module"] = _mlx
-        _app_state["loaded_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        from agents.llm_selector import APPLE_INTELLIGENCE_ID
-        if _mlx._resolve_model_id() == APPLE_INTELLIGENCE_ID:
-            log.info("server: 8 GB machine — Apple Intelligence backend, no MLX model to pre-load")
-        else:
-            log.info("server: loading MLX model at startup…")
-            _mlx._get_model()
-            log.info("server: MLX model ready")
+    import datetime
+    import agents.run_task_linker_mlx as _mlx
+    _app_state["mlx_module"] = _mlx
+    _app_state["loaded_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    from agents.llm_selector import APPLE_INTELLIGENCE_ID
+    if _mlx._resolve_model_id() == APPLE_INTELLIGENCE_ID:
+        log.info("server: 8 GB machine — Apple Intelligence backend, no MLX model to pre-load")
+    else:
+        log.info("server: loading MLX model at startup…")
+        _mlx._get_model()
+        log.info("server: MLX model ready")
     yield
 
 
@@ -83,7 +68,7 @@ app = FastAPI(title="Meridian Agent", version="1.0.0", lifespan=_lifespan)
 async def health() -> dict:
     return {
         "status": "ok",
-        "backend": _app_state.get("backend", "hermes"),
+        "backend": "mlx",
         "db": str(_DB_PATH),
         "db_exists": _DB_PATH.exists(),
     }
@@ -91,61 +76,13 @@ async def health() -> dict:
 
 @app.get("/info")
 async def info() -> dict:
-    """Return the identity of the loaded model.
-
-    model_id is None for the hermes backend (no model loaded in-process).
-    loaded_at is an ISO-8601 UTC timestamp set when the model finished loading.
-    """
+    """Return the identity of the loaded model."""
     m = _app_state.get("mlx_module")
     return {
-        "backend":   _app_state.get("backend", "hermes"),
+        "backend":   "mlx",
         "model_id":  m._resolve_model_id() if m else None,
         "loaded_at": _app_state.get("loaded_at"),
     }
-
-
-# ---------------------------------------------------------------------------
-# Hermes backend — conversational AIAgent
-# ---------------------------------------------------------------------------
-
-class ChatRequest(BaseModel):
-    message: str
-
-
-class ChatResponse(BaseModel):
-    response: str
-
-
-@app.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest) -> ChatResponse:
-    if _app_state.get("backend") == "mlx":
-        raise HTTPException(status_code=404, detail="Use /classify for mlx backend")
-
-    from run_agent import AIAgent
-    from agents._system_context import SYSTEM_CONTEXT
-    from agents.config import MODEL, BASE_URL, API_KEY, AGENT_MAX_TOKENS
-
-    agent = AIAgent(
-        model=MODEL,
-        base_url=BASE_URL,
-        api_key=API_KEY or "none",
-        enabled_toolsets=["terminal", "skills", "memory"],
-        ephemeral_system_prompt=SYSTEM_CONTEXT,
-        quiet_mode=True,
-        skip_context_files=True,
-        load_soul_identity=False,
-        skip_memory=False,
-        max_iterations=20,
-        max_tokens=AGENT_MAX_TOKENS,
-    )
-
-    log.info("chat: %.120s", req.message)
-    with contextlib.redirect_stdout(sys.stderr):
-        result = agent.run_conversation(req.message)
-
-    response = str(result.get("final_response") or result.get("response") or "")
-    log.info("response: %.120s", response)
-    return ChatResponse(response=response)
 
 
 # ---------------------------------------------------------------------------
@@ -185,8 +122,6 @@ def _get_classify_log() -> "Any":
 
 @app.post("/classify", response_model=ClassifyResponse)
 async def classify(req: ClassifyRequest) -> ClassifyResponse:
-    if _app_state.get("backend") != "mlx":
-        raise HTTPException(status_code=404, detail="Use /chat for hermes backend")
 
     import json as _json
     import time as _time
@@ -268,19 +203,8 @@ class ClassifySessionsRequest(BaseModel):
 
 @app.post("/classify_sessions")
 async def classify_sessions(req: ClassifySessionsRequest) -> dict:
-    """Classify one or more sessions by ID using the pre-loaded MLX model.
-
-    Only available when the server is started with ``--backend mlx``.
-    Returns a results list in the same JSON format the Rust daemon already
-    parses from the subprocess stdout.
-    """
+    """Classify one or more sessions by ID using the pre-loaded MLX model."""
     from fastapi.concurrency import run_in_threadpool
-
-    if _app_state.get("backend") != "mlx":
-        raise HTTPException(
-            status_code=503,
-            detail="classify_sessions is only available with --backend mlx",
-        )
 
     m = _app_state.get("mlx_module")
     if m is None:
@@ -345,9 +269,6 @@ async def classify_sessions(req: ClassifySessionsRequest) -> dict:
 # our already-loaded MLX model. Free-form generation only (no FSM /
 # structured-output decoding); callers that need JSON shape inject it
 # into the system prompt.
-#
-# Only available with --backend mlx. The hermes backend keeps using
-# /chat for its conversational path.
 
 
 class _OAIMessage(BaseModel):
@@ -430,11 +351,6 @@ async def openai_chat_completions(req: _OAIChatRequest) -> dict:
 
     from fastapi.concurrency import run_in_threadpool
 
-    if _app_state.get("backend") != "mlx":
-        raise HTTPException(
-            status_code=503,
-            detail="/v1/chat/completions is only available with --backend mlx",
-        )
     if req.stream:
         raise HTTPException(status_code=400, detail="streaming not supported")
 
@@ -544,8 +460,6 @@ async def summarise(req: _SummariseRequest) -> _SummariseResponse:
     """
     from fastapi.concurrency import run_in_threadpool
 
-    if _app_state.get("backend") != "mlx":
-        raise HTTPException(status_code=503, detail="/summarise requires --backend mlx")
     m = _app_state.get("mlx_module")
     if m is None:
         raise HTTPException(status_code=503, detail="MLX model is still loading")
@@ -657,7 +571,7 @@ def _get_synth_agent() -> "Any":
 
 @app.post("/synthesise_worklog")
 async def synthesise_worklog(req: _SynthWorklogRequest) -> dict:
-    """Synthesise ONE Jira worklog from a collected session bundle (MLX only).
+    """Synthesise ONE Jira worklog from a collected session bundle.
 
     Returns a JiraUpdate dict. The authoritative scalar fields (task_key,
     window, cycle_index, time_spent_seconds) are stamped from the bundle so the
@@ -665,11 +579,6 @@ async def synthesise_worklog(req: _SynthWorklogRequest) -> dict:
     Rust grounds, routes, and posts.
     """
     from fastapi.concurrency import run_in_threadpool
-
-    if _app_state.get("backend") != "mlx":
-        raise HTTPException(
-            status_code=503, detail="/synthesise_worklog requires --backend mlx"
-        )
 
     from agents.pm_worklog_update import workflow as pm_workflow
     from agents.pm_worklog_update.models import JiraUpdate, SessionBundle
@@ -731,10 +640,9 @@ async def synthesise_worklog(req: _SynthWorklogRequest) -> dict:
 async def openai_models_list() -> dict:
     """OpenAI-style models listing — agno/openai-python probe this on first use."""
     model_id = "qwen3.5-9b-instruct"
-    if _app_state.get("backend") == "mlx":
-        m = _app_state.get("mlx_module")
-        if m is not None and hasattr(m, "_resolve_model_id"):
-            model_id = m._resolve_model_id()
+    m = _app_state.get("mlx_module")
+    if m is not None and hasattr(m, "_resolve_model_id"):
+        model_id = m._resolve_model_id()
     return {
         "object": "list",
         "data": [
@@ -758,19 +666,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Meridian agent server")
     parser.add_argument("--port",    type=int, default=7823)
     parser.add_argument("--host",    default="127.0.0.1")
-    parser.add_argument(
-        "--backend",
-        choices=["hermes", "mlx"],
-        default="hermes",
-        help="hermes: AIAgent conversational mode  |  mlx: direct in-process inference",
-    )
     args = parser.parse_args()
 
-    _app_state["backend"] = args.backend
-    tracer = observability.setup(f"meridian-agent-server-{args.backend}")
+    _app_state["backend"] = "mlx"
+    tracer = observability.setup("meridian-agent-server-mlx")
     _app_state["tracer"] = tracer
 
-    log.info("meridian agent server (%s) on http://%s:%d", args.backend, args.host, args.port)
+    log.info("meridian agent server (mlx) on http://%s:%d", args.host, args.port)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 
