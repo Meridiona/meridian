@@ -45,12 +45,16 @@ Add the block for your tracker, then `meridian restart`.
 
 ### Jira
 
+The installer now connects Jira for you (it offers browser sign-in during `meridian setup` / `./install.sh`). To connect manually or re-connect:
+
 **Easiest — browser OAuth (no API token):**
 ```bash
 meridian oauth-login jira    # opens your browser → click Accept
 meridian restart
 ```
-Tokens are saved to `~/.meridian/oauth/jira.json` and auto-refresh; the site is discovered automatically. Nothing to put in `.env`.
+Tokens are saved to `~/.meridian/oauth/jira.json` and auto-refresh; the site is discovered automatically. Nothing to put in `.env`. Each user connects to **their own** Jira site (discovered from who signs in).
+
+> **If your Atlassian org blocks third-party apps:** some orgs require an admin to approve OAuth apps (you'll see "your site admin must authorize this app") or disable user app installs entirely. In that case, use the **API-token fallback** below instead — it needs no org-level app approval.
 
 **Legacy — static API token** (use this *instead* of the OAuth login):
 

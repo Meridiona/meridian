@@ -175,6 +175,12 @@ async fn main() -> Result<()> {
                     ),
                     Err(e) => {
                         eprintln!("oauth-login jira failed: {e:#}");
+                        eprintln!(
+                            "\nIf your Atlassian org blocks third-party OAuth apps (a \"site admin \
+                             must authorize\" message, or app installs disabled), use the API-token \
+                             fallback instead: set JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN via \
+                             `meridian config edit`."
+                        );
                         std::process::exit(1);
                     }
                 }

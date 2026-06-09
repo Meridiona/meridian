@@ -141,6 +141,7 @@ prompt_category() {
 
 # GitHub setup helpers — shared with scripts/install-from-bundle.sh.
 source "${REPO_ROOT}/scripts/lib-github-setup.sh"
+source "${REPO_ROOT}/scripts/lib-jira-setup.sh"
 
 prompt_env_vars() {
     if [[ "${SKIP_ENV:-0}" == "1" ]]; then
@@ -164,17 +165,10 @@ prompt_env_vars() {
     echo
 
     if prompt_category "Jira"; then
-        info "Easiest: skip the token prompts below and, after install, run"
-        info "  meridian oauth-login jira   — connect in your browser, no API token."
-        info "Or fill these in for the legacy API-token path:"
-        prompt_env_var "JIRA_BASE_URL" "Jira URL (e.g. https://your-org.atlassian.net)" 0 "$root_env"
-        # The python-side variable name is JIRA_URL, not JIRA_BASE_URL — write both.
-        local jira_url
-        jira_url="$(get_env_value JIRA_BASE_URL "$root_env")"
-        [[ -n "$jira_url" ]] && set_env_value JIRA_URL "$jira_url" "$root_env"
-        prompt_env_var "JIRA_EMAIL" "Jira email" 0 "$root_env"
-        prompt_env_var "JIRA_API_TOKEN" "Jira API token" 1 "$root_env"
-        prompt_env_var "JIRA_PROJECT_KEYS" "Jira project keys (optional, comma-sep, e.g. KAN,ENG)" 0 "$root_env"
+        # OAuth-first. The daemon binary isn't built yet at this point, so a
+        # browser-OAuth choice is DEFERRED (MERIDIAN_JIRA_OAUTH_PENDING) and run
+        # after the build, before the daemon starts. API token is the fallback.
+        _connect_jira "$root_env" "${REPO_ROOT}/target/release/meridian"
     fi
     echo
 
@@ -663,6 +657,15 @@ else
     run cargo build --release --manifest-path "${REPO_ROOT}/Cargo.toml"
     ok "cargo build --release"
     MERIDIAN_BIN="${REPO_ROOT}/target/release/meridian"
+fi
+
+# Fulfil a deferred Jira browser-OAuth login (chosen during the credential prompts,
+# before the binary existed). Runs now that MERIDIAN_BIN is built and BEFORE the
+# daemon starts, so the daemon reads the token store on its first launch — no
+# extra command or restart. No-ops unless OAuth was chosen. (--dry-run skips: no
+# binary to run.)
+if [[ "${DRY_RUN:-0}" -eq 0 ]]; then
+    _run_pending_jira_oauth "${MERIDIAN_BIN}" "${REPO_ROOT}/.env"
 fi
 
 if [[ -w "/usr/local/bin" ]]; then

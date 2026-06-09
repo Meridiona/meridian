@@ -49,6 +49,7 @@ Commands:
   worklog-status     Show today's PM worklogs (done/pending/drafted/posted + comments)
                      [--day YYYY-MM-DD]
   config edit        Open the repo-root .env in $EDITOR
+  oauth-login jira   Connect Jira via your browser (OAuth — no API token)
   permissions        Open macOS permission panes for screenpipe
   update             Pull latest changes, rebuild, and restart (source checkout only)
   uninstall          Stop daemons and remove CLI symlinks
@@ -731,7 +732,7 @@ case "$CMD" in
     uninstall)        cmd_uninstall ;;
     permissions)      cmd_permissions ;;
     version|--version|-v) cat "${REPO_ROOT}/VERSION" 2>/dev/null || echo "unknown" ;;
-    worklog-status|pm-worklog|coding-agent-hook|coding-agent-summarise|coding-agent-classify|coding-agent-install-skill) cmd_daemon_passthrough "$CMD" "$@" ;;
+    worklog-status|pm-worklog|coding-agent-hook|coding-agent-summarise|coding-agent-classify|coding-agent-install-skill|oauth-login) cmd_daemon_passthrough "$CMD" "$@" ;;
     --help|-h|help|"") cmd_help ;;
     *) err "unknown command: ${CMD}"; echo; cmd_help; exit 1 ;;
 esac
