@@ -42,12 +42,32 @@ fi
 # found when screenpipe is a native binary (Homebrew) rather than the npm shim.
 STAGED_BIN="${HOME}/.meridian/bin/screenpipe"
 
-# Prefer the already-staged stable binary (written by install-from-bundle.sh).
-# On a standalone re-run of this script (e.g. `meridian repair`) resolve the
-# real Mach-O from the npm tree and stage it so the launchd plist is immune to
-# nvm version changes — the npm shim path under ~/.nvm is version-specific and
-# breaks silently when the user runs `nvm use` or upgrades Node.
-if [[ -x "${STAGED_BIN}" ]] && file "${STAGED_BIN}" 2>/dev/null | grep -q "Mach-O"; then
+# Determine the binary path to write into the plist.
+#
+# Priority order — chosen to avoid invalidating existing TCC grants:
+#
+# 1. Existing plist path is still a valid Mach-O → keep it.
+#    macOS TCC grants are per absolute path. Changing the path silently
+#    revokes the grant and breaks screenpipe on the next start. Preserve
+#    the old path on updates so working installs stay working.
+#
+# 2. Already-staged stable binary exists → use it.
+#    Covers fresh installs and repairs where no old plist exists.
+#
+# 3. Resolve the real Mach-O from the npm tree → stage it → use it.
+#    Handles new installs where neither a plist nor a staged binary exists.
+#    nvm users get a version-specific path under ~/.nvm that breaks on
+#    `nvm use` or Node upgrades, so we always copy to the stable
+#    ~/.meridian/bin/screenpipe location.
+_old_plist_bin=""
+if [[ -f "${PLIST_DEST}" ]]; then
+    _old_plist_bin="$(plutil -extract ProgramArguments.0 raw "${PLIST_DEST}" 2>/dev/null || true)"
+fi
+
+if [[ -n "${_old_plist_bin}" ]] && [[ -x "${_old_plist_bin}" ]] && file "${_old_plist_bin}" 2>/dev/null | grep -q "Mach-O"; then
+    SCREENPIPE_BIN="${_old_plist_bin}"
+    echo "→ keeping existing screenpipe binary (preserves TCC grant): ${SCREENPIPE_BIN}"
+elif [[ -x "${STAGED_BIN}" ]] && file "${STAGED_BIN}" 2>/dev/null | grep -q "Mach-O"; then
     SCREENPIPE_BIN="${STAGED_BIN}"
     echo "→ using staged screenpipe binary: ${SCREENPIPE_BIN}"
 else
