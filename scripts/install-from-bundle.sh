@@ -568,10 +568,42 @@ else
     info "Installing MLX inference server launchd agent…"
     bash "${APP_ROOT}/services/scripts/install-mlx-server-daemon.sh" --port "${MLX_PORT}" || warn "MLX agent install failed"
     info "Waiting for the MLX server to load the model…"
+    _MLX_LOG="${HOME}/.meridian/logs/mlx-server.log"
+    _MLX_ERR="${HOME}/.meridian/logs/mlx-server-error.log"
     _w=0
+
+    # Stream both log files while polling so the user can see which model is
+    # loading and whether a download is in progress.
+    # mlx-server.log  — JSON structured logs: model selection, readiness
+    # mlx-server-error.log — raw stderr: huggingface_hub download progress
+    # tail -F follows by name and retries if the file doesn't exist yet.
+    (tail -F "${_MLX_LOG}" 2>/dev/null | python3 -u -c '
+import sys, json
+for line in sys.stdin:
+    line = line.rstrip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+        lvl = d.get("level", "INFO")
+        msg = d.get("message", line)
+        prefix = "  ⚠ " if lvl in ("WARNING", "ERROR") else "  · "
+        print(prefix + msg, flush=True)
+    except Exception:
+        print("  " + line, flush=True)
+') &
+    _log_pid=$!
+    (tail -F "${_MLX_ERR}" 2>/dev/null | while IFS= read -r _eline; do
+        printf '  %s\n' "${_eline}"
+    done) &
+    _err_pid=$!
+
     until curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; do
-        sleep 3; _w=$((_w+3)); [[ $_w -ge 300 ]] && { warn "MLX not ready after 300s — check: meridian logs mlx-server"; break; }
+        sleep 3; _w=$((_w+3))
+        [[ $_w -ge 300 ]] && { warn "MLX not ready after 300s — check: meridian logs mlx-server"; break; }
     done
+    { kill "${_log_pid}" "${_err_pid}" 2>/dev/null; wait "${_log_pid}" "${_err_pid}" 2>/dev/null; } || true
+
     # Only stamp after confirmed ready — prevents stale stamp on a failed restart.
     if curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; then
         ok "MLX server ready (${_w}s)"

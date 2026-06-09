@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "meridian-agents"
 version = "1.32.1"
-description = "Meridian agents — hermes task linking and Jira progress updates for meridian.db"
+description = "Meridian agents — MLX classifier server and Jira worklog synthesis for meridian.db"
 requires-python = ">=3.11"
 authors = [{ name = "Meridiona" }]
 license = { text = "MIT" }
@@ -53,9 +53,9 @@ meridian-server = "agents.server:main"
 
 [tool.uv]
 # Lock all extras so `uv lock` produces a complete, reproducible uv.lock.
-# The shipped venv installs BOTH server-side extras — `uv sync --extra mlx
-# --extra pm_worklog_update` — because the one MLX server serves
-# /classify_sessions (mlx) AND /synthesise_worklog (agno, pm_worklog_update).
+# At install time both extras are synced — `uv sync --extra mlx --extra
+# pm_worklog_update` — because the one MLX server serves /classify_sessions
+# (mlx) AND /synthesise_worklog (agno, pm_worklog_update).
 constraint-dependencies = []
 
 [tool.setuptools.packages.find]
