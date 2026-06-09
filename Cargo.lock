@@ -2301,7 +2301,7 @@ dependencies = [
 
 [[package]]
 name = "meridian"
-version = "1.32.0"
+version = "1.32.1"
 dependencies = [
  "anyhow",
  "chrono",
