@@ -354,6 +354,18 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
     }
 }
 
+/// Force an immediate Jira sync regardless of the staleness gate.
+/// Clears `pm_sync_state` for this provider so `refresh_if_stale` sees it as
+/// stale, then delegates. The `last_synced_at` is updated inside the delegate,
+/// so subsequent ticks won't double-fetch.
+pub async fn force_refresh(pool: &SqlitePool, jira: &JiraConfig) -> Result<Option<Vec<String>>> {
+    sqlx::query("DELETE FROM pm_sync_state WHERE provider = 'jira'")
+        .execute(pool)
+        .await
+        .context("clearing jira sync state for force refresh")?;
+    refresh_if_stale(pool, jira).await
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

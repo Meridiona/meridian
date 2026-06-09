@@ -84,16 +84,8 @@ collect_credentials() {
     echo "    (edit later anytime: meridian config edit)" >&2
     echo >&2
     if prompt_category "Jira"; then
-        info "Easiest: skip the token prompts below and, after install, run"
-        info "  meridian oauth-login jira   — connect in your browser, no API token."
-        info "Or fill these in for the legacy API-token path:"
-        prompt_env_var "JIRA_BASE_URL" "Jira URL (e.g. https://your-org.atlassian.net)" 0 "$env_file"
-        # The Python side reads JIRA_URL, the Rust side JIRA_BASE_URL — keep both in sync.
-        local jira_url; jira_url="$(get_env_value JIRA_BASE_URL "$env_file")"
-        [[ -n "$jira_url" ]] && set_env_value JIRA_URL "$jira_url" "$env_file"
-        prompt_env_var "JIRA_EMAIL" "Jira email" 0 "$env_file"
-        prompt_env_var "JIRA_API_TOKEN" "Jira API token" 1 "$env_file"
-        prompt_env_var "JIRA_PROJECT_KEYS" "Jira project keys (optional, comma-sep, e.g. KAN,ENG)" 0 "$env_file"
+        # OAuth-first; the prebuilt bundle binary is available, so log in inline.
+        _connect_jira "$env_file" "${APP_ROOT}/bin/meridian"
     fi
     echo >&2
     if prompt_category "GitHub"; then
@@ -116,8 +108,9 @@ collect_credentials() {
     ok "Credential collection complete"
 }
 
-# GitHub setup helpers — shared with install.sh.
+# GitHub + Jira setup helpers — shared with install.sh.
 source "${APP_ROOT}/scripts/lib-github-setup.sh"
+source "${APP_ROOT}/scripts/lib-jira-setup.sh"
 
 GUI_TARGET="gui/$(id -u)"
 LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"

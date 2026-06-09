@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack -p 3939",
-    "build": "next build",
+    "build": "next build && cp -r .next/static .next/standalone/.next/static",
     "start": "next start -p 3939",
     "lint": "next lint",
     "typecheck": "tsc --noEmit"

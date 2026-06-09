@@ -19,8 +19,13 @@ interface HealthStatus {
   error?: string
 }
 
+function expandTilde(p: string): string {
+  return p.startsWith('~/') ? path.join(os.homedir(), p.slice(2)) : p
+}
+
 function dbPath(): string {
-  return process.env.MERIDIAN_DB_PATH ?? path.join(os.homedir(), '.meridian', 'meridian.db')
+  const fromEnv = process.env.MERIDIAN_DB_PATH
+  return fromEnv ? expandTilde(fromEnv) : path.join(os.homedir(), '.meridian', 'meridian.db')
 }
 
 function logsDir(): string {

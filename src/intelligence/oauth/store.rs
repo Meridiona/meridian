@@ -69,7 +69,8 @@ pub fn load(provider: &str) -> Result<OAuthTokens> {
 }
 
 /// Persist tokens atomically-ish (write temp, rename) with `0600` permissions so
-/// the refresh/access tokens aren't world-readable.
+/// the refresh/access tokens aren't world-readable. On Unix, sets permissions before
+/// writing to avoid a race window where other users could read the file.
 pub fn save(tokens: &OAuthTokens) -> Result<()> {
     let dir = oauth_dir();
     std::fs::create_dir_all(&dir)
@@ -78,14 +79,29 @@ pub fn save(tokens: &OAuthTokens) -> Result<()> {
     let tmp_path = dir.join(format!(".{}.json.tmp", tokens.provider));
 
     let json = serde_json::to_string_pretty(tokens).context("serialising OAuth tokens")?;
-    std::fs::write(&tmp_path, json)
-        .with_context(|| format!("writing temp token file {}", tmp_path.display()))?;
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600))
-            .context("chmod 0600 on OAuth token file")?;
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp_path)
+            .with_context(|| {
+                format!("creating token file with 0600 mode {}", tmp_path.display())
+            })?;
+        file.write_all(json.as_bytes())
+            .with_context(|| format!("writing token file {}", tmp_path.display()))?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&tmp_path, json)
+            .with_context(|| format!("writing temp token file {}", tmp_path.display()))?;
     }
 
     std::fs::rename(&tmp_path, &final_path)
