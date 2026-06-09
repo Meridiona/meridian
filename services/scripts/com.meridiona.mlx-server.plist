@@ -51,6 +51,8 @@
         <string>{{HOME}}/.meridian/meridian.db</string>
         <key>PYTHONUNBUFFERED</key>
         <string>1</string>
+        <key>TQDM_MININTERVAL</key>
+        <string>3</string>
         <key>MLX_SERVER_PORT</key>
         <string>{{MLX_SERVER_PORT}}</string>
         <key>MERIDIAN_OO_AUTH</key>
