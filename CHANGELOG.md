@@ -1,3 +1,10 @@
+# [1.38.0](https://github.com/Meridiona/meridian/compare/v1.37.4...v1.38.0) (2026-06-09)
+
+
+### Features
+
+* **setup:** auto-install + sign in to gh when configuring GitHub (no PAT) ([#226](https://github.com/Meridiona/meridian/issues/226)) ([7499ea5](https://github.com/Meridiona/meridian/commit/7499ea5a1fe75e0a9245c2451e212055edd4835b))
+
 ## [1.37.4](https://github.com/Meridiona/meridian/compare/v1.37.3...v1.37.4) (2026-06-09)
 
 
