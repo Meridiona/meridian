@@ -2,13 +2,10 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { usePathname, useRouter } from 'next/navigation'
 import { fmtDurDecimal, AppGlyph, TaskKey, LiveDot, useTick } from '@/components/atoms'
 
-type View = 'today' | 'tasks' | 'queue' | 'worklogs' | 'sessions' | 'week' | 'settings'
-
 interface Props {
-  view: View
-  onNavigate: (v: View) => void
   onOpenCmd: () => void
   queueCount: number
 }
@@ -48,7 +45,9 @@ interface VersionInfo {
   updateAvailable: boolean
 }
 
-export default function Sidebar({ view, onNavigate, onOpenCmd, queueCount }: Props) {
+export default function Sidebar({ onOpenCmd, queueCount }: Props) {
+  const pathname = usePathname()
+  const router = useRouter()
   const [active, setActive] = useState<ActiveInfo | null>(null)
   const [ver, setVer] = useState<VersionInfo | null>(null)
   const [updating, setUpdating] = useState(false)
@@ -75,13 +74,13 @@ export default function Sidebar({ view, onNavigate, onOpenCmd, queueCount }: Pro
     }
   }
 
-  const items: Array<{ id: View; label: string; kbd: string; badge?: number }> = [
-    { id: 'today',    label: 'Today',    kbd: '1' },
-    { id: 'tasks',    label: 'Tasks',    kbd: '2' },
-    { id: 'queue',    label: 'Queue',    kbd: '3', badge: queueCount || undefined },
-    { id: 'worklogs', label: 'Worklogs', kbd: '4' },
-    { id: 'sessions', label: 'Sessions', kbd: '5' },
-    { id: 'week',     label: 'Week',     kbd: '6' },
+  const items: Array<{ route: string; label: string; kbd: string; badge?: number }> = [
+    { route: '/today',    label: 'Today',    kbd: '1' },
+    { route: '/tasks',    label: 'Tasks',    kbd: '2' },
+    { route: '/queue',    label: 'Queue',    kbd: '3', badge: queueCount || undefined },
+    { route: '/worklogs', label: 'Worklogs', kbd: '4' },
+    { route: '/sessions', label: 'Sessions', kbd: '5' },
+    { route: '/week',     label: 'Week',     kbd: '6' },
   ]
 
   return (
@@ -127,10 +126,10 @@ export default function Sidebar({ view, onNavigate, onOpenCmd, queueCount }: Pro
       {/* Nav */}
       <nav className="flex-1 px-3">
         {items.map(it => {
-          const isActive = view === it.id
+          const isActive = pathname === it.route
           return (
-            <button key={it.id}
-              onClick={() => onNavigate(it.id)}
+            <button key={it.route}
+              onClick={() => router.push(it.route)}
               className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-left transition-colors mb-px"
               style={{
                 background: isActive ? 'var(--surface-2)' : 'transparent',
@@ -157,11 +156,11 @@ export default function Sidebar({ view, onNavigate, onOpenCmd, queueCount }: Pro
 
       {/* Settings link */}
       <div className="px-3 pb-4">
-        <button onClick={() => onNavigate('settings')}
+        <button onClick={() => router.push('/settings')}
           className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-left transition-colors"
           style={{
-            background: view === 'settings' ? 'var(--surface-2)' : 'transparent',
-            color: view === 'settings' ? 'var(--ink)' : 'var(--ink-3)',
+            background: pathname === '/settings' ? 'var(--surface-2)' : 'transparent',
+            color: pathname === '/settings' ? 'var(--ink)' : 'var(--ink-3)',
           }}>
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
             <circle cx="8" cy="8" r="2.5"/>
@@ -173,7 +172,7 @@ export default function Sidebar({ view, onNavigate, onOpenCmd, queueCount }: Pro
       </div>
 
       {/* Active session pill */}
-      {active && <ActiveSessionPill info={active} onClick={() => onNavigate('today')} />}
+      {active && <ActiveSessionPill info={active} onClick={() => router.push('/today')} />}
     </aside>
   )
 }

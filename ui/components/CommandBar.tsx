@@ -2,37 +2,42 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { TaskKey, StatusPill } from '@/components/atoms'
-
-type View = 'today' | 'tasks' | 'queue' | 'worklogs' | 'sessions' | 'week'
 
 interface Props {
   onClose: () => void
-  onNavigate: (v: View, key?: string) => void
 }
 
 interface CmdItem {
   kind: 'view' | 'task'
   label: string
-  v: View
+  route: string
   key?: string
   status?: string
 }
 
-export default function CommandBar({ onClose, onNavigate }: Props) {
+export default function CommandBar({ onClose }: Props) {
+  const router = useRouter()
   const [q, setQ] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => { inputRef.current?.focus() }, [])
 
   const views: CmdItem[] = [
-    { kind: 'view', label: 'Go to Today',        v: 'today' },
-    { kind: 'view', label: 'Go to Tasks',        v: 'tasks' },
-    { kind: 'view', label: 'Go to Review queue', v: 'queue' },
-    { kind: 'view', label: 'Go to Worklogs',     v: 'worklogs' },
-    { kind: 'view', label: 'Go to Sessions',     v: 'sessions' },
-    { kind: 'view', label: 'Go to Week',         v: 'week' },
+    { kind: 'view', label: 'Go to Today',        route: '/today' },
+    { kind: 'view', label: 'Go to Tasks',        route: '/tasks' },
+    { kind: 'view', label: 'Go to Review queue', route: '/queue' },
+    { kind: 'view', label: 'Go to Worklogs',     route: '/worklogs' },
+    { kind: 'view', label: 'Go to Sessions',     route: '/sessions' },
+    { kind: 'view', label: 'Go to Week',         route: '/week' },
   ]
+
+  function navigate(item: CmdItem) {
+    const dest = item.key ? `${item.route}?focus=${item.key}` : item.route
+    router.push(dest)
+    onClose()
+  }
 
   const filtered = views.filter(a =>
     !q || a.label.toLowerCase().includes(q.toLowerCase())
@@ -59,9 +64,7 @@ export default function CommandBar({ onClose, onNavigate }: Props) {
           onChange={e => setQ(e.target.value)}
           onKeyDown={e => {
             if (e.key === 'Escape') onClose()
-            if (e.key === 'Enter' && filtered[0]) {
-              onNavigate(filtered[0].v, filtered[0].key)
-            }
+            if (e.key === 'Enter' && filtered[0]) navigate(filtered[0])
           }}
           placeholder="Jump to view or task…"
           className="w-full px-5 py-4 text-[14px] font-sans"
@@ -79,7 +82,7 @@ export default function CommandBar({ onClose, onNavigate }: Props) {
           )}
           {filtered.map((r, i) => (
             <button key={i}
-              onClick={() => onNavigate(r.v, r.key)}
+              onClick={() => navigate(r)}
               className="w-full text-left px-5 py-2.5 flex items-center gap-3 transition-colors hover:opacity-80"
               style={{ background: i === 0 ? 'var(--surface-2)' : 'transparent' }}>
               {r.kind === 'task' && <TaskKey keyId={r.key} />}
