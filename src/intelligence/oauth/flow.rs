@@ -27,6 +27,11 @@ pub struct ProviderSpec {
     /// Extra `/authorize` query params beyond the standard set (e.g. Atlassian's
     /// `audience` and `prompt`).
     pub extra_authorize_params: Vec<(&'static str, String)>,
+    /// Confidential-client secret for providers that require one at the token
+    /// endpoint. Atlassian Cloud's 3LO token exchange ignores PKCE and demands a
+    /// `client_secret` even for desktop apps, so we send it when present. `None`
+    /// for true public clients (where PKCE alone authenticates the exchange).
+    pub client_secret: Option<String>,
 }
 
 /// The token-endpoint response shared by authorization-code exchange and refresh.
@@ -82,11 +87,12 @@ pub async fn refresh(
     spec: &ProviderSpec,
     refresh_token: &str,
 ) -> Result<TokenResponse> {
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "grant_type": "refresh_token",
         "client_id": client_id,
         "refresh_token": refresh_token,
     });
+    with_client_secret(&mut body, spec);
     post_token(spec.token_url, &body)
         .await
         .context("refreshing OAuth access token")
@@ -129,16 +135,27 @@ async fn exchange_code(
     code: &str,
     verifier: &str,
 ) -> Result<TokenResponse> {
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "grant_type": "authorization_code",
         "client_id": client_id,
         "code": code,
         "redirect_uri": redirect_uri,
         "code_verifier": verifier,
     });
+    with_client_secret(&mut body, spec);
     post_token(spec.token_url, &body)
         .await
         .context("exchanging authorization code for tokens")
+}
+
+/// Inject `client_secret` into a token-endpoint body when the provider is a
+/// confidential client (Atlassian Cloud). No-op for true public clients.
+fn with_client_secret(body: &mut serde_json::Value, spec: &ProviderSpec) {
+    if let Some(secret) = spec.client_secret.as_deref() {
+        if !secret.trim().is_empty() {
+            body["client_secret"] = serde_json::Value::String(secret.to_string());
+        }
+    }
 }
 
 async fn post_token(token_url: &str, body: &serde_json::Value) -> Result<TokenResponse> {
@@ -299,6 +316,7 @@ mod tests {
             token_url: "https://auth.example.com/token",
             scopes: "read:jira-work offline_access",
             extra_authorize_params: vec![("audience", "api.atlassian.com".to_string())],
+            client_secret: None,
         }
     }
 

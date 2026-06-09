@@ -32,8 +32,7 @@ fn refresh_lock() -> &'static Mutex<()> {
 /// be registered on the OAuth app. Override with `JIRA_OAUTH_REDIRECT_PORT`.
 pub const DEFAULT_REDIRECT_PORT: u16 = 9123;
 
-/// Meridian's public Atlassian OAuth 2.0 (3LO) client id. PKCE public clients
-/// have NO secret, so this is safe to ship — every install uses it, so
+/// Meridian's Atlassian OAuth 2.0 (3LO) client id. Every install uses it, so
 /// `meridian oauth-login jira` needs zero config. Override (e.g. for a different
 /// app or Jira Data Center) with `JIRA_OAUTH_CLIENT_ID`.
 ///
@@ -42,6 +41,25 @@ pub const DEFAULT_REDIRECT_PORT: u16 = 9123;
 /// users — is documented in `docs/jira-oauth-app.md`. Update both together.
 pub const DEFAULT_CLIENT_ID: &str = "sXRB5rwKFX53DUgb9u5LO7gr0pRMwNDS";
 
+/// Meridian's Atlassian OAuth 2.0 (3LO) client secret, **baked in at build time**
+/// — never stored in source. Atlassian Cloud's token endpoint ignores PKCE and
+/// requires a `client_secret` even for desktop apps (a
+/// [known limitation](https://jira.atlassian.com/browse/OAUTH20-2491)), so — unlike
+/// a true public PKCE client — we must ship one. The official release build injects
+/// it via the `MERIDIAN_JIRA_OAUTH_CLIENT_SECRET` compile-time env (a GitHub Actions
+/// secret; see `.github/workflows/release.yml`); plain source builds compile in an
+/// empty string, so a source-built daemon must supply `JIRA_OAUTH_CLIENT_SECRET` at
+/// runtime or use the API-token fallback.
+///
+/// It is extractable from the shipped binary by design, but the blast radius of a
+/// leak is bounded: the registered redirect is loopback-only (`127.0.0.1:9123`,
+/// exact-match enforced) and scopes are narrow, so it is revocable/rotatable in the
+/// Atlassian console (rotate the secret and the Actions secret together).
+pub const DEFAULT_CLIENT_SECRET: &str = match option_env!("MERIDIAN_JIRA_OAUTH_CLIENT_SECRET") {
+    Some(s) => s,
+    None => "",
+};
+
 /// Resolve the client id to use for `oauth-login`: `JIRA_OAUTH_CLIENT_ID` env
 /// override if set and non-blank, else the baked-in default.
 pub fn client_id() -> String {
@@ -49,6 +67,15 @@ pub fn client_id() -> String {
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_CLIENT_ID.to_string())
+}
+
+/// Resolve the client secret: `JIRA_OAUTH_CLIENT_SECRET` env override if set and
+/// non-blank, else the baked-in default.
+pub fn client_secret() -> String {
+    std::env::var("JIRA_OAUTH_CLIENT_SECRET")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_CLIENT_SECRET.to_string())
 }
 
 const ACCESSIBLE_RESOURCES_URL: &str = "https://api.atlassian.com/oauth/token/accessible-resources";
@@ -66,6 +93,7 @@ fn spec() -> ProviderSpec {
             ("audience", "api.atlassian.com".to_string()),
             ("prompt", "consent".to_string()),
         ],
+        client_secret: Some(client_secret()),
     }
 }
 
