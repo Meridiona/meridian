@@ -10,15 +10,42 @@
 # scopes: `repo` (post worklog / task-update issue comments) and `read:project`
 # (read Projects v2 via GraphQL). gh's default web-login grants repo + read:org
 # but not read:project, so add whatever is missing through the same browser flow,
-# then write the OAuth token to GITHUB_TOKEN. Returns non-zero if gh is missing,
-# unauthenticated, or the scope refresh fails, so the caller can fall back to a
-# manual PAT prompt. An existing GITHUB_TOKEN is kept untouched.
+# then write the OAuth token to GITHUB_TOKEN.
+#
+# Since the user has opted into GitHub, drive the whole no-PAT path for them:
+# install gh via Homebrew if it's missing (the installer already brew-installs
+# node/ffmpeg/uv the same way) and run gh's browser sign-in if they're not
+# authenticated. Returns non-zero only if gh can't be installed, the sign-in
+# fails, or the scope refresh fails, so the caller can fall back to a manual PAT
+# prompt. An existing GITHUB_TOKEN is kept untouched.
 _try_gh_token() {
     local env_file="$1"
     [[ -n "$(get_env_value GITHUB_TOKEN "$env_file")" ]] && {
         ok "GITHUB_TOKEN already set — keeping"; return 0
     }
+
+    # gh missing → install it (best-effort). Without Homebrew we can't, so fall
+    # back to the PAT prompt.
+    if ! command -v gh >/dev/null 2>&1; then
+        if command -v brew >/dev/null 2>&1; then
+            info "  Installing GitHub CLI (gh) for no-PAT sign-in…"
+            brew install gh >&2 || { warn "  gh install failed — use a personal access token instead"; return 1; }
+        else
+            warn "  GitHub CLI (gh) not installed and Homebrew unavailable — use a personal access token"
+            return 1
+        fi
+    fi
     command -v gh >/dev/null 2>&1 || return 1
+
+    # Not signed in → run gh's interactive browser login, requesting meridian's
+    # scopes up front so the refresh step below is usually a no-op.
+    if ! gh auth status >/dev/null 2>&1; then
+        info "  Signing in to GitHub (opens a browser)…"
+        gh auth login -h github.com -p https -w -s "repo,read:project" >&2 || {
+            warn "  GitHub sign-in failed — use a personal access token instead"
+            return 1
+        }
+    fi
     gh auth status >/dev/null 2>&1 || return 1
 
     # Add any missing scope through gh's browser flow. `project` (write) satisfies
