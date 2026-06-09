@@ -44,8 +44,6 @@ _SERVICES_DIR = Path(__file__).parent.parent.parent
 if str(_SERVICES_DIR) not in sys.path:
     sys.path.insert(0, str(_SERVICES_DIR))
 
-os.environ.setdefault("HERMES_HOME", str(_SERVICES_DIR / ".hermes"))
-
 # ---------------------------------------------------------------------------
 # Dataset — load goldens from .dataset.json (DeepEval Golden format)
 # ---------------------------------------------------------------------------

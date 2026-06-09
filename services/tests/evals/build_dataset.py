@@ -9,8 +9,7 @@ Two modes:
       python tests/evals/build_dataset.py
 
   Bulk mode (general export):
-    Queries sessions where task_method = 'hermes_aiagent' and routing is
-    'auto' or 'pending' (hermes sessions use 'pending') with high confidence.
+    Queries classified sessions (task_method = 'mlx_direct') with high confidence.
     MERIDIAN_DB=~/.meridian/meridian.db python tests/evals/build_dataset.py
 
 Options (env vars):
@@ -78,7 +77,7 @@ def _fetch_sessions_by_ids(con: sqlite3.Connection, ids: list[int]) -> list[dict
 
 
 def _fetch_labeled_sessions(con: sqlite3.Connection) -> list[dict]:
-    # hermes_aiagent sessions use task_routing='pending'; legacy auto-classified use 'auto'
+    # include historical hermes_aiagent rows alongside current mlx_direct rows
     rows = con.execute(
         f"SELECT {_SESSION_COLS}"
         " FROM app_sessions"
@@ -132,7 +131,7 @@ def main() -> None:
         if missing:
             print(f"WARNING: sessions not found in DB: {sorted(missing)}", file=sys.stderr)
     else:
-        print(f"Bulk mode: fetching hermes_aiagent sessions (confidence >= {MIN_CONFIDENCE}, limit {LIMIT})")
+        print(f"Bulk mode: fetching classified sessions (confidence >= {MIN_CONFIDENCE}, limit {LIMIT})")
         sessions = _fetch_labeled_sessions(con)
 
     pm_tasks = _fetch_pm_tasks(con)

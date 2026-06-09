@@ -198,7 +198,7 @@ def _configure_logging(agent_name: str) -> None:
 
     root = logging.getLogger()
     # Clear any pre-existing handlers — long-running daemons that import
-    # third-party libs (hermes, mcp) often leave a default basicConfig handler
+    # third-party libs (mcp, etc.) often leave a default basicConfig handler
     # behind that would duplicate every line.
     root.handlers.clear()
     root.addHandler(file_h)
