@@ -40,42 +40,29 @@ if [[ ! -f "${TEMPLATE}" ]]; then
     exit 1
 fi
 
-VENV="${SERVICES_DIR}/.venv"
-VENV_CFG="${VENV}/pyvenv.cfg"
-if [[ ! -f "${VENV_CFG}" ]]; then
-    echo "✗ venv not found at ${VENV}" >&2
-    echo "  Run:  bash scripts/setup-services.sh --mlx" >&2
+# Find the uv binary.
+UV_BIN=""
+for _uv_candidate in "${HOME}/.local/bin/uv" /opt/homebrew/bin/uv /usr/local/bin/uv; do
+    if [[ -x "${_uv_candidate}" ]]; then UV_BIN="${_uv_candidate}"; break; fi
+done
+[[ -z "${UV_BIN}" ]] && UV_BIN="$(command -v uv 2>/dev/null || true)"
+if [[ -z "${UV_BIN}" ]]; then
+    echo "✗ uv not found. Run:  bash scripts/setup-services.sh --mlx" >&2
     exit 1
 fi
 
-# Resolve the base Python from pyvenv.cfg so we invoke it directly rather
-# than through the venv wrapper. The wrapper shebang causes Python to read
-# pyvenv.cfg at startup, which EPERM-fails when launchd launches the process
-# on macOS 15 (launchd inherits no TCC Documents permission).
-#
-# pyvenv.cfg format differs by creator:
-#   python -m venv  → "executable = /path/to/python3.11"
-#   uv sync         → "home = /path/to/bin"  (no `executable` key)
-# Try `executable` first, fall back to `home` + python3.11/python3/python.
-# `|| true` prevents set -e from exiting when grep finds no match (exit 1).
-BASE_PYTHON=$(grep '^executable' "${VENV_CFG}" 2>/dev/null | awk '{print $3}' || true)
-if [[ -z "${BASE_PYTHON}" || ! -x "${BASE_PYTHON}" ]]; then
-    _home=$(grep '^home ' "${VENV_CFG}" 2>/dev/null | awk '{print $3}' || true)
-    if [[ -n "${_home}" ]]; then
-        for _py in python3.11 python3 python; do
-            if [[ -x "${_home}/${_py}" ]]; then BASE_PYTHON="${_home}/${_py}"; break; fi
-        done
+# The venv always lives at services/.venv — inside the repo for dev installs,
+# inside ~/.meridian/app/services/ for npm installs (managed by install-from-bundle.sh).
+SERVICES_VENV="${SERVICES_DIR}/.venv"
+
+if [[ ! -d "${SERVICES_VENV}" ]]; then
+    if [[ "${SERVICES_DIR}" == "${HOME}/.meridian/"* ]]; then
+        echo "✗ venv not found at ${SERVICES_VENV}" >&2
+        echo "  npm install appears incomplete — reinstall via: meridian update" >&2
+        exit 1
     fi
-fi
-if [[ ! -x "${BASE_PYTHON}" ]]; then
-    echo "✗ base Python not found (checked pyvenv.cfg executable + home keys in ${VENV_CFG})" >&2
-    exit 1
-fi
-
-# venv site-packages directory (PYTHONPATH replaces venv activation).
-SITE_PACKAGES=$(ls -d "${VENV}/lib/python"*/site-packages 2>/dev/null | head -1)
-if [[ -z "${SITE_PACKAGES}" ]]; then
-    echo "✗ site-packages not found under ${VENV}/lib/" >&2
+    echo "✗ venv not found at ${SERVICES_VENV}" >&2
+    echo "  Run:  bash scripts/setup-services.sh --mlx" >&2
     exit 1
 fi
 
@@ -99,8 +86,8 @@ sed \
     -e "s|{{REPO_ROOT}}|${REPO_ROOT}|g" \
     -e "s|{{HOME}}|${HOME}|g" \
     -e "s|{{MLX_SERVER_PORT}}|${MLX_SERVER_PORT}|g" \
-    -e "s|{{BASE_PYTHON}}|${BASE_PYTHON}|g" \
-    -e "s|{{SITE_PACKAGES}}|${SITE_PACKAGES}|g" \
+    -e "s|{{UV_BIN}}|${UV_BIN}|g" \
+    -e "s|{{SERVICES_VENV}}|${SERVICES_VENV}|g" \
     -e "s|{{MERIDIAN_OO_AUTH}}|${MERIDIAN_OO_AUTH}|g" \
     -e "s|{{MERIDIAN_OTLP_ENDPOINT}}|${MERIDIAN_OTLP_ENDPOINT}|g" \
     "${TEMPLATE}" > "${PLIST_DEST}"

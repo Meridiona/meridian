@@ -40,21 +40,57 @@ fi
 # attaches to a stable binary named `screenpipe` (and survives reinstalls of the
 # same version, since its path is fixed). Falls back to whatever `command -v`
 # found when screenpipe is a native binary (Homebrew) rather than the npm shim.
-SCREENPIPE_BIN="$(command -v screenpipe)" || true
-if [[ -z "${SCREENPIPE_BIN}" ]]; then
-    echo "✗ screenpipe binary not found in PATH — install with: npm install -g screenpipe" >&2
-    exit 1
+STAGED_BIN="${HOME}/.meridian/bin/screenpipe"
+
+# Determine the binary path to write into the plist.
+#
+# Priority order — chosen to avoid invalidating existing TCC grants:
+#
+# 1. Existing plist path is still a valid Mach-O → keep it.
+#    macOS TCC grants are per absolute path. Changing the path silently
+#    revokes the grant and breaks screenpipe on the next start. Preserve
+#    the old path on updates so working installs stay working.
+#
+# 2. Already-staged stable binary exists → use it.
+#    Covers fresh installs and repairs where no old plist exists.
+#
+# 3. Resolve the real Mach-O from the npm tree → stage it → use it.
+#    Handles new installs where neither a plist nor a staged binary exists.
+#    nvm users get a version-specific path under ~/.nvm that breaks on
+#    `nvm use` or Node upgrades, so we always copy to the stable
+#    ~/.meridian/bin/screenpipe location.
+_old_plist_bin=""
+if [[ -f "${PLIST_DEST}" ]]; then
+    _old_plist_bin="$(plutil -extract ProgramArguments.0 raw "${PLIST_DEST}" 2>/dev/null || true)"
 fi
-_npm_root="$(npm root -g 2>/dev/null || true)"
-if [[ -n "${_npm_root}" && -d "${_npm_root}/screenpipe" ]]; then
-    _real=""
-    while IFS= read -r _cand; do
-        if file "${_cand}" 2>/dev/null | grep -q "Mach-O"; then _real="${_cand}"; break; fi
-    done < <(find "${_npm_root}/screenpipe" -type f -name screenpipe -perm +0111 2>/dev/null)
-    if [[ -n "${_real}" ]]; then
-        SCREENPIPE_BIN="${_real}"
-        echo "→ using the real screenpipe binary (not the node wrapper): ${SCREENPIPE_BIN}"
+
+if [[ -n "${_old_plist_bin}" ]] && [[ -x "${_old_plist_bin}" ]] && file "${_old_plist_bin}" 2>/dev/null | grep -q "Mach-O"; then
+    SCREENPIPE_BIN="${_old_plist_bin}"
+    echo "→ keeping existing screenpipe binary (preserves TCC grant): ${SCREENPIPE_BIN}"
+elif [[ -x "${STAGED_BIN}" ]] && file "${STAGED_BIN}" 2>/dev/null | grep -q "Mach-O"; then
+    SCREENPIPE_BIN="${STAGED_BIN}"
+    echo "→ using staged screenpipe binary: ${SCREENPIPE_BIN}"
+else
+    SCREENPIPE_BIN="$(command -v screenpipe 2>/dev/null || true)"
+    if [[ -z "${SCREENPIPE_BIN}" ]]; then
+        echo "✗ screenpipe not found in PATH — install with: npm install -g screenpipe" >&2
+        exit 1
     fi
+    _npm_root="$(npm root -g 2>/dev/null || true)"
+    if [[ -n "${_npm_root}" && -d "${_npm_root}/screenpipe" ]]; then
+        _real=""
+        while IFS= read -r _cand; do
+            if file "${_cand}" 2>/dev/null | grep -q "Mach-O"; then _real="${_cand}"; break; fi
+        done < <(find "${_npm_root}/screenpipe" -type f -name screenpipe -perm +0111 2>/dev/null)
+        if [[ -n "${_real}" ]]; then
+            SCREENPIPE_BIN="${_real}"
+        fi
+    fi
+    mkdir -p "${HOME}/.meridian/bin"
+    cp "${SCREENPIPE_BIN}" "${STAGED_BIN}"
+    chmod +x "${STAGED_BIN}"
+    SCREENPIPE_BIN="${STAGED_BIN}"
+    echo "→ staged screenpipe binary: ${SCREENPIPE_BIN}"
 fi
 
 mkdir -p "${HOME}/.meridian/logs"
