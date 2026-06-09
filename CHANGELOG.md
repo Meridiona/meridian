@@ -1,3 +1,10 @@
+# [1.37.0](https://github.com/Meridiona/meridian/compare/v1.36.0...v1.37.0) (2026-06-09)
+
+
+### Features
+
+* **trello:** inject app key at package time, document setup flow ([#220](https://github.com/Meridiona/meridian/issues/220)) ([3182b6a](https://github.com/Meridiona/meridian/commit/3182b6a92f64515fed3277418983446dd089232d))
+
 # [1.36.0](https://github.com/Meridiona/meridian/compare/v1.35.1...v1.36.0) (2026-06-09)
 
 
