@@ -32,7 +32,12 @@ pub async fn post_worklog(
 
     let token = oauth_trello::load_token().context("loading Trello OAuth token")?;
     let short_link = parse_short_link(task_key)?;
-    let body = format_worklog_comment(comment, time_spent_seconds, window_start_iso, window_end_iso);
+    let body = format_worklog_comment(
+        comment,
+        time_spent_seconds,
+        window_start_iso,
+        window_end_iso,
+    );
 
     let url = format!(
         "{TRELLO_BASE}/cards/{short_link}/actions/comments\
