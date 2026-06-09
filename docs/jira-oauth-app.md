@@ -5,23 +5,20 @@ needs **one public Atlassian OAuth 2.0 (3LO) app**, registered **once by
 Meridiona**. End users never touch any of this — they run `meridian oauth-login
 jira` (or the installer does it for them) and click **Accept** in their browser.
 
-The baked-in client id lives in `src/intelligence/oauth/jira.rs` →
-`DEFAULT_CLIENT_ID`. **Atlassian Cloud also requires a confidential
-`client_secret`** at the token endpoint, even for desktop apps: it accepts the
-PKCE `code_challenge` at `/authorize` but **ignores PKCE at the token step** and
-rejects a secret-less exchange with `access_denied` / `Unauthorized` (a known,
-still-open limitation — [OAUTH20-2491](https://jira.atlassian.com/browse/OAUTH20-2491)).
-So PKCE alone is **not** enough here.
+The client id lives in `src/intelligence/oauth/jira.rs` → `DEFAULT_CLIENT_ID`.
 
-The secret is **never stored in source**. The release build injects it at compile
-time from the `MERIDIAN_JIRA_OAUTH_CLIENT_SECRET` env (wired in
-`.github/workflows/release.yml` from the **`JIRA_OAUTH_CLIENT_SECRET`** GitHub
-Actions secret); `option_env!` in `jira.rs` bakes it into the shipped binary.
-Plain source builds compile in an empty string — a source-built daemon must supply
-`JIRA_OAUTH_CLIENT_SECRET` at runtime, or use the API-token fallback. The secret
-is extractable from the shipped binary by design, but the blast radius is bounded:
-loopback-only redirect (`127.0.0.1:9123`, exact-match enforced) and narrow scopes,
-revocable/rotatable in the console.
+**Atlassian Cloud also requires a confidential `client_secret`** at the token
+endpoint, even for desktop apps: it accepts the PKCE `code_challenge` at
+`/authorize` but **ignores PKCE at the token step** and rejects a secret-less
+exchange with `access_denied` / `Unauthorized` (a known, still-open limitation —
+[OAUTH20-2491](https://jira.atlassian.com/browse/OAUTH20-2491)). So PKCE alone is
+**not** enough here.
+
+The secret is **never committed to source.** It is provided to the release build
+from the **`JIRA_OAUTH_CLIENT_SECRET`** GitHub Actions secret (wired in
+`.github/workflows/release.yml`). A plain source build doesn't have it, so a
+source-built daemon must supply `JIRA_OAUTH_CLIENT_SECRET` at runtime, or use the
+API-token fallback.
 
 ---
 
@@ -62,12 +59,13 @@ revocable/rotatable in the console.
 
 6. **Settings → Authentication details** → copy the **Secret** and store it as the
    **`JIRA_OAUTH_CLIENT_SECRET`** GitHub Actions secret (repo `Meridiona/meridian`
-   → Settings → Secrets and variables → Actions). The release workflow bakes it
-   into the binary at build time. **Without this, OAuth login fails for everyone.**
+   → Settings → Secrets and variables → Actions). The release workflow uses it at
+   build time. **Without this, OAuth login fails for everyone.**
    - **Rotation:** regenerate the secret in the console only when compromised, then
-     update the Actions secret and **cut a release** — the secret is compiled in, so
-     already-shipped binaries keep the old one until a new release ships. Do **not**
-     rotate on a schedule (it would break every installed client). See `KAN-159`.
+     update the Actions secret and **cut a release** — released clients pick up the
+     new secret only via a new release, so they keep working on the old one until
+     then. Do **not** rotate on a schedule (it would break every installed client).
+     See `KAN-159`.
 
 ---
 
