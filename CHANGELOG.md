@@ -1,3 +1,10 @@
+## [1.34.4](https://github.com/Meridiona/meridian/compare/v1.34.3...v1.34.4) (2026-06-09)
+
+
+### Bug Fixes
+
+* **install:** preserve existing plist path on update to avoid TCC grant invalidation ([#210](https://github.com/Meridiona/meridian/issues/210)) ([ee4569e](https://github.com/Meridiona/meridian/commit/ee4569ea631b9f1e7edfa8ad24711f559f0581bb))
+
 ## [1.34.3](https://github.com/Meridiona/meridian/compare/v1.34.2...v1.34.3) (2026-06-09)
 
 
