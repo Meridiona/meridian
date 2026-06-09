@@ -530,6 +530,30 @@ PYEOF
         info "Claude Code SessionEnd hook removed"
     fi
 
+    # 8. Remove downloaded MLX model weights from the HuggingFace cache.
+    # Only delete models in meridian's catalog — avoids touching models the user
+    # downloaded separately for other tools (Ollama, LM Studio, etc.).
+    local _hf_cache="${HOME}/.cache/huggingface/hub"
+    local _meridian_models=(
+        "models--mlx-community--Llama-3.3-70B-Instruct-4bit"
+        "models--mlx-community--DeepSeek-R1-Distill-Llama-70B-4bit"
+        "models--mlx-community--Qwen3.6-35B-A3B-4bit"
+        "models--mlx-community--DeepSeek-R1-Distill-Qwen-32B-4bit"
+        "models--mlx-community--phi-4-4bit"
+        "models--mlx-community--DeepSeek-R1-Distill-Qwen-14B-4bit"
+        "models--mlx-community--gemma-3-12b-it-qat-4bit"
+        "models--mlx-community--Qwen3.5-9B-OptiQ-4bit"
+        "models--mlx-community--Qwen3.5-4B-MLX-4bit"
+        "models--mlx-community--Llama-3.2-3B-Instruct-4bit"
+    )
+    for _mdir in "${_meridian_models[@]}"; do
+        local _mpath="${_hf_cache}/${_mdir}"
+        if [[ -d "${_mpath}" ]]; then
+            rm -rf "${_mpath}"
+            info "removed model: ${_mdir}"
+        fi
+    done
+
     set -e
 
     ok "Meridian uninstalled"
