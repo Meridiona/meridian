@@ -1,3 +1,10 @@
+## [1.35.1](https://github.com/Meridiona/meridian/compare/v1.35.0...v1.35.1) (2026-06-09)
+
+
+### Bug Fixes
+
+* **tray:** rename meridiana-mark icon to meridiona-mark ([211853d](https://github.com/Meridiona/meridian/commit/211853d4dce58f70ffffede4d6739b232f28d13c))
+
 # [1.35.0](https://github.com/Meridiona/meridian/compare/v1.34.6...v1.35.0) (2026-06-09)
 
 
