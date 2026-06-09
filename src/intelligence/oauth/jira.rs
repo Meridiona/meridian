@@ -36,9 +36,17 @@ pub const DEFAULT_REDIRECT_PORT: u16 = 9123;
 /// `meridian oauth-login jira` needs zero config. Override (e.g. for a different
 /// app or Jira Data Center) with `JIRA_OAUTH_CLIENT_ID`.
 ///
-/// Registering / maintaining this app — scopes, the `127.0.0.1:9123` callback,
-/// and the **Distribution → Distributable** toggle that gates all non-Meridiona
-/// users — is documented in `docs/jira-oauth-app.md`. Update both together.
+/// Re-registering the app (developer.atlassian.com/console/myapps) — the console-only
+/// facts that aren't recoverable from this code:
+///   * Own it under a **Meridiona** Atlassian account, not a personal one.
+///   * Scopes: the classic Jira scopes in `spec()` below (`offline_access` is
+///     requested at runtime, not a console checkbox).
+///   * Callback (exact match): `http://127.0.0.1:9123/callback` — use the **IP, not
+///     `localhost`** (the console greys out Save for `localhost`).
+///   * **Distribution → Enable sharing (Distributable) is REQUIRED** before any
+///     non-Meridiona user can authorize — a private 3LO app only works for users in
+///     the development org; external users hit a "site admin must authorize" block.
+///   * Secret → the `JIRA_OAUTH_CLIENT_SECRET` Actions secret (see `client_secret`).
 pub const DEFAULT_CLIENT_ID: &str = "sXRB5rwKFX53DUgb9u5LO7gr0pRMwNDS";
 
 /// Meridian's Atlassian OAuth 2.0 (3LO) client secret, **baked in at build time**
