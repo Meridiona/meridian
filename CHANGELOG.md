@@ -110,7 +110,7 @@
 ### Bug Fixes
 
 * **tray:** support both dev and bundle binary paths in install script ([2be9204](https://github.com/Meridiona/meridian/commit/2be9204ccc075b3bc2d56d9ef421e275f740b28c))
-* **tray:** use meridiana-mark logo instead of generic placeholder ([1a2fac4](https://github.com/Meridiona/meridian/commit/1a2fac41cc7435235fd860caa2c1e314bf4ea90f))
+* **tray:** use meridiona-mark logo instead of generic placeholder ([1a2fac4](https://github.com/Meridiona/meridian/commit/1a2fac41cc7435235fd860caa2c1e314bf4ea90f))
 
 ## [1.31.1](https://github.com/Meridiona/meridian/compare/v1.31.0...v1.31.1) (2026-06-08)
 
@@ -868,7 +868,7 @@
 * **tests:** serialise LLM smoke tests to prevent parallel timeout ([eb6315a](https://github.com/Meridiona/meridian/commit/eb6315a5f8df5320a8fd390067369c088782bb5c))
 * **tests:** serialize config env-var tests with a mutex ([0d87772](https://github.com/Meridiona/meridian/commit/0d87772008bbd549edc140207ab98c75827970d2))
 * **timeline:** guard NaN in CSS position calculations ([817da6a](https://github.com/Meridiona/meridian/commit/817da6abcfd47fefe7bbae47140771f9e5c139ed))
-* **ui:** correct Meridiana typo to Meridiona in app metadata ([331f456](https://github.com/Meridiona/meridian/commit/331f45646673f9abbebc5157f9c230dbf45482b1))
+* **ui:** correct meridiona typo to Meridiona in app metadata ([331f456](https://github.com/Meridiona/meridian/commit/331f45646673f9abbebc5157f9c230dbf45482b1))
 * **ui:** guard NaN in tooltip left from focus event clientX ([ab68ad8](https://github.com/Meridiona/meridian/commit/ab68ad869ac0513286cbf68207c130de41b15a45))
 * **ui:** make All Time label black for readability ([2e20dce](https://github.com/Meridiona/meridian/commit/2e20dcec7e677cc4b2e9d1efcdd00fe9f9aacae2))
 * **ui:** pin exact package versions, fix typescript@5.8.2 (5.8.0 was never published) ([4946f7b](https://github.com/Meridiona/meridian/commit/4946f7b4629f0adfb5d9b90c633d5176a6708df1))
@@ -1225,7 +1225,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 * **tests:** serialise LLM smoke tests to prevent parallel timeout ([eb6315a](https://github.com/Meridiona/meridian/commit/eb6315a5f8df5320a8fd390067369c088782bb5c))
 * **tests:** serialize config env-var tests with a mutex ([0d87772](https://github.com/Meridiona/meridian/commit/0d87772008bbd549edc140207ab98c75827970d2))
 * **timeline:** guard NaN in CSS position calculations ([817da6a](https://github.com/Meridiona/meridian/commit/817da6abcfd47fefe7bbae47140771f9e5c139ed))
-* **ui:** correct Meridiana typo to Meridiona in app metadata ([331f456](https://github.com/Meridiona/meridian/commit/331f45646673f9abbebc5157f9c230dbf45482b1))
+* **ui:** correct meridiona typo to Meridiona in app metadata ([331f456](https://github.com/Meridiona/meridian/commit/331f45646673f9abbebc5157f9c230dbf45482b1))
 * **ui:** guard NaN in tooltip left from focus event clientX ([ab68ad8](https://github.com/Meridiona/meridian/commit/ab68ad869ac0513286cbf68207c130de41b15a45))
 * **ui:** make All Time label black for readability ([2e20dce](https://github.com/Meridiona/meridian/commit/2e20dcec7e677cc4b2e9d1efcdd00fe9f9aacae2))
 * **ui:** pin exact package versions, fix typescript@5.8.2 (5.8.0 was never published) ([4946f7b](https://github.com/Meridiona/meridian/commit/4946f7b4629f0adfb5d9b90c633d5176a6708df1))

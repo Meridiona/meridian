@@ -59,7 +59,7 @@ these break whenever `runner.rs` or `extractor.rs` changes. test ALL of these af
 - [ ] **timeline category colors** — day timeline segment colors come from `getCategoryMeta(category).color`, not app-name hashing.
 - [ ] **focus donut chart** — donut reflects actual session durations; percentages sum to 100%.
 - [ ] **stats row totals** — total active time and session count match what is in the DB.
-- [ ] **app name branding** — UI shows "Meridian" / "Meridiona", not "Meridiana" (typo fix commit `331f456`).
+- [ ] **app name branding** — UI shows "Meridian" / "Meridiona", not "meridiona" (typo fix commit `331f456`).
 
 ### 6. MCP server
 
