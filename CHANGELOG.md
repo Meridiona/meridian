@@ -1,3 +1,10 @@
+## [1.37.2](https://github.com/Meridiona/meridian/compare/v1.37.1...v1.37.2) (2026-06-09)
+
+
+### Bug Fixes
+
+* **uninstall:** clean up venv, node-runtime, oauth tokens, and misc files ([#222](https://github.com/Meridiona/meridian/issues/222)) ([162010f](https://github.com/Meridiona/meridian/commit/162010f72cd3f075c3a60d696c42fd76604959aa))
+
 ## [1.37.1](https://github.com/Meridiona/meridian/compare/v1.37.0...v1.37.1) (2026-06-09)
 
 
