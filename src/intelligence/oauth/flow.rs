@@ -300,25 +300,18 @@ async fn accept_fragment_relay(listener: &TcpListener) -> Result<String> {
 
         if target.starts_with("/capture") {
             // Second request: JS relayed the token as ?t=TOKEN
-            let token = target
-                .split('?')
-                .nth(1)
-                .and_then(|q| {
-                    q.split('&').find_map(|pair| {
-                        let mut it = pair.splitn(2, '=');
-                        match (it.next(), it.next()) {
-                            (Some("t"), Some(v)) => Some(decode(v)),
-                            _ => None,
-                        }
-                    })
-                });
+            let token = target.split('?').nth(1).and_then(|q| {
+                q.split('&').find_map(|pair| {
+                    let mut it = pair.splitn(2, '=');
+                    match (it.next(), it.next()) {
+                        (Some("t"), Some(v)) => Some(decode(v)),
+                        _ => None,
+                    }
+                })
+            });
             match token {
                 Some(t) if !t.is_empty() => {
-                    let _ = respond(
-                        &mut socket,
-                        "Trello connected! You can close this tab.",
-                    )
-                    .await;
+                    let _ = respond(&mut socket, "Trello connected! You can close this tab.").await;
                     return Ok(t);
                 }
                 _ => {
