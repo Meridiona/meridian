@@ -21,10 +21,10 @@ use anyhow::Result;
 use sqlx::SqlitePool;
 use tokio::sync::watch;
 
-use crate::config::{Config, GitHubConfig, JiraConfig, LinearConfig, PmProviderConfig};
+use crate::config::{Config, GitHubConfig, JiraConfig, LinearConfig, PmProviderConfig, TrelloConfig};
 
 use super::config::PmWorklogConfig;
-use super::{db, github, jira, linear};
+use super::{db, github, jira, linear, trello};
 
 /// How often the approved-sweep runs. Short by design — this is the latency a
 /// user feels between clicking "Approve" in the dashboard and the worklog
@@ -164,6 +164,21 @@ async fn post_one(
             .await?;
             (r.id, r.label)
         }
+        "trello" => {
+            let Some(c) = trello_cfg(config) else {
+                return missing_provider(&w.provider, w);
+            };
+            let r = trello::post_worklog(
+                c,
+                &w.task_key,
+                w.time_spent_seconds,
+                &w.window_start,
+                &w.window_end,
+                comment,
+            )
+            .await?;
+            (r.id, r.label)
+        }
         other => {
             db::fail_worklog(pool, w.id, &format!("unknown provider '{other}'")).await?;
             return Ok(false);
@@ -206,6 +221,13 @@ fn github_cfg(config: &Config) -> Option<&GitHubConfig> {
 fn linear_cfg(config: &Config) -> Option<&LinearConfig> {
     config.pm_providers.iter().find_map(|p| match p {
         PmProviderConfig::Linear(l) => Some(l),
+        _ => None,
+    })
+}
+
+fn trello_cfg(config: &Config) -> Option<&TrelloConfig> {
+    config.pm_providers.iter().find_map(|p| match p {
+        PmProviderConfig::Trello(t) => Some(t),
         _ => None,
     })
 }

@@ -15,3 +15,4 @@ pub mod flow;
 pub mod jira;
 pub mod pkce;
 pub mod store;
+pub mod trello;

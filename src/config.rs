@@ -99,6 +99,14 @@ pub struct LinearConfig {
     pub team_ids: Vec<String>,
 }
 
+#[derive(Clone, Debug)]
+pub struct TrelloConfig {
+    /// Meridian's Trello Power-Up app key (baked in or TRELLO_APP_KEY override).
+    pub app_key: String,
+    /// Board IDs to limit card fetches. Empty = all boards the user's cards span.
+    pub board_ids: Vec<String>,
+}
+
 /// Provider-agnostic credential variant. Add new providers here; callers
 /// match on this enum, so the compiler enforces exhaustive handling.
 #[derive(Clone, Debug)]
@@ -106,6 +114,7 @@ pub enum PmProviderConfig {
     Jira(JiraConfig),
     GitHub(GitHubConfig),
     Linear(LinearConfig),
+    Trello(TrelloConfig),
 }
 
 impl PmProviderConfig {
@@ -114,6 +123,7 @@ impl PmProviderConfig {
             Self::Jira(_) => "jira",
             Self::GitHub(_) => "github",
             Self::Linear(_) => "linear",
+            Self::Trello(_) => "trello",
         }
     }
 }
@@ -232,8 +242,22 @@ fn parse_linear() -> Option<PmProviderConfig> {
     }))
 }
 
+fn parse_trello() -> Option<PmProviderConfig> {
+    if !crate::intelligence::oauth::store::exists("trello") {
+        return None;
+    }
+    let app_key = std::env::var("TRELLO_APP_KEY")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(crate::intelligence::oauth::trello::app_key);
+    Some(PmProviderConfig::Trello(TrelloConfig {
+        app_key,
+        board_ids: env_list("TRELLO_BOARD_IDS"),
+    }))
+}
+
 fn parse_providers() -> Vec<PmProviderConfig> {
-    [parse_jira(), parse_github(), parse_linear()]
+    [parse_jira(), parse_github(), parse_linear(), parse_trello()]
         .into_iter()
         .flatten()
         .collect()

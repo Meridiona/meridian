@@ -146,9 +146,9 @@ async fn main() -> Result<()> {
     }
 
     // `meridian oauth-login <provider> [--client-id ID] [--port N]` — interactive
-    // browser OAuth (Authorization Code + PKCE) for a PM provider. Opens the
-    // system browser, captures the loopback redirect, and persists tokens to
-    // ~/.meridian/oauth/<provider>.json. Currently supports: jira.
+    // browser OAuth flow for a PM provider. Opens the system browser, captures
+    // the loopback redirect (or JS relay for fragment-based flows), and persists
+    // tokens to ~/.meridian/oauth/<provider>.json. Supports: jira, trello.
     if std::env::args().nth(1).as_deref() == Some("oauth-login") {
         let args: Vec<String> = std::env::args().collect();
         let flag = |name: &str| -> Option<String> {
@@ -185,8 +185,28 @@ async fn main() -> Result<()> {
                     }
                 }
             }
+            "trello" => {
+                let app_key = flag("--app-key")
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(meridian::intelligence::oauth::trello::app_key);
+                let port = flag("--port")
+                    .and_then(|v| v.parse::<u16>().ok())
+                    .unwrap_or_else(meridian::intelligence::oauth::trello::redirect_port);
+                println!(
+                    "Starting Trello browser authorization (redirect http://127.0.0.1:{port}/callback)…"
+                );
+                match meridian::intelligence::oauth::trello::login(&app_key, port).await {
+                    Ok(()) => println!(
+                        "\n✓ Trello connected.\n  Token saved to ~/.meridian/oauth/trello.json — run `meridian restart` to pick it up."
+                    ),
+                    Err(e) => {
+                        eprintln!("oauth-login trello failed: {e:#}");
+                        std::process::exit(1);
+                    }
+                }
+            }
             other => {
-                eprintln!("oauth-login: unknown provider {other:?} (supported: jira)");
+                eprintln!("oauth-login: unknown provider {other:?} (supported: jira, trello)");
                 std::process::exit(1);
             }
         }
