@@ -580,7 +580,7 @@ else
     # mlx-server.log  — JSON structured logs: model selection, readiness
     # mlx-server-error.log — raw stderr: huggingface_hub download progress
     # tail -F follows by name and retries if the file doesn't exist yet.
-    (tail -F "${_MLX_LOG}" 2>/dev/null | python3 -u -c '
+    (tail -F -n 0 "${_MLX_LOG}" 2>/dev/null | python3 -u -c '
 import sys, json
 for line in sys.stdin:
     line = line.rstrip()
@@ -596,7 +596,7 @@ for line in sys.stdin:
         print("  " + line, flush=True)
 ') &
     _log_pid=$!
-    (tail -F "${_MLX_ERR}" 2>/dev/null | while IFS= read -r _eline; do
+    (tail -F -n 0 "${_MLX_ERR}" 2>/dev/null | while IFS= read -r _eline; do
         printf '  %s\n' "${_eline}"
     done) &
     _err_pid=$!
