@@ -48,7 +48,6 @@ struct WorkItemBatchResponse {
 struct WorkItemDetail {
     id: u64,
     fields: WorkItemFields,
-    url: String,
 }
 
 #[derive(Deserialize)]
@@ -302,6 +301,10 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         let task_key = format!("{}#{}", cfg.project, u.detail.id);
         let description = u.detail.fields.description.as_deref().unwrap_or("");
         let changed = u.detail.fields.changed_date.as_deref().unwrap_or("");
+        let browser_url = format!(
+            "{}/{}/_workitems/edit/{}",
+            cfg.api_base, cfg.project, u.detail.id
+        );
 
         sqlx::query(
             "INSERT INTO pm_tasks
@@ -322,7 +325,7 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         .bind(description)
         .bind(u.status_category)
         .bind(&u.detail.fields.work_item_type)
-        .bind(&u.detail.url)
+        .bind(&browser_url)
         .bind(changed)
         .execute(pool)
         .await
