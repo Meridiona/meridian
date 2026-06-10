@@ -154,7 +154,16 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
       </header>
 
       {showIntegrations ? (
-        <ConnectTrackers integrations={integrations} onDisconnect={fetchIntegrations} />
+        <div>
+          <button
+            onClick={() => setShowIntegrations(false)}
+            className="flex items-center gap-1.5 text-[12px] mb-5"
+            style={{ color: 'var(--ink-3)', cursor: 'pointer', background: 'none', border: 'none', padding: 0 }}
+          >
+            ← Back to tasks
+          </button>
+          <ConnectTrackers integrations={integrations} onDisconnect={fetchIntegrations} />
+        </div>
       ) : (
         <>
           {showProviderTabs && (
@@ -190,13 +199,13 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
                           <span className="ml-auto font-mono tnum text-[10px]" style={{ color: 'var(--ink-4)' }}>{group.length}</span>
                         </div>
                         {group.map(t => (
-                          <TaskRow key={t.key} task={t} selected={t.key === selected} onSelect={() => setSelected(t.key)} />
+                          <TaskRow key={t.key} task={t} selected={t.key === selected} onSelect={() => setSelected(t.key)} showProvider={false} />
                         ))}
                       </div>
                     )
                   })
                 : visibleTasks.map(t => (
-                    <TaskRow key={t.key} task={t} selected={t.key === selected} onSelect={() => setSelected(t.key)} />
+                    <TaskRow key={t.key} task={t} selected={t.key === selected} onSelect={() => setSelected(t.key)} showProvider={showProviderTabs} />
                   ))
               }
             </div>
@@ -237,8 +246,9 @@ function ProviderTab({ id, active, onClick }: { id: string; active: boolean; onC
   )
 }
 
-function TaskRow({ task, selected, onSelect }: { task: TaskSummary; selected: boolean; onSelect: () => void }) {
+function TaskRow({ task, selected, onSelect, showProvider }: { task: TaskSummary; selected: boolean; onSelect: () => void; showProvider?: boolean }) {
   const segs = Object.entries(task.cats).map(([cat, value]) => ({ cat, value }))
+  const meta = PROVIDER_META[task.provider]
   return (
     <button onClick={onSelect}
       className="w-full text-left px-4 py-3 transition-colors"
@@ -247,6 +257,15 @@ function TaskRow({ task, selected, onSelect }: { task: TaskSummary; selected: bo
         borderLeft: selected ? '2px solid var(--accent)' : '2px solid transparent',
       }}>
       <div className="flex items-center gap-3">
+        {showProvider && meta && (
+          <span
+            className="inline-flex items-center justify-center rounded shrink-0 font-mono"
+            style={{ width: 16, height: 16, fontSize: 9, fontWeight: 700, background: meta.color + '1A', color: meta.color }}
+            title={meta.label}
+          >
+            {meta.glyph}
+          </span>
+        )}
         <TaskKey keyId={task.key} />
         <StatusPill status={task.status} />
         <span className="ml-auto font-mono tnum text-[12px]" style={{ color: task.today_s > 0 ? 'var(--ink)' : 'var(--ink-4)' }}>
@@ -266,6 +285,7 @@ function TaskRow({ task, selected, onSelect }: { task: TaskSummary; selected: bo
 
 function TaskDetail({ task, sessions }: { task: TaskSummary; sessions: TodayResponse['sessions'] }) {
   const sortedSessions = [...sessions].sort((a, b) => a.started_at.localeCompare(b.started_at))
+  const providerMeta = PROVIDER_META[task.provider]
 
   return (
     <div className="space-y-7 min-w-0">
@@ -273,7 +293,17 @@ function TaskDetail({ task, sessions }: { task: TaskSummary; sessions: TodayResp
         <div className="flex items-center gap-3 mb-3">
           <TaskKey keyId={task.key} big />
           <StatusPill status={task.status} />
-          <span className="text-[11px]" style={{ color: 'var(--ink-3)' }}>{task.provider}</span>
+          {providerMeta ? (
+            <span
+              className="inline-flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded-full"
+              style={{ background: providerMeta.color + '1A', color: providerMeta.color, fontWeight: 500 }}
+            >
+              <span className="font-mono" style={{ fontSize: 9, fontWeight: 700 }}>{providerMeta.glyph}</span>
+              {providerMeta.label}
+            </span>
+          ) : (
+            <span className="text-[11px]" style={{ color: 'var(--ink-3)' }}>{task.provider}</span>
+          )}
           {task.url && (
             <a href={task.url} target="_blank" rel="noopener noreferrer"
               className="ml-auto text-[12px]" style={{ color: 'var(--ink-3)' }}>
