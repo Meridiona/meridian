@@ -49,7 +49,7 @@ No clone, no build. The package ships a prebuilt binary; `meridian setup` copies
 
 `meridian setup` then walks you through screenpipe's two macOS permissions (Screen Recording, Accessibility — audio is disabled, so no Microphone). Connect Jira afterwards (optional).
 
-👉 **Full walkthrough — permissions, Jira, verifying, logs, updating, troubleshooting: [SETUP.md](SETUP.md).**
+👉 **Full walkthrough — permissions, verifying, logs, updating, troubleshooting: [SETUP.md](SETUP.md).**
 
 ```bash
 meridian status      # the four services
@@ -199,18 +199,23 @@ Connect one or more trackers and Meridian maps captured work sessions to tasks, 
 
 ### Azure DevOps quick-start
 
+Just two variables — paste your project URL from the browser and your PAT:
+
 ```bash
 # Add to .env (or run meridian setup to be prompted interactively)
+AZURE_DEVOPS_URL=https://dev.azure.com/your-org/your-project
 AZURE_DEVOPS_PAT=your-pat-here
-AZURE_DEVOPS_ORG=your-org-name      # e.g. mycompany → dev.azure.com/mycompany
-AZURE_DEVOPS_PROJECT=YourProject
+```
 
-# Force a sync and verify tasks land in the database
+`AZURE_DEVOPS_URL` works for all three URL shapes: `dev.azure.com/org/project`, `org.visualstudio.com/project`, and on-premises servers — meridian auto-extracts the org and project.
+
+To create a PAT: **User settings → Personal access tokens → New token**, scope: **Work Items → Read & write**.
+
+```bash
+# Verify tasks synced
 meridian force-pm-sync
 sqlite3 ~/.meridian/meridian.db "SELECT task_key, title FROM pm_tasks WHERE provider='azure_devops';"
 ```
-
-For on-premises or legacy `visualstudio.com` URLs, set `AZURE_DEVOPS_ORG_URL` to the full base URL instead of `AZURE_DEVOPS_ORG`. See `.env.example` for examples of all three URL shapes.
 
 ## Data location
 

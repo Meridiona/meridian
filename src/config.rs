@@ -272,35 +272,78 @@ fn parse_trello() -> Option<PmProviderConfig> {
     }))
 }
 
+/// Split a project URL into (api_base, project).
+///
+/// Last path segment = project; everything before (scheme + host + any preceding
+/// segments) = api_base. Works for all three URL shapes:
+///
+///   https://dev.azure.com/org/project      → ("https://dev.azure.com/org", "project")
+///   https://org.visualstudio.com/project   → ("https://org.visualstudio.com", "project")
+///   https://tfs.corp.com/Coll/project      → ("https://tfs.corp.com/Coll", "project")
+pub fn split_azure_devops_url(url: &str) -> Option<(String, String)> {
+    let url = url.trim().trim_end_matches('/');
+    let path_start = url.find("://").map(|i| i + 3).unwrap_or(0);
+    let host_end = url[path_start..]
+        .find('/')
+        .map(|i| path_start + i)
+        .unwrap_or(url.len());
+    let host = &url[..host_end];
+    let path = url[host_end..].trim_matches('/');
+    if path.is_empty() {
+        return None;
+    }
+    let (api_base, project) = if let Some((before, proj)) = path.rsplit_once('/') {
+        // Multi-segment path (dev.azure.com or on-prem).
+        let base = if before.is_empty() {
+            host.to_owned()
+        } else {
+            format!("{}/{}", host, before.trim_matches('/'))
+        };
+        (base, proj.to_owned())
+    } else {
+        // Single-segment path (visualstudio.com): host alone is the api_base.
+        (host.to_owned(), path.to_owned())
+    };
+    if project.is_empty() {
+        return None;
+    }
+    Some((api_base, project))
+}
+
 fn parse_azure_devops() -> Option<PmProviderConfig> {
     let pat = std::env::var("AZURE_DEVOPS_PAT").ok()?;
     if pat.trim().is_empty() {
         return None;
     }
-    // Resolve the API base from either a full URL override (legacy cloud or
-    // on-premises) or the simpler ORG name (standard cloud).
-    let api_base = if let Ok(url) = std::env::var("AZURE_DEVOPS_ORG_URL") {
-        url.trim_end_matches('/').to_owned()
+
+    // Primary: AZURE_DEVOPS_URL — user pastes the project URL from the browser.
+    // Fallback: legacy three-variable form (AZURE_DEVOPS_ORG / AZURE_DEVOPS_ORG_URL
+    // + AZURE_DEVOPS_PROJECT) for users who migrated from the earlier config.
+    let (api_base, project) = if let Ok(url) = std::env::var("AZURE_DEVOPS_URL") {
+        split_azure_devops_url(url.trim())?
+    } else if let Ok(url) = std::env::var("AZURE_DEVOPS_ORG_URL") {
+        let base = url.trim().trim_end_matches('/').to_owned();
+        let project = std::env::var("AZURE_DEVOPS_PROJECT").ok()?;
+        let project = project.trim().to_owned();
+        if project.is_empty() { return None; }
+        (base, project)
     } else {
         let org = std::env::var("AZURE_DEVOPS_ORG").ok()?;
         let org = org.trim();
-        if org.is_empty() {
-            return None;
-        }
-        if org.contains("://") {
-            // Full URL passed via AZURE_DEVOPS_ORG — accept as-is.
+        if org.is_empty() { return None; }
+        let base = if org.contains("://") {
             org.trim_end_matches('/').to_owned()
         } else if org.contains(".visualstudio.com") {
             format!("https://{}", org.trim_end_matches('/'))
         } else {
             format!("https://dev.azure.com/{org}")
-        }
+        };
+        let project = std::env::var("AZURE_DEVOPS_PROJECT").ok()?;
+        let project = project.trim().to_owned();
+        if project.is_empty() { return None; }
+        (base, project)
     };
-    let project = std::env::var("AZURE_DEVOPS_PROJECT").ok()?;
-    let project = project.trim().to_owned();
-    if project.is_empty() {
-        return None;
-    }
+
     Some(PmProviderConfig::AzureDevOps(AzureDevOpsConfig {
         pat,
         api_base,
@@ -658,5 +701,38 @@ mod tests {
         assert!(cfg.meridian_db_uri().starts_with("sqlite://"));
         std::env::remove_var("SCREENPIPE_DB");
         std::env::remove_var("MERIDIAN_DB");
+    }
+
+    #[test]
+    fn test_split_azure_devops_url_cloud_standard() {
+        let (base, project) = split_azure_devops_url("https://dev.azure.com/mycompany/MyProject").unwrap();
+        assert_eq!(base, "https://dev.azure.com/mycompany");
+        assert_eq!(project, "MyProject");
+    }
+
+    #[test]
+    fn test_split_azure_devops_url_visualstudio() {
+        let (base, project) = split_azure_devops_url("https://mycompany.visualstudio.com/MyProject").unwrap();
+        assert_eq!(base, "https://mycompany.visualstudio.com");
+        assert_eq!(project, "MyProject");
+    }
+
+    #[test]
+    fn test_split_azure_devops_url_on_premises() {
+        let (base, project) = split_azure_devops_url("https://tfs.corp.com/DefaultCollection/MyProject").unwrap();
+        assert_eq!(base, "https://tfs.corp.com/DefaultCollection");
+        assert_eq!(project, "MyProject");
+    }
+
+    #[test]
+    fn test_split_azure_devops_url_trailing_slash() {
+        let (base, project) = split_azure_devops_url("https://dev.azure.com/mycompany/MyProject/").unwrap();
+        assert_eq!(base, "https://dev.azure.com/mycompany");
+        assert_eq!(project, "MyProject");
+    }
+
+    #[test]
+    fn test_split_azure_devops_url_no_path() {
+        assert!(split_azure_devops_url("https://dev.azure.com").is_none());
     }
 }
