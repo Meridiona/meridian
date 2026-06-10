@@ -1,3 +1,11 @@
+# [1.43.0](https://github.com/Meridiona/meridian/compare/v1.42.0...v1.43.0) (2026-06-10)
+
+
+### Features
+
+* **azure-devops:** surface PAT permission errors in the UI ([#241](https://github.com/Meridiona/meridian/issues/241)) ([f426420](https://github.com/Meridiona/meridian/commit/f4264208f3c0647ca1c9b571b06b47f2825c3ee8))
+* **ui:** show issue type in Tasks page for all providers ([#242](https://github.com/Meridiona/meridian/issues/242)) ([206dca5](https://github.com/Meridiona/meridian/commit/206dca537d2fda07f2784b2372d5135b660bcc76))
+
 # [1.42.0](https://github.com/Meridiona/meridian/compare/v1.41.0...v1.42.0) (2026-06-10)
 
 
