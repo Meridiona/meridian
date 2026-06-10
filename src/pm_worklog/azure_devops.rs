@@ -55,7 +55,12 @@ pub async fn post_worklog(
         bail!("time_spent_seconds={time_spent_seconds} below the 60s worklog minimum");
     }
     let item = parse_task_key(task_key)?;
-    let body = format_worklog_comment(comment, time_spent_seconds, window_start_iso, window_end_iso);
+    let body = format_worklog_comment(
+        comment,
+        time_spent_seconds,
+        window_start_iso,
+        window_end_iso,
+    );
 
     // The Comments endpoint is a preview API; use the -preview.4 suffix as
     // documented for Azure DevOps Services (cloud). On-premises TFS may require
