@@ -29,10 +29,19 @@ to `app_sessions`:
 
 ## Prerequisites
 
-- macOS with Apple Silicon (the MLX inference server requires Metal)
+- **macOS on Apple Silicon (M1 or later) — required.** The on-device model runs on
+  [MLX](https://github.com/ml-explore/mlx), which is Metal-based and ships arm64-only wheels:
+  - **Intel Macs are not supported** — there is no x86_64 MLX build, so the installer refuses
+    to proceed rather than leave a half-working install.
+  - **Windows and Linux are not supported** — the capture and service stack (screenpipe
+    permissions, launchd agents, accessibility helper) is macOS-only.
+  - A note for Rosetta users: the installer detects the *hardware*, so an x86_64 terminal,
+    Homebrew, or Python on an Apple Silicon Mac is fine — Python services are built from a
+    pinned, uv-managed arm64 interpreter regardless of what is on your `PATH`.
 - [screenpipe](https://screenpi.pe) running and recording
 - Rust 1.93.1 — install via `rustup` or `rust-toolchain.toml` is picked up automatically
-- Python 3.11 — install via `brew install python@3.11` or `pyenv install 3.11` (outlines/MLX require ≤ 3.13; 3.11 is the supported floor)
+- Python 3.11 — provisioned automatically: the installers fetch a uv-managed arm64 CPython
+  (`cpython-3.11-macos-aarch64-none`), so no system Python is needed
 
 ## Getting started
 
