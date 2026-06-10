@@ -96,7 +96,11 @@ fn html_to_plaintext(html: &str) -> String {
             // Peek ahead: <br, </p, </div, </li → emit a space so words don't run together.
             let lookahead: String = chars.clone().take(4).collect();
             let l = lookahead.to_ascii_lowercase();
-            if l.starts_with("br") || l.starts_with("/p") || l.starts_with("/di") || l.starts_with("/li") {
+            if l.starts_with("br")
+                || l.starts_with("/p")
+                || l.starts_with("/di")
+                || l.starts_with("/li")
+            {
                 s.push(' ');
             }
         } else if ch == '>' {
@@ -107,11 +111,11 @@ fn html_to_plaintext(html: &str) -> String {
     }
     // Decode the most common HTML entities.
     let s = s
-        .replace("&amp;",  "&")
-        .replace("&lt;",   "<")
-        .replace("&gt;",   ">")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
         .replace("&quot;", "\"")
-        .replace("&#39;",  "'")
+        .replace("&#39;", "'")
         .replace("&apos;", "'")
         .replace("&nbsp;", " ")
         .replace("&#160;", " ");
@@ -120,7 +124,9 @@ fn html_to_plaintext(html: &str) -> String {
     let mut prev_space = true;
     for ch in s.chars() {
         if ch.is_ascii_whitespace() || ch == '\u{00a0}' {
-            if !prev_space { out.push(' '); }
+            if !prev_space {
+                out.push(' ');
+            }
             prev_space = true;
         } else {
             out.push(ch);
@@ -491,7 +497,10 @@ mod tests {
     #[test]
     fn test_html_to_plaintext_basic() {
         assert_eq!(html_to_plaintext("<div>Bug test<br> </div>"), "Bug test");
-        assert_eq!(html_to_plaintext("<p>Hello &amp; world</p>"), "Hello & world");
+        assert_eq!(
+            html_to_plaintext("<p>Hello &amp; world</p>"),
+            "Hello & world"
+        );
         assert_eq!(
             html_to_plaintext("<div>Step 1</div><div>Step 2</div>"),
             "Step 1 Step 2",
