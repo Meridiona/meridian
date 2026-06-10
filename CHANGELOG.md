@@ -1,3 +1,10 @@
+## [1.39.2](https://github.com/Meridiona/meridian/compare/v1.39.1...v1.39.2) (2026-06-10)
+
+
+### Bug Fixes
+
+* **azure-devops:** correct pm_tasks column names in upsert query ([#234](https://github.com/Meridiona/meridian/issues/234)) ([20ef4e7](https://github.com/Meridiona/meridian/commit/20ef4e7b39a4a7aeb6f704a2bce9c549e410c325))
+
 ## [1.39.1](https://github.com/Meridiona/meridian/compare/v1.39.0...v1.39.1) (2026-06-10)
 
 
