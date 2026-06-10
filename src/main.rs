@@ -343,18 +343,35 @@ async fn main() -> Result<()> {
         "meridian daemon starting"
     );
 
-    // 4b. Preflight: verify classification stack is ready before starting the daemon.
-    //     Fails fast with a clear message rather than silently erroring every tick.
+    // 4b. Open / create meridian pool and run migrations FIRST — before any
+    //     preflight that can block or fail. The UI and MCP server read this DB
+    //     directly, so it must exist even when an optional component (MLX
+    //     server, screenpipe) is down; ordering it after the MLX preflight left
+    //     machines with a broken MLX install running a daemon that never
+    //     created its own database.
+    let meridian = setup_db(&initial_cfg.meridian_db_uri()).await?;
+
+    // 4c. Preflight: verify the classification stack. NON-FATAL — classification
+    //     is an enhancement layer; ETL must keep recording sessions while the
+    //     MLX server is down. Unclassified sessions stay pending and the task
+    //     linker's 5-minute fallback drains them once the server is reachable.
+    //     (Exiting here put launchd in a 120s-wait → exit → respawn loop on any
+    //     machine where the MLX server could not start.)
     if let Err(e) = check_classification_ready(&initial_cfg) {
-        tracing::error!("{}", e);
-        eprintln!("\nERROR: {}\n", e);
-        std::process::exit(1);
+        tracing::error!(
+            error = %e,
+            "classification preflight failed — continuing with classification degraded"
+        );
+        eprintln!(
+            "\nWARNING: {e}\n\
+             Sessions will be recorded but not classified until the MLX server is reachable.\n"
+        );
     }
 
-    // 4. Open screenpipe pool (read-only)
+    // 4d. Open screenpipe pool (read-only)
     let screenpipe = open_screenpipe(&initial_cfg.screenpipe_db_uri()).await?;
 
-    // 4c. Capture-layer (L1) preflight: surface degraded screen capture (revoked
+    // 4e. Capture-layer (L1) preflight: surface degraded screen capture (revoked
     //     Screen Recording / Accessibility permission, dead screenpipe, stale
     //     frames) before the poll loop. Non-fatal — the daemon still runs; we log
     //     the fault so misclassifications aren't blamed on the model.
@@ -362,9 +379,6 @@ async fn main() -> Result<()> {
         meridian::health::capture::checks(&initial_cfg, Some(&screenpipe)).await,
     )
     .log("startup");
-
-    // 5. Open / create meridian pool and run migrations
-    let meridian = setup_db(&initial_cfg.meridian_db_uri()).await?;
 
     // 5b. Unix domain socket — health endpoint for the tray / UI.
     //     ~/.meridian/daemon.sock: connecting succeeds = daemon is running.
