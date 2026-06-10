@@ -79,6 +79,64 @@ struct StateDetail {
 }
 
 // ---------------------------------------------------------------------------
+// HTML helpers
+// ---------------------------------------------------------------------------
+
+/// Strip HTML tags and decode the most common entities so description fields
+/// stored in pm_tasks contain readable plain text rather than raw HTML markup.
+/// Azure DevOps returns HTML for Description, AcceptanceCriteria, ReproSteps, etc.
+fn html_to_plaintext(html: &str) -> String {
+    // Remove script/style blocks entirely (including their content).
+    let mut s = String::with_capacity(html.len());
+    let mut chars = html.chars().peekable();
+    let mut in_tag = false;
+    while let Some(ch) = chars.next() {
+        if ch == '<' {
+            in_tag = true;
+            // Peek ahead: <br, </p, </div, </li → emit a space so words don't run together.
+            let lookahead: String = chars.clone().take(4).collect();
+            let l = lookahead.to_ascii_lowercase();
+            if l.starts_with("br")
+                || l.starts_with("/p")
+                || l.starts_with("/di")
+                || l.starts_with("/li")
+            {
+                s.push(' ');
+            }
+        } else if ch == '>' {
+            in_tag = false;
+        } else if !in_tag {
+            s.push(ch);
+        }
+    }
+    // Decode the most common HTML entities.
+    let s = s
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&nbsp;", " ")
+        .replace("&#160;", " ");
+    // Collapse runs of whitespace (including newlines) to a single space.
+    let mut out = String::with_capacity(s.len());
+    let mut prev_space = true;
+    for ch in s.chars() {
+        if ch.is_ascii_whitespace() || ch == '\u{00a0}' {
+            if !prev_space {
+                out.push(' ');
+            }
+            prev_space = true;
+        } else {
+            out.push(ch);
+            prev_space = false;
+        }
+    }
+    out.trim().to_owned()
+}
+
+// ---------------------------------------------------------------------------
 // Auth and helpers
 // ---------------------------------------------------------------------------
 
@@ -311,7 +369,7 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
     let mut kept: Vec<String> = Vec::with_capacity(active.len());
     for u in &active {
         let task_key = format!("{}#{}", cfg.project, u.detail.id);
-        let description = u.detail.fields.description.as_deref().unwrap_or("");
+        let description = html_to_plaintext(u.detail.fields.description.as_deref().unwrap_or(""));
         let changed = u.detail.fields.changed_date.as_deref().unwrap_or("");
         let browser_url = format!(
             "{}/{}/_workitems/edit/{}",
@@ -463,6 +521,25 @@ mod tests {
             .decode(encoded)
             .unwrap();
         assert_eq!(decoded, b":mytoken");
+    }
+
+    #[test]
+    fn test_html_to_plaintext_basic() {
+        assert_eq!(html_to_plaintext("<div>Bug test<br> </div>"), "Bug test");
+        assert_eq!(
+            html_to_plaintext("<p>Hello &amp; world</p>"),
+            "Hello & world"
+        );
+        assert_eq!(
+            html_to_plaintext("<div>Step 1</div><div>Step 2</div>"),
+            "Step 1 Step 2",
+        );
+        assert_eq!(html_to_plaintext(""), "");
+        assert_eq!(html_to_plaintext("plain text"), "plain text");
+        assert_eq!(
+            html_to_plaintext("<ul><li>item 1</li><li>item 2</li></ul>"),
+            "item 1 item 2",
+        );
     }
 
     #[test]
