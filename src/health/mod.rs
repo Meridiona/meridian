@@ -321,11 +321,24 @@ pub async fn run_all(cfg: &Config) -> Report {
         }
     }
 
-    // mlx-server — service + HTTP readiness probes.
+    // mlx-server — service + HTTP readiness probes. Hardware that can never
+    // run MLX (Intel Macs — mlx ships arm64-only wheels) is recorded by the
+    // installers; report that as fact instead of an unfixable "server down".
     {
-        let mut g = platform::mlx_service(cfg);
-        g.extend(mlx::checks(cfg).await);
-        checks.extend(tag("mlx-server", g));
+        if platform::mlx_unsupported() {
+            checks.extend(tag(
+                "mlx-server",
+                vec![Check::info(
+                    "mlx",
+                    "L2",
+                    "unsupported on this hardware (Intel Mac) — summaries use the agent CLIs; local classification is unavailable",
+                )],
+            ));
+        } else {
+            let mut g = platform::mlx_service(cfg);
+            g.extend(mlx::checks(cfg).await);
+            checks.extend(tag("mlx-server", g));
+        }
     }
 
     // jira — auth, sync freshness, candidate completeness.
