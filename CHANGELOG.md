@@ -1,3 +1,11 @@
+## [1.40.1](https://github.com/Meridiona/meridian/compare/v1.40.0...v1.40.1) (2026-06-10)
+
+
+### Bug Fixes
+
+* **azure-devops:** correct pm_tasks column names in upsert query ([c34ef21](https://github.com/Meridiona/meridian/commit/c34ef216950d467338a1d0d6f691429c9f74a793))
+* **azure-devops:** store browser URL instead of REST API URL ([14425c3](https://github.com/Meridiona/meridian/commit/14425c3cda978241da2b74a9967f7ac70b94c4a7))
+
 # [1.40.0](https://github.com/Meridiona/meridian/compare/v1.39.2...v1.40.0) (2026-06-10)
 
 
