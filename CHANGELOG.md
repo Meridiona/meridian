@@ -1,3 +1,45 @@
+# [1.38.0](https://github.com/Meridiona/meridian/compare/v1.37.4...v1.38.0) (2026-06-09)
+
+
+### Features
+
+* **setup:** auto-install + sign in to gh when configuring GitHub (no PAT) ([#226](https://github.com/Meridiona/meridian/issues/226)) ([7499ea5](https://github.com/Meridiona/meridian/commit/7499ea5a1fe75e0a9245c2451e212055edd4835b))
+
+## [1.37.4](https://github.com/Meridiona/meridian/compare/v1.37.3...v1.37.4) (2026-06-09)
+
+
+### Bug Fixes
+
+* **setup:** show live MLX model download progress ([#225](https://github.com/Meridiona/meridian/issues/225)) ([268dff0](https://github.com/Meridiona/meridian/commit/268dff016246e15ab146031b807fb1161ce26383))
+
+## [1.37.3](https://github.com/Meridiona/meridian/compare/v1.37.2...v1.37.3) (2026-06-09)
+
+
+### Bug Fixes
+
+* **tray:** use launchctl bootstrap instead of deprecated load ([#224](https://github.com/Meridiona/meridian/issues/224)) ([1c1f171](https://github.com/Meridiona/meridian/commit/1c1f171335e25d47a3cf27850cdf5622c143e4ec))
+
+## [1.37.2](https://github.com/Meridiona/meridian/compare/v1.37.1...v1.37.2) (2026-06-09)
+
+
+### Bug Fixes
+
+* **uninstall:** clean up venv, node-runtime, oauth tokens, and misc files ([#222](https://github.com/Meridiona/meridian/issues/222)) ([162010f](https://github.com/Meridiona/meridian/commit/162010f72cd3f075c3a60d696c42fd76604959aa))
+
+## [1.37.1](https://github.com/Meridiona/meridian/compare/v1.37.0...v1.37.1) (2026-06-09)
+
+
+### Bug Fixes
+
+* **packaging:** include lib-trello-setup.sh in release bundle ([#221](https://github.com/Meridiona/meridian/issues/221)) ([e5cb6cf](https://github.com/Meridiona/meridian/commit/e5cb6cf3ac0212d2df1ebb0a435c56220e211112))
+
+# [1.37.0](https://github.com/Meridiona/meridian/compare/v1.36.0...v1.37.0) (2026-06-09)
+
+
+### Features
+
+* **trello:** inject app key at package time, document setup flow ([#220](https://github.com/Meridiona/meridian/issues/220)) ([3182b6a](https://github.com/Meridiona/meridian/commit/3182b6a92f64515fed3277418983446dd089232d))
+
 # [1.36.0](https://github.com/Meridiona/meridian/compare/v1.35.1...v1.36.0) (2026-06-09)
 
 

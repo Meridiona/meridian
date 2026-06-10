@@ -181,7 +181,7 @@ tar cf - \
 echo "→ scripts + plists + CLI"
 cp scripts/meridian-cli.sh scripts/install-from-bundle.sh scripts/meridian-npm-setup.sh \
    scripts/bootstrap.sh scripts/ui-start.sh scripts/lib-github-setup.sh \
-   scripts/lib-jira-setup.sh "${DEST}/scripts/"
+   scripts/lib-jira-setup.sh scripts/lib-trello-setup.sh "${DEST}/scripts/"
 cp scripts/install-daemon.sh scripts/uninstall-daemon.sh \
    scripts/install-ui-daemon.sh scripts/uninstall-ui-daemon.sh \
    scripts/install-screenpipe-daemon.sh scripts/uninstall-screenpipe-daemon.sh \
@@ -203,6 +203,21 @@ cp scripts/a11y-helper/meridian-a11y-helper "${DEST}/scripts/a11y-helper/"
 
 echo "→ config template + version stamp"
 cp .env.example "${DEST}/.env.example"
+
+# Inject the Trello Power-Up app key into the bundle .env so the daemon can
+# run `meridian oauth-login trello` without the user setting anything manually.
+# Read from the repo .env (gitignored); skip silently if not set.
+_trello_key=""
+if [[ -f ".env" ]]; then
+    _trello_key="$(grep -E '^TRELLO_APP_KEY=' .env | cut -d= -f2- | tr -d '[:space:]')" || true
+fi
+if [[ -n "${_trello_key}" ]]; then
+    echo "  injecting TRELLO_APP_KEY into bundle .env.example"
+    sed -i '' "s|^# TRELLO_APP_KEY=.*|TRELLO_APP_KEY=${_trello_key}|" "${DEST}/.env.example"
+else
+    echo "  ⚠ TRELLO_APP_KEY not set in .env — Trello OAuth will not work in this bundle"
+fi
+
 printf '%s\n' "${VERSION}" > "${DEST}/VERSION"
 
 echo "✓ ${DEST} populated"

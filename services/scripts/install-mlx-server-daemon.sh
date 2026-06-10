@@ -40,6 +40,15 @@ if [[ ! -f "${TEMPLATE}" ]]; then
     exit 1
 fi
 
+# MLX requires Apple Silicon — mlx ships arm64-only wheels (Metal). Probe the
+# HARDWARE via sysctl: hw.optional.arm64 stays 1 in a Rosetta (x86_64) shell,
+# where uname -m would lie. Installing the agent anyway would just crash-loop.
+if [[ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" != "1" ]]; then
+    echo "✗ MLX requires Apple Silicon — not installing the MLX server agent on this Mac." >&2
+    echo "  Coding-agent summaries still work via the agent CLIs (claude/codex)." >&2
+    exit 1
+fi
+
 # Find the uv binary.
 UV_BIN=""
 for _uv_candidate in "${HOME}/.local/bin/uv" /opt/homebrew/bin/uv /usr/local/bin/uv; do
@@ -63,6 +72,20 @@ if [[ ! -d "${SERVICES_VENV}" ]]; then
     fi
     echo "✗ venv not found at ${SERVICES_VENV}" >&2
     echo "  Run:  bash scripts/setup-services.sh --mlx" >&2
+    exit 1
+fi
+
+# Refuse a mixed-architecture venv (built by a Rosetta/Intel python3 before the
+# interpreter was pinned to a uv-managed arm64 build) — the server would only
+# crash-loop on native-extension imports.
+_venv_arch="$("${SERVICES_VENV}/bin/python" -c 'import platform; print(platform.machine())' 2>/dev/null || true)"
+if [[ "${_venv_arch}" != "arm64" ]]; then
+    echo "✗ venv python at ${SERVICES_VENV} is '${_venv_arch:-unknown}', need arm64 (mixed-architecture venv)." >&2
+    if [[ "${SERVICES_DIR}" == "${HOME}/.meridian/"* ]]; then
+        echo "  Rebuild it:  meridian update" >&2
+    else
+        echo "  Rebuild it:  rm -rf ${SERVICES_VENV} && bash scripts/setup-services.sh --mlx" >&2
+    fi
     exit 1
 fi
 
