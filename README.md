@@ -78,6 +78,7 @@ Once installed, use `meridian dev …` to rebuild + restart after edits — see 
 - **Jira** — easiest is browser OAuth: run `meridian oauth-login jira` (no API token needed). Legacy path: URL, email, API token, project keys (gated by `[y/N]`)
 - **GitHub** — token (auto-extracted from the `gh` CLI, no PAT needed) + GitHub Projects to sync
 - **Linear** — API key, team IDs
+- **Azure DevOps** — Personal Access Token + organisation name + project (all three required)
 - **Observability (OpenObserve)** — base64 auth + OTLP endpoints
 
 Empty input skips that variable. Values already in `.env` are preserved on re-run.
@@ -183,6 +184,33 @@ Example:
 ```bash
 POLL_INTERVAL_SECS=30 ./target/release/meridian
 ```
+
+## Supported PM tools
+
+Connect one or more trackers and Meridian maps captured work sessions to tasks, then posts time-logged worklogs as comments on the task.
+
+| Tracker | Auth | Worklog mechanism | Cloud / on-prem |
+|---|---|---|---|
+| **Jira** | Browser OAuth (recommended) or Basic (URL + email + API token) | Native Jira worklog endpoint | Cloud (Atlassian) |
+| **GitHub** | `gh` CLI token (no PAT needed) or classic PAT | Issue comment (no native time-tracking API) | Cloud only |
+| **Linear** | Personal API key | Issue comment (no native time-tracking API) | Cloud only |
+| **Trello** | Browser OAuth | Card comment (no native time-tracking API) | Cloud only |
+| **Azure DevOps** | Personal Access Token (PAT) with Work Items Read & write scope | Work item comment (no native time-tracking API) | Cloud (`dev.azure.com`) + legacy (`*.visualstudio.com`) + on-premises (TFS/Azure DevOps Server) |
+
+### Azure DevOps quick-start
+
+```bash
+# Add to .env (or run meridian setup to be prompted interactively)
+AZURE_DEVOPS_PAT=your-pat-here
+AZURE_DEVOPS_ORG=your-org-name      # e.g. mycompany → dev.azure.com/mycompany
+AZURE_DEVOPS_PROJECT=YourProject
+
+# Force a sync and verify tasks land in the database
+meridian force-pm-sync
+sqlite3 ~/.meridian/meridian.db "SELECT task_key, title FROM pm_tasks WHERE provider='azure_devops';"
+```
+
+For on-premises or legacy `visualstudio.com` URLs, set `AZURE_DEVOPS_ORG_URL` to the full base URL instead of `AZURE_DEVOPS_ORG`. See `.env.example` for examples of all three URL shapes.
 
 ## Data location
 

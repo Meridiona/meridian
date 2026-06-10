@@ -17,6 +17,7 @@
 // ~60s approved-poster); also runnable one-shot via
 // `meridian pm-worklog [--day YYYY-MM-DD]` and `meridian worklog-post-approved`.
 
+pub mod azure_devops;
 pub mod collect;
 pub mod comment;
 pub mod config;

@@ -11,6 +11,7 @@ export interface IntegrationsResponse {
   linear: boolean
   github: boolean
   trello: boolean
+  azure_devops: boolean
 }
 
 function repoRoot(): string {
@@ -69,6 +70,7 @@ const OAUTH_PROVIDERS = new Set(['jira', 'trello'])
 const TOKEN_KEYS: Record<string, string[]> = {
   github: ['GITHUB_TOKEN', 'GITHUB_PROJECT_IDS'],
   linear: ['LINEAR_API_KEY', 'LINEAR_TEAM_IDS'],
+  azure_devops: ['AZURE_DEVOPS_PAT', 'AZURE_DEVOPS_ORG', 'AZURE_DEVOPS_PROJECT', 'AZURE_DEVOPS_ORG_URL'],
 }
 const ALL_PROVIDERS = new Set([...OAUTH_PROVIDERS, ...Object.keys(TOKEN_KEYS)])
 
@@ -116,6 +118,7 @@ export async function GET() {
     linear: isSet(env, 'LINEAR_API_KEY'),
     github: isSet(env, 'GITHUB_TOKEN'),
     trello: trelloOAuth,
+    azure_devops: isSet(env, 'AZURE_DEVOPS_PAT') && (isSet(env, 'AZURE_DEVOPS_ORG') || isSet(env, 'AZURE_DEVOPS_ORG_URL')),
   }
 
   return NextResponse.json(result)

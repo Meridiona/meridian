@@ -14,7 +14,7 @@ This installs Node if missing, installs the `meridian` CLI, then runs `meridian 
 
 `meridian setup` will walk you through:
 1. Granting **Screen Recording** and **Accessibility** permissions to screenpipe (required)
-2. Connecting your issue tracker (Jira, Linear, or GitHub)
+2. Connecting your issue tracker (Jira, Linear, GitHub, Trello, or Azure DevOps)
 
 ---
 
@@ -33,7 +33,7 @@ meridian restart
 
 ---
 
-## Connect your tracker (Jira, Linear, GitHub, or Trello)
+## Connect your tracker (Jira, Linear, GitHub, Trello, or Azure DevOps)
 
 Edit the config file:
 
@@ -104,6 +104,35 @@ meridian restart
 Your token is saved to `~/.meridian/oauth/trello.json`. Meridian syncs open cards assigned to you across all your boards.
 
 Worklogs are **never posted automatically** — Meridian drafts them for you to review and approve in the dashboard.
+
+### Azure DevOps
+
+1. Create a Personal Access Token (PAT) in Azure DevOps:
+   - Go to **User settings → Personal access tokens → New token**
+   - Set expiry as required by your org
+   - Required scope: **Work Items → Read & write**
+   - Prefer project-scoped or org-scoped PATs over global ones (global PATs are being retired by Microsoft)
+
+2. Add to config:
+```dotenv
+AZURE_DEVOPS_PAT=your-pat-here
+AZURE_DEVOPS_ORG=your-org-name      # e.g. mycompany (→ dev.azure.com/mycompany)
+AZURE_DEVOPS_PROJECT=YourProject    # e.g. WebApp
+```
+
+**Legacy cloud (`*.visualstudio.com`) or on-premises (TFS / Azure DevOps Server):**
+```dotenv
+AZURE_DEVOPS_PAT=your-pat-here
+AZURE_DEVOPS_ORG_URL=https://mycompany.visualstudio.com   # or https://tfs.corp.com/DefaultCollection
+AZURE_DEVOPS_PROJECT=YourProject
+```
+
+Meridian syncs all work items assigned to you in the configured project that are not in a "Completed" or "Removed" state. State filtering is dynamic — any custom state names your org uses are handled automatically.
+
+Then restart:
+```bash
+meridian restart
+```
 
 ---
 

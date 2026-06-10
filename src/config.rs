@@ -107,6 +107,20 @@ pub struct TrelloConfig {
     pub board_ids: Vec<String>,
 }
 
+#[derive(Clone, Debug)]
+pub struct AzureDevOpsConfig {
+    /// Personal access token (PAT). Auth: Basic base64(":token").
+    pub pat: String,
+    /// Resolved API root. Supports all three URL shapes:
+    ///   https://dev.azure.com/{org}           (cloud, standard)
+    ///   https://{org}.visualstudio.com        (cloud, legacy)
+    ///   https://tfs.company.com/{collection}  (on-premises)
+    /// Set AZURE_DEVOPS_ORG_URL for legacy/on-prem; AZURE_DEVOPS_ORG for cloud.
+    pub api_base: String,
+    /// Project name or ID — scopes all work item queries.
+    pub project: String,
+}
+
 /// Provider-agnostic credential variant. Add new providers here; callers
 /// match on this enum, so the compiler enforces exhaustive handling.
 #[derive(Clone, Debug)]
@@ -115,6 +129,7 @@ pub enum PmProviderConfig {
     GitHub(GitHubConfig),
     Linear(LinearConfig),
     Trello(TrelloConfig),
+    AzureDevOps(AzureDevOpsConfig),
 }
 
 impl PmProviderConfig {
@@ -124,6 +139,7 @@ impl PmProviderConfig {
             Self::GitHub(_) => "github",
             Self::Linear(_) => "linear",
             Self::Trello(_) => "trello",
+            Self::AzureDevOps(_) => "azure_devops",
         }
     }
 }
@@ -256,11 +272,53 @@ fn parse_trello() -> Option<PmProviderConfig> {
     }))
 }
 
+fn parse_azure_devops() -> Option<PmProviderConfig> {
+    let pat = std::env::var("AZURE_DEVOPS_PAT").ok()?;
+    if pat.trim().is_empty() {
+        return None;
+    }
+    // Resolve the API base from either a full URL override (legacy cloud or
+    // on-premises) or the simpler ORG name (standard cloud).
+    let api_base = if let Ok(url) = std::env::var("AZURE_DEVOPS_ORG_URL") {
+        url.trim_end_matches('/').to_owned()
+    } else {
+        let org = std::env::var("AZURE_DEVOPS_ORG").ok()?;
+        let org = org.trim();
+        if org.is_empty() {
+            return None;
+        }
+        if org.contains("://") {
+            // Full URL passed via AZURE_DEVOPS_ORG — accept as-is.
+            org.trim_end_matches('/').to_owned()
+        } else if org.contains(".visualstudio.com") {
+            format!("https://{}", org.trim_end_matches('/'))
+        } else {
+            format!("https://dev.azure.com/{org}")
+        }
+    };
+    let project = std::env::var("AZURE_DEVOPS_PROJECT").ok()?;
+    let project = project.trim().to_owned();
+    if project.is_empty() {
+        return None;
+    }
+    Some(PmProviderConfig::AzureDevOps(AzureDevOpsConfig {
+        pat,
+        api_base,
+        project,
+    }))
+}
+
 fn parse_providers() -> Vec<PmProviderConfig> {
-    [parse_jira(), parse_github(), parse_linear(), parse_trello()]
-        .into_iter()
-        .flatten()
-        .collect()
+    [
+        parse_jira(),
+        parse_github(),
+        parse_linear(),
+        parse_trello(),
+        parse_azure_devops(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 // ---------------------------------------------------------------------------
