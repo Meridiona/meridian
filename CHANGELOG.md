@@ -1,3 +1,11 @@
+# [1.42.0](https://github.com/Meridiona/meridian/compare/v1.41.0...v1.42.0) (2026-06-10)
+
+
+### Features
+
+* **ui:** show absolute time on hover in Shape of Day activity breakdown ([82a7b89](https://github.com/Meridiona/meridian/commit/82a7b8919287cb660574d0c951711dafabd5ae77))
+* **ui:** vendor badges and integrations back nav on Tasks page ([a69ae3c](https://github.com/Meridiona/meridian/commit/a69ae3c1a45d053f4f1d368c59d65037adc7d139))
+
 # [1.41.0](https://github.com/Meridiona/meridian/compare/v1.40.1...v1.41.0) (2026-06-10)
 
 
