@@ -285,6 +285,11 @@ function TaskDetail({ task, sessions }: { task: TaskSummary; sessions: TodayResp
         <div className="flex items-center gap-3 mb-3">
           <TaskKey keyId={task.key} big />
           <StatusPill status={task.status} />
+          {task.issue_type && (
+            <span className="text-[11px] px-1.5 py-0.5 rounded-md" style={{ background: 'var(--tint)', color: 'var(--ink-2)' }}>
+              {task.issue_type}
+            </span>
+          )}
           {providerMeta ? (
             <span
               className="inline-flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded-full"
