@@ -287,7 +287,10 @@ configure_editor_accessibility() {
 
 # ── 0. Platform gate ────────────────────────────────────────────────────────
 [[ "$(uname -s)" == "Darwin" ]]  || { err "Meridian requires macOS."; exit 1; }
-[[ "$(uname -m)" == "arm64" ]]   || { err "Meridian requires Apple Silicon (arm64). This bundle is macOS-arm64 only."; exit 1; }
+# hw.optional.arm64 reports the HARDWARE: it stays 1 in a Rosetta (x86_64)
+# shell on Apple Silicon, where uname -m would lie and wrongly refuse.
+[[ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" == "1" ]] \
+    || { err "Meridian requires Apple Silicon (arm64). This bundle is macOS-arm64 only."; exit 1; }
 
 # Refuse root: this installs per-user launchd agents (gui/$(id -u)) and writes
 # ~/.meridian. As root, launchd bootstrap fails and files end up root-owned. The
@@ -438,31 +441,51 @@ curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1 && _mlx_was_healt
 
 # ── 4. Python venv + MLX deps ────────────────────────────────────────────────
 # Installed from PyPI via uv sync at install time — no pre-built venv shipped.
-# PyPI MLX wheels are tagged macosx_13_0_arm64 / macosx_14_0_arm64 so pip's
-# platform tag filter guarantees the correct ABI for the user's macOS version.
-# Differential skip: if uv.lock hasn't changed and mlx.core imports cleanly,
-# the venv is already correct — no network round-trip needed.
+# PyPI MLX wheels are arm64-only (mlx is Metal-based), so the venv interpreter
+# MUST be a native arm64 CPython. PATH python3 is NOT trustworthy here: user
+# machines often carry x86_64 builds running under Rosetta (Intel Homebrew,
+# pyenv), which fail the mlx resolve outright — or worse, leave a
+# mixed-architecture venv behind. So the venv is built from a uv-MANAGED
+# interpreter pinned by full build key: deterministic on every machine,
+# independent of whatever python3 (or uv binary arch) the user has.
+# Differential skip: if uv.lock + interpreter build are unchanged, the venv
+# python is really arm64, and mlx.core imports cleanly — no network round-trip.
+MERIDIAN_PY_BUILD="cpython-3.11-macos-aarch64-none"
 VENV="${APP_ROOT}/services/.venv"
 VENV_STAMP="${VENV}/.meridian-venv-hash"
 _LOCK_HASH="$(shasum -a 256 "${APP_ROOT}/services/uv.lock" 2>/dev/null | cut -d' ' -f1 || true)"
+# Stamp records lock hash + interpreter build — bumping either rebuilds the venv.
+_WANT_STAMP="${_LOCK_HASH} ${MERIDIAN_PY_BUILD}"
 
 _venv_changed=1
-_have_hash=""; [[ -f "${VENV_STAMP}" ]] && _have_hash="$(cat "${VENV_STAMP}" 2>/dev/null)"
+_have_stamp=""; [[ -f "${VENV_STAMP}" ]] && _have_stamp="$(cat "${VENV_STAMP}" 2>/dev/null)"
+_venv_arch=""
+[[ -x "${VENV}/bin/python" ]] \
+    && _venv_arch="$("${VENV}/bin/python" -c 'import platform; print(platform.machine())' 2>/dev/null || true)"
 
-if [[ -n "${_LOCK_HASH}" && "${_LOCK_HASH}" == "${_have_hash}" && -x "${VENV}/bin/python" ]] \
+if [[ -n "${_LOCK_HASH}" && "${_WANT_STAMP}" == "${_have_stamp}" && "${_venv_arch}" == "arm64" ]] \
    && "${VENV}/bin/python" -c "import mlx.core" 2>/dev/null; then
     ok "Python deps unchanged — skipping uv sync"
     _venv_changed=0
 else
+    # Self-heal: a venv whose interpreter is not arm64 (built by a Rosetta
+    # python3 before this pin existed) can never be fixed in place — wipe it.
+    if [[ -d "${VENV}" && -n "${_venv_arch}" && "${_venv_arch}" != "arm64" ]]; then
+        warn "venv interpreter is ${_venv_arch}, not arm64 (mixed-architecture venv) — rebuilding from scratch"
+        rm -rf "${VENV}"
+    fi
+    "${UV_BIN}" python install "${MERIDIAN_PY_BUILD}" \
+        || warn "managed Python pre-install failed — uv sync retries the download"
     info "Installing Python services from PyPI (mlx-lm/outlines/fastapi/agno; first run ~40–120s)…"
     if "${UV_BIN}" sync \
             --project "${APP_ROOT}/services" \
             --extra mlx \
             --extra pm_worklog_update \
             --frozen \
-            --python 3.11; then
-        [[ -n "${_LOCK_HASH}" ]] && printf '%s\n' "${_LOCK_HASH}" > "${VENV_STAMP}"
-        ok "Python services ready ($(${VENV}/bin/python --version 2>&1))"
+            --python "${MERIDIAN_PY_BUILD}" \
+            --python-preference only-managed; then
+        [[ -n "${_LOCK_HASH}" ]] && printf '%s\n' "${_WANT_STAMP}" > "${VENV_STAMP}"
+        ok "Python services ready ($("${VENV}/bin/python" --version 2>&1), $("${VENV}/bin/python" -c 'import platform; print(platform.machine())' 2>/dev/null))"
     else
         warn "uv sync failed — leaving venv as-is; re-run 'meridian setup' to retry"
     fi
