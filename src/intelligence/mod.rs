@@ -86,6 +86,11 @@ pub async fn run_pm_force_sync(meridian: &SqlitePool, config: &Config) -> Result
             PmProviderConfig::GitHub(cfg) => providers::github::force_refresh(meridian, cfg).await,
             PmProviderConfig::Linear(cfg) => providers::linear::force_refresh(meridian, cfg).await,
             PmProviderConfig::Trello(cfg) => providers::trello::force_refresh(meridian, cfg).await,
+            PmProviderConfig::AzureDevOps(cfg) => {
+                providers::azure_devops::force_refresh(meridian, cfg)
+                    .await
+                    .map(Some)
+            }
         };
         match result {
             Ok(None) => tracing::info!(provider = name, "force sync: auth unavailable or no tasks"),
@@ -106,7 +111,7 @@ pub async fn run_pm_force_sync(meridian: &SqlitePool, config: &Config) -> Result
 #[tracing::instrument(skip_all)]
 pub async fn run_pm_sync(meridian: &SqlitePool, config: &Config) -> Result<()> {
     if config.pm_providers.is_empty() {
-        tracing::warn!("no PM providers configured — pm_tasks will stay empty (set JIRA_BASE_URL/GITHUB_TOKEN/LINEAR_API_KEY)");
+        tracing::warn!("no PM providers configured — pm_tasks will stay empty (set JIRA_BASE_URL/GITHUB_TOKEN/LINEAR_API_KEY/AZURE_DEVOPS_PAT)");
         return Ok(());
     }
     let provider_count = config.pm_providers.len();
@@ -124,6 +129,9 @@ pub async fn run_pm_sync(meridian: &SqlitePool, config: &Config) -> Result<()> {
             }
             PmProviderConfig::Trello(cfg) => {
                 providers::trello::refresh_if_stale(meridian, cfg).await
+            }
+            PmProviderConfig::AzureDevOps(cfg) => {
+                providers::azure_devops::refresh_if_stale(meridian, cfg).await
             }
         };
         match result {
