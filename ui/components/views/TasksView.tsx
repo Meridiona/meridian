@@ -506,9 +506,185 @@ function ConnectTrackers({ integrations, onDisconnect }: { integrations: Integra
 }
 
 function TrackerSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
-  // Browser-OAuth trackers (Jira) get the one-command flow; everyone else gets
-  // the get-a-token / paste-env / restart flow.
-  return tracker.oauth ? <OAuthSetup oauth={tracker.oauth} /> : <TokenSetup tracker={tracker} />
+  if (tracker.oauth) return <OAuthSetup oauth={tracker.oauth} />
+  if (tracker.id === 'azure_devops') return <AzureDevOpsSetup tracker={tracker} />
+  return <TokenSetup tracker={tracker} />
+}
+
+function AzureDevOpsSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
+  const [pat, setPat] = useState('')
+  const [orgs, setOrgs] = useState<string[] | null>(null)
+  const [selectedOrg, setSelectedOrg] = useState('')
+  const [projects, setProjects] = useState<string[] | null>(null)
+  const [selectedProject, setSelectedProject] = useState('')
+  const [loading, setLoading] = useState<'orgs' | 'projects' | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const lookupOrgs = async () => {
+    if (!pat.trim()) return
+    setLoading('orgs')
+    setError(null)
+    setOrgs(null)
+    setSelectedOrg('')
+    setProjects(null)
+    setSelectedProject('')
+    try {
+      const r = await fetch('/api/integrations/azure-devops/discover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pat: pat.trim() }),
+      })
+      const json = await r.json()
+      if (!r.ok) { setError(json.error ?? 'Failed to fetch organisations'); return }
+      setOrgs(json.orgs ?? [])
+      if ((json.orgs ?? []).length === 1) setSelectedOrg(json.orgs[0])
+    } catch {
+      setError('Network error — check your connection')
+    } finally {
+      setLoading(null)
+    }
+  }
+
+  const lookupProjects = async (org: string) => {
+    if (!org) return
+    setLoading('projects')
+    setError(null)
+    setProjects(null)
+    setSelectedProject('')
+    try {
+      const r = await fetch('/api/integrations/azure-devops/discover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pat: pat.trim(), org }),
+      })
+      const json = await r.json()
+      if (!r.ok) { setError(json.error ?? 'Failed to fetch projects'); return }
+      setProjects(json.projects ?? [])
+      if ((json.projects ?? []).length === 1) setSelectedProject(json.projects[0])
+    } catch {
+      setError('Network error — check your connection')
+    } finally {
+      setLoading(null)
+    }
+  }
+
+  const handleOrgChange = (org: string) => {
+    setSelectedOrg(org)
+    if (org) lookupProjects(org)
+  }
+
+  const envBlock = selectedOrg && selectedProject
+    ? `AZURE_DEVOPS_URL=https://dev.azure.com/${selectedOrg}/${selectedProject}\nAZURE_DEVOPS_PAT=${pat.trim()}`
+    : tracker.env ?? ''
+
+  return (
+    <div className="px-4 pb-4 pt-1" style={{ background: 'var(--surface-2)' }}>
+      <ol className="space-y-3">
+        <li className="flex gap-3">
+          <StepNum n={1} />
+          <div className="min-w-0 flex-1">
+            <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
+              Go to User settings → Personal access tokens → New token. Set scope to{' '}
+              <strong>Work Items → Read &amp; write</strong>.{' '}
+              <a href="https://dev.azure.com" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>
+                Open ↗
+              </a>
+            </p>
+            <div className="mt-2 flex gap-2">
+              <input
+                type="password"
+                value={pat}
+                onChange={e => setPat(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && lookupOrgs()}
+                placeholder="Paste your PAT here"
+                className="flex-1 font-mono text-[11px] px-2 py-1.5 rounded-md border"
+                style={{ color: 'var(--ink)', background: 'var(--surface)', borderColor: 'var(--rule)', outline: 'none' }}
+              />
+              <button
+                onClick={lookupOrgs}
+                disabled={!pat.trim() || loading === 'orgs'}
+                className="text-[11px] px-3 py-1.5 rounded-md transition-opacity shrink-0"
+                style={{
+                  background: 'var(--accent)', color: '#fff',
+                  opacity: (!pat.trim() || loading === 'orgs') ? 0.5 : 1,
+                  cursor: (!pat.trim() || loading === 'orgs') ? 'default' : 'pointer',
+                }}
+              >
+                {loading === 'orgs' ? 'Looking up…' : 'Look up orgs'}
+              </button>
+            </div>
+            {error && (
+              <p className="mt-1.5 text-[11px]" style={{ color: '#e53e3e' }}>{error}</p>
+            )}
+          </div>
+        </li>
+
+        {orgs !== null && (
+          <li className="flex gap-3">
+            <StepNum n={2} />
+            <div className="min-w-0 flex-1">
+              <p className="text-[12px] mb-1.5" style={{ color: 'var(--ink-2)' }}>
+                {orgs.length === 0 ? 'No organisations found for this PAT.' : 'Choose your organisation:'}
+              </p>
+              {orgs.length > 0 && (
+                <select
+                  value={selectedOrg}
+                  onChange={e => handleOrgChange(e.target.value)}
+                  className="w-full text-[12px] px-2 py-1.5 rounded-md border"
+                  style={{ color: 'var(--ink)', background: 'var(--surface)', borderColor: 'var(--rule)' }}
+                >
+                  <option value="">— select org —</option>
+                  {orgs.map(o => <option key={o} value={o}>{o}</option>)}
+                </select>
+              )}
+            </div>
+          </li>
+        )}
+
+        {projects !== null && selectedOrg && (
+          <li className="flex gap-3">
+            <StepNum n={3} />
+            <div className="min-w-0 flex-1">
+              <p className="text-[12px] mb-1.5" style={{ color: 'var(--ink-2)' }}>
+                {projects.length === 0 ? 'No projects found in this organisation.' : 'Choose your project:'}
+              </p>
+              {loading === 'projects' && (
+                <p className="text-[11px]" style={{ color: 'var(--ink-3)' }}>Loading projects…</p>
+              )}
+              {projects.length > 0 && (
+                <select
+                  value={selectedProject}
+                  onChange={e => setSelectedProject(e.target.value)}
+                  className="w-full text-[12px] px-2 py-1.5 rounded-md border"
+                  style={{ color: 'var(--ink)', background: 'var(--surface)', borderColor: 'var(--rule)' }}
+                >
+                  <option value="">— select project —</option>
+                  {projects.map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+              )}
+            </div>
+          </li>
+        )}
+
+        <li className="flex gap-3">
+          <StepNum n={selectedOrg && selectedProject ? (projects !== null ? 4 : 3) : (orgs !== null ? 3 : 2)} />
+          <div className="min-w-0 flex-1">
+            <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
+              Run <CodeChip text="meridian config edit" /> and add:
+            </p>
+            <CopyBlock text={envBlock} />
+          </div>
+        </li>
+
+        <li className="flex gap-3">
+          <StepNum n={selectedOrg && selectedProject ? (projects !== null ? 5 : 4) : (orgs !== null ? 4 : 3)} />
+          <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
+            Save, then run <CodeChip text="meridian restart" />. Your tasks appear here within a minute.
+          </p>
+        </li>
+      </ol>
+    </div>
+  )
 }
 
 function OAuthSetup({ oauth }: { oauth: { command: string; hint: string } }) {
