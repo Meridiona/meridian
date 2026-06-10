@@ -306,16 +306,16 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         sqlx::query(
             "INSERT INTO pm_tasks
                (task_key, provider, title, description_text, status_category,
-                issue_type, source_url, updated_at_remote)
+                issue_type, url, updated_at)
              VALUES (?, 'azure_devops', ?, ?, ?, ?, ?, ?)
              ON CONFLICT(task_key) DO UPDATE SET
-               provider          = 'azure_devops',
-               title             = excluded.title,
-               description_text  = excluded.description_text,
-               status_category   = excluded.status_category,
-               issue_type        = excluded.issue_type,
-               source_url        = excluded.source_url,
-               updated_at_remote = excluded.updated_at_remote",
+               provider         = 'azure_devops',
+               title            = excluded.title,
+               description_text = excluded.description_text,
+               status_category  = excluded.status_category,
+               issue_type       = excluded.issue_type,
+               url              = excluded.url,
+               updated_at       = excluded.updated_at",
         )
         .bind(&task_key)
         .bind(&u.detail.fields.title)
