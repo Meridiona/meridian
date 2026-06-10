@@ -419,10 +419,10 @@ const TRACKERS: Array<{
     name: 'Azure DevOps',
     glyph: 'Az',
     color: '#0078D4',
-    tokenHint: 'Create a Personal Access Token in Azure DevOps (User settings → Personal access tokens). Select Full access or at minimum Work Items → Read & write.',
+    tokenHint: 'Open your Azure DevOps project in the browser and copy the URL from the address bar (e.g. https://dev.azure.com/myorg/MyProject). Then go to User settings → Personal access tokens → New token and create a token with Work Items → Read & write scope.',
     tokenUrl: 'https://dev.azure.com',
-    env: 'AZURE_DEVOPS_PAT=your-pat-here\nAZURE_DEVOPS_ORG=your-org-name\nAZURE_DEVOPS_PROJECT=your-project-name',
-    note: 'AZURE_DEVOPS_ORG is your organisation name (e.g. mycompany in dev.azure.com/mycompany). For legacy visualstudio.com or on-premises servers, set AZURE_DEVOPS_ORG_URL to the full base URL instead.',
+    env: 'AZURE_DEVOPS_URL=https://dev.azure.com/your-org/your-project\nAZURE_DEVOPS_PAT=your-pat-here',
+    note: 'AZURE_DEVOPS_URL works for all URL shapes — paste exactly what is in your browser. Legacy visualstudio.com URLs and on-premises servers are supported too.',
   },
 ]
 

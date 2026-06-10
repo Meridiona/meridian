@@ -107,32 +107,40 @@ Worklogs are **never posted automatically** — Meridian drafts them for you to 
 
 ### Azure DevOps
 
-1. Create a Personal Access Token (PAT) in Azure DevOps:
-   - Go to **User settings → Personal access tokens → New token**
-   - Set expiry as required by your org
-   - Required scope: **Work Items → Read & write**
-   - Prefer project-scoped or org-scoped PATs over global ones (global PATs are being retired by Microsoft)
+Just two things needed: your project URL and a PAT.
 
-2. Add to config:
-```dotenv
-AZURE_DEVOPS_PAT=your-pat-here
-AZURE_DEVOPS_ORG=your-org-name      # e.g. mycompany (→ dev.azure.com/mycompany)
-AZURE_DEVOPS_PROJECT=YourProject    # e.g. WebApp
+**Step 1 — Project URL**
+
+Open your Azure DevOps project in a browser and copy the URL from the address bar. It will look like one of these:
+
+```
+Cloud (standard):  https://dev.azure.com/mycompany/MyProject
+Cloud (legacy):    https://mycompany.visualstudio.com/MyProject
+On-premises:       https://tfs.corp.com/DefaultCollection/MyProject
 ```
 
-**Legacy cloud (`*.visualstudio.com`) or on-premises (TFS / Azure DevOps Server):**
+**Step 2 — Personal Access Token**
+
+Go to **User settings (avatar, top-right) → Personal access tokens → New token**.
+- Required scope: **Work Items → Read & write**
+- Choose org-scoped (not global) — global PATs are being retired by Microsoft
+
+**Step 3 — Add to config**
+
 ```dotenv
+AZURE_DEVOPS_URL=https://dev.azure.com/mycompany/MyProject   ← paste your URL here
 AZURE_DEVOPS_PAT=your-pat-here
-AZURE_DEVOPS_ORG_URL=https://mycompany.visualstudio.com   # or https://tfs.corp.com/DefaultCollection
-AZURE_DEVOPS_PROJECT=YourProject
 ```
 
-Meridian syncs all work items assigned to you in the configured project that are not in a "Completed" or "Removed" state. State filtering is dynamic — any custom state names your org uses are handled automatically.
+Run `meridian config edit` to open the config file, add the two lines, save, then:
 
-Then restart:
 ```bash
 meridian restart
 ```
+
+Meridian syncs all work items assigned to you that are not completed. State filtering is dynamic — custom state names (any board workflow) are handled automatically.
+
+> You can also run `meridian setup` and choose **Azure DevOps** to be prompted interactively instead of editing the file manually.
 
 ---
 
