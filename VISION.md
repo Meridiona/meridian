@@ -34,12 +34,12 @@ Zero config, zero prompts, zero UI interaction required. It runs in the backgrou
 
 - **Correctness over features.** A wrong session boundary or a wrong task assignment is worse than no feature at all. Accuracy is non-negotiable.
 - **Minimal footprint.** Meridian runs 24/7 in the background. It should be invisible — never competing with the work it's recording.
-- **Local-first always.** All data stays on the machine. No network calls, no telemetry, no remote dependencies. Privacy through architecture, not promises.
+- **Local-first always.** Capture and classification run on-device; no analytics servers, no default telemetry, and Meridiana never receives your data. The only outbound traffic is the ticket updates you approve, sent directly to the trackers you connect. Privacy through architecture, not promises.
 - **No feature creep.** Every feature must serve the core loop: capture → classify → sync. If it doesn't, it doesn't ship.
 
 ## What we believe
 
 - Ambient data should require zero user effort to structure.
 - AI tools are only as good as the context they receive. Bad data in, bad answers out.
-- Local computation is a feature. Privacy through architecture, not promises.
+- On-device computation is a feature. Your work data never reaches our servers.
 - The unglamorous infrastructure — reliable capture, stable data, correct math — is what makes everything else possible.

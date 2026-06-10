@@ -328,6 +328,14 @@ cmd_smoke() {
         printf "  %s\n" "════════════════════════════════════════════════════════"
     fi
 
+    # Hardware that can never run MLX (recorded by the installers): skip the
+    # probe instead of failing with a remedy that cannot work.
+    if grep -q '^mlx=unsupported_intel_hardware$' "${HOME}/.meridian/capabilities" 2>/dev/null; then
+        _smoke_row "·" "2" "mlx" "unsupported on this hardware (Intel Mac) — smoke skipped"
+        echo ""
+        return 0
+    fi
+
     # Quick reachability probe — if the server isn't up, nothing else can run.
     local reach_ok=0
     set +e

@@ -6,7 +6,9 @@
 
 ## Overview
 
-Meridian is a local-first activity-tracking daemon that normalizes screen-capture frames from screenpipe into structured app sessions. All data is processed and stored locally on your machine — Meridiana does not collect, transmit, or store your activity data on any remote server.
+Meridian is a local-first developer-efficiency tool that turns your activity into structured work sessions and keeps your project management in sync. Capture and classification run on-device, and **Meridiana (the company) never receives your activity data** — there are no analytics servers and no telemetry by default.
+
+Meridian does make network calls, but only ones you control: it sends the ticket updates you approve directly from your machine to the trackers *you* connect (Jira, GitHub, Linear). Each kind of outbound traffic is described below.
 
 ---
 
@@ -15,8 +17,8 @@ Meridian is a local-first activity-tracking daemon that normalizes screen-captur
 Meridian itself collects **no data**. Instead:
 
 - **screenpipe** (a separate process you control) captures screen frames, OCR text, audio transcriptions, and UI element metadata according to its own configuration
-- **Meridian** reads screenpipe's local SQLite database (`~/.screenpipe/db.sqlite`), normalizes the raw captures into app-based activity sessions, and stores them in its own database (`~/.meridian/meridian.db`)
-- **Your machine only** — all processing happens locally; nothing leaves your computer
+- **Meridian** reads screenpipe's local SQLite database (`~/.screenpipe/db.sqlite`), structures the raw captures into app-based activity sessions, and stores them in its own database (`~/.meridian/meridian.db`)
+- **Processed on-device** — capture, structuring, and classification all happen locally; your screen content is never sent to Meridiana. The only data that leaves your machine is described under [Third-party Integrations](#third-party-integrations) and [Optional cloud LLM](#optional-cloud-llm) below
 
 ---
 
@@ -44,6 +46,14 @@ When you authorize an integration:
 2. The OAuth token or API key is stored **only on your machine**
 3. Meridian makes API calls **directly from your machine** to the third-party service using that token
 4. Meridiana (the company) never sees your credentials, tokens, or the data you exchange
+
+---
+
+## Optional cloud LLM
+
+By default, classification and summarisation run **on-device** using a local model (MLX). You can optionally configure a cloud LLM (any OpenAI-compatible endpoint, e.g. OpenRouter) as a fallback for machines that can't run the local model.
+
+**If you enable this, session text — which may include OCR'd screen content — is sent to that provider** so it can classify the session. This is **off by default**; it only happens if you set a cloud LLM API key in your configuration. Choose a provider you trust, and review its data-handling policy. To keep everything on-device, leave the cloud LLM unconfigured.
 
 ---
 
