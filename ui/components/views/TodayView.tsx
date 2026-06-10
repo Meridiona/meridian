@@ -252,7 +252,7 @@ function BucketRow({ bucket, agentSummaries = [] }: { bucket: Bucket; agentSumma
         className="w-full text-left grid grid-cols-[auto_1fr_200px_auto] items-center gap-5 px-5 py-4 transition-colors"
         style={{ background: open ? 'var(--surface-2)' : 'var(--surface)' }}
       >
-        <span className="font-mono tnum text-[12px] w-[72px]" style={{ color: 'var(--ink-2)' }}>
+        <span className="font-mono tnum text-[12px] w-[92px] shrink-0" style={{ color: 'var(--ink-2)' }}>
           {!bucket.isOverhead && !bucket.isUntracked && !bucket.isQueue
             ? <TaskKey keyId={bucket.key} />
             : <span style={{ color: 'var(--ink-3)' }}>

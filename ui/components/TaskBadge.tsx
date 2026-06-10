@@ -4,6 +4,7 @@
 import { ExternalLink } from 'lucide-react'
 import { clsx } from 'clsx'
 import * as Tooltip from '@radix-ui/react-tooltip'
+import { shortTaskKey } from '@/components/atoms'
 
 interface TaskBadgeProps {
   taskKey: string | null
@@ -158,7 +159,7 @@ export default function TaskBadge({
   if (sessionType === 'task' && routing === 'auto' && taskKey) {
     const inner = (
       <>
-        <span className="font-mono">{taskKey}</span>
+        <span className="font-mono whitespace-nowrap">{shortTaskKey(taskKey)}</span>
         {taskUrl && <ExternalLink className="w-2.5 h-2.5 opacity-60" />}
       </>
     )
@@ -197,7 +198,7 @@ export default function TaskBadge({
           'bg-[#FEF9EC] text-[#92400E] border border-[#FDE68A]',
           sizeClass,
         )}>
-          <span className="font-mono">{taskKey ?? 'queued'}</span>
+          <span className="font-mono whitespace-nowrap">{taskKey ? shortTaskKey(taskKey) : 'queued'}</span>
           <span className="opacity-60">?</span>
         </span>
       </WithTooltip>
