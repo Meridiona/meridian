@@ -1,3 +1,15 @@
+# [1.40.0](https://github.com/Meridiona/meridian/compare/v1.39.2...v1.40.0) (2026-06-10)
+
+
+### Bug Fixes
+
+* **install:** make meridian update atomic — stage and swap instead of rm-rf in place ([#236](https://github.com/Meridiona/meridian/issues/236)) ([e8599af](https://github.com/Meridiona/meridian/commit/e8599af7714118a32108361c9cd7315aeae75947))
+
+
+### Features
+
+* **ui:** group Today task buckets by integration, show titles & time-chunked summaries ([#235](https://github.com/Meridiona/meridian/issues/235)) ([753eaa0](https://github.com/Meridiona/meridian/commit/753eaa0edd2553fb60d79c9c36437e1f642849d3)), closes [Meridiona/meridian#194](https://github.com/Meridiona/meridian/issues/194) [#123](https://github.com/Meridiona/meridian/issues/123)
+
 ## [1.39.2](https://github.com/Meridiona/meridian/compare/v1.39.1...v1.39.2) (2026-06-10)
 
 
