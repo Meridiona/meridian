@@ -14,7 +14,7 @@ This installs Node if missing, installs the `meridian` CLI, then runs `meridian 
 
 `meridian setup` will walk you through:
 1. Granting **Screen Recording** and **Accessibility** permissions to screenpipe (required)
-2. Connecting your issue tracker (Jira, Linear, or GitHub)
+2. Connecting your issue tracker (Jira, Linear, GitHub, Trello, or Azure DevOps)
 
 ---
 
@@ -33,7 +33,7 @@ meridian restart
 
 ---
 
-## Connect your tracker (Jira, Linear, GitHub, or Trello)
+## Connect your tracker (Jira, Linear, GitHub, Trello, or Azure DevOps)
 
 Edit the config file:
 
@@ -104,6 +104,43 @@ meridian restart
 Your token is saved to `~/.meridian/oauth/trello.json`. Meridian syncs open cards assigned to you across all your boards.
 
 Worklogs are **never posted automatically** — Meridian drafts them for you to review and approve in the dashboard.
+
+### Azure DevOps
+
+Just two things needed: your project URL and a PAT.
+
+**Step 1 — Project URL**
+
+Open your Azure DevOps project in a browser and copy the URL from the address bar. It will look like one of these:
+
+```
+Cloud (standard):  https://dev.azure.com/mycompany/MyProject
+Cloud (legacy):    https://mycompany.visualstudio.com/MyProject
+On-premises:       https://tfs.corp.com/DefaultCollection/MyProject
+```
+
+**Step 2 — Personal Access Token**
+
+Go to **User settings (avatar, top-right) → Personal access tokens → New token**.
+- Required scope: **Work Items → Read & write**
+- Choose org-scoped (not global) — global PATs are being retired by Microsoft
+
+**Step 3 — Add to config**
+
+```dotenv
+AZURE_DEVOPS_URL=https://dev.azure.com/mycompany/MyProject   ← paste your URL here
+AZURE_DEVOPS_PAT=your-pat-here
+```
+
+Run `meridian config edit` to open the config file, add the two lines, save, then:
+
+```bash
+meridian restart
+```
+
+Meridian syncs all work items assigned to you that are not completed. State filtering is dynamic — custom state names (any board workflow) are handled automatically.
+
+> You can also run `meridian setup` and choose **Azure DevOps** to be prompted interactively instead of editing the file manually.
 
 ---
 

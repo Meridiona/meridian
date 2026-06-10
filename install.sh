@@ -142,6 +142,7 @@ prompt_category() {
 # GitHub setup helpers — shared with scripts/install-from-bundle.sh.
 source "${REPO_ROOT}/scripts/lib-github-setup.sh"
 source "${REPO_ROOT}/scripts/lib-jira-setup.sh"
+source "${REPO_ROOT}/scripts/lib-azure-setup.sh"
 
 prompt_env_vars() {
     if [[ "${SKIP_ENV:-0}" == "1" ]]; then
@@ -189,6 +190,11 @@ prompt_env_vars() {
     if prompt_category "Linear"; then
         prompt_env_var "LINEAR_API_KEY" "Linear API key" 1 "$root_env"
         prompt_env_var "LINEAR_TEAM_IDS" "Linear team IDs (optional, comma-sep)" 0 "$root_env"
+    fi
+    echo
+
+    if prompt_category "Azure DevOps (VSTS)"; then
+        setup_azure_devops "$root_env"
     fi
     echo
 
