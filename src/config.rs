@@ -325,12 +325,16 @@ fn parse_azure_devops() -> Option<PmProviderConfig> {
         let base = url.trim().trim_end_matches('/').to_owned();
         let project = std::env::var("AZURE_DEVOPS_PROJECT").ok()?;
         let project = project.trim().to_owned();
-        if project.is_empty() { return None; }
+        if project.is_empty() {
+            return None;
+        }
         (base, project)
     } else {
         let org = std::env::var("AZURE_DEVOPS_ORG").ok()?;
         let org = org.trim();
-        if org.is_empty() { return None; }
+        if org.is_empty() {
+            return None;
+        }
         let base = if org.contains("://") {
             org.trim_end_matches('/').to_owned()
         } else if org.contains(".visualstudio.com") {
@@ -340,7 +344,9 @@ fn parse_azure_devops() -> Option<PmProviderConfig> {
         };
         let project = std::env::var("AZURE_DEVOPS_PROJECT").ok()?;
         let project = project.trim().to_owned();
-        if project.is_empty() { return None; }
+        if project.is_empty() {
+            return None;
+        }
         (base, project)
     };
 
@@ -705,28 +711,32 @@ mod tests {
 
     #[test]
     fn test_split_azure_devops_url_cloud_standard() {
-        let (base, project) = split_azure_devops_url("https://dev.azure.com/mycompany/MyProject").unwrap();
+        let (base, project) =
+            split_azure_devops_url("https://dev.azure.com/mycompany/MyProject").unwrap();
         assert_eq!(base, "https://dev.azure.com/mycompany");
         assert_eq!(project, "MyProject");
     }
 
     #[test]
     fn test_split_azure_devops_url_visualstudio() {
-        let (base, project) = split_azure_devops_url("https://mycompany.visualstudio.com/MyProject").unwrap();
+        let (base, project) =
+            split_azure_devops_url("https://mycompany.visualstudio.com/MyProject").unwrap();
         assert_eq!(base, "https://mycompany.visualstudio.com");
         assert_eq!(project, "MyProject");
     }
 
     #[test]
     fn test_split_azure_devops_url_on_premises() {
-        let (base, project) = split_azure_devops_url("https://tfs.corp.com/DefaultCollection/MyProject").unwrap();
+        let (base, project) =
+            split_azure_devops_url("https://tfs.corp.com/DefaultCollection/MyProject").unwrap();
         assert_eq!(base, "https://tfs.corp.com/DefaultCollection");
         assert_eq!(project, "MyProject");
     }
 
     #[test]
     fn test_split_azure_devops_url_trailing_slash() {
-        let (base, project) = split_azure_devops_url("https://dev.azure.com/mycompany/MyProject/").unwrap();
+        let (base, project) =
+            split_azure_devops_url("https://dev.azure.com/mycompany/MyProject/").unwrap();
         assert_eq!(base, "https://dev.azure.com/mycompany");
         assert_eq!(project, "MyProject");
     }
