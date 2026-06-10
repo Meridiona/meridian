@@ -19,6 +19,32 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICES_DIR="${REPO_ROOT}/services"
 
+# MLX needs a native arm64 CPython: mlx ships arm64-only wheels (Metal), and a
+# Rosetta/Intel python3 from PATH either fails the resolve or leaves a
+# mixed-architecture venv. So on Apple Silicon the venv is built from a
+# uv-MANAGED interpreter pinned by full build key — never the PATH python.
+MERIDIAN_PY_BUILD="cpython-3.11-macos-aarch64-none"
+
+# Hardware probe: hw.optional.arm64 stays 1 in a Rosetta (x86_64) shell on
+# Apple Silicon, where uname -m reports the process arch and lies.
+APPLE_SILICON=0
+if [[ "$(uname -s)" == "Darwin" \
+      && "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" == "1" ]]; then
+    APPLE_SILICON=1
+fi
+
+# Record MLX capability for `meridian doctor`: on unsupported hardware it
+# reports "unsupported" with the degradation story instead of an unfixable
+# "server down → meridian start" loop.
+mkdir -p "${HOME}/.meridian"
+CAPABILITIES_FILE="${HOME}/.meridian/capabilities"
+_mlx_cap="supported"
+if [[ "$(uname -s)" == "Darwin" && "${APPLE_SILICON}" -eq 0 ]]; then
+    _mlx_cap="unsupported_intel_hardware"
+fi
+{ grep -v '^mlx=' "${CAPABILITIES_FILE}" 2>/dev/null || true; echo "mlx=${_mlx_cap}"; } \
+    > "${CAPABILITIES_FILE}.tmp" && mv "${CAPABILITIES_FILE}.tmp" "${CAPABILITIES_FILE}"
+
 USE_MLX=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -49,13 +75,16 @@ echo "  ✓ uv $("${UV_BIN}" --version | awk '{print $2}')"
 #    This venv is for interactive dev use (terminal, evals, scripts).
 #    The launchd daemon uses ~/.meridian/mlx-server-venv instead (see above).
 if [[ "${USE_MLX}" -eq 1 ]]; then
-    if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
-        echo "✗ --mlx requires Apple Silicon (arm64 macOS)" >&2
+    if [[ "${APPLE_SILICON}" -ne 1 ]]; then
+        echo "✗ --mlx requires Apple Silicon hardware (mlx has no x86_64 wheels)" >&2
+        echo "  Summaries still work via the agent CLIs; re-run without --mlx." >&2
         exit 1
     fi
     echo "Installing Python services (mlx + pm_worklog_update) to services/.venv..."
+    "${UV_BIN}" python install "${MERIDIAN_PY_BUILD}"
     "${UV_BIN}" sync --project "${SERVICES_DIR}" \
-        --extra mlx --extra pm_worklog_update --python 3.11
+        --extra mlx --extra pm_worklog_update \
+        --python "${MERIDIAN_PY_BUILD}" --python-preference only-managed
     echo "  ✓ mlx + pm_worklog_update extras installed"
 
     if ! "${UV_BIN}" run --no-sync --project "${SERVICES_DIR}" \
@@ -66,10 +95,16 @@ if [[ "${USE_MLX}" -eq 1 ]]; then
     echo "  ✓ meridian-server script available"
 else
     echo "Installing Python services to services/.venv..."
-    "${UV_BIN}" sync --project "${SERVICES_DIR}" --python 3.11
+    if [[ "${APPLE_SILICON}" -eq 1 ]]; then
+        "${UV_BIN}" python install "${MERIDIAN_PY_BUILD}"
+        "${UV_BIN}" sync --project "${SERVICES_DIR}" \
+            --python "${MERIDIAN_PY_BUILD}" --python-preference only-managed
+    else
+        "${UV_BIN}" sync --project "${SERVICES_DIR}" --python 3.11
+    fi
     echo "  ✓ core dependencies installed"
 
-    if [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]]; then
+    if [[ "${APPLE_SILICON}" -eq 1 ]]; then
         echo "Apple Silicon detected — installing mlx-lm for local inference..."
         "${UV_BIN}" pip install --python "${SERVICES_DIR}/.venv/bin/python" "mlx-lm>=0.22,<1"
         echo "  ✓ mlx-lm installed"
