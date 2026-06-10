@@ -49,6 +49,8 @@ A local dashboard at **http://localhost:3939** shows your day as a timeline and 
 
 **Requirements:** macOS on Apple Silicon (M1+).
 
+> The on-device model runs on [MLX](https://github.com/ml-explore/mlx) (Metal-based, arm64-only), so **Intel Macs are not supported** — the installer checks the hardware and refuses cleanly. **Windows and Linux are not supported** either: the capture and service stack is macOS-only. Rosetta toolchains (x86_64 terminal, Homebrew, or Python) on an Apple Silicon Mac are fine — Python services are built from a pinned, uv-managed arm64 interpreter regardless of what's on your `PATH`.
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Meridiona/meridian/main/scripts/bootstrap.sh | bash
 ```
