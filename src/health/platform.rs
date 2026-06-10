@@ -146,6 +146,19 @@ pub fn screenpipe_service() -> Vec<Check> {
     vec![plist_check(LABEL_SCREENPIPE, "screenpipe plist"), run]
 }
 
+/// MLX capability recorded by the installers in `~/.meridian/capabilities`.
+/// `mlx=unsupported_intel_hardware` means this Mac can never run MLX (mlx
+/// ships arm64-only wheels) — doctor reports that as fact, not as a failure
+/// with an unfollowable remedy.
+pub fn mlx_unsupported() -> bool {
+    std::fs::read_to_string(home().join(".meridian/capabilities"))
+        .map(|s| {
+            s.lines()
+                .any(|l| l.trim() == "mlx=unsupported_intel_hardware")
+        })
+        .unwrap_or(false)
+}
+
 pub fn mlx_service(_cfg: &Config) -> Vec<Check> {
     let run = match launchd_pid(LABEL_MLX) {
         Some(pid) => Check::ok("mlx service", "L2", format!("pid {pid}")),
@@ -156,24 +169,56 @@ pub fn mlx_service(_cfg: &Config) -> Vec<Check> {
 }
 
 fn venv_check() -> Check {
-    let py = match repo_root() {
-        Some(r) => r.join("services/.venv/bin/python"),
-        None => return Check::info("python venv", "system", "repo root not found"),
+    // Source checkout: <repo>/services/.venv. Bundle install: the venv lives
+    // under ~/.meridian/app (no Cargo.toml, so repo_root() is None).
+    let (py, remedy) = match repo_root() {
+        Some(r) => (
+            r.join("services/.venv/bin/python"),
+            "bash scripts/setup-services.sh",
+        ),
+        None => (
+            home().join(".meridian/app/services/.venv/bin/python"),
+            "meridian update",
+        ),
     };
     if !is_exec(&py) {
-        return Check::critical("python venv", "system", ".venv missing")
-            .with_remedy("bash scripts/setup-services.sh");
+        return Check::critical("python venv", "system", ".venv missing").with_remedy(remedy);
     }
+    // A venv built by a Rosetta/Intel python3 carries x86_64 native extensions
+    // an arm64 interpreter can never import — rebuilding is the only fix.
+    let arch = Command::new(&py)
+        .args(["-c", "import platform; print(platform.machine())"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    match arch.as_deref() {
+        Some("arm64") => {}
+        Some(other) => {
+            return Check::critical(
+                "python venv",
+                "system",
+                format!("venv python is {other}, not arm64 — mixed-architecture venv"),
+            )
+            .with_remedy(remedy)
+        }
+        None => {
+            return Check::critical("python venv", "system", "venv python failed to run")
+                .with_remedy(remedy)
+        }
+    }
+    // Import the module the launchd agent actually execs (`python -m
+    // agents.server`) — pulls in pydantic/fastapi/mlx, so it catches broken or
+    // mixed-architecture native extensions, not just a present venv dir.
     let ok = Command::new(&py)
-        .args(["-c", "import run_agent"])
+        .args(["-c", "import agents.server"])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
     if ok {
-        Check::ok("python venv", "system", "run_agent importable")
+        Check::ok("python venv", "system", "agents.server importable")
     } else {
-        Check::critical("python venv", "system", "run_agent import failed")
-            .with_remedy("bash scripts/setup-services.sh")
+        Check::critical("python venv", "system", "agents.server import failed").with_remedy(remedy)
     }
 }
 
