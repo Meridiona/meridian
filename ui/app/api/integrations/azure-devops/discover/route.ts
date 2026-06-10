@@ -24,6 +24,14 @@ async function fetchJson<T>(url: string, pat: string): Promise<{ data: T | null;
   }
 }
 
+// fetchJson reports network-level failures (DNS, unreachable host) as status 0,
+// which would otherwise surface as a meaningless "HTTP 0" to the user.
+function errorMessage(status: number, permissionMsg: string): string {
+  if (status === 0) return 'Could not reach Azure DevOps — check the URL and your network'
+  if (status === 401 || status === 403) return permissionMsg
+  return `Azure DevOps returned HTTP ${status}`
+}
+
 interface ProfileResponse { id: string }
 interface AccountsResponse { value: Array<{ accountName: string }> }
 interface ProjectsResponse { value: Array<{ name: string }> }
@@ -48,9 +56,7 @@ export async function POST(request: Request) {
       pat,
     )
     if (!data) {
-      const msg = status === 401 || status === 403
-        ? 'PAT is invalid or lacks Work Items → Read & write scope'
-        : `Azure DevOps returned HTTP ${status}`
+      const msg = errorMessage(status, 'PAT is invalid or lacks Work Items → Read & write scope')
       return NextResponse.json({ error: msg, detail: error }, { status: 502 })
     }
     const projects = data.value.map(p => p.name).sort((a, b) => a.localeCompare(b))
@@ -63,9 +69,7 @@ export async function POST(request: Request) {
     pat,
   )
   if (!profile.data) {
-    const msg = profile.status === 401 || profile.status === 403
-      ? 'PAT is invalid or expired — check it and try again'
-      : `Azure DevOps profile API returned HTTP ${profile.status}`
+    const msg = errorMessage(profile.status, 'PAT is invalid or expired — check it and try again')
     return NextResponse.json({ error: msg, detail: profile.error }, { status: 502 })
   }
 
@@ -75,10 +79,10 @@ export async function POST(request: Request) {
     pat,
   )
   if (!accounts.data) {
-    return NextResponse.json(
-      { error: `Could not list organizations (HTTP ${accounts.status})`, detail: accounts.error },
-      { status: 502 },
-    )
+    const msg = accounts.status === 0
+      ? 'Could not reach Azure DevOps — check the URL and your network'
+      : `Could not list organizations (HTTP ${accounts.status})`
+    return NextResponse.json({ error: msg, detail: accounts.error }, { status: 502 })
   }
 
   const orgs = accounts.data.value.map(a => a.accountName).sort((a, b) => a.localeCompare(b))

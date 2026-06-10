@@ -244,22 +244,32 @@ pub async fn refresh_if_stale(
 }
 
 /// Unconditionally refresh the Azure DevOps task cache.
+///
+/// Any failure inside the refresh — WIQL, batch fetch, upsert, prune — is
+/// recorded in `pm_sync_state.last_error` so the UI can surface it. The stamp
+/// itself is best-effort: a failed stamp must never mask the original error.
 #[tracing::instrument(skip(pool, cfg), fields(provider = "azure_devops"))]
 pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result<Vec<String>> {
+    match refresh_inner(pool, cfg).await {
+        Ok(kept) => Ok(kept),
+        Err(e) => {
+            let msg = e.to_string();
+            if let Err(stamp_err) = stamp_error(pool, &msg).await {
+                tracing::warn!(error = %stamp_err, "failed to record azure_devops sync error");
+            }
+            Err(e)
+        }
+    }
+}
+
+async fn refresh_inner(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result<Vec<String>> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .context("building HTTP client")?;
 
     // 1. WIQL: all work items assigned to me.
-    let all_ids = match run_wiql(&client, cfg).await {
-        Ok(ids) => ids,
-        Err(e) => {
-            let msg = e.to_string();
-            stamp_error(pool, &msg).await?;
-            return Err(e);
-        }
-    };
+    let all_ids = run_wiql(&client, cfg).await?;
     tracing::debug!(count = all_ids.len(), "azure_devops: WIQL returned IDs");
 
     if all_ids.is_empty() {
@@ -436,7 +446,9 @@ async fn stamp_error(pool: &SqlitePool, error: &str) -> Result<()> {
     sqlx::query(
         "INSERT INTO pm_sync_state (provider, last_synced_at, last_error)
          VALUES ('azure_devops', ?, ?)
-         ON CONFLICT(provider) DO UPDATE SET last_error = excluded.last_error",
+         ON CONFLICT(provider) DO UPDATE SET
+           last_synced_at = excluded.last_synced_at,
+           last_error     = excluded.last_error",
     )
     .bind(&now)
     .bind(error)
