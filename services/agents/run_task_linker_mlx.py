@@ -491,7 +491,8 @@ def _fetch_pm_tasks(con: _sqlite3.Connection) -> list[dict[str, Any]]:
         "       COALESCE(issue_type,'') AS issue_type,"
         "       COALESCE(parent_key,'') AS parent_key,"
         "       COALESCE(epic_title,'') AS epic_title,"
-        "       COALESCE(sprint_name,'') AS sprint_name"
+        "       COALESCE(sprint_name,'') AS sprint_name,"
+        "       COALESCE(tags,'') AS tags"
         " FROM pm_tasks",
     ).fetchall()
     return [dict(r) for r in rows]

@@ -101,9 +101,10 @@ def _format_candidates(tasks: list[dict]) -> str:
         issue_type  = (task.get("issue_type") or "").strip()
         epic_title  = (task.get("epic_title") or "").strip()
         sprint_name = (task.get("sprint_name") or "").strip()
+        tags        = (task.get("tags") or "").strip()
         if len(desc) > 240:
             desc = desc[:240] + "…"
-        meta_parts = [p for p in [issue_type, f"Epic: {epic_title}" if epic_title else "", sprint_name] if p]
+        meta_parts = [p for p in [issue_type, f"Epic: {epic_title}" if epic_title else "", sprint_name, f"tags: {tags}" if tags else ""] if p]
         meta = "  [" + " · ".join(meta_parts) + "]" if meta_parts else ""
         rows.append(
             f"{i}. {task['task_key']}{meta}\n"
