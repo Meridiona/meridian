@@ -10,10 +10,11 @@ import type { IntegrationsResponse } from '@/app/api/integrations/route'
 const TASKS_POLL_INTERVAL_MS = 60_000
 
 const PROVIDER_META: Record<string, { label: string; color: string; glyph: string }> = {
-  jira:   { label: 'Jira',   color: '#2684FF', glyph: 'Ji' },
-  linear: { label: 'Linear', color: '#5E6AD2', glyph: 'Li' },
-  github: { label: 'GitHub', color: '#24292F', glyph: 'Gh' },
-  trello: { label: 'Trello', color: '#0052CC', glyph: 'Tr' },
+  jira:         { label: 'Jira',          color: '#2684FF', glyph: 'Ji' },
+  linear:       { label: 'Linear',        color: '#5E6AD2', glyph: 'Li' },
+  github:       { label: 'GitHub',        color: '#24292F', glyph: 'Gh' },
+  trello:       { label: 'Trello',        color: '#0052CC', glyph: 'Tr' },
+  azure_devops: { label: 'Azure DevOps',  color: '#0078D4', glyph: 'Az' },
 }
 
 export default function TasksView({ focusKey }: { focusKey?: string | null }) {
@@ -360,7 +361,7 @@ function TaskDetail({ task, sessions }: { task: TaskSummary; sessions: TodayResp
 // up and, on click, expands the exact steps to connect one. Deliberately quiet:
 // a single status line per tracker, details only when asked for.
 
-type TrackerId = 'jira' | 'linear' | 'github' | 'trello'
+type TrackerId = 'jira' | 'linear' | 'github' | 'trello' | 'azure_devops'
 
 const TRACKERS: Array<{
   id: TrackerId
@@ -413,12 +414,22 @@ const TRACKERS: Array<{
       hint: 'Connect with your browser — no API token to create.',
     },
   },
+  {
+    id: 'azure_devops',
+    name: 'Azure DevOps',
+    glyph: 'Az',
+    color: '#0078D4',
+    tokenHint: 'Open your Azure DevOps project in the browser and copy the URL from the address bar (e.g. https://dev.azure.com/myorg/MyProject). Then go to User settings → Personal access tokens → New token and create a token with Work Items → Read & write scope.',
+    tokenUrl: 'https://dev.azure.com',
+    env: 'AZURE_DEVOPS_URL=https://dev.azure.com/your-org/your-project\nAZURE_DEVOPS_PAT=your-pat-here',
+    note: 'AZURE_DEVOPS_URL works for all URL shapes — paste exactly what is in your browser. Legacy visualstudio.com URLs and on-premises servers are supported too.',
+  },
 ]
 
 function ConnectTrackers({ integrations, onDisconnect }: { integrations: IntegrationsResponse | null; onDisconnect?: () => void }) {
   const [open, setOpen] = useState<TrackerId | null>(null)
   const [disconnecting, setDisconnecting] = useState<TrackerId | null>(null)
-  const anyConnected = !!integrations && (integrations.jira || integrations.linear || integrations.github || integrations.trello)
+  const anyConnected = !!integrations && (integrations.jira || integrations.linear || integrations.github || integrations.trello || integrations.azure_devops)
 
   const handleDisconnect = (id: TrackerId) => {
     setDisconnecting(id)

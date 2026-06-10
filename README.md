@@ -11,6 +11,12 @@
 
 </div>
 
+- **Cloud LLM** — `OPENROUTER_API_KEY` (skip if you're running a local LLM)
+- **Jira** — easiest is browser OAuth: run `meridian oauth-login jira` (no API token needed). Legacy path: URL, email, API token, project keys (gated by `[y/N]`)
+- **GitHub** — token (auto-extracted from the `gh` CLI, no PAT needed) + GitHub Projects to sync
+- **Linear** — API key, team IDs
+- **Azure DevOps** — Personal Access Token + organisation name + project (all three required)
+- **Observability (OpenObserve)** — base64 auth + OTLP endpoints
 Meridian is an ambient developer-efficiency tool. It runs quietly on your Mac, understands what you're working on, and keeps your tickets in **Jira, GitHub Issues, and Linear** in sync — so you never start a timer, fill out a form, or drag a card again.
 
 Not a time tracker you fill out. Not a dashboard you check. A background layer that watches what you build and keeps your project management current — with zero effort.
@@ -56,6 +62,39 @@ npm install -g @meridiona/meridian
 meridian setup
 ```
 
+## Supported PM tools
+
+Connect one or more trackers and Meridian maps captured work sessions to tasks, then posts time-logged worklogs as comments on the task.
+
+| Tracker | Auth | Worklog mechanism | Cloud / on-prem |
+|---|---|---|---|
+| **Jira** | Browser OAuth (recommended) or Basic (URL + email + API token) | Native Jira worklog endpoint | Cloud (Atlassian) |
+| **GitHub** | `gh` CLI token (no PAT needed) or classic PAT | Issue comment (no native time-tracking API) | Cloud only |
+| **Linear** | Personal API key | Issue comment (no native time-tracking API) | Cloud only |
+| **Trello** | Browser OAuth | Card comment (no native time-tracking API) | Cloud only |
+| **Azure DevOps** | Personal Access Token (PAT) with Work Items Read & write scope | Work item comment (no native time-tracking API) | Cloud (`dev.azure.com`) + legacy (`*.visualstudio.com`) + on-premises (TFS/Azure DevOps Server) |
+
+### Azure DevOps quick-start
+
+Just two variables — paste your project URL from the browser and your PAT:
+
+```bash
+# Add to .env (or run meridian setup to be prompted interactively)
+AZURE_DEVOPS_URL=https://dev.azure.com/your-org/your-project
+AZURE_DEVOPS_PAT=your-pat-here
+```
+
+`AZURE_DEVOPS_URL` works for all three URL shapes: `dev.azure.com/org/project`, `org.visualstudio.com/project`, and on-premises servers — meridian auto-extracts the org and project.
+
+To create a PAT: **User settings → Personal access tokens → New token**, scope: **Work Items → Read & write**.
+
+```bash
+# Verify tasks synced
+meridian force-pm-sync
+sqlite3 ~/.meridian/meridian.db "SELECT task_key, title FROM pm_tasks WHERE provider='azure_devops';"
+```
+
+## Data location
 👉 **Full walkthrough — permissions, tracker setup, configuration, troubleshooting: [SETUP.md](SETUP.md).**
 
 ## Quickstart
