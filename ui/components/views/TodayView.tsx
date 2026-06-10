@@ -1,18 +1,18 @@
 // meridian — normalises screenpipe activity into structured app sessions
 'use client'
 
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, Fragment } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   fmtDur, fmtDurDecimal, fmtClock,
-  CATS, AppGlyph, CatDot, LiveDot,
+  CATS, AppGlyph, CatDot, LiveDot, ProviderGlyph, PROVIDER_META,
   TaskKey, ConfidenceRing, SegBar, SectionHead, Card, useTick,
 } from '@/components/atoms'
 import TaskBadge from '@/components/TaskBadge'
 import ShapeOfDay from '@/components/ShapeOfDay'
 import DayTimeline from '@/components/DayTimeline'
 import TodayMetrics from '@/components/TodayMetrics'
-import type { TodayResponse } from '@/app/api/today/route'
+import type { TodayResponse, AgentSummary } from '@/app/api/today/route'
 
 interface BucketSession {
   id: number | string
@@ -26,6 +26,7 @@ interface BucketSession {
   link_method: string | null
   link_confidence: number | null
   routing: string | null
+  summary: string | null
 }
 
 interface Bucket {
@@ -168,14 +169,77 @@ function buildInsight(data: TodayResponse): string | null {
   return extra.length ? `${lead} — ${extra.join('; ')}.` : `${lead}.`
 }
 
+// ── Per-task summary chunks ──────────────────────────────────────────────────
+// Sessions on a task (foreground + coding-agent) are clustered into rolling
+// windows of at most CHUNK_MAX_SPAN_S, broken early on a CHUNK_MAX_GAP_S lull —
+// one digest line per stretch of work rather than one per session, so an
+// expanded task reads as a short narrative instead of a wall of text.
+const CHUNK_MAX_SPAN_S = 2 * 3600
+const CHUNK_MAX_GAP_S = 30 * 60
+
+interface SummaryChunk {
+  start: string
+  end: string
+  text: string
+}
+
+/** First sentence of a session summary, capped — summaries run 10-40 sentences. */
+function summaryLead(text: string): string {
+  const t = text.trim()
+  const m = t.match(/^[^.!?]*[.!?]/)
+  const s = (m ? m[0] : t).trim()
+  return s.length > 240 ? s.slice(0, 237).trimEnd() + '…' : s
+}
+
+function buildSummaryChunks(sessions: BucketSession[], agentSummaries: AgentSummary[]): SummaryChunk[] {
+  const entries = [
+    ...sessions.filter(s => s.summary).map(s => ({ started_at: s.started_at, dur: s.dur, summary: s.summary! })),
+    ...agentSummaries,
+  ].sort((a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime())
+
+  const chunks: Array<{ startMs: number; endMs: number; leads: string[] }> = []
+  for (const e of entries) {
+    const startMs = new Date(e.started_at).getTime()
+    const endMs = startMs + Math.max(0, e.dur) * 1000
+    const lead = summaryLead(e.summary)
+    const cur = chunks[chunks.length - 1]
+    if (cur && startMs - cur.startMs <= CHUNK_MAX_SPAN_S * 1000 && startMs - cur.endMs <= CHUNK_MAX_GAP_S * 1000) {
+      cur.endMs = Math.max(cur.endMs, endMs)
+      if (lead && !cur.leads.includes(lead)) cur.leads.push(lead)
+    } else {
+      chunks.push({ startMs, endMs, leads: lead ? [lead] : [] })
+    }
+  }
+
+  // Newest stretch first, matching the session list below it.
+  return chunks
+    .filter(c => c.leads.length > 0)
+    .map(c => ({
+      start: new Date(c.startMs).toISOString(),
+      end: new Date(c.endMs).toISOString(),
+      text: c.leads.join(' '),
+    }))
+    .reverse()
+}
+
 // ── Task bucket row ──────────────────────────────────────────────────────────
-function BucketRow({ bucket }: { bucket: Bucket }) {
+function BucketRow({ bucket, agentSummaries = [] }: { bucket: Bucket; agentSummaries?: AgentSummary[] }) {
   const [open, setOpen] = useState(false)
   const segs = useMemo(() => {
     const byCat: Record<string, number> = {}
     bucket.sessions.forEach(s => { byCat[s.cat] = (byCat[s.cat] ?? 0) + s.dur })
     return Object.entries(byCat).map(([cat, value]) => ({ cat, value }))
   }, [bucket.sessions])
+
+  // Latest work on top — both the digest chunks and the raw session list.
+  const recentFirst = useMemo(
+    () => [...bucket.sessions].sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime()),
+    [bucket.sessions],
+  )
+  const chunks = useMemo(
+    () => buildSummaryChunks(bucket.sessions, agentSummaries),
+    [bucket.sessions, agentSummaries],
+  )
 
   const pct = bucket.day_total_s > 0
     ? ((bucket.total_s / bucket.day_total_s) * 100).toFixed(0)
@@ -188,7 +252,7 @@ function BucketRow({ bucket }: { bucket: Bucket }) {
         className="w-full text-left grid grid-cols-[auto_1fr_200px_auto] items-center gap-5 px-5 py-4 transition-colors"
         style={{ background: open ? 'var(--surface-2)' : 'var(--surface)' }}
       >
-        <span className="font-mono tnum text-[12px] w-[72px]" style={{ color: 'var(--ink-2)' }}>
+        <span className="font-mono tnum text-[12px] w-[92px] shrink-0" style={{ color: 'var(--ink-2)' }}>
           {!bucket.isOverhead && !bucket.isUntracked && !bucket.isQueue
             ? <TaskKey keyId={bucket.key} />
             : <span style={{ color: 'var(--ink-3)' }}>
@@ -221,8 +285,24 @@ function BucketRow({ bucket }: { bucket: Bucket }) {
 
       {open && (
         <div className="px-5 pb-4 pt-1 rule-t" style={{ borderTopColor: 'var(--rule)' }}>
+          {chunks.length > 0 && (
+            <div className="py-3 space-y-2.5">
+              <p className="text-[10px] uppercase tracking-[0.16em]" style={{ color: 'var(--ink-3)' }}>Summary</p>
+              {chunks.map(c => (
+                <div key={c.start} className="grid grid-cols-[auto_1fr] gap-3">
+                  <span className="font-mono tnum text-[11px] pt-px whitespace-nowrap" style={{ color: 'var(--ink-3)' }}>
+                    {fmtClock(c.start)}–{fmtClock(c.end)}
+                  </span>
+                  <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)', textWrap: 'pretty' } as React.CSSProperties}>
+                    {c.text}
+                  </p>
+                </div>
+              ))}
+              <p className="text-[10px] uppercase tracking-[0.16em] pt-1" style={{ color: 'var(--ink-3)' }}>Sessions</p>
+            </div>
+          )}
           <div className="grid grid-cols-1 gap-px" style={{ background: 'var(--rule)' }}>
-            {bucket.sessions.map(s => (
+            {recentFirst.map(s => (
               <div key={s.id} className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-4 py-2.5 px-3"
                 style={{ background: 'var(--surface)' }}>
                 <AppGlyph app={s.app} size={20} />
@@ -248,6 +328,20 @@ function BucketRow({ bucket }: { bucket: Bucket }) {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ── Integration group header ─────────────────────────────────────────────────
+function GroupHead({ provider, label, total_s }: { provider?: string; label?: string; total_s: number }) {
+  const meta = provider ? PROVIDER_META[provider] : undefined
+  return (
+    <div className="flex items-center gap-2 px-5 py-2" style={{ background: 'var(--surface-2)' }}>
+      {provider && meta && <ProviderGlyph provider={provider} size={16} />}
+      <span className="text-[10px] uppercase tracking-[0.15em]" style={{ color: 'var(--ink-3)' }}>
+        {label ?? meta?.label ?? provider}
+      </span>
+      <span className="ml-auto font-mono tnum text-[10px]" style={{ color: 'var(--ink-4)' }}>{fmtDur(total_s)}</span>
     </div>
   )
 }
@@ -381,7 +475,7 @@ export default function TodayView() {
   }
 
   data.sessions.forEach(s => {
-    const bs: BucketSession = { id: s.id, app: s.app, started_at: s.started_at, dur: s.dur, cat: s.cat, titles: s.titles, task_key: s.task_key, session_type: s.session_type, link_method: s.link_method, link_confidence: s.link_confidence, routing: s.routing }
+    const bs: BucketSession = { id: s.id, app: s.app, started_at: s.started_at, dur: s.dur, cat: s.cat, titles: s.titles, task_key: s.task_key, session_type: s.session_type, link_method: s.link_method, link_confidence: s.link_confidence, routing: s.routing, summary: s.summary }
     if (s.task_key) pushToBucket(s.task_key, bs)
     else if (s.routing === 'queue') pushToBucket('_queue', bs)
     // session_type ('task' | 'overhead' | 'unknown') is the classifier's own
@@ -392,7 +486,7 @@ export default function TodayView() {
   })
 
   if (data.active) {
-    const ab: BucketSession = { id: 'active', app: data.active.app, started_at: data.active.started_at, dur: data.active.elapsed_s, cat: data.active.cat, titles: data.active.titles, task_key: null, session_type: null, link_method: null, link_confidence: null, routing: null }
+    const ab: BucketSession = { id: 'active', app: data.active.app, started_at: data.active.started_at, dur: data.active.elapsed_s, cat: data.active.cat, titles: data.active.titles, task_key: null, session_type: null, link_method: null, link_confidence: null, routing: null, summary: null }
     pushToBucket('_active', ab)
   }
 
@@ -415,7 +509,10 @@ export default function TodayView() {
            : b.key === '_untracked' ? 'Untracked — personal, idle, unclassified'
            : b.key === '_queue'     ? 'Sessions waiting to be assigned'
            : b.key === '_active'    ? 'Current session'
-           : b.key,
+           // The human-readable ticket title; the key itself stays visible as
+           // the small mono badge in the row's left column. Falls back to the
+           // key when the ticket was pruned from pm_tasks (closed + re-synced).
+           : data.task_meta?.[b.key]?.title ?? b.key,
       day_total_s: total_s,
     }
   }).sort((a, b) => {
@@ -423,6 +520,24 @@ export default function TodayView() {
       k === '_queue' ? 10 : k === '_untracked' ? 9 : k === '_overhead' ? 8 : k === '_active' ? -1 : 0
     return (ord(a.key) - ord(b.key)) || (b.total_s - a.total_s)
   })
+
+  // ── Group task buckets by integration ──────────────────────────────────────
+  // The active block leads, then one group per tracker (largest first), then
+  // the off-ticket buckets (overhead / untracked / queue) at the bottom.
+  const activeBucket = buckets.find(b => b.key === '_active')
+  const taskBuckets = buckets.filter(b => !b.key.startsWith('_'))
+  const offTicketBuckets = buckets.filter(b => b.key.startsWith('_') && b.key !== '_active')
+
+  const byProvider = new Map<string, Bucket[]>()
+  taskBuckets.forEach(b => {
+    const provider = data.task_meta?.[b.key]?.provider ?? 'other'
+    if (!byProvider.has(provider)) byProvider.set(provider, [])
+    byProvider.get(provider)!.push(b)
+  })
+  const providerGroups = Array.from(byProvider.entries())
+    .map(([provider, group]) => ({ provider, group, total_s: group.reduce((a, g) => a + g.total_s, 0) }))
+    .sort((a, b) => b.total_s - a.total_s)
+  const offTicketTotal = offTicketBuckets.reduce((a, b) => a + b.total_s, 0)
 
   const queueCount = data.sessions.filter(s => s.routing === 'queue').length
 
@@ -483,7 +598,23 @@ export default function TodayView() {
             right={<button onClick={() => router.push('/tasks')} className="text-[12px]" style={{ color: 'var(--ink-3)' }}>Open Tasks →</button>}
           />
           <div className="space-y-px rule rounded-xl overflow-hidden border" style={{ borderColor: 'var(--rule)' }}>
-            {buckets.map(b => <BucketRow key={b.key} bucket={b} />)}
+            {activeBucket && <BucketRow bucket={activeBucket} />}
+            {providerGroups.map(g => (
+              <Fragment key={g.provider}>
+                <GroupHead provider={g.provider} label={g.provider === 'other' ? 'Other tasks' : undefined} total_s={g.total_s} />
+                {g.group.map(b => (
+                  <BucketRow key={b.key} bucket={b} agentSummaries={data.task_agent_summaries?.[b.key] ?? []} />
+                ))}
+              </Fragment>
+            ))}
+            {offTicketBuckets.length > 0 && (
+              <Fragment>
+                {(activeBucket || providerGroups.length > 0) && (
+                  <GroupHead label="Off-ticket" total_s={offTicketTotal} />
+                )}
+                {offTicketBuckets.map(b => <BucketRow key={b.key} bucket={b} />)}
+              </Fragment>
+            )}
           </div>
         </section>
       )}

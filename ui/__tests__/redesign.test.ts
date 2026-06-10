@@ -40,6 +40,20 @@ function fmtClock(isoOrHours: string | number): string {
   return `${hh}:${String(mn).padStart(2, '0')} ${period}`
 }
 
+function shortTaskKey(keyId: string, max = 12): string {
+  if (keyId.length <= max) return keyId
+  const slash = keyId.indexOf('/')
+  const k = slash >= 0 ? keyId.slice(slash + 1) : keyId
+  if (k.length <= max) return k
+  const hash = k.lastIndexOf('#')
+  if (hash > 0) {
+    const tail = k.slice(hash)
+    const head = k.slice(0, Math.max(1, max - tail.length - 1))
+    return `${head}…${tail}`
+  }
+  return `${k.slice(0, max - 1)}…`
+}
+
 function hexA(hex: string, a: number): string {
   const h = hex.replace('#', '')
   const r = parseInt(h.substring(0, 2), 16)
@@ -47,6 +61,32 @@ function hexA(hex: string, a: number): string {
   const b = parseInt(h.substring(4, 6), 16)
   return `rgba(${r},${g},${b},${a})`
 }
+
+// ── shortTaskKey ─────────────────────────────────────────────────────────────
+describe('shortTaskKey (redesign atoms)', () => {
+  it('leaves short keys untouched', () => {
+    expect(shortTaskKey('KAN-157')).toBe('KAN-157')
+    expect(shortTaskKey('ENG-1234')).toBe('ENG-1234')
+  })
+
+  it('drops the owner from a GitHub key that then fits', () => {
+    expect(shortTaskKey('Meridiona/meridian#194')).toBe('meridian#194')
+  })
+
+  it('ellipsizes a long repo but always keeps the issue number', () => {
+    expect(shortTaskKey('Meridiona/screenpipe-integration#1234')).toBe('screen…#1234')
+  })
+
+  it('keeps the full issue number even when the tail is long', () => {
+    const out = shortTaskKey('org/repository-name#1234567890')
+    expect(out.endsWith('#1234567890')).toBe(true)
+    expect(out).toContain('…')
+  })
+
+  it('tail-ellipsizes long keys with no issue number', () => {
+    expect(shortTaskKey('a-very-long-task-key-without-hash')).toBe('a-very-long…')
+  })
+})
 
 // ── fmtDur ───────────────────────────────────────────────────────────────────
 describe('fmtDur (redesign atoms)', () => {

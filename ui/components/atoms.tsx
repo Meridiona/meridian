@@ -51,6 +51,33 @@ export const CATS: Record<string, { label: string; short: string }> = {
   idle_personal:     { label: 'Idle',        short: 'Idle'   },
 }
 
+// ── Tracker (integration) metadata ───────────────────────────────────────────
+export const PROVIDER_META: Record<string, { label: string; color: string; glyph: string }> = {
+  jira:         { label: 'Jira',          color: '#2684FF', glyph: 'Ji' },
+  linear:       { label: 'Linear',        color: '#5E6AD2', glyph: 'Li' },
+  github:       { label: 'GitHub',        color: '#24292F', glyph: 'Gh' },
+  trello:       { label: 'Trello',        color: '#0052CC', glyph: 'Tr' },
+  azure_devops: { label: 'Azure DevOps',  color: '#0078D4', glyph: 'Az' },
+}
+
+export function ProviderGlyph({ provider, size = 16 }: { provider: string; size?: number }) {
+  const meta = PROVIDER_META[provider]
+  return (
+    <span
+      className="inline-flex items-center justify-center rounded shrink-0 font-mono"
+      style={{
+        width: size, height: size,
+        fontSize: Math.max(7, size * 0.56), fontWeight: 700,
+        background: (meta?.color ?? '#888') + '1A',
+        color: meta?.color ?? '#888',
+      }}
+      aria-label={meta?.label ?? provider}
+    >
+      {meta?.glyph ?? provider[0]?.toUpperCase() ?? '?'}
+    </span>
+  )
+}
+
 // ── App glyph metadata ───────────────────────────────────────────────────────
 const APP_META: Record<string, { mono: string; color: string }> = {
   'Antigravity':    { mono: 'Aᴳ', color: '#7C3AED' },
@@ -129,14 +156,36 @@ export function AppGlyph({ app, size = 24, withName = false }: { app: string | n
   )
 }
 
+/**
+ * Compact display form for a task key. GitHub keys (`owner/repo#123`) overflow
+ * the fixed-width key columns, so drop the owner and, if the rest is still too
+ * long, ellipsize the repo while always preserving the `#123` issue number.
+ * Callers showing the short form should keep the full key in a tooltip.
+ */
+export function shortTaskKey(keyId: string, max = 12): string {
+  if (keyId.length <= max) return keyId
+  const slash = keyId.indexOf('/')
+  const k = slash >= 0 ? keyId.slice(slash + 1) : keyId
+  if (k.length <= max) return k
+  const hash = k.lastIndexOf('#')
+  if (hash > 0) {
+    const tail = k.slice(hash)
+    const head = k.slice(0, Math.max(1, max - tail.length - 1))
+    return `${head}…${tail}`
+  }
+  return `${k.slice(0, max - 1)}…`
+}
+
 export function TaskKey({ keyId, big = false }: { keyId?: string | null; big?: boolean }) {
   if (!keyId) return null
+  const display = shortTaskKey(keyId)
   return (
     <span
-      className={`font-mono tracking-tight ${big ? 'text-[12px]' : 'text-[11px]'} px-1.5 py-px rounded-[4px] tnum`}
+      title={display === keyId ? undefined : keyId}
+      className={`font-mono tracking-tight whitespace-nowrap ${big ? 'text-[12px]' : 'text-[11px]'} px-1.5 py-px rounded-[4px] tnum`}
       style={{ color: 'var(--ink)', background: 'var(--tint)', borderBottom: '1px solid var(--rule-2)' }}
     >
-      {keyId}
+      {display}
     </span>
   )
 }
