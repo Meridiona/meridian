@@ -1,3 +1,11 @@
+## [1.39.1](https://github.com/Meridiona/meridian/compare/v1.39.0...v1.39.1) (2026-06-10)
+
+
+### Bug Fixes
+
+* **bundle:** include lib-azure-setup.sh in release package ([#233](https://github.com/Meridiona/meridian/issues/233)) ([20a2178](https://github.com/Meridiona/meridian/commit/20a21780917c0d14f6500e318f499c083f4bc718))
+* **daemon:** create meridian.db before the MLX preflight and survive MLX being down ([#232](https://github.com/Meridiona/meridian/issues/232)) ([a285232](https://github.com/Meridiona/meridian/commit/a285232a70bec95752ecc884a1d042b6e7c58d37))
+
 # [1.39.0](https://github.com/Meridiona/meridian/compare/v1.38.0...v1.39.0) (2026-06-10)
 
 
