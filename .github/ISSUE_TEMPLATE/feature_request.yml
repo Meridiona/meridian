@@ -1,0 +1,50 @@
+name: Feature request
+description: Suggest an improvement or new capability
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature requests are welcome. The more clearly you describe the problem, the better we can evaluate and prioritise.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the specific pain point or gap. "I want X" is less useful than "I spend time doing Y manually because Z doesn't exist."
+      placeholder: "e.g. I can't tell which Jira ticket I spent the most time on last sprint without manually querying the DB."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What would you like to see? Keep it concrete.
+      placeholder: "e.g. A per-sprint rollup view in the dashboard showing time per ticket."
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+      description: Any workarounds you've tried, or other approaches that could solve the problem.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area does this affect?
+      options:
+        - Dashboard / UI
+        - Session capture / ETL pipeline
+        - Task classification
+        - Jira / GitHub / Linear integration
+        - MCP server
+        - Installer / CLI
+        - Coding-agent ingest (Claude Code, Codex, Cursor)
+        - Other
+    validations:
+      required: true
