@@ -51,6 +51,33 @@ export const CATS: Record<string, { label: string; short: string }> = {
   idle_personal:     { label: 'Idle',        short: 'Idle'   },
 }
 
+// ── Tracker (integration) metadata ───────────────────────────────────────────
+export const PROVIDER_META: Record<string, { label: string; color: string; glyph: string }> = {
+  jira:         { label: 'Jira',          color: '#2684FF', glyph: 'Ji' },
+  linear:       { label: 'Linear',        color: '#5E6AD2', glyph: 'Li' },
+  github:       { label: 'GitHub',        color: '#24292F', glyph: 'Gh' },
+  trello:       { label: 'Trello',        color: '#0052CC', glyph: 'Tr' },
+  azure_devops: { label: 'Azure DevOps',  color: '#0078D4', glyph: 'Az' },
+}
+
+export function ProviderGlyph({ provider, size = 16 }: { provider: string; size?: number }) {
+  const meta = PROVIDER_META[provider]
+  return (
+    <span
+      className="inline-flex items-center justify-center rounded shrink-0 font-mono"
+      style={{
+        width: size, height: size,
+        fontSize: Math.max(7, size * 0.56), fontWeight: 700,
+        background: (meta?.color ?? '#888') + '1A',
+        color: meta?.color ?? '#888',
+      }}
+      aria-label={meta?.label ?? provider}
+    >
+      {meta?.glyph ?? provider[0]?.toUpperCase() ?? '?'}
+    </span>
+  )
+}
+
 // ── App glyph metadata ───────────────────────────────────────────────────────
 const APP_META: Record<string, { mono: string; color: string }> = {
   'Antigravity':    { mono: 'Aᴳ', color: '#7C3AED' },

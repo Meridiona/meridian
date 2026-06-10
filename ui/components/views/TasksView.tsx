@@ -2,20 +2,12 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { fmtDur, fmtClock, AppGlyph, CatDot, TaskKey, StatusPill, SegBar, SectionHead, Card, CATS } from '@/components/atoms'
+import { fmtDur, fmtClock, AppGlyph, CatDot, TaskKey, StatusPill, SegBar, SectionHead, Card, CATS, PROVIDER_META } from '@/components/atoms'
 import type { TaskSummary, TasksResponse } from '@/app/api/tasks/route'
 import type { TodayResponse } from '@/app/api/today/route'
 import type { IntegrationsResponse } from '@/app/api/integrations/route'
 
 const TASKS_POLL_INTERVAL_MS = 60_000
-
-const PROVIDER_META: Record<string, { label: string; color: string; glyph: string }> = {
-  jira:         { label: 'Jira',          color: '#2684FF', glyph: 'Ji' },
-  linear:       { label: 'Linear',        color: '#5E6AD2', glyph: 'Li' },
-  github:       { label: 'GitHub',        color: '#24292F', glyph: 'Gh' },
-  trello:       { label: 'Trello',        color: '#0052CC', glyph: 'Tr' },
-  azure_devops: { label: 'Azure DevOps',  color: '#0078D4', glyph: 'Az' },
-}
 
 export default function TasksView({ focusKey }: { focusKey?: string | null }) {
   const [data, setData] = useState<TasksResponse | null>(null)

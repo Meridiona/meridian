@@ -35,6 +35,19 @@ interface TodaySession {
   method: string
   link_method: string | null
   link_confidence: number | null
+  summary: string | null
+}
+
+export interface TaskMeta {
+  title: string
+  provider: string
+  url: string
+}
+
+export interface AgentSummary {
+  started_at: string
+  dur: number
+  summary: string
 }
 
 interface TodayActive {
@@ -85,6 +98,14 @@ export interface TodayResponse {
   // engaged_s: focus_s + autonomous agent time — the denominator for the per-task
   // "% of day" so a task carrying autonomous agent work never exceeds 100%.
   engaged_s: number
+  // task_key → tracker metadata from pm_tasks (title, provider, url) so the UI
+  // can show the human task title and group buckets by integration. A key may be
+  // missing if the originating ticket closed and was pruned on the next sync.
+  task_meta: Record<string, TaskMeta>
+  // task_key → coding-agent session summaries for today. Agent transcript rows
+  // are excluded from `sessions` (they're an overlay, not foreground activity)
+  // but they carry the summariser's digest — the per-task summary blocks need it.
+  task_agent_summaries: Record<string, AgentSummary[]>
 }
 
 export async function GET() {
@@ -98,6 +119,10 @@ export async function GET() {
     let hasExplanation = false
     try { db.prepare('SELECT category_explanation FROM app_sessions LIMIT 0').run(); hasExplanation = true } catch { /* pre-009 */ }
 
+    // session_summary was added in migration 024 — check gracefully
+    let hasSummary = false
+    try { db.prepare('SELECT session_summary FROM app_sessions LIMIT 0').run(); hasSummary = true } catch { /* pre-024 */ }
+
     const sql = `
       SELECT
         s.id,
@@ -110,6 +135,7 @@ export async function GET() {
         s.confidence,
         s.category_method,
         ${hasExplanation ? 's.category_explanation,' : "NULL AS category_explanation,"}
+        ${hasSummary ? 's.session_summary,' : "NULL AS session_summary,"}
         s.window_titles,
         s.task_key,
         s.task_routing      AS routing,
@@ -155,6 +181,7 @@ export async function GET() {
         method: (r.category_method as string) || 'rule_based',
         link_method: (r.link_method as string) || null,
         link_confidence: typeof r.link_confidence === 'number' ? r.link_confidence : null,
+        summary: (r.session_summary as string) || null,
       }
     })
 
@@ -266,6 +293,37 @@ export async function GET() {
     }
     const engaged_s = focus_s + autonomous_s
 
+    // ── Task metadata (title / provider / url) for keys touched today ──────────
+    const task_meta: Record<string, TaskMeta> = {}
+    try {
+      const todayKeys = new Set(allRows.map(r => r.task_key as string | null).filter(Boolean))
+      const tRows = db.prepare(`
+        SELECT task_key, title, provider, url FROM pm_tasks
+      `).all() as Array<Record<string, unknown>>
+      tRows.forEach(t => {
+        const k = t.task_key as string
+        if (!todayKeys.has(k)) return
+        task_meta[k] = {
+          title: (t.title as string) || k,
+          provider: (t.provider as string) || 'jira',
+          url: (t.url as string) || '',
+        }
+      })
+    } catch { /* pm_tasks table might not exist */ }
+
+    // ── Coding-agent summaries per task ─────────────────────────────────────────
+    const task_agent_summaries: Record<string, AgentSummary[]> = {}
+    codingRows.forEach(r => {
+      const k = r.task_key as string | null
+      const summary = (r.session_summary as string) || null
+      if (!k || !summary) return
+      ;(task_agent_summaries[k] ??= []).push({
+        started_at: r.started_at as string,
+        dur: (r.duration_s as number) ?? 0,
+        summary,
+      })
+    })
+
     const resp: TodayResponse = {
       date,
       sessions,
@@ -283,6 +341,8 @@ export async function GET() {
       task_totals,
       task_autonomous_s,
       engaged_s,
+      task_meta,
+      task_agent_summaries,
     }
 
     return NextResponse.json(resp)
@@ -294,6 +354,7 @@ export async function GET() {
       presence_segments: [], agent_segments: [],
       session_count: 0, switch_count: 0,
       task_totals: {}, task_autonomous_s: {}, engaged_s: 0,
+      task_meta: {}, task_agent_summaries: {},
     } satisfies TodayResponse)
   }
 }
