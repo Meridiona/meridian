@@ -1,3 +1,17 @@
+# [1.39.0](https://github.com/Meridiona/meridian/compare/v1.38.0...v1.39.0) (2026-06-10)
+
+
+### Bug Fixes
+
+* **install:** pin Python services to a uv-managed arm64 interpreter ([#228](https://github.com/Meridiona/meridian/issues/228)) ([c327c7b](https://github.com/Meridiona/meridian/commit/c327c7b68f3afb391baf2f3bca9f2cd2f7c226a6))
+* **integrations:** simplify Azure DevOps setup to 2 vars + fix visualstudio.com URL parsing ([746cc85](https://github.com/Meridiona/meridian/commit/746cc850df5aafa88b5d42db14f7912f675e31e6))
+* **ui:** stop the dashboard crash-looping under a mismatched Node after `meridian update` ([#223](https://github.com/Meridiona/meridian/issues/223)) ([a44d68c](https://github.com/Meridiona/meridian/commit/a44d68cc59e914b5789f7dba80f2c842b404ba9f))
+
+
+### Features
+
+* **integrations:** add Azure DevOps (VSTS) PM connector ([2636578](https://github.com/Meridiona/meridian/commit/2636578a3bc02a89ad60c01541eb4d10458a458f)), closes [Meridian#42](https://github.com/Meridian/issues/42)
+
 # [1.38.0](https://github.com/Meridiona/meridian/compare/v1.37.4...v1.38.0) (2026-06-09)
 
 
