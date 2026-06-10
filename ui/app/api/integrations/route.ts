@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import getDb from '@/lib/db'
 
 export const dynamic = 'force-dynamic'
 
@@ -12,6 +13,7 @@ export interface IntegrationsResponse {
   github: boolean
   trello: boolean
   azure_devops: boolean
+  sync_errors: Partial<Record<string, string>>
 }
 
 function repoRoot(): string {
@@ -119,6 +121,19 @@ export async function GET() {
     github: isSet(env, 'GITHUB_TOKEN'),
     trello: trelloOAuth,
     azure_devops: isSet(env, 'AZURE_DEVOPS_PAT') && (isSet(env, 'AZURE_DEVOPS_URL') || isSet(env, 'AZURE_DEVOPS_ORG') || isSet(env, 'AZURE_DEVOPS_ORG_URL')),
+    sync_errors: {},
+  }
+
+  try {
+    const db = getDb()
+    const rows = db.prepare(
+      "SELECT provider, last_error FROM pm_sync_state WHERE last_error IS NOT NULL"
+    ).all() as Array<{ provider: string; last_error: string }>
+    for (const row of rows) {
+      result.sync_errors[row.provider] = row.last_error
+    }
+  } catch {
+    // DB not available (e.g. daemon not yet initialised) — omit errors silently
   }
 
   return NextResponse.json(result)
