@@ -442,6 +442,7 @@ function ConnectTrackers({ integrations, onDisconnect }: { integrations: Integra
       <div className="mt-5 rounded-xl border overflow-hidden" style={{ borderColor: 'var(--rule)' }}>
         {TRACKERS.map((t, i) => {
           const connected = !!integrations?.[t.id]
+          const syncError = integrations?.sync_errors?.[t.id]
           const isOpen = open === t.id
           return (
             <div key={t.id} className={i > 0 ? 'rule-t' : ''} style={{ borderTopColor: 'var(--rule)' }}>
@@ -458,9 +459,9 @@ function ConnectTrackers({ integrations, onDisconnect }: { integrations: Integra
                 </span>
                 <span className="text-[13px]" style={{ color: 'var(--ink)' }}>{t.name}</span>
                 {connected ? (
-                  <span className="ml-auto inline-flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--ink-2)' }}>
-                    <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: 'var(--success)' }} />
-                    Connected
+                  <span className="ml-auto inline-flex items-center gap-1.5 text-[11px]" style={{ color: syncError ? '#d97706' : 'var(--ink-2)' }}>
+                    <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: syncError ? '#d97706' : 'var(--success)' }} />
+                    {syncError ? 'Sync error' : 'Connected'}
                     <span className="inline-block transition-transform" style={{ transform: isOpen ? 'rotate(90deg)' : 'none', color: 'var(--ink-4)' }}>›</span>
                   </span>
                 ) : (
@@ -472,6 +473,16 @@ function ConnectTrackers({ integrations, onDisconnect }: { integrations: Integra
               </button>
               {isOpen && connected && (
                 <div className="px-4 pb-4 pt-2" style={{ background: 'var(--surface-2)' }}>
+                  {syncError && (
+                    <div className="mb-3 rounded-md px-3 py-2 text-[12px] leading-relaxed" style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d' }}>
+                      <strong>Sync failed:</strong>{' '}
+                      {syncError.startsWith('permission_error: ')
+                        ? syncError.slice('permission_error: '.length)
+                        : syncError.startsWith('sync_error: ')
+                          ? syncError.slice('sync_error: '.length)
+                          : syncError}
+                    </div>
+                  )}
                   <p className="text-[12px] leading-relaxed mb-3" style={{ color: 'var(--ink-3)' }}>
                     After disconnecting, run <CodeChip text="meridian restart" /> for the change to take effect.
                   </p>
