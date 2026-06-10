@@ -9,22 +9,14 @@ import TweaksPanel from '@/components/TweaksPanel'
 import HealthBanner from '@/components/HealthBanner'
 
 const KEY_ROUTES: Record<string, string> = {
-  '1': '/today', '2': '/tasks', '3': '/queue',
-  '4': '/worklogs', '5': '/sessions', '6': '/week', '7': '/settings',
+  '1': '/today', '2': '/tasks', '3': '/worklogs',
+  '4': '/sessions', '5': '/week', '6': '/settings',
 }
 
 export default function DashboardShell({ children }: { children: React.ReactNode }) {
   const router = useRouter()
   const pathname = usePathname()
   const [cmdOpen, setCmdOpen] = useState(false)
-  const [queueCount, setQueueCount] = useState(0)
-
-  useEffect(() => {
-    fetch('/api/queue-review')
-      .then(r => r.json())
-      .then(d => setQueueCount(d.items?.length ?? 0))
-      .catch(() => {})
-  }, [])
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -52,7 +44,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--paper)' }}>
       <HealthBanner />
       <div className="flex flex-1">
-        <Sidebar onOpenCmd={() => setCmdOpen(true)} queueCount={queueCount} />
+        <Sidebar onOpenCmd={() => setCmdOpen(true)} />
         <main className="flex-1 min-w-0" data-screen-label={pathname.slice(1)}>
           <div className="max-w-[1080px] mx-auto px-10 py-14">
             {children}
@@ -63,7 +55,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
               <span>Meridian · local · {todayDate}</span>
               <span className="font-mono tnum">
                 <span className="kbd">⌘</span> <span className="kbd">K</span> to jump ·{' '}
-                <span className="kbd">1</span>–<span className="kbd">7</span> to switch view
+                <span className="kbd">1</span>–<span className="kbd">6</span> to switch view
               </span>
             </footer>
           </div>
