@@ -1,3 +1,10 @@
+# [1.41.0](https://github.com/Meridiona/meridian/compare/v1.40.1...v1.41.0) (2026-06-10)
+
+
+### Features
+
+* **ui:** remove Queue view from navigation ([a5e1592](https://github.com/Meridiona/meridian/commit/a5e159205cd55a83292ea970be53b540ce3d9b15))
+
 ## [1.40.1](https://github.com/Meridiona/meridian/compare/v1.40.0...v1.40.1) (2026-06-10)
 
 
