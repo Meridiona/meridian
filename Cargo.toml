@@ -6,11 +6,11 @@ resolver = "2"
 name = "meridian"
 version = "1.36.0"
 edition = "2021"
-description = "Meridian — normalises screenpipe activity into structured app sessions"
+description = "Meridian — ambient developer-efficiency tool that keeps Jira, GitHub, and Linear in sync"
 authors = ["Meridiona"]
 repository = "https://github.com/meridiona/meridian"
 license = "MIT"
-keywords = ["screenpipe", "productivity", "activity-tracking"]
+keywords = ["developer-tools", "productivity", "activity-tracking", "jira", "screenpipe"]
 
 [lib]
 name = "meridian"

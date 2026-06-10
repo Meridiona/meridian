@@ -1,0 +1,84 @@
+name: Bug report
+description: Something isn't working
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. The more detail you give, the faster we can fix it.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+      placeholder: "e.g. Sessions stop being recorded after waking from sleep"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      placeholder: "e.g. Sessions should resume after wake"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start Meridian
+        2. Put the Mac to sleep for > 5 minutes
+        3. Wake up
+        4. Check meridian.db — no new sessions
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Meridian version
+      description: Run `meridian version`
+      placeholder: "1.36.0"
+    validations:
+      required: true
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      description: Run `sw_vers -productVersion`
+      placeholder: "15.4"
+    validations:
+      required: true
+
+  - type: input
+    id: chip
+    attributes:
+      label: Apple Silicon chip
+      description: e.g. M1, M2 Pro, M4
+      placeholder: "M3 Pro"
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        Run `meridian logs -f` and paste anything around the time of the bug.
+        Error-only view: `meridian logs daemon-error -f`
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor output
+      description: Run `meridian doctor` and paste the output.
+      render: text
+    validations:
+      required: false
