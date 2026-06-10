@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Setup & configuration help
+    url: https://github.com/Meridiona/meridian/blob/main/SETUP.md
+    about: Installation, permissions, tracker setup, troubleshooting
+  - name: Privacy questions
+    url: mailto:akarsh@meridiona.com
+    about: Questions about data handling or the privacy policy

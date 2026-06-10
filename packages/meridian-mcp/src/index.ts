@@ -385,7 +385,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
         mimeType: "text/markdown",
         text: `# Meridian Usage Guide
 
-Meridian tracks your app usage by reading screenpipe's ambient recordings and normalising them into structured app sessions. The AI tagger links sessions to Jira tickets and tags each session with activity/tool/topic dimensions.
+Meridian is an ambient developer-efficiency tool. It watches what you work on, classifies each session against your Jira/GitHub/Linear tickets, and keeps your project management in sync — on-device, with no manual effort. Sessions are tagged with activity, tool, and topic dimensions.
 
 ## Tool Selection
 
