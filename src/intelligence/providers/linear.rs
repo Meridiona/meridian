@@ -219,6 +219,7 @@ async fn upsert(
                title            = excluded.title,
                description_text = excluded.description_text,
                status_category  = excluded.status_category,
+               issue_type       = excluded.issue_type,
                project_key      = excluded.project_key,
                url              = excluded.url,
                parent_key       = excluded.parent_key,
