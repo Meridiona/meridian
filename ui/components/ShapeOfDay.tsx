@@ -137,7 +137,7 @@ export default function ShapeOfDay({ data }: { data: TodayResponse }) {
                     </span>
                   </div>
                   <span className="text-[12px] font-mono tnum font-semibold" style={{ color: isHov ? 'var(--ink)' : 'var(--ink-3)' }}>
-                    {item.percentage.toFixed(0)}%
+                    {isHov ? fmtDur(item.seconds) : `${item.percentage.toFixed(0)}%`}
                   </span>
                 </div>
               )
