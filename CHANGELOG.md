@@ -1,3 +1,10 @@
+## [1.49.1](https://github.com/Meridiona/meridian/compare/v1.49.0...v1.49.1) (2026-06-11)
+
+
+### Bug Fixes
+
+* **dev:** correct stale summary text printed after install-dev.sh ([#264](https://github.com/Meridiona/meridian/issues/264)) ([147425d](https://github.com/Meridiona/meridian/commit/147425df369a36d435f2acb4c4f688677a57f1cd))
+
 # [1.49.0](https://github.com/Meridiona/meridian/compare/v1.48.2...v1.49.0) (2026-06-11)
 
 
