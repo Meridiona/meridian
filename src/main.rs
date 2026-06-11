@@ -412,18 +412,23 @@ async fn main() -> Result<()> {
     }
     tracing::info!(path = %sock_path.display(), "daemon.sock ready");
 
-    // 6. Graceful shutdown: listen for SIGINT and SIGTERM
+    // 6. Graceful shutdown: listen for SIGINT, SIGTERM, and SIGHUP.
+    //    SIGHUP = "reload config" — same clean shutdown path as SIGTERM so that
+    //    launchd auto-restarts the daemon with the new settings.json applied.
     let mut sigint = signal(SignalKind::interrupt())?;
     let mut sigterm = signal(SignalKind::terminate())?;
+    let mut sighup = signal(SignalKind::hangup())?;
 
-    // Combines both signals into a single future that resolves on whichever fires first.
+    // Combines SIGINT / SIGTERM / SIGHUP into a single future.
     async fn wait_for_shutdown(
         sigint: &mut tokio::signal::unix::Signal,
         sigterm: &mut tokio::signal::unix::Signal,
+        sighup: &mut tokio::signal::unix::Signal,
     ) {
         tokio::select! {
-            _ = sigint.recv()  => {},
-            _ = sigterm.recv() => {},
+            _ = sigint.recv()  => { tracing::info!("SIGINT received") },
+            _ = sigterm.recv() => { tracing::info!("SIGTERM received") },
+            _ = sighup.recv()  => { tracing::info!("SIGHUP received — reloading (graceful restart)") },
         }
     }
 
@@ -660,6 +665,10 @@ async fn main() -> Result<()> {
     }
 
     // 8b. Poll loop — ETL, PM sync, and FM categorization on the configured interval.
+    // Track the last-applied log level so we can detect changes and hot-reload
+    // the EnvFilter without restarting the daemon.
+    let mut last_log_level = initial_cfg.runtime.log_level.clone();
+
     loop {
         // Determine the sleep duration from the current settings.json before sleeping.
         let poll_interval = {
@@ -668,12 +677,24 @@ async fn main() -> Result<()> {
         };
 
         tokio::select! {
-            _ = wait_for_shutdown(&mut sigint, &mut sigterm) => {
+            _ = wait_for_shutdown(&mut sigint, &mut sigterm, &mut sighup) => {
                 break;
             }
             _ = tokio::time::sleep(poll_interval) => {
                 // Re-read config to pick up any settings.json changes made while sleeping.
                 let cfg = Config::from_env();
+
+                // Hot-reload the log level if it changed in settings.json.
+                if cfg.runtime.log_level != last_log_level
+                    && observability::reload_log_level(&cfg.runtime.log_level)
+                {
+                    tracing::info!(
+                        old_level = %last_log_level,
+                        new_level = %cfg.runtime.log_level,
+                        "log level hot-reloaded"
+                    );
+                    last_log_level = cfg.runtime.log_level.clone();
+                }
                 let poll_tick = tracing::info_span!(
                     "poll_tick",
                     poll_interval_secs = cfg.runtime.poll_interval_secs
