@@ -72,7 +72,16 @@ export function readSettings(): RuntimeSettings {
   for (const p of [getSettingsPath(), getLegacySettingsPath()]) {
     try {
       const raw = fs.readFileSync(/*turbopackIgnore: true*/ p, 'utf-8')
-      return { ...SETTINGS_DEFAULTS, ...JSON.parse(raw) }
+      const parsed = JSON.parse(raw)
+      return {
+        ...SETTINGS_DEFAULTS,
+        ...parsed,
+        // Rust serialises Option::None as JSON null; coerce to '' so TS
+        // consumers never encounter null on a string-typed field.
+        otlp_endpoint: parsed.otlp_endpoint ?? '',
+        oo_email:      parsed.oo_email      ?? '',
+        oo_password:   parsed.oo_password   ?? '',
+      }
     } catch {
       // not at this location — try the next
     }
