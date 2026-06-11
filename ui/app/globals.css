@@ -242,7 +242,7 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
 .type-active {
   font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
   font-size: 28px;
-  line-height: 1.15;
+  line-height: 1;
   font-style: italic;
   letter-spacing: 0;
   font-feature-settings: 'liga', 'dlig';
