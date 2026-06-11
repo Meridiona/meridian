@@ -193,10 +193,7 @@ pub fn is_otlp_configured() -> bool {
     if !settings.otlp_enabled {
         return false;
     }
-    let has_settings_creds = settings
-        .oo_email
-        .as_deref()
-        .is_some_and(|e| !e.is_empty())
+    let has_settings_creds = settings.oo_email.as_deref().is_some_and(|e| !e.is_empty())
         && settings
             .oo_password
             .as_deref()
@@ -236,10 +233,7 @@ pub fn resolve_otlp_target() -> Option<OtlpTarget> {
     let auth = match (&settings.oo_email, &settings.oo_password) {
         (Some(email), Some(pass)) if !email.is_empty() && !pass.is_empty() => {
             // Guard against HTTP header injection and malformed user:password splits.
-            if email.contains(['\n', '\r'])
-                || pass.contains(['\n', '\r'])
-                || email.contains(':')
-            {
+            if email.contains(['\n', '\r']) || pass.contains(['\n', '\r']) || email.contains(':') {
                 tracing::warn!(
                     "OTLP credentials contain invalid characters — OTLP export disabled"
                 );
@@ -333,8 +327,7 @@ fn build_default_filter(log_level: &str) -> String {
         "WARNING" | "WARN" => "meridian=warn,sqlx=warn".to_string(),
         "ERROR" => "meridian=error,sqlx=error".to_string(),
         // INFO or anything else: keep the previous fixed default with module-level overrides.
-        _ => "meridian=info,meridian::etl=debug,meridian::intelligence=debug,sqlx=warn"
-            .to_string(),
+        _ => "meridian=info,meridian::etl=debug,meridian::intelligence=debug,sqlx=warn".to_string(),
     }
 }
 
