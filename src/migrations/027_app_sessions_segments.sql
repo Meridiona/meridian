@@ -1,4 +1,4 @@
--- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+-- meridian — normalises screenpipe activity into structured app sessions
 --
 -- Segment-based chunking + sealing for Claude / Codex coding-agent rows.
 --

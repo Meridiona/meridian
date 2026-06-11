@@ -1,4 +1,4 @@
--- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+-- meridian — normalises screenpipe activity into structured app sessions
 
 -- Track the source of session_text per session so the LLM can calibrate
 -- confidence: accessibility tree text is clean/structured, OCR is noisier.

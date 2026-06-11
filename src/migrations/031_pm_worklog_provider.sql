@@ -1,4 +1,4 @@
--- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+-- meridian — normalises screenpipe activity into structured app sessions
 --
 -- Multi-provider worklog support. A worklog must remember WHICH tracker it
 -- belongs to so the approved-poster can route it to the right backend (Jira's

@@ -1,4 +1,4 @@
--- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+-- meridian — normalises screenpipe activity into structured app sessions
 
 -- Add activity category and confidence score to every closed session.
 -- Populated inline during ETL at the moment each session closes.

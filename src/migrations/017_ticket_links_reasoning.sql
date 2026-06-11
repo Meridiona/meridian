@@ -1,2 +1,2 @@
--- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+-- meridian — normalises screenpipe activity into structured app sessions
 ALTER TABLE ticket_links ADD COLUMN reasoning TEXT;

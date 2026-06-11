@@ -1,4 +1,4 @@
--- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+-- meridian — normalises screenpipe activity into structured app sessions
 --
 -- Worklog-reject attribution capture. When a reviewer dismisses a worklog they
 -- can now say where the time *should* have gone: a different ticket, or

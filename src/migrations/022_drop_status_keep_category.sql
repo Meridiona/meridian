@@ -1,4 +1,4 @@
--- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+-- meridian — normalises screenpipe activity into structured app sessions
 
 -- Remove redundant status column; status_category is the normalized form used for all logic.
 -- status_category values: 'todo', 'in_progress', 'done'

@@ -34,6 +34,8 @@ SQL migration files use the SQL comment form:
 -- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 ```
 
+> **Migrations are exempt from retroactive header changes.** This header applies to a migration only when it is *first created*. Once a migration has shipped, its bytes are frozen — sqlx records a checksum of each applied migration and refuses to start the daemon if the file later differs (`migration N was previously applied but has been modified`). NEVER reformat, re-header, or otherwise edit an already-merged migration; doing so bricks every existing install on its next upgrade. Pre-existing migrations keep whatever first-line comment they shipped with.
+
 The `commit-msg` hook enforces conventional commit format. The `pre-commit` hook enforces `cargo fmt` and `cargo clippy`. The `pre-push` hook runs the full suite: fmt + clippy + `cargo test` + UI build + UI tests.
 
 ---

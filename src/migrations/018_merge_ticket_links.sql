@@ -1,4 +1,4 @@
--- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+-- meridian — normalises screenpipe activity into structured app sessions
 
 -- Merge ticket_links into app_sessions so every session row carries its task
 -- classification inline. task_method IS NULL means not yet classified.
