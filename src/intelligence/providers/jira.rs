@@ -302,12 +302,12 @@ async fn upsert(
             issue.fields.extra.get(field_id)?.as_str().map(str::to_owned)
         });
 
-        sqlx::query(
+        let upsert_result = sqlx::query(
             "INSERT INTO pm_tasks
                (task_key, provider, title, description_text, status_raw, is_terminal,
                 issue_type, project_key, url, parent_key, epic_title, due_date,
                 assignee_name, tags, sprint_name, start_date, updated_at, fetched_at)
-             VALUES (?, 'jira', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+             VALUES (?, 'jira', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                      strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
              ON CONFLICT(task_key) DO UPDATE SET
                title            = excluded.title,
@@ -349,7 +349,11 @@ async fn upsert(
         .bind(&issue.fields.updated)
         .execute(pool)
         .await
-        .with_context(|| format!("upserting {}", issue.key))?;
+        .with_context(|| format!("upserting {}", issue.key));
+        if let Err(ref upsert_err) = upsert_result {
+            // Log full error chain so the root cause is visible in /logs
+            tracing::warn!(task_key = %issue.key, error = ?upsert_err, "jira task upsert failed — skipping");
+        }
     }
     Ok(())
 }

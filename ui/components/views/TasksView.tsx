@@ -34,7 +34,7 @@ function epicColor(epicKey: string | null): string {
   return EPIC_PALETTE[h % EPIC_PALETTE.length]
 }
 
-export default function TasksView({ focusKey }: { focusKey?: string | null }) {
+export default function TasksView({ focusKey, openIntegrations }: { focusKey?: string | null; openIntegrations?: boolean }) {
   const [data, setData] = useState<TasksResponse | null>(null)
   const [todaySessions, setTodaySessions] = useState<TodayResponse['sessions']>([])
   const [integrations, setIntegrations] = useState<IntegrationsResponse | null>(null)
@@ -43,7 +43,7 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
   const [lastSynced, setLastSynced] = useState<Date | null>(null)
   const [syncError, setSyncError] = useState<string | null>(null)
   const [providerFilter, setProviderFilter] = useState<string>('all')
-  const [showIntegrations, setShowIntegrations] = useState(false)
+  const [showIntegrations, setShowIntegrations] = useState(openIntegrations ?? false)
   const [collapsedEpics, setCollapsedEpics] = useState<Set<string>>(new Set())
 
   const fetchTasks = () => {

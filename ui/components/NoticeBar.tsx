@@ -98,6 +98,26 @@ export default function NoticeBar() {
                 </div>
               )}
             </div>
+            {n.notice_id.startsWith('pm.') && (
+              <a
+                href="/tasks?integrations=1"
+                style={{
+                  flexShrink: 0,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: s.text,
+                  background: 'rgba(0,0,0,0.07)',
+                  border: `1px solid ${s.border}`,
+                  borderRadius: 5,
+                  padding: '3px 8px',
+                  textDecoration: 'none',
+                  whiteSpace: 'nowrap',
+                  alignSelf: 'center',
+                }}
+              >
+                Fix in Tasks →
+              </a>
+            )}
           </div>
         )
       })}

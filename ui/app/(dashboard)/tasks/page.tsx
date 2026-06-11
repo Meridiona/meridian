@@ -7,7 +7,12 @@ import TasksView from '@/components/views/TasksView'
 
 function TasksContent() {
   const params = useSearchParams()
-  return <TasksView focusKey={params.get('focus')} />
+  return (
+    <TasksView
+      focusKey={params.get('focus')}
+      openIntegrations={params.get('integrations') === '1'}
+    />
+  )
 }
 
 export default function TasksPage() {
