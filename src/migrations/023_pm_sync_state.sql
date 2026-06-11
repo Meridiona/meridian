@@ -1,4 +1,4 @@
--- meridian — normalises screenpipe activity into structured app sessions
+-- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 
 -- Replace per-row expires_at TTL with a single last_synced_at timestamp per
 -- provider. This decouples "when to re-fetch" from task data and prevents a

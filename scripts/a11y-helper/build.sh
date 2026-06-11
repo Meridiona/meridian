@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# meridian — normalises screenpipe activity into structured app sessions
+# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 #
 # Builds the meridian-a11y-helper binary from main.swift and ad-hoc signs it
 # with a stable identifier.

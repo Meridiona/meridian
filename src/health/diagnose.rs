@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Root-cause diagnosis. Correlates failing checks into the underlying cause so
 // the operator sees "the summariser stalled (which is why hours are stuck and

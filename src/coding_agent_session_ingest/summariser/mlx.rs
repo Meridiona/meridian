@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Fallback summariser — the local MLX server's schema-constrained /summarise
 // endpoint (the ONLY remaining Python hop). Used when claude/codex are

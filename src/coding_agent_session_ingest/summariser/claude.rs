@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Run `claude -p` with the session-summary skill + structured output. Returns
 // the validated {summary, blockers}, or RateLimited (→ MLX fallback) /

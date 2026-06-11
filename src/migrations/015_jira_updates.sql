@@ -1,4 +1,4 @@
--- meridian — normalises screenpipe activity into structured app sessions
+-- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 CREATE TABLE IF NOT EXISTS jira_update_log (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     task_key      TEXT    NOT NULL,

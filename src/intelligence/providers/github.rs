@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // GitHub task connector. Fetches open issues assigned to the viewer from
 // configured GitHub Projects v2 (GraphQL API). task_key is `owner/repo#number`.

@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Health check for the status banner. Uses direct fast checks (fs + launchctl)
 // instead of `meridian doctor` — never blocks the event loop, responds in <5ms.

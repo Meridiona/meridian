@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Trello card connector. Pulls open cards where the authenticated user is a
 // member (GET /1/members/me/cards) into pm_tasks so the classifier can link

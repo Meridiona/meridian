@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // `meridian worklog-status` — a human-readable PM-worklog report, no SQL needed.
 // For a day it prints: the hour ledger (done / pending / stuck), worklogs by

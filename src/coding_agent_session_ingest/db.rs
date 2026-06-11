@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // SQLite read/write layer for coding-agent rows (app_sessions rows carrying a
 // non-NULL claude_session_uuid). One row per segment, keyed on

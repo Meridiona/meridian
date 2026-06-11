@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# meridian — normalises screenpipe activity into structured app sessions
+# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 #
 # Set the product version across every manifest, in lockstep. Called by
 # semantic-release (@semantic-release/exec prepareCmd) with the next version.

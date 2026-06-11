@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Env-driven config for the pm-worklog stage. Defaults mirror the Python
 // `pm_worklog_update/config.py`; the cadence + readiness knobs are new for the

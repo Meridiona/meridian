@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Worklog persistence — `pm_worklogs` + `pm_worklog_evidence`. Port of the write
 // paths in `pm_worklog_update/db.py`. The UPSERT is keyed on

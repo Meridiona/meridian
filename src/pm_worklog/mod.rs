@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Stage 4 — pm-worklog. Turns classified `task` sessions into Jira worklogs,
 // one per (task, hour), entirely in Rust except the single LLM hop (the agno

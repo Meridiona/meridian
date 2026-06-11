@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Run `copilot -p` to summarise a GitHub Copilot session (symmetry with
 // claude.rs / codex.rs — each agent's transcripts are summarised by its own

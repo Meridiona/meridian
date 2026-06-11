@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Trello token flow. Trello uses an older "token" grant (not Authorization Code
 // + PKCE) that delivers the token in the URL fragment — `#token=...` — which the

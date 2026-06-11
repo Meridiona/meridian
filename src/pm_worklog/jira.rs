@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Jira worklog poster — a faithful Rust port of `pm_worklog_update/jira_poster.py`.
 // Turns (task_key, real_seconds, started_utc, comment) into a POST to

@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Summariser: turn each sealed coding-agent segment into a factual prose summary
 // for the PM work-log, then hand it to the classifier (task_method →

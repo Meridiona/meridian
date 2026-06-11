@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Linear task connector. Pulls the issues assigned to the authenticated user
 // (the API key's owner) into `pm_tasks` so the classifier can link sessions to

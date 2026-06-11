@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 
 // Initialise OTel BEFORE any other imports create spans / tracers.
 import { initOtel, logger, withSpan } from "./observability.js";

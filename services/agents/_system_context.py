@@ -1,4 +1,4 @@
-# meridian — normalises screenpipe activity into structured app sessions
+# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 """Shared system context for all agent entry points (task-linker, server).
 
 This module defines the single source of truth for the AI agent's system prompt,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# meridian — normalises screenpipe activity into structured app sessions
+# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 #
 # Force-apply all pending database migrations.
 # Use this if the UI is showing schema-mismatch errors (e.g. "no such column").

@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Writable meridian.db handle — used ONLY by the worklog approval mutations
 // (edit / approve / reject). Everything else reads through the read-only handle
