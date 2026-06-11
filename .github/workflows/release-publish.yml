@@ -12,11 +12,6 @@ name: Publish
 # gh release edit is idempotent. Use workflow_dispatch with the tag input to
 # re-publish a failed release without a dummy commit.
 #
-# IMPORTANT — one-time setup required:
-#   On npmjs.com, update the Trusted Publisher config for both
-#   @meridiona/meridian and @meridiona/meridian-darwin-arm64 to reference
-#   this workflow file (.github/workflows/release-publish.yml) instead of
-#   the old release.yml.
 
 on:
   push:
@@ -115,35 +110,26 @@ jobs:
           bash scripts/package-release.sh "${VERSION#v}"
           bash scripts/verify-release-bundle.sh "${VERSION#v}"
 
-      - name: Obtain npm publish token via OIDC
-        # Replicates what @semantic-release/npm does internally when NPM_TOKEN
-        # is absent: exchange the GitHub Actions OIDC JWT for a short-lived
-        # npm publish token. Requires both packages to be configured as
-        # Trusted Publishers on npmjs.com pointing to this workflow file.
-        run: |
-          # Audience must be the npm registry URL, not "sigstore".
-          # "sigstore" is for provenance attestation only; trusted publishing
-          # auth uses the registry URL as the audience (matches @semantic-release/npm).
-          OIDC_JWT=$(curl -sS \
-            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Fregistry.npmjs.org%2F" | jq -r '.value')
-
-          RESP=$(curl -sS -X POST "https://registry.npmjs.org/-/v1/login" \
-            -H "Content-Type: application/json" \
-            -d "{\"type\":\"oidc\",\"provenance\":true,\"token\":\"${OIDC_JWT}\"}")
-
-          NPM_PUBLISH_TOKEN=$(echo "$RESP" | jq -r '.token // empty')
-          if [ -z "$NPM_PUBLISH_TOKEN" ]; then
-            echo "OIDC token exchange failed: $RESP" && exit 1
-          fi
-
-          npm config set //registry.npmjs.org/:_authToken "${NPM_PUBLISH_TOKEN}"
-
-      - name: Publish arch-specific package
-        run: npm publish ./npm/meridian-darwin-arm64 --access public --provenance
-
-      - name: Publish main package
-        run: npm publish ./npm/meridian --access public --provenance
+      - name: Publish packages
+        # Calls @semantic-release/npm directly — same OIDC auth path the old
+        # single-stage workflow used, without running the full pipeline.
+        run: node --input-type=module - <<'EOF'
+          const { verifyConditions, publish } = await import('@semantic-release/npm');
+          const version = process.env.RELEASE_VERSION.replace(/^v/, '');
+          const logger = { log: console.log, error: console.error, warn: console.warn };
+          const ctx = {
+            nextRelease: { version, channel: null, gitTag: `v${version}`, notes: '' },
+            logger, env: process.env, cwd: process.cwd(),
+            stdout: process.stdout, stderr: process.stderr,
+          };
+          await verifyConditions({ npmPublish: true }, ctx);
+          for (const pkgRoot of ['npm/meridian-darwin-arm64', 'npm/meridian']) {
+            await publish({ pkgRoot, npmPublish: true }, ctx);
+            console.log('published', pkgRoot);
+          }
+        EOF
+        env:
+          RELEASE_VERSION: ${{ steps.tag.outputs.name }}
 
       - name: Publish draft release
         env:
