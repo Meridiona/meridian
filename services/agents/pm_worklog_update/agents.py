@@ -62,7 +62,7 @@ def build_synth_agent(
         debug_level: 1 or 2 (verbose).
     """
     from agno.agent import Agent
-    from agno.guardrails import PIIDetectionGuardrail
+    # from agno.guardrails import PIIDetectionGuardrail
     from agno.skills import LocalSkills, Skills
 
     return Agent(
@@ -94,11 +94,14 @@ def build_synth_agent(
         #     tools.get_earlier_today_summaries,
         # ],
         pre_hooks=[
-            PIIDetectionGuardrail(),
             ProjectSecretGuard(),
             SessionBundleSizeGuard(max_tokens=80_000),
         ],
         post_hooks=[
+            # PIIDetectionGuardrail disabled — was falsely blocking on session input
+            # (OCR/window titles contain names/emails). Re-enable on post_hooks once
+            # we confirm the output Jira comment doesn't reproduce raw PII.
+            # PIIDetectionGuardrail(),
             time_spent_sanity_check,
         ],
         output_schema=JiraUpdate,

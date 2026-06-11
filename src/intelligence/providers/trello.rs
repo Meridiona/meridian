@@ -24,6 +24,18 @@ const SYNC_INTERVAL_MINS: i64 = 5;
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
+struct TrelloLabel {
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct TrelloMember {
+    #[serde(rename = "fullName", default)]
+    full_name: String,
+}
+
+#[derive(Deserialize)]
 struct TrelloCard {
     #[serde(rename = "shortLink")]
     short_link: String,
@@ -38,6 +50,12 @@ struct TrelloCard {
     short_url: String,
     #[serde(default)]
     closed: bool,
+    #[serde(default)]
+    due: Option<String>,
+    #[serde(default)]
+    labels: Vec<TrelloLabel>,
+    #[serde(default)]
+    members: Vec<TrelloMember>,
 }
 
 // ---------------------------------------------------------------------------
@@ -64,7 +82,8 @@ async fn fetch(trello: &TrelloConfig) -> Result<Vec<TrelloCard>> {
     let url = format!(
         "{TRELLO_BASE}/members/me/cards\
          ?filter=open\
-         &fields=shortLink,name,desc,idBoard,dateLastActivity,shortUrl,closed\
+         &fields=shortLink,name,desc,idBoard,dateLastActivity,shortUrl,closed,due,labels\
+         &members=true&member_fields=fullName\
          &limit={MAX_RESULTS}\
          &key={}&token={}",
         trello.app_key, token,
@@ -108,12 +127,28 @@ async fn upsert(
         // Trello cards have no status/list name in the connector's current fetch,
         // and closed cards are filtered out above — so every kept card is open
         // (is_terminal = 0) with an empty status_raw.
+        let tags: Option<String> = {
+            let names: Vec<&str> = card
+                .labels
+                .iter()
+                .map(|l| l.name.as_str())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if names.is_empty() {
+                None
+            } else {
+                Some(names.join(", "))
+            }
+        };
+        let assignee_name: Option<&str> = card.members.first().map(|m| m.full_name.as_str());
+
         sqlx::query(
             "INSERT INTO pm_tasks
                (task_key, provider, title, description_text, status_raw, is_terminal,
-                issue_type, project_key, url, updated_at, fetched_at)
+                issue_type, project_key, url, due_date, tags, assignee_name,
+                updated_at, fetched_at)
              VALUES (?, 'trello', ?, ?, '', 0, 'Card', ?, ?,
-                     ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                     ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
              ON CONFLICT(task_key) DO UPDATE SET
                provider         = 'trello',
                title            = excluded.title,
@@ -122,6 +157,9 @@ async fn upsert(
                is_terminal      = excluded.is_terminal,
                project_key      = excluded.project_key,
                url              = excluded.url,
+               due_date         = excluded.due_date,
+               tags             = excluded.tags,
+               assignee_name    = excluded.assignee_name,
                updated_at       = excluded.updated_at,
                fetched_at       = excluded.fetched_at",
         )
@@ -130,6 +168,9 @@ async fn upsert(
         .bind(&card.desc)
         .bind(&card.id_board)
         .bind(&card.short_url)
+        .bind(card.due.as_deref())
+        .bind(tags.as_deref())
+        .bind(assignee_name)
         .bind(&card.date_last_activity)
         .execute(pool)
         .await
@@ -264,6 +305,9 @@ mod tests {
             date_last_activity: String::new(),
             short_url: String::new(),
             closed: false,
+            due: None,
+            labels: vec![],
+            members: vec![],
         };
         assert!(board_allowed(&card, &[]));
     }
@@ -278,6 +322,9 @@ mod tests {
             date_last_activity: String::new(),
             short_url: String::new(),
             closed: false,
+            due: None,
+            labels: vec![],
+            members: vec![],
         };
         assert!(board_allowed(&card, &["board1".to_string()]));
         assert!(!board_allowed(&card, &["board2".to_string()]));
