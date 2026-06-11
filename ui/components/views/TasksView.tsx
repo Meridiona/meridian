@@ -300,7 +300,7 @@ function TaskRow({ task, selected, onSelect, epicColor: eColor, showProvider }: 
           </span>
         )}
         <TaskKey keyId={task.key} />
-        <StatusPill status={task.status} />
+        <StatusPill status={task.status} isTerminal={task.is_terminal} />
         <span className="ml-auto font-mono tnum text-[12px]" style={{ color: task.today_s > 0 ? 'var(--ink)' : 'var(--ink-4)' }}>
           {task.today_s > 0 ? fmtDur(task.today_s) : '—'}
         </span>
@@ -329,7 +329,7 @@ function TaskDetail({ task, sessions }: { task: TaskSummary; sessions: TodayResp
         )}
         <div className="flex items-center gap-3 mb-3">
           <TaskKey keyId={task.key} big />
-          <StatusPill status={task.status} />
+          <StatusPill status={task.status} isTerminal={task.is_terminal} />
           {task.issue_type && (
             <span className="text-[11px] px-1.5 py-0.5 rounded-md" style={{ background: 'var(--tint)', color: 'var(--ink-2)' }}>
               {task.issue_type}

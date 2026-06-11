@@ -64,7 +64,8 @@ def db(tmp_path: Path) -> Path:
         );
         CREATE TABLE pm_tasks (
             task_key TEXT PRIMARY KEY, title TEXT, description_text TEXT,
-            status_category TEXT DEFAULT 'in_progress',
+            status_raw TEXT DEFAULT '',
+            is_terminal INTEGER DEFAULT 0,
             issue_type TEXT, parent_key TEXT, epic_title TEXT, sprint_name TEXT,
             assignee_name TEXT
         );
@@ -78,9 +79,9 @@ def db(tmp_path: Path) -> Path:
                 '["run_watcher.py"]', 'coding', 0.9)
     """)
     con.execute("""
-        INSERT INTO pm_tasks (task_key, title, description_text, status_category)
+        INSERT INTO pm_tasks (task_key, title, description_text, status_raw, is_terminal)
         VALUES ('KAN-42', 'Fix gap detection',
-                'Fix gap detection across ETL run boundaries', 'in_progress')
+                'Fix gap detection across ETL run boundaries', 'In Progress', 0)
     """)
     con.commit()
     con.close()

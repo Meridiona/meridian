@@ -51,6 +51,6 @@ DATABASE (for verification and ad-hoc queries)
     app_sessions: id, app_name, started_at, ended_at, duration_s, session_text,
                   session_text_source, window_titles, category, confidence,
                   task_key, task_confidence, task_routing
-    pm_tasks:     task_key, title, description_text, issue_type, status_category,
+    pm_tasks:     task_key, title, description_text, issue_type, status_raw, is_terminal,
                   parent_key, epic_title, sprint_name, assignee_name
 """

@@ -57,7 +57,8 @@ class SessionBundle(BaseModel):
     real_seconds:        int
     raw_text_bytes:      int = 0
     is_heavy:            bool = False
-    pm_task_status:      Optional[str] = None
+    pm_task_status:      Optional[str] = None  # verbatim provider status name (e.g. "In Review")
+    pm_task_is_terminal: bool = False           # normalized "is this ticket done/closed?" signal
     pm_task_title:       Optional[str] = None
     pm_task_description: Optional[str] = None
     assignee_name:       Optional[str] = None
