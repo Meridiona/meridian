@@ -17,8 +17,8 @@ env:
   SQLX_OFFLINE: "true"
 
 jobs:
-  ci:
-    name: CI
+  rust:
+    name: Rust
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,15 +41,27 @@ jobs:
       - name: test
         run: cargo test
 
-      - name: build
-        run: cargo build --release
+  ui:
+    name: UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: ui/package-lock.json
+
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: ui/.next/cache
+          key: nextjs-${{ hashFiles('ui/package-lock.json') }}-${{ hashFiles('ui/**/*.ts', 'ui/**/*.tsx') }}
+          restore-keys: |
+            nextjs-${{ hashFiles('ui/package-lock.json') }}-
+            nextjs-
 
       - name: UI install
         run: npm ci
