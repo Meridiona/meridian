@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 import { Select } from '@/components/ui/Select'
 import { Switch } from '@/components/ui/Switch'
 import { NumberStepper } from '@/components/ui/NumberStepper'
+import { TextInput } from '@/components/ui/TextInput'
 import type { RuntimeSettings } from '@/lib/settings'
 
 type SaveStatus = 'idle' | 'saved' | 'error'
@@ -137,14 +138,89 @@ export default function SettingsView() {
       {/* Observability */}
       <SectionCard>
         <SectionHeader>Observability</SectionHeader>
-        <FieldRow label="Log Level" description="Python agent log verbosity. DEBUG includes raw LLM prompts and rule hits.">
+        <FieldRow label="Log Level" description="Controls verbosity of traces and logs sent to OpenObserve. DEBUG exports everything; WARNING/ERROR suppress info spans. Takes effect after a daemon restart.">
           <Select
             value={settings.log_level}
             onValueChange={v => patch({ log_level: v as RuntimeSettings['log_level'] })}
             options={LOG_LEVEL_OPTIONS}
           />
         </FieldRow>
-        <SaveButton status={observabilityStatus} onClick={() => save({ log_level: settings.log_level }, setObservabilityStatus)} />
+        <FieldRow label="OpenObserve Export" description="Send traces and logs to the local OpenObserve instance. Requires credentials below; takes effect after a daemon restart.">
+          <Switch checked={settings.otlp_enabled} onCheckedChange={v => patch({ otlp_enabled: v })} />
+        </FieldRow>
+        <FieldRow label="OTLP Endpoint" description="Leave blank to use the default (localhost:5080).">
+          <TextInput
+            value={settings.otlp_endpoint}
+            onChange={v => patch({ otlp_endpoint: v })}
+            placeholder="http://localhost:5080/api/default/v1/traces"
+          />
+        </FieldRow>
+        <FieldRow label="Email">
+          <TextInput
+            type="email"
+            value={settings.oo_email}
+            onChange={v => patch({ oo_email: v })}
+            placeholder="admin@example.com"
+          />
+        </FieldRow>
+        <FieldRow label="Password">
+          <TextInput
+            type="password"
+            value={settings.oo_password}
+            onChange={v => patch({ oo_password: v })}
+            placeholder="••••••••"
+          />
+        </FieldRow>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', paddingTop: '8px', borderTop: '1px solid var(--rule)' }}>
+          <button
+            type="button"
+            onClick={() => save({
+              log_level: settings.log_level,
+              otlp_enabled: settings.otlp_enabled,
+              otlp_endpoint: settings.otlp_endpoint,
+              oo_email: settings.oo_email,
+              oo_password: settings.oo_password,
+            }, setObservabilityStatus)}
+            style={{
+              background: 'var(--accent)',
+              color: '#fff',
+              fontSize: '12px',
+              fontWeight: 500,
+              padding: '5px 14px',
+              borderRadius: '6px',
+              border: 'none',
+              cursor: 'default',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
+            }}
+          >
+            Save
+          </button>
+          {observabilityStatus === 'saved' && <span style={{ fontSize: '12px', color: 'var(--success)' }}>Saved</span>}
+          {observabilityStatus === 'error' && <span style={{ fontSize: '12px', color: 'var(--warn)' }}>Failed to save</span>}
+          <button
+            type="button"
+            onClick={() => {
+              let base = 'http://localhost:5080'
+              try {
+                if (settings.otlp_endpoint) base = new URL(settings.otlp_endpoint).origin
+              } catch { /* keep default */ }
+              window.open(base, '_blank', 'noopener,noreferrer')
+            }}
+            style={{
+              background: 'transparent',
+              color: 'var(--accent)',
+              fontSize: '12px',
+              fontWeight: 500,
+              padding: '5px 14px',
+              borderRadius: '6px',
+              border: '1px solid var(--accent)',
+              cursor: 'default',
+              marginLeft: 'auto',
+            }}
+          >
+            Open OpenObserve
+          </button>
+        </div>
       </SectionCard>
 
       {/* ETL Pipeline */}

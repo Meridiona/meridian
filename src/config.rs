@@ -22,6 +22,12 @@ pub struct RuntimeSettings {
     pub llm_budget_pct: f64,
     pub poll_interval_secs: u64,
     pub jira_update_enabled: bool,
+    // OpenObserve OTLP export — all three must be non-empty for export to activate.
+    // Takes precedence over MERIDIAN_OTLP_ENDPOINT / MERIDIAN_OO_AUTH env vars.
+    pub otlp_enabled: bool,
+    pub otlp_endpoint: Option<String>,
+    pub oo_email: Option<String>,
+    pub oo_password: Option<String>,
 }
 
 impl Default for RuntimeSettings {
@@ -37,6 +43,10 @@ impl Default for RuntimeSettings {
             llm_budget_pct: 0.5,
             poll_interval_secs: 60,
             jira_update_enabled: true,
+            otlp_enabled: true,
+            otlp_endpoint: None,
+            oo_email: None,
+            oo_password: None,
         }
     }
 }
