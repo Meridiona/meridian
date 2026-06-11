@@ -73,6 +73,8 @@ html, body {
 }
 
 * { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+/* Serif glyphs rely on fine strokes — subpixel rendering preserves them better */
+.font-serif { -webkit-font-smoothing: auto; -moz-osx-font-smoothing: auto; }
 
 body, .font-sans {
   font-feature-settings: 'ss01', 'cv11';
@@ -174,6 +176,111 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
   border-radius: 4px;
 }
 
+/* ── Cursor ──────────────────────────────────────────────────────────────── */
+button:not(:disabled) { cursor: pointer; }
+button:disabled       { cursor: not-allowed; }
+
 /* ── Density ─────────────────────────────────────────────────────────────── */
 html.density-compact .density-pad { padding-top: .5rem;   padding-bottom: .5rem; }
 html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25rem; }
+
+/* ── Meridian Type Scale ─────────────────────────────────────────────────────
+   Semantic typography classes. Apply ONE of these instead of raw Tailwind
+   chains. Every class bundles font-family, size, leading, tracking, and
+   antialiasing. Colour is NOT included — pair with text-ink / text-ink-2 etc.
+
+   Usage:
+     <h1 className="type-hero mt-1" style={{ color: 'var(--ink)' }}>Today</h1>
+     <p  className="type-empty" style={{ color: 'var(--ink-2)' }}>No data.</p>
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* 88px — hero: Today page main heading */
+.type-hero {
+  font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
+  font-size: 88px;
+  line-height: 1;
+  letter-spacing: 0;
+  font-feature-settings: 'liga', 'dlig';
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+}
+
+/* 56px — page title: main heading on every page */
+.type-title {
+  font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
+  font-size: 56px;
+  line-height: 1.1;
+  letter-spacing: 0;
+  font-feature-settings: 'liga', 'dlig';
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+}
+
+/* 36px — section heading: task detail title, sub-section heads */
+.type-heading {
+  font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
+  font-size: 36px;
+  line-height: 1.15;
+  letter-spacing: 0;
+  font-feature-settings: 'liga', 'dlig';
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+}
+
+/* 32px — stat: insight callout text */
+.type-stat {
+  font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
+  font-size: 32px;
+  line-height: 1.15;
+  letter-spacing: 0;
+  font-feature-settings: 'liga', 'dlig';
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+}
+
+/* 28px italic — active: "You're on · task name" live heading */
+.type-active {
+  font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
+  font-size: 28px;
+  line-height: 1.15;
+  font-style: italic;
+  letter-spacing: 0;
+  font-feature-settings: 'liga', 'dlig';
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+}
+
+/* 24px italic — empty: empty state messages */
+.type-empty {
+  font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
+  font-size: 24px;
+  line-height: 1.2;
+  font-style: italic;
+  letter-spacing: 0;
+  font-feature-settings: 'liga', 'dlig';
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+}
+
+/* 22px — callout: insight card headline */
+.type-callout {
+  font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
+  font-size: 22px;
+  line-height: 1.2;
+  letter-spacing: 0;
+  font-feature-settings: 'liga', 'dlig';
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+}
+
+/* 22px italic — wordmark: "meridian" in sidebar — slight tracking is intentional */
+.type-wordmark {
+  font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
+  font-size: 22px;
+  line-height: 1;
+  font-style: italic;
+  letter-spacing: -0.02em;
+  font-feature-settings: 'liga', 'dlig';
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+}

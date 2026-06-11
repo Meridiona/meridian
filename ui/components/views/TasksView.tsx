@@ -63,7 +63,7 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
       <div className="space-y-8">
         <header className="rise">
           <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Tasks</p>
-          <h1 className="font-serif text-[56px] leading-[1] tracking-tight mt-1" style={{ color: 'var(--ink)' }}>What you&apos;re working on</h1>
+          <h1 className="type-title mt-1" style={{ color: 'var(--ink)' }}>What you&apos;re working on</h1>
         </header>
         <p className="text-[13px]" style={{ color: 'var(--ink-3)' }}>Loading…</p>
       </div>
@@ -75,7 +75,7 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
       <div className="space-y-8">
         <header className="rise">
           <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Tasks</p>
-          <h1 className="font-serif text-[56px] leading-[1] tracking-tight mt-1" style={{ color: 'var(--ink)' }}>What you&apos;re working on</h1>
+          <h1 className="type-title mt-1" style={{ color: 'var(--ink)' }}>What you&apos;re working on</h1>
         </header>
         <ConnectTrackers integrations={integrations} onDisconnect={fetchIntegrations} />
       </div>
@@ -105,7 +105,7 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
       <header className="rise flex items-end justify-between">
         <div>
           <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Tasks</p>
-          <h1 className="font-serif text-[56px] leading-[1] tracking-tight mt-1" style={{ color: 'var(--ink)' }}>
+          <h1 className="type-title mt-1" style={{ color: 'var(--ink)' }}>
             What you&apos;re working on
           </h1>
         </div>
@@ -308,7 +308,7 @@ function TaskDetail({ task, sessions }: { task: TaskSummary; sessions: TodayResp
             </a>
           )}
         </div>
-        <h2 className="font-serif text-[36px] leading-[1.1] tracking-tight" style={{ color: 'var(--ink)' }}>
+        <h2 className="type-heading" style={{ color: 'var(--ink)' }}>
           {task.title}
         </h2>
         {task.description && (

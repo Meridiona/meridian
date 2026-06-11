@@ -17,7 +17,7 @@ export default function WeekView() {
       <div className="space-y-10">
         <header className="rise">
           <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Last 7 days</p>
-          <h1 className="font-serif text-[56px] leading-[1] tracking-tight mt-1" style={{ color: 'var(--ink)' }}>Your week in shape</h1>
+          <h1 className="type-title mt-1" style={{ color: 'var(--ink)' }}>Your week in shape</h1>
         </header>
         <p className="text-[13px]" style={{ color: 'var(--ink-3)' }}>Loading…</p>
       </div>
@@ -42,7 +42,7 @@ export default function WeekView() {
       <header className="rise flex items-end justify-between">
         <div>
           <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Last 7 days</p>
-          <h1 className="font-serif text-[56px] leading-[1] tracking-tight mt-1" style={{ color: 'var(--ink)' }}>
+          <h1 className="type-title mt-1" style={{ color: 'var(--ink)' }}>
             Your week in shape
           </h1>
         </div>
@@ -91,7 +91,7 @@ export default function WeekView() {
 
       {data.total_s === 0 && (
         <div className="py-16 text-center rounded-xl border" style={{ borderColor: 'var(--rule)', background: 'var(--surface)' }}>
-          <p className="font-serif italic text-[24px]" style={{ color: 'var(--ink-2)' }}>Nothing recorded yet.</p>
+          <p className="type-empty" style={{ color: 'var(--ink-2)' }}>Nothing recorded yet.</p>
           <p className="text-[12px] mt-2" style={{ color: 'var(--ink-3)' }}>Start meridian to begin tracking activity.</p>
         </div>
       )}
@@ -175,7 +175,7 @@ function Insight({ kicker, headline, body }: { kicker: string; headline: string;
   return (
     <Card className="p-5">
       <p className="text-[10px] uppercase tracking-[0.18em] mb-2" style={{ color: 'var(--ink-3)' }}>{kicker}</p>
-      <p className="font-serif text-[22px] leading-tight" style={{ color: 'var(--ink)' }}>{headline}</p>
+      <p className="type-callout" style={{ color: 'var(--ink)' }}>{headline}</p>
       <p className="text-[12px] mt-2 leading-relaxed" style={{ color: 'var(--ink-2)' }}>{body}</p>
     </Card>
   )

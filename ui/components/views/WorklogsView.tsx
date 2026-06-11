@@ -109,7 +109,7 @@ export default function WorklogsView() {
       <header className="rise flex items-end justify-between gap-4">
         <div>
           <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Worklog review</p>
-          <h1 className="font-serif text-[56px] leading-[1] tracking-tight mt-1" style={{ color: 'var(--ink)' }}>
+          <h1 className="type-title mt-1" style={{ color: 'var(--ink)' }}>
             Approve before it posts
           </h1>
           <p className="mt-3 text-[14px] max-w-prose" style={{ color: 'var(--ink-2)' }}>
@@ -146,7 +146,7 @@ export default function WorklogsView() {
         <p className="text-[13px]" style={{ color: 'var(--ink-3)' }}>Loading…</p>
       ) : items.length === 0 ? (
         <div className="py-16 text-center rounded-xl border" style={{ borderColor: 'var(--rule)', background: 'var(--surface)' }}>
-          <p className="font-serif italic text-[24px]" style={{ color: 'var(--ink-2)' }}>No worklogs {isToday ? 'yet today' : 'this day'}.</p>
+          <p className="type-empty" style={{ color: 'var(--ink-2)' }}>No worklogs {isToday ? 'yet today' : 'this day'}.</p>
           <p className="text-[12px] mt-2" style={{ color: 'var(--ink-3)' }}>
             They appear here as the daemon drafts them, hour by hour.
           </p>
