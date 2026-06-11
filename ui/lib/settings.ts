@@ -6,6 +6,10 @@ import os from 'os'
 export interface RuntimeSettings {
   // Observability
   log_level: 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR'
+  otlp_enabled: boolean
+  otlp_endpoint: string
+  oo_email: string
+  oo_password: string
   // ETL
   poll_interval_secs: number
   // Classification
@@ -23,6 +27,10 @@ export interface RuntimeSettings {
 
 export const SETTINGS_DEFAULTS: RuntimeSettings = {
   log_level: 'INFO',
+  otlp_enabled: true,
+  otlp_endpoint: '',
+  oo_email: '',
+  oo_password: '',
   poll_interval_secs: 60,
   classification_enabled: true,
   min_classification_duration_s: 10,

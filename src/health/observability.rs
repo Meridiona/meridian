@@ -2,27 +2,22 @@
 //
 // Observability sink health. If OpenObserve is down, traces/logs silently drop
 // — which blinds the very fault-attribution this layer depends on, so it is
-// worth a check of its own. Export is gated on MERIDIAN_OO_AUTH being set.
+// worth a check of its own. Export is gated on credentials being present in
+// settings.json or MERIDIAN_OO_AUTH (resolved by observability::resolve_otlp_target).
 
 use crate::config::Config;
 use crate::health::Check;
 use std::time::Duration;
 
 pub async fn checks(_cfg: &Config) -> Vec<Check> {
-    let auth_set = std::env::var("MERIDIAN_OO_AUTH")
-        .map(|v| !v.is_empty())
-        .unwrap_or(false);
-    if !auth_set {
+    let Some(target) = crate::observability::resolve_otlp_target() else {
         return vec![Check::info(
             "openobserve",
             "obs",
-            "OTLP export disabled (no MERIDIAN_OO_AUTH) — telemetry not collected",
+            "OTLP export disabled (no credentials in settings or MERIDIAN_OO_AUTH) — telemetry not collected",
         )];
-    }
-
-    let endpoint = std::env::var("MERIDIAN_OTLP_ENDPOINT")
-        .unwrap_or_else(|_| "http://localhost:5080/api/default/v1/traces".to_string());
-    let healthz = derive_healthz(&endpoint);
+    };
+    let healthz = derive_healthz(&target.endpoint);
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
