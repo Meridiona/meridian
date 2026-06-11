@@ -26,10 +26,13 @@ use std::collections::HashMap;
 use std::env;
 use std::sync::RwLock;
 
+/// Lower-cased (terminal, open) override lists for one provider key.
+type EnvLists = (Vec<String>, Vec<String>);
+
 // Env var lists are read once per provider per process lifetime — env vars don't
 // change at runtime in the daemon, so caching avoids O(tasks) syscalls per sync.
 // Tests that manipulate env vars must call `clear_env_cache()` before each case.
-static STATUS_ENV_CACHE: Lazy<RwLock<HashMap<String, (Vec<String>, Vec<String>)>>> =
+static STATUS_ENV_CACHE: Lazy<RwLock<HashMap<String, EnvLists>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
 /// A provider status after normalisation.
@@ -75,7 +78,7 @@ fn env_override(provider: &str, raw: &str) -> Option<bool> {
     None
 }
 
-fn cached_env_lists(key: &str) -> (Vec<String>, Vec<String>) {
+fn cached_env_lists(key: &str) -> EnvLists {
     {
         let cache = STATUS_ENV_CACHE.read().unwrap();
         if let Some(entry) = cache.get(key) {
@@ -91,7 +94,10 @@ fn cached_env_lists(key: &str) -> (Vec<String>, Vec<String>) {
             .collect()
     };
     let entry = (parse("TERMINAL_STATUSES"), parse("OPEN_STATUSES"));
-    STATUS_ENV_CACHE.write().unwrap().insert(key.to_string(), entry.clone());
+    STATUS_ENV_CACHE
+        .write()
+        .unwrap()
+        .insert(key.to_string(), entry.clone());
     entry
 }
 
@@ -102,8 +108,19 @@ fn cached_env_lists(key: &str) -> (Vec<String>, Vec<String>) {
 /// like "Incomplete" (contains "complete") or "Uncancelled" (contains "cancel").
 fn heuristic_terminal(raw: &str) -> bool {
     const TERMINAL_KEYWORDS: &[&str] = &[
-        "done", "complete", "completed", "closed", "resolved", "shipped", "merged",
-        "deployed", "released", "archived", "cancel", "cancelled", "canceled",
+        "done",
+        "complete",
+        "completed",
+        "closed",
+        "resolved",
+        "shipped",
+        "merged",
+        "deployed",
+        "released",
+        "archived",
+        "cancel",
+        "cancelled",
+        "canceled",
     ];
     let lower = raw.to_ascii_lowercase();
     lower
@@ -165,10 +182,16 @@ mod tests {
     #[test]
     fn heuristic_leaves_open_columns_open() {
         for name in [
-            "Backlog", "In Review", "QA", "Blocked", "Doing", "",
+            "Backlog",
+            "In Review",
+            "QA",
+            "Blocked",
+            "Doing",
+            "",
             // word-boundary guard: these contain terminal keywords as substrings
             // but must NOT be classified as terminal
-            "Incomplete", "Uncancelled",
+            "Incomplete",
+            "Uncancelled",
         ] {
             assert!(
                 !resolve("github", name, None).is_terminal,
