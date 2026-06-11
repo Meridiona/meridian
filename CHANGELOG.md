@@ -1,3 +1,20 @@
+# [1.47.0](https://github.com/Meridiona/meridian/compare/v1.46.0...v1.47.0) (2026-06-11)
+
+
+### Bug Fixes
+
+* **favicon:** add 48px frame to favicon.ico (16/32/48) ([a2b7766](https://github.com/Meridiona/meridian/commit/a2b77666a350bcd75343295cda6ec010bb3b3355))
+* **favicon:** compress icon.png 139 KB → 52 KB with pngquant --quality=80-95 ([842490b](https://github.com/Meridiona/meridian/commit/842490b02c51b82a66786bf6e7e1a3308f534012))
+* **observability:** address PR [#251](https://github.com/Meridiona/meridian/issues/251) security and validation review comments ([662908e](https://github.com/Meridiona/meridian/commit/662908e793dcd8a7455e1517f6c198f8ad5e90fc)), closes [#3](https://github.com/Meridiona/meridian/issues/3) [#256](https://github.com/Meridiona/meridian/issues/256) [#4](https://github.com/Meridiona/meridian/issues/4)
+* **ui:** add cursor:pointer to all interactive buttons across the product ([552d354](https://github.com/Meridiona/meridian/commit/552d354d3301485c7bd69b79225eb8eb6873076b))
+* **ui:** correct cursor semantics — not-allowed for disabled, remove redundant inline rules ([fbe4858](https://github.com/Meridiona/meridian/commit/fbe485866474c9f9fc81e05fac1b1b24ba573ee1))
+
+
+### Features
+
+* **observability:** configure OpenObserve OTLP export from UI settings ([b7f9aa1](https://github.com/Meridiona/meridian/commit/b7f9aa134053ccc3346bb05ba2d43eb42b3429d7))
+* **ui:** add favicon from Meridiona tray icon ([6ef13ed](https://github.com/Meridiona/meridian/commit/6ef13ed8dcd8b13bdb19661b136511bd808c5dd2))
+
 # [1.46.0](https://github.com/Meridiona/meridian/compare/v1.45.3...v1.46.0) (2026-06-11)
 
 
