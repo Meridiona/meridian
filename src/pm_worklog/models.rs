@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Data models for the pm-worklog stage (Stage 4). These mirror the Python
 // `pm_worklog_update/models.py` field-for-field so the JSON contract with the

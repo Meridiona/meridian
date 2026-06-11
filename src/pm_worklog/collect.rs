@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Collect: assemble the SessionBundle for one (task, hour) window straight from
 // meridian.db. Port of `pm_worklog_update/db.py::fetch_session_bundle`. Pure SQL

@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // The one LLM hop of Stage 4: POST the collected bundle to the MLX server's
 // `/synthesise_worklog` endpoint (which runs the agno synth agent in-process)

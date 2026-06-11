@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Worklog mutations — the human-in-the-loop write path. The UI never posts to
 // Jira itself; it only records intent in the DB and the daemon's approved-sweep

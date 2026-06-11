@@ -25,13 +25,13 @@ Meridian is a single-process Rust daemon that reads screenpipe's SQLite database
 Every `.rs`, `.ts`, and `.tsx` file must start with this comment as its very first line:
 
 ```
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 ```
 
 SQL migration files use the SQL comment form:
 
 ```
--- meridian — normalises screenpipe activity into structured app sessions
+-- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 ```
 
 The `commit-msg` hook enforces conventional commit format. The `pre-commit` hook enforces `cargo fmt` and `cargo clippy`. The `pre-push` hook runs the full suite: fmt + clippy + `cargo test` + UI build + UI tests.

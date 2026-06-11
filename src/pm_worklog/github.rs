@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // GitHub worklog poster. GitHub has NO native time tracking (it's a long-standing
 // open feature request — neither the Issues API nor Projects v2 exposes a

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# meridian — normalises screenpipe activity into structured app sessions
+# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 #
 # Pre-publish smoke test for the release bundle. Runs in semantic-release's
 # PREPARE phase (appended to prepareCmd in .releaserc.json) — i.e. AFTER

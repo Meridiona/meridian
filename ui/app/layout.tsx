@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 
 import type { Metadata } from 'next'
 import { GeistSans } from 'geist/font/sans'

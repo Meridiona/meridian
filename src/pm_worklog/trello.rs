@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Trello worklog poster. Trello has no native time-tracking API, so a worklog
 // is a structured Markdown comment on the card via POST /1/cards/{shortLink}/

@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Shared summary contract — the rules, the schema, and limit detection. Lives in
 // one place so the three engines stay consistent: Claude loads the

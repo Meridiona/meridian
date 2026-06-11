@@ -19,7 +19,7 @@ conservative estimate). M4 Ultra is omitted — it was cancelled; Mac Pro was
 discontinued March 2026 without an M4 Ultra update. M5 Ultra is omitted — not
 yet shipped as of mid-2026.
 """
-# meridian — normalises screenpipe activity into structured app sessions
+# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 from __future__ import annotations
 
 import ctypes

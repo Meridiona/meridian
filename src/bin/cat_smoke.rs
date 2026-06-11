@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Smoke-test binary: reads real app_sessions from meridian.db, runs categorize()
 // on each row, and prints the result. Nothing is written to the DB.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# meridian — normalises screenpipe activity into structured app sessions
+# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 """Pretty-print the contents of active_session (or any app_session by id).
 
 Usage:

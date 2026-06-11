@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Azure DevOps (VSTS) task connector. Fetches work items assigned to the
 // authenticated user via the WIQL API, then batch-resolves full item detail.

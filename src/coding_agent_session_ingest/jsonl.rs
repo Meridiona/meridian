@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // JSONL normalisation layer for coding-agent sessions. Claude Code and Codex
 // write different on-disk event schemas; each record is normalised to a common

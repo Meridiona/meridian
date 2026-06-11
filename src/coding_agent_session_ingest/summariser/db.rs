@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // SQLite layer for the summariser — read the queue, write the summary. The
 // single write path is idempotent (`UPDATE ... WHERE session_summary IS NULL`),

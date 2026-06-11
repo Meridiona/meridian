@@ -1,4 +1,4 @@
-# meridian — normalises screenpipe activity into structured app sessions
+# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 """Tests for agents._parser — parse_response and extract_json."""
 from __future__ import annotations
 

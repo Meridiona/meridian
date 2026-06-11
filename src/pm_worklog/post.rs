@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // The approved-worklog poster. This is the ONLY path that writes to a real
 // tracker. The hour-driven driver (`scheduler.rs`) only ever DRAFTS; a human

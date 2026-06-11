@@ -93,7 +93,7 @@ Releases are automated by release-please from the commit history, so accurate co
 Every `.rs`, `.ts`, and `.tsx` file starts with this exact first line:
 
 ```
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 ```
 
 SQL migrations use the `--` comment form. Python files in `services/agents/` use a `"""…"""` module docstring instead. The hooks expect these.

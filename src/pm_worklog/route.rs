@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Route: process ONE (task, hour) — collect the bundle, synthesise (the single
 // LLM hop), ground it, and persist a DRAFTED worklog row. This stage never posts

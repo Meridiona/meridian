@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Azure DevOps worklog poster. Azure DevOps has no native time-tracking API
 // exposed to PAT auth; the equivalent is a work item comment (the Comments v1

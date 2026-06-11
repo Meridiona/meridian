@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // The hour-driven driver. Walk hours from local-midnight → now; for each hour
 // that is READY, DRAFT one worklog per task that had classified work in it, then

@@ -1,4 +1,4 @@
--- meridian — normalises screenpipe activity into structured app sessions
+-- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 
 -- Remove gap rows that are exact duplicates of an earlier row for the same
 -- time window. Duplicates arise when an ETL run is aborted mid-way and

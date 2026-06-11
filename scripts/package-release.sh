@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# meridian — normalises screenpipe activity into structured app sessions
+# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 #
 # Populate the per-arch npm package (npm/meridian-darwin-arm64) with the
 # prebuilt payload, ready for `npm publish`. Run by semantic-release

@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Run `codex exec` to summarise a Codex session (symmetry with claude.rs). Safe,
 // side-effect-free, non-interactive: `-s read-only`, `--skip-git-repo-check`,

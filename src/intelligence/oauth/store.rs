@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Daemon-writable OAuth token store. Unlike static API tokens (which live in
 // `.env`, read-only to the daemon), OAuth access tokens expire and refresh

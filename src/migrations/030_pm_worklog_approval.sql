@@ -1,4 +1,4 @@
--- meridian — normalises screenpipe activity into structured app sessions
+-- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 --
 -- pm-worklog UI approval flow. Worklogs are now never auto-posted: the daemon
 -- only ever DRAFTS them, and a human approves (and optionally edits) each one in
