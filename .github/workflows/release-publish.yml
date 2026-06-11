@@ -65,13 +65,6 @@ jobs:
             ui/package-lock.json
             tray/package-lock.json
 
-      - name: Cache uv packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/uv
-          key: uv-${{ hashFiles('services/uv.lock') }}
-          restore-keys: uv-
-
       - name: Cache Next.js build
         uses: actions/cache@v4
         with:
@@ -98,15 +91,24 @@ jobs:
           VERSION="${{ steps.tag.outputs.name }}"
 
           # Rust and UI are independent — run them in parallel.
-          # Tauri must wait for both: it links the Rust binary and bundles the UI.
-          cargo build --release &
+          # --workspace builds the daemon AND the tray binary in one cargo
+          # invocation: shared deps compile once and the tray's tauri/wry crates
+          # overlap the daemon build instead of running as a serial tail. The
+          # tray binary lands at target/release/meridian-tray (the exact path
+          # package-release.sh copies). We deliberately skip `tauri build`: its
+          # only output we use is that bare binary — the .app/.dmg bundle is
+          # discarded, the tray icon is include_bytes! (compile-time embedded),
+          # all bundle icons are committed (so tauri_build::build() needs no
+          # generated assets), and the binary is adhoc linker-signed by cargo
+          # exactly as `tauri build` leaves it. So no tauri-cli npm ci, no
+          # create-icons.sh, and no bundling on the critical path.
+          cargo build --release --workspace &
           CARGO_PID=$!
           (cd ui && npm ci --no-audit --no-fund && npm run build) &
           UI_PID=$!
           wait $CARGO_PID || { echo "cargo build failed"; exit 1; }
           wait $UI_PID   || { echo "ui build failed"; exit 1; }
 
-          (cd tray && bash create-icons.sh && npm ci --no-audit --no-fund && npm run build)
           bash scripts/package-release.sh "${VERSION#v}"
           bash scripts/verify-release-bundle.sh "${VERSION#v}"
 
@@ -120,6 +122,7 @@ jobs:
           const logger = { log: console.log, error: console.error, warn: console.warn };
           const ctx = {
             nextRelease: { version, channel: null, gitTag: 'v' + version, notes: '' },
+            options: { publish: [{ path: '@semantic-release/npm' }] },
             logger, env: process.env, cwd: process.cwd(),
             stdout: process.stdout, stderr: process.stderr,
           };
