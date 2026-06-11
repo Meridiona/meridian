@@ -167,6 +167,10 @@ body, .font-sans {
   border: 2px solid transparent;
 }
 
+/* ── Cursor ──────────────────────────────────────────────────────────────── */
+button:not(:disabled) { cursor: pointer; }
+button:disabled       { cursor: not-allowed; }
+
 /* ── Focus ring ──────────────────────────────────────────────────────────── */
 button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
   outline: 2px solid var(--accent);
