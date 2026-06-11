@@ -101,8 +101,16 @@ jobs:
       - name: Build
         run: |
           VERSION="${{ steps.tag.outputs.name }}"
-          cargo build --release
-          (cd ui && npm ci --no-audit --no-fund && npm run build)
+
+          # Rust and UI are independent — run them in parallel.
+          # Tauri must wait for both: it links the Rust binary and bundles the UI.
+          cargo build --release &
+          CARGO_PID=$!
+          (cd ui && npm ci --no-audit --no-fund && npm run build) &
+          UI_PID=$!
+          wait $CARGO_PID || { echo "cargo build failed"; exit 1; }
+          wait $UI_PID   || { echo "ui build failed"; exit 1; }
+
           (cd tray && bash create-icons.sh && npm ci --no-audit --no-fund && npm run build)
           bash scripts/package-release.sh "${VERSION#v}"
           bash scripts/verify-release-bundle.sh "${VERSION#v}"
