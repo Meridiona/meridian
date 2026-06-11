@@ -101,16 +101,17 @@ def adf_to_text(node) -> str:
 UPSERT_SQL = """
 INSERT INTO pm_tasks (
     task_key, provider, title, description_text,
-    status_category, issue_type, project_key, url,
+    status_raw, is_terminal, issue_type, project_key, url,
     updated_at, fetched_at,
     parent_key, epic_title
-) VALUES (?, 'jira', ?, ?, ?, ?, ?, ?, ?,
+) VALUES (?, 'jira', ?, ?, ?, ?, ?, ?, ?, ?,
           strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
           ?, ?)
 ON CONFLICT(task_key) DO UPDATE SET
     title            = excluded.title,
     description_text = excluded.description_text,
-    status_category  = excluded.status_category,
+    status_raw       = excluded.status_raw,
+    is_terminal      = excluded.is_terminal,
     issue_type       = excluded.issue_type,
     project_key      = excluded.project_key,
     url              = excluded.url,
@@ -126,15 +127,14 @@ VALUES ('jira', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 ON CONFLICT(provider) DO UPDATE SET last_synced_at = excluded.last_synced_at
 """
 
-STATUS_CATEGORY_MAP = {"done": "done", "indeterminate": "in_progress"}
-
-
 def normalise(issue: dict, base_url: str) -> tuple:
     fields = issue.get("fields") or {}
     status = fields.get("status") or {}
     cat_key = ((status.get("statusCategory") or {}).get("key")) or "new"
-    # Map Jira status categories to normalized form: todo, in_progress, done
-    status_cat = STATUS_CATEGORY_MAP.get(cat_key, "todo")
+    # Store the verbatim Jira status name; derive `is_terminal` from the fixed
+    # statusCategory ("done" => terminal). Mirrors the Rust jira provider.
+    status_raw = status.get("name") or ""
+    is_terminal = 1 if cat_key == "done" else 0
     parent = fields.get("parent")
     parent_key = parent.get("key") if parent else None
     parent_title = None
@@ -144,7 +144,8 @@ def normalise(issue: dict, base_url: str) -> tuple:
         issue.get("key", ""),
         fields.get("summary") or "",
         adf_to_text(fields.get("description")),
-        status_cat,
+        status_raw,
+        is_terminal,
         (fields.get("issuetype") or {}).get("name") or "",
         (fields.get("project") or {}).get("key") or "",
         f"{base_url.rstrip('/')}/browse/{issue.get('key', '')}",

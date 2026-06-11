@@ -69,18 +69,18 @@ async fn seed_pm_task(
     task_key: &str,
     title: &str,
     description: &str,
-    status_category: &str,
+    status_raw: &str,
 ) {
     sqlx::query(
         "INSERT INTO pm_tasks
-            (task_key, provider, title, description_text, status_category,
+            (task_key, provider, title, description_text, status_raw, is_terminal,
              issue_type, project_key, url, updated_at)
-         VALUES (?, 'jira', ?, ?, ?, 'Story', 'KAN', '', strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
+         VALUES (?, 'jira', ?, ?, ?, 0, 'Story', 'KAN', '', strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
     )
     .bind(task_key)
     .bind(title)
     .bind(description)
-    .bind(status_category)
+    .bind(status_raw)
     .execute(pool)
     .await
     .unwrap();

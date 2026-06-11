@@ -94,10 +94,11 @@ def _fetch_labeled_sessions(con: sqlite3.Connection) -> list[dict]:
 def _fetch_pm_tasks(con: sqlite3.Connection) -> list[dict]:
     rows = con.execute(
         "SELECT task_key, title, COALESCE(description_text,'') AS description_text,"
-        "       COALESCE(status_category,'') AS status_category,"
+        "       COALESCE(status_raw,'') AS status_raw,"
+        "       COALESCE(is_terminal,0) AS is_terminal,"
         "       COALESCE(issue_type,'') AS issue_type, COALESCE(epic_title,'') AS epic_title,"
         "       COALESCE(sprint_name,'') AS sprint_name"
-        " FROM pm_tasks WHERE LOWER(status_category) != 'done'"
+        " FROM pm_tasks WHERE is_terminal = 0"
     ).fetchall()
     return [dict(r) for r in rows]
 

@@ -65,6 +65,10 @@ struct LinearIssue {
 
 #[derive(Deserialize)]
 struct WorkflowState {
+    /// User-facing state name ("In Review", "Ready for Merge", …) — custom per
+    /// team. Stored verbatim as `status_raw`.
+    #[serde(default)]
+    name: String,
     #[serde(rename = "type")]
     type_: String,
 }
@@ -90,14 +94,11 @@ struct NamedUser {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Map a Linear workflow-state type to meridian's status_category. State types:
-/// backlog | unstarted | started | completed | canceled | triage.
-fn map_state_type(type_: &str) -> &'static str {
-    match type_ {
-        "completed" | "canceled" => "done",
-        "started" => "in_progress",
-        _ => "todo",
-    }
+/// Whether a Linear workflow-state type is terminal. State types are a fixed,
+/// reliable taxonomy: backlog | unstarted | started | completed | canceled |
+/// triage. `completed` and `canceled` are done; everything else is open.
+fn native_terminal(type_: &str) -> bool {
+    matches!(type_, "completed" | "canceled")
 }
 
 /// True if this issue should be dropped (already finished). Mirrors Jira's
@@ -134,7 +135,7 @@ async fn fetch(linear: &LinearConfig) -> Result<Vec<LinearIssue>> {
     let query = format!(
         "query {{ viewer {{ assignedIssues(first: {MAX_RESULTS}) {{ nodes {{ \
            identifier title description updatedAt url \
-           state {{ type }} team {{ id key }} \
+           state {{ name type }} team {{ id key }} \
            parent {{ identifier title }} assignee {{ name }} \
            dueDate \
          }} }} }} }}"
@@ -186,11 +187,10 @@ async fn upsert(
         if is_finished(issue) || !team_allowed(issue, &linear.team_ids) {
             continue;
         }
-        let status = issue
-            .state
-            .as_ref()
-            .map(|s| map_state_type(&s.type_))
-            .unwrap_or("todo");
+        let status = match issue.state.as_ref() {
+            Some(s) => super::status::resolve("linear", &s.name, Some(native_terminal(&s.type_))),
+            None => super::status::resolve("linear", "", Some(false)),
+        };
         let description = issue.description.clone().unwrap_or_default();
         let url = issue.url.clone().unwrap_or_default();
         let project_key = issue
@@ -212,16 +212,17 @@ async fn upsert(
 
         sqlx::query(
             "INSERT INTO pm_tasks
-               (task_key, provider, title, description_text, status_category,
+               (task_key, provider, title, description_text, status_raw, is_terminal,
                 issue_type, project_key, url, parent_key, epic_title, assignee_name,
                 due_date, updated_at, fetched_at)
-             VALUES (?, 'linear', ?, ?, ?, '', ?, ?, ?, ?, ?, ?,
+             VALUES (?, 'linear', ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?,
                      strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
              ON CONFLICT(task_key) DO UPDATE SET
                provider         = 'linear',
                title            = excluded.title,
                description_text = excluded.description_text,
-               status_category  = excluded.status_category,
+               status_raw       = excluded.status_raw,
+               is_terminal      = excluded.is_terminal,
                issue_type       = excluded.issue_type,
                project_key      = excluded.project_key,
                url              = excluded.url,
@@ -235,7 +236,8 @@ async fn upsert(
         .bind(&issue.identifier)
         .bind(&issue.title)
         .bind(&description)
-        .bind(status)
+        .bind(&status.raw)
+        .bind(status.is_terminal)
         .bind(&project_key)
         .bind(&url)
         .bind(parent_key)
@@ -376,12 +378,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn state_mapping() {
-        assert_eq!(map_state_type("started"), "in_progress");
-        assert_eq!(map_state_type("completed"), "done");
-        assert_eq!(map_state_type("canceled"), "done");
-        assert_eq!(map_state_type("backlog"), "todo");
-        assert_eq!(map_state_type("triage"), "todo");
+    fn state_terminality() {
+        // completed / canceled are terminal; everything else is open.
+        assert!(native_terminal("completed"));
+        assert!(native_terminal("canceled"));
+        assert!(!native_terminal("started"));
+        assert!(!native_terminal("backlog"));
+        assert!(!native_terminal("triage"));
     }
 
     fn issue_with(team_id: &str, team_key: &str, state: &str) -> LinearIssue {
@@ -392,6 +395,7 @@ mod tests {
             updated_at: "2026-06-01T00:00:00.000Z".into(),
             url: None,
             state: Some(WorkflowState {
+                name: state.into(),
                 type_: state.into(),
             }),
             team: Some(Team {

@@ -105,17 +105,21 @@ async fn upsert(
         if card.closed || !board_allowed(card, &trello.board_ids) {
             continue;
         }
+        // Trello cards have no status/list name in the connector's current fetch,
+        // and closed cards are filtered out above — so every kept card is open
+        // (is_terminal = 0) with an empty status_raw.
         sqlx::query(
             "INSERT INTO pm_tasks
-               (task_key, provider, title, description_text, status_category,
+               (task_key, provider, title, description_text, status_raw, is_terminal,
                 issue_type, project_key, url, updated_at, fetched_at)
-             VALUES (?, 'trello', ?, ?, 'in_progress', 'Card', ?, ?,
+             VALUES (?, 'trello', ?, ?, '', 0, 'Card', ?, ?,
                      ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
              ON CONFLICT(task_key) DO UPDATE SET
                provider         = 'trello',
                title            = excluded.title,
                description_text = excluded.description_text,
-               status_category  = excluded.status_category,
+               status_raw       = excluded.status_raw,
+               is_terminal      = excluded.is_terminal,
                project_key      = excluded.project_key,
                url              = excluded.url,
                updated_at       = excluded.updated_at,
