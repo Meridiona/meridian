@@ -6,6 +6,10 @@ import os from 'os'
 export interface RuntimeSettings {
   // Observability
   log_level: 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR'
+  otlp_enabled: boolean
+  otlp_endpoint: string
+  oo_email: string
+  oo_password: string
   // ETL
   poll_interval_secs: number
   // Classification
@@ -23,6 +27,10 @@ export interface RuntimeSettings {
 
 export const SETTINGS_DEFAULTS: RuntimeSettings = {
   log_level: 'INFO',
+  otlp_enabled: true,
+  otlp_endpoint: '',
+  oo_email: '',
+  oo_password: '',
   poll_interval_secs: 60,
   classification_enabled: true,
   min_classification_duration_s: 10,
@@ -64,7 +72,16 @@ export function readSettings(): RuntimeSettings {
   for (const p of [getSettingsPath(), getLegacySettingsPath()]) {
     try {
       const raw = fs.readFileSync(/*turbopackIgnore: true*/ p, 'utf-8')
-      return { ...SETTINGS_DEFAULTS, ...JSON.parse(raw) }
+      const parsed = JSON.parse(raw)
+      return {
+        ...SETTINGS_DEFAULTS,
+        ...parsed,
+        // Rust serialises Option::None as JSON null; coerce to '' so TS
+        // consumers never encounter null on a string-typed field.
+        otlp_endpoint: parsed.otlp_endpoint ?? '',
+        oo_email:      parsed.oo_email      ?? '',
+        oo_password:   parsed.oo_password   ?? '',
+      }
     } catch {
       // not at this location — try the next
     }

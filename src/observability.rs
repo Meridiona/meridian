@@ -39,8 +39,6 @@ use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 const DEFAULT_OTLP_ENDPOINT: &str = "http://localhost:5080/api/default/v1/traces";
-const DEFAULT_ENV_FILTER: &str =
-    "meridian=info,meridian::etl=debug,meridian::intelligence=debug,sqlx=warn";
 
 /// RAII guard returned from [`init`]. Holds the file-writer worker thread and
 /// (when OTel is enabled) the logger provider for graceful shutdown.
@@ -83,8 +81,11 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
     let file_appender = tracing_appender::rolling::daily(&log_dir, format!("{service_name}.jsonl"));
     let (file_writer, file_guard) = tracing_appender::non_blocking(file_appender);
 
+    // Build the env filter from RUST_LOG if set; otherwise derive from settings.log_level.
+    let settings_log_level = crate::config::load_runtime_settings().log_level;
+    let default_filter = build_default_filter(&settings_log_level);
     let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_ENV_FILTER));
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&default_filter));
 
     // stdout: everything (INFO+). This is what `meridian logs` / daemon.log shows.
     let fmt_stdout = tracing_subscriber::fmt::layer()
@@ -177,19 +178,99 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
     })
 }
 
-/// Builds the OTel tracer and logger providers when `MERIDIAN_OO_AUTH` is set.
-/// Returns the providers (not layers) so the caller can construct layers at the
-/// correct generic subscriber type without boxing.
-fn try_build_otel_providers(service_name: &str) -> Result<Option<(Tracer, LoggerProvider)>> {
-    let Ok(auth) = std::env::var("MERIDIAN_OO_AUTH") else {
-        return Ok(None);
-    };
-    if auth.is_empty() {
-        return Ok(None);
+/// Resolved OTLP export target: trace endpoint + Basic-auth credential.
+/// `None` means export is disabled (toggle off, or no credentials anywhere).
+pub struct OtlpTarget {
+    pub endpoint: String,
+    pub auth: String,
+}
+
+/// Cheap liveness check used by the health probe — does NOT assemble
+/// credentials. Returns `true` when OTLP export would be attempted if
+/// `resolve_otlp_target()` were called (toggle on + credentials present).
+pub fn is_otlp_configured() -> bool {
+    let settings = crate::config::load_runtime_settings();
+    if !settings.otlp_enabled {
+        return false;
+    }
+    let has_settings_creds = settings.oo_email.as_deref().is_some_and(|e| !e.is_empty())
+        && settings
+            .oo_password
+            .as_deref()
+            .is_some_and(|p| !p.is_empty());
+    has_settings_creds || std::env::var("MERIDIAN_OO_AUTH").is_ok_and(|v| !v.is_empty())
+}
+
+/// Resolve the configured OTLP endpoint URL (without assembling credentials).
+/// Used by the health check to derive the `/healthz` URL to ping.
+pub fn resolve_otlp_endpoint() -> Option<String> {
+    let settings = crate::config::load_runtime_settings();
+    if !settings.otlp_enabled {
+        return None;
+    }
+    Some(
+        settings
+            .otlp_endpoint
+            .filter(|s| !s.is_empty())
+            .or_else(|| std::env::var("MERIDIAN_OTLP_ENDPOINT").ok())
+            .unwrap_or_else(|| DEFAULT_OTLP_ENDPOINT.to_string()),
+    )
+}
+
+/// Resolve the full OTLP export target: endpoint + Basic-auth header value.
+/// Called only at daemon startup (inside `try_build_otel_providers`). Use
+/// `is_otlp_configured()` + `resolve_otlp_endpoint()` for lighter call sites.
+pub fn resolve_otlp_target() -> Option<OtlpTarget> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    let settings = crate::config::load_runtime_settings();
+
+    if !settings.otlp_enabled {
+        return None;
     }
 
-    let trace_endpoint = std::env::var("MERIDIAN_OTLP_ENDPOINT")
-        .unwrap_or_else(|_| DEFAULT_OTLP_ENDPOINT.to_string());
+    // Auth: settings email+password → env var MERIDIAN_OO_AUTH → disabled.
+    let auth = match (&settings.oo_email, &settings.oo_password) {
+        (Some(email), Some(pass)) if !email.is_empty() && !pass.is_empty() => {
+            // Guard against HTTP header injection and malformed user:password splits.
+            if email.contains(['\n', '\r']) || pass.contains(['\n', '\r']) || email.contains(':') {
+                tracing::warn!(
+                    "OTLP credentials contain invalid characters — OTLP export disabled"
+                );
+                return None;
+            }
+            STANDARD.encode(format!("{email}:{pass}"))
+        }
+        _ => match std::env::var("MERIDIAN_OO_AUTH") {
+            Ok(v) if !v.is_empty() => v,
+            _ => return None,
+        },
+    };
+
+    let endpoint = settings
+        .otlp_endpoint
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("MERIDIAN_OTLP_ENDPOINT").ok())
+        .unwrap_or_else(|| DEFAULT_OTLP_ENDPOINT.to_string());
+
+    // Validate scheme — only http/https are valid OTLP transports.
+    if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
+        tracing::warn!(
+            endpoint = %endpoint,
+            "OTLP endpoint has no http/https scheme — OTLP export disabled"
+        );
+        return None;
+    }
+
+    Some(OtlpTarget { endpoint, auth })
+}
+
+/// Builds the OTel tracer and logger providers when OTLP export is configured.
+fn try_build_otel_providers(service_name: &str) -> Result<Option<(Tracer, LoggerProvider)>> {
+    let Some(target) = resolve_otlp_target() else {
+        return Ok(None);
+    };
+    let (trace_endpoint, auth) = (target.endpoint, target.auth);
 
     // Derive the log endpoint from the trace endpoint by swapping the path suffix.
     let log_endpoint = trace_endpoint.replace("/v1/traces", "/v1/logs");
@@ -236,6 +317,18 @@ fn try_build_otel_providers(service_name: &str) -> Result<Option<(Tracer, Logger
         .build();
 
     Ok(Some((tracer, logger_provider)))
+}
+
+/// Map the settings.json `log_level` value (DEBUG/INFO/WARNING/ERROR) to a
+/// tracing `EnvFilter` string used when `RUST_LOG` is not set.
+fn build_default_filter(log_level: &str) -> String {
+    match log_level.to_uppercase().as_str() {
+        "DEBUG" => "meridian=debug,sqlx=warn".to_string(),
+        "WARNING" | "WARN" => "meridian=warn,sqlx=warn".to_string(),
+        "ERROR" => "meridian=error,sqlx=error".to_string(),
+        // INFO or anything else: keep the previous fixed default with module-level overrides.
+        _ => "meridian=info,meridian::etl=debug,meridian::intelligence=debug,sqlx=warn".to_string(),
+    }
 }
 
 fn resolve_log_dir() -> Result<PathBuf> {
