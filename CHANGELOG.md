@@ -1,3 +1,10 @@
+# [1.49.0](https://github.com/Meridiona/meridian/compare/v1.48.2...v1.49.0) (2026-06-11)
+
+
+### Features
+
+* **dev:** add hot-reload dev environment with dev-start.sh ([5280dbb](https://github.com/Meridiona/meridian/commit/5280dbbbf058f9f2dfbeff4fc1c64d2a66c3f509))
+
 ## [1.48.2](https://github.com/Meridiona/meridian/compare/v1.48.1...v1.48.2) (2026-06-11)
 
 
