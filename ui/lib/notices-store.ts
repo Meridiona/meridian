@@ -71,3 +71,10 @@ export function subscribe(ctrl: Controller): void {
 export function unsubscribe(ctrl: Controller): void {
   controllers.delete(ctrl)
 }
+
+// Force an immediate re-read and broadcast — call after writing to system_notices
+// from an API route (e.g. after clearing a notice on successful auth).
+export function refresh(): void {
+  lastSnapshot = '' // invalidate snapshot so broadcast always pushes
+  broadcast()
+}

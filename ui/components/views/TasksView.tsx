@@ -887,7 +887,12 @@ function OAuthSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
         const ir = await fetch('/api/integrations').catch(() => null)
         if (!ir?.ok) return
         const data = await ir.json()
-        if (data[tracker.id]) { clearInterval(poll); setStatus('done') }
+        if (data[tracker.id]) {
+          clearInterval(poll)
+          setStatus('done')
+          // Clear the provider's error notice immediately — don't wait for next ETL poll
+          fetch(`/api/notices/pm.${tracker.id}`, { method: 'DELETE' }).catch(() => {})
+        }
       }, 2_000)
     } catch (e) {
       setError(String(e)); setStatus('error')
@@ -941,7 +946,12 @@ function TokenSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
       const r = await fetch('/api/integrations')
       if (r.ok) {
         const data = await r.json()
-        setConnected(!!data[tracker.id])
+        const isConnected = !!data[tracker.id]
+        setConnected(isConnected)
+        if (isConnected) {
+          // Clear the provider's error notice immediately
+          fetch(`/api/notices/pm.${tracker.id}`, { method: 'DELETE' }).catch(() => {})
+        }
       }
     } catch { /* ignore */ }
     finally { setChecking(false) }
