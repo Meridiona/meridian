@@ -35,10 +35,20 @@ use opentelemetry_sdk::{
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{layer::SubscriberExt, reload, util::SubscriberInitExt, EnvFilter};
 
 const DEFAULT_OTLP_ENDPOINT: &str = "http://localhost:5080/api/default/v1/traces";
+
+/// Type alias for the hot-reload handle. The `S = Registry` parameter reflects
+/// that the reload layer is installed directly on `tracing_subscriber::Registry`
+/// (it is the first layer added, before any OTel or fmt layers).
+type FilterHandle = reload::Handle<EnvFilter, tracing_subscriber::Registry>;
+
+/// Global handle for hot-reloading the `EnvFilter` without restarting the daemon.
+/// Set once during `init()`; accessed from the poll loop via `reload_log_level()`.
+static FILTER_HANDLE: OnceLock<FilterHandle> = OnceLock::new();
 
 /// RAII guard returned from [`init`]. Holds the file-writer worker thread and
 /// (when OTel is enabled) the logger provider for graceful shutdown.
@@ -84,8 +94,16 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
     // Build the env filter from RUST_LOG if set; otherwise derive from settings.log_level.
     let settings_log_level = crate::config::load_runtime_settings().log_level;
     let default_filter = build_default_filter(&settings_log_level);
-    let env_filter =
+    let initial_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&default_filter));
+
+    // Wrap the filter in a reload layer so the poll loop can update it at runtime
+    // via `reload_log_level()` without restarting the daemon.
+    let (reload_layer, filter_handle) = reload::Layer::new(initial_filter);
+    let _ = FILTER_HANDLE.set(filter_handle);
+    // We need to move reload_layer into exactly one subscriber init branch below.
+    // Using Option::take() satisfies the borrow checker since only one branch runs.
+    let mut rl = Some(reload_layer);
 
     // stdout: everything (INFO+). This is what `meridian logs` / daemon.log shows.
     let fmt_stdout = tracing_subscriber::fmt::layer()
@@ -120,7 +138,7 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
             let log_layer = OpenTelemetryTracingBridge::new(&lp);
 
             tracing_subscriber::registry()
-                .with(env_filter)
+                .with(rl.take().unwrap())
                 .with(fmt_stdout)
                 .with(fmt_stderr)
                 .with(fmt_file)
@@ -132,7 +150,7 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
         }
         Ok(None) => {
             tracing_subscriber::registry()
-                .with(env_filter)
+                .with(rl.take().unwrap())
                 .with(fmt_stdout)
                 .with(fmt_stderr)
                 .with(fmt_file)
@@ -142,7 +160,7 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
         Err(err) => {
             eprintln!("observability: OTLP exporter init failed: {err:#}");
             tracing_subscriber::registry()
-                .with(env_filter)
+                .with(rl.take().unwrap())
                 .with(fmt_stdout)
                 .with(fmt_stderr)
                 .with(fmt_file)
@@ -320,7 +338,8 @@ fn try_build_otel_providers(service_name: &str) -> Result<Option<(Tracer, Logger
 }
 
 /// Map the settings.json `log_level` value (DEBUG/INFO/WARNING/ERROR) to a
-/// tracing `EnvFilter` string used when `RUST_LOG` is not set.
+/// tracing `EnvFilter` string. Used at startup and on hot-reload, when
+/// `RUST_LOG` is not set.
 fn build_default_filter(log_level: &str) -> String {
     match log_level.to_uppercase().as_str() {
         "DEBUG" => "meridian=debug,sqlx=warn".to_string(),
@@ -328,6 +347,26 @@ fn build_default_filter(log_level: &str) -> String {
         "ERROR" => "meridian=error,sqlx=error".to_string(),
         // INFO or anything else: keep the previous fixed default with module-level overrides.
         _ => "meridian=info,meridian::etl=debug,meridian::intelligence=debug,sqlx=warn".to_string(),
+    }
+}
+
+/// Hot-reload the log level filter without restarting the daemon.
+///
+/// Called from the poll loop whenever `settings.log_level` changes. Returns
+/// `true` if the filter was updated, `false` if RUST_LOG is set (we don't
+/// fight explicit env-var overrides) or the handle isn't initialised yet.
+pub fn reload_log_level(level: &str) -> bool {
+    // Respect explicit RUST_LOG override — don't fight the user's env var.
+    if std::env::var("RUST_LOG").is_ok() {
+        return false;
+    }
+    let Some(handle) = FILTER_HANDLE.get() else {
+        return false;
+    };
+    let filter_str = build_default_filter(level);
+    match filter_str.parse::<EnvFilter>() {
+        Ok(new_filter) => handle.modify(|f| *f = new_filter).is_ok(),
+        Err(_) => false,
     }
 }
 
