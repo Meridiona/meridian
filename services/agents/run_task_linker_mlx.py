@@ -187,7 +187,7 @@ class SessionClassification(BaseModel):
         ),
     )
     session_summary: str = Field(
-        ..., min_length=100, max_length=1000,
+        ..., min_length=100,
         description=(
             "A factual prose summary of EVERYTHING the user did in this "
             "session, written for downstream project-management updates. "
@@ -342,7 +342,7 @@ def _coerce_apple_fm_result(data: dict) -> dict:
     if not data.get("reasoning"):
         data["reasoning"] = "Classified via Apple Foundation Models."
 
-    # session_summary: must be 100-1000 chars
+    # session_summary: must be at least 100 chars
     summary = str(data.get("session_summary", ""))
     if len(summary) < 100:
         # Pad from reasoning
@@ -350,7 +350,7 @@ def _coerce_apple_fm_result(data: dict) -> dict:
         summary = (summary + " " + reasoning).strip()
     if len(summary) < 100:
         summary = summary + " The session was processed by Apple Foundation Models."
-    data["session_summary"] = summary[:1000]
+    data["session_summary"] = summary
 
     # dimensions: must be dict[str, list[str]]
     dims = data.get("dimensions", {})
