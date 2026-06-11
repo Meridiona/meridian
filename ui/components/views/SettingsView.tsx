@@ -59,7 +59,6 @@ function SaveButton({ onClick, status }: { onClick: () => void; status: SaveStat
           padding: '5px 14px',
           borderRadius: '6px',
           border: 'none',
-          cursor: 'default',
           boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
         }}
       >
