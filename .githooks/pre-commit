@@ -3,14 +3,15 @@
 # Note: run `chmod +x .githooks/pre-commit` after cloning to make this executable
 set -e
 
-# Block modifications to already-committed migration files.
+# Block modifications, renames, or deletions of already-committed migration files.
 # Editing an existing migration changes its checksum and breaks any DB that has
-# already applied it — add a new numbered migration instead.
+# already applied it — add a new numbered migration instead. (M = modified,
+# D = deleted, R = renamed; $2 is the old path for all three.)
 modified_migrations=$(git diff --cached --name-status \
-    | awk '$1 == "M" { print $2 }' \
+    | awk '$1 ~ /^(M|D|R)/ { print $2 }' \
     | grep -E '^src/migrations/[0-9]+_.*\.sql$' || true)
 if [[ -n "$modified_migrations" ]]; then
-    echo "ERROR: modifying existing migration files is not allowed:" >&2
+    echo "ERROR: modifying, renaming, or deleting existing migration files is not allowed:" >&2
     echo "$modified_migrations" | sed 's/^/  /' >&2
     echo "" >&2
     echo "  Add a new src/migrations/<next>_<description>.sql instead." >&2

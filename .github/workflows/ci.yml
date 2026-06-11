@@ -58,3 +58,29 @@ jobs:
       - name: UI build
         run: npm run build
         working-directory: ui
+
+  # Shipped migrations are immutable: sqlx records a checksum of every applied
+  # migration and the daemon refuses to start if a migration file later differs.
+  # A pre-commit hook also guards this, but hooks are opt-in and bypassable, so
+  # enforce it server-side where it cannot be skipped.
+  migration-guard:
+    name: Migrations append-only
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reject modified, renamed, or deleted migrations
+        run: |
+          base='${{ github.event.pull_request.base.sha }}'
+          violations=$(git diff --name-status "$base"...HEAD -- src/migrations \
+            | grep -E '^(M|D|R)' || true)
+          if [ -n "$violations" ]; then
+            echo "::error::Shipped migrations are immutable. Add a NEW numbered migration in src/migrations/ — never modify, rename, or delete an existing one (it changes the sqlx checksum and breaks every database that already applied it)."
+            echo "Offending changes:"
+            echo "$violations"
+            exit 1
+          fi
+          echo "OK — no existing migrations were modified, renamed, or deleted."
