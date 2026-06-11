@@ -1,0 +1,181 @@
+name: Publish
+
+# Stage 2 of the two-stage release pipeline.
+#
+# Triggered by a tag push from Stage 1 (release.yml). Checks out the tagged
+# commit, builds the macOS arm64 payload, publishes both npm packages via
+# OIDC trusted publishing, uploads the binary asset to the draft GitHub
+# release, and converts it to published.
+#
+# Retry-safe: re-running this workflow for the same tag is safe — npm rejects
+# already-published versions gracefully, asset upload is idempotent, and
+# gh release edit is idempotent. Use workflow_dispatch with the tag input to
+# re-publish a failed release without a dummy commit.
+#
+# IMPORTANT — one-time setup required:
+#   On npmjs.com, update the Trusted Publisher config for both
+#   @meridiona/meridian and @meridiona/meridian-darwin-arm64 to reference
+#   this workflow file (.github/workflows/release-publish.yml) instead of
+#   the old release.yml.
+
+on:
+  push:
+    tags:
+      - "v[0-9]*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. v1.2.3)"
+        required: true
+
+permissions:
+  contents: write
+  id-token: write   # OIDC trusted publishing — no NPM_TOKEN needed
+
+jobs:
+  publish:
+    runs-on: macos-26
+    env:
+      SQLX_OFFLINE: "true"
+      MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.name }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: |
+            package-lock.json
+            ui/package-lock.json
+            tray/package-lock.json
+
+      - name: Cache uv packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ hashFiles('services/uv.lock') }}
+          restore-keys: uv-
+
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: ui/.next/cache
+          key: nextjs-${{ hashFiles('ui/package-lock.json') }}-${{ hashFiles('ui/**/*.ts', 'ui/**/*.tsx') }}
+          restore-keys: |
+            nextjs-${{ hashFiles('ui/package-lock.json') }}-
+            nextjs-
+
+      - name: Cache Node.js 22 arm64 tarball
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/node22-arm64
+          key: node22-22.22.3-darwin-arm64
+
+      - name: Install release tooling
+        run: npm ci --no-audit --no-fund
+
+      - name: Set version
+        run: bash scripts/set-version.sh "${{ steps.tag.outputs.name }}"
+
+      - name: Build
+        run: |
+          VERSION="${{ steps.tag.outputs.name }}"
+
+          # Rust and UI are independent — run them in parallel.
+          # Tauri must wait for both: it links the Rust binary and bundles the UI.
+          cargo build --release &
+          CARGO_PID=$!
+          (cd ui && npm ci --no-audit --no-fund && npm run build) &
+          UI_PID=$!
+          wait $CARGO_PID || { echo "cargo build failed"; exit 1; }
+          wait $UI_PID   || { echo "ui build failed"; exit 1; }
+
+          (cd tray && bash create-icons.sh && npm ci --no-audit --no-fund && npm run build)
+          bash scripts/package-release.sh "${VERSION#v}"
+          bash scripts/verify-release-bundle.sh "${VERSION#v}"
+
+      - name: Obtain npm publish token via OIDC
+        # Replicates what @semantic-release/npm does internally when NPM_TOKEN
+        # is absent: exchange the GitHub Actions OIDC JWT for a short-lived
+        # npm publish token. Requires both packages to be configured as
+        # Trusted Publishers on npmjs.com pointing to this workflow file.
+        run: |
+          # Audience must be the npm registry URL, not "sigstore".
+          # "sigstore" is for provenance attestation only; trusted publishing
+          # auth uses the registry URL as the audience (matches @semantic-release/npm).
+          OIDC_JWT=$(curl -sS \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Fregistry.npmjs.org%2F" | jq -r '.value')
+
+          RESP=$(curl -sS -X POST "https://registry.npmjs.org/-/v1/login" \
+            -H "Content-Type: application/json" \
+            -d "{\"type\":\"oidc\",\"provenance\":true,\"token\":\"${OIDC_JWT}\"}")
+
+          NPM_PUBLISH_TOKEN=$(echo "$RESP" | jq -r '.token // empty')
+          if [ -z "$NPM_PUBLISH_TOKEN" ]; then
+            echo "OIDC token exchange failed: $RESP" && exit 1
+          fi
+
+          npm config set //registry.npmjs.org/:_authToken "${NPM_PUBLISH_TOKEN}"
+
+      - name: Publish arch-specific package
+        run: npm publish ./npm/meridian-darwin-arm64 --access public --provenance
+
+      - name: Publish main package
+        run: npm publish ./npm/meridian --access public --provenance
+
+      - name: Publish draft release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          # Convert draft → published (idempotent — safe to re-run on retry)
+          gh release edit "${{ steps.tag.outputs.name }}" --draft=false --repo "$GITHUB_REPOSITORY"
+
+      - name: Commit version bumps to main
+        # Pushes the updated manifests (Cargo.toml, package.json files, etc.)
+        # back to main so the repo reflects the released version. The [skip ci]
+        # marker prevents this commit from triggering Stage 1 again.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.name }}"
+          VERSION="${TAG#v}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            Cargo.toml Cargo.lock \
+            services/pyproject.toml \
+            ui/package.json \
+            packages/meridian-mcp/package.json \
+            npm/meridian/package.json \
+            npm/meridian-darwin-arm64/package.json
+
+          # Only commit if there are staged changes (idempotent on retry)
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(release): ${VERSION} [skip ci]"
+            git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            git push origin HEAD:main
+          fi

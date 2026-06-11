@@ -11,6 +11,7 @@ export interface TaskSummary {
   key: string
   title: string
   description: string
+  issue_type: string
   status: string
   provider: string
   url: string
@@ -39,7 +40,7 @@ export async function GET() {
 
     // get all tasks
     const taskRows = db.prepare(`
-      SELECT task_key, title, description_text, status_category, provider, url
+      SELECT task_key, title, description_text, COALESCE(issue_type,'') AS issue_type, status_category, provider, url
       FROM pm_tasks
       ORDER BY task_key DESC
     `).all() as Array<Record<string, unknown>>
@@ -122,6 +123,7 @@ export async function GET() {
         key: k,
         title: t.title as string,
         description: (t.description_text as string) || '',
+        issue_type: (t.issue_type as string) || '',
         status: (t.status_category as string) || 'todo',
         provider: (t.provider as string) || 'jira',
         url: (t.url as string) || '',

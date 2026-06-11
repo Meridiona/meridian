@@ -111,11 +111,9 @@ def _coerce_jira(raw) -> JiraUpdate | None:
 
 
 def _decide_state(update: JiraUpdate, coverage: float, bundle: SessionBundle) -> UpdateState:
-    """Apply the routing matrix that picks the final UpdateState."""
+    """All worklogs are DRAFTED until a human approves via the UI — never auto-posted."""
     if not update.summary.strip():
         return UpdateState.SKIPPED
-    if update.confidence < config.PM_WORKLOG_MIN_CONFIDENCE:
-        return UpdateState.DRAFTED
     return UpdateState.DRAFTED
 
 

@@ -95,6 +95,7 @@ struct StateDetail {
 /// stored in pm_tasks contain readable plain text rather than raw HTML markup.
 /// Azure DevOps returns HTML for Description, AcceptanceCriteria, ReproSteps, etc.
 fn html_to_plaintext(html: &str) -> String {
+    // Remove script/style blocks entirely (including their content).
     let mut s = String::with_capacity(html.len());
     let mut chars = html.chars().peekable();
     let mut in_tag = false;
@@ -197,7 +198,12 @@ async fn run_wiql(client: &reqwest::Client, cfg: &AzureDevOpsConfig) -> Result<V
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Azure DevOps WIQL returned {status}: {text}");
+        let msg = match status.as_u16() {
+            401 => "permission_error: PAT is invalid or expired — regenerate it in Azure DevOps User settings → Personal access tokens".to_string(),
+            403 => "permission_error: PAT lacks required scope — create a token with Work Items → Read & write scope".to_string(),
+            _ => format!("sync_error: HTTP {status}: {text}"),
+        };
+        anyhow::bail!("{msg}");
     }
     let wiql: WiqlResponse = resp.json().await.context("parsing WIQL response")?;
     Ok(wiql.work_items.iter().map(|w| w.id).collect())
@@ -321,7 +327,14 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         .context("building HTTP client")?;
 
     // 1. WIQL: all work items assigned to me.
-    let all_ids = run_wiql(&client, cfg).await?;
+    let all_ids = match run_wiql(&client, cfg).await {
+        Ok(ids) => ids,
+        Err(e) => {
+            let msg = e.to_string();
+            stamp_error(pool, &msg).await?;
+            return Err(e);
+        }
+    };
     tracing::debug!(count = all_ids.len(), "azure_devops: WIQL returned IDs");
 
     if all_ids.is_empty() {
@@ -522,14 +535,31 @@ async fn prune(pool: &SqlitePool, kept_keys: &[String]) -> Result<()> {
 async fn stamp_sync(pool: &SqlitePool) -> Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query(
-        "INSERT INTO pm_sync_state (provider, last_synced_at)
-         VALUES ('azure_devops', ?)
-         ON CONFLICT(provider) DO UPDATE SET last_synced_at = excluded.last_synced_at",
+        "INSERT INTO pm_sync_state (provider, last_synced_at, last_error)
+         VALUES ('azure_devops', ?, NULL)
+         ON CONFLICT(provider) DO UPDATE SET
+           last_synced_at = excluded.last_synced_at,
+           last_error     = NULL",
     )
     .bind(&now)
     .execute(pool)
     .await
     .context("updating azure_devops sync state")?;
+    Ok(())
+}
+
+async fn stamp_error(pool: &SqlitePool, error: &str) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO pm_sync_state (provider, last_synced_at, last_error)
+         VALUES ('azure_devops', ?, ?)
+         ON CONFLICT(provider) DO UPDATE SET last_error = excluded.last_error",
+    )
+    .bind(&now)
+    .bind(error)
+    .execute(pool)
+    .await
+    .context("recording azure_devops sync error")?;
     Ok(())
 }
 

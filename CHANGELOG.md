@@ -1,3 +1,26 @@
+# [1.43.0](https://github.com/Meridiona/meridian/compare/v1.42.0...v1.43.0) (2026-06-10)
+
+
+### Features
+
+* **azure-devops:** surface PAT permission errors in the UI ([#241](https://github.com/Meridiona/meridian/issues/241)) ([f426420](https://github.com/Meridiona/meridian/commit/f4264208f3c0647ca1c9b571b06b47f2825c3ee8))
+* **ui:** show issue type in Tasks page for all providers ([#242](https://github.com/Meridiona/meridian/issues/242)) ([206dca5](https://github.com/Meridiona/meridian/commit/206dca537d2fda07f2784b2372d5135b660bcc76))
+
+# [1.42.0](https://github.com/Meridiona/meridian/compare/v1.41.0...v1.42.0) (2026-06-10)
+
+
+### Features
+
+* **ui:** show absolute time on hover in Shape of Day activity breakdown ([82a7b89](https://github.com/Meridiona/meridian/commit/82a7b8919287cb660574d0c951711dafabd5ae77))
+* **ui:** vendor badges and integrations back nav on Tasks page ([a69ae3c](https://github.com/Meridiona/meridian/commit/a69ae3c1a45d053f4f1d368c59d65037adc7d139))
+
+# [1.41.0](https://github.com/Meridiona/meridian/compare/v1.40.1...v1.41.0) (2026-06-10)
+
+
+### Features
+
+* **ui:** remove Queue view from navigation ([a5e1592](https://github.com/Meridiona/meridian/commit/a5e159205cd55a83292ea970be53b540ce3d9b15))
+
 ## [1.40.1](https://github.com/Meridiona/meridian/compare/v1.40.0...v1.40.1) (2026-06-10)
 
 
