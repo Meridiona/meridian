@@ -1,3 +1,10 @@
+# [1.50.0](https://github.com/Meridiona/meridian/compare/v1.49.2...v1.50.0) (2026-06-11)
+
+
+### Features
+
+* **observability:** system notices fault bus, log viewer UI, and UI auth for all providers ([#266](https://github.com/Meridiona/meridian/issues/266)) ([916a6d2](https://github.com/Meridiona/meridian/commit/916a6d20118da290fc8be64026d608f6d366ebb0))
+
 ## [1.49.2](https://github.com/Meridiona/meridian/compare/v1.49.1...v1.49.2) (2026-06-11)
 
 
