@@ -20,7 +20,7 @@ export default function SessionsView() {
     return <div className="space-y-8">
       <header className="rise">
         <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Sessions</p>
-        <h1 className="font-serif text-[56px] leading-[1] tracking-tight mt-1" style={{ color: 'var(--ink)' }}>Every moment, captured</h1>
+        <h1 className="type-title mt-1" style={{ color: 'var(--ink)' }}>Every moment, captured</h1>
       </header>
       <p className="text-[13px]" style={{ color: 'var(--ink-3)' }}>Loading…</p>
     </div>
@@ -37,7 +37,7 @@ export default function SessionsView() {
       <header className="rise flex items-end justify-between">
         <div>
           <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Sessions</p>
-          <h1 className="font-serif text-[56px] leading-[1] tracking-tight mt-1" style={{ color: 'var(--ink)' }}>
+          <h1 className="type-title mt-1" style={{ color: 'var(--ink)' }}>
             Every moment, captured
           </h1>
         </div>

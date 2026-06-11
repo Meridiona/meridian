@@ -88,7 +88,7 @@ export default function Sidebar({ onOpenCmd }: Props) {
       <div className="px-6 py-7">
         <div className="flex items-center gap-2">
           <span className="inline-block w-2.5 h-2.5 rounded-full live-dot" style={{ background: 'var(--accent)' }} />
-          <span className="font-serif italic text-[22px] leading-none tracking-tight" style={{ color: 'var(--ink)' }}>meridian</span>
+          <span className="type-wordmark" style={{ color: 'var(--ink)' }}>meridian</span>
         </div>
         <p className="text-[10px] uppercase tracking-[0.2em] mt-2" style={{ color: 'var(--ink-3)' }}>
           local · v{ver?.current ?? '…'}
