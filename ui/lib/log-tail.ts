@@ -26,9 +26,20 @@ type Controller = ReadableStreamDefaultController<Uint8Array>
 const encoder = new TextEncoder()
 const controllers = new Set<Controller>()
 
-let watcherStarted = false
-let currentLogPath = ''
-let filePosition = 0
+// Store watcher handle on globalThis so Next.js HMR module re-evaluation
+// doesn't spawn a second watcher while the first keeps running.
+const g = globalThis as typeof globalThis & {
+  _meridianWatcher?: fs.FSWatcher
+  _meridianLogPath?: string
+  _meridianFilePos?: number
+}
+
+function watcherStarted(): boolean { return !!g._meridianWatcher }
+function setWatcher(w: fs.FSWatcher | undefined) { g._meridianWatcher = w }
+function getCurrentLogPath(): string { return g._meridianLogPath ?? '' }
+function setCurrentLogPath(p: string) { g._meridianLogPath = p }
+function getFilePosition(): number { return g._meridianFilePos ?? 0 }
+function setFilePosition(n: number) { g._meridianFilePos = n }
 
 function logDir(): string {
   return process.env.MERIDIAN_LOG_DIR ?? path.join(os.homedir(), '.meridian', 'logs')
@@ -75,19 +86,19 @@ function readNewLines() {
   const logPath = todayLogPath()
 
   // If the date rolled over, reset position for the new file
-  if (logPath !== currentLogPath) {
-    currentLogPath = logPath
-    filePosition = 0
+  if (logPath !== getCurrentLogPath()) {
+    setCurrentLogPath(logPath)
+    setFilePosition(0)
   }
 
   try {
     const stat = fs.statSync(logPath)
-    if (stat.size <= filePosition) return
+    if (stat.size <= getFilePosition()) return
     const fd = fs.openSync(logPath, 'r')
-    const buf = Buffer.alloc(stat.size - filePosition)
-    fs.readSync(fd, buf as unknown as Uint8Array, 0, buf.length, filePosition)
+    const buf = Buffer.alloc(stat.size - getFilePosition())
+    fs.readSync(fd, buf as unknown as Uint8Array, 0, buf.length, getFilePosition())
     fs.closeSync(fd)
-    filePosition = stat.size
+    setFilePosition(stat.size)
 
     const lines = buf.toString('utf8').split('\n').filter(Boolean)
     const entries = lines.map(parseLine).filter((e): e is LogEntry => e !== null)
@@ -98,18 +109,17 @@ function readNewLines() {
 }
 
 function ensureWatcher() {
-  if (watcherStarted) return
-  watcherStarted = true
-  currentLogPath = todayLogPath()
+  if (watcherStarted()) return
+  setCurrentLogPath(todayLogPath())
 
   // Watch the directory so we catch both writes to today's file and the moment
   // a new dated file appears at midnight
   try {
-    fs.watch(logDir(), { persistent: false }, (_event, filename) => {
+    setWatcher(fs.watch(logDir(), { persistent: false }, (_event, filename) => {
       if (filename?.startsWith('meridian-rust.jsonl')) {
         readNewLines()
       }
-    })
+    }))
   } catch {
     // Log dir not yet created — fall back to polling until it appears
     const poll = setInterval(() => {
@@ -145,8 +155,8 @@ export function readRecentLines(n: number): Promise<LogEntry[]> {
     })
     rl.on('close', () => {
       // Set position so the SSE watcher picks up from here
-      try { filePosition = fs.statSync(logPath).size } catch { /* ignore */ }
-      currentLogPath = logPath
+      try { setFilePosition(fs.statSync(logPath).size) } catch { /* ignore */ }
+      setCurrentLogPath(logPath)
       resolve(entries.slice(-n))
     })
     rl.on('error', () => resolve([]))

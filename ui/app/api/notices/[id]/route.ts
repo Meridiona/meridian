@@ -12,9 +12,9 @@ export const dynamic = 'force-dynamic'
 
 export async function DELETE(
   _request: Request,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
-  const noticeId = params.id
+  const { id: noticeId } = await params
   if (!noticeId) {
     return NextResponse.json({ error: 'Missing notice id' }, { status: 400 })
   }

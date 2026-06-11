@@ -1,7 +1,7 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { fmtDur, fmtClock, AppGlyph, CatDot, TaskKey, StatusPill, SectionHead, Card, CATS, PROVIDER_META } from '@/components/atoms'
 import type { TaskSummary, TasksResponse } from '@/app/api/tasks/route'
 import type { TodayResponse } from '@/app/api/today/route'
@@ -873,6 +873,9 @@ function AzureDevOpsSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
 function OAuthSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
   const [status, setStatus] = useState<'idle' | 'waiting' | 'done' | 'error'>('idle')
   const [error, setError] = useState<string | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  useEffect(() => () => { if (pollRef.current != null) clearInterval(pollRef.current) }, [])
 
   const startOAuth = async () => {
     setStatus('waiting')
@@ -882,13 +885,14 @@ function OAuthSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
       if (!r.ok) { const b = await r.json(); setError(b.error ?? 'Failed to start'); setStatus('error'); return }
       // Poll until connected (up to 3 minutes)
       const deadline = Date.now() + 180_000
-      const poll = setInterval(async () => {
-        if (Date.now() > deadline) { clearInterval(poll); setStatus('error'); setError('Timed out — try again'); return }
+      pollRef.current = setInterval(async () => {
+        if (Date.now() > deadline) { clearInterval(pollRef.current!); pollRef.current = null; setStatus('error'); setError('Timed out — try again'); return }
         const ir = await fetch('/api/integrations').catch(() => null)
         if (!ir?.ok) return
         const data = await ir.json()
         if (data[tracker.id]) {
-          clearInterval(poll)
+          clearInterval(pollRef.current!)
+          pollRef.current = null
           setStatus('done')
           // Clear the provider's error notice immediately — don't wait for next ETL poll
           fetch(`/api/notices/pm.${tracker.id}`, { method: 'DELETE' }).catch(() => {})

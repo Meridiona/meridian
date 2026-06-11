@@ -91,9 +91,8 @@ export async function POST(request: Request) {
   // Build env var updates from submitted fields
   const updates: Record<string, string> = {}
   for (const [fieldName, envKey] of Object.entries(fieldMap)) {
-    if (fields[fieldName]?.trim()) {
-      updates[envKey] = fields[fieldName].trim()
-    }
+    const v = fields[fieldName]?.trim().replace(/[\r\n]/g, '')
+    if (v) updates[envKey] = v
   }
 
   if (Object.keys(updates).length === 0) {
@@ -101,7 +100,6 @@ export async function POST(request: Request) {
   }
 
   // Validate required fields per provider
-  const keys = PROVIDER_KEYS[provider]!
   const required: Record<string, string[]> = {
     jira:   ['JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN'],
     linear: ['LINEAR_API_KEY'],
