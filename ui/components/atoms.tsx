@@ -190,19 +190,31 @@ export function TaskKey({ keyId, big = false }: { keyId?: string | null; big?: b
   )
 }
 
-const STATUS_META: Record<string, { label: string; dot: string }> = {
-  todo:        { label: 'Todo',        dot: 'var(--ink-4)'  },
-  in_progress: { label: 'In progress', dot: 'var(--accent)' },
-  in_review:   { label: 'In review',   dot: '#8B5CF6'       },
-  done:        { label: 'Done',        dot: 'var(--success)' },
+// Status names are now dynamic — they come straight from the user's tracker
+// ("In Review", "QA", "Ready for Deploy", …), so we render the raw name verbatim
+// rather than collapsing it into a fixed set. Colour is driven by `isTerminal`
+// (the resolved "is this done?" signal). When a caller has only the raw string
+// (e.g. the command bar), we infer terminality from a keyword fallback.
+const TERMINAL_KEYWORDS = ['done', 'complete', 'closed', 'resolved', 'shipped', 'merged', 'deployed', 'released', 'archived', 'cancel']
+
+function humanizeStatus(raw: string): string {
+  const s = raw.replace(/_/g, ' ').trim()
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''
 }
 
-export function StatusPill({ status }: { status: string }) {
-  const m = STATUS_META[status] ?? STATUS_META.todo
+function looksTerminal(raw: string): boolean {
+  const lower = raw.toLowerCase()
+  return TERMINAL_KEYWORDS.some(kw => lower.includes(kw))
+}
+
+export function StatusPill({ status, isTerminal }: { status: string; isTerminal?: boolean }) {
+  if (!status) return null
+  const terminal = isTerminal ?? looksTerminal(status)
+  const dot = terminal ? 'var(--success)' : 'var(--accent)'
   return (
     <span className="inline-flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--ink-2)' }}>
-      <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: m.dot }} />
-      {m.label}
+      <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: dot }} />
+      {humanizeStatus(status)}
     </span>
   )
 }

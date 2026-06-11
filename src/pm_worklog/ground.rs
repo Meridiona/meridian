@@ -50,7 +50,7 @@ pub fn ground(
     if update.confidence < min_confidence {
         flags.insert(FLAG_LOW_CONFIDENCE.to_string());
     }
-    if bundle.pm_task_status.as_deref() == Some("done") {
+    if bundle.pm_task_is_terminal {
         flags.insert(FLAG_TICKET_CLOSED.to_string());
     }
     let bundle_ids: HashSet<i64> = bundle.sessions.iter().map(|s| s.id).collect();
@@ -116,7 +116,7 @@ mod tests {
         }
     }
 
-    fn bundle_with_ids(ids: &[i64], status: Option<&str>) -> SessionBundle {
+    fn bundle_with_ids(ids: &[i64], is_terminal: bool) -> SessionBundle {
         SessionBundle {
             task_key: "KAN-1".into(),
             window_start: "2026-05-30T05:00:00Z".into(),
@@ -142,7 +142,8 @@ mod tests {
             real_seconds: 600,
             raw_text_bytes: 0,
             is_heavy: false,
-            pm_task_status: status.map(|s| s.to_string()),
+            pm_task_status: None,
+            pm_task_is_terminal: is_terminal,
             pm_task_title: None,
             pm_task_description: None,
             assignee_name: None,
@@ -152,7 +153,7 @@ mod tests {
 
     #[test]
     fn drops_ungrounded_and_keeps_evidenced() {
-        let g = ground(base_update(), &bundle_with_ids(&[1], None), 0.65);
+        let g = ground(base_update(), &bundle_with_ids(&[1], false), 0.65);
         assert_eq!(g.update.what_shipped.len(), 1);
         assert_eq!(g.update.what_shipped[0].text, "shipped a");
         assert_eq!(g.dropped_bullets.len(), 1);
@@ -164,7 +165,7 @@ mod tests {
     fn no_evidence_at_all_flags_low_evidence_and_zeroes_confidence() {
         let mut u = base_update();
         u.what_shipped = vec![bullet("nothing proven", &[])];
-        let g = ground(u, &bundle_with_ids(&[1], None), 0.65);
+        let g = ground(u, &bundle_with_ids(&[1], false), 0.65);
         assert_eq!(g.coverage, 0.0);
         assert!(g.update.risk_flags.contains(&FLAG_LOW_EVIDENCE.to_string()));
         assert!(g
@@ -178,7 +179,7 @@ mod tests {
     fn cross_ticket_leak_when_ref_outside_bundle() {
         let mut u = base_update();
         u.what_shipped = vec![bullet("cites a foreign session", &[999])];
-        let g = ground(u, &bundle_with_ids(&[1, 2], None), 0.65);
+        let g = ground(u, &bundle_with_ids(&[1, 2], false), 0.65);
         assert!(g
             .update
             .risk_flags
@@ -186,8 +187,8 @@ mod tests {
     }
 
     #[test]
-    fn ticket_closed_flag_when_status_done() {
-        let g = ground(base_update(), &bundle_with_ids(&[1], Some("done")), 0.65);
+    fn ticket_closed_flag_when_terminal() {
+        let g = ground(base_update(), &bundle_with_ids(&[1], true), 0.65);
         assert!(g
             .update
             .risk_flags

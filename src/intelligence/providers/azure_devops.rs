@@ -163,14 +163,11 @@ fn basic_auth(pat: &str) -> String {
     format!("Basic {encoded}")
 }
 
-/// Map an Azure StateCategory value to Meridian's status_category.
-fn to_status_category(category: &str) -> &'static str {
-    match category {
-        "Proposed" => "todo",
-        "InProgress" | "Resolved" => "in_progress",
-        "Completed" | "Removed" => "done",
-        _ => "in_progress",
-    }
+/// Whether an Azure StateCategory is terminal. StateCategory is a fixed, reliable
+/// metaschema field: Proposed | InProgress | Resolved | Completed | Removed.
+/// Only Completed / Removed are terminal.
+fn native_terminal(category: &str) -> bool {
+    matches!(category, "Completed" | "Removed")
 }
 
 // ---------------------------------------------------------------------------
@@ -363,7 +360,7 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
     // 4. Filter and upsert — Completed / Removed items are dropped.
     struct UpsertItem<'a> {
         detail: &'a WorkItemDetail,
-        status_category: &'static str,
+        status: super::status::ResolvedStatus,
     }
     let active: Vec<UpsertItem<'_>> = details
         .iter()
@@ -376,9 +373,15 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
             if matches!(azure_category, "Completed" | "Removed") {
                 return None;
             }
+            // Store the user-facing System.State name verbatim; the StateCategory
+            // gives the reliable terminal signal (always false for kept items).
             Some(UpsertItem {
                 detail: item,
-                status_category: to_status_category(azure_category),
+                status: super::status::resolve(
+                    "azure_devops",
+                    &item.fields.state,
+                    Some(native_terminal(azure_category)),
+                ),
             })
         })
         .collect();
@@ -433,14 +436,15 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
 
         sqlx::query(
             "INSERT INTO pm_tasks
-               (task_key, provider, title, description_text, status_category,
+               (task_key, provider, title, description_text, status_raw, is_terminal,
                 issue_type, url, updated_at, sprint_name, tags)
-             VALUES (?, 'azure_devops', ?, ?, ?, ?, ?, ?, ?, ?)
+             VALUES (?, 'azure_devops', ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(task_key) DO UPDATE SET
                provider         = 'azure_devops',
                title            = excluded.title,
                description_text = excluded.description_text,
-               status_category  = excluded.status_category,
+               status_raw       = excluded.status_raw,
+               is_terminal      = excluded.is_terminal,
                issue_type       = excluded.issue_type,
                url              = excluded.url,
                updated_at       = excluded.updated_at,
@@ -450,7 +454,8 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         .bind(&task_key)
         .bind(&f.title)
         .bind(&description)
-        .bind(u.status_category)
+        .bind(&u.status.raw)
+        .bind(u.status.is_terminal)
         .bind(&f.work_item_type)
         .bind(&browser_url)
         .bind(changed)
@@ -602,13 +607,14 @@ mod tests {
     }
 
     #[test]
-    fn test_to_status_category() {
-        assert_eq!(to_status_category("Proposed"), "todo");
-        assert_eq!(to_status_category("InProgress"), "in_progress");
-        assert_eq!(to_status_category("Resolved"), "in_progress");
-        assert_eq!(to_status_category("Completed"), "done");
-        assert_eq!(to_status_category("Removed"), "done");
-        assert_eq!(to_status_category("SomeCustomState"), "in_progress");
+    fn test_native_terminal() {
+        // Only Completed / Removed are terminal StateCategories.
+        assert!(native_terminal("Completed"));
+        assert!(native_terminal("Removed"));
+        assert!(!native_terminal("Proposed"));
+        assert!(!native_terminal("InProgress"));
+        assert!(!native_terminal("Resolved"));
+        assert!(!native_terminal("SomeCustomState"));
     }
 
     #[test]

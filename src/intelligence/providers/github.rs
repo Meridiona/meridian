@@ -46,7 +46,7 @@ struct ProjectNode {
 struct ProjectItemConnection {
     #[serde(rename = "pageInfo")]
     page_info: PageInfo,
-    nodes: Vec<ProjectItem>,
+    nodes: Vec<Option<ProjectItem>>,
 }
 
 #[derive(Deserialize)]
@@ -96,7 +96,7 @@ struct Repo {
 
 #[derive(Deserialize)]
 struct AssigneeConnection {
-    nodes: Vec<LoginNode>,
+    nodes: Vec<Option<LoginNode>>,
 }
 
 #[derive(Deserialize)]
@@ -110,7 +110,13 @@ struct GhTask {
     repo_slug: String,
     title: String,
     body: String,
-    status: &'static str,
+    /// Verbatim Projects v2 "Status" column name (e.g. "In Review"). Empty when
+    /// the item has no Status field set.
+    status_raw: String,
+    /// Whether that column means the issue is done — resolved via the shared
+    /// status resolver (override → keyword heuristic; GitHub has no native
+    /// done/closed category on the board column itself).
+    is_terminal: bool,
     url: String,
     updated_at: String,
     assignee: String,
@@ -120,28 +126,20 @@ struct GhTask {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Map a GitHub Project Status field value to meridian's status_category.
-fn map_project_status(field_values: &[serde_json::Value]) -> &'static str {
+/// Extract the verbatim value of the Projects v2 "Status" column, if set.
+/// GitHub gives us only the raw column name — there is no semantic category —
+/// so we hand it to the shared resolver to decide `is_terminal`.
+fn extract_status_raw(field_values: &[serde_json::Value]) -> String {
     for fv in field_values {
         let field_name = fv.pointer("/field/name").and_then(|v| v.as_str());
         let value_name = fv.get("name").and_then(|v| v.as_str());
         if let (Some(f), Some(v)) = (field_name, value_name) {
             if f.eq_ignore_ascii_case("status") {
-                let lower = v.to_lowercase();
-                return if lower.contains("progress") || lower.contains("doing") {
-                    "in_progress"
-                } else if lower.contains("done")
-                    || lower.contains("complete")
-                    || lower.contains("closed")
-                {
-                    "done"
-                } else {
-                    "todo"
-                };
+                return v.to_string();
             }
         }
     }
-    "todo"
+    String::new()
 }
 
 fn post_graphql(
@@ -243,7 +241,7 @@ async fn fetch_project_items(
             }
         };
 
-        for item in &project.items.nodes {
+        for item in project.items.nodes.iter().flatten() {
             if item.item_type.as_deref() != Some("ISSUE") {
                 continue;
             }
@@ -264,16 +262,23 @@ async fn fetch_project_items(
                 .assignees
                 .nodes
                 .iter()
+                .flatten()
                 .any(|a| a.login.eq_ignore_ascii_case(viewer_login))
             {
                 continue;
             }
+            let resolved = super::status::resolve(
+                "github",
+                &extract_status_raw(&item.field_values.nodes),
+                None,
+            );
             tasks.push(GhTask {
                 task_key: format!("{}#{}", content.repository.name_with_owner, content.number),
                 repo_slug: content.repository.name_with_owner.clone(),
                 title: content.title.clone(),
                 body: content.body.clone().unwrap_or_default(),
-                status: map_project_status(&item.field_values.nodes),
+                status_raw: resolved.raw,
+                is_terminal: resolved.is_terminal,
                 url: content.url.clone(),
                 updated_at: content.updated_at.clone(),
                 assignee: viewer_login.to_string(),
@@ -297,15 +302,16 @@ async fn upsert(pool: &SqlitePool, tasks: &[GhTask]) -> Result<()> {
     for t in tasks {
         sqlx::query(
             "INSERT INTO pm_tasks
-               (task_key, provider, title, description_text, status_category,
+               (task_key, provider, title, description_text, status_raw, is_terminal,
                 issue_type, project_key, url, assignee_name, updated_at, fetched_at)
-             VALUES (?, 'github', ?, ?, ?, 'Issue', ?, ?, ?, ?,
+             VALUES (?, 'github', ?, ?, ?, ?, 'Issue', ?, ?, ?, ?,
                      strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
              ON CONFLICT(task_key) DO UPDATE SET
                provider         = 'github',
                title            = excluded.title,
                description_text = excluded.description_text,
-               status_category  = excluded.status_category,
+               status_raw       = excluded.status_raw,
+               is_terminal      = excluded.is_terminal,
                project_key      = excluded.project_key,
                url              = excluded.url,
                assignee_name    = excluded.assignee_name,
@@ -315,7 +321,8 @@ async fn upsert(pool: &SqlitePool, tasks: &[GhTask]) -> Result<()> {
         .bind(&t.task_key)
         .bind(&t.title)
         .bind(&t.body)
-        .bind(t.status)
+        .bind(&t.status_raw)
+        .bind(t.is_terminal)
         .bind(&t.repo_slug)
         .bind(&t.url)
         .bind(&t.assignee)
@@ -496,10 +503,11 @@ mod tests {
 
     #[test]
     fn mixed_content_project_deserialises() {
-        // A real Projects v2 board mixes Issues with PRs and draft items. GitHub
-        // returns `content: {}` for a PR/draft under our `... on Issue` selection
-        // and `null` for a redacted item. Before the fix these broke the whole
-        // ProjectData parse (typed Option<IssueContent>), skipping the project.
+        // A real Projects v2 board mixes Issues with PRs and draft items, and the
+        // GraphQL `nodes` array can itself contain a literal `null` (a redacted /
+        // inaccessible item). GitHub returns `content: {}` for a PR/draft under our
+        // `... on Issue` selection. All three shapes must deserialise without
+        // failing the whole ProjectData parse and dropping the project.
         let json = r#"{
           "data": { "node": { "items": {
             "pageInfo": { "hasNextPage": false, "endCursor": null },
@@ -510,54 +518,47 @@ mod tests {
                              "repository": { "nameWithOwner": "org/repo" },
                              "assignees": { "nodes": [{ "login": "me" }] } } },
               { "type": "PULL_REQUEST", "fieldValues": { "nodes": [] }, "content": {} },
-              { "type": "DRAFT_ISSUE", "fieldValues": { "nodes": [] }, "content": null }
+              { "type": "DRAFT_ISSUE", "fieldValues": { "nodes": [] }, "content": null },
+              null
             ]
           } } }
         }"#;
         let parsed: GqlResponse<ProjectData> =
             serde_json::from_str(json).expect("mixed-content response must deserialise");
         let nodes = parsed.data.unwrap().node.unwrap().items.nodes;
-        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes.len(), 4);
+
+        // The null node deserialises to None and the production loop skips it via
+        // `.iter().flatten()` — only the three real items survive.
+        assert!(nodes[3].is_none());
+        assert_eq!(nodes.iter().flatten().count(), 3);
 
         // The ISSUE item's raw content parses into IssueContent…
         let issue: IssueContent =
-            serde_json::from_value(nodes[0].content.clone().unwrap()).unwrap();
+            serde_json::from_value(nodes[0].as_ref().unwrap().content.clone().unwrap()).unwrap();
         assert_eq!(issue.number, 5);
         assert_eq!(issue.repository.name_with_owner, "org/repo");
 
         // …while the PR's `{}` does not — so the loop skips it instead of failing.
-        assert!(serde_json::from_value::<IssueContent>(nodes[1].content.clone().unwrap()).is_err());
-        assert!(nodes[2].content.is_none());
+        assert!(serde_json::from_value::<IssueContent>(
+            nodes[1].as_ref().unwrap().content.clone().unwrap()
+        )
+        .is_err());
+        assert!(nodes[2].as_ref().unwrap().content.is_none());
     }
 
     #[test]
-    fn project_status_todo() {
-        assert_eq!(map_project_status(&[status_field("Todo")]), "todo");
-        assert_eq!(map_project_status(&[]), "todo");
-    }
-
-    #[test]
-    fn project_status_in_progress() {
+    fn extracts_status_column_verbatim() {
+        // The user's real column name is preserved — never collapsed to a bucket.
         assert_eq!(
-            map_project_status(&[status_field("In Progress")]),
-            "in_progress"
+            extract_status_raw(&[status_field("In Review")]),
+            "In Review"
         );
-        assert_eq!(map_project_status(&[status_field("Doing")]), "in_progress");
-    }
-
-    #[test]
-    fn project_status_done() {
-        assert_eq!(map_project_status(&[status_field("Done")]), "done");
-        assert_eq!(map_project_status(&[status_field("Completed")]), "done");
-    }
-
-    #[test]
-    fn project_status_unknown_defaults_todo() {
-        // Columns that aren't clearly "in progress" or "done" fall back to todo,
-        // so a Backlog / In Review / Blocked issue still surfaces as an open task.
-        assert_eq!(map_project_status(&[status_field("Backlog")]), "todo");
-        assert_eq!(map_project_status(&[status_field("In Review")]), "todo");
-        assert_eq!(map_project_status(&[status_field("Blocked")]), "todo");
+        assert_eq!(
+            extract_status_raw(&[status_field("Ready for Deploy")]),
+            "Ready for Deploy"
+        );
+        assert_eq!(extract_status_raw(&[]), "");
     }
 
     #[test]
@@ -566,6 +567,22 @@ mod tests {
             "name": "High",
             "field": { "name": "Priority" }
         });
-        assert_eq!(map_project_status(&[priority_field]), "todo");
+        assert_eq!(extract_status_raw(&[priority_field]), "");
+    }
+
+    #[test]
+    fn custom_columns_no_longer_collapse() {
+        // The reported bug: custom columns the old substring matcher didn't know
+        // about silently became "todo". Now the raw name is kept and only
+        // genuinely terminal columns resolve to is_terminal=true.
+        let raw = extract_status_raw(&[status_field("Shipped")]);
+        let resolved = super::super::status::resolve("github", &raw, None);
+        assert_eq!(resolved.raw, "Shipped");
+        assert!(resolved.is_terminal);
+
+        let raw = extract_status_raw(&[status_field("In Review")]);
+        let resolved = super::super::status::resolve("github", &raw, None);
+        assert_eq!(resolved.raw, "In Review");
+        assert!(!resolved.is_terminal);
     }
 }
