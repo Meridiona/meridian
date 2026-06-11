@@ -21,7 +21,16 @@
 // AZURE_DEVOPS). An override always wins, so a team can correct a tracker that
 // mislabels (or fails to label) a status without a code change.
 
+use once_cell::sync::Lazy;
+use std::collections::HashMap;
 use std::env;
+use std::sync::RwLock;
+
+// Env var lists are read once per provider per process lifetime — env vars don't
+// change at runtime in the daemon, so caching avoids O(tasks) syscalls per sync.
+// Tests that manipulate env vars must call `clear_env_cache()` before each case.
+static STATUS_ENV_CACHE: Lazy<RwLock<HashMap<String, (Vec<String>, Vec<String>)>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
 
 /// A provider status after normalisation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,35 +64,56 @@ fn env_override(provider: &str, raw: &str) -> Option<bool> {
         return None;
     }
     let key = provider.to_ascii_uppercase().replace('-', "_");
-    if env_list_contains(&format!("{key}_TERMINAL_STATUSES"), raw) {
+    let (terminal, open) = cached_env_lists(&key);
+    let lower = raw.to_ascii_lowercase();
+    if terminal.iter().any(|s| s == &lower) {
         return Some(true);
     }
-    if env_list_contains(&format!("{key}_OPEN_STATUSES"), raw) {
+    if open.iter().any(|s| s == &lower) {
         return Some(false);
     }
     None
 }
 
-fn env_list_contains(var: &str, needle: &str) -> bool {
-    env::var(var)
-        .ok()
-        .map(|v| {
-            v.split(',')
-                .any(|item| item.trim().eq_ignore_ascii_case(needle))
-        })
-        .unwrap_or(false)
+fn cached_env_lists(key: &str) -> (Vec<String>, Vec<String>) {
+    {
+        let cache = STATUS_ENV_CACHE.read().unwrap();
+        if let Some(entry) = cache.get(key) {
+            return entry.clone();
+        }
+    }
+    let parse = |suffix: &str| -> Vec<String> {
+        env::var(format!("{key}_{suffix}"))
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect()
+    };
+    let entry = (parse("TERMINAL_STATUSES"), parse("OPEN_STATUSES"));
+    STATUS_ENV_CACHE.write().unwrap().insert(key.to_string(), entry.clone());
+    entry
 }
 
 /// Keyword fallback for trackers with no trustworthy done/closed category. Covers
 /// the vocabulary real boards use for terminal columns. An empty name is open.
+///
+/// Uses word-boundary matching (split on non-alphanumeric) to avoid false positives
+/// like "Incomplete" (contains "complete") or "Uncancelled" (contains "cancel").
 fn heuristic_terminal(raw: &str) -> bool {
     const TERMINAL_KEYWORDS: &[&str] = &[
-        "done", "complete", "closed", "resolved", "shipped", "merged", "deployed", "released",
-        "archived", // "cancel" covers cancel / cancelled / canceled
-        "cancel",
+        "done", "complete", "completed", "closed", "resolved", "shipped", "merged",
+        "deployed", "released", "archived", "cancel", "cancelled", "canceled",
     ];
-    let lower = raw.to_lowercase();
-    TERMINAL_KEYWORDS.iter().any(|kw| lower.contains(kw))
+    let lower = raw.to_ascii_lowercase();
+    lower
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|word| TERMINAL_KEYWORDS.contains(&word))
+}
+
+#[cfg(test)]
+fn clear_env_cache() {
+    STATUS_ENV_CACHE.write().unwrap().clear();
 }
 
 #[cfg(test)]
@@ -92,6 +122,8 @@ mod tests {
 
     // Env-dependent assertions are gated behind a serial guard so concurrent
     // tests can't observe each other's vars. Each sets a unique provider prefix.
+    // Always call clear_env_cache() at the start of env tests so a prior test's
+    // cached values don't bleed through.
     use std::sync::Mutex;
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -132,7 +164,12 @@ mod tests {
 
     #[test]
     fn heuristic_leaves_open_columns_open() {
-        for name in ["Backlog", "In Review", "QA", "Blocked", "Doing", ""] {
+        for name in [
+            "Backlog", "In Review", "QA", "Blocked", "Doing", "",
+            // word-boundary guard: these contain terminal keywords as substrings
+            // but must NOT be classified as terminal
+            "Incomplete", "Uncancelled",
+        ] {
             assert!(
                 !resolve("github", name, None).is_terminal,
                 "{name} should be open"
@@ -143,6 +180,7 @@ mod tests {
     #[test]
     fn env_terminal_override_wins_over_native() {
         let _g = ENV_LOCK.lock().unwrap();
+        clear_env_cache();
         std::env::set_var("JIRA_TERMINAL_STATUSES", "Ready for Release, Verified");
         // Native says open, but the team marked it terminal.
         assert!(resolve("jira", "Ready for Release", Some(false)).is_terminal);
@@ -153,6 +191,7 @@ mod tests {
     #[test]
     fn env_open_override_wins_over_heuristic() {
         let _g = ENV_LOCK.lock().unwrap();
+        clear_env_cache();
         // "Done-ish" name the team does NOT consider closed.
         std::env::set_var("GITHUB_OPEN_STATUSES", "Done Pending Review");
         assert!(!resolve("github", "Done Pending Review", None).is_terminal);
@@ -162,6 +201,7 @@ mod tests {
     #[test]
     fn provider_id_uppercased_for_env_lookup() {
         let _g = ENV_LOCK.lock().unwrap();
+        clear_env_cache();
         std::env::set_var("AZURE_DEVOPS_TERMINAL_STATUSES", "Deployed to Prod");
         assert!(resolve("azure_devops", "Deployed to Prod", Some(false)).is_terminal);
         std::env::remove_var("AZURE_DEVOPS_TERMINAL_STATUSES");
