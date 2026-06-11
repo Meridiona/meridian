@@ -503,10 +503,11 @@ mod tests {
 
     #[test]
     fn mixed_content_project_deserialises() {
-        // A real Projects v2 board mixes Issues with PRs and draft items. GitHub
-        // returns `content: {}` for a PR/draft under our `... on Issue` selection
-        // and `null` for a redacted item. Before the fix these broke the whole
-        // ProjectData parse (typed Option<IssueContent>), skipping the project.
+        // A real Projects v2 board mixes Issues with PRs and draft items, and the
+        // GraphQL `nodes` array can itself contain a literal `null` (a redacted /
+        // inaccessible item). GitHub returns `content: {}` for a PR/draft under our
+        // `... on Issue` selection. All three shapes must deserialise without
+        // failing the whole ProjectData parse and dropping the project.
         let json = r#"{
           "data": { "node": { "items": {
             "pageInfo": { "hasNextPage": false, "endCursor": null },
@@ -517,24 +518,33 @@ mod tests {
                              "repository": { "nameWithOwner": "org/repo" },
                              "assignees": { "nodes": [{ "login": "me" }] } } },
               { "type": "PULL_REQUEST", "fieldValues": { "nodes": [] }, "content": {} },
-              { "type": "DRAFT_ISSUE", "fieldValues": { "nodes": [] }, "content": null }
+              { "type": "DRAFT_ISSUE", "fieldValues": { "nodes": [] }, "content": null },
+              null
             ]
           } } }
         }"#;
         let parsed: GqlResponse<ProjectData> =
             serde_json::from_str(json).expect("mixed-content response must deserialise");
         let nodes = parsed.data.unwrap().node.unwrap().items.nodes;
-        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes.len(), 4);
+
+        // The null node deserialises to None and the production loop skips it via
+        // `.iter().flatten()` — only the three real items survive.
+        assert!(nodes[3].is_none());
+        assert_eq!(nodes.iter().flatten().count(), 3);
 
         // The ISSUE item's raw content parses into IssueContent…
         let issue: IssueContent =
-            serde_json::from_value(nodes[0].content.clone().unwrap()).unwrap();
+            serde_json::from_value(nodes[0].as_ref().unwrap().content.clone().unwrap()).unwrap();
         assert_eq!(issue.number, 5);
         assert_eq!(issue.repository.name_with_owner, "org/repo");
 
         // …while the PR's `{}` does not — so the loop skips it instead of failing.
-        assert!(serde_json::from_value::<IssueContent>(nodes[1].content.clone().unwrap()).is_err());
-        assert!(nodes[2].content.is_none());
+        assert!(serde_json::from_value::<IssueContent>(
+            nodes[1].as_ref().unwrap().content.clone().unwrap()
+        )
+        .is_err());
+        assert!(nodes[2].as_ref().unwrap().content.is_none());
     }
 
     #[test]
