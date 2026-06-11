@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Jira integration health (L2/L3). The auth probe (/myself) is the only thing
 // that distinguishes an expired token from a transient blip — today the daemon

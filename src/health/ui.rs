@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // UI *readiness* — not just liveness. `ui service` (a launchd PID) and `ui
 // built` (`.next` exists) both pass for a running-but-broken dashboard: a stale

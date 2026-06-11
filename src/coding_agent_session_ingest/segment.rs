@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Segmentation: a single coding-agent JSONL is sliced into SEGMENTS split on
 // idle gaps > `segment_gap_seconds` (default 1h) AND on a `max_segment_seconds`

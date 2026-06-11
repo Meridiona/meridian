@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# meridian — normalises screenpipe activity into structured app sessions
+# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 set -uo pipefail
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${REPO_ROOT:-$(cd "${TESTS_DIR}/../.." && pwd)}"

@@ -1,4 +1,4 @@
--- meridian — normalises screenpipe activity into structured app sessions
+-- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 
 -- Remove all subtasks from pm_tasks, keeping only top-level tasks and features.
 -- Subtasks will be filtered out at fetch time with type != Subtask in the JQL.

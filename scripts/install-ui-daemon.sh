@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# meridian — normalises screenpipe activity into structured app sessions
+# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 # Install the meridian Next.js dashboard as a launchd LaunchAgent under the
 # current user. Serves on http://localhost:3939. Built artifact must exist
 # at ui/.next/ before this script runs (install.sh handles that).

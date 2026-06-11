@@ -1,4 +1,4 @@
--- meridian — normalises screenpipe activity into structured app sessions
+-- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 --
 -- Add a `session_summary` column to `app_sessions` so the classifier can
 -- emit a 10-40 sentence factual summary of the user's activity in the

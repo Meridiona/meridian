@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // MLX classifier server health (L2). Distinguishes liveness (port open) from
 // readiness (model actually loaded) — the latter is the gap the Rust preflight

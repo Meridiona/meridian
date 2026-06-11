@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 
 //! Shared test helpers — in-memory DB factories and frame insertion utilities.
 //! Every integration test module includes this via `mod common;`.

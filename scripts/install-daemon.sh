@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# meridian — normalises screenpipe activity into structured app sessions
+# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 # Install the meridian Rust daemon as a launchd LaunchAgent under the
 # current user. The daemon runs continuously, polling screenpipe every
 # POLL_INTERVAL_SECS seconds (default 60).

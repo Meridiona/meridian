@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Cursor source: agent conversations live in Cursor's global KV store
 // (`~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`,

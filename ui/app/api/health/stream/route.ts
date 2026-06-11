@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // SSE endpoint for real-time health status. Uses fs.watch (FSEvents on macOS)
 // to detect DB and a11y-helper log changes — no polling, instant notification.

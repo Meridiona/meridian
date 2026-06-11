@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# meridian — normalises screenpipe activity into structured app sessions
+# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 #
 # Bridge from the npm install to the real install. Assembles the prebuilt bundle
 # (the @meridiona/meridian-darwin-arm64 package contents) into ~/.meridian/app

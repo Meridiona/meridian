@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Browser-based OAuth 2.0 (Authorization Code + PKCE) for PM providers. Public
 // desktop clients can't ship a client secret, so PKCE proves possession of the

@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Platform / prerequisite checks: launchd agents, plist validity, process
 // liveness, installed binaries, build artifacts, toolchains, and disk. These

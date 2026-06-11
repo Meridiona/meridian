@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# meridian — normalises screenpipe activity into structured app sessions
+# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 
 # Shared helpers for the install test suite.
 # Color-coded output for test reports. Tracked via FAIL_COUNT global.

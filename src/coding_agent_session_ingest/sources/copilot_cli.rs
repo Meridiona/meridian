@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // GitHub Copilot CLI source: `~/.copilot/session-state/<uuid>/events.jsonl`.
 // One dir per session; the event log is append-only JSONL, one typed event per

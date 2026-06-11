@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# meridian — normalises screenpipe activity into structured app sessions
+# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 # Install OpenObserve as a launchd LaunchAgent under the current user.
 # Serves on http://localhost:5080 and auto-starts on login.
 #
@@ -107,7 +107,7 @@ fi
 echo "→ writing ${HOME}/.openobserve/run.sh"
 cat > "${HOME}/.openobserve/run.sh" <<'RUNEOF'
 #!/usr/bin/env bash
-# meridian — normalises screenpipe activity into structured app sessions
+# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 # OpenObserve launcher. Called by launchd (com.meridiona.openobserve).
 #
 # Log level override (dev):

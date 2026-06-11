@@ -1,4 +1,4 @@
-# meridian — normalises screenpipe activity into structured app sessions
+# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 """Unit tests for agents.llm_selector — model selection and server management.
 
 All external I/O (subprocess, socket, HTTP, platform, psutil, mlx) is patched

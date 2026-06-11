@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Coding-agent ingest health: per-agent presence of the CLIs (the summariser
 // engines — a missing CLI means that agent's sessions silently fall back to MLX

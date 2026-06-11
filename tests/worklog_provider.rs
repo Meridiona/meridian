@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Runtime coverage for the multi-provider worklog write path: that
 // `upsert_pm_worklog` snapshots the provider from `pm_tasks` onto the worklog

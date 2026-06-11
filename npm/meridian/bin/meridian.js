@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Thin launcher for the `@meridiona/meridian` npm package. The prebuilt app
 // (daemon binary + dashboard + Python services + scripts) lives in the per-arch

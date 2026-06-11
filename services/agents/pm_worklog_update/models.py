@@ -1,4 +1,4 @@
-# meridian — normalises screenpipe activity into structured app sessions
+# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 """Pydantic models for the pm_worklog_update workflow."""
 from __future__ import annotations
 

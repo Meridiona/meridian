@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Cursor Agent CLI source: `cursor-agent` (the headless CLI, both interactive
 // TUI and `-p` print mode) does NOT write the IDE's vscdb — each chat gets its

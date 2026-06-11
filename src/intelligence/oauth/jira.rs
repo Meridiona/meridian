@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Jira-specific OAuth wiring on top of the generic PKCE `flow` engine:
 //   * `login()`         — the interactive `meridian oauth-login jira` flow:

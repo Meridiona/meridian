@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Linear worklog poster. Linear has NO native worklog / time-logging API — its
 // full GraphQL schema exposes no worklog, timeEntry, "time spent" field, or

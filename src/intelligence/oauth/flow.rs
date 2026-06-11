@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Generic OAuth 2.0 Authorization Code + PKCE engine, shared by the PM providers
 // (Jira now, Linear next). It opens the system browser to the provider's consent
