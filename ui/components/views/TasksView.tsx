@@ -27,10 +27,6 @@ function isDueSoon(due: string): boolean {
   return ms <= 3 * 86400000
 }
 
-function fmtDate(d: string): string {
-  return new Date(d + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-}
-
 function epicColor(epicKey: string | null): string {
   if (!epicKey) return 'var(--ink-4)'
   let h = 0
