@@ -123,7 +123,7 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
               color: syncing ? 'var(--ink-4)' : 'var(--ink-3)',
               background: 'var(--surface)',
               border: '1px solid var(--rule)',
-              cursor: syncing ? 'default' : 'pointer',
+              cursor: syncing ? 'not-allowed' : 'pointer',
             }}
             title={lastSynced ? `Last synced ${lastSynced.toLocaleTimeString()}` : 'Sync tasks from Jira / Linear / GitHub'}
           >
@@ -525,7 +525,7 @@ function ConnectTrackers({ integrations, onDisconnect }: { integrations: Integra
                     onClick={() => handleDisconnect(t.id)}
                     disabled={disconnecting === t.id}
                     className="text-[12px] px-3 py-1.5 rounded-md transition-opacity"
-                    style={{ color: '#e53e3e', border: '1px solid #e53e3e', opacity: disconnecting === t.id ? 0.5 : 1, cursor: disconnecting === t.id ? 'default' : 'pointer', background: 'transparent' }}
+                    style={{ color: '#e53e3e', border: '1px solid #e53e3e', opacity: disconnecting === t.id ? 0.5 : 1, cursor: disconnecting === t.id ? 'not-allowed' : 'pointer', background: 'transparent' }}
                   >
                     {disconnecting === t.id ? 'Disconnecting…' : `Disconnect ${t.name}`}
                   </button>
@@ -642,7 +642,7 @@ function AzureDevOpsSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
                 style={{
                   background: 'var(--accent)', color: '#fff',
                   opacity: (!pat.trim() || loading === 'orgs') ? 0.5 : 1,
-                  cursor: (!pat.trim() || loading === 'orgs') ? 'default' : 'pointer',
+                  cursor: (!pat.trim() || loading === 'orgs') ? 'not-allowed' : 'pointer',
                 }}
               >
                 {loading === 'orgs' ? 'Looking up…' : 'Look up orgs'}
