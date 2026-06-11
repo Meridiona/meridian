@@ -64,7 +64,7 @@ export function NumberStepper({ value, onChange, min, max, step = 1 }: NumberSte
           justifyContent: 'center',
           width: '30px',
           border: 'none',
-          cursor: atMin ? 'not-allowed' : 'default',
+          cursor: atMin ? 'not-allowed' : 'pointer',
           color: atMin ? 'var(--ink-4)' : 'var(--ink-2)',
           flexShrink: 0,
         }}
@@ -115,7 +115,7 @@ export function NumberStepper({ value, onChange, min, max, step = 1 }: NumberSte
           justifyContent: 'center',
           width: '30px',
           border: 'none',
-          cursor: atMax ? 'not-allowed' : 'default',
+          cursor: atMax ? 'not-allowed' : 'pointer',
           color: atMax ? 'var(--ink-4)' : 'var(--ink-2)',
           flexShrink: 0,
         }}
