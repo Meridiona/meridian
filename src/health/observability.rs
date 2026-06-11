@@ -10,14 +10,17 @@ use crate::health::Check;
 use std::time::Duration;
 
 pub async fn checks(_cfg: &Config) -> Vec<Check> {
-    let Some(target) = crate::observability::resolve_otlp_target() else {
+    // Use the cheap helpers — the health check never needs the auth credential.
+    if !crate::observability::is_otlp_configured() {
         return vec![Check::info(
             "openobserve",
             "obs",
             "OTLP export disabled (no credentials in settings or MERIDIAN_OO_AUTH) — telemetry not collected",
         )];
-    };
-    let healthz = derive_healthz(&target.endpoint);
+    }
+    let endpoint = crate::observability::resolve_otlp_endpoint()
+        .unwrap_or_else(|| "http://localhost:5080/api/default/v1/traces".to_string());
+    let healthz = derive_healthz(&endpoint);
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()

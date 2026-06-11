@@ -61,7 +61,6 @@ function SaveButton({ onClick, status }: { onClick: () => void; status: SaveStat
           padding: '5px 14px',
           borderRadius: '6px',
           border: 'none',
-          cursor: 'default',
           boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
         }}
       >
@@ -82,7 +81,6 @@ const LOG_LEVEL_OPTIONS = [
 
 export default function SettingsView() {
   const [settings, setSettings] = useState<RuntimeSettings | null>(null)
-  const [observabilityStatus, setObservabilityStatus] = useState<SaveStatus>('idle')
   const [reloadStatus, setReloadStatus] = useState<ReloadStatus>('idle')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [etlStatus, setEtlStatus] = useState<SaveStatus>('idle')
@@ -200,7 +198,7 @@ export default function SettingsView() {
       {/* Observability */}
       <SectionCard>
         <SectionHeader>Observability</SectionHeader>
-        <FieldRow label="Log Level" description="Python agent log verbosity. DEBUG includes raw LLM prompts and rule hits.">
+        <FieldRow label="Log Level" description="Controls verbosity of traces and logs sent to OpenObserve. DEBUG exports everything; WARNING/ERROR suppress info spans. Takes effect after a daemon restart.">
           <Select
             value={settings.log_level}
             onValueChange={v => patch({ log_level: v as RuntimeSettings['log_level'] })}
