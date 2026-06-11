@@ -51,5 +51,7 @@ jobs:
 
       - name: Analyze commits and create draft release
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          # Stage 1 never pushes back to main (no @semantic-release/git), so
+          # the auto-provisioned GITHUB_TOKEN is sufficient — no PAT needed.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx semantic-release
