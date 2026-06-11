@@ -113,12 +113,13 @@ jobs:
       - name: Publish packages
         # Calls @semantic-release/npm directly — same OIDC auth path the old
         # single-stage workflow used, without running the full pipeline.
-        run: node --input-type=module - <<'EOF'
+        run: |
+          node --input-type=module - <<'EOF'
           const { verifyConditions, publish } = await import('@semantic-release/npm');
           const version = process.env.RELEASE_VERSION.replace(/^v/, '');
           const logger = { log: console.log, error: console.error, warn: console.warn };
           const ctx = {
-            nextRelease: { version, channel: null, gitTag: `v${version}`, notes: '' },
+            nextRelease: { version, channel: null, gitTag: 'v' + version, notes: '' },
             logger, env: process.env, cwd: process.cwd(),
             stdout: process.stdout, stderr: process.stderr,
           };
@@ -127,7 +128,7 @@ jobs:
             await publish({ pkgRoot, npmPublish: true }, ctx);
             console.log('published', pkgRoot);
           }
-        EOF
+          EOF
         env:
           RELEASE_VERSION: ${{ steps.tag.outputs.name }}
 
