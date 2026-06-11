@@ -34,8 +34,6 @@ struct JiraFields {
     parent: Option<JiraParent>,
     #[serde(default)]
     duedate: Option<String>,
-    #[serde(rename = "startDate", default)]
-    start_date: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -203,8 +201,8 @@ async fn upsert(
         sqlx::query(
             "INSERT INTO pm_tasks
                (task_key, provider, title, description_text, status_category,
-                issue_type, project_key, url, parent_key, epic_title, due_date, start_date, updated_at, fetched_at)
-             VALUES (?, 'jira', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                issue_type, project_key, url, parent_key, epic_title, due_date, updated_at, fetched_at)
+             VALUES (?, 'jira', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                      strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
              ON CONFLICT(task_key) DO UPDATE SET
                title            = excluded.title,
@@ -216,7 +214,6 @@ async fn upsert(
                parent_key       = excluded.parent_key,
                epic_title       = excluded.epic_title,
                due_date         = excluded.due_date,
-               start_date       = excluded.start_date,
                updated_at       = excluded.updated_at,
                fetched_at       = excluded.fetched_at",
         )
@@ -234,7 +231,6 @@ async fn upsert(
             Some(epic_title)
         })
         .bind(&issue.fields.duedate)
-        .bind(&issue.fields.start_date)
         .bind(&issue.fields.updated)
         .execute(pool)
         .await
