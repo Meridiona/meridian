@@ -1,3 +1,10 @@
+## [1.49.2](https://github.com/Meridiona/meridian/compare/v1.49.1...v1.49.2) (2026-06-11)
+
+
+### Bug Fixes
+
+* **dev:** suppress update-available banner in dev mode ([#265](https://github.com/Meridiona/meridian/issues/265)) ([77e50b4](https://github.com/Meridiona/meridian/commit/77e50b40a1eefec24fe2d0abd4722037a5d0e2c8))
+
 ## [1.49.1](https://github.com/Meridiona/meridian/compare/v1.49.0...v1.49.1) (2026-06-11)
 
 
