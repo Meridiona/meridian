@@ -58,13 +58,22 @@ struct WorkItemFields {
     work_item_type: String,
     #[serde(rename = "System.State")]
     state: String,
-    #[serde(rename = "System.AreaPath", default)]
-    #[allow(dead_code)]
-    area_path: Option<String>,
     #[serde(rename = "System.ChangedDate", default)]
     changed_date: Option<String>,
     #[serde(rename = "System.Description", default)]
     description: Option<String>,
+    /// Acceptance criteria (Scrum/Agile PBI, Bug, Feature, Epic).
+    #[serde(rename = "Microsoft.VSTS.Common.AcceptanceCriteria", default)]
+    acceptance_criteria: Option<String>,
+    /// Repro steps — present on Bug work items only.
+    #[serde(rename = "Microsoft.VSTS.TCM.ReproSteps", default)]
+    repro_steps: Option<String>,
+    /// Semicolon-delimited tag list e.g. `"backend; auth; spike"`.
+    #[serde(rename = "System.Tags", default)]
+    tags: Option<String>,
+    /// Full iteration path e.g. `MyProject\Sprint 14`. Last segment = sprint name.
+    #[serde(rename = "System.IterationPath", default)]
+    iteration_path: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -134,6 +143,12 @@ fn html_to_plaintext(html: &str) -> String {
         }
     }
     out.trim().to_owned()
+}
+
+/// Extract the last path segment from an Azure DevOps iteration path.
+/// `"MyProject\\Sprint 14"` → `"Sprint 14"`.
+fn sprint_from_iteration_path(path: &str) -> String {
+    path.rsplit('\\').next().unwrap_or(path).trim().to_owned()
 }
 
 // ---------------------------------------------------------------------------
@@ -211,7 +226,9 @@ async fn fetch_batch(
     let url = format!(
         "{}/{}/_apis/wit/workitems?ids={}&\
          fields=System.Id,System.Title,System.WorkItemType,System.State,\
-         System.AreaPath,System.ChangedDate,System.Description&api-version=7.1",
+         System.ChangedDate,System.Description,System.Tags,System.IterationPath,\
+         Microsoft.VSTS.Common.AcceptanceCriteria,\
+         Microsoft.VSTS.TCM.ReproSteps&api-version=7.1",
         cfg.api_base, cfg.project, ids_str
     );
     let resp = client
@@ -369,8 +386,46 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
     let mut kept: Vec<String> = Vec::with_capacity(active.len());
     for u in &active {
         let task_key = format!("{}#{}", cfg.project, u.detail.id);
-        let description = html_to_plaintext(u.detail.fields.description.as_deref().unwrap_or(""));
-        let changed = u.detail.fields.changed_date.as_deref().unwrap_or("");
+        let f = &u.detail.fields;
+
+        // Build composite description: base + acceptance criteria + repro steps.
+        // All three are HTML fields from the API — strip tags before storing.
+        let mut desc_parts: Vec<String> = Vec::new();
+        let base = html_to_plaintext(f.description.as_deref().unwrap_or(""));
+        if !base.is_empty() {
+            desc_parts.push(base);
+        }
+        if let Some(ac) = &f.acceptance_criteria {
+            let ac = html_to_plaintext(ac);
+            if !ac.is_empty() {
+                desc_parts.push(format!("Acceptance Criteria: {ac}"));
+            }
+        }
+        if let Some(rs) = &f.repro_steps {
+            let rs = html_to_plaintext(rs);
+            if !rs.is_empty() {
+                desc_parts.push(format!("Repro Steps: {rs}"));
+            }
+        }
+        let description = desc_parts.join("\n\n");
+
+        // Tags: normalise to comma-separated, trimming each tag.
+        let tags: Option<String> = f.tags.as_deref().map(|t| {
+            t.split(';')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(", ")
+        });
+
+        // Sprint: last segment of the iteration path.
+        let sprint = f
+            .iteration_path
+            .as_deref()
+            .map(sprint_from_iteration_path)
+            .filter(|s| !s.is_empty());
+
+        let changed = f.changed_date.as_deref().unwrap_or("");
         let browser_url = format!(
             "{}/{}/_workitems/edit/{}",
             cfg.api_base, cfg.project, u.detail.id
@@ -379,8 +434,8 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         sqlx::query(
             "INSERT INTO pm_tasks
                (task_key, provider, title, description_text, status_category,
-                issue_type, url, updated_at)
-             VALUES (?, 'azure_devops', ?, ?, ?, ?, ?, ?)
+                issue_type, url, updated_at, sprint_name, tags)
+             VALUES (?, 'azure_devops', ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(task_key) DO UPDATE SET
                provider         = 'azure_devops',
                title            = excluded.title,
@@ -388,15 +443,19 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
                status_category  = excluded.status_category,
                issue_type       = excluded.issue_type,
                url              = excluded.url,
-               updated_at       = excluded.updated_at",
+               updated_at       = excluded.updated_at,
+               sprint_name      = excluded.sprint_name,
+               tags             = excluded.tags",
         )
         .bind(&task_key)
-        .bind(&u.detail.fields.title)
-        .bind(description)
+        .bind(&f.title)
+        .bind(&description)
         .bind(u.status_category)
-        .bind(&u.detail.fields.work_item_type)
+        .bind(&f.work_item_type)
         .bind(&browser_url)
         .bind(changed)
+        .bind(sprint.as_deref())
+        .bind(tags.as_deref())
         .execute(pool)
         .await
         .with_context(|| format!("upserting Azure DevOps work item {}", u.detail.id))?;
@@ -550,5 +609,35 @@ mod tests {
         assert_eq!(to_status_category("Completed"), "done");
         assert_eq!(to_status_category("Removed"), "done");
         assert_eq!(to_status_category("SomeCustomState"), "in_progress");
+    }
+
+    #[test]
+    fn test_html_to_plaintext() {
+        assert_eq!(html_to_plaintext("<div>Bug test<br> </div>"), "Bug test");
+        assert_eq!(
+            html_to_plaintext("<p>Hello &amp; world</p>"),
+            "Hello & world"
+        );
+        assert_eq!(
+            html_to_plaintext("<div>Step 1</div><div>Step 2</div>"),
+            "Step 1 Step 2",
+        );
+        assert_eq!(html_to_plaintext(""), "");
+        assert_eq!(html_to_plaintext("plain text"), "plain text");
+        assert_eq!(
+            html_to_plaintext("<ul><li>item 1</li><li>item 2</li></ul>"),
+            "item 1 item 2",
+        );
+    }
+
+    #[test]
+    fn test_sprint_from_iteration_path() {
+        assert_eq!(
+            sprint_from_iteration_path(r"MyProject\Sprint 14"),
+            "Sprint 14"
+        );
+        assert_eq!(sprint_from_iteration_path("MyProject"), "MyProject");
+        assert_eq!(sprint_from_iteration_path(r"A\B\C"), "C");
+        assert_eq!(sprint_from_iteration_path(""), "");
     }
 }
