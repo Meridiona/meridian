@@ -194,12 +194,12 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
      <p  className="type-empty" style={{ color: 'var(--ink-2)' }}>No data.</p>
    ─────────────────────────────────────────────────────────────────────────── */
 
-/* 88px — hero: Today page main heading */
+/* 72px — hero: Today page main heading */
 .type-hero {
   font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
-  font-size: 88px;
-  line-height: 1;
-  letter-spacing: 0;
+  font-size: 72px;
+  line-height: 0.95;
+  letter-spacing: -0.025em;
   font-feature-settings: 'liga', 'dlig';
   -webkit-font-smoothing: auto;
   -moz-osx-font-smoothing: auto;
@@ -209,8 +209,8 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
 .type-title {
   font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
   font-size: 56px;
-  line-height: 1.1;
-  letter-spacing: 0;
+  line-height: 1;
+  letter-spacing: -0.025em;
   font-feature-settings: 'liga', 'dlig';
   -webkit-font-smoothing: auto;
   -moz-osx-font-smoothing: auto;
@@ -220,19 +220,19 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
 .type-heading {
   font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
   font-size: 36px;
-  line-height: 1.15;
-  letter-spacing: 0;
+  line-height: 1.1;
+  letter-spacing: -0.025em;
   font-feature-settings: 'liga', 'dlig';
   -webkit-font-smoothing: auto;
   -moz-osx-font-smoothing: auto;
 }
 
-/* 32px — stat: insight callout text */
+/* 26px — stat: insight callout / narrative text */
 .type-stat {
   font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
-  font-size: 32px;
-  line-height: 1.15;
-  letter-spacing: 0;
+  font-size: 26px;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
   font-feature-settings: 'liga', 'dlig';
   -webkit-font-smoothing: auto;
   -moz-osx-font-smoothing: auto;
