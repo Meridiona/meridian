@@ -31,12 +31,6 @@ function activeEnvPath(): string {
       })()
 }
 
-const PROVIDER_KEYS: Record<string, string[]> = {
-  jira:    ['JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN'],
-  linear:  ['LINEAR_API_KEY', 'LINEAR_TEAM_IDS'],
-  github:  ['GITHUB_TOKEN', 'GITHUB_PROJECT_IDS'],
-}
-
 const FIELD_MAP: Record<string, Record<string, string>> = {
   jira:   { base_url: 'JIRA_BASE_URL', email: 'JIRA_EMAIL', api_token: 'JIRA_API_TOKEN' },
   linear: { api_key: 'LINEAR_API_KEY', team_ids: 'LINEAR_TEAM_IDS' },
