@@ -1,4 +1,4 @@
-// meridian — normalises screenpipe activity into structured app sessions
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // GET /api/daemon/status — lightweight liveness probe for the daemon socket.
 // Used by the Settings UI to poll during a reload and show "Active" when
