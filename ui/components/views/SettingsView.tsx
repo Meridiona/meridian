@@ -138,7 +138,7 @@ export default function SettingsView() {
       {/* Observability */}
       <SectionCard>
         <SectionHeader>Observability</SectionHeader>
-        <FieldRow label="Log Level" description="Python agent log verbosity. DEBUG includes raw LLM prompts and rule hits.">
+        <FieldRow label="Log Level" description="Controls verbosity of traces and logs sent to OpenObserve. DEBUG exports everything; WARNING/ERROR suppress info spans. Takes effect after a daemon restart.">
           <Select
             value={settings.log_level}
             onValueChange={v => patch({ log_level: v as RuntimeSettings['log_level'] })}
