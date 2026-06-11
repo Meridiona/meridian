@@ -177,19 +177,52 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
     })
 }
 
-/// Builds the OTel tracer and logger providers when `MERIDIAN_OO_AUTH` is set.
-/// Returns the providers (not layers) so the caller can construct layers at the
-/// correct generic subscriber type without boxing.
-fn try_build_otel_providers(service_name: &str) -> Result<Option<(Tracer, LoggerProvider)>> {
-    let Ok(auth) = std::env::var("MERIDIAN_OO_AUTH") else {
-        return Ok(None);
-    };
-    if auth.is_empty() {
-        return Ok(None);
+/// Resolved OTLP export target: trace endpoint + Basic-auth credential.
+/// `None` means export is disabled (toggle off, or no credentials anywhere).
+pub struct OtlpTarget {
+    pub endpoint: String,
+    pub auth: String,
+}
+
+/// Resolve the OTLP export config. settings.json values take precedence over
+/// the MERIDIAN_OTLP_ENDPOINT / MERIDIAN_OO_AUTH env vars; the settings
+/// `otlp_enabled` toggle overrides both. Shared by the exporter bootstrap and
+/// the health check so they never disagree on whether export is active.
+pub fn resolve_otlp_target() -> Option<OtlpTarget> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    let settings = crate::config::load_runtime_settings();
+
+    if !settings.otlp_enabled {
+        return None;
     }
 
-    let trace_endpoint = std::env::var("MERIDIAN_OTLP_ENDPOINT")
-        .unwrap_or_else(|_| DEFAULT_OTLP_ENDPOINT.to_string());
+    // Auth: settings email+password → env var MERIDIAN_OO_AUTH → disabled
+    let auth = match (&settings.oo_email, &settings.oo_password) {
+        (Some(email), Some(pass)) if !email.is_empty() && !pass.is_empty() => {
+            STANDARD.encode(format!("{email}:{pass}"))
+        }
+        _ => match std::env::var("MERIDIAN_OO_AUTH") {
+            Ok(v) if !v.is_empty() => v,
+            _ => return None,
+        },
+    };
+
+    let endpoint = settings
+        .otlp_endpoint
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("MERIDIAN_OTLP_ENDPOINT").ok())
+        .unwrap_or_else(|| DEFAULT_OTLP_ENDPOINT.to_string());
+
+    Some(OtlpTarget { endpoint, auth })
+}
+
+/// Builds the OTel tracer and logger providers when OTLP export is configured.
+fn try_build_otel_providers(service_name: &str) -> Result<Option<(Tracer, LoggerProvider)>> {
+    let Some(target) = resolve_otlp_target() else {
+        return Ok(None);
+    };
+    let (trace_endpoint, auth) = (target.endpoint, target.auth);
 
     // Derive the log endpoint from the trace endpoint by swapping the path suffix.
     let log_endpoint = trace_endpoint.replace("/v1/traces", "/v1/logs");
