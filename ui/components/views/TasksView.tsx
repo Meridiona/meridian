@@ -491,6 +491,9 @@ const TRACKERS: Array<{
       command: 'meridian oauth-login jira',
       hint: 'Connect with your browser — no API token to create.',
     },
+    tokenHint: 'Go to Atlassian account security and create an API token with "All Jira" or "Read" scope.',
+    tokenUrl: 'https://id.atlassian.com/manage-profile/security/api-tokens',
+    env: 'JIRA_BASE_URL=https://yourorg.atlassian.net\nJIRA_EMAIL=you@yourorg.com\nJIRA_API_TOKEN=ATATT3x…',
   },
   {
     id: 'linear',
@@ -533,23 +536,6 @@ const TRACKERS: Array<{
   },
 ]
 
-// Field definitions for token-based setup forms
-type FieldDef = { name: string; label: string; placeholder: string; secret?: boolean; required: boolean }
-const TOKEN_FIELDS: Record<string, FieldDef[]> = {
-  jira: [
-    { name: 'base_url',    label: 'Jira URL',    placeholder: 'https://yourorg.atlassian.net', required: true },
-    { name: 'email',       label: 'Email',        placeholder: 'you@yourorg.com',               required: true },
-    { name: 'api_token',   label: 'API Token',    placeholder: 'ATATT3x…',                      required: true, secret: true },
-  ],
-  linear: [
-    { name: 'api_key',  label: 'API Key',    placeholder: 'lin_api_…', required: true, secret: true },
-    { name: 'team_ids', label: 'Team IDs',   placeholder: 'ENG (optional — leave blank for all)', required: false },
-  ],
-  github: [
-    { name: 'token',       label: 'Personal Access Token', placeholder: 'ghp_…',          required: true, secret: true },
-    { name: 'project_ids', label: 'Project IDs',           placeholder: 'PVT_… (optional — leave blank for all)', required: false },
-  ],
-}
 
 function ConnectTrackers({ integrations, onDisconnect }: { integrations: IntegrationsResponse | null; onDisconnect?: () => void }) {
   const [open, setOpen] = useState<TrackerId | null>(null)
@@ -946,76 +932,75 @@ function OAuthSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
 }
 
 function TokenSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
-  const fields = TOKEN_FIELDS[tracker.id] ?? []
-  const [values, setValues] = useState<Record<string, string>>({})
-  const [status, setStatus] = useState<'idle' | 'saving' | 'done' | 'error'>('idle')
-  const [error, setError] = useState<string | null>(null)
+  const [connected, setConnected] = useState(false)
+  const [checking, setChecking] = useState(false)
 
-  const requiredFields = fields.filter(f => f.required)
-  const allFilled = requiredFields.every(f => values[f.name]?.trim())
-
-  const save = async () => {
-    setStatus('saving'); setError(null)
+  const checkConnection = async () => {
+    setChecking(true)
     try {
-      const r = await fetch('/api/auth/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: tracker.id, ...values }),
-      })
-      const body = await r.json()
-      if (!r.ok) { setError(body.error ?? 'Save failed'); setStatus('error'); return }
-      setStatus('done')
-    } catch (e) { setError(String(e)); setStatus('error') }
-  }
-
-  if (status === 'done') {
-    return (
-      <div className="px-4 pb-4 pt-2" style={{ background: 'var(--surface-2)' }}>
-        <p className="text-[12px]" style={{ color: 'var(--success)' }}>✓ Saved! Your tasks will appear within a minute.</p>
-      </div>
-    )
+      const r = await fetch('/api/integrations')
+      if (r.ok) {
+        const data = await r.json()
+        setConnected(!!data[tracker.id])
+      }
+    } catch { /* ignore */ }
+    finally { setChecking(false) }
   }
 
   return (
-    <div className="px-4 pb-4 pt-2" style={{ background: 'var(--surface-2)' }}>
-      {tracker.tokenHint && (
-        <p className="text-[12px] leading-relaxed mb-3" style={{ color: 'var(--ink-2)' }}>
-          {tracker.tokenHint}{' '}
-          {tracker.tokenUrl && (
-            <a href={tracker.tokenUrl} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>Open ↗</a>
-          )}
-        </p>
-      )}
-      <div className="space-y-2">
-        {fields.map(f => (
-          <div key={f.name}>
-            <label className="block text-[11px] mb-0.5" style={{ color: 'var(--ink-3)' }}>
-              {f.label}{f.required ? '' : ' (optional)'}
-            </label>
-            <input
-              type={f.secret ? 'password' : 'text'}
-              value={values[f.name] ?? ''}
-              onChange={e => setValues(v => ({ ...v, [f.name]: e.target.value }))}
-              placeholder={f.placeholder}
-              className="w-full font-mono text-[11px] px-2 py-1.5 rounded-md border"
-              style={{ color: 'var(--ink)', background: 'var(--surface)', borderColor: 'var(--rule)', outline: 'none' }}
-            />
+    <div className="px-4 pb-4 pt-1" style={{ background: 'var(--surface-2)' }}>
+      <ol className="space-y-3">
+        <li className="flex gap-3">
+          <StepNum n={1} />
+          <div className="min-w-0 flex-1">
+            <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
+              {tracker.tokenHint}{' '}
+              {tracker.tokenUrl && (
+                <a href={tracker.tokenUrl} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>
+                  Open ↗
+                </a>
+              )}
+            </p>
           </div>
-        ))}
-      </div>
-      {error && <p className="mt-2 text-[11px]" style={{ color: '#e53e3e' }}>{error}</p>}
-      <button
-        onClick={save}
-        disabled={!allFilled || status === 'saving'}
-        className="mt-3 text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
-        style={{
-          background: 'var(--accent)', color: '#fff',
-          opacity: (!allFilled || status === 'saving') ? 0.5 : 1,
-          cursor: (!allFilled || status === 'saving') ? 'not-allowed' : 'pointer',
-        }}
-      >
-        {status === 'saving' ? 'Saving…' : `Connect ${tracker.name}`}
-      </button>
+        </li>
+        <li className="flex gap-3">
+          <StepNum n={2} />
+          <div className="min-w-0 flex-1">
+            <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
+              Run <CodeChip text="meridian config edit" /> and add:
+            </p>
+            {tracker.env && <CopyBlock text={tracker.env} />}
+          </div>
+        </li>
+        <li className="flex gap-3">
+          <StepNum n={3} />
+          <div className="min-w-0 flex-1">
+            <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
+              Save, then run <CodeChip text="meridian restart" />
+            </p>
+            <button
+              onClick={checkConnection}
+              disabled={checking}
+              className="mt-2 text-[11px] px-3 py-1.5 rounded-md transition-opacity"
+              style={{
+                background: 'var(--tint)',
+                color: connected ? 'var(--success)' : 'var(--ink-2)',
+                border: `1px solid ${connected ? 'var(--success)' : 'var(--rule)'}`,
+                opacity: checking ? 0.6 : 1,
+                cursor: checking ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {checking ? 'Checking…' : connected ? '✓ Connected!' : 'Check connection'}
+            </button>
+          </div>
+        </li>
+        {tracker.note && (
+          <li className="flex gap-3">
+            <span className="shrink-0 w-[18px]" />
+            <p className="text-[11px] leading-relaxed" style={{ color: 'var(--ink-4)' }}>{tracker.note}</p>
+          </li>
+        )}
+      </ol>
     </div>
   )
 }
