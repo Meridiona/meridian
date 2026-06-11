@@ -226,9 +226,27 @@ function WorklogCard({ w, busy, onApprove, onReject, onUnapprove, onSave }: {
     <div className="rounded-xl border overflow-hidden" style={{ borderColor: 'var(--rule)', background: 'var(--surface)' }}>
       <div className="px-5 py-4">
         {/* meta row */}
-        <div className="flex items-center gap-3">
-          <TaskKey keyId={w.task_key} />
-          <span className="text-[10px] uppercase tracking-[0.12em]" style={{ color: 'var(--ink-4)' }}>{providerLabel(w.provider)}</span>
+        <div className="flex items-center gap-3 min-w-0">
+          {w.task_url ? (
+            <a href={w.task_url} target="_blank" rel="noreferrer" title={`Open ${w.task_key} in ${providerLabel(w.provider)}`}
+              className="flex items-center gap-2 min-w-0 group">
+              <TaskKey keyId={w.task_key} />
+              {w.task_title && (
+                <span className="text-[12px] truncate group-hover:underline" style={{ color: 'var(--ink-2)' }}>
+                  {w.task_title}
+                </span>
+              )}
+              <span className="text-[10px] shrink-0" style={{ color: 'var(--ink-4)' }}>↗</span>
+            </a>
+          ) : (
+            <span className="flex items-center gap-2 min-w-0">
+              <TaskKey keyId={w.task_key} />
+              {w.task_title && (
+                <span className="text-[12px] truncate" style={{ color: 'var(--ink-2)' }}>{w.task_title}</span>
+              )}
+            </span>
+          )}
+          <span className="text-[10px] uppercase tracking-[0.12em] shrink-0" style={{ color: 'var(--ink-4)' }}>{providerLabel(w.provider)}</span>
           <span className="font-mono tnum text-[11px]" style={{ color: 'var(--ink-3)' }}>{fmtClock(w.window_start)}</span>
           <span className="text-[11px]" style={{ color: 'var(--ink-4)' }}>·</span>
           <span className="font-mono tnum text-[11px]" style={{ color: 'var(--ink-3)' }}>{fmtDur(w.time_spent_seconds)}</span>
