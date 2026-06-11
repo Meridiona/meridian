@@ -49,6 +49,10 @@ struct JiraParentFields {
 
 #[derive(Deserialize)]
 struct JiraStatus {
+    /// The user-facing status name ("In Review", "Awaiting QA", …) — custom per
+    /// workflow. Stored verbatim as `status_raw`.
+    #[serde(default)]
+    name: String,
     #[serde(rename = "statusCategory")]
     status_category: JiraStatusCategory,
 }
@@ -96,11 +100,17 @@ fn adf_to_plaintext(value: &serde_json::Value) -> String {
     }
 }
 
-fn map_status_category(key: &str) -> &'static str {
-    match key {
-        "done" => "done",
-        "indeterminate" => "in_progress",
-        _ => "todo",
+/// Jira's `statusCategory.key` is a fixed, non-customisable semantic field:
+/// `done` / `indeterminate` / `new`. It is reliable for those three, but Jira
+/// Service Management (and misconfigured Server/Data-Center workflows) can emit
+/// `undefined` ("No Category"). For `undefined` we return `None` so the keyword
+/// heuristic on the raw status name — and any user override — still gets a say,
+/// rather than blindly treating an unlabelled status as open.
+fn native_terminal(category_key: &str) -> Option<bool> {
+    match category_key {
+        "done" => Some(true),
+        "new" | "indeterminate" => Some(false),
+        _ => None,
     }
 }
 
@@ -181,7 +191,11 @@ async fn upsert(
             .map(adf_to_plaintext)
             .unwrap_or_default();
 
-        let cat = map_status_category(&issue.fields.status.status_category.key);
+        let status = super::status::resolve(
+            "jira",
+            &issue.fields.status.name,
+            native_terminal(&issue.fields.status.status_category.key),
+        );
         let url = ctx.browse_url(&issue.key);
 
         let (parent_key, epic_title) = issue
@@ -200,14 +214,15 @@ async fn upsert(
 
         sqlx::query(
             "INSERT INTO pm_tasks
-               (task_key, provider, title, description_text, status_category,
+               (task_key, provider, title, description_text, status_raw, is_terminal,
                 issue_type, project_key, url, parent_key, epic_title, due_date, updated_at, fetched_at)
-             VALUES (?, 'jira', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+             VALUES (?, 'jira', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                      strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
              ON CONFLICT(task_key) DO UPDATE SET
                title            = excluded.title,
                description_text = excluded.description_text,
-               status_category  = excluded.status_category,
+               status_raw       = excluded.status_raw,
+               is_terminal      = excluded.is_terminal,
                issue_type       = excluded.issue_type,
                project_key      = excluded.project_key,
                url              = excluded.url,
@@ -220,7 +235,8 @@ async fn upsert(
         .bind(&issue.key)
         .bind(&issue.fields.summary)
         .bind(&description)
-        .bind(cat)
+        .bind(&status.raw)
+        .bind(status.is_terminal)
         .bind(&issue.fields.issuetype.name)
         .bind(&issue.fields.project.key)
         .bind(&url)
@@ -391,9 +407,9 @@ mod tests {
     async fn insert_jira_task(pool: &SqlitePool, task_key: &str) {
         sqlx::query(
             "INSERT INTO pm_tasks
-               (task_key, provider, title, description_text, status_category,
+               (task_key, provider, title, description_text, status_raw, is_terminal,
                 issue_type, project_key, url, updated_at, fetched_at)
-             VALUES (?, 'jira', 'Test Task', '', 'todo', 'Story', 'KAN', '',
+             VALUES (?, 'jira', 'Test Task', '', 'To Do', 0, 'Story', 'KAN', '',
                      strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
                      strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
         )
@@ -407,9 +423,9 @@ mod tests {
     async fn insert_other_task(pool: &SqlitePool, task_key: &str, provider: &str) {
         sqlx::query(
             "INSERT INTO pm_tasks
-               (task_key, provider, title, description_text, status_category,
+               (task_key, provider, title, description_text, status_raw, is_terminal,
                 issue_type, project_key, url, updated_at)
-             VALUES (?, ?, 'Other Task', '', 'todo', 'Story', 'GH', '',
+             VALUES (?, ?, 'Other Task', '', 'To Do', 0, 'Story', 'GH', '',
                      strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
         )
         .bind(task_key)

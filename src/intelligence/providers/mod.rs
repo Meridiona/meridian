@@ -4,4 +4,5 @@ pub mod azure_devops;
 pub mod github;
 pub mod jira;
 pub mod linear;
+pub mod status;
 pub mod trello;

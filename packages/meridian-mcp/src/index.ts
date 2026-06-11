@@ -694,7 +694,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const includeContent = (args?.include_content as boolean) ?? false;
 
         const taskMeta = dbGet(db, `
-          SELECT title, url, status FROM pm_tasks WHERE task_key = ?
+          SELECT title, url, status_raw AS status FROM pm_tasks WHERE task_key = ?
         `, [taskKey]) as { title: string; url: string; status: string } | undefined;
 
         const rows = dbAll(db, `
@@ -867,13 +867,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             s.task_key,
             pt.title,
             pt.url,
-            pt.status,
+            pt.status_raw AS status,
             SUM(s.duration_s) AS total_s,
             COUNT(*) AS session_count
           FROM app_sessions s
           LEFT JOIN pm_tasks pt ON s.task_key = pt.task_key
           WHERE s.task_key IS NOT NULL AND s.task_session_type != 'overhead' AND ${tw.cond}
-          GROUP BY s.task_key, pt.title, pt.url, pt.status
+          GROUP BY s.task_key, pt.title, pt.url, pt.status_raw
           ORDER BY total_s DESC
         `, tw.params) as Array<{
           task_key: string; title: string | null; url: string | null;
@@ -946,7 +946,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // 2. Fallback: most recently linked completed session for the same app
         const recent = dbGet(db, `
           SELECT s.task_key, s.task_confidence AS confidence, s.task_method AS method,
-                 pt.title, pt.url, pt.status,
+                 pt.title, pt.url, pt.status_raw AS status,
                  s.ended_at
           FROM app_sessions s
           LEFT JOIN pm_tasks pt ON s.task_key = pt.task_key
@@ -977,7 +977,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         if (taskKey) {
           const meta = dbGet(db, `
-            SELECT title, url, status FROM pm_tasks WHERE task_key = ?
+            SELECT title, url, status_raw AS status FROM pm_tasks WHERE task_key = ?
           `, [taskKey]) as { title: string; url: string; status: string } | undefined;
 
           const fromCtx = !!ctx?.jira_key;
