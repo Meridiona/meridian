@@ -246,6 +246,7 @@ async fn upsert(
     ctx: &JiraReqCtx,
     start_date_field: Option<&str>,
 ) -> Result<()> {
+    let mut ok_count: usize = 0;
     for issue in issues {
         if !jira.project_keys.is_empty() && !jira.project_keys.contains(&issue.fields.project.key) {
             continue;
@@ -350,10 +351,15 @@ async fn upsert(
         .execute(pool)
         .await
         .with_context(|| format!("upserting {}", issue.key));
-        if let Err(ref upsert_err) = upsert_result {
-            // Log full error chain so the root cause is visible in /logs
-            tracing::warn!(task_key = %issue.key, error = ?upsert_err, "jira task upsert failed — skipping");
+        match upsert_result {
+            Ok(_) => ok_count += 1,
+            Err(ref upsert_err) => {
+                tracing::warn!(task_key = %issue.key, error = ?upsert_err, "jira task upsert failed — skipping");
+            }
         }
+    }
+    if !issues.is_empty() && ok_count == 0 {
+        anyhow::bail!("all {} jira task upserts failed — DB write errors above", issues.len());
     }
     Ok(())
 }

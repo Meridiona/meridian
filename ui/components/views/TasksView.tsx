@@ -616,6 +616,7 @@ function ConnectedPanel({
   onDisconnect: () => void
 }) {
   const [reauthorizing, setReauthorizing] = useState(false)
+  const exitReauth = () => setReauthorizing(false)
   const cleanError = syncError
     ? syncError.replace(/^permission_error: |^sync_error: /, '')
     : null
@@ -641,8 +642,8 @@ function ConnectedPanel({
           <p className="text-[12px] mb-2" style={{ color: 'var(--ink-2)' }}>
             Re-authorize {tracker.name}:
           </p>
-          <TrackerSetup tracker={tracker} reauthorize />
-          <button onClick={() => setReauthorizing(false)} className="mt-2 text-[11px]" style={{ color: 'var(--ink-4)', cursor: 'pointer' }}>
+          <TrackerSetup tracker={tracker} reauthorize onSuccess={exitReauth} />
+          <button onClick={exitReauth} className="mt-2 text-[11px]" style={{ color: 'var(--ink-4)', cursor: 'pointer' }}>
             Cancel
           </button>
         </div>
@@ -666,8 +667,8 @@ function ConnectedPanel({
   )
 }
 
-function TrackerSetup({ tracker, reauthorize }: { tracker: (typeof TRACKERS)[number]; reauthorize?: boolean }) {
-  // Jira supports both OAuth and API token — show a chooser (or force API token on reauth)
+function TrackerSetup({ tracker, reauthorize, onSuccess }: { tracker: (typeof TRACKERS)[number]; reauthorize?: boolean; onSuccess?: () => void }) {
+  // Jira supports both OAuth and API token — show a chooser (or force token on reauth)
   const [jiraMode, setJiraMode] = useState<'oauth' | 'token'>(reauthorize ? 'token' : 'oauth')
   if (tracker.id === 'jira') {
     return (
@@ -685,11 +686,11 @@ function TrackerSetup({ tracker, reauthorize }: { tracker: (typeof TRACKERS)[num
             style={{ background: jiraMode === 'token' ? 'var(--accent)' : 'var(--tint)', color: jiraMode === 'token' ? '#fff' : 'var(--ink-3)', cursor: 'pointer' }}
           >API Token</button>
         </div>
-        {jiraMode === 'oauth' ? <OAuthSetup tracker={tracker} /> : <TokenSetup tracker={tracker} />}
+        {jiraMode === 'oauth' ? <OAuthSetup tracker={tracker} onSuccess={onSuccess} /> : <TokenSetup tracker={tracker} />}
       </div>
     )
   }
-  if (tracker.oauth) return <OAuthSetup tracker={tracker} />
+  if (tracker.oauth) return <OAuthSetup tracker={tracker} onSuccess={onSuccess} />
   if (tracker.id === 'azure_devops') return <AzureDevOpsSetup tracker={tracker} />
   return <TokenSetup tracker={tracker} />
 }
@@ -870,7 +871,7 @@ function AzureDevOpsSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
   )
 }
 
-function OAuthSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
+function OAuthSetup({ tracker, onSuccess }: { tracker: (typeof TRACKERS)[number]; onSuccess?: () => void }) {
   const [status, setStatus] = useState<'idle' | 'waiting' | 'done' | 'error'>('idle')
   const [error, setError] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -883,21 +884,31 @@ function OAuthSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
     try {
       const r = await fetch(`/api/auth/oauth/start?provider=${tracker.id}`, { method: 'POST' })
       if (!r.ok) { const b = await r.json(); setError(b.error ?? 'Failed to start'); setStatus('error'); return }
-      // Poll until connected (up to 3 minutes)
+      // Poll until connected (up to 3 minutes).
+      // `stopped` prevents two async invocations of the same callback from both
+      // resolving — e.g. tick N suspended at await while tick N+1 hits the deadline.
       const deadline = Date.now() + 180_000
-      pollRef.current = setInterval(async () => {
-        if (Date.now() > deadline) { clearInterval(pollRef.current!); pollRef.current = null; setStatus('error'); setError('Timed out — try again'); return }
+      let stopped = false
+      const id = setInterval(async () => {
+        if (stopped) return
+        if (Date.now() > deadline) {
+          stopped = true; clearInterval(id); pollRef.current = null
+          setStatus('error'); setError('Timed out — try again'); return
+        }
         const ir = await fetch('/api/integrations').catch(() => null)
+        if (stopped) return  // re-check after await — timeout may have fired
         if (!ir?.ok) return
         const data = await ir.json()
+        if (stopped) return
         if (data[tracker.id]) {
-          clearInterval(pollRef.current!)
-          pollRef.current = null
+          stopped = true; clearInterval(id); pollRef.current = null
           setStatus('done')
           // Clear the provider's error notice immediately — don't wait for next ETL poll
           fetch(`/api/notices/pm.${tracker.id}`, { method: 'DELETE' }).catch(() => {})
+          onSuccess?.()
         }
       }, 2_000)
+      pollRef.current = id
     } catch (e) {
       setError(String(e)); setStatus('error')
     }

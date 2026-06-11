@@ -229,9 +229,11 @@ fn env_list(key: &str) -> Vec<String> {
 fn parse_jira() -> Option<PmProviderConfig> {
     let base_url = std::env::var("JIRA_URL")
         .or_else(|_| std::env::var("JIRA_BASE_URL"))
-        .unwrap_or_default();
-    let email = std::env::var("JIRA_EMAIL").unwrap_or_default();
-    let api_token = std::env::var("JIRA_API_TOKEN").unwrap_or_default();
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    let email = std::env::var("JIRA_EMAIL").unwrap_or_default().trim().to_owned();
+    let api_token = std::env::var("JIRA_API_TOKEN").unwrap_or_default().trim().to_owned();
 
     // Configured if EITHER auth path is viable:
     //   * browser OAuth — the user has run `meridian oauth-login jira`, so a token
