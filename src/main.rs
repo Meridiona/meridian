@@ -660,6 +660,10 @@ async fn main() -> Result<()> {
     }
 
     // 8b. Poll loop — ETL, PM sync, and FM categorization on the configured interval.
+    // Track the last-applied log level so we can detect changes and hot-reload
+    // the EnvFilter without restarting the daemon.
+    let mut last_log_level = initial_cfg.runtime.log_level.clone();
+
     loop {
         // Determine the sleep duration from the current settings.json before sleeping.
         let poll_interval = {
@@ -674,6 +678,18 @@ async fn main() -> Result<()> {
             _ = tokio::time::sleep(poll_interval) => {
                 // Re-read config to pick up any settings.json changes made while sleeping.
                 let cfg = Config::from_env();
+
+                // Hot-reload the log level if it changed in settings.json.
+                if cfg.runtime.log_level != last_log_level
+                    && observability::reload_log_level(&cfg.runtime.log_level)
+                {
+                    tracing::info!(
+                        old_level = %last_log_level,
+                        new_level = %cfg.runtime.log_level,
+                        "log level hot-reloaded"
+                    );
+                    last_log_level = cfg.runtime.log_level.clone();
+                }
                 let poll_tick = tracing::info_span!(
                     "poll_tick",
                     poll_interval_secs = cfg.runtime.poll_interval_secs
