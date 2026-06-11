@@ -228,7 +228,7 @@ function WorklogCard({ w, busy, onApprove, onReject, onUnapprove, onSave }: {
         {/* meta row */}
         <div className="flex items-center gap-3 min-w-0">
           {w.task_url ? (
-            <a href={w.task_url} target="_blank" rel="noreferrer" title={`Open ${w.task_key} in ${providerLabel(w.provider)}`}
+            <a href={w.task_url} target="_blank" rel="noopener noreferrer" title={`Open ${w.task_key} in ${providerLabel(w.provider)}`}
               className="flex items-center gap-2 min-w-0 group">
               <TaskKey keyId={w.task_key} />
               {w.task_title && (

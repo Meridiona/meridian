@@ -116,7 +116,7 @@ export async function GET(req: Request) {
         id: r.id,
         task_key: r.task_key,
         task_title: r.task_title,
-        task_url: r.task_url,
+        task_url: r.task_url?.startsWith('https://') ? r.task_url : null,
         provider: r.provider ?? 'jira',
         window_start: r.window_start,
         state: r.state,
