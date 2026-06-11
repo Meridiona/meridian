@@ -101,8 +101,16 @@ jobs:
       - name: Build
         run: |
           VERSION="${{ steps.tag.outputs.name }}"
-          cargo build --release
-          (cd ui && npm ci --no-audit --no-fund && npm run build)
+
+          # Rust and UI are independent — run them in parallel.
+          # Tauri must wait for both: it links the Rust binary and bundles the UI.
+          cargo build --release &
+          CARGO_PID=$!
+          (cd ui && npm ci --no-audit --no-fund && npm run build) &
+          UI_PID=$!
+          wait $CARGO_PID || { echo "cargo build failed"; exit 1; }
+          wait $UI_PID   || { echo "ui build failed"; exit 1; }
+
           (cd tray && bash create-icons.sh && npm ci --no-audit --no-fund && npm run build)
           bash scripts/package-release.sh "${VERSION#v}"
           bash scripts/verify-release-bundle.sh "${VERSION#v}"
@@ -113,9 +121,12 @@ jobs:
         # npm publish token. Requires both packages to be configured as
         # Trusted Publishers on npmjs.com pointing to this workflow file.
         run: |
+          # Audience must be the npm registry URL, not "sigstore".
+          # "sigstore" is for provenance attestation only; trusted publishing
+          # auth uses the registry URL as the audience (matches @semantic-release/npm).
           OIDC_JWT=$(curl -sS \
             -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r '.value')
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Fregistry.npmjs.org%2F" | jq -r '.value')
 
           RESP=$(curl -sS -X POST "https://registry.npmjs.org/-/v1/login" \
             -H "Content-Type: application/json" \
