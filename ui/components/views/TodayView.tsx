@@ -69,13 +69,13 @@ function ActiveSessionCard({ active, taskKey }: { active: NonNullable<TodayRespo
           <div className="flex-1 min-w-0">
             {/* "You're on" headline */}
             <div className="flex items-baseline gap-3 flex-wrap">
-              <p className="font-serif text-[28px] leading-none italic" style={{ color: 'var(--ink)' }}>
+              <p className="type-active" style={{ color: 'var(--ink)' }}>
                 You&apos;re on
               </p>
               {taskKey && (
                 <TaskKey keyId={taskKey} big />
               )}
-              <span className="font-serif text-[28px] leading-none italic truncate" style={{ color: 'var(--ink)' }}>
+              <span className="type-active truncate" style={{ color: 'var(--ink)' }}>
                 {active.cat !== 'idle_personal' ? CATS[active.cat]?.label?.toLowerCase() ?? active.cat : 'an uncategorized session'}
               </span>
             </div>
@@ -451,7 +451,7 @@ export default function TodayView() {
     return (
       <div className="space-y-12">
         <header className="rise">
-          <h1 className="font-serif leading-[0.95] tracking-tight" style={{ color: 'var(--ink)' }}>Today</h1>
+          <h1 className="type-hero" style={{ color: 'var(--ink)' }}>Today</h1>
         </header>
         <p className="text-[13px]" style={{ color: 'var(--ink-3)' }}>Loading…</p>
       </div>
@@ -554,7 +554,7 @@ export default function TodayView() {
             </p>
           )}
         </div>
-        <h1 className="font-serif text-[88px] leading-[0.95] tracking-tight" style={{ color: 'var(--ink)' }}>Today</h1>
+        <h1 className="type-hero" style={{ color: 'var(--ink)' }}>Today</h1>
       </header>
 
       {/* Layer 1 — the glance: one insight + the day timeline (overlap shown, not summed) */}
@@ -567,7 +567,7 @@ export default function TodayView() {
             {insight && (
               <div>
                 <p className="text-[11px] uppercase tracking-[0.18em] mb-3" style={{ color: 'var(--ink-3)' }}>Today at a glance</p>
-                <p className="font-serif text-[32px] leading-[1.15]" style={{ color: 'var(--ink)', textWrap: 'pretty' } as React.CSSProperties}>{insight}</p>
+                <p className="type-stat" style={{ color: 'var(--ink)', textWrap: 'pretty' } as React.CSSProperties}>{insight}</p>
               </div>
             )}
             {(data.sessions.length > 0 || data.active) && (
