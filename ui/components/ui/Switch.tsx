@@ -23,7 +23,7 @@ export function Switch({ checked, onCheckedChange, id }: SwitchProps) {
         borderRadius: '12px',
         border: 'none',
         padding: 0,
-        cursor: 'default',
+        cursor: 'pointer',
         flexShrink: 0,
         position: 'relative',
         outline: 'none',
