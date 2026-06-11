@@ -46,7 +46,7 @@ struct ProjectNode {
 struct ProjectItemConnection {
     #[serde(rename = "pageInfo")]
     page_info: PageInfo,
-    nodes: Vec<ProjectItem>,
+    nodes: Vec<Option<ProjectItem>>,
 }
 
 #[derive(Deserialize)]
@@ -96,7 +96,7 @@ struct Repo {
 
 #[derive(Deserialize)]
 struct AssigneeConnection {
-    nodes: Vec<LoginNode>,
+    nodes: Vec<Option<LoginNode>>,
 }
 
 #[derive(Deserialize)]
@@ -241,7 +241,7 @@ async fn fetch_project_items(
             }
         };
 
-        for item in &project.items.nodes {
+        for item in project.items.nodes.iter().flatten() {
             if item.item_type.as_deref() != Some("ISSUE") {
                 continue;
             }
@@ -262,6 +262,7 @@ async fn fetch_project_items(
                 .assignees
                 .nodes
                 .iter()
+                .flatten()
                 .any(|a| a.login.eq_ignore_ascii_case(viewer_login))
             {
                 continue;
