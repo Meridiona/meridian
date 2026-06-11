@@ -94,11 +94,11 @@ def build_synth_agent(
         #     tools.get_earlier_today_summaries,
         # ],
         pre_hooks=[
-            PIIDetectionGuardrail(),
             ProjectSecretGuard(),
             SessionBundleSizeGuard(max_tokens=80_000),
         ],
         post_hooks=[
+            PIIDetectionGuardrail(),
             time_spent_sanity_check,
         ],
         output_schema=JiraUpdate,

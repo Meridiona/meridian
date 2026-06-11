@@ -51,6 +51,12 @@ struct WorkItemDetail {
 }
 
 #[derive(Deserialize)]
+struct AzureIdentity {
+    #[serde(rename = "displayName")]
+    display_name: String,
+}
+
+#[derive(Deserialize)]
 struct WorkItemFields {
     #[serde(rename = "System.Title")]
     title: String,
@@ -74,6 +80,17 @@ struct WorkItemFields {
     /// Full iteration path e.g. `MyProject\Sprint 14`. Last segment = sprint name.
     #[serde(rename = "System.IterationPath", default)]
     iteration_path: Option<String>,
+    #[serde(rename = "System.TeamProject", default)]
+    team_project: Option<String>,
+    #[serde(rename = "System.AssignedTo", default)]
+    assigned_to: Option<AzureIdentity>,
+    /// Start date — present on all process types (Scheduling namespace).
+    #[serde(rename = "Microsoft.VSTS.Scheduling.StartDate", default)]
+    start_date: Option<String>,
+    /// Target date — cross-process equivalent of due date (TargetDate, not DueDate
+    /// which is Agile-process-only).
+    #[serde(rename = "Microsoft.VSTS.Scheduling.TargetDate", default)]
+    target_date: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -224,8 +241,11 @@ async fn fetch_batch(
         "{}/{}/_apis/wit/workitems?ids={}&\
          fields=System.Id,System.Title,System.WorkItemType,System.State,\
          System.ChangedDate,System.Description,System.Tags,System.IterationPath,\
+         System.TeamProject,System.AssignedTo,\
          Microsoft.VSTS.Common.AcceptanceCriteria,\
-         Microsoft.VSTS.TCM.ReproSteps&api-version=7.1",
+         Microsoft.VSTS.TCM.ReproSteps,\
+         Microsoft.VSTS.Scheduling.StartDate,\
+         Microsoft.VSTS.Scheduling.TargetDate&api-version=7.1",
         cfg.api_base, cfg.project, ids_str
     );
     let resp = client
@@ -433,12 +453,15 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
             "{}/{}/_workitems/edit/{}",
             cfg.api_base, cfg.project, u.detail.id
         );
+        let project_key = f.team_project.as_deref();
+        let assignee_name = f.assigned_to.as_ref().map(|a| a.display_name.as_str());
 
         sqlx::query(
             "INSERT INTO pm_tasks
                (task_key, provider, title, description_text, status_raw, is_terminal,
-                issue_type, url, updated_at, sprint_name, tags)
-             VALUES (?, 'azure_devops', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                issue_type, project_key, url, updated_at, sprint_name, tags,
+                assignee_name, start_date, due_date)
+             VALUES (?, 'azure_devops', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(task_key) DO UPDATE SET
                provider         = 'azure_devops',
                title            = excluded.title,
@@ -446,10 +469,14 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
                status_raw       = excluded.status_raw,
                is_terminal      = excluded.is_terminal,
                issue_type       = excluded.issue_type,
+               project_key      = excluded.project_key,
                url              = excluded.url,
                updated_at       = excluded.updated_at,
                sprint_name      = excluded.sprint_name,
-               tags             = excluded.tags",
+               tags             = excluded.tags,
+               assignee_name    = excluded.assignee_name,
+               start_date       = excluded.start_date,
+               due_date         = excluded.due_date",
         )
         .bind(&task_key)
         .bind(&f.title)
@@ -457,10 +484,14 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         .bind(&u.status.raw)
         .bind(u.status.is_terminal)
         .bind(&f.work_item_type)
+        .bind(project_key)
         .bind(&browser_url)
         .bind(changed)
         .bind(sprint.as_deref())
         .bind(tags.as_deref())
+        .bind(assignee_name)
+        .bind(f.start_date.as_deref())
+        .bind(f.target_date.as_deref())
         .execute(pool)
         .await
         .with_context(|| format!("upserting Azure DevOps work item {}", u.detail.id))?;
@@ -550,6 +581,7 @@ async fn stamp_sync(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await
     .context("updating azure_devops sync state")?;
+    let _ = crate::notices::clear(pool, "pm.azure_devops").await;
     Ok(())
 }
 
@@ -565,6 +597,15 @@ async fn stamp_error(pool: &SqlitePool, error: &str) -> Result<()> {
     .execute(pool)
     .await
     .context("recording azure_devops sync error")?;
+    let _ = crate::notices::raise(
+        pool,
+        "pm.azure_devops",
+        "error",
+        "Azure DevOps sync failing",
+        error,
+        Some("Set AZURE_DEVOPS_PAT in .env"),
+    )
+    .await;
     Ok(())
 }
 

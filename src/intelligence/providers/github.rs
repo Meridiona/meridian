@@ -86,6 +86,8 @@ struct IssueContent {
     updated_at: String,
     repository: Repo,
     assignees: AssigneeConnection,
+    #[serde(default)]
+    labels: GhLabelConnection,
 }
 
 #[derive(Deserialize)]
@@ -104,6 +106,16 @@ struct LoginNode {
     login: String,
 }
 
+#[derive(Deserialize, Default)]
+struct GhLabelConnection {
+    nodes: Vec<GhLabel>,
+}
+
+#[derive(Deserialize)]
+struct GhLabel {
+    name: String,
+}
+
 /// One normalised issue ready to upsert.
 struct GhTask {
     task_key: String,
@@ -120,6 +132,7 @@ struct GhTask {
     url: String,
     updated_at: String,
     assignee: String,
+    tags: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +209,7 @@ const PROJECT_ITEMS_QUERY: &str = "query($id: ID!, $cursor: String) {
               number title body state url updatedAt
               repository { nameWithOwner }
               assignees(first: 10) { nodes { login } }
+              labels(first: 10) { nodes { name } }
             }
           }
         }
@@ -272,6 +286,18 @@ async fn fetch_project_items(
                 &extract_status_raw(&item.field_values.nodes),
                 None,
             );
+            let label_names: Vec<&str> = content
+                .labels
+                .nodes
+                .iter()
+                .map(|l| l.name.as_str())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let tags = if label_names.is_empty() {
+                None
+            } else {
+                Some(label_names.join(", "))
+            };
             tasks.push(GhTask {
                 task_key: format!("{}#{}", content.repository.name_with_owner, content.number),
                 repo_slug: content.repository.name_with_owner.clone(),
@@ -282,6 +308,7 @@ async fn fetch_project_items(
                 url: content.url.clone(),
                 updated_at: content.updated_at.clone(),
                 assignee: viewer_login.to_string(),
+                tags,
             });
         }
 
@@ -303,8 +330,8 @@ async fn upsert(pool: &SqlitePool, tasks: &[GhTask]) -> Result<()> {
         sqlx::query(
             "INSERT INTO pm_tasks
                (task_key, provider, title, description_text, status_raw, is_terminal,
-                issue_type, project_key, url, assignee_name, updated_at, fetched_at)
-             VALUES (?, 'github', ?, ?, ?, ?, 'Issue', ?, ?, ?, ?,
+                issue_type, project_key, url, assignee_name, tags, updated_at, fetched_at)
+             VALUES (?, 'github', ?, ?, ?, ?, 'Issue', ?, ?, ?, ?, ?,
                      strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
              ON CONFLICT(task_key) DO UPDATE SET
                provider         = 'github',
@@ -315,6 +342,7 @@ async fn upsert(pool: &SqlitePool, tasks: &[GhTask]) -> Result<()> {
                project_key      = excluded.project_key,
                url              = excluded.url,
                assignee_name    = excluded.assignee_name,
+               tags             = excluded.tags,
                updated_at       = excluded.updated_at,
                fetched_at       = excluded.fetched_at",
         )
@@ -326,6 +354,7 @@ async fn upsert(pool: &SqlitePool, tasks: &[GhTask]) -> Result<()> {
         .bind(&t.repo_slug)
         .bind(&t.url)
         .bind(&t.assignee)
+        .bind(t.tags.as_deref())
         .bind(&t.updated_at)
         .execute(pool)
         .await
@@ -403,6 +432,7 @@ pub async fn refresh_if_stale(
         Ok(l) => l,
         Err(e) => {
             tracing::warn!(error = %e, "github viewer fetch failed — keeping stale cache");
+            let _ = super::stamp_sync_error(pool, "github", &format!("GitHub auth failed — {e}")).await;
             return Ok(None);
         }
     };
@@ -438,6 +468,7 @@ pub async fn refresh_if_stale(
 
     if !any_ok {
         tracing::warn!("all github project fetches failed — keeping stale cache");
+        let _ = super::stamp_sync_error(pool, "github", "GitHub sync failed — all project fetches failed").await;
         return Ok(None);
     }
 
@@ -475,6 +506,7 @@ pub async fn refresh_if_stale(
     }
 
     tracing::info!(upserted_count = keys.len(), "github tasks refreshed");
+    let _ = super::clear_sync_error(pool, "github").await;
     Ok(Some(keys))
 }
 

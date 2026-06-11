@@ -603,15 +603,19 @@ async def synthesise_worklog(req: _SynthWorklogRequest) -> dict:
         try:
             response = await run_in_threadpool(_run)
         except Exception as exc:  # noqa: BLE001 — never crash the shared server
-            last_detail = f"agent run failed: {exc}"
+            last_detail = f"agent run raised {type(exc).__name__}: {exc}"
             log.warning("synthesise_worklog: attempt %d %s", attempt, last_detail)
             continue
         raw = getattr(response, "content", response)
+        if raw is None:
+            last_detail = "agent returned no content (guardrail likely blocked the run)"
+            log.warning("synthesise_worklog: attempt %d %s", attempt, last_detail)
+            continue
         update = pm_workflow._coerce_jira(raw)
         if update is not None:
             break
-        last_detail = "agent output did not parse into a JiraUpdate"
-        log.warning("synthesise_worklog: attempt %d %s", attempt, last_detail)
+        last_detail = f"agent output did not parse into a JiraUpdate (raw type={type(raw).__name__})"
+        log.warning("synthesise_worklog: attempt %d %s | raw=%.200s", attempt, last_detail, str(raw))
 
     if update is None:
         raise HTTPException(
