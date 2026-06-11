@@ -1,3 +1,10 @@
+## [1.48.1](https://github.com/Meridiona/meridian/compare/v1.48.0...v1.48.1) (2026-06-11)
+
+
+### Bug Fixes
+
+* **db:** self-heal migration checksums instead of crash-looping ([190a52f](https://github.com/Meridiona/meridian/commit/190a52f71d9e38e51f3dfbebdb09bf7d31dba5c3))
+
 # [1.48.0](https://github.com/Meridiona/meridian/compare/v1.47.0...v1.48.0) (2026-06-11)
 
 
