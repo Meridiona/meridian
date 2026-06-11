@@ -61,6 +61,12 @@ struct LinearIssue {
     assignee: Option<NamedUser>,
     #[serde(rename = "dueDate", default)]
     due_date: Option<String>,
+    #[serde(rename = "startedAt", default)]
+    started_at: Option<String>,
+    #[serde(default)]
+    labels: Option<LabelConnection>,
+    #[serde(default)]
+    cycle: Option<Cycle>,
 }
 
 #[derive(Deserialize)]
@@ -87,6 +93,21 @@ struct Parent {
 
 #[derive(Deserialize)]
 struct NamedUser {
+    name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct LabelConnection {
+    nodes: Vec<LabelNode>,
+}
+
+#[derive(Deserialize)]
+struct LabelNode {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct Cycle {
     name: Option<String>,
 }
 
@@ -137,7 +158,7 @@ async fn fetch(linear: &LinearConfig) -> Result<Vec<LinearIssue>> {
            identifier title description updatedAt url \
            state {{ name type }} team {{ id key }} \
            parent {{ identifier title }} assignee {{ name }} \
-           dueDate \
+           dueDate startedAt labels {{ nodes {{ name }} }} cycle {{ name }} \
          }} }} }} }}"
     );
     let body = serde_json::json!({ "query": query });
@@ -209,13 +230,26 @@ async fn upsert(
             })
             .unwrap_or((None, String::new()));
         let assignee = issue.assignee.as_ref().and_then(|a| a.name.clone());
+        let tags: Option<String> = issue.labels.as_ref().map(|lc| {
+            lc.nodes
+                .iter()
+                .map(|l| l.name.as_str())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(", ")
+        });
+        let sprint_name: Option<String> = issue
+            .cycle
+            .as_ref()
+            .and_then(|c| c.name.clone())
+            .filter(|s| !s.is_empty());
 
         sqlx::query(
             "INSERT INTO pm_tasks
                (task_key, provider, title, description_text, status_raw, is_terminal,
                 issue_type, project_key, url, parent_key, epic_title, assignee_name,
-                due_date, updated_at, fetched_at)
-             VALUES (?, 'linear', ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?,
+                due_date, start_date, tags, sprint_name, updated_at, fetched_at)
+             VALUES (?, 'linear', ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                      strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
              ON CONFLICT(task_key) DO UPDATE SET
                provider         = 'linear',
@@ -230,6 +264,9 @@ async fn upsert(
                epic_title       = excluded.epic_title,
                assignee_name    = excluded.assignee_name,
                due_date         = excluded.due_date,
+               start_date       = excluded.start_date,
+               tags             = excluded.tags,
+               sprint_name      = excluded.sprint_name,
                updated_at       = excluded.updated_at,
                fetched_at       = excluded.fetched_at",
         )
@@ -248,6 +285,9 @@ async fn upsert(
         })
         .bind(assignee)
         .bind(&issue.due_date)
+        .bind(&issue.started_at)
+        .bind(tags.as_deref())
+        .bind(sprint_name.as_deref())
         .bind(&issue.updated_at)
         .execute(pool)
         .await
@@ -352,10 +392,12 @@ pub async fn refresh_if_stale(
                 }
             }
             tracing::info!(upserted_count = n, "linear tasks refreshed");
+            let _ = super::clear_sync_error(pool, "linear").await;
             Ok(Some(kept))
         }
         Err(e) => {
             tracing::warn!(error = %e, "linear fetch failed — keeping stale cache");
+            let _ = super::stamp_sync_error(pool, "linear", &format!("Linear sync failed — {e}")).await;
             Ok(None)
         }
     }
@@ -405,6 +447,9 @@ mod tests {
             parent: None,
             assignee: None,
             due_date: None,
+            started_at: None,
+            labels: None,
+            cycle: None,
         }
     }
 

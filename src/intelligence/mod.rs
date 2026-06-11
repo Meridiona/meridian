@@ -145,9 +145,12 @@ pub async fn run_pm_sync(meridian: &SqlitePool, config: &Config) -> Result<()> {
                     ?keys,
                     "provider cache was stale — refreshed"
                 );
+                // Clear any lingering notice — provider just refreshed successfully
+                let _ = providers::clear_sync_error(meridian, name).await;
             }
             Err(e) => {
                 tracing::warn!(provider = name, error = %e, "provider refresh failed");
+                let _ = providers::stamp_sync_error(meridian, name, &e.to_string()).await;
             }
         }
     }

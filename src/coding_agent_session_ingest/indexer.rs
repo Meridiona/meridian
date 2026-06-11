@@ -255,6 +255,9 @@ pub async fn run_tick(pool: &SqlitePool, cfg: &IndexerConfig, now: DateTime<Utc>
     let candidates = candidate_jsonls(pool, cfg, now).await;
     let mut wrote = 0_u64;
     let mut failed = 0_u64;
+    for path in &candidates {
+        tracing::debug!(source = "jsonl", path = %path.display(), "registering agent session file");
+    }
     for path in candidates {
         match register_session(pool, &path, false, now).await {
             Outcome::Inserted => wrote += 1,
@@ -431,8 +434,17 @@ async fn candidate_jsonls(
                         .with_timezone(&Local)
                         .date_naive();
                     if mdate != today {
+                        tracing::debug!(
+                            path = %path.display(),
+                            file_date = %mdate,
+                            "backfill skipped — file not touched today"
+                        );
                         continue;
                     }
+                    tracing::debug!(
+                        path = %path.display(),
+                        "new agent session file discovered"
+                    );
                 }
             }
             candidates.push((mtime_epoch, path));
