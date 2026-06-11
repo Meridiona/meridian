@@ -1,3 +1,15 @@
+# [1.46.0](https://github.com/Meridiona/meridian/compare/v1.45.3...v1.46.0) (2026-06-11)
+
+
+### Features
+
+* **ui:** show task title and PM-tool link on worklog cards ([#252](https://github.com/Meridiona/meridian/issues/252)) ([4ecbafa](https://github.com/Meridiona/meridian/commit/4ecbafad59fccded31ed6e0fed586f486e6aeebb))
+
+
+### Reverts
+
+* **ci:** restore single-stage release workflow ([787991e](https://github.com/Meridiona/meridian/commit/787991eaa920cfccd1ae714db9d2ea55a1204a8b))
+
 # [1.43.0](https://github.com/Meridiona/meridian/compare/v1.42.0...v1.43.0) (2026-06-10)
 
 
