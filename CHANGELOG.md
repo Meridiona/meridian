@@ -1,3 +1,21 @@
+## [1.48.2](https://github.com/Meridiona/meridian/compare/v1.48.1...v1.48.2) (2026-06-11)
+
+
+### Bug Fixes
+
+* **github:** guard against null nodes in ProjectV2 GraphQL response ([8098c60](https://github.com/Meridiona/meridian/commit/8098c60b25077bb0f46393a7c7500e9dd41ab585))
+* **pm:** make task status dynamic across all providers ([aff118f](https://github.com/Meridiona/meridian/commit/aff118f769d239d371bf2e656fa0c935e9111ecb))
+* **pm:** renumber migration to 036, fmt, and type alias ([82e352d](https://github.com/Meridiona/meridian/commit/82e352d3e58eb069e5c5dd565c1bb585f6a56c17)), closes [#258](https://github.com/Meridiona/meridian/issues/258)
+* **pm:** update eval dataset builder for dynamic status ([41b8746](https://github.com/Meridiona/meridian/commit/41b8746332a75e9830fe418cd8932a7bd0863580))
+* **status:** word-boundary keyword matching + once_cell env cache ([92b8901](https://github.com/Meridiona/meridian/commit/92b89014405ac96e56dde2c6dbb0da2a53eff3c5))
+
+## [1.48.1](https://github.com/Meridiona/meridian/compare/v1.48.0...v1.48.1) (2026-06-11)
+
+
+### Bug Fixes
+
+* **db:** self-heal migration checksums instead of crash-looping ([190a52f](https://github.com/Meridiona/meridian/commit/190a52f71d9e38e51f3dfbebdb09bf7d31dba5c3))
+
 # [1.48.0](https://github.com/Meridiona/meridian/compare/v1.47.0...v1.48.0) (2026-06-11)
 
 

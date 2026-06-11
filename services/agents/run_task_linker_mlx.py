@@ -487,7 +487,8 @@ def _fetch_pm_tasks(con: _sqlite3.Connection) -> list[dict[str, Any]]:
     rows = con.execute(
         "SELECT task_key, title,"
         "       COALESCE(description_text,'') AS description_text,"
-        "       COALESCE(status_category,'') AS status_category,"
+        "       COALESCE(status_raw,'') AS status_raw,"
+        "       COALESCE(is_terminal,0) AS is_terminal,"
         "       COALESCE(issue_type,'') AS issue_type,"
         "       COALESCE(parent_key,'') AS parent_key,"
         "       COALESCE(epic_title,'') AS epic_title,"

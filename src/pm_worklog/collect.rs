@@ -28,9 +28,11 @@ pub async fn fetch_session_bundle(
     cycle_index: i64,
     day_utc: &str,
 ) -> Result<SessionBundle> {
-    // Ticket context.
+    // Ticket context. `status_raw` is the verbatim provider status name (shown to
+    // the synth for context); `is_terminal` is the normalized "is this ticket
+    // done?" signal that drives the ticket-closed risk flag in `ground`.
     let task_row = sqlx::query(
-        "SELECT title, status_category, assignee_name, \
+        "SELECT title, status_raw, is_terminal, assignee_name, \
                 COALESCE(description_text, '') AS description_text \
          FROM pm_tasks WHERE task_key = ?",
     )
@@ -39,21 +41,21 @@ pub async fn fetch_session_bundle(
     .await
     .context("fetch pm_task context")?;
 
-    let (pm_task_title, pm_task_status, assignee_name, pm_task_description) = match &task_row {
-        Some(r) => (
-            r.try_get::<Option<String>, _>("title").ok().flatten(),
-            r.try_get::<Option<String>, _>("status_category")
-                .ok()
-                .flatten(),
-            r.try_get::<Option<String>, _>("assignee_name")
-                .ok()
-                .flatten(),
-            r.try_get::<String, _>("description_text")
-                .ok()
-                .map(|d| d.chars().take(1000).collect::<String>()),
-        ),
-        None => (None, None, None, None),
-    };
+    let (pm_task_title, pm_task_status, pm_task_is_terminal, assignee_name, pm_task_description) =
+        match &task_row {
+            Some(r) => (
+                r.try_get::<Option<String>, _>("title").ok().flatten(),
+                r.try_get::<Option<String>, _>("status_raw").ok().flatten(),
+                r.try_get::<bool, _>("is_terminal").unwrap_or(false),
+                r.try_get::<Option<String>, _>("assignee_name")
+                    .ok()
+                    .flatten(),
+                r.try_get::<String, _>("description_text")
+                    .ok()
+                    .map(|d| d.chars().take(1000).collect::<String>()),
+            ),
+            None => (None, None, false, None, None),
+        };
 
     // Classified task sessions in the window.
     let rows = sqlx::query(
@@ -179,6 +181,7 @@ pub async fn fetch_session_bundle(
         raw_text_bytes: raw_bytes as i64,
         is_heavy,
         pm_task_status,
+        pm_task_is_terminal,
         pm_task_title,
         pm_task_description,
         assignee_name,
