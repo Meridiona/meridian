@@ -15,6 +15,10 @@ export interface TaskSummary {
   status: string
   provider: string
   url: string
+  epic_key: string | null
+  epic_title: string | null
+  due_date: string | null
+  start_date: string | null
   today_s: number
   today_autonomous_s: number  // agent time on the task that ran while you were away
   week_s: number
@@ -40,7 +44,7 @@ export async function GET() {
 
     // get all tasks
     const taskRows = db.prepare(`
-      SELECT task_key, title, description_text, COALESCE(issue_type,'') AS issue_type, status_category, provider, url
+      SELECT task_key, title, description_text, COALESCE(issue_type,'') AS issue_type, status_category, provider, url, parent_key, epic_title, due_date, start_date
       FROM pm_tasks
       ORDER BY task_key DESC
     `).all() as Array<Record<string, unknown>>
@@ -127,6 +131,10 @@ export async function GET() {
         status: (t.status_category as string) || 'todo',
         provider: (t.provider as string) || 'jira',
         url: (t.url as string) || '',
+        epic_key: (t.parent_key as string | null) ?? null,
+        epic_title: (t.epic_title as string | null) ?? null,
+        due_date: (t.due_date as string | null) ?? null,
+        start_date: (t.start_date as string | null) ?? null,
         today_s: agg?.dur ?? 0,
         today_autonomous_s: agg?.autonomous_s ?? 0,
         week_s: weekByTask[k] ?? 0,
