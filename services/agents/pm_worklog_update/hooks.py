@@ -177,7 +177,7 @@ def risk_flagger(run_output: RunOutput, *, bundle: SessionBundle) -> None:
     if upd.confidence < config.PM_WORKLOG_MIN_CONFIDENCE:
         flags.add(RiskFlag.LOW_CONFIDENCE)
 
-    if bundle.pm_task_status == "done":
+    if bundle.pm_task_is_terminal:
         flags.add(RiskFlag.TICKET_CLOSED)
 
     # Cross-ticket leak: any bullet that references a session_id which

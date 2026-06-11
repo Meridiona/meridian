@@ -25,9 +25,9 @@ async fn make_db() -> SqlitePool {
 async fn insert_task(pool: &SqlitePool, task_key: &str, provider: &str) {
     sqlx::query(
         "INSERT INTO pm_tasks
-           (task_key, provider, title, description_text, status_category,
+           (task_key, provider, title, description_text, status_raw, is_terminal,
             issue_type, project_key, url, updated_at, fetched_at)
-         VALUES (?, ?, 'T', '', 'in_progress', 'Issue', 'acme/api', '',
+         VALUES (?, ?, 'T', '', 'In Progress', 0, 'Issue', 'acme/api', '',
                  strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
                  strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
     )
