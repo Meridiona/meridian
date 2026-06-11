@@ -13,6 +13,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # register only screenpipe and a11y-helper below.
 bash "${REPO_ROOT}/install.sh" --dev --no-daemon "$@"
 
+# Write 'dev' into ~/.meridian/app/VERSION so the UI update-available banner
+# never shows in dev mode (the version check returns false when current='dev').
+mkdir -p "${HOME}/.meridian/app"
+echo "dev" > "${HOME}/.meridian/app/VERSION"
+echo "  ✓ ~/.meridian/app/VERSION set to 'dev' (suppresses update banner)"
+
 # Register only the infrastructure agents that we don't actively develop.
 # The Rust daemon and MLX server are intentionally excluded — dev-start.sh
 # runs them with hot-reload instead.
