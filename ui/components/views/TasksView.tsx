@@ -21,16 +21,20 @@ const EPIC_PALETTE = [
   '#B7860C', // gold
 ]
 
-// due date within 3 days from now
+// covers overdue AND due within 3 days
 function isDueSoon(due: string): boolean {
-  const ms = new Date(due).getTime() - Date.now()
-  return ms >= 0 && ms <= 3 * 86400000
+  const ms = new Date(due + 'T00:00:00').getTime() - Date.now()
+  return ms <= 3 * 86400000
 }
 
-function epicColor(epicTitle: string | null): string {
-  if (!epicTitle) return 'var(--ink-4)'
+function fmtDate(d: string): string {
+  return new Date(d + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+function epicColor(epicKey: string | null): string {
+  if (!epicKey) return 'var(--ink-4)'
   let h = 0
-  for (let i = 0; i < epicTitle.length; i++) h = (h * 31 + epicTitle.charCodeAt(i)) >>> 0
+  for (let i = 0; i < epicKey.length; i++) h = (h * 31 + epicKey.charCodeAt(i)) >>> 0
   return EPIC_PALETTE[h % EPIC_PALETTE.length]
 }
 
@@ -120,13 +124,14 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
 
   const sel = visibleTasks.find(t => t.key === selected) ?? visibleTasks[0] ?? data.tasks[0]
 
-  // Group tasks by epic. Tasks with no epic go into a null bucket at the end.
-  const epicOrder: Array<string | null> = []
+  // Group tasks by epic_key (stable per-epic, not per-title) so cross-provider
+  // epics with the same title don't collide.
+  const epicOrder: Array<{ key: string; title: string | null }> = []
   const tasksByEpic: Record<string, TaskSummary[]> = {}
   for (const t of visibleTasks) {
-    const eKey = t.epic_title ?? '__none__'
+    const eKey = t.epic_key ?? '__none__'
     if (!tasksByEpic[eKey]) {
-      epicOrder.push(t.epic_title ?? null)
+      epicOrder.push({ key: eKey, title: t.epic_title ?? null })
       tasksByEpic[eKey] = []
     }
     tasksByEpic[eKey].push(t)
@@ -205,10 +210,9 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
 
           <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,300px)_minmax(0,1fr)] gap-8 items-start">
             <div className="rounded-xl overflow-hidden border" style={{ borderColor: 'var(--rule)' }}>
-              {epicOrder.map((epicTitle, ei) => {
-                const eKey = epicTitle ?? '__none__'
+              {epicOrder.map(({ key: eKey, title: epicTitle }, ei) => {
                 const group = tasksByEpic[eKey] ?? []
-                const color = epicColor(epicTitle)
+                const color = epicColor(eKey === '__none__' ? null : eKey)
                 const collapsed = collapsedEpics.has(eKey)
                 return (
                   <div key={eKey}>
