@@ -2,12 +2,37 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { fmtDur, fmtClock, AppGlyph, CatDot, TaskKey, StatusPill, SegBar, SectionHead, Card, CATS, PROVIDER_META } from '@/components/atoms'
+import { fmtDur, fmtClock, AppGlyph, CatDot, TaskKey, StatusPill, SectionHead, Card, CATS, PROVIDER_META } from '@/components/atoms'
 import type { TaskSummary, TasksResponse } from '@/app/api/tasks/route'
 import type { TodayResponse } from '@/app/api/today/route'
 import type { IntegrationsResponse } from '@/app/api/integrations/route'
 
 const TASKS_POLL_INTERVAL_MS = 60_000
+
+// Deterministic color from epic title — cycles through a palette of muted hues
+const EPIC_PALETTE = [
+  '#7C6FCD', // purple
+  '#2684FF', // blue
+  '#E66F2E', // orange
+  '#2D9B6A', // green
+  '#C0392B', // red
+  '#8E6BBF', // violet
+  '#1A7A8A', // teal
+  '#B7860C', // gold
+]
+
+// covers overdue AND due within 3 days
+function isDueSoon(due: string): boolean {
+  const ms = new Date(due + 'T00:00:00').getTime() - Date.now()
+  return ms <= 3 * 86400000
+}
+
+function epicColor(epicKey: string | null): string {
+  if (!epicKey) return 'var(--ink-4)'
+  let h = 0
+  for (let i = 0; i < epicKey.length; i++) h = (h * 31 + epicKey.charCodeAt(i)) >>> 0
+  return EPIC_PALETTE[h % EPIC_PALETTE.length]
+}
 
 export default function TasksView({ focusKey }: { focusKey?: string | null }) {
   const [data, setData] = useState<TasksResponse | null>(null)
@@ -18,6 +43,7 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
   const [lastSynced, setLastSynced] = useState<Date | null>(null)
   const [providerFilter, setProviderFilter] = useState<string>('all')
   const [showIntegrations, setShowIntegrations] = useState(false)
+  const [collapsedEpics, setCollapsedEpics] = useState<Set<string>>(new Set())
 
   const fetchTasks = () => {
     fetch('/api/tasks').then(r => r.json()).then((d: TasksResponse) => {
@@ -94,11 +120,24 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
 
   const sel = visibleTasks.find(t => t.key === selected) ?? visibleTasks[0] ?? data.tasks[0]
 
-  // Group tasks by provider for the "All" sectioned view.
-  const tasksByProvider: Record<string, TaskSummary[]> = {}
+  // Group tasks by epic_key (stable per-epic, not per-title) so cross-provider
+  // epics with the same title don't collide.
+  const epicOrder: Array<{ key: string; title: string | null }> = []
+  const tasksByEpic: Record<string, TaskSummary[]> = {}
   for (const t of visibleTasks) {
-    ;(tasksByProvider[t.provider] ??= []).push(t)
+    const eKey = t.epic_key ?? '__none__'
+    if (!tasksByEpic[eKey]) {
+      epicOrder.push({ key: eKey, title: t.epic_title ?? null })
+      tasksByEpic[eKey] = []
+    }
+    tasksByEpic[eKey].push(t)
   }
+
+  const toggleEpic = (eKey: string) => setCollapsedEpics(prev => {
+    const next = new Set(prev)
+    if (next.has(eKey)) next.delete(eKey); else next.add(eKey)
+    return next
+  })
 
   return (
     <div className="space-y-8">
@@ -112,8 +151,6 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
         <div className="flex items-center gap-4">
           <p className="text-[12px]" style={{ color: 'var(--ink-3)' }}>
             <span className="font-mono tnum">{touched}</span> touched today
-            <span className="mx-2">·</span>
-            <span className="font-mono tnum">{data.tasks.length}</span> on board
           </p>
           <button
             onClick={handleSync}
@@ -167,42 +204,46 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
             </div>
           )}
 
-          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,300px)_minmax(0,1fr)] gap-8">
+          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,300px)_minmax(0,1fr)] gap-8 items-start">
             <div className="rounded-xl overflow-hidden border" style={{ borderColor: 'var(--rule)' }}>
-              {providerFilter === 'all' && showProviderTabs
-                ? presentProviders.map((provider, pi) => {
-                    const group = tasksByProvider[provider] ?? []
-                    const meta = PROVIDER_META[provider]
-                    return (
-                      <div key={provider}>
-                        <div
-                          className="flex items-center gap-2 px-4 py-2"
-                          style={{ background: 'var(--surface-2)', borderTop: pi > 0 ? '1px solid var(--rule)' : undefined }}
-                        >
-                          <span
-                            className="inline-flex items-center justify-center rounded shrink-0 font-mono"
-                            style={{ width: 16, height: 16, fontSize: 9, fontWeight: 700, background: (meta?.color ?? '#888') + '1A', color: meta?.color ?? '#888' }}
-                          >
-                            {meta?.glyph ?? provider[0].toUpperCase()}
-                          </span>
-                          <span className="text-[10px] uppercase tracking-[0.15em]" style={{ color: 'var(--ink-3)' }}>
-                            {meta?.label ?? provider}
-                          </span>
-                          <span className="ml-auto font-mono tnum text-[10px]" style={{ color: 'var(--ink-4)' }}>{group.length}</span>
-                        </div>
-                        {group.map(t => (
-                          <TaskRow key={t.key} task={t} selected={t.key === selected} onSelect={() => setSelected(t.key)} showProvider={false} />
-                        ))}
-                      </div>
-                    )
-                  })
-                : visibleTasks.map(t => (
-                    <TaskRow key={t.key} task={t} selected={t.key === selected} onSelect={() => setSelected(t.key)} showProvider={showProviderTabs} />
-                  ))
-              }
+              {epicOrder.map(({ key: eKey, title: epicTitle }, ei) => {
+                const group = tasksByEpic[eKey] ?? []
+                const color = epicColor(eKey === '__none__' ? null : eKey)
+                const collapsed = collapsedEpics.has(eKey)
+                return (
+                  <div key={eKey}>
+                    <button
+                      onClick={() => toggleEpic(eKey)}
+                      className="w-full flex items-center gap-2 px-4 py-2 text-left"
+                      style={{
+                        background: epicTitle ? color + '22' : 'var(--surface-2)',
+                        borderTop: ei > 0 ? `1px solid ${color}33` : undefined,
+                        borderLeft: `3px solid ${color}`,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <span
+                        className="shrink-0 text-[9px] transition-transform"
+                        style={{ color, transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)', display: 'inline-block' }}
+                      >▾</span>
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.15em] truncate" style={{ color }}>
+                        {epicTitle ?? 'No epic'}
+                      </span>
+                      <span className="ml-auto font-mono tnum text-[10px] shrink-0" style={{ color: color + 'AA' }}>{group.length}</span>
+                    </button>
+                    {!collapsed && group.map(t => (
+                      <TaskRow key={t.key} task={t} selected={t.key === selected} onSelect={() => setSelected(t.key)} epicColor={color} showProvider={showProviderTabs} />
+                    ))}
+                  </div>
+                )
+              })}
             </div>
 
-            {sel && <TaskDetail task={sel} sessions={todaySessions.filter(s => s.task_key === sel.key)} />}
+            {sel && (
+              <div className="lg:sticky lg:top-8">
+                <TaskDetail task={sel} sessions={todaySessions.filter(s => s.task_key === sel.key)} />
+              </div>
+            )}
           </div>
         </>
       )}
@@ -238,15 +279,15 @@ function ProviderTab({ id, active, onClick }: { id: string; active: boolean; onC
   )
 }
 
-function TaskRow({ task, selected, onSelect, showProvider }: { task: TaskSummary; selected: boolean; onSelect: () => void; showProvider?: boolean }) {
-  const segs = Object.entries(task.cats).map(([cat, value]) => ({ cat, value }))
+function TaskRow({ task, selected, onSelect, epicColor: eColor, showProvider }: { task: TaskSummary; selected: boolean; onSelect: () => void; epicColor?: string; showProvider?: boolean }) {
   const meta = PROVIDER_META[task.provider]
+  const borderColor = selected ? (eColor ?? 'var(--accent)') : 'transparent'
   return (
     <button onClick={onSelect}
       className="w-full text-left px-4 py-3 transition-colors"
       style={{
         background: selected ? 'var(--surface-2)' : 'var(--surface)',
-        borderLeft: selected ? '2px solid var(--accent)' : '2px solid transparent',
+        borderLeft: `2px solid ${borderColor}`,
       }}>
       <div className="flex items-center gap-3">
         {showProvider && meta && (
@@ -265,12 +306,6 @@ function TaskRow({ task, selected, onSelect, showProvider }: { task: TaskSummary
         </span>
       </div>
       <p className="text-[13px] mt-1.5 truncate" style={{ color: 'var(--ink)' }}>{task.title}</p>
-      <div className="mt-1.5">
-        <SegBar
-          segments={segs.length ? segs : [{ value: 1, color: 'var(--rule-2)' }]}
-          height={2}
-        />
-      </div>
     </button>
   )
 }
@@ -278,10 +313,20 @@ function TaskRow({ task, selected, onSelect, showProvider }: { task: TaskSummary
 function TaskDetail({ task, sessions }: { task: TaskSummary; sessions: TodayResponse['sessions'] }) {
   const sortedSessions = [...sessions].sort((a, b) => a.started_at.localeCompare(b.started_at))
   const providerMeta = PROVIDER_META[task.provider]
+  const eColor = epicColor(task.epic_title)
 
   return (
     <div className="space-y-7 min-w-0">
       <div>
+        {task.epic_title && (
+          <div className="flex items-center gap-2 mb-3">
+            <span className="inline-block rounded-full shrink-0" style={{ width: 7, height: 7, background: eColor }} />
+            <span className="text-[11px] uppercase tracking-[0.14em]" style={{ color: eColor }}>
+              {task.epic_key && <span className="font-mono mr-1.5" style={{ opacity: 0.7 }}>{task.epic_key}</span>}
+              {task.epic_title}
+            </span>
+          </div>
+        )}
         <div className="flex items-center gap-3 mb-3">
           <TaskKey keyId={task.key} big />
           <StatusPill status={task.status} />
@@ -336,6 +381,25 @@ function TaskDetail({ task, sessions }: { task: TaskSummary; sessions: TodayResp
           <p className="font-mono tnum text-[22px] leading-none" style={{ color: 'var(--ink)' }}>{task.session_count}</p>
         </div>
       </div>
+
+      {(task.start_date || task.due_date) && (
+        <div className="flex items-center gap-6">
+          {task.start_date && (
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.16em] mb-1" style={{ color: 'var(--ink-3)' }}>Start</p>
+              <p className="font-mono tnum text-[13px]" style={{ color: 'var(--ink-2)' }}>{task.start_date}</p>
+            </div>
+          )}
+          {task.due_date && (
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.16em] mb-1" style={{ color: 'var(--ink-3)' }}>Due</p>
+              <p className="font-mono tnum text-[13px]" style={{ color: isDueSoon(task.due_date) ? '#e53e3e' : 'var(--ink-2)' }}>
+                {task.due_date}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
 
       {sortedSessions.length > 0 ? (
         <div>
