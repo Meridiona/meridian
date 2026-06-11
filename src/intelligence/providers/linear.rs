@@ -59,6 +59,10 @@ struct LinearIssue {
     team: Option<Team>,
     parent: Option<Parent>,
     assignee: Option<NamedUser>,
+    #[serde(rename = "dueDate", default)]
+    due_date: Option<String>,
+    #[serde(rename = "startedAt", default)]
+    started_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -134,6 +138,7 @@ async fn fetch(linear: &LinearConfig) -> Result<Vec<LinearIssue>> {
            identifier title description updatedAt url \
            state {{ type }} team {{ id key }} \
            parent {{ identifier title }} assignee {{ name }} \
+           dueDate startedAt \
          }} }} }} }}"
     );
     let body = serde_json::json!({ "query": query });
@@ -211,8 +216,8 @@ async fn upsert(
             "INSERT INTO pm_tasks
                (task_key, provider, title, description_text, status_category,
                 issue_type, project_key, url, parent_key, epic_title, assignee_name,
-                updated_at, fetched_at)
-             VALUES (?, 'linear', ?, ?, ?, '', ?, ?, ?, ?, ?, ?,
+                due_date, start_date, updated_at, fetched_at)
+             VALUES (?, 'linear', ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?,
                      strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
              ON CONFLICT(task_key) DO UPDATE SET
                provider         = 'linear',
@@ -225,6 +230,8 @@ async fn upsert(
                parent_key       = excluded.parent_key,
                epic_title       = excluded.epic_title,
                assignee_name    = excluded.assignee_name,
+               due_date         = excluded.due_date,
+               start_date       = excluded.start_date,
                updated_at       = excluded.updated_at,
                fetched_at       = excluded.fetched_at",
         )
@@ -241,6 +248,8 @@ async fn upsert(
             Some(epic_title)
         })
         .bind(assignee)
+        .bind(&issue.due_date)
+        .bind(&issue.started_at)
         .bind(&issue.updated_at)
         .execute(pool)
         .await
