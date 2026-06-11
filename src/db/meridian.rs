@@ -107,12 +107,86 @@ pub async fn setup_db(uri: &str) -> anyhow::Result<SqlitePool> {
         .await
         .with_context(|| format!("failed to open SQLite at {uri}"))?;
 
-    sqlx::migrate!("src/migrations")
+    let migrator = sqlx::migrate!("src/migrations");
+    reconcile_migration_checksums(&pool, &migrator).await?;
+    migrator
         .run(&pool)
         .await
         .context("failed to run migrations")?;
 
     Ok(pool)
+}
+
+/// Realign `_sqlx_migrations` checksums with the embedded migration files.
+///
+/// sqlx records a SHA-384 checksum of every applied migration and refuses to
+/// start ("migration N was previously applied but has been modified") if a
+/// migration file later differs. A comment/header-only edit to a shipped
+/// migration is enough to trip this and crash-loop the daemon on the next
+/// upgrade — the executable SQL is unchanged, but the bytes (hence the hash)
+/// are not. Rather than freeze migration bytes forever, we reconcile: for each
+/// already-applied migration whose stored checksum differs from the embedded
+/// one, rewrite the stored checksum (with a warning) so `run()` proceeds.
+///
+/// Only applied migrations present in `_sqlx_migrations` are touched; new or
+/// unapplied migrations are left for `run()` to apply normally, and a fresh DB
+/// (no `_sqlx_migrations` table yet) is a no-op. The trade-off is that a genuine
+/// SQL edit to a shipped migration is silently accepted rather than blocked —
+/// the warning log is the audit trail, and the "never edit a shipped migration"
+/// rule still stands.
+async fn reconcile_migration_checksums(
+    pool: &SqlitePool,
+    migrator: &sqlx::migrate::Migrator,
+) -> anyhow::Result<()> {
+    // `_sqlx_migrations` is created by the migrator on first run; on a brand-new
+    // database it does not exist yet, so there is nothing applied to reconcile.
+    let table_exists: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+         WHERE type = 'table' AND name = '_sqlx_migrations')",
+    )
+    .fetch_one(pool)
+    .await
+    .context("checking for _sqlx_migrations table")?;
+    if table_exists == 0 {
+        return Ok(());
+    }
+
+    for migration in migrator.iter() {
+        let stored: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = ?")
+                .bind(migration.version)
+                .fetch_optional(pool)
+                .await
+                .with_context(|| {
+                    format!(
+                        "reading stored checksum for migration {}",
+                        migration.version
+                    )
+                })?;
+
+        // Not applied yet, or already aligned → nothing to do.
+        let Some(stored) = stored else { continue };
+        if stored.as_slice() == migration.checksum.as_ref() {
+            continue;
+        }
+
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+            .bind(migration.checksum.as_ref())
+            .bind(migration.version)
+            .execute(pool)
+            .await
+            .with_context(|| format!("repairing checksum for migration {}", migration.version))?;
+
+        tracing::warn!(
+            version = migration.version,
+            description = %migration.description,
+            "migration checksum drifted from the embedded file — repaired in \
+             _sqlx_migrations (expected only for comment/header-only edits to a \
+             shipped migration)"
+        );
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -453,4 +527,62 @@ pub async fn insert_gap(
     .await
     .context("insert_gap failed")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    /// A header/comment-only edit to a shipped migration changes its checksum and
+    /// makes sqlx refuse to start ("migration N … has been modified"). Reconcile
+    /// must realign the stored checksum so the daemon boots again.
+    #[tokio::test]
+    async fn reconcile_repairs_drifted_checksum() {
+        // max_connections(1) keeps a single shared in-memory DB for the pool.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open in-memory db");
+
+        let migrator = sqlx::migrate!("src/migrations");
+        migrator.run(&pool).await.expect("initial migrate");
+
+        // Simulate a #250-style header edit: the stored checksum no longer matches
+        // the embedded migration's bytes.
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = X'00' WHERE version = 1")
+            .execute(&pool)
+            .await
+            .expect("corrupt stored checksum");
+
+        // This is the crash-loop the daemon hits on upgrade.
+        assert!(
+            migrator.run(&pool).await.is_err(),
+            "a drifted checksum must make sqlx run() fail"
+        );
+
+        // After reconcile, run() succeeds again.
+        reconcile_migration_checksums(&pool, &migrator)
+            .await
+            .expect("reconcile");
+        migrator
+            .run(&pool)
+            .await
+            .expect("migrate after reconcile must succeed");
+    }
+
+    /// A fresh database (no `_sqlx_migrations` table yet) is a clean no-op.
+    #[tokio::test]
+    async fn reconcile_is_noop_on_fresh_db() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open in-memory db");
+        let migrator = sqlx::migrate!("src/migrations");
+        reconcile_migration_checksums(&pool, &migrator)
+            .await
+            .expect("reconcile on fresh db must be a no-op");
+    }
 }
