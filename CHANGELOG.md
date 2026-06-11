@@ -1,3 +1,19 @@
+# [1.48.0](https://github.com/Meridiona/meridian/compare/v1.47.0...v1.48.0) (2026-06-11)
+
+
+### Bug Fixes
+
+* **tasks:** address PR review — fix epic map key, isDueSoon, dates formatting, startDate removal ([f461d50](https://github.com/Meridiona/meridian/commit/f461d500f16a573824cb00e1370f5f016613fcda))
+
+
+### Features
+
+* **daemon:** SIGHUP-triggered restart + UI Apply button with polling ([f7e4cbb](https://github.com/Meridiona/meridian/commit/f7e4cbbe9e5e69f39fad2804aea41693c4c0e2f4))
+* **observability:** configure OpenObserve OTLP export from UI settings ([01ff003](https://github.com/Meridiona/meridian/commit/01ff003ee1b4fbe883114f48f4e02ed98f9b082b))
+* **observability:** hot-reload log level without daemon restart ([1162866](https://github.com/Meridiona/meridian/commit/1162866e394f44c5ada96c3ac6ff5acfee7fad86))
+* **tasks:** fetch and store due_date/start_date from Jira and Linear ([d983355](https://github.com/Meridiona/meridian/commit/d983355b8c6a107cc8c61ed91e6a9a6fb02a6b71))
+* **ui/tasks:** epic grouping, collapsible sections, due dates, sticky detail ([1dead7f](https://github.com/Meridiona/meridian/commit/1dead7fa2b6dbb60ad88d5c4679ab208e37e92a1))
+
 # [1.47.0](https://github.com/Meridiona/meridian/compare/v1.46.0...v1.47.0) (2026-06-11)
 
 
