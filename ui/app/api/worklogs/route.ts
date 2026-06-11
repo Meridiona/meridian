@@ -19,6 +19,8 @@ export interface WorklogBullet {
 export interface WorklogItem {
   id: number
   task_key: string
+  task_title: string | null
+  task_url: string | null
   provider: string
   window_start: string
   state: string
@@ -44,6 +46,8 @@ export interface WorklogsResponse {
 interface RawRow {
   id: number
   task_key: string
+  task_title: string | null
+  task_url: string | null
   provider: string
   window_start: string
   state: string
@@ -82,13 +86,15 @@ export async function GET(req: Request) {
   try {
     const db = getDb()
     const rows = db.prepare(`
-      SELECT id, task_key, COALESCE(provider, 'jira') AS provider, window_start,
-             state, confidence, coverage,
-             time_spent_seconds, payload_json, posted_worklog_id,
-             last_post_error, edited_at
-      FROM pm_worklogs
-      WHERE day_utc = ?
-      ORDER BY window_start, task_key
+      SELECT w.id, w.task_key, t.title AS task_title, t.url AS task_url,
+             COALESCE(w.provider, 'jira') AS provider, w.window_start,
+             w.state, w.confidence, w.coverage,
+             w.time_spent_seconds, w.payload_json, w.posted_worklog_id,
+             w.last_post_error, w.edited_at
+      FROM pm_worklogs w
+      LEFT JOIN pm_tasks t ON t.task_key = w.task_key
+      WHERE w.day_utc = ?
+      ORDER BY w.window_start, w.task_key
     `).all(day) as RawRow[]
 
     const counts: Record<string, number> = {}
@@ -109,6 +115,8 @@ export async function GET(req: Request) {
       return {
         id: r.id,
         task_key: r.task_key,
+        task_title: r.task_title,
+        task_url: r.task_url?.startsWith('https://') ? r.task_url : null,
         provider: r.provider ?? 'jira',
         window_start: r.window_start,
         state: r.state,
