@@ -270,10 +270,12 @@ pub async fn refresh_if_stale(
                 }
             }
             tracing::info!(upserted_count = n, "trello tasks refreshed");
+            let _ = super::clear_sync_error(pool, "trello").await;
             Ok(Some(kept))
         }
         Err(e) => {
             tracing::warn!(error = %e, "trello fetch failed — keeping stale cache");
+            let _ = super::stamp_sync_error(pool, "trello", &format!("Trello sync failed — {e}")).await;
             Ok(None)
         }
     }

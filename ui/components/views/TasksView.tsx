@@ -41,6 +41,7 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
   const [selected, setSelected] = useState<string | null>(focusKey ?? null)
   const [syncing, setSyncing] = useState(false)
   const [lastSynced, setLastSynced] = useState<Date | null>(null)
+  const [syncError, setSyncError] = useState<string | null>(null)
   const [providerFilter, setProviderFilter] = useState<string>('all')
   const [showIntegrations, setShowIntegrations] = useState(false)
   const [collapsedEpics, setCollapsedEpics] = useState<Set<string>>(new Set())
@@ -64,13 +65,19 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
   const handleSync = () => {
     if (syncing) return
     setSyncing(true)
+    setSyncError(null)
     fetch('/api/tasks/sync', { method: 'POST' })
-      .then(() => fetchTasks())
-      .catch(() => {})
-      .finally(() => {
-        setSyncing(false)
-        setLastSynced(new Date())
+      .then(async r => {
+        const body = await r.json().catch(() => ({}))
+        if (!r.ok || body.ok === false) {
+          setSyncError(body.error ?? 'Sync failed — check daemon logs')
+        } else {
+          setLastSynced(new Date())
+          fetchTasks()
+        }
       })
+      .catch(() => setSyncError('Could not reach the daemon — is it running?'))
+      .finally(() => setSyncing(false))
   }
 
   useEffect(() => {
@@ -81,7 +88,7 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
     fetchIntegrations()
 
     const timer = setInterval(fetchTasks, TASKS_POLL_INTERVAL_MS)
-    return () => clearInterval(timer)
+    return () => { clearInterval(timer) }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!data) {
@@ -152,21 +159,30 @@ export default function TasksView({ focusKey }: { focusKey?: string | null }) {
           <p className="text-[12px]" style={{ color: 'var(--ink-3)' }}>
             <span className="font-mono tnum">{touched}</span> touched today
           </p>
-          <button
-            onClick={handleSync}
-            disabled={syncing}
-            className="flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md transition-colors"
-            style={{
-              color: syncing ? 'var(--ink-4)' : 'var(--ink-3)',
-              background: 'var(--surface)',
-              border: '1px solid var(--rule)',
-              cursor: syncing ? 'not-allowed' : 'pointer',
-            }}
-            title={lastSynced ? `Last synced ${lastSynced.toLocaleTimeString()}` : 'Sync tasks from Jira / Linear / GitHub'}
-          >
-            <span style={{ display: 'inline-block', animation: syncing ? 'spin 1s linear infinite' : 'none' }}>↻</span>
-            {syncing ? 'Syncing…' : 'Sync'}
-          </button>
+          <div className="flex flex-col items-end gap-1">
+            <button
+              onClick={handleSync}
+              disabled={syncing}
+              className="flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md transition-colors"
+              style={{
+                color: syncing ? 'var(--ink-4)' : syncError ? '#e53e3e' : 'var(--ink-3)',
+                background: 'var(--surface)',
+                border: `1px solid ${syncError ? '#e53e3e' : 'var(--rule)'}`,
+                cursor: syncing ? 'not-allowed' : 'pointer',
+              }}
+              title={lastSynced ? `Last synced ${lastSynced.toLocaleTimeString()}` : 'Sync tasks from Jira / Linear / GitHub'}
+            >
+              <span style={{ display: 'inline-block', animation: syncing ? 'spin 1s linear infinite' : 'none' }}>
+                {syncError ? '⚠' : '↻'}
+              </span>
+              {syncing ? 'Syncing…' : syncError ? 'Sync failed' : 'Sync'}
+            </button>
+            {syncError && (
+              <p className="text-[11px] max-w-[280px] text-right" style={{ color: '#e53e3e' }}>
+                {syncError}
+              </p>
+            )}
+          </div>
           <button
             onClick={() => setShowIntegrations(s => !s)}
             className="flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md transition-colors"
@@ -517,6 +533,24 @@ const TRACKERS: Array<{
   },
 ]
 
+// Field definitions for token-based setup forms
+type FieldDef = { name: string; label: string; placeholder: string; secret?: boolean; required: boolean }
+const TOKEN_FIELDS: Record<string, FieldDef[]> = {
+  jira: [
+    { name: 'base_url',    label: 'Jira URL',    placeholder: 'https://yourorg.atlassian.net', required: true },
+    { name: 'email',       label: 'Email',        placeholder: 'you@yourorg.com',               required: true },
+    { name: 'api_token',   label: 'API Token',    placeholder: 'ATATT3x…',                      required: true, secret: true },
+  ],
+  linear: [
+    { name: 'api_key',  label: 'API Key',    placeholder: 'lin_api_…', required: true, secret: true },
+    { name: 'team_ids', label: 'Team IDs',   placeholder: 'ENG (optional — leave blank for all)', required: false },
+  ],
+  github: [
+    { name: 'token',       label: 'Personal Access Token', placeholder: 'ghp_…',          required: true, secret: true },
+    { name: 'project_ids', label: 'Project IDs',           placeholder: 'PVT_… (optional — leave blank for all)', required: false },
+  ],
+}
+
 function ConnectTrackers({ integrations, onDisconnect }: { integrations: IntegrationsResponse | null; onDisconnect?: () => void }) {
   const [open, setOpen] = useState<TrackerId | null>(null)
   const [disconnecting, setDisconnecting] = useState<TrackerId | null>(null)
@@ -571,29 +605,12 @@ function ConnectTrackers({ integrations, onDisconnect }: { integrations: Integra
                 )}
               </button>
               {isOpen && connected && (
-                <div className="px-4 pb-4 pt-2" style={{ background: 'var(--surface-2)' }}>
-                  {syncError && (
-                    <div className="mb-3 rounded-md px-3 py-2 text-[12px] leading-relaxed" style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d' }}>
-                      <strong>Sync failed:</strong>{' '}
-                      {syncError.startsWith('permission_error: ')
-                        ? syncError.slice('permission_error: '.length)
-                        : syncError.startsWith('sync_error: ')
-                          ? syncError.slice('sync_error: '.length)
-                          : syncError}
-                    </div>
-                  )}
-                  <p className="text-[12px] leading-relaxed mb-3" style={{ color: 'var(--ink-3)' }}>
-                    After disconnecting, run <CodeChip text="meridian restart" /> for the change to take effect.
-                  </p>
-                  <button
-                    onClick={() => handleDisconnect(t.id)}
-                    disabled={disconnecting === t.id}
-                    className="text-[12px] px-3 py-1.5 rounded-md transition-opacity"
-                    style={{ color: '#e53e3e', border: '1px solid #e53e3e', opacity: disconnecting === t.id ? 0.5 : 1, cursor: disconnecting === t.id ? 'not-allowed' : 'pointer', background: 'transparent' }}
-                  >
-                    {disconnecting === t.id ? 'Disconnecting…' : `Disconnect ${t.name}`}
-                  </button>
-                </div>
+                <ConnectedPanel
+                  tracker={t}
+                  syncError={syncError}
+                  disconnecting={disconnecting === t.id}
+                  onDisconnect={() => handleDisconnect(t.id)}
+                />
               )}
               {isOpen && !connected && <TrackerSetup tracker={t} />}
             </div>
@@ -604,8 +621,89 @@ function ConnectTrackers({ integrations, onDisconnect }: { integrations: Integra
   )
 }
 
-function TrackerSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
-  if (tracker.oauth) return <OAuthSetup oauth={tracker.oauth} />
+function ConnectedPanel({
+  tracker, syncError, disconnecting, onDisconnect,
+}: {
+  tracker: (typeof TRACKERS)[number]
+  syncError?: string
+  disconnecting: boolean
+  onDisconnect: () => void
+}) {
+  const [reauthorizing, setReauthorizing] = useState(false)
+  const cleanError = syncError
+    ? syncError.replace(/^permission_error: |^sync_error: /, '')
+    : null
+
+  return (
+    <div className="px-4 pb-4 pt-2" style={{ background: 'var(--surface-2)' }}>
+      {cleanError && !reauthorizing && (
+        <div className="mb-3 rounded-md px-3 py-2" style={{ background: '#fef3c7', border: '1px solid #fcd34d' }}>
+          <p className="text-[12px] leading-relaxed" style={{ color: '#92400e' }}>
+            <strong>Sync failed:</strong> {cleanError}
+          </p>
+          <button
+            onClick={() => setReauthorizing(true)}
+            className="mt-2 text-[11px] px-3 py-1 rounded-md"
+            style={{ background: '#92400e', color: '#fff', cursor: 'pointer' }}
+          >
+            Fix: Re-authorize {tracker.name}
+          </button>
+        </div>
+      )}
+      {reauthorizing && (
+        <div className="mb-3">
+          <p className="text-[12px] mb-2" style={{ color: 'var(--ink-2)' }}>
+            Re-authorize {tracker.name}:
+          </p>
+          <TrackerSetup tracker={tracker} reauthorize />
+          <button onClick={() => setReauthorizing(false)} className="mt-2 text-[11px]" style={{ color: 'var(--ink-4)', cursor: 'pointer' }}>
+            Cancel
+          </button>
+        </div>
+      )}
+      {!reauthorizing && (
+        <>
+          <p className="text-[12px] leading-relaxed mb-3" style={{ color: 'var(--ink-3)' }}>
+            Disconnect removes the stored credentials. The daemon reloads automatically.
+          </p>
+          <button
+            onClick={onDisconnect}
+            disabled={disconnecting}
+            className="text-[12px] px-3 py-1.5 rounded-md transition-opacity"
+            style={{ color: '#e53e3e', border: '1px solid #e53e3e', opacity: disconnecting ? 0.5 : 1, cursor: disconnecting ? 'not-allowed' : 'pointer', background: 'transparent' }}
+          >
+            {disconnecting ? 'Disconnecting…' : `Disconnect ${tracker.name}`}
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
+
+function TrackerSetup({ tracker, reauthorize }: { tracker: (typeof TRACKERS)[number]; reauthorize?: boolean }) {
+  // Jira supports both OAuth and API token — show a chooser (or force API token on reauth)
+  const [jiraMode, setJiraMode] = useState<'oauth' | 'token'>(reauthorize ? 'token' : 'oauth')
+  if (tracker.id === 'jira') {
+    return (
+      <div style={{ background: 'var(--surface-2)' }}>
+        {/* Mode toggle */}
+        <div className="px-4 pt-2 pb-1 flex gap-2">
+          <button
+            onClick={() => setJiraMode('oauth')}
+            className="text-[11px] px-3 py-1 rounded-md"
+            style={{ background: jiraMode === 'oauth' ? 'var(--accent)' : 'var(--tint)', color: jiraMode === 'oauth' ? '#fff' : 'var(--ink-3)', cursor: 'pointer' }}
+          >Browser OAuth</button>
+          <button
+            onClick={() => setJiraMode('token')}
+            className="text-[11px] px-3 py-1 rounded-md"
+            style={{ background: jiraMode === 'token' ? 'var(--accent)' : 'var(--tint)', color: jiraMode === 'token' ? '#fff' : 'var(--ink-3)', cursor: 'pointer' }}
+          >API Token</button>
+        </div>
+        {jiraMode === 'oauth' ? <OAuthSetup tracker={tracker} /> : <TokenSetup tracker={tracker} />}
+      </div>
+    )
+  }
+  if (tracker.oauth) return <OAuthSetup tracker={tracker} />
   if (tracker.id === 'azure_devops') return <AzureDevOpsSetup tracker={tracker} />
   return <TokenSetup tracker={tracker} />
 }
@@ -786,67 +884,138 @@ function AzureDevOpsSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
   )
 }
 
-function OAuthSetup({ oauth }: { oauth: { command: string; hint: string } }) {
+function OAuthSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
+  const [status, setStatus] = useState<'idle' | 'waiting' | 'done' | 'error'>('idle')
+  const [error, setError] = useState<string | null>(null)
+
+  const startOAuth = async () => {
+    setStatus('waiting')
+    setError(null)
+    try {
+      const r = await fetch(`/api/auth/oauth/start?provider=${tracker.id}`, { method: 'POST' })
+      if (!r.ok) { const b = await r.json(); setError(b.error ?? 'Failed to start'); setStatus('error'); return }
+      // Poll until connected (up to 3 minutes)
+      const deadline = Date.now() + 180_000
+      const poll = setInterval(async () => {
+        if (Date.now() > deadline) { clearInterval(poll); setStatus('error'); setError('Timed out — try again'); return }
+        const ir = await fetch('/api/integrations').catch(() => null)
+        if (!ir?.ok) return
+        const data = await ir.json()
+        if (data[tracker.id]) { clearInterval(poll); setStatus('done') }
+      }, 2_000)
+    } catch (e) {
+      setError(String(e)); setStatus('error')
+    }
+  }
+
   return (
-    <div className="px-4 pb-4 pt-1" style={{ background: 'var(--surface-2)' }}>
-      <ol className="space-y-3">
-        <li className="flex gap-3">
-          <StepNum n={1} />
-          <div className="min-w-0 flex-1">
-            <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
-              {oauth.hint} In a terminal, run:
-            </p>
-            <CopyBlock text={oauth.command} />
-            <p className="mt-2 text-[11px] leading-relaxed" style={{ color: 'var(--ink-3)' }}>
-              Your browser opens — pick your site and click Accept.
-            </p>
-          </div>
-        </li>
-        <li className="flex gap-3">
-          <StepNum n={2} />
+    <div className="px-4 pb-4 pt-2" style={{ background: 'var(--surface-2)' }}>
+      {status === 'idle' && (
+        <div className="space-y-3">
           <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
-            Run <CodeChip text="meridian restart" />. Your tasks appear here within a minute.
+            {tracker.oauth?.hint}
           </p>
-        </li>
-      </ol>
+          <button
+            onClick={startOAuth}
+            className="text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
+            style={{ background: 'var(--accent)', color: '#fff', cursor: 'pointer' }}
+          >
+            Connect {tracker.name} →
+          </button>
+        </div>
+      )}
+      {status === 'waiting' && (
+        <div className="space-y-2">
+          <p className="text-[12px]" style={{ color: 'var(--ink-2)' }}>
+            Your browser should have opened. Authorize the app, then come back here.
+          </p>
+          <p className="text-[11px]" style={{ color: 'var(--ink-4)' }}>Waiting for authorization…</p>
+        </div>
+      )}
+      {status === 'done' && (
+        <p className="text-[12px]" style={{ color: 'var(--success)' }}>✓ Connected! Your tasks will appear shortly.</p>
+      )}
+      {status === 'error' && (
+        <div className="space-y-2">
+          <p className="text-[12px]" style={{ color: '#e53e3e' }}>{error ?? 'OAuth failed.'}</p>
+          <button onClick={() => setStatus('idle')} className="text-[11px]" style={{ color: 'var(--accent)', cursor: 'pointer' }}>Try again</button>
+        </div>
+      )}
     </div>
   )
 }
 
 function TokenSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
+  const fields = TOKEN_FIELDS[tracker.id] ?? []
+  const [values, setValues] = useState<Record<string, string>>({})
+  const [status, setStatus] = useState<'idle' | 'saving' | 'done' | 'error'>('idle')
+  const [error, setError] = useState<string | null>(null)
+
+  const requiredFields = fields.filter(f => f.required)
+  const allFilled = requiredFields.every(f => values[f.name]?.trim())
+
+  const save = async () => {
+    setStatus('saving'); setError(null)
+    try {
+      const r = await fetch('/api/auth/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: tracker.id, ...values }),
+      })
+      const body = await r.json()
+      if (!r.ok) { setError(body.error ?? 'Save failed'); setStatus('error'); return }
+      setStatus('done')
+    } catch (e) { setError(String(e)); setStatus('error') }
+  }
+
+  if (status === 'done') {
+    return (
+      <div className="px-4 pb-4 pt-2" style={{ background: 'var(--surface-2)' }}>
+        <p className="text-[12px]" style={{ color: 'var(--success)' }}>✓ Saved! Your tasks will appear within a minute.</p>
+      </div>
+    )
+  }
+
   return (
-    <div className="px-4 pb-4 pt-1" style={{ background: 'var(--surface-2)' }}>
-      <ol className="space-y-3">
-        <li className="flex gap-3">
-          <StepNum n={1} />
-          <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
-            {tracker.tokenHint}{' '}
-            <a href={tracker.tokenUrl} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>
-              Open ↗
-            </a>
-          </p>
-        </li>
-        <li className="flex gap-3">
-          <StepNum n={2} />
-          <div className="min-w-0 flex-1">
-            <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
-              In a terminal, run <CodeChip text="meridian config edit" /> and add:
-            </p>
-            <CopyBlock text={tracker.env ?? ''} />
-            {tracker.note && (
-              <p className="mt-2 text-[11px] leading-relaxed" style={{ color: 'var(--ink-3)' }}>
-                {tracker.note}
-              </p>
-            )}
+    <div className="px-4 pb-4 pt-2" style={{ background: 'var(--surface-2)' }}>
+      {tracker.tokenHint && (
+        <p className="text-[12px] leading-relaxed mb-3" style={{ color: 'var(--ink-2)' }}>
+          {tracker.tokenHint}{' '}
+          {tracker.tokenUrl && (
+            <a href={tracker.tokenUrl} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>Open ↗</a>
+          )}
+        </p>
+      )}
+      <div className="space-y-2">
+        {fields.map(f => (
+          <div key={f.name}>
+            <label className="block text-[11px] mb-0.5" style={{ color: 'var(--ink-3)' }}>
+              {f.label}{f.required ? '' : ' (optional)'}
+            </label>
+            <input
+              type={f.secret ? 'password' : 'text'}
+              value={values[f.name] ?? ''}
+              onChange={e => setValues(v => ({ ...v, [f.name]: e.target.value }))}
+              placeholder={f.placeholder}
+              className="w-full font-mono text-[11px] px-2 py-1.5 rounded-md border"
+              style={{ color: 'var(--ink)', background: 'var(--surface)', borderColor: 'var(--rule)', outline: 'none' }}
+            />
           </div>
-        </li>
-        <li className="flex gap-3">
-          <StepNum n={3} />
-          <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
-            Save, then run <CodeChip text="meridian restart" />. Your tasks appear here within a minute.
-          </p>
-        </li>
-      </ol>
+        ))}
+      </div>
+      {error && <p className="mt-2 text-[11px]" style={{ color: '#e53e3e' }}>{error}</p>}
+      <button
+        onClick={save}
+        disabled={!allFilled || status === 'saving'}
+        className="mt-3 text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
+        style={{
+          background: 'var(--accent)', color: '#fff',
+          opacity: (!allFilled || status === 'saving') ? 0.5 : 1,
+          cursor: (!allFilled || status === 'saving') ? 'not-allowed' : 'pointer',
+        }}
+      >
+        {status === 'saving' ? 'Saving…' : `Connect ${tracker.name}`}
+      </button>
     </div>
   )
 }

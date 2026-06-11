@@ -581,6 +581,7 @@ async fn stamp_sync(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await
     .context("updating azure_devops sync state")?;
+    let _ = crate::notices::clear(pool, "pm.azure_devops").await;
     Ok(())
 }
 
@@ -596,6 +597,15 @@ async fn stamp_error(pool: &SqlitePool, error: &str) -> Result<()> {
     .execute(pool)
     .await
     .context("recording azure_devops sync error")?;
+    let _ = crate::notices::raise(
+        pool,
+        "pm.azure_devops",
+        "error",
+        "Azure DevOps sync failing",
+        error,
+        Some("Set AZURE_DEVOPS_PAT in .env"),
+    )
+    .await;
     Ok(())
 }
 

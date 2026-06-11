@@ -468,7 +468,15 @@ async fn main() -> Result<()> {
         let _guard = startup_tick.enter();
         tracing::info!("running initial ETL pass");
         if let Err(e) = run_etl(&screenpipe, &meridian).await {
-            tracing::error!("ETL run failed: {}", e);
+            tracing::error!(error = %e, "ETL run failed");
+            let _ = meridian::notices::raise(
+                &meridian, "etl.failed", "error",
+                "Activity capture pipeline failed",
+                &e.to_string(),
+                Some("Open /logs in the dashboard to see details"),
+            ).await;
+        } else {
+            let _ = meridian::notices::clear(&meridian, "etl.failed").await;
         }
         etl_notify.notify_one();
         if let Err(e) = run_pm_sync(&meridian, &cfg).await {
@@ -580,6 +588,7 @@ async fn main() -> Result<()> {
                         Ok(TaskLinkOutcome::Classified) => {
                             failure_counts.clear();
                             classified_any = true;
+                            let _ = meridian::notices::clear(&meridian_linker, "mlx.down").await;
                             // Loop immediately — more sessions may be waiting.
                         }
                         Ok(TaskLinkOutcome::NoPendingWork) => {
@@ -622,6 +631,14 @@ async fn main() -> Result<()> {
                                     "max consecutive failures — writing subprocess_error sentinel \
                                  and advancing cursor"
                                 );
+                                let _ = meridian::notices::raise(
+                                    &meridian_linker,
+                                    "mlx.down",
+                                    "error",
+                                    "MLX classifier is not responding",
+                                    &format!("Failed to classify session {session_id} after {count} attempts — classification is paused"),
+                                    Some("Start MLX server: cd services && .venv313/bin/meridian-server --backend mlx"),
+                                ).await;
                                 if let Err(e) =
                                     mark_session_subprocess_error(&meridian_linker, session_id)
                                         .await
@@ -703,7 +720,15 @@ async fn main() -> Result<()> {
                 let _guard = poll_tick.enter();
                 tracing::debug!("starting ETL tick");
                 if let Err(e) = run_etl(&screenpipe, &meridian).await {
-                    tracing::error!("ETL run failed: {}", e);
+                    tracing::error!(error = %e, "ETL run failed");
+                    let _ = meridian::notices::raise(
+                        &meridian, "etl.failed", "error",
+                        "Activity capture pipeline failed",
+                        &e.to_string(),
+                        Some("Open /logs in the dashboard to see details"),
+                    ).await;
+                } else {
+                    let _ = meridian::notices::clear(&meridian, "etl.failed").await;
                 }
                 // Wake the background task linker to drain newly-created sessions.
                 etl_notify.notify_one();

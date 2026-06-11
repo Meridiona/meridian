@@ -274,20 +274,26 @@ impl JiraReqCtx {
 
 /// Decide how to authenticate Jira requests: prefer OAuth when a token store
 /// exists (the user has logged in), otherwise fall back to the static API token.
+/// API token beats stored OAuth — a set JIRA_API_TOKEN always wins.
+/// This mirrors the industry standard (gh, Vercel CLI, Stripe CLI all follow
+/// env-var-first) and lets developers use a stable PAT in .env without being
+/// blocked by a stale OAuth session stored in ~/.meridian/oauth/jira.json.
 pub async fn resolve(jira: &JiraConfig) -> Result<JiraReqCtx> {
+    if !jira.base_url.is_empty() && !jira.email.is_empty() && !jira.api_token.is_empty() {
+        tracing::debug!(auth_method = "api_token", "resolving Jira auth");
+        return Ok(JiraReqCtx::Basic {
+            base_url: jira.base_url.clone(),
+            email: jira.email.clone(),
+            api_token: jira.api_token.clone(),
+        });
+    }
     if store::exists("jira") {
+        tracing::debug!(auth_method = "oauth", "resolving Jira auth");
         let t = ensure_fresh().await?;
         return Ok(JiraReqCtx::OAuth {
             token: t.access_token,
             cloud_id: t.cloud_id,
             site_url: t.site_url,
-        });
-    }
-    if !jira.base_url.is_empty() && !jira.email.is_empty() && !jira.api_token.is_empty() {
-        return Ok(JiraReqCtx::Basic {
-            base_url: jira.base_url.clone(),
-            email: jira.email.clone(),
-            api_token: jira.api_token.clone(),
         });
     }
     bail!(

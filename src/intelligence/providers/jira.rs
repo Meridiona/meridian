@@ -72,6 +72,7 @@ struct JiraFieldMeta {
 /// matches "start date":
 ///   1. exact case-insensitive match on "start date"
 ///   2. name contains both "start" and "date" (case-insensitive)
+///
 /// Returns None if no match or if the request fails.
 async fn discover_start_date_field(ctx: &JiraReqCtx) -> Option<String> {
     let client = reqwest::Client::new();
@@ -431,9 +432,13 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
         Ok(ctx) => ctx,
         Err(e) => {
             tracing::warn!(error = %e, "jira auth unavailable — keeping stale cache");
+            let msg = format!("Jira auth failed — {e}");
+            let _ = super::stamp_sync_error(pool, "jira", &msg).await;
             return Ok(None);
         }
     };
+    let auth_method = if jira.api_token.is_empty() { "oauth" } else { "api_token" };
+    tracing::debug!(auth_method, "jira auth resolved");
 
     let start_date_field = discover_start_date_field(&ctx).await;
     if let Some(ref id) = start_date_field {
@@ -444,7 +449,20 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
         Ok(issues) => {
             let keys: Vec<String> = issues.iter().map(|i| i.key.clone()).collect();
             let n = keys.len();
+            let project_key = issues.first().map(|i| i.fields.project.key.as_str()).unwrap_or("-");
+            let terminal_count = issues
+                .iter()
+                .filter(|i| native_terminal(&i.fields.status.status_category.key) == Some(true))
+                .count();
             tracing::debug!(fetched_count = n, "jira fetch completed");
+            tracing::info!(
+                issue_count = n,
+                project_key,
+                upserted = n,
+                terminal_skipped = terminal_count,
+                auth_method,
+                "jira issues fetched"
+            );
             upsert(pool, &issues, jira, &ctx, start_date_field.as_deref()).await?;
             sqlx::query(
                 "INSERT INTO pm_sync_state (provider, last_synced_at)
@@ -468,10 +486,13 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
                 );
             }
             tracing::info!(upserted_count = n, "jira tasks refreshed");
+            let _ = super::clear_sync_error(pool, "jira").await;
             Ok(Some(keys))
         }
         Err(e) => {
             tracing::warn!(error = %e, "jira fetch failed — keeping stale cache");
+            let msg = format!("Jira sync failed — {e}");
+            let _ = super::stamp_sync_error(pool, "jira", &msg).await;
             Ok(None)
         }
     }

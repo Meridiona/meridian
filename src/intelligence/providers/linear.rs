@@ -392,10 +392,12 @@ pub async fn refresh_if_stale(
                 }
             }
             tracing::info!(upserted_count = n, "linear tasks refreshed");
+            let _ = super::clear_sync_error(pool, "linear").await;
             Ok(Some(kept))
         }
         Err(e) => {
             tracing::warn!(error = %e, "linear fetch failed — keeping stale cache");
+            let _ = super::stamp_sync_error(pool, "linear", &format!("Linear sync failed — {e}")).await;
             Ok(None)
         }
     }

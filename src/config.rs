@@ -481,11 +481,23 @@ impl Config {
             .and_then(|v| v.parse::<u16>().ok())
             .unwrap_or(7823);
 
+        let pm_providers = parse_providers();
+        let provider_names: Vec<&str> = pm_providers.iter().map(|p| p.provider_name()).collect();
+
+        tracing::info!(
+            screenpipe_db = %screenpipe_db,
+            meridian_db = %meridian_db,
+            poll_interval_secs,
+            classification_enabled,
+            pm_providers = ?provider_names,
+            "config loaded"
+        );
+
         Self {
             screenpipe_db,
             meridian_db,
             poll_interval_secs,
-            pm_providers: parse_providers(),
+            pm_providers,
             classification_enabled,
             classification_timeout_s,
             min_classification_duration_s,
