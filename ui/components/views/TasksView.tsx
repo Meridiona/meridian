@@ -317,12 +317,56 @@ function TaskRow({ task, selected, onSelect, epicColor: eColor, showProvider }: 
         )}
         <TaskKey keyId={task.key} />
         <StatusPill status={task.status} isTerminal={task.is_terminal} />
+        {task.hygiene && task.hygiene.issues.length > 0 && (
+          <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full shrink-0"
+            style={{ background: 'var(--warn)' + '1A', color: 'var(--warn)' }}
+            title={`${task.hygiene.issues.length} hygiene fix${task.hygiene.issues.length === 1 ? '' : 'es'} suggested`}>
+            ⚠ {task.hygiene.issues.length}
+          </span>
+        )}
         <span className="ml-auto font-mono tnum text-[12px]" style={{ color: task.today_s > 0 ? 'var(--ink)' : 'var(--ink-4)' }}>
           {task.today_s > 0 ? fmtDur(task.today_s) : '—'}
         </span>
       </div>
       <p className="text-[13px] mt-1.5 truncate" style={{ color: 'var(--ink)' }}>{task.title}</p>
     </button>
+  )
+}
+
+// Board-hygiene fixes for the selected ticket: each Definition-of-Ready defect
+// with a suggested fix. Until in-app write-back lands, the fix opens the ticket in
+// the tracker so the dev can apply it there.
+function HygienePanel({ task }: { task: TaskSummary }) {
+  const h = task.hygiene
+  if (!h || h.issues.length === 0) return null
+  return (
+    <div className="rounded-xl border overflow-hidden" style={{ borderColor: 'var(--rule)', background: 'var(--surface)' }}>
+      <div className="px-4 py-3 flex items-center gap-2 rule-b" style={{ borderColor: 'var(--rule)' }}>
+        <span style={{ color: 'var(--warn)' }}>⚠</span>
+        <span className="text-[13px] font-medium" style={{ color: 'var(--ink)' }}>
+          {h.issues.length} fix{h.issues.length === 1 ? '' : 'es'} for a healthier ticket
+        </span>
+      </div>
+      <ul>
+        {h.issues.map((it, i) => (
+          <li key={it.code} className={i > 0 ? 'rule-t' : ''} style={{ borderColor: 'var(--rule)' }}>
+            <div className="px-4 py-2.5 flex items-center gap-3">
+              <p className="text-[12px] min-w-0 flex-1" style={{ color: 'var(--ink-2)' }}>{it.hint}</p>
+              {task.url && (
+                <a href={task.url} target="_blank" rel="noopener noreferrer"
+                  className="text-[12px] px-2.5 py-1 rounded-md border shrink-0 transition-colors"
+                  style={{ borderColor: 'var(--rule)', color: 'var(--ink-2)' }}>
+                  {it.fix?.label ?? 'Fix'} ↗
+                </a>
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
+      <p className="px-4 py-2 text-[11px]" style={{ color: 'var(--ink-4)', background: 'var(--tint)' }}>
+        Opens the ticket in your tracker — one-click in-app fixes are coming.
+      </p>
+    </div>
   )
 }
 
@@ -376,6 +420,8 @@ function TaskDetail({ task, sessions }: { task: TaskSummary; sessions: TodayResp
           <p className="text-[14px] mt-3 max-w-prose" style={{ color: 'var(--ink-2)' }}>{task.description}</p>
         )}
       </div>
+
+      <HygienePanel task={task} />
 
       <div className="grid grid-cols-3 rule-t rule-b" style={{ borderColor: 'var(--rule)' }}>
         <div className="px-5 py-4">
