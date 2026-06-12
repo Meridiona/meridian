@@ -152,6 +152,45 @@ There are no JS/TS test suites yet. When adding them, place them under `ui/__tes
 
 ---
 
+## Dev vs Installed — Two Parallel Meridians (read BEFORE debugging runtime behaviour)
+
+One machine can carry **two flavours of Meridian at once**: the source checkout (this repo) and the installed bundle. They resolve config differently, and most "my settings change has no effect" bugs are edits to the file the *other* flavour reads. Identify which flavour you are looking at before touching any config.
+
+| | Dev (source) | Installed (bundle) |
+|---|---|---|
+| Daemon process | `cargo run` / `cargo watch` from the repo; **cwd = repo root** | `~/.local/bin/meridian-daemon` under launchd `com.meridiona.daemon`; **cwd = `~/.meridian/app`** |
+| `.env` the daemon reads | `<repo>/.env` | `~/.meridian/app/.env` (dotenvy stops at the FIRST `.env` walking up from cwd) |
+| `settings.json` | `<repo>/settings.json` (cwd-resolved) | `~/.meridian/app/settings.json` — usually **absent → silent built-in defaults**. (PR #271 moves both flavours to a canonical `~/.meridian/settings.json`; once merged, that path wins everywhere.) |
+| UI on :3939 | `next dev` from `<repo>/ui` | launchd `com.meridiona.ui` |
+| MLX server :7823 | `uvicorn --reload` (via `dev-start.sh`) | launchd `com.meridiona.mlx-server` |
+| Supervision | foreground Terminal windows (`dev-start.sh`); only screenpipe + a11y-helper stay under launchd | everything under launchd with `KeepAlive` |
+| `~/.meridian/app/VERSION` | `dev` (suppresses the update banner) | real semver |
+
+**Shared mutable state — collision risk:** both flavours write `~/.meridian/meridian.db` and `~/.meridian/logs/`, and contend for ports 3939 / 7823 / 5080. NEVER run both daemons (or both UIs) simultaneously; `meridian stop` the installed stack before `dev-start.sh`.
+
+### Identify the running flavour first
+
+```bash
+launchctl print "gui/$(id -u)/com.meridiona.daemon" | grep -E "state|program"   # installed daemon live?
+ps -axo pid,args | grep -E "meridian-daemon|cargo watch|next dev|agents.server" | grep -v grep
+lsof -p <daemon-pid> | awk '$4=="cwd"{print $NF}'   # the cwd tells you which .env/settings.json it reads
+```
+
+### Mode lifecycle
+
+- `install.sh` — production install: release build, all services registered under launchd
+- `install-dev.sh` — dev install: debug build + deps, only screenpipe + a11y-helper under launchd, `VERSION=dev`. Does NOT unregister an existing production stack.
+- `dev-start.sh` — opens 4 hot-reload Terminal windows (daemon, MLX, UI, tray). It checks its own prereqs but does NOT stop a live installed stack — run `meridian stop` first.
+- `meridian stop|start|restart` — drives the launchd (installed) stack only.
+
+### Rules for agents
+
+- "Settings/env change has no effect" → first find the **running** process's cwd and check the file *it* resolves — not the repo copy you just edited.
+- After changing daemon code, the installed daemon keeps running the **old binary** until rebuilt and redeployed (`cp` to the install location — never symlink a daemon binary into `~/Documents`, dyld hangs on TCC-protected paths).
+- Don't start dev services while the installed stack is live; check ports/launchd first.
+
+---
+
 ## Environment Variables
 
 | Variable | Default | Purpose |
