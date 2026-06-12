@@ -327,7 +327,7 @@ function TaskRow({ task, selected, onSelect, epicColor: eColor, showProvider }: 
 }
 
 function TaskDetail({ task, sessions }: { task: TaskSummary; sessions: TodayResponse['sessions'] }) {
-  const sortedSessions = [...sessions].sort((a, b) => a.started_at.localeCompare(b.started_at))
+  const sortedSessions = [...sessions].sort((a, b) => b.started_at.localeCompare(a.started_at))
   const providerMeta = PROVIDER_META[task.provider]
   const eColor = epicColor(task.epic_title)
 
