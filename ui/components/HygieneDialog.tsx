@@ -36,7 +36,9 @@ export default function HygieneDialog({ task, onClose }: { task: TaskSummary; on
           </div>
           <h2 className="text-[15px] font-medium" style={{ color: 'var(--ink)' }}>{task.title}</h2>
           <p className="text-[12px] mt-1" style={{ color: 'var(--ink-3)' }}>
-            {issues.length} fix{issues.length === 1 ? '' : 'es'} to make this a well-formed ticket.
+            {issues.length === 0
+              ? 'This looks stale or unclear — review it, or close it in your tracker.'
+              : `${issues.length} fix${issues.length === 1 ? '' : 'es'} to make this a well-formed ticket.`}
           </p>
         </div>
 
