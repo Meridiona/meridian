@@ -20,7 +20,12 @@ const nextConfig: NextConfig = {
   // crash-loops the standalone server. So package-release.sh packs the standalone
   // into `ui.tar.gz` (tar preserves symlinks; npm ships it as one opaque file) and
   // install-from-bundle.sh extracts it on the user's machine — keeping Turbopack.
-  output: 'standalone',
+  // Only emit the standalone server bundle for production builds. Applying
+  // `output: 'standalone'` in dev makes Next 16's Turbopack mis-resolve the
+  // distDir relative to the pinned `outputFileTracingRoot`, crashing
+  // `next dev --turbopack` with "Invalid distDirRoot". Production builds set
+  // NODE_ENV=production, so the shipped standalone bundle is unaffected.
+  output: process.env.NODE_ENV === 'production' ? 'standalone' : undefined,
   // Pin the standalone file-tracing root to this `ui/` dir. The repo root also
   // has a package-lock.json, so Next otherwise infers the monorepo root and
   // nests the output as `.next/standalone/ui/server.js` — which breaks the
