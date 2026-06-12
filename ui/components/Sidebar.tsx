@@ -79,6 +79,7 @@ export default function Sidebar({ onOpenCmd }: Props) {
     { route: '/worklogs', label: 'Worklogs', kbd: '3' },
     { route: '/sessions', label: 'Sessions', kbd: '4' },
     { route: '/week',     label: 'Week',     kbd: '5' },
+    { route: '/cleanup',  label: 'Clean-up', kbd: '7' },
   ]
 
   return (

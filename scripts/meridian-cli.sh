@@ -816,7 +816,7 @@ case "$CMD" in
     uninstall)        cmd_uninstall ;;
     permissions)      cmd_permissions ;;
     version|--version|-v) cat "${REPO_ROOT}/VERSION" 2>/dev/null || echo "unknown" ;;
-    worklog-status|pm-worklog|coding-agent-hook|coding-agent-summarise|coding-agent-classify|coding-agent-install-skill|oauth-login|tasks-sync) cmd_daemon_passthrough "$CMD" "$@" ;;
+    worklog-status|pm-worklog|coding-agent-hook|coding-agent-summarise|coding-agent-classify|coding-agent-install-skill|oauth-login|tasks-sync|ticket-update|ticket-parents) cmd_daemon_passthrough "$CMD" "$@" ;;
     --help|-h|help|"") cmd_help ;;
     *) err "unknown command: ${CMD}"; echo; cmd_help; exit 1 ;;
 esac
