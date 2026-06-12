@@ -132,6 +132,9 @@ pub async fn save_verdict(
 }
 
 /// Record a human decision on a ticket. Written once per user action; idempotent.
+/// Errors if no curation row exists for `task_key` (the ticket hasn't been triaged
+/// yet) — otherwise the UPDATE would match 0 rows and the decision would be
+/// silently lost, only for the ticket to reappear on the next load.
 pub async fn record_decision(
     pool: &SqlitePool,
     task_key: &str,
@@ -139,7 +142,7 @@ pub async fn record_decision(
     snoozed_until: Option<&str>,
     now: &str,
 ) -> Result<()> {
-    sqlx::query(
+    let res = sqlx::query(
         "UPDATE pm_task_curation \
          SET decision = ?, decided_at = ?, snoozed_until = ? \
          WHERE task_key = ?",
@@ -151,12 +154,27 @@ pub async fn record_decision(
     .execute(pool)
     .await
     .with_context(|| format!("recording decision for {task_key}"))?;
+    if res.rows_affected() == 0 {
+        anyhow::bail!("no curation row for {task_key} — it hasn't been triaged yet");
+    }
     Ok(())
 }
 
 /// Delete curation rows whose ticket is no longer in `pm_tasks`. Returns the count
 /// removed. Keeps the working set from pointing at tickets that left the board.
+///
+/// Guarded against an empty `pm_tasks`: a `NOT IN (empty set)` is TRUE for every
+/// row, so a transient sync gap that momentarily empties the board would otherwise
+/// delete EVERY human decision. An all-tickets-gone board is far more likely a
+/// failed sync than a real mass departure, so we skip pruning entirely then.
 pub async fn prune_orphans(pool: &SqlitePool) -> Result<u64> {
+    let board_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pm_tasks")
+        .fetch_one(pool)
+        .await
+        .context("counting pm_tasks before prune")?;
+    if board_count == 0 {
+        return Ok(0);
+    }
     let res = sqlx::query(
         "DELETE FROM pm_task_curation \
          WHERE task_key NOT IN (SELECT task_key FROM pm_tasks)",
@@ -450,6 +468,62 @@ mod tests {
             .unwrap();
         let keys: Vec<&str> = ws2.iter().map(|c| c.task_key.as_str()).collect();
         assert_eq!(keys, vec!["THIN-1", "READY-1"]);
+    }
+
+    #[tokio::test]
+    async fn record_decision_errors_when_no_curation_row() {
+        let pool = db().await;
+        // No triage has run, so pm_task_curation is empty.
+        let r = record_decision(
+            &pool,
+            "GHOST-1",
+            Decision::Keep,
+            None,
+            "2026-06-12T12:00:00Z",
+        )
+        .await;
+        assert!(
+            r.is_err(),
+            "a decision on an un-triaged ticket must not silently succeed"
+        );
+    }
+
+    #[tokio::test]
+    async fn prune_skips_when_board_empty() {
+        let pool = db().await;
+        let long = "A".repeat(120);
+        insert_task(
+            &pool,
+            "T-1",
+            "Backlog",
+            0,
+            &long,
+            None,
+            "2026-01-01T00:00:00Z",
+        )
+        .await;
+        run_triage(&pool, now()).await.unwrap();
+        record_decision(&pool, "T-1", Decision::Keep, None, "2026-06-12T12:00:00Z")
+            .await
+            .unwrap();
+
+        // A transient sync wipes the whole board (e.g. provider returned nothing).
+        sqlx::query("DELETE FROM pm_tasks")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let pruned = prune_orphans(&pool).await.unwrap();
+        assert_eq!(pruned, 0, "must NOT prune when the board is empty");
+
+        // The human decision survives.
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pm_task_curation")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            n, 1,
+            "curation decisions must survive an empty-board sync gap"
+        );
     }
 
     #[test]

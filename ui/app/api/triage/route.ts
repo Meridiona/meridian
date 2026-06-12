@@ -94,18 +94,21 @@ export async function GET() {
       return NextResponse.json({ items: [], counts: emptyCounts(), has_run: false } as TriageResponse)
     }
 
+    // Hide tickets snoozed until a future moment (mirrors the Rust load_working_set).
+    const nowIso = new Date().toISOString()
     const rows = db.prepare(`
       SELECT t.task_key, t.provider, t.title, t.url,
              COALESCE(t.description_text,'') AS description_text,
              c.bucket, c.reasons_json, c.decision, c.snoozed_until
       FROM pm_task_curation c
       JOIN pm_tasks t ON t.task_key = c.task_key
+      WHERE c.snoozed_until IS NULL OR c.snoozed_until <= ?
       ORDER BY CASE c.bucket
         WHEN 'needs_detail' THEN 0
         WHEN 'looks_stale'  THEN 1
         WHEN 'not_sure'     THEN 2
         ELSE 3 END, t.task_key
-    `).all() as RawRow[]
+    `).all(nowIso) as RawRow[]
 
     const items: TriageTicket[] = rows.map(r => {
       let reasons: TriageReason[] = []
