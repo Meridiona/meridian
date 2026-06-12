@@ -42,10 +42,9 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   jira_update_enabled: true,
 }
 
-// The daemon reads the repo-local settings.json (cwd = repo root). The UI must
-// write the SAME file or its toggles never reach the daemon. The UI runs with
-// cwd = <repo>/ui (launchd WorkingDirectory and `next dev`/`start`), so the repo
-// root is the nearest ancestor containing Cargo.toml.
+// repoRoot finds the source-checkout root (nearest ancestor with Cargo.toml).
+// Used only for the legacy read fallback below — the UI writes to the canonical
+// ~/.meridian/settings.json, not here.
 function repoRoot(): string {
   let dir = process.cwd()
   for (let i = 0; i < 6; i++) {
@@ -60,16 +59,32 @@ function repoRoot(): string {
 
 // Lazy getters to avoid tracing filesystem ops at build time (Turbopack NFT issue).
 // These are only called at runtime when API routes execute.
+//
+// Canonical settings path — MUST match the daemon's resolution in
+// src/config.rs::settings_json_path(). The daemon's cwd varies by install type
+// (repo root under `cargo run`, ~/.meridian/app for a bundle), so neither side
+// resolves settings.json relative to cwd; both use ~/.meridian/settings.json
+// (next to meridian.db), overridable via MERIDIAN_SETTINGS_PATH. The repo-local
+// settings.json survives only as a read-time migration fallback.
 function getSettingsPath(): string {
-  return path.join(/*turbopackIgnore: true*/ repoRoot(), 'settings.json')
-}
-
-function getLegacySettingsPath(): string {
+  const override = process.env.MERIDIAN_SETTINGS_PATH
+  if (override && override.trim()) {
+    const expanded = override.startsWith('~/')
+      ? path.join(/*turbopackIgnore: true*/ os.homedir(), override.slice(2))
+      : override
+    return expanded
+  }
   return path.join(/*turbopackIgnore: true*/ os.homedir(), '.meridian', 'settings.json')
 }
 
+// Legacy location: a source checkout may still carry settings.json in the repo
+// root. Read-only fallback so existing dev configs migrate on first write.
+function getRepoSettingsPath(): string {
+  return path.join(/*turbopackIgnore: true*/ repoRoot(), 'settings.json')
+}
+
 export function readSettings(): RuntimeSettings {
-  for (const p of [getSettingsPath(), getLegacySettingsPath()]) {
+  for (const p of [getSettingsPath(), getRepoSettingsPath()]) {
     try {
       const raw = fs.readFileSync(/*turbopackIgnore: true*/ p, 'utf-8')
       const parsed = JSON.parse(raw)
