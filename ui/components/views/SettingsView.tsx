@@ -223,7 +223,7 @@ export default function SettingsView() {
         <FieldRow label="OpenObserve Export" description="Send traces and logs to the local OpenObserve instance. Off by default; enabling reveals the connection fields. Takes effect after a daemon restart.">
           <Switch checked={settings.otlp_enabled} onCheckedChange={v => patch({ otlp_enabled: v })} />
         </FieldRow>
-        <FieldRow label="Log Level" description="Controls verbosity of traces and logs (OpenObserve and local log files). DEBUG exports everything; WARNING/ERROR suppress info spans. Takes effect after a daemon restart.">
+        <FieldRow label="Log Level" description="Verbosity of daemon logs — always applies to the local log files, and to OpenObserve export when enabled. DEBUG logs everything; WARNING/ERROR suppress info. Hot-reloads on the next daemon tick.">
           <Select
             value={settings.log_level}
             onValueChange={v => patch({ log_level: v as RuntimeSettings['log_level'] })}
