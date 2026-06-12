@@ -4,6 +4,7 @@ pub mod oauth;
 pub mod providers;
 pub mod session_categorizer;
 pub mod task_linker;
+pub mod task_triage;
 
 pub use task_linker::{
     check_classification_ready, link_range, mark_session_subprocess_error,
