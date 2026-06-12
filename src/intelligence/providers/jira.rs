@@ -84,14 +84,20 @@ async fn discover_start_date_field(ctx: &JiraReqCtx) -> Option<String> {
     let fields: Vec<JiraFieldMeta> = resp.json().await.ok()?;
 
     // Priority 1: exact match
-    if let Some(f) = fields.iter().find(|f| f.name.eq_ignore_ascii_case("start date")) {
+    if let Some(f) = fields
+        .iter()
+        .find(|f| f.name.eq_ignore_ascii_case("start date"))
+    {
         return Some(f.id.clone());
     }
     // Priority 2: name contains both "start" and "date"
-    fields.iter().find(|f| {
-        let n = f.name.to_lowercase();
-        n.contains("start") && n.contains("date")
-    }).map(|f| f.id.clone())
+    fields
+        .iter()
+        .find(|f| {
+            let n = f.name.to_lowercase();
+            n.contains("start") && n.contains("date")
+        })
+        .map(|f| f.id.clone())
 }
 
 #[derive(Deserialize)]
@@ -197,8 +203,17 @@ async fn fetch(ctx: &JiraReqCtx, start_date_field: Option<&str>) -> Result<Vec<J
     let url = ctx.api_url("/rest/api/3/search/jql");
 
     let mut fields = vec![
-        "summary", "description", "issuetype", "project", "updated",
-        "parent", "status", "duedate", "assignee", "labels", "customfield_10020",
+        "summary",
+        "description",
+        "issuetype",
+        "project",
+        "updated",
+        "parent",
+        "status",
+        "duedate",
+        "assignee",
+        "labels",
+        "customfield_10020",
     ];
     if let Some(id) = start_date_field {
         fields.push(id);
@@ -300,7 +315,12 @@ async fn upsert(
             .and_then(|s| s.name.clone());
 
         let start_date: Option<String> = start_date_field.and_then(|field_id| {
-            issue.fields.extra.get(field_id)?.as_str().map(str::to_owned)
+            issue
+                .fields
+                .extra
+                .get(field_id)?
+                .as_str()
+                .map(str::to_owned)
         });
 
         let upsert_result = sqlx::query(
@@ -359,7 +379,10 @@ async fn upsert(
         }
     }
     if !issues.is_empty() && ok_count == 0 {
-        anyhow::bail!("all {} jira task upserts failed — DB write errors above", issues.len());
+        anyhow::bail!(
+            "all {} jira task upserts failed — DB write errors above",
+            issues.len()
+        );
     }
     Ok(())
 }
@@ -447,7 +470,11 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
             return Ok(None);
         }
     };
-    let auth_method = if jira.api_token.is_empty() { "oauth" } else { "api_token" };
+    let auth_method = if jira.api_token.is_empty() {
+        "oauth"
+    } else {
+        "api_token"
+    };
     tracing::debug!(auth_method, "jira auth resolved");
 
     let start_date_field = discover_start_date_field(&ctx).await;
@@ -459,7 +486,10 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
         Ok(issues) => {
             let keys: Vec<String> = issues.iter().map(|i| i.key.clone()).collect();
             let n = keys.len();
-            let project_key = issues.first().map(|i| i.fields.project.key.as_str()).unwrap_or("-");
+            let project_key = issues
+                .first()
+                .map(|i| i.fields.project.key.as_str())
+                .unwrap_or("-");
             let terminal_count = issues
                 .iter()
                 .filter(|i| native_terminal(&i.fields.status.status_category.key) == Some(true))
