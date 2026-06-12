@@ -251,5 +251,39 @@
     "expected": "looks_stale",
     "board_uses_sprints": false,
     "note": "already done — does not belong in the active candidate pool"
+  },
+  {
+    "task_key": "STALE-FAR-FUTURE-RECENT",
+    "title": "Plan the v2 mobile companion app architecture",
+    "description_text": "Forward-looking design work for the eventual mobile companion. Scoped now but not started; not this cycle.",
+    "status_raw": "To Do",
+    "due_date": "2026-08-01",
+    "updated_at": "2026-06-10T00:00:00Z",
+    "expected": "looks_stale",
+    "board_uses_sprints": false,
+    "note": "due 50 days out (>30 horizon), recent, not started → planned not current → exclude"
+  },
+  {
+    "task_key": "READY-FAR-FUTURE-IN-PROGRESS",
+    "title": "Build the Q4 analytics dashboard for pilots",
+    "description_text": "Dashboard for pilot analytics. Already being worked on even though the formal due date is months out.",
+    "status_raw": "In Progress",
+    "due_date": "2026-09-01",
+    "updated_at": "2026-06-11T00:00:00Z",
+    "expected": "ready",
+    "board_uses_sprints": false,
+    "note": "far-future due but In Progress — active wins, far-future never demotes a started ticket"
+  },
+  {
+    "task_key": "READY-FAR-FUTURE-IN-SPRINT",
+    "title": "Draft the enterprise onboarding flow",
+    "description_text": "Pulled into the current sprint despite a distant due date, so it is current work this cycle.",
+    "status_raw": "To Do",
+    "due_date": "2026-09-15",
+    "sprint_name": "Sprint 12",
+    "updated_at": "2026-06-11T00:00:00Z",
+    "expected": "ready",
+    "board_uses_sprints": true,
+    "note": "far-future due but in the active sprint — sprint membership keeps it current"
   }
 ]

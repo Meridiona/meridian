@@ -51,12 +51,20 @@ Each ticket is judged on two independent questions.
 | In sprint | `sprint_name` non-empty *(only if the board uses sprints)* |
 | Start reached | `start_date` is within `[now − 90d, now]` |
 
-**Stale signature** — leans stale **only if ALL hold**:
+**Stale signature** — the **base** must hold, paired with **at least one** demoting signal:
 
+Base (all required):
 1. `status_raw` is **not** Started (NotStarted or Unknown), **and**
 2. no live date window (not due-soon and no active start window), **and**
-3. age (`now − updated_at`) **>** `stale_age_days`, **and**
-4. *(sprint boards only)* the ticket is **not** in a sprint.
+3. *(sprint boards only)* the ticket is **not** in a sprint.
+
+Demoting signal (any one):
+- age (`now − updated_at`) **>** `stale_age_days` (abandoned), **or**
+- due date is **more than `due_soon_days` in the future** (`far_future` — planned, not
+  current work; excluded from the candidate pool until session-evidence rescues it).
+
+So a far-future-dated ticket that isn't started or sprinted is stale **even when recent**;
+a ticket with no due date and recent activity is **not** stale (it becomes `not_sure`).
 
 ### Axis B — Is it classifiable?
 

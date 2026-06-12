@@ -89,6 +89,7 @@ pub enum TriageReason {
     NotStarted,
     NoDueDate,
     OverdueLong { by_days: i64 },
+    FarFutureDue { in_days: i64 },
     NotInSprint,
     AlreadyDone,
     // — ambiguity / meta —
@@ -120,6 +121,9 @@ impl TriageReason {
             TriageReason::NoDueDate => "No due date set.".into(),
             TriageReason::OverdueLong { by_days } => {
                 format!("Overdue by {by_days} days with no movement.")
+            }
+            TriageReason::FarFutureDue { in_days } => {
+                format!("Not due for {in_days} days — planned, not current work.")
             }
             TriageReason::NotInSprint => "Not in any sprint.".into(),
             TriageReason::AlreadyDone => "Already marked done.".into(),
@@ -234,18 +238,32 @@ pub fn triage_ticket(t: &TicketSignals, cfg: &TriageConfig) -> TriageVerdict {
     let due_soon =
         due_in.is_some_and(|d| (-cfg.overdue_grace_days..=cfg.due_soon_days).contains(&d));
     let overdue_long = due_in.is_some_and(|d| d < -cfg.overdue_grace_days);
+    // A due date beyond the horizon is planned-but-not-current work, not an active
+    // signal. When the ticket also isn't started or sprinted, it should be excluded
+    // from the current candidate pool (runtime session-evidence rescues it if the
+    // user starts early).
+    let far_future = due_in.is_some_and(|d| d > cfg.due_soon_days);
     let has_live_date = due_soon || start_reached;
     let active = started == Startedness::Started || in_sprint || has_live_date;
 
-    // 2. Stale signature — ALL conditions must hold together (one alone never demotes).
+    // 2. Stale signature. The base requirement (not started, no live date window,
+    //    not in an active sprint) demotes only when paired with either evidence of
+    //    abandonment (old/overdue) OR a far-future due date (not current work).
     let sprint_ok_for_stale = !cfg.board_uses_sprints || !in_sprint;
     let is_old = age.is_some_and(|a| a > cfg.stale_age_days);
-    if started != Startedness::Started && !has_live_date && is_old && sprint_ok_for_stale {
+    let base_stale = started != Startedness::Started && !has_live_date && sprint_ok_for_stale;
+    if base_stale && (is_old || far_future) {
         let mut reasons = vec![TriageReason::NotStarted];
-        if let Some(a) = age {
-            reasons.push(TriageReason::NoActivitySince { days: a });
+        if is_old {
+            if let Some(a) = age {
+                reasons.push(TriageReason::NoActivitySince { days: a });
+            }
         }
-        if overdue_long {
+        if far_future {
+            reasons.push(TriageReason::FarFutureDue {
+                in_days: due_in.unwrap(),
+            });
+        } else if overdue_long {
             reasons.push(TriageReason::OverdueLong {
                 by_days: -due_in.unwrap(),
             });

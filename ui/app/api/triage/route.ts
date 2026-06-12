@@ -59,6 +59,7 @@ function reasonHint(code: string, detail: Record<string, number> | undefined): s
     case 'not_started': return 'Still sitting in a not-started column.'
     case 'no_due_date': return 'No due date set.'
     case 'overdue_long': return `Overdue by ${detail?.by_days} days with no movement.`
+    case 'far_future_due': return `Not due for ${detail?.in_days} days — planned, not current work.`
     case 'not_in_sprint': return 'Not in any sprint.'
     case 'already_done': return 'Already marked done.'
     case 'no_activity_signal': return "Open, but nothing yet says it's active."
