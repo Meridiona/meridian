@@ -27,7 +27,8 @@ export interface RuntimeSettings {
 
 export const SETTINGS_DEFAULTS: RuntimeSettings = {
   log_level: 'INFO',
-  otlp_enabled: true,
+  // OpenObserve export is opt-in: off until the user enables it in Settings.
+  otlp_enabled: false,
   otlp_endpoint: '',
   oo_email: '',
   oo_password: '',

@@ -44,7 +44,9 @@ impl Default for RuntimeSettings {
             llm_budget_pct: 0.5,
             poll_interval_secs: 60,
             jira_update_enabled: true,
-            otlp_enabled: true,
+            // OpenObserve export is opt-in — off until enabled in Settings (UI
+            // default in ui/lib/settings.ts must match this).
+            otlp_enabled: false,
             otlp_endpoint: None,
             oo_email: None,
             oo_password: None,
