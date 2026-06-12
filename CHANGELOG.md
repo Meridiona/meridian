@@ -1,3 +1,10 @@
+## [1.50.1](https://github.com/Meridiona/meridian/compare/v1.50.0...v1.50.1) (2026-06-12)
+
+
+### Bug Fixes
+
+* **tasks:** sort task sessions in descending order by start time ([#270](https://github.com/Meridiona/meridian/issues/270)) ([c807305](https://github.com/Meridiona/meridian/commit/c807305dddb879b84bce22529096485769d172f6))
+
 # [1.50.0](https://github.com/Meridiona/meridian/compare/v1.49.2...v1.50.0) (2026-06-11)
 
 
