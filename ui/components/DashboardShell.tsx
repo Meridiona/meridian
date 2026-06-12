@@ -11,6 +11,7 @@ import HealthBanner from '@/components/HealthBanner'
 const KEY_ROUTES: Record<string, string> = {
   '1': '/today', '2': '/tasks', '3': '/worklogs',
   '4': '/sessions', '5': '/week', '6': '/settings',
+  '7': '/cleanup',
 }
 
 export default function DashboardShell({ children }: { children: React.ReactNode }) {

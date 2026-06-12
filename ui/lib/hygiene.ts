@@ -11,10 +11,26 @@ export interface HygieneFix {
   ai: boolean // suggested value comes from AI (wired later)
 }
 
+export type Severity = 'must_fix' | 'optional'
+
 export interface HygieneIssue {
   code: string
   hint: string
   fix: HygieneFix | null // null ⇒ handled at ticket level (close / snooze) or descriptive
+  severity: Severity // must_fix: Meridian needs it (due date / description / title) — the rest is optional
+}
+
+// Must-fix = the fields Meridian needs to track a ticket accurately. Everything
+// else is good hygiene the dev can address at leisure on the cleanup page.
+const MUST_FIX = new Set([
+  'missing_description',
+  'thin_description',
+  'vague_title',
+  'missing_due_date',
+])
+
+function reasonSeverity(code: string): Severity {
+  return MUST_FIX.has(code) ? 'must_fix' : 'optional'
 }
 
 export interface Hygiene {
@@ -76,6 +92,16 @@ export function parseIssues(reasonsJson: string | null): HygieneIssue[] {
   let raw: RawReason[]
   try { raw = JSON.parse(reasonsJson) } catch { return [] }
   return raw
-    .map(r => ({ code: r.code, hint: reasonHint(r.code, r.detail), fix: reasonFix(r.code) }))
+    .map(r => ({
+      code: r.code,
+      hint: reasonHint(r.code, r.detail),
+      fix: reasonFix(r.code),
+      severity: reasonSeverity(r.code),
+    }))
     .filter(i => i.fix !== null)
+}
+
+/** True if any issue is must-fix — drives the Tasks-page banner. */
+export function hasMustFix(issues: HygieneIssue[]): boolean {
+  return issues.some(i => i.severity === 'must_fix')
 }
