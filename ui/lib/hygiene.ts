@@ -86,11 +86,15 @@ function reasonFix(code: string): HygieneFix | null {
 
 interface RawReason { code: string; detail?: Record<string, number> }
 
-/** Parse a reasons_json blob into the fixable hygiene issues (drops active/descriptive). */
-export function parseIssues(reasonsJson: string | null): HygieneIssue[] {
+/** Parse a reasons_json blob into the fixable hygiene issues (drops active/
+ *  descriptive reasons and any the dev has chosen to ignore). */
+export function parseIssues(reasonsJson: string | null, ignoredJson?: string | null): HygieneIssue[] {
   if (!reasonsJson) return []
   let raw: RawReason[]
   try { raw = JSON.parse(reasonsJson) } catch { return [] }
+  let ignored: string[] = []
+  if (ignoredJson) { try { ignored = JSON.parse(ignoredJson) } catch { ignored = [] } }
+  const ignoredSet = new Set(ignored)
   return raw
     .map(r => ({
       code: r.code,
@@ -98,7 +102,7 @@ export function parseIssues(reasonsJson: string | null): HygieneIssue[] {
       fix: reasonFix(r.code),
       severity: reasonSeverity(r.code),
     }))
-    .filter(i => i.fix !== null)
+    .filter(i => i.fix !== null && !ignoredSet.has(i.code))
 }
 
 /** True if any issue is must-fix — drives the Tasks-page banner. */

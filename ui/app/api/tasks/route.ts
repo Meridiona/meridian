@@ -59,13 +59,20 @@ export async function GET() {
       "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pm_task_curation'",
     ).get()
     if (hasCuration) {
-      const cur = db.prepare(
-        'SELECT task_key, bucket, reasons_json, decision FROM pm_task_curation',
-      ).all() as Array<{ task_key: string; bucket: string; reasons_json: string; decision: string | null }>
+      // ignored_codes arrived in migration 040 — tolerate older DBs.
+      const hasIgnored = db.prepare(
+        "SELECT 1 FROM pragma_table_info('pm_task_curation') WHERE name='ignored_codes'",
+      ).get()
+      const cols = hasIgnored
+        ? 'task_key, bucket, reasons_json, decision, ignored_codes'
+        : "task_key, bucket, reasons_json, decision, '[]' AS ignored_codes"
+      const cur = db.prepare(`SELECT ${cols} FROM pm_task_curation`)
+        .all() as Array<{ task_key: string; bucket: string; reasons_json: string; decision: string | null; ignored_codes: string }>
       for (const c of cur) {
+        // Snoozed-until-future tickets drop off until their snooze lapses.
         hygieneByKey[c.task_key] = {
           bucket: c.bucket,
-          issues: parseIssues(c.reasons_json),
+          issues: parseIssues(c.reasons_json, c.ignored_codes),
           decision: c.decision,
         }
       }
