@@ -10,7 +10,6 @@ const links = [
   { href: '/', label: 'Today' },
   { href: '/sessions', label: 'Sessions' },
   { href: '/apps', label: 'Apps' },
-  { href: '/board-cleanup', label: 'Clean-up' },
   { href: '/logs', label: 'Logs' },
   { href: '/settings', label: 'Settings' },
 ]

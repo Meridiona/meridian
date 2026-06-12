@@ -30,6 +30,7 @@ export default function CommandBar({ onClose }: Props) {
     { kind: 'view', label: 'Go to Worklogs', route: '/worklogs' },
     { kind: 'view', label: 'Go to Sessions', route: '/sessions' },
     { kind: 'view', label: 'Go to Week',     route: '/week' },
+    { kind: 'view', label: 'Go to Clean-up', route: '/board-cleanup' },
   ]
 
   function navigate(item: CmdItem) {
