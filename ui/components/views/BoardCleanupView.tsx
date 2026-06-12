@@ -20,8 +20,8 @@ const FACTS: string[] = [
 
 const BUCKET_META: Record<Exclude<TriageBucket, 'ready'>, { label: string; blurb: string; tone: string }> = {
   needs_detail: {
-    label: 'Could use more detail',
-    blurb: "Likely active, but too thin for Meridian to attribute work to. Add a line in your tracker, or keep it.",
+    label: 'Could use a quick fix',
+    blurb: "Likely active, but missing something Meridian needs — a clearer description or a due date. A quick edit in your tracker makes it attributable.",
     tone: 'var(--accent)',
   },
   looks_stale: {

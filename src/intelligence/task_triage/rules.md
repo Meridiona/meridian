@@ -74,6 +74,7 @@ a ticket with no due date and recent activity is **not** stale (it becomes `not_
 | Thin description | fewer than `thin_desc_chars` characters |
 | Vague title | 1–2 words, all generic fillers ("Fix bug", "Updates", "WIP") |
 | No context anchor | no epic **and** no parent *(only counts when also thin)* |
+| Missing due date | no due date — **only when the board uses due dates** (some ticket has one). A board that never sets due dates is never flagged for the missing field. |
 
 ## Decision order (first match wins)
 

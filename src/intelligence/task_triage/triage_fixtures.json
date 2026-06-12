@@ -285,5 +285,27 @@
     "expected": "ready",
     "board_uses_sprints": true,
     "note": "far-future due but in the active sprint — sprint membership keeps it current"
+  },
+  {
+    "task_key": "NEEDS-NO-DUE-IN-PROGRESS",
+    "title": "LLM benchmarking and prompt evaluation framework",
+    "description_text": "Set up an offline evaluation harness to compare model quality and prompt variants for the classifier.",
+    "status_raw": "In Progress",
+    "updated_at": "2026-06-11T00:00:00Z",
+    "expected": "needs_detail",
+    "board_uses_sprints": false,
+    "board_uses_due_dates": true,
+    "note": "board uses due dates but this in-progress ticket has none — flag to add one (the real KAN-109 case)"
+  },
+  {
+    "task_key": "READY-NO-DUE-BOARD-WITHOUT-DUE",
+    "title": "Investigate flaky integration test on CI",
+    "description_text": "The auth integration test fails intermittently on CI. Reproduce, find the race, and stabilise it.",
+    "status_raw": "In Progress",
+    "updated_at": "2026-06-11T00:00:00Z",
+    "expected": "ready",
+    "board_uses_sprints": false,
+    "board_uses_due_dates": false,
+    "note": "no due date, but the board doesn't use due dates — must NOT be flagged for the missing field"
   }
 ]

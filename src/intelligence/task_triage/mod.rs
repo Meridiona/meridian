@@ -84,6 +84,7 @@ pub enum TriageReason {
     ThinDescription { chars: usize },
     VagueTitle,
     NoContextAnchor,
+    MissingDueDate,
     // — staleness —
     NoActivitySince { days: i64 },
     NotStarted,
@@ -114,6 +115,9 @@ impl TriageReason {
             }
             TriageReason::VagueTitle => "Title is generic — make it specific.".into(),
             TriageReason::NoContextAnchor => "No epic or parent to anchor it.".into(),
+            TriageReason::MissingDueDate => {
+                "No due date — add one so Meridian knows when it's live.".into()
+            }
             TriageReason::NoActivitySince { days } => {
                 format!("No board activity in {days} days.")
             }
@@ -175,6 +179,10 @@ pub struct TriageConfig {
     /// Detected per board: false disables every sprint-based rule (many teams,
     /// including the reference board, don't use sprints at all).
     pub board_uses_sprints: bool,
+    /// Detected per board: only flag a missing due date when the board actually
+    /// uses due dates (some tickets have one). A team that never sets due dates
+    /// must not have every ticket flagged for the missing field.
+    pub board_uses_due_dates: bool,
     /// Updated longer ago than this confirms staleness. (days)
     pub stale_age_days: i64,
     /// A due date within this horizon counts as an "active" signal. (days)
@@ -186,10 +194,11 @@ pub struct TriageConfig {
 }
 
 impl TriageConfig {
-    pub fn new(now: DateTime<Utc>, board_uses_sprints: bool) -> Self {
+    pub fn new(now: DateTime<Utc>, board_uses_sprints: bool, board_uses_due_dates: bool) -> Self {
         Self {
             now,
             board_uses_sprints,
+            board_uses_due_dates,
             stale_age_days: 60,
             due_soon_days: 30,
             overdue_grace_days: 14,
@@ -206,9 +215,20 @@ pub fn board_uses_sprints(tickets: &[TicketSignals]) -> bool {
         .any(|t| opt_nonempty(&t.sprint_name).is_some())
 }
 
-/// Triage a whole fetched board. Detects sprint usage once, then verdicts each.
+/// True if any ticket in the set carries a due date — used to decide whether to
+/// flag tickets that are *missing* one. A board that never sets due dates should
+/// not have every ticket flagged for the absent field.
+pub fn board_uses_due_dates(tickets: &[TicketSignals]) -> bool {
+    tickets.iter().any(|t| opt_nonempty(&t.due_date).is_some())
+}
+
+/// Triage a whole fetched board. Detects sprint + due-date usage once, then verdicts each.
 pub fn triage_board(tickets: &[TicketSignals], now: DateTime<Utc>) -> Vec<TriageVerdict> {
-    let cfg = TriageConfig::new(now, board_uses_sprints(tickets));
+    let cfg = TriageConfig::new(
+        now,
+        board_uses_sprints(tickets),
+        board_uses_due_dates(tickets),
+    );
     tickets.iter().map(|t| triage_ticket(t, &cfg)).collect()
 }
 
@@ -276,14 +296,17 @@ pub fn triage_ticket(t: &TicketSignals, cfg: &TriageConfig) -> TriageVerdict {
         return verdict(TriageBucket::LooksStale, reasons);
     }
 
-    // 3. Quality — usable enough for the classifier to match work against it?
+    // 3. Quality / hygiene — usable enough for the classifier, with the metadata a
+    //    board that tracks it expects. A missing due date is only flagged when the
+    //    board actually uses due dates (board-level guard, like sprints).
     let desc = t.description_text.trim();
     let desc_chars = desc.chars().count();
     let missing = desc.is_empty();
     let thin = desc_chars < cfg.thin_desc_chars;
     let vague = rules::is_vague_title(&t.title);
     let no_anchor = t.epic_title.is_none() && t.parent_key.is_none();
-    if missing || thin || vague {
+    let no_due = cfg.board_uses_due_dates && opt_nonempty(&t.due_date).is_none();
+    if missing || thin || vague || no_due {
         let mut reasons = Vec::new();
         if missing {
             reasons.push(TriageReason::MissingDescription);
@@ -295,6 +318,9 @@ pub fn triage_ticket(t: &TicketSignals, cfg: &TriageConfig) -> TriageVerdict {
         }
         if no_anchor && thin {
             reasons.push(TriageReason::NoContextAnchor);
+        }
+        if no_due {
+            reasons.push(TriageReason::MissingDueDate);
         }
         return verdict(TriageBucket::NeedsDetail, reasons);
     }
@@ -366,7 +392,11 @@ impl TriageSummary {
 pub async fn run_triage(pool: &SqlitePool, now: DateTime<Utc>) -> Result<TriageSummary> {
     let inputs = store::load_board(pool).await?;
     let tickets: Vec<TicketSignals> = inputs.iter().map(|i| i.signals.clone()).collect();
-    let cfg = TriageConfig::new(now, board_uses_sprints(&tickets));
+    let cfg = TriageConfig::new(
+        now,
+        board_uses_sprints(&tickets),
+        board_uses_due_dates(&tickets),
+    );
     let now_str = now.to_rfc3339();
 
     let mut summary = TriageSummary::default();
@@ -395,6 +425,8 @@ mod tests {
         ticket: TicketSignals,
         expected: TriageBucket,
         board_uses_sprints: bool,
+        #[serde(default)]
+        board_uses_due_dates: bool,
         note: String,
     }
 
@@ -406,7 +438,7 @@ mod tests {
 
         let mut failures = Vec::new();
         for fx in &fixtures {
-            let cfg = TriageConfig::new(now(), fx.board_uses_sprints);
+            let cfg = TriageConfig::new(now(), fx.board_uses_sprints, fx.board_uses_due_dates);
             let got = triage_ticket(&fx.ticket, &cfg);
             if got.bucket != fx.expected {
                 failures.push(format!(
@@ -443,7 +475,7 @@ mod tests {
         let mut t = base();
         t.is_terminal = true;
         t.status_raw = "In Progress".into();
-        let v = triage_ticket(&t, &TriageConfig::new(now(), false));
+        let v = triage_ticket(&t, &TriageConfig::new(now(), false, false));
         assert_eq!(v.bucket, TriageBucket::LooksStale);
         assert_eq!(v.reasons, vec![TriageReason::AlreadyDone]);
     }
@@ -452,7 +484,7 @@ mod tests {
     fn one_stale_signal_alone_never_demotes() {
         // No due date (a stale signal) but recently updated ⇒ NOT stale.
         let t = base();
-        let v = triage_ticket(&t, &TriageConfig::new(now(), false));
+        let v = triage_ticket(&t, &TriageConfig::new(now(), false, false));
         assert_ne!(v.bucket, TriageBucket::LooksStale);
     }
 
@@ -462,7 +494,7 @@ mod tests {
         t.updated_at = "garbage".into();
         t.status_raw = "Backlog".into();
         // not started + no due + unknown age ⇒ age gate fails ⇒ not stale.
-        let v = triage_ticket(&t, &TriageConfig::new(now(), false));
+        let v = triage_ticket(&t, &TriageConfig::new(now(), false, false));
         assert_eq!(v.bucket, TriageBucket::NotSure);
         assert!(v.reasons.contains(&TriageReason::UnreadableUpdatedAt));
     }
@@ -472,7 +504,7 @@ mod tests {
         let mut t = base();
         t.status_raw = "In Progress".into();
         t.description_text = "fix it".into();
-        let v = triage_ticket(&t, &TriageConfig::new(now(), false));
+        let v = triage_ticket(&t, &TriageConfig::new(now(), false, false));
         assert_eq!(v.bucket, TriageBucket::NeedsDetail);
     }
 
@@ -484,7 +516,7 @@ mod tests {
         let mut t = base();
         t.updated_at = "2026-01-01T00:00:00Z".into();
         t.status_raw = "Backlog".into();
-        let v = triage_ticket(&t, &TriageConfig::new(now(), false));
+        let v = triage_ticket(&t, &TriageConfig::new(now(), false, false));
         assert_eq!(v.bucket, TriageBucket::LooksStale);
         assert!(!v.reasons.contains(&TriageReason::NotInSprint));
     }

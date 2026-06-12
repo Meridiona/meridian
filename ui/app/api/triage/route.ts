@@ -55,6 +55,7 @@ function reasonHint(code: string, detail: Record<string, number> | undefined): s
     case 'thin_description': return `Description is only ${detail?.chars} characters — add a little detail.`
     case 'vague_title': return 'Title is generic — make it specific.'
     case 'no_context_anchor': return 'No epic or parent to anchor it.'
+    case 'missing_due_date': return "No due date — add one so Meridian knows when it's live."
     case 'no_activity_since': return `No board activity in ${detail?.days} days.`
     case 'not_started': return 'Still sitting in a not-started column.'
     case 'no_due_date': return 'No due date set.'
