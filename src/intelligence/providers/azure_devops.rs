@@ -51,6 +51,12 @@ struct WorkItemDetail {
 }
 
 #[derive(Deserialize)]
+struct AzureIdentity {
+    #[serde(rename = "displayName")]
+    display_name: String,
+}
+
+#[derive(Deserialize)]
 struct WorkItemFields {
     #[serde(rename = "System.Title")]
     title: String,
@@ -74,6 +80,17 @@ struct WorkItemFields {
     /// Full iteration path e.g. `MyProject\Sprint 14`. Last segment = sprint name.
     #[serde(rename = "System.IterationPath", default)]
     iteration_path: Option<String>,
+    #[serde(rename = "System.TeamProject", default)]
+    team_project: Option<String>,
+    #[serde(rename = "System.AssignedTo", default)]
+    assigned_to: Option<AzureIdentity>,
+    /// Start date — present on all process types (Scheduling namespace).
+    #[serde(rename = "Microsoft.VSTS.Scheduling.StartDate", default)]
+    start_date: Option<String>,
+    /// Target date — cross-process equivalent of due date (TargetDate, not DueDate
+    /// which is Agile-process-only).
+    #[serde(rename = "Microsoft.VSTS.Scheduling.TargetDate", default)]
+    target_date: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -163,14 +180,11 @@ fn basic_auth(pat: &str) -> String {
     format!("Basic {encoded}")
 }
 
-/// Map an Azure StateCategory value to Meridian's status_category.
-fn to_status_category(category: &str) -> &'static str {
-    match category {
-        "Proposed" => "todo",
-        "InProgress" | "Resolved" => "in_progress",
-        "Completed" | "Removed" => "done",
-        _ => "in_progress",
-    }
+/// Whether an Azure StateCategory is terminal. StateCategory is a fixed, reliable
+/// metaschema field: Proposed | InProgress | Resolved | Completed | Removed.
+/// Only Completed / Removed are terminal.
+fn native_terminal(category: &str) -> bool {
+    matches!(category, "Completed" | "Removed")
 }
 
 // ---------------------------------------------------------------------------
@@ -227,8 +241,11 @@ async fn fetch_batch(
         "{}/{}/_apis/wit/workitems?ids={}&\
          fields=System.Id,System.Title,System.WorkItemType,System.State,\
          System.ChangedDate,System.Description,System.Tags,System.IterationPath,\
+         System.TeamProject,System.AssignedTo,\
          Microsoft.VSTS.Common.AcceptanceCriteria,\
-         Microsoft.VSTS.TCM.ReproSteps&api-version=7.1",
+         Microsoft.VSTS.TCM.ReproSteps,\
+         Microsoft.VSTS.Scheduling.StartDate,\
+         Microsoft.VSTS.Scheduling.TargetDate&api-version=7.1",
         cfg.api_base, cfg.project, ids_str
     );
     let resp = client
@@ -363,7 +380,7 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
     // 4. Filter and upsert — Completed / Removed items are dropped.
     struct UpsertItem<'a> {
         detail: &'a WorkItemDetail,
-        status_category: &'static str,
+        status: super::status::ResolvedStatus,
     }
     let active: Vec<UpsertItem<'_>> = details
         .iter()
@@ -376,9 +393,15 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
             if matches!(azure_category, "Completed" | "Removed") {
                 return None;
             }
+            // Store the user-facing System.State name verbatim; the StateCategory
+            // gives the reliable terminal signal (always false for kept items).
             Some(UpsertItem {
                 detail: item,
-                status_category: to_status_category(azure_category),
+                status: super::status::resolve(
+                    "azure_devops",
+                    &item.fields.state,
+                    Some(native_terminal(azure_category)),
+                ),
             })
         })
         .collect();
@@ -430,32 +453,45 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
             "{}/{}/_workitems/edit/{}",
             cfg.api_base, cfg.project, u.detail.id
         );
+        let project_key = f.team_project.as_deref();
+        let assignee_name = f.assigned_to.as_ref().map(|a| a.display_name.as_str());
 
         sqlx::query(
             "INSERT INTO pm_tasks
-               (task_key, provider, title, description_text, status_category,
-                issue_type, url, updated_at, sprint_name, tags)
-             VALUES (?, 'azure_devops', ?, ?, ?, ?, ?, ?, ?, ?)
+               (task_key, provider, title, description_text, status_raw, is_terminal,
+                issue_type, project_key, url, updated_at, sprint_name, tags,
+                assignee_name, start_date, due_date)
+             VALUES (?, 'azure_devops', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(task_key) DO UPDATE SET
                provider         = 'azure_devops',
                title            = excluded.title,
                description_text = excluded.description_text,
-               status_category  = excluded.status_category,
+               status_raw       = excluded.status_raw,
+               is_terminal      = excluded.is_terminal,
                issue_type       = excluded.issue_type,
+               project_key      = excluded.project_key,
                url              = excluded.url,
                updated_at       = excluded.updated_at,
                sprint_name      = excluded.sprint_name,
-               tags             = excluded.tags",
+               tags             = excluded.tags,
+               assignee_name    = excluded.assignee_name,
+               start_date       = excluded.start_date,
+               due_date         = excluded.due_date",
         )
         .bind(&task_key)
         .bind(&f.title)
         .bind(&description)
-        .bind(u.status_category)
+        .bind(&u.status.raw)
+        .bind(u.status.is_terminal)
         .bind(&f.work_item_type)
+        .bind(project_key)
         .bind(&browser_url)
         .bind(changed)
         .bind(sprint.as_deref())
         .bind(tags.as_deref())
+        .bind(assignee_name)
+        .bind(f.start_date.as_deref())
+        .bind(f.target_date.as_deref())
         .execute(pool)
         .await
         .with_context(|| format!("upserting Azure DevOps work item {}", u.detail.id))?;
@@ -545,6 +581,7 @@ async fn stamp_sync(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await
     .context("updating azure_devops sync state")?;
+    let _ = crate::notices::clear(pool, "pm.azure_devops").await;
     Ok(())
 }
 
@@ -560,6 +597,15 @@ async fn stamp_error(pool: &SqlitePool, error: &str) -> Result<()> {
     .execute(pool)
     .await
     .context("recording azure_devops sync error")?;
+    let _ = crate::notices::raise(
+        pool,
+        "pm.azure_devops",
+        "error",
+        "Azure DevOps sync failing",
+        error,
+        Some("Set AZURE_DEVOPS_PAT in .env"),
+    )
+    .await;
     Ok(())
 }
 
@@ -602,13 +648,14 @@ mod tests {
     }
 
     #[test]
-    fn test_to_status_category() {
-        assert_eq!(to_status_category("Proposed"), "todo");
-        assert_eq!(to_status_category("InProgress"), "in_progress");
-        assert_eq!(to_status_category("Resolved"), "in_progress");
-        assert_eq!(to_status_category("Completed"), "done");
-        assert_eq!(to_status_category("Removed"), "done");
-        assert_eq!(to_status_category("SomeCustomState"), "in_progress");
+    fn test_native_terminal() {
+        // Only Completed / Removed are terminal StateCategories.
+        assert!(native_terminal("Completed"));
+        assert!(native_terminal("Removed"));
+        assert!(!native_terminal("Proposed"));
+        assert!(!native_terminal("InProgress"));
+        assert!(!native_terminal("Resolved"));
+        assert!(!native_terminal("SomeCustomState"));
     }
 
     #[test]

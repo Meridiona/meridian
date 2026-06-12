@@ -1,7 +1,7 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Select } from '@/components/ui/Select'
 import { Switch } from '@/components/ui/Switch'
 import { NumberStepper } from '@/components/ui/NumberStepper'
@@ -9,6 +9,7 @@ import { TextInput } from '@/components/ui/TextInput'
 import type { RuntimeSettings } from '@/lib/settings'
 
 type SaveStatus = 'idle' | 'saved' | 'error'
+type ReloadStatus = 'idle' | 'saving' | 'reloading' | 'done' | 'error'
 
 function SectionCard({ children }: { children: React.ReactNode }) {
   return (
@@ -60,7 +61,6 @@ function SaveButton({ onClick, status }: { onClick: () => void; status: SaveStat
           padding: '5px 14px',
           borderRadius: '6px',
           border: 'none',
-          cursor: 'default',
           boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
         }}
       >
@@ -81,7 +81,8 @@ const LOG_LEVEL_OPTIONS = [
 
 export default function SettingsView() {
   const [settings, setSettings] = useState<RuntimeSettings | null>(null)
-  const [observabilityStatus, setObservabilityStatus] = useState<SaveStatus>('idle')
+  const [reloadStatus, setReloadStatus] = useState<ReloadStatus>('idle')
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [etlStatus, setEtlStatus] = useState<SaveStatus>('idle')
   const [classificationStatus, setClassificationStatus] = useState<SaveStatus>('idle')
   const [llmStatus, setLlmStatus] = useState<SaveStatus>('idle')
@@ -117,6 +118,65 @@ export default function SettingsView() {
       setTimeout(() => setStatus('idle'), 3000)
     }
   }
+
+  // Save observability settings then send SIGHUP so the daemon restarts and
+  // picks up the new OTLP config. Log-level changes are hot-reloaded in-process
+  // (no restart needed); this button handles the credential/toggle/endpoint case.
+  const applyObservability = useCallback(async () => {
+    if (!settings) return
+    setReloadStatus('saving')
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          log_level: settings.log_level,
+          otlp_enabled: settings.otlp_enabled,
+          otlp_endpoint: settings.otlp_endpoint,
+          oo_email: settings.oo_email,
+          oo_password: settings.oo_password,
+        }),
+      })
+      if (!res.ok) throw new Error('save failed')
+      const updated: RuntimeSettings = await res.json()
+      setSettings(updated)
+    } catch {
+      setReloadStatus('error')
+      setTimeout(() => setReloadStatus('idle'), 3000)
+      return
+    }
+
+    setReloadStatus('reloading')
+    const reloadRes = await fetch('/api/daemon/reload', { method: 'POST' })
+    if (!reloadRes.ok) {
+      setReloadStatus('error')
+      setTimeout(() => setReloadStatus('idle'), 3000)
+      return
+    }
+
+    // Poll daemon/status until it responds again (daemon restarted).
+    // Give the daemon up to 15 s to come back up.
+    let attempts = 0
+    pollRef.current = setInterval(async () => {
+      attempts++
+      try {
+        const s = await fetch('/api/daemon/status')
+        const { running } = await s.json() as { running: boolean }
+        if (running) {
+          clearInterval(pollRef.current!)
+          pollRef.current = null
+          setReloadStatus('done')
+          setTimeout(() => setReloadStatus('idle'), 3000)
+        }
+      } catch { /* keep polling */ }
+      if (attempts >= 30) {
+        clearInterval(pollRef.current!)
+        pollRef.current = null
+        setReloadStatus('error')
+        setTimeout(() => setReloadStatus('idle'), 3000)
+      }
+    }, 500)
+  }, [settings])
 
   if (!settings) {
     return (
@@ -172,15 +232,13 @@ export default function SettingsView() {
           />
         </FieldRow>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', paddingTop: '8px', borderTop: '1px solid var(--rule)' }}>
+          {/* Log Level → hot-reloaded in-process (no restart). All other OTel
+              fields require the daemon to restart to rebuild the exporters —
+              "Apply" saves settings then sends SIGHUP; launchd restarts it. */}
           <button
             type="button"
-            onClick={() => save({
-              log_level: settings.log_level,
-              otlp_enabled: settings.otlp_enabled,
-              otlp_endpoint: settings.otlp_endpoint,
-              oo_email: settings.oo_email,
-              oo_password: settings.oo_password,
-            }, setObservabilityStatus)}
+            onClick={applyObservability}
+            disabled={reloadStatus === 'saving' || reloadStatus === 'reloading'}
             style={{
               background: 'var(--accent)',
               color: '#fff',
@@ -189,14 +247,18 @@ export default function SettingsView() {
               padding: '5px 14px',
               borderRadius: '6px',
               border: 'none',
-              cursor: 'default',
+              cursor: reloadStatus === 'saving' || reloadStatus === 'reloading' ? 'not-allowed' : 'default',
+              opacity: reloadStatus === 'saving' || reloadStatus === 'reloading' ? 0.7 : 1,
               boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
             }}
           >
-            Save
+            {reloadStatus === 'saving' ? 'Saving…' : reloadStatus === 'reloading' ? 'Reloading…' : 'Apply'}
           </button>
-          {observabilityStatus === 'saved' && <span style={{ fontSize: '12px', color: 'var(--success)' }}>Saved</span>}
-          {observabilityStatus === 'error' && <span style={{ fontSize: '12px', color: 'var(--warn)' }}>Failed to save</span>}
+          {reloadStatus === 'done' && <span style={{ fontSize: '12px', color: 'var(--success)' }}>Active</span>}
+          {reloadStatus === 'error' && <span style={{ fontSize: '12px', color: 'var(--warn)' }}>Failed</span>}
+          <span style={{ fontSize: '11px', color: 'var(--ink-3)' }}>
+            {reloadStatus === 'reloading' ? 'Restarting daemon…' : 'Log level applies next tick · endpoint/credentials require restart'}
+          </span>
           <button
             type="button"
             onClick={() => {

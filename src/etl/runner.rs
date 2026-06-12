@@ -134,8 +134,19 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<V
 
     let result: Result<()> = async {
         let mut batch = first_batch;
+        let mut batch_count: usize = 0;
 
         loop {
+            batch_count += 1;
+            let batch_min = batch.first().map(|f| f.id).unwrap_or(0);
+            let batch_max = batch.last().map(|f| f.id).unwrap_or(0);
+            debug!(
+                batch = batch_count,
+                frame_id_min = batch_min,
+                frame_id_max = batch_max,
+                frame_count = batch.len(),
+                "ETL batch starting"
+            );
             for frame in &batch {
                 let app = frame.app_name.trim();
                 let window = frame
@@ -225,6 +236,13 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<V
                                 },
                             )
                             .await?;
+                            info!(
+                                session_id = sid,
+                                app_name = closing_app,
+                                frame_count = block_frame_count,
+                                reason = "pre-gap close",
+                                "session closed into app_sessions"
+                            );
                             new_session_ids.push(sid);
                             sessions_closed += cnt;
                         }
@@ -301,6 +319,13 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<V
                             },
                         )
                         .await?;
+                        info!(
+                            session_id = sid,
+                            app_name = old_app,
+                            frame_count = block_frame_count,
+                            reason = "app switch",
+                            "session closed into app_sessions"
+                        );
                         new_session_ids.push(sid);
                         sessions_closed += cnt;
 
@@ -329,6 +354,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<V
         // Upsert the still-open block into active_session.
         if let Some(ref open_app) = current_app {
             if block_frame_count > 0 {
+                debug!(app_name = open_app, frame_count = block_frame_count, "upserting open block into active_session");
                 sessions_closed += upsert_open_block(
                     screenpipe,
                     meridian,
@@ -360,6 +386,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<V
     }
 
     update_cursor(meridian, last_processed_id, run_id).await?;
+    debug!(cursor = last_processed_id, run_id, "ETL cursor advanced");
     complete_etl_run(meridian, run_id, sessions_closed, None).await?;
 
     tracing::Span::current().record("sessions_closed", sessions_closed);

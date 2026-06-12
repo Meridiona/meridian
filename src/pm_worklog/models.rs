@@ -46,8 +46,13 @@ pub struct SessionBundle {
     pub raw_text_bytes: i64,
     #[serde(default)]
     pub is_heavy: bool,
+    /// Verbatim provider status name (e.g. "In Review") — context for the synth.
     #[serde(default)]
     pub pm_task_status: Option<String>,
+    /// Normalized "is this ticket done/closed?" signal — drives the ticket-closed
+    /// risk flag. Derived by the status resolver, not by string-matching.
+    #[serde(default)]
+    pub pm_task_is_terminal: bool,
     #[serde(default)]
     pub pm_task_title: Option<String>,
     #[serde(default)]

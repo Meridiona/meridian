@@ -6,6 +6,7 @@ import { GeistMono } from 'geist/font/mono'
 import { Instrument_Serif } from 'next/font/google'
 import './globals.css'
 import { ThemeProvider } from '@/lib/theme-context'
+import NoticeBar from '@/components/NoticeBar'
 
 const instrumentSerif = Instrument_Serif({
   weight: '400',
@@ -25,6 +26,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className={`${GeistSans.variable} ${GeistMono.variable} ${instrumentSerif.variable}`}>
       <body className="min-h-screen font-sans">
         <ThemeProvider>
+          <NoticeBar />
           {children}
         </ThemeProvider>
       </body>

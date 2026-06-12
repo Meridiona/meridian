@@ -1,3 +1,101 @@
+## [1.50.1](https://github.com/Meridiona/meridian/compare/v1.50.0...v1.50.1) (2026-06-12)
+
+
+### Bug Fixes
+
+* **tasks:** sort task sessions in descending order by start time ([#270](https://github.com/Meridiona/meridian/issues/270)) ([c807305](https://github.com/Meridiona/meridian/commit/c807305dddb879b84bce22529096485769d172f6))
+
+# [1.50.0](https://github.com/Meridiona/meridian/compare/v1.49.2...v1.50.0) (2026-06-11)
+
+
+### Features
+
+* **observability:** system notices fault bus, log viewer UI, and UI auth for all providers ([#266](https://github.com/Meridiona/meridian/issues/266)) ([916a6d2](https://github.com/Meridiona/meridian/commit/916a6d20118da290fc8be64026d608f6d366ebb0))
+
+## [1.49.2](https://github.com/Meridiona/meridian/compare/v1.49.1...v1.49.2) (2026-06-11)
+
+
+### Bug Fixes
+
+* **dev:** suppress update-available banner in dev mode ([#265](https://github.com/Meridiona/meridian/issues/265)) ([77e50b4](https://github.com/Meridiona/meridian/commit/77e50b40a1eefec24fe2d0abd4722037a5d0e2c8))
+
+## [1.49.1](https://github.com/Meridiona/meridian/compare/v1.49.0...v1.49.1) (2026-06-11)
+
+
+### Bug Fixes
+
+* **dev:** correct stale summary text printed after install-dev.sh ([#264](https://github.com/Meridiona/meridian/issues/264)) ([147425d](https://github.com/Meridiona/meridian/commit/147425df369a36d435f2acb4c4f688677a57f1cd))
+
+# [1.49.0](https://github.com/Meridiona/meridian/compare/v1.48.2...v1.49.0) (2026-06-11)
+
+
+### Features
+
+* **dev:** add hot-reload dev environment with dev-start.sh ([5280dbb](https://github.com/Meridiona/meridian/commit/5280dbbbf058f9f2dfbeff4fc1c64d2a66c3f509))
+
+## [1.48.2](https://github.com/Meridiona/meridian/compare/v1.48.1...v1.48.2) (2026-06-11)
+
+
+### Bug Fixes
+
+* **github:** guard against null nodes in ProjectV2 GraphQL response ([8098c60](https://github.com/Meridiona/meridian/commit/8098c60b25077bb0f46393a7c7500e9dd41ab585))
+* **pm:** make task status dynamic across all providers ([aff118f](https://github.com/Meridiona/meridian/commit/aff118f769d239d371bf2e656fa0c935e9111ecb))
+* **pm:** renumber migration to 036, fmt, and type alias ([82e352d](https://github.com/Meridiona/meridian/commit/82e352d3e58eb069e5c5dd565c1bb585f6a56c17)), closes [#258](https://github.com/Meridiona/meridian/issues/258)
+* **pm:** update eval dataset builder for dynamic status ([41b8746](https://github.com/Meridiona/meridian/commit/41b8746332a75e9830fe418cd8932a7bd0863580))
+* **status:** word-boundary keyword matching + once_cell env cache ([92b8901](https://github.com/Meridiona/meridian/commit/92b89014405ac96e56dde2c6dbb0da2a53eff3c5))
+
+## [1.48.1](https://github.com/Meridiona/meridian/compare/v1.48.0...v1.48.1) (2026-06-11)
+
+
+### Bug Fixes
+
+* **db:** self-heal migration checksums instead of crash-looping ([190a52f](https://github.com/Meridiona/meridian/commit/190a52f71d9e38e51f3dfbebdb09bf7d31dba5c3))
+
+# [1.48.0](https://github.com/Meridiona/meridian/compare/v1.47.0...v1.48.0) (2026-06-11)
+
+
+### Bug Fixes
+
+* **tasks:** address PR review — fix epic map key, isDueSoon, dates formatting, startDate removal ([f461d50](https://github.com/Meridiona/meridian/commit/f461d500f16a573824cb00e1370f5f016613fcda))
+
+
+### Features
+
+* **daemon:** SIGHUP-triggered restart + UI Apply button with polling ([f7e4cbb](https://github.com/Meridiona/meridian/commit/f7e4cbbe9e5e69f39fad2804aea41693c4c0e2f4))
+* **observability:** configure OpenObserve OTLP export from UI settings ([01ff003](https://github.com/Meridiona/meridian/commit/01ff003ee1b4fbe883114f48f4e02ed98f9b082b))
+* **observability:** hot-reload log level without daemon restart ([1162866](https://github.com/Meridiona/meridian/commit/1162866e394f44c5ada96c3ac6ff5acfee7fad86))
+* **tasks:** fetch and store due_date/start_date from Jira and Linear ([d983355](https://github.com/Meridiona/meridian/commit/d983355b8c6a107cc8c61ed91e6a9a6fb02a6b71))
+* **ui/tasks:** epic grouping, collapsible sections, due dates, sticky detail ([1dead7f](https://github.com/Meridiona/meridian/commit/1dead7fa2b6dbb60ad88d5c4679ab208e37e92a1))
+
+# [1.47.0](https://github.com/Meridiona/meridian/compare/v1.46.0...v1.47.0) (2026-06-11)
+
+
+### Bug Fixes
+
+* **favicon:** add 48px frame to favicon.ico (16/32/48) ([a2b7766](https://github.com/Meridiona/meridian/commit/a2b77666a350bcd75343295cda6ec010bb3b3355))
+* **favicon:** compress icon.png 139 KB → 52 KB with pngquant --quality=80-95 ([842490b](https://github.com/Meridiona/meridian/commit/842490b02c51b82a66786bf6e7e1a3308f534012))
+* **observability:** address PR [#251](https://github.com/Meridiona/meridian/issues/251) security and validation review comments ([662908e](https://github.com/Meridiona/meridian/commit/662908e793dcd8a7455e1517f6c198f8ad5e90fc)), closes [#3](https://github.com/Meridiona/meridian/issues/3) [#256](https://github.com/Meridiona/meridian/issues/256) [#4](https://github.com/Meridiona/meridian/issues/4)
+* **ui:** add cursor:pointer to all interactive buttons across the product ([552d354](https://github.com/Meridiona/meridian/commit/552d354d3301485c7bd69b79225eb8eb6873076b))
+* **ui:** correct cursor semantics — not-allowed for disabled, remove redundant inline rules ([fbe4858](https://github.com/Meridiona/meridian/commit/fbe485866474c9f9fc81e05fac1b1b24ba573ee1))
+
+
+### Features
+
+* **observability:** configure OpenObserve OTLP export from UI settings ([b7f9aa1](https://github.com/Meridiona/meridian/commit/b7f9aa134053ccc3346bb05ba2d43eb42b3429d7))
+* **ui:** add favicon from Meridiona tray icon ([6ef13ed](https://github.com/Meridiona/meridian/commit/6ef13ed8dcd8b13bdb19661b136511bd808c5dd2))
+
+# [1.46.0](https://github.com/Meridiona/meridian/compare/v1.45.3...v1.46.0) (2026-06-11)
+
+
+### Features
+
+* **ui:** show task title and PM-tool link on worklog cards ([#252](https://github.com/Meridiona/meridian/issues/252)) ([4ecbafa](https://github.com/Meridiona/meridian/commit/4ecbafad59fccded31ed6e0fed586f486e6aeebb))
+
+
+### Reverts
+
+* **ci:** restore single-stage release workflow ([787991e](https://github.com/Meridiona/meridian/commit/787991eaa920cfccd1ae714db9d2ea55a1204a8b))
+
 # [1.43.0](https://github.com/Meridiona/meridian/compare/v1.42.0...v1.43.0) (2026-06-10)
 
 

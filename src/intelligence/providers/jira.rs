@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use sqlx::SqlitePool;
+use std::collections::HashMap;
 
 use crate::config::JiraConfig;
 use crate::intelligence::oauth::jira::JiraReqCtx;
@@ -32,6 +33,65 @@ struct JiraFields {
     updated: String,
     #[serde(rename = "parent")]
     parent: Option<JiraParent>,
+    #[serde(default)]
+    duedate: Option<String>,
+    #[serde(default)]
+    assignee: Option<JiraUser>,
+    #[serde(default)]
+    labels: Vec<String>,
+    // Sprint custom field — Cloud standard; value is an array of sprint objects.
+    #[serde(rename = "customfield_10020", default)]
+    sprint: Option<Vec<JiraSprint>>,
+    // Remaining fields captured for dynamic start-date extraction.
+    #[serde(flatten)]
+    extra: HashMap<String, serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct JiraUser {
+    #[serde(rename = "displayName")]
+    display_name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct JiraSprint {
+    name: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Field discovery
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct JiraFieldMeta {
+    id: String,
+    name: String,
+}
+
+/// Call /rest/api/3/field and return the ID of the field whose name best
+/// matches "start date":
+///   1. exact case-insensitive match on "start date"
+///   2. name contains both "start" and "date" (case-insensitive)
+///
+/// Returns None if no match or if the request fails.
+async fn discover_start_date_field(ctx: &JiraReqCtx) -> Option<String> {
+    let client = reqwest::Client::new();
+    let url = ctx.api_url("/rest/api/3/field");
+    let resp = ctx.apply(client.get(&url)).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let fields: Vec<JiraFieldMeta> = resp.json().await.ok()?;
+
+    // Priority 1: exact match
+    if let Some(f) = fields.iter().find(|f| f.name.eq_ignore_ascii_case("start date")) {
+        return Some(f.id.clone());
+    }
+    // Priority 2: name contains both "start" and "date"
+    fields.iter().find(|f| {
+        let n = f.name.to_lowercase();
+        n.contains("start") && n.contains("date")
+    }).map(|f| f.id.clone())
 }
 
 #[derive(Deserialize)]
@@ -47,6 +107,10 @@ struct JiraParentFields {
 
 #[derive(Deserialize)]
 struct JiraStatus {
+    /// The user-facing status name ("In Review", "Awaiting QA", …) — custom per
+    /// workflow. Stored verbatim as `status_raw`.
+    #[serde(default)]
+    name: String,
     #[serde(rename = "statusCategory")]
     status_category: JiraStatusCategory,
 }
@@ -94,11 +158,17 @@ fn adf_to_plaintext(value: &serde_json::Value) -> String {
     }
 }
 
-fn map_status_category(key: &str) -> &'static str {
-    match key {
-        "done" => "done",
-        "indeterminate" => "in_progress",
-        _ => "todo",
+/// Jira's `statusCategory.key` is a fixed, non-customisable semantic field:
+/// `done` / `indeterminate` / `new`. It is reliable for those three, but Jira
+/// Service Management (and misconfigured Server/Data-Center workflows) can emit
+/// `undefined` ("No Category"). For `undefined` we return `None` so the keyword
+/// heuristic on the raw status name — and any user override — still gets a say,
+/// rather than blindly treating an unlabelled status as open.
+fn native_terminal(category_key: &str) -> Option<bool> {
+    match category_key {
+        "done" => Some(true),
+        "new" | "indeterminate" => Some(false),
+        _ => None,
     }
 }
 
@@ -122,14 +192,22 @@ const SYNC_INTERVAL_MINS: i64 = 5;
         status_code = tracing::field::Empty,
     )
 )]
-async fn fetch(ctx: &JiraReqCtx) -> Result<Vec<JiraIssue>> {
+async fn fetch(ctx: &JiraReqCtx, start_date_field: Option<&str>) -> Result<Vec<JiraIssue>> {
     let client = reqwest::Client::new();
     let url = ctx.api_url("/rest/api/3/search/jql");
+
+    let mut fields = vec![
+        "summary", "description", "issuetype", "project", "updated",
+        "parent", "status", "duedate", "assignee", "labels", "customfield_10020",
+    ];
+    if let Some(id) = start_date_field {
+        fields.push(id);
+    }
 
     let body = serde_json::json!({
         "jql": "assignee = currentUser() AND statusCategory != Done AND type IN (Task, Feature) ORDER BY updated DESC",
         "maxResults": MAX_RESULTS,
-        "fields": ["summary", "description", "issuetype", "project", "updated", "parent", "status"]
+        "fields": fields,
     });
 
     let start = std::time::Instant::now();
@@ -166,7 +244,9 @@ async fn upsert(
     issues: &[JiraIssue],
     jira: &JiraConfig,
     ctx: &JiraReqCtx,
+    start_date_field: Option<&str>,
 ) -> Result<()> {
+    let mut ok_count: usize = 0;
     for issue in issues {
         if !jira.project_keys.is_empty() && !jira.project_keys.contains(&issue.fields.project.key) {
             continue;
@@ -179,7 +259,11 @@ async fn upsert(
             .map(adf_to_plaintext)
             .unwrap_or_default();
 
-        let cat = map_status_category(&issue.fields.status.status_category.key);
+        let status = super::status::resolve(
+            "jira",
+            &issue.fields.status.name,
+            native_terminal(&issue.fields.status.status_category.key),
+        );
         let url = ctx.browse_url(&issue.key);
 
         let (parent_key, epic_title) = issue
@@ -196,28 +280,59 @@ async fn upsert(
             })
             .unwrap_or((None, ""));
 
-        sqlx::query(
+        let assignee_name = issue
+            .fields
+            .assignee
+            .as_ref()
+            .and_then(|a| a.display_name.clone());
+
+        let tags: Option<String> = if issue.fields.labels.is_empty() {
+            None
+        } else {
+            Some(issue.fields.labels.join(", "))
+        };
+
+        let sprint_name = issue
+            .fields
+            .sprint
+            .as_deref()
+            .and_then(|sprints| sprints.first())
+            .and_then(|s| s.name.clone());
+
+        let start_date: Option<String> = start_date_field.and_then(|field_id| {
+            issue.fields.extra.get(field_id)?.as_str().map(str::to_owned)
+        });
+
+        let upsert_result = sqlx::query(
             "INSERT INTO pm_tasks
-               (task_key, provider, title, description_text, status_category,
-                issue_type, project_key, url, parent_key, epic_title, updated_at, fetched_at)
-             VALUES (?, 'jira', ?, ?, ?, ?, ?, ?, ?, ?, ?,
+               (task_key, provider, title, description_text, status_raw, is_terminal,
+                issue_type, project_key, url, parent_key, epic_title, due_date,
+                assignee_name, tags, sprint_name, start_date, updated_at, fetched_at)
+             VALUES (?, 'jira', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                      strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
              ON CONFLICT(task_key) DO UPDATE SET
                title            = excluded.title,
                description_text = excluded.description_text,
-               status_category  = excluded.status_category,
+               status_raw       = excluded.status_raw,
+               is_terminal      = excluded.is_terminal,
                issue_type       = excluded.issue_type,
                project_key      = excluded.project_key,
                url              = excluded.url,
                parent_key       = excluded.parent_key,
                epic_title       = excluded.epic_title,
+               due_date         = excluded.due_date,
+               assignee_name    = excluded.assignee_name,
+               tags             = excluded.tags,
+               sprint_name      = excluded.sprint_name,
+               start_date       = excluded.start_date,
                updated_at       = excluded.updated_at,
                fetched_at       = excluded.fetched_at",
         )
         .bind(&issue.key)
         .bind(&issue.fields.summary)
         .bind(&description)
-        .bind(cat)
+        .bind(&status.raw)
+        .bind(status.is_terminal)
         .bind(&issue.fields.issuetype.name)
         .bind(&issue.fields.project.key)
         .bind(&url)
@@ -227,10 +342,24 @@ async fn upsert(
         } else {
             Some(epic_title)
         })
+        .bind(&issue.fields.duedate)
+        .bind(assignee_name)
+        .bind(tags)
+        .bind(sprint_name)
+        .bind(start_date)
         .bind(&issue.fields.updated)
         .execute(pool)
         .await
-        .with_context(|| format!("upserting {}", issue.key))?;
+        .with_context(|| format!("upserting {}", issue.key));
+        match upsert_result {
+            Ok(_) => ok_count += 1,
+            Err(ref upsert_err) => {
+                tracing::warn!(task_key = %issue.key, error = ?upsert_err, "jira task upsert failed — skipping");
+            }
+        }
+    }
+    if !issues.is_empty() && ok_count == 0 {
+        anyhow::bail!("all {} jira task upserts failed — DB write errors above", issues.len());
     }
     Ok(())
 }
@@ -313,16 +442,38 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
         Ok(ctx) => ctx,
         Err(e) => {
             tracing::warn!(error = %e, "jira auth unavailable — keeping stale cache");
+            let msg = format!("Jira auth failed — {e}");
+            let _ = super::stamp_sync_error(pool, "jira", &msg).await;
             return Ok(None);
         }
     };
+    let auth_method = if jira.api_token.is_empty() { "oauth" } else { "api_token" };
+    tracing::debug!(auth_method, "jira auth resolved");
 
-    match fetch(&ctx).await {
+    let start_date_field = discover_start_date_field(&ctx).await;
+    if let Some(ref id) = start_date_field {
+        tracing::debug!(field_id = %id, "discovered jira start date field");
+    }
+
+    match fetch(&ctx, start_date_field.as_deref()).await {
         Ok(issues) => {
             let keys: Vec<String> = issues.iter().map(|i| i.key.clone()).collect();
             let n = keys.len();
+            let project_key = issues.first().map(|i| i.fields.project.key.as_str()).unwrap_or("-");
+            let terminal_count = issues
+                .iter()
+                .filter(|i| native_terminal(&i.fields.status.status_category.key) == Some(true))
+                .count();
             tracing::debug!(fetched_count = n, "jira fetch completed");
-            upsert(pool, &issues, jira, &ctx).await?;
+            tracing::info!(
+                issue_count = n,
+                project_key,
+                upserted = n,
+                terminal_skipped = terminal_count,
+                auth_method,
+                "jira issues fetched"
+            );
+            upsert(pool, &issues, jira, &ctx, start_date_field.as_deref()).await?;
             sqlx::query(
                 "INSERT INTO pm_sync_state (provider, last_synced_at)
                  VALUES ('jira', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
@@ -345,10 +496,13 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
                 );
             }
             tracing::info!(upserted_count = n, "jira tasks refreshed");
+            let _ = super::clear_sync_error(pool, "jira").await;
             Ok(Some(keys))
         }
         Err(e) => {
             tracing::warn!(error = %e, "jira fetch failed — keeping stale cache");
+            let msg = format!("Jira sync failed — {e}");
+            let _ = super::stamp_sync_error(pool, "jira", &msg).await;
             Ok(None)
         }
     }
@@ -387,9 +541,9 @@ mod tests {
     async fn insert_jira_task(pool: &SqlitePool, task_key: &str) {
         sqlx::query(
             "INSERT INTO pm_tasks
-               (task_key, provider, title, description_text, status_category,
+               (task_key, provider, title, description_text, status_raw, is_terminal,
                 issue_type, project_key, url, updated_at, fetched_at)
-             VALUES (?, 'jira', 'Test Task', '', 'todo', 'Story', 'KAN', '',
+             VALUES (?, 'jira', 'Test Task', '', 'To Do', 0, 'Story', 'KAN', '',
                      strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
                      strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
         )
@@ -403,9 +557,9 @@ mod tests {
     async fn insert_other_task(pool: &SqlitePool, task_key: &str, provider: &str) {
         sqlx::query(
             "INSERT INTO pm_tasks
-               (task_key, provider, title, description_text, status_category,
+               (task_key, provider, title, description_text, status_raw, is_terminal,
                 issue_type, project_key, url, updated_at)
-             VALUES (?, ?, 'Other Task', '', 'todo', 'Story', 'GH', '',
+             VALUES (?, ?, 'Other Task', '', 'To Do', 0, 'Story', 'GH', '',
                      strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
         )
         .bind(task_key)

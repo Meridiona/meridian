@@ -1,30 +1,43 @@
 #!/usr/bin/env bash
 # ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-# Dev-mode install: debug Rust binary, no Next.js production build, no tray build.
-# Background services (screenpipe, MLX server, Rust daemon) still register as launchd agents.
-# UI:  cd ui && npm run dev
-# Tray: automatically starts in a new terminal via npm run tauri dev
+# Dev-mode install: build deps and register only the infrastructure launchd agents
+# (screenpipe, a11y-helper). The Rust daemon and MLX server are NOT registered
+# as launchd agents — run them in watch mode via: bash dev-start.sh
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Run main install with --dev flag
-bash "${REPO_ROOT}/install.sh" --dev "$@"
+# Run main install: builds Rust (debug), installs UI/tray deps, sets up Python
+# venv + MLX. --no-daemon skips all launchd registration so we can selectively
+# register only screenpipe and a11y-helper below.
+bash "${REPO_ROOT}/install.sh" --dev --no-daemon "$@"
 
-# Start tray app in a new Terminal window
+# Write 'dev' into ~/.meridian/app/VERSION so the UI update-available banner
+# never shows in dev mode (the version check returns false when current='dev').
+mkdir -p "${HOME}/.meridian/app"
+echo "dev" > "${HOME}/.meridian/app/VERSION"
+echo "  ✓ ~/.meridian/app/VERSION set to 'dev' (suppresses update banner)"
+
+# Register only the infrastructure agents that we don't actively develop.
+# The Rust daemon and MLX server are intentionally excluded — dev-start.sh
+# runs them with hot-reload instead.
 echo ""
-echo "→ Starting tray app in a new Terminal window..."
-osascript <<APPLESCRIPT
-tell application "Terminal"
-    activate
-    do script "cd '${REPO_ROOT}/tray' && npm run tauri dev"
-end tell
-APPLESCRIPT
+echo "→ Installing infrastructure launchd agents (screenpipe + a11y-helper)..."
+bash "${REPO_ROOT}/scripts/install-screenpipe-daemon.sh"
+bash "${REPO_ROOT}/scripts/install-a11y-helper-daemon.sh"
+echo "  ✓ screenpipe + a11y-helper registered"
 
-echo "  ✓ Tray app starting — it will open in a new Terminal window"
 echo ""
-echo "You can now:"
-echo "  cd ui && npm run dev          # start Next.js dashboard (separate terminal)"
-echo "  tail -f ~/.meridian/logs/*.log # monitor background services"
-
+echo "✓ Dev environment ready."
+echo ""
+echo "Start all services with hot-reload:"
+echo "  bash dev-start.sh"
+echo ""
+echo "What dev-start.sh opens (4 Terminal windows):"
+echo "  1. Rust daemon   — cargo watch, rebuilds on every .rs save"
+echo "  2. MLX server    — uvicorn --reload, reloads on .py changes"
+echo "  3. Next.js UI    — http://localhost:3939 (hot reload)"
+echo "  4. Tauri tray    — hot reload"
+echo ""
+echo "screenpipe + a11y-helper run via launchd and restart automatically."
