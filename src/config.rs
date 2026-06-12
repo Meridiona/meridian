@@ -24,7 +24,8 @@ pub struct RuntimeSettings {
     pub poll_interval_secs: u64,
     pub jira_update_enabled: bool,
     // OpenObserve OTLP export — all three must be non-empty for export to activate.
-    // Takes precedence over MERIDIAN_OTLP_ENDPOINT / MERIDIAN_OO_AUTH env vars.
+    // settings.json is the ONLY credential source (MERIDIAN_OO_AUTH is deprecated
+    // and ignored); otlp_endpoint still falls back to MERIDIAN_OTLP_ENDPOINT.
     pub otlp_enabled: bool,
     pub otlp_endpoint: Option<String>,
     pub oo_email: Option<String>,
