@@ -1,3 +1,26 @@
+# [1.51.0](https://github.com/Meridiona/meridian/compare/v1.50.1...v1.51.0) (2026-06-12)
+
+
+### Bug Fixes
+
+* **triage:** harden curation persistence against silent data loss ([8d04264](https://github.com/Meridiona/meridian/commit/8d042643bfd0298db19a72debc45599c92c8755e))
+* **ui:** add Clean-up to the real sidebar nav (not Nav.tsx) ([232be4e](https://github.com/Meridiona/meridian/commit/232be4e3d24a06efb2913c15b4b8a60eaabc7662))
+
+
+### Features
+
+* **triage:** deterministic ticket-triage engine for onboarding board cleanup ([2f99632](https://github.com/Meridiona/meridian/commit/2f99632f7e6e94dbf9bdeb4534590b68b990b84f))
+* **triage:** flag tickets missing a due date (board-guarded) ([df4bb04](https://github.com/Meridiona/meridian/commit/df4bb041abedea157ba5855ce4778864a3c967ac))
+* **triage:** full Definition-of-Ready ruleset + per-rule fix model ([d6a4a74](https://github.com/Meridiona/meridian/commit/d6a4a741170dfc2885a14839f1f87d1bb1f9aa7d))
+* **triage:** persist triage verdicts, run on sync, gate classification ([dde65c2](https://github.com/Meridiona/meridian/commit/dde65c29fafb9931afc8090dec03a09a9a9ad3ec))
+* **triage:** treat far-future due dates as not-current work ([c093b14](https://github.com/Meridiona/meridian/commit/c093b146d39b1a848773f93f56e293d392bf832d))
+* **triage:** write board-hygiene fixes back to the real tracker ([fefb681](https://github.com/Meridiona/meridian/commit/fefb68177772df69a1917a7c9504fd42a9243f7a))
+* **ui:** board-hygiene fix dialog from the Tasks view ([1c14dfa](https://github.com/Meridiona/meridian/commit/1c14dfabf7f2491669bbe2eeac0ad81df9506abc))
+* **ui:** onboarding board-cleanup screen + triage API ([653b2a7](https://github.com/Meridiona/meridian/commit/653b2a71ae73ac7eea48bb65a7b1d62dd8d45dd7))
+* **ui:** redesign cleanup page + per-issue ignore (must-fix can't be ignored) ([a536802](https://github.com/Meridiona/meridian/commit/a5368020bde295dc08a7f6007ecd3549e1b93731))
+* **ui:** severity-tiered cleanup — must-fix banner + cleanup page ([fac0348](https://github.com/Meridiona/meridian/commit/fac0348ba5fce1183a8a36ce47cc4782c5cb2a25))
+* **ui:** surface board-hygiene fixes inline in the Tasks view ([5c1ef25](https://github.com/Meridiona/meridian/commit/5c1ef25dd9707faa83a4cd06c1ee5c9a22e88d4d))
+
 ## [1.50.1](https://github.com/Meridiona/meridian/compare/v1.50.0...v1.50.1) (2026-06-12)
 
 
