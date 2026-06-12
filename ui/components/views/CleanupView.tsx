@@ -2,7 +2,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { TaskKey, ProviderGlyph } from '@/components/atoms'
+import { TaskKey, ProviderGlyph, Card, SectionHead } from '@/components/atoms'
 import HygieneDialog from '@/components/HygieneDialog'
 import { hasMustFix, type HygieneIssue } from '@/lib/hygiene'
 import type { TaskSummary, TasksResponse } from '@/app/api/tasks/route'
@@ -87,103 +87,82 @@ export default function CleanupView() {
   const ready = total - (groups.must.length + groups.nice.length + groups.review.length)
   const attention = groups.must.length + groups.nice.length + groups.review.length
   const healthPct = total > 0 ? Math.round((ready / total) * 100) : 100
+  const healthTone = healthPct >= 90 ? 'var(--success)' : healthPct >= 60 ? 'var(--accent)' : 'var(--warn)'
 
   return (
-    <div className="max-w-3xl mx-auto px-6 md:px-8 py-8 rise">
-      {/* Header */}
-      <header className="mb-8">
-        <p className="text-[11px] uppercase tracking-[0.2em] mb-1" style={{ color: 'var(--ink-3)' }}>Board health</p>
-        <h1 className="type-title" style={{ color: 'var(--ink)' }}>Clean-up</h1>
-        <p className="text-[13px] mt-2 max-w-prose" style={{ color: 'var(--ink-3)' }}>
-          A healthy board means Meridian attributes your work accurately. Must-fix items come first;
-          the rest you can tidy, ignore, or leave for later.
-        </p>
+    <div className="space-y-10">
+      {/* Header — same shape as Week / Tasks: kicker + title, big stat on the right */}
+      <header className="rise flex items-end justify-between">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Board health</p>
+          <h1 className="type-title mt-1" style={{ color: 'var(--ink)' }}>Clean-up</h1>
+        </div>
+        <div className="text-right">
+          <p className="font-mono tnum text-[32px] leading-none" style={{ color: healthTone }}>{healthPct}</p>
+          <p className="text-[11px] mt-1.5" style={{ color: 'var(--ink-3)' }}>Board Score</p>
+        </div>
       </header>
 
-      {/* Health summary */}
-      <div className="flex items-stretch gap-4 mb-9">
-        <HealthRing pct={healthPct} />
-        <div className="grid grid-cols-3 flex-1 rounded-xl border overflow-hidden" style={{ borderColor: 'var(--rule)' }}>
-          <Stat label="Ready" value={ready} tone="var(--success)" />
-          <Stat label="Must fix" value={groups.must.length} tone="var(--warn)" border />
-          <Stat label="To tidy" value={groups.nice.length + groups.review.length} tone="var(--accent)" border />
-        </div>
+      {/* Summary tiles — the Week-view insight grid */}
+      <div className="grid grid-cols-3 gap-6">
+        <Insight kicker="Ready Work Items" value={ready} tone="var(--success)"
+          body="Have everything Meridian needs to attribute your work." />
+        <Insight kicker="Must fix" value={groups.must.length} tone="var(--warn)"
+          body="Missing a due date, description, or clear title. Can't be ignored." />
+        <Insight kicker="To tidy" value={groups.nice.length + groups.review.length} tone="var(--accent)"
+          body="Optional hygiene, or stale tickets to review. Fix at leisure." />
       </div>
 
       {attention === 0 ? (
         <AllClear />
       ) : (
-        <div className="space-y-9">
-          <Section title="Must fix" tone={TONE.must_fix}
-            blurb="Meridian can't track these accurately until they're cleared — these cannot be ignored."
-            tasks={groups.must}>
-            {t => <TicketCard key={t.key} task={t} issues={visibleIssues(t)} tone={TONE.must_fix}
-              onFix={() => setFixTask(t)} />}
+        <>
+          <Section kicker="Can't track without these" title="Must fix" count={groups.must.length}
+            blurb="Meridian can't track these accurately until they're cleared — these cannot be ignored.">
+            {groups.must.map(t => <TicketCard key={t.key} task={t} issues={visibleIssues(t)} tone={TONE.must_fix}
+              onFix={() => setFixTask(t)} />)}
           </Section>
 
-          <Section title="Nice to fix" tone={TONE.optional}
-            blurb="Good hygiene — an epic, labels, a priority or estimate. Fix, ignore, or come back later."
-            tasks={groups.nice}>
-            {t => <TicketCard key={t.key} task={t} issues={visibleIssues(t)} tone={TONE.optional}
-              onFix={() => setFixTask(t)} onIgnore={code => ignore(t.key, code)} onLater={() => later(t.key)} />}
+          <Section kicker="Good hygiene" title="Nice to fix" count={groups.nice.length}
+            blurb="An epic, labels, a priority or estimate. Fix, ignore, or come back later.">
+            {groups.nice.map(t => <TicketCard key={t.key} task={t} issues={visibleIssues(t)} tone={TONE.optional}
+              onFix={() => setFixTask(t)} onIgnore={code => ignore(t.key, code)} onLater={() => later(t.key)} />)}
           </Section>
 
-          <Section title="Review" tone={TONE.review}
-            blurb="Looks stale or unclear. Keep it, or open it to close in your tracker."
-            tasks={groups.review}>
-            {t => <TicketCard key={t.key} task={t} issues={[]} tone={TONE.review} review
-              onFix={() => setFixTask(t)} onKeep={() => keep(t.key)} />}
+          <Section kicker="Stale or unclear" title="Review" count={groups.review.length}
+            blurb="Looks stale or unclear. Keep it, or open it to close in your tracker.">
+            {groups.review.map(t => <TicketCard key={t.key} task={t} issues={[]} tone={TONE.review} review
+              onFix={() => setFixTask(t)} onKeep={() => keep(t.key)} />)}
           </Section>
-        </div>
+        </>
       )}
 
-      {fixTask && <HygieneDialog task={fixTask} onClose={() => { setFixTask(null); load() }} />}
+      {fixTask && <HygieneDialog task={fixTask} onClose={() => { setFixTask(null); load() }} onApplied={load} />}
     </div>
   )
 }
 
-function HealthRing({ pct }: { pct: number }) {
-  const size = 84, r = size / 2 - 7, c = 2 * Math.PI * r
-  const tone = pct >= 90 ? 'var(--success)' : pct >= 60 ? 'var(--accent)' : 'var(--warn)'
+// Insight tile — same Card vocabulary as WeekView's insight grid.
+function Insight({ kicker, value, tone, body }: { kicker: string; value: number; tone: string; body: string }) {
   return (
-    <div className="relative shrink-0" style={{ width: size, height: size }}>
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--rule-2)" strokeWidth="6" />
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={tone} strokeWidth="6" strokeLinecap="round"
-          strokeDasharray={`${(c * pct) / 100} ${c}`} transform={`rotate(-90 ${size / 2} ${size / 2})`} />
-      </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="type-stat tnum" style={{ color: 'var(--ink)', fontSize: 20 }}>{pct}</span>
-        <span className="text-[9px] uppercase tracking-[0.14em]" style={{ color: 'var(--ink-3)' }}>healthy</span>
-      </div>
-    </div>
+    <Card className="p-5">
+      <p className="text-[10px] uppercase tracking-[0.18em] mb-2" style={{ color: 'var(--ink-3)' }}>{kicker}</p>
+      <p className="type-callout" style={{ color: value > 0 ? tone : 'var(--ink-4)' }}>{value}</p>
+      <p className="text-[12px] mt-2 leading-relaxed" style={{ color: 'var(--ink-2)' }}>{body}</p>
+    </Card>
   )
 }
 
-function Stat({ label, value, tone, border }: { label: string; value: number; tone: string; border?: boolean }) {
-  return (
-    <div className={`px-4 py-4 flex flex-col justify-center ${border ? 'rule-l' : ''}`} style={{ borderLeftColor: 'var(--rule)' }}>
-      <span className="type-stat tnum" style={{ color: value > 0 ? tone : 'var(--ink-4)', fontSize: 24 }}>{value}</span>
-      <span className="text-[10px] uppercase tracking-[0.14em] mt-1" style={{ color: 'var(--ink-3)' }}>{label}</span>
-    </div>
-  )
-}
-
-function Section({ title, tone, blurb, tasks, children }: {
-  title: string; tone: string; blurb: string; tasks: TaskSummary[]
-  children: (t: TaskSummary) => React.ReactNode
+// A group of tickets under the shared SectionHead. Hidden when empty.
+function Section({ kicker, title, count, blurb, children }: {
+  kicker: string; title: string; count: number; blurb: string; children: React.ReactNode
 }) {
-  if (tasks.length === 0) return null
+  if (count === 0) return null
   return (
     <section>
-      <div className="flex items-center gap-2 mb-1">
-        <span className="w-2 h-2 rounded-full" style={{ background: tone }} />
-        <h2 className="text-[15px] font-medium" style={{ color: 'var(--ink)' }}>
-          {title} <span style={{ color: 'var(--ink-3)' }}>· {tasks.length}</span>
-        </h2>
-      </div>
-      <p className="text-[12px] mb-3 max-w-xl" style={{ color: 'var(--ink-3)' }}>{blurb}</p>
-      <div className="space-y-2.5">{tasks.map(children)}</div>
+      <SectionHead kicker={kicker} title={<>{title} <span style={{ color: 'var(--ink-3)' }}>· {count}</span></>} />
+      <p className="text-[12px] mb-3 max-w-xl -mt-1.5" style={{ color: 'var(--ink-3)' }}>{blurb}</p>
+      <div className="space-y-2.5">{children}</div>
     </section>
   )
 }
@@ -258,10 +237,9 @@ function TicketCard({ task, issues, tone, review, onFix, onIgnore, onLater, onKe
 
 function AllClear() {
   return (
-    <div className="rounded-2xl border p-10 text-center" style={{ background: 'var(--surface)', borderColor: 'var(--rule)' }}>
-      <div aria-hidden style={{ fontSize: 34 }} className="mb-2">✨</div>
-      <h2 className="text-[18px] font-medium mb-1" style={{ color: 'var(--ink)' }}>Your board is healthy</h2>
-      <p className="text-sm" style={{ color: 'var(--ink-3)' }}>Every ticket has what Meridian needs. Nothing to clean up.</p>
+    <div className="py-16 text-center rounded-xl border" style={{ borderColor: 'var(--rule)', background: 'var(--surface)' }}>
+      <p className="type-empty" style={{ color: 'var(--ink-2)' }}>Your board is healthy.</p>
+      <p className="text-[12px] mt-2" style={{ color: 'var(--ink-3)' }}>Every ticket has what Meridian needs. Nothing to clean up.</p>
     </div>
   )
 }

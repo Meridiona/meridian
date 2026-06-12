@@ -5,8 +5,6 @@ import { useEffect, useRef, useState } from 'react'
 import { fmtDur, fmtClock, AppGlyph, CatDot, TaskKey, StatusPill, SectionHead, Card, CATS, PROVIDER_META } from '@/components/atoms'
 import type { TaskSummary, TasksResponse } from '@/app/api/tasks/route'
 import HygieneDialog from '@/components/HygieneDialog'
-import { hasMustFix } from '@/lib/hygiene'
-import Link from 'next/link'
 import type { TodayResponse } from '@/app/api/today/route'
 import type { IntegrationsResponse } from '@/app/api/integrations/route'
 
@@ -202,29 +200,6 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
         </div>
       </header>
 
-      {(() => {
-        const mustFix = (data?.tasks ?? []).filter(t => t.hygiene && hasMustFix(t.hygiene.issues))
-        if (mustFix.length === 0) return null
-        return (
-          <Link href="/cleanup"
-            className="flex items-center gap-3 rounded-xl border px-4 py-3 transition-colors"
-            style={{ borderColor: 'var(--warn)', background: 'var(--warn)' + '0F' }}>
-            <span style={{ color: 'var(--warn)' }}>⚠</span>
-            <div className="min-w-0 flex-1">
-              <p className="text-[13px] font-medium" style={{ color: 'var(--ink)' }}>
-                {mustFix.length} ticket{mustFix.length === 1 ? '' : 's'} need must-have info
-              </p>
-              <p className="text-[11px] truncate" style={{ color: 'var(--ink-3)' }}>
-                Missing a due date, description, or clear title — Meridian can&apos;t track them accurately yet.
-              </p>
-            </div>
-            <span className="text-[12px] px-3 py-1 rounded-md shrink-0" style={{ background: 'var(--warn)', color: '#fff' }}>
-              Clean up →
-            </span>
-          </Link>
-        )
-      })()}
-
       {showIntegrations ? (
         <div>
           <button
@@ -291,7 +266,7 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
         </>
       )}
 
-      {fixTask && <HygieneDialog task={fixTask} onClose={() => setFixTask(null)} />}
+      {fixTask && <HygieneDialog task={fixTask} onClose={() => setFixTask(null)} onApplied={fetchTasks} />}
     </div>
   )
 }
