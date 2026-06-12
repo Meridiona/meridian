@@ -38,6 +38,18 @@ export default function CleanupView() {
     return ig ? issues.filter(i => !ig.has(i.code)) : issues
   }, [ignored])
 
+  const unignore = useCallback((taskKey: string, code: string) => {
+    setIgnored(prev => {
+      const set = new Set(prev[taskKey] ?? [])
+      set.delete(code)
+      return { ...prev, [taskKey]: set }
+    })
+  }, [])
+
+  const undismiss = useCallback((taskKey: string) => {
+    setDismissed(prev => { const next = new Set(prev); next.delete(taskKey); return next })
+  }, [])
+
   const ignore = useCallback((taskKey: string, code: string) => {
     setIgnored(prev => {
       const next = { ...prev }
@@ -45,27 +57,24 @@ export default function CleanupView() {
       next[taskKey].add(code)
       return next
     })
+    // Revert the optimistic hide if the server rejects it (e.g. must-fix code) or
+    // the request fails — otherwise the issue silently reappears on next reload.
     fetch('/api/triage/ignore', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ task_key: taskKey, code }),
-    }).catch(() => load())
-  }, [load])
+    }).then(r => { if (!r.ok) unignore(taskKey, code) }).catch(() => unignore(taskKey, code))
+  }, [unignore])
 
-  const later = useCallback((taskKey: string) => {
+  const decide = useCallback((taskKey: string, body: Record<string, unknown>) => {
     setDismissed(prev => new Set(prev).add(taskKey))
     fetch('/api/triage/decision', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task_key: taskKey, decision: 'snoozed', snooze_days: 7 }),
-    }).catch(() => load())
-  }, [load])
+      body: JSON.stringify({ task_key: taskKey, ...body }),
+    }).then(r => { if (!r.ok) undismiss(taskKey) }).catch(() => undismiss(taskKey))
+  }, [undismiss])
 
-  const keep = useCallback((taskKey: string) => {
-    setDismissed(prev => new Set(prev).add(taskKey))
-    fetch('/api/triage/decision', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task_key: taskKey, decision: 'keep' }),
-    }).catch(() => load())
-  }, [load])
+  const later = useCallback((taskKey: string) => decide(taskKey, { decision: 'snoozed', snooze_days: 7 }), [decide])
+  const keep = useCallback((taskKey: string) => decide(taskKey, { decision: 'keep' }), [decide])
 
   const groups = useMemo(() => {
     const live = tasks.filter(t => t.hygiene && !dismissed.has(t.key))

@@ -490,7 +490,7 @@ def _fetch_pm_tasks(con: _sqlite3.Connection) -> list[dict[str, Any]]:
     # else flows through, including not-yet-decided `looks_stale` rows — the triage
     # only *proposes*; nothing is removed without the human's confirmed decision.
     # LEFT JOIN keeps this safe if curation has no row for a ticket yet.
-    rows = con.execute(
+    base_cols = (
         "SELECT t.task_key, t.title,"
         "       COALESCE(t.description_text,'') AS description_text,"
         "       COALESCE(t.status_raw,'') AS status_raw,"
@@ -501,9 +501,17 @@ def _fetch_pm_tasks(con: _sqlite3.Connection) -> list[dict[str, Any]]:
         "       COALESCE(t.sprint_name,'') AS sprint_name,"
         "       COALESCE(t.tags,'') AS tags"
         " FROM pm_tasks t"
-        " LEFT JOIN pm_task_curation c ON c.task_key = t.task_key"
-        " WHERE c.decision IS NULL OR c.decision != 'excluded'",
-    ).fetchall()
+    )
+    try:
+        rows = con.execute(
+            base_cols
+            + " LEFT JOIN pm_task_curation c ON c.task_key = t.task_key"
+            " WHERE c.decision IS NULL OR c.decision != 'excluded'",
+        ).fetchall()
+    except _sqlite3.OperationalError:
+        # Pre-migration-038 DB (no pm_task_curation): degrade to the unfiltered
+        # candidate set rather than crashing the whole /classify_sessions call.
+        rows = con.execute(base_cols).fetchall()
     return [dict(r) for r in rows]
 
 

@@ -64,12 +64,15 @@ export async function GET() {
         "SELECT 1 FROM pragma_table_info('pm_task_curation') WHERE name='ignored_codes'",
       ).get()
       const cols = hasIgnored
-        ? 'task_key, bucket, reasons_json, decision, ignored_codes'
-        : "task_key, bucket, reasons_json, decision, '[]' AS ignored_codes"
+        ? 'task_key, bucket, reasons_json, decision, snoozed_until, ignored_codes'
+        : "task_key, bucket, reasons_json, decision, snoozed_until, '[]' AS ignored_codes"
       const cur = db.prepare(`SELECT ${cols} FROM pm_task_curation`)
-        .all() as Array<{ task_key: string; bucket: string; reasons_json: string; decision: string | null; ignored_codes: string }>
+        .all() as Array<{ task_key: string; bucket: string; reasons_json: string; decision: string | null; snoozed_until: string | null; ignored_codes: string }>
+      const nowIso = new Date().toISOString()
       for (const c of cur) {
-        // Snoozed-until-future tickets drop off until their snooze lapses.
+        // Snoozed-until-future tickets drop off (no hygiene) until the snooze lapses —
+        // this is what makes the cleanup page's "Later" actually defer the ticket.
+        if (c.snoozed_until && c.snoozed_until > nowIso) continue
         hygieneByKey[c.task_key] = {
           bucket: c.bucket,
           issues: parseIssues(c.reasons_json, c.ignored_codes),
