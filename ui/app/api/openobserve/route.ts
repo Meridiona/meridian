@@ -50,14 +50,21 @@ export async function POST(req: Request) {
       )
     }
     // Sync the UI-entered credentials into the plist's ZO_ROOT_USER_* env vars
-    // BEFORE the service starts. OpenObserve creates its root account from
-    // these on its FIRST boot (no user store yet) — this is what lets a
-    // first-time user simply pick an email/password in Settings and have it
-    // become their OpenObserve login. On an already-initialised instance the
-    // env vars are ignored, so this is harmless. The service must be stopped
-    // when the plist changes, so patch → (re)bootstrap, not patch-while-running.
+    // BEFORE the service's first start. OpenObserve creates its root account
+    // from these on its FIRST boot only (no user store yet) — this is what
+    // lets a first-time user simply pick an email/password in Settings and
+    // have it become their OpenObserve login. Once the instance is
+    // initialised the env vars are ignored, so we skip the patch AND the
+    // bootout/bootstrap cycle it requires — if OO is already running,
+    // enabling must not bounce it (the restart window reads as "Apply didn't
+    // work" to anyone who clicks "Open OpenObserve" right away).
+    const dataDir = path.join(/*turbopackIgnore: true*/ os.homedir(), '.openobserve', 'data')
+    let initialised = false
+    try {
+      initialised = fs.readdirSync(/*turbopackIgnore: true*/ dataDir).length > 0
+    } catch { /* no data dir yet — first boot */ }
     const { oo_email, oo_password } = readSettings()
-    if (oo_email && oo_password) {
+    if (!initialised && oo_email && oo_password) {
       await launchctl('bootout', target) // ensure next bootstrap reads the fresh plist
       // launchd tears the entry down asynchronously; bootstrap fails with EIO
       // while it lingers. Poll until gone (max ~5 s) — same guard as the

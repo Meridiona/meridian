@@ -149,15 +149,24 @@ export default function SettingsView() {
 
     // The toggle gates the OpenObserve SERVICE itself, not just the exporters:
     // enabled → start the launchd agent; disabled → stop it (and keep it off
-    // across logins). Failure here is surfaced but doesn't block the daemon
-    // reload — the daemon tolerates a missing OTLP backend.
+    // across logins). A failed start is a real error the user must see —
+    // otherwise "Apply" reports success while OpenObserve is down.
     try {
-      await fetch('/api/openobserve', {
+      const ooRes = await fetch('/api/openobserve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: settings.otlp_enabled }),
       })
-    } catch { /* non-fatal — surfaced via the OO health card */ }
+      if (!ooRes.ok) {
+        setReloadStatus('error')
+        setTimeout(() => setReloadStatus('idle'), 3000)
+        return
+      }
+    } catch {
+      setReloadStatus('error')
+      setTimeout(() => setReloadStatus('idle'), 3000)
+      return
+    }
 
     setReloadStatus('reloading')
     const reloadRes = await fetch('/api/daemon/reload', { method: 'POST' })
@@ -220,7 +229,7 @@ export default function SettingsView() {
         <SectionHeader>Observability</SectionHeader>
         {/* Master switch first: when off, OpenObserve is disabled by default and
             the connection fields stay hidden — they appear only once enabled. */}
-        <FieldRow label="OpenObserve Export" description="Send traces and logs to the local OpenObserve instance. Off by default; enabling reveals the connection fields. Takes effect after a daemon restart.">
+        <FieldRow label="OpenObserve Export" description="Send traces and logs to the local OpenObserve instance. Off by default; enabling reveals the connection fields. Apply starts/stops OpenObserve and restarts the daemon for you.">
           <Switch checked={settings.otlp_enabled} onCheckedChange={v => patch({ otlp_enabled: v })} />
         </FieldRow>
         <FieldRow label="Log Level" description="Verbosity of daemon logs — always applies to the local log files, and to OpenObserve export when enabled. DEBUG logs everything; WARNING/ERROR suppress info. Hot-reloads on the next daemon tick.">
@@ -285,7 +294,7 @@ export default function SettingsView() {
           {reloadStatus === 'done' && <span style={{ fontSize: '12px', color: 'var(--success)' }}>Active</span>}
           {reloadStatus === 'error' && <span style={{ fontSize: '12px', color: 'var(--warn)' }}>Failed</span>}
           <span style={{ fontSize: '11px', color: 'var(--ink-3)' }}>
-            {reloadStatus === 'reloading' ? 'Restarting daemon…' : 'Log level applies next tick · endpoint/credentials require restart'}
+            {reloadStatus === 'reloading' ? 'Restarting daemon…' : 'Apply handles everything — starts/stops OpenObserve and restarts the daemon'}
           </span>
           {settings.otlp_enabled && (
             <button
