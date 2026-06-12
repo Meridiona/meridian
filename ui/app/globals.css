@@ -73,8 +73,6 @@ html, body {
 }
 
 * { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-/* Serif glyphs rely on fine strokes — subpixel rendering preserves them better */
-.font-serif { -webkit-font-smoothing: auto; -moz-osx-font-smoothing: auto; }
 
 body, .font-sans {
   font-feature-settings: 'ss01', 'cv11';
@@ -201,8 +199,6 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
   line-height: 0.95;
   letter-spacing: -0.025em;
   font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
 }
 
 /* 56px — page title: main heading on every page */
@@ -212,8 +208,6 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
   line-height: 1;
   letter-spacing: -0.025em;
   font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
 }
 
 /* 36px — section heading: task detail title, sub-section heads */
@@ -223,8 +217,6 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
   line-height: 1.1;
   letter-spacing: -0.025em;
   font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
 }
 
 /* 26px — stat: insight callout / narrative text */
@@ -232,10 +224,7 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
   font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
   font-size: 26px;
   line-height: 1.2;
-  letter-spacing: -0.01em;
   font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
 }
 
 /* 28px italic — active: "You're on · task name" live heading */
@@ -246,8 +235,6 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
   font-style: italic;
   letter-spacing: 0;
   font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
 }
 
 /* 24px italic — empty: empty state messages */
@@ -258,8 +245,6 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
   font-style: italic;
   letter-spacing: 0;
   font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
 }
 
 /* 22px — callout: insight card headline */
@@ -269,8 +254,6 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
   line-height: 1.2;
   letter-spacing: 0;
   font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
 }
 
 /* 22px italic — wordmark: "meridian" in sidebar — slight tracking is intentional */
@@ -281,6 +264,4 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
   font-style: italic;
   letter-spacing: -0.02em;
   font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
 }
