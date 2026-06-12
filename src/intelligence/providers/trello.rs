@@ -275,7 +275,8 @@ pub async fn refresh_if_stale(
         }
         Err(e) => {
             tracing::warn!(error = %e, "trello fetch failed — keeping stale cache");
-            let _ = super::stamp_sync_error(pool, "trello", &format!("Trello sync failed — {e}")).await;
+            let _ =
+                super::stamp_sync_error(pool, "trello", &format!("Trello sync failed — {e}")).await;
             Ok(None)
         }
     }
