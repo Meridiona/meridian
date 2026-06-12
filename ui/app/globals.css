@@ -288,3 +288,24 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
   -webkit-font-smoothing: auto;
   -moz-osx-font-smoothing: auto;
 }
+
+/* ── Radix Switch — iOS-style pill ────────────────────────────────────────────
+   Restored: these styles were added in 706364e (Apple-style Radix controls)
+   and silently dropped when globals.css was rewritten for the type scale.
+   Switch.tsx renders className="meridian-switch" and relies on this block —
+   without it every toggle's track is transparent (invisible). */
+.meridian-switch {
+  background: rgba(120, 120, 128, 0.28);
+  transition: background 0.22s ease;
+}
+.meridian-switch[data-state="checked"] {
+  background: var(--accent);
+}
+.meridian-switch-thumb {
+  transform: translateX(2px);
+  transition: transform 0.22s cubic-bezier(0.25, 0.46, 0.45, 0.94),
+              box-shadow 0.15s ease;
+}
+.meridian-switch-thumb[data-state="checked"] {
+  transform: translateX(20px);
+}
