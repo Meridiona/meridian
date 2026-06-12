@@ -232,27 +232,27 @@ export default function SettingsView() {
         </FieldRow>
         {settings.otlp_enabled && (
           <>
-            <FieldRow label="OTLP Endpoint" description="Leave blank to use the default (localhost:5080).">
-              <TextInput
-                value={settings.otlp_endpoint}
-                onChange={v => patch({ otlp_endpoint: v })}
-                placeholder="http://localhost:5080/api/default/v1/traces"
-              />
-            </FieldRow>
-            <FieldRow label="Email">
+            <FieldRow label="Email" description="Your OpenObserve login. First time? Just pick an email and password here — they become the OpenObserve root account when the service first starts. Already using OpenObserve? Enter the credentials you log in with.">
               <TextInput
                 type="email"
                 value={settings.oo_email}
                 onChange={v => patch({ oo_email: v })}
-                placeholder="admin@example.com"
+                placeholder="you@example.com"
               />
             </FieldRow>
-            <FieldRow label="Password">
+            <FieldRow label="Password" description="Stored locally; used to log in at localhost:5080 and as auth for trace/log export.">
               <TextInput
                 type="password"
                 value={settings.oo_password}
                 onChange={v => patch({ oo_password: v })}
                 placeholder="••••••••"
+              />
+            </FieldRow>
+            <FieldRow label="OTLP Endpoint (optional)" description="Advanced — leave blank for the local OpenObserve instance. Only set this to export to a remote collector.">
+              <TextInput
+                value={settings.otlp_endpoint}
+                onChange={v => patch({ otlp_endpoint: v })}
+                placeholder="http://localhost:5080/api/default/v1/traces"
               />
             </FieldRow>
           </>

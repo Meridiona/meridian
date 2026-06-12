@@ -13,6 +13,7 @@ import { promisify } from 'util'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { readSettings } from '@/lib/settings'
 
 export const dynamic = 'force-dynamic'
 
@@ -47,6 +48,31 @@ export async function POST(req: Request) {
         { error: 'OpenObserve agent not installed — run scripts/install-openobserve-daemon.sh' },
         { status: 409 },
       )
+    }
+    // Sync the UI-entered credentials into the plist's ZO_ROOT_USER_* env vars
+    // BEFORE the service starts. OpenObserve creates its root account from
+    // these on its FIRST boot (no user store yet) — this is what lets a
+    // first-time user simply pick an email/password in Settings and have it
+    // become their OpenObserve login. On an already-initialised instance the
+    // env vars are ignored, so this is harmless. The service must be stopped
+    // when the plist changes, so patch → (re)bootstrap, not patch-while-running.
+    const { oo_email, oo_password } = readSettings()
+    if (oo_email && oo_password) {
+      await launchctl('bootout', target) // ensure next bootstrap reads the fresh plist
+      // launchd tears the entry down asynchronously; bootstrap fails with EIO
+      // while it lingers. Poll until gone (max ~5 s) — same guard as the
+      // install script's bootout wait loop.
+      for (let i = 0; i < 10; i++) {
+        if (!(await launchctl('print', target)).ok) break
+        await new Promise(r => setTimeout(r, 500))
+      }
+      const patch = async (key: string, value: string) => {
+        try {
+          await execFileP('plutil', ['-replace', `EnvironmentVariables.${key}`, '-string', value, plist])
+        } catch { /* plist without EnvironmentVariables dict — leave as installed */ }
+      }
+      await patch('ZO_ROOT_USER_EMAIL', oo_email)
+      await patch('ZO_ROOT_USER_PASSWORD', oo_password)
     }
     // enable first: bootstrap fails with EIO on a disabled service.
     await launchctl('enable', target)
