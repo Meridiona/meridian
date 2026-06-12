@@ -1,0 +1,255 @@
+[
+  {
+    "task_key": "READY-IN-PROGRESS",
+    "title": "Integrate Stripe Checkout for monthly subscriptions",
+    "description_text": "Wire the Stripe Checkout session, handle the webhook, and persist entitlement state with tests.",
+    "status_raw": "In Progress",
+    "updated_at": "2026-06-11T00:00:00Z",
+    "expected": "ready",
+    "board_uses_sprints": false,
+    "note": "active by status + detailed"
+  },
+  {
+    "task_key": "READY-DUE-SOON",
+    "title": "Build the public pricing page on the marketing site",
+    "description_text": "Three tiers, monthly/annual toggle, copy from the launch doc, responsive layout.",
+    "status_raw": "To Do",
+    "due_date": "2026-06-20",
+    "updated_at": "2026-06-10T00:00:00Z",
+    "expected": "ready",
+    "board_uses_sprints": false,
+    "note": "due in 8 days is an active signal"
+  },
+  {
+    "task_key": "READY-IN-SPRINT",
+    "title": "Add untracked sessions surface to the dashboard",
+    "description_text": "Render the untracked bucket in the timeline so users can reattribute lost work.",
+    "status_raw": "To Do",
+    "sprint_name": "Launch Sprint 3",
+    "updated_at": "2026-06-10T00:00:00Z",
+    "expected": "ready",
+    "board_uses_sprints": true,
+    "note": "in the active sprint"
+  },
+  {
+    "task_key": "READY-START-REACHED",
+    "title": "Run the 48 hour founder stability test before pilot",
+    "description_text": "Leave the daemon running for 48h on the founder machine and record any crash or drift.",
+    "status_raw": "To Do",
+    "start_date": "2026-06-01",
+    "updated_at": "2026-06-09T00:00:00Z",
+    "expected": "ready",
+    "board_uses_sprints": false,
+    "note": "start date has passed, work should be underway"
+  },
+  {
+    "task_key": "READY-JIRA-OFFSET",
+    "title": "Investigate and fix top 3 classifier failure modes",
+    "description_text": "Pull the worst eval misses, group by failure mode, and fix the top three with regression goldens.",
+    "status_raw": "In Progress",
+    "updated_at": "2026-06-11T11:34:51.105+0530",
+    "expected": "ready",
+    "board_uses_sprints": false,
+    "note": "real Jira colon-less offset timestamp must parse"
+  },
+  {
+    "task_key": "READY-OVERDUE-WITHIN-GRACE",
+    "title": "Publish ToS, Privacy Policy and Refund Policy pages",
+    "description_text": "Draft the three legal pages, get them reviewed, and link them from the footer.",
+    "status_raw": "To Do",
+    "due_date": "2026-06-05",
+    "updated_at": "2026-06-08T00:00:00Z",
+    "expected": "ready",
+    "board_uses_sprints": false,
+    "note": "overdue by 7 days is within grace, still active"
+  },
+  {
+    "task_key": "READY-KAN-109",
+    "title": "LLM benchmarking and prompt evaluation framework for Session-Task classifier",
+    "description_text": "Set up an offline evaluation harness to compare model quality and prompt variants for the session to task classification pipeline. Goal: make model-swap decisions data-driven rather than intuition-based.",
+    "status_raw": "In Progress",
+    "updated_at": "2026-06-11T11:34:51.105+0530",
+    "expected": "ready",
+    "board_uses_sprints": false,
+    "note": "real board row: in progress, no due, rich description"
+  },
+  {
+    "task_key": "READY-KAN-227",
+    "title": "Prepare Product Hunt listing (target July 8-10 launch)",
+    "description_text": "PH launches require ~30 days of prep. Deliverables: thumbnail, gallery screenshots, tagline, description, first comment story. Find a hunter in devtools.",
+    "status_raw": "To Do",
+    "due_date": "2026-07-08",
+    "updated_at": "2026-06-11T00:00:00Z",
+    "epic_title": "July 1 Launch Execution",
+    "parent_key": "KAN-180",
+    "expected": "ready",
+    "board_uses_sprints": false,
+    "note": "real board row: due within horizon, detailed"
+  },
+  {
+    "task_key": "NEEDS-MISSING-DESC",
+    "title": "Automate the nightly eval run and post results",
+    "description_text": "",
+    "status_raw": "In Progress",
+    "updated_at": "2026-06-10T00:00:00Z",
+    "expected": "needs_detail",
+    "board_uses_sprints": false,
+    "note": "active but empty description"
+  },
+  {
+    "task_key": "NEEDS-THIN-DESC",
+    "title": "Set up email waitlist capture before launch",
+    "description_text": "do the form",
+    "status_raw": "To Do",
+    "due_date": "2026-06-20",
+    "updated_at": "2026-06-10T00:00:00Z",
+    "expected": "needs_detail",
+    "board_uses_sprints": false,
+    "note": "due soon but description is too thin to match"
+  },
+  {
+    "task_key": "NEEDS-VAGUE-TITLE",
+    "title": "Fix bug",
+    "description_text": "Something is broken somewhere in the sign in flow, needs a proper look when there is time.",
+    "status_raw": "In Progress",
+    "updated_at": "2026-06-10T00:00:00Z",
+    "expected": "needs_detail",
+    "board_uses_sprints": false,
+    "note": "rich description but useless generic title"
+  },
+  {
+    "task_key": "NEEDS-THIN-NO-ANCHOR",
+    "title": "Profiles work",
+    "description_text": "build it",
+    "status_raw": "To Do",
+    "due_date": "2026-06-25",
+    "updated_at": "2026-06-10T00:00:00Z",
+    "expected": "needs_detail",
+    "board_uses_sprints": false,
+    "note": "thin, vague, and no epic/parent anchor"
+  },
+  {
+    "task_key": "NEEDS-EMPTY-AND-VAGUE",
+    "title": "WIP",
+    "description_text": "   ",
+    "status_raw": "In Progress",
+    "updated_at": "2026-06-10T00:00:00Z",
+    "expected": "needs_detail",
+    "board_uses_sprints": false,
+    "note": "whitespace-only description and placeholder title"
+  },
+  {
+    "task_key": "STALE-CLASSIC",
+    "title": "Migrate the legacy settings panel to the new design system",
+    "description_text": "Old settings screen still uses the deprecated component library and should be ported over eventually.",
+    "status_raw": "Backlog",
+    "updated_at": "2026-01-01T00:00:00Z",
+    "expected": "looks_stale",
+    "board_uses_sprints": false,
+    "note": "not started, no due, no sprint, 5+ months untouched"
+  },
+  {
+    "task_key": "STALE-OVERDUE-LONG",
+    "title": "Ship the Slack notification integration",
+    "description_text": "Send a daily summary to Slack. Was scoped a while ago and never picked back up after the spike.",
+    "status_raw": "To Do",
+    "due_date": "2026-04-01",
+    "updated_at": "2026-03-01T00:00:00Z",
+    "expected": "looks_stale",
+    "board_uses_sprints": false,
+    "note": "overdue by 72 days, untouched 100+ days"
+  },
+  {
+    "task_key": "STALE-FAR-FUTURE-DUE",
+    "title": "Explore on-device fine tuning for the classifier",
+    "description_text": "Long-horizon research idea to fine tune the local model on the user's own labelled sessions.",
+    "status_raw": "To Do",
+    "due_date": "2027-01-01",
+    "updated_at": "2026-02-01T00:00:00Z",
+    "expected": "looks_stale",
+    "board_uses_sprints": false,
+    "note": "due is far future (not a live signal), old, not started"
+  },
+  {
+    "task_key": "STALE-UNKNOWN-STATUS-OLD",
+    "title": "Decide corporate device policy position for compliance",
+    "description_text": "Open question on whether we support managed corporate devices at launch or defer to later.",
+    "status_raw": "Parked",
+    "updated_at": "2026-02-15T00:00:00Z",
+    "expected": "looks_stale",
+    "board_uses_sprints": false,
+    "note": "unrecognised status reads as not-started, old, no due"
+  },
+  {
+    "task_key": "STALE-OVERDUE-BOUNDARY-15",
+    "title": "Refresh the onboarding screenshots in the docs",
+    "description_text": "The docs still show the old UI. Replace the four onboarding screenshots with current ones.",
+    "status_raw": "To Do",
+    "due_date": "2026-05-28",
+    "updated_at": "2026-03-01T00:00:00Z",
+    "expected": "looks_stale",
+    "board_uses_sprints": false,
+    "note": "overdue by 15 days (just past the 14-day grace), old"
+  },
+  {
+    "task_key": "STALE-SPRINT-BOARD-NO-SPRINT-OLD",
+    "title": "Rework the empty-state illustration on the home view",
+    "description_text": "Designer handed off a new empty-state illustration that we never integrated into the home screen.",
+    "status_raw": "Backlog",
+    "updated_at": "2026-01-20T00:00:00Z",
+    "expected": "looks_stale",
+    "board_uses_sprints": true,
+    "note": "sprint board, ticket not in any sprint, old, not started"
+  },
+  {
+    "task_key": "NOTSURE-ZOMBIE-FRESH",
+    "title": "Audit local data storage for sensitive content exposure",
+    "description_text": "Review what the daemon persists to disk and confirm nothing sensitive is stored in the clear.",
+    "status_raw": "To Do",
+    "updated_at": "2026-06-10T00:00:00Z",
+    "expected": "not_sure",
+    "board_uses_sprints": false,
+    "note": "recently touched but no due/sprint/progress signal — genuinely ambiguous"
+  },
+  {
+    "task_key": "NOTSURE-BLOCKED-RECENT",
+    "title": "Wire pilot user thumbs-down corrections into the eval set",
+    "description_text": "When a pilot user rejects an attribution, capture the correction as a labelled eval example.",
+    "status_raw": "Blocked",
+    "updated_at": "2026-06-09T00:00:00Z",
+    "expected": "not_sure",
+    "board_uses_sprints": false,
+    "note": "unknown status, recent, detailed — can't tell, ask the user"
+  },
+  {
+    "task_key": "NOTSURE-UNPARSEABLE-TS",
+    "title": "Establish baseline classifier accuracy on the golden set",
+    "description_text": "Run the current model against the golden dataset and record the baseline exact-match accuracy.",
+    "status_raw": "Backlog",
+    "updated_at": "not-a-real-timestamp",
+    "expected": "not_sure",
+    "board_uses_sprints": false,
+    "note": "unreadable timestamp must not be treated as old (no false stale)"
+  },
+  {
+    "task_key": "NOTSURE-SPRINT-BOARD-NO-SPRINT-RECENT",
+    "title": "Schedule and conduct 6 compliance discovery interviews",
+    "description_text": "Recruit six target users and run discovery interviews on their compliance and device constraints.",
+    "status_raw": "Backlog",
+    "updated_at": "2026-06-10T00:00:00Z",
+    "expected": "not_sure",
+    "board_uses_sprints": true,
+    "note": "sprint board, not in a sprint, but recent — not old enough to be stale"
+  },
+  {
+    "task_key": "STALE-TERMINAL-DONE",
+    "title": "Set up daily pilot triage cadence",
+    "description_text": "Define the daily standup-style triage for pilot week so feedback gets actioned within a day.",
+    "status_raw": "Done",
+    "is_terminal": true,
+    "updated_at": "2026-06-10T00:00:00Z",
+    "expected": "looks_stale",
+    "board_uses_sprints": false,
+    "note": "already done — does not belong in the active candidate pool"
+  }
+]
