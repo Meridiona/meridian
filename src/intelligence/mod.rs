@@ -105,6 +105,7 @@ pub async fn run_pm_force_sync(meridian: &SqlitePool, config: &Config) -> Result
             }
         }
     }
+    triage_after_sync(meridian).await;
     Ok(())
 }
 
@@ -155,5 +156,23 @@ pub async fn run_pm_sync(meridian: &SqlitePool, config: &Config) -> Result<()> {
             }
         }
     }
+    triage_after_sync(meridian).await;
     Ok(())
+}
+
+/// Re-triage the cached board into `pm_task_curation` after a sync. Best-effort:
+/// a triage failure must never fail the sync (the board is still usable), so we
+/// log and move on.
+async fn triage_after_sync(meridian: &SqlitePool) {
+    match task_triage::run_triage(meridian, chrono::Utc::now()).await {
+        Ok(s) => tracing::debug!(
+            ready = s.ready,
+            needs_detail = s.needs_detail,
+            looks_stale = s.looks_stale,
+            not_sure = s.not_sure,
+            pruned = s.pruned,
+            "board triaged"
+        ),
+        Err(e) => tracing::warn!(error = %e, "board triage after sync failed"),
+    }
 }

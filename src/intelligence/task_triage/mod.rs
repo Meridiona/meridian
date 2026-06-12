@@ -18,10 +18,13 @@
 // a live one as stale.
 
 mod rules;
+pub mod store;
 
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rules::Startedness;
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 
 /// The four onboarding buckets a ticket can land in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +44,27 @@ impl TriageBucket {
             TriageBucket::NeedsDetail => "add_detail",
             TriageBucket::LooksStale => "review_for_close",
             TriageBucket::NotSure => "confirm",
+        }
+    }
+
+    /// Stable wire/storage string. Matches the serde `snake_case` rename.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TriageBucket::Ready => "ready",
+            TriageBucket::NeedsDetail => "needs_detail",
+            TriageBucket::LooksStale => "looks_stale",
+            TriageBucket::NotSure => "not_sure",
+        }
+    }
+
+    /// Parse the storage string back into a bucket.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "ready" => Some(TriageBucket::Ready),
+            "needs_detail" => Some(TriageBucket::NeedsDetail),
+            "looks_stale" => Some(TriageBucket::LooksStale),
+            "not_sure" => Some(TriageBucket::NotSure),
+            _ => None,
         }
     }
 }
@@ -288,6 +312,53 @@ pub fn triage_ticket(t: &TicketSignals, cfg: &TriageConfig) -> TriageVerdict {
 /// "missing" as either NULL or an empty string, and both must read as absent.
 fn opt_nonempty(o: &Option<String>) -> Option<&str> {
     o.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Per-bucket tallies from one triage pass, for logging and the onboarding summary.
+#[derive(Debug, Default, Clone, Copy, Serialize)]
+pub struct TriageSummary {
+    pub ready: u32,
+    pub needs_detail: u32,
+    pub looks_stale: u32,
+    pub not_sure: u32,
+    /// Curation rows removed because their ticket left the board.
+    pub pruned: u64,
+}
+
+impl TriageSummary {
+    fn record(&mut self, bucket: TriageBucket) {
+        match bucket {
+            TriageBucket::Ready => self.ready += 1,
+            TriageBucket::NeedsDetail => self.needs_detail += 1,
+            TriageBucket::LooksStale => self.looks_stale += 1,
+            TriageBucket::NotSure => self.not_sure += 1,
+        }
+    }
+
+    /// Tickets that want the user's attention (everything but `ready`).
+    pub fn needs_attention(&self) -> u32 {
+        self.needs_detail + self.looks_stale + self.not_sure
+    }
+}
+
+/// Triage the whole cached board and persist every verdict into `pm_task_curation`,
+/// then drop curation rows for tickets that left the board. Idempotent: re-running
+/// refreshes machine verdicts but never overwrites a human decision. Runs right
+/// after a PM sync, so the working set is always current.
+pub async fn run_triage(pool: &SqlitePool, now: DateTime<Utc>) -> Result<TriageSummary> {
+    let inputs = store::load_board(pool).await?;
+    let tickets: Vec<TicketSignals> = inputs.iter().map(|i| i.signals.clone()).collect();
+    let cfg = TriageConfig::new(now, board_uses_sprints(&tickets));
+    let now_str = now.to_rfc3339();
+
+    let mut summary = TriageSummary::default();
+    for input in &inputs {
+        let verdict = triage_ticket(&input.signals, &cfg);
+        summary.record(verdict.bucket);
+        store::save_verdict(pool, &input.provider, &verdict, &now_str).await?;
+    }
+    summary.pruned = store::prune_orphans(pool).await?;
+    Ok(summary)
 }
 
 #[cfg(test)]
