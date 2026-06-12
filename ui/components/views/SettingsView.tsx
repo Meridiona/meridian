@@ -198,43 +198,51 @@ export default function SettingsView() {
       {/* Observability */}
       <SectionCard>
         <SectionHeader>Observability</SectionHeader>
-        <FieldRow label="Log Level" description="Controls verbosity of traces and logs sent to OpenObserve. DEBUG exports everything; WARNING/ERROR suppress info spans. Takes effect after a daemon restart.">
+        {/* Master switch first: when off, OpenObserve is disabled by default and
+            the connection fields stay hidden — they appear only once enabled. */}
+        <FieldRow label="OpenObserve Export" description="Send traces and logs to the local OpenObserve instance. Off by default; enabling reveals the connection fields. Takes effect after a daemon restart.">
+          <Switch checked={settings.otlp_enabled} onCheckedChange={v => patch({ otlp_enabled: v })} />
+        </FieldRow>
+        <FieldRow label="Log Level" description="Controls verbosity of traces and logs (OpenObserve and local log files). DEBUG exports everything; WARNING/ERROR suppress info spans. Takes effect after a daemon restart.">
           <Select
             value={settings.log_level}
             onValueChange={v => patch({ log_level: v as RuntimeSettings['log_level'] })}
             options={LOG_LEVEL_OPTIONS}
           />
         </FieldRow>
-        <FieldRow label="OpenObserve Export" description="Send traces and logs to the local OpenObserve instance. Requires credentials below; takes effect after a daemon restart.">
-          <Switch checked={settings.otlp_enabled} onCheckedChange={v => patch({ otlp_enabled: v })} />
-        </FieldRow>
-        <FieldRow label="OTLP Endpoint" description="Leave blank to use the default (localhost:5080).">
-          <TextInput
-            value={settings.otlp_endpoint}
-            onChange={v => patch({ otlp_endpoint: v })}
-            placeholder="http://localhost:5080/api/default/v1/traces"
-          />
-        </FieldRow>
-        <FieldRow label="Email">
-          <TextInput
-            type="email"
-            value={settings.oo_email}
-            onChange={v => patch({ oo_email: v })}
-            placeholder="admin@example.com"
-          />
-        </FieldRow>
-        <FieldRow label="Password">
-          <TextInput
-            type="password"
-            value={settings.oo_password}
-            onChange={v => patch({ oo_password: v })}
-            placeholder="••••••••"
-          />
-        </FieldRow>
+        {settings.otlp_enabled && (
+          <>
+            <FieldRow label="OTLP Endpoint" description="Leave blank to use the default (localhost:5080).">
+              <TextInput
+                value={settings.otlp_endpoint}
+                onChange={v => patch({ otlp_endpoint: v })}
+                placeholder="http://localhost:5080/api/default/v1/traces"
+              />
+            </FieldRow>
+            <FieldRow label="Email">
+              <TextInput
+                type="email"
+                value={settings.oo_email}
+                onChange={v => patch({ oo_email: v })}
+                placeholder="admin@example.com"
+              />
+            </FieldRow>
+            <FieldRow label="Password">
+              <TextInput
+                type="password"
+                value={settings.oo_password}
+                onChange={v => patch({ oo_password: v })}
+                placeholder="••••••••"
+              />
+            </FieldRow>
+          </>
+        )}
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', paddingTop: '8px', borderTop: '1px solid var(--rule)' }}>
           {/* Log Level → hot-reloaded in-process (no restart). All other OTel
-              fields require the daemon to restart to rebuild the exporters —
-              "Apply" saves settings then sends SIGHUP; launchd restarts it. */}
+              fields require the daemon to rebuild its exporters — "Apply" saves
+              settings then sends SIGHUP to ONLY the daemon PID; launchd's
+              KeepAlive relaunches that single service, leaving screenpipe / MLX /
+              UI untouched. */}
           <button
             type="button"
             onClick={applyObservability}
@@ -259,29 +267,31 @@ export default function SettingsView() {
           <span style={{ fontSize: '11px', color: 'var(--ink-3)' }}>
             {reloadStatus === 'reloading' ? 'Restarting daemon…' : 'Log level applies next tick · endpoint/credentials require restart'}
           </span>
-          <button
-            type="button"
-            onClick={() => {
-              let base = 'http://localhost:5080'
-              try {
-                if (settings.otlp_endpoint) base = new URL(settings.otlp_endpoint).origin
-              } catch { /* keep default */ }
-              window.open(base, '_blank', 'noopener,noreferrer')
-            }}
-            style={{
-              background: 'transparent',
-              color: 'var(--accent)',
-              fontSize: '12px',
-              fontWeight: 500,
-              padding: '5px 14px',
-              borderRadius: '6px',
-              border: '1px solid var(--accent)',
-              cursor: 'default',
-              marginLeft: 'auto',
-            }}
-          >
-            Open OpenObserve
-          </button>
+          {settings.otlp_enabled && (
+            <button
+              type="button"
+              onClick={() => {
+                let base = 'http://localhost:5080'
+                try {
+                  if (settings.otlp_endpoint) base = new URL(settings.otlp_endpoint).origin
+                } catch { /* keep default */ }
+                window.open(base, '_blank', 'noopener,noreferrer')
+              }}
+              style={{
+                background: 'transparent',
+                color: 'var(--accent)',
+                fontSize: '12px',
+                fontWeight: 500,
+                padding: '5px 14px',
+                borderRadius: '6px',
+                border: '1px solid var(--accent)',
+                cursor: 'default',
+                marginLeft: 'auto',
+              }}
+            >
+              Open OpenObserve
+            </button>
+          )}
         </div>
       </SectionCard>
 
