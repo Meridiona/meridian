@@ -9,7 +9,7 @@
   /* Fonts */
   --font-sans:  var(--font-geist-sans);
   --font-mono:  var(--font-geist-mono);
-  --font-serif: var(--font-instrument-serif);
+  --font-serif: 'Iowan Old Style', Georgia, serif;
 
   /* Colors → Tailwind utilities (text-*, bg-*, border-*) */
   --color-paper:       var(--paper);
@@ -73,8 +73,6 @@ html, body {
 }
 
 * { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-/* Serif glyphs rely on fine strokes — subpixel rendering preserves them better */
-.font-serif { -webkit-font-smoothing: auto; -moz-osx-font-smoothing: auto; }
 
 body, .font-sans {
   font-feature-settings: 'ss01', 'cv11';
@@ -86,7 +84,7 @@ body, .font-sans {
 }
 
 .font-serif {
-  font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
+  font-family: 'Iowan Old Style', Georgia, serif;
   font-feature-settings: 'liga', 'dlig';
 }
 
@@ -200,91 +198,75 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
 
 /* 72px — hero: Today page main heading */
 .type-hero {
-  font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
+  font-family: 'Iowan Old Style', Georgia, serif;
   font-size: 72px;
   line-height: 0.95;
   letter-spacing: -0.025em;
   font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
 }
 
 /* 56px — page title: main heading on every page */
 .type-title {
-  font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
+  font-family: 'Iowan Old Style', Georgia, serif;
   font-size: 56px;
   line-height: 1;
   letter-spacing: -0.025em;
   font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
 }
 
 /* 36px — section heading: task detail title, sub-section heads */
 .type-heading {
-  font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
+  font-family: 'Iowan Old Style', Georgia, serif;
   font-size: 36px;
   line-height: 1.1;
   letter-spacing: -0.025em;
   font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
 }
 
 /* 26px — stat: insight callout / narrative text */
 .type-stat {
-  font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
+  font-family: 'Iowan Old Style', Georgia, serif;
   font-size: 26px;
   line-height: 1.2;
   letter-spacing: -0.01em;
   font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
 }
 
 /* 28px italic — active: "You're on · task name" live heading */
 .type-active {
-  font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
+  font-family: 'Iowan Old Style', Georgia, serif;
   font-size: 28px;
   line-height: 1;
   font-style: italic;
   letter-spacing: 0;
   font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
 }
 
 /* 24px italic — empty: empty state messages */
 .type-empty {
-  font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
+  font-family: 'Iowan Old Style', Georgia, serif;
   font-size: 24px;
   line-height: 1.2;
   font-style: italic;
   letter-spacing: 0;
   font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
 }
 
 /* 22px — callout: insight card headline */
 .type-callout {
-  font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
+  font-family: 'Iowan Old Style', Georgia, serif;
   font-size: 22px;
   line-height: 1.2;
   letter-spacing: 0;
   font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
 }
 
 /* 22px italic — wordmark: "meridian" in sidebar — slight tracking is intentional */
 .type-wordmark {
-  font-family: var(--font-instrument-serif), 'Instrument Serif', Georgia, serif;
+  font-family: 'Iowan Old Style', Georgia, serif;
   font-size: 22px;
   line-height: 1;
   font-style: italic;
   letter-spacing: -0.02em;
   font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
 }
