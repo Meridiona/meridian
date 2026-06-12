@@ -307,5 +307,73 @@
     "board_uses_sprints": false,
     "board_uses_due_dates": false,
     "note": "no due date, but the board doesn't use due dates — must NOT be flagged for the missing field"
+  },
+  {
+    "task_key": "NEEDS-NO-ASSIGNEE",
+    "title": "Wire the webhook retry backoff",
+    "description_text": "Add exponential backoff to the outbound webhook delivery so transient 5xx responses are retried.",
+    "status_raw": "In Progress",
+    "updated_at": "2026-06-11T00:00:00Z",
+    "expected": "needs_detail",
+    "board_uses_sprints": false,
+    "board_uses_assignees": true,
+    "note": "board uses assignees but this ticket has none — flag to assign an owner"
+  },
+  {
+    "task_key": "NEEDS-NO-PRIORITY",
+    "title": "Add rate limiting to the public API",
+    "description_text": "Introduce a token-bucket rate limiter on the public endpoints with sensible per-key defaults.",
+    "status_raw": "In Progress",
+    "updated_at": "2026-06-11T00:00:00Z",
+    "expected": "needs_detail",
+    "board_uses_sprints": false,
+    "board_uses_priority": true,
+    "note": "board uses priority but this ticket has none — flag to set priority"
+  },
+  {
+    "task_key": "NEEDS-NO-ESTIMATE",
+    "title": "Migrate the cache layer to Redis",
+    "description_text": "Replace the in-process cache with Redis so multiple daemon instances share state correctly.",
+    "status_raw": "In Progress",
+    "updated_at": "2026-06-11T00:00:00Z",
+    "expected": "needs_detail",
+    "board_uses_sprints": false,
+    "board_uses_estimates": true,
+    "note": "board uses story points but this ticket has no estimate"
+  },
+  {
+    "task_key": "NEEDS-NO-ACCEPTANCE-CRITERIA",
+    "title": "Build the CSV export feature",
+    "description_text": "Let users export their session data as CSV from the dashboard, scoped to the selected date range.",
+    "status_raw": "In Progress",
+    "updated_at": "2026-06-11T00:00:00Z",
+    "expected": "needs_detail",
+    "board_uses_sprints": false,
+    "board_uses_acceptance_criteria": true,
+    "note": "board uses acceptance criteria but this ticket defines no done-condition"
+  },
+  {
+    "task_key": "READY-ALL-FIELDS-PRESENT",
+    "title": "Implement the audit log viewer",
+    "description_text": "Render the audit log with filtering by actor and action, paginated, in the admin dashboard.",
+    "status_raw": "In Progress",
+    "updated_at": "2026-06-11T00:00:00Z",
+    "assignee_name": "Sathvik",
+    "priority": "High",
+    "story_points": "5",
+    "acceptance_criteria": "Given an admin, when they open the audit log, then entries are filterable and paginated.",
+    "tags": "backend",
+    "parent_key": "KAN-50",
+    "due_date": "2026-06-20",
+    "expected": "ready",
+    "board_uses_sprints": false,
+    "board_uses_due_dates": true,
+    "board_uses_assignees": true,
+    "board_uses_parents": true,
+    "board_uses_labels": true,
+    "board_uses_priority": true,
+    "board_uses_estimates": true,
+    "board_uses_acceptance_criteria": true,
+    "note": "every DoR field present — must NOT be flagged on any rule (no false positives)"
   }
 ]

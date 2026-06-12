@@ -68,7 +68,8 @@ impl Decision {
 pub async fn load_board(pool: &SqlitePool) -> Result<Vec<CurationInput>> {
     let rows = sqlx::query(
         "SELECT task_key, provider, title, description_text, status_raw, is_terminal, \
-                sprint_name, due_date, start_date, updated_at, epic_title, parent_key \
+                sprint_name, due_date, start_date, updated_at, epic_title, parent_key, \
+                assignee_name, tags, priority, story_points, acceptance_criteria \
          FROM pm_tasks",
     )
     .fetch_all(pool)
@@ -91,6 +92,11 @@ pub async fn load_board(pool: &SqlitePool) -> Result<Vec<CurationInput>> {
                 updated_at: r.get("updated_at"),
                 epic_title: r.get("epic_title"),
                 parent_key: r.get("parent_key"),
+                assignee_name: r.get("assignee_name"),
+                tags: r.get("tags"),
+                priority: r.get("priority"),
+                story_points: r.get("story_points"),
+                acceptance_criteria: r.get("acceptance_criteria"),
             },
         })
         .collect())

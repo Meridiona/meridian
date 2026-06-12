@@ -85,6 +85,11 @@ pub enum TriageReason {
     VagueTitle,
     NoContextAnchor,
     MissingDueDate,
+    MissingAssignee,
+    MissingLabels,
+    MissingPriority,
+    MissingEstimate,
+    MissingAcceptanceCriteria,
     // — staleness —
     NoActivitySince { days: i64 },
     NotStarted,
@@ -118,6 +123,13 @@ impl TriageReason {
             TriageReason::MissingDueDate => {
                 "No due date — add one so Meridian knows when it's live.".into()
             }
+            TriageReason::MissingAssignee => "No assignee — who owns this?".into(),
+            TriageReason::MissingLabels => "No labels — add one to categorise it.".into(),
+            TriageReason::MissingPriority => "No priority set.".into(),
+            TriageReason::MissingEstimate => "No estimate — add story points.".into(),
+            TriageReason::MissingAcceptanceCriteria => {
+                "No acceptance criteria — define what 'done' means.".into()
+            }
             TriageReason::NoActivitySince { days } => {
                 format!("No board activity in {days} days.")
             }
@@ -135,6 +147,77 @@ impl TriageReason {
             TriageReason::UnreadableUpdatedAt => "Couldn't read its last-updated time.".into(),
         }
     }
+
+    /// The in-app fix for this defect, if it is directly fixable on the ticket.
+    /// `None` for purely descriptive/active reasons. Drives both the Tasks-view fix
+    /// control and the tracker write-back.
+    pub fn fix(&self) -> Option<FixAction> {
+        use FixControl::*;
+        let f = |control, field, label, ai| {
+            Some(FixAction {
+                control,
+                field,
+                label,
+                ai_suggested: ai,
+            })
+        };
+        match self {
+            TriageReason::MissingDescription => {
+                f(EditText, "description", "Add a description", true)
+            }
+            TriageReason::ThinDescription { .. } => {
+                f(EditText, "description", "Expand the description", true)
+            }
+            TriageReason::VagueTitle => f(EditText, "summary", "Make the title specific", true),
+            TriageReason::NoContextAnchor => {
+                f(PickParent, "parent", "Link to an epic or parent", false)
+            }
+            TriageReason::MissingDueDate => f(DatePicker, "duedate", "Add a due date", false),
+            TriageReason::MissingAssignee => f(AssignSelf, "assignee", "Assign to me", false),
+            TriageReason::MissingLabels => f(EditLabels, "labels", "Add a label", false),
+            TriageReason::MissingPriority => f(PickPriority, "priority", "Set priority", false),
+            TriageReason::MissingEstimate => {
+                f(NumberInput, "story_points", "Add an estimate", false)
+            }
+            TriageReason::MissingAcceptanceCriteria => f(
+                EditChecklist,
+                "acceptance_criteria",
+                "Add acceptance criteria",
+                true,
+            ),
+            // Staleness is fixed at the ticket level (close / snooze), handled by the
+            // bucket actions, not a per-field edit.
+            _ => None,
+        }
+    }
+}
+
+/// The kind of input control the Tasks view shows to fix a hygiene defect, and how
+/// the write-back maps it onto the tracker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FixControl {
+    DatePicker,
+    AssignSelf,
+    EditText,
+    EditChecklist,
+    PickParent,
+    EditLabels,
+    PickPriority,
+    NumberInput,
+}
+
+/// A concrete fix a dev can apply in-app, which writes back to the tracker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FixAction {
+    pub control: FixControl,
+    /// Tracker field key the write-back targets.
+    pub field: &'static str,
+    /// Button/label text shown to the dev.
+    pub label: &'static str,
+    /// Whether the suggested value comes from AI (description / title / AC) — the
+    /// edit box ships now; the AI suggestion is wired later.
+    pub ai_suggested: bool,
 }
 
 /// The verdict for one ticket: where it landed and why.
@@ -170,19 +253,59 @@ pub struct TicketSignals {
     pub epic_title: Option<String>,
     #[serde(default)]
     pub parent_key: Option<String>,
+    #[serde(default)]
+    pub assignee_name: Option<String>,
+    #[serde(default)]
+    pub tags: Option<String>,
+    #[serde(default)]
+    pub priority: Option<String>,
+    #[serde(default)]
+    pub story_points: Option<String>,
+    #[serde(default)]
+    pub acceptance_criteria: Option<String>,
 }
 
-/// Tunable thresholds. Defaults are deliberately conservative (bias to KEEP).
+/// Which hygiene fields a board actually uses, detected once per board. A missing
+/// field is only ever flagged when its `*` here is true — so a team that never
+/// sets, say, story points is never nagged about them. A field counts as "used"
+/// when at least one ticket on the board carries it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BoardUsage {
+    pub sprints: bool,
+    pub due_dates: bool,
+    pub assignees: bool,
+    pub parents: bool,
+    pub labels: bool,
+    pub priority: bool,
+    pub estimates: bool,
+    pub acceptance_criteria: bool,
+}
+
+impl BoardUsage {
+    /// Detect which fields the board uses from the full fetched set.
+    pub fn detect(tickets: &[TicketSignals]) -> Self {
+        let any = |f: &dyn Fn(&TicketSignals) -> bool| tickets.iter().any(f);
+        Self {
+            sprints: any(&|t| opt_nonempty(&t.sprint_name).is_some()),
+            due_dates: any(&|t| opt_nonempty(&t.due_date).is_some()),
+            assignees: any(&|t| opt_nonempty(&t.assignee_name).is_some()),
+            parents: any(&|t| {
+                opt_nonempty(&t.parent_key).is_some() || opt_nonempty(&t.epic_title).is_some()
+            }),
+            labels: any(&|t| opt_nonempty(&t.tags).is_some()),
+            priority: any(&|t| opt_nonempty(&t.priority).is_some()),
+            estimates: any(&|t| opt_nonempty(&t.story_points).is_some()),
+            acceptance_criteria: any(&|t| opt_nonempty(&t.acceptance_criteria).is_some()),
+        }
+    }
+}
+
+/// Tunable thresholds + the board's field usage. Defaults bias to KEEP.
 #[derive(Debug, Clone, Copy)]
 pub struct TriageConfig {
     pub now: DateTime<Utc>,
-    /// Detected per board: false disables every sprint-based rule (many teams,
-    /// including the reference board, don't use sprints at all).
-    pub board_uses_sprints: bool,
-    /// Detected per board: only flag a missing due date when the board actually
-    /// uses due dates (some tickets have one). A team that never sets due dates
-    /// must not have every ticket flagged for the missing field.
-    pub board_uses_due_dates: bool,
+    /// Which hygiene fields the board uses (gates every "missing field" flag).
+    pub usage: BoardUsage,
     /// Updated longer ago than this confirms staleness. (days)
     pub stale_age_days: i64,
     /// A due date within this horizon counts as an "active" signal. (days)
@@ -194,11 +317,10 @@ pub struct TriageConfig {
 }
 
 impl TriageConfig {
-    pub fn new(now: DateTime<Utc>, board_uses_sprints: bool, board_uses_due_dates: bool) -> Self {
+    pub fn new(now: DateTime<Utc>, usage: BoardUsage) -> Self {
         Self {
             now,
-            board_uses_sprints,
-            board_uses_due_dates,
+            usage,
             stale_age_days: 60,
             due_soon_days: 30,
             overdue_grace_days: 14,
@@ -207,28 +329,9 @@ impl TriageConfig {
     }
 }
 
-/// True if any ticket in the set is assigned to a sprint — used to decide whether
-/// sprint-based rules apply to this board at all.
-pub fn board_uses_sprints(tickets: &[TicketSignals]) -> bool {
-    tickets
-        .iter()
-        .any(|t| opt_nonempty(&t.sprint_name).is_some())
-}
-
-/// True if any ticket in the set carries a due date — used to decide whether to
-/// flag tickets that are *missing* one. A board that never sets due dates should
-/// not have every ticket flagged for the absent field.
-pub fn board_uses_due_dates(tickets: &[TicketSignals]) -> bool {
-    tickets.iter().any(|t| opt_nonempty(&t.due_date).is_some())
-}
-
-/// Triage a whole fetched board. Detects sprint + due-date usage once, then verdicts each.
+/// Triage a whole fetched board. Detects field usage once, then verdicts each.
 pub fn triage_board(tickets: &[TicketSignals], now: DateTime<Utc>) -> Vec<TriageVerdict> {
-    let cfg = TriageConfig::new(
-        now,
-        board_uses_sprints(tickets),
-        board_uses_due_dates(tickets),
-    );
+    let cfg = TriageConfig::new(now, BoardUsage::detect(tickets));
     tickets.iter().map(|t| triage_ticket(t, &cfg)).collect()
 }
 
@@ -269,7 +372,7 @@ pub fn triage_ticket(t: &TicketSignals, cfg: &TriageConfig) -> TriageVerdict {
     // 2. Stale signature. The base requirement (not started, no live date window,
     //    not in an active sprint) demotes only when paired with either evidence of
     //    abandonment (old/overdue) OR a far-future due date (not current work).
-    let sprint_ok_for_stale = !cfg.board_uses_sprints || !in_sprint;
+    let sprint_ok_for_stale = !cfg.usage.sprints || !in_sprint;
     let is_old = age.is_some_and(|a| a > cfg.stale_age_days);
     let base_stale = started != Startedness::Started && !has_live_date && sprint_ok_for_stale;
     if base_stale && (is_old || far_future) {
@@ -290,38 +393,18 @@ pub fn triage_ticket(t: &TicketSignals, cfg: &TriageConfig) -> TriageVerdict {
         } else if due_in.is_none() {
             reasons.push(TriageReason::NoDueDate);
         }
-        if cfg.board_uses_sprints && !in_sprint {
+        if cfg.usage.sprints && !in_sprint {
             reasons.push(TriageReason::NotInSprint);
         }
         return verdict(TriageBucket::LooksStale, reasons);
     }
 
-    // 3. Quality / hygiene — usable enough for the classifier, with the metadata a
-    //    board that tracks it expects. A missing due date is only flagged when the
-    //    board actually uses due dates (board-level guard, like sprints).
-    let desc = t.description_text.trim();
-    let desc_chars = desc.chars().count();
-    let missing = desc.is_empty();
-    let thin = desc_chars < cfg.thin_desc_chars;
-    let vague = rules::is_vague_title(&t.title);
-    let no_anchor = t.epic_title.is_none() && t.parent_key.is_none();
-    let no_due = cfg.board_uses_due_dates && opt_nonempty(&t.due_date).is_none();
-    if missing || thin || vague || no_due {
-        let mut reasons = Vec::new();
-        if missing {
-            reasons.push(TriageReason::MissingDescription);
-        } else if thin {
-            reasons.push(TriageReason::ThinDescription { chars: desc_chars });
-        }
-        if vague {
-            reasons.push(TriageReason::VagueTitle);
-        }
-        if no_anchor && thin {
-            reasons.push(TriageReason::NoContextAnchor);
-        }
-        if no_due {
-            reasons.push(TriageReason::MissingDueDate);
-        }
+    // 3. Quality / hygiene — the Definition-of-Ready fields a good ticket carries.
+    //    Each "missing field" check is gated on the board actually using that field
+    //    (cfg.usage.*), so a team that doesn't track e.g. story points is never
+    //    nagged about them. Every reason here maps to an in-app fix (TriageReason::fix).
+    let reasons = hygiene_issues(t, cfg);
+    if !reasons.is_empty() {
         return verdict(TriageBucket::NeedsDetail, reasons);
     }
 
@@ -350,6 +433,49 @@ pub fn triage_ticket(t: &TicketSignals, cfg: &TriageConfig) -> TriageVerdict {
         }
         verdict(TriageBucket::NotSure, reasons)
     }
+}
+
+/// All Definition-of-Ready hygiene defects on a ticket, each mapping to an in-app
+/// fix (`TriageReason::fix`). Board-guarded: a missing field is flagged only when
+/// the board actually uses that field. A non-empty result buckets the ticket as
+/// `needs_detail`.
+pub fn hygiene_issues(t: &TicketSignals, cfg: &TriageConfig) -> Vec<TriageReason> {
+    let mut reasons = Vec::new();
+    let desc = t.description_text.trim();
+    let desc_chars = desc.chars().count();
+    if desc.is_empty() {
+        reasons.push(TriageReason::MissingDescription);
+    } else if desc_chars < cfg.thin_desc_chars {
+        reasons.push(TriageReason::ThinDescription { chars: desc_chars });
+    }
+    if rules::is_vague_title(&t.title) {
+        reasons.push(TriageReason::VagueTitle);
+    }
+    if cfg.usage.due_dates && opt_nonempty(&t.due_date).is_none() {
+        reasons.push(TriageReason::MissingDueDate);
+    }
+    if cfg.usage.assignees && opt_nonempty(&t.assignee_name).is_none() {
+        reasons.push(TriageReason::MissingAssignee);
+    }
+    if cfg.usage.parents
+        && opt_nonempty(&t.parent_key).is_none()
+        && opt_nonempty(&t.epic_title).is_none()
+    {
+        reasons.push(TriageReason::NoContextAnchor);
+    }
+    if cfg.usage.labels && opt_nonempty(&t.tags).is_none() {
+        reasons.push(TriageReason::MissingLabels);
+    }
+    if cfg.usage.priority && opt_nonempty(&t.priority).is_none() {
+        reasons.push(TriageReason::MissingPriority);
+    }
+    if cfg.usage.estimates && opt_nonempty(&t.story_points).is_none() {
+        reasons.push(TriageReason::MissingEstimate);
+    }
+    if cfg.usage.acceptance_criteria && opt_nonempty(&t.acceptance_criteria).is_none() {
+        reasons.push(TriageReason::MissingAcceptanceCriteria);
+    }
+    reasons
 }
 
 /// Borrow the inner string only when it is present and not blank — providers store
@@ -392,11 +518,7 @@ impl TriageSummary {
 pub async fn run_triage(pool: &SqlitePool, now: DateTime<Utc>) -> Result<TriageSummary> {
     let inputs = store::load_board(pool).await?;
     let tickets: Vec<TicketSignals> = inputs.iter().map(|i| i.signals.clone()).collect();
-    let cfg = TriageConfig::new(
-        now,
-        board_uses_sprints(&tickets),
-        board_uses_due_dates(&tickets),
-    );
+    let cfg = TriageConfig::new(now, BoardUsage::detect(&tickets));
     let now_str = now.to_rfc3339();
 
     let mut summary = TriageSummary::default();
@@ -427,6 +549,18 @@ mod tests {
         board_uses_sprints: bool,
         #[serde(default)]
         board_uses_due_dates: bool,
+        #[serde(default)]
+        board_uses_assignees: bool,
+        #[serde(default)]
+        board_uses_parents: bool,
+        #[serde(default)]
+        board_uses_labels: bool,
+        #[serde(default)]
+        board_uses_priority: bool,
+        #[serde(default)]
+        board_uses_estimates: bool,
+        #[serde(default)]
+        board_uses_acceptance_criteria: bool,
         note: String,
     }
 
@@ -438,7 +572,17 @@ mod tests {
 
         let mut failures = Vec::new();
         for fx in &fixtures {
-            let cfg = TriageConfig::new(now(), fx.board_uses_sprints, fx.board_uses_due_dates);
+            let usage = BoardUsage {
+                sprints: fx.board_uses_sprints,
+                due_dates: fx.board_uses_due_dates,
+                assignees: fx.board_uses_assignees,
+                parents: fx.board_uses_parents,
+                labels: fx.board_uses_labels,
+                priority: fx.board_uses_priority,
+                estimates: fx.board_uses_estimates,
+                acceptance_criteria: fx.board_uses_acceptance_criteria,
+            };
+            let cfg = TriageConfig::new(now(), usage);
             let got = triage_ticket(&fx.ticket, &cfg);
             if got.bucket != fx.expected {
                 failures.push(format!(
@@ -467,6 +611,11 @@ mod tests {
             updated_at: "2026-06-12T00:00:00Z".into(),
             epic_title: None,
             parent_key: None,
+            assignee_name: None,
+            tags: None,
+            priority: None,
+            story_points: None,
+            acceptance_criteria: None,
         }
     }
 
@@ -475,7 +624,7 @@ mod tests {
         let mut t = base();
         t.is_terminal = true;
         t.status_raw = "In Progress".into();
-        let v = triage_ticket(&t, &TriageConfig::new(now(), false, false));
+        let v = triage_ticket(&t, &TriageConfig::new(now(), BoardUsage::default()));
         assert_eq!(v.bucket, TriageBucket::LooksStale);
         assert_eq!(v.reasons, vec![TriageReason::AlreadyDone]);
     }
@@ -484,7 +633,7 @@ mod tests {
     fn one_stale_signal_alone_never_demotes() {
         // No due date (a stale signal) but recently updated ⇒ NOT stale.
         let t = base();
-        let v = triage_ticket(&t, &TriageConfig::new(now(), false, false));
+        let v = triage_ticket(&t, &TriageConfig::new(now(), BoardUsage::default()));
         assert_ne!(v.bucket, TriageBucket::LooksStale);
     }
 
@@ -494,7 +643,7 @@ mod tests {
         t.updated_at = "garbage".into();
         t.status_raw = "Backlog".into();
         // not started + no due + unknown age ⇒ age gate fails ⇒ not stale.
-        let v = triage_ticket(&t, &TriageConfig::new(now(), false, false));
+        let v = triage_ticket(&t, &TriageConfig::new(now(), BoardUsage::default()));
         assert_eq!(v.bucket, TriageBucket::NotSure);
         assert!(v.reasons.contains(&TriageReason::UnreadableUpdatedAt));
     }
@@ -504,7 +653,7 @@ mod tests {
         let mut t = base();
         t.status_raw = "In Progress".into();
         t.description_text = "fix it".into();
-        let v = triage_ticket(&t, &TriageConfig::new(now(), false, false));
+        let v = triage_ticket(&t, &TriageConfig::new(now(), BoardUsage::default()));
         assert_eq!(v.bucket, TriageBucket::NeedsDetail);
     }
 
@@ -516,7 +665,7 @@ mod tests {
         let mut t = base();
         t.updated_at = "2026-01-01T00:00:00Z".into();
         t.status_raw = "Backlog".into();
-        let v = triage_ticket(&t, &TriageConfig::new(now(), false, false));
+        let v = triage_ticket(&t, &TriageConfig::new(now(), BoardUsage::default()));
         assert_eq!(v.bucket, TriageBucket::LooksStale);
         assert!(!v.reasons.contains(&TriageReason::NotInSprint));
     }
