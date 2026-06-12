@@ -232,8 +232,14 @@ fn parse_jira() -> Option<PmProviderConfig> {
         .unwrap_or_default()
         .trim()
         .to_owned();
-    let email = std::env::var("JIRA_EMAIL").unwrap_or_default().trim().to_owned();
-    let api_token = std::env::var("JIRA_API_TOKEN").unwrap_or_default().trim().to_owned();
+    let email = std::env::var("JIRA_EMAIL")
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    let api_token = std::env::var("JIRA_API_TOKEN")
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
 
     // Configured if EITHER auth path is viable:
     //   * browser OAuth — the user has run `meridian oauth-login jira`, so a token

@@ -470,11 +470,14 @@ async fn main() -> Result<()> {
         if let Err(e) = run_etl(&screenpipe, &meridian).await {
             tracing::error!(error = %e, "ETL run failed");
             let _ = meridian::notices::raise(
-                &meridian, "etl.failed", "error",
+                &meridian,
+                "etl.failed",
+                "error",
                 "Activity capture pipeline failed",
                 &e.to_string(),
                 Some("Open /logs in the dashboard to see details"),
-            ).await;
+            )
+            .await;
         } else {
             let _ = meridian::notices::clear(&meridian, "etl.failed").await;
         }
