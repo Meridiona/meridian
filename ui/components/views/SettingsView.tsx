@@ -119,9 +119,10 @@ export default function SettingsView() {
     }
   }
 
-  // Save observability settings then send SIGHUP so the daemon restarts and
-  // picks up the new OTLP config. Log-level changes are hot-reloaded in-process
-  // (no restart needed); this button handles the credential/toggle/endpoint case.
+  // Save observability settings, start/stop the OpenObserve service to match
+  // the toggle, then send SIGHUP so the daemon restarts and picks up the new
+  // OTLP config. Log-level changes are hot-reloaded in-process (no restart
+  // needed); this button handles the credential/toggle/endpoint case.
   const applyObservability = useCallback(async () => {
     if (!settings) return
     setReloadStatus('saving')
@@ -146,8 +147,27 @@ export default function SettingsView() {
       return
     }
 
+    // The toggle gates the OpenObserve SERVICE itself, not just the exporters:
+    // enabled → start the launchd agent; disabled → stop it (and keep it off
+    // across logins). Failure here is surfaced but doesn't block the daemon
+    // reload — the daemon tolerates a missing OTLP backend.
+    try {
+      await fetch('/api/openobserve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: settings.otlp_enabled }),
+      })
+    } catch { /* non-fatal — surfaced via the OO health card */ }
+
     setReloadStatus('reloading')
     const reloadRes = await fetch('/api/daemon/reload', { method: 'POST' })
+    if (reloadRes.status === 503) {
+      // Daemon not running (e.g. dev session with the stack down) — settings
+      // are saved and will be read at the next daemon start. Not an error.
+      setReloadStatus('done')
+      setTimeout(() => setReloadStatus('idle'), 3000)
+      return
+    }
     if (!reloadRes.ok) {
       setReloadStatus('error')
       setTimeout(() => setReloadStatus('idle'), 3000)
