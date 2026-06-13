@@ -55,6 +55,35 @@ async function reachable(): Promise<boolean> {
   }
 }
 
+// The configured OTLP traces URL (settings override → local default). Used as
+// the authenticated probe target below.
+function tracesUrl(): string {
+  const { otlp_endpoint } = readSettings()
+  return otlp_endpoint && otlp_endpoint.trim()
+    ? otlp_endpoint
+    : 'http://localhost:5080/api/default/v1/traces'
+}
+
+// Do the given credentials actually authenticate against the running
+// OpenObserve? Good auth → 200, wrong auth → 401/403. Lets us catch the case
+// where OO was already initialised with a different root account (changing the
+// password in Settings after first boot is a no-op — OO only reads
+// ZO_ROOT_USER_* on first boot — so the new creds would silently not work).
+async function authOk(email: string, password: string): Promise<boolean> {
+  try {
+    const auth = Buffer.from(`${email}:${password}`).toString('base64')
+    const r = await fetch(tracesUrl(), {
+      method: 'POST',
+      headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-protobuf' },
+      body: new Uint8Array(),
+      signal: AbortSignal.timeout(2000),
+    })
+    return r.status !== 401 && r.status !== 403
+  } catch {
+    return false
+  }
+}
+
 // Resolve install-openobserve-daemon.sh across install types: bundle first
 // (~/.meridian/app), then walk up from cwd for a source checkout.
 function resolveInstaller(): string | null {
@@ -189,6 +218,20 @@ export async function POST(req: Request) {
       return Response.json(
         { error: 'OpenObserve did not become reachable — see ~/.meridian/logs/openobserve-error.log' },
         { status: 500 },
+      )
+    }
+    // Already-initialised instance: verify the credentials in Settings actually
+    // log in. If they don't, the user almost certainly changed email/password
+    // after OO's first boot — which OO ignores — so fail loudly instead of
+    // reporting success while export silently 401s.
+    if (initialised && oo_email && oo_password && !(await authOk(oo_email, oo_password))) {
+      return Response.json(
+        {
+          error:
+            'OpenObserve is already initialised with a different login. Enter the existing ' +
+            'OpenObserve credentials, or reset ~/.openobserve/data to start over with new ones.',
+        },
+        { status: 409 },
       )
     }
     return Response.json({ ok: true, running: true })
