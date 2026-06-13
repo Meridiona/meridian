@@ -3,7 +3,8 @@
 // Observability sink health. If OpenObserve is down, traces/logs silently drop
 // — which blinds the very fault-attribution this layer depends on, so it is
 // worth a check of its own. Export is gated on credentials being present in
-// settings.json or MERIDIAN_OO_AUTH (resolved by observability::resolve_otlp_target).
+// settings.json (resolved by observability::resolve_otlp_target; the old
+// MERIDIAN_OO_AUTH env fallback is deprecated and ignored).
 
 use crate::config::Config;
 use crate::health::Check;
@@ -15,7 +16,7 @@ pub async fn checks(_cfg: &Config) -> Vec<Check> {
         return vec![Check::info(
             "openobserve",
             "obs",
-            "OTLP export disabled (no credentials in settings or MERIDIAN_OO_AUTH) — telemetry not collected",
+            "OTLP export disabled (no credentials in Settings) — telemetry not collected",
         )];
     }
     let endpoint = crate::observability::resolve_otlp_endpoint()

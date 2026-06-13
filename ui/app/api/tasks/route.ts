@@ -4,6 +4,7 @@ import { NextResponse } from 'next/server'
 import getDb from '@/lib/db'
 import { localDayBounds, todayString } from '@/lib/date-utils'
 import { sessionInterval, unionSeconds, intersectSeconds, mergeIntervals, type Interval } from '@/lib/intervals'
+import { parseIssues, type Hygiene } from '@/lib/hygiene'
 
 export const dynamic = 'force-dynamic'
 
@@ -25,6 +26,7 @@ export interface TaskSummary {
   week_s: number
   session_count: number
   cats: Record<string, number>
+  hygiene: Hygiene | null  // board-hygiene flags + fixes (null until triaged)
 }
 
 export interface TasksResponse {
@@ -49,6 +51,35 @@ export async function GET() {
       FROM pm_tasks
       ORDER BY task_key DESC
     `).all() as Array<Record<string, unknown>>
+
+    // Board-hygiene verdicts the daemon wrote into pm_task_curation (after each
+    // sync). Tolerate a DB that predates migration 038 (table absent).
+    const hygieneByKey: Record<string, Hygiene> = {}
+    const hasCuration = db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pm_task_curation'",
+    ).get()
+    if (hasCuration) {
+      // ignored_codes arrived in migration 040 — tolerate older DBs.
+      const hasIgnored = db.prepare(
+        "SELECT 1 FROM pragma_table_info('pm_task_curation') WHERE name='ignored_codes'",
+      ).get()
+      const cols = hasIgnored
+        ? 'task_key, bucket, reasons_json, decision, snoozed_until, ignored_codes'
+        : "task_key, bucket, reasons_json, decision, snoozed_until, '[]' AS ignored_codes"
+      const cur = db.prepare(`SELECT ${cols} FROM pm_task_curation`)
+        .all() as Array<{ task_key: string; bucket: string; reasons_json: string; decision: string | null; snoozed_until: string | null; ignored_codes: string }>
+      const nowIso = new Date().toISOString()
+      for (const c of cur) {
+        // Snoozed-until-future tickets drop off (no hygiene) until the snooze lapses —
+        // this is what makes the cleanup page's "Later" actually defer the ticket.
+        if (c.snoozed_until && c.snoozed_until > nowIso) continue
+        hygieneByKey[c.task_key] = {
+          bucket: c.bucket,
+          issues: parseIssues(c.reasons_json, c.ignored_codes),
+          decision: c.decision,
+        }
+      }
+    }
 
     // A task's time = YOUR hands-on time on it + the agent time that ran while
     // you were AWAY (autonomous). Agent time alongside you (supervised) is not
@@ -142,6 +173,7 @@ export async function GET() {
         week_s: weekByTask[k] ?? 0,
         session_count: agg?.sessions ?? 0,
         cats: agg?.cats ?? {},
+        hygiene: hygieneByKey[k] ?? null,
       }
     }).sort((a, b) => b.today_s - a.today_s)
 

@@ -10,13 +10,15 @@
 //      (log events carry trace_id/span_id so they correlate with traces in OO)
 //
 // Environment variables read at init time:
-//   MERIDIAN_OTLP_ENDPOINT  — OTLP/HTTP traces endpoint
+//   MERIDIAN_OTLP_ENDPOINT  — OTLP/HTTP traces endpoint override
 //                              (default: http://localhost:5080/api/default/v1/traces)
-//   MERIDIAN_OO_AUTH        — base64(email:password); when empty, OTLP export
-//                              is skipped (e.g. in tests or when OO is offline)
 //   MERIDIAN_LOG_DIR        — log directory (default: ~/.meridian/logs)
 //   RUST_LOG                — standard env-filter; default
 //                              "meridian=info,meridian::etl=debug,sqlx=warn"
+//
+// OpenObserve credentials come from settings.json (oo_email/oo_password, set in
+// the dashboard Settings). The MERIDIAN_OO_AUTH env var is DEPRECATED and
+// ignored; export is skipped when settings carry no credentials.
 //
 // `init` returns an `ObservabilityGuard` whose `Drop` flushes the file writer.
 // Call `ObservabilityGuard::shutdown().await` before tearing down the tokio
@@ -211,12 +213,13 @@ pub fn is_otlp_configured() -> bool {
     if !settings.otlp_enabled {
         return false;
     }
-    let has_settings_creds = settings.oo_email.as_deref().is_some_and(|e| !e.is_empty())
+    // settings.json is the single source for OO credentials — the old
+    // MERIDIAN_OO_AUTH env fallback is deprecated and ignored.
+    settings.oo_email.as_deref().is_some_and(|e| !e.is_empty())
         && settings
             .oo_password
             .as_deref()
-            .is_some_and(|p| !p.is_empty());
-    has_settings_creds || std::env::var("MERIDIAN_OO_AUTH").is_ok_and(|v| !v.is_empty())
+            .is_some_and(|p| !p.is_empty())
 }
 
 /// Resolve the configured OTLP endpoint URL (without assembling credentials).
@@ -230,7 +233,11 @@ pub fn resolve_otlp_endpoint() -> Option<String> {
         settings
             .otlp_endpoint
             .filter(|s| !s.is_empty())
-            .or_else(|| std::env::var("MERIDIAN_OTLP_ENDPOINT").ok())
+            .or_else(|| {
+                std::env::var("MERIDIAN_OTLP_ENDPOINT")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+            })
             .unwrap_or_else(|| DEFAULT_OTLP_ENDPOINT.to_string()),
     )
 }
@@ -247,7 +254,10 @@ pub fn resolve_otlp_target() -> Option<OtlpTarget> {
         return None;
     }
 
-    // Auth: settings email+password → env var MERIDIAN_OO_AUTH → disabled.
+    // Auth: settings email+password only. The MERIDIAN_OO_AUTH env fallback is
+    // DEPRECATED and ignored — a dual credential store (env + settings) meant
+    // the UI could show creds while the daemon used different ones (or none).
+    // Credentials are set in the dashboard Settings and read from settings.json.
     let auth = match (&settings.oo_email, &settings.oo_password) {
         (Some(email), Some(pass)) if !email.is_empty() && !pass.is_empty() => {
             // Guard against HTTP header injection and malformed user:password splits.
@@ -259,16 +269,25 @@ pub fn resolve_otlp_target() -> Option<OtlpTarget> {
             }
             STANDARD.encode(format!("{email}:{pass}"))
         }
-        _ => match std::env::var("MERIDIAN_OO_AUTH") {
-            Ok(v) if !v.is_empty() => v,
-            _ => return None,
-        },
+        _ => {
+            if std::env::var("MERIDIAN_OO_AUTH").is_ok_and(|v| !v.is_empty()) {
+                tracing::warn!(
+                    "MERIDIAN_OO_AUTH is set but deprecated and ignored — \
+                     set OpenObserve credentials in the dashboard Settings instead"
+                );
+            }
+            return None;
+        }
     };
 
     let endpoint = settings
         .otlp_endpoint
         .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("MERIDIAN_OTLP_ENDPOINT").ok())
+        .or_else(|| {
+            std::env::var("MERIDIAN_OTLP_ENDPOINT")
+                .ok()
+                .filter(|s| !s.is_empty())
+        })
         .unwrap_or_else(|| DEFAULT_OTLP_ENDPOINT.to_string());
 
     // Validate scheme — only http/https are valid OTLP transports.
