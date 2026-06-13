@@ -97,6 +97,7 @@ const LOG_LEVEL_OPTIONS = [
 export default function SettingsView() {
   const [settings, setSettings] = useState<RuntimeSettings | null>(null)
   const [reloadStatus, setReloadStatus] = useState<ReloadStatus>('idle')
+  const [reloadMsg, setReloadMsg] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [etlStatus, setEtlStatus] = useState<SaveStatus>('idle')
   const [classificationStatus, setClassificationStatus] = useState<SaveStatus>('idle')
@@ -140,6 +141,7 @@ export default function SettingsView() {
   // needed); this button handles the credential/toggle/endpoint case.
   const applyObservability = useCallback(async () => {
     if (!settings) return
+    setReloadMsg(null)
     setReloadStatus('saving')
     try {
       const res = await fetch('/api/settings', {
@@ -174,8 +176,10 @@ export default function SettingsView() {
         body: JSON.stringify({ enabled: settings.otlp_enabled }),
       })
       if (!ooRes.ok) {
+        const b = await ooRes.json().catch(() => ({})) as { error?: string }
+        setReloadMsg(b.error ?? 'OpenObserve start failed')
         setReloadStatus('error')
-        setTimeout(() => setReloadStatus('idle'), 3000)
+        setTimeout(() => { setReloadStatus('idle'); setReloadMsg(null) }, 8000)
         return
       }
       // Fresh machine: the server is downloading + installing OpenObserve in
@@ -324,7 +328,7 @@ export default function SettingsView() {
               : 'Apply'}
           </button>
           {reloadStatus === 'done' && <span style={{ fontSize: '12px', color: 'var(--success)' }}>Active</span>}
-          {reloadStatus === 'error' && <span style={{ fontSize: '12px', color: 'var(--warn)' }}>Failed</span>}
+          {reloadStatus === 'error' && <span style={{ fontSize: '12px', color: 'var(--warn)' }}>{reloadMsg ?? 'Failed'}</span>}
           <span style={{ fontSize: '11px', color: 'var(--ink-3)' }}>
             {reloadStatus === 'installing' ? 'Downloading & installing OpenObserve (first time only)…'
               : reloadStatus === 'reloading' ? 'Restarting daemon…'
