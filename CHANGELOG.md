@@ -1,3 +1,23 @@
+# [1.52.0](https://github.com/Meridiona/meridian/compare/v1.51.0...v1.52.0) (2026-06-13)
+
+
+### Bug Fixes
+
+* **config:** resolve settings.json from a fixed, install-independent path ([b8a1f2a](https://github.com/Meridiona/meridian/commit/b8a1f2adfe3badcbffa9e6abd253564082ca86a6))
+* **observability:** empty MERIDIAN_OTLP_ENDPOINT no longer disables export; drop RUST_LOG from daemon plist ([a1b2f1b](https://github.com/Meridiona/meridian/commit/a1b2f1b8a57770377c85d26a106851af7364f473))
+* **ui:** detect post-init OpenObserve credential mismatch; surface error text ([6a6bb5b](https://github.com/Meridiona/meridian/commit/6a6bb5bed9e51f3e84f130e82d35a45b92a904e8))
+* **ui:** don't bounce a running OpenObserve on Apply; surface start failures ([9de6e6d](https://github.com/Meridiona/meridian/commit/9de6e6dd28b9004616353c3ad6c0c974ebcfe6a4))
+* **ui:** restore lost Radix switch styles; clarify Log Level scope ([049a0d0](https://github.com/Meridiona/meridian/commit/049a0d00d2ffeb60a326636fffe77a416b3ce95b))
+
+
+### Features
+
+* **observability:** make settings.json the source for OpenObserve credentials ([0a20319](https://github.com/Meridiona/meridian/commit/0a203196cfb8f3bc3c92b9b44bb6ef5e1393e36f))
+* **observability:** OpenObserve service runs only when export is enabled ([48c9b50](https://github.com/Meridiona/meridian/commit/48c9b5099a478d09d31aff28febc50d162054730))
+* **ui:** bootstrap OpenObserve from the toggle on a fresh machine ([5bb2833](https://github.com/Meridiona/meridian/commit/5bb283320fc1806e1fb301b4d0319b3e2b4fea01)), closes [#271](https://github.com/Meridiona/meridian/issues/271)
+* **ui:** first-time OpenObserve credential setup + endpoint as advanced field ([99f6cf6](https://github.com/Meridiona/meridian/commit/99f6cf6157d5f4f9951a4a907ae72adfa36f9e51))
+* **ui:** gate OpenObserve settings behind a top-level enable toggle ([8f36b7c](https://github.com/Meridiona/meridian/commit/8f36b7c235c3852e747f162cc66d247d5d504b8d))
+
 # [1.51.0](https://github.com/Meridiona/meridian/compare/v1.50.1...v1.51.0) (2026-06-12)
 
 
