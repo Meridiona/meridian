@@ -233,7 +233,11 @@ pub fn resolve_otlp_endpoint() -> Option<String> {
         settings
             .otlp_endpoint
             .filter(|s| !s.is_empty())
-            .or_else(|| std::env::var("MERIDIAN_OTLP_ENDPOINT").ok())
+            .or_else(|| {
+                std::env::var("MERIDIAN_OTLP_ENDPOINT")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+            })
             .unwrap_or_else(|| DEFAULT_OTLP_ENDPOINT.to_string()),
     )
 }
@@ -279,7 +283,11 @@ pub fn resolve_otlp_target() -> Option<OtlpTarget> {
     let endpoint = settings
         .otlp_endpoint
         .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("MERIDIAN_OTLP_ENDPOINT").ok())
+        .or_else(|| {
+            std::env::var("MERIDIAN_OTLP_ENDPOINT")
+                .ok()
+                .filter(|s| !s.is_empty())
+        })
         .unwrap_or_else(|| DEFAULT_OTLP_ENDPOINT.to_string());
 
     // Validate scheme — only http/https are valid OTLP transports.
