@@ -9,7 +9,22 @@ import { TextInput } from '@/components/ui/TextInput'
 import type { RuntimeSettings } from '@/lib/settings'
 
 type SaveStatus = 'idle' | 'saved' | 'error'
-type ReloadStatus = 'idle' | 'saving' | 'reloading' | 'done' | 'error'
+type ReloadStatus = 'idle' | 'saving' | 'installing' | 'reloading' | 'done' | 'error'
+
+// Poll GET /api/openobserve until OpenObserve is reachable or the background
+// install fails. Returns true when reachable. Up to ~90 s (binary download).
+async function pollOpenObserveReady(): Promise<boolean> {
+  for (let i = 0; i < 60; i++) {
+    try {
+      const r = await fetch('/api/openobserve')
+      const s = await r.json() as { reachable?: boolean; failed?: boolean }
+      if (s.reachable) return true
+      if (s.failed) return false
+    } catch { /* keep polling */ }
+    await new Promise(res => setTimeout(res, 1500))
+  }
+  return false
+}
 
 function SectionCard({ children }: { children: React.ReactNode }) {
   return (
@@ -148,9 +163,10 @@ export default function SettingsView() {
     }
 
     // The toggle gates the OpenObserve SERVICE itself, not just the exporters:
-    // enabled → start the launchd agent; disabled → stop it (and keep it off
-    // across logins). A failed start is a real error the user must see —
-    // otherwise "Apply" reports success while OpenObserve is down.
+    // enabled → start the launchd agent (installing it first on a fresh
+    // machine); disabled → stop it (and keep it off across logins). A failed
+    // start is a real error the user must see — otherwise "Apply" reports
+    // success while OpenObserve is down.
     try {
       const ooRes = await fetch('/api/openobserve', {
         method: 'POST',
@@ -161,6 +177,19 @@ export default function SettingsView() {
         setReloadStatus('error')
         setTimeout(() => setReloadStatus('idle'), 3000)
         return
+      }
+      // Fresh machine: the server is downloading + installing OpenObserve in
+      // the background. Poll until it is reachable (binary download can take
+      // ~30 s) before continuing to the daemon reload.
+      const ooBody = await ooRes.json() as { installing?: boolean }
+      if (ooBody.installing) {
+        setReloadStatus('installing')
+        const ready = await pollOpenObserveReady()
+        if (!ready) {
+          setReloadStatus('error')
+          setTimeout(() => setReloadStatus('idle'), 4000)
+          return
+        }
       }
     } catch {
       setReloadStatus('error')
@@ -275,7 +304,7 @@ export default function SettingsView() {
           <button
             type="button"
             onClick={applyObservability}
-            disabled={reloadStatus === 'saving' || reloadStatus === 'reloading'}
+            disabled={reloadStatus === 'saving' || reloadStatus === 'installing' || reloadStatus === 'reloading'}
             style={{
               background: 'var(--accent)',
               color: '#fff',
@@ -284,17 +313,22 @@ export default function SettingsView() {
               padding: '5px 14px',
               borderRadius: '6px',
               border: 'none',
-              cursor: reloadStatus === 'saving' || reloadStatus === 'reloading' ? 'not-allowed' : 'default',
-              opacity: reloadStatus === 'saving' || reloadStatus === 'reloading' ? 0.7 : 1,
+              cursor: reloadStatus === 'saving' || reloadStatus === 'installing' || reloadStatus === 'reloading' ? 'not-allowed' : 'default',
+              opacity: reloadStatus === 'saving' || reloadStatus === 'installing' || reloadStatus === 'reloading' ? 0.7 : 1,
               boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
             }}
           >
-            {reloadStatus === 'saving' ? 'Saving…' : reloadStatus === 'reloading' ? 'Reloading…' : 'Apply'}
+            {reloadStatus === 'saving' ? 'Saving…'
+              : reloadStatus === 'installing' ? 'Installing…'
+              : reloadStatus === 'reloading' ? 'Reloading…'
+              : 'Apply'}
           </button>
           {reloadStatus === 'done' && <span style={{ fontSize: '12px', color: 'var(--success)' }}>Active</span>}
           {reloadStatus === 'error' && <span style={{ fontSize: '12px', color: 'var(--warn)' }}>Failed</span>}
           <span style={{ fontSize: '11px', color: 'var(--ink-3)' }}>
-            {reloadStatus === 'reloading' ? 'Restarting daemon…' : 'Apply handles everything — starts/stops OpenObserve and restarts the daemon'}
+            {reloadStatus === 'installing' ? 'Downloading & installing OpenObserve (first time only)…'
+              : reloadStatus === 'reloading' ? 'Restarting daemon…'
+              : 'Apply handles everything — installs/starts/stops OpenObserve and restarts the daemon'}
           </span>
           {settings.otlp_enabled && (
             <button
