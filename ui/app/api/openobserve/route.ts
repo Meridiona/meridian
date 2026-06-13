@@ -1,14 +1,21 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// POST /api/openobserve — start or stop the local OpenObserve launchd service
-// (com.meridiona.openobserve) to match the "OpenObserve Export" toggle.
+// OpenObserve service control for the "OpenObserve Export" toggle.
+//
+//   POST { enabled: true }
+//     - agent already installed → start it (cred-sync on first boot, then
+//       enable/bootstrap/kickstart) and confirm it is actually serving
+//     - agent NOT installed (fresh machine) → kick off install-openobserve-
+//       daemon.sh in the background (downloads the binary, writes the plist,
+//       reads creds from settings.json, starts the service) and return
+//       { installing: true }; the client polls GET until it is reachable
+//   POST { enabled: false } → stop + disable (persists across logins)
+//   GET → { installed, running, reachable, installing, failed, error }
 //
 // The toggle gates the SERVICE, not just the daemon's exporters: with export
-// disabled there is no idle OpenObserve server holding :5080 and its memory
-// caps. Disable also persists across logins (launchctl disable), so RunAtLoad
-// cannot resurrect the service after a reboot.
+// off there is no idle OpenObserve server holding :5080 and its memory caps.
 
-import { execFile } from 'child_process'
+import { execFile, spawn } from 'child_process'
 import { promisify } from 'util'
 import fs from 'fs'
 import os from 'os'
@@ -19,6 +26,16 @@ export const dynamic = 'force-dynamic'
 
 const execFileP = promisify(execFile)
 const LABEL = 'com.meridiona.openobserve'
+const HEALTHZ = 'http://localhost:5080/healthz'
+// Status file written by the background installer wrapper: "installing" while
+// it runs, then "exit:<code>" when done. Lives outside any app dir so it
+// survives bundle re-installs.
+const STATUS_FILE = path.join(os.homedir(), '.meridian', '.oo-install.status')
+const INSTALL_LOG = path.join(os.homedir(), '.meridian', 'logs', 'openobserve-install.log')
+
+function plistPath(): string {
+  return path.join(/*turbopackIgnore: true*/ os.homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`)
+}
 
 async function launchctl(...args: string[]): Promise<{ ok: boolean; err?: string }> {
   try {
@@ -27,6 +44,73 @@ async function launchctl(...args: string[]): Promise<{ ok: boolean; err?: string
   } catch (e) {
     return { ok: false, err: e instanceof Error ? e.message : String(e) }
   }
+}
+
+async function reachable(): Promise<boolean> {
+  try {
+    const r = await fetch(HEALTHZ, { signal: AbortSignal.timeout(1000) })
+    return r.ok
+  } catch {
+    return false
+  }
+}
+
+// Resolve install-openobserve-daemon.sh across install types: bundle first
+// (~/.meridian/app), then walk up from cwd for a source checkout.
+function resolveInstaller(): string | null {
+  const candidates = [
+    path.join(/*turbopackIgnore: true*/ os.homedir(), '.meridian', 'app', 'scripts', 'install-openobserve-daemon.sh'),
+  ]
+  let dir = process.cwd()
+  for (let i = 0; i < 6; i++) {
+    candidates.push(path.join(/*turbopackIgnore: true*/ dir, 'scripts', 'install-openobserve-daemon.sh'))
+    const parent = path.dirname(/*turbopackIgnore: true*/ dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return candidates.find(p => fs.existsSync(/*turbopackIgnore: true*/ p)) ?? null
+}
+
+// POSIX single-quote escape for safe interpolation into a bash -c string.
+function sq(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`
+}
+
+function startBackgroundInstall(script: string): { ok: boolean; error?: string } {
+  try {
+    fs.mkdirSync(/*turbopackIgnore: true*/ path.dirname(INSTALL_LOG), { recursive: true })
+    fs.writeFileSync(/*turbopackIgnore: true*/ STATUS_FILE, 'installing')
+    // Wrapper runs the installer, tees output to the log, and records the exit
+    // code in the status file. Detached + unref so it outlives this request.
+    const cmd = `${sq(script)} >> ${sq(INSTALL_LOG)} 2>&1; printf 'exit:%s' "$?" > ${sq(STATUS_FILE)}`
+    const child = spawn('bash', ['-c', cmd], { detached: true, stdio: 'ignore' })
+    child.unref()
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+function readStatus(): string | null {
+  try {
+    return fs.readFileSync(/*turbopackIgnore: true*/ STATUS_FILE, 'utf-8').trim()
+  } catch {
+    return null
+  }
+}
+
+export async function GET() {
+  const installed = fs.existsSync(/*turbopackIgnore: true*/ plistPath())
+  const status = readStatus()
+  const installing = status === 'installing'
+  const up = await reachable()
+  let failed = false
+  let error: string | undefined
+  if (status && status.startsWith('exit:') && status !== 'exit:0' && !up) {
+    failed = true
+    error = `OpenObserve install failed (code ${status.slice('exit:'.length)}) — see ${INSTALL_LOG}`
+  }
+  return Response.json({ installed, installing, reachable: up, failed, error })
 }
 
 export async function POST(req: Request) {
@@ -40,24 +124,34 @@ export async function POST(req: Request) {
   }
   const domain = `gui/${uid}`
   const target = `${domain}/${LABEL}`
-  const plist = path.join(/*turbopackIgnore: true*/ os.homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`)
+  const plist = plistPath()
 
   if (body.enabled) {
+    // Fresh machine: no launchd agent yet. Bootstrap from zero — the installer
+    // downloads the binary, writes the plist, reads creds from settings.json
+    // (the UI saved them just before calling this), and starts the service.
+    // It is slow (binary download), so run it in the background and let the
+    // client poll GET for readiness.
     if (!fs.existsSync(/*turbopackIgnore: true*/ plist)) {
-      return Response.json(
-        { error: 'OpenObserve agent not installed — run scripts/install-openobserve-daemon.sh' },
-        { status: 409 },
-      )
+      const script = resolveInstaller()
+      if (!script) {
+        return Response.json(
+          { error: 'OpenObserve installer not found (scripts/install-openobserve-daemon.sh)' },
+          { status: 500 },
+        )
+      }
+      const started = startBackgroundInstall(script)
+      if (!started.ok) {
+        return Response.json({ error: started.error ?? 'failed to start installer' }, { status: 500 })
+      }
+      return Response.json({ ok: true, installing: true })
     }
+
     // Sync the UI-entered credentials into the plist's ZO_ROOT_USER_* env vars
     // BEFORE the service's first start. OpenObserve creates its root account
-    // from these on its FIRST boot only (no user store yet) — this is what
-    // lets a first-time user simply pick an email/password in Settings and
-    // have it become their OpenObserve login. Once the instance is
-    // initialised the env vars are ignored, so we skip the patch AND the
-    // bootout/bootstrap cycle it requires — if OO is already running,
-    // enabling must not bounce it (the restart window reads as "Apply didn't
-    // work" to anyone who clicks "Open OpenObserve" right away).
+    // from these on its FIRST boot only — once the data dir is populated they
+    // are ignored, so we skip the patch (and the restart it requires) to avoid
+    // bouncing an already-running instance.
     const dataDir = path.join(/*turbopackIgnore: true*/ os.homedir(), '.openobserve', 'data')
     let initialised = false
     try {
@@ -67,8 +161,7 @@ export async function POST(req: Request) {
     if (!initialised && oo_email && oo_password) {
       await launchctl('bootout', target) // ensure next bootstrap reads the fresh plist
       // launchd tears the entry down asynchronously; bootstrap fails with EIO
-      // while it lingers. Poll until gone (max ~5 s) — same guard as the
-      // install script's bootout wait loop.
+      // while it lingers. Poll until gone (max ~5 s).
       for (let i = 0; i < 10; i++) {
         if (!(await launchctl('print', target)).ok) break
         await new Promise(r => setTimeout(r, 500))
@@ -85,9 +178,18 @@ export async function POST(req: Request) {
     await launchctl('enable', target)
     await launchctl('bootstrap', domain, plist) // "already bootstrapped" is fine
     await launchctl('kickstart', target)        // start now if not running
-    const up = (await launchctl('print', target)).ok
+    // Confirm OO is actually SERVING, not merely loaded — launchctl reports a
+    // job as present the moment it is bootstrapped, well before it binds :5080.
+    let up = false
+    for (let i = 0; i < 20; i++) {
+      if (await reachable()) { up = true; break }
+      await new Promise(r => setTimeout(r, 500))
+    }
     if (!up) {
-      return Response.json({ error: 'OpenObserve failed to start — check ~/.meridian/logs/openobserve-error.log' }, { status: 500 })
+      return Response.json(
+        { error: 'OpenObserve did not become reachable — see ~/.meridian/logs/openobserve-error.log' },
+        { status: 500 },
+      )
     }
     return Response.json({ ok: true, running: true })
   }
