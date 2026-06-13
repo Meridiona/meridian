@@ -1,3 +1,10 @@
+## [1.52.1](https://github.com/Meridiona/meridian/compare/v1.52.0...v1.52.1) (2026-06-13)
+
+
+### Bug Fixes
+
+* **bundle:** ship the OpenObserve installer + plist in the release package ([b218c56](https://github.com/Meridiona/meridian/commit/b218c560b8739b03c8b3c21204b29f4dee70efcd))
+
 # [1.52.0](https://github.com/Meridiona/meridian/compare/v1.51.0...v1.52.0) (2026-06-13)
 
 
