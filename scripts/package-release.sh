@@ -187,10 +187,17 @@ cp scripts/install-daemon.sh scripts/uninstall-daemon.sh \
    scripts/install-ui-daemon.sh scripts/uninstall-ui-daemon.sh \
    scripts/install-screenpipe-daemon.sh scripts/uninstall-screenpipe-daemon.sh \
    scripts/install-a11y-helper-daemon.sh "${DEST}/scripts/"
+# OpenObserve installer + plist: required at runtime by the dashboard's
+# "OpenObserve Export" toggle, which bootstraps OO on demand via
+# POST /api/openobserve → scripts/install-openobserve-daemon.sh. Without these
+# in the bundle the toggle errors "OpenObserve installer not found".
+cp scripts/install-openobserve-daemon.sh scripts/uninstall-openobserve-daemon.sh \
+   "${DEST}/scripts/"
 cp scripts/com.meridiona.daemon.plist \
    scripts/com.meridiona.screenpipe.plist \
    scripts/com.meridiona.a11y-helper.plist \
    scripts/com.meridiona.ui.plist \
+   scripts/com.meridiona.openobserve.plist \
    scripts/com.meridiona.tray.plist "${DEST}/scripts/"
 cp scripts/install-tray-daemon.sh scripts/uninstall-tray-daemon.sh "${DEST}/scripts/"
 

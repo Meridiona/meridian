@@ -25,12 +25,21 @@ pub async fn stamp_sync_error(pool: &SqlitePool, provider: &str, error: &str) ->
     .await?;
 
     let (title, remedy): (&str, Option<&str>) = match provider {
-        "jira"         => ("Jira sync failing",        Some("Set JIRA_API_TOKEN and JIRA_BASE_URL in .env")),
-        "linear"       => ("Linear sync failing",       Some("Set LINEAR_API_KEY in .env")),
-        "trello"       => ("Trello sync failing",       Some("Run: meridian oauth-login trello")),
-        "github"       => ("GitHub sync failing",       Some("Set GITHUB_TOKEN in .env")),
-        "azure_devops" => ("Azure DevOps sync failing", Some("Set AZURE_DEVOPS_PAT in .env")),
-        _              => ("PM sync failing",            None),
+        "jira" => (
+            "Jira sync failing",
+            Some("Set JIRA_API_TOKEN and JIRA_BASE_URL in .env"),
+        ),
+        "linear" => ("Linear sync failing", Some("Set LINEAR_API_KEY in .env")),
+        "trello" => (
+            "Trello sync failing",
+            Some("Run: meridian oauth-login trello"),
+        ),
+        "github" => ("GitHub sync failing", Some("Set GITHUB_TOKEN in .env")),
+        "azure_devops" => (
+            "Azure DevOps sync failing",
+            Some("Set AZURE_DEVOPS_PAT in .env"),
+        ),
+        _ => ("PM sync failing", None),
     };
     let _ = crate::notices::raise(
         pool,
@@ -46,12 +55,10 @@ pub async fn stamp_sync_error(pool: &SqlitePool, provider: &str, error: &str) ->
 
 /// Clear the last error for a provider after a successful sync.
 pub async fn clear_sync_error(pool: &SqlitePool, provider: &str) -> Result<()> {
-    sqlx::query(
-        "UPDATE pm_sync_state SET last_error = NULL WHERE provider = ?",
-    )
-    .bind(provider)
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE pm_sync_state SET last_error = NULL WHERE provider = ?")
+        .bind(provider)
+        .execute(pool)
+        .await?;
     let _ = crate::notices::clear(pool, &format!("pm.{provider}")).await;
     Ok(())
 }

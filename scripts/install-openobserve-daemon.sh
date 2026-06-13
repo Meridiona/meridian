@@ -8,7 +8,10 @@
 # Re-running is safe — it bootouts the existing agent first, rewrites the
 # plist with current credentials, and reloads it.
 #
-# Requires MERIDIAN_OO_AUTH=<base64(email:password)> in <repo>/.env.
+# Credentials come from settings.json (oo_email/oo_password, set in the
+# dashboard Settings). MERIDIAN_OO_AUTH in <repo>/.env is DEPRECATED and used
+# only as a fallback; with no credentials anywhere the agent is installed
+# stopped and the dashboard toggle starts it once credentials are set.
 #
 # Uninstall:
 #   ./scripts/uninstall-openobserve-daemon.sh
@@ -62,30 +65,54 @@ if [[ -z "${OO_BIN}" ]]; then
     fi
 fi
 
-# Read MERIDIAN_OO_AUTH from the repo-root .env and decode it.
-ENV_FILE="$(cd "${SCRIPT_DIR}/.." && pwd)/.env"
-OO_AUTH=""
-if [[ -f "${ENV_FILE}" ]]; then
-    OO_AUTH="$(grep -E '^MERIDIAN_OO_AUTH=' "${ENV_FILE}" | cut -d= -f2- | tr -d '[:space:]')" || true
-fi
-
-if [[ -z "${OO_AUTH}" ]]; then
-    echo "✗ MERIDIAN_OO_AUTH not set in ${ENV_FILE}" >&2
-    echo "  Add it:  MERIDIAN_OO_AUTH=\$(printf 'email:password' | base64)" >&2
-    exit 1
-fi
-
-OO_CREDENTIALS=""
-OO_CREDENTIALS="$(printf '%s' "${OO_AUTH}" | base64 --decode 2>/dev/null)" || {
-    echo "✗ MERIDIAN_OO_AUTH is not valid base64" >&2
-    exit 1
+# Resolve OpenObserve root credentials. settings.json (written by the dashboard
+# Settings page) is the canonical source; MERIDIAN_OO_AUTH in <repo>/.env is
+# DEPRECATED and honoured only as a fallback for not-yet-migrated installs.
+# With no credentials anywhere, the plist is written with placeholders and the
+# service is left stopped — enabling OpenObserve Export in the dashboard
+# patches real credentials into the plist (POST /api/openobserve) before the
+# service's first start, which is when OpenObserve creates its root account.
+_get_setting() {
+    python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get(sys.argv[2]) or '')" "$1" "$2" 2>/dev/null || true
 }
-OO_EMAIL="${OO_CREDENTIALS%%:*}"
-OO_PASSWORD="${OO_CREDENTIALS#*:}"
 
-if [[ -z "${OO_EMAIL}" || -z "${OO_PASSWORD}" || "${OO_EMAIL}" == "${OO_CREDENTIALS}" ]]; then
-    echo "✗ MERIDIAN_OO_AUTH decoded to '${OO_CREDENTIALS}' — expected 'email:password'" >&2
-    exit 1
+OO_EMAIL=""
+OO_PASSWORD=""
+for _settings in "${HOME}/.meridian/settings.json" "$(cd "${SCRIPT_DIR}/.." && pwd)/settings.json"; do
+    [[ -f "${_settings}" ]] || continue
+    OO_EMAIL="$(_get_setting "${_settings}" oo_email)"
+    OO_PASSWORD="$(_get_setting "${_settings}" oo_password)"
+    if [[ -n "${OO_EMAIL}" && -n "${OO_PASSWORD}" ]]; then
+        echo "→ using OpenObserve credentials from ${_settings}"
+        break
+    fi
+    OO_EMAIL=""; OO_PASSWORD=""
+done
+
+if [[ -z "${OO_EMAIL}" ]]; then
+    ENV_FILE="$(cd "${SCRIPT_DIR}/.." && pwd)/.env"
+    OO_AUTH=""
+    if [[ -f "${ENV_FILE}" ]]; then
+        OO_AUTH="$(grep -E '^MERIDIAN_OO_AUTH=' "${ENV_FILE}" | cut -d= -f2- | tr -d '[:space:]')" || true
+    fi
+    if [[ -n "${OO_AUTH}" ]]; then
+        echo "  ⚠ MERIDIAN_OO_AUTH is DEPRECATED — set OpenObserve credentials in the dashboard Settings instead" >&2
+        OO_CREDENTIALS="$(printf '%s' "${OO_AUTH}" | base64 --decode 2>/dev/null)" || OO_CREDENTIALS=""
+        OO_EMAIL="${OO_CREDENTIALS%%:*}"
+        OO_PASSWORD="${OO_CREDENTIALS#*:}"
+        if [[ -z "${OO_EMAIL}" || -z "${OO_PASSWORD}" || "${OO_EMAIL}" == "${OO_CREDENTIALS}" ]]; then
+            OO_EMAIL=""; OO_PASSWORD=""
+        fi
+    fi
+fi
+
+_no_creds=0
+if [[ -z "${OO_EMAIL}" || -z "${OO_PASSWORD}" ]]; then
+    _no_creds=1
+    OO_EMAIL="setup-pending@meridian.local"
+    OO_PASSWORD="setup-pending"
+    echo "→ no OpenObserve credentials yet — installing the agent stopped; enable"
+    echo "  OpenObserve Export in the dashboard Settings to set them and start it"
 fi
 
 mkdir -p "${HOME}/.meridian/logs"
@@ -175,13 +202,34 @@ while launchctl print "${GUI_TARGET}/${LABEL}" >/dev/null 2>&1; do
     fi
 done
 
-echo "→ bootstrap ${LABEL}"
-launchctl bootstrap "${GUI_TARGET}" "${PLIST_DEST}"
-launchctl enable "${GUI_TARGET}/${LABEL}"
-launchctl kickstart -k "${GUI_TARGET}/${LABEL}"
+# Respect the runtime toggle: the service runs only when "OpenObserve Export"
+# is enabled in Settings. The plist is always installed so the UI's toggle
+# (POST /api/openobserve) can start/stop the service on demand; here we only
+# decide the INITIAL state. No settings.json anywhere → off (matches
+# RuntimeSettings::default and the UI default).
+_otlp_enabled() {
+    local f
+    for f in "${HOME}/.meridian/settings.json" "$(cd "${SCRIPT_DIR}/.." && pwd)/settings.json"; do
+        [[ -f "$f" ]] || continue
+        grep -q '"otlp_enabled"[[:space:]]*:[[:space:]]*true' "$f" && return 0
+        return 1
+    done
+    return 1
+}
 
-echo
-echo "✓ OpenObserve installed and started"
+if [[ "${_no_creds}" -eq 0 ]] && _otlp_enabled; then
+    echo "→ bootstrap ${LABEL} (OpenObserve Export is enabled in settings)"
+    launchctl bootstrap "${GUI_TARGET}" "${PLIST_DEST}"
+    launchctl enable "${GUI_TARGET}/${LABEL}"
+    launchctl kickstart -k "${GUI_TARGET}/${LABEL}"
+    echo
+    echo "✓ OpenObserve installed and started"
+else
+    launchctl disable "${GUI_TARGET}/${LABEL}" 2>/dev/null || true
+    echo
+    echo "✓ OpenObserve installed (service left stopped — OpenObserve Export is"
+    echo "  disabled in Settings; enable the toggle in the dashboard to start it)"
+fi
 echo
 echo "  open  http://localhost:5080                           # the UI"
 echo "  tail -f ~/.meridian/logs/openobserve.log              # live stdout"

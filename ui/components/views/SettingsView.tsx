@@ -9,7 +9,22 @@ import { TextInput } from '@/components/ui/TextInput'
 import type { RuntimeSettings } from '@/lib/settings'
 
 type SaveStatus = 'idle' | 'saved' | 'error'
-type ReloadStatus = 'idle' | 'saving' | 'reloading' | 'done' | 'error'
+type ReloadStatus = 'idle' | 'saving' | 'installing' | 'reloading' | 'done' | 'error'
+
+// Poll GET /api/openobserve until OpenObserve is reachable or the background
+// install fails. Returns true when reachable. Up to ~90 s (binary download).
+async function pollOpenObserveReady(): Promise<boolean> {
+  for (let i = 0; i < 60; i++) {
+    try {
+      const r = await fetch('/api/openobserve')
+      const s = await r.json() as { reachable?: boolean; failed?: boolean }
+      if (s.reachable) return true
+      if (s.failed) return false
+    } catch { /* keep polling */ }
+    await new Promise(res => setTimeout(res, 1500))
+  }
+  return false
+}
 
 function SectionCard({ children }: { children: React.ReactNode }) {
   return (
@@ -82,6 +97,7 @@ const LOG_LEVEL_OPTIONS = [
 export default function SettingsView() {
   const [settings, setSettings] = useState<RuntimeSettings | null>(null)
   const [reloadStatus, setReloadStatus] = useState<ReloadStatus>('idle')
+  const [reloadMsg, setReloadMsg] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [etlStatus, setEtlStatus] = useState<SaveStatus>('idle')
   const [classificationStatus, setClassificationStatus] = useState<SaveStatus>('idle')
@@ -119,11 +135,13 @@ export default function SettingsView() {
     }
   }
 
-  // Save observability settings then send SIGHUP so the daemon restarts and
-  // picks up the new OTLP config. Log-level changes are hot-reloaded in-process
-  // (no restart needed); this button handles the credential/toggle/endpoint case.
+  // Save observability settings, start/stop the OpenObserve service to match
+  // the toggle, then send SIGHUP so the daemon restarts and picks up the new
+  // OTLP config. Log-level changes are hot-reloaded in-process (no restart
+  // needed); this button handles the credential/toggle/endpoint case.
   const applyObservability = useCallback(async () => {
     if (!settings) return
+    setReloadMsg(null)
     setReloadStatus('saving')
     try {
       const res = await fetch('/api/settings', {
@@ -146,8 +164,52 @@ export default function SettingsView() {
       return
     }
 
+    // The toggle gates the OpenObserve SERVICE itself, not just the exporters:
+    // enabled → start the launchd agent (installing it first on a fresh
+    // machine); disabled → stop it (and keep it off across logins). A failed
+    // start is a real error the user must see — otherwise "Apply" reports
+    // success while OpenObserve is down.
+    try {
+      const ooRes = await fetch('/api/openobserve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: settings.otlp_enabled }),
+      })
+      if (!ooRes.ok) {
+        const b = await ooRes.json().catch(() => ({})) as { error?: string }
+        setReloadMsg(b.error ?? 'OpenObserve start failed')
+        setReloadStatus('error')
+        setTimeout(() => { setReloadStatus('idle'); setReloadMsg(null) }, 8000)
+        return
+      }
+      // Fresh machine: the server is downloading + installing OpenObserve in
+      // the background. Poll until it is reachable (binary download can take
+      // ~30 s) before continuing to the daemon reload.
+      const ooBody = await ooRes.json() as { installing?: boolean }
+      if (ooBody.installing) {
+        setReloadStatus('installing')
+        const ready = await pollOpenObserveReady()
+        if (!ready) {
+          setReloadStatus('error')
+          setTimeout(() => setReloadStatus('idle'), 4000)
+          return
+        }
+      }
+    } catch {
+      setReloadStatus('error')
+      setTimeout(() => setReloadStatus('idle'), 3000)
+      return
+    }
+
     setReloadStatus('reloading')
     const reloadRes = await fetch('/api/daemon/reload', { method: 'POST' })
+    if (reloadRes.status === 503) {
+      // Daemon not running (e.g. dev session with the stack down) — settings
+      // are saved and will be read at the next daemon start. Not an error.
+      setReloadStatus('done')
+      setTimeout(() => setReloadStatus('idle'), 3000)
+      return
+    }
     if (!reloadRes.ok) {
       setReloadStatus('error')
       setTimeout(() => setReloadStatus('idle'), 3000)
@@ -198,47 +260,55 @@ export default function SettingsView() {
       {/* Observability */}
       <SectionCard>
         <SectionHeader>Observability</SectionHeader>
-        <FieldRow label="Log Level" description="Controls verbosity of traces and logs sent to OpenObserve. DEBUG exports everything; WARNING/ERROR suppress info spans. Takes effect after a daemon restart.">
+        {/* Master switch first: when off, OpenObserve is disabled by default and
+            the connection fields stay hidden — they appear only once enabled. */}
+        <FieldRow label="OpenObserve Export" description="Send traces and logs to the local OpenObserve instance. Off by default; enabling reveals the connection fields. Apply starts/stops OpenObserve and restarts the daemon for you.">
+          <Switch checked={settings.otlp_enabled} onCheckedChange={v => patch({ otlp_enabled: v })} />
+        </FieldRow>
+        <FieldRow label="Log Level" description="Verbosity of daemon logs — always applies to the local log files, and to OpenObserve export when enabled. DEBUG logs everything; WARNING/ERROR suppress info. Hot-reloads on the next daemon tick.">
           <Select
             value={settings.log_level}
             onValueChange={v => patch({ log_level: v as RuntimeSettings['log_level'] })}
             options={LOG_LEVEL_OPTIONS}
           />
         </FieldRow>
-        <FieldRow label="OpenObserve Export" description="Send traces and logs to the local OpenObserve instance. Requires credentials below; takes effect after a daemon restart.">
-          <Switch checked={settings.otlp_enabled} onCheckedChange={v => patch({ otlp_enabled: v })} />
-        </FieldRow>
-        <FieldRow label="OTLP Endpoint" description="Leave blank to use the default (localhost:5080).">
-          <TextInput
-            value={settings.otlp_endpoint}
-            onChange={v => patch({ otlp_endpoint: v })}
-            placeholder="http://localhost:5080/api/default/v1/traces"
-          />
-        </FieldRow>
-        <FieldRow label="Email">
-          <TextInput
-            type="email"
-            value={settings.oo_email}
-            onChange={v => patch({ oo_email: v })}
-            placeholder="admin@example.com"
-          />
-        </FieldRow>
-        <FieldRow label="Password">
-          <TextInput
-            type="password"
-            value={settings.oo_password}
-            onChange={v => patch({ oo_password: v })}
-            placeholder="••••••••"
-          />
-        </FieldRow>
+        {settings.otlp_enabled && (
+          <>
+            <FieldRow label="Email" description="Your OpenObserve login. First time? Just pick an email and password here — they become the OpenObserve root account when the service first starts. Already using OpenObserve? Enter the credentials you log in with.">
+              <TextInput
+                type="email"
+                value={settings.oo_email}
+                onChange={v => patch({ oo_email: v })}
+                placeholder="you@example.com"
+              />
+            </FieldRow>
+            <FieldRow label="Password" description="Stored locally; used to log in at localhost:5080 and as auth for trace/log export.">
+              <TextInput
+                type="password"
+                value={settings.oo_password}
+                onChange={v => patch({ oo_password: v })}
+                placeholder="••••••••"
+              />
+            </FieldRow>
+            <FieldRow label="OTLP Endpoint (optional)" description="Advanced — leave blank for the local OpenObserve instance. Only set this to export to a remote collector.">
+              <TextInput
+                value={settings.otlp_endpoint}
+                onChange={v => patch({ otlp_endpoint: v })}
+                placeholder="http://localhost:5080/api/default/v1/traces"
+              />
+            </FieldRow>
+          </>
+        )}
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', paddingTop: '8px', borderTop: '1px solid var(--rule)' }}>
           {/* Log Level → hot-reloaded in-process (no restart). All other OTel
-              fields require the daemon to restart to rebuild the exporters —
-              "Apply" saves settings then sends SIGHUP; launchd restarts it. */}
+              fields require the daemon to rebuild its exporters — "Apply" saves
+              settings then sends SIGHUP to ONLY the daemon PID; launchd's
+              KeepAlive relaunches that single service, leaving screenpipe / MLX /
+              UI untouched. */}
           <button
             type="button"
             onClick={applyObservability}
-            disabled={reloadStatus === 'saving' || reloadStatus === 'reloading'}
+            disabled={reloadStatus === 'saving' || reloadStatus === 'installing' || reloadStatus === 'reloading'}
             style={{
               background: 'var(--accent)',
               color: '#fff',
@@ -247,41 +317,48 @@ export default function SettingsView() {
               padding: '5px 14px',
               borderRadius: '6px',
               border: 'none',
-              cursor: reloadStatus === 'saving' || reloadStatus === 'reloading' ? 'not-allowed' : 'default',
-              opacity: reloadStatus === 'saving' || reloadStatus === 'reloading' ? 0.7 : 1,
+              cursor: reloadStatus === 'saving' || reloadStatus === 'installing' || reloadStatus === 'reloading' ? 'not-allowed' : 'default',
+              opacity: reloadStatus === 'saving' || reloadStatus === 'installing' || reloadStatus === 'reloading' ? 0.7 : 1,
               boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
             }}
           >
-            {reloadStatus === 'saving' ? 'Saving…' : reloadStatus === 'reloading' ? 'Reloading…' : 'Apply'}
+            {reloadStatus === 'saving' ? 'Saving…'
+              : reloadStatus === 'installing' ? 'Installing…'
+              : reloadStatus === 'reloading' ? 'Reloading…'
+              : 'Apply'}
           </button>
           {reloadStatus === 'done' && <span style={{ fontSize: '12px', color: 'var(--success)' }}>Active</span>}
-          {reloadStatus === 'error' && <span style={{ fontSize: '12px', color: 'var(--warn)' }}>Failed</span>}
+          {reloadStatus === 'error' && <span style={{ fontSize: '12px', color: 'var(--warn)' }}>{reloadMsg ?? 'Failed'}</span>}
           <span style={{ fontSize: '11px', color: 'var(--ink-3)' }}>
-            {reloadStatus === 'reloading' ? 'Restarting daemon…' : 'Log level applies next tick · endpoint/credentials require restart'}
+            {reloadStatus === 'installing' ? 'Downloading & installing OpenObserve (first time only)…'
+              : reloadStatus === 'reloading' ? 'Restarting daemon…'
+              : 'Apply handles everything — installs/starts/stops OpenObserve and restarts the daemon'}
           </span>
-          <button
-            type="button"
-            onClick={() => {
-              let base = 'http://localhost:5080'
-              try {
-                if (settings.otlp_endpoint) base = new URL(settings.otlp_endpoint).origin
-              } catch { /* keep default */ }
-              window.open(base, '_blank', 'noopener,noreferrer')
-            }}
-            style={{
-              background: 'transparent',
-              color: 'var(--accent)',
-              fontSize: '12px',
-              fontWeight: 500,
-              padding: '5px 14px',
-              borderRadius: '6px',
-              border: '1px solid var(--accent)',
-              cursor: 'default',
-              marginLeft: 'auto',
-            }}
-          >
-            Open OpenObserve
-          </button>
+          {settings.otlp_enabled && (
+            <button
+              type="button"
+              onClick={() => {
+                let base = 'http://localhost:5080'
+                try {
+                  if (settings.otlp_endpoint) base = new URL(settings.otlp_endpoint).origin
+                } catch { /* keep default */ }
+                window.open(base, '_blank', 'noopener,noreferrer')
+              }}
+              style={{
+                background: 'transparent',
+                color: 'var(--accent)',
+                fontSize: '12px',
+                fontWeight: 500,
+                padding: '5px 14px',
+                borderRadius: '6px',
+                border: '1px solid var(--accent)',
+                cursor: 'default',
+                marginLeft: 'auto',
+              }}
+            >
+              Open OpenObserve
+            </button>
+          )}
         </div>
       </SectionCard>
 
