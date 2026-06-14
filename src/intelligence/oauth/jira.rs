@@ -252,6 +252,16 @@ impl JiraReqCtx {
         }
     }
 
+    /// Human-facing site root (e.g. `https://acme.atlassian.net`) — for building
+    /// deep links like the create-issue dialog. Uses the site URL under OAuth.
+    pub fn site_base(&self) -> String {
+        let base = match self {
+            Self::OAuth { site_url, .. } => site_url,
+            Self::Basic { base_url, .. } => base_url,
+        };
+        base.trim_end_matches('/').to_string()
+    }
+
     /// Human-facing `browse` URL for an issue key (uses the site URL under OAuth).
     pub fn browse_url(&self, issue_key: &str) -> String {
         let base = match self {

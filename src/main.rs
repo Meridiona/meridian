@@ -269,6 +269,79 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `meridian ticket-update --provider P --key K --field F --value V` — apply
+    // ONE board-hygiene fix to the real tracker (due date, assignee, label, …).
+    // Prints a JSON result the UI reads: {"status":"applied"} or
+    // {"status":"redirected","browse_url":...}. On a successful write it triggers
+    // a force sync so the local mirror + hygiene verdicts reflect the change.
+    if std::env::args().nth(1).as_deref() == Some("ticket-update") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let provider = flag("--provider").unwrap_or_default();
+        let key = flag("--key").unwrap_or_default();
+        let field = flag("--field").unwrap_or_default();
+        let value = flag("--value").unwrap_or_default();
+        if provider.is_empty() || key.is_empty() || field.is_empty() {
+            eprintln!("ticket-update: --provider, --key and --field are required");
+            std::process::exit(2);
+        }
+        let cfg = Config::from_env();
+        match meridian::intelligence::ticket_update::apply(&cfg, &provider, &key, &field, &value)
+            .await
+        {
+            Ok(result) => {
+                // Reflect an applied write back into our mirror + hygiene verdicts.
+                if matches!(
+                    result.status,
+                    meridian::intelligence::ticket_update::ApplyStatus::Applied
+                ) {
+                    if let Ok(pool) = setup_db(&cfg.meridian_db_uri()).await {
+                        let _ = run_pm_force_sync(&pool, &cfg).await;
+                        pool.close().await;
+                    }
+                }
+                println!("{}", result.to_json());
+            }
+            Err(e) => {
+                eprintln!("ticket-update: {e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
+    // `meridian ticket-parents --provider P --key K` — list valid parents for a
+    // ticket (Epic / parent task / parent work item, per the tracker's hierarchy)
+    // + a create-parent deep link, for the "link to a parent" hygiene fix. Prints
+    // JSON {"parents":[{key,title}],"parent_label":...,"create_url":...}. Read-only.
+    if std::env::args().nth(1).as_deref() == Some("ticket-parents") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let provider = flag("--provider").unwrap_or_default();
+        let key = flag("--key").unwrap_or_default();
+        if provider.is_empty() || key.is_empty() {
+            eprintln!("ticket-parents: --provider and --key are required");
+            std::process::exit(2);
+        }
+        let cfg = Config::from_env();
+        match meridian::intelligence::ticket_update::parents::list(&cfg, &provider, &key).await {
+            Ok(result) => println!("{}", result.to_json()),
+            Err(e) => {
+                eprintln!("ticket-parents: {e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
     // `meridian worklog-status [--day YYYY-MM-DD]` — a human-readable report of
     // the day's worklogs (hours done/pending/stuck, rows by state, per-ticket
     // comments + flagged ones). Read-only; no daemon init.
@@ -470,11 +543,14 @@ async fn main() -> Result<()> {
         if let Err(e) = run_etl(&screenpipe, &meridian).await {
             tracing::error!(error = %e, "ETL run failed");
             let _ = meridian::notices::raise(
-                &meridian, "etl.failed", "error",
+                &meridian,
+                "etl.failed",
+                "error",
                 "Activity capture pipeline failed",
                 &e.to_string(),
                 Some("Open /logs in the dashboard to see details"),
-            ).await;
+            )
+            .await;
         } else {
             let _ = meridian::notices::clear(&meridian, "etl.failed").await;
         }

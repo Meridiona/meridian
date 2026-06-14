@@ -432,7 +432,8 @@ pub async fn refresh_if_stale(
         Ok(l) => l,
         Err(e) => {
             tracing::warn!(error = %e, "github viewer fetch failed — keeping stale cache");
-            let _ = super::stamp_sync_error(pool, "github", &format!("GitHub auth failed — {e}")).await;
+            let _ =
+                super::stamp_sync_error(pool, "github", &format!("GitHub auth failed — {e}")).await;
             return Ok(None);
         }
     };
@@ -468,7 +469,12 @@ pub async fn refresh_if_stale(
 
     if !any_ok {
         tracing::warn!("all github project fetches failed — keeping stale cache");
-        let _ = super::stamp_sync_error(pool, "github", "GitHub sync failed — all project fetches failed").await;
+        let _ = super::stamp_sync_error(
+            pool,
+            "github",
+            "GitHub sync failed — all project fetches failed",
+        )
+        .await;
         return Ok(None);
     }
 

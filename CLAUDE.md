@@ -162,7 +162,7 @@ There are no JS/TS test suites yet. When adding them, place them under `ui/__tes
 | `RUST_LOG` | `meridian=info` | Tracing filter |
 | `SQLX_OFFLINE` | `true` (via `.cargo/config.toml`) | Prevents sqlx from hitting the DB at compile time |
 | `MERIDIAN_OTLP_ENDPOINT` | (unset → no export) | OpenObserve OTLP/HTTP traces endpoint (loaded from `.env`) |
-| `MERIDIAN_OO_AUTH` | (unset → no auth) | Base64 `user:password` for OpenObserve OTLP auth |
+| `MERIDIAN_OO_AUTH` | DEPRECATED — ignored by the daemon | OO credentials live in `settings.json` (`oo_email`/`oo_password`, set via dashboard Settings); env var still read by Python services + installer fallback |
 | `MLX_SERVER_URL` | (unset → in-process load) | URL of a running MLX classifier server (eval pipeline) |
 | `EVAL_DATASET_PATH` | `services/tests/evals/data/generated/goldens_real.json` | Override Goldens file for the eval pipeline |
 | `SESSION_TEXT_CAP` | `2500` (chars) | Per-session OCR/a11y excerpt cap in the classifier prompt. Set to `0` to disable truncation for eval experiments (caller is then responsible for not blowing the model's context window — phi-4 = 16k tokens). |
