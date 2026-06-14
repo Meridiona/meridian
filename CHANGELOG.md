@@ -1,3 +1,12 @@
+## [1.52.3](https://github.com/Meridiona/meridian/compare/v1.52.2...v1.52.3) (2026-06-14)
+
+
+### Bug Fixes
+
+* **dev:** give install-dev.sh full parity with the production install ([669d37a](https://github.com/Meridiona/meridian/commit/669d37a26fc39714766355ae16be093685e51395))
+* **dev:** guard session-summary cp so a missing source can't abort the dev install ([03b1f1d](https://github.com/Meridiona/meridian/commit/03b1f1df57b99e94db00441a81a850dffb736d14))
+* **ui:** gate standalone output on build phase so dev server boots ([353700e](https://github.com/Meridiona/meridian/commit/353700eaae56a11baf62509360b40b6f5a7534f0)), closes [vercel/next.js#87881](https://github.com/vercel/next.js/issues/87881)
+
 ## [1.52.2](https://github.com/Meridiona/meridian/compare/v1.52.1...v1.52.2) (2026-06-14)
 
 
