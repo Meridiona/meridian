@@ -60,10 +60,14 @@ else
 fi
 
 echo "→ Installing session-summary Claude Code command..."
-mkdir -p "${HOME}/.claude/commands"
-cp "${REPO_ROOT}/services/skills/coding-agent/session-summary/SKILL.md" \
-   "${HOME}/.claude/commands/session-summary.md"
-echo "  ✓ session-summary command installed"
+_skill_src="${REPO_ROOT}/services/skills/coding-agent/session-summary/SKILL.md"
+if [[ -f "${_skill_src}" ]]; then
+    mkdir -p "${HOME}/.claude/commands"
+    cp "${_skill_src}" "${HOME}/.claude/commands/session-summary.md"
+    echo "  ✓ session-summary command installed"
+else
+    echo "  ⚠ session-summary command skipped (source not found: ${_skill_src})"
+fi
 
 echo ""
 echo "✓ Dev environment ready."
