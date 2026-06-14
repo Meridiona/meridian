@@ -1,3 +1,10 @@
+## [1.52.4](https://github.com/Meridiona/meridian/compare/v1.52.3...v1.52.4) (2026-06-14)
+
+
+### Bug Fixes
+
+* **uninstall:** tear down orphaned OpenObserve + legacy crash-loop agents ([1ce31a1](https://github.com/Meridiona/meridian/commit/1ce31a1d3a2f3b3de9d0f9f0e5988c9cf6bd5103)), closes [#158](https://github.com/Meridiona/meridian/issues/158)
+
 ## [1.52.3](https://github.com/Meridiona/meridian/compare/v1.52.2...v1.52.3) (2026-06-14)
 
 
