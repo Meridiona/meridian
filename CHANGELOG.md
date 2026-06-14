@@ -1,3 +1,10 @@
+## [1.52.2](https://github.com/Meridiona/meridian/compare/v1.52.1...v1.52.2) (2026-06-14)
+
+
+### Bug Fixes
+
+* **ui:** render display serif in Georgia to match design ([681f387](https://github.com/Meridiona/meridian/commit/681f38702fb5232552cde6571731d5a97a7aacdb))
+
 ## [1.52.1](https://github.com/Meridiona/meridian/compare/v1.52.0...v1.52.1) (2026-06-13)
 
 
