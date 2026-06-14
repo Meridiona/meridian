@@ -254,6 +254,7 @@ Read `VISION.md` first.
 - Use `better-sqlite3` (synchronous) in the MCP server — it runs in a single-threaded Node process
 - UI API routes live in `ui/app/api/`; keep them thin — query, transform, return JSON
 - No `any` types unless unavoidable and justified with a comment
+- **Spawning the `meridian` binary from a UI route: ALWAYS use `selectMeridianBinary(meridianCandidates())` from `@/lib/meridian-bin`.** Never spawn a bare `'meridian'` (relies on `$PATH`), and never hand-roll a candidate list. The dashboard runs under **launchd**, whose PATH lacks Homebrew's `node`, so the `#!/usr/bin/env node` wrapper at `~/.local/bin/meridian` dies with `env: node: No such file or directory`. The helper probes the **native binary first** (`~/.meridian/app/bin/meridian`, no runtime deps → works under launchd), so it behaves identically in dev and installed. This bug is invisible in `dev-start` (dev installs a bash wrapper, not a node one) — it only surfaces on bundle/npm installs. `__tests__/meridian-bin.test.ts` guards the ordering. The one sanctioned exception is launching `meridian` in a user Terminal (`open -a Terminal …`, e.g. `api/update`), where an interactive login shell *does* have node/PATH.
 
 ### SQL migrations
 
@@ -286,6 +287,7 @@ Read `VISION.md` first.
 1. Create `ui/app/api/<name>/route.ts`
 2. Query `meridian.db` using `better-sqlite3` (see existing routes for the pattern)
 3. Return a typed JSON response; define the response type inline
+4. If the route shells out to the `meridian` binary, resolve it with `selectMeridianBinary(meridianCandidates())` from `@/lib/meridian-bin` — never a bare `'meridian'` or an ad-hoc candidate list (see the launchd/node-wrapper note under Coding Conventions → TypeScript / Next.js)
 
 ### Add a new MCP tool
 

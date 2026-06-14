@@ -15,16 +15,9 @@ import { spawn } from 'child_process'
 import path from 'path'
 import os from 'os'
 import fs from 'fs'
+import { meridianCandidates, selectMeridianBinary } from '@/lib/meridian-bin'
 
 const ALLOWED = new Set(['jira', 'trello'])
-
-function findMeridianBin(): string {
-  // Installed binary takes precedence; fall back to cargo run for dev
-  const installed = path.join(os.homedir(), '.meridian', 'app', 'meridian')
-  if (fs.existsSync(installed)) return installed
-  // Try PATH
-  return 'meridian'
-}
 
 export async function POST(request: Request) {
   const { searchParams } = new URL(request.url)
@@ -33,7 +26,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: `Unknown provider: ${provider}` }, { status: 400 })
   }
 
-  const bin = findMeridianBin()
+  const bin = selectMeridianBinary(meridianCandidates())
   const logDir = process.env.MERIDIAN_LOG_DIR ?? path.join(os.homedir(), '.meridian', 'logs')
 
   try {
