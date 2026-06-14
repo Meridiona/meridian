@@ -11,15 +11,15 @@
 
 </div>
 
-- **Cloud LLM** — `OPENROUTER_API_KEY` (skip if you're running a local LLM)
-- **Jira** — easiest is browser OAuth: run `meridian oauth-login jira` (no API token needed). Legacy path: URL, email, API token, project keys (gated by `[y/N]`)
-- **GitHub** — token (auto-extracted from the `gh` CLI, no PAT needed) + GitHub Projects to sync
-- **Linear** — API key, team IDs
-- **Azure DevOps** — Personal Access Token + organisation name + project (all three required)
-- **Observability (OpenObserve)** — base64 auth + OTLP endpoints
 Meridian is an ambient developer-efficiency tool. It runs quietly on your Mac, understands what you're working on, and keeps your tickets in **Jira, GitHub Issues, and Linear** in sync — so you never start a timer, fill out a form, or drag a card again.
 
 Not a time tracker you fill out. Not a dashboard you check. A background layer that watches what you build and keeps your project management current — with zero effort.
+
+---
+
+> ### 🏆 Microsoft Build AI 2026 — Theme 01: AI at Work (Productivity & Teamwork Reimagined)
+>
+> Meridian is our submission for the **AI at Work** track: an AI layer that eliminates the tedious project-management overhead developers and teams carry — keeping tickets updated **and** the board clean, automatically.
 
 ---
 
@@ -44,6 +44,40 @@ Developers lose hours every week to overhead: updating ticket status, logging ti
 3. **Sync** — the matching ticket in Jira / GitHub Issues / Linear is updated for you. **Nothing posts without your approval.**
 
 A local dashboard at **http://localhost:3939** shows your day as a timeline and per-app breakdown. A built-in [MCP server](SETUP.md#mcp-server) makes the same data available to AI tools like Claude and Cursor.
+
+> Beyond keeping tickets updated, Meridian also keeps the **board itself healthy** — its triage engine flags stale tickets, duplicates, and mislabeled status, and proposes clean-ups you approve. Project management isn't just synced; it's maintained.
+
+## Architecture overview
+
+Meridian is a **single-process Rust daemon** (macOS, Apple Silicon) plus a Next.js dashboard, a TypeScript MCP server, and a Tauri tray. It reads [screenpipe](https://screenpi.pe)'s local capture DB and normalises it into structured work sessions in its own local SQLite database (`~/.meridian/meridian.db`).
+
+```
+ CAPTURE                 CLASSIFY                  ACT
+ screenpipe (screen/OCR) ETL state machine →       worklogs & status updates
+ + coding-agent ingest   session boundaries →      + board cleanup / triage
+ (GitHub Copilot,        on-device categorizer →   → Jira · GitHub Issues · Linear
+  Claude Code, Codex,    task classifier             · Trello · Azure DevOps
+  Cursor)                                          (only after you approve)
+        └──────────── on-device / private ──────────┘  └── approved outbound only ──┘
+```
+
+- **Capture** (`src/etl/`, `src/db/screenpipe.rs`, `src/coding_agent_session_ingest/`) — bounds raw activity into clean sessions, accurate across sleep, idle, and restarts; ingests coding-agent transcripts (including **GitHub Copilot** CLI + VS Code chats).
+- **Classify** (`src/intelligence/`) — an on-device model categorizes each session and links it to the specific ticket, then the triage engine assesses board hygiene.
+- **Act** (`src/pm_worklog/`, `src/intelligence/ticket_update/`) — drafts worklogs, status updates, and board clean-ups for 5 trackers, posted only on your approval.
+
+Everything in capture and classification runs **on-device**; the only data that ever leaves your machine is the updates you approve. See [CLAUDE.md](CLAUDE.md) for the full architecture and conventions.
+
+## AI tools & Microsoft stack
+
+Meridian leverages the **Microsoft ecosystem** across its data sources, integrations, and development:
+
+| Microsoft tool | How Meridian uses it | Status |
+|---|---|---|
+| **Azure DevOps** | First-class PM integration — reads work items and posts time-logged worklog comments (cloud, legacy `*.visualstudio.com`, and on-prem TFS) | ✅ Live |
+| **GitHub Copilot** | Ingested as a **first-class data source** — Copilot CLI + VS Code chat sessions feed session classification; also used as a build accelerant | ✅ Live |
+| **GitHub Issues** | PM integration — links sessions to issues and posts worklog comments via the `gh` CLI token | ✅ Live |
+
+**On-device AI:** session classification and summarisation run locally on **[MLX](https://github.com/ml-explore/mlx)** (Apple's Metal framework) — no screen content leaves the device to classify. An **opt-in cloud LLM** (via OpenRouter) is available but **off by default**.
 
 ## Install
 
@@ -136,6 +170,25 @@ cd meridian
 ```
 
 Builds the daemon and dashboard from source and registers the same services. See [SETUP.md](SETUP.md) for the development workflow, configuration reference, and MCP server setup.
+
+## Dependencies
+
+| Component | Stack |
+|---|---|
+| Daemon | Rust (toolchain pinned to 1.93.1), SQLite (sqlx), tokio |
+| Dashboard | Next.js / TypeScript, `better-sqlite3` |
+| MCP server | TypeScript / Node, `better-sqlite3` |
+| Tray app | Tauri (Rust) |
+| On-device AI | MLX + mlx-lm (Python, arm64), FastAPI model server |
+| Capture layer | [screenpipe](https://screenpi.pe) (external, local) |
+| Platform | macOS, Apple Silicon (M1+) |
+
+## Team
+
+| Member | Role |
+|---|---|
+| **Adithya C H** | Co-founder, Meridiona |
+| **Akarsh Hegde** | Co-founder, Meridiona |
 
 ## Built on
 
