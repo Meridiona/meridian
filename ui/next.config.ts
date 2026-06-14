@@ -1,7 +1,8 @@
 import type { NextConfig } from 'next'
+import { PHASE_PRODUCTION_BUILD } from 'next/constants'
 import path from 'path'
 
-const nextConfig: NextConfig = {
+const nextConfig = (phase: string): NextConfig => ({
   // Pin the Turbopack workspace root to this `ui/` directory. The repo root
   // also has a package-lock.json, so Turbopack otherwise infers the monorepo
   // root and tries to watch the whole tree — including the 22 GB Rust
@@ -20,7 +21,12 @@ const nextConfig: NextConfig = {
   // crash-loops the standalone server. So package-release.sh packs the standalone
   // into `ui.tar.gz` (tar preserves symlinks; npm ships it as one opaque file) and
   // install-from-bundle.sh extracts it on the user's machine — keeping Turbopack.
-  output: 'standalone',
+  //
+  // Gate on the build phase, NOT process.env.NODE_ENV: a stray NODE_ENV=production
+  // in the shell otherwise enables standalone during `next dev`, which double-joins
+  // the dev distDir (`.next/dev/dev`) and panics Turbopack with
+  // "Invalid distDirRoot: .next" (vercel/next.js#87881).
+  output: phase === PHASE_PRODUCTION_BUILD ? 'standalone' : undefined,
   // Pin the standalone file-tracing root to this `ui/` dir. The repo root also
   // has a package-lock.json, so Next otherwise infers the monorepo root and
   // nests the output as `.next/standalone/ui/server.js` — which breaks the
@@ -44,6 +50,6 @@ const nextConfig: NextConfig = {
   logging: {
     fetches: { fullUrl: false },
   },
-}
+})
 
 export default nextConfig
