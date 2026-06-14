@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { fmtDur, fmtClock, AppGlyph, CatDot, TaskKey, StatusPill, SectionHead, Card, CATS, PROVIDER_META } from '@/components/atoms'
 import type { TaskSummary, TasksResponse } from '@/app/api/tasks/route'
+import HygieneDialog from '@/components/HygieneDialog'
 import type { TodayResponse } from '@/app/api/today/route'
 import type { IntegrationsResponse } from '@/app/api/integrations/route'
 
@@ -44,6 +45,7 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
   const [syncError, setSyncError] = useState<string | null>(null)
   const [providerFilter, setProviderFilter] = useState<string>('all')
   const [showIntegrations, setShowIntegrations] = useState(openIntegrations ?? false)
+  const [fixTask, setFixTask] = useState<TaskSummary | null>(null)
   const [collapsedEpics, setCollapsedEpics] = useState<Set<string>>(new Set())
 
   const fetchTasks = () => {
@@ -248,7 +250,7 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
                       <span className="ml-auto font-mono tnum text-[10px] shrink-0" style={{ color: color + 'AA' }}>{group.length}</span>
                     </button>
                     {!collapsed && group.map(t => (
-                      <TaskRow key={t.key} task={t} selected={t.key === selected} onSelect={() => setSelected(t.key)} epicColor={color} showProvider={showProviderTabs} />
+                      <TaskRow key={t.key} task={t} selected={t.key === selected} onSelect={() => setSelected(t.key)} onFix={() => setFixTask(t)} epicColor={color} showProvider={showProviderTabs} />
                     ))}
                   </div>
                 )
@@ -257,12 +259,14 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
 
             {sel && (
               <div className="lg:sticky lg:top-8">
-                <TaskDetail task={sel} sessions={todaySessions.filter(s => s.task_key === sel.key)} />
+                <TaskDetail task={sel} sessions={todaySessions.filter(s => s.task_key === sel.key)} onFix={() => setFixTask(sel)} />
               </div>
             )}
           </div>
         </>
       )}
+
+      {fixTask && <HygieneDialog task={fixTask} onClose={() => setFixTask(null)} onApplied={fetchTasks} />}
     </div>
   )
 }
@@ -295,7 +299,7 @@ function ProviderTab({ id, active, onClick }: { id: string; active: boolean; onC
   )
 }
 
-function TaskRow({ task, selected, onSelect, epicColor: eColor, showProvider }: { task: TaskSummary; selected: boolean; onSelect: () => void; epicColor?: string; showProvider?: boolean }) {
+function TaskRow({ task, selected, onSelect, onFix, epicColor: eColor, showProvider }: { task: TaskSummary; selected: boolean; onSelect: () => void; onFix: () => void; epicColor?: string; showProvider?: boolean }) {
   const meta = PROVIDER_META[task.provider]
   const borderColor = selected ? (eColor ?? 'var(--accent)') : 'transparent'
   return (
@@ -317,6 +321,16 @@ function TaskRow({ task, selected, onSelect, epicColor: eColor, showProvider }: 
         )}
         <TaskKey keyId={task.key} />
         <StatusPill status={task.status} isTerminal={task.is_terminal} />
+        {task.hygiene && task.hygiene.issues.length > 0 && (
+          <span role="button" tabIndex={0}
+            onClick={(e) => { e.stopPropagation(); onFix() }}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onFix() } }}
+            className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full shrink-0 cursor-pointer"
+            style={{ background: 'var(--warn)' + '1A', color: 'var(--warn)' }}
+            title={`${task.hygiene.issues.length} hygiene fix${task.hygiene.issues.length === 1 ? '' : 'es'} — click to fix`}>
+            ⚠ {task.hygiene.issues.length}
+          </span>
+        )}
         <span className="ml-auto font-mono tnum text-[12px]" style={{ color: task.today_s > 0 ? 'var(--ink)' : 'var(--ink-4)' }}>
           {task.today_s > 0 ? fmtDur(task.today_s) : '—'}
         </span>
@@ -326,7 +340,32 @@ function TaskRow({ task, selected, onSelect, epicColor: eColor, showProvider }: 
   )
 }
 
-function TaskDetail({ task, sessions }: { task: TaskSummary; sessions: TodayResponse['sessions'] }) {
+// A compact board-hygiene call-to-action in the detail pane: opens the focused
+// fix dialog. The list of defects + controls lives in the dialog itself.
+function HygienePanel({ task, onFix }: { task: TaskSummary; onFix: () => void }) {
+  const h = task.hygiene
+  if (!h || h.issues.length === 0) return null
+  return (
+    <button onClick={onFix}
+      className="w-full rounded-xl border px-4 py-3 flex items-center gap-3 text-left transition-colors"
+      style={{ borderColor: 'var(--warn)', background: 'var(--warn)' + '0F' }}>
+      <span style={{ color: 'var(--warn)' }}>⚠</span>
+      <div className="min-w-0 flex-1">
+        <p className="text-[13px] font-medium" style={{ color: 'var(--ink)' }}>
+          {h.issues.length} fix{h.issues.length === 1 ? '' : 'es'} for a healthier ticket
+        </p>
+        <p className="text-[11px] truncate" style={{ color: 'var(--ink-3)' }}>
+          {h.issues.map(i => i.hint).join(' · ')}
+        </p>
+      </div>
+      <span className="text-[12px] px-2.5 py-1 rounded-md shrink-0" style={{ background: 'var(--warn)', color: '#fff' }}>
+        Review & fix
+      </span>
+    </button>
+  )
+}
+
+function TaskDetail({ task, sessions, onFix }: { task: TaskSummary; sessions: TodayResponse['sessions']; onFix: () => void }) {
   const sortedSessions = [...sessions].sort((a, b) => b.started_at.localeCompare(a.started_at))
   const providerMeta = PROVIDER_META[task.provider]
   const eColor = epicColor(task.epic_title)
@@ -376,6 +415,8 @@ function TaskDetail({ task, sessions }: { task: TaskSummary; sessions: TodayResp
           <p className="text-[14px] mt-3 max-w-prose" style={{ color: 'var(--ink-2)' }}>{task.description}</p>
         )}
       </div>
+
+      <HygienePanel task={task} onFix={onFix} />
 
       <div className="grid grid-cols-3 rule-t rule-b" style={{ borderColor: 'var(--rule)' }}>
         <div className="px-5 py-4">

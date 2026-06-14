@@ -43,14 +43,14 @@
         <string>{{HOME}}/.meridian/meridian.db</string>
         <key>POLL_INTERVAL_SECS</key>
         <string>60</string>
-        <key>RUST_LOG</key>
-        <string>meridian=info</string>
-        <!-- OTLP auth for OpenObserve — must be set here (not just .env)
-             because the Rust binary reads env vars before dotenv is loaded.
-             The install script reads MERIDIAN_OO_AUTH from the repo-root .env and
-             substitutes the {{MERIDIAN_OO_AUTH}} placeholder below. -->
-        <key>MERIDIAN_OO_AUTH</key>
-        <string>{{MERIDIAN_OO_AUTH}}</string>
+        <!-- RUST_LOG is intentionally NOT set here. The daemon derives its log
+             filter from settings.log_level (dashboard Settings → Log Level) and
+             hot-reloads it on the next poll tick; pinning RUST_LOG would make
+             reload_log_level() a no-op and silently defeat the UI control. A
+             power user can still export RUST_LOG to override. -->
+        <!-- MERIDIAN_OO_AUTH is deprecated and ignored by the daemon — OpenObserve
+             credentials come from settings.json (dashboard Settings). The key is
+             left out of this plist on purpose. -->
         <key>MERIDIAN_OTLP_ENDPOINT</key>
         <string>{{MERIDIAN_OTLP_ENDPOINT}}</string>
     </dict>

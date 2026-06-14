@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "meridian"
-version = "1.50.1"
+version = "1.52.1"
 edition = "2021"
 description = "Meridian — ambient developer-efficiency tool that keeps Jira, GitHub, and Linear in sync"
 authors = ["Meridiona"]

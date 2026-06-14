@@ -4,11 +4,12 @@
 use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
-// RuntimeSettings — hot-reloadable subset of config (repo-local settings.json)
+// RuntimeSettings — hot-reloadable subset of config (~/.meridian/settings.json)
 // ---------------------------------------------------------------------------
 
-/// Settings that can be changed at runtime by editing the repo-local `settings.json`.
-/// The daemon re-reads this file on every poll tick; no restart required.
+/// Settings that can be changed at runtime by editing `settings.json` (resolved by
+/// [`settings_json_path`]). The daemon re-reads this file on every poll tick; no
+/// restart required.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
 pub struct RuntimeSettings {
@@ -23,7 +24,8 @@ pub struct RuntimeSettings {
     pub poll_interval_secs: u64,
     pub jira_update_enabled: bool,
     // OpenObserve OTLP export — all three must be non-empty for export to activate.
-    // Takes precedence over MERIDIAN_OTLP_ENDPOINT / MERIDIAN_OO_AUTH env vars.
+    // settings.json is the ONLY credential source (MERIDIAN_OO_AUTH is deprecated
+    // and ignored); otlp_endpoint still falls back to MERIDIAN_OTLP_ENDPOINT.
     pub otlp_enabled: bool,
     pub otlp_endpoint: Option<String>,
     pub oo_email: Option<String>,
@@ -43,7 +45,9 @@ impl Default for RuntimeSettings {
             llm_budget_pct: 0.5,
             poll_interval_secs: 60,
             jira_update_enabled: true,
-            otlp_enabled: true,
+            // OpenObserve export is opt-in — off until enabled in Settings (UI
+            // default in ui/lib/settings.ts must match this).
+            otlp_enabled: false,
             otlp_endpoint: None,
             oo_email: None,
             oo_password: None,
@@ -51,13 +55,49 @@ impl Default for RuntimeSettings {
     }
 }
 
-/// Return the path to the repo-local `settings.json`, resolved against the
-/// process working directory (the daemon runs with cwd = repo root). Kept inside
-/// the repo so nothing is read from outside it; absent → built-in defaults.
+/// Resolve the path to `settings.json` — the hot-reloadable runtime settings the
+/// UI writes and the daemon reads. Both sides MUST agree on this path or the UI's
+/// "Apply" never reaches the daemon.
+///
+/// The daemon's working directory depends on the install type (repo root under
+/// `cargo run`, `~/.meridian/app` for a bundle install), so resolving relative to
+/// cwd makes the UI and daemon disagree on anything but a source checkout. Instead
+/// we resolve to a fixed, install-independent location. Resolution order:
+///   1. `MERIDIAN_SETTINGS_PATH` — explicit override (tests, non-standard installs)
+///   2. `~/.meridian/settings.json` — canonical home, next to `meridian.db`; this
+///      is what the UI writes (see `ui/lib/settings.ts`)
+///   3. `<cwd>/settings.json` — legacy fallback, honoured only when the canonical
+///      file is absent (a source checkout still keeping settings in the repo). The
+///      canonical path takes precedence so a UI write always wins once it exists.
 fn settings_json_path() -> std::path::PathBuf {
-    std::env::current_dir()
-        .unwrap_or_else(|_| std::path::PathBuf::from("."))
-        .join("settings.json")
+    if let Ok(p) = std::env::var("MERIDIAN_SETTINGS_PATH") {
+        if !p.is_empty() {
+            return PathBuf::from(shellexpand::tilde(&p).into_owned());
+        }
+    }
+
+    let canonical = std::env::var("HOME")
+        .ok()
+        .map(|home| PathBuf::from(home).join(".meridian").join("settings.json"));
+
+    if let Some(path) = &canonical {
+        if path.exists() {
+            return path.clone();
+        }
+    }
+
+    // Legacy: a source checkout may still carry settings.json in the repo root
+    // (the daemon's cwd). Honoured only when the canonical file does not exist.
+    let cwd_path = std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("settings.json");
+    if cwd_path.exists() {
+        return cwd_path;
+    }
+
+    // Neither exists yet — default to the canonical path so a first write lands
+    // in the right, install-independent place.
+    canonical.unwrap_or(cwd_path)
 }
 
 /// Load the repo-local `settings.json`, falling back to defaults if the file is
@@ -232,8 +272,14 @@ fn parse_jira() -> Option<PmProviderConfig> {
         .unwrap_or_default()
         .trim()
         .to_owned();
-    let email = std::env::var("JIRA_EMAIL").unwrap_or_default().trim().to_owned();
-    let api_token = std::env::var("JIRA_API_TOKEN").unwrap_or_default().trim().to_owned();
+    let email = std::env::var("JIRA_EMAIL")
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    let api_token = std::env::var("JIRA_API_TOKEN")
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
 
     // Configured if EITHER auth path is viable:
     //   * browser OAuth — the user has run `meridian oauth-login jira`, so a token
