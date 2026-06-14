@@ -499,6 +499,7 @@ cmd_uninstall() {
     bash "${REPO_ROOT}/scripts/uninstall-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/scripts/uninstall-screenpipe-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/scripts/uninstall-tray-daemon.sh" 2>/dev/null
+    bash "${REPO_ROOT}/scripts/uninstall-openobserve-daemon.sh" 2>/dev/null
     # a11y-helper plist
     launchctl bootout "${GUI_TARGET}/com.meridiona.a11y-helper" 2>/dev/null || true
     rm -f "${HOME}/Library/LaunchAgents/com.meridiona.a11y-helper.plist"
