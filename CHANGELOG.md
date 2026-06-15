@@ -1,3 +1,10 @@
+## [1.52.5](https://github.com/Meridiona/meridian/compare/v1.52.4...v1.52.5) (2026-06-15)
+
+
+### Bug Fixes
+
+* **openobserve:** correct ZO_MEMORY_CACHE_MAX_SIZE and ZO_DATAFUSION_POOL_SIZE units ([#284](https://github.com/Meridiona/meridian/issues/284)) ([1e9e111](https://github.com/Meridiona/meridian/commit/1e9e111933180893dd4075027885a7052efc620b))
+
 ## [1.52.4](https://github.com/Meridiona/meridian/compare/v1.52.3...v1.52.4) (2026-06-14)
 
 
