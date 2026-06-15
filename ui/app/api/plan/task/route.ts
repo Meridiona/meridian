@@ -6,6 +6,7 @@
 
 import { NextResponse } from 'next/server'
 import getDb from '@/lib/db'
+import { dueDaysFrom } from '@/lib/daily-plan'
 
 export const dynamic = 'force-dynamic'
 
@@ -25,16 +26,6 @@ export interface TaskDetail {
   start_date: string | null
   description: string
   acceptance_criteria: string | null
-}
-
-function dueDaysFrom(due: string | null): number | null {
-  if (!due) return null
-  const d = new Date(due.length <= 10 ? `${due}T00:00:00` : due)
-  if (isNaN(d.getTime())) return null
-  const now = new Date()
-  const a = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  const b = new Date(d.getFullYear(), d.getMonth(), d.getDate())
-  return Math.round((b.getTime() - a.getTime()) / 86400000)
 }
 
 export async function GET(req: Request) {
@@ -66,7 +57,7 @@ export async function GET(req: Request) {
       priority: (r.priority as string)?.trim() || null,
       story_points: (r.story_points as string)?.trim() || null,
       due_date: (r.due_date as string | null) ?? null,
-      due_days: dueDaysFrom((r.due_date as string | null) ?? null),
+      due_days: dueDaysFrom((r.due_date as string | null) ?? null, new Date()),
       start_date: (r.start_date as string | null) ?? null,
       description: (r.description_text as string) || '',
       acceptance_criteria: (r.acceptance_criteria as string)?.trim() || null,

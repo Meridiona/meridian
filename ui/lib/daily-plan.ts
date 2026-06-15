@@ -98,7 +98,7 @@ function looksStarted(status: string): boolean {
 }
 
 /** Whole days until a due date (date-only). Negative = overdue. null if absent/bad. */
-function dueDaysFrom(due: string | null, now: Date): number | null {
+export function dueDaysFrom(due: string | null, now: Date): number | null {
   if (!due) return null
   const d = new Date(due.length <= 10 ? `${due}T00:00:00` : due)
   if (isNaN(d.getTime())) return null
@@ -306,13 +306,17 @@ export function buildAvailable(db: Database.Database, date: string): AvailableTa
   return items
 }
 
-/** Full plan payload for a day. */
-export function buildPlanResponse(date: string): PlanResponse {
-  const db = getDb()
+/** Full plan payload for a day. `db` and `available` may be supplied by a write
+ *  handler that has already opened the DB and scored the board, so a POST scores
+ *  the board once instead of twice. */
+export function buildPlanResponse(
+  date: string,
+  db: Database.Database = getDb(),
+  available: AvailableTask[] = buildAvailable(db, date),
+): PlanResponse {
   const now = new Date()
   const hasTable = tableExists(db, 'daily_plan')
   const meta = loadMeta(db, date)
-  const available = buildAvailable(db, date)
 
   const plan = loadPlan(db, date, now)
   const committed = new Set(plan.map(p => p.task_key))

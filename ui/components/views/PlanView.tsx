@@ -115,7 +115,10 @@ export default function PlanView() {
   // user's in-progress edits. Skipped entirely during an active drag.
   const load = useCallback((initial = false) => {
     if (!initial && draggingRef.current) return
-    fetch('/api/plan').then(r => r.json()).then((d: PlanResponse) => {
+    fetch('/api/plan').then(r => {
+      if (!r.ok) throw new Error(`plan load failed: ${r.status}`)  // 500 = real backend error, not an empty day
+      return r.json()
+    }).then((d: PlanResponse) => {
       setData(d); setLoadFailed(false)
       if (initial) derive(d)
     }).catch(() => { if (initial) setLoadFailed(true) })

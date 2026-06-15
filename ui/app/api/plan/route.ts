@@ -23,21 +23,30 @@ function nowIso(): string {
   return new Date().toISOString().replace(/\.\d+Z$/, 'Z')
 }
 
-function validDate(d: unknown): string {
-  return typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : todayString()
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+
+// GET: an absent/garbage date harmlessly falls back to today (read-only).
+function readDate(d: unknown): string {
+  return typeof d === 'string' && DATE_RE.test(d) ? d : todayString()
+}
+
+// Writes: an explicitly-supplied date MUST be valid — defaulting a malformed
+// date to today would silently mutate the WRONG day's plan. Absent → today.
+function writeDate(d: unknown): string | null {
+  if (d === undefined || d === null) return todayString()
+  return typeof d === 'string' && DATE_RE.test(d) ? d : null
 }
 
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url)
-    const date = validDate(url.searchParams.get('date'))
+    const date = readDate(url.searchParams.get('date'))
     return NextResponse.json(buildPlanResponse(date))
   } catch (e) {
+    // Surface backend failure as 500 — a DB/read error must NOT render as a
+    // valid empty day (the client can't tell those apart otherwise).
     console.error('plan api GET error:', e)
-    return NextResponse.json(
-      { date: todayString(), has_table: false, confirmed: false, skipped: false, plan: [], suggestions: [], available: [] },
-      { status: 200 },
-    )
+    return NextResponse.json({ error: 'failed to load plan' }, { status: 500 })
   }
 }
 
@@ -56,7 +65,10 @@ export async function POST(req: Request) {
   if (typeof action !== 'string') {
     return NextResponse.json({ error: 'action required' }, { status: 400 })
   }
-  const date = validDate(body.date)
+  const date = writeDate(body.date)
+  if (date === null) {
+    return NextResponse.json({ error: 'invalid date (expected YYYY-MM-DD)' }, { status: 400 })
+  }
 
   try {
     const db = getWriteDb()
@@ -70,15 +82,13 @@ export async function POST(req: Request) {
     }
 
     const now = nowIso()
+    // Score the board ONCE per request and reuse it for both the origin lookup
+    // and the response payload below (buildPlanResponse would otherwise re-score).
+    const available = buildAvailable(db, date)
     // origin lookup uses the scored board so a committed task keeps a meaningful
     // origin label ("carried over" / "in progress" / …) instead of bare "manual".
-    const originFor = (() => {
-      let map: Map<string, string> | null = null
-      return (key: string): string => {
-        if (!map) map = new Map(buildAvailable(db, date).map(a => [a.key, a.origin]))
-        return map.get(key) ?? 'manual'
-      }
-    })()
+    const originMap = new Map(available.map(a => [a.key, a.origin]))
+    const originFor = (key: string): string => originMap.get(key) ?? 'manual'
 
     const upsertMeta = (confirmedAt: string | null, skipped: number) => {
       db.prepare(`
@@ -112,12 +122,20 @@ export async function POST(req: Request) {
 
     switch (action) {
       case 'confirm': {
+        // task_keys MUST be an array — an explicit [] means "clear the plan",
+        // but a missing/malformed body must 400, not wipe the day silently.
+        if (!Array.isArray(body.task_keys)) {
+          return NextResponse.json({ error: 'task_keys array required' }, { status: 400 })
+        }
         const keys = keysFromBody()
         db.transaction(() => { replacePlan(keys); upsertMeta(now, 0) })()
         break
       }
       case 'set': {
         // Live edit while already confirmed — replace rows, leave meta untouched.
+        if (!Array.isArray(body.task_keys)) {
+          return NextResponse.json({ error: 'task_keys array required' }, { status: 400 })
+        }
         replacePlan(keysFromBody())
         break
       }
@@ -159,7 +177,8 @@ export async function POST(req: Request) {
     }
 
     // Return the fresh state so the client can reconcile against the server.
-    return NextResponse.json(buildPlanResponse(date))
+    // Reuse the board scored above (plan writes don't change pm_tasks scoring).
+    return NextResponse.json(buildPlanResponse(date, db, available))
   } catch (e) {
     console.error('plan api POST error:', e)
     return NextResponse.json({ error: 'write failed' }, { status: 500 })

@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS daily_plan (
     PRIMARY KEY (plan_date, task_key)
 );
 
-CREATE INDEX IF NOT EXISTS idx_daily_plan_date ON daily_plan (plan_date);
+-- No separate index on plan_date: it's the leftmost column of the primary key,
+-- so `WHERE plan_date = ?` already uses the PK index.
 
 -- One row per planned day. Presence of a row = the dev acted that day.
 CREATE TABLE IF NOT EXISTS daily_plan_meta (
