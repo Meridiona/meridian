@@ -9,5 +9,6 @@ pub mod health;
 pub mod intelligence;
 pub mod llm_gate;
 pub mod notices;
+pub mod notifications;
 pub mod observability;
 pub mod pm_worklog;
