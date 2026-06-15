@@ -808,6 +808,11 @@ async fn main() -> Result<()> {
                 }
                 // Wake the background task linker to drain newly-created sessions.
                 etl_notify.notify_one();
+
+                // Morning plan nudge — idempotent per day, gated to working hours.
+                if let Err(e) = meridian::daily_plan::maybe_nudge(&meridian).await {
+                    tracing::debug!(error = %e, "plan nudge check skipped");
+                }
                 // pm_tasks is refreshed on demand at its read boundaries
                 // (classification in run_task_linking, drafting in the worklog
                 // driver), so no timer-driven refresh is needed here.

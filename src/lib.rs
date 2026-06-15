@@ -3,6 +3,7 @@
 
 pub mod coding_agent_session_ingest;
 pub mod config;
+pub mod daily_plan;
 pub mod db;
 pub mod etl;
 pub mod health;
