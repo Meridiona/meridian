@@ -20,7 +20,7 @@ pub fn get_status(state: State<'_, Arc<Mutex<AppState>>>) -> Result<StatusPayloa
 #[tauri::command]
 pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
     app.opener()
-        .open_url(&ui_base(), None::<&str>)
+        .open_url(ui_base(), None::<&str>)
         .map_err(|e| e.to_string())
 }
 

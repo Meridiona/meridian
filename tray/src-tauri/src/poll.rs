@@ -42,6 +42,13 @@ struct WorklogsResp {
     items: Vec<WorklogItem>,
 }
 
+#[derive(Deserialize)]
+struct PendingNotif {
+    id: i64,
+    title: String,
+    body: String,
+}
+
 pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
@@ -65,8 +72,13 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
             refresh_today(&client, &state).await;
         }
         if do_worklogs {
-            refresh_worklogs(&app, &client, &state).await;
+            refresh_worklogs(&client, &state).await;
         }
+        // Drain the daemon's notification outbox every tick — this is the single
+        // delivery path for all daemon-originated notifications (plan nudge,
+        // worklog ready, promoted faults). The tray is a dumb delivery agent;
+        // preference + quiet-hours filtering already happened server-side.
+        drain_notifications(&app, &client).await;
 
         {
             let mut s = state.lock().unwrap();
@@ -195,7 +207,10 @@ async fn refresh_today(client: &Client, state: &Arc<Mutex<AppState>>) {
     }
 }
 
-async fn refresh_worklogs(app: &tauri::AppHandle, client: &Client, state: &Arc<Mutex<AppState>>) {
+// Tracks the draft count for the tray tooltip/badge only. The "worklog ready"
+// notification itself is emitted by the daemon's worklog scheduler into the
+// notification outbox and delivered via drain_notifications — not fired here.
+async fn refresh_worklogs(client: &Client, state: &Arc<Mutex<AppState>>) {
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let resp = client
         .get(format!("{}/api/worklogs?day={}", ui_base(), today))
@@ -212,29 +227,35 @@ async fn refresh_worklogs(app: &tauri::AppHandle, client: &Client, state: &Arc<M
         },
     };
 
-    let notify_new = {
-        let mut s = state.lock().unwrap();
-        let changed = draft_count > s.last_notified_drafts;
-        if draft_count == 0 {
-            s.last_notified_drafts = 0;
-        }
-        s.drafts_count = draft_count;
-        if changed {
-            s.last_notified_drafts = draft_count;
-        }
-        changed
+    state.lock().unwrap().drafts_count = draft_count;
+}
+
+// Poll the daemon's notification outbox and deliver each pending native
+// notification as a macOS toast, then acknowledge it so it never re-fires.
+async fn drain_notifications(app: &tauri::AppHandle, client: &Client) {
+    let resp = client
+        .get(format!("{}/api/notifications/pending", ui_base()))
+        .send()
+        .await
+        .ok();
+
+    let items: Vec<PendingNotif> = match resp {
+        Some(r) if r.status().is_success() => r.json().await.unwrap_or_default(),
+        _ => return,
     };
 
-    if notify_new {
-        let msg = if draft_count == 1 {
-            "1 worklog drafted. Worth a look.".to_string()
-        } else {
-            format!(
-                "{} drafts ready — took you hours, took me 30 seconds.",
-                draft_count
-            )
-        };
-        notify(app, "Meridian", &msg);
+    for n in items {
+        notify(app, &n.title, &n.body);
+        // Acknowledge so the row is marked delivered and never shown twice. A
+        // failed ack just means it retries next tick — at-least-once delivery.
+        let _ = client
+            .post(format!(
+                "{}/api/notifications/{}/delivered",
+                ui_base(),
+                n.id
+            ))
+            .send()
+            .await;
     }
 }
 
