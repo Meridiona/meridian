@@ -154,8 +154,8 @@ else
 fi
 export RUST_LOG
 
-export ZO_MEMORY_CACHE_MAX_SIZE=2147483648   # 2 GB (cache layer)
-export ZO_DATAFUSION_POOL_SIZE=4294967296    # 4 GB (query engine)
+export ZO_MEMORY_CACHE_MAX_SIZE=512          # 512 MB (unit is MB in v0.15+; bytes caused panic)
+export ZO_DATAFUSION_POOL_SIZE=4096          # 4 GB  (unit is MB in v0.15+)
 
 exec "${HOME}/.openobserve/openobserve"
 RUNEOF
