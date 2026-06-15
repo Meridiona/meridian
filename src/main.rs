@@ -710,7 +710,7 @@ async fn main() -> Result<()> {
                                 let _ = meridian::notices::raise(
                                     &meridian_linker,
                                     "mlx.down",
-                                    "error",
+                                    "warning",
                                     "MLX classifier is not responding",
                                     &format!("Failed to classify session {session_id} after {count} attempts — classification is paused"),
                                     Some("Start MLX server: cd services && .venv313/bin/meridian-server --backend mlx"),
@@ -812,6 +812,25 @@ async fn main() -> Result<()> {
                 // Morning plan nudge — idempotent per day, gated to working hours.
                 if let Err(e) = meridian::daily_plan::maybe_nudge(&meridian).await {
                     tracing::debug!(error = %e, "plan nudge check skipped");
+                }
+
+                // Proactive classifier health probe. Detect a down/wedged MLX
+                // server every tick via a fast /health check (NOT reactively, only
+                // when a classify happens to fail) so the fault surfaces promptly
+                // on the dashboard banner AND — via the notices→outbox bridge — as
+                // a desktop toast + in-app banner. Auto-clears when it recovers.
+                if meridian::intelligence::mlx_ready(&cfg).await {
+                    let _ = meridian::notices::clear(&meridian, "mlx.down").await;
+                } else {
+                    let _ = meridian::notices::raise(
+                        &meridian,
+                        "mlx.down",
+                        "warning",
+                        "Classifier offline",
+                        "The MLX classifier server isn't responding — new sessions are recorded but won't be tagged until it's back.",
+                        Some("Restart it: cd services && .venv313/bin/meridian-server --backend mlx"),
+                    )
+                    .await;
                 }
                 // pm_tasks is refreshed on demand at its read boundaries
                 // (classification in run_task_linking, drafting in the worklog
