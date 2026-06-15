@@ -72,7 +72,11 @@ pub async fn toggle_daemon(app: tauri::AppHandle, is_running: bool) -> Result<()
         } else {
             ("Resumed", "Meridian is back tracking.")
         };
-        notify_user(&app, title, body);
+        // Honor the user's notification prefs (master switch + quiet hours) for
+        // this direct toast, same policy as the outbox notifications.
+        if crate::poll::notifications_allowed("system.pause").await {
+            notify_user(&app, title, body);
+        }
         Ok(())
     } else {
         Err(format!(

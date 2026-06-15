@@ -155,10 +155,42 @@ async fn refresh_health(app: &tauri::AppHandle, client: &Client, state: &Arc<Mut
         (notify_down, notify_back)
     };
 
-    if notify_down {
+    if notify_down && notifications_allowed("system.health").await {
         notify(app, "Meridian went quiet.", "Tap to check what happened.");
-    } else if notify_back {
+    } else if notify_back && notifications_allowed("system.health").await {
         notify(app, "Back online.", "Picking up where you left off.");
+    }
+}
+
+/// Ask the dashboard whether a notification for `event_key` may fire right now,
+/// honoring the user's master switch + quiet hours. The tray's direct health/
+/// pause toasts don't flow through the outbox (the daemon can't enqueue while
+/// it's down), so they consult the same server-side policy here. Defaults to
+/// `true` when the dashboard is unreachable — an operational alert (e.g. "went
+/// quiet") must not be lost just because the preference check itself failed.
+pub(crate) async fn notifications_allowed(event_key: &str) -> bool {
+    #[derive(Deserialize)]
+    struct Allowed {
+        allowed: bool,
+    }
+    let client = match Client::builder().timeout(Duration::from_secs(3)).build() {
+        Ok(c) => c,
+        Err(_) => return true,
+    };
+    let resp = client
+        .get(format!(
+            "{}/api/notifications/allowed?event={}",
+            ui_base(),
+            event_key
+        ))
+        .send()
+        .await
+        .ok();
+    match resp {
+        Some(r) if r.status().is_success() => {
+            r.json::<Allowed>().await.map(|a| a.allowed).unwrap_or(true)
+        }
+        _ => true,
     }
 }
 
