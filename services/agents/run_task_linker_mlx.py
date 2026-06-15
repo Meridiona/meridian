@@ -302,7 +302,10 @@ def model_session() -> Iterator[Any]:
     frees it mid-inference. Wrap every direct ``model(...)`` call in this.
 
     Lock is held only briefly (to bump/clear the in-flight counter), never for
-    the duration of inference — so concurrent requests don't serialise here.
+    the duration of inference. NOTE: production serialises all MLX calls upstream
+    via the Rust llm_gate (1-permit semaphore), so inferences don't actually
+    overlap — this lock scope just avoids adding a second, redundant serialisation
+    point, NOT a claim that concurrent generation on the shared model is safe.
     """
     global _in_flight, _last_used
     with _model_lock:
@@ -356,6 +359,19 @@ def maybe_evict_idle(idle_s: float | None = None) -> float | None:
 def model_resident() -> bool:
     """True if the MLX model is currently loaded in memory."""
     return bool(_model_cache)
+
+
+def model_active_memory_gb() -> float | None:
+    """Live Metal active-memory footprint in GB, or None if MLX is unavailable.
+
+    The only honest measure of the model's footprint — `ps`/Activity Monitor
+    can't see Metal unified memory (they undercount by ~6.5 GB).
+    """
+    try:
+        import mlx.core as mx
+        return round(mx.get_active_memory() / 1e9, 2)
+    except Exception:  # noqa: BLE001 — mx absent on non-MLX machines
+        return None
 
 
 # Apple Foundation Models has a 4096-token combined context window (input + output).
