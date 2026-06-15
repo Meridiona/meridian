@@ -86,7 +86,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         if evictor is not None:
+            import contextlib
             evictor.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await evictor
 
 
 app = FastAPI(title="Meridian Agent", version="1.0.0", lifespan=_lifespan)
@@ -115,18 +118,12 @@ async def info() -> dict:
     and Activity Monitor (they undercount the model by ~6.5 GB).
     """
     m = _app_state.get("mlx_module")
-    active_gb: float | None = None
-    try:
-        import mlx.core as mx
-        active_gb = round(mx.get_active_memory() / 1e9, 2)
-    except Exception:  # noqa: BLE001 — mx may be absent on non-MLX machines
-        pass
     return {
         "backend":          "mlx",
         "model_id":         m._resolve_model_id() if m else None,
         "loaded_at":        _app_state.get("loaded_at"),
         "model_resident":   m.model_resident() if m else False,
-        "active_memory_gb": active_gb,
+        "active_memory_gb": m.model_active_memory_gb() if m else None,
     }
 
 

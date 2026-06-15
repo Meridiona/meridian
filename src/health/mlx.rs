@@ -74,11 +74,18 @@ pub async fn checks(cfg: &Config) -> Vec<Check> {
             let active_gb = body.get("active_memory_gb").and_then(|v| v.as_f64());
             match (model, server_ready) {
                 (Some(m), true) => {
-                    let detail = match (resident, active_gb) {
-                        (Some(true), Some(gb)) => format!("{m} — resident, {gb:.1} GB"),
-                        (Some(true), None) => format!("{m} — resident"),
-                        (Some(false), _) => format!("{m} — idle (evicted; loads on demand)"),
-                        (None, _) => m.to_string(), // older eager build: loaded_at ⇒ resident
+                    // Apple Intelligence is an on-device backend with no MLX model to
+                    // load or evict — model_resident is always false there, so the
+                    // "idle (evicted)" wording would be misleading.
+                    let detail = if m == "apple-intelligence" {
+                        format!("{m} — on-device (no MLX model)")
+                    } else {
+                        match (resident, active_gb) {
+                            (Some(true), Some(gb)) => format!("{m} — resident, {gb:.1} GB"),
+                            (Some(true), None) => format!("{m} — resident"),
+                            (Some(false), _) => format!("{m} — idle (evicted; loads on demand)"),
+                            (None, _) => m.to_string(), // older eager build: loaded_at ⇒ resident
+                        }
                     };
                     out.push(Check::ok("model server", "L2", detail));
                 }
