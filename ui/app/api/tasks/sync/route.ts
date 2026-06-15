@@ -2,23 +2,15 @@
 
 import { NextResponse } from 'next/server'
 import { spawn } from 'child_process'
+import { meridianCandidates, selectMeridianBinary } from '@/lib/meridian-bin'
 
 export const dynamic = 'force-dynamic'
 
-// Candidate paths for the meridian binary. The shell-script wrapper at
-// ~/.local/bin/meridian delegates to the daemon via cmd_daemon_passthrough,
-// which is what we need. Launchd's PATH lacks ~/.local/bin, so we probe
-// candidate locations rather than relying on $PATH.
-const MERIDIAN_CANDIDATES = [
-  `${process.env.HOME}/.local/bin/meridian`,
-  '/usr/local/bin/meridian',
-  `${process.env.HOME}/.meridian/app/bin/meridian`,
-]
-
 function runTasksSync(): Promise<{ ok: boolean; stdout: string; stderr: string }> {
-  const bin = MERIDIAN_CANDIDATES.find(p => {
-    try { require('fs').accessSync(p, require('fs').constants.X_OK); return true } catch { return false }
-  }) ?? MERIDIAN_CANDIDATES[0]
+  // Prefer the native binary over the node wrapper: launchd's PATH lacks `node`,
+  // so probing the wrapper first broke sync on installed dashboards. See
+  // lib/meridian-bin.ts for the ordering rationale.
+  const bin = selectMeridianBinary(meridianCandidates())
 
   return new Promise(resolve => {
     const child = spawn(bin, ['tasks-sync'], {
