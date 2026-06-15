@@ -35,10 +35,13 @@ pub async fn pm_tasks_present(pool: &SqlitePool) -> bool {
     }
 }
 
-/// True when the MLX classifier is actually WORKING: reachable AND, if it reports
-/// model-load status, the model is loaded. This is a POSITIVE readiness probe
-/// (short timeout) — never inferred from a failed classify call, and never the
-/// 120 s startup wait of `check_classification_ready`. Safe to call every cycle.
+/// True when the MLX classifier is READY TO SERVE: the port answers and `/info`
+/// reports the server is up (`loaded_at`). With lazy-load builds the model may be
+/// evicted (idle) and is reloaded on the next classify (~4 s, well within the
+/// 120 s classify timeout) — so "ready" means "will serve on demand", not
+/// "resident now". A POSITIVE readiness probe (short timeout) — never inferred
+/// from a failed classify call, and never the 120 s startup wait of
+/// `check_classification_ready`. Safe to call every cycle.
 pub async fn mlx_ready(cfg: &Config) -> bool {
     let base = format!("http://127.0.0.1:{}", cfg.mlx_server_port);
     let client = match reqwest::Client::builder()
@@ -52,8 +55,9 @@ pub async fn mlx_ready(cfg: &Config) -> bool {
     if client.get(format!("{base}/health")).send().await.is_err() {
         return false;
     }
-    // Readiness: /info reports `loaded_at`. If this build exposes it, require the
-    // model to be loaded; if /info is absent (older build), liveness is enough.
+    // Readiness: /info reports `loaded_at` once the server is up. We require the
+    // server up (not the model resident — lazy-load reloads on demand). If /info
+    // is absent (older build), liveness is enough.
     match client.get(format!("{base}/info")).send().await {
         Ok(resp) => match resp.json::<serde_json::Value>().await {
             Ok(body) => match body.get("loaded_at") {
