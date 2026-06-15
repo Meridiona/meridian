@@ -10,9 +10,9 @@ import HealthBanner from '@/components/HealthBanner'
 import MustFixBanner from '@/components/MustFixBanner'
 
 const KEY_ROUTES: Record<string, string> = {
-  '1': '/today', '2': '/tasks', '3': '/worklogs',
-  '4': '/sessions', '5': '/week', '6': '/settings',
-  '7': '/cleanup', '8': '/plan',
+  '1': '/today', '2': '/plan', '3': '/tasks',
+  '4': '/worklogs', '5': '/sessions', '6': '/week',
+  '7': '/cleanup', '8': '/settings',
 }
 
 export default function DashboardShell({ children }: { children: React.ReactNode }) {
@@ -74,7 +74,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
                 <span>Meridian · local · {todayDate}</span>
                 <span className="font-mono tnum">
                   <span className="kbd">⌘</span> <span className="kbd">K</span> to jump ·{' '}
-                  <span className="kbd">1</span>–<span className="kbd">6</span> to switch view
+                  <span className="kbd">1</span>–<span className="kbd">8</span> to switch view
                 </span>
               </footer>
             </div>
