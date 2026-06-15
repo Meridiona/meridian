@@ -12,7 +12,7 @@ import MustFixBanner from '@/components/MustFixBanner'
 const KEY_ROUTES: Record<string, string> = {
   '1': '/today', '2': '/tasks', '3': '/worklogs',
   '4': '/sessions', '5': '/week', '6': '/settings',
-  '7': '/cleanup',
+  '7': '/cleanup', '8': '/plan',
 }
 
 export default function DashboardShell({ children }: { children: React.ReactNode }) {
@@ -42,26 +42,43 @@ export default function DashboardShell({ children }: { children: React.ReactNode
     weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
   })
 
+  // App-like pages bind to the viewport and scroll their own inner regions
+  // (no page-level scrollbar, no footer). Document-flow pages keep the classic
+  // scroll-the-whole-page layout. Keyed on route so non-app pages are unchanged.
+  const appLike = pathname === '/plan'
+
   return (
-    <div className="min-h-screen flex flex-col" style={{ background: 'var(--paper)' }}>
+    <div
+      className={`flex flex-col ${appLike ? 'h-[100svh] overflow-hidden' : 'min-h-screen'}`}
+      style={{ background: 'var(--paper)' }}
+    >
       <HealthBanner />
       <MustFixBanner />
-      <div className="flex flex-1">
+      <div className={`flex flex-1 ${appLike ? 'min-h-0' : ''}`}>
         <Sidebar onOpenCmd={() => setCmdOpen(true)} />
-        <main className="flex-1 min-w-0" data-screen-label={pathname.slice(1)}>
-          <div className="max-w-[1080px] mx-auto px-10 py-14">
-            {children}
-            <footer
-              className="mt-24 pt-8 rule-t flex items-center justify-between text-[11px]"
-              style={{ borderTopColor: 'var(--rule)', color: 'var(--ink-4)' }}
-            >
-              <span>Meridian · local · {todayDate}</span>
-              <span className="font-mono tnum">
-                <span className="kbd">⌘</span> <span className="kbd">K</span> to jump ·{' '}
-                <span className="kbd">1</span>–<span className="kbd">6</span> to switch view
-              </span>
-            </footer>
-          </div>
+        <main
+          className={`flex-1 min-w-0 ${appLike ? 'flex flex-col overflow-hidden' : ''}`}
+          data-screen-label={pathname.slice(1)}
+        >
+          {appLike ? (
+            <div className="flex-1 min-h-0 flex flex-col w-full max-w-[1080px] mx-auto px-10 py-10">
+              {children}
+            </div>
+          ) : (
+            <div className="max-w-[1080px] mx-auto px-10 py-14">
+              {children}
+              <footer
+                className="mt-24 pt-8 rule-t flex items-center justify-between text-[11px]"
+                style={{ borderTopColor: 'var(--rule)', color: 'var(--ink-4)' }}
+              >
+                <span>Meridian · local · {todayDate}</span>
+                <span className="font-mono tnum">
+                  <span className="kbd">⌘</span> <span className="kbd">K</span> to jump ·{' '}
+                  <span className="kbd">1</span>–<span className="kbd">6</span> to switch view
+                </span>
+              </footer>
+            </div>
+          )}
         </main>
         {cmdOpen && (
           <CommandBar onClose={() => setCmdOpen(false)} />

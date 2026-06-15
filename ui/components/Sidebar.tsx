@@ -75,6 +75,7 @@ export default function Sidebar({ onOpenCmd }: Props) {
 
   const items: Array<{ route: string; label: string; kbd: string }> = [
     { route: '/today',    label: 'Today',    kbd: '1' },
+    { route: '/plan',     label: 'Plan',     kbd: '8' },
     { route: '/tasks',    label: 'Tasks',    kbd: '2' },
     { route: '/worklogs', label: 'Worklogs', kbd: '3' },
     { route: '/sessions', label: 'Sessions', kbd: '4' },

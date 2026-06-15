@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@hello-pangea/dnd": "^18.0.1",
     "@opentelemetry/api": "1.9",
     "@opentelemetry/exporter-trace-otlp-http": "0.217",
     "@opentelemetry/sdk-node": "0.217",
