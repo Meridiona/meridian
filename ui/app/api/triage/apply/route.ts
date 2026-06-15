@@ -11,28 +11,9 @@
 
 import { NextResponse } from 'next/server'
 import { spawn } from 'child_process'
-import fs from 'fs'
+import { meridianCandidates, selectMeridianBinary } from '@/lib/meridian-bin'
 
 export const dynamic = 'force-dynamic'
-
-const MERIDIAN_CANDIDATES = [
-  `${process.env.HOME}/.local/bin/meridian`,
-  '/usr/local/bin/meridian',
-  `${process.env.HOME}/.meridian/app/bin/meridian`,
-]
-
-function meridianBin(): string {
-  return (
-    MERIDIAN_CANDIDATES.find(p => {
-      try {
-        fs.accessSync(p, fs.constants.X_OK)
-        return true
-      } catch {
-        return false
-      }
-    }) ?? MERIDIAN_CANDIDATES[0]
-  )
-}
 
 interface ApplyOutput {
   status: 'applied' | 'redirected'
@@ -51,7 +32,7 @@ function runUpdate(
 ): Promise<{ ok: boolean; out?: ApplyOutput; error?: string }> {
   return new Promise(resolve => {
     const args = ['ticket-update', '--provider', provider, '--key', key, '--field', field, '--value', value]
-    const child = spawn(meridianBin(), args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(selectMeridianBinary(meridianCandidates()), args, { stdio: ['ignore', 'pipe', 'pipe'] })
 
     let stdout = ''
     let stderr = ''
