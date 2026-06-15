@@ -59,27 +59,42 @@ pub async fn checks(cfg: &Config) -> Vec<Check> {
         }
     }
 
-    // 2. readiness via /info — model actually loaded, not just port open
+    // 2. readiness via /info — server up + current model state.
+    // Lazy-load builds load the model on first request and EVICT it after
+    // MLX_IDLE_EVICT_S idle, so "not resident" is a healthy idle state, not an
+    // error. `loaded_at` means the server is up; `model_resident`/`active_memory_gb`
+    // (lazy-load builds only) report the live footprint — `ps` cannot see it.
     match client.get(format!("{base}/info")).send().await {
         Ok(resp) => {
             let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
             let model = body.get("model_id").and_then(|v| v.as_str());
-            let loaded = body.get("loaded_at").map(|v| !v.is_null()).unwrap_or(false);
-            match (model, loaded) {
-                (Some(m), true) => out.push(Check::ok("model loaded", "L2", m.to_string())),
+            let server_ready = body.get("loaded_at").map(|v| !v.is_null()).unwrap_or(false);
+            // Present on lazy-load builds; absent on older eager builds.
+            let resident = body.get("model_resident").and_then(|v| v.as_bool());
+            let active_gb = body.get("active_memory_gb").and_then(|v| v.as_f64());
+            match (model, server_ready) {
+                (Some(m), true) => {
+                    let detail = match (resident, active_gb) {
+                        (Some(true), Some(gb)) => format!("{m} — resident, {gb:.1} GB"),
+                        (Some(true), None) => format!("{m} — resident"),
+                        (Some(false), _) => format!("{m} — idle (evicted; loads on demand)"),
+                        (None, _) => m.to_string(), // older eager build: loaded_at ⇒ resident
+                    };
+                    out.push(Check::ok("model server", "L2", detail));
+                }
                 (Some(m), false) => out.push(
-                    Check::warn("model loaded", "L2", format!("{m} still loading"))
+                    Check::warn("model server", "L2", format!("{m} still loading"))
                         .with_remedy("wait for the model load to finish, then re-run"),
                 ),
                 (None, _) => out.push(
-                    Check::warn("model loaded", "L2", "model not reported as loaded").with_remedy(
+                    Check::warn("model server", "L2", "model not reported").with_remedy(
                         "restart the mlx-server; check its logs for an OOM/load error",
                     ),
                 ),
             }
         }
         Err(_) => out.push(Check::info(
-            "model loaded",
+            "model server",
             "L2",
             "/info not exposed by this build",
         )),
