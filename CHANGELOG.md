@@ -1,3 +1,10 @@
+## [1.52.6](https://github.com/Meridiona/meridian/compare/v1.52.5...v1.52.6) (2026-06-15)
+
+
+### Bug Fixes
+
+* **ui:** spawn native meridian binary, not the node wrapper, under launchd ([#283](https://github.com/Meridiona/meridian/issues/283)) ([ad1504c](https://github.com/Meridiona/meridian/commit/ad1504ca5a520bd0e00bc848c0214d7c06f338d0))
+
 ## [1.52.5](https://github.com/Meridiona/meridian/compare/v1.52.4...v1.52.5) (2026-06-15)
 
 
