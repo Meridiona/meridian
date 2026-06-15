@@ -2,7 +2,7 @@
 
 # Meridian
 
-**Your project management, updated automatically.**
+**Your project management — handled, quietly.**
 
 [![CI](https://github.com/Meridiona/meridian/actions/workflows/ci.yml/badge.svg)](https://github.com/Meridiona/meridian/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -11,21 +11,23 @@
 
 </div>
 
-- **Cloud LLM** — `OPENROUTER_API_KEY` (skip if you're running a local LLM)
-- **Jira** — easiest is browser OAuth: run `meridian oauth-login jira` (no API token needed). Legacy path: URL, email, API token, project keys (gated by `[y/N]`)
-- **GitHub** — token (auto-extracted from the `gh` CLI, no PAT needed) + GitHub Projects to sync
-- **Linear** — API key, team IDs
-- **Azure DevOps** — Personal Access Token + organisation name + project (all three required)
-- **Observability (OpenObserve)** — base64 auth + OTLP endpoints
-Meridian is an ambient developer-efficiency tool. It runs quietly on your Mac, understands what you're working on, and keeps your tickets in **Jira, GitHub Issues, and Linear** in sync — so you never start a timer, fill out a form, or drag a card again.
+You finish something good — and then you have to go *log* it. Update the status. Write the standup. Drag the card. Meridian makes that second job disappear.
 
-Not a time tracker you fill out. Not a dashboard you check. A background layer that watches what you build and keeps your project management current — with zero effort.
+It runs quietly on your Mac, understands what you're working on, and keeps your tickets in **Jira, GitHub Issues, and Linear** current — so you never start a timer, fill out a form, or drag a card again.
+
+Not a time tracker you fill out. Not a dashboard you check. A background layer that keeps your project management honest while you stay in the work.
+
+## Demo
+
+https://github.com/user-attachments/assets/501f41e6-aa89-404b-b430-a0b8b59c198e
 
 ---
 
 ## Why
 
-Developers lose hours every week to overhead: updating ticket status, logging time, writing standups, moving cards. The information needed to do all of it already exists in your work — the code you write, the PRs you review, the branch you're on. Meridian captures that context, figures out which task it belongs to, and pushes the update to the right place.
+Every week, hours vanish into the work *about* the work — the status updates, the time logs, the standups, the cards. None of it is hard. It's just relentless, and it pulls you out of flow every single time.
+
+But everything needed to do it already exists in what you just did — the code you wrote, the PRs you reviewed, the branch you're on. Meridian reads that context, works out which task it belongs to, and puts the update where it goes. The busywork doesn't get faster. It gets gone.
 
 - **Zero effort** — no timers, no forms, no prompts. It just runs.
 - **On-device by default** — capture and classification happen locally. The only things that leave your machine are the ticket updates you approve, sent to your own trackers. ([Privacy](#privacy))
