@@ -1,3 +1,10 @@
+# [1.53.0](https://github.com/Meridiona/meridian/compare/v1.52.6...v1.53.0) (2026-06-16)
+
+
+### Features
+
+* **ui:** daily "today's plan" page with declared working set ([#288](https://github.com/Meridiona/meridian/issues/288)) ([b2c724d](https://github.com/Meridiona/meridian/commit/b2c724db7f49ed04b1740a3905fd351e682b7e23))
+
 ## [1.52.6](https://github.com/Meridiona/meridian/compare/v1.52.5...v1.52.6) (2026-06-15)
 
 
