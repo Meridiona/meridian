@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { fmtDurDecimal, AppGlyph, TaskKey, LiveDot, useTick } from '@/components/atoms'
+import { load as loadData } from '@/lib/bridge'
 
 interface Props {
   onOpenCmd: () => void
@@ -53,7 +54,8 @@ export default function Sidebar({ onOpenCmd }: Props) {
 
   useEffect(() => {
     function load() {
-      fetch('/api/active').then(r => r.json()).then((d: ActiveInfo | null) => setActive(d)).catch(() => {})
+      // get_active (Rust) in the Tauri window, /api/active in a browser — same shape.
+      loadData<ActiveInfo | null>('/api/active', 'get_active').then(setActive).catch(() => {})
     }
     load()
     const id = setInterval(load, 30_000)

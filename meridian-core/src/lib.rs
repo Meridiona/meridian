@@ -18,6 +18,9 @@ pub use sqlx::SqlitePool;
 /// Wall-clock interval math shared by the dashboard routes (ported from intervals.ts).
 pub mod intervals;
 
+/// The `/api/active` dashboard view of the active session (ported from active/route.ts).
+pub mod active;
+
 /// Local-day boundary helpers for the dashboard routes (ported from date-utils.ts).
 pub mod date;
 

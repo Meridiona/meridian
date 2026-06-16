@@ -127,22 +127,26 @@ pub(crate) fn meridian_db_path() -> String {
     format!("{}/.meridian/meridian.db", home)
 }
 
-/// Read the live active session from meridian.db via the daemon's own query
-/// layer. The pool is opened ONCE at startup and shared as Tauri managed state
-/// (see `lib.rs`); `None` means the DB couldn't be opened at startup. This is
-/// the template every ported dashboard read route follows.
+/// The dashboard's active-session view (the ported /api/active): the
+/// active_session row reshaped with elapsed_s + parsed JSON columns. The pool is
+/// opened ONCE at startup and shared as Tauri managed state (see `lib.rs`);
+/// `None` means the DB couldn't be opened. Resolves `now` here so the core fn
+/// stays deterministic.
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_active(
     pool: State<'_, Option<meridian_core::SqlitePool>>,
-) -> Result<Option<meridian_core::ActiveSession>, String> {
-    match pool.inner() {
-        Some(pool) => meridian_core::get_active_session(pool).await.map_err(|e| {
+) -> Result<Option<meridian_core::active::ActiveView>, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    meridian_core::active::get_active_view(pool, &now)
+        .await
+        .map_err(|e| {
             tracing::warn!(error = %e, "get_active failed");
             e.to_string()
-        }),
-        None => Err("meridian.db is not open yet".to_string()),
-    }
+        })
 }
 
 /// The Today dashboard payload, computed entirely in Rust (the ported
