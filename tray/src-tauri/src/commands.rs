@@ -20,7 +20,7 @@ pub fn get_status(state: State<'_, Arc<Mutex<AppState>>>) -> Result<StatusPayloa
 #[tauri::command]
 pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
     app.opener()
-        .open_url(&ui_base(), None::<&str>)
+        .open_url(ui_base(), None::<&str>)
         .map_err(|e| e.to_string())
 }
 
@@ -72,7 +72,11 @@ pub async fn toggle_daemon(app: tauri::AppHandle, is_running: bool) -> Result<()
         } else {
             ("Resumed", "Meridian is back tracking.")
         };
-        notify_user(&app, title, body);
+        // Honor the user's notification prefs (master switch + quiet hours) for
+        // this direct toast, same policy as the outbox notifications.
+        if crate::poll::notifications_allowed("system.pause").await {
+            notify_user(&app, title, body);
+        }
         Ok(())
     } else {
         Err(format!(
