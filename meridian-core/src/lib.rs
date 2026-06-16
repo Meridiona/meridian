@@ -21,6 +21,9 @@ pub mod intervals;
 /// Local-day boundary helpers for the dashboard routes (ported from date-utils.ts).
 pub mod date;
 
+/// The `/api/today` dashboard payload, computed in Rust (ported from today/route.ts).
+pub mod today;
+
 /// The single in-progress activity block (the `active_session` row, id = 1).
 /// JSON columns are stored as raw text (`String`), so this needs no chrono/json
 /// sqlx features — keeping the dependency surface minimal.

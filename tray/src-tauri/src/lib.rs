@@ -149,6 +149,7 @@ pub fn run() {
             commands::restart_daemon,
             commands::toggle_daemon,
             commands::get_active,
+            commands::get_today,
         ])
         .run(tauri::generate_context!())
         .expect("error running meridian tray");
