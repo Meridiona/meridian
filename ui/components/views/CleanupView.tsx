@@ -6,6 +6,7 @@ import { TaskKey, ProviderGlyph, Card, SectionHead } from '@/components/atoms'
 import HygieneDialog from '@/components/HygieneDialog'
 import { hasMustFix, type HygieneIssue } from '@/lib/hygiene'
 import type { TaskSummary, TasksResponse } from '@/app/api/tasks/route'
+import { load as loadData } from '@/lib/bridge'
 
 // Severity → dot + tone. Warm editorial palette: warn (amber) is the alert.
 const TONE = {
@@ -23,9 +24,8 @@ export default function CleanupView() {
   const [dismissed, setDismissed] = useState<Set<string>>(new Set())
 
   const load = useCallback(() => {
-    fetch('/api/tasks')
-      .then(r => r.json())
-      .then((res: TasksResponse) => { setTasks(res.tasks ?? []); setLoading(false) })
+    loadData<TasksResponse>('/api/tasks', 'get_tasks')
+      .then((res) => { setTasks(res.tasks ?? []); setLoading(false) })
       .catch(() => setLoading(false))
   }, [])
 

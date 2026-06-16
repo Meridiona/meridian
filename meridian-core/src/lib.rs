@@ -33,6 +33,12 @@ pub mod coding_agents;
 /// The `/api/worklogs` day review payload (ported from worklogs/route.ts).
 pub mod worklogs;
 
+/// Board-hygiene reason → hint/fix mapping (ported from lib/hygiene.ts).
+pub mod hygiene;
+
+/// The `/api/tasks` per-task time + hygiene payload (ported from tasks/route.ts).
+pub mod tasks;
+
 /// The single in-progress activity block (the `active_session` row, id = 1).
 /// JSON columns are stored as raw text (`String`), so this needs no chrono/json
 /// sqlx features — keeping the dependency surface minimal.

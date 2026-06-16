@@ -221,3 +221,28 @@ pub async fn get_worklogs(
             e.to_string()
         })
 }
+
+/// Per-task time + board hygiene, computed in Rust (the ported /api/tasks).
+/// Resolves today, the 7-day window start, and now here so the core fn stays
+/// deterministic/testable (mirrors get_today).
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn get_tasks(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+) -> Result<meridian_core::tasks::TasksResponse, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let today = meridian_core::date::today_string();
+    // Local date 6 days ago (matches the route's `Date.now() - 6 days`).
+    let week_start = (chrono::Local::now() - chrono::Duration::days(6))
+        .format("%Y-%m-%d")
+        .to_string();
+    let now_iso = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    meridian_core::tasks::get_tasks(pool, &today, &week_start, &now_iso)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "get_tasks failed");
+            e.to_string()
+        })
+}

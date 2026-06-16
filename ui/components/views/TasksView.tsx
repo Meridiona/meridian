@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { fmtDur, fmtClock, AppGlyph, CatDot, TaskKey, StatusPill, SectionHead, Card, CATS, PROVIDER_META } from '@/components/atoms'
 import type { TaskSummary, TasksResponse } from '@/app/api/tasks/route'
+import { load } from '@/lib/bridge'
 import HygieneDialog from '@/components/HygieneDialog'
 import type { TodayResponse } from '@/app/api/today/route'
 import type { IntegrationsResponse } from '@/app/api/integrations/route'
@@ -49,7 +50,8 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
   const [collapsedEpics, setCollapsedEpics] = useState<Set<string>>(new Set())
 
   const fetchTasks = () => {
-    fetch('/api/tasks').then(r => r.json()).then((d: TasksResponse) => {
+    // get_tasks (Rust) in the Tauri window, /api/tasks in a browser — same shape.
+    load<TasksResponse>('/api/tasks', 'get_tasks').then((d) => {
       setData(d)
       if (!selected && d.tasks.length > 0) {
         const first = d.tasks.find(t => t.today_s > 0) ?? d.tasks[0]

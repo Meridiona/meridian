@@ -206,11 +206,11 @@ function WorklogCard({ w, busy, onApprove, onReject, onUnapprove, onSave }: {
     setTarget('__unknown__')
     if (candidates == null) {
       try {
-        const res = await fetch('/api/tasks')
-        const data = await res.json()
+        // get_tasks (Rust) in the Tauri window, /api/tasks in a browser.
+        const data = await loadData<{ tasks: { key: string; title: string }[] }>('/api/tasks', 'get_tasks')
         // Don't offer the worklog's own ticket as the "should have gone" target.
         setCandidates((data.tasks ?? [])
-          .map((t: { key: string; title: string }) => ({ key: t.key, title: t.title }))
+          .map((t) => ({ key: t.key, title: t.title }))
           .filter((c: Candidate) => c.key !== w.task_key))
       } catch { setCandidates([]) }
     }
