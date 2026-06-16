@@ -24,6 +24,7 @@ Method tag in results: "mlx_direct".
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import logging
 import os
@@ -483,7 +484,53 @@ def _fetch_recent_sessions(
     return result
 
 
-def _fetch_pm_tasks(con: _sqlite3.Connection) -> list[dict[str, Any]]:
+def _local_day(started_at: str) -> str:
+    """The local calendar day (YYYY-MM-DD) of a session's UTC `started_at`.
+
+    `daily_plan.plan_date` is the dev's *local* day (the dashboard stamps it from
+    the browser's local date), but `app_sessions.started_at` is stored UTC. We
+    convert UTC → local here so a session is matched to the plan the dev actually
+    declared for that day. Returns "" on an unparseable timestamp (→ no boost).
+    """
+    if not started_at:
+        return ""
+    try:
+        # `astimezone()` with no arg converts an aware datetime to the host's
+        # local zone — the same zone the dashboard used to compute plan_date.
+        return _dt.datetime.fromisoformat(started_at).astimezone().date().isoformat()
+    except ValueError:
+        return ""
+
+
+def _fetch_plan_focus(con: _sqlite3.Connection, plan_date: str) -> list[str]:
+    """Ordered task_keys the dev CONFIRMED as their focus for `plan_date`.
+
+    Empty (→ no boost, classification proceeds exactly as before) when the day is
+    unconfirmed, explicitly skipped, has no plan rows, or the plan tables don't
+    exist yet (pre-migration-041 DB). This is a ranking signal only — never a
+    filter — so an empty result can only ever cost the boost, never recall.
+    """
+    if not plan_date:
+        return []
+    try:
+        meta = con.execute(
+            "SELECT confirmed_at, skipped FROM daily_plan_meta WHERE plan_date = ?",
+            (plan_date,),
+        ).fetchone()
+        if meta is None or meta["skipped"] or not meta["confirmed_at"]:
+            return []
+        rows = con.execute(
+            "SELECT task_key FROM daily_plan WHERE plan_date = ? ORDER BY position",
+            (plan_date,),
+        ).fetchall()
+        return [r["task_key"] for r in rows]
+    except _sqlite3.OperationalError:
+        return []
+
+
+def _fetch_pm_tasks(
+    con: _sqlite3.Connection, focus_keys: list[str] | None = None
+) -> list[dict[str, Any]]:
     # Candidate set for classification. Tickets the user explicitly EXCLUDED during
     # onboarding board-cleanup (pm_task_curation.decision = 'excluded') are dropped
     # so a cleaned-up dead ticket can never be a classification target. Everything
@@ -512,7 +559,20 @@ def _fetch_pm_tasks(con: _sqlite3.Connection) -> list[dict[str, Any]]:
         # Pre-migration-038 DB (no pm_task_curation): degrade to the unfiltered
         # candidate set rather than crashing the whole /classify_sessions call.
         rows = con.execute(base_cols).fetchall()
-    return [dict(r) for r in rows]
+    tasks = [dict(r) for r in rows]
+
+    # Today's-focus boost: tag the tickets the dev declared for the day and float
+    # them to the top of the candidate list, in their declared order. This is a
+    # BOOST, never a filter — every other candidate still follows, so recall is
+    # untouched. A focus key that isn't in `tasks` (e.g. excluded by curation)
+    # simply has no effect; we never resurrect a filtered-out ticket.
+    focus = focus_keys or []
+    if focus:
+        order = {key: i for i, key in enumerate(focus)}
+        for t in tasks:
+            t["is_today_focus"] = t["task_key"] in order
+        tasks.sort(key=lambda t: (0, order[t["task_key"]]) if t.get("is_today_focus") else (1, 0))
+    return tasks
 
 
 # ---------------------------------------------------------------------------
@@ -555,10 +615,13 @@ def _classify_one(
                 session_id, f"session {session_id} not found in DB", 0.0, "mlx_error"
             )
 
-        pm_tasks = _fetch_pm_tasks(con)
-        recent   = _fetch_recent_sessions(con, session_id)
+        plan_date  = _local_day(session_raw.get("started_at") or "")
+        focus_keys = _fetch_plan_focus(con, plan_date)
+        pm_tasks   = _fetch_pm_tasks(con, focus_keys)
+        recent     = _fetch_recent_sessions(con, session_id)
 
         db_span.set_attribute("pm_tasks_count", len(pm_tasks))
+        db_span.set_attribute("today_focus_count", len(focus_keys))
         db_span.set_attribute("recent_sessions_count", len(recent))
 
         session_text = session_raw.get("session_text") or ""
@@ -785,7 +848,8 @@ def _classify_one_logged(
     """Classify one session and append a full record to the run log."""
     # Gather inputs before classification so we can log them even on error.
     session_raw = _fetch_session(con, session_id)
-    pm_tasks = _fetch_pm_tasks(con) if session_raw else []
+    focus_keys = _fetch_plan_focus(con, _local_day(session_raw.get("started_at") or "")) if session_raw else []
+    pm_tasks = _fetch_pm_tasks(con, focus_keys) if session_raw else []
     recent = _fetch_recent_sessions(con, session_id) if session_raw else []
 
     if session_raw:
