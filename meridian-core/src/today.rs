@@ -17,6 +17,7 @@ use crate::SqlitePool;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use std::collections::BTreeMap;
+use tracing::Instrument;
 
 /// Foreground sessions shorter than this are sub-second focus jitter, not real
 /// context switches.
@@ -206,6 +207,7 @@ pub async fn get_today(
     now_iso: &str,
 ) -> anyhow::Result<TodayResponse> {
     let (start, end) = local_day_bounds(date);
+    tracing::debug!(start = %start, end = %end, "today: local-day window");
 
     // Optional columns added by later migrations — substitute NULL when absent
     // (mirrors the TS route's `hasExplanation`/`hasSummary` graceful checks).
@@ -245,6 +247,7 @@ pub async fn get_today(
         .bind(&start)
         .bind(&end)
         .fetch_all(pool)
+        .instrument(tracing::info_span!("today.read.app_sessions"))
         .await?;
 
     // Foreground sessions become the dashboard's `sessions`; the coding-agent
@@ -291,6 +294,7 @@ pub async fn get_today(
     );
     let active: Option<TodayActive> = sqlx::query_as::<_, ActiveRow>(&active_sql)
         .fetch_optional(pool)
+        .instrument(tracing::info_span!("today.read.active_session"))
         .await
         .ok()
         .flatten()
@@ -319,6 +323,7 @@ pub async fn get_today(
     .bind(&start)
     .bind(&end)
     .fetch_all(pool)
+    .instrument(tracing::info_span!("today.read.gaps"))
     .await
     .unwrap_or_default() // gaps table may not exist on very old schemas
     .into_iter()
@@ -425,6 +430,7 @@ pub async fn get_today(
     let meta_rows =
         sqlx::query_as::<_, TaskMetaRow>(r#"SELECT task_key, title, provider, url FROM pm_tasks"#)
             .fetch_all(pool)
+            .instrument(tracing::info_span!("today.read.pm_tasks"))
             .await
             .unwrap_or_default();
     for t in meta_rows {
@@ -465,13 +471,16 @@ pub async fn get_today(
 
     let session_count = sessions.len() as i64 + active.is_some() as i64;
 
-    tracing::debug!(
+    tracing::info!(
         sessions = sessions.len(),
+        session_count,
         focus_s,
         idle_s,
         agent_s,
+        supervised_s,
         autonomous_s,
         switch_count,
+        gaps = gaps.len(),
         tasks = task_totals.len(),
         "today computed"
     );
