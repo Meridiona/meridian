@@ -168,3 +168,18 @@ worklogsBtn.addEventListener('click', () => invoke('open_worklogs'))
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 invoke('get_status').then(render).catch(() => {})
+
+// ── Direct meridian.db read (proof of the Rust-command-over-SQLite path) ──────
+// Calls the get_active Tauri command, which reads meridian.db via the daemon's
+// own query layer — the pattern every ported dashboard route will follow.
+const dbActive = document.getElementById('db-active')
+function loadActiveFromDb() {
+  invoke('get_active')
+    .then((s) => {
+      dbActive.textContent = s
+        ? `DB · ${s.app_name} · ${s.frame_count} frames (direct read)`
+        : 'DB · nothing active (direct read)'
+    })
+    .catch((e) => { dbActive.textContent = 'DB · error: ' + String(e) })
+}
+loadActiveFromDb()

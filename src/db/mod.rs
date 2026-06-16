@@ -3,3 +3,8 @@
 
 pub mod meridian;
 pub mod screenpipe;
+
+// Re-export the pool type so consumers (e.g. the Tauri tray) can name it as
+// `meridian::db::SqlitePool` without adding `sqlx` to their own Cargo.toml —
+// keeps a single sqlx version across the workspace.
+pub use sqlx::SqlitePool;

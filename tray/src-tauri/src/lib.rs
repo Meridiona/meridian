@@ -25,6 +25,17 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
+            // Open meridian.db ONCE at startup and share it with commands via
+            // managed state (no migrations — the daemon owns the schema). `None`
+            // if the DB can't be opened yet, so get_active errors gracefully
+            // instead of crashing the tray.
+            let db_path = commands::meridian_db_path();
+            let db_pool =
+                tauri::async_runtime::block_on(meridian::db::meridian::open_existing(&db_path))
+                    .map_err(|e| eprintln!("tray: meridian.db not opened ({db_path}): {e}"))
+                    .ok();
+            app.manage(db_pool);
+
             let toggle_item =
                 MenuItemBuilder::with_id("toggle_daemon", "Connected ●").build(app)?;
             let open_item =

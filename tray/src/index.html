@@ -28,6 +28,13 @@
       </div>
     </section>
 
+    <!-- Proof of the dashboard-fold path: this line is read straight from
+         meridian.db through a Rust command (get_active), not the Node UI API. -->
+    <section class="db-direct" id="db-direct"
+             style="padding:2px 14px 6px;font-size:11px;color:#6b8;opacity:.85">
+      <span id="db-active">DB · reading…</span>
+    </section>
+
     <div class="rule"></div>
 
     <section class="stats-section">

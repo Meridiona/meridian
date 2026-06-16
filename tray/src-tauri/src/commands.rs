@@ -99,7 +99,7 @@ fn uid_str() -> String {
 
 /// Resolve meridian.db: `MERIDIAN_DB` env, else `~/.meridian/meridian.db`.
 /// (Production should reuse `meridian::config` for full .env + `~` handling.)
-fn meridian_db_path() -> String {
+pub(crate) fn meridian_db_path() -> String {
     if let Ok(p) = std::env::var("MERIDIAN_DB") {
         return p;
     }
@@ -107,19 +107,18 @@ fn meridian_db_path() -> String {
     format!("{}/.meridian/meridian.db", home)
 }
 
-/// SPIKE: read the live active session straight from meridian.db via the
-/// daemon's own query layer (the `meridian` lib crate) — the template for
-/// porting the dashboard's read routes to Rust. Opens WITHOUT migrations (the
-/// daemon owns the schema). NOTE: opens a pool per call for the spike;
-/// production will hold one pooled connection in Tauri managed state.
+/// Read the live active session from meridian.db via the daemon's own query
+/// layer. The pool is opened ONCE at startup and shared as Tauri managed state
+/// (see `lib.rs`); `None` means the DB couldn't be opened at startup. This is
+/// the template every ported dashboard read route follows.
 #[tauri::command]
-pub async fn get_active() -> Result<Option<meridian::db::meridian::ActiveSession>, String> {
-    let pool = meridian::db::meridian::open_existing(&meridian_db_path())
-        .await
-        .map_err(|e| e.to_string())?;
-    let result = meridian::db::meridian::get_active_session(&pool)
-        .await
-        .map_err(|e| e.to_string());
-    pool.close().await;
-    result
+pub async fn get_active(
+    pool: State<'_, Option<meridian::db::SqlitePool>>,
+) -> Result<Option<meridian::db::meridian::ActiveSession>, String> {
+    match pool.inner() {
+        Some(pool) => meridian::db::meridian::get_active_session(pool)
+            .await
+            .map_err(|e| e.to_string()),
+        None => Err("meridian.db is not open yet".to_string()),
+    }
 }
