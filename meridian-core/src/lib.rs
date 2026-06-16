@@ -62,9 +62,11 @@ pub async fn open_existing(uri: &str) -> anyhow::Result<SqlitePool> {
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
         .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
 
-    SqlitePool::connect_with(opts)
+    let pool = SqlitePool::connect_with(opts)
         .await
-        .with_context(|| format!("failed to open existing SQLite at {uri}"))
+        .with_context(|| format!("failed to open existing SQLite at {uri}"))?;
+    tracing::info!(uri, "opened meridian.db (read-only WAL)");
+    Ok(pool)
 }
 
 /// Read the single active session (the `active_session` row, id = 1), or `None`.

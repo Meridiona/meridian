@@ -14,6 +14,7 @@ use crate::SqlitePool;
 use chrono::{Datelike, Local, TimeZone, Utc};
 use serde::Serialize;
 use std::collections::BTreeMap;
+use tracing::Instrument;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DaySummary {
@@ -72,6 +73,7 @@ pub async fn get_week(pool: &SqlitePool, now_iso: &str) -> anyhow::Result<WeekRe
             .bind(&start)
             .bind(&end)
             .fetch_all(pool)
+            .instrument(tracing::info_span!("week.read.day", day = %date_str))
             .await?;
 
         let mut cats: BTreeMap<String, f64> = BTreeMap::new();
@@ -85,16 +87,23 @@ pub async fn get_week(pool: &SqlitePool, now_iso: &str) -> anyhow::Result<WeekRe
 
         // The live active session counts toward today (graceful: ignore errors).
         if is_today {
-            if let Ok(Some((started_at, category))) = sqlx::query_as::<_, (String, Option<String>)>(
+            match sqlx::query_as::<_, (String, Option<String>)>(
                 r#"SELECT started_at, category FROM active_session WHERE id = 1"#,
             )
             .fetch_optional(pool)
             .await
             {
-                let elapsed = ms(&started_at).map(|s| (now_ms - s) / 1000).unwrap_or(0);
-                let cat = category.unwrap_or_else(|| "idle_personal".to_string());
-                *cats.entry(cat).or_insert(0.0) += elapsed as f64 / 3600.0;
-                total_s += elapsed;
+                Ok(Some((started_at, category))) => {
+                    let elapsed = ms(&started_at).map(|s| (now_ms - s) / 1000).unwrap_or(0);
+                    let cat = category.unwrap_or_else(|| "idle_personal".to_string());
+                    *cats.entry(cat).or_insert(0.0) += elapsed as f64 / 3600.0;
+                    total_s += elapsed;
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "week: active_session read failed, today excludes the live session"
+                ),
             }
         }
 
@@ -108,6 +117,6 @@ pub async fn get_week(pool: &SqlitePool, now_iso: &str) -> anyhow::Result<WeekRe
     }
 
     let total_s = days.iter().map(|d| d.total_s).sum();
-    tracing::debug!(days = days.len(), total_s, "week computed");
+    tracing::info!(days = days.len(), total_s, "week computed");
     Ok(WeekResponse { days, total_s })
 }

@@ -137,9 +137,10 @@ pub async fn get_active(
     pool: State<'_, Option<meridian_core::SqlitePool>>,
 ) -> Result<Option<meridian_core::ActiveSession>, String> {
     match pool.inner() {
-        Some(pool) => meridian_core::get_active_session(pool)
-            .await
-            .map_err(|e| e.to_string()),
+        Some(pool) => meridian_core::get_active_session(pool).await.map_err(|e| {
+            tracing::warn!(error = %e, "get_active failed");
+            e.to_string()
+        }),
         None => Err("meridian.db is not open yet".to_string()),
     }
 }
@@ -159,7 +160,10 @@ pub async fn get_today(
     let now = chrono::Utc::now().to_rfc3339();
     meridian_core::today::get_today(pool, &date, &now)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| {
+            tracing::warn!(error = %e, "get_today failed");
+            e.to_string()
+        })
 }
 
 /// The 7-day Week summary, computed in Rust (the ported /api/week).
@@ -174,5 +178,8 @@ pub async fn get_week(
     let now = chrono::Utc::now().to_rfc3339();
     meridian_core::week::get_week(pool, &now)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| {
+            tracing::warn!(error = %e, "get_week failed");
+            e.to_string()
+        })
 }

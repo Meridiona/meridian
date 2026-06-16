@@ -282,7 +282,7 @@ pub async fn get_today(
         .collect();
 
     // Active session (single row, id = 1). Same optional-column handling, and
-    // graceful (.ok().flatten()) so a missing column/table → no active session.
+    // graceful (logged warn on error) so a missing column/table → no active session.
     let active_expl = if cols.contains("category_explanation") {
         "category_explanation"
     } else {
@@ -296,8 +296,10 @@ pub async fn get_today(
         .fetch_optional(pool)
         .instrument(tracing::info_span!("today.read.active_session"))
         .await
-        .ok()
-        .flatten()
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "today: active_session read failed, treating as none");
+            None
+        })
         .map(|ar| {
             let (_t, titles) = parse_titles(&ar.window_titles, &ar.app_name);
             let elapsed_s = match (ms(now_iso), ms(&ar.started_at)) {
@@ -325,7 +327,11 @@ pub async fn get_today(
     .fetch_all(pool)
     .instrument(tracing::info_span!("today.read.gaps"))
     .await
-    .unwrap_or_default() // gaps table may not exist on very old schemas
+    .unwrap_or_else(|e| {
+        // gaps table may not exist on very old schemas
+        tracing::warn!(error = %e, "today: gaps read failed, treating as empty");
+        Vec::new()
+    })
     .into_iter()
     .map(|g| TodayGap {
         id: g.id,
@@ -432,7 +438,10 @@ pub async fn get_today(
             .fetch_all(pool)
             .instrument(tracing::info_span!("today.read.pm_tasks"))
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "today: pm_tasks read failed, no task metadata");
+                Vec::new()
+            });
     for t in meta_rows {
         if !today_keys.contains(&t.task_key) {
             continue;
