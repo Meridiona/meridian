@@ -584,32 +584,13 @@ if [[ "$_oo_installed" -eq 0 ]]; then
             *) err "Unsupported arch: $_oo_arch — install manually from https://openobserve.ai"; exit 1 ;;
         esac
 
-        _oo_url=""
-        _oo_ver=""
-        if [[ "${DRY_RUN}" -eq 0 ]]; then
-            # Newer OO releases (v0.90+) stopped attaching binary assets to GitHub
-            # releases. We fetch the 100 most-recent releases and pick the newest
-            # one that actually has a darwin-<arch> tarball attached.
-            _oo_releases_json="$(curl -fsSL \
-                "https://api.github.com/repos/openobserve/openobserve/releases?per_page=100" \
-                2>/dev/null || true)"
-            if [[ -n "$_oo_releases_json" ]]; then
-                _oo_result="$(printf '%s' "$_oo_releases_json" | python3 -c "
-import sys, json
-releases = json.load(sys.stdin)
-arch = '${_oo_arch}'
-for r in releases:
-    for a in r.get('assets', []):
-        n = a['name']
-        if 'darwin' in n and arch in n and n.endswith('.tar.gz') and 'sha256' not in n:
-            print(r['tag_name'], a['browser_download_url'])
-            sys.exit(0)
-" 2>/dev/null || true)"
-                _oo_ver="${_oo_result%% *}"
-                _oo_url="${_oo_result#* }"
-                [[ "$_oo_ver" == "$_oo_url" ]] && _oo_url=""  # single token = no URL found
-            fi
-        else
+        # GitHub stopped attaching binary assets to OO releases, so the binaries
+        # live on the official downloads host. Pin a current stable — trace
+        # deep-linking (dashboard drilldown into a single trace's spans) needs a
+        # modern build; the old v0.11 GitHub asset is long gone.
+        _oo_ver="v0.90.3"
+        _oo_url="https://downloads.openobserve.ai/releases/openobserve/${_oo_ver}/openobserve-${_oo_ver}-darwin-${_oo_arch}.tar.gz"
+        if [[ "${DRY_RUN}" -ne 0 ]]; then
             _oo_ver="v0-dry-run"
             _oo_url="https://example.com/dry-run"
         fi
