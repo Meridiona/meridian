@@ -25,6 +25,17 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
+            // Request OS notification authorization up front. Without this,
+            // `.show()` is a silent no-op on macOS until the app has prompted at
+            // least once — the reason the health/pause toasts never appeared.
+            {
+                use tauri_plugin_notification::{NotificationExt, PermissionState};
+                let notifier = app.notification();
+                if !matches!(notifier.permission_state(), Ok(PermissionState::Granted)) {
+                    let _ = notifier.request_permission();
+                }
+            }
+
             let toggle_item =
                 MenuItemBuilder::with_id("toggle_daemon", "Connected ●").build(app)?;
             let open_item =
