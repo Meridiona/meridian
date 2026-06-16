@@ -1,3 +1,11 @@
+## [1.53.1](https://github.com/Meridiona/meridian/compare/v1.53.0...v1.53.1) (2026-06-16)
+
+
+### Bug Fixes
+
+* **dev:** resolve meridian binary to repo build in dev to stop migration drift ([#291](https://github.com/Meridiona/meridian/issues/291)) ([088d5da](https://github.com/Meridiona/meridian/commit/088d5da593197e1556b7f162745e181310d56835))
+* **dev:** stop the previous dev run in dev-start.sh (no more piled-up daemons) ([#293](https://github.com/Meridiona/meridian/issues/293)) ([3a8756b](https://github.com/Meridiona/meridian/commit/3a8756bf3d0a404f8974154eb621ef5ee7c9a049))
+
 # [1.53.0](https://github.com/Meridiona/meridian/compare/v1.52.6...v1.53.0) (2026-06-16)
 
 
