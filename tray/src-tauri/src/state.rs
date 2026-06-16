@@ -41,8 +41,6 @@ pub struct AppState {
     pub drafts_count: u32,
     pub ui_reachable: bool,
     pub last_poll: Option<Instant>,
-    /// notification dedup
-    pub last_notified_drafts: u32,
     pub daemon_was_healthy: bool,
     pub consecutive_health_failures: u32,
     pub last_menu_state: HealthStatus,
@@ -59,7 +57,6 @@ impl Default for AppState {
             drafts_count: 0,
             ui_reachable: false,
             last_poll: None,
-            last_notified_drafts: 0,
             daemon_was_healthy: false,
             consecutive_health_failures: 0,
             last_menu_state: HealthStatus::Unknown,

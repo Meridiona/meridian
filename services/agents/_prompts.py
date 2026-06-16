@@ -106,8 +106,11 @@ def _format_candidates(tasks: list[dict]) -> str:
             desc = desc[:240] + "…"
         meta_parts = [p for p in [issue_type, f"Epic: {epic_title}" if epic_title else "", sprint_name, f"tags: {tags}" if tags else ""] if p]
         meta = "  [" + " · ".join(meta_parts) + "]" if meta_parts else ""
+        # The dev declared this ticket as today's focus on the plan page. It's a
+        # tie-breaking prior, not a forced answer — only matches if the evidence fits.
+        focus = " ★ TODAY'S FOCUS" if task.get("is_today_focus") else ""
         rows.append(
-            f"{i}. {task['task_key']}{meta}\n"
+            f"{i}. {task['task_key']}{focus}{meta}\n"
             f"   title: {title}\n"
             f"   description: {desc or '(empty)'}"
         )
@@ -152,12 +155,21 @@ def build_user_message(
         f"{_format_recent_sessions(sessions)}\n"
         "\n"
     ) if has_any_task_key else ""
+    # When the dev declared a focus for the day, name it in the header so the model
+    # treats ★ rows as a prior — preferred when the evidence plausibly fits, but
+    # never forced. Recall is preserved: every candidate is still listed.
+    has_focus = any(c.get("is_today_focus") for c in candidates)
+    candidate_header = (
+        "CANDIDATE TICKETS (★ = the dev declared this as a task they're working on "
+        "today; prefer a ★ ticket when the session plausibly matches it, but only "
+        "if the evidence fits — never force a match):\n"
+    ) if has_focus else "CANDIDATE TICKETS:\n"
     return (
         f"{recent_block}"
         "SESSION:\n"
         f"{_format_session(session)}\n"
         "\n"
-        "CANDIDATE TICKETS:\n"
+        f"{candidate_header}"
         f"{_format_candidates(candidates)}"
     )
 

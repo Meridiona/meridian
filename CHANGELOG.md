@@ -1,3 +1,25 @@
+# [1.54.0](https://github.com/Meridiona/meridian/compare/v1.53.1...v1.54.0) (2026-06-16)
+
+
+### Features
+
+* land notification system + classifier plan-boost onto main ([#294](https://github.com/Meridiona/meridian/issues/294)) ([d0c5d3f](https://github.com/Meridiona/meridian/commit/d0c5d3fe461a5211961e6756fe0924960c836da9)), closes [#289](https://github.com/Meridiona/meridian/issues/289) [#290](https://github.com/Meridiona/meridian/issues/290) [#288](https://github.com/Meridiona/meridian/issues/288) [#289](https://github.com/Meridiona/meridian/issues/289) [#290](https://github.com/Meridiona/meridian/issues/290)
+
+## [1.53.1](https://github.com/Meridiona/meridian/compare/v1.53.0...v1.53.1) (2026-06-16)
+
+
+### Bug Fixes
+
+* **dev:** resolve meridian binary to repo build in dev to stop migration drift ([#291](https://github.com/Meridiona/meridian/issues/291)) ([088d5da](https://github.com/Meridiona/meridian/commit/088d5da593197e1556b7f162745e181310d56835))
+* **dev:** stop the previous dev run in dev-start.sh (no more piled-up daemons) ([#293](https://github.com/Meridiona/meridian/issues/293)) ([3a8756b](https://github.com/Meridiona/meridian/commit/3a8756bf3d0a404f8974154eb621ef5ee7c9a049))
+
+# [1.53.0](https://github.com/Meridiona/meridian/compare/v1.52.6...v1.53.0) (2026-06-16)
+
+
+### Features
+
+* **ui:** daily "today's plan" page with declared working set ([#288](https://github.com/Meridiona/meridian/issues/288)) ([b2c724d](https://github.com/Meridiona/meridian/commit/b2c724db7f49ed04b1740a3905fd351e682b7e23))
+
 ## [1.52.6](https://github.com/Meridiona/meridian/compare/v1.52.5...v1.52.6) (2026-06-15)
 
 

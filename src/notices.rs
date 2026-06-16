@@ -41,6 +41,33 @@ pub async fn raise(
     .execute(pool)
     .await
     .context("raising system notice")?;
+
+    // Promote the fault to an OS-level toast (the dashboard banner already comes
+    // from this table, so the notification is native-only to avoid a double
+    // banner). Deduped on the notice id → one toast per fault, cleared below when
+    // the fault recovers so a later re-occurrence toasts again. Best-effort:
+    // never let notification delivery break the fault-bus write.
+    let dedup = format!("system.fault:{id}");
+    let link = if id.starts_with("pm.") {
+        Some("/tasks?integrations=1")
+    } else {
+        Some("/logs")
+    };
+    let _ = crate::notifications::enqueue(
+        pool,
+        crate::notifications::NewNotification {
+            dedup_key: &dedup,
+            event_key: "system.fault",
+            severity,
+            title,
+            body: detail,
+            deep_link: link,
+            channels: crate::notifications::CHANNEL_NATIVE,
+            scheduled_for: None,
+            expires_at: None,
+        },
+    )
+    .await;
     Ok(())
 }
 
@@ -51,5 +78,8 @@ pub async fn clear(pool: &SqlitePool, id: &str) -> Result<()> {
         .execute(pool)
         .await
         .context("clearing system notice")?;
+    // Retract the paired toast so a future re-occurrence of this fault notifies
+    // again instead of being deduped away.
+    let _ = crate::notifications::retract(pool, &format!("system.fault:{id}")).await;
     Ok(())
 }
