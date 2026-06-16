@@ -24,6 +24,9 @@ pub mod date;
 /// The `/api/today` dashboard payload, computed in Rust (ported from today/route.ts).
 pub mod today;
 
+/// The `/api/week` 7-day summary, computed in Rust (ported from week/route.ts).
+pub mod week;
+
 /// The single in-progress activity block (the `active_session` row, id = 1).
 /// JSON columns are stored as raw text (`String`), so this needs no chrono/json
 /// sqlx features — keeping the dependency surface minimal.

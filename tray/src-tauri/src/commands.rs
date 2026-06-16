@@ -141,3 +141,18 @@ pub async fn get_today(
         .await
         .map_err(|e| e.to_string())
 }
+
+/// The 7-day Week summary, computed in Rust (the ported /api/week).
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn get_week(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+) -> Result<meridian_core::week::WeekResponse, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    meridian_core::week::get_week(pool, &now)
+        .await
+        .map_err(|e| e.to_string())
+}

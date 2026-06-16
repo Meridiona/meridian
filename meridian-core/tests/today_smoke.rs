@@ -84,3 +84,31 @@ async fn today_perf() {
         el.as_secs_f64() * 1000.0 / n as f64,
     );
 }
+
+/// Rough golden-compare for get_week against the REAL DB. Run + diff vs Node:
+///   cargo test -p meridian-core --test today_smoke week_smoke -- --ignored --nocapture
+///   curl -s localhost:3939/api/week | jq -c '{days:[.days[]|{day,date,total_s,cats}], total_s}'
+#[tokio::test]
+#[ignore]
+async fn week_smoke() {
+    let home = std::env::var("HOME").unwrap();
+    let db = format!("{home}/.meridian/meridian.db");
+    let pool = meridian_core::open_existing(&db).await.expect("open db");
+    let now = chrono::Utc::now().to_rfc3339();
+    let r = meridian_core::week::get_week(&pool, &now)
+        .await
+        .expect("get_week");
+    println!(
+        "RUST_WEEK days={} total_s={} per_day={:?}",
+        r.days.len(),
+        r.total_s,
+        r.days
+            .iter()
+            .map(|d| (d.date.as_str(), d.total_s))
+            .collect::<Vec<_>>(),
+    );
+    println!("RUST_WEEK_JSON {}", serde_json::to_string(&r).unwrap());
+    assert_eq!(r.days.len(), 7);
+    assert!(r.days.last().unwrap().is_today);
+    assert_eq!(r.total_s, r.days.iter().map(|d| d.total_s).sum::<i64>());
+}
