@@ -32,6 +32,27 @@ pub async fn open_worklogs(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// The cleanup working set (the ported /api/triage GET). Resolves `now` here
+/// (so the core fn stays deterministic) to hide future-snoozed tickets. No
+/// dashboard consumer today — ported for parity with the daemon's cleanup
+/// engine; see meridian_core::triage.
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn get_triage(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+) -> Result<meridian_core::triage::TriageResponse, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    meridian_core::triage::get_triage(pool, &now)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "get_triage failed");
+            e.to_string()
+        })
+}
+
 /// Sentinel returned to the UI when a password is stored — the real value never
 /// leaves the daemon side. Matches ui/app/api/settings/route.ts.
 const PASSWORD_SENTINEL: &str = "••••••••";

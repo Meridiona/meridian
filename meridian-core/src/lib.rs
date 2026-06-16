@@ -27,6 +27,9 @@ pub mod settings;
 /// The DB half of `/api/integrations` (pm_sync_state errors; ported from integrations/route.ts).
 pub mod integrations;
 
+/// The `/api/triage` cleanup working set (ported from triage/route.ts).
+pub mod triage;
+
 /// Local-day boundary helpers for the dashboard routes (ported from date-utils.ts).
 pub mod date;
 

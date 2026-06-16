@@ -2,6 +2,7 @@
 mod commands;
 pub(crate) mod format;
 mod integrations;
+mod parents;
 mod poll;
 mod state;
 
@@ -168,7 +169,9 @@ pub fn run() {
             commands::get_worklogs,
             commands::get_tasks,
             commands::get_settings,
+            commands::get_triage,
             integrations::get_integrations,
+            parents::get_ticket_parents,
             commands::open_permission_pane,
         ])
         .run(tauri::generate_context!())

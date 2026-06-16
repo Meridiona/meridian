@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 import { TaskKey, ProviderGlyph, StatusPill } from '@/components/atoms'
 import type { TaskSummary } from '@/app/api/tasks/route'
 import type { HygieneIssue } from '@/lib/hygiene'
+import { load } from '@/lib/bridge'
 
 const PRIORITIES = ['Highest', 'High', 'Medium', 'Low', 'Lowest']
 
@@ -220,9 +221,15 @@ function ParentPicker({ provider, taskKey, saving, onPick }: {
 
   useEffect(() => {
     let alive = true
-    fetch(`/api/triage/parents?provider=${encodeURIComponent(provider)}&key=${encodeURIComponent(taskKey)}`)
-      .then(r => r.json())
-      .then((d: { parents?: Parent[]; parent_label?: string; create_url?: string; error?: string }) => {
+    // get_ticket_parents (Rust, shells out to `meridian ticket-parents`) in the
+    // Tauri window; /api/triage/parents in a browser. Same shape — both relay
+    // the CLI's JSON and carry an `error` field on failure rather than throwing.
+    load<{ parents?: Parent[]; parent_label?: string; create_url?: string; error?: string }>(
+      `/api/triage/parents?provider=${encodeURIComponent(provider)}&key=${encodeURIComponent(taskKey)}`,
+      'get_ticket_parents',
+      { provider, key: taskKey },
+    )
+      .then((d) => {
         if (!alive) return
         setParents(d.parents ?? [])
         setLabel(d.parent_label || 'parent')
