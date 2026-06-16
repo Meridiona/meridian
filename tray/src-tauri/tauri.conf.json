@@ -4,7 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.meridiona.tray",
   "build": {
-    "frontendDist": "../src"
+    "frontendDist": "../src",
+    "devUrl": "http://localhost:3939",
+    "beforeDevCommand": "cd ../ui && npm run dev"
   },
   "app": {
     "macOSPrivateApi": true,

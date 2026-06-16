@@ -82,10 +82,13 @@ pub fn run() {
                             } else if let Err(e) = WebviewWindowBuilder::new(
                                 app,
                                 "dashboard",
-                                WebviewUrl::App("dashboard.html".into()),
+                                // The real Next dashboard route (resolves against
+                                // devUrl → next dev in dev, the static export in
+                                // build). Replaces the throwaway dashboard.html.
+                                WebviewUrl::App("today".into()),
                             )
-                            .title("Meridian — Native Dashboard")
-                            .inner_size(820.0, 640.0)
+                            .title("Meridian — Dashboard")
+                            .inner_size(1100.0, 760.0)
                             .build()
                             {
                                 eprintln!("tray: failed to open native dashboard: {e}");
@@ -218,16 +221,17 @@ fn open_in_browser(app: &tauri::AppHandle, url: &str) {
     let _ = app.opener().open_url(url, None::<&str>);
 }
 
-/// Open (or focus) the in-app onboarding wizard window. Loads `wizard.html`
-/// from the bundled frontend; the wizard drives permissions, model status, and
-/// tracker auth entirely through Tauri commands (no Node server).
+/// Open (or focus) the in-app onboarding wizard window. Loads the Next `/setup`
+/// route (resolves against devUrl → next dev in dev, the static export in
+/// build); the wizard drives permissions, model status, and tracker auth
+/// entirely through Tauri commands (no Node server).
 fn open_wizard_window(app: &tauri::AppHandle) {
     if let Some(win) = app.get_webview_window("setup") {
         let _ = win.show();
         let _ = win.set_focus();
         return;
     }
-    if let Err(e) = WebviewWindowBuilder::new(app, "setup", WebviewUrl::App("wizard.html".into()))
+    if let Err(e) = WebviewWindowBuilder::new(app, "setup", WebviewUrl::App("setup".into()))
         .title("Meridian — Setup")
         .inner_size(560.0, 660.0)
         .resizable(false)
