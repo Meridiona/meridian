@@ -183,3 +183,21 @@ pub async fn get_week(
             e.to_string()
         })
 }
+
+/// Today's coding-agent totals, computed in Rust (the ported /api/coding-agents).
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn get_coding_agents(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+) -> Result<meridian_core::coding_agents::CodingAgentsResponse, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let date = meridian_core::date::today_string();
+    meridian_core::coding_agents::get_coding_agents(pool, &date)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "get_coding_agents failed");
+            e.to_string()
+        })
+}

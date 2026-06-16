@@ -27,6 +27,9 @@ pub mod today;
 /// The `/api/week` 7-day summary, computed in Rust (ported from week/route.ts).
 pub mod week;
 
+/// The `/api/coding-agents` daily agent totals (ported from coding-agents/route.ts).
+pub mod coding_agents;
+
 /// The single in-progress activity block (the `active_session` row, id = 1).
 /// JSON columns are stored as raw text (`String`), so this needs no chrono/json
 /// sqlx features — keeping the dependency surface minimal.
