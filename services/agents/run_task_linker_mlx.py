@@ -34,6 +34,7 @@ import time
 from pathlib import Path
 from typing import Any, Literal, Optional
 
+from opentelemetry import trace
 from opentelemetry.trace import StatusCode
 from pydantic import BaseModel, Field
 
@@ -840,6 +841,41 @@ def _open_run_log(db_path: str) -> "tuple[Path, Any]":
     return log_path, log_path.open("w", encoding="utf-8")
 
 
+# `method` values that mean the model produced a usable classification.
+# Anything else — mlx_error / apple_fm_error / schema_error / invalid_task_key /
+# session-not-found — is an error path the dashboard surfaces under errors-only.
+_SUCCESS_METHODS = {"mlx_direct", "apple_fm"}
+
+
+def _annotate_classification_span(result: dict[str, Any]) -> None:
+    """Promote the classification result onto the enclosing `classify_session`
+    span so each session is ONE self-describing row in OpenObserve — filterable
+    by session_id / session_type / task_key / is_error without joining the child
+    spans. Both the server and CLI entry points wrap the call in a
+    `classify_session` span, so annotating the current span here covers both.
+    """
+    span = trace.get_current_span()
+    if not span.is_recording():
+        return
+    method = str(result.get("method", ""))
+    task_key = result.get("task_key")
+    is_error = method not in _SUCCESS_METHODS
+    span.set_attribute("session_id", int(result.get("session_id", 0)))
+    span.set_attribute("task_key", task_key or "-")
+    span.set_attribute("has_task", task_key is not None)
+    span.set_attribute("session_type", str(result.get("session_type", "")))
+    span.set_attribute("category", str(result.get("category", "")))
+    span.set_attribute("confidence", float(result.get("confidence", 0.0)))
+    span.set_attribute(
+        "category_confidence", float(result.get("category_confidence", 0.0))
+    )
+    span.set_attribute("method", method)
+    span.set_attribute("elapsed_s", float(result.get("elapsed_s", 0.0)))
+    span.set_attribute("is_error", is_error)
+    if is_error:
+        span.set_status(StatusCode.ERROR, str(result.get("reasoning", method))[:300])
+
+
 def _classify_one_logged(
     session_id: int,
     con: _sqlite3.Connection,
@@ -888,6 +924,7 @@ def _classify_one_logged(
     }
     run_log.write(json.dumps(record, default=str) + "\n")
     run_log.flush()
+    _annotate_classification_span(result)
     return result
 
 
@@ -950,15 +987,12 @@ def main() -> None:
         try:
             results: list[dict[str, Any]] = []
             for sid in session_ids:
-                with tracer.start_as_current_span("classify_session") as cls_span:
-                    cls_span.set_attribute("session_id", sid)
+                with tracer.start_as_current_span("classify_session"):
+                    # _classify_one_logged enriches this span with the full
+                    # result (session_id, task_key, session_type, is_error, …).
                     log.info("run_task_linker_mlx: classifying session %d", sid)
                     result = _classify_one_logged(sid, con, run_log_file)
                     results.append(result)
-                    cls_span.set_attribute("task_key", result["task_key"] or "-")
-                    cls_span.set_attribute("session_type", result["session_type"])
-                    cls_span.set_attribute("method", result["method"])
-                    cls_span.set_attribute("elapsed_s", result["elapsed_s"])
                     log.info(
                         "run_task_linker_mlx: session_id=%d task_key=%s "
                         "session_type=%s elapsed_s=%.2f",
