@@ -13,3 +13,6 @@ libsqlite3-sys = { version = "0.26", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 anyhow = "1.0.86"
 chrono = "0.4.31"
+# Instrumentation facade only (~no-op without a subscriber) — the heavy OTLP
+# exporter is wired by the binary (daemon, or the tray's `otel` dev feature).
+tracing = "0.1"

@@ -112,6 +112,7 @@ pub(crate) fn meridian_db_path() -> String {
 /// (see `lib.rs`); `None` means the DB couldn't be opened at startup. This is
 /// the template every ported dashboard read route follows.
 #[tauri::command]
+#[tracing::instrument(skip(pool))]
 pub async fn get_active(
     pool: State<'_, Option<meridian_core::SqlitePool>>,
 ) -> Result<Option<meridian_core::ActiveSession>, String> {

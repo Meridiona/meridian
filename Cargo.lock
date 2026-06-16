@@ -2342,6 +2342,7 @@ dependencies = [
  "libsqlite3-sys",
  "serde",
  "sqlx",
+ "tracing",
 ]
 
 [[package]]
@@ -2349,6 +2350,7 @@ name = "meridian-tray"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "meridian",
  "meridian-core",
  "reqwest 0.12.28",
  "serde",
@@ -2358,6 +2360,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-positioner",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

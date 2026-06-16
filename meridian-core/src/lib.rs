@@ -45,6 +45,7 @@ pub struct ActiveSession {
 /// the schema — the daemon owns migrations. A second process running the
 /// migrator would race it. Opens a normal WAL connection so it reads correctly
 /// alongside the daemon's writes; callers issue only SELECTs.
+#[tracing::instrument(skip_all, fields(uri = %uri))]
 pub async fn open_existing(uri: &str) -> anyhow::Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str(uri)
         .with_context(|| format!("invalid SQLite URI: {uri}"))?
@@ -58,6 +59,7 @@ pub async fn open_existing(uri: &str) -> anyhow::Result<SqlitePool> {
 }
 
 /// Read the single active session (the `active_session` row, id = 1), or `None`.
+#[tracing::instrument(skip_all)]
 pub async fn get_active_session(pool: &SqlitePool) -> anyhow::Result<Option<ActiveSession>> {
     let row = sqlx::query_as::<_, ActiveSession>(
         r#"
@@ -72,5 +74,10 @@ pub async fn get_active_session(pool: &SqlitePool) -> anyhow::Result<Option<Acti
     .await
     .context("get_active_session: fetch failed")?;
 
+    tracing::debug!(
+        found = row.is_some(),
+        app = row.as_ref().map(|r| r.app_name.as_str()),
+        "active_session read"
+    );
     Ok(row)
 }

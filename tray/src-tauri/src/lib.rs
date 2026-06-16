@@ -14,6 +14,13 @@ use tauri::{
 };
 
 pub fn run() {
+    // Dev-only (`--features otel`): export tray spans to OpenObserve via the
+    // daemon's OTLP setup, tagged service.name = meridian-tray. Held for the
+    // process lifetime. Compiled out entirely (and `meridian` isn't even a dep)
+    // when the feature is off — release builds stay lean.
+    #[cfg(feature = "otel")]
+    let _otel_guard = meridian::observability::init("meridian-tray").ok();
+
     let app_state = Arc::new(Mutex::new(AppState::default()));
 
     tauri::Builder::default()
