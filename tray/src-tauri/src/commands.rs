@@ -201,3 +201,23 @@ pub async fn get_coding_agents(
             e.to_string()
         })
 }
+
+/// A day's worklogs for review, computed in Rust (the ported /api/worklogs).
+/// `day` defaults to today (local) when omitted, matching the route.
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn get_worklogs(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    day: Option<String>,
+) -> Result<meridian_core::worklogs::WorklogsResponse, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let day = day.unwrap_or_else(meridian_core::date::today_string);
+    meridian_core::worklogs::get_worklogs(pool, &day)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "get_worklogs failed");
+            e.to_string()
+        })
+}

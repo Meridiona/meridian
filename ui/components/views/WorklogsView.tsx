@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { fmtDur, fmtClock, TaskKey, ConfidenceRing } from '@/components/atoms'
 import type { WorklogItem, WorklogsResponse } from '@/app/api/worklogs/route'
+import { load as loadData } from '@/lib/bridge'
 
 // Local YYYY-MM-DD for `d` days from today (negative = past).
 function dayString(offsetDays = 0): string {
@@ -45,9 +46,11 @@ export default function WorklogsView() {
   const [busy, setBusy] = useState<number | null>(null)
 
   const load = useCallback((d: string) => {
-    fetch(`/api/worklogs?day=${d}`)
-      .then(r => r.json())
-      .then((res: WorklogsResponse) => { setItems(res.items ?? []); setCounts(res.counts ?? {}); setLoading(false) })
+    // get_worklogs (Rust) in the Tauri window, /api/worklogs in a browser.
+    // Mutations (/api/worklogs/[id], below) stay on fetch until those write
+    // routes are ported.
+    loadData<WorklogsResponse>(`/api/worklogs?day=${d}`, 'get_worklogs', { day: d })
+      .then((res) => { setItems(res.items ?? []); setCounts(res.counts ?? {}); setLoading(false) })
       .catch(() => setLoading(false))
   }, [])
 

@@ -30,6 +30,9 @@ pub mod week;
 /// The `/api/coding-agents` daily agent totals (ported from coding-agents/route.ts).
 pub mod coding_agents;
 
+/// The `/api/worklogs` day review payload (ported from worklogs/route.ts).
+pub mod worklogs;
+
 /// The single in-progress activity block (the `active_session` row, id = 1).
 /// JSON columns are stored as raw text (`String`), so this needs no chrono/json
 /// sqlx features — keeping the dependency surface minimal.

@@ -164,6 +164,7 @@ pub fn run() {
             commands::get_today,
             commands::get_week,
             commands::get_coding_agents,
+            commands::get_worklogs,
             commands::open_permission_pane,
         ])
         .run(tauri::generate_context!())
