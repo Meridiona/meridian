@@ -30,10 +30,9 @@ pub fn run() {
             // if the DB can't be opened yet, so get_active errors gracefully
             // instead of crashing the tray.
             let db_path = commands::meridian_db_path();
-            let db_pool =
-                tauri::async_runtime::block_on(meridian::db::meridian::open_existing(&db_path))
-                    .map_err(|e| eprintln!("tray: meridian.db not opened ({db_path}): {e}"))
-                    .ok();
+            let db_pool = tauri::async_runtime::block_on(meridian_core::open_existing(&db_path))
+                .map_err(|e| eprintln!("tray: meridian.db not opened ({db_path}): {e}"))
+                .ok();
             app.manage(db_pool);
 
             let toggle_item =

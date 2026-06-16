@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "tray/src-tauri"]
+members = [".", "meridian-core", "tray/src-tauri"]
 resolver = "2"
 
 [package]
@@ -33,6 +33,10 @@ path = "src/bin/backfill_task_classification.rs"
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls", "chrono", "migrate", "json"] }
 libsqlite3-sys = { version = "0.26", features = ["bundled"] }
 sqlite-vec = "0.1.3"
+
+# Shared lean data layer (DB row types + read queries) — also depended on by the
+# Tauri dashboard, so the queries live in ONE place (single source of truth).
+meridian-core = { path = "meridian-core" }
 
 # Async
 tokio = { version = "1.15", features = ["full"] }

@@ -1,0 +1,73 @@
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+//! meridian-core — the lean shared data layer used by BOTH the daemon and the
+//! dashboard/Tauri app: DB row types + read queries + a no-migration opener.
+//!
+//! Single source of truth: the daemon re-exports these (so its code is
+//! unchanged) and the Tauri app depends on this crate directly — neither
+//! reimplements the queries, and the UI no longer pulls the daemon's deps.
+
+use anyhow::Context;
+use serde::{Deserialize, Serialize};
+use sqlx::{sqlite::SqliteConnectOptions, FromRow};
+use std::str::FromStr;
+
+// Re-export the pool type so consumers can name it as `meridian_core::SqlitePool`
+// without adding `sqlx` to their own Cargo.toml.
+pub use sqlx::SqlitePool;
+
+/// The single in-progress activity block (the `active_session` row, id = 1).
+/// JSON columns are stored as raw text (`String`), so this needs no chrono/json
+/// sqlx features — keeping the dependency surface minimal.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ActiveSession {
+    pub id: i64,
+    pub app_name: String,
+    pub started_at: String,
+    pub last_seen_at: String,
+    pub window_titles: String,
+    pub audio_snippets: Option<String>,
+    pub signals: Option<String>,
+    pub min_frame_id: i64,
+    pub max_frame_id: i64,
+    pub frame_count: i64,
+    pub idle_frame_count: i64,
+    pub category: String,
+    pub confidence: f64,
+    pub session_text: Option<String>,
+}
+
+/// Open an EXISTING meridian.db WITHOUT running migrations or creating the file.
+///
+/// For read consumers (the dashboard / Tauri app) that must not own or mutate
+/// the schema — the daemon owns migrations. A second process running the
+/// migrator would race it. Opens a normal WAL connection so it reads correctly
+/// alongside the daemon's writes; callers issue only SELECTs.
+pub async fn open_existing(uri: &str) -> anyhow::Result<SqlitePool> {
+    let opts = SqliteConnectOptions::from_str(uri)
+        .with_context(|| format!("invalid SQLite URI: {uri}"))?
+        .create_if_missing(false)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
+
+    SqlitePool::connect_with(opts)
+        .await
+        .with_context(|| format!("failed to open existing SQLite at {uri}"))
+}
+
+/// Read the single active session (the `active_session` row, id = 1), or `None`.
+pub async fn get_active_session(pool: &SqlitePool) -> anyhow::Result<Option<ActiveSession>> {
+    let row = sqlx::query_as::<_, ActiveSession>(
+        r#"
+        SELECT id, app_name, started_at, last_seen_at,
+               window_titles, audio_snippets, signals,
+               min_frame_id, max_frame_id, frame_count, idle_frame_count,
+               category, confidence, session_text
+        FROM active_session WHERE id = 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await
+    .context("get_active_session: fetch failed")?;
+
+    Ok(row)
+}

@@ -20,7 +20,7 @@ pub fn get_status(state: State<'_, Arc<Mutex<AppState>>>) -> Result<StatusPayloa
 #[tauri::command]
 pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
     app.opener()
-        .open_url(&ui_base(), None::<&str>)
+        .open_url(ui_base(), None::<&str>)
         .map_err(|e| e.to_string())
 }
 
@@ -113,10 +113,10 @@ pub(crate) fn meridian_db_path() -> String {
 /// the template every ported dashboard read route follows.
 #[tauri::command]
 pub async fn get_active(
-    pool: State<'_, Option<meridian::db::SqlitePool>>,
-) -> Result<Option<meridian::db::meridian::ActiveSession>, String> {
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+) -> Result<Option<meridian_core::ActiveSession>, String> {
     match pool.inner() {
-        Some(pool) => meridian::db::meridian::get_active_session(pool)
+        Some(pool) => meridian_core::get_active_session(pool)
             .await
             .map_err(|e| e.to_string()),
         None => Err("meridian.db is not open yet".to_string()),

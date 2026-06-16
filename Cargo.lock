@@ -2309,6 +2309,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "libsqlite3-sys",
+ "meridian-core",
  "once_cell",
  "opentelemetry",
  "opentelemetry-appender-tracing",
@@ -2333,11 +2334,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "meridian-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libsqlite3-sys",
+ "serde",
+ "sqlx",
+]
+
+[[package]]
 name = "meridian-tray"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "meridian",
+ "meridian-core",
  "reqwest 0.12.28",
  "serde",
  "tauri",
