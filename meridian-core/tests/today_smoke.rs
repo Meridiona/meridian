@@ -54,3 +54,33 @@ async fn today_smoke() {
         r.sessions.len() as i64 + r.active.is_some() as i64
     );
 }
+
+/// Rough perf: in-process get_today latency (the work the Tauri command does),
+/// pool opened once. Compare against `curl -w %{time_total}` to the Node route.
+#[tokio::test]
+#[ignore]
+async fn today_perf() {
+    let home = std::env::var("HOME").unwrap();
+    let db = format!("{home}/.meridian/meridian.db");
+    let pool = meridian_core::open_existing(&db).await.expect("open db");
+    let date = meridian_core::date::today_string();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    let _ = meridian_core::today::get_today(&pool, &date, &now)
+        .await
+        .unwrap(); // warm
+
+    let n = 200;
+    let t0 = std::time::Instant::now();
+    for _ in 0..n {
+        let _ = meridian_core::today::get_today(&pool, &date, &now)
+            .await
+            .unwrap();
+    }
+    let el = t0.elapsed();
+    println!(
+        "RUST_PERF get_today: {n} runs in {:.1}ms → {:.3}ms/call",
+        el.as_secs_f64() * 1000.0,
+        el.as_secs_f64() * 1000.0 / n as f64,
+    );
+}
