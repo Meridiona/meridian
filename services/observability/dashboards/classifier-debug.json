@@ -1,0 +1,158 @@
+{
+  "title": "Session→Task Classifier — Debug",
+  "description": "Every session-task classification, newest first. Filter by session_id, session_type, or errors-only; click a row's trace_id and open it in Traces to see the full waterfall (db_fetch → build_prompt → llm_inference → parse_response, with raw_mlx_output). Backed by the enriched `classify_session` spans on service meridian-task-linker-mlx.",
+  "version": 5,
+  "variables": {
+    "list": [
+      {
+        "type": "textbox",
+        "name": "session_id",
+        "label": "Session ID",
+        "query_data": null,
+        "value": "",
+        "options": []
+      },
+      {
+        "type": "custom",
+        "name": "session_type",
+        "label": "Session type",
+        "query_data": null,
+        "value": "",
+        "options": [
+          {"label": "All", "value": "", "selected": true},
+          {"label": "task", "value": "task", "selected": false},
+          {"label": "overhead", "value": "overhead", "selected": false},
+          {"label": "untracked", "value": "untracked", "selected": false}
+        ]
+      },
+      {
+        "type": "custom",
+        "name": "errors_only",
+        "label": "Errors only",
+        "query_data": null,
+        "value": "",
+        "options": [
+          {"label": "All", "value": "", "selected": true},
+          {"label": "Errors only", "value": "true", "selected": false}
+        ]
+      }
+    ],
+    "showDynamicFilters": true
+  },
+  "tabs": [
+    {
+      "tabId": "default",
+      "name": "Default",
+      "panels": [
+        {
+          "id": "stat_total",
+          "type": "metric",
+          "title": "Classifications",
+          "description": "Total classify_session spans in range",
+          "config": {"show_legends": false, "unit": null, "decimals": 0},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as value FROM default WHERE operation_name='classify_session'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [], "y": [], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 0, "y": 0, "w": 12, "h": 6, "i": 1}
+        },
+        {
+          "id": "stat_errors",
+          "type": "metric",
+          "title": "Errors",
+          "description": "Classifications whose method failed (is_error=true)",
+          "config": {"show_legends": false, "unit": null, "decimals": 0},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as value FROM default WHERE operation_name='classify_session' AND is_error='true'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [], "y": [], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 12, "y": 0, "w": 12, "h": 6, "i": 2}
+        },
+        {
+          "id": "stat_untracked",
+          "type": "metric",
+          "title": "Untracked",
+          "description": "Sessions classified as untracked (no ticket)",
+          "config": {"show_legends": false, "unit": null, "decimals": 0},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as value FROM default WHERE operation_name='classify_session' AND session_type='untracked'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [], "y": [], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 24, "y": 0, "w": 12, "h": 6, "i": 3}
+        },
+        {
+          "id": "stat_conf",
+          "type": "metric",
+          "title": "Avg confidence",
+          "description": "Mean confidence of successful classifications",
+          "config": {"show_legends": false, "unit": null, "decimals": 2},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT round(avg(CAST(confidence AS DOUBLE)),2) as value FROM default WHERE operation_name='classify_session' AND is_error='false'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [], "y": [], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 36, "y": 0, "w": 12, "h": 6, "i": 4}
+        },
+        {
+          "id": "table_all",
+          "type": "table",
+          "title": "All classifications (newest first)",
+          "description": "Filter with the Session ID / Session type / Errors only variables above. Copy a trace_id and open it in Traces for the full waterfall.",
+          "config": {"show_legends": false},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT _timestamp, session_id, task_key, session_type, category, confidence, method, is_error, trace_id FROM default WHERE operation_name='classify_session' AND ('$session_id'='' OR session_id='$session_id') AND ('$session_type'='' OR session_type='$session_type') AND ('$errors_only'='' OR is_error='$errors_only') ORDER BY _timestamp DESC",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [], "y": [], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 0, "y": 6, "w": 48, "h": 14, "i": 5}
+        },
+        {
+          "id": "table_errors",
+          "type": "table",
+          "title": "Errors only",
+          "description": "Failed classifications — inference errors, schema errors, invalid task_key, session-not-found.",
+          "config": {"show_legends": false},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT _timestamp, session_id, task_key, session_type, method, trace_id FROM default WHERE operation_name='classify_session' AND is_error='true' ORDER BY _timestamp DESC",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [], "y": [], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 0, "y": 20, "w": 48, "h": 10, "i": 6}
+        }
+      ]
+    }
+  ]
+}
