@@ -10,7 +10,7 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
-    Manager, WindowEvent,
+    Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 
 pub fn run() {
@@ -53,6 +53,10 @@ pub fn run() {
                 MenuItemBuilder::with_id("toggle_daemon", "Connected ●").build(app)?;
             let open_item =
                 MenuItemBuilder::with_id("open_dashboard", "Open Dashboard").build(app)?;
+            // Native (in-app) dashboard — renders Today/Week from Rust commands,
+            // no browser, no Node server. The fold-into-Tauri end-state.
+            let native_item =
+                MenuItemBuilder::with_id("open_native", "Open Dashboard (native)").build(app)?;
             let worklogs_item =
                 MenuItemBuilder::with_id("open_worklogs", "Review Drafts").build(app)?;
             let restart_item =
@@ -62,6 +66,7 @@ pub fn run() {
                 .items(&[
                     &toggle_item,
                     &open_item,
+                    &native_item,
                     &worklogs_item,
                     &restart_item,
                     &quit_item,
@@ -84,6 +89,24 @@ pub fn run() {
                     match event.id.as_ref() {
                         "open_dashboard" => {
                             open_in_browser(app, &ui_base());
+                        }
+                        "open_native" => {
+                            // In-app dashboard window (Today/Week from Rust). Reuse
+                            // the window if it already exists, else build it.
+                            if let Some(win) = app.get_webview_window("dashboard") {
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                            } else if let Err(e) = WebviewWindowBuilder::new(
+                                app,
+                                "dashboard",
+                                WebviewUrl::App("dashboard.html".into()),
+                            )
+                            .title("Meridian — Native Dashboard")
+                            .inner_size(820.0, 640.0)
+                            .build()
+                            {
+                                eprintln!("tray: failed to open native dashboard: {e}");
+                            }
                         }
                         "open_worklogs" => {
                             open_in_browser(app, &format!("{}/worklogs", ui_base()));

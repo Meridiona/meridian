@@ -1,0 +1,35 @@
+<!doctype html>
+<!-- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity -->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Meridian — Native Dashboard</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 14px/1.5 -apple-system, system-ui, sans-serif; margin: 0; padding: 24px 28px; }
+    h1 { font-size: 22px; margin: 0 0 2px; }
+    h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; opacity: .6; margin: 24px 0 8px; }
+    .date { font-size: 13px; opacity: .55; font-weight: 400; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid color-mix(in srgb, currentColor 10%, transparent); }
+    li b { font-variant-numeric: tabular-nums; }
+    .day { display: flex; justify-content: space-between; padding: 4px 0; font-variant-numeric: tabular-nums; }
+    .day .today { font-weight: 700; }
+    .total { margin-top: 8px; font-weight: 600; }
+    .src { margin-top: 28px; font-size: 11px; opacity: .5; }
+    .err { color: #c0392b; }
+  </style>
+</head>
+<body>
+  <h1>Today <span class="date" id="date"></span></h1>
+  <ul id="today"><li>Loading…</li></ul>
+
+  <h2>This week</h2>
+  <div id="week">Loading…</div>
+
+  <p class="src">Rendered in-app from Rust (<code>meridian-core</code>) via Tauri commands — no browser, no Node server.</p>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>
