@@ -18,8 +18,15 @@ pub fn run() {
     // daemon's OTLP setup, tagged service.name = meridian-tray. Held for the
     // process lifetime. Compiled out entirely (and `meridian` isn't even a dep)
     // when the feature is off — release builds stay lean.
+    //
+    // Must run INSIDE Tauri's Tokio runtime: the OTLP batch exporter spawns a
+    // background task and panics ("no reactor running") if called before one
+    // exists. `block_on` enters the global runtime so the spawn succeeds; the
+    // exporter task then lives on that runtime for the process lifetime.
     #[cfg(feature = "otel")]
-    let _otel_guard = meridian::observability::init("meridian-tray").ok();
+    let _otel_guard =
+        tauri::async_runtime::block_on(async { meridian::observability::init("meridian-tray") })
+            .ok();
 
     let app_state = Arc::new(Mutex::new(AppState::default()));
 
