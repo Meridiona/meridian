@@ -2,10 +2,20 @@
 //! `/api/worklogs?day=YYYY-MM-DD` ported to Rust — a faithful port of
 //! `ui/app/api/worklogs/route.ts`.
 //!
+//! # What this is
 //! A day's drafted/approved/posted worklogs for review: the editable Jira
 //! comment (payload `summary`), supporting bullets/next-steps for context,
-//! confidence/coverage, risk flags, and post status. Read-only — mutations
-//! stay in the (not-yet-ported) [id] route.
+//! confidence/coverage, risk flags, and post status. Read-only — the mutations
+//! live in the (not-yet-ported) `worklogs/[id]` route.
+//!
+//! # Who calls this
+//! The tray `get_worklogs` command → the dashboard `WorklogsView` (the draft
+//! review list). Note: `WorklogsView`'s approve/reject actions still POST to
+//! `/api/worklogs/[id]` until that write route is ported.
+//!
+//! # Related
+//! - [`crate::tasks`] joins the same `pm_tasks` for per-ticket time.
+//! - Bullets/next-steps are parsed out of the row's `payload_json` blob below.
 
 use crate::SqlitePool;
 use anyhow::Context;
@@ -15,12 +25,17 @@ use sqlx::FromRow;
 use std::collections::BTreeMap;
 use tracing::Instrument;
 
+/// One supporting bullet on a worklog, tagged by kind (shipped / in progress /
+/// blocker / decision).
 #[derive(Debug, Clone, Serialize)]
 pub struct WorklogBullet {
     pub kind: String,
     pub text: String,
 }
 
+/// One reviewable worklog: the editable comment (`summary`) + context (bullets,
+/// next steps, risk flags, reasoning) + post state. `edited` reflects a manual
+/// edit on the row.
 #[derive(Debug, Clone, Serialize)]
 pub struct WorklogItem {
     pub id: i64,

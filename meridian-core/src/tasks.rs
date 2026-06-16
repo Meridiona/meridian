@@ -1,12 +1,25 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //! `/api/tasks` ported to Rust — a faithful port of `ui/app/api/tasks/route.ts`.
 //!
+//! # What this is
 //! Per-task time accounting: YOUR hands-on foreground time on a task + the
 //! agent time that ran while you were AWAY (autonomous). Agent time alongside
 //! you (supervised) is NOT added — that wall-clock is already your presence, so
 //! adding it would double-count the day. Hence we need your full foreground
 //! presence to split autonomous from supervised agent time. Plus board-hygiene
-//! verdicts the daemon wrote into pm_task_curation (tolerating older DBs).
+//! verdicts the daemon wrote into `pm_task_curation` (tolerating older DBs).
+//!
+//! # Who calls this
+//! The tray `get_tasks` command → the dashboard `TasksView`, `CleanupView`,
+//! `MustFixBanner`, and `WorklogsView` (reject-candidate lookup).
+//!
+//! # Related
+//! - [`crate::intervals`] (`session_interval`/`union_seconds`/`intersect_seconds`/
+//!   `merge_intervals`) is the time math; [`task_time`] composes it — the
+//!   autonomous calc is `union(agent) − intersect(agent, presence)`.
+//! - [`crate::hygiene::parse_issues`] turns the curation `reasons_json` into the
+//!   per-ticket [`crate::hygiene::Hygiene`] verdict embedded in each task.
+//! - [`crate::date::local_day_bounds`] resolves the today/week query windows.
 
 use crate::date::local_day_bounds;
 use crate::hygiene::{parse_issues, Hygiene};

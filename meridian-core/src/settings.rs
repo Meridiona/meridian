@@ -1,9 +1,23 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //! Runtime settings (`~/.meridian/settings.json`) — the hot-reloadable subset
-//! of config the dashboard writes and the daemon reads each poll tick. Lives in
-//! meridian-core as the single source of truth: the daemon re-exports this (its
-//! `config::{RuntimeSettings, load_runtime_settings}` are unchanged) and the
-//! Tauri app reads it directly, so neither side reimplements the schema/path.
+//! of config the dashboard writes and the daemon reads each poll tick.
+//!
+//! # What this is
+//! The single source of truth for the settings schema + path. Lives here (not
+//! the daemon) so all three consumers share ONE definition: the daemon
+//! re-exports it (its `config::{RuntimeSettings, load_runtime_settings}` are
+//! unchanged), and the Tauri app reads it directly — no reimplementation.
+//!
+//! # Who calls this
+//! - The daemon: `src/config.rs` re-exports these; `src/observability.rs` reads
+//!   them each poll tick to drive log level + OTLP export.
+//! - The Tauri app: the tray `get_settings` command (the ported `/api/settings`
+//!   GET) serialises this, redacting `oo_password`.
+//!
+//! # Related
+//! - `ui/lib/settings.ts` is the TS mirror of this schema + defaults — keep the
+//!   two in sync (the `SETTINGS_DEFAULTS` there must match [`RuntimeSettings::default`]).
+//! - The PUT (write) side of `/api/settings` is not yet ported.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

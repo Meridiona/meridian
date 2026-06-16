@@ -1,10 +1,20 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //! `/api/active` ported to Rust — a faithful port of `ui/app/api/active/route.ts`.
 //!
+//! # What this is
 //! The dashboard's view of the single in-progress block: the `active_session`
 //! row reshaped with `elapsed_s` (now − started_at) and the JSON columns parsed
 //! to values. Distinct from [`crate::get_active_session`] (the raw row the
 //! daemon uses) — this is the computed shape the dashboard renders.
+//!
+//! # Who calls this
+//! The tray `get_active` command → the dashboard `Sidebar`'s active-session pill.
+//!
+//! # Related
+//! - [`crate::get_active_session`] returns the RAW `active_session` row (daemon
+//!   shape); this module is the reshaped dashboard view — they are NOT
+//!   interchangeable (different fields).
+//! - [`crate::today`] also reports the active session, folded into today's totals.
 
 use crate::SqlitePool;
 use anyhow::Context;
@@ -28,6 +38,8 @@ pub struct ActiveView {
     pub confidence: f64,
 }
 
+/// The `active_session` row as stored (JSON columns are raw text here, parsed
+/// into [`ActiveView`] values below).
 #[derive(FromRow)]
 struct Raw {
     app_name: String,
@@ -41,12 +53,16 @@ struct Raw {
     confidence: Option<f64>,
 }
 
+/// RFC3339 → epoch millis (`None` if unparseable), for the elapsed_s math.
 fn ms(s: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(s)
         .ok()
         .map(|d| d.timestamp_millis())
 }
 
+/// Read the active session as the dashboard view, or `None` if nothing is
+/// active. `now_iso` (RFC3339) drives `elapsed_s`; resolved by the caller (the
+/// tray command) so this fn stays deterministic.
 #[tracing::instrument(skip(pool))]
 pub async fn get_active_view(
     pool: &SqlitePool,

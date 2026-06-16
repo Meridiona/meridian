@@ -2,10 +2,20 @@
 //! `/api/coding-agents` ported to Rust — a faithful port of
 //! `ui/app/api/coding-agents/route.ts`.
 //!
+//! # What this is
 //! Today's coding-agent activity: the union of all coding-agent sessions
 //! (overlap deduped) plus a per-agent union, descending. NOTE: the route unions
 //! the raw `started_at`/`ended_at` spans (it does NOT cap to `duration_s` the
 //! way `today`/the session-interval math does), so neither do we — byte-identical.
+//!
+//! # Who calls this
+//! The tray `get_coding_agents` command → (currently no dashboard consumer; Today
+//! already surfaces agent time via `agent_s`/`agent_segments`). Ported for parity.
+//!
+//! # Related
+//! - [`crate::intervals::union_seconds`] does the overlap-dedup math.
+//! - [`crate::today`] is the live surface for agent time; [`crate::tasks`] splits
+//!   agent time into supervised vs autonomous (this module does not).
 
 use crate::intervals::{union_seconds, Interval};
 use crate::SqlitePool;
@@ -16,24 +26,32 @@ use tracing::Instrument;
 /// The agents we attribute (matches the route's `CODING_AGENTS`).
 const CODING_AGENTS: [&str; 2] = ["Claude Code", "Codex"];
 
+/// One agent's deduped total for the day.
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentTotal {
+    /// App name, e.g. "Claude Code" / "Codex".
     pub app: String,
+    /// Union seconds across that agent's sessions today (overlap counted once).
     pub total_s: i64,
 }
 
+/// The `/api/coding-agents` payload: the day, the cross-agent union total, and
+/// the per-agent breakdown (descending, agents with zero time dropped).
 #[derive(Debug, Clone, Serialize)]
 pub struct CodingAgentsResponse {
+    /// Local day, "YYYY-MM-DD".
     pub date: String,
+    /// Union across ALL coding-agent sessions (overlap deduped).
     pub total_s: i64,
     pub agents: Vec<AgentTotal>,
 }
 
+/// One `app_sessions` row → an [`Interval`]; a missing `ended_at` becomes an
+/// empty string that `parse_ms` rejects, so the row drops out of the union
+/// (matching the route, where an undefined end parses to NaN and is filtered).
 fn iv(started_at: &str, ended_at: &Option<String>) -> Interval {
     Interval {
         started_at: started_at.to_string(),
-        // A missing ended_at parses to NaN in the route → dropped by union; an
-        // empty string fails parse_ms here → dropped by normalize. Same effect.
         ended_at: ended_at.clone().unwrap_or_default(),
     }
 }
