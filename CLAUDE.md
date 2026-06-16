@@ -164,6 +164,7 @@ There are no JS/TS test suites yet. When adding them, place them under `ui/__tes
 | `MERIDIAN_OTLP_ENDPOINT` | (unset → no export) | OpenObserve OTLP/HTTP traces endpoint (loaded from `.env`) |
 | `MERIDIAN_OO_AUTH` | DEPRECATED — ignored by the daemon | OO credentials live in `settings.json` (`oo_email`/`oo_password`, set via dashboard Settings); env var still read by Python services + installer fallback |
 | `MLX_SERVER_URL` | (unset → in-process load) | URL of a running MLX classifier server (eval pipeline) |
+| `MLX_IDLE_EVICT_S` | `120` (secs) | Idle-eviction window for the MLX model. The model holds ~7 GB of Metal unified memory while resident (invisible to `ps`/Activity Monitor — measure with `mx.get_active_memory()`), so the server lazy-loads it on first request and unloads it after this many seconds idle (~3s cold reload). `0` disables eviction (pins the model). Avoid values below ~30s — a TTL shorter than the gap between sessions in a classification burst causes repeated mid-burst evict+reload thrash. See `services/agents/server.py` `_idle_evictor` + `run_task_linker_mlx.py` `maybe_evict_idle`. |
 | `EVAL_DATASET_PATH` | `services/tests/evals/data/generated/goldens_real.json` | Override Goldens file for the eval pipeline |
 | `SESSION_TEXT_CAP` | `2500` (chars) | Per-session OCR/a11y excerpt cap in the classifier prompt. Set to `0` to disable truncation for eval experiments (caller is then responsible for not blowing the model's context window — phi-4 = 16k tokens). |
 
