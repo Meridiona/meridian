@@ -2338,6 +2338,7 @@ name = "meridian-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "libsqlite3-sys",
  "serde",
  "sqlx",
