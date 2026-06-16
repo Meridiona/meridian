@@ -4,12 +4,14 @@
 import { useEffect, useState, useMemo } from 'react'
 import { CATS, CatDot, SectionHead, Card } from '@/components/atoms'
 import type { WeekResponse } from '@/app/api/week/route'
+import { load } from '@/lib/bridge'
 
 export default function WeekView() {
   const [data, setData] = useState<WeekResponse | null>(null)
 
   useEffect(() => {
-    fetch('/api/week').then(r => r.json()).then(setData).catch(() => {})
+    // get_week (Rust) in the Tauri window, /api/week in a browser — same shape.
+    load<WeekResponse>('/api/week', 'get_week').then(setData).catch(() => {})
   }, [])
 
   if (!data) {
