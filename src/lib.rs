@@ -3,11 +3,13 @@
 
 pub mod coding_agent_session_ingest;
 pub mod config;
+pub mod daily_plan;
 pub mod db;
 pub mod etl;
 pub mod health;
 pub mod intelligence;
 pub mod llm_gate;
 pub mod notices;
+pub mod notifications;
 pub mod observability;
 pub mod pm_worklog;

@@ -260,6 +260,24 @@ prompt_permissions() {
     run open "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
     read -r -p "  Press Enter when Microphone is granted (or skip if screenpipe isn't listed yet)… " _
     ok "Microphone acknowledged"
+
+    # Notifications: the tray surfaces desktop toasts (plan nudges, worklog
+    # drafts, faults). macOS HIDES all notifications while the screen is being
+    # shared/recorded unless this is on — and screenpipe records continuously, so
+    # without it every Meridian toast is silently suppressed. There is no API to
+    # set this toggle and no prompt for it, so we can only walk the user there.
+    echo
+    echo "    Meridian's menu-bar tray shows desktop notifications. Because"
+    echo "    screenpipe records the screen, macOS hides notifications during"
+    echo "    screen sharing unless you explicitly allow them."
+    read -r -p "  Press Enter to open the Notifications pane… " _
+    run open "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+    echo "    → Scroll to the bottom and turn ON"
+    echo "      'Allow notifications when mirroring or sharing the display'."
+    echo "    → When 'Meridian Tray' appears in the app list, make sure its"
+    echo "      notifications are allowed (style Banners or Alerts, not None)."
+    read -r -p "  Press Enter when done… " _
+    ok "Notifications acknowledged"
 }
 
 # Check if a11y-helper has accessibility permission granted by reading its log

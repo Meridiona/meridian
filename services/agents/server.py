@@ -73,7 +73,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     evictor: "asyncio.Task | None" = None
     if _mlx._resolve_model_id() == APPLE_INTELLIGENCE_ID:
         log.info("server: Apple Intelligence backend — no MLX model to load")
-    else:
+    elif _mlx._IDLE_EVICT_S > 0:
         # Lazy: the ~7 GB model loads on the first inference and is evicted after
         # MLX_IDLE_EVICT_S of inactivity, so the server idles light (~0.4 GB)
         # instead of pinning ~7 GB of Metal memory for the whole process life.
@@ -82,6 +82,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             _mlx._IDLE_EVICT_S,
         )
         evictor = asyncio.create_task(_idle_evictor(_mlx))
+    else:
+        # Eviction disabled — don't spawn a no-op evictor task just to cancel it.
+        log.info("server: MLX model loads on first request; idle-eviction disabled (MLX_IDLE_EVICT_S=0)")
     try:
         yield
     finally:

@@ -26,6 +26,7 @@ export default function CommandBar({ onClose }: Props) {
 
   const views: CmdItem[] = [
     { kind: 'view', label: 'Go to Today',    route: '/today' },
+    { kind: 'view', label: "Go to Today's plan", route: '/plan' },
     { kind: 'view', label: 'Go to Tasks',    route: '/tasks' },
     { kind: 'view', label: 'Go to Worklogs', route: '/worklogs' },
     { kind: 'view', label: 'Go to Sessions', route: '/sessions' },

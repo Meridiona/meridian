@@ -36,8 +36,33 @@ describe('meridianCandidates', () => {
   })
 })
 
+describe('meridianCandidates in development', () => {
+  // `npm run dev` runs with cwd = <repo>/ui, so the repo root is one level up.
+  const list = meridianCandidates(HOME, 'development', '/work/meridian/ui')
+
+  it('prepends the repo build (target/debug) ahead of the installed binaries', () => {
+    expect(list[0]).toBe('/work/meridian/target/debug/meridian')
+    expect(list.indexOf('/work/meridian/target/debug/meridian')).toBeLessThan(list.indexOf(native))
+  })
+
+  it('keeps a release build as a fallback after debug but before installed', () => {
+    const debug = list.indexOf('/work/meridian/target/debug/meridian')
+    const release = list.indexOf('/work/meridian/target/release/meridian')
+    expect(debug).toBeLessThan(release)
+    expect(release).toBeLessThan(list.indexOf(native))
+  })
+
+  it('still lists the node wrapper last (launchd-parity ordering preserved)', () => {
+    expect(list[list.length - 1]).toBe(nodeWrapper)
+  })
+
+  it('does not prepend repo builds outside development', () => {
+    expect(meridianCandidates(HOME, 'production', '/work/meridian/ui')[0]).toBe(native)
+  })
+})
+
 describe('selectMeridianBinary', () => {
-  const candidates = meridianCandidates(HOME)
+  const candidates = meridianCandidates(HOME, 'production')
 
   it('prefers the native binary when both native and wrapper are executable', () => {
     // Everything executable (the real dev-machine case that masked the bug).

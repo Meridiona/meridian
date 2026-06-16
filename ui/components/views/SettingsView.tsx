@@ -103,6 +103,7 @@ export default function SettingsView() {
   const [classificationStatus, setClassificationStatus] = useState<SaveStatus>('idle')
   const [llmStatus, setLlmStatus] = useState<SaveStatus>('idle')
   const [jiraStatus, setJiraStatus] = useState<SaveStatus>('idle')
+  const [notifStatus, setNotifStatus] = useState<SaveStatus>('idle')
 
   useEffect(() => {
     fetch('/api/settings')
@@ -426,6 +427,49 @@ export default function SettingsView() {
           <Switch checked={settings.jira_update_enabled} onCheckedChange={v => patch({ jira_update_enabled: v })} />
         </FieldRow>
         <SaveButton status={jiraStatus} onClick={() => save({ jira_update_enabled: settings.jira_update_enabled }, setJiraStatus)} />
+      </SectionCard>
+
+      {/* Notifications */}
+      <SectionCard>
+        <SectionHeader>Notifications</SectionHeader>
+        <FieldRow label="Notifications" description="Master switch for desktop toasts and in-app banners. Off silences everything below.">
+          <Switch checked={settings.notifications_enabled} onCheckedChange={v => patch({ notifications_enabled: v })} />
+        </FieldRow>
+        {settings.notifications_enabled && (
+          <>
+            <FieldRow label="Plan your day" description="Morning reminder to confirm today's working set on the Plan page.">
+              <Switch checked={settings.notify_plan_nudge} onCheckedChange={v => patch({ notify_plan_nudge: v })} />
+            </FieldRow>
+            <FieldRow label="Worklog drafts ready" description="When the daily worklog drafts are ready to review and approve.">
+              <Switch checked={settings.notify_worklog_ready} onCheckedChange={v => patch({ notify_worklog_ready: v })} />
+            </FieldRow>
+            <FieldRow label="System faults" description="When a tracker sync or the classifier stack fails (also shown as a banner).">
+              <Switch checked={settings.notify_system_fault} onCheckedChange={v => patch({ notify_system_fault: v })} />
+            </FieldRow>
+            <FieldRow label="Quiet hours" description="Hold back desktop toasts during this window (banners still appear). Wraps past midnight.">
+              <Switch checked={settings.quiet_hours_enabled} onCheckedChange={v => patch({ quiet_hours_enabled: v })} />
+            </FieldRow>
+            {settings.quiet_hours_enabled && (
+              <FieldRow label="Window" description="From → to, local time.">
+                <TextInput type="time" width={110} value={settings.quiet_hours_start} onChange={v => patch({ quiet_hours_start: v })} />
+                <span style={{ fontSize: '11px', color: 'var(--ink-3)' }}>→</span>
+                <TextInput type="time" width={110} value={settings.quiet_hours_end} onChange={v => patch({ quiet_hours_end: v })} />
+              </FieldRow>
+            )}
+          </>
+        )}
+        <SaveButton
+          status={notifStatus}
+          onClick={() => save({
+            notifications_enabled: settings.notifications_enabled,
+            notify_plan_nudge: settings.notify_plan_nudge,
+            notify_worklog_ready: settings.notify_worklog_ready,
+            notify_system_fault: settings.notify_system_fault,
+            quiet_hours_enabled: settings.quiet_hours_enabled,
+            quiet_hours_start: settings.quiet_hours_start,
+            quiet_hours_end: settings.quiet_hours_end,
+          }, setNotifStatus)}
+        />
       </SectionCard>
     </div>
   )

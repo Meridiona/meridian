@@ -540,6 +540,21 @@ if [[ "${SKIP_PERMISSIONS}" -eq 0 ]]; then
     echo "      ${HOME}/.meridian/bin/meridian-a11y-helper"
     echo "  Without the a11y helper, Electron apps (Claude, Codex, Slack, …) stay invisible to capture."
     read -r -p "  Press Enter once all are granted… " _ || true
+
+    # Notifications: the tray surfaces desktop toasts (plan nudges, worklog
+    # drafts, faults). macOS hides ALL notifications while the screen is being
+    # recorded/shared unless this is on — and screenpipe records continuously, so
+    # without it every Meridian toast is silently suppressed. No API/prompt exists
+    # for this toggle, so we can only walk the user to it.
+    echo "→ Meridian's tray shows desktop notifications. Because screenpipe records"
+    echo "  the screen, macOS hides notifications during screen sharing unless allowed."
+    read -r -p "  Press Enter to open Notifications settings… " _ || true
+    open "x-apple.systempreferences:com.apple.Notifications-Settings.extension" 2>/dev/null || true
+    echo "  → Scroll to the bottom and turn ON"
+    echo "    'Allow notifications when mirroring or sharing the display'."
+    echo "  → When 'Meridian Tray' appears, ensure its notifications are allowed"
+    echo "    (style Banners or Alerts, not None)."
+    read -r -p "  Press Enter when done… " _ || true
 fi
 
 # Enable a11y mode in installed VS Code-family editors (idempotent). Without
