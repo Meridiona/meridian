@@ -13,7 +13,7 @@ export const dynamic = 'force-dynamic'
 export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const nid = Number(id)
-  if (!Number.isInteger(nid)) {
+  if (!Number.isInteger(nid) || nid <= 0) {
     return NextResponse.json({ error: 'bad id' }, { status: 400 })
   }
   try {

@@ -20,20 +20,31 @@ const SEVERITY_STYLES: Record<string, { bg: string; border: string; text: string
 export default function NotificationBanner() {
   const [items, setItems] = useState<BannerNotification[]>([])
   const esRef = useRef<EventSource | null>(null)
+  const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
+    let cancelled = false
     function connect() {
+      if (cancelled) return
       const es = new EventSource('/api/notifications/stream')
       esRef.current = es
       es.onmessage = (e) => {
         try { setItems(JSON.parse(e.data) as BannerNotification[]) } catch { /* ignore */ }
       }
       es.onerror = () => {
-        es.close(); esRef.current = null; setTimeout(connect, 5_000)
+        es.close(); esRef.current = null
+        // Reconnect after a backoff, but record the timer so unmount can cancel
+        // it — otherwise it fires connect() after cleanup, leaking an
+        // unclosed EventSource and calling setItems on an unmounted component.
+        retryRef.current = setTimeout(connect, 5_000)
       }
     }
     connect()
-    return () => { esRef.current?.close() }
+    return () => {
+      cancelled = true
+      if (retryRef.current) { clearTimeout(retryRef.current); retryRef.current = null }
+      esRef.current?.close()
+    }
   }, [])
 
   async function dismiss(id: number) {

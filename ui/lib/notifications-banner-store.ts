@@ -69,6 +69,13 @@ export function subscribe(ctrl: Controller): void {
 
 export function unsubscribe(ctrl: Controller): void {
   controllers().delete(ctrl)
+  // Stop the shared poll once nobody is listening — otherwise the 30s interval
+  // lives on globalThis forever (broadcast() early-returns, so it's a no-op
+  // timer, but a needless one). subscribe() re-arms it via ensureInterval().
+  if (controllers().size === 0 && g._meridianNotifInterval != null) {
+    clearInterval(g._meridianNotifInterval)
+    g._meridianNotifInterval = undefined
+  }
 }
 
 /** Force an immediate re-read + broadcast — call after a dismiss write. */

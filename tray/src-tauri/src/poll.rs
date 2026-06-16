@@ -323,6 +323,11 @@ fn update_tray_icon(app: &tauri::AppHandle, state: &Arc<Mutex<AppState>>) {
 }
 
 fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
+    // v1: the native macOS toast shows title + body only. Producers populate a
+    // `deep_link` (e.g. /plan, /worklogs) and the in-app banner channel renders
+    // it as an "Open →" link, but click-to-navigate on a native toast needs
+    // Tauri notification actions + a focus/navigate handler — deferred. The two
+    // channels are intentionally asymmetric here; the banner carries the link.
     let _ = app.notification().builder().title(title).body(body).show();
 }
 

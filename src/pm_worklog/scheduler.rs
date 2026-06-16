@@ -251,7 +251,7 @@ async fn run_pass(pool: &SqlitePool, cfg: &PmWorklogConfig, scope: Scope) {
     // tooltip/badge tracks the live count separately.
     if drafted_total > 0 {
         let dedup = format!("worklog.ready:{}", Local::now().format("%Y-%m-%d"));
-        let _ = crate::notifications::enqueue(
+        if let Err(e) = crate::notifications::enqueue(
             pool,
             crate::notifications::NewNotification::event(
                 &dedup,
@@ -261,7 +261,13 @@ async fn run_pass(pool: &SqlitePool, cfg: &PmWorklogConfig, scope: Scope) {
             )
             .link("/worklogs"),
         )
-        .await;
+        .await
+        {
+            // Mirror the plan-nudge site: a swallowed enqueue failure means the
+            // tray/banner stays silent while drafts read "ready" in the dashboard,
+            // with nothing to diagnose. Surface it.
+            tracing::warn!(error = %e, "worklog-ready notification enqueue failed");
+        }
     }
 }
 
