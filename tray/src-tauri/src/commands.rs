@@ -96,3 +96,30 @@ fn uid_str() -> String {
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "501".to_string())
 }
+
+/// Resolve meridian.db: `MERIDIAN_DB` env, else `~/.meridian/meridian.db`.
+/// (Production should reuse `meridian::config` for full .env + `~` handling.)
+fn meridian_db_path() -> String {
+    if let Ok(p) = std::env::var("MERIDIAN_DB") {
+        return p;
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    format!("{}/.meridian/meridian.db", home)
+}
+
+/// SPIKE: read the live active session straight from meridian.db via the
+/// daemon's own query layer (the `meridian` lib crate) — the template for
+/// porting the dashboard's read routes to Rust. Opens WITHOUT migrations (the
+/// daemon owns the schema). NOTE: opens a pool per call for the spike;
+/// production will hold one pooled connection in Tauri managed state.
+#[tauri::command]
+pub async fn get_active() -> Result<Option<meridian::db::meridian::ActiveSession>, String> {
+    let pool = meridian::db::meridian::open_existing(&meridian_db_path())
+        .await
+        .map_err(|e| e.to_string())?;
+    let result = meridian::db::meridian::get_active_session(&pool)
+        .await
+        .map_err(|e| e.to_string());
+    pool.close().await;
+    result
+}

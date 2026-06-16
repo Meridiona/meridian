@@ -2337,6 +2337,7 @@ name = "meridian-tray"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "meridian",
  "reqwest 0.12.28",
  "serde",
  "tauri",

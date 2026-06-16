@@ -117,6 +117,24 @@ pub async fn setup_db(uri: &str) -> anyhow::Result<SqlitePool> {
     Ok(pool)
 }
 
+/// Open an EXISTING meridian.db WITHOUT running migrations or creating the file.
+///
+/// For read consumers (the dashboard / Tauri app) that must not own or mutate
+/// the schema — the daemon owns migrations via [`setup_db`]. A second process
+/// running the migrator would race the daemon. Opens a normal WAL connection so
+/// it reads correctly alongside the daemon's writes; callers issue only SELECTs.
+pub async fn open_existing(uri: &str) -> anyhow::Result<SqlitePool> {
+    let opts = SqliteConnectOptions::from_str(uri)
+        .with_context(|| format!("invalid SQLite URI: {uri}"))?
+        .create_if_missing(false)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
+
+    SqlitePool::connect_with(opts)
+        .await
+        .with_context(|| format!("failed to open existing SQLite at {uri}"))
+}
+
 /// Realign `_sqlx_migrations` checksums with the embedded migration files.
 ///
 /// sqlx records a SHA-384 checksum of every applied migration and refuses to

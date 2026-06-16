@@ -124,6 +124,7 @@ pub fn run() {
             commands::open_worklogs,
             commands::restart_daemon,
             commands::toggle_daemon,
+            commands::get_active,
         ])
         .run(tauri::generate_context!())
         .expect("error running meridian tray");
