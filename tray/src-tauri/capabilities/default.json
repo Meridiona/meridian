@@ -1,9 +1,10 @@
 {
   "identifier": "default",
-  "description": "Main window capability — tray popover",
-  "windows": ["main"],
+  "description": "Tray popover, in-app dashboard, and setup wizard windows",
+  "windows": ["main", "dashboard", "setup"],
   "permissions": [
     "core:default",
+    "core:window:allow-close",
     "positioner:default",
     "notification:default",
     "opener:default"

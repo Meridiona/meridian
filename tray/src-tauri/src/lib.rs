@@ -91,6 +91,9 @@ pub fn run() {
                                 eprintln!("tray: failed to open native dashboard: {e}");
                             }
                         }
+                        "open_setup" => {
+                            open_wizard_window(app);
+                        }
                         "open_worklogs" => {
                             open_in_browser(app, &format!("{}/worklogs", ui_base()));
                         }
@@ -157,6 +160,7 @@ pub fn run() {
             commands::get_active,
             commands::get_today,
             commands::get_week,
+            commands::open_permission_pane,
         ])
         .run(tauri::generate_context!())
         .expect("error running meridian tray");
@@ -186,6 +190,8 @@ pub(crate) fn build_tray_menu<R: Runtime>(
     // browser, no Node server. The fold-into-Tauri end-state.
     let native_item =
         MenuItemBuilder::with_id("open_native", "Open Dashboard (native)").build(app)?;
+    // First-run / re-run onboarding wizard (permissions, model, tracker auth).
+    let setup_item = MenuItemBuilder::with_id("open_setup", "Setup…").build(app)?;
     let worklogs_item = MenuItemBuilder::with_id("open_worklogs", "Review Drafts").build(app)?;
     let restart_item = MenuItemBuilder::with_id("restart_daemon", "Restart Daemon").build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", "Quit Meridian Tray").build(app)?;
@@ -194,6 +200,7 @@ pub(crate) fn build_tray_menu<R: Runtime>(
             &toggle_item,
             &open_item,
             &native_item,
+            &setup_item,
             &worklogs_item,
             &restart_item,
             &quit_item,
@@ -209,6 +216,25 @@ fn ui_base() -> String {
 fn open_in_browser(app: &tauri::AppHandle, url: &str) {
     use tauri_plugin_opener::OpenerExt;
     let _ = app.opener().open_url(url, None::<&str>);
+}
+
+/// Open (or focus) the in-app onboarding wizard window. Loads `wizard.html`
+/// from the bundled frontend; the wizard drives permissions, model status, and
+/// tracker auth entirely through Tauri commands (no Node server).
+fn open_wizard_window(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("setup") {
+        let _ = win.show();
+        let _ = win.set_focus();
+        return;
+    }
+    if let Err(e) = WebviewWindowBuilder::new(app, "setup", WebviewUrl::App("wizard.html".into()))
+        .title("Meridian — Setup")
+        .inner_size(560.0, 660.0)
+        .resizable(false)
+        .build()
+    {
+        eprintln!("tray: failed to open setup wizard: {e}");
+    }
 }
 
 fn uid_str() -> String {

@@ -32,6 +32,26 @@ pub async fn open_worklogs(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Deep-link straight to a macOS privacy pane in System Settings. `pane` is
+/// one of the wizard's known keys; anything else is rejected so the frontend
+/// can't open an arbitrary URL. We always offer this button regardless of
+/// current grant state — the user may need to fix a revoked permission too.
+#[tauri::command]
+pub async fn open_permission_pane(app: tauri::AppHandle, pane: String) -> Result<(), String> {
+    let url = match pane.as_str() {
+        "screen_recording" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        }
+        "accessibility" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        }
+        other => return Err(format!("unknown permission pane: {other}")),
+    };
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn restart_daemon() -> Result<(), String> {
     let uid = uid_str();
