@@ -57,6 +57,11 @@ meridian/
     migrations/
       001_initial.sql    # app_sessions, active_session, etl_runs, etl_cursor
       002_gaps.sql       # gaps table, idle_frame_count columns
+  meridian-core/         # lean shared data layer — used by BOTH the daemon and the Tauri dashboard
+    src/
+      lib.rs             # ActiveSession + open_existing + get_active_session (daemon re-exports these)
+      intervals.rs       # wall-clock interval math (port of ui/lib/intervals.ts)
+      date.rs            # local-day bounds (port of ui/lib/date-utils.ts)
   tests/
     integration_etl.rs   # integration tests — in-memory SQLite, no network
   ui/
@@ -87,6 +92,16 @@ meridian/
     package.json         # npm/Node build config
     create-icons.sh      # icon generation script
 ```
+
+> **Dashboard → Tauri migration (in progress — branch `spike/meridian-core`).** The Next.js dashboard's
+> API routes (`ui/app/api/*`) are being ported to **Rust** so the dashboard can be folded into the Tauri
+> app with **no Node server at runtime**. Shared read queries + types live in **`meridian-core`** as the
+> single source of truth: the daemon **re-exports** them (its code unchanged) and the tray depends on them
+> directly, so neither side reimplements the queries. `tray/src-tauri/src/commands.rs::get_active` is the
+> first ported route; the interval/day-bound math is ported in `meridian-core::{intervals,date}` with golden
+> tests. Frontend stays Next.js (static export). Dev-only `--features otel` on the tray exports its spans to
+> OpenObserve (`service.name = meridian-tray`) — release builds omit it and stay lean. Rationale + full scope:
+> Obsidian vault `Decisions/Dashboard frontend - keep Next in Tauri.md`.
 
 ---
 
