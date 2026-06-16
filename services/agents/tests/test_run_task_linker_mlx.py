@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+import time
 from io import StringIO
 from pathlib import Path
 from typing import Iterator
@@ -1009,6 +1010,58 @@ class TestModelCache:
         with patch.dict(sys.modules, {"outlines": None, "mlx_lm": None}):
             with pytest.raises((ImportError, TypeError)):
                 m._get_model()
+
+
+# ---------------------------------------------------------------------------
+# Idle eviction — model_session() in-flight tracking + maybe_evict_idle()
+# (the model holds ~7 GB while resident; the server unloads it when idle)
+# ---------------------------------------------------------------------------
+
+class TestModelEviction:
+    def test_model_session_loads_and_tracks_in_flight(self):
+        import agents.run_task_linker_mlx as m
+        sentinel = MagicMock(name="model")
+        with patch.object(m, "_get_model", return_value=sentinel):
+            m._in_flight = 0
+            with m.model_session() as model:
+                assert model is sentinel
+                assert m._in_flight == 1          # marked in-flight while in use
+            assert m._in_flight == 0              # released on exit
+
+    def test_evict_noop_when_not_idle_long_enough(self):
+        import agents.run_task_linker_mlx as m
+        m._model_cache["x"] = MagicMock()
+        m._in_flight = 0
+        m._last_used = time.monotonic()           # just used
+        assert m.maybe_evict_idle(idle_s=600) is None
+        assert m.model_resident() is True
+
+    def test_evict_disabled_when_ttl_zero(self):
+        import agents.run_task_linker_mlx as m
+        m._model_cache["x"] = MagicMock()
+        assert m.maybe_evict_idle(idle_s=0) is None
+        assert m.model_resident() is True
+
+    def test_evict_noop_when_in_flight(self):
+        import agents.run_task_linker_mlx as m
+        m._model_cache["x"] = MagicMock()
+        m._in_flight = 1                          # an inference is using the model
+        m._last_used = time.monotonic() - 1000
+        try:
+            assert m.maybe_evict_idle(idle_s=0.001) is None
+            assert m.model_resident() is True     # never freed mid-inference
+        finally:
+            m._in_flight = 0
+
+    def test_evict_clears_cache_when_idle(self):
+        import agents.run_task_linker_mlx as m
+        m._model_cache["x"] = MagicMock()
+        m._in_flight = 0
+        m._last_used = time.monotonic() - 1000    # idle long past the window
+        freed = m.maybe_evict_idle(idle_s=0.001)
+        assert freed is not None                  # eviction happened
+        assert m.model_resident() is False
+        assert m._model_cache == {}
 
 
 # ---------------------------------------------------------------------------
