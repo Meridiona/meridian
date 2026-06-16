@@ -5,6 +5,7 @@ mod integrations;
 mod parents;
 mod poll;
 mod state;
+mod version;
 
 use state::{AppState, HealthStatus};
 use std::sync::{Arc, Mutex};
@@ -172,6 +173,7 @@ pub fn run() {
             commands::get_triage,
             integrations::get_integrations,
             parents::get_ticket_parents,
+            version::get_version,
             commands::open_permission_pane,
         ])
         .run(tauri::generate_context!())

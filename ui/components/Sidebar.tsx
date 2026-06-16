@@ -63,7 +63,8 @@ export default function Sidebar({ onOpenCmd }: Props) {
   }, [])
 
   useEffect(() => {
-    fetch('/api/version').then(r => r.json()).then((d: VersionInfo) => setVer(d)).catch(() => {})
+    // get_version (Rust) in the Tauri window, /api/version in a browser — same shape.
+    loadData<VersionInfo>('/api/version', 'get_version').then(setVer).catch(() => {})
   }, [])
 
   async function runUpdate() {
