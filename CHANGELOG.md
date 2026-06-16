@@ -1,3 +1,15 @@
+## [1.54.1](https://github.com/Meridiona/meridian/compare/v1.54.0...v1.54.1) (2026-06-16)
+
+
+### Bug Fixes
+
+* **mlx:** address code-review findings on idle-evict ([67f7fa1](https://github.com/Meridiona/meridian/commit/67f7fa1434c2555daa365bb0da7269cc881c81af))
+
+
+### Performance Improvements
+
+* **mlx:** idle-evict the classifier model to free ~7 GB when idle ([3f7bbe7](https://github.com/Meridiona/meridian/commit/3f7bbe76d34bf685abd233e37061b51693aab8e1))
+
 # [1.54.0](https://github.com/Meridiona/meridian/compare/v1.53.1...v1.54.0) (2026-06-16)
 
 
