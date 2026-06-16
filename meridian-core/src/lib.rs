@@ -18,6 +18,9 @@ pub use sqlx::SqlitePool;
 /// Wall-clock interval math shared by the dashboard routes (ported from intervals.ts).
 pub mod intervals;
 
+/// Local-day boundary helpers for the dashboard routes (ported from date-utils.ts).
+pub mod date;
+
 /// The single in-progress activity block (the `active_session` row, id = 1).
 /// JSON columns are stored as raw text (`String`), so this needs no chrono/json
 /// sqlx features — keeping the dependency surface minimal.
