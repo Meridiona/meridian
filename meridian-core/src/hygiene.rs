@@ -183,3 +183,65 @@ pub fn parse_issues(reasons_json: Option<&str>, ignored_json: Option<&str>) -> V
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_only_fixable_reasons() {
+        // in_progress / due_soon have no fix → dropped; missing_due_date stays.
+        let reasons = r#"[
+            {"code":"in_progress"},
+            {"code":"due_soon","detail":{"in_days":2}},
+            {"code":"missing_due_date"}
+        ]"#;
+        let issues = parse_issues(Some(reasons), None);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].code, "missing_due_date");
+        assert!(issues[0].fix.is_some());
+    }
+
+    #[test]
+    fn ignored_codes_are_filtered_out() {
+        let reasons = r#"[{"code":"missing_labels"},{"code":"missing_priority"}]"#;
+        let issues = parse_issues(Some(reasons), Some(r#"["missing_labels"]"#));
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].code, "missing_priority");
+    }
+
+    #[test]
+    fn severity_splits_must_fix_from_optional() {
+        let reasons = r#"[{"code":"missing_due_date"},{"code":"missing_labels"}]"#;
+        let issues = parse_issues(Some(reasons), None);
+        let by = |c: &str| issues.iter().find(|i| i.code == c).unwrap();
+        assert_eq!(by("missing_due_date").severity, "must_fix");
+        assert_eq!(by("missing_labels").severity, "optional");
+    }
+
+    #[test]
+    fn thin_description_hint_carries_the_char_count() {
+        let issues = parse_issues(
+            Some(r#"[{"code":"thin_description","detail":{"chars":12}}]"#),
+            None,
+        );
+        assert_eq!(issues[0].hint, "Description is only 12 characters.");
+    }
+
+    #[test]
+    fn fix_shape_matches_the_control_mapping() {
+        let issues = parse_issues(Some(r#"[{"code":"missing_assignee"}]"#), None);
+        let fix = issues[0].fix.as_ref().unwrap();
+        assert_eq!(fix.control, "assign_self");
+        assert_eq!(fix.field, "assignee");
+        assert!(!fix.ai);
+    }
+
+    #[test]
+    fn empty_or_malformed_yields_no_issues() {
+        assert!(parse_issues(None, None).is_empty());
+        assert!(parse_issues(Some(""), None).is_empty());
+        assert!(parse_issues(Some("not json"), None).is_empty());
+        assert!(parse_issues(Some("[]"), None).is_empty());
+    }
+}

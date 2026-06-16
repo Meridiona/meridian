@@ -21,3 +21,6 @@ tracing = "0.1"
 [dev-dependencies]
 # For the #[ignore]d golden-compare smoke test (runs get_today against the real DB).
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# Integration tests build an in-memory schema + seed rows to exercise the
+# readers (sqlx is a regular dep, but integration tests need it in scope too).
+sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls"] }
