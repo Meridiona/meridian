@@ -93,15 +93,21 @@ meridian/
     create-icons.sh      # icon generation script
 ```
 
-> **Dashboard → Tauri migration (in progress — branch `spike/meridian-core`).** The Next.js dashboard's
-> API routes (`ui/app/api/*`) are being ported to **Rust** so the dashboard can be folded into the Tauri
-> app with **no Node server at runtime**. Shared read queries + types live in **`meridian-core`** as the
-> single source of truth: the daemon **re-exports** them (its code unchanged) and the tray depends on them
-> directly, so neither side reimplements the queries. `tray/src-tauri/src/commands.rs::get_active` is the
-> first ported route; the interval/day-bound math is ported in `meridian-core::{intervals,date}` with golden
-> tests. Frontend stays Next.js (static export). Dev-only `--features otel` on the tray exports its spans to
-> OpenObserve (`service.name = meridian-tray`) — release builds omit it and stay lean. Rationale + full scope:
-> Obsidian vault `Decisions/Dashboard frontend - keep Next in Tauri.md`.
+> **Dashboard → Tauri fold (in progress — branch `spike/meridian-core`).** The Next.js dashboard's API
+> routes (`ui/app/api/*`) are being ported to **Rust** so the dashboard folds into the Tauri app with **no
+> Node server at runtime**. **DB-backed reads live in `meridian-core`** as the single source of truth (the
+> daemon **re-exports** them, its code unchanged; the tray depends on them directly); **file/env/process
+> routes are tray commands** (`tray/src-tauri/src/`). Frontend consumers reach Rust via Tauri `invoke`
+> through the dual-path `ui/lib/bridge.ts::load` (falls back to `/api` in a browser until the cutover).
+> **Ported so far:** active, today, week, coding-agents, worklogs, tasks, settings, integrations,
+> triage(+parents). **When porting a route, follow the step-by-step playbook in Coding Conventions →
+> "Porting a dashboard route to Rust"** (doc + tracing + placement + test standards); exemplars:
+> `meridian-core/src/triage.rs`, `tray/src-tauri/src/parents.rs`. The interval/day-bound math is in
+> `meridian-core::{intervals,date}` with golden tests. Frontend stays Next.js; the **export cutover**
+> (delete `/api`, flip `output:'export'`, point `frontendDist` at the export) is the LAST step. Dev-only
+> `--features otel` on the tray exports spans to OpenObserve (`service.name = meridian-tray`) — release
+> builds omit it. Rationale + full scope: Obsidian `Decisions/Dashboard frontend - keep Next in Tauri.md`,
+> `~/.claude/plans/meridian-next-fold.md`.
 
 ---
 
@@ -263,6 +269,18 @@ Read `VISION.md` first.
 - Argument limit: clippy's 7-argument limit applies; group related params into a struct (see `BlockBounds` in `runner.rs`)
 - Avoid `unwrap()` outside tests; use `?` or explicit error handling
 - ETL state machine lives in `runner.rs` — add sub-step helpers inside that module rather than new top-level modules
+
+### Porting a dashboard route to Rust (Next-fold playbook)
+
+The fold replaces every `ui/app/api/*` route with a Rust command the frontend calls over Tauri `invoke`. **This is the standard for the work — follow every step when porting a route.** Exemplars to copy: `meridian-core/src/triage.rs` (DB read) and `tray/src-tauri/src/parents.rs` (shell-out).
+
+1. **Place it by data source.** A **DB-backed read** → a module in `meridian-core/src/` (the lean shared layer; the daemon re-exports it if it needs it too). Reuse `meridian-core::{intervals,date}` — never re-derive time/day math. Anything reading **files / env / a process / external HTTP** (`settings.json`, `.env`, `launchctl`, npm registry, shelling out to `meridian`) → a command/module in `tray/src-tauri/src/`; keep `meridian-core` DB-only.
+2. **Match the route byte-for-byte.** Replicate its shaping exactly: defaults, `null → ''` coercions, truncation, ordering, and graceful missing-table/column detection (`sqlite_master` / `pragma_table_info`). Comment any deliberate divergence (e.g. a `BTreeMap` sorts keys vs the route's insertion order — fine when consumers read by key).
+3. **Thin command wrapper.** A `#[tauri::command]` resolves request-scoped values (today / now / day) and calls the core fn, so the core stays deterministic and testable. Register it in `lib.rs`'s `invoke_handler!`. Every new window label must be added to `capabilities/default.json` or its `invoke`s are silently denied.
+4. **Document it (required).** Module `//!` header with: one-line purpose + which route it ports, a **`# Who calls this`** (the command + the frontend consumer), and a **`# Related`** section linking sibling modules / dependent fns via intra-doc links (`` [`crate::tasks`] ``). Every `pub` fn/struct gets a `///` covering purpose, key params, return, and any non-obvious behaviour carried from the source.
+5. **Trace it (required).** `#[tracing::instrument(skip(pool))]` on **both** the command and the core fn; wrap each query in `.instrument(tracing::debug_span!("<module>.read.<table>"))`; `tracing::debug!(rows = …)` after a query; a `tracing::info!(…)` summary on serve; `tracing::warn!(error = %e, …)` on the command's error path. All of it exports to OpenObserve under the tray `otel` feature / the daemon's `observability::init`.
+6. **Swap the consumer.** Replace `fetch('/api/x')` with `load('/api/x', 'command', args)` from `@/lib/bridge` — dual-path: `invoke` in the Tauri window, `/api` fetch in a plain browser. **Keep the `/api` route** until the export cutover (it serves the browser dashboard meanwhile). Mutations (`POST`/`PATCH`/`DELETE`) stay on `fetch` until their write command is ported.
+7. **Test it.** Pure mappers/parsers → `#[cfg(test)]` unit tests in-module (see `hygiene.rs`). DB readers → an in-memory seeded test in `meridian-core/tests/readers.rs` (single-connection `:memory:` pool, hand-computed rows; place date-bounded rows *relative to* `local_day_bounds(today)` so the test is timezone-independent).
 
 ### TypeScript / Next.js
 
