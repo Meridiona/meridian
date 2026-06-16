@@ -23,6 +23,17 @@ export interface RuntimeSettings {
   llm_budget_pct: number
   // Jira updater
   jira_update_enabled: boolean
+  // Notifications — master switch + per-event-type toggles + quiet hours.
+  // Filtering happens once at the delivery layer (the notification API routes),
+  // never in the producers, so every event flows into the outbox and only the
+  // user's preferences decide whether it surfaces.
+  notifications_enabled: boolean
+  notify_plan_nudge: boolean
+  notify_worklog_ready: boolean
+  notify_system_fault: boolean
+  quiet_hours_enabled: boolean
+  quiet_hours_start: string // 'HH:MM' local time, inclusive
+  quiet_hours_end: string   // 'HH:MM' local time, exclusive
 }
 
 export const SETTINGS_DEFAULTS: RuntimeSettings = {
@@ -41,6 +52,13 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   llm_prefer_local: true,
   llm_budget_pct: 0.5,
   jira_update_enabled: true,
+  notifications_enabled: true,
+  notify_plan_nudge: true,
+  notify_worklog_ready: true,
+  notify_system_fault: true,
+  quiet_hours_enabled: false,
+  quiet_hours_start: '22:00',
+  quiet_hours_end: '08:00',
 }
 
 // repoRoot finds the source-checkout root (nearest ancestor with Cargo.toml).

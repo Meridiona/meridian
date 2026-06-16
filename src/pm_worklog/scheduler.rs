@@ -228,17 +228,45 @@ async fn run_pass(pool: &SqlitePool, cfg: &PmWorklogConfig, scope: Scope) {
             .collect(),
     };
     let min_duration_s = config.min_classification_duration_s;
+    let mut drafted_total = 0u32;
     for day in days {
         match run_driver(pool, cfg, min_duration_s, Some(day)).await {
-            Ok(s) => tracing::info!(
-                day = %day,
-                hours_processed = s.hours_processed,
-                drafted = s.worklogs_drafted,
-                not_ready = s.hours_not_ready,
-                scope = if scope == Scope::Backfill { "backfill" } else { "event" },
-                "pm-worklog driver pass complete"
-            ),
+            Ok(s) => {
+                drafted_total += s.worklogs_drafted;
+                tracing::info!(
+                    day = %day,
+                    hours_processed = s.hours_processed,
+                    drafted = s.worklogs_drafted,
+                    not_ready = s.hours_not_ready,
+                    scope = if scope == Scope::Backfill { "backfill" } else { "event" },
+                    "pm-worklog driver pass complete"
+                )
+            }
             Err(e) => tracing::error!(day = %day, error = %e, "pm-worklog driver pass failed"),
+        }
+    }
+
+    // One "drafts ready" notification per local day — deduped by the outbox so a
+    // pass that drafts hour-by-hour through the day only pings once. The tray
+    // tooltip/badge tracks the live count separately.
+    if drafted_total > 0 {
+        let dedup = format!("worklog.ready:{}", Local::now().format("%Y-%m-%d"));
+        if let Err(e) = crate::notifications::enqueue(
+            pool,
+            crate::notifications::NewNotification::event(
+                &dedup,
+                "worklog.ready",
+                "Worklog drafts ready",
+                "Drafts are ready to review and approve.",
+            )
+            .link("/worklogs"),
+        )
+        .await
+        {
+            // Mirror the plan-nudge site: a swallowed enqueue failure means the
+            // tray/banner stays silent while drafts read "ready" in the dashboard,
+            // with nothing to diagnose. Surface it.
+            tracing::warn!(error = %e, "worklog-ready notification enqueue failed");
         }
     }
 }
