@@ -7,6 +7,7 @@ import { Switch } from '@/components/ui/Switch'
 import { NumberStepper } from '@/components/ui/NumberStepper'
 import { TextInput } from '@/components/ui/TextInput'
 import type { RuntimeSettings } from '@/lib/settings'
+import { load } from '@/lib/bridge'
 
 type SaveStatus = 'idle' | 'saved' | 'error'
 type ReloadStatus = 'idle' | 'saving' | 'installing' | 'reloading' | 'done' | 'error'
@@ -105,9 +106,10 @@ export default function SettingsView() {
   const [jiraStatus, setJiraStatus] = useState<SaveStatus>('idle')
 
   useEffect(() => {
-    fetch('/api/settings')
-      .then(r => r.json())
-      .then((d: RuntimeSettings) => setSettings(d))
+    // get_settings (Rust) in the Tauri window, /api/settings in a browser.
+    // The PUT saves (below) stay on fetch until the write route is ported.
+    load<RuntimeSettings>('/api/settings', 'get_settings')
+      .then(setSettings)
       .catch(() => {})
   }, [])
 

@@ -1,0 +1,121 @@
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+//! Runtime settings (`~/.meridian/settings.json`) — the hot-reloadable subset
+//! of config the dashboard writes and the daemon reads each poll tick. Lives in
+//! meridian-core as the single source of truth: the daemon re-exports this (its
+//! `config::{RuntimeSettings, load_runtime_settings}` are unchanged) and the
+//! Tauri app reads it directly, so neither side reimplements the schema/path.
+
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+/// Settings changeable at runtime by editing `settings.json`. The daemon
+/// re-reads on every poll tick (no restart). `Serialize` is added (the daemon
+/// only needs `Deserialize`) so the dashboard command can return it as JSON.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RuntimeSettings {
+    pub log_level: String,
+    pub classification_enabled: bool,
+    pub min_classification_duration_s: i64,
+    pub classification_timeout_s: u64,
+    pub agent_auto_floor: f64,
+    pub agent_queue_floor: f64,
+    pub llm_prefer_local: bool,
+    pub llm_budget_pct: f64,
+    pub poll_interval_secs: u64,
+    pub jira_update_enabled: bool,
+    // OpenObserve OTLP export — all three must be non-empty for export to
+    // activate. settings.json is the ONLY credential source (MERIDIAN_OO_AUTH is
+    // deprecated/ignored); otlp_endpoint still falls back to MERIDIAN_OTLP_ENDPOINT.
+    pub otlp_enabled: bool,
+    pub otlp_endpoint: Option<String>,
+    pub oo_email: Option<String>,
+    pub oo_password: Option<String>,
+}
+
+impl Default for RuntimeSettings {
+    fn default() -> Self {
+        Self {
+            log_level: "INFO".to_string(),
+            classification_enabled: true,
+            min_classification_duration_s: 10,
+            classification_timeout_s: 120,
+            agent_auto_floor: 0.65,
+            agent_queue_floor: 0.40,
+            llm_prefer_local: true,
+            llm_budget_pct: 0.5,
+            poll_interval_secs: 60,
+            jira_update_enabled: true,
+            // OpenObserve export is opt-in — off until enabled in Settings (the UI
+            // default in ui/lib/settings.ts must match this).
+            otlp_enabled: false,
+            otlp_endpoint: None,
+            oo_email: None,
+            oo_password: None,
+        }
+    }
+}
+
+/// Expand a leading `~/` to `$HOME` (the only tilde form we accept — mirrors the
+/// dashboard's settings.ts). Avoids pulling shellexpand into the lean crate.
+fn expand_tilde(p: &str) -> PathBuf {
+    if let Some(rest) = p.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(p)
+}
+
+/// Resolve `settings.json` — must agree with the dashboard (`ui/lib/settings.ts`)
+/// or "Apply" never reaches the daemon. Resolution order:
+///   1. `MERIDIAN_SETTINGS_PATH` override (tests / non-standard installs)
+///   2. `~/.meridian/settings.json` — canonical home, next to `meridian.db`
+///   3. `<cwd>/settings.json` — legacy fallback, only when the canonical is absent
+///
+/// cwd-relative resolution is avoided for the canonical path because the daemon's
+/// working directory varies by install type (repo root vs `~/.meridian/app`).
+pub fn settings_json_path() -> PathBuf {
+    if let Ok(p) = std::env::var("MERIDIAN_SETTINGS_PATH") {
+        if !p.is_empty() {
+            return expand_tilde(&p);
+        }
+    }
+
+    let canonical = std::env::var("HOME")
+        .ok()
+        .map(|home| PathBuf::from(home).join(".meridian").join("settings.json"));
+
+    if let Some(path) = &canonical {
+        if path.exists() {
+            return path.clone();
+        }
+    }
+
+    let cwd_path = std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("settings.json");
+    if cwd_path.exists() {
+        return cwd_path;
+    }
+
+    // Neither exists yet — default to the canonical path so a first write lands
+    // in the right, install-independent place.
+    canonical.unwrap_or(cwd_path)
+}
+
+/// Load `settings.json`, falling back to defaults if absent or unparseable.
+pub fn load_runtime_settings() -> RuntimeSettings {
+    let path = settings_json_path();
+    match std::fs::read_to_string(&path) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "settings.json parse error — using defaults"
+            );
+            RuntimeSettings::default()
+        }),
+        Err(_) => RuntimeSettings::default(), // file doesn't exist yet — fine
+    }
+}

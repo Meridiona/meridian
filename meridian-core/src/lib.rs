@@ -21,6 +21,9 @@ pub mod intervals;
 /// The `/api/active` dashboard view of the active session (ported from active/route.ts).
 pub mod active;
 
+/// Runtime settings (settings.json) — shared by the daemon (re-exported) and the app.
+pub mod settings;
+
 /// Local-day boundary helpers for the dashboard routes (ported from date-utils.ts).
 pub mod date;
 
