@@ -24,6 +24,9 @@ pub mod active;
 /// Runtime settings (settings.json) — shared by the daemon (re-exported) and the app.
 pub mod settings;
 
+/// The DB half of `/api/integrations` (pm_sync_state errors; ported from integrations/route.ts).
+pub mod integrations;
+
 /// Local-day boundary helpers for the dashboard routes (ported from date-utils.ts).
 pub mod date;
 

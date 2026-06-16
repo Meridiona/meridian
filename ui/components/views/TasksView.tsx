@@ -61,7 +61,8 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
   }
 
   const fetchIntegrations = () => {
-    fetch('/api/integrations').then(r => r.json()).then((d: IntegrationsResponse) => {
+    // get_integrations (Rust) in the Tauri window, /api/integrations in a browser.
+    load<IntegrationsResponse>('/api/integrations', 'get_integrations').then((d) => {
       setIntegrations(d)
     }).catch(() => {})
   }
@@ -938,11 +939,9 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: (typeof TRACKERS)[number]
           stopped = true; clearInterval(id); pollRef.current = null
           setStatus('error'); setError('Timed out — try again'); return
         }
-        const ir = await fetch('/api/integrations').catch(() => null)
+        const data = await load<Record<string, unknown>>('/api/integrations', 'get_integrations').catch(() => null)
         if (stopped) return  // re-check after await — timeout may have fired
-        if (!ir?.ok) return
-        const data = await ir.json()
-        if (stopped) return
+        if (!data) return
         if (data[tracker.id]) {
           stopped = true; clearInterval(id); pollRef.current = null
           setStatus('done')
@@ -1001,9 +1000,8 @@ function TokenSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
   const checkConnection = async () => {
     setChecking(true)
     try {
-      const r = await fetch('/api/integrations')
-      if (r.ok) {
-        const data = await r.json()
+      const data = await load<Record<string, unknown>>('/api/integrations', 'get_integrations')
+      {
         const isConnected = !!data[tracker.id]
         setConnected(isConnected)
         if (isConnected) {

@@ -1,6 +1,7 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 mod commands;
 pub(crate) mod format;
+mod integrations;
 mod poll;
 mod state;
 
@@ -167,6 +168,7 @@ pub fn run() {
             commands::get_worklogs,
             commands::get_tasks,
             commands::get_settings,
+            integrations::get_integrations,
             commands::open_permission_pane,
         ])
         .run(tauri::generate_context!())
