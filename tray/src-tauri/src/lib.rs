@@ -4,13 +4,13 @@ pub(crate) mod format;
 mod poll;
 mod state;
 
-use state::AppState;
+use state::{AppState, HealthStatus};
 use std::sync::{Arc, Mutex};
 use tauri::{
     image::Image,
-    menu::{MenuBuilder, MenuItemBuilder},
+    menu::{Menu, MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
-    Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    Manager, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 
 pub fn run() {
@@ -49,29 +49,12 @@ pub fn run() {
                 .ok();
             app.manage(db_pool);
 
-            let toggle_item =
-                MenuItemBuilder::with_id("toggle_daemon", "Connected ●").build(app)?;
-            let open_item =
-                MenuItemBuilder::with_id("open_dashboard", "Open Dashboard").build(app)?;
-            // Native (in-app) dashboard — renders Today/Week from Rust commands,
-            // no browser, no Node server. The fold-into-Tauri end-state.
-            let native_item =
-                MenuItemBuilder::with_id("open_native", "Open Dashboard (native)").build(app)?;
-            let worklogs_item =
-                MenuItemBuilder::with_id("open_worklogs", "Review Drafts").build(app)?;
-            let restart_item =
-                MenuItemBuilder::with_id("restart_daemon", "Restart Daemon").build(app)?;
-            let quit_item = MenuItemBuilder::with_id("quit", "Quit Meridian Tray").build(app)?;
-            let menu = MenuBuilder::new(app)
-                .items(&[
-                    &toggle_item,
-                    &open_item,
-                    &native_item,
-                    &worklogs_item,
-                    &restart_item,
-                    &quit_item,
-                ])
-                .build()?;
+            // Single source of truth for the tray menu — `build_tray_menu` is the
+            // ONLY place item ids/labels live, so the poll loop's health-driven
+            // rebuild (poll.rs) can't drift out of sync and silently drop items
+            // (it previously clobbered this 6-item menu with a stale 5-item one).
+            // Initial health is Unknown until the first poll resolves it.
+            let menu = build_tray_menu(app.handle(), &HealthStatus::Unknown)?;
 
             let tray_icon_bytes = include_bytes!("../icons/meridiona-mark.png");
             let tray_icon = Image::from_bytes(tray_icon_bytes)?;
@@ -177,6 +160,45 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error running meridian tray");
+}
+
+/// The toggle item's label for a given daemon health. Kept next to the menu
+/// builder so the label and the menu never disagree.
+pub(crate) fn toggle_label(health: &HealthStatus) -> &'static str {
+    match health {
+        HealthStatus::Healthy => "Connected ●",
+        HealthStatus::Unhealthy | HealthStatus::Unknown => "Disconnected ○",
+    }
+}
+
+/// Build the full tray menu. The single definition of the tray's items —
+/// called from `setup()` at startup AND from the poll loop when health flips
+/// (poll.rs::update_toggle_menu). Only the toggle label is health-dependent;
+/// everything else is constant. Adding a menu item here automatically keeps
+/// both call sites in sync.
+pub(crate) fn build_tray_menu<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    health: &HealthStatus,
+) -> tauri::Result<Menu<R>> {
+    let toggle_item = MenuItemBuilder::with_id("toggle_daemon", toggle_label(health)).build(app)?;
+    let open_item = MenuItemBuilder::with_id("open_dashboard", "Open Dashboard").build(app)?;
+    // Native (in-app) dashboard — renders Today/Week from Rust commands, no
+    // browser, no Node server. The fold-into-Tauri end-state.
+    let native_item =
+        MenuItemBuilder::with_id("open_native", "Open Dashboard (native)").build(app)?;
+    let worklogs_item = MenuItemBuilder::with_id("open_worklogs", "Review Drafts").build(app)?;
+    let restart_item = MenuItemBuilder::with_id("restart_daemon", "Restart Daemon").build(app)?;
+    let quit_item = MenuItemBuilder::with_id("quit", "Quit Meridian Tray").build(app)?;
+    MenuBuilder::new(app)
+        .items(&[
+            &toggle_item,
+            &open_item,
+            &native_item,
+            &worklogs_item,
+            &restart_item,
+            &quit_item,
+        ])
+        .build()
 }
 
 fn ui_base() -> String {

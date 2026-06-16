@@ -274,9 +274,6 @@ fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
 }
 
 fn update_toggle_menu(app: &tauri::AppHandle, state: &Arc<Mutex<AppState>>) {
-    use tauri::menu::MenuBuilder;
-    use tauri::menu::MenuItemBuilder;
-
     let (health, tray_id, last_menu_state) = {
         let s = state.lock().unwrap();
         (
@@ -290,42 +287,13 @@ fn update_toggle_menu(app: &tauri::AppHandle, state: &Arc<Mutex<AppState>>) {
         return;
     }
 
-    let label = match &health {
-        HealthStatus::Healthy => "Connected ●",
-        HealthStatus::Unhealthy | HealthStatus::Unknown => "Disconnected ○",
-    };
-
+    // Rebuild via the single source of truth in lib.rs so this health-driven
+    // refresh always carries the full item set (it used to hardcode a 5-item
+    // menu here and silently drop "Open Dashboard (native)").
     if let Some(id) = tray_id {
         if let Some(tray) = app.tray_by_id(&id) {
-            if let Ok(toggle_item) = MenuItemBuilder::with_id("toggle_daemon", label).build(app) {
-                if let Ok(open_item) =
-                    MenuItemBuilder::with_id("open_dashboard", "Open Dashboard").build(app)
-                {
-                    if let Ok(worklogs_item) =
-                        MenuItemBuilder::with_id("open_worklogs", "Review Drafts").build(app)
-                    {
-                        if let Ok(restart_item) =
-                            MenuItemBuilder::with_id("restart_daemon", "Restart Daemon").build(app)
-                        {
-                            if let Ok(quit_item) =
-                                MenuItemBuilder::with_id("quit", "Quit Meridian Tray").build(app)
-                            {
-                                if let Ok(menu) = MenuBuilder::new(app)
-                                    .items(&[
-                                        &toggle_item,
-                                        &open_item,
-                                        &worklogs_item,
-                                        &restart_item,
-                                        &quit_item,
-                                    ])
-                                    .build()
-                                {
-                                    let _ = tray.set_menu(Some(menu));
-                                }
-                            }
-                        }
-                    }
-                }
+            if let Ok(menu) = crate::build_tray_menu(app, &health) {
+                let _ = tray.set_menu(Some(menu));
             }
         }
     }
