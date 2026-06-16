@@ -1,3 +1,10 @@
+# [1.54.0](https://github.com/Meridiona/meridian/compare/v1.53.1...v1.54.0) (2026-06-16)
+
+
+### Features
+
+* land notification system + classifier plan-boost onto main ([#294](https://github.com/Meridiona/meridian/issues/294)) ([d0c5d3f](https://github.com/Meridiona/meridian/commit/d0c5d3fe461a5211961e6756fe0924960c836da9)), closes [#289](https://github.com/Meridiona/meridian/issues/289) [#290](https://github.com/Meridiona/meridian/issues/290) [#288](https://github.com/Meridiona/meridian/issues/288) [#289](https://github.com/Meridiona/meridian/issues/289) [#290](https://github.com/Meridiona/meridian/issues/290)
+
 ## [1.53.1](https://github.com/Meridiona/meridian/compare/v1.53.0...v1.53.1) (2026-06-16)
 
 
