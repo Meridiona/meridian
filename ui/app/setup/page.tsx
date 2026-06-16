@@ -7,28 +7,7 @@
 // Node server. This is the template every folded-in native window follows.
 
 import { useState } from 'react'
-
-// Minimal shape of the global bridge exposed by `withGlobalTauri: true`. Typed
-// (rather than `any`) so the invoke surface stays checked.
-type TauriBridge = {
-  core: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> }
-  window: { getCurrentWindow: () => { close: () => Promise<void> } }
-}
-declare global {
-  interface Window {
-    __TAURI__?: TauriBridge
-  }
-}
-
-function bridge(): TauriBridge | undefined {
-  return typeof window !== 'undefined' ? window.__TAURI__ : undefined
-}
-
-async function invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown> {
-  const t = bridge()
-  if (!t) throw new Error('Open this from the Meridian app — the Tauri bridge is unavailable in a plain browser.')
-  return t.core.invoke(cmd, args)
-}
+import { invoke, tauri } from '@/lib/bridge'
 
 const STEPS = ['Welcome', 'Permissions', 'Model', 'Connect', 'Done'] as const
 
@@ -45,7 +24,7 @@ export default function SetupWizard() {
   const next = () => {
     setErr('')
     if (step < last) setStep(step + 1)
-    else bridge()?.window.getCurrentWindow().close() // Finish — close the wizard window.
+    else tauri()?.window.getCurrentWindow().close() // Finish — close the wizard window.
   }
 
   return (
