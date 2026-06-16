@@ -49,6 +49,26 @@ if [[ ! -d "${REPO_ROOT}/tray/node_modules" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Stop any previous dev run FIRST so re-running this is idempotent. The Rust
+# daemon binds a unix socket (~/.meridian/daemon.sock), NOT a TCP port, and just
+# removes+rebinds it on launch — so a daemon from an earlier run keeps running
+# silently and races the same DB / etl_cursor (you'd accumulate N daemons after
+# N runs, stalling classification). Kill the backend watchers + binaries here.
+# ---------------------------------------------------------------------------
+UI_PORT="${MERIDIAN_UI_PORT:-3939}"
+echo "→ stopping any previous dev run…"
+pkill -f 'cargo-watch.*--bin meridian'  2>/dev/null || true   # daemon file-watcher
+pkill -f 'target/debug/meridian$'       2>/dev/null || true   # daemon binary (not -tray / -server)
+pkill -f 'uvicorn agents.server:app'    2>/dev/null || true   # MLX dev server (uvicorn --reload)
+pkill -f 'tauri dev'                    2>/dev/null || true    # tray file-watcher
+pkill -f 'target/debug/meridian-tray$'  2>/dev/null || true   # tray binary
+# Free the dashboard port if a prior `next dev` still holds it.
+_ui_pids="$(lsof -ti "tcp:${UI_PORT}" 2>/dev/null || true)"
+[[ -n "${_ui_pids}" ]] && kill ${_ui_pids} 2>/dev/null || true
+sleep 1   # let sockets / ports free before the new windows bind them
+echo "  ✓ previous dev run stopped"
+
+# ---------------------------------------------------------------------------
 # Launch each service in its own Terminal window
 # ---------------------------------------------------------------------------
 
