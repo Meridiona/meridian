@@ -10,7 +10,12 @@
         "label": "Session ID",
         "query_data": null,
         "value": "",
-        "options": []
+        "options": [],
+        "multiSelect": false,
+        "hideOnDashboard": false,
+        "selectAllValueForMultiSelect": "custom",
+        "customMultiSelectValue": [],
+        "escapeSingleQuotes": false
       },
       {
         "type": "custom",
@@ -23,7 +28,12 @@
           {"label": "task", "value": "task", "selected": false},
           {"label": "overhead", "value": "overhead", "selected": false},
           {"label": "untracked", "value": "untracked", "selected": false}
-        ]
+        ],
+        "multiSelect": false,
+        "hideOnDashboard": false,
+        "selectAllValueForMultiSelect": "custom",
+        "customMultiSelectValue": [],
+        "escapeSingleQuotes": false
       },
       {
         "type": "custom",
@@ -34,11 +44,17 @@
         "options": [
           {"label": "All", "value": "", "selected": true},
           {"label": "Errors only", "value": "true", "selected": false}
-        ]
+        ],
+        "multiSelect": false,
+        "hideOnDashboard": false,
+        "selectAllValueForMultiSelect": "custom",
+        "customMultiSelectValue": [],
+        "escapeSingleQuotes": false
       }
     ],
     "showDynamicFilters": true
   },
+  "defaultDatetimeDuration": {"type": "relative", "relativeTimePeriod": "6h", "startTime": null, "endTime": null},
   "tabs": [
     {
       "tabId": "default",
