@@ -262,7 +262,10 @@ async fn main() -> Result<()> {
                 pool.close().await;
             }
             Err(e) => {
-                eprintln!("tasks-sync: open db: {e}");
+                // `{e:#}` prints the full anyhow source chain (e.g. the sqlx
+                // "migration N was previously applied / missing" cause) instead
+                // of just the top-level "failed to run migrations" context.
+                eprintln!("tasks-sync: open db: {e:#}");
                 std::process::exit(1);
             }
         }
