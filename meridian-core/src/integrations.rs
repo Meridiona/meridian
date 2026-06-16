@@ -6,6 +6,7 @@
 use crate::SqlitePool;
 use anyhow::Context;
 use std::collections::BTreeMap;
+use tracing::Instrument;
 
 /// provider → last_error for providers whose most recent sync failed. Tolerates
 /// a DB without the table yet (daemon not initialised) by returning empty.
@@ -15,7 +16,11 @@ pub async fn sync_errors(pool: &SqlitePool) -> anyhow::Result<BTreeMap<String, S
         "SELECT provider, last_error FROM pm_sync_state WHERE last_error IS NOT NULL",
     )
     .fetch_all(pool)
+    .instrument(tracing::debug_span!("integrations.read.pm_sync_state"))
     .await
     .context("integrations: fetch pm_sync_state")?;
-    Ok(rows.into_iter().collect())
+    tracing::debug!(rows = rows.len(), "integrations.read.pm_sync_state");
+    let map: BTreeMap<String, String> = rows.into_iter().collect();
+    tracing::info!(providers = map.len(), "integrations sync-errors served");
+    Ok(map)
 }

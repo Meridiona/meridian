@@ -13,6 +13,7 @@ use serde::Serialize;
 use serde_json::Value;
 use sqlx::FromRow;
 use std::collections::BTreeMap;
+use tracing::Instrument;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WorklogBullet {
@@ -123,8 +124,10 @@ pub async fn get_worklogs(pool: &SqlitePool, day: &str) -> anyhow::Result<Worklo
     )
     .bind(day)
     .fetch_all(pool)
+    .instrument(tracing::debug_span!("worklogs.read.pm_worklogs"))
     .await
     .context("worklogs: fetch pm_worklogs")?;
+    tracing::debug!(rows = rows.len(), "worklogs.read.pm_worklogs");
 
     let mut counts: BTreeMap<String, i64> = BTreeMap::new();
     let mut items: Vec<WorklogItem> = Vec::with_capacity(rows.len());
@@ -176,7 +179,7 @@ pub async fn get_worklogs(pool: &SqlitePool, day: &str) -> anyhow::Result<Worklo
         });
     }
 
-    tracing::debug!(day, items = items.len(), "worklogs computed");
+    tracing::info!(day, items = items.len(), "worklogs computed");
     Ok(WorklogsResponse {
         day: day.to_string(),
         items,

@@ -11,6 +11,7 @@ use crate::intervals::{union_seconds, Interval};
 use crate::SqlitePool;
 use anyhow::Context;
 use serde::Serialize;
+use tracing::Instrument;
 
 /// The agents we attribute (matches the route's `CODING_AGENTS`).
 const CODING_AGENTS: [&str; 2] = ["Claude Code", "Codex"];
@@ -54,8 +55,10 @@ pub async fn get_coding_agents(
         )
         .bind(date)
         .fetch_all(pool)
+        .instrument(tracing::debug_span!("coding_agents.read.app_sessions"))
         .await
         .context("coding-agents: fetch app_sessions")?;
+    tracing::debug!(rows = rows.len(), "coding_agents.read.app_sessions");
 
     let all: Vec<Interval> = rows.iter().map(|(_, s, e)| iv(s, e)).collect();
 
@@ -77,7 +80,7 @@ pub async fn get_coding_agents(
     agents.sort_by(|a, b| b.total_s.cmp(&a.total_s));
 
     let total_s = union_seconds(&all);
-    tracing::debug!(
+    tracing::info!(
         date,
         total_s,
         agents = agents.len(),

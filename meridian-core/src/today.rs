@@ -214,10 +214,12 @@ pub async fn get_today(
     let cols: std::collections::HashSet<String> =
         sqlx::query_scalar::<_, String>("SELECT name FROM pragma_table_info('app_sessions')")
             .fetch_all(pool)
+            .instrument(tracing::debug_span!("today.read.columns"))
             .await
             .unwrap_or_default()
             .into_iter()
             .collect();
+    tracing::debug!(columns = cols.len(), "today.read.columns");
     let expl_expr = if cols.contains("category_explanation") {
         "s.category_explanation"
     } else {
@@ -247,8 +249,9 @@ pub async fn get_today(
         .bind(&start)
         .bind(&end)
         .fetch_all(pool)
-        .instrument(tracing::info_span!("today.read.app_sessions"))
+        .instrument(tracing::debug_span!("today.read.app_sessions"))
         .await?;
+    tracing::debug!(rows = all_rows.len(), "today.read.app_sessions");
 
     // Foreground sessions become the dashboard's `sessions`; the coding-agent
     // overlay drives the unioned focus/agent figures but is never its own row.
@@ -294,7 +297,7 @@ pub async fn get_today(
     );
     let active: Option<TodayActive> = sqlx::query_as::<_, ActiveRow>(&active_sql)
         .fetch_optional(pool)
-        .instrument(tracing::info_span!("today.read.active_session"))
+        .instrument(tracing::debug_span!("today.read.active_session"))
         .await
         .unwrap_or_else(|e| {
             tracing::warn!(error = %e, "today: active_session read failed, treating as none");
@@ -316,6 +319,7 @@ pub async fn get_today(
                 explain: ar.category_explanation,
             }
         });
+    tracing::debug!(found = active.is_some(), "today.read.active_session");
 
     // Gaps for the day.
     let gaps: Vec<TodayGap> = sqlx::query_as::<_, GapRow>(
@@ -325,7 +329,7 @@ pub async fn get_today(
     .bind(&start)
     .bind(&end)
     .fetch_all(pool)
-    .instrument(tracing::info_span!("today.read.gaps"))
+    .instrument(tracing::debug_span!("today.read.gaps"))
     .await
     .unwrap_or_else(|e| {
         // gaps table may not exist on very old schemas
@@ -341,6 +345,7 @@ pub async fn get_today(
         dur: g.duration_s,
     })
     .collect();
+    tracing::debug!(rows = gaps.len(), "today.read.gaps");
 
     // ── Presence (foreground stream) ──────────────────────────────────────────
     let mut presence_raw: Vec<Interval> = all_rows
@@ -436,12 +441,13 @@ pub async fn get_today(
     let meta_rows =
         sqlx::query_as::<_, TaskMetaRow>(r#"SELECT task_key, title, provider, url FROM pm_tasks"#)
             .fetch_all(pool)
-            .instrument(tracing::info_span!("today.read.pm_tasks"))
+            .instrument(tracing::debug_span!("today.read.pm_tasks"))
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "today: pm_tasks read failed, no task metadata");
                 Vec::new()
             });
+    tracing::debug!(rows = meta_rows.len(), "today.read.pm_tasks");
     for t in meta_rows {
         if !today_keys.contains(&t.task_key) {
             continue;

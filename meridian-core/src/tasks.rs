@@ -18,6 +18,7 @@ use anyhow::Context;
 use serde::Serialize;
 use sqlx::FromRow;
 use std::collections::BTreeMap;
+use tracing::Instrument;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskSummary {
@@ -140,8 +141,10 @@ pub async fn get_tasks(
         "#,
     )
     .fetch_all(pool)
+    .instrument(tracing::debug_span!("tasks.read.pm_tasks"))
     .await
     .context("tasks: fetch pm_tasks")?;
+    tracing::debug!(rows = task_rows.len(), "tasks.read.pm_tasks");
 
     // Board-hygiene verdicts (pm_task_curation, migration 038; ignored_codes 040).
     let hygiene_by_key = load_hygiene(pool, now_iso).await?;
@@ -167,16 +170,27 @@ pub async fn get_tasks(
                 .collect(),
         )
     };
-    let today_presence = merge_intervals(
-        &presence_rows(today_start.clone(), today_end.clone())
-            .await
-            .context("tasks: today presence")?,
+    let today_presence_raw = presence_rows(today_start.clone(), today_end.clone())
+        .instrument(tracing::debug_span!("tasks.read.presence", scope = "today"))
+        .await
+        .context("tasks: today presence")?;
+    tracing::debug!(
+        rows = today_presence_raw.len(),
+        scope = "today",
+        "tasks.read.presence"
     );
-    let week_presence = merge_intervals(
-        &presence_rows(ws.clone(), today_end.clone())
-            .await
-            .context("tasks: week presence")?,
+    let today_presence = merge_intervals(&today_presence_raw);
+
+    let week_presence_raw = presence_rows(ws.clone(), today_end.clone())
+        .instrument(tracing::debug_span!("tasks.read.presence", scope = "week"))
+        .await
+        .context("tasks: week presence")?;
+    tracing::debug!(
+        rows = week_presence_raw.len(),
+        scope = "week",
+        "tasks.read.presence"
     );
+    let week_presence = merge_intervals(&week_presence_raw);
 
     // Task sessions (task_session_type='task', task_key NOT NULL).
     let task_sessions = |start: String, end: String| async move {
@@ -194,11 +208,23 @@ pub async fn get_tasks(
         .await
     };
     let today_sessions = task_sessions(today_start.clone(), today_end.clone())
+        .instrument(tracing::debug_span!("tasks.read.sessions", scope = "today"))
         .await
         .context("tasks: today sessions")?;
+    tracing::debug!(
+        rows = today_sessions.len(),
+        scope = "today",
+        "tasks.read.sessions"
+    );
     let week_sessions = task_sessions(ws.clone(), today_end.clone())
+        .instrument(tracing::debug_span!("tasks.read.sessions", scope = "week"))
         .await
         .context("tasks: week sessions")?;
+    tracing::debug!(
+        rows = week_sessions.len(),
+        scope = "week",
+        "tasks.read.sessions"
+    );
 
     // Group by task_key.
     let mut today_by_task_rows: BTreeMap<String, Vec<SessionRow>> = BTreeMap::new();
@@ -257,8 +283,10 @@ pub async fn get_tasks(
     .bind(&today_start)
     .bind(&today_end)
     .fetch_one(pool)
+    .instrument(tracing::debug_span!("tasks.read.unassigned"))
     .await
     .context("tasks: unassigned sum")?;
+    tracing::debug!(unassigned_s = unassigned.0, "tasks.read.unassigned");
 
     let mut tasks: Vec<TaskSummary> = task_rows
         .into_iter()
@@ -293,7 +321,7 @@ pub async fn get_tasks(
     // Descending by today_s; stable so ties keep the task_key DESC order.
     tasks.sort_by(|a, b| b.today_s.cmp(&a.today_s));
 
-    tracing::debug!(
+    tracing::info!(
         tasks = tasks.len(),
         unassigned_s = unassigned.0,
         "tasks computed"
@@ -317,8 +345,13 @@ async fn load_hygiene(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pm_task_curation'",
     )
     .fetch_optional(pool)
+    .instrument(tracing::debug_span!("tasks.read.curation_exists"))
     .await
     .context("tasks: detect pm_task_curation")?;
+    tracing::debug!(
+        present = has_curation.is_some(),
+        "tasks.read.curation_exists"
+    );
     if has_curation.is_none() {
         return Ok(out);
     }
@@ -327,6 +360,7 @@ async fn load_hygiene(
         "SELECT 1 FROM pragma_table_info('pm_task_curation') WHERE name='ignored_codes'",
     )
     .fetch_optional(pool)
+    .instrument(tracing::debug_span!("tasks.read.ignored_col"))
     .await
     .context("tasks: detect ignored_codes")?;
     let ignored_col = if has_ignored.is_some() {
@@ -350,8 +384,10 @@ async fn load_hygiene(
     );
     let rows: Vec<CurationRow> = sqlx::query_as(&sql)
         .fetch_all(pool)
+        .instrument(tracing::debug_span!("tasks.read.pm_task_curation"))
         .await
         .context("tasks: fetch pm_task_curation")?;
+    tracing::debug!(rows = rows.len(), "tasks.read.pm_task_curation");
 
     for (task_key, bucket, reasons_json, decision, snoozed_until, ignored_codes) in rows {
         // Snoozed-until-future drops off until the snooze lapses.

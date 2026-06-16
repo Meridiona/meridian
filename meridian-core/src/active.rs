@@ -11,6 +11,7 @@ use anyhow::Context;
 use serde::Serialize;
 use serde_json::{json, Value};
 use sqlx::FromRow;
+use tracing::Instrument;
 
 /// Mirrors the route's `ActiveSessionRow` (ui/lib/types.ts).
 #[derive(Debug, Clone, Serialize)]
@@ -60,16 +61,20 @@ pub async fn get_active_view(
         "#,
     )
     .fetch_optional(pool)
+    .instrument(tracing::debug_span!("active.read.active_session"))
     .await
     .context("active: fetch active_session")?;
+    tracing::debug!(found = row.is_some(), "active.read.active_session");
 
     let Some(r) = row else {
+        tracing::debug!("active served (no active session)");
         return Ok(None);
     };
 
     let now_ms = ms(now_iso).unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
     let started_ms = ms(&r.started_at).unwrap_or(now_ms);
     let elapsed_s = (now_ms - started_ms) / 1000;
+    tracing::debug!(app = %r.app_name, elapsed_s, "active served");
 
     // window_titles defaults to [] (route: `JSON.parse(... || '[]')`); the
     // optional blobs stay null when absent/unparseable.

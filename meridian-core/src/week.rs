@@ -73,7 +73,7 @@ pub async fn get_week(pool: &SqlitePool, now_iso: &str) -> anyhow::Result<WeekRe
             .bind(&start)
             .bind(&end)
             .fetch_all(pool)
-            .instrument(tracing::info_span!("week.read.day", day = %date_str))
+            .instrument(tracing::debug_span!("week.read.day", day = %date_str))
             .await?;
 
         let mut cats: BTreeMap<String, f64> = BTreeMap::new();
@@ -91,6 +91,7 @@ pub async fn get_week(pool: &SqlitePool, now_iso: &str) -> anyhow::Result<WeekRe
                 r#"SELECT started_at, category FROM active_session WHERE id = 1"#,
             )
             .fetch_optional(pool)
+            .instrument(tracing::debug_span!("week.read.active"))
             .await
             {
                 Ok(Some((started_at, category))) => {
@@ -107,6 +108,7 @@ pub async fn get_week(pool: &SqlitePool, now_iso: &str) -> anyhow::Result<WeekRe
             }
         }
 
+        tracing::debug!(day = %date_str, total_s, cats = cats.len(), "week.read.day");
         days.push(DaySummary {
             day: dow,
             date: mmdd,
