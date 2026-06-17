@@ -132,13 +132,37 @@ function dueReason(dueDays: number | null): string | null {
 
 interface MetaRow { confirmed_at: string | null; skipped: number }
 
-/** Committed plan rows joined with their live pm_tasks state. Reads pm_tasks
- *  directly (not the scored `available` map) so a committed task that has since
- *  gone terminal still shows its real title / Done state. */
+// Snapshot of a ticket's board fields, captured onto the daily_plan row at
+// write time (see /api/plan POST). Mirrors the pm_tasks columns we display.
+interface TaskSnapshot {
+  title?: string | null; provider?: string | null; url?: string | null
+  status_raw?: string | null; is_terminal?: number
+  due_date?: string | null; description_text?: string | null
+  epic_title?: string | null; parent_key?: string | null
+  priority?: string | null; issue_type?: string | null; story_points?: string | null
+}
+
+function parseSnapshot(s: string | null): TaskSnapshot | null {
+  if (!s) return null
+  try { return JSON.parse(s) as TaskSnapshot } catch { return null }
+}
+
+/** Committed plan rows joined with their LIVE pm_tasks state. A planned ticket
+ *  that has since gone terminal is pruned from pm_tasks (we keep the active board
+ *  clean — see migration 044), so the live join misses. In that case we fall back
+ *  to the snapshot captured on the plan row, and treat an off-board planned task
+ *  as completed (`is_terminal`) — it left the active board, almost always by being
+ *  finished. This keeps a planned-then-done task visible in the day's plan with
+ *  its real title / description / epic instead of collapsing to a bare key. */
 function loadPlan(db: Database.Database, date: string, now: Date): PlanItem[] {
   if (!tableExists(db, 'daily_plan')) return []
+  const hasSnapshot = !!db.prepare(
+    "SELECT 1 FROM pragma_table_info('daily_plan') WHERE name='task_snapshot'",
+  ).get()
   const rows = db.prepare(`
     SELECT p.task_key, p.position, p.origin,
+           ${hasSnapshot ? 'p.task_snapshot' : 'NULL AS task_snapshot'},
+           (t.task_key IS NOT NULL) AS on_board,
            t.title, t.provider, t.url,
            COALESCE(t.status_raw,'') AS status_raw,
            COALESCE(t.is_terminal,0) AS is_terminal,
@@ -150,28 +174,38 @@ function loadPlan(db: Database.Database, date: string, now: Date): PlanItem[] {
     ORDER BY p.position ASC, p.task_key ASC
   `).all(date) as Array<{
     task_key: string; position: number; origin: string
+    task_snapshot: string | null; on_board: number
     title: string | null; provider: string | null; url: string | null
     status_raw: string; is_terminal: number; due_date: string | null
     description_text: string | null; epic_title: string | null; parent_key: string | null
     priority: string | null; issue_type: string | null; story_points: string | null
   }>
-  return rows.map(r => ({
-    task_key: r.task_key,
-    position: r.position,
-    origin: r.origin,
-    title: r.title ?? r.task_key,
-    provider: r.provider ?? 'jira',
-    url: r.url ?? '',
-    status: r.status_raw,
-    is_terminal: !!r.is_terminal,
-    due_date: r.due_date ?? null,
-    due_days: dueDaysFrom(r.due_date ?? null, now),
-    description: excerpt(r.description_text),
-    epic: (r.epic_title?.trim() || r.parent_key?.trim() || null) ?? null,
-    priority: r.priority?.trim() || null,
-    issue_type: r.issue_type?.trim() || '',
-    story_points: r.story_points?.trim() || null,
-  }))
+  return rows.map(r => {
+    const onBoard = !!r.on_board
+    // Live board row wins; otherwise fall back to the captured snapshot.
+    const snap = onBoard ? null : parseSnapshot(r.task_snapshot)
+    const dueDate = (onBoard ? r.due_date : snap?.due_date) ?? null
+    return {
+      task_key: r.task_key,
+      position: r.position,
+      origin: r.origin,
+      title: (onBoard ? r.title : snap?.title) ?? r.task_key,
+      provider: (onBoard ? r.provider : snap?.provider) ?? 'jira',
+      url: (onBoard ? r.url : snap?.url) ?? '',
+      status: (onBoard ? r.status_raw : (snap?.status_raw ?? '')) || '',
+      // Off the active board ⇒ completed for the day's plan (it was pruned, which
+      // for a planned ticket means Done). On board ⇒ trust the live flag.
+      is_terminal: onBoard ? !!r.is_terminal : true,
+      due_date: dueDate,
+      due_days: dueDaysFrom(dueDate, now),
+      description: excerpt(onBoard ? r.description_text : (snap?.description_text ?? null)),
+      epic: ((onBoard ? r.epic_title : snap?.epic_title)?.trim()
+        || (onBoard ? r.parent_key : snap?.parent_key)?.trim() || null) ?? null,
+      priority: (onBoard ? r.priority : snap?.priority)?.trim() || null,
+      issue_type: (onBoard ? r.issue_type : snap?.issue_type)?.trim() || '',
+      story_points: (onBoard ? r.story_points : snap?.story_points)?.trim() || null,
+    }
+  })
 }
 
 function loadMeta(db: Database.Database, date: string): MetaRow {
