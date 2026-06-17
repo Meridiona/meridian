@@ -87,13 +87,13 @@ export async function GET() {
     // double-count the day and inflate a task past your Focus. So we need your
     // full presence (every foreground session, task or not) to tell autonomous
     // from supervised agent time.
-    interface SessionRow { started_at: string; ended_at: string; duration_s: number; claude_session_uuid: string | null; category: string | null; task_key: string }
+    interface SessionRow { started_at: string; ended_at: string; duration_s: number; coding_agent_session_uuid: string | null; category: string | null; task_key: string }
 
     const fgPresenceRows = (start: string, end: string) =>
       (db.prepare(`
-        SELECT s.started_at, s.ended_at, s.duration_s, s.claude_session_uuid, s.category, s.task_key
+        SELECT s.started_at, s.ended_at, s.duration_s, s.coding_agent_session_uuid, s.category, s.task_key
         FROM app_sessions s
-        WHERE s.started_at >= ? AND s.started_at < ? AND s.claude_session_uuid IS NULL
+        WHERE s.started_at >= ? AND s.started_at < ? AND s.coding_agent_session_uuid IS NULL
       `).all(start, end) as SessionRow[])
         .map(r => ({ started_at: r.started_at, ended_at: r.ended_at }))
 
@@ -102,7 +102,7 @@ export async function GET() {
 
     const taskSessions = (start: string, end: string) =>
       db.prepare(`
-        SELECT s.started_at, s.ended_at, s.duration_s, s.claude_session_uuid, s.category, s.task_key
+        SELECT s.started_at, s.ended_at, s.duration_s, s.coding_agent_session_uuid, s.category, s.task_key
         FROM app_sessions s
         WHERE s.started_at >= ? AND s.started_at < ?
           AND s.task_session_type = 'task'
@@ -114,8 +114,8 @@ export async function GET() {
 
     // your time on the task + autonomous agent time (agent intervals outside presence)
     const taskTime = (rows: SessionRow[], presence: Interval[]) => {
-      const fg = rows.filter(r => r.claude_session_uuid == null).map(sessionInterval)
-      const agent = rows.filter(r => r.claude_session_uuid != null).map(sessionInterval)
+      const fg = rows.filter(r => r.coding_agent_session_uuid == null).map(sessionInterval)
+      const agent = rows.filter(r => r.coding_agent_session_uuid != null).map(sessionInterval)
       const your_s = unionSeconds(fg)
       const autonomous_s = Math.max(0, unionSeconds(agent) - intersectSeconds(agent, presence))
       return { your_s, autonomous_s, total_s: your_s + autonomous_s }
@@ -129,7 +129,7 @@ export async function GET() {
     const todayByTask: Record<string, { dur: number; autonomous_s: number; sessions: number; cats: Record<string, number> }> = {}
     for (const [k, rows] of Object.entries(todayRowsByTask)) {
       // Category split is the FOREGROUND share only — proportions for the bar.
-      const fgRows = rows.filter(r => r.claude_session_uuid == null)
+      const fgRows = rows.filter(r => r.coding_agent_session_uuid == null)
       const cats: Record<string, number> = {}
       fgRows.forEach(r => {
         const cat = r.category || 'idle_personal'

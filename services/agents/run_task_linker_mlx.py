@@ -593,7 +593,8 @@ def _fetch_session(
     row = con.execute(
         "SELECT id, app_name, started_at, ended_at, duration_s, session_text,"
         "       session_text_source, window_titles, category, confidence,"
-        "       session_summary, claude_session_uuid,"
+        "       session_summary, coding_agent_session_uuid,"
+        "       segment_started_at, sealed_at, summary_source,"
         "       min_frame_id, max_frame_id, frame_count"
         " FROM app_sessions WHERE id = ?",
         (session_id,),
@@ -829,7 +830,7 @@ def _classify_one(
         # session_text and a concise, high-quality prose summary in
         # session_summary. Classify on the summary, not the multi-MB transcript:
         # cheaper, faster, and it's already the distilled "what was done".
-        if session_raw.get("claude_session_uuid") and (session_raw.get("session_summary") or "").strip():
+        if session_raw.get("coding_agent_session_uuid") and (session_raw.get("session_summary") or "").strip():
             session_text = session_raw["session_summary"]
 
         # db_fetch is the SOLE source of "what the model was given" — recorded
@@ -868,6 +869,16 @@ def _classify_one(
             db_span.set_attribute("min_frame_id", _min_fid)
             db_span.set_attribute("max_frame_id", _max_fid)
             db_span.set_attribute("frame_count", int(session_raw.get("frame_count") or 0))
+        # Coding-agent provenance: which agent conversation + segment this row came
+        # from, when the indexer sealed it, and who wrote the summary the model is
+        # classifying on. Only present on coding-agent rows (Claude Code / Codex /
+        # …); guard on coding_agent_session_uuid so screen-capture sessions stay clean.
+        _ca_uuid = session_raw.get("coding_agent_session_uuid")
+        if _ca_uuid:
+            db_span.set_attribute("coding_agent_session_uuid", str(_ca_uuid))
+            db_span.set_attribute("segment_started_at", str(session_raw.get("segment_started_at") or ""))
+            db_span.set_attribute("sealed_at", str(session_raw.get("sealed_at") or ""))
+            db_span.set_attribute("summary_source", str(session_raw.get("summary_source") or ""))
         db_span.set_attribute("pm_tasks_count", len(pm_tasks))
         db_span.set_attribute("today_focus_count", len(focus_keys))
         db_span.set_attribute("recent_sessions_count", len(recent))

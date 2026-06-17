@@ -13,7 +13,7 @@ what meridian actually produced in app_sessions. Reports three layers:
 Join key is the screenpipe frame_id: labeled blocks carry a frame_range; app_sessions carry
 min_frame_id/max_frame_id. Each app_session is assigned to exactly one labeled block by its
 midpoint frame, so fragments are never double-counted. Only screen-derived sessions
-(claude_session_uuid IS NULL) participate — coding-agent rows are a separate ingest path.
+(coding_agent_session_uuid IS NULL) participate — coding-agent rows are a separate ingest path.
 
 This is the measurement harness for the real-session eval (KAN-141). Re-run it after every
 ETL fix to quantify the delta against a fixed ground-truth label set.
@@ -77,7 +77,7 @@ def _load_sessions(db_path: Path, date: str) -> list[dict]:
                task_confidence, task_method
         FROM app_sessions
         WHERE substr(started_at, 1, 10) = ?
-          AND claude_session_uuid IS NULL
+          AND coding_agent_session_uuid IS NULL
         ORDER BY min_frame_id
         """,
         (date,),

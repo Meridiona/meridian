@@ -308,7 +308,7 @@ mod tests {
 
         let (app, src, method): (String, String, String) = sqlx::query_as(
             "SELECT app_name, session_text_source, task_method FROM app_sessions \
-             WHERE claude_session_uuid = 'u3'",
+             WHERE coding_agent_session_uuid = 'u3'",
         )
         .fetch_one(&pool)
         .await

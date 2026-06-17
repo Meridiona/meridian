@@ -130,7 +130,7 @@ export async function GET() {
         s.started_at,
         s.ended_at,
         s.duration_s,
-        s.claude_session_uuid,
+        s.coding_agent_session_uuid,
         s.category,
         s.confidence,
         s.category_method,
@@ -149,13 +149,13 @@ export async function GET() {
     const allRows = db.prepare(sql).all(start, end) as Array<Record<string, unknown>>
 
     // Two streams share app_sessions: the foreground screen-capture stream
-    // (claude_session_uuid IS NULL) and the coding-agent transcript overlay
-    // (claude_session_uuid IS NOT NULL). The overlay records the same wall-clock
+    // (coding_agent_session_uuid IS NULL) and the coding-agent transcript overlay
+    // (coding_agent_session_uuid IS NOT NULL). The overlay records the same wall-clock
     // time from a second angle, so it must NOT appear as its own foreground
     // session — it drives the unioned focus figure and the coding-agent tile,
     // never the per-task buckets, timeline, or switch count.
-    const rows = allRows.filter(r => r.claude_session_uuid == null)
-    const codingRows = allRows.filter(r => r.claude_session_uuid != null)
+    const rows = allRows.filter(r => r.coding_agent_session_uuid == null)
+    const codingRows = allRows.filter(r => r.coding_agent_session_uuid != null)
 
     const sessions: TodaySession[] = rows.map(r => {
       const titles: Array<{ window_name?: string; title?: string; count: number }> =
@@ -276,9 +276,9 @@ export async function GET() {
         started_at: r.started_at as string,
         ended_at: r.ended_at as string,
         duration_s: (r.duration_s as number) ?? 0,
-        claude_session_uuid: (r.claude_session_uuid as string) ?? null,
+        coding_agent_session_uuid: (r.coding_agent_session_uuid as string) ?? null,
       })
-      if (r.claude_session_uuid == null) (taskFgIntervals[k] ??= []).push(iv)
+      if (r.coding_agent_session_uuid == null) (taskFgIntervals[k] ??= []).push(iv)
       else (taskAgentIntervals[k] ??= []).push(iv)
     })
     const task_totals: Record<string, number> = {}
