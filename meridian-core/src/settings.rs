@@ -92,7 +92,9 @@ fn expand_tilde(p: &str) -> PathBuf {
 pub fn settings_json_path() -> PathBuf {
     if let Ok(p) = std::env::var("MERIDIAN_SETTINGS_PATH") {
         if !p.is_empty() {
-            return expand_tilde(&p);
+            let p = expand_tilde(&p);
+            tracing::debug!(source = "env_override", path = %p.display(), "settings_json_path resolved");
+            return p;
         }
     }
 
@@ -102,6 +104,7 @@ pub fn settings_json_path() -> PathBuf {
 
     if let Some(path) = &canonical {
         if path.exists() {
+            tracing::debug!(source = "canonical", path = %path.display(), "settings_json_path resolved");
             return path.clone();
         }
     }
@@ -110,12 +113,15 @@ pub fn settings_json_path() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."))
         .join("settings.json");
     if cwd_path.exists() {
+        tracing::debug!(source = "cwd_fallback", path = %cwd_path.display(), "settings_json_path resolved");
         return cwd_path;
     }
 
     // Neither exists yet — default to the canonical path so a first write lands
     // in the right, install-independent place.
-    canonical.unwrap_or(cwd_path)
+    let p = canonical.unwrap_or(cwd_path);
+    tracing::debug!(source = "default_not_yet_created", path = %p.display(), "settings_json_path resolved");
+    p
 }
 
 /// Load `settings.json`, falling back to defaults if absent or unparseable.
