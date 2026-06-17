@@ -51,7 +51,7 @@ def _reconstruct_prompt(db_path: str, session_id: int) -> str | None:
     recent = _fetch_recent_sessions(con, session_id)
     pm_tasks = _fetch_pm_tasks(con)
     session_text = raw.get("session_text") or ""
-    if raw.get("claude_session_uuid") and (raw.get("session_summary") or "").strip():
+    if raw.get("coding_agent_session_uuid") and (raw.get("session_summary") or "").strip():
         session_text = raw["session_summary"]
     session = {
         "id": session_id,

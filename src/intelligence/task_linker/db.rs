@@ -34,7 +34,7 @@ pub(super) async fn fetch_pending_classifier_sessions(
 ) -> Result<Vec<i64>> {
     let ids: Vec<i64> = sqlx::query_scalar(
         "SELECT id FROM app_sessions
-         WHERE claude_session_uuid IS NOT NULL
+         WHERE coding_agent_session_uuid IS NOT NULL
            AND session_summary IS NOT NULL
            AND task_method = 'pending_classifier'
          ORDER BY ended_at ASC
@@ -262,7 +262,7 @@ mod tests {
                 app_name, started_at, ended_at, duration_s,
                 window_titles, audio_snippets, signals,
                 min_frame_id, max_frame_id, frame_count, idle_frame_count, etl_run_id,
-                claude_session_uuid, segment_started_at, sealed_at,
+                coding_agent_session_uuid, segment_started_at, sealed_at,
                 session_summary, task_method
              ) VALUES ('Claude Code',
                 '2026-05-20T08:00:00.000000+00:00', '2026-05-20T08:30:00.000000+00:00', 300,
@@ -345,7 +345,7 @@ mod tests {
             "INSERT INTO app_sessions (
                 app_name, started_at, ended_at, duration_s, window_titles, audio_snippets, signals,
                 min_frame_id, max_frame_id, frame_count, idle_frame_count, etl_run_id,
-                claude_session_uuid, segment_started_at, sealed_at, task_method
+                coding_agent_session_uuid, segment_started_at, sealed_at, task_method
              ) VALUES ('Claude Code','2026-05-20T08:00:00.000000+00:00','2026-05-20T08:30:00.000000+00:00',
                 300,'[]','[]','{}',0,0,4,0,1,'u2','2026-05-20T08:00:00.000000+00:00',
                 '2026-05-20T09:00:00.000000+00:00','pending_summariser')",
