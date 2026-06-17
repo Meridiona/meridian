@@ -39,7 +39,7 @@ def _reconstruct_prompt(db_path: str, session_id: int) -> str | None:
     from agents._prompts import build_user_message
     from agents.run_task_linker_mlx import (
         _fetch_pm_tasks,
-        _fetch_recent_sessions,
+        _fetch_recent_ticket_activity,
         _fetch_session,
     )
 
@@ -48,8 +48,10 @@ def _reconstruct_prompt(db_path: str, session_id: int) -> str | None:
     raw = _fetch_session(con, session_id)
     if raw is None:
         return None
-    recent = _fetch_recent_sessions(con, session_id)
     pm_tasks = _fetch_pm_tasks(con)
+    recent = _fetch_recent_ticket_activity(
+        con, raw.get("started_at") or "", [t["task_key"] for t in pm_tasks]
+    )
     session_text = raw.get("session_text") or ""
     if raw.get("coding_agent_session_uuid") and (raw.get("session_summary") or "").strip():
         session_text = raw["session_summary"]
@@ -66,7 +68,9 @@ def _reconstruct_prompt(db_path: str, session_id: int) -> str | None:
         "confidence": raw.get("confidence", 0.0),
         "audio_snippets": [],
     }
-    return build_user_message(session, pm_tasks, recent_sessions=recent)
+    return build_user_message(
+        session, pm_tasks, recent_activity=recent, now_iso=raw.get("started_at")
+    )
 
 
 def _classify(url: str, db_path: str, session_ids: list[int]) -> list[dict]:

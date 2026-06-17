@@ -348,7 +348,7 @@ class TestObservabilityClassifyOne:
     def test_db_fetch_recent_sessions_count(self, db: Path, span_exporter):
         _, spans = self._run(db, span_exporter)
         s = _span_by_name(spans, "db_fetch")
-        assert s.attributes["recent_sessions_count"] == 0  # no prior sessions
+        assert s.attributes["recent_continuity_tickets"] == 0  # no prior tracked work
 
     def test_db_fetch_session_loaded_event_fields(self, db: Path, span_exporter):
         _, spans = self._run(db, span_exporter)
@@ -421,7 +421,7 @@ class TestObservabilityClassifyOne:
         s = _span_by_name(spans, "build_prompt")
         assert s is not None
         assert s.attributes["pm_tasks_count"] == 1
-        assert s.attributes["recent_sessions_count"] == 0
+        assert s.attributes["recent_continuity_tickets"] == 0
         assert s.attributes["prompt_chars"] > 0
 
     def test_build_prompt_assembled_event(self, db: Path, span_exporter):

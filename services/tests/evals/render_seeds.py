@@ -24,7 +24,10 @@ _SERVICES_DIR = Path(__file__).parent.parent.parent
 if str(_SERVICES_DIR) not in sys.path:
     sys.path.insert(0, str(_SERVICES_DIR))
 
+import sqlite3  # noqa: E402
+
 from agents._prompts import build_user_message  # noqa: E402
+from agents.run_task_linker_mlx import _fetch_recent_ticket_activity  # noqa: E402
 
 EVAL_DIR = Path(__file__).parent
 SEED_DIR = EVAL_DIR / "data" / "seeds"
@@ -34,22 +37,36 @@ PERSONA_FILES = {
 }
 
 
-def _project_recent(prior: list[dict]) -> list[dict]:
-    """Project a list of prior seed sessions into the shape build_user_message wants."""
-    out = []
+def _project_recent(
+    prior: list[dict], current_started_at: str, candidate_keys: list[str]
+) -> list[dict]:
+    """Build the per-ticket continuity prior for a seed session, reusing the EXACT
+    production aggregation (`_fetch_recent_ticket_activity`) so rendered goldens
+    match the live prompt. We load the prior scoreable seeds into a throwaway
+    in-memory DB and run the real query against it (windowing, confidence floor,
+    candidate-gating, recency ordering all happen there — one source of truth)."""
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.execute(
+        "CREATE TABLE app_sessions ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " task_key TEXT, started_at TEXT, ended_at TEXT, duration_s REAL,"
+        " task_confidence REAL, task_session_type TEXT)"
+    )
     for s in prior:
         gt = s.get("ground_truth", {})
         tk = gt.get("task_key")
         task_key = tk if tk and tk != "none" else None
-        out.append({
-            "app_name":     s["app_name"],
-            "started_at":   s["started_at"],
-            "duration_s":   s["duration_s"],
-            "task_key":     task_key,
-            "task_routing": "auto" if task_key else None,
-            "category":     s.get("category", ""),
-        })
-    return out
+        if not task_key:
+            continue  # untracked/overhead priors carry no continuity signal
+        con.execute(
+            "INSERT INTO app_sessions"
+            " (task_key, started_at, ended_at, duration_s, task_confidence, task_session_type)"
+            " VALUES (?, ?, ?, ?, 1.0, 'task')",
+            (task_key, s["started_at"], s.get("ended_at") or s["started_at"], s["duration_s"]),
+        )
+    con.commit()
+    return _fetch_recent_ticket_activity(con, current_started_at, candidate_keys)
 
 
 def render(persona: str) -> list[dict]:
@@ -79,8 +96,12 @@ def render(persona: str) -> list[dict]:
         if not gt.get("scoreable"):
             continue
 
-        recent = _project_recent(scoreable_prior[-5:])
-        prompt = build_user_message(s, candidates, recent_sessions=recent)
+        recent = _project_recent(
+            scoreable_prior, s["started_at"], [c["task_key"] for c in candidates]
+        )
+        prompt = build_user_message(
+            s, candidates, recent_activity=recent, now_iso=s["started_at"]
+        )
 
         expected = {
             "task_key":     gt.get("task_key", "none"),

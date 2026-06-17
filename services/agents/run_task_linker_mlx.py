@@ -13,7 +13,7 @@ OTel span hierarchy (when invoked as a script via main()):
             db_fetch
             classifier_input     ← the COMPLETE model input (system + user)
                 system_prompt        — classifier skill + context
-                recent_context       — past-5 sessions
+                recent_context       — 30-min per-ticket continuity prior
                 session_block        — the input session being classified
                 candidate_tickets    — ranked candidate tickets (★ = today)
             llm_inference
@@ -54,15 +54,22 @@ from agents import observability
 from agents._prompts import (
     build_user_message,
     _format_candidates,
-    _format_recent_sessions,
+    _format_continuity,
     _format_session,
+    _CONTINUITY_WINDOW_MIN,
 )
 from agents._system_context import SYSTEM_CONTEXT
 
 log = logging.getLogger("agents.run_task_linker_mlx")
 tracer = observability.setup("meridian-task-linker-mlx")
 
-_CONTEXT_WINDOW = 5
+# Recent-work continuity: only count a prior session toward the continuity block
+# if its task link is confident enough to trust (a shaky 0.5 generic match
+# shouldn't compound into a continuity nudge). 0.7 sits at the top of the SKILL's
+# "generic project-level match" band (0.50-0.65), so this keeps real alignments
+# and drops weak guesses. The window length lives in _prompts._CONTINUITY_WINDOW_MIN
+# (shared with the prompt label). Override via CONTINUITY_MIN_CONFIDENCE.
+_CONTINUITY_MIN_CONFIDENCE = float(os.environ.get("CONTINUITY_MIN_CONFIDENCE", "0.7"))
 _MAX_TOKENS = 1024
 _TEMPERATURE = 0.0  # greedy decoding — deterministic classification
 
@@ -602,23 +609,88 @@ def _fetch_session(
     return dict(row) if row else None
 
 
-def _fetch_recent_sessions(
-    con: _sqlite3.Connection, before_id: int
+def _fetch_recent_ticket_activity(
+    con: _sqlite3.Connection,
+    current_started_at: str,
+    candidate_keys: list[str],
 ) -> list[dict[str, Any]]:
-    # Recent context is a task-continuity signal only: app, time, duration and
-    # which ticket each recent session mapped to. We deliberately do NOT select
-    # session_text/excerpt or category — recent OCR is noise here and a category
-    # tag would feed a prior back into classification. (session_text is still
-    # referenced in WHERE only to skip empty-capture rows.)
+    """The developer's tracked-ticket work in the _CONTINUITY_WINDOW_MIN minutes
+    before the current session, aggregated per ticket → a calibrated continuity
+    prior (NOT a raw session log).
+
+    Returns one entry per ticket worked in the window:
+        {"task_key", "total_s", "sessions", "last_ended_at", "ago_s"}
+    ordered by recency (most-recently-active ticket first). Empty when there is no
+    qualifying recent work — the caller then omits the block entirely rather than
+    asserting a continuity that doesn't exist.
+
+    A session counts only if it is (a) already CLASSIFIED to a ticket
+    (task_session_type='task' — "last classified", never pending/in-flight),
+    (b) confident enough to trust as a prior (task_confidence >=
+    _CONTINUITY_MIN_CONFIDENCE), and (c) mapped to a ticket in the CURRENT
+    candidate set — a prior on a ticket the model can't even pick is pure noise.
+    Windowing is done in Python (fromisoformat) so it's robust to the stored
+    timestamp's timezone/precision; the SQL only does the cheap "strictly before
+    current" + confidence prefilter (consistent ISO format → lexicographic '<' is
+    chronological).
+    """
+    candidates = set(candidate_keys)
+    if not current_started_at or not candidates:
+        return []
+    try:
+        anchor = _dt.datetime.fromisoformat(current_started_at)
+    except (ValueError, TypeError):
+        return []
+    window_start = anchor - _dt.timedelta(minutes=_CONTINUITY_WINDOW_MIN)
     rows = con.execute(
-        "SELECT app_name, started_at, duration_s, task_key, task_routing"
+        "SELECT task_key, started_at, ended_at, duration_s, task_confidence"
         " FROM app_sessions"
-        " WHERE id < ? AND duration_s > 1 AND COALESCE(session_text,'') != ''"
-        " ORDER BY id DESC LIMIT ?",
-        (before_id, _CONTEXT_WINDOW),
+        " WHERE started_at < ?"
+        "   AND task_key IS NOT NULL"
+        "   AND task_session_type = 'task'"
+        "   AND task_confidence >= ?"
+        " ORDER BY started_at DESC LIMIT 200",
+        (current_started_at, _CONTINUITY_MIN_CONFIDENCE),
     ).fetchall()
-    result = [dict(r) for r in rows]
-    result.reverse()
+
+    agg: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        d = dict(r)
+        tk = d.get("task_key")
+        if tk not in candidates:
+            continue
+        try:
+            s_at = _dt.datetime.fromisoformat(d["started_at"])
+        except (ValueError, TypeError):
+            continue
+        if s_at < window_start:
+            continue  # outside the continuity window
+        try:
+            e_at = _dt.datetime.fromisoformat(d.get("ended_at") or d["started_at"])
+        except (ValueError, TypeError):
+            e_at = s_at
+        entry = agg.get(tk)
+        if entry is None:
+            entry = {"task_key": tk, "total_s": 0.0, "sessions": 0, "last_ended": e_at}
+            agg[tk] = entry
+        entry["total_s"] += float(d.get("duration_s") or 0.0)
+        entry["sessions"] += 1
+        if e_at > entry["last_ended"]:
+            entry["last_ended"] = e_at
+
+    result: list[dict[str, Any]] = []
+    for entry in agg.values():
+        ago_s = max(0.0, (anchor - entry["last_ended"]).total_seconds())
+        result.append(
+            {
+                "task_key":      entry["task_key"],
+                "total_s":       entry["total_s"],
+                "sessions":      entry["sessions"],
+                "last_ended_at": entry["last_ended"].isoformat(),
+                "ago_s":         ago_s,
+            }
+        )
+    result.sort(key=lambda e: e["ago_s"])  # most-recently-active ticket first
     return result
 
 
@@ -813,7 +885,7 @@ def _classify_one(
         session_raw = _fetch_session(con, session_id)
         if session_raw is None:
             db_span.set_attribute("pm_tasks_count", 0)
-            db_span.set_attribute("recent_sessions_count", 0)
+            db_span.set_attribute("recent_continuity_tickets", 0)
             db_span.add_event("session_not_found", {"session_id": session_id})
             db_span.set_status(StatusCode.ERROR, f"session {session_id} not found in DB")
             return _error_result(
@@ -823,7 +895,12 @@ def _classify_one(
         plan_date  = _local_day(session_raw.get("started_at") or "")
         focus_keys = _fetch_plan_focus(con, plan_date)
         pm_tasks   = _fetch_pm_tasks(con, focus_keys)
-        recent     = _fetch_recent_sessions(con, session_id)
+        # Continuity prior needs the candidate set up front (it only names tickets
+        # the model can actually pick), so compute candidate_keys before fetching.
+        candidate_keys = [t["task_key"] for t in pm_tasks]
+        recent     = _fetch_recent_ticket_activity(
+            con, session_raw.get("started_at") or "", candidate_keys
+        )
 
         session_text = session_raw.get("session_text") or ""
         # Coding-agent rows (Claude Code / Codex) carry the full transcript in
@@ -839,7 +916,7 @@ def _classify_one(
         # it answers "was the right ticket even offered, and where was it ranked?"
         # without anyone having to read the prompt. Ranked order is preserved
         # (today's-focus keys float to the front in _fetch_pm_tasks).
-        candidate_keys = [t["task_key"] for t in pm_tasks]
+        # candidate_keys computed above (the continuity fetch needs it).
         recent_task_keys = [r.get("task_key") for r in recent if r.get("task_key")]
         # Session identity + the app_sessions row metadata, so a trace is
         # self-contained — you know WHICH session and its key fields (app, window
@@ -881,7 +958,13 @@ def _classify_one(
             db_span.set_attribute("summary_source", str(session_raw.get("summary_source") or ""))
         db_span.set_attribute("pm_tasks_count", len(pm_tasks))
         db_span.set_attribute("today_focus_count", len(focus_keys))
-        db_span.set_attribute("recent_sessions_count", len(recent))
+        # Continuity prior: how many tickets the dev worked in the prior window,
+        # and across how many classified sessions (0/0 when there's no qualifying
+        # recent work → the block is omitted from the prompt).
+        db_span.set_attribute("recent_continuity_tickets", len(recent))
+        db_span.set_attribute(
+            "recent_continuity_sessions", sum(int(r.get("sessions", 0) or 0) for r in recent)
+        )
         db_span.set_attribute("candidate_task_keys", ", ".join(candidate_keys) if candidate_keys else "-")
         db_span.set_attribute("today_focus_keys", ", ".join(focus_keys) if focus_keys else "-")
         # Which candidate-set policy actually applied for this session, so a trace
@@ -920,8 +1003,8 @@ def _classify_one(
     # The single drill-down span for "exactly what the classifier was asked".
     # It carries the COMPLETE input, byte-for-byte as handed to the model:
     #   • system_prompt — full system context + the task-classifier SKILL
-    #   • llm_input     — full user message: the input session block, the recent
-    #                     past-5 sessions, and the ranked candidate tickets
+    #   • llm_input     — full user message: the input session block, the 30-min
+    #                     per-ticket continuity prior, and the ranked candidate tickets
     # Both are captured POST-assembly, so any cap already applied while building
     # the prompt (e.g. SESSION_TEXT_CAP truncating the OCR excerpt) is reflected
     # here EXACTLY as the model saw it — never the pre-cap original. Concatenating
@@ -931,7 +1014,9 @@ def _classify_one(
     # capped at ~8k chars — so on that path the on-span text is the assembled
     # input, not the rewritten one.)
     with tracer.start_as_current_span("classifier_input") as bp_span:
-        user_message = build_user_message(session, pm_tasks, recent_sessions=recent)
+        user_message = build_user_message(
+            session, pm_tasks, recent_activity=recent, now_iso=session.get("started_at")
+        )
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user",   "content": user_message},
@@ -975,7 +1060,8 @@ def _classify_one(
                     part.set_attribute(_k, _v)
 
         _input_part("system_prompt", _SYSTEM_PROMPT)       # classifier skill + context
-        _input_part("recent_context", _format_recent_sessions(recent))   # past-5 sessions
+        _input_part("recent_context",
+                    _format_continuity(recent, session.get("started_at")))   # 30-min continuity prior
         _input_part("session_block", _format_session(session))           # the input session
         _input_part("candidate_tickets", _format_candidates(pm_tasks),   # ranked candidates
                     ticket_count=len(pm_tasks))
@@ -1310,7 +1396,13 @@ def _classify_one_logged_inner(
     session_raw = _fetch_session(con, session_id)
     focus_keys = _fetch_plan_focus(con, _local_day(session_raw.get("started_at") or "")) if session_raw else []
     pm_tasks = _fetch_pm_tasks(con, focus_keys) if session_raw else []
-    recent = _fetch_recent_sessions(con, session_id) if session_raw else []
+    recent = (
+        _fetch_recent_ticket_activity(
+            con, session_raw.get("started_at") or "", [t["task_key"] for t in pm_tasks]
+        )
+        if session_raw
+        else []
+    )
 
     if session_raw:
         user_message = build_user_message(
@@ -1328,7 +1420,8 @@ def _classify_one_logged_inner(
                 "audio_snippets":      [],
             },
             pm_tasks,
-            recent_sessions=recent,
+            recent_activity=recent,
+            now_iso=session_raw.get("started_at", ""),
         )
     else:
         user_message = ""
