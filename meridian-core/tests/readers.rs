@@ -139,3 +139,75 @@ async fn tasks_autonomous_excludes_supervised_agent_time() {
     assert_eq!(x.session_count, 1, "foreground sessions only");
     assert_eq!(x.cats.get("coding").copied(), Some(3600));
 }
+
+/// Regression for the active-session column-guard bug: `app_sessions` HAS
+/// `category_explanation` (post-migration) but `active_session` does NOT. The
+/// old code guarded the active query on `app_sessions`' columns, injecting the
+/// non-existent column → the read failed and the live block silently vanished.
+/// With the fix (always `NULL`), the active session is returned.
+#[tokio::test]
+async fn today_returns_active_session_when_app_sessions_has_explanation_column() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open in-memory db");
+
+    // app_sessions WITH category_explanation (the migrated shape that triggers
+    // the bug) — all columns get_today selects.
+    sqlx::query(
+        r#"
+        CREATE TABLE app_sessions (
+            id INTEGER, app_name TEXT, started_at TEXT, ended_at TEXT, duration_s INTEGER,
+            claude_session_uuid TEXT, category TEXT, confidence REAL, category_method TEXT,
+            category_explanation TEXT, session_summary TEXT, window_titles TEXT, task_key TEXT,
+            task_routing TEXT, task_session_type TEXT, task_method TEXT, task_confidence REAL
+        );
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    // active_session deliberately WITHOUT category_explanation (its real schema).
+    sqlx::query(
+        r#"CREATE TABLE active_session (
+            id INTEGER, app_name TEXT, started_at TEXT, window_titles TEXT,
+            category TEXT, confidence REAL
+        );"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let today = meridian_core::date::today_string();
+    let (start, _end) = meridian_core::date::local_day_bounds(&today);
+    let base = DateTime::parse_from_rfc3339(&start).unwrap();
+    let at = |h: f64| {
+        (base + Duration::milliseconds((h * 3_600_000.0) as i64))
+            .to_rfc3339_opts(SecondsFormat::Millis, true)
+    };
+
+    sqlx::query(
+        "INSERT INTO active_session (id, app_name, started_at, window_titles, category, confidence) \
+         VALUES (1, 'Code', ?, '[]', 'coding', 0.9)",
+    )
+    .bind(at(1.0))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let now = at(2.0); // one hour after the active session started
+    let r = meridian_core::today::get_today(&pool, &today, &now)
+        .await
+        .unwrap();
+
+    let active = r
+        .active
+        .expect("active session must survive the column guard");
+    assert_eq!(active.app, "Code");
+    assert_eq!(active.elapsed_s, 3600);
+    assert!(
+        active.explain.is_none(),
+        "active session never carries an explanation"
+    );
+}

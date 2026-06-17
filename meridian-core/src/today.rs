@@ -131,7 +131,6 @@ struct ActiveRow {
     window_titles: Option<String>,
     category: Option<String>,
     confidence: Option<f64>,
-    category_explanation: Option<String>,
 }
 
 #[derive(FromRow)]
@@ -284,18 +283,17 @@ pub async fn get_today(
         })
         .collect();
 
-    // Active session (single row, id = 1). Same optional-column handling, and
-    // graceful (logged warn on error) so a missing column/table → no active session.
-    let active_expl = if cols.contains("category_explanation") {
-        "category_explanation"
-    } else {
-        "NULL AS category_explanation"
-    };
-    let active_sql = format!(
-        "SELECT app_name, started_at, window_titles, category, confidence, {active_expl} \
-         FROM active_session WHERE id = 1"
-    );
-    let active: Option<TodayActive> = sqlx::query_as::<_, ActiveRow>(&active_sql)
+    // Active session (single row, id = 1). `active_session` has no
+    // category_explanation column (only `app_sessions` does), and the active
+    // block never carries an explanation (cf. active.rs::get_active_view), so we
+    // simply don't select it — `explain` is hardcoded None below. The earlier
+    // `cols` guard is about `app_sessions`, a DIFFERENT table; reusing it here
+    // injected a non-existent column on any post-migration DB, failing the read
+    // 100% of the time and silently dropping the live block (the TS route shares
+    // this latent bug). Graceful (logged warn on error) so a missing table → none.
+    let active_sql = "SELECT app_name, started_at, window_titles, category, confidence \
+                      FROM active_session WHERE id = 1";
+    let active: Option<TodayActive> = sqlx::query_as::<_, ActiveRow>(active_sql)
         .fetch_optional(pool)
         .instrument(tracing::debug_span!("today.read.active_session"))
         .await
@@ -316,7 +314,7 @@ pub async fn get_today(
                 cat: normalize_cat(&ar.category),
                 titles,
                 confidence: ar.confidence.unwrap_or(0.0),
-                explain: ar.category_explanation,
+                explain: None, // active_session never carries an explanation
             }
         });
     tracing::debug!(found = active.is_some(), "today.read.active_session");
