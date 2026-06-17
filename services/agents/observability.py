@@ -3,10 +3,11 @@
 A single `setup(agent_name)` call wires up:
 
   * an OTel `TracerProvider` with `service.name=agent_name`
-  * a `BatchSpanProcessor` exporting OTLP/HTTP-protobuf spans to OpenObserve
-  * a `LoggerProvider` + OTLP-logs handler so every `logging.LogRecord` is also
-    shipped to OpenObserve (correlated to the active span), mirroring the Rust
-    daemon's `OpenTelemetryTracingBridge`
+  * a `BatchSpanProcessor` writing OTLP/HTTP-protobuf spans to the durable
+    telemetry spool (the Rust daemon's shipper drains it to OpenObserve)
+  * a `LoggerProvider` + spool log handler so every `logging.LogRecord` is also
+    spooled (correlated to the active span), mirroring the Rust daemon's
+    `OpenTelemetryTracingBridge`
   * W3C `TraceContextTextMapPropagator` as the global propagator so each
     agent can pick up the Rust daemon's `traceparent` and continue the trace
   * `LoggingInstrumentor` so every `logging.LogRecord` carries
@@ -15,11 +16,11 @@ A single `setup(agent_name)` call wires up:
     under `~/.meridian/logs/{agent_name}.jsonl` plus stderr — both ingestable
     by OpenObserve's log pipeline without further parsing.
 
-Export config (endpoint + Basic-auth credentials) is resolved from the SAME
-`~/.meridian/settings.json` the Rust daemon reads — `otlp_enabled`,
-`otlp_endpoint`, `oo_email`, `oo_password` — so the dashboard Settings page is
-the single source of truth for both processes. The legacy `MERIDIAN_OO_AUTH`
-env credential is deprecated and ignored, matching the daemon.
+Export is gated by the SAME `~/.meridian/settings.json` the Rust daemon reads —
+the `otlp_enabled` toggle — so the dashboard Settings page is the single source
+of truth for both processes. Delivery (endpoint + Basic-auth credentials) is
+owned entirely by the Rust shipper; Python only ever writes to the spool. The
+legacy `MERIDIAN_OO_AUTH` env credential is deprecated and ignored.
 
 `extract_parent_context(traceparent)` is the helper agents use to continue
 a span emitted by another process — typically the Rust ETL or another
@@ -34,11 +35,10 @@ credentials are present), spans and logs are written atomically to
 `~/.meridian/telemetry/pending/<signal>-<unix_micros>-<seq>.otlp` via
 `SpoolSpanExporter` and `SpoolLogExporter`.  The Rust daemon's shipper
 task drains that shared directory to OpenObserve — Python does NOT need
-its own shipper.
+its own shipper, and credential resolution lives there, not here.
 """
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import logging.handlers
@@ -52,10 +52,6 @@ from typing import Optional
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
 from opentelemetry.context import Context
-from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-    OTLPSpanExporter,
-)
 from opentelemetry.instrumentation.logging import LoggingInstrumentor
 from opentelemetry.propagate import set_global_textmap
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
@@ -112,13 +108,36 @@ def _write_spool(signal: str, payload: bytes) -> None:
     tmp_path = pending / f"{filename}.tmp"
 
     try:
-        tmp_path.write_bytes(payload)
+        # fsync the tmp file before the rename so a power loss can't leave a
+        # rename (metadata) durable while the data blocks are still in page
+        # cache — that would surface a truncated .otlp the shipper POSTs (→ a
+        # 400). Mirrors the Rust writer's sync_all() + dir fsync.
+        with open(tmp_path, "wb") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
         tmp_path.rename(final_path)
+        try:
+            dir_fd = os.open(str(pending), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            # Directory fsync is best-effort (not all FS/platforms support it);
+            # the tmp-file fsync already guarantees the data is on disk.
+            pass
     except Exception as exc:
         logging.getLogger(__name__).warning(
             "telemetry spool write failed — payload dropped",
             extra={"signal": signal, "error": str(exc)},
         )
+        # Best-effort cleanup so a failed write never strands a .tmp orphan
+        # (the Rust shipper sweeps these, but don't rely on it).
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 class SpoolSpanExporter:
@@ -175,13 +194,12 @@ class SpoolLogExporter:
 
 
 # ──────────────────────── Config ───────────────────────────────────────────────
-DEFAULT_TRACES_ENDPOINT = "http://localhost:5080/api/default/v1/traces"
-DEFAULT_LOGS_ENDPOINT   = "http://localhost:5080/api/default/v1/logs"
-DEFAULT_LOG_DIR         = Path.home() / ".meridian" / "logs"
-# Single source of truth for OpenObserve export config — the SAME file the Rust
-# daemon reads (see `src/observability.rs::resolve_otlp_target`). Keeps the two
-# processes credential-aligned: the dashboard Settings page writes here and both
-# the daemon and this MLX server pick it up with no env plumbing.
+DEFAULT_LOG_DIR = Path.home() / ".meridian" / "logs"
+# Single source of truth for the export TOGGLE — the SAME file the Rust daemon
+# reads (see `src/observability.rs::resolve_otlp_target`). Delivery credentials
+# live there too: the dashboard Settings page writes here and the Rust shipper
+# picks them up. This process only reads `otlp_enabled` to decide whether to
+# spool — it never delivers, so it needs no endpoint/credentials of its own.
 _SETTINGS_PATH = Path(
     os.environ.get("MERIDIAN_SETTINGS_PATH")
     or (Path.home() / ".meridian" / "settings.json")
@@ -194,18 +212,6 @@ _INITIALISED: dict[str, trace.Tracer] = {}
 _PROCESS_SERVICE_NAME: str | None = None
 # Held so shutdown() can flush log records the same way it flushes spans.
 _LOGGER_PROVIDER: LoggerProvider | None = None
-
-
-# ──────────────────────── OTLP target resolution ───────────────────────────────
-class _OtlpTarget:
-    """Resolved OTLP export target: signal endpoint + Basic-auth header value."""
-
-    __slots__ = ("traces_endpoint", "logs_endpoint", "headers")
-
-    def __init__(self, traces_endpoint: str, logs_endpoint: str, headers: dict[str, str]):
-        self.traces_endpoint = traces_endpoint
-        self.logs_endpoint = logs_endpoint
-        self.headers = headers
 
 
 def _load_settings() -> dict[str, object]:
@@ -222,55 +228,13 @@ def _is_otlp_enabled() -> bool:
     """Return True when the otlp_enabled toggle is on and tracing is not disabled.
 
     Deliberately does NOT check credentials — used to gate the spool exporters
-    so telemetry is captured even when OO credentials are absent (the shipper
-    delivers when they are provided later).
+    so telemetry is captured even when OO credentials are absent (the Rust
+    shipper delivers when they are provided later, and warns once if a user
+    leaves the toggle on with no credentials).
     """
     if os.environ.get("MERIDIAN_TRACING_DISABLED", "").lower() in ("1", "true", "yes"):
         return False
     return bool(_load_settings().get("otlp_enabled"))
-
-
-def _resolve_otlp_target() -> Optional[_OtlpTarget]:
-    """Mirror of the Rust daemon's `resolve_otlp_target()`.
-
-    Returns `None` (→ export disabled) when the toggle is off or credentials
-    are missing. Endpoint precedence: settings.json `otlp_endpoint` → the
-    `MERIDIAN_OTLP_TRACES_ENDPOINT`/`MERIDIAN_OTLP_ENDPOINT` env override →
-    the localhost default. Auth is `base64(oo_email:oo_password)` — settings.json
-    only; the legacy `MERIDIAN_OO_AUTH` env path is deprecated and ignored, the
-    same decision the daemon made.
-    """
-    if os.environ.get("MERIDIAN_TRACING_DISABLED", "").lower() in ("1", "true", "yes"):
-        return None
-
-    settings = _load_settings()
-    if not settings.get("otlp_enabled"):
-        return None
-
-    email = str(settings.get("oo_email") or "")
-    password = str(settings.get("oo_password") or "")
-    if not email or not password:
-        return None
-    # Guard against HTTP header injection / malformed user:password splits —
-    # matches the daemon's same-named check.
-    if any(c in email for c in "\r\n:") or any(c in password for c in "\r\n"):
-        return None
-    auth = base64.standard_b64encode(f"{email}:{password}".encode()).decode()
-
-    configured = str(settings.get("otlp_endpoint") or "").strip()
-    env_endpoint = (
-        os.environ.get("MERIDIAN_OTLP_TRACES_ENDPOINT", "").strip()
-        or os.environ.get("MERIDIAN_OTLP_ENDPOINT", "").strip()
-    )
-    traces_endpoint = configured or env_endpoint or DEFAULT_TRACES_ENDPOINT
-    # OpenObserve serves logs at the sibling `/v1/logs` path; derive it from the
-    # traces endpoint so a custom base host carries over to both signals.
-    if traces_endpoint.endswith("/v1/traces"):
-        logs_endpoint = traces_endpoint[: -len("/v1/traces")] + "/v1/logs"
-    else:
-        logs_endpoint = DEFAULT_LOGS_ENDPOINT
-
-    return _OtlpTarget(traces_endpoint, logs_endpoint, {"Authorization": f"Basic {auth}"})
 
 
 # ──────────────────────── Public API ───────────────────────────────────────────
@@ -357,7 +321,7 @@ def _configure_tracing(agent_name: str) -> None:
 
 
 def _configure_log_export(agent_name: str) -> Optional[logging.Handler]:
-    """Build an OTLP-logs handler so every `log.*` record reaches OpenObserve,
+    """Build a spool-logs handler so every `log.*` record reaches OpenObserve,
     correlated to the active span by trace_id/span_id — the Python counterpart
     of the Rust daemon's `OpenTelemetryTracingBridge`.
 
@@ -441,14 +405,21 @@ def _configure_logging(agent_name: str) -> None:
     root.addHandler(file_h)
     root.addHandler(stdout_h)
     root.addHandler(stderr_h)
-    # Ship every record to OpenObserve via OTLP/HTTP logs too, when export is
-    # configured. The OTel LoggingHandler reads the active span context, so each
+    # Spool every record for OpenObserve via OTLP/HTTP logs too, when export is
+    # enabled. The OTel LoggingHandler reads the active span context, so each
     # OO log row carries the trace_id/span_id that ties it to the classifier's
     # span waterfall. No-op (None) when OTLP is disabled.
-    # The OTLP handler already carries service.name via the OTel Resource, so it
+    # The spool handler already carries service.name via the OTel Resource, so it
     # needs no _ServiceFilter (that would duplicate the attribute on each record).
     otlp_log_h = _configure_log_export(agent_name)
     if otlp_log_h is not None:
+        # Do NOT feed the spool handler's OWN transport/encoder logs back into
+        # the spool: on a hiccup httpx/urllib3/opentelemetry emit WARNING+
+        # records which this root handler would try to spool → more failures (a
+        # log→export→log loop). Drop those from THIS handler only — they still
+        # reach the file/stderr handlers.
+        _otlp_excluded = ("httpx", "httpcore", "urllib3", "grpc", "opentelemetry")
+        otlp_log_h.addFilter(lambda r: not r.name.startswith(_otlp_excluded))
         root.addHandler(otlp_log_h)
     root.setLevel(level)
 

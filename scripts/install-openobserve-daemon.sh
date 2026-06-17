@@ -51,6 +51,7 @@ if [[ -z "${OO_BIN}" ]]; then
     # GitHub release assets were removed for recent versions; binaries now live on
     # the official downloads host. Trace deep-linking (dashboard drilldown into a
     # single trace's spans) needs a modern build, so we pin a current stable.
+    # KEEP IN SYNC: the same version is pinned in install.sh — bump both together.
     _oo_ver="v0.90.3"
     _oo_url="https://downloads.openobserve.ai/releases/openobserve/${_oo_ver}/openobserve-${_oo_ver}-darwin-${_oo_arch}.tar.gz"
     mkdir -p "${HOME}/.openobserve"

@@ -1,6 +1,6 @@
 {
   "title": "Session→Task Classifier — Debug",
-  "description": "Every session-task classification, newest first. Filter by session_id, session_type, or errors-only; copy a row's trace_id and open it in Traces for the full waterfall (db_fetch → classifier_input → llm_inference → classifier_output). classifier_input carries the complete model input as sent (llm_input = the chat-template wire prompt, plus system_prompt / recent_context / session_block / candidate_tickets as child spans); classifier_output carries llm_output (the raw model output) with reasoning / category / dimensions / session_summary as child spans. Backed by the enriched `classify_session` spans on service meridian-task-linker-mlx.",
+  "description": "Every session-task classification, newest first. Filter by session_id, session_type, or errors-only; copy a row's trace_id and open it in Traces for the full waterfall (db_fetch → classifier_input → llm_inference → classifier_output). classifier_input carries the complete model input as sent (llm_input = the chat-template wire prompt, plus system_prompt / recent_context / session_block / candidate_tickets as child spans); classifier_output carries llm_output (the raw model output) with reasoning / category / dimensions / session_summary as child spans. Backed by the enriched `classify_session` spans (service meridian-agent-server-mlx in-process, or meridian-task-linker-mlx from the standalone CLI). Drilldown keys on trace_id alone so it works for both.",
   "version": 5,
   "variables": {
     "list": [
@@ -15,7 +15,7 @@
         "hideOnDashboard": false,
         "selectAllValueForMultiSelect": "custom",
         "customMultiSelectValue": [],
-        "escapeSingleQuotes": false
+        "escapeSingleQuotes": true
       },
       {
         "type": "custom",
@@ -33,7 +33,7 @@
         "hideOnDashboard": false,
         "selectAllValueForMultiSelect": "custom",
         "customMultiSelectValue": [],
-        "escapeSingleQuotes": false
+        "escapeSingleQuotes": true
       },
       {
         "type": "custom",
@@ -49,7 +49,7 @@
         "hideOnDashboard": false,
         "selectAllValueForMultiSelect": "custom",
         "customMultiSelectValue": [],
-        "escapeSingleQuotes": false
+        "escapeSingleQuotes": true
       }
     ],
     "showDynamicFilters": true

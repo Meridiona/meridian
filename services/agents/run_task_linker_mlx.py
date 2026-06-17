@@ -1131,8 +1131,10 @@ def _open_run_log(db_path: str) -> "tuple[Path, Any]":
 
 
 # `method` values that mean the model produced a usable classification.
-# Anything else — mlx_error / apple_fm_error / schema_error / invalid_task_key /
-# session-not-found — is an error path the dashboard surfaces under errors-only.
+# Anything else is an error path the dashboard surfaces under errors-only. The
+# real error `method` values emitted by `_error_result` are `mlx_parse_error`
+# (schema validation / unknown task_key — those names are child-span `outcome`
+# attributes, NOT methods) and `mlx_error` (inference failure / session-not-found).
 _SUCCESS_METHODS = {"mlx_direct", "apple_fm"}
 
 
@@ -1166,6 +1168,35 @@ def _annotate_classification_span(result: dict[str, Any]) -> None:
 
 
 def _classify_one_logged(
+    session_id: int,
+    con: _sqlite3.Connection,
+    run_log: Any,
+) -> dict[str, Any]:
+    """Classify one session, marking the span is_error=true on ANY failure.
+
+    Wraps the inner worker so an UNHANDLED exception (a sqlite read error,
+    malformed window_titles JSON, …) still stamps is_error=true + ERROR status on
+    the enclosing classify_session span before propagating — otherwise the
+    dashboard's errors-only table (which filters is_error='true') silently misses
+    exactly the crashes an operator opens it to find. Handled failures already
+    return _error_result dicts that _annotate_classification_span marks.
+    """
+    try:
+        return _classify_one_logged_inner(session_id, con, run_log)
+    except Exception as exc:  # noqa: BLE001 — annotate, then re-raise unchanged
+        span = trace.get_current_span()
+        if span.is_recording():
+            span.set_attribute("session_id", int(session_id))
+            span.set_attribute("is_error", True)
+            span.set_attribute("method", "mlx_error")
+            span.set_status(StatusCode.ERROR, str(exc)[:300])
+        log.exception(
+            "run_task_linker_mlx: unhandled error classifying session %d", session_id
+        )
+        raise
+
+
+def _classify_one_logged_inner(
     session_id: int,
     con: _sqlite3.Connection,
     run_log: Any,

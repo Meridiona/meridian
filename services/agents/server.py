@@ -258,65 +258,53 @@ async def classify_sessions(req: ClassifySessionsRequest) -> dict:
     fh = _get_classify_log()
     tracer = _app_state.get("tracer") or trace.get_tracer("meridian-agent-server-mlx")
 
-    # Each session becomes its OWN self-contained trace (classify_session +
-    # db_fetch / classifier_input / llm_inference / classifier_output — 5 spans),
-    # NOT nested under the daemon's ETL trace. That's what makes a single-trace
-    # filter (trace_id='<id>') show exactly one classification with zero ETL /
-    # pm_sync noise and no fragile compound query. The causal link to the daemon
-    # run is preserved the correct OTel way — a span Link + a `daemon_trace_id`
-    # attribute — rather than by nesting.
-    _daemon_ctx = observability.extract_parent_context(req.traceparent)
-    _daemon_links: list = []
-    _daemon_trace_id: str | None = None
-    if _daemon_ctx is not None:
-        _sc = trace.get_current_span(_daemon_ctx).get_span_context()
-        if _sc.is_valid:
-            _daemon_links = [trace.Link(_sc)]
-            _daemon_trace_id = format(_sc.trace_id, "032x")
+    parent_ctx = observability.extract_parent_context(req.traceparent)
 
+    # No batch-wrapper span: each session emits a single `classify_session` span
+    # attached directly to the Rust caller's context (via the propagated
+    # traceparent). This keeps the debug trace minimal — one self-describing span
+    # per session with no redundant N=1 wrapper. For N>1, the sessions appear as
+    # sibling classify_session spans under the same daemon trace.
     def _classify_all() -> list[dict]:
-        # Always use the server's own _DB_PATH — ignoring req.meridian_db avoids
-        # path-traversal: the server knows its DB from the environment.
-        con = _sqlite3.connect(str(_DB_PATH), check_same_thread=False)
-        con.row_factory = _sqlite3.Row
+        _tok = _otel_context.attach(parent_ctx) if parent_ctx is not None else None
         try:
-            results: list[dict] = []
-            for sid in req.session_ids:
-                attrs: dict = {"session_id": sid}
-                if _daemon_trace_id:
-                    attrs["daemon_trace_id"] = _daemon_trace_id
-                # context=_otel_context.Context() (empty) forces a fresh root span,
-                # so this classification is its own trace. _classify_one_logged
-                # enriches it (task_key, confidence, is_error, …) and emits the
-                # db_fetch / classifier_input / llm_inference / classifier_output.
-                with tracer.start_as_current_span(
-                    "classify_session",
-                    context=_otel_context.Context(),
-                    links=_daemon_links,
-                    attributes=attrs,
-                ) as cs_span:
-                    result = m._classify_one_logged(sid, con, fh)
-                    # Stamp THIS classification trace's W3C traceparent onto the
-                    # result so Rust can persist it (app_sessions.classify_traceparent)
-                    # and later link a worklog_draft span back to this exact trace —
-                    # the worklog->session->classification backtrack in OpenObserve.
-                    _csc = cs_span.get_span_context()
-                    if _csc.is_valid:
-                        result["classify_traceparent"] = (
-                            f"00-{_csc.trace_id:032x}-{_csc.span_id:016x}-"
-                            f"{int(_csc.trace_flags):02x}"
-                        )
-                log.info(
-                    "classify_sessions: session_id=%d task_key=%s session_type=%s elapsed_s=%.2f",
-                    sid,
-                    result.get("task_key"),
-                    result.get("session_type"),
-                    result.get("elapsed_s", 0.0),
-                )
-                results.append(result)
-            return results
+            # Always use the server's own _DB_PATH — ignoring req.meridian_db avoids
+            # path-traversal: the server knows its DB from the environment.
+            con = _sqlite3.connect(str(_DB_PATH), check_same_thread=False)
+            con.row_factory = _sqlite3.Row
+            try:
+                results: list[dict] = []
+                for sid in req.session_ids:
+                    # _classify_one_logged owns this span's attributes (session_id,
+                    # task_key, confidence, is_error, …) via _annotate_classification_span
+                    # and emits db_fetch / build_prompt / llm_inference / parse_response
+                    # as its children — one source of truth, matching the CLI path.
+                    with tracer.start_as_current_span("classify_session") as cs_span:
+                        result = m._classify_one_logged(sid, con, fh)
+                        # Stamp THIS classification span's W3C traceparent onto the
+                        # result so Rust can persist it (app_sessions.classify_traceparent)
+                        # and later link a worklog_draft span back to this exact span —
+                        # the worklog→session→classification backtrack in OpenObserve.
+                        _csc = cs_span.get_span_context()
+                        if _csc.is_valid:
+                            result["classify_traceparent"] = (
+                                f"00-{_csc.trace_id:032x}-{_csc.span_id:016x}-"
+                                f"{int(_csc.trace_flags):02x}"
+                            )
+                    log.info(
+                        "classify_sessions: session_id=%d task_key=%s session_type=%s elapsed_s=%.2f",
+                        sid,
+                        result.get("task_key"),
+                        result.get("session_type"),
+                        result.get("elapsed_s", 0.0),
+                    )
+                    results.append(result)
+                return results
+            finally:
+                con.close()
         finally:
-            con.close()
+            if _tok is not None:
+                _otel_context.detach(_tok)
 
     results = await run_in_threadpool(_classify_all)
     return {"results": results}
@@ -447,10 +435,22 @@ async def openai_chat_completions(req: _OAIChatRequest) -> dict:
 
     from agents.llm_selector import APPLE_INTELLIGENCE_ID
 
+    # A `json_schema` request cannot be honoured on Apple Foundation Models:
+    # outlines FSM-constrained decoding is incompatible with FM, so the schema
+    # would be silently dropped and a structured-output caller (e.g. agno) would
+    # get free-form text that fails to parse downstream. Reject explicitly with a
+    # 4xx rather than emit unconstrained output that breaks later.
+    if output_type is not None and m._resolve_model_id() == APPLE_INTELLIGENCE_ID:
+        raise HTTPException(
+            status_code=400,
+            detail="response_format=json_schema is not supported on Apple "
+            "Foundation Models (no FSM-constrained decoding available)",
+        )
+
     def _generate() -> str:
         if m._resolve_model_id() == APPLE_INTELLIGENCE_ID:
             # outlines FSM decoding is incompatible with Foundation Models;
-            # Apple FM falls back to free-form (schema hint must be in prompt).
+            # Apple FM falls back to free-form (json_object / no schema only).
             return _infer_apple_fm(msgs, max_tokens)
         with m.model_session() as model:
             return model(
