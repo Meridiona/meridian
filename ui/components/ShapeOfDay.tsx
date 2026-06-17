@@ -25,26 +25,15 @@ export default function ShapeOfDay({ data }: { data: TodayResponse }) {
     const byCat: Record<string, number> = {}
     data.sessions.forEach(s => { byCat[s.cat] = (byCat[s.cat] || 0) + s.dur })
     if (data.active) byCat[data.active.cat] = (byCat[data.active.cat] || 0) + data.active.elapsed_s
+    // Autonomous agent time (coding agent ran while you were away) is extra coding
+    // time not captured in any foreground session — add it to the coding slice.
+    if (data.autonomous_s > 0) byCat['coding'] = (byCat['coding'] || 0) + data.autonomous_s
     const total = Object.values(byCat).reduce((sum, v) => sum + v, 0) || 1
     return Object.entries(byCat).map(([cat, seconds]) => ({
       cat, seconds,
       percentage: (seconds / total) * 100,
       label: CATS[cat]?.label || cat,
     })).sort((a, b) => b.seconds - a.seconds)
-  }, [data])
-
-  const longestFocusBlock = useMemo(() => {
-    const activities = [
-      ...data.sessions.map(s => ({ kind: 'session' as const, startH: toH(s.started_at), dur: s.dur })),
-      ...(data.active ? [{ kind: 'session' as const, startH: toH(data.active.started_at), dur: data.active.elapsed_s }] : []),
-      ...data.gaps.map(g => ({ kind: 'gap' as const, startH: toH(g.started_at), dur: g.dur })),
-    ].sort((a, b) => a.startH - b.startH)
-    let maxBlock = 0, currentBlock = 0
-    activities.forEach(act => {
-      if (act.kind === 'gap' && act.dur > 300) { maxBlock = Math.max(maxBlock, currentBlock); currentBlock = 0 }
-      else if (act.kind === 'session') currentBlock += act.dur
-    })
-    return Math.max(maxBlock, currentBlock)
   }, [data])
 
   const slices = useMemo(() => {
@@ -96,9 +85,9 @@ export default function ShapeOfDay({ data }: { data: TodayResponse }) {
             </svg>
             <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
               <p className="font-mono tnum text-[28px] leading-none" style={{ color: 'var(--ink)' }}>
-                {fmtDur(data.focus_s)}
+                {fmtDur(data.engaged_s || data.focus_s)}
               </p>
-              <p className="text-[10px] uppercase tracking-wide mt-1" style={{ color: 'var(--ink-3)' }}>active</p>
+              <p className="text-[10px] uppercase tracking-wide mt-1" style={{ color: 'var(--ink-3)' }}>engaged</p>
             </div>
           </div>
         </div>
@@ -106,8 +95,9 @@ export default function ShapeOfDay({ data }: { data: TodayResponse }) {
         <div className="flex-1 space-y-4">
           <div className="grid grid-cols-2 gap-3 pb-4 rule-b" style={{ borderBottomColor: 'var(--rule)' }}>
             <div>
-              <p className="text-[10px] uppercase tracking-wide mb-1" style={{ color: 'var(--ink-3)' }}>Longest block</p>
-              <p className="font-mono tnum text-[20px] leading-none" style={{ color: 'var(--success)' }}>{fmtDur(longestFocusBlock)}</p>
+              <p className="text-[10px] uppercase tracking-wide mb-1" style={{ color: 'var(--ink-3)' }}>Top category</p>
+              <p className="font-mono tnum text-[20px] leading-none" style={{ color: 'var(--success)' }}>{fmtDur(catData[0]?.seconds ?? 0)}</p>
+              <p className="text-[11px] mt-1" style={{ color: 'var(--ink-3)' }}>{catData[0]?.label ?? '—'}</p>
             </div>
             <div>
               <p className="text-[10px] uppercase tracking-wide mb-1" style={{ color: 'var(--ink-3)' }}>Idle time</p>
