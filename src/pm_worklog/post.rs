@@ -76,16 +76,63 @@ pub async fn post_approved(
     Ok(summary)
 }
 
+/// Format a stored UTC ISO timestamp as local wall-clock — so the worklog_post
+/// span (and the dashboard) shows lifecycle times in the dev's local zone.
+fn local_ts(iso_utc: &str) -> String {
+    use chrono::{DateTime, Local};
+    DateTime::parse_from_rfc3339(iso_utc)
+        .map(|dt| {
+            dt.with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        })
+        .unwrap_or_else(|_| iso_utc.to_string())
+}
+
+/// Now, as local wall-clock — recorded as `posted_at_local` when a post lands.
+fn local_now() -> String {
+    chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
 /// Post one approved worklog. Returns `Ok(true)` if it was posted, `Ok(false)` if
 /// it was skipped as ineligible (too short / empty / no matching provider — each
 /// recorded), or `Err` on a transient failure the caller should record for retry.
+///
+/// Wrapped in a `worklog_post` span so every post attempt is one trace carrying
+/// the full lifecycle: when drafted, when approved, when posted (all local),
+/// provider, final state, posted id, and time logged.
+#[tracing::instrument(
+    name = "worklog_post",
+    skip_all,
+    fields(
+        task_key = %w.task_key,
+        provider = %w.provider,
+        time_spent_seconds = w.time_spent_seconds,
+        post_attempt_count = w.post_attempt_count,
+        window_start = %w.window_start,
+        state = tracing::field::Empty,
+        posted_worklog_id = tracing::field::Empty,
+        drafted_at_local = tracing::field::Empty,
+        approved_at_local = tracing::field::Empty,
+        posted_at_local = tracing::field::Empty,
+    )
+)]
 async fn post_one(
     pool: &SqlitePool,
     config: &Config,
     cfg: &PmWorklogConfig,
     w: &db::ApprovedWorklog,
 ) -> Result<bool> {
+    let span = tracing::Span::current();
+    if let Some(c) = &w.created_at {
+        span.record("drafted_at_local", local_ts(c).as_str());
+    }
+    if let Some(a) = &w.approved_at {
+        span.record("approved_at_local", local_ts(a).as_str());
+    }
+
     if w.comment.trim().is_empty() {
+        span.record("state", "failed");
         // Nothing to post — the user approved an empty draft. Terminal: editing
         // the worklog re-drafts it, so don't keep retrying.
         db::fail_worklog(pool, w.id, "approved worklog has an empty comment").await?;
@@ -93,6 +140,7 @@ async fn post_one(
     }
     if w.time_spent_seconds < cfg.min_post_seconds {
         // Below the worklog floor — terminal; nothing the sweep can do.
+        span.record("state", "failed");
         db::fail_worklog(
             pool,
             w.id,
@@ -115,6 +163,9 @@ async fn post_one(
             "window already posted — adopting existing worklog id"
         );
         db::mark_worklog_posted(pool, w.id, &worklog_id).await?;
+        span.record("state", "posted");
+        span.record("posted_worklog_id", worklog_id.as_str());
+        span.record("posted_at_local", local_now().as_str());
         return Ok(true);
     }
 
@@ -198,12 +249,16 @@ async fn post_one(
             (r.id, r.label)
         }
         other => {
+            span.record("state", "failed");
             db::fail_worklog(pool, w.id, &format!("unknown provider '{other}'")).await?;
             return Ok(false);
         }
     };
 
     db::mark_worklog_posted(pool, w.id, &worklog_id).await?;
+    span.record("state", "posted");
+    span.record("posted_worklog_id", worklog_id.as_str());
+    span.record("posted_at_local", local_now().as_str());
     tracing::info!(
         pm_worklog_id = w.id, task = %w.task_key, provider = %w.provider,
         worklog_id = %worklog_id, time_spent = %label, "approved worklog posted"
@@ -215,6 +270,7 @@ async fn post_one(
 /// (nothing to post to) and warn once. Returns `Ok(false)` (not posted, not a
 /// hard error — it will post when the provider is configured).
 fn missing_provider(provider: &str, w: &db::ApprovedWorklog) -> Result<bool> {
+    tracing::Span::current().record("state", "waiting");
     tracing::warn!(
         pm_worklog_id = w.id, task = %w.task_key, %provider,
         "approved worklog waiting but its provider is not configured — not posting"

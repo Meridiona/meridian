@@ -192,6 +192,11 @@ pub struct ApprovedWorklog {
     pub comment: String,
     /// Which tracker this worklog posts to ('jira' | 'github' | 'linear').
     pub provider: String,
+    /// Lifecycle timestamps (stored UTC ISO) — surfaced on the `worklog_post`
+    /// span so the dashboard shows when each worklog was drafted / approved.
+    pub created_at: Option<String>,
+    pub approved_at: Option<String>,
+    pub post_attempt_count: i64,
 }
 
 /// All worklogs awaiting a post (`state = 'approved'`), oldest window first.
@@ -200,7 +205,8 @@ pub struct ApprovedWorklog {
 pub async fn fetch_approved_worklogs(pool: &SqlitePool) -> Result<Vec<ApprovedWorklog>> {
     let rows = sqlx::query(
         "SELECT id, task_key, window_start, window_end, time_spent_seconds, payload_json, \
-                COALESCE(provider, 'jira') AS provider \
+                COALESCE(provider, 'jira') AS provider, created_at, approved_at, \
+                COALESCE(post_attempt_count, 0) AS post_attempt_count \
          FROM pm_worklogs WHERE state = 'approved' ORDER BY window_start, task_key",
     )
     .fetch_all(pool)
@@ -221,6 +227,9 @@ pub async fn fetch_approved_worklogs(pool: &SqlitePool) -> Result<Vec<ApprovedWo
             time_spent_seconds: r.try_get("time_spent_seconds").unwrap_or(0),
             comment,
             provider: r.try_get("provider").unwrap_or_else(|_| "jira".to_string()),
+            created_at: r.try_get("created_at").ok(),
+            approved_at: r.try_get("approved_at").ok(),
+            post_attempt_count: r.try_get("post_attempt_count").unwrap_or(0),
         });
     }
     Ok(out)

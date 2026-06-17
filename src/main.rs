@@ -224,12 +224,22 @@ async fn main() -> Result<()> {
             .position(|a| a == "--day")
             .and_then(|i| args.get(i + 1).cloned());
         let cfg = Config::from_env();
+        // Initialise observability so this one-shot emits the SAME worklog_draft
+        // trace the daemon does (lineage child spans + the active span whose
+        // traceparent propagates to the MLX synth, nesting worklog_input/output
+        // inside the worklog trace). Without this the CLI emitted no spans and the
+        // synth landed as an orphan root. Flushed explicitly before exit so the
+        // batch processor's final spans reach the telemetry spool.
+        let obs_guard = observability::init("meridian-rust").ok();
         match setup_db(&cfg.meridian_db_uri()).await {
             Ok(pool) => {
                 meridian::pm_worklog::cli_run(&pool, day.as_deref()).await;
                 pool.close().await;
             }
             Err(e) => eprintln!("pm-worklog: open db: {e}"),
+        }
+        if let Some(g) = obs_guard {
+            g.shutdown().await;
         }
         return Ok(());
     }
@@ -399,6 +409,14 @@ async fn main() -> Result<()> {
         }
         let critical = report.worst() == meridian::health::Severity::Critical;
         std::process::exit(if critical { 1 } else { 0 });
+    }
+
+    // `meridian telemetry <status|export|import>` — telemetry spool management.
+    // Read-only for status/export; import POSTs to OO. No daemon init needed.
+    if std::env::args().nth(1).as_deref() == Some("telemetry") {
+        let args: Vec<String> = std::env::args().collect();
+        meridian::telemetry_spool::cli::run(&args).await;
+        return Ok(());
     }
 
     // 2. Tracing — layered subscriber (stdout + JSONL file + OTLP to OpenObserve).
@@ -624,6 +642,23 @@ async fn main() -> Result<()> {
         });
     }
 
+    // 7f. Telemetry spool shipper: drains ~/.meridian/telemetry/pending/ to
+    //     OpenObserve every MERIDIAN_TELEMETRY_SHIP_INTERVAL_S (default 30s).
+    //     Active only when otlp_enabled is true; noop ticks if no OO target is
+    //     configured (e.g. credentials not yet set).
+    //
+    //     The shipper gets its OWN shutdown channel (not the shared one) so the
+    //     shutdown sequence can flush the OTel exporters — which write the
+    //     daemon's final spans/logs INTO the spool — and drain them BEFORE the
+    //     shipper stops. Stopping it on the shared signal would race the flush and
+    //     strand the shutdown telemetry until the next daemon start.
+    let (shipper_shutdown_tx, shipper_shutdown_rx) = tokio::sync::watch::channel(false);
+    {
+        tokio::spawn(async move {
+            meridian::telemetry_spool::shipper::run_shipper(shipper_shutdown_rx).await;
+        });
+    }
+
     {
         let mut shutdown_rx = shutdown_rx;
         let meridian_linker = meridian.clone();
@@ -842,7 +877,8 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Signal the task linker loop to stop.
+    // Signal the task linker loops to stop. The shipper has its OWN channel and
+    // is intentionally left running for now (see below).
     let _ = shutdown_tx.send(true);
 
     // 9. Shutdown
@@ -851,8 +887,15 @@ async fn main() -> Result<()> {
     screenpipe.close().await;
     meridian.close().await;
 
-    // Flush OTel exporters while the tokio runtime is still alive.
+    // Flush OTel exporters FIRST, while the runtime is alive — this writes the
+    // daemon's final shutdown spans/logs into the spool's pending/ dir...
     obs_guard.shutdown().await;
+    // ...then run one last ship so that final batch reaches OO now rather than on
+    // the next daemon start (the spool would persist it either way; this just
+    // delivers it promptly, and matters when the daemon is being uninstalled)...
+    meridian::telemetry_spool::shipper::drain_once().await;
+    // ...and only now stop the shipper task.
+    let _ = shipper_shutdown_tx.send(true);
 
     Ok(())
 }
