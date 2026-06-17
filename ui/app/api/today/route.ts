@@ -135,6 +135,7 @@ export async function GET() {
         s.confidence,
         s.category_method,
         ${hasExplanation ? 's.category_explanation,' : "NULL AS category_explanation,"}
+        s.task_reasoning,
         ${hasSummary ? 's.session_summary,' : "NULL AS session_summary,"}
         s.window_titles,
         s.task_key,
@@ -172,7 +173,11 @@ export async function GET() {
         dur: r.duration_s as number,
         cat: (['fm_parse_error', 'fm_skip'].includes(r.category as string) ? 'idle_personal' : (r.category as string)) || 'idle_personal',
         titles: titles.length ? titles.map(t => t.window_name ?? t.title ?? '').filter(Boolean) : [topTitle],
-        explain: (r.category_explanation as string) || null,
+        // The classifier no longer emits a separate category_explanation; new
+        // sessions carry their justification in task_reasoning. Prefer the
+        // historical category_explanation when present (older rows), else fall
+        // back to the classification reasoning so the dashboard still shows why.
+        explain: (r.category_explanation as string) || (r.task_reasoning as string) || null,
         routing: (r.routing as string) || null,
         session_type: (r.session_type as string) || null,
         task_key: (r.task_key as string) || null,
