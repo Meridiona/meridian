@@ -119,6 +119,7 @@ Read **[TESTING.md](TESTING.md)** first. The integration tests in `tests/integra
 - **Conventional Commits:** `type(scope): summary` — e.g. `fix(etl): detect sleep gaps that span ETL run boundaries`.
   - Common types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`.
 - **Never push to `main` directly.** Open a PR from your branch.
+- **Do not mention Claude as co-author in commit messages.**
 
 Releases are automated by release-please from the commit history, so accurate types matter.
 

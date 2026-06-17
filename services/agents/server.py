@@ -41,20 +41,58 @@ _DB_PATH = Path(os.environ.get("MERIDIAN_DB", Path.home() / ".meridian/meridian.
 _app_state: dict[str, Any] = {}
 
 
+async def _idle_evictor(mlx_module: Any) -> None:
+    """Background loop: evict the MLX model after it has been idle long enough.
+
+    Runs the (briefly blocking) eviction in a threadpool so it never stalls the
+    event loop, and never raises out — the evictor must outlive transient errors.
+    """
+    import asyncio
+    from fastapi.concurrency import run_in_threadpool
+
+    ttl = mlx_module._IDLE_EVICT_S
+    if ttl <= 0:
+        return
+    interval = max(15.0, ttl / 4.0)   # check ~4× per idle window
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await run_in_threadpool(mlx_module.maybe_evict_idle)
+        except Exception as exc:       # noqa: BLE001 — evictor must never die
+            log.warning("server: idle-evictor error: %s", exc)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    import asyncio
     import datetime
     import agents.run_task_linker_mlx as _mlx
     _app_state["mlx_module"] = _mlx
     _app_state["loaded_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     from agents.llm_selector import APPLE_INTELLIGENCE_ID
+    evictor: "asyncio.Task | None" = None
     if _mlx._resolve_model_id() == APPLE_INTELLIGENCE_ID:
-        log.info("server: 8 GB machine — Apple Intelligence backend, no MLX model to pre-load")
+        log.info("server: Apple Intelligence backend — no MLX model to load")
+    elif _mlx._IDLE_EVICT_S > 0:
+        # Lazy: the ~7 GB model loads on the first inference and is evicted after
+        # MLX_IDLE_EVICT_S of inactivity, so the server idles light (~0.4 GB)
+        # instead of pinning ~7 GB of Metal memory for the whole process life.
+        log.info(
+            "server: MLX model loads on first request; idle-evict after %.0fs",
+            _mlx._IDLE_EVICT_S,
+        )
+        evictor = asyncio.create_task(_idle_evictor(_mlx))
     else:
-        log.info("server: loading MLX model at startup…")
-        _mlx._get_model()
-        log.info("server: MLX model ready")
-    yield
+        # Eviction disabled — don't spawn a no-op evictor task just to cancel it.
+        log.info("server: MLX model loads on first request; idle-eviction disabled (MLX_IDLE_EVICT_S=0)")
+    try:
+        yield
+    finally:
+        if evictor is not None:
+            import contextlib
+            evictor.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await evictor
 
 
 app = FastAPI(title="Meridian Agent", version="1.0.0", lifespan=_lifespan)
@@ -76,12 +114,19 @@ async def health() -> dict:
 
 @app.get("/info")
 async def info() -> dict:
-    """Return the identity of the loaded model."""
+    """Return the identity of the model and its live memory state.
+
+    `active_memory_gb` reads `mx.get_active_memory()` — the ONLY honest measure
+    of the model's footprint, since Metal unified memory is invisible to `ps`
+    and Activity Monitor (they undercount the model by ~6.5 GB).
+    """
     m = _app_state.get("mlx_module")
     return {
-        "backend":   "mlx",
-        "model_id":  m._resolve_model_id() if m else None,
-        "loaded_at": _app_state.get("loaded_at"),
+        "backend":          "mlx",
+        "model_id":         m._resolve_model_id() if m else None,
+        "loaded_at":        _app_state.get("loaded_at"),
+        "model_resident":   m.model_resident() if m else False,
+        "active_memory_gb": m.model_active_memory_gb() if m else None,
     }
 
 
@@ -143,14 +188,14 @@ async def classify(req: ClassifyRequest) -> ClassifyResponse:
             # _classify_apple_fm uses asyncio.new_event_loop() internally;
             # must run in a thread (no existing loop) not in the async handler.
             return m._classify_apple_fm(messages)
-        model = m._get_model()
-        raw = model(
-            Chat(messages),
-            output_type=m.SessionClassification,
-            max_tokens=m._MAX_TOKENS,
-            sampler=make_sampler(temp=m._TEMPERATURE),
-            verbose=False,
-        )
+        with m.model_session() as model:
+            raw = model(
+                Chat(messages),
+                output_type=m.SessionClassification,
+                max_tokens=m._MAX_TOKENS,
+                sampler=make_sampler(temp=m._TEMPERATURE),
+                verbose=False,
+            )
         return m.SessionClassification.model_validate_json(raw)
 
     try:
@@ -375,13 +420,13 @@ async def openai_chat_completions(req: _OAIChatRequest) -> dict:
     def _generate() -> str:
         if m._resolve_model_id() == APPLE_INTELLIGENCE_ID:
             return _infer_apple_fm(msgs, max_tokens)
-        model = m._get_model()
-        return model(
-            Chat(msgs),
-            max_tokens=max_tokens,
-            sampler=make_sampler(temp=temperature),
-            verbose=False,
-        )
+        with m.model_session() as model:
+            return model(
+                Chat(msgs),
+                max_tokens=max_tokens,
+                sampler=make_sampler(temp=temperature),
+                verbose=False,
+            )
 
     t0 = _time.time()
     try:
@@ -504,14 +549,14 @@ async def summarise(req: _SummariseRequest) -> _SummariseResponse:
     from outlines.inputs import Chat
 
     def _generate() -> str:
-        model = m._get_model()
-        return model(
-            Chat(messages),
-            output_type=_SummarySchema,
-            max_tokens=req.max_tokens,
-            sampler=make_sampler(temp=req.temperature),
-            verbose=False,
-        )
+        with m.model_session() as model:
+            return model(
+                Chat(messages),
+                output_type=_SummarySchema,
+                max_tokens=req.max_tokens,
+                sampler=make_sampler(temp=req.temperature),
+                verbose=False,
+            )
 
     try:
         raw = await run_in_threadpool(_generate)

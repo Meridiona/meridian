@@ -24,14 +24,18 @@ Method tag in results: "mlx_direct".
 """
 from __future__ import annotations
 
+import datetime as _dt
+import gc
 import json
 import logging
 import os
 import sqlite3 as _sqlite3
 import sys
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Iterator
 
 from opentelemetry.trace import StatusCode
 from pydantic import BaseModel, Field
@@ -233,42 +237,144 @@ _SYSTEM_PROMPT = (
 
 
 # ---------------------------------------------------------------------------
-# Model loading — cached for the process lifetime.
-# outlines.from_mlxlm wraps the already-loaded mlx model; subsequent calls
-# skip the expensive disk load.
+# Model loading — loaded lazily on first use, evicted when idle.
+#
+# The MLX model holds ~7 GB of Metal unified memory while resident (measured;
+# note `ps`/Activity Monitor RSS does NOT show it). Classification is bursty,
+# so we keep the model only while it's being used: load on first inference,
+# and evict after MLX_IDLE_EVICT_S of inactivity (server.py runs the evictor).
+# `del + gc.collect() + mx.clear_cache()` reclaims the full 7 GB; cold reload
+# is ~3 s. `_model_lock` + `_in_flight` guarantee the evictor never frees the
+# model out from under an in-flight inference.
 # ---------------------------------------------------------------------------
 
 _model_cache: dict[str, Any] = {}
+_model_lock = threading.Lock()       # guards _model_cache mutation, _in_flight, _last_used, eviction
+_in_flight = 0                       # inferences currently using the model
+_last_used = time.monotonic()        # monotonic ts of the last finished inference
+
+# Aggressive default (2 min): the model is present only during active bursts.
+# Tune via env without a code change; 0 disables idle eviction entirely.
+_IDLE_EVICT_S = float(os.environ.get("MLX_IDLE_EVICT_S", "120"))
 
 
 def _get_model() -> Any:
-    """Return an outlines-wrapped model, loading from disk on the first call."""
+    """Return an outlines-wrapped model, loading from disk on the first call.
+
+    Cache-miss load is done under _model_lock (double-checked) so concurrent
+    callers can't double-load and the idle evictor can't race the load.
+    """
     model_id = _resolve_model_id()
-    if model_id in _model_cache:
-        return _model_cache[model_id]
+    cached = _model_cache.get(model_id)
+    if cached is not None:
+        return cached
 
+    with _model_lock:
+        cached = _model_cache.get(model_id)   # re-check under lock
+        if cached is not None:
+            return cached
+        try:
+            import mlx_lm
+            import outlines
+        except ImportError as exc:
+            raise ImportError(
+                f"Required package not installed: {exc}. "
+                "Install with: pip install 'mlx-lm>=0.22' 'outlines[mlxlm]>=1.3'"
+            ) from exc
+
+        log.info(
+            "run_task_linker_mlx: loading %s (first call this process)", model_id
+        )
+        t0 = time.time()
+        mlx_model, tokenizer = mlx_lm.load(
+            model_id,
+            tokenizer_config={"trust_remote_code": True},
+        )
+        outlines_model = outlines.from_mlxlm(mlx_model, tokenizer)
+        log.info("run_task_linker_mlx: model loaded in %.1fs", time.time() - t0)
+
+        _model_cache[model_id] = outlines_model
+        return outlines_model
+
+
+@contextmanager
+def model_session() -> Iterator[Any]:
+    """Yield the loaded model, marking it in-flight so the idle evictor never
+    frees it mid-inference. Wrap every direct ``model(...)`` call in this.
+
+    Lock is held only briefly (to bump/clear the in-flight counter), never for
+    the duration of inference. NOTE: production serialises all MLX calls upstream
+    via the Rust llm_gate (1-permit semaphore), so inferences don't actually
+    overlap — this lock scope just avoids adding a second, redundant serialisation
+    point, NOT a claim that concurrent generation on the shared model is safe.
+    """
+    global _in_flight, _last_used
+    with _model_lock:
+        _in_flight += 1
     try:
-        import mlx_lm
-        import outlines
-    except ImportError as exc:
-        raise ImportError(
-            f"Required package not installed: {exc}. "
-            "Install with: pip install 'mlx-lm>=0.22' 'outlines[mlxlm]>=1.3'"
-        ) from exc
+        yield _get_model()
+    finally:
+        with _model_lock:
+            _in_flight -= 1
+            _last_used = time.monotonic()
 
-    log.info(
-        "run_task_linker_mlx: loading %s (first call this process)", model_id
-    )
-    t0 = time.time()
-    mlx_model, tokenizer = mlx_lm.load(
-        model_id,
-        tokenizer_config={"trust_remote_code": True},
-    )
-    outlines_model = outlines.from_mlxlm(mlx_model, tokenizer)
-    log.info("run_task_linker_mlx: model loaded in %.1fs", time.time() - t0)
 
-    _model_cache[model_id] = outlines_model
-    return outlines_model
+def maybe_evict_idle(idle_s: float | None = None) -> float | None:
+    """Evict the model if it's resident, nothing is in flight, and it's been
+    idle longer than ``idle_s`` (default MLX_IDLE_EVICT_S). Returns the GB freed,
+    or None if no eviction happened. Safe to call from a threadpool worker.
+
+    Uses a non-blocking lock acquire: if an inference/load is mutating state we
+    simply skip this tick and try again on the next one.
+    """
+    ttl = _IDLE_EVICT_S if idle_s is None else idle_s
+    if ttl <= 0:
+        return None
+    if not _model_lock.acquire(blocking=False):
+        return None
+    try:
+        if _in_flight > 0 or not _model_cache:
+            return None
+        if (time.monotonic() - _last_used) < ttl:
+            return None
+        try:
+            import mlx.core as mx
+            before = mx.get_active_memory()
+        except Exception:               # noqa: BLE001 — mx should always import here
+            mx, before = None, 0
+        _model_cache.clear()
+        gc.collect()
+        freed = 0.0
+        if mx is not None:
+            mx.clear_cache()
+            freed = max(0.0, (before - mx.get_active_memory()) / 1e9)
+        log.info(
+            "run_task_linker_mlx: evicted idle model (idle ≥ %.0fs), freed ~%.1f GB",
+            ttl, freed,
+        )
+        return freed
+    finally:
+        _model_lock.release()
+
+
+def model_resident() -> bool:
+    """True if the MLX model is currently loaded in memory."""
+    return bool(_model_cache)
+
+
+def model_active_memory_gb() -> float | None:
+    """Live Metal active-memory footprint in GB, or None if MLX is unavailable.
+
+    Process-wide Metal active memory (≈ the model when resident — the model
+    dominates, though a transient load allocation can briefly inflate it), and
+    the only honest measure: `ps`/Activity Monitor can't see Metal unified
+    memory (they undercount by ~6.5 GB).
+    """
+    try:
+        import mlx.core as mx
+        return round(mx.get_active_memory() / 1e9, 2)
+    except Exception:  # noqa: BLE001 — mx absent on non-MLX machines
+        return None
 
 
 # Apple Foundation Models has a 4096-token combined context window (input + output).
@@ -483,7 +589,53 @@ def _fetch_recent_sessions(
     return result
 
 
-def _fetch_pm_tasks(con: _sqlite3.Connection) -> list[dict[str, Any]]:
+def _local_day(started_at: str) -> str:
+    """The local calendar day (YYYY-MM-DD) of a session's UTC `started_at`.
+
+    `daily_plan.plan_date` is the dev's *local* day (the dashboard stamps it from
+    the browser's local date), but `app_sessions.started_at` is stored UTC. We
+    convert UTC → local here so a session is matched to the plan the dev actually
+    declared for that day. Returns "" on an unparseable timestamp (→ no boost).
+    """
+    if not started_at:
+        return ""
+    try:
+        # `astimezone()` with no arg converts an aware datetime to the host's
+        # local zone — the same zone the dashboard used to compute plan_date.
+        return _dt.datetime.fromisoformat(started_at).astimezone().date().isoformat()
+    except ValueError:
+        return ""
+
+
+def _fetch_plan_focus(con: _sqlite3.Connection, plan_date: str) -> list[str]:
+    """Ordered task_keys the dev CONFIRMED as their focus for `plan_date`.
+
+    Empty (→ no boost, classification proceeds exactly as before) when the day is
+    unconfirmed, explicitly skipped, has no plan rows, or the plan tables don't
+    exist yet (pre-migration-041 DB). This is a ranking signal only — never a
+    filter — so an empty result can only ever cost the boost, never recall.
+    """
+    if not plan_date:
+        return []
+    try:
+        meta = con.execute(
+            "SELECT confirmed_at, skipped FROM daily_plan_meta WHERE plan_date = ?",
+            (plan_date,),
+        ).fetchone()
+        if meta is None or meta["skipped"] or not meta["confirmed_at"]:
+            return []
+        rows = con.execute(
+            "SELECT task_key FROM daily_plan WHERE plan_date = ? ORDER BY position",
+            (plan_date,),
+        ).fetchall()
+        return [r["task_key"] for r in rows]
+    except _sqlite3.OperationalError:
+        return []
+
+
+def _fetch_pm_tasks(
+    con: _sqlite3.Connection, focus_keys: list[str] | None = None
+) -> list[dict[str, Any]]:
     # Candidate set for classification. Tickets the user explicitly EXCLUDED during
     # onboarding board-cleanup (pm_task_curation.decision = 'excluded') are dropped
     # so a cleaned-up dead ticket can never be a classification target. Everything
@@ -512,7 +664,20 @@ def _fetch_pm_tasks(con: _sqlite3.Connection) -> list[dict[str, Any]]:
         # Pre-migration-038 DB (no pm_task_curation): degrade to the unfiltered
         # candidate set rather than crashing the whole /classify_sessions call.
         rows = con.execute(base_cols).fetchall()
-    return [dict(r) for r in rows]
+    tasks = [dict(r) for r in rows]
+
+    # Today's-focus boost: tag the tickets the dev declared for the day and float
+    # them to the top of the candidate list, in their declared order. This is a
+    # BOOST, never a filter — every other candidate still follows, so recall is
+    # untouched. A focus key that isn't in `tasks` (e.g. excluded by curation)
+    # simply has no effect; we never resurrect a filtered-out ticket.
+    focus = focus_keys or []
+    if focus:
+        order = {key: i for i, key in enumerate(focus)}
+        for t in tasks:
+            t["is_today_focus"] = t["task_key"] in order
+        tasks.sort(key=lambda t: (0, order[t["task_key"]]) if t.get("is_today_focus") else (1, 0))
+    return tasks
 
 
 # ---------------------------------------------------------------------------
@@ -555,10 +720,13 @@ def _classify_one(
                 session_id, f"session {session_id} not found in DB", 0.0, "mlx_error"
             )
 
-        pm_tasks = _fetch_pm_tasks(con)
-        recent   = _fetch_recent_sessions(con, session_id)
+        plan_date  = _local_day(session_raw.get("started_at") or "")
+        focus_keys = _fetch_plan_focus(con, plan_date)
+        pm_tasks   = _fetch_pm_tasks(con, focus_keys)
+        recent     = _fetch_recent_sessions(con, session_id)
 
         db_span.set_attribute("pm_tasks_count", len(pm_tasks))
+        db_span.set_attribute("today_focus_count", len(focus_keys))
         db_span.set_attribute("recent_sessions_count", len(recent))
 
         session_text = session_raw.get("session_text") or ""
@@ -642,14 +810,14 @@ def _classify_one(
                 from mlx_lm.sample_utils import make_sampler
                 from outlines.inputs import Chat
 
-                model = _get_model()
-                raw = model(
-                    Chat(messages),
-                    output_type=SessionClassification,
-                    max_tokens=_MAX_TOKENS,
-                    sampler=make_sampler(temp=_TEMPERATURE),
-                    verbose=False,
-                )
+                with model_session() as model:
+                    raw = model(
+                        Chat(messages),
+                        output_type=SessionClassification,
+                        max_tokens=_MAX_TOKENS,
+                        sampler=make_sampler(temp=_TEMPERATURE),
+                        verbose=False,
+                    )
         except Exception as exc:
             elapsed = time.time() - t0
             outcome = "apple_fm_error" if _use_apple_fm else "mlx_error"
@@ -785,7 +953,8 @@ def _classify_one_logged(
     """Classify one session and append a full record to the run log."""
     # Gather inputs before classification so we can log them even on error.
     session_raw = _fetch_session(con, session_id)
-    pm_tasks = _fetch_pm_tasks(con) if session_raw else []
+    focus_keys = _fetch_plan_focus(con, _local_day(session_raw.get("started_at") or "")) if session_raw else []
+    pm_tasks = _fetch_pm_tasks(con, focus_keys) if session_raw else []
     recent = _fetch_recent_sessions(con, session_id) if session_raw else []
 
     if session_raw:

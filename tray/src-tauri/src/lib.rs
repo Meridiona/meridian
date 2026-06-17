@@ -42,6 +42,17 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
+            // Request OS notification authorization up front. Without this,
+            // `.show()` is a silent no-op on macOS until the app has prompted at
+            // least once — the reason the health/pause toasts never appeared.
+            {
+                use tauri_plugin_notification::{NotificationExt, PermissionState};
+                let notifier = app.notification();
+                if !matches!(notifier.permission_state(), Ok(PermissionState::Granted)) {
+                    let _ = notifier.request_permission();
+                }
+            }
+
             // Open meridian.db ONCE at startup and share it with commands via
             // managed state (no migrations — the daemon owns the schema). `None`
             // if the DB can't be opened yet, so get_active errors gracefully

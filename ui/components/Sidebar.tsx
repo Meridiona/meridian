@@ -78,10 +78,11 @@ export default function Sidebar({ onOpenCmd }: Props) {
 
   const items: Array<{ route: string; label: string; kbd: string }> = [
     { route: '/today',    label: 'Today',    kbd: '1' },
-    { route: '/tasks',    label: 'Tasks',    kbd: '2' },
-    { route: '/worklogs', label: 'Worklogs', kbd: '3' },
-    { route: '/sessions', label: 'Sessions', kbd: '4' },
-    { route: '/week',     label: 'Week',     kbd: '5' },
+    { route: '/plan',     label: 'Plan',     kbd: '2' },
+    { route: '/tasks',    label: 'Tasks',    kbd: '3' },
+    { route: '/worklogs', label: 'Worklogs', kbd: '4' },
+    { route: '/sessions', label: 'Sessions', kbd: '5' },
+    { route: '/week',     label: 'Week',     kbd: '6' },
     { route: '/cleanup',  label: 'Clean-up', kbd: '7' },
   ]
 
@@ -165,7 +166,7 @@ export default function Sidebar({ onOpenCmd }: Props) {
             <path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3.05 3.05l1.06 1.06M11.89 11.89l1.06 1.06M3.05 12.95l1.06-1.06M11.89 4.11l1.06-1.06"/>
           </svg>
           <span className="text-[13px]">Settings</span>
-          <span className="kbd ml-auto">6</span>
+          <span className="kbd ml-auto">8</span>
         </button>
       </div>
 

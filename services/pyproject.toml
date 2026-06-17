@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "meridian-agents"
-version = "1.52.6"
+version = "1.54.1"
 description = "Meridian agents — MLX classifier server and Jira worklog synthesis for meridian.db"
 requires-python = ">=3.11"
 authors = [{ name = "Meridiona" }]
