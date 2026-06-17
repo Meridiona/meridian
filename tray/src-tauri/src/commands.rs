@@ -219,13 +219,17 @@ fn env_from_daemon_dotenv(key: &str) -> Option<String> {
 /// then the daemon's .env file, then the default location.
 pub(crate) fn meridian_db_path() -> String {
     if let Ok(p) = std::env::var("MERIDIAN_DB") {
+        tracing::debug!(source = "env", path = %p, "resolved meridian_db_path");
         return p;
     }
     if let Some(p) = env_from_daemon_dotenv("MERIDIAN_DB") {
+        tracing::debug!(source = "daemon_dotenv", path = %p, "resolved meridian_db_path");
         return p;
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    format!("{}/.meridian/meridian.db", home)
+    let p = format!("{}/.meridian/meridian.db", home);
+    tracing::debug!(source = "default", path = %p, "resolved meridian_db_path");
+    p
 }
 
 /// The dashboard's active-session view (the ported /api/active): the
