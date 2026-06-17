@@ -319,14 +319,65 @@ _prompt_cache_ids: "list[int] | None" = None
 _prompt_cache_lock = threading.Lock()
 _PROMPT_CACHE_ENABLED = os.environ.get("CLASSIFY_PROMPT_CACHE", "1") == "1"
 
+# ---------------------------------------------------------------------------
+# Constrained-generation FSM cache.
+#
+# outlines compiles the SessionClassification schema into a token-level FSM
+# (the OutlinesCoreLogitsProcessor `index`). Measured: building that Generator
+# costs ~6 s — and the schema is STATIC, so rebuilding it per session was burning
+# ~6 s/classification (≈30% of wall-clock) for nothing. We build it ONCE per
+# resident model and reuse it, calling the processor's own reset() before each
+# generation to clear the per-sequence FSM state (greedy decoding → reused-FSM
+# output is byte-identical to a freshly built one). Tied to the model instance,
+# so it's invalidated alongside the KV cache on evict/reload.
+_generator_cache: dict[str, tuple] = {}
+_generator_lock = threading.Lock()
+
 
 def _invalidate_prompt_cache() -> None:
-    """Drop the persistent prefix KV cache. Call whenever the resident model is
-    freed or swapped — the cached KV is only valid for that exact model instance.
+    """Drop the per-model caches (prefix KV + compiled FSM generator). Call
+    whenever the resident model is freed or swapped — both are valid only for that
+    exact model instance.
     """
     global _prompt_cache, _prompt_cache_ids
     _prompt_cache = None
     _prompt_cache_ids = None
+    _generator_cache.clear()
+
+
+def _get_constrained_logits_processors(model: Any) -> "list":
+    """Return the cached FSM logits-processor list for SessionClassification,
+    building it once per resident model. The processor carries per-generation
+    state, so it is reset() before being handed back — making reuse equivalent to
+    a freshly built generator while skipping the ~6 s FSM compile each call.
+    """
+    mid = _resolve_model_id()
+    cached = _generator_cache.get(mid)
+    if cached is None:
+        with _generator_lock:
+            cached = _generator_cache.get(mid)  # re-check under lock
+            if cached is None:
+                from outlines.generator import Generator
+
+                t0 = time.time()
+                gen = Generator(model, SessionClassification)
+                lp = model.type_adapter.format_output_type(gen.logits_processor)
+                _generator_cache[mid] = (gen, lp)
+                cached = _generator_cache[mid]
+                log.info(
+                    "run_task_linker_mlx: compiled classification FSM in %.1fs "
+                    "(cached for process lifetime)", time.time() - t0,
+                )
+    _gen, lp = cached
+    # Clear per-sequence FSM state so this generation starts clean.
+    reset = getattr(_gen.logits_processor, "reset", None)
+    if callable(reset):
+        reset()
+    for p in lp:
+        p_reset = getattr(p, "reset", None)
+        if callable(p_reset) and p is not _gen.logits_processor:
+            p_reset()
+    return lp
 
 
 def _common_prefix_len(a: "list[int] | None", b: "list[int] | None") -> int:
@@ -340,6 +391,26 @@ def _common_prefix_len(a: "list[int] | None", b: "list[int] | None") -> int:
     return i
 
 
+_prompt_cache_trimmable: "bool | None" = None  # lazily detected per model
+
+
+def _cache_offset(prompt_cache: "list") -> int:
+    """Current cached sequence length, across cache implementations. Standard
+    KVCache exposes `.offset`; batched caches (ArraysCache) expose `.lengths`.
+    Returns -1 when neither is available (→ caller must not reuse)."""
+    c0 = prompt_cache[0]
+    off = getattr(c0, "offset", None)
+    if isinstance(off, int):
+        return off
+    lengths = getattr(c0, "lengths", None)  # ArraysCache: per-batch lengths
+    try:
+        if lengths is not None:
+            return int(max(lengths))
+    except (TypeError, ValueError):
+        pass
+    return -1
+
+
 def _generate_constrained(
     model: Any,
     full_ids: "list[int]",
@@ -347,17 +418,26 @@ def _generate_constrained(
     sampler: Any,
 ) -> "tuple[str, Any, int]":
     """FSM-constrained generation for `full_ids`, reusing the cached system+skill
-    prefix when possible.
+    prefix's KV across sessions WHEN the model's cache supports trimming.
 
     Returns ``(raw_text, gen_stats, cache_hit_tokens)`` where ``cache_hit_tokens``
     is the number of leading prompt tokens served from the persistent KV cache
     (0 → full reprocess / uncached path). Greedy decoding makes the cached and
     uncached outputs byte-identical.
+
+    Prefix reuse uses the public trim_prompt_cache multi-turn idiom: keep one
+    persistent cache + the token ids it holds; reuse the longest common prefix
+    with the previous prompt, reprocess only the divergent suffix, then trim the
+    generated tail back off. Models whose cache is NOT trimmable (e.g. the batched
+    ArraysCache some quantized builds use) can't support this safely, so we detect
+    that ONCE and fall back to plain uncached generation — correct, just without
+    the prefill saving (which is then better recovered via speculative decoding /
+    a smaller prompt).
     """
     from mlx_lm import stream_generate
     from mlx_lm.models import cache as _kc
 
-    global _prompt_cache, _prompt_cache_ids
+    global _prompt_cache, _prompt_cache_ids, _prompt_cache_trimmable
 
     gen_kwargs = dict(
         max_tokens=_MAX_TOKENS,
@@ -376,9 +456,29 @@ def _generate_constrained(
             gen_stats = gr
         return "".join(parts), gen_stats
 
-    # Uncached path: caching disabled, or another call holds the shared cache.
-    # A fresh per-call cache (mlx_lm makes one internally) keeps this correct.
-    if not (_PROMPT_CACHE_ENABLED and _prompt_cache_lock.acquire(blocking=False)):
+    # One-time capability probe: is this model's KV cache trimmable? If not, prefix
+    # reuse can't work, so don't even take the lock — run uncached every call.
+    if _prompt_cache_trimmable is None:
+        try:
+            _prompt_cache_trimmable = bool(
+                _kc.can_trim_prompt_cache(_kc.make_prompt_cache(model.model))
+            )
+        except Exception:  # noqa: BLE001
+            _prompt_cache_trimmable = False
+        if not _prompt_cache_trimmable:
+            log.info(
+                "run_task_linker_mlx: model KV cache is not trimmable — prefix "
+                "prompt-caching disabled (FSM-compile cache still active)"
+            )
+
+    # Uncached path: caching disabled, cache not trimmable, or another call holds
+    # the shared cache. A fresh per-call cache (mlx_lm makes one internally) is
+    # correct in every case.
+    if not (
+        _PROMPT_CACHE_ENABLED
+        and _prompt_cache_trimmable
+        and _prompt_cache_lock.acquire(blocking=False)
+    ):
         raw, gen_stats = _stream(full_ids, None)
         return raw, gen_stats, 0
 
@@ -392,18 +492,14 @@ def _generate_constrained(
         # exactly full_ids[:common] before the suffix is processed.
         extra = len(_prompt_cache_ids or []) - common
         if extra > 0:
-            if _kc.can_trim_prompt_cache(_prompt_cache):
-                _kc.trim_prompt_cache(_prompt_cache, extra)
-            else:
-                _prompt_cache = _kc.make_prompt_cache(model.model)
-                common = 0
+            _kc.trim_prompt_cache(_prompt_cache, extra)
 
         suffix = full_ids[common:]
         # stream_generate needs ≥1 token to process. An identical-to-previous
         # prompt (no suffix) is vanishingly unlikely (the per-session block always
         # differs), but handle it: back the cache off one token and reprocess it.
         if not suffix:
-            if common > 0 and _kc.can_trim_prompt_cache(_prompt_cache):
+            if common > 0:
                 _kc.trim_prompt_cache(_prompt_cache, 1)
                 common -= 1
                 suffix = full_ids[common:]
@@ -422,12 +518,9 @@ def _generate_constrained(
         # offset — not a count of generated tokens, which would risk an off-by-one
         # and silently corrupt the reused prefix. After this, the cache holds
         # exactly full_ids, ready for the next session to reuse.
-        try:
-            cur_offset = int(_prompt_cache[0].offset)
-        except Exception:  # noqa: BLE001 — unexpected cache shape → don't reuse
-            cur_offset = -1
+        cur_offset = _cache_offset(_prompt_cache)
         trim_amount = cur_offset - len(full_ids)
-        if trim_amount > 0 and _kc.can_trim_prompt_cache(_prompt_cache):
+        if trim_amount > 0:
             _kc.trim_prompt_cache(_prompt_cache, trim_amount)
             _prompt_cache_ids = list(full_ids)
         elif trim_amount == 0:
@@ -1260,15 +1353,13 @@ def _classify_one(
                         # tok/s + finish_reason) instead of discarding them, AND we
                         # control the prompt_cache so the static system+skill prefix
                         # is reused across sessions (see _prompt_cache above). The
-                        # logits processor is compiled exactly as outlines does it; we
-                        # tokenize the chat prompt ourselves (token ids, not a string)
-                        # so we can do the prefix arithmetic the cache needs.
-                        from outlines.generator import Generator
-
-                        _gen = Generator(model, SessionClassification)
-                        logits_processors = model.type_adapter.format_output_type(
-                            _gen.logits_processor
-                        )
+                        # FSM logits processor is compiled ONCE per model and cached
+                        # (the ~6 s schema compile must not run per session);
+                        # _get_constrained_logits_processors resets its per-sequence
+                        # state before each use. We tokenize the chat prompt ourselves
+                        # (token ids, not a string) so we can do the prefix arithmetic
+                        # the KV cache needs.
+                        logits_processors = _get_constrained_logits_processors(model)
                         full_ids = _get_tokenizer().apply_chat_template(
                             messages, tokenize=True, add_generation_prompt=True
                         )
