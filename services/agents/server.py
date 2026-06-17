@@ -259,49 +259,43 @@ async def classify_sessions(req: ClassifySessionsRequest) -> dict:
     tracer = _app_state.get("tracer") or trace.get_tracer("meridian-agent-server-mlx")
     parent_ctx = observability.extract_parent_context(req.traceparent)
 
-    with tracer.start_as_current_span("classify_sessions", context=parent_ctx) as span:
-        span.set_attribute("session_count", len(req.session_ids))
-
-        # Snapshot the OTel context while classify_sessions span is active so we
-        # can attach it explicitly inside the threadpool (anyio copies contextvars,
-        # but explicit attach is more reliable across anyio versions).
-        ctx_snapshot = _otel_context.get_current()
-
-        def _classify_all() -> list[dict]:
-            # Attach classify_sessions context so _classify_one sub-spans
-            # (db_fetch, build_prompt, llm_inference, parse_response) appear
-            # as children of classify_sessions in the OO trace waterfall.
-            _tok = _otel_context.attach(ctx_snapshot)
+    # No batch-wrapper span: each session emits a single `classify_session` span
+    # attached directly to the Rust caller's context (via the propagated
+    # traceparent). This keeps the debug trace minimal — one self-describing span
+    # per session with no redundant N=1 wrapper. For N>1, the sessions appear as
+    # sibling classify_session spans under the same daemon trace.
+    def _classify_all() -> list[dict]:
+        _tok = _otel_context.attach(parent_ctx) if parent_ctx is not None else None
+        try:
+            # Always use the server's own _DB_PATH — ignoring req.meridian_db avoids
+            # path-traversal: the server knows its DB from the environment.
+            con = _sqlite3.connect(str(_DB_PATH), check_same_thread=False)
+            con.row_factory = _sqlite3.Row
             try:
-                # Always use the server's own _DB_PATH — ignoring req.meridian_db avoids
-                # path-traversal: the server knows its DB from the environment.
-                con = _sqlite3.connect(str(_DB_PATH), check_same_thread=False)
-                con.row_factory = _sqlite3.Row
-                try:
-                    results: list[dict] = []
-                    for sid in req.session_ids:
-                        with tracer.start_as_current_span(
-                            "classify_session",
-                            attributes={"session_id": sid},
-                        ):
-                            result = m._classify_one_logged(sid, con, fh)
-                        log.info(
-                            "classify_sessions: session_id=%d task_key=%s session_type=%s elapsed_s=%.2f",
-                            sid,
-                            result.get("task_key"),
-                            result.get("session_type"),
-                            result.get("elapsed_s", 0.0),
-                        )
-                        results.append(result)
-                    return results
-                finally:
-                    con.close()
+                results: list[dict] = []
+                for sid in req.session_ids:
+                    # _classify_one_logged owns this span's attributes (session_id,
+                    # task_key, confidence, is_error, …) via _annotate_classification_span
+                    # and emits db_fetch / build_prompt / llm_inference / parse_response
+                    # as its children — one source of truth, matching the CLI path.
+                    with tracer.start_as_current_span("classify_session"):
+                        result = m._classify_one_logged(sid, con, fh)
+                    log.info(
+                        "classify_sessions: session_id=%d task_key=%s session_type=%s elapsed_s=%.2f",
+                        sid,
+                        result.get("task_key"),
+                        result.get("session_type"),
+                        result.get("elapsed_s", 0.0),
+                    )
+                    results.append(result)
+                return results
             finally:
+                con.close()
+        finally:
+            if _tok is not None:
                 _otel_context.detach(_tok)
 
-        results = await run_in_threadpool(_classify_all)
-        span.set_attribute("classified_count", len(results))
-
+    results = await run_in_threadpool(_classify_all)
     return {"results": results}
 
 
@@ -415,14 +409,42 @@ async def openai_chat_completions(req: _OAIChatRequest) -> dict:
     temperature = req.temperature if req.temperature is not None else 0.3
     max_tokens  = req.max_tokens if req.max_tokens else 2048
 
+    # Honour OpenAI `response_format: {"type":"json_schema", ...}` by
+    # FSM-constraining decoding to that schema via outlines. Without this, a
+    # reasoning model is free to emit chain-of-thought prose instead of the JSON
+    # the caller (e.g. agno's structured-output path) expects, and the parse
+    # fails. `{"type":"json_object"}` carries no schema, so it stays free-form.
+    output_type = None
+    rf = req.response_format
+    if isinstance(rf, dict) and rf.get("type") == "json_schema":
+        schema = (rf.get("json_schema") or {}).get("schema")
+        if schema:
+            from outlines.types import JsonSchema
+            output_type = JsonSchema(schema)
+
     from agents.llm_selector import APPLE_INTELLIGENCE_ID
+
+    # A `json_schema` request cannot be honoured on Apple Foundation Models:
+    # outlines FSM-constrained decoding is incompatible with FM, so the schema
+    # would be silently dropped and a structured-output caller (e.g. agno) would
+    # get free-form text that fails to parse downstream. Reject explicitly with a
+    # 4xx rather than emit unconstrained output that breaks later.
+    if output_type is not None and m._resolve_model_id() == APPLE_INTELLIGENCE_ID:
+        raise HTTPException(
+            status_code=400,
+            detail="response_format=json_schema is not supported on Apple "
+            "Foundation Models (no FSM-constrained decoding available)",
+        )
 
     def _generate() -> str:
         if m._resolve_model_id() == APPLE_INTELLIGENCE_ID:
+            # outlines FSM decoding is incompatible with Foundation Models;
+            # Apple FM falls back to free-form (json_object / no schema only).
             return _infer_apple_fm(msgs, max_tokens)
         with m.model_session() as model:
             return model(
                 Chat(msgs),
+                output_type=output_type,
                 max_tokens=max_tokens,
                 sampler=make_sampler(temp=temperature),
                 verbose=False,
