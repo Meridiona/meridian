@@ -116,7 +116,7 @@ pub async fn upstream_settled(
     // C — no session started in the hour is still in-flight. A row blocks only if
     // the pipeline will still advance it:
     //   * regular row the classifier will pick up:
-    //       claude_session_uuid IS NULL AND task_method IS NULL AND duration_s > min
+    //       coding_agent_session_uuid IS NULL AND task_method IS NULL AND duration_s > min
     //     (exactly the classifier's candidate condition — by construction the hour
     //      settles when the classify queue for this window drains).
     //   * coding-agent row still moving through summarise/classify:
@@ -131,10 +131,10 @@ pub async fn upstream_settled(
          WHERE started_at >= ? AND started_at < ? \
            AND task_session_type IS NULL \
            AND ( \
-                 (claude_session_uuid IS NULL \
+                 (coding_agent_session_uuid IS NULL \
                     AND task_method IS NULL \
                     AND duration_s > ?) \
-              OR (claude_session_uuid IS NOT NULL \
+              OR (coding_agent_session_uuid IS NOT NULL \
                     AND task_method IN \
                         ('coding_agent_live', 'pending_summariser', 'pending_classifier')) \
            )",
@@ -217,7 +217,7 @@ mod tests {
                 app_name, started_at, ended_at, duration_s, \
                 window_titles, audio_snippets, signals, \
                 min_frame_id, max_frame_id, frame_count, idle_frame_count, etl_run_id, \
-                claude_session_uuid, task_method, task_session_type \
+                coding_agent_session_uuid, task_method, task_session_type \
              ) VALUES ('App', ?, ?, ?, '[]', '[]', '{}', 1, 1, 1, 0, \
                        (SELECT MAX(id) FROM etl_runs), ?, ?, ?)",
         )

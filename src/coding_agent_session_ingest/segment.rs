@@ -4,7 +4,7 @@
 // idle gaps > `segment_gap_seconds` (default 1h) AND on a `max_segment_seconds`
 // time-box (default 1h), so a long continuous burst still seals on a
 // predictable cadence. One `app_sessions` row per segment, keyed on
-// (claude_session_uuid, segment_started_at).
+// (coding_agent_session_uuid, segment_started_at).
 //
 // Originally ported from the Python indexer's `parse_session_segments`; the
 // tests below (mirrored from the old `test_segmentation.py`) pin the behaviour.

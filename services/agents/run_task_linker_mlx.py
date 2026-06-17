@@ -66,6 +66,20 @@ _CONTEXT_WINDOW = 5
 _MAX_TOKENS = 1024
 _TEMPERATURE = 0.0  # greedy decoding — deterministic classification
 
+# Candidate-set policy. When the dev has CONFIRMED a daily plan, restrict the
+# classifier's candidate tickets to exactly those planned tickets instead of
+# offering every open ticket (the historical "boost-never-filter" behaviour).
+# Rationale: a focused candidate set sharpens precision on the day's declared
+# work; off-plan work then intentionally falls through to `untracked` — a
+# deliberate holding state — rather than being mis-linked onto an unrelated open
+# ticket. NOTE: until a recall-recovery stage exists, `untracked` sessions do
+# not produce PM worklogs, so off-plan work is not written back while this is on.
+#   "1" (default) → plan-only filtering whenever a plan is confirmed
+#   "0"           → legacy boost-never-filter (plan tickets floated up, all kept)
+# Read once at import — flipping it requires an MLX-server restart. Only ever
+# active on days with a confirmed, non-empty plan; unplanned days are unaffected.
+_PLAN_ONLY_CANDIDATES = os.environ.get("CLASSIFY_PLAN_ONLY_CANDIDATES", "1") == "1"
+
 # The eval-tuned default classifier model. It lives in the llm_selector catalog
 # (_MODELS) as "qwen3.5-9b-optiq"; llm_selector keeps it on machines where it
 # fits and degrades only when Metal headroom can't accommodate it. The catalog
@@ -579,7 +593,8 @@ def _fetch_session(
     row = con.execute(
         "SELECT id, app_name, started_at, ended_at, duration_s, session_text,"
         "       session_text_source, window_titles, category, confidence,"
-        "       session_summary, claude_session_uuid,"
+        "       session_summary, coding_agent_session_uuid,"
+        "       segment_started_at, sealed_at, summary_source,"
         "       min_frame_id, max_frame_id, frame_count"
         " FROM app_sessions WHERE id = ?",
         (session_id,),
@@ -684,17 +699,46 @@ def _fetch_pm_tasks(
         rows = con.execute(base_cols).fetchall()
     tasks = [dict(r) for r in rows]
 
-    # Today's-focus boost: tag the tickets the dev declared for the day and float
-    # them to the top of the candidate list, in their declared order. This is a
-    # BOOST, never a filter — every other candidate still follows, so recall is
-    # untouched. A focus key that isn't in `tasks` (e.g. excluded by curation)
-    # simply has no effect; we never resurrect a filtered-out ticket.
+    # Candidate-set policy (see _PLAN_ONLY_CANDIDATES). `focus_keys` are the
+    # tickets the dev CONFIRMED for this session's day (empty when no plan).
     focus = focus_keys or []
-    if focus:
-        order = {key: i for i, key in enumerate(focus)}
-        for t in tasks:
-            t["is_today_focus"] = t["task_key"] in order
-        tasks.sort(key=lambda t: (0, order[t["task_key"]]) if t.get("is_today_focus") else (1, 0))
+    if not focus:
+        # No confirmed plan → offer every candidate. Unchanged behaviour for
+        # users who don't use the plan, or days that aren't confirmed yet.
+        # `is_today_focus` is left unset (falsy) on every ticket.
+        return tasks
+
+    order = {key: i for i, key in enumerate(focus)}
+
+    if _PLAN_ONLY_CANDIDATES:
+        # Plan-only: the candidate set IS the confirmed plan, in declared order.
+        # Off-plan work then has no candidate to match, so the model returns
+        # `untracked` (the intended holding state) instead of being shoehorned
+        # onto an unrelated ticket.
+        in_plan = [t for t in tasks if t["task_key"] in order]
+        # GUARD: never return an empty candidate set. If the confirmed plan's
+        # tickets are all absent from the live pool (curation-excluded, closed,
+        # or not yet synced), fall back to the full set — an empty list would
+        # force EVERY session that day to `untracked`.
+        if not in_plan:
+            log.warning(
+                "plan-only candidates: confirmed plan has no live candidate "
+                "tickets (focus=%s) — falling back to full candidate set",
+                focus,
+            )
+            return tasks
+        for t in in_plan:
+            t["is_today_focus"] = True
+        in_plan.sort(key=lambda t: order[t["task_key"]])
+        return in_plan
+
+    # Legacy boost-never-filter: tag the declared tickets and float them to the
+    # top in declared order, but keep every other candidate so recall is
+    # untouched. A focus key not in `tasks` (e.g. excluded by curation) simply
+    # has no effect — we never resurrect a filtered-out ticket.
+    for t in tasks:
+        t["is_today_focus"] = t["task_key"] in order
+    tasks.sort(key=lambda t: (0, order[t["task_key"]]) if t.get("is_today_focus") else (1, 0))
     return tasks
 
 
@@ -786,7 +830,7 @@ def _classify_one(
         # session_text and a concise, high-quality prose summary in
         # session_summary. Classify on the summary, not the multi-MB transcript:
         # cheaper, faster, and it's already the distilled "what was done".
-        if session_raw.get("claude_session_uuid") and (session_raw.get("session_summary") or "").strip():
+        if session_raw.get("coding_agent_session_uuid") and (session_raw.get("session_summary") or "").strip():
             session_text = session_raw["session_summary"]
 
         # db_fetch is the SOLE source of "what the model was given" — recorded
@@ -797,7 +841,20 @@ def _classify_one(
         # (today's-focus keys float to the front in _fetch_pm_tasks).
         candidate_keys = [t["task_key"] for t in pm_tasks]
         recent_task_keys = [r.get("task_key") for r in recent if r.get("task_key")]
+        # Session identity + the app_sessions row metadata, so a trace is
+        # self-contained — you know WHICH session and its key fields (app, window
+        # titles, time span) without opening meridian.db.
+        db_span.set_attribute("session_id", session_id)
         db_span.set_attribute("app_name", str(session_raw.get("app_name") or ""))
+        db_span.set_attribute("started_at", str(session_raw.get("started_at") or ""))
+        db_span.set_attribute("ended_at", str(session_raw.get("ended_at") or ""))
+        try:
+            _wts = json.loads(session_raw.get("window_titles") or "[]")
+            _wt_names = [str(w.get("window_name", "")) for w in _wts if w.get("window_name")]
+        except (TypeError, ValueError):
+            _wt_names = []
+        db_span.set_attribute("window_titles", " | ".join(_wt_names) if _wt_names else "-")
+        db_span.set_attribute("window_title_count", len(_wt_names))
         db_span.set_attribute("duration_s", float(session_raw.get("duration_s") or 0.0))
         db_span.set_attribute("text_source", str(session_raw.get("session_text_source") or ""))
         db_span.set_attribute("session_text_chars", len(session_text))
@@ -812,11 +869,36 @@ def _classify_one(
             db_span.set_attribute("min_frame_id", _min_fid)
             db_span.set_attribute("max_frame_id", _max_fid)
             db_span.set_attribute("frame_count", int(session_raw.get("frame_count") or 0))
+        # Coding-agent provenance: which agent conversation + segment this row came
+        # from, when the indexer sealed it, and who wrote the summary the model is
+        # classifying on. Only present on coding-agent rows (Claude Code / Codex /
+        # …); guard on coding_agent_session_uuid so screen-capture sessions stay clean.
+        _ca_uuid = session_raw.get("coding_agent_session_uuid")
+        if _ca_uuid:
+            db_span.set_attribute("coding_agent_session_uuid", str(_ca_uuid))
+            db_span.set_attribute("segment_started_at", str(session_raw.get("segment_started_at") or ""))
+            db_span.set_attribute("sealed_at", str(session_raw.get("sealed_at") or ""))
+            db_span.set_attribute("summary_source", str(session_raw.get("summary_source") or ""))
         db_span.set_attribute("pm_tasks_count", len(pm_tasks))
         db_span.set_attribute("today_focus_count", len(focus_keys))
         db_span.set_attribute("recent_sessions_count", len(recent))
         db_span.set_attribute("candidate_task_keys", ", ".join(candidate_keys) if candidate_keys else "-")
         db_span.set_attribute("today_focus_keys", ", ".join(focus_keys) if focus_keys else "-")
+        # Which candidate-set policy actually applied for this session, so a trace
+        # explains the candidate list without re-deriving it:
+        #   all               → no confirmed plan; every open ticket offered
+        #   plan_only         → narrowed to the confirmed plan
+        #   plan_fallback_all → plan confirmed but its tickets weren't live → fell back
+        #   boost             → legacy boost-never-filter (flag off)
+        if not focus_keys:
+            candidate_mode = "all"
+        elif not _PLAN_ONLY_CANDIDATES:
+            candidate_mode = "boost"
+        elif pm_tasks and all(t.get("is_today_focus") for t in pm_tasks):
+            candidate_mode = "plan_only"
+        else:
+            candidate_mode = "plan_fallback_all"
+        db_span.set_attribute("candidate_mode", candidate_mode)
         db_span.set_attribute("recent_task_keys", ", ".join(recent_task_keys) if recent_task_keys else "-")
 
     session = {
@@ -1266,6 +1348,14 @@ def _classify_one_logged_inner(
     }
     run_log.write(json.dumps(record, default=str) + "\n")
     run_log.flush()
+    # Promote app_name onto the classify_session span (the one row-per-session
+    # span the dashboards query), so app name is a filterable column there — not
+    # just on the child db_fetch span. session_raw is the DB row; current span
+    # here is classify_session (db_fetch's child span has already closed).
+    if session_raw:
+        _cs = trace.get_current_span()
+        if _cs.is_recording():
+            _cs.set_attribute("app_name", str(session_raw.get("app_name") or ""))
     _annotate_classification_span(result)
     return result
 

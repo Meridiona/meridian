@@ -24,7 +24,7 @@ pub const TASK_METHOD_DEAD_LETTER: &str = "subprocess_error";
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct PendingRow {
     pub id: i64,
-    #[sqlx(rename = "claude_session_uuid")]
+    #[sqlx(rename = "coding_agent_session_uuid")]
     pub session_uuid: String,
     #[sqlx(rename = "app_name")]
     pub agent: String,
@@ -59,7 +59,7 @@ pub async fn ensure_summary_source_column(pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
-const ROW_COLS: &str = "id, claude_session_uuid, app_name, segment_started_at, \
+const ROW_COLS: &str = "id, coding_agent_session_uuid, app_name, segment_started_at, \
                         started_at, ended_at, duration_s";
 
 /// Sealed coding segments needing a summary, oldest-ended first. `day`
@@ -82,7 +82,7 @@ pub async fn fetch_pending(
     let sql = format!(
         "SELECT {cols}
          FROM   app_sessions
-         WHERE  claude_session_uuid IS NOT NULL
+         WHERE  coding_agent_session_uuid IS NOT NULL
            AND  sealed_at IS NOT NULL
            AND  task_method = ?
            AND  session_summary IS NULL
@@ -132,7 +132,7 @@ pub async fn fetch_prior_summary(
 ) -> Result<Option<String>> {
     let s: Option<String> = sqlx::query_scalar(
         "SELECT session_summary FROM app_sessions
-         WHERE claude_session_uuid = ?
+         WHERE coding_agent_session_uuid = ?
            AND segment_started_at < ?
            AND session_summary IS NOT NULL
          ORDER BY segment_started_at DESC

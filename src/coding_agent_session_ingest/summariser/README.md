@@ -100,7 +100,7 @@ also down, `drain` returns a back-off signal and the loop sleeps
 
 ### Eligibility (`fetch_pending`)
 
-A sealed row is summarised only if it has `claude_session_uuid`, a non-empty
+A sealed row is summarised only if it has `coding_agent_session_uuid`, a non-empty
 `session_summary IS NULL` slot, `frame_count >= min_turns` (2), and
 `length(session_text) >= min_text_bytes` (800). Sub-second / trivially-thin
 sessions fall below the floor and are silently skipped — that's intended, not a

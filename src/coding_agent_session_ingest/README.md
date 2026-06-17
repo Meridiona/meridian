@@ -14,7 +14,7 @@ endpoints the pipeline calls over HTTP.
 ## The lifecycle (`task_method` column)
 
 A coding-agent row is any `app_sessions` row with a non-NULL
-`claude_session_uuid`. It walks one column through its life:
+`coding_agent_session_uuid`. It walks one column through its life:
 
 ```
 coding_agent_live ──seal──▶ pending_summariser ──summarise──▶ pending_classifier ──classify──▶ mlx_direct
@@ -47,7 +47,7 @@ A low-frequency tokio loop (`run_loop`, default 600 s) plus the SessionEnd hook.
   > 1 h **or** a 1 h time-box. The time-box only cuts at the next real user
   prompt, so a row always ends on a complete assistant turn and the next opens
   on a user message (continuity). One row per `(uuid, segment_started_at)`.
-- **`db.rs`** — the segment UPSERT (`ON CONFLICT(claude_session_uuid,
+- **`db.rs`** — the segment UPSERT (`ON CONFLICT(coding_agent_session_uuid,
   segment_started_at) … WHERE sealed_at IS NULL`), stale-row sealing, endpoints.
 - **`indexer.rs`** — per tick: (1) seal settled live rows (the crash / force-quit
   / sleep backstop), then (2) re-parse changed files and refresh their live tail.
@@ -110,8 +110,8 @@ binary is on PATH). No coding agent → both tasks log "dormant" and return.
 
 | File | Change |
 |---|---|
-| `027_app_sessions_segments.sql` | segment columns + `(claude_session_uuid, segment_started_at)` unique index |
+| `027_app_sessions_segments.sql` | segment columns + `(coding_agent_session_uuid, segment_started_at)` unique index |
 | `028_drop_day_utc.sql` | dropped the earlier `day_utc` key |
 
-The `(claude_session_uuid, segment_started_at)` unique index is the idempotency
+The `(coding_agent_session_uuid, segment_started_at)` unique index is the idempotency
 key. Never `DELETE`-then-`INSERT` a coding-agent row from the daemon path.
