@@ -27,6 +27,7 @@ const MUST_FIX = new Set([
   'thin_description',
   'vague_title',
   'missing_due_date',
+  'overdue',
 ])
 
 function reasonSeverity(code: string): Severity {
@@ -58,6 +59,7 @@ function reasonHint(code: string, d: Record<string, number> | undefined): string
     case 'no_activity_since': return `No board activity in ${d?.days} days.`
     case 'not_started': return 'Still in a not-started column.'
     case 'no_due_date': return 'No due date set.'
+    case 'overdue': return `Overdue by ${d?.by_days} day(s) — reschedule or close it.`
     case 'overdue_long': return `Overdue by ${d?.by_days} days with no movement.`
     case 'far_future_due': return `Not due for ${d?.in_days} days — planned, not current work.`
     case 'not_in_sprint': return 'Not in any sprint.'
@@ -75,6 +77,7 @@ function reasonFix(code: string): HygieneFix | null {
     case 'vague_title': return { control: 'edit_text', field: 'summary', label: 'Make the title specific', ai: true }
     case 'no_context_anchor': return { control: 'pick_parent', field: 'parent', label: 'Link to an epic or parent', ai: false }
     case 'missing_due_date': return { control: 'date_picker', field: 'duedate', label: 'Add a due date', ai: false }
+    case 'overdue': return { control: 'date_picker', field: 'duedate', label: 'Reschedule due date', ai: false }
     case 'missing_assignee': return { control: 'assign_self', field: 'assignee', label: 'Assign to me', ai: false }
     case 'missing_labels': return { control: 'edit_labels', field: 'labels', label: 'Add a label', ai: false }
     case 'missing_priority': return { control: 'pick_priority', field: 'priority', label: 'Set priority', ai: false }
