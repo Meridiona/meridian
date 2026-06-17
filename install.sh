@@ -588,6 +588,8 @@ if [[ "$_oo_installed" -eq 0 ]]; then
         # live on the official downloads host. Pin a current stable — trace
         # deep-linking (dashboard drilldown into a single trace's spans) needs a
         # modern build; the old v0.11 GitHub asset is long gone.
+        # KEEP IN SYNC: the same version is pinned in
+        # scripts/install-openobserve-daemon.sh — bump both together.
         _oo_ver="v0.90.3"
         _oo_url="https://downloads.openobserve.ai/releases/openobserve/${_oo_ver}/openobserve-${_oo_ver}-darwin-${_oo_arch}.tar.gz"
         if [[ "${DRY_RUN}" -ne 0 ]]; then

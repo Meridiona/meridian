@@ -274,13 +274,11 @@ async def classify_sessions(req: ClassifySessionsRequest) -> dict:
             try:
                 results: list[dict] = []
                 for sid in req.session_ids:
-                    # _classify_one_logged enriches this span (session_id, task_key,
-                    # confidence, is_error, …) and emits db_fetch / build_prompt /
-                    # llm_inference / parse_response as its children.
-                    with tracer.start_as_current_span(
-                        "classify_session",
-                        attributes={"session_id": sid},
-                    ):
+                    # _classify_one_logged owns this span's attributes (session_id,
+                    # task_key, confidence, is_error, …) via _annotate_classification_span
+                    # and emits db_fetch / build_prompt / llm_inference / parse_response
+                    # as its children — one source of truth, matching the CLI path.
+                    with tracer.start_as_current_span("classify_session"):
                         result = m._classify_one_logged(sid, con, fh)
                     log.info(
                         "classify_sessions: session_id=%d task_key=%s session_type=%s elapsed_s=%.2f",
@@ -426,10 +424,22 @@ async def openai_chat_completions(req: _OAIChatRequest) -> dict:
 
     from agents.llm_selector import APPLE_INTELLIGENCE_ID
 
+    # A `json_schema` request cannot be honoured on Apple Foundation Models:
+    # outlines FSM-constrained decoding is incompatible with FM, so the schema
+    # would be silently dropped and a structured-output caller (e.g. agno) would
+    # get free-form text that fails to parse downstream. Reject explicitly with a
+    # 4xx rather than emit unconstrained output that breaks later.
+    if output_type is not None and m._resolve_model_id() == APPLE_INTELLIGENCE_ID:
+        raise HTTPException(
+            status_code=400,
+            detail="response_format=json_schema is not supported on Apple "
+            "Foundation Models (no FSM-constrained decoding available)",
+        )
+
     def _generate() -> str:
         if m._resolve_model_id() == APPLE_INTELLIGENCE_ID:
             # outlines FSM decoding is incompatible with Foundation Models;
-            # Apple FM falls back to free-form (schema hint must be in prompt).
+            # Apple FM falls back to free-form (json_object / no schema only).
             return _infer_apple_fm(msgs, max_tokens)
         with m.model_session() as model:
             return model(

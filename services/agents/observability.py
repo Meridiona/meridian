@@ -80,6 +80,9 @@ _INITIALISED: dict[str, trace.Tracer] = {}
 _PROCESS_SERVICE_NAME: str | None = None
 # Held so shutdown() can flush log records the same way it flushes spans.
 _LOGGER_PROVIDER: LoggerProvider | None = None
+# One-time guard so an export misconfiguration (enabled-but-no-creds, or a
+# schemeless endpoint) warns once per process instead of on every resolve.
+_WARNED_EXPORT_MISCONFIG: bool = False
 
 
 # ──────────────────────── OTLP target resolution ───────────────────────────────
@@ -114,6 +117,8 @@ def _resolve_otlp_target() -> Optional[_OtlpTarget]:
     only; the legacy `MERIDIAN_OO_AUTH` env path is deprecated and ignored, the
     same decision the daemon made.
     """
+    global _WARNED_EXPORT_MISCONFIG
+
     if os.environ.get("MERIDIAN_TRACING_DISABLED", "").lower() in ("1", "true", "yes"):
         return None
 
@@ -121,9 +126,34 @@ def _resolve_otlp_target() -> Optional[_OtlpTarget]:
     if not settings.get("otlp_enabled"):
         return None
 
+    # Resolve the endpoint up front so we can warn (not silently disable) when
+    # export is enabled but unusable. Precedence: settings → env → localhost.
+    configured = str(settings.get("otlp_endpoint") or "").strip()
+    env_endpoint = (
+        os.environ.get("MERIDIAN_OTLP_TRACES_ENDPOINT", "").strip()
+        or os.environ.get("MERIDIAN_OTLP_ENDPOINT", "").strip()
+    )
+    traces_endpoint = configured or env_endpoint or DEFAULT_TRACES_ENDPOINT
+
+    def _warn_once(msg: str, *args: object) -> None:
+        global _WARNED_EXPORT_MISCONFIG
+        if not _WARNED_EXPORT_MISCONFIG:
+            _WARNED_EXPORT_MISCONFIG = True
+            logging.getLogger(__name__).warning(msg, *args)
+
     email = str(settings.get("oo_email") or "")
     password = str(settings.get("oo_password") or "")
     if not email or not password:
+        # otlp_enabled but no usable credentials → export OFF. Warn once so an
+        # env-only (MERIDIAN_OO_AUTH) install that predates the settings.json
+        # credential move doesn't go dark silently — mirrors the daemon, which
+        # also warns. MERIDIAN_OO_AUTH is no longer read here.
+        _warn_once(
+            "OpenObserve export enabled but oo_email/oo_password missing in %s — "
+            "traces+logs export DISABLED. Set credentials in the dashboard Settings "
+            "(the MERIDIAN_OO_AUTH env var is no longer used).",
+            _SETTINGS_PATH,
+        )
         return None
     # Guard against HTTP header injection / malformed user:password splits —
     # matches the daemon's same-named check.
@@ -131,18 +161,29 @@ def _resolve_otlp_target() -> Optional[_OtlpTarget]:
         return None
     auth = base64.standard_b64encode(f"{email}:{password}".encode()).decode()
 
-    configured = str(settings.get("otlp_endpoint") or "").strip()
-    env_endpoint = (
-        os.environ.get("MERIDIAN_OTLP_TRACES_ENDPOINT", "").strip()
-        or os.environ.get("MERIDIAN_OTLP_ENDPOINT", "").strip()
-    )
-    traces_endpoint = configured or env_endpoint or DEFAULT_TRACES_ENDPOINT
-    # OpenObserve serves logs at the sibling `/v1/logs` path; derive it from the
-    # traces endpoint so a custom base host carries over to both signals.
-    if traces_endpoint.endswith("/v1/traces"):
-        logs_endpoint = traces_endpoint[: -len("/v1/traces")] + "/v1/logs"
+    # Validate scheme — only http/https are valid OTLP transports. The daemon
+    # disables export + warns on a schemeless endpoint; mirror that exactly so the
+    # two processes don't disagree on whether export is on.
+    if not (traces_endpoint.startswith("http://") or traces_endpoint.startswith("https://")):
+        _warn_once(
+            "OTLP endpoint %r has no http/https scheme — export DISABLED.",
+            traces_endpoint,
+        )
+        return None
+
+    # OpenObserve serves logs at the sibling `…/v1/logs` path. Derive it from the
+    # traces endpoint by swapping the trailing signal segment so a custom host or
+    # base (incl. a trailing slash, e.g. `…/v1/traces/`) carries to BOTH signals —
+    # never silently fall back to localhost for logs while traces go remote.
+    t = traces_endpoint.rstrip("/")
+    if t.endswith("/v1/traces"):
+        logs_endpoint = t[: -len("/v1/traces")] + "/v1/logs"
+    elif t.endswith("/traces"):
+        logs_endpoint = t[: -len("/traces")] + "/logs"
+    elif "traces" in t:
+        logs_endpoint = t.rsplit("traces", 1)[0] + "logs"
     else:
-        logs_endpoint = DEFAULT_LOGS_ENDPOINT
+        logs_endpoint = t + "/v1/logs"
 
     return _OtlpTarget(traces_endpoint, logs_endpoint, {"Authorization": f"Basic {auth}"})
 
