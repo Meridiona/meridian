@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "meridian"
-version = "1.54.1"
+version = "1.56.0"
 edition = "2021"
 description = "Meridian — ambient developer-efficiency tool that keeps Jira, GitHub, and Linear in sync"
 authors = ["Meridiona"]
@@ -70,6 +70,19 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 once_cell = "1.19"
 dotenvy = "0.15"
 shellexpand = "3"
+
+# Telemetry spool: tar+gz for export/import CLI
+tar = "0.4"
+flate2 = "1"
+
+# HttpClient trait for SpoolClient
+opentelemetry-http = "0.27"
+async-trait = "0.1"
+bytes = "1"
+http = "1.1"
+
+# Telemetry import needs a tempdir at runtime (not just in tests)
+tempfile = "3"
 
 # OAuth (PKCE) — browser-based auth for PM providers (Jira, Linear)
 sha2 = "0.10"

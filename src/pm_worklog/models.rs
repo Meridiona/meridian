@@ -28,6 +28,29 @@ pub struct SessionDigest {
     pub category: Option<String>,
     #[serde(default)]
     pub text_source: Option<String>,
+    /// Lineage trace contexts — NOT part of the Python synth contract
+    /// (`skip_serializing` keeps the bundle JSON byte-identical), used only
+    /// Rust-side to add OTel span Links from the worklog_draft trace back to
+    /// each session's formation (ETL close) and classification traces.
+    #[serde(skip_serializing, default)]
+    pub formation_traceparent: Option<String>,
+    #[serde(skip_serializing, default)]
+    pub classify_traceparent: Option<String>,
+    /// Classification verdict scalars — also `skip_serializing` (Rust-only).
+    /// Reconstructed into clickable child spans under each session node in the
+    /// worklog_draft trace, so the classification CONTENT (what task, why, the
+    /// summary, the category) shows inline without re-fetching the original
+    /// classifier trace (which the span Link still points to for raw LLM I/O).
+    #[serde(skip_serializing, default)]
+    pub task_confidence: f64,
+    #[serde(skip_serializing, default)]
+    pub task_session_type: Option<String>,
+    #[serde(skip_serializing, default)]
+    pub task_reasoning: Option<String>,
+    #[serde(skip_serializing, default)]
+    pub category_explanation: Option<String>,
+    #[serde(skip_serializing, default)]
+    pub session_summary: Option<String>,
 }
 
 /// The collected input for one (task, hour) window — what Rust sends to the

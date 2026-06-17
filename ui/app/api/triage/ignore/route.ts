@@ -12,7 +12,7 @@ import { getWriteDb } from '@/lib/db-write'
 export const dynamic = 'force-dynamic'
 
 // Mirror of MUST_FIX in lib/hygiene — these can never be ignored.
-const MUST_FIX = new Set(['missing_description', 'thin_description', 'vague_title', 'missing_due_date'])
+const MUST_FIX = new Set(['missing_description', 'thin_description', 'vague_title', 'missing_due_date', 'overdue'])
 
 export async function POST(req: Request) {
   let body: { task_key?: unknown; code?: unknown; undo?: unknown }

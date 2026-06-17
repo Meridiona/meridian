@@ -29,9 +29,14 @@ pub async fn synthesise(bundle: &SessionBundle, cfg: &PmWorklogConfig) -> Result
         .build()
         .context("building synth http client")?;
 
+    // Propagate the active span's W3C traceparent (the `worklog_draft` span) so
+    // the Python synth becomes its own trace linked back to this draft — the same
+    // correlation the classifier uses. `None` when no span is active.
+    let traceparent = crate::observability::current_traceparent();
+
     let resp = client
         .post(&url)
-        .json(&json!({ "bundle": bundle }))
+        .json(&json!({ "bundle": bundle, "traceparent": traceparent }))
         .send()
         .await
         .with_context(|| {

@@ -1,3 +1,23 @@
+# [1.56.0](https://github.com/Meridiona/meridian/compare/v1.55.0...v1.56.0) (2026-06-17)
+
+
+### Bug Fixes
+
+* **plan:** retain completed planned tasks + surface overdue tickets in clean-up ([#301](https://github.com/Meridiona/meridian/issues/301)) ([f6ea76a](https://github.com/Meridiona/meridian/commit/f6ea76a8e36f1313d628b99214d7d047819a3723))
+* **worklog:** make synth emit JSON, not prose (PII hook + json_schema) ([#300](https://github.com/Meridiona/meridian/issues/300)) ([47f389f](https://github.com/Meridiona/meridian/commit/47f389f4e65fd09cf1c18e8294aa627de9fb2339)), closes [#297](https://github.com/Meridiona/meridian/issues/297)
+
+
+### Features
+
+* **observability:** durable telemetry spool + full worklog lineage trace ([#299](https://github.com/Meridiona/meridian/issues/299)) ([bafd96b](https://github.com/Meridiona/meridian/commit/bafd96beee2f6ee961b167dc1bfce5b60cb911ad))
+
+# [1.55.0](https://github.com/Meridiona/meridian/compare/v1.54.1...v1.55.0) (2026-06-17)
+
+
+### Features
+
+* **observability:** full session-task classifier debugging in OpenObserve ([#297](https://github.com/Meridiona/meridian/issues/297)) ([72598f0](https://github.com/Meridiona/meridian/commit/72598f0d016d5a35a7339f10fcd8ce7ce36e0fcb))
+
 ## [1.54.1](https://github.com/Meridiona/meridian/compare/v1.54.0...v1.54.1) (2026-06-16)
 
 
