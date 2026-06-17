@@ -23,6 +23,25 @@ _VSCODE_BANNER_RE = re.compile(
 # then responsible for not blowing the model's context window).
 SESSION_TEXT_CAP = int(os.environ.get("SESSION_TEXT_CAP", "10000"))
 
+# Max chars of each candidate ticket's description included in the prompt.
+# Default 0 = NO cap — the full description is sent. This field was previously
+# hard-capped at 240 chars, which dropped 56-83% of real ticket text (measured:
+# avg 548 chars, max 1440 across the live board), and the discriminating scope a
+# session must be matched against frequently lives past char 240. With the
+# 128K-context classifier and plan-only candidate sets (2-3 tickets), the prompt
+# has ample budget, so descriptions are sent in full by default. Set
+# CANDIDATE_DESC_CAP=<n> to re-impose a ceiling if an unusually long description
+# ever bloats the prompt (e.g. on a full-candidate fallback day).
+CANDIDATE_DESC_CAP = int(os.environ.get("CANDIDATE_DESC_CAP", "0"))
+
+# Recent-work continuity window (minutes). The prompt summarises the developer's
+# tracked work in this many minutes BEFORE the current session, aggregated per
+# ticket, as a weak continuity prior. Time-windowed (not count-windowed) on
+# purpose: session length is wildly variable, so "last N sessions" can be 90s of
+# micro-glances or 3h of deep work. Shared with run_task_linker_mlx.py, which
+# fetches the window. Override via CONTINUITY_WINDOW_MIN.
+_CONTINUITY_WINDOW_MIN = int(os.environ.get("CONTINUITY_WINDOW_MIN", "30"))
+
 
 def _fmt_dur(duration_s: int | float) -> str:
     secs = int(duration_s or 0)
@@ -102,8 +121,8 @@ def _format_candidates(tasks: list[dict]) -> str:
         epic_title  = (task.get("epic_title") or "").strip()
         sprint_name = (task.get("sprint_name") or "").strip()
         tags        = (task.get("tags") or "").strip()
-        if len(desc) > 240:
-            desc = desc[:240] + "…"
+        if CANDIDATE_DESC_CAP > 0 and len(desc) > CANDIDATE_DESC_CAP:
+            desc = desc[:CANDIDATE_DESC_CAP] + "…"
         meta_parts = [p for p in [issue_type, f"Epic: {epic_title}" if epic_title else "", sprint_name, f"tags: {tags}" if tags else ""] if p]
         meta = "  [" + " · ".join(meta_parts) + "]" if meta_parts else ""
         # The dev declared this ticket as today's focus on the plan page. It's a
@@ -117,44 +136,70 @@ def _format_candidates(tasks: list[dict]) -> str:
     return "\n\n".join(rows) if rows else "(no candidates)"
 
 
-def _format_recent_sessions(sessions: list[dict]) -> str:
-    if not sessions:
-        return "  (no recent session context)"
-    rows = []
-    for s in sessions:
-        time_str = _fmt_time(s.get("started_at") or "")
-        app = (s.get("app_name") or "?")[:14]
-        dur_str = _fmt_dur(s.get("duration_s") or 0)
-        task_key = s.get("task_key")
-        routing = s.get("task_routing")  # None means unclassified
-        if task_key:
-            target = f"→ {task_key}"
-        elif routing == "untracked":
-            target = "→ [untracked]"
-        elif routing is None:
-            # session captured but not yet classified
-            target = "→ [pending]"
+def _fmt_continuity_mins(seconds: float) -> str:
+    """Coarse minutes label for the continuity block: '<1 min' or '~N min'."""
+    secs = int(seconds or 0)
+    if secs < 60:
+        return "<1 min"
+    return f"~{round(secs / 60)} min"
+
+
+def _format_continuity(activity: list[dict], now_iso: str | None = None) -> str:
+    """Render the recent-ticket continuity prior — one bullet per ticket worked in
+    the window, ordered most-recent-first: total time spent, how many sessions it
+    spanned, and how long before the current session it was last active.
+
+    `activity` entries come from `_fetch_recent_ticket_activity` (already
+    aggregated, candidate-gated, confidence-filtered, recency-sorted). Empty input
+    → an explicit "no tracked work" line (not ""), so the block is ALWAYS present:
+    that tells the model definitively "there is no recent continuity — rely on this
+    session's own evidence" (silence is ambiguous — it can't tell "no work" from
+    "not provided") and keeps the trace node legible instead of blank. We
+    deliberately do NOT emit a raw per-session log: those rows leak internal state
+    (sub-threshold micro-sessions, not-yet-classified neighbours, two interleaved
+    classify pipelines) that the model misreads as signal. This is a derived,
+    calibrated statement of recent tracked work.
+    """
+    if not activity:
+        return "  (no tracked work in this window)"
+    lines = []
+    for a in activity:
+        total = _fmt_continuity_mins(a.get("total_s", 0))
+        n = int(a.get("sessions", 0) or 0)
+        sess = "1 session" if n == 1 else f"{n} sessions"
+        ago_s = a.get("ago_s")
+        if ago_s is None:
+            recency = ""
+        elif ago_s < 60:
+            recency = ", last active just before this session"
         else:
-            target = "→ [overhead]"
-        # Category is intentionally omitted — recent-context is a task-continuity
-        # signal only; carrying the (rule-based or prior-LLM) category tag would
-        # feed a category prior back into classification.
-        rows.append(f"  {time_str}  {app:<14}  {dur_str:<7}  {target}")
-    return "\n".join(rows)
+            recency = f", last active ~{round(ago_s / 60)} min before this session"
+        lines.append(f"  • {a['task_key']} — {total} over {sess}{recency}")
+    return "\n".join(lines)
 
 
 def build_user_message(
     session: dict,
     candidates: list[dict],
-    recent_sessions: list[dict] | None = None,
+    recent_activity: list[dict] | None = None,
+    now_iso: str | None = None,
 ) -> str:
-    sessions = recent_sessions or []
-    has_any_task_key = any(s.get("task_key") for s in sessions)
+    continuity = _format_continuity(recent_activity or [], now_iso)
+    # ALWAYS emitted (even when empty, where `continuity` is an explicit
+    # "no tracked work" line) so the model gets a definitive signal rather than
+    # ambiguous silence, and the trace node is never blank. Framed as a WEAK prior,
+    # never an instruction: an assertive "user was working on KAN-X" anchors the
+    # model into force-linking — the exact false-positive failure mode the SKILL
+    # warns against. The block states facts (ticket, time, recency); the SKILL's
+    # "classify by THIS session's evidence" rule governs.
     recent_block = (
-        "RECENT WORK CONTEXT:\n"
-        f"{_format_recent_sessions(sessions)}\n"
+        f"RECENT WORK CONTEXT — the developer's tracked work in the last "
+        f"{_CONTINUITY_WINDOW_MIN} minutes before this session. This is a WEAK "
+        "continuity hint, NOT proof: continue the most-recent ticket ONLY if this "
+        "session's own evidence also fits it; never link on continuity alone.\n"
+        f"{continuity}\n"
         "\n"
-    ) if has_any_task_key else ""
+    )
     # When the dev declared a focus for the day, name it in the header so the model
     # treats ★ rows as a prior — preferred when the evidence plausibly fits, but
     # never forced. Recall is preserved: every candidate is still listed.
