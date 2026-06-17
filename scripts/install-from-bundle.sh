@@ -367,11 +367,13 @@ fi
 if ! command -v ffmpeg >/dev/null 2>&1; then info "Installing ffmpeg…"; brew install ffmpeg; fi
 ok "ffmpeg"
 
-# ── 2. Config: single repo-local .env ────────────────────────────────────────
-ENV_FILE="${APP_ROOT}/.env"
+# ── 2. Config: user credential file ──────────────────────────────────────────
+# Canonical location is ~/.meridian/.env — install-independent, next to
+# meridian.db and settings.json, never inside app/ (the binary tree).
+ENV_FILE="${HOME}/.meridian/.env"
 if [[ ! -f "${ENV_FILE}" ]]; then
     cp "${APP_ROOT}/.env.example" "${ENV_FILE}"
-    info "created ${ENV_FILE} from template — add your Jira creds later: meridian config edit"
+    info "created ${ENV_FILE} from template — add your credentials: meridian config edit"
 fi
 # MLX is the default backend.
 grep -q '^CLASSIFIER_BACKEND=' "${ENV_FILE}" || echo "CLASSIFIER_BACKEND=mlx" >> "${ENV_FILE}"
@@ -716,7 +718,7 @@ if command -v cursor >/dev/null 2>&1 || [[ -d "${HOME}/Library/Application Suppo
     else
         info "  Cursor detected but the cursor-agent CLI is missing — Cursor summaries will use the local model (MLX)."
         info "  To summarise with Cursor's own CLI:  curl https://cursor.com/install -fsS | bash  then: cursor-agent login"
-        info "  Or let the daemon install it on demand: add CURSOR_AGENT_AUTO_INSTALL=1 to ${HOME}/.meridian/app/.env"
+        info "  Or let the daemon install it on demand: add CURSOR_AGENT_AUTO_INSTALL=1 to ${HOME}/.meridian/.env"
     fi
 fi
 

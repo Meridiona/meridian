@@ -268,7 +268,7 @@ _doctor_fallback() {
     printf "  ════════════════════════════════════════════════════════\n"
     _group "system"
     _row "$([[ "$(uname -s)" == "Darwin" ]] && echo ok || echo fail)" "macOS" ""
-    _row "$([[ -f "${REPO_ROOT}/.env" ]] && echo ok || echo fail)" "config (.env)" ""
+    _row "$([[ -f "${HOME}/.meridian/.env" || -f "${REPO_ROOT}/.env" ]] && echo ok || echo fail)" "config (.env)" ""
     _group "services (plists)"
     _plist_row "$LABEL_DAEMON" "daemon plist"
     _plist_row "$LABEL_SCREENPIPE" "screenpipe plist"
@@ -288,7 +288,9 @@ _doctor_fallback() {
 #   (no flag)        full run: classification + worklog synthesis
 
 _smoke_read_env() {
-    local key="$1" env_file="${REPO_ROOT}/.env"
+    local key="$1"
+    local env_file="${HOME}/.meridian/.env"
+    [[ -f "$env_file" ]] || env_file="${REPO_ROOT}/.env"
     [[ -f "$env_file" ]] || return 0
     grep -E "^${key}=" "$env_file" 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
@@ -452,9 +454,10 @@ cmd_config() {
         err "usage: meridian config edit"
         exit 1
     fi
-    local env_file="${REPO_ROOT}/.env"
+    local env_file="${HOME}/.meridian/.env"
+    [[ -f "$env_file" ]] || env_file="${REPO_ROOT}/.env"
     if [[ ! -f "$env_file" ]]; then
-        err "${env_file} not found — run ./install.sh first"
+        err "~/.meridian/.env not found — run the installer first"
         exit 1
     fi
     "${EDITOR:-nano}" "$env_file"

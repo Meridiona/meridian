@@ -48,8 +48,17 @@ cp -R "${BUNDLE}/." "${STAGE}/"
 # Drop npm-package metadata that isn't part of the app.
 rm -f "${STAGE}/package.json" "${STAGE}/README.md" "${STAGE}/.gitignore" "${STAGE}/.npmignore"
 
-# Preserve an existing .env across re-installs/updates.
-[[ -f "${APP}/.env" ]] && cp "${APP}/.env" "${STAGE}/.env"
+# One-time migration: move credentials from the old app/.env location to the
+# canonical ~/.meridian/.env (outside the swap area — untouched by updates).
+# If both exist, the canonical wins and the old copy is removed.
+if [[ -f "${APP}/.env" ]]; then
+    if [[ ! -f "${HOME}/.meridian/.env" ]]; then
+        mv "${APP}/.env" "${HOME}/.meridian/.env"
+        echo "migrated credentials: ~/.meridian/app/.env → ~/.meridian/.env"
+    else
+        rm -f "${APP}/.env"
+    fi
+fi
 
 # Preserve the Python venv across updates. The venv is built from PyPI via
 # uv sync at install time; preserving it means install-from-bundle.sh only
