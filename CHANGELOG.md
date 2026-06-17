@@ -1,3 +1,10 @@
+## [1.58.1](https://github.com/Meridiona/meridian/compare/v1.58.0...v1.58.1) (2026-06-17)
+
+
+### Bug Fixes
+
+* **install:** revive screenpipe after `meridian stop` (enable before bootstrap + retry) ([#308](https://github.com/Meridiona/meridian/issues/308)) ([e277bbb](https://github.com/Meridiona/meridian/commit/e277bbb0e577c4fe2a87a285899b421627a3b920))
+
 # [1.58.0](https://github.com/Meridiona/meridian/compare/v1.57.0...v1.58.0) (2026-06-17)
 
 
