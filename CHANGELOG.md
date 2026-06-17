@@ -1,3 +1,10 @@
+# [1.59.0](https://github.com/Meridiona/meridian/compare/v1.58.1...v1.59.0) (2026-06-17)
+
+
+### Features
+
+* **classifier:** plan-only candidate set + 30-min per-ticket continuity context ([#309](https://github.com/Meridiona/meridian/issues/309)) ([f19d42c](https://github.com/Meridiona/meridian/commit/f19d42c16152ae9ed70615364cb53b3046d40b96))
+
 ## [1.58.1](https://github.com/Meridiona/meridian/compare/v1.58.0...v1.58.1) (2026-06-17)
 
 
