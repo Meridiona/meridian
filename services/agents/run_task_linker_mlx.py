@@ -580,7 +580,7 @@ def _fetch_session(
         "SELECT id, app_name, started_at, ended_at, duration_s, session_text,"
         "       session_text_source, window_titles, category, confidence,"
         "       session_summary, claude_session_uuid,"
-        "       min_frame_id, max_frame_id, frame_count"
+        "       min_frame_id, max_frame_id, frame_count, frame_contributions"
         " FROM app_sessions WHERE id = ?",
         (session_id,),
     ).fetchone()
@@ -818,6 +818,30 @@ def _classify_one(
         db_span.set_attribute("candidate_task_keys", ", ".join(candidate_keys) if candidate_keys else "-")
         db_span.set_attribute("today_focus_keys", ", ".join(focus_keys) if focus_keys else "-")
         db_span.set_attribute("recent_task_keys", ", ".join(recent_task_keys) if recent_task_keys else "-")
+
+    # ── contributing_frames ─────────────────────────────────────────────────────
+    # Which screenpipe frames' OCR/a11y text actually fed this session's
+    # session_text, captured at ETL formation time (durable across screenpipe
+    # pruning; see migration 045). One self-describing span per session so a
+    # misclassification can be traced back to the exact capture frames — without
+    # needing screenpipe access. Skipped for sessions with no frame provenance
+    # (coding-agent rows, or rows formed before migration 045).
+    try:
+        _frames = json.loads(session_raw.get("frame_contributions") or "[]")
+    except (TypeError, ValueError):
+        _frames = []
+    if _frames:
+        with tracer.start_as_current_span("contributing_frames") as cf_span:
+            cf_span.set_attribute("frame_count", len(_frames))
+            cf_span.set_attribute(
+                "frame_ids", ", ".join(str(f.get("frame_id")) for f in _frames)
+            )
+            cf_span.set_attribute("first_frame_ts", str(_frames[0].get("timestamp", "")))
+            cf_span.set_attribute("last_frame_ts", str(_frames[-1].get("timestamp", "")))
+            cf_span.set_attribute("total_chars", sum(int(f.get("chars") or 0) for f in _frames))
+            # Full per-frame detail (id, timestamp, source, chars) as a JSON blob,
+            # so the exact provenance is one click away in the span attributes.
+            cf_span.set_attribute("frames", json.dumps(_frames, separators=(",", ":")))
 
     session = {
         "id":                  session_id,

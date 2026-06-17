@@ -275,6 +275,137 @@ async fn test_session_text_empty_when_no_full_text() {
 }
 
 // ---------------------------------------------------------------------------
+// Frame contributions (per-frame provenance)
+// ---------------------------------------------------------------------------
+
+// Helper: parse the frame_contributions JSON into the list of frame_ids.
+fn frame_ids(json: &str) -> Vec<i64> {
+    serde_json::from_str::<Vec<serde_json::Value>>(json)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|f| f.get("frame_id").and_then(serde_json::Value::as_i64))
+        .collect()
+}
+
+/// A closed session records exactly the frames whose text fed session_text.
+#[tokio::test]
+async fn test_frame_contributions_populated_in_closed_session() {
+    let sp = common::make_screenpipe_db().await;
+    let md = common::make_meridian_db().await;
+
+    common::insert_frames_with_text(
+        &sp,
+        1,
+        &[
+            ("Code", "2026-01-01T10:00:00+00:00", "fn main() {}"),
+            ("Code", "2026-01-01T10:00:01+00:00", "let x = 1;"),
+            ("Code", "2026-01-01T10:00:02+00:00", "println!(\"hi\");"),
+            // app switch forces close
+            ("Slack", "2026-01-01T10:00:03+00:00", "Channel: #general"),
+        ],
+    )
+    .await;
+
+    run_etl(&sp, &md).await.unwrap();
+
+    let row: (Option<String>,) =
+        sqlx::query_as("SELECT frame_contributions FROM app_sessions WHERE app_name = 'Code'")
+            .fetch_one(&md)
+            .await
+            .unwrap();
+
+    let json = row.0.expect("closed session must have frame_contributions");
+    let ids = frame_ids(&json);
+    assert_eq!(ids, vec![1, 2, 3], "must record the 3 Code frames that had text");
+    // The frame that closed the block (Slack, id 4) belongs to the next session.
+    assert!(!ids.contains(&4), "the Slack frame must not be attributed to Code");
+}
+
+/// Empty-text frames contribute nothing — frame_contributions is an empty array.
+#[tokio::test]
+async fn test_frame_contributions_empty_when_no_full_text() {
+    let sp = common::make_screenpipe_db().await;
+    let md = common::make_meridian_db().await;
+
+    for i in 0i64..3 {
+        let ts = format!("2026-01-01T10:00:0{}+00:00", i);
+        sqlx::query(
+            "INSERT INTO frames (id, app_name, window_name, timestamp, full_text, text_source)
+             VALUES (?, 'Code', NULL, ?, '', 'accessibility')",
+        )
+        .bind(i + 1)
+        .bind(&ts)
+        .execute(&sp)
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO frames (id, app_name, window_name, timestamp, full_text, text_source)
+         VALUES (4, 'Slack', NULL, '2026-01-01T10:00:04+00:00', 'notifications', 'accessibility')",
+    )
+    .execute(&sp)
+    .await
+    .unwrap();
+
+    run_etl(&sp, &md).await.unwrap();
+
+    let row: (Option<String>,) =
+        sqlx::query_as("SELECT frame_contributions FROM app_sessions WHERE app_name = 'Code'")
+            .fetch_one(&md)
+            .await
+            .unwrap();
+
+    let json = row.0.unwrap_or_default();
+    assert!(
+        frame_ids(&json).is_empty(),
+        "frames with empty full_text must produce no contributions; got: {json:?}"
+    );
+}
+
+/// Across two ETL runs on the same open session, frame contributions union both
+/// batches with no duplicate frame_ids.
+#[tokio::test]
+async fn test_frame_contributions_merged_across_etl_runs() {
+    let sp = common::make_screenpipe_db().await;
+    let md = common::make_meridian_db().await;
+
+    common::insert_frames_with_text(
+        &sp,
+        1,
+        &[
+            ("Code", "2026-01-01T10:00:00+00:00", "set_a_line_one"),
+            ("Code", "2026-01-01T10:00:01+00:00", "set_a_line_two"),
+        ],
+    )
+    .await;
+    run_etl(&sp, &md).await.unwrap();
+
+    common::insert_frames_with_text(
+        &sp,
+        3,
+        &[
+            ("Code", "2026-01-01T10:01:00+00:00", "set_b_line_one"),
+            ("Code", "2026-01-01T10:01:01+00:00", "set_b_line_two"),
+        ],
+    )
+    .await;
+    run_etl(&sp, &md).await.unwrap();
+
+    let row: (Option<String>,) =
+        sqlx::query_as("SELECT frame_contributions FROM active_session WHERE id = 1")
+            .fetch_one(&md)
+            .await
+            .unwrap();
+
+    let ids = frame_ids(&row.0.expect("active_session must have frame_contributions"));
+    assert_eq!(
+        ids,
+        vec![1, 2, 3, 4],
+        "merged contributions must union both batches in order, deduped by frame_id"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Marker emission — large time gap
 // ---------------------------------------------------------------------------
 

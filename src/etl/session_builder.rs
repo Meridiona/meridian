@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::db::meridian::ActiveSession;
 use crate::db::screenpipe::{AudioSnippet, SignalEvent, WindowTitleCount};
-use crate::etl::extractor::BlockContext;
+use crate::etl::extractor::{BlockContext, FrameContribution, FRAME_CONTRIBUTION_CAP};
 use crate::etl::text_merge::merge_session_texts;
 use crate::intelligence::session_categorizer::{categorize, SessionSignals};
 
@@ -67,6 +67,7 @@ pub(super) fn build_active_session(
         category,
         confidence,
         session_text: Some(ctx.session_text.clone()),
+        frame_contributions: Some(ctx.frame_contributions.clone()),
     })
 }
 
@@ -127,6 +128,27 @@ pub(super) fn merge_into_active(
         &ctx.session_text,
     );
 
+    // Union the per-frame provenance, deduped by frame_id (a re-extracted block
+    // re-reports earlier frames), preserving order and capped like the source.
+    let mut frame_contribs: Vec<FrameContribution> = existing
+        .frame_contributions
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    let mut seen_frame_ids: std::collections::HashSet<i64> =
+        frame_contribs.iter().map(|f| f.frame_id).collect();
+    let new_contribs: Vec<FrameContribution> =
+        serde_json::from_str(&ctx.frame_contributions).unwrap_or_default();
+    for fc in new_contribs {
+        if frame_contribs.len() >= FRAME_CONTRIBUTION_CAP {
+            break;
+        }
+        if seen_frame_ids.insert(fc.frame_id) {
+            frame_contribs.push(fc);
+        }
+    }
+    let merged_frame_contributions = serde_json::to_string(&frame_contribs)?;
+
     let (category, confidence) = classify(&ClassifyInput {
         app_name: &existing.app_name,
         window_titles: &merged_titles,
@@ -152,6 +174,7 @@ pub(super) fn merge_into_active(
         category,
         confidence,
         session_text: Some(merged_session_text),
+        frame_contributions: Some(merged_frame_contributions),
     })
 }
 

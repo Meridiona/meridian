@@ -42,6 +42,7 @@ async fn test_close_active_session_with_inserts_and_clears() {
         category: "idle_personal".into(),
         confidence: 0.0,
         session_text: None,
+        frame_contributions: None,
     };
 
     upsert_active_session(&md, &session).await.unwrap();
@@ -96,6 +97,7 @@ async fn test_close_active_session_with_stale_then_new() {
         category: "communication".into(),
         confidence: 0.8,
         session_text: None,
+        frame_contributions: None,
     };
 
     upsert_active_session(&md, &stale).await.unwrap();
@@ -120,6 +122,7 @@ async fn test_close_active_session_with_stale_then_new() {
         category: "coding".into(),
         confidence: 0.7,
         session_text: None,
+        frame_contributions: None,
     };
 
     close_active_session_with(&md, &new_session, etl_run_id)
