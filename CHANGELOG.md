@@ -1,3 +1,10 @@
+# [1.55.0](https://github.com/Meridiona/meridian/compare/v1.54.1...v1.55.0) (2026-06-17)
+
+
+### Features
+
+* **observability:** full session-task classifier debugging in OpenObserve ([#297](https://github.com/Meridiona/meridian/issues/297)) ([72598f0](https://github.com/Meridiona/meridian/commit/72598f0d016d5a35a7339f10fcd8ce7ce36e0fcb))
+
 ## [1.54.1](https://github.com/Meridiona/meridian/compare/v1.54.0...v1.54.1) (2026-06-16)
 
 
