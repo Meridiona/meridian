@@ -1303,6 +1303,14 @@ def _classify_one_logged_inner(
     }
     run_log.write(json.dumps(record, default=str) + "\n")
     run_log.flush()
+    # Promote app_name onto the classify_session span (the one row-per-session
+    # span the dashboards query), so app name is a filterable column there — not
+    # just on the child db_fetch span. session_raw is the DB row; current span
+    # here is classify_session (db_fetch's child span has already closed).
+    if session_raw:
+        _cs = trace.get_current_span()
+        if _cs.is_recording():
+            _cs.set_attribute("app_name", str(session_raw.get("app_name") or ""))
     _annotate_classification_span(result)
     return result
 
