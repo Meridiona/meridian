@@ -38,7 +38,7 @@ import logging.handlers
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
@@ -86,15 +86,12 @@ _WARNED_EXPORT_MISCONFIG: bool = False
 
 
 # ──────────────────────── OTLP target resolution ───────────────────────────────
-class _OtlpTarget:
-    """Resolved OTLP export target: signal endpoint + Basic-auth header value."""
+class _OtlpTarget(NamedTuple):
+    """Resolved OTLP export target: signal endpoints + Basic-auth header value."""
 
-    __slots__ = ("traces_endpoint", "logs_endpoint", "headers")
-
-    def __init__(self, traces_endpoint: str, logs_endpoint: str, headers: dict[str, str]):
-        self.traces_endpoint = traces_endpoint
-        self.logs_endpoint = logs_endpoint
-        self.headers = headers
+    traces_endpoint: str
+    logs_endpoint: str
+    headers: dict[str, str]
 
 
 def _load_settings() -> dict[str, object]:
@@ -210,8 +207,13 @@ def setup(agent_name: str) -> trace.Tracer:
 
     if _PROCESS_SERVICE_NAME is None:
         _PROCESS_SERVICE_NAME = agent_name
-        _configure_tracing(agent_name)
-        _configure_logging(agent_name)
+        # Resolve the export target ONCE and pass it to both configurers — a
+        # second read could see a settings.json the dashboard rewrote mid-setup
+        # (TOCTOU), leaving traces enabled while logs resolve disabled (or with
+        # different creds/endpoint) in the same process.
+        target = _resolve_otlp_target()
+        _configure_tracing(agent_name, target)
+        _configure_logging(agent_name, target)
         logging.getLogger(agent_name).info(
             "observability initialised",
             extra={"service.name": agent_name},
@@ -255,11 +257,10 @@ def extract_parent_context(traceparent: Optional[str]) -> Optional[Context]:
 
 
 # ──────────────────────── Tracing setup ────────────────────────────────────────
-def _configure_tracing(agent_name: str) -> None:
+def _configure_tracing(agent_name: str, target: Optional[_OtlpTarget]) -> None:
     resource = Resource.create({"service.name": agent_name})
     provider = TracerProvider(resource=resource)
 
-    target = _resolve_otlp_target()
     if target is not None:
         exporter = OTLPSpanExporter(
             endpoint=target.traces_endpoint, headers=target.headers
@@ -273,7 +274,9 @@ def _configure_tracing(agent_name: str) -> None:
     set_global_textmap(TraceContextTextMapPropagator())
 
 
-def _configure_log_export(agent_name: str) -> Optional[logging.Handler]:
+def _configure_log_export(
+    agent_name: str, target: Optional[_OtlpTarget]
+) -> Optional[logging.Handler]:
     """Build an OTLP-logs handler so every `log.*` record reaches OpenObserve,
     correlated to the active span by trace_id/span_id — the Python counterpart
     of the Rust daemon's `OpenTelemetryTracingBridge`.
@@ -283,7 +286,6 @@ def _configure_log_export(agent_name: str) -> Optional[logging.Handler]:
     """
     global _LOGGER_PROVIDER
 
-    target = _resolve_otlp_target()
     if target is None:
         return None
 
@@ -297,7 +299,7 @@ def _configure_log_export(agent_name: str) -> Optional[logging.Handler]:
 
 
 # ──────────────────────── Logging setup ────────────────────────────────────────
-def _configure_logging(agent_name: str) -> None:
+def _configure_logging(agent_name: str, target: Optional[_OtlpTarget]) -> None:
     log_dir = Path(os.environ.get("MERIDIAN_LOG_DIR") or DEFAULT_LOG_DIR)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{agent_name}.jsonl"
@@ -363,8 +365,15 @@ def _configure_logging(agent_name: str) -> None:
     # span waterfall. No-op (None) when OTLP is disabled.
     # The OTLP handler already carries service.name via the OTel Resource, so it
     # needs no _ServiceFilter (that would duplicate the attribute on each record).
-    otlp_log_h = _configure_log_export(agent_name)
+    otlp_log_h = _configure_log_export(agent_name, target)
     if otlp_log_h is not None:
+        # Do NOT feed the OTLP exporter's OWN transport logs back into OTLP
+        # export: on export failure httpx/urllib3/opentelemetry emit WARNING+
+        # records which this root handler would try to export → more failures (a
+        # log→export→log loop). Drop those from THIS handler only — they still
+        # reach the file/stderr handlers.
+        _otlp_excluded = ("httpx", "httpcore", "urllib3", "grpc", "opentelemetry")
+        otlp_log_h.addFilter(lambda r: not r.name.startswith(_otlp_excluded))
         root.addHandler(otlp_log_h)
     root.setLevel(level)
 

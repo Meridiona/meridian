@@ -15,7 +15,7 @@
         "hideOnDashboard": false,
         "selectAllValueForMultiSelect": "custom",
         "customMultiSelectValue": [],
-        "escapeSingleQuotes": false
+        "escapeSingleQuotes": true
       },
       {
         "type": "custom",
@@ -33,7 +33,7 @@
         "hideOnDashboard": false,
         "selectAllValueForMultiSelect": "custom",
         "customMultiSelectValue": [],
-        "escapeSingleQuotes": false
+        "escapeSingleQuotes": true
       },
       {
         "type": "custom",
@@ -49,7 +49,7 @@
         "hideOnDashboard": false,
         "selectAllValueForMultiSelect": "custom",
         "customMultiSelectValue": [],
-        "escapeSingleQuotes": false
+        "escapeSingleQuotes": true
       }
     ],
     "showDynamicFilters": true
