@@ -136,8 +136,13 @@ def _write_spool(signal: str, payload: bytes) -> None:
         # (the Rust shipper sweeps these, but don't rely on it).
         try:
             tmp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        except OSError as cleanup_exc:
+            # Cleanup failure is non-fatal: write already failed and we avoid
+            # raising secondary errors from best-effort orphan removal.
+            logging.getLogger(__name__).debug(
+                "telemetry spool tmp cleanup failed",
+                extra={"tmp_path": str(tmp_path), "error": str(cleanup_exc)},
+            )
 
 
 class SpoolSpanExporter:
