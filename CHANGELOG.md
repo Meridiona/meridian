@@ -1,3 +1,11 @@
+# [1.57.0](https://github.com/Meridiona/meridian/compare/v1.56.0...v1.57.0) (2026-06-17)
+
+
+### Features
+
+* **observability:** one root trace per classified session + frame-range attribution ([#304](https://github.com/Meridiona/meridian/issues/304)) ([0d76152](https://github.com/Meridiona/meridian/commit/0d76152fb06e58823ef2c408c166ec5e582d87dd))
+* **today:** replace AI-assisted % with coding time + fix Shape of Day ([#307](https://github.com/Meridiona/meridian/issues/307)) ([d79b33b](https://github.com/Meridiona/meridian/commit/d79b33b8a23000c3e76f1d2998a766fdcbfd2d03))
+
 # [1.56.0](https://github.com/Meridiona/meridian/compare/v1.55.0...v1.56.0) (2026-06-17)
 
 
