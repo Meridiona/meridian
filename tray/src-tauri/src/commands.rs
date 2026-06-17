@@ -44,7 +44,7 @@ pub async fn get_triage(
     let Some(pool) = pool.inner() else {
         return Err("meridian.db is not open yet".to_string());
     };
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     meridian_core::triage::get_triage(pool, &now)
         .await
         .map_err(|e| {
@@ -174,10 +174,54 @@ fn uid_str() -> String {
         .unwrap_or_else(|| "501".to_string())
 }
 
-/// Resolve meridian.db: `MERIDIAN_DB` env, else `~/.meridian/meridian.db`.
-/// (Production should reuse `meridian::config` for full .env + `~` handling.)
+/// Read `key` from a single line of a .env file, stripping surrounding quotes.
+fn dotenv_line_value(line: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    let t = line.trim();
+    if t.starts_with('#') || !t.starts_with(prefix.as_str()) {
+        return None;
+    }
+    let raw = t[prefix.len()..].trim();
+    let v = raw.trim_matches('"').trim_matches('\'').trim();
+    if v.is_empty() {
+        None
+    } else {
+        Some(v.to_string())
+    }
+}
+
+/// Look up `key` in the daemon's .env (bundle: `~/.meridian/app/.env`, else
+/// the first `.env` walking up from cwd — same search as `active_env_path`).
+fn env_from_daemon_dotenv(key: &str) -> Option<String> {
+    let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
+    let bundle = home.as_ref().map(|h| h.join(".meridian/app/.env"));
+    let path = if bundle.as_ref().is_some_and(|p| p.exists()) {
+        bundle.unwrap()
+    } else {
+        let mut dir = std::env::current_dir().ok()?;
+        for _ in 0..8 {
+            let c = dir.join(".env");
+            if c.exists() {
+                let contents = std::fs::read_to_string(&c).ok()?;
+                return contents.lines().find_map(|l| dotenv_line_value(l, key));
+            }
+            if !dir.pop() {
+                return None;
+            }
+        }
+        return None;
+    };
+    let contents = std::fs::read_to_string(&path).ok()?;
+    contents.lines().find_map(|l| dotenv_line_value(l, key))
+}
+
+/// Resolve meridian.db path: process env first (launchd plist / shell export),
+/// then the daemon's .env file, then the default location.
 pub(crate) fn meridian_db_path() -> String {
     if let Ok(p) = std::env::var("MERIDIAN_DB") {
+        return p;
+    }
+    if let Some(p) = env_from_daemon_dotenv("MERIDIAN_DB") {
         return p;
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());

@@ -67,7 +67,9 @@ fn parse_env(path: &PathBuf) -> HashMap<String, String> {
                 continue;
             }
             let key = trimmed[..eq].trim();
-            let val = trimmed[eq + 1..].trim();
+            // Strip surrounding quotes so KEY="" and KEY='' register as empty.
+            let raw = trimmed[eq + 1..].trim();
+            let val = raw.trim_matches('"').trim_matches('\'').trim();
             if !key.is_empty() && !val.is_empty() {
                 out.insert(key.to_string(), val.to_string());
             }

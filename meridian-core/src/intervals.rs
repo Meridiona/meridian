@@ -114,10 +114,14 @@ pub fn intersect_seconds(a: &[Interval], b: &[Interval]) -> i64 {
         if hi > lo {
             total_ms += hi - lo;
         }
-        // advance whichever interval ends first
+        // advance whichever interval ends first; advance both on a tie so
+        // neither re-enters against a following interval starting right there
         if a[i].1 < b[j].1 {
             i += 1;
+        } else if a[i].1 > b[j].1 {
+            j += 1;
         } else {
+            i += 1;
             j += 1;
         }
     }
@@ -197,6 +201,15 @@ mod tests {
         // a 10:00–10:10, b 10:05–10:20 → overlap 10:05–10:10 = 300 s
         let a = vec![iv("2026-06-16T10:00:00+00:00", "2026-06-16T10:10:00+00:00")];
         let b = vec![iv("2026-06-16T10:05:00+00:00", "2026-06-16T10:20:00+00:00")];
+        assert_eq!(intersect_seconds(&a, &b), 300);
+    }
+
+    #[test]
+    fn intersect_equal_endpoints_counted_once() {
+        // Both intervals end at the same point — advance-both-on-tie means the
+        // endpoint is not double-counted if subsequent intervals start there.
+        let a = vec![iv("2026-06-16T10:00:00+00:00", "2026-06-16T10:10:00+00:00")];
+        let b = vec![iv("2026-06-16T10:05:00+00:00", "2026-06-16T10:10:00+00:00")];
         assert_eq!(intersect_seconds(&a, &b), 300);
     }
 

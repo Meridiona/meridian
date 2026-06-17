@@ -33,6 +33,11 @@ pub mod triage;
 /// Local-day boundary helpers for the dashboard routes (ported from date-utils.ts).
 pub mod date;
 
+/// Response types + DB row shapes for `/api/today` — extracted so `today.rs`
+/// stays under the 500-line limit. Re-exported from [`crate::today`]; callers
+/// use `meridian_core::today::TodayResponse` etc.
+mod today_types;
+
 /// The `/api/today` dashboard payload, computed in Rust (ported from today/route.ts).
 pub mod today;
 

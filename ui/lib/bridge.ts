@@ -46,7 +46,17 @@ export async function load<T = unknown>(
 ): Promise<T> {
   const t = tauri()
   if (t) return t.core.invoke(command, args) as Promise<T>
-  const r = await fetch(apiPath)
+  // Browser fallback: append args as query params so /api routes receive them.
+  const qs = args
+    ? new URLSearchParams(
+        Object.fromEntries(
+          Object.entries(args)
+            .filter(([, v]) => v != null)
+            .map(([k, v]) => [k, String(v)])
+        )
+      ).toString()
+    : ''
+  const r = await fetch(qs ? `${apiPath}?${qs}` : apiPath)
   if (!r.ok) throw new Error(`${apiPath} → ${r.status}`)
   return r.json() as Promise<T>
 }
