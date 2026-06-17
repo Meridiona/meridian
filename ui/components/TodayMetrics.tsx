@@ -16,10 +16,11 @@ interface Props {
   agent_s: number
   supervised_s: number
   autonomous_s: number
+  coding_s: number
   switch_count: number
 }
 
-type Key = 'focus' | 'ai' | 'switches'
+type Key = 'focus' | 'coding' | 'switches'
 
 const pct = (part: number, whole: number) => (whole > 0 ? Math.round((part / whole) * 100) : 0)
 
@@ -36,14 +37,15 @@ function DetailRow({ label, value, hint }: { label: string; value: string; hint?
 }
 
 export default function TodayMetrics(props: Props) {
-  const { focus_s, idle_s, agent_s, supervised_s, autonomous_s, switch_count } = props
+  const { focus_s, idle_s, agent_s, supervised_s, autonomous_s, coding_s, switch_count } = props
   const [open, setOpen] = useState<Key | null>(null)
 
   const tiles: { key: Key; label: string; value: string; note: string }[] = [
     { key: 'focus', label: 'Focus', value: fmtDur(focus_s), note: 'active' },
-    { key: 'ai', label: 'AI-assisted', value: `${pct(supervised_s, focus_s)}%`, note: 'of focus' },
+    { key: 'coding', label: 'Coding', value: fmtDur(coding_s), note: 'time coding' },
     { key: 'switches', label: 'Switches', value: String(switch_count), note: 'context switches' },
   ]
+  const showAgentLine = autonomous_s >= 60
 
   const detail = (key: Key) => {
     switch (key) {
@@ -52,15 +54,14 @@ export default function TodayMetrics(props: Props) {
           <>
             <DetailRow label="Active" value={fmtDur(focus_s)} hint="you, at the keyboard" />
             <DetailRow label="Idle / away" value={fmtDur(idle_s)} hint="no input detected" />
-            <DetailRow label="AI-assisted" value={`${fmtDur(supervised_s)} · ${pct(supervised_s, focus_s)}%`} hint="of your active time" />
           </>
         )
-      case 'ai':
+      case 'coding':
         return (
           <>
-            <DetailRow label="Supervised" value={fmtDur(supervised_s)} hint="agent ran while you were active" />
-            <DetailRow label="Autonomous" value={fmtDur(autonomous_s)} hint="agent ran while you were away" />
-            <DetailRow label="Agent total" value={fmtDur(agent_s)} hint="engaged Claude / Codex time" />
+            <DetailRow label="Your coding" value={fmtDur(coding_s - autonomous_s)} hint="at the keyboard" />
+            <DetailRow label="Agent (solo)" value={fmtDur(autonomous_s)} hint="Claude / Codex ran while you were away" />
+            <DetailRow label="Total" value={fmtDur(agent_s)} hint="engaged Claude / Codex time" />
           </>
         )
       case 'switches':
@@ -94,7 +95,10 @@ export default function TodayMetrics(props: Props) {
                 <span className="text-[9px]" style={{ color: 'var(--ink-4)', transform: isOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}>▾</span>
               </p>
               <p className="font-mono tnum text-[20px] leading-none" style={{ color: 'var(--ink)' }}>{t.value}</p>
-              <p className="text-[11px] mt-1.5" style={{ color: 'var(--ink-3)' }}>{t.note}</p>
+              {t.key === 'coding' && showAgentLine
+                ? <p className="text-[11px] mt-1.5" style={{ color: 'var(--live)' }}>incl. {fmtDur(autonomous_s)} autonomous AI agent</p>
+                : <p className="text-[11px] mt-1.5" style={{ color: 'var(--ink-3)' }}>{t.note}</p>
+              }
             </button>
           )
         })}
