@@ -263,6 +263,17 @@ Read `VISION.md` first.
 - Include the file header comment on line 1
 - The integration test helper `make_meridian_db()` runs all migrations; new migrations are covered automatically by `cargo test`
 
+### Observability (logs & traces → OpenObserve)
+
+Any new or changed code path that does real work (daemon stages, the MLX server, the classifier, agents, ingest) **must be observable in OpenObserve** — not just `println!`/`print()` to a terminal. Add proper logs and traces as you write the code, not as an afterthought.
+
+- **Python (`services/`)**: use the module logger created via `observability.setup("<service>")` (`log = logging.getLogger(...)`). `log.info/warning/error` already export to OpenObserve's logs stream, correlated to the active span by `trace_id`/`span_id` — never `print()`. Pass structured fields with `extra={...}` so they're queryable columns, not interpolated into the message string.
+- **Rust**: `tracing::info!/warn!/error!/debug!` with **structured fields** — never format data values into the message string (already enforced).
+- **Wrap discrete operations in spans** (`tracer.start_as_current_span(...)`) and put the meaningful inputs, outputs, and metrics as **span attributes**, not buried in log lines. For an LLM/model call, capture the EXACT input as sent and output as received (post-cap/post-template — reflect any truncation that actually happened), plus real token counts/latency from the model's own metadata (e.g. MLX `GenerationResponse`) rather than re-deriving them. See `run_task_linker_mlx.py`'s `classify_session → classifier_input / llm_inference / classifier_output` span tree for the reference shape.
+- **No duplication, no truncation of debug data**: emit each fact once, on the span that owns it; don't truncate the values you'd actually need to debug a misclassification. Keep static/identical-every-call blobs (e.g. the full system prompt) out of every trace where a size + a single archived copy suffices.
+- **Set span status `ERROR`** (with a message) on failures, and log a `warning`/`error` with `.context`/`extra` at the failure boundary.
+- **Export is gated** by the OpenObserve Export toggle (`otlp_enabled` in `settings.json`); code must degrade silently (logs still go to file/stderr) when it's off — never crash because export is disabled.
+
 ---
 
 ## Common Tasks

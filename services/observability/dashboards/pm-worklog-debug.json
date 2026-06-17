@@ -1,0 +1,140 @@
+{
+  "title": "PM Worklog — Debug",
+  "description": "Every PM-worklog draft and post, newest first. The Drafted table is one row per `synthesise_worklog` trace (the LLM synth: bundle in → JiraUpdate out, with gen_ai.* token usage); the Posted table is one row per `worklog_post` trace (the Rust draft→approve→post lifecycle, with drafted/approved/posted timestamps). Click any row → opens that trace's spans. Lineage backtrack: in a worklog_draft trace, expand `contributing_sessions` and click a `session:<id>` node — its span Links (link.kind=classification / formation) jump straight to how that session was classified (the full classifier span tree) and how it was formed. The exact LLM input is on `worklog_input` (full wire prompt + system_prompt/user_message child spans); the output is on `worklog_output`. All times are local (IST, UTC+5:30). Backed by `synthesise_worklog` spans (service meridian-agent-server-mlx — the in-process MLX server) and `worklog_post` spans (service meridian-rust). The queries key on trace_id / operation_name and deliberately do NOT pin service_name — do not 'tighten' them to a service or the drilldown goes empty (the #297 bug).",
+  "version": 5,
+  "variables": {
+    "list": [
+      {
+        "type": "textbox",
+        "name": "task_key",
+        "label": "Task key",
+        "query_data": null,
+        "value": "",
+        "options": [],
+        "multiSelect": false,
+        "hideOnDashboard": false,
+        "selectAllValueForMultiSelect": "custom",
+        "customMultiSelectValue": [],
+        "escapeSingleQuotes": false
+      }
+    ],
+    "showDynamicFilters": true
+  },
+  "defaultDatetimeDuration": {"type": "relative", "relativeTimePeriod": "24h", "startTime": null, "endTime": null},
+  "tabs": [
+    {
+      "tabId": "default",
+      "name": "Default",
+      "panels": [
+        {
+          "id": "stat_drafts",
+          "type": "metric",
+          "title": "Drafts",
+          "description": "Total synthesise_worklog spans in range",
+          "config": {"show_legends": false, "unit": null, "decimals": 0, "no_value_replacement": "0"},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as \"y_axis_1\" FROM \"default\" WHERE operation_name='synthesise_worklog'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [], "y": [{"label": "Drafts", "alias": "y_axis_1", "column": "y_axis_1", "color": "#5960b2", "aggregationFunction": null, "isDerived": false, "havingConditions": []}], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 0, "y": 0, "w": 12, "h": 6, "i": 1}
+        },
+        {
+          "id": "stat_posted",
+          "type": "metric",
+          "title": "Posted",
+          "description": "Worklogs posted to the tracker (worklog_post, state=posted)",
+          "config": {"show_legends": false, "unit": null, "decimals": 0, "no_value_replacement": "0"},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as \"y_axis_1\" FROM \"default\" WHERE operation_name='worklog_post' AND state='posted'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [], "y": [{"label": "Posted", "alias": "y_axis_1", "column": "y_axis_1", "color": "#59b27a", "aggregationFunction": null, "isDerived": false, "havingConditions": []}], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 12, "y": 0, "w": 12, "h": 6, "i": 2}
+        },
+        {
+          "id": "stat_failed",
+          "type": "metric",
+          "title": "Failed / errors",
+          "description": "Synth errors + failed posts",
+          "config": {"show_legends": false, "unit": null, "decimals": 0, "no_value_replacement": "0"},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as \"y_axis_1\" FROM \"default\" WHERE (operation_name='synthesise_worklog' AND is_error='true') OR (operation_name='worklog_post' AND state='failed')",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [], "y": [{"label": "Failed", "alias": "y_axis_1", "column": "y_axis_1", "color": "#b25959", "aggregationFunction": null, "isDerived": false, "havingConditions": []}], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 24, "y": 0, "w": 12, "h": 6, "i": 3}
+        },
+        {
+          "id": "stat_conf",
+          "type": "metric",
+          "title": "Avg confidence",
+          "description": "Mean synth confidence",
+          "config": {"show_legends": false, "unit": null, "decimals": 2, "no_value_replacement": "0"},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT round(avg(CAST(confidence AS DOUBLE)),2) as \"y_axis_1\" FROM \"default\" WHERE operation_name='synthesise_worklog' AND is_error='false'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [], "y": [{"label": "Avg confidence", "alias": "y_axis_1", "column": "y_axis_1", "color": "#b29959", "aggregationFunction": null, "isDerived": false, "havingConditions": []}], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 36, "y": 0, "w": 12, "h": 6, "i": 4}
+        },
+        {
+          "id": "table_drafts",
+          "type": "table",
+          "title": "Drafted worklogs (synth) — newest first",
+          "description": "One row per synthesise_worklog trace. Filter with Task key above. Click a row → opens just that trace's spans (worklog_input / synth_inference / worklog_output). Times are IST.",
+          "config": {"show_legends": false, "wrap_table_cells": false, "table_dynamic_columns": false, "drilldown": [{"name": "Open this trace's spans", "type": "byUrl", "targetBlank": true, "findBy": "name", "data": {"url": "/web/traces?org_identifier=default&stream=default&search_type=ui&search_mode=spans&period=30d&query=${row.field.trace_filter}", "folder": "", "dashboard": "", "tab": "", "passAllVariables": false, "variables": []}}]},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT to_char(to_timestamp_micros(_timestamp + 19800000000),'%Y-%m-%d %H:%M:%S') as \"Drafted (IST)\", task_key as \"Task\", confidence as \"Confidence\", session_count as \"Sessions\", time_spent_seconds as \"Time logged (s)\", summary_chars as \"Summary chars\", bullet_count as \"Bullets\", \"gen_ai_usage_input_tokens\" as \"In tokens\", \"gen_ai_usage_output_tokens\" as \"Out tokens\", round(CAST(duration_s AS DOUBLE),1) as \"Synth (s)\", is_error as \"Error\", trace_id as \"trace_id\", encode(concat('trace_id=''', trace_id, ''''),'base64') as \"trace_filter\" FROM \"default\" WHERE operation_name='synthesise_worklog' AND ('$task_key'='' OR task_key='$task_key') ORDER BY _timestamp DESC",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [{"label": "Drafted (IST)", "alias": "Drafted (IST)", "column": "_timestamp", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Task", "alias": "Task", "column": "task_key", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Confidence", "alias": "Confidence", "column": "confidence", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Sessions", "alias": "Sessions", "column": "session_count", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Time logged (s)", "alias": "Time logged (s)", "column": "time_spent_seconds", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Summary chars", "alias": "Summary chars", "column": "summary_chars", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Bullets", "alias": "Bullets", "column": "bullet_count", "color": null, "isDerived": false, "havingConditions": []}, {"label": "In tokens", "alias": "In tokens", "column": "gen_ai_usage_input_tokens", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Out tokens", "alias": "Out tokens", "column": "gen_ai_usage_output_tokens", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Synth (s)", "alias": "Synth (s)", "column": "duration_s", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Error", "alias": "Error", "column": "is_error", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Trace ID", "alias": "trace_id", "column": "trace_id", "color": null, "isDerived": false, "havingConditions": []}, {"label": "trace_filter", "alias": "trace_filter", "column": "trace_filter", "color": null, "isDerived": false, "havingConditions": []}], "y": [], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 0, "y": 6, "w": 48, "h": 13, "i": 5}
+        },
+        {
+          "id": "table_posts",
+          "type": "table",
+          "title": "Posted worklogs (lifecycle) — newest first",
+          "description": "One row per worklog_post trace (Rust). Shows the full lifecycle: when drafted, when approved, when posted (all IST), provider, posted id, time logged, and final state. Click a row → opens that post's trace. Populates once the daemon is running the worklog_post instrumentation.",
+          "config": {"show_legends": false, "wrap_table_cells": false, "table_dynamic_columns": false, "drilldown": [{"name": "Open this trace's spans", "type": "byUrl", "targetBlank": true, "findBy": "name", "data": {"url": "/web/traces?org_identifier=default&stream=default&search_type=ui&search_mode=spans&period=30d&query=${row.field.trace_filter}", "folder": "", "dashboard": "", "tab": "", "passAllVariables": false, "variables": []}}]},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT to_char(to_timestamp_micros(_timestamp + 19800000000),'%Y-%m-%d %H:%M:%S') as \"Posted (IST)\", task_key as \"Task\", provider as \"Provider\", state as \"State\", time_spent_seconds as \"Time logged (s)\", drafted_at_local as \"Drafted (IST)\", approved_at_local as \"Approved (IST)\", posted_at_local as \"Posted at (IST)\", posted_worklog_id as \"Worklog id\", post_attempt_count as \"Attempts\", trace_id as \"trace_id\", encode(concat('trace_id=''', trace_id, ''''),'base64') as \"trace_filter\" FROM \"default\" WHERE operation_name='worklog_post' AND ('$task_key'='' OR task_key='$task_key') ORDER BY _timestamp DESC",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [{"label": "Posted (IST)", "alias": "Posted (IST)", "column": "_timestamp", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Task", "alias": "Task", "column": "task_key", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Provider", "alias": "Provider", "column": "provider", "color": null, "isDerived": false, "havingConditions": []}, {"label": "State", "alias": "State", "column": "state", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Time logged (s)", "alias": "Time logged (s)", "column": "time_spent_seconds", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Drafted (IST)", "alias": "Drafted (IST)", "column": "drafted_at_local", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Approved (IST)", "alias": "Approved (IST)", "column": "approved_at_local", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Posted at (IST)", "alias": "Posted at (IST)", "column": "posted_at_local", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Worklog id", "alias": "Worklog id", "column": "posted_worklog_id", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Attempts", "alias": "Attempts", "column": "post_attempt_count", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Trace ID", "alias": "trace_id", "column": "trace_id", "color": null, "isDerived": false, "havingConditions": []}, {"label": "trace_filter", "alias": "trace_filter", "column": "trace_filter", "color": null, "isDerived": false, "havingConditions": []}], "y": [], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 0, "y": 19, "w": 48, "h": 11, "i": 6}
+        }
+      ]
+    }
+  ]
+}

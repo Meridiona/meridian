@@ -18,6 +18,22 @@ const EXCERPT_CAP_CHARS: usize = 2_000;
 const HEAVY_SESSION_COUNT: usize = 60;
 const HEAVY_TEXT_BYTES: usize = 400_000;
 
+/// True if `table` has a column named `column`. Used to guard lineage-only
+/// columns so a not-yet-applied migration degrades a feature rather than failing
+/// the whole read. Cheap (`PRAGMA table_info` over an already-open pool).
+async fn column_exists(pool: &SqlitePool, table: &str, column: &str) -> bool {
+    // `table` here is a hardcoded literal from this module, never user input.
+    let rows = match sqlx::query(&format!("PRAGMA table_info({table})"))
+        .fetch_all(pool)
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    rows.iter()
+        .any(|r| r.try_get::<String, _>("name").map(|n| n == column).unwrap_or(false))
+}
+
 /// Build the bundle for `task_key` over `[window_start_iso, window_end_iso)`.
 /// Bounds must be `+00:00`-style ISO (matching the stored `started_at` format).
 pub async fn fetch_session_bundle(
@@ -58,23 +74,42 @@ pub async fn fetch_session_bundle(
         };
 
     // Classified task sessions in the window.
-    let rows = sqlx::query(
+    //
+    // `classify_traceparent` (migration 043) is a LINEAGE-ONLY column: naming it
+    // unconditionally in the SELECT would make the whole query fail with "no such
+    // column" if that migration ever lags (locked DB / checksum mismatch — cf.
+    // the migration-031 crash-loop), taking down ALL worklog drafting rather than
+    // just the trace backlink. Guard its presence so a missing column degrades
+    // lineage only — every other column here predates #299 and is always present.
+    let classify_tp_col = if column_exists(pool, "app_sessions", "classify_traceparent").await {
+        "classify_traceparent"
+    } else {
+        tracing::warn!(
+            "app_sessions.classify_traceparent absent (migration 043 not applied?) — \
+             worklog lineage backlink degraded, drafting continues"
+        );
+        "NULL AS classify_traceparent"
+    };
+    let sql = format!(
         "SELECT id, app_name, started_at, ended_at, duration_s, \
                 idle_frame_count, frame_count, window_titles, \
-                session_text, session_text_source, category, session_summary \
+                session_text, session_text_source, category, session_summary, \
+                traceparent, {classify_tp_col}, \
+                task_confidence, task_session_type, task_reasoning, category_explanation \
          FROM app_sessions \
          WHERE task_key = ? \
            AND started_at >= ? \
            AND started_at <  ? \
            AND COALESCE(task_session_type, '') = 'task' \
-         ORDER BY id ASC",
-    )
-    .bind(task_key)
-    .bind(window_start_iso)
-    .bind(window_end_iso)
-    .fetch_all(pool)
-    .await
-    .context("fetch session rows for bundle")?;
+         ORDER BY id ASC"
+    );
+    let rows = sqlx::query(&sql)
+        .bind(task_key)
+        .bind(window_start_iso)
+        .bind(window_end_iso)
+        .fetch_all(pool)
+        .await
+        .context("fetch session rows for bundle")?;
 
     let mut digests: Vec<SessionDigest> = Vec::with_capacity(rows.len());
     let mut raw_bytes: usize = 0;
@@ -161,6 +196,32 @@ pub async fn fetch_session_bundle(
             excerpt,
             category,
             text_source,
+            formation_traceparent: r.try_get::<Option<String>, _>("traceparent").ok().flatten(),
+            classify_traceparent: r
+                .try_get::<Option<String>, _>("classify_traceparent")
+                .ok()
+                .flatten(),
+            task_confidence: r
+                .try_get::<Option<f64>, _>("task_confidence")
+                .ok()
+                .flatten()
+                .unwrap_or(0.0),
+            task_session_type: r
+                .try_get::<Option<String>, _>("task_session_type")
+                .ok()
+                .flatten(),
+            task_reasoning: r
+                .try_get::<Option<String>, _>("task_reasoning")
+                .ok()
+                .flatten(),
+            category_explanation: r
+                .try_get::<Option<String>, _>("category_explanation")
+                .ok()
+                .flatten(),
+            session_summary: r
+                .try_get::<Option<String>, _>("session_summary")
+                .ok()
+                .flatten(),
         });
 
         raw_bytes += text.len();
@@ -187,6 +248,45 @@ pub async fn fetch_session_bundle(
         assignee_name,
         earlier_today_summaries: fetch_earlier_today_summaries(pool, task_key, day_utc).await?,
     })
+}
+
+/// Multi-label activity dimensions for a set of sessions, keyed by session id.
+/// Used only to reconstruct the `dimensions` child span under each session node
+/// in the worklog_draft trace — not part of the synth prompt. Session ids come
+/// from rows we just read, so inlining them in the `IN (…)` list is injection-safe.
+pub async fn fetch_session_dimensions(
+    pool: &SqlitePool,
+    ids: &[i64],
+) -> Result<std::collections::HashMap<i64, std::collections::BTreeMap<String, Vec<String>>>> {
+    use std::collections::{BTreeMap, HashMap};
+    let mut out: HashMap<i64, BTreeMap<String, Vec<String>>> = HashMap::new();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let in_list = ids
+        .iter()
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT session_id, dimension, value FROM session_dimensions \
+         WHERE session_id IN ({in_list}) ORDER BY session_id, dimension, value"
+    );
+    let rows = sqlx::query(&sql)
+        .fetch_all(pool)
+        .await
+        .context("fetch session dimensions for lineage")?;
+    for r in &rows {
+        let sid: i64 = r.get("session_id");
+        let dim: String = r.get("dimension");
+        let val: String = r.get("value");
+        out.entry(sid)
+            .or_default()
+            .entry(dim)
+            .or_default()
+            .push(val);
+    }
+    Ok(out)
 }
 
 /// Already-posted worklog summaries for this ticket today — fed to the synth as

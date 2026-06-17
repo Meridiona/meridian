@@ -170,6 +170,12 @@ pub(super) struct SessionClassification {
     /// by the PM-update workflow as its primary signal.
     #[serde(default)]
     pub(super) session_summary: String,
+    /// W3C traceparent of this session's `classify_session` trace (set by the
+    /// MLX server). Persisted to `app_sessions.classify_traceparent` so a
+    /// worklog_draft span can link back to exactly how this session was
+    /// classified. `None` on the Apple-FM path or an older server.
+    #[serde(default)]
+    pub(super) classify_traceparent: Option<String>,
     #[allow(dead_code)]
     pub(super) elapsed_s: f64,
 }

@@ -302,14 +302,34 @@ pub fn resolve_otlp_target() -> Option<OtlpTarget> {
     Some(OtlpTarget { endpoint, auth })
 }
 
-/// Builds the OTel tracer and logger providers when OTLP export is configured.
+/// Builds the OTel tracer and logger providers.
+///
+/// When `otlp_enabled` is true in settings.json the exporters are wired to the
+/// [`SpoolClient`], which writes every OTLP batch atomically to
+/// `~/.meridian/telemetry/pending/` and returns a synthetic HTTP 200.  The
+/// background shipper task then forwards the files to OpenObserve whenever a
+/// target is reachable.  This keeps capture and delivery fully decoupled: no
+/// telemetry is lost during OO downtime.
+///
+/// We build the spool providers whenever `otlp_enabled` is true — even when
+/// credentials are absent — so durability works before OO is fully configured.
+/// The shipper checks `resolve_otlp_target()` separately and skips delivery
+/// until credentials are present.
 fn try_build_otel_providers(service_name: &str) -> Result<Option<(Tracer, LoggerProvider)>> {
-    let Some(target) = resolve_otlp_target() else {
+    // Gate on otlp_enabled only — credentials are NOT required for capture.
+    let settings = crate::config::load_runtime_settings();
+    if !settings.otlp_enabled {
         return Ok(None);
-    };
-    let (trace_endpoint, auth) = (target.endpoint, target.auth);
+    }
 
-    // Derive the log endpoint from the trace endpoint by swapping the path suffix.
+    // Derive placeholder endpoints — SpoolClient ignores them (it writes to
+    // disk), but the SDK requires non-empty strings.
+    let trace_endpoint = settings
+        .otlp_endpoint
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_OTLP_ENDPOINT)
+        .to_string();
     let log_endpoint = trace_endpoint.replace("/v1/traces", "/v1/logs");
 
     let resource = Resource::new(vec![KeyValue::new(
@@ -317,17 +337,20 @@ fn try_build_otel_providers(service_name: &str) -> Result<Option<(Tracer, Logger
         service_name.to_string(),
     )]);
 
-    let mut headers = HashMap::new();
-    headers.insert("Authorization".to_string(), format!("Basic {auth}"));
+    // Build spool clients — one per signal so filenames encode the correct prefix.
+    let spool_trace = crate::telemetry_spool::spool_client::SpoolClient::new()
+        .context("build spool client for traces")?;
+    let spool_logs = crate::telemetry_spool::spool_client::SpoolClient::new()
+        .context("build spool client for logs")?;
 
     // ── Trace pipeline ────────────────────────────────────────────────────
     let span_exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_http()
+        .with_http_client(spool_trace)
         .with_endpoint(&trace_endpoint)
         .with_protocol(Protocol::HttpBinary)
-        .with_headers(headers.clone())
         .build()
-        .context("build OTLP span exporter")?;
+        .context("build OTLP span exporter (spool)")?;
 
     let tracer_provider = TracerProvider::builder()
         .with_batch_exporter(span_exporter, runtime::Tokio)
@@ -342,11 +365,11 @@ fn try_build_otel_providers(service_name: &str) -> Result<Option<(Tracer, Logger
     // ── Log pipeline ──────────────────────────────────────────────────────
     let log_exporter = opentelemetry_otlp::LogExporter::builder()
         .with_http()
+        .with_http_client(spool_logs)
         .with_endpoint(&log_endpoint)
         .with_protocol(Protocol::HttpBinary)
-        .with_headers(headers)
         .build()
-        .context("build OTLP log exporter")?;
+        .context("build OTLP log exporter (spool)")?;
 
     let logger_provider = LoggerProvider::builder()
         .with_batch_exporter(log_exporter, runtime::Tokio)
@@ -414,4 +437,33 @@ pub fn current_traceparent() -> Option<String> {
     let mut carrier = StringInjector(HashMap::new());
     TraceContextPropagator::new().inject_context(&cx, &mut carrier);
     carrier.0.remove("traceparent")
+}
+
+/// Parse a stored W3C `traceparent` string back into an OTel [`SpanContext`],
+/// suitable for adding as a span Link (e.g. linking a worklog_draft span to the
+/// classification / formation traces of its contributing sessions). Returns
+/// `None` when the string is empty or not a valid traceparent.
+pub fn span_context_from_traceparent(
+    traceparent: &str,
+) -> Option<opentelemetry::trace::SpanContext> {
+    use opentelemetry::propagation::{Extractor, TextMapPropagator};
+    use opentelemetry::trace::TraceContextExt;
+
+    if traceparent.is_empty() {
+        return None;
+    }
+
+    struct StringExtractor<'a>(&'a str);
+    impl Extractor for StringExtractor<'_> {
+        fn get(&self, key: &str) -> Option<&str> {
+            (key == "traceparent").then_some(self.0)
+        }
+        fn keys(&self) -> Vec<&str> {
+            vec!["traceparent"]
+        }
+    }
+
+    let cx = TraceContextPropagator::new().extract(&StringExtractor(traceparent));
+    let sc = cx.span().span_context().clone();
+    sc.is_valid().then_some(sc)
 }

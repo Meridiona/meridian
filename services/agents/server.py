@@ -257,6 +257,7 @@ async def classify_sessions(req: ClassifySessionsRequest) -> dict:
 
     fh = _get_classify_log()
     tracer = _app_state.get("tracer") or trace.get_tracer("meridian-agent-server-mlx")
+
     parent_ctx = observability.extract_parent_context(req.traceparent)
 
     # No batch-wrapper span: each session emits a single `classify_session` span
@@ -278,8 +279,18 @@ async def classify_sessions(req: ClassifySessionsRequest) -> dict:
                     # task_key, confidence, is_error, …) via _annotate_classification_span
                     # and emits db_fetch / build_prompt / llm_inference / parse_response
                     # as its children — one source of truth, matching the CLI path.
-                    with tracer.start_as_current_span("classify_session"):
+                    with tracer.start_as_current_span("classify_session") as cs_span:
                         result = m._classify_one_logged(sid, con, fh)
+                        # Stamp THIS classification span's W3C traceparent onto the
+                        # result so Rust can persist it (app_sessions.classify_traceparent)
+                        # and later link a worklog_draft span back to this exact span —
+                        # the worklog→session→classification backtrack in OpenObserve.
+                        _csc = cs_span.get_span_context()
+                        if _csc.is_valid:
+                            result["classify_traceparent"] = (
+                                f"00-{_csc.trace_id:032x}-{_csc.span_id:016x}-"
+                                f"{int(_csc.trace_flags):02x}"
+                            )
                     log.info(
                         "classify_sessions: session_id=%d task_key=%s session_type=%s elapsed_s=%.2f",
                         sid,
@@ -606,6 +617,10 @@ class _SynthWorklogRequest(BaseModel):
     # Rust collected for one (task, hour) window.
     bundle: dict
     debug: bool = False
+    # W3C traceparent propagated from the Rust worklog-draft span. When present,
+    # this synth becomes its OWN trace linked back to the daemon's draft trace
+    # (same pattern as /classify_sessions) — so it shows as one clean trace.
+    traceparent: str | None = None
 
 
 def _get_synth_agent() -> "Any":
@@ -636,6 +651,80 @@ def _get_synth_agent() -> "Any":
     return agent
 
 
+def _set_token_metrics(span: Any, metrics: Any) -> None:
+    """Set OTel GenAI token/duration attributes from an agno metrics object,
+    coercing DEFENSIVELY: a None/missing/non-numeric field is skipped, never
+    raised. These run AFTER a successful `agent.run`, so a bare `int(metrics.x)`
+    on a truthy-non-int value (a string/list, depending on agno/model-server
+    version) would turn a successful synth into a 500 and lose the draft. Telemetry
+    must never do that.
+    """
+    if metrics is None:
+        return
+
+    def _num(name: str) -> "int | float | None":
+        v = getattr(metrics, name, None)
+        # bool is an int subclass — exclude it so a stray True/False is dropped.
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    _in, _out = _num("input_tokens"), _num("output_tokens")
+    _tot, _dur = _num("total_tokens"), _num("duration")
+    if _in is not None:
+        span.set_attribute("gen_ai.usage.input_tokens", int(_in))
+    if _out is not None:
+        span.set_attribute("gen_ai.usage.output_tokens", int(_out))
+    if _tot is not None:
+        span.set_attribute("gen_ai.usage.total_tokens", int(_tot))
+    if _dur is not None:
+        span.set_attribute("duration_s", round(float(_dur), 2))
+
+
+def _record_wire_prompt(tracer: Any, in_span: Any, response: Any, user_message: str) -> None:
+    """Populate the worklog_input span with the EXACT messages agno sent to the
+    model (system + user), plus a clickable child span per role — mirroring the
+    classifier's classifier_input. Faithful to "what actually went in": when agno
+    does not expose `response.messages`, it sets `wire_prompt_captured=False` and
+    keeps just the rendered user message rather than pretending it had the system
+    prompt. The assistant turn is skipped here — that is the OUTPUT, captured by
+    worklog_output.
+    """
+    import json
+    from opentelemetry.trace import set_span_in_context
+
+    wire = getattr(response, "messages", None) if response is not None else None
+    system_text: str | None = None
+    parts: list[str] = []
+    if wire:
+        for msg in wire:
+            role = getattr(msg, "role", "") or ""
+            if role == "assistant":
+                continue
+            content = getattr(msg, "content", "")
+            text = content if isinstance(content, str) else json.dumps(content, default=str)
+            if role == "system":
+                system_text = text
+            parts.append(f"<<{role}>>\n{text}")
+
+    captured = bool(parts)
+    full_input = "\n\n".join(parts) if captured else user_message
+    in_span.set_attribute("llm_input", full_input)
+    in_span.set_attribute("full_input_chars", len(full_input))
+    in_span.set_attribute("wire_prompt_captured", captured)
+    if system_text is not None:
+        in_span.set_attribute("system_prompt_chars", len(system_text))
+
+    in_ctx = set_span_in_context(in_span)
+
+    def _part(name: str, text: str) -> None:
+        with tracer.start_as_current_span(name, context=in_ctx) as part:
+            part.set_attribute("llm_input", text)
+            part.set_attribute("chars", len(text))
+
+    if system_text is not None:
+        _part("system_prompt", system_text)
+    _part("user_message", user_message)
+
+
 @app.post("/synthesise_worklog")
 async def synthesise_worklog(req: _SynthWorklogRequest) -> dict:
     """Synthesise ONE Jira worklog from a collected session bundle.
@@ -658,53 +747,164 @@ async def synthesise_worklog(req: _SynthWorklogRequest) -> dict:
     agent = _get_synth_agent()
     user_message = pm_workflow._render_workflow_input(bundle)
 
-    def _run() -> "Any":
-        return agent.run(input=user_message)
+    tracer = _app_state.get("tracer") or trace.get_tracer("meridian-agent-server-mlx")
+    # CONTINUE the daemon's worklog_draft trace: parent the synth spans to the
+    # worklog_draft span propagated via traceparent, so the LLM input/output nests
+    # directly INSIDE that one trace — the whole worklog (contributing sessions +
+    # detailed LLM input + output) reads as a single tree, exactly the way
+    # classifier_input / llm_inference / classifier_output sit under classify_session.
+    # Falls back to a fresh root span only when called without a parent (manual curl).
+    _daemon_ctx = observability.extract_parent_context(req.traceparent)
 
-    # The local model is non-deterministic (temp > 0) and occasionally emits an
-    # output that doesn't parse into a JiraUpdate. Retry a couple of times before
-    # giving up — a fresh sample almost always parses.
-    update = None
-    last_detail = "no attempt"
-    for attempt in range(1, 4):
-        try:
-            response = await run_in_threadpool(_run)
-        except Exception as exc:  # noqa: BLE001 — never crash the shared server
-            last_detail = f"agent run raised {type(exc).__name__}: {exc}"
-            log.warning("synthesise_worklog: attempt %d %s", attempt, last_detail)
-            continue
-        raw = getattr(response, "content", response)
-        if raw is None:
-            last_detail = "agent returned no content (guardrail likely blocked the run)"
-            log.warning("synthesise_worklog: attempt %d %s", attempt, last_detail)
-            continue
-        update = pm_workflow._coerce_jira(raw)
-        if update is not None:
-            break
-        last_detail = f"agent output did not parse into a JiraUpdate (raw type={type(raw).__name__})"
-        log.warning("synthesise_worklog: attempt %d %s | raw=%.200s", attempt, last_detail, str(raw))
+    def _synthesise() -> dict:
+        with tracer.start_as_current_span(
+            "synthesise_worklog",
+            context=_daemon_ctx if _daemon_ctx is not None else _otel_context.Context(),
+            attributes={"task_key": bundle.task_key},
+        ) as root:
+            root.set_attribute("window_start", bundle.window_start)
+            root.set_attribute("window_end", bundle.window_end)
+            # Default to is_error=True and flip to False only on full success
+            # below. The pm-worklog dashboard buckets on is_error in
+            # ('true','false'), so an UNSET value (left by an unexpected raise in
+            # agno internals / _coerce_jira / _record_wire_prompt) would vanish
+            # from BOTH the Failed count and the Avg-confidence panel. Pessimistic
+            # default guarantees every escaped error is counted.
+            root.set_attribute("is_error", True)
 
-    if update is None:
-        raise HTTPException(
-            status_code=500, detail=f"synth produced no JiraUpdate after 3 attempts ({last_detail})"
-        )
+            # ── worklog_input ─ created up-front so it leads the waterfall. The
+            # EXACT wire prompt (system + user, as agno actually composes and
+            # sends it) is filled in AFTER the run from response.messages — the
+            # only place agno exposes the composed messages — mirroring the
+            # classifier's classifier_input. start_span (not current) keeps it a
+            # sibling of synth_inference, not its parent.
+            in_span = tracer.start_span("worklog_input")
+            response_obj = None
+            update = None
+            last_detail = "no attempt"
+            metrics = None
+            model_name = None
+            attempts = 0
+            try:
+                in_span.set_attribute("prompt_chars", len(user_message))
+                in_span.set_attribute("session_count", len(bundle.sessions))
+                in_span.set_attribute("real_seconds", bundle.real_seconds)
+                in_span.set_attribute("total_seconds", bundle.total_seconds)
+                in_span.set_attribute("pm_task_status", bundle.pm_task_status or "-")
+                in_span.set_attribute("pm_task_is_terminal", bundle.pm_task_is_terminal)
+                in_span.set_attribute("is_heavy", bundle.is_heavy)
 
-    # Stamp authoritative fields from the bundle — never trust the LLM for these.
-    update = update.model_copy(
-        update={
-            "task_key":           bundle.task_key,
-            "window_start":       bundle.window_start,
-            "window_end":         bundle.window_end,
-            "cycle_index":        bundle.cycle_index,
-            "time_spent_seconds": bundle.real_seconds,
-        }
-    )
-    log.info(
-        "synthesise_worklog: task=%s sessions=%d summary_chars=%d bullets=%d conf=%.2f",
-        bundle.task_key, len(bundle.sessions), len(update.summary or ""),
-        len(update.bullets), update.confidence,
-    )
-    return update.model_dump()
+                # ── synth_inference ─ the agno run (loops back to /v1/chat/completions).
+                # Retry a few times: the local model occasionally emits unparseable JSON.
+                with tracer.start_as_current_span("synth_inference") as inf:
+                    inf.set_attribute("gen_ai.operation.name", "chat")
+                    inf.set_attribute("gen_ai.provider.name", "mlx")
+                    for attempt in range(1, 4):
+                        attempts = attempt
+                        try:
+                            response = agent.run(input=user_message)
+                        except Exception as exc:  # noqa: BLE001 — never crash the shared server
+                            last_detail = f"agent run raised {type(exc).__name__}: {exc}"
+                            log.warning("synthesise_worklog: attempt %d %s", attempt, last_detail)
+                            continue
+                        raw = getattr(response, "content", response)
+                        if raw is None:
+                            last_detail = "agent returned no content (guardrail likely blocked the run)"
+                            log.warning("synthesise_worklog: attempt %d %s", attempt, last_detail)
+                            continue
+                        update = pm_workflow._coerce_jira(raw)
+                        if update is not None:
+                            response_obj = response
+                            metrics = getattr(response, "metrics", None)
+                            model_name = getattr(response, "model", None)
+                            break
+                        last_detail = f"agent output did not parse into a JiraUpdate (raw type={type(raw).__name__})"
+                        log.warning("synthesise_worklog: attempt %d %s | raw=%.200s", attempt, last_detail, str(raw))
+
+                    inf.set_attribute("attempts", attempts)
+                    if model_name:
+                        inf.set_attribute("gen_ai.request.model", str(model_name))
+                        inf.set_attribute("gen_ai.response.model", str(model_name))
+                    # agno reports the model's OWN token accounting — surface it under
+                    # the OTel GenAI semantic conventions, same as the classifier.
+                    _set_token_metrics(inf, metrics)
+                    if update is None:
+                        inf.set_status(trace.StatusCode.ERROR, last_detail)
+                        root.set_attribute("is_error", True)
+                        root.set_status(trace.StatusCode.ERROR, last_detail)
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"synth produced no JiraUpdate after 3 attempts ({last_detail})",
+                        )
+
+                # Now that the run succeeded, fill worklog_input with the EXACT
+                # composed messages agno sent (system + user) + clickable child parts.
+                _record_wire_prompt(tracer, in_span, response_obj, user_message)
+            finally:
+                in_span.end()
+
+            # Stamp authoritative fields from the bundle — never trust the LLM.
+            update = update.model_copy(
+                update={
+                    "task_key":           bundle.task_key,
+                    "window_start":       bundle.window_start,
+                    "window_end":         bundle.window_end,
+                    "cycle_index":        bundle.cycle_index,
+                    "time_spent_seconds": bundle.real_seconds,
+                }
+            )
+
+            # ── worklog_output ─ the COMPLETE synth output, plus a clickable child
+            # per output section (summary / bullets / reasoning / risk flags).
+            with tracer.start_as_current_span("worklog_output") as out_span:
+                out_span.set_attribute("llm_output", update.model_dump_json())
+                out_span.set_attribute("confidence", update.confidence)
+                out_span.set_attribute("summary_chars", len(update.summary or ""))
+                out_span.set_attribute("bullet_count", len(update.bullets))
+                out_span.set_attribute(
+                    "risk_flags", ", ".join(f.value for f in update.risk_flags) or "-"
+                )
+
+                def _out_part(name: str, text: str, **extra: Any) -> None:
+                    with tracer.start_as_current_span(name) as part:
+                        part.set_attribute("llm_output", text)
+                        part.set_attribute("chars", len(text))
+                        for _k, _v in extra.items():
+                            part.set_attribute(_k, _v)
+
+                _bullets_text = "\n".join(
+                    f"• {b.text}  [evidence: {', '.join(map(str, b.evidence_refs)) or 'none'}]"
+                    for b in update.bullets
+                )
+                _next_steps = "\n".join(f"• {s}" for s in update.next_steps)
+                _out_part("summary", update.summary or "")
+                _out_part("bullets", _bullets_text, bullet_count=len(update.bullets))
+                _out_part("next_steps", _next_steps, count=len(update.next_steps))
+                _out_part("reasoning", update.reasoning or "")
+                _out_part(
+                    "risk_flags",
+                    ", ".join(f.value for f in update.risk_flags) or "-",
+                    flag_count=len(update.risk_flags),
+                )
+
+            root.set_attribute("confidence", update.confidence)
+            root.set_attribute("summary_chars", len(update.summary or ""))
+            root.set_attribute("bullet_count", len(update.bullets))
+            root.set_attribute("time_spent_seconds", update.time_spent_seconds)
+            root.set_attribute("session_count", len(bundle.sessions))
+            root.set_attribute("is_error", False)
+            # Promote the model's token accounting + latency onto the root so one
+            # dashboard row per draft carries them without joining the child span.
+            _set_token_metrics(root, metrics)
+
+            log.info(
+                "synthesise_worklog: task=%s sessions=%d summary_chars=%d bullets=%d conf=%.2f attempts=%d",
+                bundle.task_key, len(bundle.sessions), len(update.summary or ""),
+                len(update.bullets), update.confidence, attempts,
+            )
+            return update.model_dump()
+
+    return await run_in_threadpool(_synthesise)
 
 
 @app.get("/v1/models")

@@ -292,6 +292,7 @@ mod tests {
             method: "mlx_direct".into(),
             dimensions: HashMap::new(),
             session_summary: "CLASSIFIER SUMMARY — must NOT overwrite".into(),
+            classify_traceparent: None,
             elapsed_s: 1.0,
         }
     }
@@ -436,6 +437,7 @@ mod tests {
             method: "hermes_aiagent".to_string(),
             dimensions: HashMap::new(),
             session_summary: String::new(),
+            classify_traceparent: None,
             elapsed_s: 0.5,
         };
         update_session_task(&pool, &r).await.unwrap();
@@ -479,6 +481,7 @@ mod tests {
             method: "hermes_aiagent".to_string(),
             dimensions: HashMap::new(),
             session_summary: String::new(),
+            classify_traceparent: None,
             elapsed_s: 0.2,
         };
         update_session_task(&pool, &r).await.unwrap();
@@ -510,6 +513,7 @@ mod tests {
             method: "hermes_aiagent".to_string(),
             dimensions: HashMap::new(),
             session_summary: String::new(),
+            classify_traceparent: None,
             elapsed_s: 0.1,
         };
         update_session_task(&pool, &r).await.unwrap();
