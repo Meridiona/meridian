@@ -34,6 +34,7 @@ if str(_SERVICES_DIR) not in sys.path:
     sys.path.insert(0, str(_SERVICES_DIR))
 
 from agents._prompts import build_user_message
+from agents.run_task_linker_mlx import _fetch_recent_ticket_activity
 
 MERIDIAN_DB = Path(os.environ.get("MERIDIAN_DB", Path.home() / ".meridian/meridian.db"))
 SESSION_IDS: list[int] = [
@@ -103,19 +104,6 @@ def _fetch_pm_tasks(con: sqlite3.Connection) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def _fetch_recent(con: sqlite3.Connection, before_id: int) -> list[dict]:
-    rows = con.execute(
-        "SELECT app_name, started_at, duration_s, task_key, task_routing, category"
-        " FROM app_sessions"
-        " WHERE id < ? AND duration_s > 1 AND COALESCE(session_text,'') != ''"
-        " ORDER BY id DESC LIMIT 5",
-        (before_id,),
-    ).fetchall()
-    result = [dict(r) for r in rows]
-    result.reverse()
-    return result
-
-
 def main() -> None:
     if not MERIDIAN_DB.exists():
         print(f"ERROR: meridian.db not found at {MERIDIAN_DB}", file=sys.stderr)
@@ -152,8 +140,12 @@ def main() -> None:
             "confidence":          s["confidence"] or 0.0,
             "audio_snippets":      [],
         }
-        recent = _fetch_recent(con, s["id"])
-        prompt_input = build_user_message(session, pm_tasks, recent_sessions=recent)
+        recent = _fetch_recent_ticket_activity(
+            con, session["started_at"], [t["task_key"] for t in pm_tasks]
+        )
+        prompt_input = build_user_message(
+            session, pm_tasks, recent_activity=recent, now_iso=session["started_at"]
+        )
 
         expected = {
             "task_key":     _normalise_task_key(s.get("task_key")),
