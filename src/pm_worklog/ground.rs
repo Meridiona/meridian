@@ -136,6 +136,13 @@ mod tests {
                     excerpt: String::new(),
                     category: None,
                     text_source: None,
+                    formation_traceparent: None,
+                    classify_traceparent: None,
+                    task_confidence: 0.0,
+                    task_session_type: None,
+                    task_reasoning: None,
+                    category_explanation: None,
+                    session_summary: None,
                 })
                 .collect(),
             total_seconds: 600,

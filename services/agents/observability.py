@@ -28,6 +28,13 @@ agent stage.
 Idempotent: calling `setup` twice is a no-op for the second call (returns
 the existing tracer). This matters because both the daemon and the
 single-shot CLI paths funnel through the same module.
+
+Spool durability: when `otlp_enabled` is true (regardless of whether
+credentials are present), spans and logs are written atomically to
+`~/.meridian/telemetry/pending/<signal>-<unix_micros>-<seq>.otlp` via
+`SpoolSpanExporter` and `SpoolLogExporter`.  The Rust daemon's shipper
+task drains that shared directory to OpenObserve — Python does NOT need
+its own shipper.
 """
 from __future__ import annotations
 
@@ -37,6 +44,8 @@ import logging
 import logging.handlers
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -50,14 +59,119 @@ from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
 from opentelemetry.instrumentation.logging import LoggingInstrumentor
 from opentelemetry.propagate import set_global_textmap
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
-from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor, LogExportResult
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExportResult
 from opentelemetry.trace.propagation.tracecontext import (
     TraceContextTextMapPropagator,
 )
 from pythonjsonlogger import jsonlogger
+
+
+# ──────────────────────── Spool exporters ──────────────────────────────────────
+
+_spool_seq_lock = threading.Lock()
+_spool_seq = 0
+
+
+def _next_spool_seq() -> int:
+    global _spool_seq
+    with _spool_seq_lock:
+        val = _spool_seq
+        _spool_seq += 1
+    return val
+
+
+def _resolve_telemetry_dir() -> Path:
+    """Mirror of the Rust writer's resolve_telemetry_dir().
+
+    Precedence: MERIDIAN_TELEMETRY_DIR env → ~/.meridian/telemetry.
+    """
+    env = os.environ.get("MERIDIAN_TELEMETRY_DIR", "").strip()
+    if env:
+        return Path(env).expanduser()
+    home = Path.home()
+    return home / ".meridian" / "telemetry"
+
+
+def _write_spool(signal: str, payload: bytes) -> None:
+    """Atomically write payload to ~/.meridian/telemetry/pending/.
+
+    Filename: <signal>-<unix_micros>-<seq>.otlp
+    Write via <name>.tmp then rename so the Rust shipper never sees partial files.
+    """
+    base = _resolve_telemetry_dir()
+    pending = base / "pending"
+    pending.mkdir(parents=True, exist_ok=True)
+
+    micros = int(time.time() * 1_000_000)
+    seq = _next_spool_seq()
+    filename = f"{signal}-{micros}-{seq}.otlp"
+    final_path = pending / filename
+    tmp_path = pending / f"{filename}.tmp"
+
+    try:
+        tmp_path.write_bytes(payload)
+        tmp_path.rename(final_path)
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "telemetry spool write failed — payload dropped",
+            extra={"signal": signal, "error": str(exc)},
+        )
+
+
+class SpoolSpanExporter:
+    """Span exporter that writes serialised OTLP payloads to the spool dir.
+
+    Wraps the SDK's encode_spans() to produce the same wire bytes the real
+    OTLPSpanExporter would POST.  The Rust shipper drains pending/ to OO.
+    """
+
+    def export(self, spans):  # type: ignore[override]
+        try:
+            from opentelemetry.exporter.otlp.proto.common.trace_encoder import (
+                encode_spans,
+            )
+            payload = encode_spans(spans).SerializeToString()
+            _write_spool("traces", payload)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "SpoolSpanExporter.export failed", extra={"error": str(exc)}
+            )
+        return SpanExportResult.SUCCESS
+
+    def shutdown(self) -> None:
+        pass
+
+    def force_flush(self, timeout_millis: int = 30_000) -> bool:
+        return True
+
+
+class SpoolLogExporter:
+    """Log exporter that writes serialised OTLP payloads to the spool dir.
+
+    Mirrors SpoolSpanExporter for the log signal.
+    """
+
+    def export(self, log_data):  # type: ignore[override]
+        try:
+            from opentelemetry.exporter.otlp.proto.common._log_encoder import (
+                encode_logs,
+            )
+            payload = encode_logs(log_data).SerializeToString()
+            _write_spool("logs", payload)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "SpoolLogExporter.export failed", extra={"error": str(exc)}
+            )
+        return LogExportResult.SUCCESS
+
+    def shutdown(self) -> None:
+        pass
+
+    def force_flush(self, timeout_millis: int = 30_000) -> bool:
+        return True
 
 
 # ──────────────────────── Config ───────────────────────────────────────────────
@@ -102,6 +216,18 @@ def _load_settings() -> dict[str, object]:
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def _is_otlp_enabled() -> bool:
+    """Return True when the otlp_enabled toggle is on and tracing is not disabled.
+
+    Deliberately does NOT check credentials — used to gate the spool exporters
+    so telemetry is captured even when OO credentials are absent (the shipper
+    delivers when they are provided later).
+    """
+    if os.environ.get("MERIDIAN_TRACING_DISABLED", "").lower() in ("1", "true", "yes"):
+        return False
+    return bool(_load_settings().get("otlp_enabled"))
 
 
 def _resolve_otlp_target() -> Optional[_OtlpTarget]:
@@ -218,12 +344,10 @@ def _configure_tracing(agent_name: str) -> None:
     resource = Resource.create({"service.name": agent_name})
     provider = TracerProvider(resource=resource)
 
-    target = _resolve_otlp_target()
-    if target is not None:
-        exporter = OTLPSpanExporter(
-            endpoint=target.traces_endpoint, headers=target.headers
-        )
-        provider.add_span_processor(BatchSpanProcessor(exporter))
+    # Wire the spool exporter when otlp_enabled is true (even without creds).
+    # The Rust shipper drains the shared spool dir when a target is available.
+    if _is_otlp_enabled():
+        provider.add_span_processor(BatchSpanProcessor(SpoolSpanExporter()))
 
     # Set as the global provider. OTel's `set_tracer_provider` warns if
     # someone already configured a provider in-process; we accept that and
@@ -239,17 +363,18 @@ def _configure_log_export(agent_name: str) -> Optional[logging.Handler]:
 
     Returns the handler (caller attaches it to root) or `None` when export is
     disabled, in which case logs still go to the JSONL file + stdout/stderr.
+
+    When `otlp_enabled` is true the spool log exporter is always wired (even
+    without credentials) — the Rust shipper handles delivery.
     """
     global _LOGGER_PROVIDER
 
-    target = _resolve_otlp_target()
-    if target is None:
+    if not _is_otlp_enabled():
         return None
 
     resource = Resource.create({"service.name": agent_name})
     provider = LoggerProvider(resource=resource)
-    exporter = OTLPLogExporter(endpoint=target.logs_endpoint, headers=target.headers)
-    provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
+    provider.add_log_record_processor(BatchLogRecordProcessor(SpoolLogExporter()))
     set_logger_provider(provider)
     _LOGGER_PROVIDER = provider
     return LoggingHandler(level=logging.NOTSET, logger_provider=provider)

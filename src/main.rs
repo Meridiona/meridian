@@ -224,12 +224,22 @@ async fn main() -> Result<()> {
             .position(|a| a == "--day")
             .and_then(|i| args.get(i + 1).cloned());
         let cfg = Config::from_env();
+        // Initialise observability so this one-shot emits the SAME worklog_draft
+        // trace the daemon does (lineage child spans + the active span whose
+        // traceparent propagates to the MLX synth, nesting worklog_input/output
+        // inside the worklog trace). Without this the CLI emitted no spans and the
+        // synth landed as an orphan root. Flushed explicitly before exit so the
+        // batch processor's final spans reach the telemetry spool.
+        let obs_guard = observability::init("meridian-rust").ok();
         match setup_db(&cfg.meridian_db_uri()).await {
             Ok(pool) => {
                 meridian::pm_worklog::cli_run(&pool, day.as_deref()).await;
                 pool.close().await;
             }
             Err(e) => eprintln!("pm-worklog: open db: {e}"),
+        }
+        if let Some(g) = obs_guard {
+            g.shutdown().await;
         }
         return Ok(());
     }
@@ -399,6 +409,14 @@ async fn main() -> Result<()> {
         }
         let critical = report.worst() == meridian::health::Severity::Critical;
         std::process::exit(if critical { 1 } else { 0 });
+    }
+
+    // `meridian telemetry <status|export|import>` — telemetry spool management.
+    // Read-only for status/export; import POSTs to OO. No daemon init needed.
+    if std::env::args().nth(1).as_deref() == Some("telemetry") {
+        let args: Vec<String> = std::env::args().collect();
+        meridian::telemetry_spool::cli::run(&args).await;
+        return Ok(());
     }
 
     // 2. Tracing — layered subscriber (stdout + JSONL file + OTLP to OpenObserve).
@@ -621,6 +639,17 @@ async fn main() -> Result<()> {
         let rx_post = shutdown_rx.clone();
         tokio::spawn(async move {
             meridian::pm_worklog::run_post_loop(pool_post, rx_post).await;
+        });
+    }
+
+    // 7f. Telemetry spool shipper: drains ~/.meridian/telemetry/pending/ to
+    //     OpenObserve every MERIDIAN_TELEMETRY_SHIP_INTERVAL_S (default 30s).
+    //     Active only when otlp_enabled is true; noop ticks if no OO target is
+    //     configured (e.g. credentials not yet set).
+    {
+        let rx_shipper = shutdown_rx.clone();
+        tokio::spawn(async move {
+            meridian::telemetry_spool::shipper::run_shipper(rx_shipper).await;
         });
     }
 

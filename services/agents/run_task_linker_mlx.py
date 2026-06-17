@@ -4,17 +4,24 @@
 Reads a JSON payload from stdin:
     {"session_ids": [int, ...], "meridian_db": str, "traceparent": str | null}
 
-Loads the MLX model in-process via outlines + mlx_lm (no HTTP server, no Hermes agent
-loop, no tool calls), and uses FSM-constrained decoding to guarantee the response is
+Loads the MLX model in-process via outlines + mlx_lm , and uses FSM-constrained decoding to guarantee the response is
 always a valid SessionClassification JSON object.
 
 OTel span hierarchy (when invoked as a script via main()):
     run_task_linker_mlx          ← root span, parented to Rust traceparent
         classify_session         ← one per session_id
             db_fetch
-            build_prompt
+            classifier_input     ← the COMPLETE model input (system + user)
+                system_prompt        — classifier skill + context
+                recent_context       — past-5 sessions
+                session_block        — the input session being classified
+                candidate_tickets    — ranked candidate tickets (★ = today)
             llm_inference
-            parse_response
+            classifier_output    ← the COMPLETE raw model output
+                reasoning            — why this task match
+                category             — category justification (+ category/confidence)
+                dimensions           — inferred activity tags
+                session_summary      — PM-facing prose deliverable
 
 When imported by server.py the same child spans are emitted under whatever
 parent span the server establishes (propagated via contextvars).
@@ -44,7 +51,12 @@ from pydantic import BaseModel, Field
 _SERVICES_DIR = Path(__file__).parent.parent
 
 from agents import observability
-from agents._prompts import build_user_message
+from agents._prompts import (
+    build_user_message,
+    _format_candidates,
+    _format_recent_sessions,
+    _format_session,
+)
 from agents._system_context import SYSTEM_CONTEXT
 
 log = logging.getLogger("agents.run_task_linker_mlx")
@@ -250,6 +262,9 @@ _SYSTEM_PROMPT = (
 # ---------------------------------------------------------------------------
 
 _model_cache: dict[str, Any] = {}
+# Tokenizer kept alongside the model so we can render the EXACT chat-template
+# prompt (the wire format outlines feeds the model) for the classifier_input span.
+_tokenizer_cache: dict[str, Any] = {}
 _model_lock = threading.Lock()       # guards _model_cache mutation, _in_flight, _last_used, eviction
 _in_flight = 0                       # inferences currently using the model
 _last_used = time.monotonic()        # monotonic ts of the last finished inference
@@ -295,6 +310,7 @@ def _get_model() -> Any:
         log.info("run_task_linker_mlx: model loaded in %.1fs", time.time() - t0)
 
         _model_cache[model_id] = outlines_model
+        _tokenizer_cache[model_id] = tokenizer
         return outlines_model
 
 
@@ -681,6 +697,45 @@ def _fetch_pm_tasks(
     return tasks
 
 
+def _get_tokenizer() -> Any:
+    """The active model's tokenizer: the resident one if loaded, else a
+    weights-free transformers load from the local HF cache (cached). The model's
+    chat template matches what outlines/mlx_lm feed the model, so rendering and
+    token counts derived here are exact. Raises if no tokenizer is available.
+    """
+    model_id = _resolve_model_id()
+    tok = _tokenizer_cache.get(model_id)
+    if tok is None:
+        from transformers import AutoTokenizer
+        tok = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+        _tokenizer_cache[model_id] = tok
+    return tok
+
+
+def _render_model_prompt(messages: list[dict[str, str]]) -> str | None:
+    """EXACT text fed to the model: messages through the tokenizer's chat template
+    (role markers + special tokens), matching what outlines feeds it. None on
+    failure / Apple FM path so the caller can fall back to a plain rendering."""
+    try:
+        return _get_tokenizer().apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort observability
+        log.debug("run_task_linker_mlx: chat-template render failed: %s", exc)
+        return None
+
+
+def _count_prompt_tokens(text: str) -> int | None:
+    """Exact prompt token count — deterministic tokenization, so it equals MLX's
+    reported prompt_tokens (output tokens, by contrast, come from MLX's stats, not
+    a re-encode). None if no tokenizer is available (Apple FM path)."""
+    try:
+        return len(_get_tokenizer().encode(text))
+    except Exception as exc:  # noqa: BLE001 — best-effort observability
+        log.debug("run_task_linker_mlx: prompt token count failed: %s", exc)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Core classification
 # ---------------------------------------------------------------------------
@@ -700,7 +755,6 @@ def _error_result(
         "method":              method,
         "dimensions":          {},
         "session_summary":     "",
-        "category_explanation": "",
         "elapsed_s":           elapsed,
     }
 
@@ -726,10 +780,6 @@ def _classify_one(
         pm_tasks   = _fetch_pm_tasks(con, focus_keys)
         recent     = _fetch_recent_sessions(con, session_id)
 
-        db_span.set_attribute("pm_tasks_count", len(pm_tasks))
-        db_span.set_attribute("today_focus_count", len(focus_keys))
-        db_span.set_attribute("recent_sessions_count", len(recent))
-
         session_text = session_raw.get("session_text") or ""
         # Coding-agent rows (Claude Code / Codex) carry the full transcript in
         # session_text and a concise, high-quality prose summary in
@@ -737,19 +787,25 @@ def _classify_one(
         # cheaper, faster, and it's already the distilled "what was done".
         if session_raw.get("claude_session_uuid") and (session_raw.get("session_summary") or "").strip():
             session_text = session_raw["session_summary"]
-        db_span.add_event("session_loaded", {
-            "app_name":           str(session_raw.get("app_name") or ""),
-            "duration_s":         float(session_raw.get("duration_s") or 0.0),
-            "category":           str(session_raw.get("category") or ""),
-            "session_text_chars": len(session_text),
-            "text_source":        str(session_raw.get("session_text_source") or ""),
-        })
+
+        # db_fetch is the SOLE source of "what the model was given" — recorded
+        # once, as attributes (no duplicate events repeating these numbers on
+        # build_prompt). `candidate_task_keys` is the highest-value debug signal:
+        # it answers "was the right ticket even offered, and where was it ranked?"
+        # without anyone having to read the prompt. Ranked order is preserved
+        # (today's-focus keys float to the front in _fetch_pm_tasks).
+        candidate_keys = [t["task_key"] for t in pm_tasks]
         recent_task_keys = [r.get("task_key") for r in recent if r.get("task_key")]
-        db_span.add_event("context_loaded", {
-            "pm_tasks_count":        len(pm_tasks),
-            "recent_sessions_count": len(recent),
-            "recent_task_keys":      ", ".join(recent_task_keys) if recent_task_keys else "-",
-        })
+        db_span.set_attribute("app_name", str(session_raw.get("app_name") or ""))
+        db_span.set_attribute("duration_s", float(session_raw.get("duration_s") or 0.0))
+        db_span.set_attribute("text_source", str(session_raw.get("session_text_source") or ""))
+        db_span.set_attribute("session_text_chars", len(session_text))
+        db_span.set_attribute("pm_tasks_count", len(pm_tasks))
+        db_span.set_attribute("today_focus_count", len(focus_keys))
+        db_span.set_attribute("recent_sessions_count", len(recent))
+        db_span.set_attribute("candidate_task_keys", ", ".join(candidate_keys) if candidate_keys else "-")
+        db_span.set_attribute("today_focus_keys", ", ".join(focus_keys) if focus_keys else "-")
+        db_span.set_attribute("recent_task_keys", ", ".join(recent_task_keys) if recent_task_keys else "-")
 
     session = {
         "id":                  session_id,
@@ -766,35 +822,85 @@ def _classify_one(
     }
     valid_keys = {t["task_key"] for t in pm_tasks}
 
-    # ── build_prompt ──────────────────────────────────────────────────────────
-    with tracer.start_as_current_span("build_prompt") as bp_span:
-        bp_span.set_attribute("pm_tasks_count", len(pm_tasks))
-        bp_span.set_attribute("recent_sessions_count", len(recent))
+    # ── classifier_input ────────────────────────────────────────────────────────
+    # The single drill-down span for "exactly what the classifier was asked".
+    # It carries the COMPLETE input, byte-for-byte as handed to the model:
+    #   • system_prompt — full system context + the task-classifier SKILL
+    #   • llm_input     — full user message: the input session block, the recent
+    #                     past-5 sessions, and the ranked candidate tickets
+    # Both are captured POST-assembly, so any cap already applied while building
+    # the prompt (e.g. SESSION_TEXT_CAP truncating the OCR excerpt) is reflected
+    # here EXACTLY as the model saw it — never the pre-cap original. Concatenating
+    # system_prompt + llm_input reproduces the model input verbatim.
+    # (MLX path: system+user are passed verbatim to the model. The Apple FM
+    # fallback rewrites these inside _classify_apple_fm — compact system, user
+    # capped at ~8k chars — so on that path the on-span text is the assembled
+    # input, not the rewritten one.)
+    with tracer.start_as_current_span("classifier_input") as bp_span:
         user_message = build_user_message(session, pm_tasks, recent_sessions=recent)
+        messages = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user",   "content": user_message},
+        ]
+        # `llm_input` on the PARENT span is the input EXACTLY as sent to the model:
+        # the two messages run through the tokenizer's chat template (role markers
+        # + special tokens), i.e. the literal string the model decodes from. This
+        # powers OO's "Input" panel, so one click shows the real wire prompt.
+        # If the template can't be rendered (e.g. Apple FM path), fall back to a
+        # plain system+user rendering so the panel is never empty. Content is
+        # verbatim and post-cap either way. The child spans below break the same
+        # input into its readable pieces.
+        rendered = _render_model_prompt(messages)
+        full_input = rendered if rendered is not None else (
+            "===== SYSTEM MESSAGE (role: system) =====\n"
+            f"{_SYSTEM_PROMPT}\n\n"
+            "===== USER MESSAGE (role: user) =====\n"
+            f"{user_message}"
+        )
         bp_span.set_attribute("prompt_chars", len(user_message))
-        recent_with_task = sum(1 for r in recent if r.get("task_key"))
-        bp_span.add_event("prompt_assembled", {
-            "pm_tasks_included":        len(pm_tasks),
-            "recent_sessions_included": len(recent),
-            "recent_with_task_key":     recent_with_task,
-            "session_text_chars":       len(session_text),
-            "prompt_chars":             len(user_message),
-            "prompt_text":              user_message[:3000],
-        })
+        bp_span.set_attribute("system_prompt_chars", len(_SYSTEM_PROMPT))
+        bp_span.set_attribute("full_input_chars", len(full_input))
+        bp_span.set_attribute("chat_template_rendered", rendered is not None)
+        bp_span.set_attribute("llm_input", full_input)
+        # Total input size in tokens (OTel GenAI semantic convention). Tokenizing
+        # the prompt is deterministic, so this equals MLX's reported input tokens.
+        _ptoks = _count_prompt_tokens(full_input)
+        if _ptoks is not None:
+            bp_span.set_attribute("gen_ai.usage.input_tokens", _ptoks)
 
-    messages = [
-        {"role": "system", "content": _SYSTEM_PROMPT},
-        {"role": "user",   "content": user_message},
-    ]
+        # Each input component is emitted as its OWN child span, so in the OO
+        # waterfall `classifier_input` expands into clickable nodes — open any one
+        # to read just that section. Each carries the EXACT rendered text the
+        # model saw for that piece (same formatters/order as llm_input, post-cap),
+        # stored under `llm_input` so OO renders it in that node's Input panel.
+        def _input_part(name: str, text: str, **extra: Any) -> None:
+            with tracer.start_as_current_span(name) as part:
+                part.set_attribute("llm_input", text)
+                part.set_attribute("chars", len(text))
+                for _k, _v in extra.items():
+                    part.set_attribute(_k, _v)
+
+        _input_part("system_prompt", _SYSTEM_PROMPT)       # classifier skill + context
+        _input_part("recent_context", _format_recent_sessions(recent))   # past-5 sessions
+        _input_part("session_block", _format_session(session))           # the input session
+        _input_part("candidate_tickets", _format_candidates(pm_tasks),   # ranked candidates
+                    ticket_count=len(pm_tasks))
+
+    # `messages` (built above for the chat-template render) is reused verbatim by
+    # inference below — the same object that gets classified.
 
     # ── llm_inference ─────────────────────────────────────────────────────────
     t0 = time.time()
     with tracer.start_as_current_span("llm_inference") as llm_span:
         model_id = _resolve_model_id()
-        llm_span.set_attribute("model", model_id)
-        llm_span.set_attribute("max_tokens", _MAX_TOKENS)
-        llm_span.set_attribute("temperature", _TEMPERATURE)
-        llm_span.add_event("inference_started", {"session_id": session_id})
+        # OTel GenAI semantic conventions — the request/operation attributes live
+        # on the inference (operation) span; usage/response attrs are on
+        # classifier_output, the input token count on classifier_input.
+        llm_span.set_attribute("gen_ai.operation.name", "chat")
+        llm_span.set_attribute("gen_ai.provider.name", "mlx")
+        llm_span.set_attribute("gen_ai.request.model", model_id)
+        llm_span.set_attribute("gen_ai.request.max_tokens", _MAX_TOKENS)
+        llm_span.set_attribute("gen_ai.request.temperature", _TEMPERATURE)
 
         # Apple Intelligence path — no in-process MLX model; JSON parsing with retry.
         try:
@@ -803,22 +909,64 @@ def _classify_one(
         except Exception:
             _use_apple_fm = False
 
+        gen_stats: Any = None  # MLX GenerationResponse (token counts + tok/s), mlx path only
         try:
             if _use_apple_fm:
                 result = _classify_apple_fm(messages)
                 raw = result.model_dump_json()
             else:
+                from mlx_lm import stream_generate
                 from mlx_lm.sample_utils import make_sampler
                 from outlines.inputs import Chat
 
                 with model_session() as model:
-                    raw = model(
-                        Chat(messages),
-                        output_type=SessionClassification,
-                        max_tokens=_MAX_TOKENS,
-                        sampler=make_sampler(temp=_TEMPERATURE),
-                        verbose=False,
-                    )
+                    sampler = make_sampler(temp=_TEMPERATURE)
+                    try:
+                        # Drive mlx_lm.stream_generate directly with outlines' FSM
+                        # logits processor — identical constrained decoding to the
+                        # high-level model(...) call, but we KEEP MLX's own
+                        # GenerationResponse stats (prompt/generation token counts +
+                        # tok/s + finish_reason) instead of discarding them. The
+                        # processor is compiled exactly as outlines does it: a
+                        # Generator turns the pydantic schema into the logits
+                        # processor; type_adapter wraps it; format_input renders the
+                        # chat prompt. The last streamed response carries the
+                        # cumulative token counts.
+                        from outlines.generator import Generator
+
+                        _gen = Generator(model, SessionClassification)
+                        logits_processors = model.type_adapter.format_output_type(
+                            _gen.logits_processor
+                        )
+                        formatted = model.type_adapter.format_input(Chat(messages))
+                        parts: list[str] = []
+                        for gr in stream_generate(
+                            model.model, model.mlx_tokenizer, formatted,
+                            max_tokens=_MAX_TOKENS,
+                            logits_processors=logits_processors,
+                            sampler=sampler,
+                        ):
+                            parts.append(gr.text)
+                            gen_stats = gr
+                        raw = "".join(parts)
+                    except Exception as stream_exc:  # noqa: BLE001
+                        # Fallback to the high-level call if outlines' internals
+                        # shift — text only, no stats — so classification never
+                        # breaks just because the metadata path did. Logged (not
+                        # silent) so the regression is visible.
+                        log.warning(
+                            "run_task_linker_mlx: stream-stats path failed (%s) — "
+                            "falling back to model(...) without token stats",
+                            stream_exc,
+                        )
+                        gen_stats = None
+                        raw = model(
+                            Chat(messages),
+                            output_type=SessionClassification,
+                            max_tokens=_MAX_TOKENS,
+                            sampler=sampler,
+                            verbose=False,
+                        )
         except Exception as exc:
             elapsed = time.time() - t0
             outcome = "apple_fm_error" if _use_apple_fm else "mlx_error"
@@ -842,24 +990,41 @@ def _classify_one(
         outcome = "apple_fm" if _use_apple_fm else "mlx_direct"
         llm_span.set_attribute("outcome", outcome)
         llm_span.set_attribute("elapsed_s", elapsed)
-        llm_span.set_attribute("response_chars", len(raw))
-        llm_span.add_event("inference_complete", {
-            "elapsed_s":      elapsed,
-            "response_chars": len(raw),
-        })
+        # MLX's OWN generation metadata (token counts, throughput, finish_reason)
+        # is carried by `gen_stats` and surfaced on the classifier_output span
+        # below, co-located with the output. raw size/content also lives there.
 
     log.debug(
         "run_task_linker_mlx: session %d raw (%.1fs): %.200s",
         session_id, elapsed, raw,
     )
 
-    # ── parse_response ────────────────────────────────────────────────────────
-    with tracer.start_as_current_span("parse_response") as pr_span:
+    # ── classifier_output ─────────────────────────────────────────────────────
+    with tracer.start_as_current_span("classifier_output") as pr_span:
+        # `llm_output` is the COMPLETE raw model output — never truncated, so you
+        # can see EXACTLY what came out. Named `llm_output` (mirroring the parent
+        # `llm_input`) so OpenObserve renders it in the span's "Output" panel. The
+        # verdict (task_key/confidence/session_type/category) lives on the root
+        # classify_session span, so it isn't repeated here.
         pr_span.set_attribute("raw_chars", len(raw))
-        pr_span.add_event("raw_mlx_output", {
-            "chars":   len(raw),
-            "preview": raw[:500],
-        })
+        pr_span.set_attribute("llm_output", raw)
+        # MLX's OWN generation metadata, co-located with the output it describes —
+        # exact token counts + throughput as REPORTED BY the model (not
+        # re-tokenized by us), under the OTel GenAI semantic conventions. tok/s and
+        # peak memory have no standard attribute name, so they stay custom. None on
+        # the Apple FM path, which has no MLX stats.
+        if gen_stats is not None:
+            _in = int(gen_stats.prompt_tokens)
+            _out = int(gen_stats.generation_tokens)
+            pr_span.set_attribute("gen_ai.usage.input_tokens", _in)
+            pr_span.set_attribute("gen_ai.usage.output_tokens", _out)
+            pr_span.set_attribute("gen_ai.usage.total_tokens", _in + _out)
+            pr_span.set_attribute("gen_ai.response.model", _resolve_model_id())
+            pr_span.set_attribute("prompt_tps", round(float(gen_stats.prompt_tps), 2))
+            pr_span.set_attribute("generation_tps", round(float(gen_stats.generation_tps), 2))
+            pr_span.set_attribute("peak_memory_gb", round(float(gen_stats.peak_memory), 2))
+            if gen_stats.finish_reason is not None:
+                pr_span.set_attribute("gen_ai.response.finish_reason", str(gen_stats.finish_reason))
 
         # Both paths converge on a JSON string in `raw`; parse to SessionClassification.
         # Apple FM already validated once inside _classify_apple_fm; re-parsing from
@@ -869,10 +1034,9 @@ def _classify_one(
         except Exception as exc:
             pr_span.set_attribute("outcome", "schema_error")
             pr_span.set_status(StatusCode.ERROR, str(exc))
-            pr_span.add_event("parse_failure", {
-                "error":       str(exc)[:300],
-                "raw_preview": raw[:300],
-            })
+            # Full raw output is already on `llm_output_raw`; the event only adds
+            # the validation error message.
+            pr_span.add_event("parse_failure", {"error": str(exc)[:300]})
             log.warning(
                 "run_task_linker_mlx: schema validation failed for session %d: %s",
                 session_id, exc,
@@ -887,8 +1051,7 @@ def _classify_one(
             pr_span.set_attribute("outcome", "invalid_task_key")
             pr_span.set_status(StatusCode.ERROR, f"unknown task_key {task_key!r}")
             pr_span.add_event("parse_failure", {
-                "error":       f"model returned unknown task_key {task_key!r}",
-                "raw_preview": raw[:300],
+                "error": f"model returned unknown task_key {task_key!r}",
             })
             log.warning(
                 "run_task_linker_mlx: model returned unknown task_key %r for session %d",
@@ -902,17 +1065,38 @@ def _classify_one(
             )
 
         # Clamp confidence to [0, 1] in case the model sneaks past schema bounds.
+        # The routing VERDICT (task_key/confidence/session_type/category) is the
+        # one-line answer and is promoted onto the root classify_session span by
+        # _annotate_classification_span — not repeated here.
         confidence = max(0.0, min(1.0, result.confidence))
         pr_span.set_attribute("outcome", "ok")
-        pr_span.set_attribute("task_key", task_key if task_key is not None else "-")
-        pr_span.set_attribute("confidence", confidence)
-        pr_span.add_event("parse_success", {
-            "task_key":         task_key if task_key is not None else "-",
-            "confidence":       confidence,
-            "session_type":     result.session_type,
-            "dimensions_count": len(result.dimensions),
-            "dimension_keys":   ", ".join(sorted(result.dimensions.keys())),
-        })
+
+        # Each meaningful output field as its OWN child span, mirroring
+        # classifier_input — so classifier_output expands into clickable nodes.
+        # These carry the rich, readable output the model produced (the verdict
+        # itself stays on the root, above):
+        #   • reasoning       — why this task match
+        #   • category        — the category justification (+ category/confidence)
+        #   • dimensions       — the inferred activity tags
+        #   • session_summary  — the PM-facing prose deliverable
+        def _output_part(name: str, text: str, **extra: Any) -> None:
+            with tracer.start_as_current_span(name) as part:
+                part.set_attribute("llm_output", text)
+                part.set_attribute("chars", len(text))
+                for _k, _v in extra.items():
+                    part.set_attribute(_k, _v)
+
+        _output_part("reasoning", result.reasoning)
+        _output_part(
+            "category", result.category_explanation,
+            category=result.category,
+            category_confidence=max(0.0, min(1.0, result.category_confidence)),
+        )
+        _output_part(
+            "dimensions", json.dumps(result.dimensions, default=str),
+            dimension_keys=", ".join(sorted(result.dimensions.keys())) or "-",
+        )
+        _output_part("session_summary", result.session_summary)
 
     return {
         "session_id":           session_id,

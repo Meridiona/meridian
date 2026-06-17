@@ -73,7 +73,8 @@ pub(super) async fn update_session_task(
              task_method = ?, task_reasoning = ?, task_session_type = ?,
              session_summary = ?,
              category = ?, confidence = ?, category_method = 'mlx',
-             category_explanation = ?
+             category_explanation = ?,
+             classify_traceparent = COALESCE(?, classify_traceparent)
          WHERE id = ?",
     )
     .bind(&r.task_key)
@@ -86,6 +87,7 @@ pub(super) async fn update_session_task(
     .bind(&r.category)
     .bind(r.category_confidence)
     .bind(category_explanation)
+    .bind(&r.classify_traceparent)
     .bind(r.session_id)
     .execute(pool)
     .await
@@ -109,7 +111,8 @@ pub(super) async fn update_coding_agent_task(
     sqlx::query(
         "UPDATE app_sessions
          SET task_key = ?, task_confidence = ?, task_routing = ?,
-             task_method = ?, task_reasoning = ?, task_session_type = ?
+             task_method = ?, task_reasoning = ?, task_session_type = ?,
+             classify_traceparent = COALESCE(?, classify_traceparent)
          WHERE id = ?",
     )
     .bind(&r.task_key)
@@ -118,6 +121,7 @@ pub(super) async fn update_coding_agent_task(
     .bind(&r.method)
     .bind(reasoning)
     .bind(&r.session_type)
+    .bind(&r.classify_traceparent)
     .bind(r.session_id)
     .execute(pool)
     .await
