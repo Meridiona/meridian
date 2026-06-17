@@ -59,9 +59,16 @@ meridian/
       002_gaps.sql       # gaps table, idle_frame_count columns
   meridian-core/         # lean shared data layer — used by BOTH the daemon and the Tauri dashboard
     src/
-      lib.rs             # ActiveSession + open_existing + get_active_session (daemon re-exports these)
-      intervals.rs       # wall-clock interval math (port of ui/lib/intervals.ts)
-      date.rs            # local-day bounds (port of ui/lib/date-utils.ts)
+      lib.rs             # thin manifest: declares modules + curated `pub use` re-exports (stable public API)
+      db.rs              # ActiveSession + open_existing + get_active_session (daemon re-exports these)
+      settings.rs        # settings.json runtime config reader (daemon re-exports)
+      util/              # DB-free helpers, re-exported flat (meridian_core::{intervals,date,hygiene})
+        intervals.rs     # wall-clock interval math (port of ui/lib/intervals.ts)
+        date.rs          # local-day bounds (port of ui/lib/date-utils.ts)
+        hygiene.rs       # board-hygiene reason → hint/fix mapping
+      readers/           # the ported /api/* DB readers, re-exported flat (meridian_core::today, ::tasks, …)
+        active.rs  coding_agents.rs  integrations.rs  tasks.rs  triage.rs  week.rs  worklogs.rs
+        today/           # mod.rs + types.rs (size split — types co-located per module)
   tests/
     integration_etl.rs   # integration tests — in-memory SQLite, no network
   ui/
@@ -79,11 +86,22 @@ meridian/
     src-tauri/           # Tauri shell (Rust + Tauri framework)
       src/
         main.rs          # Tauri entry point
-        lib.rs           # Tauri library root
-        poll.rs          # polling loop for /api/health, /api/today
-        commands.rs      # Tauri commands (get_status, open_dashboard, etc.)
-        format.rs        # duration formatting helpers (with unit tests)
+        lib.rs           # thin app bootstrap (builder, db pool, tray install, invoke_handler)
+        tray.rs          # tray menu builder + menu-event dispatch + window openers
+        sys.rs           # shared helpers: uid_str, notify, ui_base (deduped)
+        install.rs       # install-mode detection + meridian_db_path / .env resolution
         state.rs         # app state and health tracking
+        format.rs        # duration formatting helpers (with unit tests)
+        poll/            # background poll loop
+          mod.rs         # loop + tick cadence + tray-sync (emit/tooltip/menu)
+          refresh.rs     # refresh_health/active/today/worklogs
+          notifications.rs # outbox drain + notifications_allowed
+        commands.rs      # commands module root: declares submodules + glob re-exports (commands::<fn>)
+        commands/        # the #[tauri::command] surface, grouped by domain
+          dashboard.rs   # DB reads (get_active/today/week/coding_agents/worklogs/tasks/triage/settings)
+          daemon.rs      # restart/toggle/get_status/get_daemon_status
+          system.rs      # open_dashboard/open_worklogs/open_permission_pane
+          health.rs  logs.rs  openobserve.rs  integrations.rs  parents.rs  version.rs
       Cargo.toml         # Tauri dependencies
     src/
       index.html         # popover UI template
@@ -102,8 +120,9 @@ meridian/
 > **Ported so far:** active, today, week, coding-agents, worklogs, tasks, settings, integrations,
 > triage(+parents). **When porting a route, follow the step-by-step playbook in Coding Conventions →
 > "Porting a dashboard route to Rust"** (doc + tracing + placement + test standards); exemplars:
-> `meridian-core/src/triage.rs`, `tray/src-tauri/src/parents.rs`. The interval/day-bound math is in
-> `meridian-core::{intervals,date}` with golden tests. Frontend stays Next.js; the **export cutover**
+> `meridian-core/src/readers/triage.rs`, `tray/src-tauri/src/commands/parents.rs`. The interval/day-bound
+> math is in `meridian-core::{intervals,date}` with golden tests (files under `meridian-core/src/util/`,
+> re-exported flat). Frontend stays Next.js; the **export cutover**
 > (delete `/api`, flip `output:'export'`, point `frontendDist` at the export) is the LAST step. Dev-only
 > `--features otel` on the tray exports spans to OpenObserve (`service.name = meridian-tray`) — release
 > builds omit it. Rationale + full scope: Obsidian `Decisions/Dashboard frontend - keep Next in Tauri.md`,
@@ -273,9 +292,9 @@ Read `VISION.md` first.
 
 ### Porting a dashboard route to Rust (Next-fold playbook)
 
-The fold replaces every `ui/app/api/*` route with a Rust command the frontend calls over Tauri `invoke`. **This is the standard for the work — follow every step when porting a route.** Exemplars to copy: `meridian-core/src/triage.rs` (DB read) and `tray/src-tauri/src/parents.rs` (shell-out).
+The fold replaces every `ui/app/api/*` route with a Rust command the frontend calls over Tauri `invoke`. **This is the standard for the work — follow every step when porting a route.** Exemplars to copy: `meridian-core/src/readers/triage.rs` (DB read) and `tray/src-tauri/src/commands/parents.rs` (shell-out).
 
-1. **Place it by data source.** A **DB-backed read** → a module in `meridian-core/src/` (the lean shared layer; the daemon re-exports it if it needs it too). Reuse `meridian-core::{intervals,date}` — never re-derive time/day math. Anything reading **files / env / a process / external HTTP** (`settings.json`, `.env`, `launchctl`, npm registry, shelling out to `meridian`) → a command/module in `tray/src-tauri/src/`; keep `meridian-core` DB-only.
+1. **Place it by data source.** A **DB-backed read** → a new module under `meridian-core/src/readers/`, added to `readers/mod.rs` and re-exported flat from `lib.rs` (`pub use readers::<name>;`) so the public path stays `meridian_core::<name>` (the daemon re-exports it if it needs it too). Reuse `meridian-core::{intervals,date}` — never re-derive time/day math. Anything reading **files / env / a process / external HTTP** (`settings.json`, `.env`, `launchctl`, npm registry, shelling out to `meridian`) → a module under `tray/src-tauri/src/commands/` (grouped by domain), declared + glob-re-exported in `commands.rs`; keep `meridian-core` DB-only.
 2. **Match the route byte-for-byte.** Replicate its shaping exactly: defaults, `null → ''` coercions, truncation, ordering, and graceful missing-table/column detection (`sqlite_master` / `pragma_table_info`). Comment any deliberate divergence (e.g. a `BTreeMap` sorts keys vs the route's insertion order — fine when consumers read by key).
 3. **Thin command wrapper.** A `#[tauri::command]` resolves request-scoped values (today / now / day) and calls the core fn, so the core stays deterministic and testable. Register it in `lib.rs`'s `invoke_handler!`. Every new window label must be added to `capabilities/default.json` or its `invoke`s are silently denied.
 4. **Document it (required).** Module `//!` header with: one-line purpose + which route it ports, a **`# Who calls this`** (the command + the frontend consumer), and a **`# Related`** section linking sibling modules / dependent fns via intra-doc links (`` [`crate::tasks`] ``). Every `pub` fn/struct gets a `///` covering purpose, key params, return, and any non-obvious behaviour carried from the source.
