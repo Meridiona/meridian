@@ -174,6 +174,52 @@ fn uid_str() -> String {
         .unwrap_or_else(|| "501".to_string())
 }
 
+/// Which install mode the tray is running in, inferred from the daemon's `.env` location.
+///
+/// - `Bundle`: the installer wrote `~/.meridian/app/.env`; the daemon reads that file.
+/// - `Dev`: no bundle env found; a repo `.env` was found by walking up from cwd (local dev).
+/// - `Bare`: neither file exists — a bare `.app` launch with no companion installer.
+///   Only process-env overrides and hardcoded defaults apply.
+#[derive(Debug)]
+pub(crate) enum InstallMode {
+    Bundle(std::path::PathBuf),
+    Dev(std::path::PathBuf),
+    Bare,
+}
+
+impl InstallMode {
+    pub(crate) fn env_path(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::Bundle(p) | Self::Dev(p) => Some(p),
+            Self::Bare => None,
+        }
+    }
+}
+
+/// Detect the install mode by probing for the daemon's `.env` file.
+/// Bundle path wins over the cwd walk when both exist, mirroring the daemon's dotenvy priority.
+/// Called once at startup; both `meridian_db_path` and `integrations::get_integrations` use this.
+pub(crate) fn detect_install_mode() -> InstallMode {
+    let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
+    if let Some(bundle) = home.as_ref().map(|h| h.join(".meridian/app/.env")) {
+        if bundle.exists() {
+            return InstallMode::Bundle(bundle);
+        }
+    }
+    if let Ok(mut dir) = std::env::current_dir() {
+        for _ in 0..8 {
+            let candidate = dir.join(".env");
+            if candidate.exists() {
+                return InstallMode::Dev(candidate);
+            }
+            if !dir.pop() {
+                break;
+            }
+        }
+    }
+    InstallMode::Bare
+}
+
 /// Read `key` from a single line of a .env file, stripping surrounding quotes.
 fn dotenv_line_value(line: &str, key: &str) -> Option<String> {
     let prefix = format!("{key}=");
@@ -190,45 +236,34 @@ fn dotenv_line_value(line: &str, key: &str) -> Option<String> {
     }
 }
 
-/// Look up `key` in the daemon's .env (bundle: `~/.meridian/app/.env`, else
-/// the first `.env` walking up from cwd — same search as `active_env_path`).
-fn env_from_daemon_dotenv(key: &str) -> Option<String> {
-    let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
-    let bundle = home.as_ref().map(|h| h.join(".meridian/app/.env"));
-    let path = if bundle.as_ref().is_some_and(|p| p.exists()) {
-        bundle.unwrap()
-    } else {
-        let mut dir = std::env::current_dir().ok()?;
-        for _ in 0..8 {
-            let c = dir.join(".env");
-            if c.exists() {
-                let contents = std::fs::read_to_string(&c).ok()?;
-                return contents.lines().find_map(|l| dotenv_line_value(l, key));
-            }
-            if !dir.pop() {
-                return None;
-            }
-        }
-        return None;
-    };
-    let contents = std::fs::read_to_string(&path).ok()?;
+fn env_key_from_path(path: &std::path::Path, key: &str) -> Option<String> {
+    let contents = std::fs::read_to_string(path).ok()?;
     contents.lines().find_map(|l| dotenv_line_value(l, key))
 }
 
 /// Resolve meridian.db path: process env first (launchd plist / shell export),
-/// then the daemon's .env file, then the default location.
+/// then the daemon's .env (keyed by install mode), then the hardcoded default.
+/// Logs at `info!` so the install mode is visible in OpenObserve on every startup.
 pub(crate) fn meridian_db_path() -> String {
     if let Ok(p) = std::env::var("MERIDIAN_DB") {
-        tracing::debug!(source = "env", path = %p, "resolved meridian_db_path");
+        tracing::info!(source = "process_env", path = %p, "meridian_db resolved");
         return p;
     }
-    if let Some(p) = env_from_daemon_dotenv("MERIDIAN_DB") {
-        tracing::debug!(source = "daemon_dotenv", path = %p, "resolved meridian_db_path");
-        return p;
+    let mode = detect_install_mode();
+    if let Some(env_file) = mode.env_path() {
+        if let Some(p) = env_key_from_path(env_file, "MERIDIAN_DB") {
+            tracing::info!(
+                source = ?mode,
+                env_file = %env_file.display(),
+                path = %p,
+                "meridian_db resolved"
+            );
+            return p;
+        }
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let p = format!("{}/.meridian/meridian.db", home);
-    tracing::debug!(source = "default", path = %p, "resolved meridian_db_path");
+    tracing::info!(source = ?mode, path = %p, "meridian_db resolved (default)");
     p
 }
 

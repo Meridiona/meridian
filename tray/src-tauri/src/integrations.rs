@@ -6,11 +6,9 @@
 //! token providers (linear/github/azure) by their `.env` keys (placeholder
 //! values don't count), and last sync errors come from the DB (meridian-core).
 //!
-//! Env-path note: the route used NODE_ENV to pick dev (repo `.env`) vs prod
-//! (`~/.meridian/app/.env`). The tray mirrors the *daemon* instead — bundle
-//! `.env` if present, else the first `.env` walking up from cwd (dotenvy's
-//! behaviour) — so it reflects what the daemon actually reads. (Approximate when
-//! several `.env`s coexist; the OAuth detection above is exact.)
+//! Env-path note: env keys (linear/github/azure tokens) are read from whichever
+//! `.env` `detect_install_mode` selects — bundle (`~/.meridian/app/.env`) for
+//! installed builds, repo `.env` for dev runs, nothing for a bare `.app` launch.
 
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
@@ -31,28 +29,7 @@ fn home() -> Option<PathBuf> {
     std::env::var("HOME").ok().map(PathBuf::from)
 }
 
-/// The `.env` the daemon reads: bundle `~/.meridian/app/.env` if present, else
-/// the first `.env` walking up from cwd.
-fn active_env_path() -> Option<PathBuf> {
-    if let Some(bundle) = home().map(|h| h.join(".meridian/app/.env")) {
-        if bundle.exists() {
-            return Some(bundle);
-        }
-    }
-    let mut dir = std::env::current_dir().ok()?;
-    for _ in 0..8 {
-        let candidate = dir.join(".env");
-        if candidate.exists() {
-            return Some(candidate);
-        }
-        if !dir.pop() {
-            break;
-        }
-    }
-    None
-}
-
-fn parse_env(path: &PathBuf) -> HashMap<String, String> {
+fn parse_env(path: &std::path::Path) -> HashMap<String, String> {
     let mut out = HashMap::new();
     let Ok(contents) = std::fs::read_to_string(path) else {
         return out;
@@ -103,7 +80,8 @@ fn oauth_file_exists(provider: &str) -> bool {
 pub async fn get_integrations(
     pool: State<'_, Option<meridian_core::SqlitePool>>,
 ) -> Result<IntegrationsResponse, String> {
-    let env = active_env_path().map(|p| parse_env(&p)).unwrap_or_default();
+    let mode = crate::commands::detect_install_mode();
+    let env = mode.env_path().map(parse_env).unwrap_or_default();
 
     let jira_basic = is_set(&env, "JIRA_BASE_URL")
         && is_set(&env, "JIRA_EMAIL")
