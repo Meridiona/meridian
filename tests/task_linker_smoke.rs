@@ -152,7 +152,7 @@ async fn real_classification_writes_task_and_advances_cursor() {
     .await;
 
     let cfg = make_cfg(&db_path);
-    run_task_linking(&pool, &cfg).await.unwrap();
+    run_task_linking(&pool, &cfg, None).await.unwrap();
 
     // task classification written to app_sessions
     let row = sqlx::query(
@@ -223,8 +223,8 @@ async fn real_classification_does_not_reprocess_classified_session() {
     .await;
 
     let cfg = make_cfg(&db_path);
-    run_task_linking(&pool, &cfg).await.unwrap(); // classifies
-    run_task_linking(&pool, &cfg).await.unwrap(); // should be a no-op
+    run_task_linking(&pool, &cfg, None).await.unwrap(); // classifies
+    run_task_linking(&pool, &cfg, None).await.unwrap(); // should be a no-op
 
     let run_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM agent_runs")
         .fetch_one(&pool)
@@ -265,7 +265,7 @@ async fn classifiable_session_paused_until_pipeline_ready() {
 
     // No pm_tasks seeded → pm_tasks_present() is false → pipeline is paused.
     let cfg = make_cfg(&db_path);
-    run_task_linking(&pool, &cfg).await.unwrap();
+    run_task_linking(&pool, &cfg, None).await.unwrap();
 
     // Session must remain unclassified (task_method still NULL).
     let method: Option<String> =
@@ -319,7 +319,7 @@ async fn short_session_is_not_classified() {
         runtime: RuntimeSettings::default(),
     };
 
-    run_task_linking(&pool, &cfg).await.unwrap();
+    run_task_linking(&pool, &cfg, None).await.unwrap();
 
     let count: (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM app_sessions WHERE task_method IS NOT NULL")
@@ -358,7 +358,7 @@ async fn trivial_session_is_marked_overhead_without_server() {
         runtime: RuntimeSettings::default(),
     };
 
-    run_task_linking(&pool, &cfg).await.unwrap();
+    run_task_linking(&pool, &cfg, None).await.unwrap();
 
     let row = sqlx::query("SELECT task_method, task_routing FROM app_sessions WHERE id = ?")
         .bind(id)

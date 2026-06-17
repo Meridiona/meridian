@@ -17,7 +17,6 @@ use meridian::intelligence::{
 use meridian::observability;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::Notify;
-use tracing::Instrument as _;
 
 /// After this many consecutive subprocess failures for the same session,
 /// write a `subprocess_error` sentinel and advance the cursor past it.
@@ -79,7 +78,7 @@ async fn main() -> Result<()> {
             Ok(pool) => {
                 let mut total = 0usize;
                 loop {
-                    match run_coding_agent_classification(&pool, &cfg).await {
+                    match run_coding_agent_classification(&pool, &cfg, None).await {
                         Ok(0) => break,
                         Ok(n) => {
                             total += n;
@@ -684,6 +683,17 @@ async fn main() -> Result<()> {
                     _ = tokio::time::sleep(Duration::from_secs(300)) => tracing::Span::none(),
                 };
 
+                // Each classification below runs as its OWN root trace (not a child
+                // of this tick), so a backlog drain produces one self-contained trace
+                // per session instead of N siblings collapsed into one tick trace.
+                // We still want the daemon→session relationship, so capture the tick's
+                // span context here and pass it down as a span LINK. `Span::none()`
+                // (the 5-min fallback wake) yields no context → no link, which is fine.
+                let tick_link = parent_span
+                    .in_scope(meridian::observability::current_traceparent)
+                    .as_deref()
+                    .and_then(meridian::observability::span_context_from_traceparent);
+
                 // Whether this wake settled at least one session — if so, wake the
                 // PM-worklog driver afterwards so a now-complete hour drafts at once.
                 let mut classified_any = false;
@@ -691,12 +701,12 @@ async fn main() -> Result<()> {
                 // Drain: classify oldest-first until nothing is left or a failure stops us.
                 loop {
                     let cfg = Config::from_env();
-                    // .instrument() enters parent_span on each poll; #[tracing::instrument]
-                    // on run_task_linking creates its span inside the async block at first
-                    // poll (tracing-attributes >= 0.1.24), so it sees parent_span as current
-                    // and becomes its child.
-                    match run_task_linking(&meridian_linker, &cfg)
-                        .instrument(parent_span.clone())
+                    // No `.instrument(parent_span)` here on purpose: run_task_linking's
+                    // own #[tracing::instrument] span is created with no ambient parent,
+                    // so it starts a fresh root trace. `tick_link` (the tick's span
+                    // context) is passed as a LINK instead — daemon→session stays
+                    // navigable without merging every drained session into one trace.
+                    match run_task_linking(&meridian_linker, &cfg, tick_link.clone())
                         .await
                     {
                         Ok(TaskLinkOutcome::Classified) => {
@@ -710,9 +720,12 @@ async fn main() -> Result<()> {
                             // classify queue (summarised rows → task linking), the
                             // last link of seal→summarise→classify. Repeat until empty.
                             loop {
-                                match run_coding_agent_classification(&meridian_linker, &cfg)
-                                    .instrument(parent_span.clone())
-                                    .await
+                                match run_coding_agent_classification(
+                                    &meridian_linker,
+                                    &cfg,
+                                    tick_link.clone(),
+                                )
+                                .await
                                 {
                                     Ok(0) => break,
                                     Ok(n) => {

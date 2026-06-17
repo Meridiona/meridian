@@ -579,7 +579,8 @@ def _fetch_session(
     row = con.execute(
         "SELECT id, app_name, started_at, ended_at, duration_s, session_text,"
         "       session_text_source, window_titles, category, confidence,"
-        "       session_summary, claude_session_uuid"
+        "       session_summary, claude_session_uuid,"
+        "       min_frame_id, max_frame_id, frame_count"
         " FROM app_sessions WHERE id = ?",
         (session_id,),
     ).fetchone()
@@ -800,6 +801,17 @@ def _classify_one(
         db_span.set_attribute("duration_s", float(session_raw.get("duration_s") or 0.0))
         db_span.set_attribute("text_source", str(session_raw.get("session_text_source") or ""))
         db_span.set_attribute("session_text_chars", len(session_text))
+        # Frame-range attribution: the contiguous screenpipe frame_id window this
+        # session was built from (min..max, inclusive) plus the kept frame count.
+        # Answers "which capture window fed this classification" — the raw frames
+        # live in screenpipe keyed by these ids. Coding-agent rows have no frames
+        # (min/max = 0), so guard on a real range before stamping.
+        _min_fid = session_raw.get("min_frame_id")
+        _max_fid = session_raw.get("max_frame_id")
+        if isinstance(_min_fid, int) and isinstance(_max_fid, int) and _max_fid > 0:
+            db_span.set_attribute("min_frame_id", _min_fid)
+            db_span.set_attribute("max_frame_id", _max_fid)
+            db_span.set_attribute("frame_count", int(session_raw.get("frame_count") or 0))
         db_span.set_attribute("pm_tasks_count", len(pm_tasks))
         db_span.set_attribute("today_focus_count", len(focus_keys))
         db_span.set_attribute("recent_sessions_count", len(recent))
