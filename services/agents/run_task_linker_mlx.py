@@ -66,6 +66,20 @@ _CONTEXT_WINDOW = 5
 _MAX_TOKENS = 1024
 _TEMPERATURE = 0.0  # greedy decoding — deterministic classification
 
+# Candidate-set policy. When the dev has CONFIRMED a daily plan, restrict the
+# classifier's candidate tickets to exactly those planned tickets instead of
+# offering every open ticket (the historical "boost-never-filter" behaviour).
+# Rationale: a focused candidate set sharpens precision on the day's declared
+# work; off-plan work then intentionally falls through to `untracked` — a
+# deliberate holding state — rather than being mis-linked onto an unrelated open
+# ticket. NOTE: until a recall-recovery stage exists, `untracked` sessions do
+# not produce PM worklogs, so off-plan work is not written back while this is on.
+#   "1" (default) → plan-only filtering whenever a plan is confirmed
+#   "0"           → legacy boost-never-filter (plan tickets floated up, all kept)
+# Read once at import — flipping it requires an MLX-server restart. Only ever
+# active on days with a confirmed, non-empty plan; unplanned days are unaffected.
+_PLAN_ONLY_CANDIDATES = os.environ.get("CLASSIFY_PLAN_ONLY_CANDIDATES", "1") == "1"
+
 # The eval-tuned default classifier model. It lives in the llm_selector catalog
 # (_MODELS) as "qwen3.5-9b-optiq"; llm_selector keeps it on machines where it
 # fits and degrades only when Metal headroom can't accommodate it. The catalog
@@ -580,7 +594,7 @@ def _fetch_session(
         "SELECT id, app_name, started_at, ended_at, duration_s, session_text,"
         "       session_text_source, window_titles, category, confidence,"
         "       session_summary, claude_session_uuid,"
-        "       min_frame_id, max_frame_id, frame_count, frame_contributions"
+        "       min_frame_id, max_frame_id, frame_count"
         " FROM app_sessions WHERE id = ?",
         (session_id,),
     ).fetchone()
@@ -684,17 +698,46 @@ def _fetch_pm_tasks(
         rows = con.execute(base_cols).fetchall()
     tasks = [dict(r) for r in rows]
 
-    # Today's-focus boost: tag the tickets the dev declared for the day and float
-    # them to the top of the candidate list, in their declared order. This is a
-    # BOOST, never a filter — every other candidate still follows, so recall is
-    # untouched. A focus key that isn't in `tasks` (e.g. excluded by curation)
-    # simply has no effect; we never resurrect a filtered-out ticket.
+    # Candidate-set policy (see _PLAN_ONLY_CANDIDATES). `focus_keys` are the
+    # tickets the dev CONFIRMED for this session's day (empty when no plan).
     focus = focus_keys or []
-    if focus:
-        order = {key: i for i, key in enumerate(focus)}
-        for t in tasks:
-            t["is_today_focus"] = t["task_key"] in order
-        tasks.sort(key=lambda t: (0, order[t["task_key"]]) if t.get("is_today_focus") else (1, 0))
+    if not focus:
+        # No confirmed plan → offer every candidate. Unchanged behaviour for
+        # users who don't use the plan, or days that aren't confirmed yet.
+        # `is_today_focus` is left unset (falsy) on every ticket.
+        return tasks
+
+    order = {key: i for i, key in enumerate(focus)}
+
+    if _PLAN_ONLY_CANDIDATES:
+        # Plan-only: the candidate set IS the confirmed plan, in declared order.
+        # Off-plan work then has no candidate to match, so the model returns
+        # `untracked` (the intended holding state) instead of being shoehorned
+        # onto an unrelated ticket.
+        in_plan = [t for t in tasks if t["task_key"] in order]
+        # GUARD: never return an empty candidate set. If the confirmed plan's
+        # tickets are all absent from the live pool (curation-excluded, closed,
+        # or not yet synced), fall back to the full set — an empty list would
+        # force EVERY session that day to `untracked`.
+        if not in_plan:
+            log.warning(
+                "plan-only candidates: confirmed plan has no live candidate "
+                "tickets (focus=%s) — falling back to full candidate set",
+                focus,
+            )
+            return tasks
+        for t in in_plan:
+            t["is_today_focus"] = True
+        in_plan.sort(key=lambda t: order[t["task_key"]])
+        return in_plan
+
+    # Legacy boost-never-filter: tag the declared tickets and float them to the
+    # top in declared order, but keep every other candidate so recall is
+    # untouched. A focus key not in `tasks` (e.g. excluded by curation) simply
+    # has no effect — we never resurrect a filtered-out ticket.
+    for t in tasks:
+        t["is_today_focus"] = t["task_key"] in order
+    tasks.sort(key=lambda t: (0, order[t["task_key"]]) if t.get("is_today_focus") else (1, 0))
     return tasks
 
 
@@ -830,31 +873,22 @@ def _classify_one(
         db_span.set_attribute("recent_sessions_count", len(recent))
         db_span.set_attribute("candidate_task_keys", ", ".join(candidate_keys) if candidate_keys else "-")
         db_span.set_attribute("today_focus_keys", ", ".join(focus_keys) if focus_keys else "-")
+        # Which candidate-set policy actually applied for this session, so a trace
+        # explains the candidate list without re-deriving it:
+        #   all               → no confirmed plan; every open ticket offered
+        #   plan_only         → narrowed to the confirmed plan
+        #   plan_fallback_all → plan confirmed but its tickets weren't live → fell back
+        #   boost             → legacy boost-never-filter (flag off)
+        if not focus_keys:
+            candidate_mode = "all"
+        elif not _PLAN_ONLY_CANDIDATES:
+            candidate_mode = "boost"
+        elif pm_tasks and all(t.get("is_today_focus") for t in pm_tasks):
+            candidate_mode = "plan_only"
+        else:
+            candidate_mode = "plan_fallback_all"
+        db_span.set_attribute("candidate_mode", candidate_mode)
         db_span.set_attribute("recent_task_keys", ", ".join(recent_task_keys) if recent_task_keys else "-")
-
-    # ── contributing_frames ─────────────────────────────────────────────────────
-    # Which screenpipe frames' OCR/a11y text actually fed this session's
-    # session_text, captured at ETL formation time (durable across screenpipe
-    # pruning; see migration 045). One self-describing span per session so a
-    # misclassification can be traced back to the exact capture frames — without
-    # needing screenpipe access. Skipped for sessions with no frame provenance
-    # (coding-agent rows, or rows formed before migration 045).
-    try:
-        _frames = json.loads(session_raw.get("frame_contributions") or "[]")
-    except (TypeError, ValueError):
-        _frames = []
-    if _frames:
-        with tracer.start_as_current_span("contributing_frames") as cf_span:
-            cf_span.set_attribute("frame_count", len(_frames))
-            cf_span.set_attribute(
-                "frame_ids", ", ".join(str(f.get("frame_id")) for f in _frames)
-            )
-            cf_span.set_attribute("first_frame_ts", str(_frames[0].get("timestamp", "")))
-            cf_span.set_attribute("last_frame_ts", str(_frames[-1].get("timestamp", "")))
-            cf_span.set_attribute("total_chars", sum(int(f.get("chars") or 0) for f in _frames))
-            # Full per-frame detail (id, timestamp, source, chars) as a JSON blob,
-            # so the exact provenance is one click away in the span attributes.
-            cf_span.set_attribute("frames", json.dumps(_frames, separators=(",", ":")))
 
     session = {
         "id":                  session_id,
