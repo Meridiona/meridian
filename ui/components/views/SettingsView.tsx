@@ -17,8 +17,10 @@ type ReloadStatus = 'idle' | 'saving' | 'installing' | 'reloading' | 'done' | 'e
 async function pollOpenObserveReady(): Promise<boolean> {
   for (let i = 0; i < 60; i++) {
     try {
-      const r = await fetch('/api/openobserve')
-      const s = await r.json() as { reachable?: boolean; failed?: boolean }
+      const s = await load<{ reachable?: boolean; failed?: boolean }>(
+        '/api/openobserve',
+        'get_openobserve_status',
+      )
       if (s.reachable) return true
       if (s.failed) return false
     } catch { /* keep polling */ }
@@ -225,8 +227,10 @@ export default function SettingsView() {
     pollRef.current = setInterval(async () => {
       attempts++
       try {
-        const s = await fetch('/api/daemon/status')
-        const { running } = await s.json() as { running: boolean }
+        const { running } = await load<{ running: boolean }>(
+          '/api/daemon/status',
+          'get_daemon_status',
+        )
         if (running) {
           clearInterval(pollRef.current!)
           pollRef.current = null

@@ -1,7 +1,11 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 mod commands;
+mod daemon_status;
 pub(crate) mod format;
+pub(crate) mod health;
 mod integrations;
+mod logs;
+mod openobserve_status;
 mod parents;
 mod poll;
 mod state;
@@ -183,6 +187,10 @@ pub fn run() {
             commands::get_settings,
             commands::get_triage,
             integrations::get_integrations,
+            daemon_status::get_daemon_status,
+            health::get_health,
+            openobserve_status::get_openobserve_status,
+            logs::get_logs,
             parents::get_ticket_parents,
             version::get_version,
             commands::open_permission_pane,

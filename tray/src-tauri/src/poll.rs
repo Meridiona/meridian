@@ -1,4 +1,5 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+use crate::health::check_health;
 use crate::state::{ActiveSession, AppState, HealthStatus};
 use reqwest::Client;
 use serde::Deserialize;
@@ -12,12 +13,6 @@ const TICK: Duration = Duration::from_secs(30);
 fn ui_base() -> String {
     let port = std::env::var("MERIDIAN_UI_PORT").unwrap_or_else(|_| "3939".to_string());
     format!("http://127.0.0.1:{}", port)
-}
-
-#[derive(Deserialize)]
-struct HealthResp {
-    database_ready: Option<bool>,
-    daemon_running: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -94,37 +89,14 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
     }
 }
 
-async fn refresh_health(app: &tauri::AppHandle, client: &Client, state: &Arc<Mutex<AppState>>) {
-    let resp = client
-        .get(format!("{}/api/health", ui_base()))
-        .send()
-        .await
-        .ok()
-        .and_then(|r| {
-            if r.status().is_success() {
-                Some(r)
-            } else {
-                None
-            }
-        });
+async fn refresh_health(app: &tauri::AppHandle, _client: &Client, state: &Arc<Mutex<AppState>>) {
+    let hr = check_health().await;
 
-    let (ui_reachable, db_ready, daemon_running) = match resp {
-        None => (false, false, false),
-        Some(r) => {
-            let hr: HealthResp = r.json().await.unwrap_or(HealthResp {
-                database_ready: None,
-                daemon_running: None,
-            });
-            // daemon_running defaults to true when the field is absent (older UI build).
-            (
-                true,
-                hr.database_ready.unwrap_or(false),
-                hr.daemon_running.unwrap_or(true),
-            )
-        }
-    };
+    // db_ready and daemon_running both default true when absent (older schema compat).
+    let db_ready = hr.database_ready.unwrap_or(false);
+    let daemon_running = hr.daemon_running.unwrap_or(true);
 
-    let new_health = if ui_reachable && db_ready && daemon_running {
+    let new_health = if db_ready && daemon_running {
         HealthStatus::Healthy
     } else {
         HealthStatus::Unhealthy
@@ -149,7 +121,7 @@ async fn refresh_health(app: &tauri::AppHandle, client: &Client, state: &Arc<Mut
             s.consecutive_health_failures = 0;
             s.daemon_was_healthy = true;
         }
-        s.ui_reachable = ui_reachable;
+        s.ui_reachable = true; // health checks are now direct (no HTTP); always reachable
         s.health = new_health;
 
         (notify_down, notify_back)

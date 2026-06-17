@@ -7,6 +7,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import type { LogEntry } from '@/lib/log-tail'
+import { load } from '@/lib/bridge'
 
 const LEVEL_STYLES: Record<string, { bg: string; color: string; label: string }> = {
   ERROR: { bg: '#fee2e2', color: '#b91c1c', label: 'ERR' },
@@ -56,9 +57,8 @@ export default function LogsView() {
 
   useEffect(() => {
     // Load last 200 entries on mount
-    fetch('/api/logs?limit=200')
-      .then(r => r.json())
-      .then((data: LogEntry[]) => setEntries(data))
+    load<LogEntry[]>('/api/logs', 'get_logs', { limit: 200 })
+      .then(data => setEntries(data))
       .catch(() => {})
 
     // Tail new entries via SSE
