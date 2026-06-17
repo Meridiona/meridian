@@ -41,15 +41,19 @@ elif command -v openobserve >/dev/null 2>&1; then
 fi
 
 if [[ -z "${OO_BIN}" ]]; then
-    echo "→ OpenObserve binary not found — downloading v0.11.0 (last release with arm64 binary)..."
+    echo "→ OpenObserve binary not found — downloading v0.90.3..."
     _oo_arch="$(uname -m)"
     case "$_oo_arch" in
         arm64)  _oo_arch="arm64" ;;
         x86_64) _oo_arch="amd64" ;;
         *) echo "✗ Unsupported arch: $_oo_arch" >&2; exit 1 ;;
     esac
-    _oo_ver="v0.11.0"
-    _oo_url="https://github.com/openobserve/openobserve/releases/download/${_oo_ver}/openobserve-${_oo_ver}-darwin-${_oo_arch}.tar.gz"
+    # GitHub release assets were removed for recent versions; binaries now live on
+    # the official downloads host. Trace deep-linking (dashboard drilldown into a
+    # single trace's spans) needs a modern build, so we pin a current stable.
+    # KEEP IN SYNC: the same version is pinned in install.sh — bump both together.
+    _oo_ver="v0.90.3"
+    _oo_url="https://downloads.openobserve.ai/releases/openobserve/${_oo_ver}/openobserve-${_oo_ver}-darwin-${_oo_arch}.tar.gz"
     mkdir -p "${HOME}/.openobserve"
     if curl -fsSL -o "${HOME}/.openobserve/openobserve.tar.gz" "$_oo_url" \
         && tar -xzf "${HOME}/.openobserve/openobserve.tar.gz" -C "${HOME}/.openobserve" \
