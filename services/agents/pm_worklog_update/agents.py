@@ -62,7 +62,8 @@ def build_synth_agent(
         debug_level: 1 or 2 (verbose).
     """
     from agno.agent import Agent
-    from agno.guardrails import PIIDetectionGuardrail
+    # PII guardrail disabled for now — not needed.
+    # from agno.guardrails import PIIDetectionGuardrail
     from agno.skills import LocalSkills, Skills
 
     return Agent(
@@ -98,11 +99,18 @@ def build_synth_agent(
             SessionBundleSizeGuard(max_tokens=80_000),
         ],
         post_hooks=[
-            PIIDetectionGuardrail(),
+            # PIIDetectionGuardrail disabled — it's an input guardrail and was
+            # wrongly wired into post_hooks (post-hooks get run_output, not
+            # run_input → TypeError). Not needed for now.
             time_spent_sanity_check,
         ],
         output_schema=JiraUpdate,
-        use_json_mode=True,
+        # use_json_mode=False → agno sends the full JiraUpdate json_schema as the
+        # request's response_format (not a bare {"type":"json_object"}). The MLX
+        # /v1/chat/completions handler reads that schema and FSM-constrains
+        # decoding with outlines, so the reasoning model physically cannot leak
+        # chain-of-thought prose instead of the JSON object.
+        use_json_mode=False,
         add_datetime_to_context=True,
         add_history_to_context=False,
         markdown=False,
