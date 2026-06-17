@@ -1001,13 +1001,11 @@ function TokenSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
     setChecking(true)
     try {
       const data = await load<Record<string, unknown>>('/api/integrations', 'get_integrations')
-      {
-        const isConnected = !!data[tracker.id]
-        setConnected(isConnected)
-        if (isConnected) {
-          // Clear the provider's error notice immediately
-          fetch(`/api/notices/pm.${tracker.id}`, { method: 'DELETE' }).catch(() => {})
-        }
+      const isConnected = !!data[tracker.id]
+      setConnected(isConnected)
+      if (isConnected) {
+        // Clear the provider's error notice immediately
+        fetch(`/api/notices/pm.${tracker.id}`, { method: 'DELETE' }).catch(() => {})
       }
     } catch { /* ignore */ }
     finally { setChecking(false) }

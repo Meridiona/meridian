@@ -131,6 +131,9 @@ struct ActiveRow {
     window_titles: Option<String>,
     category: Option<String>,
     confidence: Option<f64>,
+    // active_session has no category_explanation column (only app_sessions does,
+    // added in migration 013). The classifier writes it AFTER sealing — a live
+    // block genuinely has no explanation yet.
 }
 
 #[derive(FromRow)]
@@ -157,12 +160,6 @@ struct TitleEntry {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn ms(s: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|d| d.timestamp_millis())
-}
 
 /// Parsed window_titles → (top title falling back to `app`, list of non-empty names).
 fn parse_titles(window_titles: &Option<String>, app: &str) -> (String, Vec<String>) {
@@ -283,14 +280,9 @@ pub async fn get_today(
         })
         .collect();
 
-    // Active session (single row, id = 1). `active_session` has no
-    // category_explanation column (only `app_sessions` does), and the active
-    // block never carries an explanation (cf. active.rs::get_active_view), so we
-    // simply don't select it — `explain` is hardcoded None below. The earlier
-    // `cols` guard is about `app_sessions`, a DIFFERENT table; reusing it here
-    // injected a non-existent column on any post-migration DB, failing the read
-    // 100% of the time and silently dropping the live block (the TS route shares
-    // this latent bug). Graceful (logged warn on error) so a missing table → none.
+    // Active session (single row, id = 1). Same optional-column handling, and
+    // graceful (logged warn on error) so a missing column/table → no active session.
+    // active_session never has category_explanation — don't select it.
     let active_sql = "SELECT app_name, started_at, window_titles, category, confidence \
                       FROM active_session WHERE id = 1";
     let active: Option<TodayActive> = sqlx::query_as::<_, ActiveRow>(active_sql)
@@ -302,16 +294,38 @@ pub async fn get_today(
             None
         })
         .map(|ar| {
-            let (_t, titles) = parse_titles(&ar.window_titles, &ar.app_name);
-            let elapsed_s = match (ms(now_iso), ms(&ar.started_at)) {
+            // Active session titles: map non-empty names, no [app_name] fallback —
+            // the route returns [] when window_titles is empty (only foreground
+            // sessions fall back to [topTitle]).
+            let entries: Vec<TitleEntry> = ar
+                .window_titles
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
+            let titles: Vec<String> = entries
+                .iter()
+                .filter_map(|t| t.window_name.clone().or_else(|| t.title.clone()))
+                .filter(|s| !s.is_empty())
+                .collect();
+            let elapsed_s = match (
+                crate::intervals::parse_ms(now_iso),
+                crate::intervals::parse_ms(&ar.started_at),
+            ) {
                 (Some(now), Some(s)) => (now - s) / 1000,
                 _ => 0,
             };
+            // Active category: plain null/empty → idle_personal only. The route
+            // does NOT remap fm_parse_error/fm_skip for the live block (only for
+            // sealed foreground sessions). normalize_cat is for app_sessions rows.
+            let cat = ar
+                .category
+                .filter(|c| !c.is_empty())
+                .unwrap_or_else(|| "idle_personal".to_string());
             TodayActive {
                 app: ar.app_name,
                 started_at: ar.started_at,
                 elapsed_s,
-                cat: normalize_cat(&ar.category),
+                cat,
                 titles,
                 confidence: ar.confidence.unwrap_or(0.0),
                 explain: None, // active_session never carries an explanation

@@ -32,15 +32,10 @@ pub struct WeekResponse {
     pub total_s: i64,
 }
 
-fn ms(s: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|d| d.timestamp_millis())
-}
-
 #[tracing::instrument(skip(pool))]
 pub async fn get_week(pool: &SqlitePool, now_iso: &str) -> anyhow::Result<WeekResponse> {
-    let now_ms = ms(now_iso).unwrap_or_else(|| Utc::now().timestamp_millis());
+    let now_ms =
+        crate::intervals::parse_ms(now_iso).unwrap_or_else(|| Utc::now().timestamp_millis());
 
     let mut days: Vec<DaySummary> = Vec::with_capacity(7);
     for i in (0..=6).rev() {
@@ -95,8 +90,15 @@ pub async fn get_week(pool: &SqlitePool, now_iso: &str) -> anyhow::Result<WeekRe
             .await
             {
                 Ok(Some((started_at, category))) => {
-                    let elapsed = ms(&started_at).map(|s| (now_ms - s) / 1000).unwrap_or(0);
-                    let cat = category.unwrap_or_else(|| "idle_personal".to_string());
+                    let elapsed = crate::intervals::parse_ms(&started_at)
+                        .map(|s| (now_ms - s) / 1000)
+                        .unwrap_or(0);
+                    // Mirror the TS route's `|| 'idle_personal'`: map both NULL
+                    // and empty-string to idle_personal so they don't land under
+                    // a blank key in the cats map.
+                    let cat = category
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "idle_personal".to_string());
                     *cats.entry(cat).or_insert(0.0) += elapsed as f64 / 3600.0;
                     total_s += elapsed;
                 }

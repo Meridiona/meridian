@@ -53,13 +53,6 @@ struct Raw {
     confidence: Option<f64>,
 }
 
-/// RFC3339 → epoch millis (`None` if unparseable), for the elapsed_s math.
-fn ms(s: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|d| d.timestamp_millis())
-}
-
 /// Read the active session as the dashboard view, or `None` if nothing is
 /// active. `now_iso` (RFC3339) drives `elapsed_s`; resolved by the caller (the
 /// tray command) so this fn stays deterministic.
@@ -87,8 +80,9 @@ pub async fn get_active_view(
         return Ok(None);
     };
 
-    let now_ms = ms(now_iso).unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
-    let started_ms = ms(&r.started_at).unwrap_or(now_ms);
+    let now_ms = crate::intervals::parse_ms(now_iso)
+        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+    let started_ms = crate::intervals::parse_ms(&r.started_at).unwrap_or(now_ms);
     let elapsed_s = (now_ms - started_ms) / 1000;
     tracing::debug!(app = %r.app_name, elapsed_s, "active served");
 

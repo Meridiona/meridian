@@ -18,7 +18,10 @@ pub struct Interval {
 /// RFC3339 → epoch milliseconds (mirrors JS `new Date(s).getTime()`).
 /// `None` for unparseable timestamps, so those rows are dropped — the Rust
 /// equivalent of the TS `Number.isFinite` filter.
-fn parse_ms(s: &str) -> Option<i64> {
+///
+/// Shared by `week`, `today`, and `active` — declared here to avoid
+/// re-implementing the same three-liner in each module.
+pub(crate) fn parse_ms(s: &str) -> Option<i64> {
     DateTime::parse_from_rfc3339(s)
         .ok()
         .map(|dt| dt.timestamp_millis())
