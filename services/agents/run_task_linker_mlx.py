@@ -797,7 +797,20 @@ def _classify_one(
         # (today's-focus keys float to the front in _fetch_pm_tasks).
         candidate_keys = [t["task_key"] for t in pm_tasks]
         recent_task_keys = [r.get("task_key") for r in recent if r.get("task_key")]
+        # Session identity + the app_sessions row metadata, so a trace is
+        # self-contained — you know WHICH session and its key fields (app, window
+        # titles, time span) without opening meridian.db.
+        db_span.set_attribute("session_id", session_id)
         db_span.set_attribute("app_name", str(session_raw.get("app_name") or ""))
+        db_span.set_attribute("started_at", str(session_raw.get("started_at") or ""))
+        db_span.set_attribute("ended_at", str(session_raw.get("ended_at") or ""))
+        try:
+            _wts = json.loads(session_raw.get("window_titles") or "[]")
+            _wt_names = [str(w.get("window_name", "")) for w in _wts if w.get("window_name")]
+        except (TypeError, ValueError):
+            _wt_names = []
+        db_span.set_attribute("window_titles", " | ".join(_wt_names) if _wt_names else "-")
+        db_span.set_attribute("window_title_count", len(_wt_names))
         db_span.set_attribute("duration_s", float(session_raw.get("duration_s") or 0.0))
         db_span.set_attribute("text_source", str(session_raw.get("session_text_source") or ""))
         db_span.set_attribute("session_text_chars", len(session_text))

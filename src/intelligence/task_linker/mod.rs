@@ -241,6 +241,7 @@ async fn call_mlx_server(
 #[tracing::instrument(
     skip_all,
     fields(
+        session_id = field::Empty,
         run_id = field::Empty,
         cursor = field::Empty,
         trivial = field::Empty,
@@ -394,6 +395,10 @@ pub async fn run_task_linking(
 
     // BATCH_LIMIT is 1, so there is exactly one session in classifiable_ids.
     let failing_session_id = classifiable_ids[0];
+    // Stamp the session id on the root span so the trace HEADER identifies which
+    // session this one-session-per-trace run is about (app_name + the rest of the
+    // app_sessions row land on the MLX `db_fetch` span).
+    span.record("session_id", failing_session_id);
 
     let input = ClassifyInput {
         session_ids: classifiable_ids,
