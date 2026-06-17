@@ -1,3 +1,10 @@
+# [1.58.0](https://github.com/Meridiona/meridian/compare/v1.57.0...v1.58.0) (2026-06-17)
+
+
+### Features
+
+* **observability:** land stranded [#305](https://github.com/Meridiona/meridian/issues/305) trace/dashboard work + rename claude_session_uuid → coding_agent_session_uuid ([#306](https://github.com/Meridiona/meridian/issues/306)) ([1f51e1d](https://github.com/Meridiona/meridian/commit/1f51e1d853ccdb8bad9e5d61625275c44cff71ee))
+
 # [1.57.0](https://github.com/Meridiona/meridian/compare/v1.56.0...v1.57.0) (2026-06-17)
 
 
