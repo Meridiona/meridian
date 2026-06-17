@@ -90,6 +90,22 @@ export async function POST(req: Request) {
     const originMap = new Map(available.map(a => [a.key, a.origin]))
     const originFor = (key: string): string => originMap.get(key) ?? 'manual'
 
+    // Snapshot the ticket's live board fields onto the plan row at write time, so
+    // a planned-then-completed task (pruned from pm_tasks once Done) still renders
+    // its real title/description/epic on the /plan page instead of a bare key.
+    // Returns null when the task isn't on the board (don't clobber an earlier
+    // snapshot — see the COALESCE in the UPSERTs below).
+    const snapStmt = db.prepare(`
+      SELECT title, provider, url, COALESCE(status_raw,'') AS status_raw,
+             COALESCE(is_terminal,0) AS is_terminal, due_date,
+             description_text, epic_title, parent_key, priority, issue_type, story_points
+      FROM pm_tasks WHERE task_key = ?
+    `)
+    const snapshotFor = (key: string): string | null => {
+      const row = snapStmt.get(key)
+      return row ? JSON.stringify(row) : null
+    }
+
     const upsertMeta = (confirmedAt: string | null, skipped: number) => {
       db.prepare(`
         INSERT INTO daily_plan_meta (plan_date, confirmed_at, skipped, created_at, updated_at)
@@ -112,10 +128,13 @@ export async function POST(req: Request) {
       }
       ordered.forEach((key, i) => {
         db.prepare(`
-          INSERT INTO daily_plan (plan_date, task_key, position, origin, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?)
-          ON CONFLICT(plan_date, task_key) DO UPDATE SET position = excluded.position, updated_at = excluded.updated_at
-        `).run(date, key, i, originFor(key), now, now)
+          INSERT INTO daily_plan (plan_date, task_key, position, origin, task_snapshot, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(plan_date, task_key) DO UPDATE SET
+            position      = excluded.position,
+            updated_at    = excluded.updated_at,
+            task_snapshot = COALESCE(excluded.task_snapshot, daily_plan.task_snapshot)
+        `).run(date, key, i, originFor(key), snapshotFor(key), now, now)
       })
     })
     const keysFromBody = () => Array.isArray(body.task_keys) ? body.task_keys.filter((k): k is string => typeof k === 'string') : []
@@ -144,10 +163,10 @@ export async function POST(req: Request) {
         if (typeof key !== 'string' || !key) return NextResponse.json({ error: 'task_key required' }, { status: 400 })
         const max = db.prepare('SELECT COALESCE(MAX(position), -1) AS m FROM daily_plan WHERE plan_date = ?').get(date) as { m: number }
         db.prepare(`
-          INSERT INTO daily_plan (plan_date, task_key, position, origin, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?)
+          INSERT INTO daily_plan (plan_date, task_key, position, origin, task_snapshot, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(plan_date, task_key) DO NOTHING
-        `).run(date, key, max.m + 1, originFor(key), now, now)
+        `).run(date, key, max.m + 1, originFor(key), snapshotFor(key), now, now)
         break
       }
       case 'remove': {
