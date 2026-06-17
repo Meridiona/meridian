@@ -241,6 +241,13 @@ async fn call_mlx_server(
 #[tracing::instrument(
     skip_all,
     fields(
+        // `otel.name` overrides the EXPORTED span name (tracing-opentelemetry
+        // honours this field), so the OpenObserve trace HEADER reads
+        // "run_task_linking · session <id>" instead of a bare op name — you see
+        // which session a trace is for without opening a span. No dashboard pins
+        // operation_name='run_task_linking' (they key on classify_session), so
+        // renaming is safe; the "run_task_linking" prefix is kept for continuity.
+        otel.name = field::Empty,
         session_id = field::Empty,
         run_id = field::Empty,
         cursor = field::Empty,
@@ -397,8 +404,13 @@ pub async fn run_task_linking(
     let failing_session_id = classifiable_ids[0];
     // Stamp the session id on the root span so the trace HEADER identifies which
     // session this one-session-per-trace run is about (app_name + the rest of the
-    // app_sessions row land on the MLX `db_fetch` span).
+    // app_sessions row land on the MLX `db_fetch` span). `otel.name` rewrites the
+    // exported span name shown in the OpenObserve header.
     span.record("session_id", failing_session_id);
+    span.record(
+        "otel.name",
+        format!("run_task_linking · session {failing_session_id}").as_str(),
+    );
 
     let input = ClassifyInput {
         session_ids: classifiable_ids,
