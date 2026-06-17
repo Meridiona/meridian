@@ -174,15 +174,14 @@ fn uid_str() -> String {
         .unwrap_or_else(|| "501".to_string())
 }
 
-/// Which install mode the tray is running in, inferred from the daemon's `.env` location.
+/// Which install mode the tray is running in, inferred from the user's `.env` location.
 ///
-/// - `Bundle`: the installer wrote `~/.meridian/app/.env`; the daemon reads that file.
-/// - `Dev`: no bundle env found; a repo `.env` was found by walking up from cwd (local dev).
-/// - `Bare`: neither file exists — a bare `.app` launch with no companion installer.
-///   Only process-env overrides and hardcoded defaults apply.
+/// - `Canonical`: `~/.meridian/.env` exists — user credentials, install-independent.
+/// - `Dev`: no canonical env; a repo `.env` found by walking up from cwd (local dev / contributor).
+/// - `Bare`: neither present — process-env overrides and hardcoded defaults only.
 #[derive(Debug)]
 pub(crate) enum InstallMode {
-    Bundle(std::path::PathBuf),
+    Canonical(std::path::PathBuf),
     Dev(std::path::PathBuf),
     Bare,
 }
@@ -190,20 +189,21 @@ pub(crate) enum InstallMode {
 impl InstallMode {
     pub(crate) fn env_path(&self) -> Option<&std::path::Path> {
         match self {
-            Self::Bundle(p) | Self::Dev(p) => Some(p),
+            Self::Canonical(p) | Self::Dev(p) => Some(p),
             Self::Bare => None,
         }
     }
 }
 
-/// Detect the install mode by probing for the daemon's `.env` file.
-/// Bundle path wins over the cwd walk when both exist, mirroring the daemon's dotenvy priority.
-/// Called once at startup; both `meridian_db_path` and `integrations::get_integrations` use this.
+/// Detect the install mode from the file system.
+/// `~/.meridian/.env` is the canonical credential location for all install types —
+/// install-independent, next to `meridian.db` and `settings.json`.
+/// Falls back to a cwd walk for dev/contributor runs where no canonical env exists.
 pub(crate) fn detect_install_mode() -> InstallMode {
     let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
-    if let Some(bundle) = home.as_ref().map(|h| h.join(".meridian/app/.env")) {
-        if bundle.exists() {
-            return InstallMode::Bundle(bundle);
+    if let Some(p) = home.as_ref().map(|h| h.join(".meridian/.env")) {
+        if p.exists() {
+            return InstallMode::Canonical(p);
         }
     }
     if let Ok(mut dir) = std::env::current_dir() {

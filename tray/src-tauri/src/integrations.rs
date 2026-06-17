@@ -6,9 +6,9 @@
 //! token providers (linear/github/azure) by their `.env` keys (placeholder
 //! values don't count), and last sync errors come from the DB (meridian-core).
 //!
-//! Env-path note: env keys (linear/github/azure tokens) are read from whichever
-//! `.env` `detect_install_mode` selects — bundle (`~/.meridian/app/.env`) for
-//! installed builds, repo `.env` for dev runs, nothing for a bare `.app` launch.
+//! Env-path note: env keys (linear/github/azure tokens) are read from `~/.meridian/.env`
+//! (canonical, all install types) or a repo `.env` found by walking up from cwd (dev),
+//! via `detect_install_mode`. Nothing is read on a bare `.app` launch.
 
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
