@@ -76,12 +76,16 @@ impl TriageBucket {
 pub enum TriageReason {
     // — positive / active —
     InProgress,
-    DueSoon { in_days: i64 },
+    DueSoon {
+        in_days: i64,
+    },
     InSprint,
     StartDateReached,
     // — quality —
     MissingDescription,
-    ThinDescription { chars: usize },
+    ThinDescription {
+        chars: usize,
+    },
     VagueTitle,
     NoContextAnchor,
     MissingDueDate,
@@ -91,11 +95,24 @@ pub enum TriageReason {
     MissingEstimate,
     MissingAcceptanceCriteria,
     // — staleness —
-    NoActivitySince { days: i64 },
+    NoActivitySince {
+        days: i64,
+    },
     NotStarted,
     NoDueDate,
-    OverdueLong { by_days: i64 },
-    FarFutureDue { in_days: i64 },
+    /// Past its due date but still otherwise live (started / recently touched /
+    /// within the overdue grace) — surfaced as a tidy item so the dev can reschedule
+    /// or close it. Distinct from `OverdueLong`, which is the abandoned-signature
+    /// case that demotes a ticket to `LooksStale`.
+    Overdue {
+        by_days: i64,
+    },
+    OverdueLong {
+        by_days: i64,
+    },
+    FarFutureDue {
+        in_days: i64,
+    },
     NotInSprint,
     AlreadyDone,
     // — ambiguity / meta —
@@ -135,6 +152,9 @@ impl TriageReason {
             }
             TriageReason::NotStarted => "Still sitting in a not-started column.".into(),
             TriageReason::NoDueDate => "No due date set.".into(),
+            TriageReason::Overdue { by_days } => {
+                format!("Overdue by {by_days} day(s) — reschedule or close it.")
+            }
             TriageReason::OverdueLong { by_days } => {
                 format!("Overdue by {by_days} days with no movement.")
             }
@@ -173,6 +193,7 @@ impl TriageReason {
                 f(PickParent, "parent", "Link to an epic or parent", false)
             }
             TriageReason::MissingDueDate => f(DatePicker, "duedate", "Add a due date", false),
+            TriageReason::Overdue { .. } => f(DatePicker, "duedate", "Reschedule due date", false),
             TriageReason::MissingAssignee => f(AssignSelf, "assignee", "Assign to me", false),
             TriageReason::MissingLabels => f(EditLabels, "labels", "Add a label", false),
             TriageReason::MissingPriority => f(PickPriority, "priority", "Set priority", false),
@@ -368,6 +389,13 @@ pub fn triage_ticket(t: &TicketSignals, cfg: &TriageConfig) -> TriageVerdict {
     let far_future = due_in.is_some_and(|d| d > cfg.due_soon_days);
     let has_live_date = due_soon || start_reached;
     let active = started == Startedness::Started || in_sprint || has_live_date;
+    // Past its due date but not caught by the abandoned-signature `OverdueLong`
+    // path below (that one demotes to LooksStale). Carried through every non-stale
+    // verdict so an overdue-but-live ticket surfaces on the cleanup page (it has a
+    // reschedule fix) without changing which bucket it lands in.
+    let overdue = due_in
+        .filter(|&d| d < 0)
+        .map(|d| TriageReason::Overdue { by_days: -d });
 
     // 2. Stale signature. The base requirement (not started, no live date window,
     //    not in an active sprint) demotes only when paired with either evidence of
@@ -403,8 +431,9 @@ pub fn triage_ticket(t: &TicketSignals, cfg: &TriageConfig) -> TriageVerdict {
     //    Each "missing field" check is gated on the board actually using that field
     //    (cfg.usage.*), so a team that doesn't track e.g. story points is never
     //    nagged about them. Every reason here maps to an in-app fix (TriageReason::fix).
-    let reasons = hygiene_issues(t, cfg);
+    let mut reasons = hygiene_issues(t, cfg);
     if !reasons.is_empty() {
+        reasons.extend(overdue);
         return verdict(TriageBucket::NeedsDetail, reasons);
     }
 
@@ -414,7 +443,9 @@ pub fn triage_ticket(t: &TicketSignals, cfg: &TriageConfig) -> TriageVerdict {
         if started == Startedness::Started {
             reasons.push(TriageReason::InProgress);
         }
-        if due_soon {
+        // Only call it "due soon" when it's actually still ahead — a past-due date
+        // is reported by the `Overdue` reason appended below.
+        if due_soon && due_in.is_some_and(|d| d >= 0) {
             reasons.push(TriageReason::DueSoon {
                 in_days: due_in.unwrap(),
             });
@@ -425,12 +456,14 @@ pub fn triage_ticket(t: &TicketSignals, cfg: &TriageConfig) -> TriageVerdict {
         if start_reached && !due_soon {
             reasons.push(TriageReason::StartDateReached);
         }
+        reasons.extend(overdue);
         verdict(TriageBucket::Ready, reasons)
     } else {
         let mut reasons = vec![TriageReason::NoActivitySignal];
         if age.is_none() {
             reasons.push(TriageReason::UnreadableUpdatedAt);
         }
+        reasons.extend(overdue);
         verdict(TriageBucket::NotSure, reasons)
     }
 }
@@ -655,6 +688,41 @@ mod tests {
         t.description_text = "fix it".into();
         let v = triage_ticket(&t, &TriageConfig::new(now(), BoardUsage::default()));
         assert_eq!(v.bucket, TriageBucket::NeedsDetail);
+    }
+
+    #[test]
+    fn overdue_but_active_stays_ready_but_flags_overdue_with_a_fix() {
+        // In progress + detailed + due 3 days ago: still Ready (we don't demote a
+        // live ticket), but it must carry an Overdue reason so the cleanup page
+        // surfaces it, and that reason must have a fix (reschedule the due date).
+        let mut t = base();
+        t.status_raw = "In Progress".into();
+        t.due_date = Some("2026-06-09".into()); // now = 2026-06-12 ⇒ overdue by 3
+        let v = triage_ticket(&t, &TriageConfig::new(now(), BoardUsage::default()));
+        assert_eq!(v.bucket, TriageBucket::Ready);
+        assert!(v.reasons.contains(&TriageReason::Overdue { by_days: 3 }));
+        // not the misleading "Due today" DueSoon for a past-due date
+        assert!(!v
+            .reasons
+            .iter()
+            .any(|r| matches!(r, TriageReason::DueSoon { .. })));
+        assert!(TriageReason::Overdue { by_days: 3 }.fix().is_some());
+    }
+
+    #[test]
+    fn not_yet_due_is_due_soon_not_overdue() {
+        let mut t = base();
+        t.status_raw = "In Progress".into();
+        t.due_date = Some("2026-06-14".into()); // due in 2 days
+        let v = triage_ticket(&t, &TriageConfig::new(now(), BoardUsage::default()));
+        assert!(v
+            .reasons
+            .iter()
+            .any(|r| matches!(r, TriageReason::DueSoon { .. })));
+        assert!(!v
+            .reasons
+            .iter()
+            .any(|r| matches!(r, TriageReason::Overdue { .. })));
     }
 
     #[test]
