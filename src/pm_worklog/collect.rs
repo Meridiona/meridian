@@ -18,6 +18,22 @@ const EXCERPT_CAP_CHARS: usize = 2_000;
 const HEAVY_SESSION_COUNT: usize = 60;
 const HEAVY_TEXT_BYTES: usize = 400_000;
 
+/// True if `table` has a column named `column`. Used to guard lineage-only
+/// columns so a not-yet-applied migration degrades a feature rather than failing
+/// the whole read. Cheap (`PRAGMA table_info` over an already-open pool).
+async fn column_exists(pool: &SqlitePool, table: &str, column: &str) -> bool {
+    // `table` here is a hardcoded literal from this module, never user input.
+    let rows = match sqlx::query(&format!("PRAGMA table_info({table})"))
+        .fetch_all(pool)
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    rows.iter()
+        .any(|r| r.try_get::<String, _>("name").map(|n| n == column).unwrap_or(false))
+}
+
 /// Build the bundle for `task_key` over `[window_start_iso, window_end_iso)`.
 /// Bounds must be `+00:00`-style ISO (matching the stored `started_at` format).
 pub async fn fetch_session_bundle(
@@ -58,25 +74,42 @@ pub async fn fetch_session_bundle(
         };
 
     // Classified task sessions in the window.
-    let rows = sqlx::query(
+    //
+    // `classify_traceparent` (migration 043) is a LINEAGE-ONLY column: naming it
+    // unconditionally in the SELECT would make the whole query fail with "no such
+    // column" if that migration ever lags (locked DB / checksum mismatch — cf.
+    // the migration-031 crash-loop), taking down ALL worklog drafting rather than
+    // just the trace backlink. Guard its presence so a missing column degrades
+    // lineage only — every other column here predates #299 and is always present.
+    let classify_tp_col = if column_exists(pool, "app_sessions", "classify_traceparent").await {
+        "classify_traceparent"
+    } else {
+        tracing::warn!(
+            "app_sessions.classify_traceparent absent (migration 043 not applied?) — \
+             worklog lineage backlink degraded, drafting continues"
+        );
+        "NULL AS classify_traceparent"
+    };
+    let sql = format!(
         "SELECT id, app_name, started_at, ended_at, duration_s, \
                 idle_frame_count, frame_count, window_titles, \
                 session_text, session_text_source, category, session_summary, \
-                traceparent, classify_traceparent, \
+                traceparent, {classify_tp_col}, \
                 task_confidence, task_session_type, task_reasoning, category_explanation \
          FROM app_sessions \
          WHERE task_key = ? \
            AND started_at >= ? \
            AND started_at <  ? \
            AND COALESCE(task_session_type, '') = 'task' \
-         ORDER BY id ASC",
-    )
-    .bind(task_key)
-    .bind(window_start_iso)
-    .bind(window_end_iso)
-    .fetch_all(pool)
-    .await
-    .context("fetch session rows for bundle")?;
+         ORDER BY id ASC"
+    );
+    let rows = sqlx::query(&sql)
+        .bind(task_key)
+        .bind(window_start_iso)
+        .bind(window_end_iso)
+        .fetch_all(pool)
+        .await
+        .context("fetch session rows for bundle")?;
 
     let mut digests: Vec<SessionDigest> = Vec::with_capacity(rows.len());
     let mut raw_bytes: usize = 0;

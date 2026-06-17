@@ -50,6 +50,11 @@ impl fmt::Display for SpoolClient {
     }
 }
 
+/// ENOSPC ("No space left on device") — 28 on both macOS and Linux. A write that
+/// fails this way is the one case where a synthetic 200 (drop) is correct: a
+/// retry can't help and the cap enforcer is what reclaims space.
+const ENOSPC: i32 = 28;
+
 #[async_trait]
 impl HttpClient for SpoolClient {
     async fn send(&self, request: Request<Vec<u8>>) -> Result<Response<Bytes>, HttpError> {
@@ -62,21 +67,55 @@ impl HttpClient for SpoolClient {
         };
 
         let body = request.into_body();
+        let base_dir = self.base_dir.clone();
+        let signal_owned = signal.to_string();
 
-        if let Err(e) = write_pending(&self.base_dir, signal, &body) {
-            // Log but do NOT fail — returning an error causes the BatchSpanProcessor
-            // to log a noisy export failure and retry. Instead we warn and let the
-            // SDK think the export succeeded (data is lost only if write_pending
-            // fails, which means the disk is full — in that case the cap enforcer
-            // will have already trimmed the backlog).
-            tracing::warn!(
-                signal,
-                error = %e,
-                "telemetry spool write failed — payload dropped"
-            );
+        // write_pending does synchronous fs work (create_dir_all + write + fsync
+        // + rename). `send` runs on a tokio worker thread (the BatchSpanProcessor
+        // exports there), so do the blocking IO on the blocking pool to avoid
+        // stalling every other future sharing that thread.
+        let write_res =
+            tokio::task::spawn_blocking(move || write_pending(&base_dir, &signal_owned, &body))
+                .await;
+
+        match write_res {
+            Ok(Ok(_path)) => {} // spooled successfully
+            Ok(Err(e)) => {
+                // Disk full → drop (synthetic 200): a retry can't succeed and the
+                // cap reclaims space. Any OTHER failure (transient FS error,
+                // permissions) leaves the batch RECOVERABLE — return an error so
+                // the SDK retries instead of silently discarding good telemetry.
+                let is_disk_full = e
+                    .chain()
+                    .find_map(|c| c.downcast_ref::<std::io::Error>())
+                    .and_then(|io| io.raw_os_error())
+                    == Some(ENOSPC);
+                if is_disk_full {
+                    tracing::warn!(
+                        signal,
+                        error = %e,
+                        "telemetry spool write failed: disk full — payload dropped (cap will trim)"
+                    );
+                } else {
+                    tracing::warn!(
+                        signal,
+                        error = %e,
+                        "telemetry spool write failed (recoverable) — signalling SDK to retry"
+                    );
+                    return Err(format!("spool write failed: {e}").into());
+                }
+            }
+            Err(join_err) => {
+                tracing::warn!(
+                    signal,
+                    error = %join_err,
+                    "telemetry spool task panicked — signalling SDK to retry"
+                );
+                return Err(format!("spool task join error: {join_err}").into());
+            }
         }
 
-        // Return a synthetic 200 so the SDK considers export successful.
+        // Return a synthetic 200 so the SDK considers the export successful.
         let response = Response::builder()
             .status(200)
             .body(Bytes::new())

@@ -1014,17 +1014,27 @@ def _classify_one(
         # peak memory have no standard attribute name, so they stay custom. None on
         # the Apple FM path, which has no MLX stats.
         if gen_stats is not None:
-            _in = int(gen_stats.prompt_tokens)
-            _out = int(gen_stats.generation_tokens)
-            pr_span.set_attribute("gen_ai.usage.input_tokens", _in)
-            pr_span.set_attribute("gen_ai.usage.output_tokens", _out)
-            pr_span.set_attribute("gen_ai.usage.total_tokens", _in + _out)
-            pr_span.set_attribute("gen_ai.response.model", _resolve_model_id())
-            pr_span.set_attribute("prompt_tps", round(float(gen_stats.prompt_tps), 2))
-            pr_span.set_attribute("generation_tps", round(float(gen_stats.generation_tps), 2))
-            pr_span.set_attribute("peak_memory_gb", round(float(gen_stats.peak_memory), 2))
-            if gen_stats.finish_reason is not None:
-                pr_span.set_attribute("gen_ai.response.finish_reason", str(gen_stats.finish_reason))
+            # These stats are TELEMETRY, never load-bearing — so a None/renamed/
+            # non-numeric field (early-truncated stream, an mlx_lm field rename)
+            # must NOT raise out of here and fail the whole classify batch (the
+            # server's _classify_all loop doesn't wrap the per-session call). Coerce
+            # defensively and drop any stat that won't convert.
+            try:
+                _in = int(gen_stats.prompt_tokens)
+                _out = int(gen_stats.generation_tokens)
+                pr_span.set_attribute("gen_ai.usage.input_tokens", _in)
+                pr_span.set_attribute("gen_ai.usage.output_tokens", _out)
+                pr_span.set_attribute("gen_ai.usage.total_tokens", _in + _out)
+                pr_span.set_attribute("gen_ai.response.model", _resolve_model_id())
+                pr_span.set_attribute("prompt_tps", round(float(gen_stats.prompt_tps), 2))
+                pr_span.set_attribute("generation_tps", round(float(gen_stats.generation_tps), 2))
+                pr_span.set_attribute("peak_memory_gb", round(float(gen_stats.peak_memory), 2))
+                if gen_stats.finish_reason is not None:
+                    pr_span.set_attribute(
+                        "gen_ai.response.finish_reason", str(gen_stats.finish_reason)
+                    )
+            except (TypeError, ValueError, AttributeError) as exc:
+                log.warning("classify: dropping unparseable gen_stats: %s", exc)
 
         # Both paths converge on a JSON string in `raw`; parse to SessionClassification.
         # Apple FM already validated once inside _classify_apple_fm; re-parsing from

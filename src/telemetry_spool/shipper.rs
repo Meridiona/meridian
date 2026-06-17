@@ -17,6 +17,7 @@
 
 use std::{
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -24,13 +25,26 @@ use anyhow::{Context, Result};
 use tokio::sync::watch;
 
 use crate::{
-    observability::resolve_otlp_target,
-    telemetry_spool::writer::{pending_dir, resolve_telemetry_dir, sent_dir, signal_from_filename},
+    observability::{resolve_otlp_endpoint, resolve_otlp_target},
+    telemetry_spool::{
+        derive_base_url, ship_one,
+        writer::{
+            micros_from_filename, pending_dir, quarantine_dir, resolve_telemetry_dir, sent_dir,
+            seq_from_filename, signal_from_filename,
+        },
+        ShipError,
+    },
 };
 
 const DEFAULT_SHIP_INTERVAL_S: u64 = 30;
 const DEFAULT_RETENTION_DAYS: u64 = 7;
 const DEFAULT_MAX_PENDING_MB: u64 = 512;
+/// `.otlp.tmp` files older than this are crash orphans — a healthy write turns
+/// tmp → final in milliseconds, so anything this old will never be completed.
+const TMP_ORPHAN_MAX_AGE_SECS: u64 = 300;
+
+/// One-time guard so "export enabled but no credentials" warns once, not every tick.
+static WARNED_NO_CREDS: AtomicBool = AtomicBool::new(false);
 
 fn ship_interval() -> Duration {
     let secs = std::env::var("MERIDIAN_TELEMETRY_SHIP_INTERVAL_S")
@@ -78,21 +92,46 @@ pub async fn run_shipper(mut shutdown: watch::Receiver<bool>) {
     }
 }
 
+/// Run a single ship pass synchronously. Used by the daemon's shutdown path to
+/// drain the final flushed batch before the shipper task is stopped.
+pub async fn drain_once() {
+    if let Err(e) = run_tick().await {
+        tracing::warn!(error = %e, "telemetry shipper final drain error");
+    }
+}
+
 async fn run_tick() -> Result<()> {
     let base = resolve_telemetry_dir()?;
     let pending = pending_dir(&base);
     let sent = sent_dir(&base);
+    let quarantine = quarantine_dir(&base);
+
+    // Clear crash-orphaned `.otlp.tmp` files first so they can't accumulate
+    // unbounded (they're invisible to both the cap and the lister otherwise).
+    sweep_tmp_orphans(&pending);
 
     // Enforce pending cap BEFORE trying to ship so we don't OOM on a long OO outage.
     enforce_pending_cap(&pending)?;
 
     // Resolve ship target — None means OO not configured, leave files.
     let Some(target) = resolve_otlp_target() else {
+        // Distinguish "export off" from "enabled but unusable": if an endpoint
+        // is configured but credentials don't resolve, we're spooling capture
+        // with no path to delivery — the cap will eventually drop it. Warn once
+        // so the user isn't silently losing telemetry they think is exporting.
+        if resolve_otlp_endpoint().is_some() && !WARNED_NO_CREDS.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                "telemetry export endpoint set but credentials missing — spooling \
+                 capture with NO delivery (files will be dropped once the pending cap \
+                 is hit). Set OpenObserve credentials in the dashboard Settings."
+            );
+        }
         tracing::debug!("telemetry shipper: no OTLP target configured — skipping");
         return Ok(());
     };
+    // Creds are back — re-arm the one-time warning for a future outage.
+    WARNED_NO_CREDS.store(false, Ordering::Relaxed);
 
-    // Derive base URL: strip /v1/traces suffix if present.
     let base_url = derive_base_url(&target.endpoint);
 
     let client = reqwest::Client::builder()
@@ -140,31 +179,50 @@ async fn run_tick() -> Result<()> {
 
         match ship_one(&client, &endpoint, &target.auth, bytes).await {
             Ok(()) => {
-                // Move to sent/
+                // Delivered. Move to sent/ for the export bundle + retention. If
+                // the rename fails (EXDEV across mounts, a permissions blip) we
+                // DELETE the pending file instead of leaving it: it was already
+                // accepted by OO, so re-POSTing it next tick would duplicate the
+                // spans. Losing the sent/ archive copy of one file is the lesser
+                // evil vs. duplicate delivery.
                 let dest = sent.join(&filename);
                 if let Err(e) = std::fs::rename(&file_path, &dest) {
                     tracing::warn!(
                         file = %file_path.display(),
                         dest = %dest.display(),
                         error = %e,
-                        "failed to move spool file to sent/"
+                        "shipped but could not archive to sent/ — deleting to avoid re-ship"
                     );
+                    let _ = std::fs::remove_file(&file_path);
                 } else {
-                    tracing::debug!(
-                        file = %filename,
-                        signal,
-                        "telemetry file shipped"
-                    );
+                    tracing::debug!(file = %filename, signal, "telemetry file shipped");
                 }
             }
-            Err(e) => {
+            Err(ShipError::Terminal(msg)) => {
+                // Permanently rejected (malformed/truncated/too-large payload).
+                // Quarantine it so it stops head-of-line-blocking every newer
+                // file behind it — then keep draining the rest of the queue.
                 tracing::warn!(
                     file = %filename,
                     signal,
-                    error = %e,
-                    "telemetry ship failed — stopping this tick, files remain"
+                    error = %msg,
+                    "telemetry payload permanently rejected — quarantining, continuing"
                 );
-                // Stop on first failure — OO may be down.
+                if let Err(e) = std::fs::create_dir_all(&quarantine)
+                    .and_then(|_| std::fs::rename(&file_path, quarantine.join(&filename)))
+                {
+                    tracing::warn!(file = %filename, error = %e, "failed to quarantine — deleting");
+                    let _ = std::fs::remove_file(&file_path);
+                }
+            }
+            Err(ShipError::Retryable(msg)) => {
+                tracing::warn!(
+                    file = %filename,
+                    signal,
+                    error = %msg,
+                    "telemetry ship failed (transient) — stopping this tick, files remain"
+                );
+                // OO is down/unreachable — stop and let the next tick retry.
                 break;
             }
         }
@@ -176,51 +234,49 @@ async fn run_tick() -> Result<()> {
     Ok(())
 }
 
-async fn ship_one(
-    client: &reqwest::Client,
-    endpoint: &str,
-    auth_b64: &str,
-    bytes: Vec<u8>,
-) -> Result<()> {
-    let resp = client
-        .post(endpoint)
-        .header("Authorization", format!("Basic {auth_b64}"))
-        .header("Content-Type", "application/x-protobuf")
-        .body(bytes)
-        .send()
-        .await
-        .context("send OTLP request")?;
-
-    let status = resp.status();
-    if status.is_success() {
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!(
-            "OTLP endpoint returned HTTP {} for {}",
-            status,
-            endpoint
-        ))
+/// Remove `.otlp.tmp` files left behind by a crash between write and rename.
+/// A healthy write completes the rename in milliseconds, so any tmp older than
+/// `TMP_ORPHAN_MAX_AGE_SECS` is dead weight the cap/lister would never see.
+fn sweep_tmp_orphans(pending: &Path) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let Ok(entries) = std::fs::read_dir(pending) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.ends_with(".otlp.tmp") {
+            continue;
+        }
+        let age = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|mt| now.saturating_sub(mt.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()))
+            .unwrap_or(u64::MAX);
+        if age >= TMP_ORPHAN_MAX_AGE_SECS {
+            let _ = std::fs::remove_file(&path);
+            tracing::debug!(file = %path.display(), age_secs = age, "swept crash-orphaned spool tmp file");
+        }
     }
 }
 
-/// Strip `/v1/traces` or `/v1/logs` suffix to get the base URL.
-fn derive_base_url(endpoint: &str) -> String {
-    if let Some(base) = endpoint.strip_suffix("/v1/traces") {
-        return base.to_string();
-    }
-    if let Some(base) = endpoint.strip_suffix("/v1/logs") {
-        return base.to_string();
-    }
-    endpoint.trim_end_matches('/').to_string()
-}
-
-/// List `.otlp` files in `dir` sorted oldest-first by encoded timestamp.
+/// List `.otlp` files in `dir` sorted oldest-first by `(micros, seq)`.
+///
+/// Including `seq` makes ordering deterministic when two files share a
+/// microsecond (traces+logs back-to-back, or a burst). Files with an
+/// unparseable name are SKIPPED rather than collapsed to key `0` — a renamed /
+/// foreign file must not sort permanently to the front and ship every tick.
 fn list_pending_oldest_first(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return vec![];
     };
 
-    let mut files: Vec<(u64, PathBuf)> = entries
+    let mut files: Vec<(u64, u64, PathBuf)> = entries
         .flatten()
         .filter_map(|e| {
             let p = e.path();
@@ -228,13 +284,14 @@ fn list_pending_oldest_first(dir: &Path) -> Vec<PathBuf> {
             if !name.ends_with(".otlp") {
                 return None;
             }
-            let micros = crate::telemetry_spool::writer::micros_from_filename(&name).unwrap_or(0);
-            Some((micros, p))
+            let micros = micros_from_filename(&name)?;
+            let seq = seq_from_filename(&name)?;
+            Some((micros, seq, p))
         })
         .collect();
 
-    files.sort_by_key(|(m, _)| *m);
-    files.into_iter().map(|(_, p)| p).collect()
+    files.sort_by_key(|(m, s, _)| (*m, *s));
+    files.into_iter().map(|(_, _, p)| p).collect()
 }
 
 /// Delete sent/ files whose mtime is older than `retention_days`.
@@ -284,7 +341,7 @@ fn enforce_pending_cap(pending: &Path) -> Result<()> {
         return Ok(());
     };
 
-    let mut files: Vec<(u64, u64, PathBuf)> = entries // (micros, size, path)
+    let mut files: Vec<(u64, u64, u64, PathBuf)> = entries // (micros, seq, size, path)
         .flatten()
         .filter_map(|e| {
             let p = e.path();
@@ -292,16 +349,18 @@ fn enforce_pending_cap(pending: &Path) -> Result<()> {
             if !name.ends_with(".otlp") {
                 return None;
             }
-            let micros = crate::telemetry_spool::writer::micros_from_filename(&name).unwrap_or(0);
+            let micros = micros_from_filename(&name)?;
+            let seq = seq_from_filename(&name)?;
             let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
-            Some((micros, size, p))
+            Some((micros, seq, size, p))
         })
         .collect();
 
-    // Sort oldest-first
-    files.sort_by_key(|(m, _, _)| *m);
+    // Sort oldest-first by (micros, seq) — same total order the shipper uses, so
+    // the cap evicts the genuinely-oldest records, not whatever read_dir yields.
+    files.sort_by_key(|(m, s, _, _)| (*m, *s));
 
-    let total: u64 = files.iter().map(|(_, s, _)| s).sum();
+    let total: u64 = files.iter().map(|(_, _, s, _)| s).sum();
     if total <= max {
         return Ok(());
     }
@@ -310,7 +369,7 @@ fn enforce_pending_cap(pending: &Path) -> Result<()> {
     let mut dropped_count = 0u64;
     let mut dropped_bytes = 0u64;
 
-    for (_, size, path) in &files {
+    for (_, _, size, path) in &files {
         if to_drop == 0 {
             break;
         }
@@ -342,33 +401,6 @@ mod tests {
     use crate::telemetry_spool::writer::write_pending;
     use tempfile::TempDir;
 
-    /// Stub HTTP target — returns 200 for the test.
-    /// We can't use a real server in unit tests, so we test the file-move
-    /// logic separately using a helper that bypasses the HTTP call.
-    #[test]
-    fn derive_base_url_strips_v1_traces() {
-        assert_eq!(
-            derive_base_url("http://localhost:5080/api/default/v1/traces"),
-            "http://localhost:5080/api/default"
-        );
-    }
-
-    #[test]
-    fn derive_base_url_strips_v1_logs() {
-        assert_eq!(
-            derive_base_url("http://localhost:5080/api/default/v1/logs"),
-            "http://localhost:5080/api/default"
-        );
-    }
-
-    #[test]
-    fn derive_base_url_passthrough_when_no_suffix() {
-        assert_eq!(
-            derive_base_url("http://localhost:5080/api/default"),
-            "http://localhost:5080/api/default"
-        );
-    }
-
     #[test]
     fn list_pending_sorted_oldest_first() {
         let dir = TempDir::new().unwrap();
@@ -385,6 +417,26 @@ mod tests {
         // First file written should appear first (lower seq or lower micros)
         assert_eq!(sorted[0], p1);
         assert_eq!(sorted[1], p2);
+    }
+
+    #[test]
+    fn list_pending_orders_same_micros_by_seq_and_skips_unparseable() {
+        let dir = TempDir::new().unwrap();
+        let pending = pending_dir(dir.path());
+        std::fs::create_dir_all(&pending).unwrap();
+
+        // Same microsecond, out-of-order seq — must come back seq 0 then seq 1.
+        std::fs::write(pending.join("traces-1000-1.otlp"), b"b").unwrap();
+        std::fs::write(pending.join("traces-1000-0.otlp"), b"a").unwrap();
+        // A crash-orphan tmp and a foreign name must be ignored entirely (the
+        // old `unwrap_or(0)` would have sorted the foreign file permanently first).
+        std::fs::write(pending.join("traces-1000-2.otlp.tmp"), b"x").unwrap();
+        std::fs::write(pending.join("garbage.otlp"), b"y").unwrap();
+
+        let sorted = list_pending_oldest_first(&pending);
+        assert_eq!(sorted.len(), 2, "tmp + foreign names excluded");
+        assert!(sorted[0].file_name().unwrap().to_str().unwrap().ends_with("-0.otlp"));
+        assert!(sorted[1].file_name().unwrap().to_str().unwrap().ends_with("-1.otlp"));
     }
 
     #[test]

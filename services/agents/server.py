@@ -651,6 +651,34 @@ def _get_synth_agent() -> "Any":
     return agent
 
 
+def _set_token_metrics(span: Any, metrics: Any) -> None:
+    """Set OTel GenAI token/duration attributes from an agno metrics object,
+    coercing DEFENSIVELY: a None/missing/non-numeric field is skipped, never
+    raised. These run AFTER a successful `agent.run`, so a bare `int(metrics.x)`
+    on a truthy-non-int value (a string/list, depending on agno/model-server
+    version) would turn a successful synth into a 500 and lose the draft. Telemetry
+    must never do that.
+    """
+    if metrics is None:
+        return
+
+    def _num(name: str) -> "int | float | None":
+        v = getattr(metrics, name, None)
+        # bool is an int subclass — exclude it so a stray True/False is dropped.
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    _in, _out = _num("input_tokens"), _num("output_tokens")
+    _tot, _dur = _num("total_tokens"), _num("duration")
+    if _in is not None:
+        span.set_attribute("gen_ai.usage.input_tokens", int(_in))
+    if _out is not None:
+        span.set_attribute("gen_ai.usage.output_tokens", int(_out))
+    if _tot is not None:
+        span.set_attribute("gen_ai.usage.total_tokens", int(_tot))
+    if _dur is not None:
+        span.set_attribute("duration_s", round(float(_dur), 2))
+
+
 def _record_wire_prompt(tracer: Any, in_span: Any, response: Any, user_message: str) -> None:
     """Populate the worklog_input span with the EXACT messages agno sent to the
     model (system + user), plus a clickable child span per role — mirroring the
@@ -736,6 +764,13 @@ async def synthesise_worklog(req: _SynthWorklogRequest) -> dict:
         ) as root:
             root.set_attribute("window_start", bundle.window_start)
             root.set_attribute("window_end", bundle.window_end)
+            # Default to is_error=True and flip to False only on full success
+            # below. The pm-worklog dashboard buckets on is_error in
+            # ('true','false'), so an UNSET value (left by an unexpected raise in
+            # agno internals / _coerce_jira / _record_wire_prompt) would vanish
+            # from BOTH the Failed count and the Avg-confidence panel. Pessimistic
+            # default guarantees every escaped error is counted.
+            root.set_attribute("is_error", True)
 
             # ── worklog_input ─ created up-front so it leads the waterfall. The
             # EXACT wire prompt (system + user, as agno actually composes and
@@ -792,15 +827,7 @@ async def synthesise_worklog(req: _SynthWorklogRequest) -> dict:
                         inf.set_attribute("gen_ai.response.model", str(model_name))
                     # agno reports the model's OWN token accounting — surface it under
                     # the OTel GenAI semantic conventions, same as the classifier.
-                    if metrics is not None:
-                        if getattr(metrics, "input_tokens", None):
-                            inf.set_attribute("gen_ai.usage.input_tokens", int(metrics.input_tokens))
-                        if getattr(metrics, "output_tokens", None):
-                            inf.set_attribute("gen_ai.usage.output_tokens", int(metrics.output_tokens))
-                        if getattr(metrics, "total_tokens", None):
-                            inf.set_attribute("gen_ai.usage.total_tokens", int(metrics.total_tokens))
-                        if getattr(metrics, "duration", None):
-                            inf.set_attribute("duration_s", round(float(metrics.duration), 2))
+                    _set_token_metrics(inf, metrics)
                     if update is None:
                         inf.set_status(trace.StatusCode.ERROR, last_detail)
                         root.set_attribute("is_error", True)
@@ -868,15 +895,7 @@ async def synthesise_worklog(req: _SynthWorklogRequest) -> dict:
             root.set_attribute("is_error", False)
             # Promote the model's token accounting + latency onto the root so one
             # dashboard row per draft carries them without joining the child span.
-            if metrics is not None:
-                if getattr(metrics, "input_tokens", None):
-                    root.set_attribute("gen_ai.usage.input_tokens", int(metrics.input_tokens))
-                if getattr(metrics, "output_tokens", None):
-                    root.set_attribute("gen_ai.usage.output_tokens", int(metrics.output_tokens))
-                if getattr(metrics, "total_tokens", None):
-                    root.set_attribute("gen_ai.usage.total_tokens", int(metrics.total_tokens))
-                if getattr(metrics, "duration", None):
-                    root.set_attribute("duration_s", round(float(metrics.duration), 2))
+            _set_token_metrics(root, metrics)
 
             log.info(
                 "synthesise_worklog: task=%s sessions=%d summary_chars=%d bullets=%d conf=%.2f attempts=%d",

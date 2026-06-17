@@ -646,10 +646,16 @@ async fn main() -> Result<()> {
     //     OpenObserve every MERIDIAN_TELEMETRY_SHIP_INTERVAL_S (default 30s).
     //     Active only when otlp_enabled is true; noop ticks if no OO target is
     //     configured (e.g. credentials not yet set).
+    //
+    //     The shipper gets its OWN shutdown channel (not the shared one) so the
+    //     shutdown sequence can flush the OTel exporters — which write the
+    //     daemon's final spans/logs INTO the spool — and drain them BEFORE the
+    //     shipper stops. Stopping it on the shared signal would race the flush and
+    //     strand the shutdown telemetry until the next daemon start.
+    let (shipper_shutdown_tx, shipper_shutdown_rx) = tokio::sync::watch::channel(false);
     {
-        let rx_shipper = shutdown_rx.clone();
         tokio::spawn(async move {
-            meridian::telemetry_spool::shipper::run_shipper(rx_shipper).await;
+            meridian::telemetry_spool::shipper::run_shipper(shipper_shutdown_rx).await;
         });
     }
 
@@ -871,7 +877,8 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Signal the task linker loop to stop.
+    // Signal the task linker loops to stop. The shipper has its OWN channel and
+    // is intentionally left running for now (see below).
     let _ = shutdown_tx.send(true);
 
     // 9. Shutdown
@@ -880,8 +887,15 @@ async fn main() -> Result<()> {
     screenpipe.close().await;
     meridian.close().await;
 
-    // Flush OTel exporters while the tokio runtime is still alive.
+    // Flush OTel exporters FIRST, while the runtime is alive — this writes the
+    // daemon's final shutdown spans/logs into the spool's pending/ dir...
     obs_guard.shutdown().await;
+    // ...then run one last ship so that final batch reaches OO now rather than on
+    // the next daemon start (the spool would persist it either way; this just
+    // delivers it promptly, and matters when the daemon is being uninstalled)...
+    meridian::telemetry_spool::shipper::drain_once().await;
+    // ...and only now stop the shipper task.
+    let _ = shipper_shutdown_tx.send(true);
 
     Ok(())
 }

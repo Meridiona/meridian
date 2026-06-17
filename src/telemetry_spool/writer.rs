@@ -12,6 +12,7 @@
 //   seq = per-process counter to disambiguate same-microsecond writes
 
 use std::{
+    io::Write,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
@@ -43,6 +44,12 @@ pub fn sent_dir(base: &Path) -> PathBuf {
     base.join("sent")
 }
 
+/// `~/.meridian/telemetry/quarantine/` — terminally-rejected (4xx) payloads
+/// are moved here so they stop blocking the queue but remain inspectable.
+pub fn quarantine_dir(base: &Path) -> PathBuf {
+    base.join("quarantine")
+}
+
 /// Build a spool filename for the given signal.
 ///
 /// `signal` must be `"traces"` or `"logs"`.
@@ -68,10 +75,30 @@ pub fn write_pending(base: &Path, signal: &str, bytes: &[u8]) -> Result<PathBuf>
     let final_path = pending.join(&filename);
     let tmp_path = pending.join(format!("{filename}.tmp"));
 
-    std::fs::write(&tmp_path, bytes)
-        .with_context(|| format!("write tmp spool file {}", tmp_path.display()))?;
-    std::fs::rename(&tmp_path, &final_path)
-        .with_context(|| format!("rename spool file to {}", final_path.display()))?;
+    // Write + fsync the tmp file BEFORE the rename. The rename gives atomic
+    // visibility (the shipper never sees a partial file), but without sync_all a
+    // power loss / kernel panic can make the rename (metadata) durable while the
+    // data blocks are still in page cache — surfacing a zero-length/truncated
+    // .otlp the shipper would POST (→ an HTTP 400 that quarantines a non-payload).
+    // sync_all() the data, then fsync the directory so the rename itself survives.
+    let write_res = (|| -> std::io::Result<()> {
+        let mut f = std::fs::File::create(&tmp_path)?;
+        f.write_all(bytes)?;
+        f.sync_all()
+    })();
+    if let Err(e) = write_res {
+        // Never strand a partial `.tmp` orphan on a failed write.
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(anyhow::Error::new(e))
+            .with_context(|| format!("write tmp spool file {}", tmp_path.display()));
+    }
+
+    if let Err(e) = std::fs::rename(&tmp_path, &final_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(anyhow::Error::new(e))
+            .with_context(|| format!("rename spool file to {}", final_path.display()));
+    }
+    fsync_dir(&pending);
 
     tracing::debug!(
         signal,
@@ -80,6 +107,15 @@ pub fn write_pending(base: &Path, signal: &str, bytes: &[u8]) -> Result<PathBuf>
         "spooled telemetry payload"
     );
     Ok(final_path)
+}
+
+/// Best-effort fsync of a directory so a rename within it survives a crash.
+/// Not all platforms/filesystems support directory fsync — failures are
+/// non-fatal because the tmp-file `sync_all` already put the data on disk.
+fn fsync_dir(dir: &Path) {
+    if let Ok(f) = std::fs::File::open(dir) {
+        let _ = f.sync_all();
+    }
 }
 
 /// Determine the OTLP signal type from a spool filename.
@@ -110,6 +146,20 @@ pub fn micros_from_filename(name: &str) -> Option<u64> {
     // First segment up to the next `-` is unix_micros
     let micros_str = after_signal.split('-').next()?;
     micros_str.parse().ok()
+}
+
+/// Parse the per-process seq from a spool filename.
+///
+/// Filename format: `<signal>-<unix_micros>-<seq>.otlp`. Used to break ties when
+/// two files share a microsecond, so oldest-first ordering stays deterministic.
+pub fn seq_from_filename(name: &str) -> Option<u64> {
+    let after_signal = name
+        .strip_prefix("traces-")
+        .or_else(|| name.strip_prefix("logs-"))?;
+    let stem = after_signal.strip_suffix(".otlp")?;
+    // `<unix_micros>-<seq>` → second segment is seq.
+    let seq_str = stem.split('-').nth(1)?;
+    seq_str.parse().ok()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -177,5 +227,14 @@ mod tests {
         );
         assert_eq!(micros_from_filename("logs-9999-0.otlp"), Some(9999u64));
         assert_eq!(micros_from_filename("unknown.otlp"), None);
+    }
+
+    #[test]
+    fn seq_from_filename_parses_and_rejects_bad_names() {
+        assert_eq!(seq_from_filename("traces-1718000000000000-42.otlp"), Some(42));
+        assert_eq!(seq_from_filename("logs-9999-0.otlp"), Some(0));
+        // `.tmp` and foreign names have no parseable seq.
+        assert_eq!(seq_from_filename("traces-1-0.otlp.tmp"), None);
+        assert_eq!(seq_from_filename("unknown.otlp"), None);
     }
 }

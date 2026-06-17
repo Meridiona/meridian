@@ -24,8 +24,11 @@ use anyhow::{Context, Result};
 
 use crate::{
     observability::{resolve_otlp_endpoint, resolve_otlp_target},
-    telemetry_spool::writer::{
-        micros_from_filename, pending_dir, resolve_telemetry_dir, sent_dir, signal_from_filename,
+    telemetry_spool::{
+        derive_base_url, ship_one,
+        writer::{
+            micros_from_filename, pending_dir, resolve_telemetry_dir, sent_dir, signal_from_filename,
+        },
     },
 };
 
@@ -249,19 +252,8 @@ async fn cmd_import(
 
         let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
 
-        match client
-            .post(&endpoint)
-            .header("Authorization", format!("Basic {auth}"))
-            .header("Content-Type", "application/x-protobuf")
-            .body(bytes)
-            .send()
-            .await
-        {
-            Ok(resp) if resp.status().is_success() => ok += 1,
-            Ok(resp) => {
-                eprintln!("  FAIL {name}: HTTP {}", resp.status());
-                fail += 1;
-            }
+        match ship_one(&client, &endpoint, &auth, bytes).await {
+            Ok(()) => ok += 1,
             Err(e) => {
                 eprintln!("  FAIL {name}: {e}");
                 fail += 1;
@@ -281,14 +273,4 @@ fn flag_value(args: &[String], name: &str) -> Option<String> {
     args.iter()
         .position(|a| a == name)
         .and_then(|i| args.get(i + 1).cloned())
-}
-
-fn derive_base_url(endpoint: &str) -> String {
-    if let Some(base) = endpoint.strip_suffix("/v1/traces") {
-        return base.to_string();
-    }
-    if let Some(base) = endpoint.strip_suffix("/v1/logs") {
-        return base.to_string();
-    }
-    endpoint.trim_end_matches('/').to_string()
 }
