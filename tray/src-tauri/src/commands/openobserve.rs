@@ -12,7 +12,7 @@
 //!   The `/api/openobserve` GET route is kept until export cutover.
 //!
 //! # Related
-//! - [`crate::health`] — checks db + daemon + a11y; openobserve is optional infra
+//! - [`crate::commands::health`] — checks db + daemon + a11y; openobserve is optional infra
 
 use serde::Serialize;
 use std::time::Duration;

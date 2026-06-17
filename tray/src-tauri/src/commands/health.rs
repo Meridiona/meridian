@@ -16,7 +16,7 @@
 //!   that stream will be replaced with a Tauri event in the SSE migration phase.
 //!
 //! # Related
-//! - [`crate::daemon_status`] — deeper socket probe (reads daemon PID)
+//! - [`crate::commands::daemon`] — deeper socket probe (reads daemon PID)
 //! - [`crate::poll`] — schedules the tray's periodic health refresh
 
 use serde::Serialize;
@@ -118,7 +118,7 @@ async fn check_daemon_running(home: &str) -> Option<bool> {
 /// Fallback: ask `launchctl print` for the a11y-helper trust state.
 /// Only called when the log scan is inconclusive (returns `None`).
 async fn launchctl_a11y_trusted() -> Option<bool> {
-    let uid = uid_str();
+    let uid = crate::sys::uid_str();
     let out = tokio::process::Command::new("launchctl")
         .args(["print", &format!("gui/{}/com.meridiona.a11y-helper", uid)])
         .output()
@@ -135,16 +135,6 @@ async fn launchctl_a11y_trusted() -> Option<bool> {
     } else {
         None
     }
-}
-
-fn uid_str() -> String {
-    std::process::Command::new("id")
-        .arg("-u")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "501".to_string())
 }
 
 /// The health check command (the ported `/api/health` GET).

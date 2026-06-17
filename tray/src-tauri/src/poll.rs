@@ -1,19 +1,14 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-use crate::health::check_health;
+use crate::commands::health::check_health;
 use crate::state::{ActiveSession, AppState, HealthStatus};
+use crate::sys::{notify, ui_base};
 use reqwest::Client;
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::Emitter;
-use tauri_plugin_notification::NotificationExt;
 
 const TICK: Duration = Duration::from_secs(30);
-
-fn ui_base() -> String {
-    let port = std::env::var("MERIDIAN_UI_PORT").unwrap_or_else(|_| "3939".to_string());
-    format!("http://127.0.0.1:{}", port)
-}
 
 #[derive(Deserialize)]
 struct ActiveResp {
@@ -294,15 +289,6 @@ fn update_tray_icon(app: &tauri::AppHandle, state: &Arc<Mutex<AppState>>) {
     }
 }
 
-fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
-    // v1: the native macOS toast shows title + body only. Producers populate a
-    // `deep_link` (e.g. /plan, /worklogs) and the in-app banner channel renders
-    // it as an "Open →" link, but click-to-navigate on a native toast needs
-    // Tauri notification actions + a focus/navigate handler — deferred. The two
-    // channels are intentionally asymmetric here; the banner carries the link.
-    let _ = app.notification().builder().title(title).body(body).show();
-}
-
 fn update_toggle_menu(app: &tauri::AppHandle, state: &Arc<Mutex<AppState>>) {
     let (health, tray_id, last_menu_state) = {
         let s = state.lock().unwrap();
@@ -322,7 +308,7 @@ fn update_toggle_menu(app: &tauri::AppHandle, state: &Arc<Mutex<AppState>>) {
     // menu here and silently drop "Open Dashboard (native)").
     if let Some(id) = tray_id {
         if let Some(tray) = app.tray_by_id(&id) {
-            if let Ok(menu) = crate::build_tray_menu(app, &health) {
+            if let Ok(menu) = crate::tray::build_tray_menu(app, &health) {
                 let _ = tray.set_menu(Some(menu));
             }
         }

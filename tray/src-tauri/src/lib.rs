@@ -1,24 +1,29 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+//! Meridian tray — app bootstrap and wiring.
+//!
+//! This file is intentionally thin: it builds the Tauri app, opens the shared
+//! `meridian.db` pool, installs the tray, registers the command surface, and
+//! spawns the poll loop. The substance lives in focused modules:
+//!
+//! - [`commands`] — the `#[tauri::command]` surface (grouped by domain).
+//! - [`tray`]     — tray menu construction + menu-event dispatch.
+//! - [`poll`]     — the background health/active/today/worklogs poll loop.
+//! - [`state`]    — the shared [`state::AppState`] the poll loop maintains.
+//! - [`install`]  — install-mode + db-path resolution.
+//! - [`sys`]      — shared uid / notify / dashboard-URL helpers.
+//! - [`format`]   — duration formatting for the popover.
+
 mod commands;
-mod daemon_status;
 pub(crate) mod format;
-pub(crate) mod health;
-mod integrations;
-mod logs;
-mod openobserve_status;
-mod parents;
+mod install;
 mod poll;
 mod state;
-mod version;
+mod sys;
+mod tray;
 
 use state::{AppState, HealthStatus};
 use std::sync::{Arc, Mutex};
-use tauri::{
-    image::Image,
-    menu::{Menu, MenuBuilder, MenuItemBuilder},
-    tray::TrayIconBuilder,
-    Manager, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
-};
+use tauri::{image::Image, tray::TrayIconBuilder, Manager, WindowEvent};
 
 pub fn run() {
     // Dev-only (`--features otel`): export tray spans to OpenObserve via the
@@ -59,20 +64,18 @@ pub fn run() {
 
             // Open meridian.db ONCE at startup and share it with commands via
             // managed state (no migrations — the daemon owns the schema). `None`
-            // if the DB can't be opened yet, so get_active errors gracefully
-            // instead of crashing the tray.
-            let db_path = commands::meridian_db_path();
+            // if the DB can't be opened yet, so reads error gracefully instead
+            // of crashing the tray.
+            let db_path = install::meridian_db_path();
             let db_pool = tauri::async_runtime::block_on(meridian_core::open_existing(&db_path))
                 .map_err(|e| eprintln!("tray: meridian.db not opened ({db_path}): {e}"))
                 .ok();
             app.manage(db_pool);
 
-            // Single source of truth for the tray menu — `build_tray_menu` is the
-            // ONLY place item ids/labels live, so the poll loop's health-driven
-            // rebuild (poll.rs) can't drift out of sync and silently drop items
-            // (it previously clobbered this 6-item menu with a stale 5-item one).
-            // Initial health is Unknown until the first poll resolves it.
-            let menu = build_tray_menu(app.handle(), &HealthStatus::Unknown)?;
+            // Single source of truth for the tray menu lives in `tray.rs`, so the
+            // poll loop's health-driven rebuild can't drift out of sync. Initial
+            // health is Unknown until the first poll resolves it.
+            let menu = tray::build_tray_menu(app.handle(), &HealthStatus::Unknown)?;
 
             let tray_icon_bytes = include_bytes!("../icons/meridiona-mark.png");
             let tray_icon = Image::from_bytes(tray_icon_bytes)?;
@@ -85,67 +88,7 @@ pub fn run() {
                 .on_tray_icon_event(|tray_handle, event| {
                     tauri_plugin_positioner::on_tray_event(tray_handle.app_handle(), &event);
                 })
-                .on_menu_event(|app, event| {
-                    let app_clone = app.clone();
-                    match event.id.as_ref() {
-                        "open_dashboard" => {
-                            open_in_browser(app, &ui_base());
-                        }
-                        "open_native" => {
-                            // In-app dashboard window (Today/Week from Rust). Reuse
-                            // the window if it already exists, else build it.
-                            if let Some(win) = app.get_webview_window("dashboard") {
-                                let _ = win.show();
-                                let _ = win.set_focus();
-                            } else if let Err(e) = WebviewWindowBuilder::new(
-                                app,
-                                "dashboard",
-                                // The real Next dashboard route (resolves against
-                                // devUrl → next dev in dev, the static export in
-                                // build). Replaces the throwaway dashboard.html.
-                                WebviewUrl::App("today".into()),
-                            )
-                            .title("Meridian — Dashboard")
-                            .inner_size(1100.0, 760.0)
-                            .build()
-                            {
-                                eprintln!("tray: failed to open native dashboard: {e}");
-                            }
-                        }
-                        "open_setup" => {
-                            open_wizard_window(app);
-                        }
-                        "open_worklogs" => {
-                            open_in_browser(app, &format!("{}/worklogs", ui_base()));
-                        }
-                        "toggle_daemon" => {
-                            if let Ok(state_guard) =
-                                app_clone.state::<Arc<Mutex<AppState>>>().lock()
-                            {
-                                let is_running =
-                                    state_guard.health == crate::state::HealthStatus::Healthy;
-                                drop(state_guard);
-                                let app_for_notify = app_clone.clone();
-                                tauri::async_runtime::spawn(async move {
-                                    let _ =
-                                        commands::toggle_daemon(app_for_notify, is_running).await;
-                                });
-                            }
-                        }
-                        "restart_daemon" => {
-                            let uid = uid_str();
-                            let _ = std::process::Command::new("launchctl")
-                                .args([
-                                    "kickstart",
-                                    "-k",
-                                    &format!("gui/{}/com.meridiona.daemon", uid),
-                                ])
-                                .spawn();
-                        }
-                        "quit" => app.exit(0),
-                        _ => {}
-                    }
-                })
+                .on_menu_event(|app, event| tray::handle_menu_event(app, event.id.as_ref()))
                 .build(app)?;
 
             {
@@ -186,97 +129,15 @@ pub fn run() {
             commands::get_tasks,
             commands::get_settings,
             commands::get_triage,
-            integrations::get_integrations,
-            daemon_status::get_daemon_status,
-            health::get_health,
-            openobserve_status::get_openobserve_status,
-            logs::get_logs,
-            parents::get_ticket_parents,
-            version::get_version,
+            commands::get_integrations,
+            commands::get_daemon_status,
+            commands::get_health,
+            commands::get_openobserve_status,
+            commands::get_logs,
+            commands::get_ticket_parents,
+            commands::get_version,
             commands::open_permission_pane,
         ])
         .run(tauri::generate_context!())
         .expect("error running meridian tray");
-}
-
-/// The toggle item's label for a given daemon health. Kept next to the menu
-/// builder so the label and the menu never disagree.
-pub(crate) fn toggle_label(health: &HealthStatus) -> &'static str {
-    match health {
-        HealthStatus::Healthy => "Connected ●",
-        HealthStatus::Unhealthy | HealthStatus::Unknown => "Disconnected ○",
-    }
-}
-
-/// Build the full tray menu. The single definition of the tray's items —
-/// called from `setup()` at startup AND from the poll loop when health flips
-/// (poll.rs::update_toggle_menu). Only the toggle label is health-dependent;
-/// everything else is constant. Adding a menu item here automatically keeps
-/// both call sites in sync.
-pub(crate) fn build_tray_menu<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    health: &HealthStatus,
-) -> tauri::Result<Menu<R>> {
-    let toggle_item = MenuItemBuilder::with_id("toggle_daemon", toggle_label(health)).build(app)?;
-    let open_item = MenuItemBuilder::with_id("open_dashboard", "Open Dashboard").build(app)?;
-    // Native (in-app) dashboard — renders Today/Week from Rust commands, no
-    // browser, no Node server. The fold-into-Tauri end-state.
-    let native_item =
-        MenuItemBuilder::with_id("open_native", "Open Dashboard (native)").build(app)?;
-    // First-run / re-run onboarding wizard (permissions, model, tracker auth).
-    let setup_item = MenuItemBuilder::with_id("open_setup", "Setup…").build(app)?;
-    let worklogs_item = MenuItemBuilder::with_id("open_worklogs", "Review Drafts").build(app)?;
-    let restart_item = MenuItemBuilder::with_id("restart_daemon", "Restart Daemon").build(app)?;
-    let quit_item = MenuItemBuilder::with_id("quit", "Quit Meridian Tray").build(app)?;
-    MenuBuilder::new(app)
-        .items(&[
-            &toggle_item,
-            &open_item,
-            &native_item,
-            &setup_item,
-            &worklogs_item,
-            &restart_item,
-            &quit_item,
-        ])
-        .build()
-}
-
-fn ui_base() -> String {
-    let port = std::env::var("MERIDIAN_UI_PORT").unwrap_or_else(|_| "3939".to_string());
-    format!("http://127.0.0.1:{}", port)
-}
-
-fn open_in_browser(app: &tauri::AppHandle, url: &str) {
-    use tauri_plugin_opener::OpenerExt;
-    let _ = app.opener().open_url(url, None::<&str>);
-}
-
-/// Open (or focus) the in-app onboarding wizard window. Loads the Next `/setup`
-/// route (resolves against devUrl → next dev in dev, the static export in
-/// build); the wizard drives permissions, model status, and tracker auth
-/// entirely through Tauri commands (no Node server).
-fn open_wizard_window(app: &tauri::AppHandle) {
-    if let Some(win) = app.get_webview_window("setup") {
-        let _ = win.show();
-        let _ = win.set_focus();
-        return;
-    }
-    if let Err(e) = WebviewWindowBuilder::new(app, "setup", WebviewUrl::App("setup".into()))
-        .title("Meridian — Setup")
-        .inner_size(560.0, 660.0)
-        .resizable(false)
-        .build()
-    {
-        eprintln!("tray: failed to open setup wizard: {e}");
-    }
-}
-
-fn uid_str() -> String {
-    std::process::Command::new("id")
-        .arg("-u")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "501".to_string())
 }

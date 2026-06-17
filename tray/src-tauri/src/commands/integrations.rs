@@ -80,7 +80,7 @@ fn oauth_file_exists(provider: &str) -> bool {
 pub async fn get_integrations(
     pool: State<'_, Option<meridian_core::SqlitePool>>,
 ) -> Result<IntegrationsResponse, String> {
-    let mode = crate::commands::detect_install_mode();
+    let mode = crate::install::detect_install_mode();
     let env = mode.env_path().map(parse_env).unwrap_or_default();
 
     let jira_basic = is_set(&env, "JIRA_BASE_URL")
