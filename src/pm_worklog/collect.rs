@@ -30,8 +30,11 @@ async fn column_exists(pool: &SqlitePool, table: &str, column: &str) -> bool {
         Ok(r) => r,
         Err(_) => return false,
     };
-    rows.iter()
-        .any(|r| r.try_get::<String, _>("name").map(|n| n == column).unwrap_or(false))
+    rows.iter().any(|r| {
+        r.try_get::<String, _>("name")
+            .map(|n| n == column)
+            .unwrap_or(false)
+    })
 }
 
 /// Build the bundle for `task_key` over `[window_start_iso, window_end_iso)`.

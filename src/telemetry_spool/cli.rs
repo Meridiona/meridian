@@ -27,7 +27,8 @@ use crate::{
     telemetry_spool::{
         derive_base_url, ship_one,
         writer::{
-            micros_from_filename, pending_dir, resolve_telemetry_dir, sent_dir, signal_from_filename,
+            micros_from_filename, pending_dir, resolve_telemetry_dir, sent_dir,
+            signal_from_filename,
         },
     },
 };
