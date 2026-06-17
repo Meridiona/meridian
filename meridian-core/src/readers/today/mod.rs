@@ -17,14 +17,12 @@ use crate::SqlitePool;
 use std::collections::BTreeMap;
 use tracing::Instrument;
 
-// Re-export the public response types at the `today` module path so callers
-// use `meridian_core::today::TodayResponse` etc. (not `today_types`).
-use crate::today_types::{
-    normalize_cat, parse_titles, ActiveRow, GapRow, TaskMetaRow, TitleEntry, TodayRow,
-};
-pub use crate::today_types::{
-    AgentSummary, TaskMeta, TodayActive, TodayGap, TodayResponse, TodaySession,
-};
+// Response types + DB row shapes live in the sibling `types` module (a size
+// split — today.rs hit the 500-line cap). Re-export the public types at the
+// `today` module path so callers use `meridian_core::today::TodayResponse` etc.
+mod types;
+use types::{normalize_cat, parse_titles, ActiveRow, GapRow, TaskMetaRow, TitleEntry, TodayRow};
+pub use types::{AgentSummary, TaskMeta, TodayActive, TodayGap, TodayResponse, TodaySession};
 
 /// Foreground sessions shorter than this are sub-second focus jitter, not real
 /// context switches.

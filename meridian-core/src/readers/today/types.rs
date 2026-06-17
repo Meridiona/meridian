@@ -1,9 +1,9 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //! Response types and DB row shapes for the `/api/today` port.
 //!
-//! Declared as a crate-level private module so `today.rs` can import them
-//! without creating a submodule directory. Public response types are re-exported
-//! from [`crate::today`] — callers use `meridian_core::today::TodayResponse`.
+//! A private sibling of `today/mod.rs`, split out because the query module hit
+//! the 500-line cap. Public response types are re-exported from the parent
+//! [`super`] (i.e. `meridian_core::today::TodayResponse`).
 
 use crate::intervals::Interval;
 use serde::{Deserialize, Serialize};
