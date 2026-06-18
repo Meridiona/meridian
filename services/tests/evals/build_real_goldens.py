@@ -46,7 +46,9 @@ from agents.run_task_linker_mlx import _fetch_recent_ticket_activity  # noqa: E4
 _EVAL_DIR = Path(__file__).parent
 MERIDIAN_DB = Path(os.environ.get("MERIDIAN_DB", Path.home() / ".meridian/meridian.db")).expanduser()
 LABELS_FILE = Path(os.environ.get("LABELS_FILE", _EVAL_DIR / "data" / "labels" / "real_curated.json"))
-OUTPUT = _EVAL_DIR / "data" / "generated" / "goldens_real_labeled.json"
+# Output defaults to goldens_<labels-stem-minus-real_curated>.json; override with OUTPUT_FILE.
+_default_out = "goldens_real_labeled.json" if LABELS_FILE.stem == "real_curated" else f"goldens_{LABELS_FILE.stem.replace('real_curated_', 'real_')}.json"
+OUTPUT = Path(os.environ.get("OUTPUT_FILE", _EVAL_DIR / "data" / "generated" / _default_out))
 
 _SESSION_COLS = (
     "id, app_name, started_at, ended_at, duration_s, session_text,"

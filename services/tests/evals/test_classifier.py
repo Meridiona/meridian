@@ -42,7 +42,12 @@ from deepeval.dataset import EvaluationDataset, Golden, get_current_golden
 from deepeval.test_case import LLMTestCase
 from deepeval.tracing import observe, update_current_span, update_current_trace
 
-from metrics import CLASSIFIER_METRICS, TaskKeyMatchMetric, SessionTypeMatchMetric
+from metrics import (
+    CLASSIFIER_METRICS,
+    UNTRACKED_FOCUS_METRICS,
+    TaskKeyMatchMetric,
+    SessionTypeMatchMetric,
+)
 from strategies import from_env as strategy_from_env
 
 # ---------------------------------------------------------------------------
@@ -243,10 +248,15 @@ def test_system_prompt_not_empty() -> None:
 @pytest.mark.slow
 @pytest.mark.integration
 def test_mlx_e2e(mlx_test_cases: list[LLMTestCase]) -> None:
-    """End-to-end: classify all goldens and evaluate with DeepEval evaluate()."""
+    """End-to-end: classify all goldens and evaluate with DeepEval evaluate().
+
+    Uses UNTRACKED_FOCUS_METRICS (TaskKeyMatch + SessionType + the
+    UntrackedNotTask false-positive guard) — the guard is the metric this whole
+    classifier effort targets, so it must appear in the DeepEval report.
+    """
     evaluate(
         test_cases=mlx_test_cases,
-        metrics=CLASSIFIER_METRICS,
+        metrics=UNTRACKED_FOCUS_METRICS,
         hyperparameters=_strategy.as_hyperparameters(),
         identifier=f"mlx-{_strategy.name}",
     )
