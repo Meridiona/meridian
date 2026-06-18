@@ -119,54 +119,58 @@ pub async fn get_today(
     // Active session (single row, id = 1). Same optional-column handling, and
     // graceful (logged warn on error) so a missing column/table → no active session.
     // active_session never has category_explanation — don't select it.
-    let active_sql = "SELECT app_name, started_at, window_titles, category, confidence \
+    // last_seen_at is read so presence can be capped at the block's last real
+    // observation (see the presence section) — a stopped daemon leaves it stale.
+    let active_sql =
+        "SELECT app_name, started_at, last_seen_at, window_titles, category, confidence \
                       FROM active_session WHERE id = 1";
-    let active: Option<TodayActive> = sqlx::query_as::<_, ActiveRow>(active_sql)
+    let active_row: Option<ActiveRow> = sqlx::query_as::<_, ActiveRow>(active_sql)
         .fetch_optional(pool)
         .instrument(tracing::debug_span!("today.read.active_session"))
         .await
         .unwrap_or_else(|e| {
             tracing::warn!(error = %e, "today: active_session read failed, treating as none");
             None
-        })
-        .map(|ar| {
-            // Active session titles: map non-empty names, no [app_name] fallback —
-            // the route returns [] when window_titles is empty (only foreground
-            // sessions fall back to [topTitle]).
-            let entries: Vec<TitleEntry> = ar
-                .window_titles
-                .as_deref()
-                .and_then(|s| serde_json::from_str(s).ok())
-                .unwrap_or_default();
-            let titles: Vec<String> = entries
-                .iter()
-                .filter_map(|t| t.window_name.clone().or_else(|| t.title.clone()))
-                .filter(|s| !s.is_empty())
-                .collect();
-            let elapsed_s = match (
-                crate::intervals::parse_ms(now_iso),
-                crate::intervals::parse_ms(&ar.started_at),
-            ) {
-                (Some(now), Some(s)) => (now - s) / 1000,
-                _ => 0,
-            };
-            // Active category: plain null/empty → idle_personal only. The route
-            // does NOT remap fm_parse_error/fm_skip for the live block (only for
-            // sealed foreground sessions). normalize_cat is for app_sessions rows.
-            let cat = ar
-                .category
-                .filter(|c| !c.is_empty())
-                .unwrap_or_else(|| "idle_personal".to_string());
-            TodayActive {
-                app: ar.app_name,
-                started_at: ar.started_at,
-                elapsed_s,
-                cat,
-                titles,
-                confidence: ar.confidence.unwrap_or(0.0),
-                explain: None, // active_session never carries an explanation
-            }
         });
+    let active: Option<TodayActive> = active_row.as_ref().map(|ar| {
+        // Active session titles: map non-empty names, no [app_name] fallback —
+        // the route returns [] when window_titles is empty (only foreground
+        // sessions fall back to [topTitle]).
+        let entries: Vec<TitleEntry> = ar
+            .window_titles
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        let titles: Vec<String> = entries
+            .iter()
+            .filter_map(|t| t.window_name.clone().or_else(|| t.title.clone()))
+            .filter(|s| !s.is_empty())
+            .collect();
+        let elapsed_s = match (
+            crate::intervals::parse_ms(now_iso),
+            crate::intervals::parse_ms(&ar.started_at),
+        ) {
+            (Some(now), Some(s)) => (now - s) / 1000,
+            _ => 0,
+        };
+        // Active category: plain null/empty → idle_personal only. The route
+        // does NOT remap fm_parse_error/fm_skip for the live block (only for
+        // sealed foreground sessions). normalize_cat is for app_sessions rows.
+        let cat = ar
+            .category
+            .clone()
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(|| "idle_personal".to_string());
+        TodayActive {
+            app: ar.app_name.clone(),
+            started_at: ar.started_at.clone(),
+            elapsed_s,
+            cat,
+            titles,
+            confidence: ar.confidence.unwrap_or(0.0),
+            explain: None, // active_session never carries an explanation
+        }
+    });
     tracing::debug!(found = active.is_some(), "today.read.active_session");
 
     // Gaps for the day.
@@ -204,12 +208,35 @@ pub async fn get_today(
             ended_at: r.ended_at.clone(),
         })
         .collect();
-    if let Some(a) = &active {
+    if let Some(ar) = &active_row {
+        // The open block's presence extent is started_at → its last observation,
+        // NOT "now": a stopped daemon leaves last_seen_at stale, and counting to
+        // now would book the entire dead interval as focus (the 50h-in-a-day bug).
+        // Cap at min(now, last_seen_at); a healthy block's last_seen is within a
+        // poll interval of now, so live totals are unchanged.
+        let active_end = match (
+            crate::intervals::parse_ms(now_iso),
+            crate::intervals::parse_ms(&ar.last_seen_at),
+        ) {
+            (Some(now), Some(ls)) if ls < now => ar.last_seen_at.clone(),
+            _ => now_iso.to_string(),
+        };
         presence_raw.push(Interval {
-            started_at: a.started_at.clone(),
-            ended_at: now_iso.to_string(),
+            started_at: ar.started_at.clone(),
+            ended_at: active_end,
         });
     }
+    // Clamp presence to [day start, min(now, day end)] so a cross-midnight or
+    // runaway span contributes only today's portion — focus is "time today",
+    // never the full extent of a block that began earlier or runs late.
+    let horizon = match (
+        crate::intervals::parse_ms(now_iso),
+        crate::intervals::parse_ms(&end),
+    ) {
+        (Some(now), Some(e)) if e < now => end.clone(),
+        _ => now_iso.to_string(),
+    };
+    let presence_raw = crate::intervals::clamp_intervals(&presence_raw, &start, &horizon);
     let presence_segments = merge_intervals(&presence_raw);
     let focus_s = union_seconds(&presence_segments);
 

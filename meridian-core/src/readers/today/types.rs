@@ -115,6 +115,10 @@ pub(crate) struct TodayRow {
 pub(crate) struct ActiveRow {
     pub(crate) app_name: String,
     pub(crate) started_at: String,
+    // The daemon's last observation of this block. Used to cap the block's
+    // presence extent: a stopped daemon leaves `last_seen_at` stale, so counting
+    // presence to "now" would inflate today's focus by the whole dead interval.
+    pub(crate) last_seen_at: String,
     pub(crate) window_titles: Option<String>,
     pub(crate) category: Option<String>,
     pub(crate) confidence: Option<f64>,

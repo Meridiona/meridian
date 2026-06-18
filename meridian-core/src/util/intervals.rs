@@ -65,6 +65,30 @@ pub fn union_seconds(intervals: &[Interval]) -> i64 {
     round_ms_to_s(total_ms)
 }
 
+/// Clamp every interval to the window `[lo, hi]` (RFC3339), keeping only the
+/// portion that falls inside it and dropping any interval entirely outside.
+///
+/// Used to bound a daily total to `[start_of_day, min(now, end_of_day)]` so a
+/// stale or cross-midnight block can't inflate "today" — e.g. an `active_session`
+/// left open by a stopped daemon would otherwise span days. Unparseable bounds
+/// degrade to a no-op (returns the input unchanged) rather than zeroing totals.
+pub fn clamp_intervals(intervals: &[Interval], lo: &str, hi: &str) -> Vec<Interval> {
+    let (Some(lo), Some(hi)) = (parse_ms(lo), parse_ms(hi)) else {
+        return intervals.to_vec();
+    };
+    intervals
+        .iter()
+        .filter_map(|r| {
+            let s = parse_ms(&r.started_at)?.max(lo);
+            let e = parse_ms(&r.ended_at)?.min(hi);
+            (e > s).then(|| Interval {
+                started_at: ms_to_iso(s),
+                ended_at: ms_to_iso(e),
+            })
+        })
+        .collect()
+}
+
 /// Merge a set of intervals into a disjoint, ascending list — the timeline's
 /// presence/agent bands are drawn from these.
 pub fn merge_intervals(intervals: &[Interval]) -> Vec<Interval> {
@@ -231,6 +255,23 @@ mod tests {
             None,
         );
         assert_eq!(fg.ended_at, "2026-06-16T10:30:00+00:00");
+    }
+
+    #[test]
+    fn clamp_bounds_drops_outside_and_trims_overlap() {
+        let lo = "2026-06-18T00:00:00+00:00";
+        let hi = "2026-06-18T12:00:00+00:00";
+        let ivs = vec![
+            // entirely before the window (a stale block from a prior day) → dropped
+            iv("2026-06-16T04:33:00+00:00", "2026-06-16T05:00:00+00:00"),
+            // straddles the lower bound → trimmed to [00:00, 01:00) = 3600 s
+            iv("2026-06-17T23:00:00+00:00", "2026-06-18T01:00:00+00:00"),
+            // runs past the upper bound → trimmed to [11:00, 12:00) = 3600 s
+            iv("2026-06-18T11:00:00+00:00", "2026-06-18T20:00:00+00:00"),
+        ];
+        let clamped = clamp_intervals(&ivs, lo, hi);
+        assert_eq!(clamped.len(), 2);
+        assert_eq!(union_seconds(&clamped), 7200);
     }
 
     #[test]

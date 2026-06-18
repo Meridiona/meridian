@@ -45,6 +45,40 @@ async fn make_pool() -> SqlitePool {
     pool
 }
 
+/// In-memory pool with the `today` reader's full schema: `app_sessions` in its
+/// migrated shape (WITH `category_explanation`) and `active_session` in its real
+/// shape (WITHOUT `category_explanation`, WITH `last_seen_at`).
+async fn make_today_pool() -> SqlitePool {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open in-memory db");
+    sqlx::query(
+        r#"
+        CREATE TABLE app_sessions (
+            id INTEGER, app_name TEXT, started_at TEXT, ended_at TEXT, duration_s INTEGER,
+            claude_session_uuid TEXT, category TEXT, confidence REAL, category_method TEXT,
+            category_explanation TEXT, session_summary TEXT, window_titles TEXT, task_key TEXT,
+            task_routing TEXT, task_session_type TEXT, task_method TEXT, task_confidence REAL
+        );
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"CREATE TABLE active_session (
+            id INTEGER, app_name TEXT, started_at TEXT, last_seen_at TEXT,
+            window_titles TEXT, category TEXT, confidence REAL
+        );"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool
+}
+
 #[tokio::test]
 async fn coding_agents_unions_overlap_per_agent_and_total() {
     let pool = make_pool().await;
@@ -147,37 +181,7 @@ async fn tasks_autonomous_excludes_supervised_agent_time() {
 /// With the fix (always `NULL`), the active session is returned.
 #[tokio::test]
 async fn today_returns_active_session_when_app_sessions_has_explanation_column() {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-
-    // app_sessions WITH category_explanation (the migrated shape that triggers
-    // the bug) — all columns get_today selects.
-    sqlx::query(
-        r#"
-        CREATE TABLE app_sessions (
-            id INTEGER, app_name TEXT, started_at TEXT, ended_at TEXT, duration_s INTEGER,
-            claude_session_uuid TEXT, category TEXT, confidence REAL, category_method TEXT,
-            category_explanation TEXT, session_summary TEXT, window_titles TEXT, task_key TEXT,
-            task_routing TEXT, task_session_type TEXT, task_method TEXT, task_confidence REAL
-        );
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    // active_session deliberately WITHOUT category_explanation (its real schema).
-    sqlx::query(
-        r#"CREATE TABLE active_session (
-            id INTEGER, app_name TEXT, started_at TEXT, window_titles TEXT,
-            category TEXT, confidence REAL
-        );"#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    let pool = make_today_pool().await;
 
     let today = meridian_core::date::today_string();
     let (start, _end) = meridian_core::date::local_day_bounds(&today);
@@ -187,11 +191,13 @@ async fn today_returns_active_session_when_app_sessions_has_explanation_column()
             .to_rfc3339_opts(SecondsFormat::Millis, true)
     };
 
+    // Live block: last_seen_at == now, so presence runs started_at → now (1 h).
     sqlx::query(
-        "INSERT INTO active_session (id, app_name, started_at, window_titles, category, confidence) \
-         VALUES (1, 'Code', ?, '[]', 'coding', 0.9)",
+        "INSERT INTO active_session (id, app_name, started_at, last_seen_at, window_titles, category, confidence) \
+         VALUES (1, 'Code', ?, ?, '[]', 'coding', 0.9)",
     )
     .bind(at(1.0))
+    .bind(at(2.0))
     .execute(&pool)
     .await
     .unwrap();
@@ -203,6 +209,7 @@ async fn today_returns_active_session_when_app_sessions_has_explanation_column()
 
     let active = r
         .active
+        .as_ref()
         .expect("active session must survive the column guard");
     assert_eq!(active.app, "Code");
     assert_eq!(active.elapsed_s, 3600);
@@ -210,4 +217,50 @@ async fn today_returns_active_session_when_app_sessions_has_explanation_column()
         active.explain.is_none(),
         "active session never carries an explanation"
     );
+    // A healthy live block contributes its full extent (started → now) to focus.
+    assert_eq!(r.focus_s, 3600, "live active block counts as 1 h of focus");
+}
+
+/// Regression for the "50h focused in one day" bug: a stale `active_session`
+/// left open by a stopped daemon (its `last_seen_at` days old, never advanced)
+/// must NOT inflate today's focus. Presence is capped at `last_seen_at` and
+/// clamped to the current day, so a block that last advanced on a prior day
+/// contributes 0 to `focus_s` — even though the card still renders.
+#[tokio::test]
+async fn today_focus_excludes_stale_active_block() {
+    let pool = make_today_pool().await;
+
+    let today = meridian_core::date::today_string();
+    let (start, _end) = meridian_core::date::local_day_bounds(&today);
+    let base = DateTime::parse_from_rfc3339(&start).unwrap();
+    let at = |h: f64| {
+        (base + Duration::milliseconds((h * 3_600_000.0) as i64))
+            .to_rfc3339_opts(SecondsFormat::Millis, true)
+    };
+
+    // Block started 50 h before today began and never advanced (last_seen ==
+    // started) — the stopped-daemon shape that produced "50h 6m focused".
+    let stale = (base - Duration::hours(50)).to_rfc3339_opts(SecondsFormat::Millis, true);
+    sqlx::query(
+        "INSERT INTO active_session (id, app_name, started_at, last_seen_at, window_titles, category, confidence) \
+         VALUES (1, 'Code', ?, ?, '[]', 'coding', 0.9)",
+    )
+    .bind(&stale)
+    .bind(&stale)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let now = at(2.0); // 2 h into today, ~52 h after the block opened
+    let r = meridian_core::today::get_today(&pool, &today, &now)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        r.focus_s, 0,
+        "a stale block from a prior day must not count toward today's focus"
+    );
+    // The card itself still renders (clamping focus is a separate concern from
+    // whether to surface a stale active session).
+    assert!(r.active.is_some(), "active card still present");
 }

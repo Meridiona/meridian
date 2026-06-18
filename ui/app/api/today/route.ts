@@ -3,7 +3,7 @@
 import { NextResponse } from 'next/server'
 import getDb from '@/lib/db'
 import { localDayBounds, todayString } from '@/lib/date-utils'
-import { unionSeconds, intersectSeconds, mergeIntervals, countSwitches, sessionInterval, type Interval } from '@/lib/intervals'
+import { unionSeconds, intersectSeconds, mergeIntervals, clampIntervals, countSwitches, sessionInterval, type Interval } from '@/lib/intervals'
 
 export const dynamic = 'force-dynamic'
 
@@ -187,6 +187,8 @@ export async function GET() {
 
     // active session
     let active: TodayActive | null = null
+    // The block's last real observation, kept for the presence cap below.
+    let activeLastSeen: string | null = null
     try {
       const activeExplCol = hasExplanation ? 'category_explanation' : "NULL AS category_explanation"
       const ar = db.prepare(`
@@ -206,6 +208,7 @@ export async function GET() {
           confidence: (ar.confidence as number) || 0,
           explain: (ar.category_explanation as string) || null,
         }
+        activeLastSeen = (ar.last_seen_at as string) || null
       }
     } catch { /* no active session */ }
 
@@ -231,11 +234,24 @@ export async function GET() {
     // ── Presence (the foreground stream — where you were demonstrably active) ──
     // Foreground sessions never overlap each other, but merging is still the
     // honest way to get contiguous timeline bands and the active total.
+    //
+    // The open block's presence extent is started_at → its last observation, NOT
+    // "now": a stopped daemon leaves last_seen_at stale, and counting to now would
+    // book the entire dead interval as focus (the 50h-in-a-day bug). Cap at
+    // min(now, last_seen_at); a healthy block's last_seen is within a poll interval.
+    const activeEnd =
+      activeLastSeen && new Date(activeLastSeen).getTime() < new Date(nowIso).getTime()
+        ? activeLastSeen
+        : nowIso
     const presenceRaw: Interval[] = [
       ...rows.map(r => ({ started_at: r.started_at as string, ended_at: r.ended_at as string })),
-      ...(active ? [{ started_at: active.started_at, ended_at: nowIso }] : []),
+      ...(active ? [{ started_at: active.started_at, ended_at: activeEnd }] : []),
     ]
-    const presence_segments = mergeIntervals(presenceRaw)
+    // Clamp to [day start, min(now, day end)] so a cross-midnight or runaway span
+    // contributes only today's portion — focus is "time today", never the full
+    // extent of a block that began earlier or runs late.
+    const horizon = new Date(end).getTime() < new Date(nowIso).getTime() ? end : nowIso
+    const presence_segments = mergeIntervals(clampIntervals(presenceRaw, start, horizon))
     const focus_s = unionSeconds(presence_segments)
 
     // ── Agent overlay (the coding-agent stream, an OVERLAY on top of presence) ─

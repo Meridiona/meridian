@@ -1,6 +1,6 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 import { describe, it, expect } from 'bun:test'
-import { unionSeconds, countSwitches, mergeIntervals, intersectSeconds } from '../lib/intervals'
+import { unionSeconds, countSwitches, mergeIntervals, intersectSeconds, clampIntervals } from '../lib/intervals'
 
 // ISO helper: minutes-past-midnight UTC → ISO string, keeps cases readable.
 const at = (min: number) => new Date(Date.UTC(2026, 0, 1, 0, min, 0)).toISOString()
@@ -118,6 +118,24 @@ describe('mergeIntervals', () => {
 // ---------------------------------------------------------------------------
 // intersectSeconds — agent ∩ active (supervised) vs outside (autonomous)
 // ---------------------------------------------------------------------------
+
+describe('clampIntervals', () => {
+  it('drops intervals entirely outside the window and trims those that straddle it', () => {
+    // window [10, 70] min. Three inputs: one before, one straddling lo, one past hi.
+    const clamped = clampIntervals(
+      [iv(0, 5), iv(0, 20), iv(60, 120)],
+      at(10),
+      at(70),
+    )
+    expect(clamped.length).toBe(2)
+    expect(unionSeconds(clamped)).toBe(1200) // [10,20]=10m + [60,70]=10m
+  })
+
+  it('is a no-op on unparseable bounds (degrades safe, never zeroes)', () => {
+    const ivs = [iv(0, 10)]
+    expect(clampIntervals(ivs, 'not-a-date', at(70))).toEqual(ivs)
+  })
+})
 
 describe('intersectSeconds', () => {
   it('returns 0 when sets do not overlap', () => {
