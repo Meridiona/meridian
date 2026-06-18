@@ -19,23 +19,6 @@ use tauri::{
     Manager, Runtime, WebviewUrl, WebviewWindowBuilder,
 };
 
-/// Resolve a Next route to the right `WebviewUrl::App` path for the build.
-///
-/// In dev (`tauri dev`, debug build) windows load from `devUrl` (the Next dev
-/// server), which serves `/today` directly — so the bare route is correct. In a
-/// packaged build (release) windows load the **static export** from
-/// `frontendDist`, where the route is the file `today/index.html` (Next emits
-/// `<route>/index.html` under `trailingSlash`); the Tauri asset protocol does
-/// NOT auto-resolve the bare `today` to that file, so name it explicitly.
-fn app_route(route: &str) -> tauri::WebviewUrl {
-    let path = if cfg!(debug_assertions) {
-        route.to_string()
-    } else {
-        format!("{route}/index.html")
-    };
-    WebviewUrl::App(path.into())
-}
-
 /// The toggle item's label for a given daemon health. Kept next to the menu
 /// builder so the label and the menu never disagree.
 pub(crate) fn toggle_label(health: &HealthStatus) -> &'static str {
@@ -101,8 +84,8 @@ fn open_native_dashboard(app: &tauri::AppHandle) {
     } else if let Err(e) = WebviewWindowBuilder::new(
         app,
         "dashboard",
-        // devUrl `/today` in dev; the static export `today/index.html` in build.
-        app_route("today"),
+        // Resolves against devUrl → next dev in dev, the static export in build.
+        WebviewUrl::App("today".into()),
     )
     .title("Meridian — Dashboard")
     .inner_size(1100.0, 760.0)
@@ -151,7 +134,7 @@ fn open_wizard_window(app: &tauri::AppHandle) {
         let _ = win.set_focus();
         return;
     }
-    if let Err(e) = WebviewWindowBuilder::new(app, "setup", app_route("setup"))
+    if let Err(e) = WebviewWindowBuilder::new(app, "setup", WebviewUrl::App("setup".into()))
         .title("Meridian — Setup")
         .inner_size(560.0, 660.0)
         .resizable(false)
