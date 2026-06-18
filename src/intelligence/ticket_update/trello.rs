@@ -28,7 +28,8 @@ pub async fn apply(cfg: &TrelloConfig, key: &str, write: &WriteField) -> Result<
         | WriteField::Priority(_)
         | WriteField::StoryPoints(_)
         | WriteField::Parent(_)
-        | WriteField::Close => {
+        | WriteField::Close
+        | WriteField::Cancel => {
             return Ok(ApplyResult::redirected(
                 "trello",
                 key,
@@ -51,12 +52,15 @@ pub async fn apply(cfg: &TrelloConfig, key: &str, write: &WriteField) -> Result<
         }
         WriteField::AssignMe => {
             let me = my_member_id(&client, cfg, &token).await?;
-            // idMembers add endpoint is additive.
-            let url = format!(
-                "{TRELLO_BASE}/cards/{short_link}/idMembers?key={}&token={}&value={}",
-                cfg.app_key, token, me
-            );
-            post(&client, &url).await?;
+            // idMembers add endpoint is additive. Use append_pair for correct URL encoding.
+            let mut url =
+                reqwest::Url::parse(&format!("{TRELLO_BASE}/cards/{short_link}/idMembers"))
+                    .context("building Trello idMembers URL")?;
+            url.query_pairs_mut()
+                .append_pair("key", &cfg.app_key)
+                .append_pair("token", &token)
+                .append_pair("value", &me);
+            post(&client, url.as_str()).await?;
         }
         WriteField::Summary(text) => {
             put_card(
@@ -153,5 +157,6 @@ fn field_name(write: &WriteField) -> &'static str {
         WriteField::Summary(_) => "summary",
         WriteField::Description(_) => "description",
         WriteField::Close => "close",
+        WriteField::Cancel => "cancel",
     }
 }
