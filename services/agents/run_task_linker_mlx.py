@@ -18,8 +18,8 @@ OTel span hierarchy (when invoked as a script via main()):
                 candidate_tickets    — ranked candidate tickets (★ = today)
             llm_inference
             classifier_output    ← the COMPLETE raw model output
-                reasoning            — why this task match
-                category             — category justification (+ category/confidence)
+                reasoning            — chain-of-thought that drove the verdict (emitted first)
+                category             — the category (+ category_confidence)
                 dimensions           — inferred activity tags
                 session_summary      — PM-facing prose deliverable
 
@@ -46,7 +46,7 @@ from typing import Any, Literal, Optional, Iterator
 
 from opentelemetry import trace
 from opentelemetry.trace import StatusCode
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 _SERVICES_DIR = Path(__file__).parent.parent
 
@@ -164,6 +164,26 @@ _SERVER_URL = f"http://127.0.0.1:{_SERVER_PORT}/classify"
 # ---------------------------------------------------------------------------
 
 class SessionClassification(BaseModel):
+    # FSM-constrained decoding emits these fields in declaration order, so the
+    # ORDER is load-bearing. `reasoning` is declared FIRST on purpose: it turns
+    # those tokens into genuine chain-of-thought the model produces BEFORE it
+    # commits to task_key/session_type/category — the verdict is then conditioned
+    # on the reasoning instead of being a blind one-shot match the reasoning only
+    # justifies after the fact. The long `session_summary` stays LAST so that if
+    # generation ever hits the _MAX_TOKENS ceiling, the full verdict has already
+    # been emitted and only the prose deliverable is truncated.
+    reasoning: str = Field(
+        ..., min_length=1, max_length=600,
+        description=(
+            "Think FIRST, before deciding. In 1-4 sentences, reason over the "
+            "evidence (window titles, OCR/a11y text, file/branch names, recent "
+            "work context) toward the classification: does it clearly match one "
+            "candidate ticket's scope, is it real work with no matching ticket "
+            "(untracked), or is it idle/personal (overhead)? Cite the specific "
+            "evidence you used. Bounded so it can't consume the whole generation "
+            "budget before the verdict fields below are emitted."
+        ),
+    )
     task_key: Optional[str] = Field(
         None,
         description="One of the supplied candidate task keys, or null if none fit.",
@@ -171,6 +191,14 @@ class SessionClassification(BaseModel):
     confidence: float = Field(
         ..., ge=0.0, le=1.0,
         description="How certain you are. See scoring heuristics for ranges.",
+    )
+    session_type: Literal["task", "overhead", "untracked"] = Field(
+        ...,
+        description=(
+            "'task' = matched to a ticket; "
+            "'overhead' = idle/personal/unrelated — discarded; "
+            "'untracked' = real work with no matching ticket — retained."
+        ),
     )
     category: Literal[
         "coding", "code_review", "meeting", "communication", "design",
@@ -181,40 +209,12 @@ class SessionClassification(BaseModel):
         description=(
             "The single best activity category for this session. Derive it from "
             "the evidence (app, window titles, screen content); no category is "
-            "supplied in the input. Declared early in the schema so FSM decoding "
-            "always emits it before the long session_summary field."
+            "supplied in the input."
         ),
     )
     category_confidence: float = Field(
         ..., ge=0.0, le=1.0,
         description="How certain you are about `category` (0.0-1.0).",
-    )
-    category_explanation: str = Field(
-        ..., min_length=1, max_length=300,
-        description=(
-            "One concise sentence justifying the `category` choice, citing the "
-            "app, window titles, or OCR evidence (e.g. 'VS Code editing "
-            "run_watcher.py with a cargo build in the terminal'). Shown in the "
-            "dashboard next to the category. Kept short so FSM decoding emits it "
-            "before the long session_summary."
-        ),
-    )
-    session_type: Literal["task", "overhead", "untracked"] = Field(
-        ...,
-        description=(
-            "'task' = matched to a ticket; "
-            "'overhead' = idle/personal/unrelated — discarded; "
-            "'untracked' = real work with no matching ticket — retained."
-        ),
-    )
-    reasoning: str = Field(
-        ...,
-        description=(
-            "Concise justification citing window titles, OCR text, or context "
-            "clues. No hard length cap — outlines must not truncate this field; "
-            "the only ceiling is the server-side _MAX_TOKENS generation budget. "
-            "Store whatever the model produces verbatim."
-        ),
     )
     dimensions: dict[str, list[str]] = Field(
         default_factory=dict,
@@ -248,6 +248,23 @@ class SessionClassification(BaseModel):
             "this is the single source of truth the PM updater will compose from."
         ),
     )
+
+    @field_validator("confidence", "category_confidence", mode="before")
+    @classmethod
+    def _clamp_unit_interval(cls, v: object) -> float:
+        """Clamp a confidence into [0, 1] instead of rejecting it.
+
+        Outlines' FSM constrains the JSON STRUCTURE and TYPE but NOT a float's
+        numeric range, so a model can emit e.g. -0.85 or 1.3. Without this,
+        model_validate_json() raises on the `ge=0/le=1` bound and the ENTIRE
+        classification is lost (observed: loop eval seed 34371 → confidence
+        -0.85). Clamping mirrors the downstream guards in _classify_one and keeps
+        a usable verdict. Falls back to 0.7 for a non-numeric value.
+        """
+        try:
+            return max(0.0, min(1.0, float(v)))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 0.7
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +311,247 @@ _last_used = time.monotonic()        # monotonic ts of the last finished inferen
 # Tune via env without a code change; 0 disables idle eviction entirely.
 _IDLE_EVICT_S = float(os.environ.get("MLX_IDLE_EVICT_S", "120"))
 
+# ---------------------------------------------------------------------------
+# Prompt-cache for the static system+skill prefix.
+#
+# Every classification shares the SAME ~3.1k-token system+skill prefix; mlx_lm
+# reprocesses the whole prompt each call by default. Caching that prefix's KV and
+# reprocessing only the per-session suffix is a large, accuracy-NEUTRAL CPU saving
+# — greedy decoding (temp 0) makes cached and uncached output byte-identical
+# (verified by services/tests/test_prompt_cache_equivalence.py).
+#
+# Mechanism: the public trim_prompt_cache multi-turn idiom (NOT private cache
+# `.state`). We keep one persistent KV cache plus the token ids it currently
+# holds; each call reuses the longest common prefix with the PREVIOUS prompt,
+# reprocesses only the divergent suffix, then trims the generated tokens back off
+# so the cache again holds exactly the prompt. The runtime common-prefix check is
+# what makes this correctness-proof: if anything diverges earlier than the shared
+# prefix it simply reprocesses from the first differing token — never reuses KV
+# for a token that wasn't actually there. A non-blocking lock guards the shared
+# cache: an overlapping call that can't take the lock falls back to an uncached
+# full-prompt generation rather than corrupting it. Invalidated on model
+# evict/reload (the KV is tied to the resident model instance).
+_prompt_cache: "list | None" = None
+_prompt_cache_ids: "list[int] | None" = None
+_prompt_cache_lock = threading.Lock()
+_PROMPT_CACHE_ENABLED = os.environ.get("CLASSIFY_PROMPT_CACHE", "1") == "1"
+
+# ---------------------------------------------------------------------------
+# Constrained-generation FSM cache.
+#
+# outlines compiles the SessionClassification schema into a token-level FSM
+# (the OutlinesCoreLogitsProcessor `index`). Measured: building that Generator
+# costs ~6 s — and the schema is STATIC, so rebuilding it per session was burning
+# ~6 s/classification (≈30% of wall-clock) for nothing. We build it ONCE per
+# resident model and reuse it, calling the processor's own reset() before each
+# generation to clear the per-sequence FSM state (greedy decoding → reused-FSM
+# output is byte-identical to a freshly built one). Tied to the model instance,
+# so it's invalidated alongside the KV cache on evict/reload.
+_generator_cache: dict[str, tuple] = {}
+_generator_lock = threading.Lock()
+
+
+def _invalidate_prompt_cache() -> None:
+    """Drop the per-model caches (prefix KV + compiled FSM generator). Call
+    whenever the resident model is freed or swapped — both are valid only for that
+    exact model instance.
+    """
+    global _prompt_cache, _prompt_cache_ids
+    _prompt_cache = None
+    _prompt_cache_ids = None
+    _generator_cache.clear()
+
+
+def _get_constrained_logits_processors(model: Any) -> "list":
+    """Return the cached FSM logits-processor list for SessionClassification,
+    building it once per resident model. The processor carries per-generation
+    state, so it is reset() before being handed back — making reuse equivalent to
+    a freshly built generator while skipping the ~6 s FSM compile each call.
+    """
+    mid = _resolve_model_id()
+    cached = _generator_cache.get(mid)
+    if cached is None:
+        with _generator_lock:
+            cached = _generator_cache.get(mid)  # re-check under lock
+            if cached is None:
+                from outlines.generator import Generator
+
+                t0 = time.time()
+                gen = Generator(model, SessionClassification)
+                lp = model.type_adapter.format_output_type(gen.logits_processor)
+                _generator_cache[mid] = (gen, lp)
+                cached = _generator_cache[mid]
+                log.info(
+                    "run_task_linker_mlx: compiled classification FSM in %.1fs "
+                    "(cached for process lifetime)", time.time() - t0,
+                )
+    _gen, lp = cached
+    # Clear per-sequence FSM state so this generation starts clean.
+    reset = getattr(_gen.logits_processor, "reset", None)
+    if callable(reset):
+        reset()
+    for p in lp:
+        p_reset = getattr(p, "reset", None)
+        if callable(p_reset) and p is not _gen.logits_processor:
+            p_reset()
+    return lp
+
+
+def _common_prefix_len(a: "list[int] | None", b: "list[int] | None") -> int:
+    """Length of the longest shared leading run of two token-id sequences."""
+    if not a or not b:
+        return 0
+    n = min(len(a), len(b))
+    i = 0
+    while i < n and a[i] == b[i]:
+        i += 1
+    return i
+
+
+_prompt_cache_trimmable: "bool | None" = None  # lazily detected per model
+
+
+def _cache_offset(prompt_cache: "list") -> int:
+    """Current cached sequence length, across cache implementations. Standard
+    KVCache exposes `.offset`; batched caches (ArraysCache) expose `.lengths`.
+    Returns -1 when neither is available (→ caller must not reuse)."""
+    c0 = prompt_cache[0]
+    off = getattr(c0, "offset", None)
+    if isinstance(off, int):
+        return off
+    lengths = getattr(c0, "lengths", None)  # ArraysCache: per-batch lengths
+    try:
+        if lengths is not None:
+            return int(max(lengths))
+    except (TypeError, ValueError):
+        # `lengths` may be non-numeric or malformed on some cache variants;
+        # treat as unsupported and fall through to -1 (caller skips reuse).
+        pass
+    return -1
+
+
+def _generate_constrained(
+    model: Any,
+    full_ids: "list[int]",
+    logits_processors: "list",
+    sampler: Any,
+) -> "tuple[str, Any, int]":
+    """FSM-constrained generation for `full_ids`, reusing the cached system+skill
+    prefix's KV across sessions WHEN the model's cache supports trimming.
+
+    Returns ``(raw_text, gen_stats, cache_hit_tokens)`` where ``cache_hit_tokens``
+    is the number of leading prompt tokens served from the persistent KV cache
+    (0 → full reprocess / uncached path). Greedy decoding makes the cached and
+    uncached outputs byte-identical.
+
+    Prefix reuse uses the public trim_prompt_cache multi-turn idiom: keep one
+    persistent cache + the token ids it holds; reuse the longest common prefix
+    with the previous prompt, reprocess only the divergent suffix, then trim the
+    generated tail back off. Models whose cache is NOT trimmable (e.g. the batched
+    ArraysCache some quantized builds use) can't support this safely, so we detect
+    that ONCE and fall back to plain uncached generation — correct, just without
+    the prefill saving (which is then better recovered via speculative decoding /
+    a smaller prompt).
+    """
+    from mlx_lm import stream_generate
+    from mlx_lm.models import cache as _kc
+
+    global _prompt_cache, _prompt_cache_ids, _prompt_cache_trimmable
+
+    gen_kwargs = dict(
+        max_tokens=_MAX_TOKENS,
+        logits_processors=logits_processors,
+        sampler=sampler,
+    )
+
+    def _stream(prompt_ids: "list[int]", prompt_cache: Any) -> "tuple[str, Any]":
+        kw = dict(gen_kwargs)
+        if prompt_cache is not None:
+            kw["prompt_cache"] = prompt_cache
+        parts: list[str] = []
+        gen_stats: Any = None
+        for gr in stream_generate(model.model, model.mlx_tokenizer, prompt_ids, **kw):
+            parts.append(gr.text)
+            gen_stats = gr
+        return "".join(parts), gen_stats
+
+    # One-time capability probe: is this model's KV cache trimmable? If not, prefix
+    # reuse can't work, so don't even take the lock — run uncached every call.
+    if _prompt_cache_trimmable is None:
+        try:
+            _prompt_cache_trimmable = bool(
+                _kc.can_trim_prompt_cache(_kc.make_prompt_cache(model.model))
+            )
+        except Exception:  # noqa: BLE001
+            _prompt_cache_trimmable = False
+        if not _prompt_cache_trimmable:
+            log.info(
+                "run_task_linker_mlx: model KV cache is not trimmable — prefix "
+                "prompt-caching disabled (FSM-compile cache still active)"
+            )
+
+    # Uncached path: caching disabled, cache not trimmable, or another call holds
+    # the shared cache. A fresh per-call cache (mlx_lm makes one internally) is
+    # correct in every case.
+    if not (
+        _PROMPT_CACHE_ENABLED
+        and _prompt_cache_trimmable
+        and _prompt_cache_lock.acquire(blocking=False)
+    ):
+        raw, gen_stats = _stream(full_ids, None)
+        return raw, gen_stats, 0
+
+    try:
+        if _prompt_cache is None:
+            _prompt_cache = _kc.make_prompt_cache(model.model)
+            _prompt_cache_ids = []
+
+        common = _common_prefix_len(_prompt_cache_ids, full_ids)
+        # Drop any cached tail that doesn't match this prompt, so the cache holds
+        # exactly full_ids[:common] before the suffix is processed.
+        extra = len(_prompt_cache_ids or []) - common
+        if extra > 0:
+            _kc.trim_prompt_cache(_prompt_cache, extra)
+
+        suffix = full_ids[common:]
+        # stream_generate needs ≥1 token to process. An identical-to-previous
+        # prompt (no suffix) is vanishingly unlikely (the per-session block always
+        # differs), but handle it: back the cache off one token and reprocess it.
+        if not suffix:
+            if common > 0:
+                _kc.trim_prompt_cache(_prompt_cache, 1)
+                common -= 1
+                suffix = full_ids[common:]
+            else:
+                _prompt_cache = _kc.make_prompt_cache(model.model)
+                common, suffix = 0, full_ids
+
+        try:
+            raw, gen_stats = _stream(suffix, _prompt_cache)
+        except Exception:
+            # Generation failed mid-stream → the shared cache is now inconsistent.
+            _invalidate_prompt_cache()
+            raise
+
+        # Restore the cache to exactly the prompt boundary using its OWN physical
+        # offset — not a count of generated tokens, which would risk an off-by-one
+        # and silently corrupt the reused prefix. After this, the cache holds
+        # exactly full_ids, ready for the next session to reuse.
+        cur_offset = _cache_offset(_prompt_cache)
+        trim_amount = cur_offset - len(full_ids)
+        if trim_amount > 0:
+            _kc.trim_prompt_cache(_prompt_cache, trim_amount)
+            _prompt_cache_ids = list(full_ids)
+        elif trim_amount == 0:
+            _prompt_cache_ids = list(full_ids)
+        else:
+            # Couldn't realign the cache to the prompt boundary — rebuild next call
+            # rather than risk reusing a misaligned prefix.
+            _invalidate_prompt_cache()
+        return raw, gen_stats, common
+    finally:
+        _prompt_cache_lock.release()
+
 
 def _get_model() -> Any:
     """Return an outlines-wrapped model, loading from disk on the first call.
@@ -332,6 +590,9 @@ def _get_model() -> Any:
 
         _model_cache[model_id] = outlines_model
         _tokenizer_cache[model_id] = tokenizer
+        # Any prior prefix KV belongs to a now-gone model instance — drop it so
+        # the next classification rebuilds against this freshly loaded model.
+        _invalidate_prompt_cache()
         return outlines_model
 
 
@@ -381,6 +642,9 @@ def maybe_evict_idle(idle_s: float | None = None) -> float | None:
         except Exception:               # noqa: BLE001 — mx should always import here
             mx, before = None, 0
         _model_cache.clear()
+        # The prefix KV cache is tied to the model we're about to free — drop it
+        # too, or the next load would reuse KV from a dead model instance.
+        _invalidate_prompt_cache()
         gc.collect()
         freed = 0.0
         if mx is not None:
@@ -426,8 +690,8 @@ _APPLE_FM_USER_CHARS = 8_000   # ~2000 tokens — user message cap
 _APPLE_FM_SYSTEM_PROMPT = """\
 You are Meridian's session classifier. Return ONLY a JSON object — no markdown, no extra text.
 
-Required schema (all fields mandatory):
-{"task_key": <string or null>, "confidence": <float 0.0-1.0>, "category": <see below>, "category_confidence": <float 0.0-1.0>, "category_explanation": "<one sentence max 300 chars>", "session_type": <see below>, "reasoning": "<concise justification>", "dimensions": {"activity": ["<tag>"], "tool": ["<tag>"]}, "session_summary": "<100-500 char factual past-tense prose>"}
+Required schema (all fields mandatory, in this order):
+{"reasoning": "<think first: 1-4 sentences reasoning over the evidence toward the verdict>", "task_key": <string or null>, "confidence": <float 0.0-1.0>, "session_type": <see below>, "category": <see below>, "category_confidence": <float 0.0-1.0>, "dimensions": {"activity": ["<tag>"], "tool": ["<tag>"]}, "session_summary": "<100-500 char factual past-tense prose>"}
 
 category must be exactly one of: coding, code_review, meeting, communication, design, documentation, planning, deployment_devops, research, idle_personal
 
@@ -447,11 +711,18 @@ _VALID_CATEGORIES = frozenset({
 })
 
 
-def _coerce_apple_fm_result(data: dict) -> dict:
+def _coerce_apple_fm_result(data: dict, valid_keys: "frozenset[str] | set[str]") -> dict:
     """Fill missing or malformed fields so Pydantic can validate Apple FM output.
 
     Apple FM doesn't guarantee all required fields. This function synthesizes
     missing ones from what was returned rather than failing.
+
+    Unlike the FSM path, Apple FM is NOT structurally constrained to the
+    candidate task_key set, so it can hallucinate a plausible-but-invalid key.
+    A hallucinated key would later trip the `task_key not in valid_keys` guard
+    in `_classify_one` and be HARD-DISCARDED as overhead (confidence 0.0) —
+    throwing away work the model genuinely recognised. We instead null the
+    out-of-set key here and downgrade the session to `untracked`, retaining it.
     """
     # session_type coercion
     st = str(data.get("session_type", "untracked"))
@@ -477,14 +748,11 @@ def _coerce_apple_fm_result(data: dict) -> dict:
     else:
         data["category_confidence"] = max(0.0, min(1.0, float(data["category_confidence"])))
 
-    # category_explanation: fall back to first sentence of reasoning
-    if not data.get("category_explanation"):
-        reasoning = str(data.get("reasoning", "No details recorded."))
-        data["category_explanation"] = reasoning[:300]
-
-    # reasoning: ensure it's a non-empty string
+    # reasoning: ensure it's a non-empty string (bounded to the schema's 600-char cap)
     if not data.get("reasoning"):
         data["reasoning"] = "Classified via Apple Foundation Models."
+    else:
+        data["reasoning"] = str(data["reasoning"])[:600]
 
     # session_summary: must be at least 100 chars
     summary = str(data.get("session_summary", ""))
@@ -511,10 +779,22 @@ def _coerce_apple_fm_result(data: dict) -> dict:
     elif data.get("task_key") is not None:
         data["task_key"] = str(data["task_key"])
 
+    # Validate the (now stringified) key against the candidate set. An
+    # out-of-set key on a "task" verdict means the model recognised real work
+    # but assigned a fabricated key — retain it as untracked rather than letting
+    # the downstream guard discard it as overhead.
+    if data["session_type"] == "task" and data.get("task_key") not in valid_keys:
+        data["task_key"] = None
+        data["session_type"] = "untracked"
+        data.setdefault("confidence", 0.65)
+
     return data
 
 
-def _classify_apple_fm(messages: list[dict[str, str]]) -> "SessionClassification":
+def _classify_apple_fm(
+    messages: list[dict[str, str]],
+    valid_keys: "frozenset[str] | set[str]",
+) -> "SessionClassification":
     """Classify via Apple Foundation Models (non-FSM, JSON parsing with coercion).
 
     Uses a compact system prompt sized for Apple FM's 4096-token context window.
@@ -556,7 +836,9 @@ def _classify_apple_fm(messages: list[dict[str, str]]) -> "SessionClassification
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
         data = json.loads(text)
-        return SessionClassification.model_validate(_coerce_apple_fm_result(data))
+        return SessionClassification.model_validate(
+            _coerce_apple_fm_result(data, valid_keys)
+        )
 
     def _call_apple_fm(prompt: str) -> str:
         # anyio (used by FastAPI's run_in_threadpool) sets up its own event loop
@@ -583,7 +865,7 @@ def _classify_apple_fm(messages: list[dict[str, str]]) -> "SessionClassification
         # One retry: ask the model to complete any missing fields.
         fix_prompt = (
             "Your previous JSON was incomplete — it was missing required fields "
-            "(category, category_confidence, category_explanation, session_summary). "
+            "(reasoning, category, category_confidence, session_summary). "
             "Return a complete JSON with ALL fields from the schema:\n" + raw
         )
         raw2 = _call_apple_fm(fix_prompt)
@@ -866,7 +1148,6 @@ def _error_result(
         "confidence":           0.0,
         "category":             "idle_personal",
         "category_confidence":  0.0,
-        "category_explanation": "",
         "session_type":         "overhead",
         "reasoning":            reason,
         "method":              method,
@@ -1090,9 +1371,12 @@ def _classify_one(
             _use_apple_fm = False
 
         gen_stats: Any = None  # MLX GenerationResponse (token counts + tok/s), mlx path only
+        prompt_cache_hit = False        # did we reuse the cached system+skill prefix?
+        prompt_cache_hit_tokens = 0     # prefix tokens served from cache (0 = full reprocess)
+        prompt_tokens_processed = 0     # tokens actually run through the model this call
         try:
             if _use_apple_fm:
-                result = _classify_apple_fm(messages)
+                result = _classify_apple_fm(messages, valid_keys)
                 raw = result.model_dump_json()
             else:
                 from mlx_lm import stream_generate
@@ -1106,40 +1390,40 @@ def _classify_one(
                         # logits processor — identical constrained decoding to the
                         # high-level model(...) call, but we KEEP MLX's own
                         # GenerationResponse stats (prompt/generation token counts +
-                        # tok/s + finish_reason) instead of discarding them. The
-                        # processor is compiled exactly as outlines does it: a
-                        # Generator turns the pydantic schema into the logits
-                        # processor; type_adapter wraps it; format_input renders the
-                        # chat prompt. The last streamed response carries the
-                        # cumulative token counts.
-                        from outlines.generator import Generator
-
-                        _gen = Generator(model, SessionClassification)
-                        logits_processors = model.type_adapter.format_output_type(
-                            _gen.logits_processor
+                        # tok/s + finish_reason) instead of discarding them, AND we
+                        # control the prompt_cache so the static system+skill prefix
+                        # is reused across sessions (see _prompt_cache above). The
+                        # FSM logits processor is compiled ONCE per model and cached
+                        # (the ~6 s schema compile must not run per session);
+                        # _get_constrained_logits_processors resets its per-sequence
+                        # state before each use. We tokenize the chat prompt ourselves
+                        # (token ids, not a string) so we can do the prefix arithmetic
+                        # the KV cache needs.
+                        logits_processors = _get_constrained_logits_processors(model)
+                        full_ids = _get_tokenizer().apply_chat_template(
+                            messages, tokenize=True, add_generation_prompt=True
                         )
-                        formatted = model.type_adapter.format_input(Chat(messages))
-                        parts: list[str] = []
-                        for gr in stream_generate(
-                            model.model, model.mlx_tokenizer, formatted,
-                            max_tokens=_MAX_TOKENS,
-                            logits_processors=logits_processors,
-                            sampler=sampler,
-                        ):
-                            parts.append(gr.text)
-                            gen_stats = gr
-                        raw = "".join(parts)
+                        prompt_tokens_processed = len(full_ids)
+                        raw, gen_stats, prompt_cache_hit_tokens = _generate_constrained(
+                            model, full_ids, logits_processors, sampler
+                        )
+                        prompt_cache_hit = prompt_cache_hit_tokens > 0
+                        prompt_tokens_processed = len(full_ids) - prompt_cache_hit_tokens
                     except Exception as stream_exc:  # noqa: BLE001
                         # Fallback to the high-level call if outlines' internals
                         # shift — text only, no stats — so classification never
                         # breaks just because the metadata path did. Logged (not
-                        # silent) so the regression is visible.
+                        # silent) so the regression is visible. The shared prefix
+                        # cache may be mid-mutation, so drop it (next call rebuilds).
                         log.warning(
                             "run_task_linker_mlx: stream-stats path failed (%s) — "
                             "falling back to model(...) without token stats",
                             stream_exc,
                         )
+                        with _prompt_cache_lock:
+                            _invalidate_prompt_cache()
                         gen_stats = None
+                        prompt_cache_hit = False
                         raw = model(
                             Chat(messages),
                             output_type=SessionClassification,
@@ -1170,6 +1454,14 @@ def _classify_one(
         outcome = "apple_fm" if _use_apple_fm else "mlx_direct"
         llm_span.set_attribute("outcome", outcome)
         llm_span.set_attribute("elapsed_s", elapsed)
+        # Prompt-cache effectiveness: how much of the static system+skill prefix
+        # was served from the persistent KV cache vs reprocessed this call. A
+        # warm hit means ~3.1k prefix tokens skipped (the per-session suffix is
+        # all that's actually run through the model).
+        if not _use_apple_fm:
+            llm_span.set_attribute("prompt_cache_hit", prompt_cache_hit)
+            llm_span.set_attribute("prompt_cache_hit_tokens", prompt_cache_hit_tokens)
+            llm_span.set_attribute("prompt_tokens_processed", prompt_tokens_processed)
         # MLX's OWN generation metadata (token counts, throughput, finish_reason)
         # is carried by `gen_stats` and surfaced on the classifier_output span
         # below, co-located with the output. raw size/content also lives there.
@@ -1200,7 +1492,12 @@ def _classify_one(
             # server's _classify_all loop doesn't wrap the per-session call). Coerce
             # defensively and drop any stat that won't convert.
             try:
-                _in = int(gen_stats.prompt_tokens)
+                # `gen_stats.prompt_tokens` is the tokens the model actually
+                # PROCESSED this call — with a warm prefix cache that's only the
+                # per-session suffix, not the full input. gen_ai.usage.input_tokens
+                # must reflect the FULL logical input, so add back the cached prefix
+                # tokens; the processed/cached split lives on the llm_inference span.
+                _in = int(gen_stats.prompt_tokens) + int(prompt_cache_hit_tokens)
                 _out = int(gen_stats.generation_tokens)
                 pr_span.set_attribute("gen_ai.usage.input_tokens", _in)
                 pr_span.set_attribute("gen_ai.usage.output_tokens", _out)
@@ -1265,8 +1562,8 @@ def _classify_one(
         # classifier_input — so classifier_output expands into clickable nodes.
         # These carry the rich, readable output the model produced (the verdict
         # itself stays on the root, above):
-        #   • reasoning       — why this task match
-        #   • category        — the category justification (+ category/confidence)
+        #   • reasoning       — the chain-of-thought that drove the verdict
+        #   • category        — the category + its confidence
         #   • dimensions       — the inferred activity tags
         #   • session_summary  — the PM-facing prose deliverable
         def _output_part(name: str, text: str, **extra: Any) -> None:
@@ -1278,7 +1575,7 @@ def _classify_one(
 
         _output_part("reasoning", result.reasoning)
         _output_part(
-            "category", result.category_explanation,
+            "category", result.category,
             category=result.category,
             category_confidence=max(0.0, min(1.0, result.category_confidence)),
         )
@@ -1294,7 +1591,6 @@ def _classify_one(
         "confidence":           confidence,
         "category":             result.category,
         "category_confidence":  max(0.0, min(1.0, result.category_confidence)),
-        "category_explanation": result.category_explanation,
         "session_type":         result.session_type,
         "reasoning":            result.reasoning,
         "method":              outcome,
