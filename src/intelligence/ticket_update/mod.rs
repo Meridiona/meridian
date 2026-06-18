@@ -51,6 +51,8 @@ pub enum WriteField {
     Description(String),
     /// ticket-level "close" action — transition to the provider's done state.
     Close,
+    /// ticket-level "cancel" action — transition to the provider's cancelled/won't-do state.
+    Cancel,
 }
 
 impl WriteField {
@@ -69,6 +71,7 @@ impl WriteField {
             "summary" => (!v.is_empty()).then(|| Self::Summary(v.to_string())),
             "description" => (!v.is_empty()).then(|| Self::Description(v.to_string())),
             "close" => Some(Self::Close),
+            "cancel" => Some(Self::Cancel),
             _ => None,
         }
     }
@@ -85,6 +88,7 @@ impl WriteField {
             Self::Summary(_) => "title",
             Self::Description(_) => "description",
             Self::Close => "status",
+            Self::Cancel => "cancel",
         }
     }
 }
@@ -265,6 +269,7 @@ mod tests {
             Some(WriteField::Parent("KAN-5".into()))
         );
         assert_eq!(WriteField::parse("close", ""), Some(WriteField::Close));
+        assert_eq!(WriteField::parse("cancel", ""), Some(WriteField::Cancel));
     }
 
     #[test]
