@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "env -u NODE_ENV next dev --turbopack -p 3939",
-    "build": "next build && cp -r .next/static .next/standalone/.next/static",
+    "build": "next build && cp -r ../tray/src out/popover",
     "start": "next start -p 3939",
     "lint": "next lint",
     "typecheck": "tsc --noEmit"

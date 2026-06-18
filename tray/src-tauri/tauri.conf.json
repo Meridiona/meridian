@@ -4,9 +4,10 @@
   "version": "0.1.0",
   "identifier": "com.meridiona.tray",
   "build": {
-    "frontendDist": "../src",
+    "frontendDist": "../../ui/out",
     "devUrl": "http://localhost:3939",
-    "beforeDevCommand": "cd ../ui && npm run dev"
+    "beforeDevCommand": "cd ../ui && npm run dev",
+    "beforeBuildCommand": "cd ../ui && npm run build"
   },
   "app": {
     "macOSPrivateApi": true,
@@ -18,6 +19,7 @@
       {
         "label": "main",
         "title": "Meridian",
+        "url": "popover/index.html",
         "width": 320,
         "height": 400,
         "decorations": false,
