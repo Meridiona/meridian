@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { fmtDurDecimal, AppGlyph, TaskKey, LiveDot, useTick } from '@/components/atoms'
-import { load as loadData } from '@/lib/bridge'
+import { load as loadData, invoke, isTauri } from '@/lib/bridge'
 
 interface Props {
   onOpenCmd: () => void
@@ -70,7 +70,9 @@ export default function Sidebar({ onOpenCmd }: Props) {
   async function runUpdate() {
     setUpdating(true)
     try {
-      await fetch('/api/update', { method: 'POST' })
+      // Dual-path: run_update (Rust) in the app, /api/update POST in a browser.
+      if (isTauri()) await invoke('run_update')
+      else await fetch('/api/update', { method: 'POST' })
     } catch {
       /* ignore — banner keeps the copyable command as fallback */
     }

@@ -158,6 +158,7 @@ pub fn run() {
             commands::reload_daemon,
             commands::set_openobserve,
             commands::sync_tasks,
+            commands::run_update,
             // OS/window actions
             commands::open_permission_pane,
         ])

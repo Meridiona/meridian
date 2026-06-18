@@ -8,14 +8,19 @@
 //! npm registry. NOT a DB read (file + external HTTP), so it lives tray-side, not
 //! in meridian-core.
 //!
+//! [`run_update`] (the ported `/api/update` POST) is the action behind that
+//! banner: it launches `meridian update` in a visible Terminal window (it
+//! self-elevates the npm step + restarts daemons, so it must run interactively,
+//! not silently inside the app).
+//!
 //! # Who calls this
-//! The `get_version` Tauri command → the dashboard `Sidebar` (the version /
-//! update line). Never throws — an update check must not break the UI.
+//! The `get_version` + `run_update` Tauri commands → the dashboard `Sidebar`
+//! (the version / update line). `get_version` never throws — an update check
+//! must not break the UI.
 //!
 //! # Related
 //! - The npm result is cached process-wide for [`CHECK_TTL_MS`] so a dashboard
 //!   left open doesn't hammer the registry (mirrors the route's module cache).
-//! - The `/api/update` action route (run the update) is not yet ported.
 
 use chrono::{DateTime, Duration as ChronoDuration, SecondsFormat, Utc};
 use serde::Serialize;
@@ -156,6 +161,73 @@ pub async fn get_version() -> VersionInfo {
         update_available,
         checked_at: Some(checked_at.to_rfc3339_opts(SecondsFormat::Millis, true)),
     }
+}
+
+/// The command a user runs to update — bare `meridian` on purpose: it runs in an
+/// interactive Terminal login shell (PATH has node), the one sanctioned spot for
+/// a bare invocation (see CLAUDE.md), so it does NOT use [`crate::install::meridian_bin`].
+const UPDATE_CMD: &str = "meridian update";
+
+/// `{ launched, command }` — mirrors the route. `launched=false` (still a
+/// success, not an error) tells the UI to show the copyable `command` fallback.
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateLaunch {
+    pub launched: bool,
+    pub command: String,
+}
+
+/// Launch `meridian update` in a visible Terminal window (the ported /api/update
+/// POST). We do NOT run the update inside the app: it restarts the daemons and
+/// may prompt for a password, so it must run in an interactive terminal the user
+/// can see. Mechanism (mirrors the route): write a `.command` script and
+/// `open -a Terminal` it — LaunchServices, so no AppleEvents/Automation prompt,
+/// and an interactive login shell where `meridian` is on PATH. Never errors —
+/// returns `launched=false` so the UI falls back to the copyable command.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn run_update() -> UpdateLaunch {
+    let script = [
+        "#!/bin/bash",
+        "echo \"→ Updating Meridian…\"",
+        "echo",
+        UPDATE_CMD,
+        "status=$?",
+        "echo",
+        "if [ $status -eq 0 ]; then echo \"✓ Update complete — you can close this window.\"; \
+         else echo \"✗ Update failed (exit $status). See output above.\"; fi",
+        "",
+    ]
+    .join("\n");
+    let script_path = std::env::temp_dir().join("meridian-update.command");
+
+    let launched = write_and_open(&script_path, &script).is_ok();
+    if launched {
+        tracing::info!(path = %script_path.display(), "launched meridian update in Terminal");
+    } else {
+        tracing::warn!("could not launch Terminal for update");
+    }
+    UpdateLaunch {
+        launched,
+        command: UPDATE_CMD.to_string(),
+    }
+}
+
+/// Write the `.command` script (executable) and `open -a Terminal` it. Split out
+/// so the single `is_ok()` above captures any failure as `launched=false`.
+fn write_and_open(script_path: &std::path::Path, script: &str) -> std::io::Result<()> {
+    std::fs::write(script_path, script)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(script_path, std::fs::Permissions::from_mode(0o755))?;
+    }
+    // Spawn detached and drop the handle — `open` returns immediately; the
+    // Terminal window outlives this command.
+    std::process::Command::new("open")
+        .args(["-a", "Terminal"])
+        .arg(script_path)
+        .spawn()
+        .map(|_| ())
 }
 
 #[cfg(test)]
