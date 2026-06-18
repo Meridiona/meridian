@@ -60,8 +60,8 @@ export default function TodayMetrics(props: Props) {
         return (
           <>
             <DetailRow label="Your coding" value={fmtDur(coding_s - autonomous_s)} hint="at the keyboard" />
-            <DetailRow label="Agent (solo)" value={fmtDur(autonomous_s)} hint="Claude / Codex ran while you were away" />
-            <DetailRow label="Total" value={fmtDur(agent_s)} hint="engaged Claude / Codex time" />
+            <DetailRow label="AI coding (solo)" value={fmtDur(autonomous_s)} hint="Claude / Codex ran while you were away" />
+            <DetailRow label="Total" value={fmtDur(coding_s)} hint="your coding + AI agent" />
           </>
         )
       case 'switches':
