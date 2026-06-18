@@ -111,22 +111,27 @@ meridian/
     create-icons.sh      # icon generation script
 ```
 
-> **Dashboard → Tauri fold (in progress — branch `spike/meridian-core`).** The Next.js dashboard's API
-> routes (`ui/app/api/*`) are being ported to **Rust** so the dashboard folds into the Tauri app with **no
-> Node server at runtime**. **DB-backed reads live in `meridian-core`** as the single source of truth (the
+> **Dashboard → Tauri fold (cutover landed — branch `spike/meridian-core`).** The Next.js dashboard now
+> runs **only inside the Tauri webview** as a **static export** (`output: 'export'` → `ui/out`) — **no Node
+> server, no `/api` routes**. **DB-backed reads live in `meridian-core`** as the single source of truth (the
 > daemon **re-exports** them, its code unchanged; the tray depends on them directly); **file/env/process
-> routes are tray commands** (`tray/src-tauri/src/`). Frontend consumers reach Rust via Tauri `invoke`
-> through the dual-path `ui/lib/bridge.ts::load` (falls back to `/api` in a browser until the cutover).
-> **Ported so far:** active, today, week, coding-agents, worklogs, tasks, settings, integrations,
-> triage(+parents). **When porting a route, follow the step-by-step playbook in Coding Conventions →
-> "Porting a dashboard route to Rust"** (doc + tracing + placement + test standards); exemplars:
-> `meridian-core/src/readers/triage.rs`, `tray/src-tauri/src/commands/parents.rs`. The interval/day-bound
-> math is in `meridian-core::{intervals,date}` with golden tests (files under `meridian-core/src/util/`,
-> re-exported flat). Frontend stays Next.js; the **export cutover**
-> (delete `/api`, flip `output:'export'`, point `frontendDist` at the export) is the LAST step. Dev-only
-> `--features otel` on the tray exports spans to OpenObserve (`service.name = meridian-tray`) — release
-> builds omit it. Rationale + full scope: Obsidian `Decisions/Dashboard frontend - keep Next in Tauri.md`,
-> `~/.claude/plans/meridian-next-fold.md`.
+> routes are tray commands** (`tray/src-tauri/src/`). Frontend consumers reach Rust **only** via Tauri
+> `invoke`/events through `ui/lib/bridge.ts` (`load`/`mutate` → `invoke`; `subscribe` → the event bus —
+> the browser `/api` fetch + `EventSource` fallbacks were removed at cutover). The four SSE streams
+> (health/notices/notifications/logs) are now **Tauri events** the tray poll loop emits (`tray/src-tauri/src/poll/live.rs`
+> + the `log-tail` tailer); the tray poll loop is HTTP-free (direct `meridian-core` reads). Response types
+> live in `ui/lib/api-types.ts` (moved out of the deleted routes). **Asset layout:** `frontendDist` →
+> `../../ui/out`; the build copies the tray popover into `out/popover/` and the main window loads
+> `popover/index.html`; dashboard/setup windows load `WebviewUrl::App("today"/"setup")` → `out/<route>/index.html`
+> (`trailingSlash: true`). **Known limitation:** the popover 404s under `tauri dev` (next dev doesn't serve
+> `popover/`); it renders in a packaged build. **When adding a route, follow the playbook in Coding
+> Conventions → "Porting a dashboard route to Rust"**; exemplars: `meridian-core/src/readers/triage.rs`,
+> `tray/src-tauri/src/commands/parents.rs`. **Follow-ups not yet done:** dead Node lib singletons
+> (`ui/lib/notices-store.ts`, `notifications-banner-store.ts`, `notifications.ts`, `db.ts` — now only
+> type-imported) and the release/packaging migration off the standalone UI server (`package-release.sh`,
+> the UI launchd plist). Dev-only `--features otel` on the tray exports spans to OpenObserve
+> (`service.name = meridian-tray`) — release builds omit it. Rationale + full scope: Obsidian
+> `Decisions/Dashboard frontend - keep Next in Tauri.md`, `~/.claude/plans/meridian-next-fold.md`.
 
 ---
 
@@ -299,7 +304,7 @@ The fold replaces every `ui/app/api/*` route with a Rust command the frontend ca
 3. **Thin command wrapper.** A `#[tauri::command]` resolves request-scoped values (today / now / day) and calls the core fn, so the core stays deterministic and testable. Register it in `lib.rs`'s `invoke_handler!`. Every new window label must be added to `capabilities/default.json` or its `invoke`s are silently denied.
 4. **Document it (required).** Module `//!` header with: one-line purpose + which route it ports, a **`# Who calls this`** (the command + the frontend consumer), and a **`# Related`** section linking sibling modules / dependent fns via intra-doc links (`` [`crate::tasks`] ``). Every `pub` fn/struct gets a `///` covering purpose, key params, return, and any non-obvious behaviour carried from the source.
 5. **Trace it (required).** `#[tracing::instrument(skip(pool))]` on **both** the command and the core fn; wrap each query in `.instrument(tracing::debug_span!("<module>.read.<table>"))`; `tracing::debug!(rows = …)` after a query; a `tracing::info!(…)` summary on serve; `tracing::warn!(error = %e, …)` on the command's error path. All of it exports to OpenObserve under the tray `otel` feature / the daemon's `observability::init`.
-6. **Swap the consumer.** Replace `fetch('/api/x')` with `load('/api/x', 'command', args)` from `@/lib/bridge` — dual-path: `invoke` in the Tauri window, `/api` fetch in a plain browser. **Keep the `/api` route** until the export cutover (it serves the browser dashboard meanwhile). Mutations (`POST`/`PATCH`/`DELETE`) stay on `fetch` until their write command is ported.
+6. **Wire the consumer.** Call the command through `@/lib/bridge`: `load(apiPath, 'command', args)` for a read, `mutate(apiPath, 'command', body, method)` for a write, `subscribe(apiPath, 'command'|null, eventName, onData)` for a live stream. These are Tauri-only now (the `/api` fetch/`EventSource` fallbacks were removed at cutover); `apiPath` is vestigial (documents the former route). Response types go in `ui/lib/api-types.ts`, never a route file. A live stream also needs an emitter in `tray/src-tauri/src/poll/live.rs` (or the log tailer) and the event covered by the window's `core:event` permission.
 7. **Test it.** Pure mappers/parsers → `#[cfg(test)]` unit tests in-module (see `hygiene.rs`). DB readers → an in-memory seeded test in `meridian-core/tests/readers.rs` (single-connection `:memory:` pool, hand-computed rows; place date-bounded rows *relative to* `local_day_bounds(today)` so the test is timezone-independent).
 
 ### TypeScript / Next.js
