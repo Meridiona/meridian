@@ -10,6 +10,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { BannerNotification } from '@/lib/notifications-banner-store'
+import { invoke, isTauri } from '@/lib/bridge'
 
 const SEVERITY_STYLES: Record<string, { bg: string; border: string; text: string; dot: string }> = {
   info:    { bg: '#eff6ff', border: '#bfdbfe', text: '#1d4ed8', dot: '#2563eb' },
@@ -48,9 +49,14 @@ export default function NotificationBanner() {
   }, [])
 
   async function dismiss(id: number) {
-    // Optimistic remove; the SSE refresh will reconcile.
+    // Optimistic remove; the SSE refresh will reconcile. Dual-path: the
+    // dismiss_notification command in the app, the /api path route in a browser.
+    // (A path-param route, so it can't use the JSON-body `mutate` helper.)
     setItems(prev => prev.filter(i => i.id !== id))
-    try { await fetch(`/api/notifications/${id}/dismiss`, { method: 'POST' }) } catch { /* ignore */ }
+    try {
+      if (isTauri()) await invoke('dismiss_notification', { id })
+      else await fetch(`/api/notifications/${id}/dismiss`, { method: 'POST' })
+    } catch { /* ignore — optimistic UI already updated */ }
   }
 
   if (items.length === 0) return null

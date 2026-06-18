@@ -1,18 +1,23 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-//! Notification delivery policy + the native-channel pending queue — the read
-//! half of the outbox, ported from `ui/lib/notifications.ts`.
+//! Notification delivery policy + the native-channel queue (read + delivery
+//! writes) — the consumer half of the outbox, ported from `ui/lib/notifications.ts`.
 //!
 //! The Rust daemon (`src/notifications.rs`) ENQUEUES into the `notifications`
 //! table; this module is the single place the *delivery* decision lives:
 //! master switch + per-type toggle ([`event_allowed`]) and quiet hours
 //! ([`in_quiet_hours`]). Producers always enqueue; only the user's settings
-//! decide whether an event actually surfaces.
+//! decide whether an event actually surfaces. The two delivery writes
+//! ([`mark_native_delivered`], [`dismiss_banner`]) ack a row so it isn't
+//! re-delivered / re-shown — idempotent, mirroring the same-named TS helpers.
 //!
 //! # Who calls this
-//! - [`crate::notifications::pending_native`] — the tray poll loop's
-//!   `drain_notifications` (replaces its `/api/notifications/pending` fetch).
+//! - [`pending_native`] + [`mark_native_delivered`] — the tray poll loop's
+//!   `drain_notifications` (replaces its `/api/notifications/pending` fetch AND
+//!   its `/api/notifications/:id/delivered` ack — the loop is now HTTP-free).
 //! - [`event_allowed`] + [`in_quiet_hours`] — the tray poll loop's
 //!   `notifications_allowed` (replaces its `/api/notifications/allowed` fetch).
+//! - [`dismiss_banner`] — the tray `dismiss_notification` command (ported
+//!   `/api/notifications/:id/dismiss`), from the dashboard banner.
 //!
 //! # Related
 //! - [`crate::settings::RuntimeSettings`] — the preference fields these read.
@@ -156,12 +161,112 @@ pub async fn pending_native(
     out
 }
 
+// ── Delivery writes ───────────────────────────────────────────────────────────
+
+/// Ack native delivery of a notification (port of `/api/notifications/:id/delivered`):
+/// stamp `delivered_native_at` + bump `attempts`, so the tray's poll loop never
+/// re-toasts it. The `AND delivered_native_at IS NULL` guard makes it idempotent
+/// (a duplicate ack is a no-op). `now` is the caller-resolved stamp.
+#[tracing::instrument(skip(pool))]
+pub async fn mark_native_delivered(pool: &SqlitePool, id: i64, now: &str) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE notifications SET delivered_native_at = ?, attempts = attempts + 1 \
+         WHERE id = ? AND delivered_native_at IS NULL",
+    )
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .instrument(tracing::debug_span!("notifications.write.delivered"))
+    .await?;
+    Ok(())
+}
+
+/// Dismiss an in-app banner (port of `/api/notifications/:id/dismiss`): stamp
+/// `banner_dismissed_at` so the dashboard banner set drops it. Idempotent via the
+/// `AND banner_dismissed_at IS NULL` guard. `now` is the caller-resolved stamp.
+#[tracing::instrument(skip(pool))]
+pub async fn dismiss_banner(pool: &SqlitePool, id: i64, now: &str) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE notifications SET banner_dismissed_at = ? \
+         WHERE id = ? AND banner_dismissed_at IS NULL",
+    )
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .instrument(tracing::debug_span!("notifications.write.dismiss"))
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
 
     fn settings() -> RuntimeSettings {
         RuntimeSettings::default()
+    }
+
+    /// In-memory pool with the columns the delivery writes touch.
+    async fn notif_pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE notifications (\
+                id INTEGER PRIMARY KEY, delivered_native_at TEXT, banner_dismissed_at TEXT, \
+                attempts INTEGER NOT NULL DEFAULT 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn mark_native_delivered_is_idempotent() {
+        let pool = notif_pool().await;
+        sqlx::query("INSERT INTO notifications (id) VALUES (1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        mark_native_delivered(&pool, 1, "2026-06-18T10:00:00Z")
+            .await
+            .unwrap();
+        // Second ack is a no-op (the IS NULL guard) — attempts must NOT bump again.
+        mark_native_delivered(&pool, 1, "2026-06-18T11:00:00Z")
+            .await
+            .unwrap();
+        let (delivered, attempts): (Option<String>, i64) =
+            sqlx::query_as("SELECT delivered_native_at, attempts FROM notifications WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(delivered.as_deref(), Some("2026-06-18T10:00:00Z"));
+        assert_eq!(attempts, 1, "duplicate ack must not re-bump attempts");
+    }
+
+    #[tokio::test]
+    async fn dismiss_banner_stamps_once() {
+        let pool = notif_pool().await;
+        sqlx::query("INSERT INTO notifications (id) VALUES (1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        dismiss_banner(&pool, 1, "2026-06-18T10:00:00Z")
+            .await
+            .unwrap();
+        dismiss_banner(&pool, 1, "2026-06-18T11:00:00Z")
+            .await
+            .unwrap();
+        let stamp: Option<String> =
+            sqlx::query_scalar("SELECT banner_dismissed_at FROM notifications WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stamp.as_deref(), Some("2026-06-18T10:00:00Z"));
     }
 
     #[test]

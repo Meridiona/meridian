@@ -55,7 +55,7 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
         // delivery path for all daemon-originated notifications (plan nudge,
         // worklog ready, promoted faults). The tray is a dumb delivery agent;
         // preference + quiet-hours filtering already happened server-side.
-        drain_notifications(&app, &client).await;
+        drain_notifications(&app).await;
 
         {
             let mut s = state.lock().unwrap();

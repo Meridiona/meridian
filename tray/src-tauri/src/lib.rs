@@ -148,6 +148,7 @@ pub fn run() {
             commands::plan_action,
             commands::triage_decision,
             commands::triage_ignore,
+            commands::dismiss_notification,
             // OS/window actions
             commands::open_permission_pane,
         ])

@@ -13,6 +13,7 @@
 //! - [`logs`]      — the `/api/logs` tail.
 //! - [`openobserve`] — the `/api/openobserve` service status probe.
 //! - [`integrations`] — which trackers are connected (`/api/integrations`).
+//! - [`notifications`] — the in-app banner dismiss write.
 //! - [`parents`]   — valid parent tickets for the hygiene "link a parent" fix.
 //! - [`triage`]    — cleanup working set + the decision/ignore DB writes.
 //! - [`version`]   — installed vs. published version (`/api/version`).
@@ -26,6 +27,7 @@ pub mod dashboard;
 pub mod health;
 pub mod integrations;
 pub mod logs;
+pub mod notifications;
 pub mod openobserve;
 pub mod parents;
 pub mod system;
@@ -41,6 +43,7 @@ pub use dashboard::*;
 pub use health::*;
 pub use integrations::*;
 pub use logs::*;
+pub use notifications::*;
 pub use openobserve::*;
 pub use parents::*;
 pub use system::*;
