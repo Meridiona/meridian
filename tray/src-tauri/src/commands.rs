@@ -19,12 +19,14 @@
 //! - [`settings`]  — runtime settings read + write (`/api/settings` GET/PUT).
 //! - [`tasks`]     — board re-sync action (`/api/tasks/sync`, spawns `meridian`).
 //! - [`triage`]    — cleanup working set + the decision/ignore DB writes.
+//! - [`setup`]     — first-run detection, permission probes, MLX status/start.
 //! - [`version`]   — installed vs. published version (`/api/version`).
 //! - [`worklogs`]  — worklog review read + edit/approve/reject/unapprove writes.
 //!
 //! # Related
 //! - [`crate::install`] — install-mode + db-path resolution the commands consume.
 //! - [`crate::sys`] — shared uid / notify / ui_base helpers.
+//! - [`crate::mlx_server`] — the MLX process manager the setup commands drive.
 
 pub mod daemon;
 pub mod dashboard;
@@ -36,6 +38,7 @@ pub mod notifications;
 pub mod openobserve;
 pub mod parents;
 pub mod settings;
+pub mod setup;
 pub mod system;
 pub mod tasks;
 pub mod triage;
@@ -56,6 +59,7 @@ pub use notifications::*;
 pub use openobserve::*;
 pub use parents::*;
 pub use settings::*;
+pub use setup::*;
 pub use system::*;
 pub use tasks::*;
 pub use triage::*;

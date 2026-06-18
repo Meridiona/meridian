@@ -1,34 +1,44 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-//! OS / window action commands — open URLs and deep-link into System Settings.
+//! OS / window action commands — open native windows and deep-link into System Settings.
 //!
-//! These don't touch the DB or the daemon; they just drive the OS shell on the
-//! user's behalf (open the dashboard in a browser, open a privacy pane).
+//! These don't touch the DB or the daemon; they drive the OS shell or open
+//! in-app Tauri windows on the user's behalf.
 //!
 //! # Who calls this
-//! Registered in `lib.rs`'s `invoke_handler!`; invoked from the popover/settings UI.
+//! Registered in `lib.rs`'s `invoke_handler!`; invoked from the popover (`app.js`)
+//! and the dashboard UI.
 //!
 //! # Related
-//! - [`crate::sys::ui_base`] — the dashboard base URL these open.
-//! - [`crate::tray`] — the tray menu also opens these targets (native window path).
+//! - [`crate::tray`] — the tray menu also opens these targets (same native window path).
 
-use crate::sys::ui_base;
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_opener::OpenerExt;
 
-/// Open the dashboard home in the user's default browser.
+/// Open (or focus) the in-app dashboard window (Today/Week from Rust commands,
+/// no browser, no Node server). Replaces the old `open_in_browser(ui_base())`
+/// which pointed at localhost:3939 — the Node server was retired in Stage 5.
 #[tauri::command]
 pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
-    app.opener()
-        .open_url(ui_base(), None::<&str>)
+    if let Some(win) = app.get_webview_window("dashboard") {
+        let _ = win.show();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(&app, "dashboard", WebviewUrl::App("today".into()))
+        .title("Meridian — Dashboard")
+        .inner_size(1100.0, 760.0)
+        .build()
+        .map(|_win| ())
         .map_err(|e| e.to_string())
 }
 
-/// Open the worklog-review page in the user's default browser.
+/// Open (or focus) the in-app dashboard window and navigate to the Worklogs
+/// view. The user arrives on Today; the dashboard nav takes them to Worklogs.
+/// Replaces the old `open_in_browser(worklogs_url)` — the Node server is gone.
 #[tauri::command]
 pub async fn open_worklogs(app: tauri::AppHandle) -> Result<(), String> {
-    let url = format!("{}/worklogs", ui_base());
-    app.opener()
-        .open_url(&url, None::<&str>)
-        .map_err(|e| e.to_string())
+    // Reuse the dashboard window; the user navigates to Worklogs from there.
+    open_dashboard(app).await
 }
 
 /// Deep-link straight to a macOS privacy pane in System Settings. `pane` is

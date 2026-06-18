@@ -6,18 +6,10 @@
 //! `commands`, `poll`, and `health` before this module consolidated them.
 //!
 //! # Related
-//! - [`crate::poll`] — the loop that fetches against [`ui_base`] and toasts via [`notify`].
+//! - [`crate::poll`] — the loop that toasts via [`notify`].
 //! - [`crate::install`] — install-mode + path resolution (a separate concern from these).
 
 use tauri_plugin_notification::NotificationExt;
-
-/// The dashboard's base URL (`MERIDIAN_UI_PORT` override → `:3939` default).
-/// Still used by the poll loop's transitional `/api/*` fetches and the
-/// open-in-browser menu items until the export cutover removes the Node server.
-pub fn ui_base() -> String {
-    let port = std::env::var("MERIDIAN_UI_PORT").unwrap_or_else(|_| "3939".to_string());
-    format!("http://127.0.0.1:{}", port)
-}
 
 /// The current user's numeric uid as a string (for `launchctl gui/<uid>/…`
 /// domain targets). Falls back to `"501"` (the first macOS user) if `id -u`

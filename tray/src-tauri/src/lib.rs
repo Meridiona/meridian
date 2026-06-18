@@ -9,13 +9,15 @@
 //! - [`tray`]     — tray menu construction + menu-event dispatch.
 //! - [`poll`]     — the background health/active/today/worklogs poll loop.
 //! - [`state`]    — the shared [`state::AppState`] the poll loop maintains.
-//! - [`install`]  — install-mode + db-path resolution.
-//! - [`sys`]      — shared uid / notify / dashboard-URL helpers.
-//! - [`format`]   — duration formatting for the popover.
+//! - [`install`]     — install-mode + db-path resolution.
+//! - [`mlx_server`]  — MLX child-process manager (Approach A bundled venv).
+//! - [`sys`]         — shared uid / notify / dashboard-URL helpers.
+//! - [`format`]      — duration formatting for the popover.
 
 mod commands;
 pub(crate) mod format;
 mod install;
+pub(crate) mod mlx_server;
 mod poll;
 mod state;
 mod sys;
@@ -41,12 +43,15 @@ pub fn run() {
             .ok();
 
     let app_state = Arc::new(Mutex::new(AppState::default()));
+    let mlx_manager: mlx_server::SharedMlxManager =
+        Arc::new(tokio::sync::Mutex::new(mlx_server::MlxManager::new(7823)));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .manage(app_state.clone())
+        .manage(mlx_manager.clone())
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -118,6 +123,29 @@ pub fn run() {
             // so log lines stream at ~1 s.
             poll::spawn_log_tailer(app.handle().clone());
 
+            // Adopt any MLX server that survived from a previous tray run so we
+            // don't spawn a duplicate.
+            {
+                let mlx = mlx_manager.clone();
+                tauri::async_runtime::spawn(async move {
+                    let home = std::env::var("HOME").unwrap_or_default();
+                    mlx_server::reclaim_orphan(&home, 7823, &mlx).await;
+                });
+            }
+
+            // Auto-open the setup wizard on first launch (no ~/.meridian/onboarded).
+            // The 800 ms delay lets the tray menu settle before the window appears.
+            {
+                let wizard_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+                    let home = std::env::var("HOME").unwrap_or_default();
+                    if !std::path::Path::new(&format!("{home}/.meridian/onboarded")).exists() {
+                        tray::open_wizard_window(&wizard_handle);
+                    }
+                });
+            }
+
             Ok(())
         })
         // Hand-maintained command list (grouped by domain). Adding a command
@@ -172,6 +200,13 @@ pub fn run() {
             commands::start_oauth,
             // OS/window actions
             commands::open_permission_pane,
+            // Setup wizard (first-run, permissions, MLX)
+            commands::is_first_run,
+            commands::mark_setup_complete,
+            commands::check_accessibility,
+            commands::check_screen_recording,
+            commands::get_mlx_status,
+            commands::start_mlx_server_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error running meridian tray");
