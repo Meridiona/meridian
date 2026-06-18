@@ -1,3 +1,10 @@
+# [1.60.0](https://github.com/Meridiona/meridian/compare/v1.59.0...v1.60.0) (2026-06-18)
+
+
+### Features
+
+* **classifier:** TASK GATE prompt + DeepEval untracked-guard eval (70%→96% guard) ([#310](https://github.com/Meridiona/meridian/issues/310)) ([9fad7b5](https://github.com/Meridiona/meridian/commit/9fad7b5d7cfabc6b315b72bf07a98110ef7cf2cd))
+
 # [1.59.0](https://github.com/Meridiona/meridian/compare/v1.58.1...v1.59.0) (2026-06-17)
 
 
