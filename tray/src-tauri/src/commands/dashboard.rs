@@ -167,6 +167,26 @@ pub async fn get_worklogs(
         })
 }
 
+/// Full detail for one board ticket (the ported /api/plan/task). `key` is the
+/// task key; resolves "today" (local) here for the deterministic due_days math.
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn get_task_detail(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    key: String,
+) -> Result<Option<meridian_core::task_detail::TaskDetail>, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let today = chrono::Local::now().date_naive();
+    meridian_core::task_detail::get_task_detail(pool, &key, today)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "get_task_detail failed");
+            e.to_string()
+        })
+}
+
 /// Per-task time + board hygiene, computed in Rust (the ported /api/tasks).
 /// Resolves today, the 7-day window start, and now here so the core fn stays
 /// deterministic/testable (mirrors get_today).

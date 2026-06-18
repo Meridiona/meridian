@@ -127,6 +127,7 @@ pub fn run() {
             commands::get_coding_agents,
             commands::get_worklogs,
             commands::get_tasks,
+            commands::get_task_detail,
             commands::get_settings,
             commands::get_triage,
             commands::get_integrations,

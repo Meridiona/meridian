@@ -23,6 +23,9 @@ pub mod integrations;
 /// The `/api/tasks` per-task time + hygiene payload (ported from tasks/route.ts).
 pub mod tasks;
 
+/// The `/api/plan/task` single-ticket detail (ported from plan/task/route.ts).
+pub mod task_detail;
+
 /// The `/api/today` dashboard payload, computed in Rust (ported from today/route.ts).
 pub mod today;
 

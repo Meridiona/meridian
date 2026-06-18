@@ -38,4 +38,6 @@ pub use db::{get_active_session, open_existing, ActiveSession};
 
 pub use util::{date, hygiene, intervals};
 
-pub use readers::{active, coding_agents, integrations, tasks, today, triage, week, worklogs};
+pub use readers::{
+    active, coding_agents, integrations, task_detail, tasks, today, triage, week, worklogs,
+};
