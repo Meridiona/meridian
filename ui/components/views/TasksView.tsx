@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { fmtDur, fmtClock, AppGlyph, CatDot, TaskKey, StatusPill, SectionHead, Card, CATS, PROVIDER_META } from '@/components/atoms'
 import type { TaskSummary, TasksResponse } from '@/app/api/tasks/route'
-import { load, invoke, isTauri, mutate } from '@/lib/bridge'
+import { load, invoke, mutate } from '@/lib/bridge'
 import HygieneDialog from '@/components/HygieneDialog'
 import type { TodayResponse } from '@/app/api/today/route'
 import type { IntegrationsResponse } from '@/app/api/integrations/route'
@@ -12,12 +12,10 @@ import type { IntegrationsResponse } from '@/app/api/integrations/route'
 const TASKS_POLL_INTERVAL_MS = 60_000
 
 // Clear a provider's error notice immediately (don't wait for the next ETL poll).
-// Dual-path: the delete_notice command in the app, the /api DELETE in a browser.
 // Fire-and-forget — a failure just means the banner clears on the next poll.
 function clearProviderNotice(provider: string): void {
   const noticeId = `pm.${provider}`
-  if (isTauri()) void invoke('delete_notice', { noticeId }).catch(() => {})
-  else void fetch(`/api/notices/${noticeId}`, { method: 'DELETE' }).catch(() => {})
+  void invoke('delete_notice', { noticeId }).catch(() => {})
 }
 
 // Deterministic color from epic title — cycles through a palette of muted hues
@@ -90,7 +88,7 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
 
   useEffect(() => {
     fetchTasks()
-    fetch('/api/today').then(r => r.json()).then((d: TodayResponse) => {
+    load<TodayResponse>('/api/today', 'get_today').then((d) => {
       setTodaySessions(d.sessions ?? [])
     }).catch(() => {})
     fetchIntegrations()

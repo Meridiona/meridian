@@ -4,6 +4,7 @@
 import { useState, useEffect } from 'react'
 import { fmtDur, fmtClock, CATS, AppGlyph, CatDot } from '@/components/atoms'
 import TaskBadge from '@/components/TaskBadge'
+import { load } from '@/lib/bridge'
 import type { TodayResponse } from '@/app/api/today/route'
 
 type Session = TodayResponse['sessions'][number]
@@ -13,7 +14,8 @@ export default function SessionsView() {
   const [filter, setFilter] = useState<string>('all')
 
   useEffect(() => {
-    fetch('/api/today').then(r => r.json()).then(setData).catch(() => {})
+    // get_today (Rust) — the sessions list rides the Today payload.
+    load<TodayResponse>('/api/today', 'get_today').then(setData).catch(() => {})
   }, [])
 
   if (!data) {
