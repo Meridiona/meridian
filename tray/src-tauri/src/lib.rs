@@ -156,6 +156,7 @@ pub fn run() {
             // process / service control (ported /api process routes)
             commands::reload_daemon,
             commands::set_openobserve,
+            commands::sync_tasks,
             // OS/window actions
             commands::open_permission_pane,
         ])

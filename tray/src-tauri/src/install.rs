@@ -62,6 +62,25 @@ pub(crate) fn detect_install_mode() -> InstallMode {
     InstallMode::Bare
 }
 
+/// Resolve the `meridian` CLI binary, native build first — the shared resolver
+/// for every command that shells out to it (`tasks-sync`, `ticket-update`,
+/// `ticket-parents`, …). Mirrors the Node `selectMeridianBinary(meridianCandidates())`:
+/// the native binary (`~/.meridian/app/bin/meridian`) has NO runtime deps, so it
+/// works under launchd's minimal PATH; the user-local `~/.local/bin/meridian` is
+/// a `#!/usr/bin/env node` wrapper that dies when launchd's PATH lacks `node`, so
+/// it's only the fallback; bare `meridian` (relies on `$PATH`) is the last resort.
+pub(crate) fn meridian_bin() -> String {
+    if let Ok(home) = std::env::var("HOME") {
+        for rel in ["/.meridian/app/bin/meridian", "/.local/bin/meridian"] {
+            let p = std::path::PathBuf::from(format!("{home}{rel}"));
+            if p.exists() {
+                return p.to_string_lossy().into_owned();
+            }
+        }
+    }
+    "meridian".to_string()
+}
+
 /// Read `key` from a single line of a .env file, stripping surrounding quotes.
 fn dotenv_line_value(line: &str, key: &str) -> Option<String> {
     let prefix = format!("{key}=");

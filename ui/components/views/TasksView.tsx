@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { fmtDur, fmtClock, AppGlyph, CatDot, TaskKey, StatusPill, SectionHead, Card, CATS, PROVIDER_META } from '@/components/atoms'
 import type { TaskSummary, TasksResponse } from '@/app/api/tasks/route'
-import { load, invoke, isTauri } from '@/lib/bridge'
+import { load, invoke, isTauri, mutate } from '@/lib/bridge'
 import HygieneDialog from '@/components/HygieneDialog'
 import type { TodayResponse } from '@/app/api/today/route'
 import type { IntegrationsResponse } from '@/app/api/integrations/route'
@@ -80,17 +80,11 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
     if (syncing) return
     setSyncing(true)
     setSyncError(null)
-    fetch('/api/tasks/sync', { method: 'POST' })
-      .then(async r => {
-        const body = await r.json().catch(() => ({}))
-        if (!r.ok || body.ok === false) {
-          setSyncError(body.error ?? 'Sync failed — check daemon logs')
-        } else {
-          setLastSynced(new Date())
-          fetchTasks()
-        }
-      })
-      .catch(() => setSyncError('Could not reach the daemon — is it running?'))
+    // Dual-path: sync_tasks (Rust) in the app, /api/tasks/sync POST in a browser.
+    // mutate throws the CLI's stderr on failure; success re-fetches the board.
+    mutate('/api/tasks/sync', 'sync_tasks', {})
+      .then(() => { setLastSynced(new Date()); fetchTasks() })
+      .catch((e) => setSyncError(e instanceof Error ? e.message : 'Sync failed — check daemon logs'))
       .finally(() => setSyncing(false))
   }
 

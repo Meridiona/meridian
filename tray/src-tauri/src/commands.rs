@@ -17,6 +17,7 @@
 //! - [`notifications`] — the in-app banner dismiss write.
 //! - [`parents`]   — valid parent tickets for the hygiene "link a parent" fix.
 //! - [`settings`]  — runtime settings read + write (`/api/settings` GET/PUT).
+//! - [`tasks`]     — board re-sync action (`/api/tasks/sync`, spawns `meridian`).
 //! - [`triage`]    — cleanup working set + the decision/ignore DB writes.
 //! - [`version`]   — installed vs. published version (`/api/version`).
 //! - [`worklogs`]  — worklog review read + edit/approve/reject/unapprove writes.
@@ -36,6 +37,7 @@ pub mod openobserve;
 pub mod parents;
 pub mod settings;
 pub mod system;
+pub mod tasks;
 pub mod triage;
 pub mod version;
 pub mod worklogs;
@@ -55,6 +57,7 @@ pub use openobserve::*;
 pub use parents::*;
 pub use settings::*;
 pub use system::*;
+pub use tasks::*;
 pub use triage::*;
 pub use version::*;
 pub use worklogs::*;

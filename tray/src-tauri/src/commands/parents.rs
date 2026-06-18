@@ -19,11 +19,10 @@
 //! # Related
 //! - [`crate::commands::get_triage`] / [`meridian_core::triage`] — the working
 //!   set whose "link a parent" fix opens this picker.
-//! - The Node helper `ui/lib/meridian-bin.ts` (`selectMeridianBinary`) — this
-//!   module reimplements its "native binary first" resolution ([`meridian_bin`]).
+//! - [`crate::install::meridian_bin`] — the shared "native binary first" resolver
+//!   (mirrors the Node helper `ui/lib/meridian-bin.ts`'s `selectMeridianBinary`).
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::time::Duration;
 
 /// One candidate parent ticket.
@@ -65,22 +64,6 @@ impl ParentsResponse {
     }
 }
 
-/// Resolve the `meridian` binary, native build first. Mirrors
-/// `selectMeridianBinary(meridianCandidates())`: the native binary
-/// (`~/.meridian/app/bin/meridian`) has no runtime deps, so prefer it; fall back
-/// to the user-local install, then bare `meridian` on `PATH`.
-fn meridian_bin() -> String {
-    if let Ok(home) = std::env::var("HOME") {
-        for rel in ["/.meridian/app/bin/meridian", "/.local/bin/meridian"] {
-            let p = PathBuf::from(format!("{home}{rel}"));
-            if p.exists() {
-                return p.to_string_lossy().into_owned();
-            }
-        }
-    }
-    "meridian".to_string()
-}
-
 /// List valid parents for `(provider, key)` (the ported /api/triage/parents).
 /// Spawns `meridian ticket-parents --provider <p> --key <k>` (args are passed
 /// as argv, not a shell string, so they can't inject), with a 30 s timeout, and
@@ -92,7 +75,7 @@ pub async fn get_ticket_parents(provider: String, key: String) -> ParentsRespons
         return ParentsResponse::failure("provider and key are required");
     }
 
-    let bin = meridian_bin();
+    let bin = crate::install::meridian_bin();
     let child = tokio::process::Command::new(&bin)
         .args(["ticket-parents", "--provider", &provider, "--key", &key])
         .stdin(std::process::Stdio::null())
