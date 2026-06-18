@@ -53,6 +53,10 @@ pub async fn apply(cfg: &LinearConfig, key: &str, write: &WriteField) -> Result<
             let state_id = completed_state_id(&client, cfg, &uuid).await?;
             json!({ "stateId": state_id })
         }
+        WriteField::Cancel => {
+            let state_id = cancelled_state_id(&client, cfg, &uuid).await?;
+            json!({ "stateId": state_id })
+        }
         WriteField::AddLabel(_) => unreachable!("handled above"),
     };
 
@@ -129,6 +133,30 @@ fn pick_completed_state(nodes: &[Value]) -> Option<String> {
         .and_then(|s| s.get("id").and_then(|i| i.as_str()).map(String::from))
 }
 
+/// The team's cancelled workflow state for the issue (type == "cancelled").
+async fn cancelled_state_id(
+    client: &reqwest::Client,
+    cfg: &LinearConfig,
+    uuid: &str,
+) -> Result<String> {
+    let query = "query IssueStates($id: String!) { issue(id: $id) { team { states { nodes { id name type } } } } }";
+    let payload = json!({ "query": query, "variables": { "id": uuid } });
+    let data = graphql(client, cfg, &payload).await?;
+    let nodes = data
+        .pointer("/issue/team/states/nodes")
+        .and_then(|n| n.as_array())
+        .cloned()
+        .unwrap_or_default();
+    pick_cancelled_state(&nodes).context("no cancelled workflow state on this Linear team")
+}
+
+fn pick_cancelled_state(nodes: &[Value]) -> Option<String> {
+    nodes
+        .iter()
+        .find(|s| s.get("type").and_then(|t| t.as_str()) == Some("cancelled"))
+        .and_then(|s| s.get("id").and_then(|i| i.as_str()).map(String::from))
+}
+
 /// Human URL for the redirect fallback.
 async fn issue_url(client: &reqwest::Client, cfg: &LinearConfig, id: &str) -> String {
     let query = "query IssueUrl($id: String!) { issue(id: $id) { url } }";
@@ -176,6 +204,7 @@ fn field_name(write: &WriteField) -> &'static str {
         WriteField::Summary(_) => "summary",
         WriteField::Description(_) => "description",
         WriteField::Close => "close",
+        WriteField::Cancel => "cancel",
     }
 }
 

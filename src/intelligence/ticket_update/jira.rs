@@ -74,6 +74,9 @@ pub async fn apply(cfg: &JiraConfig, key: &str, write: &WriteField) -> Result<Ap
         WriteField::Close => {
             close(&ctx, &client, key).await?;
         }
+        WriteField::Cancel => {
+            cancel(&ctx, &client, key).await?;
+        }
     }
 
     Ok(ApplyResult::applied("jira", key, write_field_name(write)))
@@ -259,6 +262,72 @@ fn pick_done_transition(transitions: &[Value]) -> Option<String> {
         .and_then(id_of)
 }
 
+/// Cancel a ticket by finding a transition with a cancelled/won't-do name and POSTing it.
+/// Jira has no standard "cancelled" statusCategory — these transitions typically fall under
+/// the "done" category with recognisable names.
+async fn cancel(ctx: &JiraReqCtx, client: &reqwest::Client, key: &str) -> Result<()> {
+    let url = ctx.api_url(&format!("/rest/api/3/issue/{key}/transitions"));
+    let resp = ctx
+        .apply(client.get(&url))
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .context("GET transitions")?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!("Jira GET transitions for {key} returned {status}: {text}");
+    }
+    let v: Value = serde_json::from_str(&text).context("parsing transitions")?;
+    let transitions = v
+        .get("transitions")
+        .and_then(|t| t.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let id = pick_cancel_transition(&transitions)
+        .with_context(|| format!("no 'cancelled' transition available for {key}"))?;
+
+    let post_url = ctx.api_url(&format!("/rest/api/3/issue/{key}/transitions"));
+    let resp = ctx
+        .apply(client.post(&post_url))
+        .header("Accept", "application/json")
+        .json(&json!({ "transition": { "id": id } }))
+        .send()
+        .await
+        .context("POST transition")?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        bail!("Jira POST cancel transition for {key} returned {status}: {text}");
+    }
+    Ok(())
+}
+
+/// Choose the transition that represents a cancellation. Uses name heuristics since Jira
+/// has no standard "cancelled" statusCategory (these often sit under "done").
+fn pick_cancel_transition(transitions: &[Value]) -> Option<String> {
+    let id_of = |t: &Value| t.get("id").and_then(|i| i.as_str()).map(String::from);
+    transitions
+        .iter()
+        .find(|t| {
+            let n = t
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            n.contains("cancel")
+                || n.contains("won't do")
+                || n.contains("wont do")
+                || n.contains("won't fix")
+                || n.contains("wontfix")
+                || n.contains("rejected")
+                || n.contains("declined")
+                || n.contains("invalid")
+                || n.contains("duplicate")
+        })
+        .and_then(id_of)
+}
+
 /// Plain text → Atlassian Document Format (Jira Cloud descriptions are ADF).
 fn adf(text: &str) -> Value {
     json!({
@@ -281,6 +350,7 @@ fn write_field_name(write: &WriteField) -> &'static str {
         WriteField::Summary(_) => "summary",
         WriteField::Description(_) => "description",
         WriteField::Close => "close",
+        WriteField::Cancel => "cancel",
     }
 }
 

@@ -71,6 +71,15 @@ pub async fn apply(cfg: &GitHubConfig, key: &str, write: &WriteField) -> Result<
             )
             .await?;
         }
+        WriteField::Cancel => {
+            patch(
+                cfg,
+                &client,
+                &issue_url(&issue),
+                json!({ "state": "closed", "state_reason": "not_planned" }),
+            )
+            .await?;
+        }
     }
 
     Ok(ApplyResult::applied("github", key, field_name(write)))
@@ -179,6 +188,7 @@ fn field_name(write: &WriteField) -> &'static str {
         WriteField::Summary(_) => "summary",
         WriteField::Description(_) => "description",
         WriteField::Close => "close",
+        WriteField::Cancel => "cancel",
     }
 }
 
