@@ -11,7 +11,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { hasMustFix } from '@/lib/hygiene'
-import type { TasksResponse } from '@/app/api/tasks/route'
+import type { TasksResponse } from '@/lib/api-types'
 import { load as loadData } from '@/lib/bridge'
 
 const POLL_MS = 60_000

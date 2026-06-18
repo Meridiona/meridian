@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react'
 import { TaskKey, ProviderGlyph, StatusPill } from '@/components/atoms'
 import { MetaChip } from '@/components/plan/parts'
 import type { CardTask } from '@/components/plan/TaskCard'
-import type { TaskDetail } from '@/app/api/plan/task/route'
+import type { TaskDetail } from '@/lib/api-types'
 import { load } from '@/lib/bridge'
 
 // Full-ticket dialog opened from a plan card. Shows the complete description and

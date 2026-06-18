@@ -12,7 +12,7 @@ import TaskBadge from '@/components/TaskBadge'
 import ShapeOfDay from '@/components/ShapeOfDay'
 import DayTimeline from '@/components/DayTimeline'
 import TodayMetrics from '@/components/TodayMetrics'
-import type { TodayResponse, AgentSummary } from '@/app/api/today/route'
+import type { TodayResponse, AgentSummary } from '@/lib/api-types'
 import { load } from '@/lib/bridge'
 
 interface BucketSession {

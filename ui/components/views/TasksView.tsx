@@ -3,11 +3,11 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { fmtDur, fmtClock, AppGlyph, CatDot, TaskKey, StatusPill, SectionHead, Card, CATS, PROVIDER_META } from '@/components/atoms'
-import type { TaskSummary, TasksResponse } from '@/app/api/tasks/route'
+import type { TaskSummary, TasksResponse } from '@/lib/api-types'
 import { load, invoke, mutate } from '@/lib/bridge'
 import HygieneDialog from '@/components/HygieneDialog'
-import type { TodayResponse } from '@/app/api/today/route'
-import type { IntegrationsResponse } from '@/app/api/integrations/route'
+import type { TodayResponse } from '@/lib/api-types'
+import type { IntegrationsResponse } from '@/lib/api-types'
 
 const TASKS_POLL_INTERVAL_MS = 60_000
 

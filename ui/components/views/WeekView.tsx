@@ -3,7 +3,7 @@
 
 import { useEffect, useState, useMemo } from 'react'
 import { CATS, CatDot, SectionHead, Card } from '@/components/atoms'
-import type { WeekResponse } from '@/app/api/week/route'
+import type { WeekResponse } from '@/lib/api-types'
 import { load } from '@/lib/bridge'
 
 export default function WeekView() {

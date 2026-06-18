@@ -3,7 +3,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { fmtDur, fmtClock, TaskKey, ConfidenceRing } from '@/components/atoms'
-import type { WorklogItem, WorklogsResponse } from '@/app/api/worklogs/route'
+import type { WorklogItem, WorklogsResponse } from '@/lib/api-types'
 import { load as loadData, mutate } from '@/lib/bridge'
 
 // Local YYYY-MM-DD for `d` days from today (negative = past).

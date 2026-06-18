@@ -3,7 +3,7 @@
 
 import { useEffect, useState } from 'react'
 import { TaskKey, ProviderGlyph, StatusPill } from '@/components/atoms'
-import type { TaskSummary } from '@/app/api/tasks/route'
+import type { TaskSummary } from '@/lib/api-types'
 import type { HygieneIssue } from '@/lib/hygiene'
 import { load, mutate } from '@/lib/bridge'
 

@@ -5,7 +5,7 @@ import { useState, useEffect } from 'react'
 import { fmtDur, fmtClock, CATS, AppGlyph, CatDot } from '@/components/atoms'
 import TaskBadge from '@/components/TaskBadge'
 import { load } from '@/lib/bridge'
-import type { TodayResponse } from '@/app/api/today/route'
+import type { TodayResponse } from '@/lib/api-types'
 
 type Session = TodayResponse['sessions'][number]
 

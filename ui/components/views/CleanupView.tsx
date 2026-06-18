@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { TaskKey, ProviderGlyph, Card, SectionHead } from '@/components/atoms'
 import HygieneDialog from '@/components/HygieneDialog'
 import { hasMustFix, type HygieneIssue } from '@/lib/hygiene'
-import type { TaskSummary, TasksResponse } from '@/app/api/tasks/route'
+import type { TaskSummary, TasksResponse } from '@/lib/api-types'
 import { load as loadData, mutate } from '@/lib/bridge'
 
 // Severity → dot + tone. Warm editorial palette: warn (amber) is the alert.
