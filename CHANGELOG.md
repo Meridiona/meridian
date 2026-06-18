@@ -1,3 +1,10 @@
+# [1.61.0](https://github.com/Meridiona/meridian/compare/v1.60.0...v1.61.0) (2026-06-18)
+
+
+### Features
+
+* **cleanup:** mark overdue tickets as done or cancelled from the cleanup page ([#312](https://github.com/Meridiona/meridian/issues/312)) ([5998324](https://github.com/Meridiona/meridian/commit/5998324c5d4447e057fcdb530e90bbe880138356))
+
 # [1.60.0](https://github.com/Meridiona/meridian/compare/v1.59.0...v1.60.0) (2026-06-18)
 
 
