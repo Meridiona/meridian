@@ -32,7 +32,7 @@ MLX_SERVER_MODEL  = os.environ.get("MLX_SERVER_MODEL", "qwen3.5-9b-instruct")
 # Token caps. The MLX model exposes 128-262K context — a single Synthesise
 # call comfortably swallows even the heaviest hour of work.
 PM_WORKLOG_SYNTH_MAX_TOKENS  = int(os.environ.get("PM_WORKLOG_SYNTH_MAX_TOKENS",  "8000"))
-PM_WORKLOG_REQUEST_TIMEOUT_S = int(os.environ.get("PM_WORKLOG_REQUEST_TIMEOUT_S", "300"))
+PM_WORKLOG_REQUEST_TIMEOUT_S = int(os.environ.get("PM_WORKLOG_REQUEST_TIMEOUT_S", "900"))
 
 # Temperature tuned for each step. Lower = more deterministic.
 PM_WORKLOG_TEMP_COLLECT = 0.0

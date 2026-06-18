@@ -62,6 +62,25 @@ async def _idle_evictor(mlx_module: Any) -> None:
             log.warning("server: idle-evictor error: %s", exc)
 
 
+def _model_sem() -> "asyncio.Semaphore":
+    """Return the process-global single-slot model semaphore.
+
+    Created once in _lifespan and stored in _app_state. Every endpoint that
+    runs a model inference acquires this before calling run_in_threadpool so
+    that classify, synthesise_worklog, and summarise never compete on the GPU.
+    The synthesise path is indirectly serialised: /synthesise_worklog itself
+    does NOT hold the semaphore (agno calls /v1/chat/completions internally),
+    so /v1/chat/completions acquires it instead — no nested acquisition,
+    no deadlock.
+    """
+    import asyncio
+    sem = _app_state.get("model_sem")
+    if sem is None:  # fallback if called before lifespan (e.g. tests)
+        sem = asyncio.Semaphore(1)
+        _app_state["model_sem"] = sem
+    return sem
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     import asyncio
@@ -69,6 +88,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     import agents.run_task_linker_mlx as _mlx
     _app_state["mlx_module"] = _mlx
     _app_state["loaded_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    _app_state["model_sem"] = asyncio.Semaphore(1)
     from agents.llm_selector import APPLE_INTELLIGENCE_ID
     evictor: "asyncio.Task | None" = None
     if _mlx._resolve_model_id() == APPLE_INTELLIGENCE_ID:
@@ -332,7 +352,8 @@ async def classify_sessions(req: ClassifySessionsRequest) -> dict:
             if _tok is not None:
                 _otel_context.detach(_tok)
 
-    results = await run_in_threadpool(_classify_all)
+    async with _model_sem():
+        results = await run_in_threadpool(_classify_all)
     return {"results": results}
 
 
@@ -489,7 +510,8 @@ async def openai_chat_completions(req: _OAIChatRequest) -> dict:
 
     t0 = _time.time()
     try:
-        text = await run_in_threadpool(_generate)
+        async with _model_sem():
+            text = await run_in_threadpool(_generate)
     except Exception as exc:                            # noqa: BLE001
         log.warning("openai_chat_completions: inference error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -618,7 +640,8 @@ async def summarise(req: _SummariseRequest) -> _SummariseResponse:
             )
 
     try:
-        raw = await run_in_threadpool(_generate)
+        async with _model_sem():
+            raw = await run_in_threadpool(_generate)
         obj = _SummarySchema.model_validate_json(raw)
     except Exception as exc:                            # noqa: BLE001
         log.warning("summarise: inference/parse error: %s", exc)
@@ -832,6 +855,9 @@ async def synthesise_worklog(req: _SynthWorklogRequest) -> dict:
                         except Exception as exc:  # noqa: BLE001 — never crash the shared server
                             last_detail = f"agent run raised {type(exc).__name__}: {exc}"
                             log.warning("synthesise_worklog: attempt %d %s", attempt, last_detail)
+                            if attempt < 3:
+                                import time as _t
+                                _t.sleep(5 * attempt)  # 5s, 10s between retries
                             continue
                         raw = getattr(response, "content", response)
                         if raw is None:

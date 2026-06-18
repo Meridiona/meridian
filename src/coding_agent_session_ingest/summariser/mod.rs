@@ -34,6 +34,7 @@ use sqlx::SqlitePool;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::{watch, Notify};
+use tracing::Instrument;
 
 use config::SummariserConfig;
 use db::PendingRow;
@@ -181,6 +182,36 @@ pub async fn summarise_one(
     cfg: &SummariserConfig,
     write: bool,
 ) -> Outcome {
+    // One span per sealed segment — exported to OpenObserve via the tracing→OTel
+    // bridge. The `prior_*` attributes make prior-burst continuity (a resumed
+    // session reading as one story) a first-class, queryable signal: whether the
+    // model received the earlier burst's summary as context, and how much.
+    let span = tracing::info_span!(
+        "summarise_segment",
+        row_id = row.id,
+        session_uuid = %row.session_uuid,
+        agent = %row.agent,
+        prior_present = tracing::field::Empty,
+        prior_chars = tracing::field::Empty,
+        transcript_chars = tracing::field::Empty,
+        prompt_chars = tracing::field::Empty,
+        summary_source = tracing::field::Empty,
+        summary_chars = tracing::field::Empty,
+        written = tracing::field::Empty,
+        is_error = tracing::field::Empty,
+    );
+    async move { summarise_one_inner(pool, row, cfg, write).await }
+        .instrument(span)
+        .await
+}
+
+async fn summarise_one_inner(
+    pool: &SqlitePool,
+    row: &PendingRow,
+    cfg: &SummariserConfig,
+    write: bool,
+) -> Outcome {
+    let span = tracing::Span::current();
     let err = |row_id, e: String| Outcome {
         row_id,
         written: false,
@@ -192,9 +223,13 @@ pub async fn summarise_one(
 
     let transcript = match db::fetch_transcript(pool, row.id).await {
         Ok(t) => t,
-        Err(e) => return err(row.id, format!("fetch transcript: {e}")),
+        Err(e) => {
+            span.record("is_error", true);
+            return err(row.id, format!("fetch transcript: {e}"));
+        }
     };
     if transcript.trim().is_empty() {
+        span.record("is_error", true);
         return err(row.id, "empty transcript".into());
     }
     let prior = db::fetch_prior_summary(pool, &row.session_uuid, &row.segment_started_at)
@@ -202,9 +237,36 @@ pub async fn summarise_one(
         .unwrap_or(None);
     let stdin_text = build_prompt(&transcript, prior.as_deref(), cfg.transcript_cap_chars);
 
-    let mut summary: Option<String> = None;
-    let mut source = Source::None;
-    let mut rate_limited = false;
+    // Continuity telemetry: record the prior-burst context on the span and emit a
+    // dedicated log line when it was applied, so a resumed-session summary is
+    // distinguishable from a fresh-burst one in both Traces and Logs.
+    let prior_chars = prior.as_deref().map(str::len).unwrap_or(0) as i64;
+    span.record("prior_present", prior.is_some());
+    span.record("prior_chars", prior_chars);
+    span.record("transcript_chars", transcript.len() as i64);
+    span.record("prompt_chars", stdin_text.len() as i64);
+    if prior.is_some() {
+        tracing::info!(
+            row_id = row.id,
+            prior_chars,
+            "summarising coding-agent segment with prior-burst continuity context"
+        );
+    }
+
+    // Debug child span: the EXACT prompt sent to the engine (post-cap, with the
+    // prior-burst context already inlined). `llm_input` is an OpenObserve FTS key,
+    // so a questionable summary can be traced straight back to what the model
+    // actually saw. Mirrors the classifier's `classifier_input` span.
+    tracing::info_span!(
+        "summariser_prompt",
+        llm_input = %stdin_text,
+        prior_present = prior.is_some(),
+        prior_chars = prior_chars,
+        transcript_chars = transcript.len() as i64,
+        prompt_chars = stdin_text.len() as i64,
+    )
+    .in_scope(|| {});
+
     let mut errors: Vec<String> = Vec::new();
 
     // 1. Primary: the session's own agent, up to `primary_attempts` tries.
@@ -221,68 +283,116 @@ pub async fn summarise_one(
     } else {
         Source::Claude
     };
-    for attempt in 1..=cfg.primary_attempts.max(1) {
-        let res = match primary_source {
-            Source::Codex => codex::run_codex(&stdin_text, cfg).await,
-            Source::Copilot => copilot::run_copilot(&stdin_text, cfg).await,
-            Source::CursorAgent => cursor_agent::run_cursor_agent(&stdin_text, cfg).await,
-            _ => claude::run_claude(&stdin_text, cfg).await,
-        };
-        match res {
-            Ok(out) => {
-                summary = Some(out.summary);
-                source = primary_source;
-                break;
-            }
-            Err(SummariserError::RateLimited(m)) => {
-                rate_limited = true;
-                // Log the primary failure even though MLX will likely save the row
-                // — otherwise a degraded-to-MLX state is invisible (this is exactly
-                // how the missing-PATH outage hid: every row silently became mlx).
-                tracing::warn!(
-                    row_id = row.id,
-                    engine = primary_source.as_str(),
-                    error = %m,
-                    "primary summariser rate-limited — falling back to MLX"
-                );
-                errors.push(format!("{} rate-limited: {m}", primary_source.as_str()));
-                break; // retrying a limit is pointless → fall through to MLX
-            }
-            Err(SummariserError::Failed(m)) => {
-                tracing::warn!(
-                    row_id = row.id,
-                    engine = primary_source.as_str(),
-                    attempt,
-                    error = %m,
-                    "primary summariser attempt failed"
-                );
-                errors.push(format!(
-                    "{} attempt {attempt} failed: {m}",
-                    primary_source.as_str()
-                ));
-            }
-        }
-    }
 
-    // 2. Fallback: local MLX (on any primary failure).
-    if summary.is_none() {
-        match mlx::run_mlx(&stdin_text, cfg).await {
-            Ok(s) => {
-                tracing::warn!(
-                    row_id = row.id,
-                    primary = primary_source.as_str(),
-                    "summarised via MLX fallback — primary engine unavailable"
-                );
-                summary = Some(s);
-                source = Source::Mlx;
+    // Debug child span: the operational story of one summarisation — which engine
+    // ran, how many attempts, whether it fell back to MLX, and wall-clock. Mirrors
+    // the classifier's `llm_inference` span; the per-attempt warn! logs below
+    // attach to it, so a degraded-to-MLX state is never silent.
+    let infer_span = tracing::info_span!(
+        "summariser_inference",
+        primary_engine = primary_source.as_str(),
+        engine_used = tracing::field::Empty,
+        model = tracing::field::Empty,
+        attempts_made = tracing::field::Empty,
+        fell_back_to_mlx = tracing::field::Empty,
+        rate_limited = tracing::field::Empty,
+        elapsed_s = tracing::field::Empty,
+        is_error = tracing::field::Empty,
+    );
+    let t_infer = std::time::Instant::now();
+    let (summary, source, rate_limited, attempts_made) = async {
+        let mut summary: Option<String> = None;
+        let mut source = Source::None;
+        let mut rate_limited = false;
+        let mut attempts_made: u32 = 0;
+        for attempt in 1..=cfg.primary_attempts.max(1) {
+            attempts_made = attempt;
+            let res = match primary_source {
+                Source::Codex => codex::run_codex(&stdin_text, cfg).await,
+                Source::Copilot => copilot::run_copilot(&stdin_text, cfg).await,
+                Source::CursorAgent => cursor_agent::run_cursor_agent(&stdin_text, cfg).await,
+                _ => claude::run_claude(&stdin_text, cfg).await,
+            };
+            match res {
+                Ok(out) => {
+                    summary = Some(out.summary);
+                    source = primary_source;
+                    break;
+                }
+                Err(SummariserError::RateLimited(m)) => {
+                    rate_limited = true;
+                    // Log the primary failure even though MLX will likely save the
+                    // row — otherwise a degraded-to-MLX state is invisible (exactly
+                    // how the missing-PATH outage hid: every row silently → mlx).
+                    tracing::warn!(
+                        row_id = row.id,
+                        engine = primary_source.as_str(),
+                        error = %m,
+                        "primary summariser rate-limited — falling back to MLX"
+                    );
+                    errors.push(format!("{} rate-limited: {m}", primary_source.as_str()));
+                    break; // retrying a limit is pointless → fall through to MLX
+                }
+                Err(SummariserError::Failed(m)) => {
+                    tracing::warn!(
+                        row_id = row.id,
+                        engine = primary_source.as_str(),
+                        attempt,
+                        error = %m,
+                        "primary summariser attempt failed"
+                    );
+                    errors.push(format!(
+                        "{} attempt {attempt} failed: {m}",
+                        primary_source.as_str()
+                    ));
+                }
             }
-            Err(e) => errors.push(format!("mlx failed: {e}")),
         }
+
+        // 2. Fallback: local MLX (on any primary failure).
+        if summary.is_none() {
+            match mlx::run_mlx(&stdin_text, cfg).await {
+                Ok(s) => {
+                    tracing::warn!(
+                        row_id = row.id,
+                        primary = primary_source.as_str(),
+                        "summarised via MLX fallback — primary engine unavailable"
+                    );
+                    summary = Some(s);
+                    source = Source::Mlx;
+                }
+                Err(e) => errors.push(format!("mlx failed: {e}")),
+            }
+        }
+        (summary, source, rate_limited, attempts_made)
     }
+    .instrument(infer_span.clone())
+    .await;
+    // Which concrete model produced this summary — the configured model for the
+    // engine that actually ran (empty config → that CLI's own default).
+    let model_used = match source {
+        Source::Claude => cfg.claude_model.clone(),
+        Source::Codex if !cfg.codex_model.is_empty() => cfg.codex_model.clone(),
+        Source::Codex => "codex-default".into(),
+        Source::CursorAgent if !cfg.cursor_model.is_empty() => cfg.cursor_model.clone(),
+        Source::CursorAgent => "cursor-agent-default".into(),
+        Source::Copilot => "copilot-default".into(),
+        Source::Mlx => "mlx-server".into(),
+        Source::None => String::new(),
+    };
+    infer_span.record("engine_used", source.as_str());
+    infer_span.record("model", model_used.as_str());
+    infer_span.record("attempts_made", attempts_made as i64);
+    infer_span.record("fell_back_to_mlx", matches!(source, Source::Mlx));
+    infer_span.record("rate_limited", rate_limited);
+    infer_span.record("elapsed_s", t_infer.elapsed().as_secs_f64());
+    infer_span.record("is_error", summary.is_none());
 
     let summary = match summary {
         Some(s) => s,
         None => {
+            span.record("is_error", true);
+            span.record("summary_source", Source::None.as_str());
             return Outcome {
                 row_id: row.id,
                 written: false,
@@ -290,9 +400,21 @@ pub async fn summarise_one(
                 rate_limited,
                 error: Some(errors.join("; ")),
                 summary: None,
-            }
+            };
         }
     };
+
+    // Debug child span: the EXACT summary produced (`llm_output`, FTS-indexed).
+    // Pairs with `summariser_prompt` so the full input→output of one summarisation
+    // is reconstructable from the trace. Mirrors the classifier's
+    // `classifier_output` span.
+    tracing::info_span!(
+        "summariser_output",
+        llm_output = %summary,
+        summary_source = source.as_str(),
+        summary_chars = summary.len() as i64,
+    )
+    .in_scope(|| {});
 
     let written = if write {
         db::write_summary(pool, row.id, &summary, source.as_str())
@@ -301,6 +423,10 @@ pub async fn summarise_one(
     } else {
         false
     };
+    span.record("summary_source", source.as_str());
+    span.record("summary_chars", summary.len() as i64);
+    span.record("written", written);
+    span.record("is_error", false);
     let uuid_short: String = row.session_uuid.chars().take(8).collect();
     tracing::info!(
         row_id = row.id, uuid = %uuid_short, source = source.as_str(),
