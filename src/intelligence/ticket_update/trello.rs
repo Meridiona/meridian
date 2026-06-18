@@ -28,7 +28,8 @@ pub async fn apply(cfg: &TrelloConfig, key: &str, write: &WriteField) -> Result<
         | WriteField::Priority(_)
         | WriteField::StoryPoints(_)
         | WriteField::Parent(_)
-        | WriteField::Close => {
+        | WriteField::Close
+        | WriteField::Cancel => {
             return Ok(ApplyResult::redirected(
                 "trello",
                 key,
@@ -153,5 +154,6 @@ fn field_name(write: &WriteField) -> &'static str {
         WriteField::Summary(_) => "summary",
         WriteField::Description(_) => "description",
         WriteField::Close => "close",
+        WriteField::Cancel => "cancel",
     }
 }
