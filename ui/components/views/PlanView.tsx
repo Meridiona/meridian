@@ -10,7 +10,7 @@ import { Card } from '@/components/atoms'
 import { GripHandle } from '@/components/plan/parts'
 import { TaskCardBody, type CardTask } from '@/components/plan/TaskCard'
 import TaskDialog from '@/components/plan/TaskDialog'
-import type { PlanResponse, AvailableTask, PlanItem } from '@/lib/daily-plan'
+import type { PlanResponse, AvailableTask, PlanItem } from '@/lib/api-types'
 import { load as loadBridge, mutate } from '@/lib/bridge'
 
 // ── normalisation ────────────────────────────────────────────────────────────

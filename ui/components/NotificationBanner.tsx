@@ -1,15 +1,15 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // In-app notification banner — the banner-channel half of the notification
-// outbox (the redundant counterpart to the tray's macOS toast). Opens one SSE
-// connection to /api/notifications/stream and renders a dismissible banner per
-// active notification. Distinct from NoticeBar (stateful faults, auto-clear):
+// outbox (the redundant counterpart to the tray's macOS toast). Subscribes to
+// the `notifications-update` Tauri event (via bridge.subscribe) and renders a
+// dismissible banner per active notification. Distinct from NoticeBar (stateful faults, auto-clear):
 // these are discrete events the user dismisses, or that expire on their own.
 
 'use client'
 
 import { useEffect, useState } from 'react'
-import type { BannerNotification } from '@/lib/notifications-banner-store'
+import type { BannerNotification } from '@/lib/api-types'
 import { invoke, subscribe } from '@/lib/bridge'
 
 const SEVERITY_STYLES: Record<string, { bg: string; border: string; text: string; dot: string }> = {

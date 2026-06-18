@@ -193,3 +193,78 @@ export interface IntegrationsResponse {
   azure_devops: boolean
   sync_errors: Partial<Record<string, string>>
 }
+
+// ── Plan (`get_plan` / `plan_action`) ────────────────────────────────────────
+
+// The per-task display meta shared by plan + available rows (was daily-plan.ts's
+// `TaskMeta`; renamed to avoid clashing with the Today `TaskMeta` above).
+export interface PlanTaskMeta {
+  description: string       // short excerpt of description_text
+  epic: string | null       // epic_title, else parent_key
+  priority: string | null
+  issue_type: string
+  story_points: string | null
+}
+
+export interface PlanItem extends PlanTaskMeta {
+  task_key: string
+  position: number
+  origin: string
+  title: string
+  provider: string
+  url: string
+  status: string
+  is_terminal: boolean
+  due_date: string | null
+  due_days: number | null   // whole days until due (negative = overdue), null if no/unparseable date
+}
+
+export interface AvailableTask extends PlanTaskMeta {
+  key: string
+  title: string
+  provider: string
+  url: string
+  status: string
+  is_terminal: boolean
+  due_date: string | null
+  due_days: number | null
+  started: boolean          // status reads as in-progress
+  carryover: boolean        // was in the most recent prior day's plan
+  worked_recently: boolean  // appeared in app_sessions in the last few days
+  score: number
+  origin: string            // primary contributing signal (for storage on add)
+  reason: string            // short friendly label for the UI
+}
+
+export interface PlanResponse {
+  date: string
+  has_table: boolean
+  confirmed: boolean
+  skipped: boolean
+  plan: PlanItem[]
+  suggestions: AvailableTask[]
+  available: AvailableTask[]
+}
+
+// ── Notices (`get_notices`) ──────────────────────────────────────────────────
+
+export interface Notice {
+  notice_id: string
+  severity: 'error' | 'warning'
+  title: string
+  detail: string
+  remedy: string | null
+  raised_at: string
+}
+
+// ── Banner notifications (`get_banner_notifications`) ─────────────────────────
+
+export interface BannerNotification {
+  id: number
+  event_key: string
+  severity: 'info' | 'warning' | 'error'
+  title: string
+  body: string
+  deep_link: string | null
+  created_at: string
+}

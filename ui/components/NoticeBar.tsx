@@ -1,7 +1,7 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// Global fault banner. Opens one SSE connection to /api/notices/stream and
-// renders a banner for each active system notice. Banners auto-disappear when
+// Global fault banner. Subscribes to the `notices-update` Tauri event (via
+// bridge.subscribe) and renders a banner for each active system notice. Banners auto-disappear when
 // the daemon clears the fault — no manual dismiss needed. Placed in the root
 // layout so it appears on every page.
 
@@ -9,7 +9,7 @@
 
 import { useEffect, useState } from 'react'
 import { subscribe } from '@/lib/bridge'
-import type { Notice } from '@/lib/notices-store'
+import type { Notice } from '@/lib/api-types'
 
 const SEVERITY_STYLES: Record<string, { bg: string; border: string; text: string; dot: string }> = {
   error: {
