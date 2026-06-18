@@ -231,7 +231,10 @@ mod tests {
 
     #[test]
     fn seq_from_filename_parses_and_rejects_bad_names() {
-        assert_eq!(seq_from_filename("traces-1718000000000000-42.otlp"), Some(42));
+        assert_eq!(
+            seq_from_filename("traces-1718000000000000-42.otlp"),
+            Some(42)
+        );
         assert_eq!(seq_from_filename("logs-9999-0.otlp"), Some(0));
         // `.tmp` and foreign names have no parseable seq.
         assert_eq!(seq_from_filename("traces-1-0.otlp.tmp"), None);

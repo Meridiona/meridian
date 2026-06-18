@@ -80,7 +80,9 @@ pub async fn ship_one(
         Err(ShipError::Terminal(format!("HTTP {status} for {endpoint}")))
     } else {
         // 401/403 (creds), 429 (rate limit), 5xx, anything else → transient.
-        Err(ShipError::Retryable(format!("HTTP {status} for {endpoint}")))
+        Err(ShipError::Retryable(format!(
+            "HTTP {status} for {endpoint}"
+        )))
     }
 }
 

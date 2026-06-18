@@ -167,6 +167,73 @@ class SessionTypeMatchMetric(BaseMetric):
         return self.success
 
 
+class UntrackedNotTaskMetric(BaseMetric):
+    """The failure mode that matters: does the classifier mark non-task work as
+    `task` (a false-positive link)?  Every forced `task` injects work that never
+    happened into a real ticket's worklog AND buries the genuine untracked work.
+
+    Scope: this metric judges ONLY goldens whose ground truth is NOT a task
+    (expected task_key is null/none — i.e. untracked or overhead). For those it
+    scores 1.0 when the prediction is also non-task (no task_key AND session_type
+    != 'task'), 0.0 when the model forced a task. For goldens that ARE genuine
+    tasks it abstains (score 1.0, reason 'n/a — expected task') so it neither
+    rewards nor penalises task recall — use TaskKeyMatch/SessionType for that.
+    No LLM call.
+    """
+
+    def __init__(self, threshold: float = 1.0):
+        self.threshold = threshold
+        self.score: float = 0.0
+        self.success: bool = False
+        self.reason: str = ""
+        self.error: str | None = None
+
+    @property
+    def __name__(self) -> str:
+        return "UntrackedNotTask"
+
+    @staticmethod
+    def _is_task(parsed: dict) -> bool:
+        key = _normalise_key(parsed.get("task_key"))
+        stype = (parsed.get("session_type") or "").strip().lower()
+        return key is not None or stype == "task"
+
+    def measure(self, test_case: LLMTestCase) -> float:
+        try:
+            expected = _parse_expected(test_case.expected_output)
+            actual = _parse_actual(test_case.actual_output)
+            expected_is_task = self._is_task(expected)
+            if expected_is_task:
+                # Abstain — this metric only guards the non-task cases.
+                self.score = 1.0
+                self.reason = "n/a — expected task"
+                self.success = True
+                return self.score
+            predicted_is_task = self._is_task(actual)
+            self.score = 0.0 if predicted_is_task else 1.0
+            self.reason = (
+                f"expected=non-task ({expected.get('session_type')}), "
+                f"predicted={'TASK ' + str(actual.get('task_key')) if predicted_is_task else actual.get('session_type')}"
+            )
+            self.success = self.score >= self.threshold
+        except Exception as exc:
+            self.error = str(exc)
+            self.score = 0.0
+            self.success = False
+            raise
+        return self.score
+
+    async def a_measure(self, test_case: LLMTestCase) -> float:
+        return self.measure(test_case)
+
+    def is_successful(self) -> bool:
+        if self.error is not None:
+            self.success = False
+        else:
+            self.success = self.score >= self.threshold
+        return self.success
+
+
 # ---------------------------------------------------------------------------
 # Metric lists — import these in eval files
 # ---------------------------------------------------------------------------
@@ -182,4 +249,12 @@ AGENT_E2E_METRICS = (
 CLASSIFIER_METRICS = [
     TaskKeyMatchMetric(threshold=1.0),
     SessionTypeMatchMetric(threshold=1.0),
+]
+
+# Untracked-focused suite: adds the false-positive guard. Use this for the
+# real_labeled golden set, whose whole point is "don't force a task".
+UNTRACKED_FOCUS_METRICS = [
+    TaskKeyMatchMetric(threshold=1.0),
+    SessionTypeMatchMetric(threshold=1.0),
+    UntrackedNotTaskMetric(threshold=1.0),
 ]

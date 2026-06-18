@@ -188,14 +188,40 @@ async def classify(req: ClassifyRequest) -> ClassifyResponse:
             # _classify_apple_fm uses asyncio.new_event_loop() internally;
             # must run in a thread (no existing loop) not in the async handler.
             return m._classify_apple_fm(messages)
+        # Use the SAME inference core as the production classify_session path:
+        # the FSM logits-processor is compiled once and cached (~6 s/call saved)
+        # and _generate_constrained reuses the static system+skill prefix's KV
+        # cache across sessions. The previous naive model(Chat, output_type=...)
+        # call rebuilt the FSM and re-prefilled the whole prompt every request,
+        # making /classify ~3x slower than production for identical output.
         with m.model_session() as model:
-            raw = model(
-                Chat(messages),
-                output_type=m.SessionClassification,
-                max_tokens=m._MAX_TOKENS,
-                sampler=make_sampler(temp=m._TEMPERATURE),
-                verbose=False,
-            )
+            sampler = make_sampler(temp=m._TEMPERATURE)
+            try:
+                logits_processors = m._get_constrained_logits_processors(model)
+                full_ids = m._get_tokenizer().apply_chat_template(
+                    messages, tokenize=True, add_generation_prompt=True
+                )
+                raw, _gen_stats, _hit = m._generate_constrained(
+                    model, full_ids, logits_processors, sampler
+                )
+            except Exception as stream_exc:  # noqa: BLE001
+                # Mirror classify_session's fallback: if outlines' internals shift,
+                # drop the shared prefix cache and fall back to the high-level call
+                # so classification never breaks just because the fast path did.
+                log.warning(
+                    "classify: stream-stats path failed (%s) — falling back to "
+                    "model(...) without prefix cache",
+                    stream_exc,
+                )
+                with m._prompt_cache_lock:
+                    m._invalidate_prompt_cache()
+                raw = model(
+                    Chat(messages),
+                    output_type=m.SessionClassification,
+                    max_tokens=m._MAX_TOKENS,
+                    sampler=sampler,
+                    verbose=False,
+                )
         return m.SessionClassification.model_validate_json(raw)
 
     try:

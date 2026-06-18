@@ -256,7 +256,9 @@ fn sweep_tmp_orphans(pending: &Path) {
         let age = entry
             .metadata()
             .and_then(|m| m.modified())
-            .map(|mt| now.saturating_sub(mt.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()))
+            .map(|mt| {
+                now.saturating_sub(mt.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs())
+            })
             .unwrap_or(u64::MAX);
         if age >= TMP_ORPHAN_MAX_AGE_SECS {
             let _ = std::fs::remove_file(&path);
@@ -435,8 +437,18 @@ mod tests {
 
         let sorted = list_pending_oldest_first(&pending);
         assert_eq!(sorted.len(), 2, "tmp + foreign names excluded");
-        assert!(sorted[0].file_name().unwrap().to_str().unwrap().ends_with("-0.otlp"));
-        assert!(sorted[1].file_name().unwrap().to_str().unwrap().ends_with("-1.otlp"));
+        assert!(sorted[0]
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .ends_with("-0.otlp"));
+        assert!(sorted[1]
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .ends_with("-1.otlp"));
     }
 
     #[test]
