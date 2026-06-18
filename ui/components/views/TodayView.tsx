@@ -463,6 +463,12 @@ export default function TodayView() {
     )
   }
 
+  // Total time in coding category: foreground coding sessions + active if coding
+  // + autonomous agent time (Claude Code / Codex ran while you were away).
+  const coding_s = data.sessions.filter(s => s.cat === 'coding').reduce((a, s) => a + s.dur, 0)
+    + (data.active?.cat === 'coding' ? data.active.elapsed_s : 0)
+    + (data.autonomous_s ?? 0)
+
   // Build buckets. The "% of day" denominator is total ENGAGED time (your
   // foreground presence + autonomous agent time), so a task carrying agent work
   // never exceeds 100%. Falls back to focus_s on older API responses.
@@ -594,6 +600,7 @@ export default function TodayView() {
         agent_s={data.agent_s}
         supervised_s={data.supervised_s}
         autonomous_s={data.autonomous_s}
+        coding_s={coding_s}
         switch_count={data.switch_count}
       />
 

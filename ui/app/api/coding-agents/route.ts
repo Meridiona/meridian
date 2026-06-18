@@ -24,11 +24,11 @@ export async function GET() {
   const date = todayString()
   try {
     const db = getDb()
-    // Coding-agent rows carry claude_session_uuid and a local-day bucket.
+    // Coding-agent rows carry coding_agent_session_uuid and a local-day bucket.
     const rows = db.prepare(`
       SELECT app_name, started_at, ended_at
       FROM app_sessions
-      WHERE claude_session_uuid IS NOT NULL
+      WHERE coding_agent_session_uuid IS NOT NULL
         AND substr(started_at, 1, 10) = ?
         AND app_name IN ('Claude Code', 'Codex')
     `).all(date) as Array<{ app_name: string; started_at: string; ended_at: string }>

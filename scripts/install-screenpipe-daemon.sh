@@ -127,10 +127,32 @@ while launchctl print "${GUI_TARGET}/${LABEL}" >/dev/null 2>&1; do
 done
 
 echo "→ bootstrap ${LABEL}"
+# `meridian stop` runs `launchctl disable` to clear the KeepAlive intent, which
+# persists in launchd's per-user override DB. bootstrap REFUSES a disabled label
+# with EIO (errno 5), so the override must be cleared FIRST — otherwise a plain
+# reinstall (install-dev.sh) can't revive a service that was `meridian stop`-ped.
 launchctl enable "${GUI_TARGET}/${LABEL}" 2>/dev/null || true
-launchctl bootstrap "${GUI_TARGET}" "${PLIST_DEST}"
-launchctl enable "${GUI_TARGET}/${LABEL}"
-launchctl kickstart -k "${GUI_TARGET}/${LABEL}"
+# bootstrap is genuinely flaky: it EIOs when the prior domain entry hasn't fully
+# cleared even after the bootout-wait above. Do NOT let one transient failure
+# abort the whole install under `set -e` (that's what left screenpipe down after
+# a stop). Retry, re-enabling each round, and treat "already loaded" as success.
+_bs_try=0
+until launchctl bootstrap "${GUI_TARGET}" "${PLIST_DEST}" 2>/dev/null; do
+    if launchctl print "${GUI_TARGET}/${LABEL}" >/dev/null 2>&1; then
+        break  # already in the domain — bootstrap only "failed" because it's present
+    fi
+    _bs_try=$(( _bs_try + 1 ))
+    if [[ "${_bs_try}" -ge 5 ]]; then
+        echo "⚠ bootstrap ${LABEL} failed after ${_bs_try} attempts — see launchctl print" >&2
+        break
+    fi
+    launchctl enable "${GUI_TARGET}/${LABEL}" 2>/dev/null || true
+    sleep 1
+done
+# Always finish with enable + kickstart, even if bootstrap was a no-op above, so a
+# disabled-but-loaded service ends up enabled AND running.
+launchctl enable "${GUI_TARGET}/${LABEL}" 2>/dev/null || true
+launchctl kickstart -k "${GUI_TARGET}/${LABEL}" 2>/dev/null || true
 
 echo
 echo "✓ screenpipe installed and started"

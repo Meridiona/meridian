@@ -1,3 +1,32 @@
+# [1.59.0](https://github.com/Meridiona/meridian/compare/v1.58.1...v1.59.0) (2026-06-17)
+
+
+### Features
+
+* **classifier:** plan-only candidate set + 30-min per-ticket continuity context ([#309](https://github.com/Meridiona/meridian/issues/309)) ([f19d42c](https://github.com/Meridiona/meridian/commit/f19d42c16152ae9ed70615364cb53b3046d40b96))
+
+## [1.58.1](https://github.com/Meridiona/meridian/compare/v1.58.0...v1.58.1) (2026-06-17)
+
+
+### Bug Fixes
+
+* **install:** revive screenpipe after `meridian stop` (enable before bootstrap + retry) ([#308](https://github.com/Meridiona/meridian/issues/308)) ([e277bbb](https://github.com/Meridiona/meridian/commit/e277bbb0e577c4fe2a87a285899b421627a3b920))
+
+# [1.58.0](https://github.com/Meridiona/meridian/compare/v1.57.0...v1.58.0) (2026-06-17)
+
+
+### Features
+
+* **observability:** land stranded [#305](https://github.com/Meridiona/meridian/issues/305) trace/dashboard work + rename claude_session_uuid → coding_agent_session_uuid ([#306](https://github.com/Meridiona/meridian/issues/306)) ([1f51e1d](https://github.com/Meridiona/meridian/commit/1f51e1d853ccdb8bad9e5d61625275c44cff71ee))
+
+# [1.57.0](https://github.com/Meridiona/meridian/compare/v1.56.0...v1.57.0) (2026-06-17)
+
+
+### Features
+
+* **observability:** one root trace per classified session + frame-range attribution ([#304](https://github.com/Meridiona/meridian/issues/304)) ([0d76152](https://github.com/Meridiona/meridian/commit/0d76152fb06e58823ef2c408c166ec5e582d87dd))
+* **today:** replace AI-assisted % with coding time + fix Shape of Day ([#307](https://github.com/Meridiona/meridian/issues/307)) ([d79b33b](https://github.com/Meridiona/meridian/commit/d79b33b8a23000c3e76f1d2998a766fdcbfd2d03))
+
 # [1.56.0](https://github.com/Meridiona/meridian/compare/v1.55.0...v1.56.0) (2026-06-17)
 
 

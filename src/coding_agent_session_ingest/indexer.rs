@@ -636,7 +636,7 @@ mod tests {
 
         let rows: Vec<(String, Option<String>, String)> = sqlx::query_as(
             "SELECT segment_started_at, sealed_at, task_method FROM app_sessions \
-             WHERE claude_session_uuid='s1' ORDER BY segment_started_at",
+             WHERE coding_agent_session_uuid='s1' ORDER BY segment_started_at",
         )
         .fetch_all(&pool)
         .await
@@ -660,11 +660,12 @@ mod tests {
         let now = base() + ChronoDuration::seconds(120);
         // Hook path: session_ended=true → the single (last) segment seals now.
         register_session(&pool, &p, true, now).await;
-        let sealed: Option<String> =
-            sqlx::query_scalar("SELECT sealed_at FROM app_sessions WHERE claude_session_uuid='s2'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let sealed: Option<String> = sqlx::query_scalar(
+            "SELECT sealed_at FROM app_sessions WHERE coding_agent_session_uuid='s2'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert!(sealed.is_some());
     }
 

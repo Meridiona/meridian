@@ -55,7 +55,7 @@ The user message contains:
 
 - **SESSION** — app, duration, top window titles, and the screen content (OCR / a11y). Decide the category yourself from this evidence; no category is provided.
 - **CANDIDATE TICKETS** — all open tracked tickets (Jira, Linear, GitHub, Trello, Azure DevOps). These are the only tickets you may choose from.
-- **RECENT SESSIONS** (previous 5) — app / time / duration / which ticket each mapped to (no screen text). A **weak disambiguation hint only**: it can support a match when the current session ALSO has matching evidence, but it must never override what the current session itself shows. Recent activity on a ticket does not make the current session that ticket.
+- **RECENT WORK CONTEXT** — a summary of the developer's tracked work in the **last 30 minutes** before this session, aggregated **per ticket**: each line is a ticket they worked, with the total time spent, how many sessions it spanned, and how long before this session it was last active (most-recently-active ticket first). It lists only tickets that are in the candidate set above. This is a **weak disambiguation hint only**: it can support a match when the current session ALSO has matching evidence, but it must never override what the current session itself shows. Recent activity on a ticket does not make the current session that ticket — and a ticket worked 25 minutes ago is a much weaker hint than one active a minute ago. When this block is absent, there was no confident recent tracked work to report.
 
 ## Available capabilities
 
@@ -74,9 +74,9 @@ Use database queries sparingly — session data and candidate tickets are alread
 
 Pick **exactly one** of the candidate `task_key` values, OR return `null` if **none** fit the session.
 
-Use **context from previous sessions** to make smarter decisions:
-- If the current session is **generic** (e.g., Slack) but follows/precedes work on a specific ticket, consider linking it to that task.
-- If sessions alternate (coding → Slack → coding), treat them as potentially the **same task** if separated by only a few minutes.
+Use the **recent work context** to make smarter decisions:
+- If the current session is **generic** (e.g., Slack) but the recent context shows sustained, very-recent work on a specific ticket, consider linking it to that task — *only if* this session's own evidence is at least consistent with it.
+- The recent context is **recency- and time-weighted**: prefer the ticket that was active most recently and for the most time. A ticket last active a minute ago is a strong tie-breaker; one last active ~25 minutes ago is weak. When two or more tickets appear, the dev was context-switching — continuity is ambiguous, so lean harder on the current session's own evidence.
 - Overhead (system settings, music, etc) should always be `null` regardless of context.
 
 ## Output format
@@ -192,18 +192,22 @@ Capture every category the session shows evidence of:
 **Bad — speculative + marketing:**
 > Successfully refactored the workflow to be more efficient. The new linear design will be much faster. Next steps include adding the worklog poster and testing end-to-end on Jira.
 
-## Using Context from Previous Sessions
+## Using the Recent Work Context
 
-You have access to **the previous 5 sessions** to disambiguate the current session:
+The **RECENT WORK CONTEXT** block summarises the developer's tracked work over the prior 30 minutes, per ticket, with time spent and how recently each was active. Use it to disambiguate the current session — never to override it.
 
-**Example: Coding → Communication about same work → Coding**
-- Session 1 (5 min ago): VS Code, editing KAN-42 implementation → task_key: KAN-42, confidence: 0.90
-- Session 2 (3 min ago): Slack, discussing PR review for KAN-42 → **if related to same work**, task_key: KAN-42, confidence: 0.75 (work mention + prior context)
-- Session 3 (now): VS Code, editing same file → task_key: KAN-42, confidence: 0.85 (context continuity)
+**Example: the recent context shows**
+```
+RECENT WORK CONTEXT — the developer's tracked work in the last 30 minutes before this session...
+  • KAN-42 — ~22 min over 5 sessions, last active just before this session
+```
+- Current session is **VS Code editing the same file** referenced by KAN-42 → strong: the recent context *and* the current evidence agree → task_key: KAN-42, confidence ~0.85.
+- Current session is **Slack** with the channel/thread discussing the KAN-42 PR → the current content itself is about KAN-42, and the recent context supports it → task_key: KAN-42, confidence ~0.75.
+- Current session is **Slack** showing a generic standup or an unrelated thread → the current evidence is NOT about KAN-42 → return `null` / `untracked` (or a different ticket if its own evidence matches). **Do not inherit KAN-42 just because it was the recent task.**
 
-**Decision:** Only link Session 2 to KAN-42 if Session 2's **own content** shows it is about that work (the OCR/window discusses or searches the KAN-42 work). If Session 2 is generic, OR shows the user has moved to *different* work (another project, another team's doc, an unrelated meeting), return `null` with `session_type: "untracked"` (or a different ticket if its own evidence matches one) — **do not inherit KAN-42 just because it was the recent task.** Continuity is a tie-breaker between plausible matches, never a substitute for current-session evidence.
+**Decision rule:** continuity is a tie-breaker between plausible matches, never a substitute for current-session evidence. Weight the recent context by recency and time — a ticket "last active just before this session" with 22 minutes behind it is a strong tie-breaker; one "last active ~25 min before this session" is weak. When the block lists **more than one ticket**, the developer was switching context, so continuity is ambiguous: rely on the current session's own evidence.
 
-Example reasoning for Session 2 (if task-related): `"Slack discusses PR review for KAN-42 implementation mentioned in prior VS Code session; linked via work context."`
+Example reasoning (if task-related): `"Slack thread discusses the KAN-42 PR; recent context shows 22 min on KAN-42 ending just before this session — linked via work context."`
 
 ## Scoring heuristics
 

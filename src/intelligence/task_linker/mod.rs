@@ -241,6 +241,14 @@ async fn call_mlx_server(
 #[tracing::instrument(
     skip_all,
     fields(
+        // `otel.name` overrides the EXPORTED span name (tracing-opentelemetry
+        // honours this field), so the OpenObserve trace HEADER reads
+        // "run_task_linking · session <id>" instead of a bare op name — you see
+        // which session a trace is for without opening a span. No dashboard pins
+        // operation_name='run_task_linking' (they key on classify_session), so
+        // renaming is safe; the "run_task_linking" prefix is kept for continuity.
+        otel.name = field::Empty,
+        session_id = field::Empty,
         run_id = field::Empty,
         cursor = field::Empty,
         trivial = field::Empty,
@@ -250,7 +258,24 @@ async fn call_mlx_server(
         outcome = field::Empty,
     )
 )]
-pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<TaskLinkOutcome> {
+pub async fn run_task_linking(
+    pool: &SqlitePool,
+    cfg: &Config,
+    tick_link: Option<opentelemetry::trace::SpanContext>,
+) -> Result<TaskLinkOutcome> {
+    // This call is its OWN root trace — the caller deliberately does not parent it
+    // under the poll/startup tick, so each drained session is a self-contained
+    // trace (one `classify_session` subtree, not N siblings sharing one tick
+    // trace). Link back to the triggering tick so the daemon→session relationship
+    // stays navigable in OpenObserve without collapsing the drain into one trace.
+    if let Some(sc) = tick_link {
+        use tracing_opentelemetry::OpenTelemetrySpanExt;
+        tracing::Span::current().add_link_with_attributes(
+            sc,
+            vec![opentelemetry::KeyValue::new("link.kind", "poll_tick")],
+        );
+    }
+
     if !cfg.classification_enabled {
         tracing::Span::current().record("outcome", "disabled");
         debug!("classification disabled — skipping");
@@ -377,6 +402,15 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<TaskLin
 
     // BATCH_LIMIT is 1, so there is exactly one session in classifiable_ids.
     let failing_session_id = classifiable_ids[0];
+    // Stamp the session id on the root span so the trace HEADER identifies which
+    // session this one-session-per-trace run is about (app_name + the rest of the
+    // app_sessions row land on the MLX `db_fetch` span). `otel.name` rewrites the
+    // exported span name shown in the OpenObserve header.
+    span.record("session_id", failing_session_id);
+    span.record(
+        "otel.name",
+        format!("run_task_linking · session {failing_session_id}").as_str(),
+    );
 
     let input = ClassifyInput {
         session_ids: classifiable_ids,
@@ -474,7 +508,11 @@ pub async fn run_task_linking(pool: &SqlitePool, cfg: &Config) -> Result<TaskLin
 /// order, so it never collides with the screen-capture cursor. The MLX server
 /// reasons over each row's `session_summary` (not the transcript); we persist
 /// the task fields WITHOUT touching `session_summary`. Returns rows classified.
-pub async fn run_coding_agent_classification(pool: &SqlitePool, cfg: &Config) -> Result<usize> {
+pub async fn run_coding_agent_classification(
+    pool: &SqlitePool,
+    cfg: &Config,
+    tick_link: Option<opentelemetry::trace::SpanContext>,
+) -> Result<usize> {
     if !cfg.classification_enabled {
         return Ok(0);
     }
@@ -498,15 +536,33 @@ pub async fn run_coding_agent_classification(pool: &SqlitePool, cfg: &Config) ->
     // whole batch.
     let mut n = 0usize;
     for id in ids {
-        let input = ClassifyInput {
-            session_ids: vec![id],
-            meridian_db: cfg.meridian_db.clone(),
-            traceparent: crate::observability::current_traceparent(),
-        };
+        use tracing::Instrument;
 
-        let out = match call_mlx_server(&input, cfg.mlx_server_port, cfg.classification_timeout_s)
-            .await
-        {
+        // One root trace per coding-agent session (same rationale as the ETL
+        // classify path): the `current_traceparent()` sent to the MLX server is
+        // captured INSIDE this span, so the server's `classify_session` subtree
+        // nests under this session alone. Link back to the triggering tick.
+        let sess_span = tracing::info_span!("coding_agent_classify_session", session_id = id);
+        if let Some(sc) = tick_link.clone() {
+            use tracing_opentelemetry::OpenTelemetrySpanExt;
+            sess_span.add_link_with_attributes(
+                sc,
+                vec![opentelemetry::KeyValue::new("link.kind", "poll_tick")],
+            );
+        }
+
+        let out = async {
+            let input = ClassifyInput {
+                session_ids: vec![id],
+                meridian_db: cfg.meridian_db.clone(),
+                traceparent: crate::observability::current_traceparent(),
+            };
+            call_mlx_server(&input, cfg.mlx_server_port, cfg.classification_timeout_s).await
+        }
+        .instrument(sess_span)
+        .await;
+
+        let out = match out {
             Ok(out) => out,
             Err(e) => {
                 // Don't abort the whole batch on one row — log and move on so a

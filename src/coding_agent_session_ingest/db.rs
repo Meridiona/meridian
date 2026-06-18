@@ -1,8 +1,8 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // SQLite read/write layer for coding-agent rows (app_sessions rows carrying a
-// non-NULL claude_session_uuid). One row per segment, keyed on
-// (claude_session_uuid, segment_started_at).
+// non-NULL coding_agent_session_uuid). One row per segment, keyed on
+// (coding_agent_session_uuid, segment_started_at).
 //
 // Lifecycle:
 //   * LIVE   — sealed_at IS NULL, task_method = 'coding_agent_live'.
@@ -128,11 +128,11 @@ pub async fn upsert_segment(
             category, confidence, category_method,
             session_text, session_text_source,
             task_method,
-            claude_session_uuid, segment_started_at, sealed_at
+            coding_agent_session_uuid, segment_started_at, sealed_at
         )
         VALUES (?, ?, ?, ?,  ?, ?, ?, ?,  ?, ?,  ?, ?, ?,  ?, ?,  ?,  ?, ?, ?)
-        ON CONFLICT (claude_session_uuid, segment_started_at)
-        WHERE claude_session_uuid IS NOT NULL
+        ON CONFLICT (coding_agent_session_uuid, segment_started_at)
+        WHERE coding_agent_session_uuid IS NOT NULL
         DO UPDATE SET
             started_at          = excluded.started_at,
             ended_at            = excluded.ended_at,
@@ -170,7 +170,7 @@ pub async fn upsert_segment(
     .context("upsert coding-agent segment")?;
 
     let id: Option<i64> = sqlx::query_scalar(
-        "SELECT id FROM app_sessions WHERE claude_session_uuid = ? AND segment_started_at = ?",
+        "SELECT id FROM app_sessions WHERE coding_agent_session_uuid = ? AND segment_started_at = ?",
     )
     .bind(&segment.session_uuid)
     .bind(&segment.segment_started_at)
@@ -195,7 +195,7 @@ pub async fn seal_stale_open_rows(
         r#"
         UPDATE app_sessions
         SET    sealed_at = ?, task_method = ?
-        WHERE  claude_session_uuid IS NOT NULL
+        WHERE  coding_agent_session_uuid IS NOT NULL
           AND  sealed_at IS NULL
           AND  ended_at < ?
         "#,
@@ -222,7 +222,7 @@ pub async fn seal_live_rows_of_source(
         r#"
         UPDATE app_sessions
         SET    sealed_at = ?, task_method = ?
-        WHERE  claude_session_uuid IS NOT NULL
+        WHERE  coding_agent_session_uuid IS NOT NULL
           AND  sealed_at IS NULL
           AND  session_text_source = ?
         "#,
@@ -250,13 +250,13 @@ pub async fn seal_superseded_rows_of_source(
         r#"
         UPDATE app_sessions
         SET    sealed_at = ?1, task_method = ?2
-        WHERE  claude_session_uuid IS NOT NULL
+        WHERE  coding_agent_session_uuid IS NOT NULL
           AND  sealed_at IS NULL
           AND  session_text_source = ?3
           AND  EXISTS (
                  SELECT 1 FROM app_sessions n
                  WHERE  n.session_text_source = ?3
-                   AND  n.claude_session_uuid <> app_sessions.claude_session_uuid
+                   AND  n.coding_agent_session_uuid <> app_sessions.coding_agent_session_uuid
                    AND  n.started_at > app_sessions.ended_at
                )
         "#,
@@ -271,10 +271,10 @@ pub async fn seal_superseded_rows_of_source(
 }
 
 /// Delete every Claude/Codex-owned app_sessions row (reseed). Only touches rows
-/// the indexer owns (`claude_session_uuid IS NOT NULL`); never screen-frame
+/// the indexer owns (`coding_agent_session_uuid IS NOT NULL`); never screen-frame
 /// rows. Returns rows deleted.
 pub async fn delete_claude_session_rows(pool: &SqlitePool) -> Result<u64> {
-    let res = sqlx::query("DELETE FROM app_sessions WHERE claude_session_uuid IS NOT NULL")
+    let res = sqlx::query("DELETE FROM app_sessions WHERE coding_agent_session_uuid IS NOT NULL")
         .execute(pool)
         .await
         .context("delete coding-agent rows")?;
@@ -283,16 +283,16 @@ pub async fn delete_claude_session_rows(pool: &SqlitePool) -> Result<u64> {
 
 // ──────────────────────── Read paths ────────────────────────────────────────
 
-/// Return {claude_session_uuid: latest_ended_at} across all its segments.
+/// Return {coding_agent_session_uuid: latest_ended_at} across all its segments.
 /// Used by the daemon's change-detection: skip parsing a JSONL whose mtime
 /// hasn't moved past the latest stored `ended_at`.
 pub async fn fetch_session_endpoints(pool: &SqlitePool) -> Result<HashMap<String, String>> {
     let rows: Vec<(String, String)> = sqlx::query_as(
         r#"
-        SELECT claude_session_uuid, MAX(ended_at) AS ended_at
+        SELECT coding_agent_session_uuid, MAX(ended_at) AS ended_at
         FROM   app_sessions
-        WHERE  claude_session_uuid IS NOT NULL
-        GROUP  BY claude_session_uuid
+        WHERE  coding_agent_session_uuid IS NOT NULL
+        GROUP  BY coding_agent_session_uuid
         "#,
     )
     .fetch_all(pool)
@@ -307,7 +307,7 @@ pub async fn fetch_session_endpoints(pool: &SqlitePool) -> Result<HashMap<String
 pub async fn sealed_high_water(pool: &SqlitePool, uuid: &str) -> Result<Option<String>> {
     let hwm: Option<String> = sqlx::query_scalar(
         "SELECT MAX(ended_at) FROM app_sessions \
-         WHERE claude_session_uuid = ? AND sealed_at IS NOT NULL",
+         WHERE coding_agent_session_uuid = ? AND sealed_at IS NOT NULL",
     )
     .bind(uuid)
     .fetch_one(pool)
