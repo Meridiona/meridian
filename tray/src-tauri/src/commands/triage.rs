@@ -5,8 +5,10 @@
 //! the user's cleanup decisions back into `pm_task_curation`. Like every UI
 //! action, nothing is pushed to the real tracker here — the writes record intent
 //! in `meridian.db`; the daemon's apply-sweep is what later pushes a close out.
-//! (The third sub-route, `triage/apply`, shells out to `meridian ticket-update`
-//! and so stays a process command, not a DB write — it is not here.)
+//! The third sub-route, `triage/apply` ([`apply_ticket_fix`]), applies a hygiene
+//! fix to the REAL tracker — it shells out to `meridian ticket-update` (tracker
+//! auth lives in the daemon), so it's a process spawn, not a DB write, but it
+//! lives here with its triage siblings.
 //!
 //! Each write resolves request-scoped time (`now`, the snooze expiry) here so the
 //! [`meridian_core::triage`] write fns stay deterministic + unit-testable, and
@@ -24,6 +26,7 @@
 //! - [`crate::commands::dashboard`] — sibling DB-read commands.
 
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tauri::State;
 
 /// Seconds-precision UTC RFC3339 (`2026-06-18T10:00:00Z`) — matches the route's
@@ -176,4 +179,104 @@ pub async fn triage_ignore(
         task_key: body.task_key,
         ignored,
     })
+}
+
+/// POST body for [`apply_ticket_fix`] (`{ provider, key, field, value? }`).
+#[derive(Debug, Deserialize)]
+pub struct ApplyBody {
+    pub provider: String,
+    pub key: String,
+    pub field: String,
+    /// The new field value (`@me` for assign-self); empty for value-less fixes.
+    #[serde(default)]
+    pub value: String,
+}
+
+/// The JSON `meridian ticket-update` prints (its last stdout line). `applied` =
+/// the write landed + the local mirror re-synced; `redirected` = no provider API
+/// for that field, so the dialog opens `browse_url` instead.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApplyOutput {
+    pub status: String,
+    pub provider: String,
+    pub key: String,
+    pub field: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub browse_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Ack for [`apply_ticket_fix`] — mirrors the route's `{ ok, result }`.
+#[derive(Debug, Serialize)]
+pub struct ApplyResponse {
+    pub ok: bool,
+    pub result: ApplyOutput,
+}
+
+/// Apply one board-hygiene fix to the real tracker (the ported /api/triage/apply
+/// POST). Spawns `meridian ticket-update --provider <p> --key <k> --field <f>
+/// --value <v>` (args via argv, not a shell string — no injection) with a 60 s
+/// timeout (a write can re-sync the whole board), and relays the CLI's JSON
+/// result. Errors (the route's 400/500) surface to the dialog as the message.
+#[tauri::command]
+#[tracing::instrument(skip(body), fields(provider = %body.provider, key = %body.key, field = %body.field))]
+pub async fn apply_ticket_fix(body: ApplyBody) -> Result<ApplyResponse, String> {
+    if body.provider.is_empty() || body.key.is_empty() || body.field.is_empty() {
+        return Err("provider, key and field are required".to_string());
+    }
+
+    let bin = crate::install::meridian_bin();
+    let child = tokio::process::Command::new(&bin)
+        .args([
+            "ticket-update",
+            "--provider",
+            &body.provider,
+            "--key",
+            &body.key,
+            "--field",
+            &body.field,
+            "--value",
+            &body.value,
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output();
+
+    let output = match tokio::time::timeout(Duration::from_secs(60), child).await {
+        Err(_) => return Err("ticket-update timed out after 60s".to_string()),
+        Ok(Err(e)) => {
+            tracing::warn!(bin = %bin, error = %e, "ticket-update spawn failed");
+            return Err(format!("spawn error: {e}"));
+        }
+        Ok(Ok(o)) => o,
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let msg = if stderr.is_empty() {
+            format!("ticket-update exited {:?}", output.status.code())
+        } else {
+            stderr
+        };
+        tracing::warn!("ticket-update non-zero: {msg}");
+        return Err(msg);
+    }
+
+    // The CLI logs the re-sync before the result JSON — take the last non-empty line.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let last = stdout.lines().rfind(|l| !l.trim().is_empty());
+    match last.and_then(|l| serde_json::from_str::<ApplyOutput>(l).ok()) {
+        Some(result) => {
+            tracing::info!(status = %result.status, "ticket-update applied");
+            Ok(ApplyResponse { ok: true, result })
+        }
+        None => {
+            let s = stdout.trim();
+            let skip = s.chars().count().saturating_sub(200);
+            let tail: String = s.chars().skip(skip).collect();
+            Err(format!("could not parse result: {tail}"))
+        }
+    }
 }

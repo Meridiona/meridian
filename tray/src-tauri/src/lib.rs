@@ -148,6 +148,7 @@ pub fn run() {
             commands::plan_action,
             commands::triage_decision,
             commands::triage_ignore,
+            commands::apply_ticket_fix,
             commands::dismiss_notification,
             commands::delete_notice,
             commands::edit_worklog,

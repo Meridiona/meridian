@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react'
 import { TaskKey, ProviderGlyph, StatusPill } from '@/components/atoms'
 import type { TaskSummary } from '@/app/api/tasks/route'
 import type { HygieneIssue } from '@/lib/hygiene'
-import { load } from '@/lib/bridge'
+import { load, mutate } from '@/lib/bridge'
 
 const PRIORITIES = ['Highest', 'High', 'Medium', 'Low', 'Lowest']
 
@@ -118,13 +118,11 @@ function FixRow({ issue, index, task, onApplied }: { issue: HygieneIssue; index:
         field: fix.field,
         value: fix.control === 'assign_self' ? '@me' : val.trim(),
       }
-      const res = await fetch('/api/triage/apply', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-      const data = await res.json()
-      if (!res.ok) { setState('error'); setMsg(data.error ?? 'Save failed'); return }
-      const result = data.result as { status: string; browse_url?: string; reason?: string }
+      // Dual-path: apply_ticket_fix (Rust) in the app, /api/triage/apply in a
+      // browser. mutate throws the route's error text on failure → show it.
+      const data = await mutate<{ result: { status: string; browse_url?: string; reason?: string } }>(
+        '/api/triage/apply', 'apply_ticket_fix', payload)
+      const result = data.result
       if (result.status === 'applied') {
         setState('applied'); setMsg('Saved to tracker')
         onApplied?.()
@@ -135,8 +133,8 @@ function FixRow({ issue, index, task, onApplied }: { issue: HygieneIssue; index:
         const url = result.browse_url || task.url
         if (url) window.open(url, '_blank', 'noopener')
       }
-    } catch {
-      setState('error'); setMsg('Network error')
+    } catch (e) {
+      setState('error'); setMsg(e instanceof Error ? e.message : 'Network error')
     }
   }
 
