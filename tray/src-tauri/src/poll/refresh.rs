@@ -2,9 +2,9 @@
 //! The poll loop's per-tick refreshers — each pulls one slice of state and
 //! writes it into the shared [`AppState`].
 //!
-//! `refresh_health` runs the local health check directly (no HTTP); the rest
-//! still fetch the transitional `/api/*` endpoints until those reads finish
-//! folding into Rust commands.
+//! All reads are now direct DB reads through [`meridian_core`] (the same readers
+//! the dashboard commands call) — the tray no longer round-trips the Next server
+//! over HTTP, so it keeps working after the export cutover removes that server.
 //!
 //! # Related
 //! - [`super`] — the loop that schedules these and the tray-sync that follows.
@@ -13,41 +13,14 @@
 
 use crate::commands::health::check_health;
 use crate::state::{ActiveSession, AppState, HealthStatus};
-use crate::sys::{notify, ui_base};
-use reqwest::Client;
-use serde::Deserialize;
+use crate::sys::notify;
+use meridian_core::SqlitePool;
 use std::sync::{Arc, Mutex};
 use tauri::Emitter;
 
-#[derive(Deserialize)]
-struct ActiveResp {
-    app_name: Option<String>,
-    elapsed_s: Option<u64>,
-}
-
-#[derive(Deserialize)]
-struct TodayResp {
-    focus_s: Option<u64>,
-    switch_count: Option<u32>,
-}
-
-#[derive(Deserialize)]
-struct WorklogItem {
-    state: String,
-}
-
-#[derive(Deserialize)]
-struct WorklogsResp {
-    items: Vec<WorklogItem>,
-}
-
 /// Run the local health check, fold it into [`AppState`], and fire the
 /// went-quiet / back-online toasts (debounced to the 2nd consecutive failure).
-pub(super) async fn refresh_health(
-    app: &tauri::AppHandle,
-    _client: &Client,
-    state: &Arc<Mutex<AppState>>,
-) {
+pub(super) async fn refresh_health(app: &tauri::AppHandle, state: &Arc<Mutex<AppState>>) {
     let hr = check_health().await;
 
     // Push the health detail to the dashboard webview (the ported
@@ -97,72 +70,50 @@ pub(super) async fn refresh_health(
     }
 }
 
-/// Fetch the active session and store the app name + elapsed seconds.
-pub(super) async fn refresh_active(client: &Client, state: &Arc<Mutex<AppState>>) {
-    let resp = client
-        .get(format!("{}/api/active", ui_base()))
-        .send()
-        .await
-        .ok();
-
-    let session = match resp {
-        None => None,
-        Some(r) if !r.status().is_success() => None,
-        Some(r) => {
-            let ar: ActiveResp = r.json().await.unwrap_or(ActiveResp {
-                app_name: None,
-                elapsed_s: None,
-            });
-            ar.app_name.map(|app_name| ActiveSession {
-                app_name,
-                elapsed_s: ar.elapsed_s.unwrap_or(0),
-            })
+/// Read the active session (direct DB) and store the app name + elapsed seconds.
+/// On a read error we keep the previous value rather than clearing the pill on a
+/// transient blip.
+pub(super) async fn refresh_active(pool: &SqlitePool, state: &Arc<Mutex<AppState>>) {
+    let now = chrono::Utc::now().to_rfc3339();
+    let session = match meridian_core::active::get_active_view(pool, &now).await {
+        Ok(Some(v)) => Some(ActiveSession {
+            app_name: v.app_name,
+            elapsed_s: v.elapsed_s.max(0) as u64,
+        }),
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!(error = %e, "refresh_active failed");
+            return;
         }
     };
-
     state.lock().unwrap().active_session = session;
 }
 
-/// Fetch today's totals (focus seconds + switch count) into [`AppState`].
-pub(super) async fn refresh_today(client: &Client, state: &Arc<Mutex<AppState>>) {
-    let resp = client
-        .get(format!("{}/api/today", ui_base()))
-        .send()
-        .await
-        .ok();
-
-    if let Some(r) = resp {
-        if let Ok(tr) = r.json::<TodayResp>().await {
+/// Read today's totals (focus seconds + switch count) into [`AppState`] (direct DB).
+pub(super) async fn refresh_today(pool: &SqlitePool, state: &Arc<Mutex<AppState>>) {
+    let date = meridian_core::date::today_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    match meridian_core::today::get_today(pool, &date, &now).await {
+        Ok(t) => {
             let mut s = state.lock().unwrap();
-            if let Some(f) = tr.focus_s {
-                s.focus_s = f;
-            }
-            if let Some(sw) = tr.switch_count {
-                s.switch_count = sw;
-            }
+            s.focus_s = t.focus_s.max(0) as u64;
+            s.switch_count = t.switch_count.max(0) as u32;
         }
+        Err(e) => tracing::warn!(error = %e, "refresh_today failed"),
     }
 }
 
-/// Track the drafted-worklog count for the tray tooltip/badge only. The "worklog
-/// ready" notification itself is emitted by the daemon's worklog scheduler into
-/// the notification outbox and delivered via `drain_notifications` — not here.
-pub(super) async fn refresh_worklogs(client: &Client, state: &Arc<Mutex<AppState>>) {
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let resp = client
-        .get(format!("{}/api/worklogs?day={}", ui_base(), today))
-        .send()
-        .await
-        .ok();
-
-    let draft_count = match resp {
-        None => return,
-        Some(r) if !r.status().is_success() => return,
-        Some(r) => match r.json::<WorklogsResp>().await {
-            Err(_) => return,
-            Ok(wr) => wr.items.iter().filter(|i| i.state == "drafted").count() as u32,
-        },
-    };
-
-    state.lock().unwrap().drafts_count = draft_count;
+/// Track the drafted-worklog count for the tray tooltip/badge only (direct DB).
+/// The "worklog ready" notification itself is emitted by the daemon's worklog
+/// scheduler into the notification outbox and delivered via `drain_notifications`
+/// — not here.
+pub(super) async fn refresh_worklogs(pool: &SqlitePool, state: &Arc<Mutex<AppState>>) {
+    let today = meridian_core::date::today_string();
+    match meridian_core::worklogs::get_worklogs(pool, &today).await {
+        Ok(w) => {
+            let count = w.items.iter().filter(|i| i.state == "drafted").count() as u32;
+            state.lock().unwrap().drafts_count = count;
+        }
+        Err(e) => tracing::warn!(error = %e, "refresh_worklogs failed"),
+    }
 }

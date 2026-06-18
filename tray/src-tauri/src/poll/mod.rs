@@ -27,7 +27,6 @@ pub(crate) use notifications::notifications_allowed;
 use crate::state::{AppState, HealthStatus};
 use notifications::drain_notifications;
 use refresh::{refresh_active, refresh_health, refresh_today, refresh_worklogs};
-use reqwest::Client;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
@@ -35,10 +34,6 @@ use tauri::{Emitter, Manager};
 const TICK: Duration = Duration::from_secs(30);
 
 pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
-    let client = Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .expect("reqwest client");
     let mut tick: u32 = 0;
     // Last-emitted JSON snapshots for the live events — emit only on change
     // (mirrors the SSE stores' change-only broadcast).
@@ -53,15 +48,24 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
         let do_health = tick.is_multiple_of(2);
         let do_worklogs = tick.is_multiple_of(10);
 
+        // The tray's own DB pool (opened at startup) — every read is now a direct
+        // DB read through it, so the loop has no HTTP dependency on the Next
+        // server. `None` only before the DB is first opened.
+        let pool = app
+            .try_state::<Option<meridian_core::SqlitePool>>()
+            .and_then(|s| s.inner().clone());
+
         if do_health {
-            refresh_health(&app, &client, &state).await;
+            refresh_health(&app, &state).await;
         }
-        refresh_active(&client, &state).await;
-        if do_health {
-            refresh_today(&client, &state).await;
-        }
-        if do_worklogs {
-            refresh_worklogs(&client, &state).await;
+        if let Some(pool) = &pool {
+            refresh_active(pool, &state).await;
+            if do_health {
+                refresh_today(pool, &state).await;
+            }
+            if do_worklogs {
+                refresh_worklogs(pool, &state).await;
+            }
         }
         // Drain the daemon's notification outbox every tick — this is the single
         // delivery path for all daemon-originated notifications (plan nudge,
@@ -71,12 +75,9 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
 
         // Push live notices + banner notifications to the dashboard webview
         // (the ported SSE streams). Skipped silently when the DB isn't open.
-        if let Some(pool) = app
-            .try_state::<Option<meridian_core::SqlitePool>>()
-            .and_then(|s| s.inner().clone())
-        {
-            live::emit_notices(&app, &pool, &mut last_notices).await;
-            live::emit_banners(&app, &pool, &mut last_banners).await;
+        if let Some(pool) = &pool {
+            live::emit_notices(&app, pool, &mut last_notices).await;
+            live::emit_banners(&app, pool, &mut last_banners).await;
         }
 
         {
