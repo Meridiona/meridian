@@ -706,9 +706,7 @@ async fn main() -> Result<()> {
                     // so it starts a fresh root trace. `tick_link` (the tick's span
                     // context) is passed as a LINK instead — daemon→session stays
                     // navigable without merging every drained session into one trace.
-                    match run_task_linking(&meridian_linker, &cfg, tick_link.clone())
-                        .await
-                    {
+                    match run_task_linking(&meridian_linker, &cfg, tick_link.clone()).await {
                         Ok(TaskLinkOutcome::Classified) => {
                             failure_counts.clear();
                             classified_any = true;
