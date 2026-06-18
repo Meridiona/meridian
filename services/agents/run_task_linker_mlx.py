@@ -424,6 +424,8 @@ def _cache_offset(prompt_cache: "list") -> int:
         if lengths is not None:
             return int(max(lengths))
     except (TypeError, ValueError):
+        # `lengths` may be non-numeric or malformed on some cache variants;
+        # treat as unsupported and fall through to -1 (caller skips reuse).
         pass
     return -1
 
