@@ -110,6 +110,42 @@ pub async fn get_daemon_status() -> Result<DaemonStatusResponse, String> {
     Ok(result)
 }
 
+/// `{ ok, pid }` on a successful reload — mirrors the route's success body.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReloadResponse {
+    pub ok: bool,
+    pub pid: u32,
+}
+
+/// Reload the daemon's config by sending it SIGHUP (the ported
+/// `/api/daemon/reload` POST). The daemon exits cleanly on SIGHUP and launchd
+/// restarts it, picking up `settings.json` changes (OTLP config, credentials).
+/// Log-level changes hot-reload in-process and don't need this. Errors when the
+/// daemon isn't running (the route's 503) — we resolve its pid from the same
+/// `daemon.sock` greeting [`get_daemon_status`] reads.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn reload_daemon() -> Result<ReloadResponse, String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let sock_path = format!("{}/.meridian/daemon.sock", home);
+
+    let probe = probe_socket(&sock_path).await;
+    let Some(pid) = probe.pid.filter(|_| probe.running) else {
+        return Err("daemon not running".to_string());
+    };
+
+    // `kill -HUP <pid>` (the route's `process.kill(pid, 'SIGHUP')`) — no libc dep.
+    let status = std::process::Command::new("kill")
+        .args(["-HUP", &pid.to_string()])
+        .status()
+        .map_err(|e| format!("kill failed: {e}"))?;
+    if !status.success() {
+        return Err(format!("kill -HUP {pid} returned non-zero"));
+    }
+    tracing::info!(pid, "daemon reload (SIGHUP) sent");
+    Ok(ReloadResponse { ok: true, pid })
+}
+
 async fn probe_socket(sock_path: &str) -> DaemonStatusResponse {
     use tokio::io::AsyncReadExt;
     use tokio::net::UnixStream;

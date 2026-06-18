@@ -153,6 +153,9 @@ pub fn run() {
             commands::edit_worklog,
             commands::worklog_action,
             commands::update_settings,
+            // process / service control (ported /api process routes)
+            commands::reload_daemon,
+            commands::set_openobserve,
             // OS/window actions
             commands::open_permission_pane,
         ])

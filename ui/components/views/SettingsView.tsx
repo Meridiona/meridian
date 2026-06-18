@@ -163,22 +163,13 @@ export default function SettingsView() {
     // start is a real error the user must see — otherwise "Apply" reports
     // success while OpenObserve is down.
     try {
-      const ooRes = await fetch('/api/openobserve', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: settings.otlp_enabled }),
-      })
-      if (!ooRes.ok) {
-        const b = await ooRes.json().catch(() => ({})) as { error?: string }
-        setReloadMsg(b.error ?? 'OpenObserve start failed')
-        setReloadStatus('error')
-        setTimeout(() => { setReloadStatus('idle'); setReloadMsg(null) }, 8000)
-        return
-      }
+      // Dual-path: set_openobserve (Rust) in the app, /api/openobserve POST in a
+      // browser. mutate throws the server's error text on failure — surface it.
+      const ooBody = await mutate<{ installing?: boolean }>(
+        '/api/openobserve', 'set_openobserve', { enabled: settings.otlp_enabled })
       // Fresh machine: the server is downloading + installing OpenObserve in
       // the background. Poll until it is reachable (binary download can take
       // ~30 s) before continuing to the daemon reload.
-      const ooBody = await ooRes.json() as { installing?: boolean }
       if (ooBody.installing) {
         setReloadStatus('installing')
         const ready = await pollOpenObserveReady()
@@ -188,22 +179,28 @@ export default function SettingsView() {
           return
         }
       }
-    } catch {
+    } catch (e) {
+      // A failed start is a real error the user must see (8 s) — otherwise "Apply"
+      // reports success while OpenObserve is down.
+      setReloadMsg(e instanceof Error ? e.message : 'OpenObserve start failed')
       setReloadStatus('error')
-      setTimeout(() => setReloadStatus('idle'), 3000)
+      setTimeout(() => { setReloadStatus('idle'); setReloadMsg(null) }, 8000)
       return
     }
 
     setReloadStatus('reloading')
-    const reloadRes = await fetch('/api/daemon/reload', { method: 'POST' })
-    if (reloadRes.status === 503) {
-      // Daemon not running (e.g. dev session with the stack down) — settings
-      // are saved and will be read at the next daemon start. Not an error.
-      setReloadStatus('done')
-      setTimeout(() => setReloadStatus('idle'), 3000)
-      return
-    }
-    if (!reloadRes.ok) {
+    try {
+      // Dual-path: reload_daemon (Rust) in the app, /api/daemon/reload POST in a
+      // browser. Both signal SIGHUP; both report "daemon not running" when down.
+      await mutate('/api/daemon/reload', 'reload_daemon', {})
+    } catch (e) {
+      // Daemon not running (e.g. a dev session with the stack down) — settings
+      // are saved and read at the next daemon start, so this is NOT an error.
+      if (e instanceof Error && e.message.includes('daemon not running')) {
+        setReloadStatus('done')
+        setTimeout(() => setReloadStatus('idle'), 3000)
+        return
+      }
       setReloadStatus('error')
       setTimeout(() => setReloadStatus('idle'), 3000)
       return
