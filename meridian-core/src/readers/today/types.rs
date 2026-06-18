@@ -97,7 +97,7 @@ pub(crate) struct TodayRow {
     pub(crate) started_at: String,
     pub(crate) ended_at: String,
     pub(crate) duration_s: i64,
-    pub(crate) claude_session_uuid: Option<String>,
+    pub(crate) coding_agent_session_uuid: Option<String>,
     pub(crate) category: Option<String>,
     pub(crate) confidence: Option<f64>,
     pub(crate) category_method: Option<String>,

@@ -2,7 +2,7 @@
 //! `/api/week` ported to Rust — a faithful port of `ui/app/api/week/route.ts`.
 //!
 //! Last 7 local days; per day `SUM(duration_s) GROUP BY category` over the
-//! FOREGROUND stream only (`claude_session_uuid IS NULL` — the coding-agent
+//! FOREGROUND stream only (`coding_agent_session_uuid IS NULL` — the coding-agent
 //! overlay records the same wall-clock a second time and would double-count).
 //!
 //! NOTE: this route uses NAIVE local-date string bounds (`YYYY-MM-DDT00:00:00`)
@@ -61,7 +61,7 @@ pub async fn get_week(pool: &SqlitePool, now_iso: &str) -> anyhow::Result<WeekRe
                 r#"
                 SELECT category, SUM(duration_s) AS dur_s
                 FROM app_sessions
-                WHERE started_at >= ? AND started_at < ? AND claude_session_uuid IS NULL
+                WHERE started_at >= ? AND started_at < ? AND coding_agent_session_uuid IS NULL
                 GROUP BY category
                 "#,
             )

@@ -2,7 +2,7 @@
 //! `/api/today` ported to Rust — a faithful port of `ui/app/api/today/route.ts`.
 //!
 //! Two streams share `app_sessions`: the foreground screen-capture stream
-//! (`claude_session_uuid IS NULL`) and the coding-agent transcript OVERLAY
+//! (`coding_agent_session_uuid IS NULL`) and the coding-agent transcript OVERLAY
 //! (`IS NOT NULL`). Totals UNION intervals (never sum) via [`crate::intervals`];
 //! "today" is the user's local day via [`crate::date`]. `category_explanation`
 //! (migration 009) and `session_summary` (024) are detected at runtime and
@@ -66,7 +66,7 @@ pub async fn get_today(
     let sql = format!(
         r#"
         SELECT s.id, s.app_name, s.started_at, s.ended_at, s.duration_s,
-               s.claude_session_uuid, s.category, s.confidence, s.category_method,
+               s.coding_agent_session_uuid, s.category, s.confidence, s.category_method,
                {expl_expr}, {summ_expr}, s.window_titles, s.task_key,
                s.task_routing      AS routing,
                s.task_session_type AS session_type,
@@ -89,7 +89,7 @@ pub async fn get_today(
     // overlay drives the unioned focus/agent figures but is never its own row.
     let sessions: Vec<TodaySession> = all_rows
         .iter()
-        .filter(|r| r.claude_session_uuid.is_none())
+        .filter(|r| r.coding_agent_session_uuid.is_none())
         .map(|r| {
             let (_top, titles) = parse_titles(&r.window_titles, &r.app_name);
             TodaySession {
@@ -202,7 +202,7 @@ pub async fn get_today(
     // ── Presence (foreground stream) ──────────────────────────────────────────
     let mut presence_raw: Vec<Interval> = all_rows
         .iter()
-        .filter(|r| r.claude_session_uuid.is_none())
+        .filter(|r| r.coding_agent_session_uuid.is_none())
         .map(|r| Interval {
             started_at: r.started_at.clone(),
             ended_at: r.ended_at.clone(),
@@ -243,13 +243,13 @@ pub async fn get_today(
     // ── Agent overlay (capped to engaged duration_s via session_interval) ──────
     let agent_raw: Vec<Interval> = all_rows
         .iter()
-        .filter(|r| r.claude_session_uuid.is_some())
+        .filter(|r| r.coding_agent_session_uuid.is_some())
         .map(|r| {
             session_interval(
                 &r.started_at,
                 &r.ended_at,
                 r.duration_s,
-                r.claude_session_uuid.as_deref(),
+                r.coding_agent_session_uuid.as_deref(),
             )
         })
         .collect();
@@ -287,9 +287,9 @@ pub async fn get_today(
             &r.started_at,
             &r.ended_at,
             r.duration_s,
-            r.claude_session_uuid.as_deref(),
+            r.coding_agent_session_uuid.as_deref(),
         );
-        if r.claude_session_uuid.is_none() {
+        if r.coding_agent_session_uuid.is_none() {
             task_fg.entry(k.to_string()).or_default().push(iv);
         } else {
             task_agent.entry(k.to_string()).or_default().push(iv);
@@ -343,7 +343,10 @@ pub async fn get_today(
 
     // ── Coding-agent summaries per task ─────────────────────────────────────────
     let mut task_agent_summaries: BTreeMap<String, Vec<AgentSummary>> = BTreeMap::new();
-    for r in all_rows.iter().filter(|r| r.claude_session_uuid.is_some()) {
+    for r in all_rows
+        .iter()
+        .filter(|r| r.coding_agent_session_uuid.is_some())
+    {
         if let (Some(k), Some(summary)) = (r.task_key.as_deref(), r.session_summary.as_deref()) {
             if summary.is_empty() {
                 continue;

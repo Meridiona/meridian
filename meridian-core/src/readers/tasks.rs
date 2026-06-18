@@ -82,7 +82,7 @@ struct SessionRow {
     started_at: String,
     ended_at: Option<String>,
     duration_s: i64,
-    claude_session_uuid: Option<String>,
+    coding_agent_session_uuid: Option<String>,
     category: Option<String>,
     task_key: String,
 }
@@ -97,7 +97,7 @@ struct TaskTime {
 fn task_time(rows: &[SessionRow], presence: &[Interval]) -> TaskTime {
     let fg: Vec<Interval> = rows
         .iter()
-        .filter(|r| r.claude_session_uuid.is_none())
+        .filter(|r| r.coding_agent_session_uuid.is_none())
         .map(|r| {
             session_interval(
                 &r.started_at,
@@ -109,13 +109,13 @@ fn task_time(rows: &[SessionRow], presence: &[Interval]) -> TaskTime {
         .collect();
     let agent: Vec<Interval> = rows
         .iter()
-        .filter(|r| r.claude_session_uuid.is_some())
+        .filter(|r| r.coding_agent_session_uuid.is_some())
         .map(|r| {
             session_interval(
                 &r.started_at,
                 r.ended_at.as_deref().unwrap_or(""),
                 r.duration_s,
-                r.claude_session_uuid.as_deref(),
+                r.coding_agent_session_uuid.as_deref(),
             )
         })
         .collect();
@@ -167,7 +167,7 @@ pub async fn get_tasks(
         let rows: Vec<(String, Option<String>)> = sqlx::query_as::<_, (String, Option<String>)>(
             r#"
                 SELECT started_at, ended_at FROM app_sessions
-                WHERE started_at >= ? AND started_at < ? AND claude_session_uuid IS NULL
+                WHERE started_at >= ? AND started_at < ? AND coding_agent_session_uuid IS NULL
                 "#,
         )
         .bind(start)
@@ -209,7 +209,7 @@ pub async fn get_tasks(
     let task_sessions = |start: String, end: String| async move {
         sqlx::query_as::<_, SessionRow>(
             r#"
-            SELECT started_at, ended_at, duration_s, claude_session_uuid, category, task_key
+            SELECT started_at, ended_at, duration_s, coding_agent_session_uuid, category, task_key
             FROM app_sessions
             WHERE started_at >= ? AND started_at < ?
               AND task_session_type = 'task' AND task_key IS NOT NULL
@@ -260,7 +260,10 @@ pub async fn get_tasks(
         // Category split is the FOREGROUND share only.
         let mut cats: BTreeMap<String, i64> = BTreeMap::new();
         let mut fg_count = 0i64;
-        for r in rows.iter().filter(|r| r.claude_session_uuid.is_none()) {
+        for r in rows
+            .iter()
+            .filter(|r| r.coding_agent_session_uuid.is_none())
+        {
             fg_count += 1;
             let cat = r
                 .category

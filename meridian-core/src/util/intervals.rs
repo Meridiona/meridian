@@ -102,16 +102,16 @@ pub fn merge_intervals(intervals: &[Interval]) -> Vec<Interval> {
 }
 
 /// Wall-clock interval for one `app_sessions` row, normalised across the two
-/// streams. Foreground rows (`claude_session_uuid` IS NULL) use their real span;
+/// streams. Foreground rows (`coding_agent_session_uuid` IS NULL) use their real span;
 /// coding-agent rows are capped to their engaged `duration_s` anchored at the
 /// start, so a parked-open agent window can't masquerade as hours of activity.
 pub fn session_interval(
     started_at: &str,
     ended_at: &str,
     duration_s: i64,
-    claude_session_uuid: Option<&str>,
+    coding_agent_session_uuid: Option<&str>,
 ) -> Interval {
-    if claude_session_uuid.is_some() {
+    if coding_agent_session_uuid.is_some() {
         let start_ms = parse_ms(started_at).unwrap_or(0);
         let end_ms = start_ms + duration_s.max(0) * 1000;
         return Interval {

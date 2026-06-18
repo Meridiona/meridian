@@ -20,7 +20,7 @@ async fn make_pool() -> SqlitePool {
         r#"
         CREATE TABLE app_sessions (
             app_name TEXT, started_at TEXT, ended_at TEXT, duration_s INTEGER,
-            claude_session_uuid TEXT, category TEXT, task_key TEXT,
+            coding_agent_session_uuid TEXT, category TEXT, task_key TEXT,
             task_session_type TEXT, task_method TEXT
         );
         "#,
@@ -58,7 +58,7 @@ async fn make_today_pool() -> SqlitePool {
         r#"
         CREATE TABLE app_sessions (
             id INTEGER, app_name TEXT, started_at TEXT, ended_at TEXT, duration_s INTEGER,
-            claude_session_uuid TEXT, category TEXT, confidence REAL, category_method TEXT,
+            coding_agent_session_uuid TEXT, category TEXT, confidence REAL, category_method TEXT,
             category_explanation TEXT, session_summary TEXT, window_titles TEXT, task_key TEXT,
             task_routing TEXT, task_session_type TEXT, task_method TEXT, task_confidence REAL
         );
@@ -103,7 +103,7 @@ async fn coding_agents_unions_overlap_per_agent_and_total() {
     ];
     for (app, s, e) in rows {
         sqlx::query(
-            "INSERT INTO app_sessions (app_name, started_at, ended_at, claude_session_uuid) VALUES (?,?,?,?)",
+            "INSERT INTO app_sessions (app_name, started_at, ended_at, coding_agent_session_uuid) VALUES (?,?,?,?)",
         )
         .bind(app).bind(s).bind(e).bind("uuid")
         .execute(&pool).await.unwrap();
@@ -142,7 +142,7 @@ async fn tasks_autonomous_excludes_supervised_agent_time() {
 
     // Foreground task session: base+1h .. base+2h (presence = 1h, your_s = 3600).
     sqlx::query(
-        "INSERT INTO app_sessions (app_name, started_at, ended_at, duration_s, claude_session_uuid, category, task_key, task_session_type) \
+        "INSERT INTO app_sessions (app_name, started_at, ended_at, duration_s, coding_agent_session_uuid, category, task_key, task_session_type) \
          VALUES ('Code', ?, ?, 3600, NULL, 'coding', 'X', 'task')",
     )
     .bind(at(1.0)).bind(at(2.0))
@@ -152,7 +152,7 @@ async fn tasks_autonomous_excludes_supervised_agent_time() {
     // Overlaps presence base+1.5h..base+2h (1800 s supervised); the other 1800 s
     // (base+2h..base+2.5h) ran while away → autonomous.
     sqlx::query(
-        "INSERT INTO app_sessions (app_name, started_at, ended_at, duration_s, claude_session_uuid, task_key, task_session_type) \
+        "INSERT INTO app_sessions (app_name, started_at, ended_at, duration_s, coding_agent_session_uuid, task_key, task_session_type) \
          VALUES ('Claude Code', ?, ?, 3600, 'uuid1', 'X', 'task')",
     )
     .bind(at(1.5)).bind(at(3.0))

@@ -66,7 +66,7 @@ pub async fn get_coding_agents(
             r#"
             SELECT app_name, started_at, ended_at
             FROM app_sessions
-            WHERE claude_session_uuid IS NOT NULL
+            WHERE coding_agent_session_uuid IS NOT NULL
               AND substr(started_at, 1, 10) = ?
               AND app_name IN ('Claude Code', 'Codex')
             "#,
