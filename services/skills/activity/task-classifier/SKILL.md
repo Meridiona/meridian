@@ -23,11 +23,24 @@ Your output feeds a write-back pipeline: every session you mark `task` is later 
 
 Reason over the evidence first, then decide in this order. **Core principle: do not try to fit every session to a ticket. Assign a `task_key` only when the session's OWN evidence clearly matches that specific ticket's scope.**
 
+**TASK GATE — assign a `task_key` ONLY if ALL THREE hold. If any fails → `untracked` (or `overhead`):**
+1. **Hands-on production, not viewing.** The session's OWN active evidence shows the developer *doing* the work this session — editing/writing code, running/building, authoring a doc — not merely looking at something.
+2. **Scope match, not topic match.** That work's *content* matches the **scope described in a candidate ticket's title/description** — not just the same app, repo name, tool, or subject area.
+3. **The ticket is a listed candidate.** Work on a project, repo, branch, or ticket key that is NOT in the candidate list → `untracked`. Never invent, borrow, or guess a key.
+
+**NOT evidence of working a ticket — never assign a task on these alone:**
+- **A ticket key merely VISIBLE on screen** — a Jira board/backlog, a browser-tab title, a PR/commit title, a dashboard tile, a notification, an OCR fragment, or this session's own RECENT-WORK continuity line. Seeing `KAN-42` ≠ working `KAN-42`.
+- **Viewing / monitoring / reviewing** — reading a dashboard or OpenObserve traces, browsing DB tables (DBeaver/SQL), scrolling a Jira board, reviewing a PR or diff, or watching server/boot logs (uvicorn/cargo/model-load output). Inspection is `untracked` (or `overhead`), NOT the ticket being inspected — even when those logs or traces mention an observability/logging ticket.
+- **Same app or adjacent topic** — coding in a *different repo or a different product*, or reading/researching *about* a ticket's area, is not doing that ticket.
+- **Recency alone** — a ticket that was active just before, with no matching current-session evidence.
+
+When genuinely unsure whether something clears the gate, it does not: choose `untracked`. A correct `untracked` is always cheaper than a wrong `task`.
+
 1. **Overhead?** Idle, music, system settings, personal browsing, or anything clearly unrelated to work → `session_type: "overhead"`, `task_key: null`, `confidence: 0.0–0.2`. Hard discard: never surfaced, never used downstream. Test: *"Would a tech lead care that this happened?"* If no → overhead.
 
 2. **Real work, but not clearly a candidate ticket? → untracked.** Any genuine work signal (coding, debugging, reviewing, research, meetings, writing, config) that does **not** clearly match a candidate's scope → `session_type: "untracked"`, `task_key: null`, `confidence: 0.6–0.8`. This is the common, important case — standups, retros, reviews of untracked PRs, repo exploration, general research, and **any feature/bug/chore with no matching candidate ticket**. Do **not** shoehorn it onto the only available ticket, or onto a recent ticket. Untracked work is kept and later turned into new tickets.
 
-3. **Clearly one specific candidate ticket? → task.** Assign `task_key` only when the session's own evidence (window titles, OCR, file/branch names, an explicit ticket-key mention) directly matches the **scope in that ticket's title/description** → `session_type: "task"`, `confidence: 0.50–0.90`. If the active app/window shows the developer has moved to something else (another repo, a meeting, another team's doc), classify by **that**, not by what they were doing minutes ago.
+3. **Clearly one specific candidate ticket? → task.** Only if it clears the TASK GATE above: the session's own *production* evidence (files being edited, code being run, content being written) directly matches the **scope in that ticket's title/description** → `session_type: "task"`, `confidence: 0.50–0.90`. A ticket key seen in a title/tab/board/PR is a hint to *check*, never proof on its own — the activity must actually be that ticket's work. If the active window shows the developer has moved to something else (another repo, a meeting, another team's doc, a dashboard), classify by **that**, not by what they were doing minutes ago.
 
 `category` is independent of `session_type`: a session can be `category: "coding"` and still `untracked` (real work, no ticket) or even `overhead`.
 
