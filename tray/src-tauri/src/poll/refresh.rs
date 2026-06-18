@@ -17,6 +17,7 @@ use crate::sys::{notify, ui_base};
 use reqwest::Client;
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
+use tauri::Emitter;
 
 #[derive(Deserialize)]
 struct ActiveResp {
@@ -48,6 +49,11 @@ pub(super) async fn refresh_health(
     state: &Arc<Mutex<AppState>>,
 ) {
     let hr = check_health().await;
+
+    // Push the health detail to the dashboard webview (the ported
+    // `/api/health/stream`). HealthResponse is a superset of the route's payload
+    // (it also carries `daemon_running`, which the banner ignores).
+    let _ = app.emit("health-update", &hr);
 
     // db_ready and daemon_running both default true when absent (older schema compat).
     let db_ready = hr.database_ready.unwrap_or(false);

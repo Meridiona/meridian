@@ -8,19 +8,56 @@
 //! the banner disappears without waiting for the ETL cycle. A faithful port of
 //! `ui/app/api/notices/[id]/route.ts` (which deletes by `notice_id`).
 //!
-//! The notice *read* is still served over SSE (`/api/notices/stream`); when that
-//! folds into a Tauri event, its query lands in this module too.
+//! The notice *read* ([`read_notices`]) is the live snapshot the tray's poll
+//! loop emits as the `notices-update` Tauri event (the ported `/api/notices/stream`
+//! SSE) and that the `get_notices` command serves on first paint — porting the
+//! query out of the Node `notices-store.ts` singleton.
 //!
 //! # Who calls this
-//! The tray `delete_notice` command → `ui/components/views/TasksView.tsx` (on a
-//! successful provider connect). The route's SSE `refresh()` push is a separate
-//! concern handled by the notices stream port.
+//! - [`delete_notice`] — the tray `delete_notice` command → `TasksView.tsx`
+//!   (on a successful provider connect).
+//! - [`read_notices`] — the tray `get_notices` command + the poll loop's
+//!   `notices-update` emit → `ui/components/NoticeBar.tsx`.
 //!
 //! # Related
 //! - [`crate::integrations`] — the provider-connection state the connect flow reads.
 
 use crate::SqlitePool;
+use sqlx::FromRow;
 use tracing::Instrument;
+
+/// One active fault banner (the shape `NoticeBar.tsx` renders). `severity` is
+/// `'error'|'warning'`; `remedy` is the optional fix hint.
+#[derive(Debug, Clone, FromRow, serde::Serialize)]
+pub struct Notice {
+    pub notice_id: String,
+    pub severity: String,
+    pub title: String,
+    pub detail: String,
+    pub remedy: Option<String>,
+    pub raised_at: String,
+}
+
+/// All active notices, newest first (port of `notices-store.ts`'s `queryNotices`).
+/// Returns empty — never errors — when the daemon hasn't created `system_notices`
+/// yet (pre-migration DB) or on a transient read error, matching the route's
+/// `catch → []`.
+#[tracing::instrument(skip(pool))]
+pub async fn read_notices(pool: &SqlitePool) -> Vec<Notice> {
+    let rows = sqlx::query_as::<_, Notice>(
+        "SELECT notice_id, severity, title, detail, remedy, raised_at \
+         FROM system_notices ORDER BY raised_at DESC",
+    )
+    .fetch_all(pool)
+    .instrument(tracing::debug_span!("notices.read.all"))
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "notices: read failed, treating as empty");
+        Vec::new()
+    });
+    tracing::debug!(rows = rows.len(), "notices.read.all");
+    rows
+}
 
 /// Clear one notice from `system_notices` by `notice_id` (port of the DELETE
 /// route). Idempotent — deleting an absent notice is a no-op. The daemon owns
@@ -70,5 +107,44 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(remaining, vec!["pm.linear".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn read_notices_orders_newest_first_and_tolerates_missing_table() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        // No table yet → empty, not an error (pre-migration DB).
+        assert!(read_notices(&pool).await.is_empty());
+
+        sqlx::query(
+            "CREATE TABLE system_notices (notice_id TEXT PRIMARY KEY, severity TEXT, \
+             title TEXT, detail TEXT, remedy TEXT, raised_at TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (nid, raised) in [
+            ("pm.jira", "2026-06-18T09:00:00Z"),
+            ("a11y", "2026-06-18T10:00:00Z"),
+        ] {
+            sqlx::query(
+                "INSERT INTO system_notices (notice_id, severity, title, detail, remedy, raised_at) \
+                 VALUES (?, 'warning', 't', 'd', NULL, ?)",
+            )
+            .bind(nid)
+            .bind(raised)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let notices = read_notices(&pool).await;
+        // ORDER BY raised_at DESC → the 10:00 row first.
+        assert_eq!(notices[0].notice_id, "a11y");
+        assert_eq!(notices[1].notice_id, "pm.jira");
+        assert!(notices[0].remedy.is_none());
     }
 }

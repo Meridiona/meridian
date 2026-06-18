@@ -3,17 +3,25 @@
 //!
 //! Every 30 s tick refreshes a slice of [`AppState`] (active session each tick;
 //! health + today every 2nd; worklog drafts every 10th), drains the daemon's
-//! notification outbox, then syncs the tray (event emit + tooltip + menu).
+//! notification outbox, pushes the live notice/banner sets to the dashboard
+//! webview, then syncs the tray (event emit + tooltip + menu).
 //!
-//! - [`refresh`] — the per-tick fetch-and-store functions.
+//! - [`refresh`] — the per-tick fetch-and-store functions (also emits
+//!   `health-update`, the ported `/api/health/stream`).
 //! - [`notifications`] — outbox drain + the quiet-hours policy check
 //!   ([`notifications_allowed`], re-exported here for [`crate::commands::daemon`]).
+//! - [`live`] — the live data → Tauri events that replace the dashboard's SSE
+//!   streams: `notices-update`, `notifications-update`, and the `log-tail`
+//!   tailer ([`spawn_log_tailer`], started from `lib.rs`, runs at ~1 s
+//!   independent of this 30 s loop).
 //!
 //! The tray-sync helpers (emit / tooltip / menu) stay here, coupled to the loop.
 
+mod live;
 mod notifications;
 mod refresh;
 
+pub(crate) use live::spawn_log_tailer;
 pub(crate) use notifications::notifications_allowed;
 
 use crate::state::{AppState, HealthStatus};
@@ -22,7 +30,7 @@ use refresh::{refresh_active, refresh_health, refresh_today, refresh_worklogs};
 use reqwest::Client;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 const TICK: Duration = Duration::from_secs(30);
 
@@ -32,6 +40,10 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
         .build()
         .expect("reqwest client");
     let mut tick: u32 = 0;
+    // Last-emitted JSON snapshots for the live events — emit only on change
+    // (mirrors the SSE stores' change-only broadcast).
+    let mut last_notices = String::new();
+    let mut last_banners = String::new();
 
     loop {
         // Tick 0, 1, 2… every 30s.
@@ -56,6 +68,16 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
         // worklog ready, promoted faults). The tray is a dumb delivery agent;
         // preference + quiet-hours filtering already happened server-side.
         drain_notifications(&app).await;
+
+        // Push live notices + banner notifications to the dashboard webview
+        // (the ported SSE streams). Skipped silently when the DB isn't open.
+        if let Some(pool) = app
+            .try_state::<Option<meridian_core::SqlitePool>>()
+            .and_then(|s| s.inner().clone())
+        {
+            live::emit_notices(&app, &pool, &mut last_notices).await;
+            live::emit_banners(&app, &pool, &mut last_banners).await;
+        }
 
         {
             let mut s = state.lock().unwrap();

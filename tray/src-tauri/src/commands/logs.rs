@@ -52,7 +52,9 @@ fn log_dir() -> String {
     })
 }
 
-fn today_log_path() -> String {
+/// Today's JSONL log path. `pub(crate)` so the poll loop's log tailer
+/// ([`crate::poll`]) follows the same file the snapshot read uses.
+pub(crate) fn today_log_path() -> String {
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
     format!("{}/meridian-rust.jsonl.{}", log_dir(), date)
 }
@@ -64,7 +66,10 @@ fn yesterday_log_path() -> String {
     format!("{}/meridian-rust.jsonl.{}", log_dir(), date)
 }
 
-fn parse_line(raw: &str) -> Option<LogEntry> {
+/// Parse one `tracing-subscriber` JSON log line into a [`LogEntry`].
+/// `pub(crate)` so the poll loop's log tailer reuses the exact same parsing the
+/// snapshot read uses (one source of truth for the log shape).
+pub(crate) fn parse_line(raw: &str) -> Option<LogEntry> {
     let obj: serde_json::Value = serde_json::from_str(raw).ok()?;
     let timestamp = obj.get("timestamp")?.as_str()?.to_string();
     let level = obj

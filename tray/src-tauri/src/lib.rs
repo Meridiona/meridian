@@ -113,6 +113,11 @@ pub fn run() {
                 poll::run_poll_loop(app_handle, state_clone).await;
             });
 
+            // Tail the daemon log → `log-tail` events for the dashboard Logs view
+            // (the ported `/api/logs/stream`). Independent of the 30 s poll tick
+            // so log lines stream at ~1 s.
+            poll::spawn_log_tailer(app.handle().clone());
+
             Ok(())
         })
         // Hand-maintained command list (grouped by domain). Adding a command
@@ -139,6 +144,8 @@ pub fn run() {
             commands::get_settings,
             commands::get_triage,
             commands::get_integrations,
+            commands::get_notices,
+            commands::get_banner_notifications,
             commands::get_health,
             commands::get_openobserve_status,
             commands::get_logs,

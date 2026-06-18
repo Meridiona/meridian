@@ -161,6 +161,75 @@ pub async fn pending_native(
     out
 }
 
+/// An in-app banner notification (the shape `NotificationBanner.tsx` renders).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BannerNotification {
+    pub id: i64,
+    pub event_key: String,
+    pub severity: String,
+    pub title: String,
+    pub body: String,
+    pub deep_link: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(FromRow)]
+struct BannerRow {
+    id: i64,
+    event_key: String,
+    severity: String,
+    title: String,
+    body: String,
+    deep_link: Option<String>,
+    created_at: String,
+    channels: String,
+}
+
+/// Banner-channel rows the dashboard should show: not dismissed, unexpired,
+/// channel includes 'banner', allowed by prefs. NEWEST first (id DESC). Unlike
+/// [`pending_native`], banners are NOT gated by quiet hours — they're passive
+/// (the user dismisses them), so quiet hours only silences the interruptive
+/// native channel. `now_iso` is the expiry comparison instant. Mirrors
+/// `activeBanners` in ui/lib/notifications.ts. Empty on a pre-migration DB.
+#[tracing::instrument(skip(pool, s))]
+pub async fn active_banners(
+    pool: &SqlitePool,
+    now_iso: &str,
+    s: &RuntimeSettings,
+) -> Vec<BannerNotification> {
+    let rows: Vec<BannerRow> = sqlx::query_as::<_, BannerRow>(
+        r#"SELECT id, event_key, severity, title, body, deep_link, created_at, channels
+           FROM notifications
+           WHERE banner_dismissed_at IS NULL
+             AND (expires_at IS NULL OR expires_at > ?)
+           ORDER BY id DESC"#,
+    )
+    .bind(now_iso)
+    .fetch_all(pool)
+    .instrument(tracing::debug_span!("notifications.read.banners"))
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "notifications: banner read failed, treating as empty");
+        Vec::new()
+    });
+
+    let out: Vec<BannerNotification> = rows
+        .into_iter()
+        .filter(|r| has_channel(&r.channels, "banner") && event_allowed(&r.event_key, s))
+        .map(|r| BannerNotification {
+            id: r.id,
+            event_key: r.event_key,
+            severity: r.severity,
+            title: r.title,
+            body: r.body,
+            deep_link: r.deep_link,
+            created_at: r.created_at,
+        })
+        .collect();
+    tracing::debug!(rows = out.len(), "notifications.read.banners");
+    out
+}
+
 // ── Delivery writes ───────────────────────────────────────────────────────────
 
 /// Ack native delivery of a notification (port of `/api/notifications/:id/delivered`):
@@ -267,6 +336,68 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(stamp.as_deref(), Some("2026-06-18T10:00:00Z"));
+    }
+
+    #[tokio::test]
+    async fn active_banners_filters_channel_dismissed_expired_and_prefs() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE notifications (\
+                id INTEGER PRIMARY KEY, event_key TEXT, severity TEXT, title TEXT, body TEXT, \
+                deep_link TEXT, created_at TEXT, channels TEXT, \
+                banner_dismissed_at TEXT, expires_at TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let now = "2026-06-18T10:00:00Z";
+        // id1: banner, live → shown.  id2: native-only → excluded.
+        // id3: dismissed → excluded.  id4: expired → excluded.
+        // id5: banner but newer id → must sort BEFORE id1 (id DESC).
+        let rows = [
+            (1, "plan.nudge", "banner", None::<&str>, None::<&str>),
+            (2, "plan.nudge", "native", None, None),
+            (3, "plan.nudge", "banner", Some(now), None),
+            (
+                4,
+                "plan.nudge",
+                "banner",
+                None,
+                Some("2026-06-18T09:00:00Z"),
+            ),
+            (5, "plan.nudge", "banner,native", None, None),
+        ];
+        for (id, ek, ch, dismissed, expires) in rows {
+            sqlx::query(
+                "INSERT INTO notifications (id, event_key, severity, title, body, created_at, channels, banner_dismissed_at, expires_at) \
+                 VALUES (?, ?, 'info', 't', 'b', '2026-06-18T08:00:00Z', ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(ek)
+            .bind(ch)
+            .bind(dismissed)
+            .bind(expires)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let banners = active_banners(&pool, now, &settings()).await;
+        let ids: Vec<i64> = banners.iter().map(|b| b.id).collect();
+        assert_eq!(
+            ids,
+            vec![5, 1],
+            "id DESC; native/dismissed/expired excluded"
+        );
+
+        // Master switch off → nothing surfaces.
+        let mut off = settings();
+        off.notifications_enabled = false;
+        assert!(active_banners(&pool, now, &off).await.is_empty());
     }
 
     #[test]

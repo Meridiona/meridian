@@ -7,7 +7,8 @@
 
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
+import { subscribe } from '@/lib/bridge'
 import type { Notice } from '@/lib/notices-store'
 
 const SEVERITY_STYLES: Record<string, { bg: string; border: string; text: string; dot: string }> = {
@@ -27,33 +28,10 @@ const SEVERITY_STYLES: Record<string, { bg: string; border: string; text: string
 
 export default function NoticeBar() {
   const [notices, setNotices] = useState<Notice[]>([])
-  const esRef = useRef<EventSource | null>(null)
 
   useEffect(() => {
-    function connect() {
-      const es = new EventSource('/api/notices/stream')
-      esRef.current = es
-
-      es.onmessage = (e) => {
-        try {
-          setNotices(JSON.parse(e.data) as Notice[])
-        } catch {
-          // malformed frame — ignore
-        }
-      }
-
-      es.onerror = () => {
-        // Connection dropped — close and reconnect after 5s
-        es.close()
-        esRef.current = null
-        setTimeout(connect, 5_000)
-      }
-    }
-
-    connect()
-    return () => {
-      esRef.current?.close()
-    }
+    // notices-update (Tauri event) in the app, /api/notices/stream SSE in a browser.
+    return subscribe<Notice[]>('/api/notices/stream', 'get_notices', 'notices-update', setNotices)
   }, [])
 
   if (notices.length === 0) return null

@@ -8,9 +8,9 @@
 
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { BannerNotification } from '@/lib/notifications-banner-store'
-import { invoke, isTauri } from '@/lib/bridge'
+import { invoke, isTauri, subscribe } from '@/lib/bridge'
 
 const SEVERITY_STYLES: Record<string, { bg: string; border: string; text: string; dot: string }> = {
   info:    { bg: '#eff6ff', border: '#bfdbfe', text: '#1d4ed8', dot: '#2563eb' },
@@ -20,32 +20,16 @@ const SEVERITY_STYLES: Record<string, { bg: string; border: string; text: string
 
 export default function NotificationBanner() {
   const [items, setItems] = useState<BannerNotification[]>([])
-  const esRef = useRef<EventSource | null>(null)
-  const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
-    let cancelled = false
-    function connect() {
-      if (cancelled) return
-      const es = new EventSource('/api/notifications/stream')
-      esRef.current = es
-      es.onmessage = (e) => {
-        try { setItems(JSON.parse(e.data) as BannerNotification[]) } catch { /* ignore */ }
-      }
-      es.onerror = () => {
-        es.close(); esRef.current = null
-        // Reconnect after a backoff, but record the timer so unmount can cancel
-        // it — otherwise it fires connect() after cleanup, leaking an
-        // unclosed EventSource and calling setItems on an unmounted component.
-        retryRef.current = setTimeout(connect, 5_000)
-      }
-    }
-    connect()
-    return () => {
-      cancelled = true
-      if (retryRef.current) { clearTimeout(retryRef.current); retryRef.current = null }
-      esRef.current?.close()
-    }
+    // notifications-update (Tauri event) in the app, /api/notifications/stream
+    // SSE in a browser. subscribe() owns the reconnect/teardown.
+    return subscribe<BannerNotification[]>(
+      '/api/notifications/stream',
+      'get_banner_notifications',
+      'notifications-update',
+      setItems,
+    )
   }, [])
 
   async function dismiss(id: number) {

@@ -7,7 +7,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import type { LogEntry } from '@/lib/log-tail'
-import { load } from '@/lib/bridge'
+import { load, subscribe } from '@/lib/bridge'
 
 const LEVEL_STYLES: Record<string, { bg: string; color: string; label: string }> = {
   ERROR: { bg: '#fee2e2', color: '#b91c1c', label: 'ERR' },
@@ -56,24 +56,18 @@ export default function LogsView() {
   }, [])
 
   useEffect(() => {
-    // Load last 200 entries on mount
+    // Prime with the last 200 entries (dual-path: get_logs / /api/logs).
     load<LogEntry[]>('/api/logs', 'get_logs', { limit: 200 })
       .then(data => setEntries(data))
       .catch(() => {})
 
-    // Tail new entries via SSE
-    const es = new EventSource('/api/logs/stream')
-    es.onmessage = (e) => {
-      if (pausedRef.current) return
-      try {
-        const incoming: LogEntry[] = JSON.parse(e.data)
-        setEntries(prev => {
-          const next = [...prev, ...incoming].slice(-2000) // cap at 2000
-          return next
-        })
-      } catch { /* ignore */ }
-    }
-    return () => es.close()
+    // Tail new entries: log-tail (Tauri event) in the app, /api/logs/stream SSE
+    // in a browser. command=null — the event carries DELTAS (we append), and the
+    // prime above already loaded the snapshot, so subscribe must not re-prime.
+    return subscribe<LogEntry[]>('/api/logs/stream', null, 'log-tail', (incoming) => {
+      if (pausedRef.current || !incoming?.length) return
+      setEntries(prev => [...prev, ...incoming].slice(-2000)) // cap at 2000
+    })
   }, [])
 
   useEffect(() => {
