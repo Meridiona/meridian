@@ -13,10 +13,12 @@
 //! - [`logs`]      — the `/api/logs` tail.
 //! - [`openobserve`] — the `/api/openobserve` service status probe.
 //! - [`integrations`] — which trackers are connected (`/api/integrations`).
+//! - [`notices`]   — clear a fault banner (`/api/notices/[id]` DELETE).
 //! - [`notifications`] — the in-app banner dismiss write.
 //! - [`parents`]   — valid parent tickets for the hygiene "link a parent" fix.
 //! - [`triage`]    — cleanup working set + the decision/ignore DB writes.
 //! - [`version`]   — installed vs. published version (`/api/version`).
+//! - [`worklogs`]  — worklog review read + edit/approve/reject/unapprove writes.
 //!
 //! # Related
 //! - [`crate::install`] — install-mode + db-path resolution the commands consume.
@@ -27,12 +29,14 @@ pub mod dashboard;
 pub mod health;
 pub mod integrations;
 pub mod logs;
+pub mod notices;
 pub mod notifications;
 pub mod openobserve;
 pub mod parents;
 pub mod system;
 pub mod triage;
 pub mod version;
+pub mod worklogs;
 
 // Glob re-exports so callers use `crate::commands::<fn>` regardless of submodule.
 // Globs (not explicit names) are required: the `#[tauri::command]` macro emits
@@ -43,9 +47,11 @@ pub use dashboard::*;
 pub use health::*;
 pub use integrations::*;
 pub use logs::*;
+pub use notices::*;
 pub use notifications::*;
 pub use openobserve::*;
 pub use parents::*;
 pub use system::*;
 pub use triage::*;
 pub use version::*;
+pub use worklogs::*;

@@ -61,24 +61,34 @@ export async function load<T = unknown>(
   return r.json() as Promise<T>
 }
 
-/** Dual-path mutation (POST): the Rust write command inside the app, else a
- *  POST to the /api route in a browser. `body` is sent as ONE payload object —
+/** Dual-path mutation: the Rust write command inside the app, else an HTTP
+ *  request to the /api route in a browser. `body` is sent as ONE payload object —
  *  to `invoke` under the `body` key (matching the command's `body:` param) and
- *  as the `fetch` JSON body — so both paths carry one identical snake_case shape.
- *  Returns the freshly-computed response both paths emit; throws on failure so
- *  callers can roll back to server truth. Removed at the export cutover. */
+ *  as the request JSON body — so both paths carry one identical shape. `method`
+ *  is the browser verb (default POST; use 'PATCH'/'DELETE' for those routes); the
+ *  app path ignores it (the command name already encodes the operation). For a
+ *  path-param route, bake the id into `apiPath` and also into `body` (the route
+ *  reads it from the URL, the command from the body). Returns the response both
+ *  paths emit; throws an Error whose message is the server's `error` text (so
+ *  callers can surface it), letting them roll back. Removed at the export cutover. */
 export async function mutate<T = unknown>(
   apiPath: string,
   command: string,
   body: Record<string, unknown>,
+  method: 'POST' | 'PATCH' | 'DELETE' = 'POST',
 ): Promise<T> {
   const t = tauri()
   if (t) return t.core.invoke(command, { body }) as Promise<T>
   const r = await fetch(apiPath, {
-    method: 'POST',
+    method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  if (!r.ok) throw new Error(`${apiPath} → ${r.status}`)
+  if (!r.ok) {
+    // Surface the route's `{ error }` message (the command path rejects with the
+    // same human text), falling back to the status line.
+    const e = await r.json().catch(() => ({}))
+    throw new Error((e as { error?: string }).error ?? `${apiPath} → ${r.status}`)
+  }
   return r.json() as Promise<T>
 }

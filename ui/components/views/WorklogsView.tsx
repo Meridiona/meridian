@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { fmtDur, fmtClock, TaskKey, ConfidenceRing } from '@/components/atoms'
 import type { WorklogItem, WorklogsResponse } from '@/app/api/worklogs/route'
-import { load as loadData } from '@/lib/bridge'
+import { load as loadData, mutate } from '@/lib/bridge'
 
 // Local YYYY-MM-DD for `d` days from today (negative = past).
 function dayString(offsetDays = 0): string {
@@ -62,14 +62,16 @@ export default function WorklogsView() {
     return () => clearInterval(id)
   }, [day, load])
 
-  async function mutate(id: number, fn: () => Promise<Response>) {
+  // Run a worklog write (dual-path via the bridge `mutate`), with busy state +
+  // reload-on-settle. The bridge throws the server's error text on failure;
+  // surface it. Each call bakes `id` into both the URL (browser) and the body
+  // (command). PATCH/POST/DELETE pick the browser verb.
+  async function run(id: number, fn: () => Promise<unknown>) {
     setBusy(id)
     try {
-      const res = await fn()
-      if (!res.ok) {
-        const e = await res.json().catch(() => ({}))
-        alert(e.error ?? 'Action failed')
-      }
+      await fn()
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Action failed')
     } finally {
       setBusy(null)
       load(day)
@@ -77,32 +79,23 @@ export default function WorklogsView() {
   }
 
   const act = (id: number, action: 'approve' | 'unapprove') =>
-    mutate(id, () => fetch(`/api/worklogs/${id}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action }),
-    }))
+    run(id, () => mutate(`/api/worklogs/${id}`, 'worklog_action', { id, action }))
 
   // Reject carries an optional attribution correction: where the time should
   // have gone. Empty object = a plain dismissal with no target supplied.
   const reject = (id: number, correction: RejectCorrection) =>
-    mutate(id, () => fetch(`/api/worklogs/${id}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'reject', ...correction }),
-    }))
+    run(id, () => mutate(`/api/worklogs/${id}`, 'worklog_action', { id, action: 'reject', ...correction }))
 
   const saveEdit = (id: number, summary: string) =>
-    mutate(id, () => fetch(`/api/worklogs/${id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ summary }),
-    }))
+    run(id, () => mutate(`/api/worklogs/${id}`, 'edit_worklog', { id, summary }, 'PATCH'))
 
   const draftedIds = items.filter(i => i.state === 'drafted' && i.summary.trim()).map(i => i.id)
   async function approveAll() {
     setBusy(-1)
-    try { await Promise.all(draftedIds.map(id => fetch(`/api/worklogs/${id}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'approve' }),
-    }))) } finally { setBusy(null); load(day) }
+    try {
+      await Promise.all(draftedIds.map(id =>
+        mutate(`/api/worklogs/${id}`, 'worklog_action', { id, action: 'approve' })))
+    } finally { setBusy(null); load(day) }
   }
 
   const isToday = day === dayString(0)

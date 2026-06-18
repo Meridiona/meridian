@@ -4,12 +4,21 @@
 import { useEffect, useRef, useState } from 'react'
 import { fmtDur, fmtClock, AppGlyph, CatDot, TaskKey, StatusPill, SectionHead, Card, CATS, PROVIDER_META } from '@/components/atoms'
 import type { TaskSummary, TasksResponse } from '@/app/api/tasks/route'
-import { load } from '@/lib/bridge'
+import { load, invoke, isTauri } from '@/lib/bridge'
 import HygieneDialog from '@/components/HygieneDialog'
 import type { TodayResponse } from '@/app/api/today/route'
 import type { IntegrationsResponse } from '@/app/api/integrations/route'
 
 const TASKS_POLL_INTERVAL_MS = 60_000
+
+// Clear a provider's error notice immediately (don't wait for the next ETL poll).
+// Dual-path: the delete_notice command in the app, the /api DELETE in a browser.
+// Fire-and-forget — a failure just means the banner clears on the next poll.
+function clearProviderNotice(provider: string): void {
+  const noticeId = `pm.${provider}`
+  if (isTauri()) void invoke('delete_notice', { noticeId }).catch(() => {})
+  else void fetch(`/api/notices/${noticeId}`, { method: 'DELETE' }).catch(() => {})
+}
 
 // Deterministic color from epic title — cycles through a palette of muted hues
 const EPIC_PALETTE = [
@@ -945,8 +954,7 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: (typeof TRACKERS)[number]
         if (data[tracker.id]) {
           stopped = true; clearInterval(id); pollRef.current = null
           setStatus('done')
-          // Clear the provider's error notice immediately — don't wait for next ETL poll
-          fetch(`/api/notices/pm.${tracker.id}`, { method: 'DELETE' }).catch(() => {})
+          clearProviderNotice(tracker.id)
           onSuccess?.()
         }
       }, 2_000)
@@ -1004,8 +1012,7 @@ function TokenSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
       const isConnected = !!data[tracker.id]
       setConnected(isConnected)
       if (isConnected) {
-        // Clear the provider's error notice immediately
-        fetch(`/api/notices/pm.${tracker.id}`, { method: 'DELETE' }).catch(() => {})
+        clearProviderNotice(tracker.id)
       }
     } catch { /* ignore */ }
     finally { setChecking(false) }

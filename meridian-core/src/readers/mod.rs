@@ -23,6 +23,9 @@ pub mod integrations;
 /// The `/api/tasks` per-task time + hygiene payload (ported from tasks/route.ts).
 pub mod tasks;
 
+/// The `/api/notices/[id]` DELETE — clear a fault banner (ported from notices/[id]/route.ts).
+pub mod notices;
+
 /// The `/api/plan` GET + POST — daily plan board scoring + writes (ported from plan/route.ts).
 pub mod plan;
 

@@ -5,13 +5,16 @@
 //! # What this is
 //! A day's drafted/approved/posted worklogs for review: the editable Jira
 //! comment (payload `summary`), supporting bullets/next-steps for context,
-//! confidence/coverage, risk flags, and post status. Read-only — the mutations
-//! live in the (not-yet-ported) `worklogs/[id]` route.
+//! confidence/coverage, risk flags, and post status. The review *writes*
+//! ([`edit_worklog`], [`worklog_action`]) are faithful ports of `worklogs/[id]`
+//! PATCH/POST: they record the human-in-the-loop decision in the DB (the daemon's
+//! ~60s approved-sweep is what actually posts to Jira) and append an immutable
+//! `pm_worklog_feedback` row per action (the eval signal). A `posted` worklog is
+//! immutable here.
 //!
 //! # Who calls this
-//! The tray `get_worklogs` command → the dashboard `WorklogsView` (the draft
-//! review list). Note: `WorklogsView`'s approve/reject actions still POST to
-//! `/api/worklogs/[id]` until that write route is ported.
+//! The tray `get_worklogs` / `edit_worklog` / `worklog_action` commands → the
+//! dashboard `WorklogsView` (read list + the approve/reject/edit actions).
 //!
 //! # Related
 //! - [`crate::tasks`] joins the same `pm_tasks` for per-ticket time.
@@ -200,4 +203,339 @@ pub async fn get_worklogs(pool: &SqlitePool, day: &str) -> anyhow::Result<Worklo
         items,
         counts,
     })
+}
+
+// ── Writes (the worklogs/[id] PATCH + POST) ───────────────────────────────────
+
+/// A worklog review action (the route's POST `action` allow-set).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorklogAction {
+    Approve,
+    Reject,
+    Unapprove,
+}
+
+impl WorklogAction {
+    /// The stored `feedback_kind` string (also the route's action value).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            WorklogAction::Approve => "approve",
+            WorklogAction::Reject => "reject",
+            WorklogAction::Unapprove => "unapprove",
+        }
+    }
+
+    /// Parse a request string; `None` outside approve/reject/unapprove.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "approve" => Some(WorklogAction::Approve),
+            "reject" => Some(WorklogAction::Reject),
+            "unapprove" => Some(WorklogAction::Unapprove),
+            _ => None,
+        }
+    }
+
+    /// The `state` this action transitions the worklog into.
+    fn next_state(&self) -> &'static str {
+        match self {
+            WorklogAction::Approve => "approved",
+            WorklogAction::Reject => "skipped",
+            WorklogAction::Unapprove => "drafted",
+        }
+    }
+}
+
+/// A worklog write rejected by a business rule (the route's 404/409).
+#[derive(Debug)]
+pub enum WorklogWriteError {
+    /// No `pm_worklogs` row with that id (the route's 404).
+    NotFound(i64),
+    /// The worklog is already `posted` to Jira → immutable (the route's 409).
+    AlreadyPosted(i64),
+}
+
+impl std::fmt::Display for WorklogWriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound(id) => write!(f, "worklog {id} not found"),
+            Self::AlreadyPosted(id) => write!(f, "worklog {id} already posted to Jira"),
+        }
+    }
+}
+impl std::error::Error for WorklogWriteError {}
+
+#[derive(FromRow)]
+struct StateRow {
+    state: String,
+    payload_json: String,
+}
+
+/// Edit a worklog's Jira comment (port of `worklogs/[id]` PATCH). Sets the
+/// payload `summary`, pulls an `approved` row back to `drafted` (content changed
+/// → must be re-approved), clears any post error, and records an `edit` feedback
+/// row (old → new). Returns the resulting state. Errors [`WorklogWriteError`] for
+/// a missing (404) or already-posted (409) worklog.
+#[tracing::instrument(skip(pool, summary))]
+pub async fn edit_worklog(
+    pool: &SqlitePool,
+    id: i64,
+    summary: &str,
+    now: &str,
+) -> anyhow::Result<String> {
+    let row: Option<StateRow> =
+        sqlx::query_as::<_, StateRow>("SELECT state, payload_json FROM pm_worklogs WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .instrument(tracing::debug_span!("worklogs.read.state"))
+            .await?;
+    let Some(row) = row else {
+        return Err(WorklogWriteError::NotFound(id).into());
+    };
+    if row.state == "posted" {
+        return Err(WorklogWriteError::AlreadyPosted(id).into());
+    }
+
+    // Capture the pre-edit summary for the feedback row (parse failure → "").
+    let original = serde_json::from_str::<Value>(&row.payload_json)
+        .ok()
+        .and_then(|p| p.get("summary").and_then(|v| v.as_str()).map(String::from))
+        .unwrap_or_default();
+    // Editing an approved row pulls it back to drafted (re-approval required).
+    let next_state = if row.state == "approved" {
+        "drafted"
+    } else {
+        row.state.as_str()
+    };
+
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "UPDATE pm_worklogs \
+         SET payload_json = json_set(payload_json, '$.summary', ?), \
+             state = ?, edited_at = ?, last_post_error = NULL \
+         WHERE id = ?",
+    )
+    .bind(summary)
+    .bind(next_state)
+    .bind(now)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO pm_worklog_feedback (pm_worklog_id, feedback_kind, original_text, edited_text) \
+         VALUES (?, 'edit', ?, ?)",
+    )
+    .bind(id)
+    .bind(&original)
+    .bind(summary)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    tracing::info!(id, state = next_state, "worklog edited");
+    Ok(next_state.to_string())
+}
+
+/// Transition a worklog's review state (port of `worklogs/[id]` POST). Applies
+/// the state change and appends an immutable feedback row carrying the
+/// `state→next` transition (and, for `reject` only, the attribution correction:
+/// where the time should have gone). Returns the resulting state. Errors
+/// [`WorklogWriteError`] for a missing (404) or already-posted (409) worklog.
+///
+/// `corrected_task_key` / `corrected_to_untracked` are the reviewer's optional
+/// reject-time attribution; the caller has already gated them to `reject`
+/// (matching the route, which ignores them for other actions).
+#[tracing::instrument(skip(pool), fields(action = action.as_str()))]
+pub async fn worklog_action(
+    pool: &SqlitePool,
+    id: i64,
+    action: WorklogAction,
+    corrected_task_key: Option<&str>,
+    corrected_to_untracked: bool,
+    now: &str,
+) -> anyhow::Result<String> {
+    let state: Option<String> = sqlx::query_scalar("SELECT state FROM pm_worklogs WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .instrument(tracing::debug_span!("worklogs.read.state"))
+        .await?;
+    let Some(state) = state else {
+        return Err(WorklogWriteError::NotFound(id).into());
+    };
+    if state == "posted" {
+        return Err(WorklogWriteError::AlreadyPosted(id).into());
+    }
+
+    let next = action.next_state();
+    let transition = format!("{state}→{next}");
+
+    let mut tx = pool.begin().await?;
+    match action {
+        WorklogAction::Approve => {
+            sqlx::query(
+                "UPDATE pm_worklogs SET state = 'approved', approved_at = ?, last_post_error = NULL WHERE id = ?",
+            )
+            .bind(now)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        WorklogAction::Reject => {
+            sqlx::query("UPDATE pm_worklogs SET state = 'skipped' WHERE id = ?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        WorklogAction::Unapprove => {
+            sqlx::query(
+                "UPDATE pm_worklogs SET state = 'drafted', approved_at = NULL WHERE id = ?",
+            )
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+    sqlx::query(
+        "INSERT INTO pm_worklog_feedback \
+            (pm_worklog_id, feedback_kind, note, corrected_task_key, corrected_to_untracked) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(action.as_str())
+    .bind(&transition)
+    .bind(corrected_task_key)
+    .bind(corrected_to_untracked as i64)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    tracing::info!(
+        id,
+        action = action.as_str(),
+        state = next,
+        "worklog action recorded"
+    );
+    Ok(next.to_string())
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn pool_with_worklogs() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for ddl in [
+            "CREATE TABLE pm_worklogs (id INTEGER PRIMARY KEY, state TEXT, payload_json TEXT, \
+                approved_at TEXT, edited_at TEXT, last_post_error TEXT)",
+            "CREATE TABLE pm_worklog_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, \
+                pm_worklog_id INTEGER, feedback_kind TEXT, original_text TEXT, edited_text TEXT, \
+                note TEXT, corrected_task_key TEXT, corrected_to_untracked INTEGER)",
+        ] {
+            sqlx::query(ddl).execute(&pool).await.unwrap();
+        }
+        pool
+    }
+
+    async fn seed(pool: &SqlitePool, id: i64, state: &str, summary: &str) {
+        sqlx::query("INSERT INTO pm_worklogs (id, state, payload_json) VALUES (?, ?, ?)")
+            .bind(id)
+            .bind(state)
+            .bind(format!(r#"{{"summary":"{summary}"}}"#))
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn edit_pulls_approved_back_to_drafted_and_logs_feedback() {
+        let pool = pool_with_worklogs().await;
+        seed(&pool, 1, "approved", "old text").await;
+
+        let next = edit_worklog(&pool, 1, "new text", "2026-06-18T10:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(next, "drafted", "editing an approved row re-drafts it");
+
+        let (state, payload): (String, String) =
+            sqlx::query_as("SELECT state, payload_json FROM pm_worklogs WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(state, "drafted");
+        assert!(payload.contains("new text"));
+        // An immutable edit-feedback row captured old → new.
+        let (kind, orig, edited): (String, String, String) = sqlx::query_as(
+            "SELECT feedback_kind, original_text, edited_text FROM pm_worklog_feedback WHERE pm_worklog_id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            (kind.as_str(), orig.as_str(), edited.as_str()),
+            ("edit", "old text", "new text")
+        );
+    }
+
+    #[tokio::test]
+    async fn posted_worklog_is_immutable() {
+        let pool = pool_with_worklogs().await;
+        seed(&pool, 1, "posted", "shipped").await;
+        let e = edit_worklog(&pool, 1, "x", "2026-06-18T10:00:00Z")
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("already posted"));
+        let e = worklog_action(
+            &pool,
+            1,
+            WorklogAction::Approve,
+            None,
+            false,
+            "2026-06-18T10:00:00Z",
+        )
+        .await
+        .unwrap_err();
+        assert!(e.to_string().contains("already posted"));
+        // Missing id → 404-equivalent.
+        let e = worklog_action(
+            &pool,
+            999,
+            WorklogAction::Approve,
+            None,
+            false,
+            "2026-06-18T10:00:00Z",
+        )
+        .await
+        .unwrap_err();
+        assert!(e.to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn reject_records_correction_attribution() {
+        let pool = pool_with_worklogs().await;
+        seed(&pool, 1, "drafted", "draft").await;
+        let next = worklog_action(
+            &pool,
+            1,
+            WorklogAction::Reject,
+            Some("PROJ-9"),
+            false,
+            "2026-06-18T10:00:00Z",
+        )
+        .await
+        .unwrap();
+        assert_eq!(next, "skipped");
+        let (kind, note, corrected): (String, String, Option<String>) = sqlx::query_as(
+            "SELECT feedback_kind, note, corrected_task_key FROM pm_worklog_feedback WHERE pm_worklog_id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(kind, "reject");
+        assert_eq!(note, "drafted→skipped");
+        assert_eq!(corrected.as_deref(), Some("PROJ-9"));
+    }
 }

@@ -144,11 +144,14 @@ pub fn run() {
             commands::get_logs,
             commands::get_ticket_parents,
             commands::get_version,
-            // DB writes (ported /api/* POSTs)
+            // DB writes (ported /api/* POSTs/PATCH/DELETE)
             commands::plan_action,
             commands::triage_decision,
             commands::triage_ignore,
             commands::dismiss_notification,
+            commands::delete_notice,
+            commands::edit_worklog,
+            commands::worklog_action,
             // OS/window actions
             commands::open_permission_pane,
         ])
