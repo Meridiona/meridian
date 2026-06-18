@@ -159,6 +159,10 @@ pub fn run() {
             commands::set_openobserve,
             commands::sync_tasks,
             commands::run_update,
+            // tracker connect/disconnect (ported /api/integrations + /api/auth/oauth)
+            commands::disconnect_integration,
+            commands::discover_azure_devops,
+            commands::start_oauth,
             // OS/window actions
             commands::open_permission_pane,
         ])

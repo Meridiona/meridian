@@ -591,7 +591,10 @@ function ConnectTrackers({ integrations, onDisconnect }: { integrations: Integra
 
   const handleDisconnect = (id: TrackerId) => {
     setDisconnecting(id)
-    fetch(`/api/integrations?provider=${id}`, { method: 'DELETE' })
+    // disconnect_integration (Rust) in the app, /api/integrations DELETE in a
+    // browser. Path-param route: provider rides the URL (browser) and the body
+    // (command), so both paths forget the same tracker.
+    mutate(`/api/integrations?provider=${id}`, 'disconnect_integration', { provider: id }, 'DELETE')
       .then(() => { onDisconnect?.(); setOpen(null) })
       .catch(() => {})
       .finally(() => setDisconnecting(null))
@@ -760,17 +763,17 @@ function AzureDevOpsSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
     setProjects(null)
     setSelectedProject('')
     try {
-      const r = await fetch('/api/integrations/azure-devops/discover', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pat: pat.trim() }),
-      })
-      const json = await r.json()
-      if (!r.ok) { setError(json.error ?? 'Failed to fetch organisations'); return }
+      // discover_azure_devops (Rust) in the app, /api/.../discover POST in a
+      // browser. mutate throws the server's error text on failure.
+      const json = await mutate<{ orgs?: string[] }>(
+        '/api/integrations/azure-devops/discover',
+        'discover_azure_devops',
+        { pat: pat.trim() },
+      )
       setOrgs(json.orgs ?? [])
-      if ((json.orgs ?? []).length === 1) setSelectedOrg(json.orgs[0])
-    } catch {
-      setError('Network error — check your connection')
+      if ((json.orgs ?? []).length === 1) setSelectedOrg(json.orgs![0])
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to fetch organisations')
     } finally {
       setLoading(null)
     }
@@ -783,17 +786,15 @@ function AzureDevOpsSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
     setProjects(null)
     setSelectedProject('')
     try {
-      const r = await fetch('/api/integrations/azure-devops/discover', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pat: pat.trim(), org }),
-      })
-      const json = await r.json()
-      if (!r.ok) { setError(json.error ?? 'Failed to fetch projects'); return }
+      const json = await mutate<{ projects?: string[] }>(
+        '/api/integrations/azure-devops/discover',
+        'discover_azure_devops',
+        { pat: pat.trim(), org },
+      )
       setProjects(json.projects ?? [])
-      if ((json.projects ?? []).length === 1) setSelectedProject(json.projects[0])
-    } catch {
-      setError('Network error — check your connection')
+      if ((json.projects ?? []).length === 1) setSelectedProject(json.projects![0])
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to fetch projects')
     } finally {
       setLoading(null)
     }
@@ -929,8 +930,9 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: (typeof TRACKERS)[number]
     setStatus('waiting')
     setError(null)
     try {
-      const r = await fetch(`/api/auth/oauth/start?provider=${tracker.id}`, { method: 'POST' })
-      if (!r.ok) { const b = await r.json(); setError(b.error ?? 'Failed to start'); setStatus('error'); return }
+      // start_oauth (Rust) in the app, /api/auth/oauth/start POST in a browser.
+      // Path-param route: provider rides the URL (browser) and the body (command).
+      await mutate(`/api/auth/oauth/start?provider=${tracker.id}`, 'start_oauth', { provider: tracker.id })
       // Poll until connected (up to 3 minutes).
       // `stopped` prevents two async invocations of the same callback from both
       // resolving — e.g. tick N suspended at await while tick N+1 hits the deadline.
