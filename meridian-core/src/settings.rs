@@ -14,12 +14,21 @@
 //! - The Tauri app: the tray `get_settings` command (the ported `/api/settings`
 //!   GET) serialises this, redacting `oo_password`.
 //!
+//! The PUT (write) side is [`read_settings_value`] + [`write_settings_value`]:
+//! these work on the raw JSON object (not the typed struct) so a write preserves
+//! any keys not in [`RuntimeSettings`] — a faithful match of the route's
+//! `{ ...current, ...body }` merge — and the write is crash-safe (temp + rename).
+//!
 //! # Related
 //! - `ui/lib/settings.ts` is the TS mirror of this schema + defaults — keep the
 //!   two in sync (the `SETTINGS_DEFAULTS` there must match [`RuntimeSettings::default`]).
-//! - The PUT (write) side of `/api/settings` is not yet ported.
+//! - The tray `update_settings` command (ported `/api/settings` PUT) validates +
+//!   merges the body on top of [`read_settings_value`] and persists via
+//!   [`write_settings_value`].
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::path::PathBuf;
 
 /// Settings changeable at runtime by editing `settings.json`. The daemon
@@ -157,5 +166,110 @@ pub fn load_runtime_settings() -> RuntimeSettings {
             RuntimeSettings::default()
         }),
         Err(_) => RuntimeSettings::default(), // file doesn't exist yet — fine
+    }
+}
+
+/// The 3 string-typed fields the daemon stores as `Option` (serialised to JSON
+/// `null` when unset). The dashboard's `readSettings` coerces these `null → ''`
+/// so TS consumers never hit a null on a string field — we mirror that here.
+const NULLABLE_STRING_FIELDS: [&str; 3] = ["otlp_endpoint", "oo_email", "oo_password"];
+
+/// Read the current settings as a raw JSON object — defaults overlaid with the
+/// on-disk file (file wins), with the nullable string fields coerced `null → ''`.
+/// A faithful mirror of `readSettings()`: working on the `Value` (not the typed
+/// struct) preserves any extra keys the file carries, so a subsequent write can
+/// round-trip them. Returns defaults alone when the file is absent/unparseable.
+pub fn read_settings_value() -> Value {
+    let mut v = serde_json::to_value(RuntimeSettings::default())
+        .unwrap_or_else(|_| Value::Object(Default::default()));
+    let path = settings_json_path();
+    if let Ok(s) = std::fs::read_to_string(&path) {
+        match serde_json::from_str::<Value>(&s) {
+            Ok(Value::Object(file)) => {
+                if let Some(obj) = v.as_object_mut() {
+                    for (k, val) in file {
+                        obj.insert(k, val); // file key overrides the default
+                    }
+                }
+            }
+            Ok(_) => tracing::warn!(path = %path.display(), "settings.json is not an object"),
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "settings.json parse error")
+            }
+        }
+    }
+    if let Some(obj) = v.as_object_mut() {
+        for k in NULLABLE_STRING_FIELDS {
+            if obj.get(k).map(Value::is_null).unwrap_or(false) {
+                obj.insert(k.to_string(), Value::String(String::new()));
+            }
+        }
+    }
+    v
+}
+
+/// Persist a settings object to `settings.json`, crash-safely. Writes pretty
+/// 2-space JSON (matching the dashboard's `JSON.stringify(x, null, 2)`) to a
+/// temp file in the same dir, then atomically renames it over the target — so a
+/// crash mid-write can never truncate the file holding the OO credentials (an
+/// improvement over the route's plain `writeFileSync`, per the config-safety
+/// practice). Creates the parent dir on first write.
+pub fn write_settings_value(settings: &Value) -> anyhow::Result<()> {
+    let path = settings_json_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("creating settings dir {}", dir.display()))?;
+    }
+    let json = serde_json::to_string_pretty(settings).context("serialising settings")?;
+    // Temp file in the SAME directory so the rename is atomic (same filesystem).
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, json.as_bytes())
+        .with_context(|| format!("writing temp settings {}", tmp.display()))?;
+    std::fs::rename(&tmp, &path)
+        .with_context(|| format!("atomically replacing {}", path.display()))?;
+    tracing::info!(path = %path.display(), "settings.json written");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Point settings resolution at a temp file for the duration of a test.
+    /// (Serialised by the caller via distinct paths — each test uses its own.)
+    fn with_settings_path(path: &std::path::Path) {
+        std::env::set_var("MERIDIAN_SETTINGS_PATH", path);
+    }
+
+    #[test]
+    fn read_coerces_nulls_and_write_round_trips_extra_keys() {
+        let dir =
+            std::env::temp_dir().join(format!("meridian-settings-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        with_settings_path(&path);
+
+        // Seed a file with an extra (unknown) key + an explicit null string field.
+        std::fs::write(
+            &path,
+            r#"{"log_level":"DEBUG","oo_email":null,"_extra":"keep me"}"#,
+        )
+        .unwrap();
+
+        let v = read_settings_value();
+        assert_eq!(v["log_level"], json!("DEBUG"), "file overrides default");
+        assert_eq!(v["oo_email"], json!(""), "null string coerced to ''");
+        assert_eq!(v["_extra"], json!("keep me"), "unknown key preserved");
+        // a default-only field still present
+        assert_eq!(v["poll_interval_secs"], json!(60));
+
+        // Write it back and confirm the extra key survives a round-trip.
+        write_settings_value(&v).unwrap();
+        let again = read_settings_value();
+        assert_eq!(again["_extra"], json!("keep me"));
+
+        std::env::remove_var("MERIDIAN_SETTINGS_PATH");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

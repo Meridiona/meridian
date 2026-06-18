@@ -16,6 +16,7 @@
 //! - [`notices`]   — clear a fault banner (`/api/notices/[id]` DELETE).
 //! - [`notifications`] — the in-app banner dismiss write.
 //! - [`parents`]   — valid parent tickets for the hygiene "link a parent" fix.
+//! - [`settings`]  — runtime settings read + write (`/api/settings` GET/PUT).
 //! - [`triage`]    — cleanup working set + the decision/ignore DB writes.
 //! - [`version`]   — installed vs. published version (`/api/version`).
 //! - [`worklogs`]  — worklog review read + edit/approve/reject/unapprove writes.
@@ -33,6 +34,7 @@ pub mod notices;
 pub mod notifications;
 pub mod openobserve;
 pub mod parents;
+pub mod settings;
 pub mod system;
 pub mod triage;
 pub mod version;
@@ -51,6 +53,7 @@ pub use notices::*;
 pub use notifications::*;
 pub use openobserve::*;
 pub use parents::*;
+pub use settings::*;
 pub use system::*;
 pub use triage::*;
 pub use version::*;

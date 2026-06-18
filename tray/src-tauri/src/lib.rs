@@ -152,6 +152,7 @@ pub fn run() {
             commands::delete_notice,
             commands::edit_worklog,
             commands::worklog_action,
+            commands::update_settings,
             // OS/window actions
             commands::open_permission_pane,
         ])

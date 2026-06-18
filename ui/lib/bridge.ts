@@ -75,7 +75,7 @@ export async function mutate<T = unknown>(
   apiPath: string,
   command: string,
   body: Record<string, unknown>,
-  method: 'POST' | 'PATCH' | 'DELETE' = 'POST',
+  method: 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'POST',
 ): Promise<T> {
   const t = tauri()
   if (t) return t.core.invoke(command, { body }) as Promise<T>

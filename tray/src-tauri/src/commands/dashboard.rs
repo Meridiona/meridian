@@ -17,38 +17,6 @@
 
 use tauri::State;
 
-/// Sentinel returned to the UI when a password is stored — the real value never
-/// leaves the daemon side. Matches ui/app/api/settings/route.ts.
-const PASSWORD_SENTINEL: &str = "••••••••";
-
-/// Runtime settings for the dashboard (the ported /api/settings GET). Reads
-/// settings.json via the shared meridian-core reader, then matches the route's
-/// response shaping: Option::None string fields → '' (TS consumers expect
-/// strings, not null), and oo_password redacted to a sentinel. Read-only —
-/// the PUT (write) route is ported later.
-#[tauri::command]
-#[tracing::instrument]
-pub async fn get_settings() -> Result<serde_json::Value, String> {
-    let s = meridian_core::settings::load_runtime_settings();
-    let mut v = serde_json::to_value(&s).map_err(|e| e.to_string())?;
-    if let Some(obj) = v.as_object_mut() {
-        obj.insert(
-            "otlp_endpoint".into(),
-            serde_json::json!(s.otlp_endpoint.clone().unwrap_or_default()),
-        );
-        obj.insert(
-            "oo_email".into(),
-            serde_json::json!(s.oo_email.clone().unwrap_or_default()),
-        );
-        let has_pw = s.oo_password.as_deref().is_some_and(|p| !p.is_empty());
-        obj.insert(
-            "oo_password".into(),
-            serde_json::json!(if has_pw { PASSWORD_SENTINEL } else { "" }),
-        );
-    }
-    Ok(v)
-}
-
 /// The dashboard's active-session view (the ported /api/active): the
 /// active_session row reshaped with elapsed_s + parsed JSON columns. Resolves
 /// `now` here so the core fn stays deterministic.

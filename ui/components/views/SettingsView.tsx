@@ -7,7 +7,7 @@ import { Switch } from '@/components/ui/Switch'
 import { NumberStepper } from '@/components/ui/NumberStepper'
 import { TextInput } from '@/components/ui/TextInput'
 import type { RuntimeSettings } from '@/lib/settings'
-import { load } from '@/lib/bridge'
+import { load, mutate } from '@/lib/bridge'
 
 type SaveStatus = 'idle' | 'saved' | 'error'
 type ReloadStatus = 'idle' | 'saving' | 'installing' | 'reloading' | 'done' | 'error'
@@ -110,7 +110,6 @@ export default function SettingsView() {
 
   useEffect(() => {
     // get_settings (Rust) in the Tauri window, /api/settings in a browser.
-    // The PUT saves (below) stay on fetch until the write route is ported.
     load<RuntimeSettings>('/api/settings', 'get_settings')
       .then(setSettings)
       .catch(() => {})
@@ -124,13 +123,8 @@ export default function SettingsView() {
   async function save(fields: Partial<RuntimeSettings>, setStatus: (s: SaveStatus) => void) {
     setStatus('idle')
     try {
-      const res = await fetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(fields),
-      })
-      if (!res.ok) throw new Error('non-ok')
-      const updated: RuntimeSettings = await res.json()
+      // Dual-path: update_settings (Rust) in the app, /api/settings PUT in a browser.
+      const updated = await mutate<RuntimeSettings>('/api/settings', 'update_settings', fields, 'PUT')
       setSettings(updated)
       setStatus('saved')
       setTimeout(() => setStatus('idle'), 2000)
@@ -149,19 +143,13 @@ export default function SettingsView() {
     setReloadMsg(null)
     setReloadStatus('saving')
     try {
-      const res = await fetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          log_level: settings.log_level,
-          otlp_enabled: settings.otlp_enabled,
-          otlp_endpoint: settings.otlp_endpoint,
-          oo_email: settings.oo_email,
-          oo_password: settings.oo_password,
-        }),
-      })
-      if (!res.ok) throw new Error('save failed')
-      const updated: RuntimeSettings = await res.json()
+      const updated = await mutate<RuntimeSettings>('/api/settings', 'update_settings', {
+        log_level: settings.log_level,
+        otlp_enabled: settings.otlp_enabled,
+        otlp_endpoint: settings.otlp_endpoint,
+        oo_email: settings.oo_email,
+        oo_password: settings.oo_password,
+      }, 'PUT')
       setSettings(updated)
     } catch {
       setReloadStatus('error')
