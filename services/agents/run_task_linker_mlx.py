@@ -711,11 +711,18 @@ _VALID_CATEGORIES = frozenset({
 })
 
 
-def _coerce_apple_fm_result(data: dict) -> dict:
+def _coerce_apple_fm_result(data: dict, valid_keys: "frozenset[str] | set[str]") -> dict:
     """Fill missing or malformed fields so Pydantic can validate Apple FM output.
 
     Apple FM doesn't guarantee all required fields. This function synthesizes
     missing ones from what was returned rather than failing.
+
+    Unlike the FSM path, Apple FM is NOT structurally constrained to the
+    candidate task_key set, so it can hallucinate a plausible-but-invalid key.
+    A hallucinated key would later trip the `task_key not in valid_keys` guard
+    in `_classify_one` and be HARD-DISCARDED as overhead (confidence 0.0) —
+    throwing away work the model genuinely recognised. We instead null the
+    out-of-set key here and downgrade the session to `untracked`, retaining it.
     """
     # session_type coercion
     st = str(data.get("session_type", "untracked"))
@@ -772,10 +779,22 @@ def _coerce_apple_fm_result(data: dict) -> dict:
     elif data.get("task_key") is not None:
         data["task_key"] = str(data["task_key"])
 
+    # Validate the (now stringified) key against the candidate set. An
+    # out-of-set key on a "task" verdict means the model recognised real work
+    # but assigned a fabricated key — retain it as untracked rather than letting
+    # the downstream guard discard it as overhead.
+    if data["session_type"] == "task" and data.get("task_key") not in valid_keys:
+        data["task_key"] = None
+        data["session_type"] = "untracked"
+        data.setdefault("confidence", 0.65)
+
     return data
 
 
-def _classify_apple_fm(messages: list[dict[str, str]]) -> "SessionClassification":
+def _classify_apple_fm(
+    messages: list[dict[str, str]],
+    valid_keys: "frozenset[str] | set[str]",
+) -> "SessionClassification":
     """Classify via Apple Foundation Models (non-FSM, JSON parsing with coercion).
 
     Uses a compact system prompt sized for Apple FM's 4096-token context window.
@@ -817,7 +836,9 @@ def _classify_apple_fm(messages: list[dict[str, str]]) -> "SessionClassification
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
         data = json.loads(text)
-        return SessionClassification.model_validate(_coerce_apple_fm_result(data))
+        return SessionClassification.model_validate(
+            _coerce_apple_fm_result(data, valid_keys)
+        )
 
     def _call_apple_fm(prompt: str) -> str:
         # anyio (used by FastAPI's run_in_threadpool) sets up its own event loop
@@ -1355,7 +1376,7 @@ def _classify_one(
         prompt_tokens_processed = 0     # tokens actually run through the model this call
         try:
             if _use_apple_fm:
-                result = _classify_apple_fm(messages)
+                result = _classify_apple_fm(messages, valid_keys)
                 raw = result.model_dump_json()
             else:
                 from mlx_lm import stream_generate
