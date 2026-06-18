@@ -115,12 +115,19 @@ pub fn run() {
 
             Ok(())
         })
+        // Hand-maintained command list (grouped by domain). Adding a command
+        // means: write it in a `commands/` submodule, glob-re-export it in
+        // `commands.rs`, AND list it here — a missing entry fails the frontend
+        // `invoke` at runtime ("command not found"), not at compile time.
         .invoke_handler(tauri::generate_handler![
+            // tray popover + daemon lifecycle
             commands::get_status,
             commands::open_dashboard,
             commands::open_worklogs,
             commands::restart_daemon,
             commands::toggle_daemon,
+            commands::get_daemon_status,
+            // dashboard DB reads (ported /api/* GETs)
             commands::get_active,
             commands::get_today,
             commands::get_week,
@@ -129,16 +136,19 @@ pub fn run() {
             commands::get_tasks,
             commands::get_task_detail,
             commands::get_plan,
-            commands::plan_action,
             commands::get_settings,
             commands::get_triage,
             commands::get_integrations,
-            commands::get_daemon_status,
             commands::get_health,
             commands::get_openobserve_status,
             commands::get_logs,
             commands::get_ticket_parents,
             commands::get_version,
+            // DB writes (ported /api/* POSTs)
+            commands::plan_action,
+            commands::triage_decision,
+            commands::triage_ignore,
+            // OS/window actions
             commands::open_permission_pane,
         ])
         .run(tauri::generate_context!())

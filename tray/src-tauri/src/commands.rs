@@ -14,6 +14,7 @@
 //! - [`openobserve`] — the `/api/openobserve` service status probe.
 //! - [`integrations`] — which trackers are connected (`/api/integrations`).
 //! - [`parents`]   — valid parent tickets for the hygiene "link a parent" fix.
+//! - [`triage`]    — cleanup working set + the decision/ignore DB writes.
 //! - [`version`]   — installed vs. published version (`/api/version`).
 //!
 //! # Related
@@ -28,6 +29,7 @@ pub mod logs;
 pub mod openobserve;
 pub mod parents;
 pub mod system;
+pub mod triage;
 pub mod version;
 
 // Glob re-exports so callers use `crate::commands::<fn>` regardless of submodule.
@@ -42,4 +44,5 @@ pub use logs::*;
 pub use openobserve::*;
 pub use parents::*;
 pub use system::*;
+pub use triage::*;
 pub use version::*;
