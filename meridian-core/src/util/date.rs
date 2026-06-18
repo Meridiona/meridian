@@ -30,6 +30,23 @@ pub fn today_string() -> String {
     Local::now().format("%Y-%m-%d").to_string()
 }
 
+/// Whole calendar days from `today` to a due date (`YYYY-MM-DD` or a full
+/// datetime), or `None` if absent/unparseable. Mirrors the JS `dueDaysFrom`:
+/// "due today" → 0, "due yesterday" → -1, overdue → negative. The single shared
+/// impl behind `task_detail` and `plan` so their due math can't drift.
+///
+/// Known divergence from the JS source on a *datetime* due value: JS parses the
+/// full timestamp as LOCAL then takes its local calendar date, whereas we take
+/// the leading `YYYY-MM-DD` prefix (a UTC-naive date). For a due near midnight in
+/// a far-from-UTC zone these can differ by a day. This edge is accepted (board
+/// due dates are date-only in practice) — comment, don't re-solve.
+pub fn due_days_from(due: Option<&str>, today: NaiveDate) -> Option<i64> {
+    let due = due?;
+    let date_part = if due.len() <= 10 { due } else { due.get(..10)? };
+    let d = NaiveDate::parse_from_str(date_part, "%Y-%m-%d").ok()?;
+    Some((d - today).num_days())
+}
+
 /// Interpret a naive datetime as LOCAL wall-clock → UTC → JS `toISOString()`
 /// format (millis precision + `Z`).
 fn local_naive_to_utc_iso(naive: NaiveDateTime) -> String {
@@ -77,6 +94,19 @@ mod tests {
         let (start, end) = local_day_bounds("2026-06-16");
         assert!(start.ends_with('Z') && start.contains('.'));
         assert!(end.ends_with(".999Z"));
+    }
+
+    #[test]
+    fn due_days_calendar_diff() {
+        let today = NaiveDate::from_ymd_opt(2026, 6, 18).unwrap();
+        assert_eq!(due_days_from(Some("2026-06-18"), today), Some(0));
+        assert_eq!(due_days_from(Some("2026-06-20"), today), Some(2));
+        assert_eq!(due_days_from(Some("2026-06-17"), today), Some(-1));
+        // full datetime → date prefix used
+        assert_eq!(due_days_from(Some("2026-06-21T15:00:00Z"), today), Some(3));
+        // absent / unparseable → None
+        assert_eq!(due_days_from(None, today), None);
+        assert_eq!(due_days_from(Some("nope"), today), None);
     }
 
     #[test]

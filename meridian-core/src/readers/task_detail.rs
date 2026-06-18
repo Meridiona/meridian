@@ -57,17 +57,6 @@ struct TaskRow {
     acceptance_criteria: Option<String>,
 }
 
-/// Whole-days from `today` to `due` (a `YYYY-MM-DD` date or a full datetime),
-/// or `None` if absent/unparseable. Mirrors `dueDaysFrom`: compares calendar
-/// days (so "due today" → 0, "due yesterday" → -1), `today` resolved by the caller.
-fn due_days_from(due: Option<&str>, today: NaiveDate) -> Option<i64> {
-    let due = due?;
-    // Date-only ("YYYY-MM-DD") → take as-is; datetime → take the date prefix.
-    let date_part = if due.len() <= 10 { due } else { due.get(..10)? };
-    let d = NaiveDate::parse_from_str(date_part, "%Y-%m-%d").ok()?;
-    Some((d - today).num_days())
-}
-
 /// One blank-to-`None` trimmed string (mirrors the route's `(x)?.trim() || null`).
 fn trimmed(v: Option<String>) -> Option<String> {
     v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
@@ -113,7 +102,7 @@ pub async fn get_task_detail(
             epic,
             priority: trimmed(r.priority),
             story_points: trimmed(r.story_points),
-            due_days: due_days_from(r.due_date.as_deref(), today),
+            due_days: crate::date::due_days_from(r.due_date.as_deref(), today),
             due_date: r.due_date,
             start_date: r.start_date,
             description: r.description_text.unwrap_or_default(),
@@ -121,22 +110,4 @@ pub async fn get_task_detail(
             key: r.task_key,
         }
     }))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn due_days_calendar_diff() {
-        let today = NaiveDate::from_ymd_opt(2026, 6, 18).unwrap();
-        assert_eq!(due_days_from(Some("2026-06-18"), today), Some(0));
-        assert_eq!(due_days_from(Some("2026-06-20"), today), Some(2));
-        assert_eq!(due_days_from(Some("2026-06-17"), today), Some(-1));
-        // full datetime → date prefix used
-        assert_eq!(due_days_from(Some("2026-06-21T15:00:00Z"), today), Some(3));
-        // absent / unparseable → None
-        assert_eq!(due_days_from(None, today), None);
-        assert_eq!(due_days_from(Some("nope"), today), None);
-    }
 }

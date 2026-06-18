@@ -187,6 +187,117 @@ pub async fn get_task_detail(
         })
 }
 
+/// The daily plan board (the ported /api/plan GET): the committed set + ranked
+/// suggestions + the full scored board. Resolves "today" (local), "now" (epoch
+/// ms + the recent-work lookback bound) here so the core scoring stays
+/// deterministic/testable. `date` defaults to today when omitted/garbage (the
+/// route's read-side `readDate` coercion).
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn get_plan(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    date: Option<String>,
+) -> Result<meridian_core::plan::PlanResponse, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let date = read_date(date);
+    let (today, now_ms, recent_since) = plan_clock();
+    let available = meridian_core::plan::build_available(pool, &date, today, now_ms, &recent_since)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "get_plan: build_available failed");
+            e.to_string()
+        })?;
+    meridian_core::plan::build_plan_response(pool, &date, today, available)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "get_plan failed");
+            e.to_string()
+        })
+}
+
+/// A daily-plan write (the ported /api/plan POST): one of confirm/set/add/
+/// remove/reorder/skip/reopen, returning the freshly-scored plan response. The
+/// whole body is one payload object (`PlanBody`) so the Tauri and browser paths
+/// send one identical snake_case shape (avoids the per-arg camelCase rename).
+#[tauri::command]
+#[tracing::instrument(skip(pool, body), fields(action = %body.action))]
+pub async fn plan_action(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    body: meridian_core::plan::PlanBody,
+) -> Result<meridian_core::plan::PlanResponse, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    // Writes must reject a malformed EXPLICIT date (defaulting it to today would
+    // mutate the WRONG day); an absent date → today. Mirrors the route's writeDate.
+    let date = match write_date(body.date.as_deref()) {
+        Some(d) => d,
+        None => return Err("invalid date (expected YYYY-MM-DD)".to_string()),
+    };
+    let (today, now_ms, recent_since) = plan_clock();
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let available = meridian_core::plan::build_available(pool, &date, today, now_ms, &recent_since)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "plan_action: build_available failed");
+            e.to_string()
+        })?;
+    meridian_core::plan::apply_plan_action(pool, &body, &date, today, &now, available)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "plan_action failed");
+            e.to_string()
+        })
+}
+
+/// `YYYY-MM-DD` validation shared by the plan read/write date coercions.
+fn is_iso_date(d: &str) -> bool {
+    let b = d.as_bytes();
+    d.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b.iter().enumerate().all(|(i, c)| {
+            if i == 4 || i == 7 {
+                *c == b'-'
+            } else {
+                c.is_ascii_digit()
+            }
+        })
+}
+
+/// Read-side date coercion (the route's `readDate`): absent/garbage → today.
+fn read_date(d: Option<String>) -> String {
+    match d {
+        Some(d) if is_iso_date(&d) => d,
+        _ => meridian_core::date::today_string(),
+    }
+}
+
+/// Write-side date coercion (the route's `writeDate`): absent → today, malformed
+/// explicit → `None` (the caller 400s rather than mutating the wrong day).
+fn write_date(d: Option<&str>) -> Option<String> {
+    match d {
+        None => Some(meridian_core::date::today_string()),
+        Some(d) if is_iso_date(d) => Some(d.to_string()),
+        Some(_) => None,
+    }
+}
+
+/// Resolve the plan's request-scoped clock: (local `today`, `now` epoch-ms,
+/// local `recent_since` day = `now − RECENT_WORK_DAYS`). Mirrors the TS use of
+/// `new Date()` / `Date.now()` across the scoring path.
+fn plan_clock() -> (chrono::NaiveDate, i64, String) {
+    let now_local = chrono::Local::now();
+    let today = now_local.date_naive();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let recent_since = (now_local - chrono::Duration::days(meridian_core::plan::RECENT_WORK_DAYS))
+        .format("%Y-%m-%d")
+        .to_string();
+    (today, now_ms, recent_since)
+}
+
 /// Per-task time + board hygiene, computed in Rust (the ported /api/tasks).
 /// Resolves today, the 7-day window start, and now here so the core fn stays
 /// deterministic/testable (mirrors get_today).

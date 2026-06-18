@@ -60,3 +60,25 @@ export async function load<T = unknown>(
   if (!r.ok) throw new Error(`${apiPath} → ${r.status}`)
   return r.json() as Promise<T>
 }
+
+/** Dual-path mutation (POST): the Rust write command inside the app, else a
+ *  POST to the /api route in a browser. `body` is sent as ONE payload object —
+ *  to `invoke` under the `body` key (matching the command's `body:` param) and
+ *  as the `fetch` JSON body — so both paths carry one identical snake_case shape.
+ *  Returns the freshly-computed response both paths emit; throws on failure so
+ *  callers can roll back to server truth. Removed at the export cutover. */
+export async function mutate<T = unknown>(
+  apiPath: string,
+  command: string,
+  body: Record<string, unknown>,
+): Promise<T> {
+  const t = tauri()
+  if (t) return t.core.invoke(command, { body }) as Promise<T>
+  const r = await fetch(apiPath, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!r.ok) throw new Error(`${apiPath} → ${r.status}`)
+  return r.json() as Promise<T>
+}

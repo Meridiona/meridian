@@ -1,10 +1,16 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //! The no-migration SQLite opener and the raw `active_session` row.
 //!
-//! These are the lowest layer of the shared data layer: a read-only WAL opener
-//! that must NOT own or mutate the schema (the daemon owns migrations), plus the
-//! `ActiveSession` row type the daemon re-exports. The [`crate::readers`] build
-//! their richer dashboard views on top of a pool opened here.
+//! These are the lowest layer of the shared data layer: a no-migration WAL opener
+//! plus the `ActiveSession` row type the daemon re-exports. The [`crate::readers`]
+//! build their richer dashboard views on top of a pool opened here.
+//!
+//! The load-bearing invariant is **schema ownership**: this pool MUST NOT run
+//! migrations or alter the schema — the daemon owns that, and a second migrator
+//! would race it. *Data* writes are permitted, though: the app issues the ported
+//! `daily_plan` mutations (see [`crate::plan`]) through this same pool, exactly as
+//! the former Node `getWriteDb` did. WAL serialises writers and `busy_timeout`
+//! rides out the daemon's short write transactions.
 //!
 //! Re-exported at the crate root (`meridian_core::{open_existing,
 //! get_active_session, ActiveSession}`) — `db` is internal organization only.
@@ -37,22 +43,28 @@ pub struct ActiveSession {
 
 /// Open an EXISTING meridian.db WITHOUT running migrations or creating the file.
 ///
-/// For read consumers (the dashboard / Tauri app) that must not own or mutate
-/// the schema — the daemon owns migrations. A second process running the
-/// migrator would race it. Opens a normal WAL connection so it reads correctly
-/// alongside the daemon's writes; callers issue only SELECTs.
+/// For the dashboard / Tauri app, which must not own or mutate the SCHEMA — the
+/// daemon owns migrations and a second migrator would race it. Opens a normal WAL
+/// connection so reads stay correct alongside the daemon's writes; the app also
+/// issues the ported `daily_plan` data-writes through it (see [`crate::plan`]).
+///
+/// `busy_timeout` matches the former Node handle's 5000ms: the daemon writes this
+/// same file every poll/ETL, and SQLite's write lock is database-wide, so without
+/// it a concurrent plan-write would fail with "database is locked". Harmless for
+/// the readers sharing the pool — WAL readers don't take the write lock.
 #[tracing::instrument(skip_all, fields(uri = %uri))]
 pub async fn open_existing(uri: &str) -> anyhow::Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str(uri)
         .with_context(|| format!("invalid SQLite URI: {uri}"))?
         .create_if_missing(false)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+        .busy_timeout(std::time::Duration::from_secs(5));
 
     let pool = SqlitePool::connect_with(opts)
         .await
         .with_context(|| format!("failed to open existing SQLite at {uri}"))?;
-    tracing::info!(uri, "opened meridian.db (read-only WAL)");
+    tracing::info!(uri, "opened meridian.db (WAL, 5s busy_timeout)");
     Ok(pool)
 }
 

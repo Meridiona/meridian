@@ -264,3 +264,216 @@ async fn today_focus_excludes_stale_active_block() {
     // whether to surface a stale active session).
     assert!(r.active.is_some(), "active card still present");
 }
+
+// ── plan reader + writes ──────────────────────────────────────────────────────
+
+/// In-memory pool with the plan reader's full schema: `pm_tasks` (scoring
+/// columns), `pm_task_curation`, `app_sessions`, and the `daily_plan` /
+/// `daily_plan_meta` tables (incl. the 044 `task_snapshot` column).
+async fn make_plan_pool() -> SqlitePool {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open in-memory db");
+    for ddl in [
+        r#"CREATE TABLE pm_tasks (
+            task_key TEXT, title TEXT, provider TEXT, url TEXT, status_raw TEXT,
+            is_terminal INTEGER, due_date TEXT, updated_at TEXT, description_text TEXT,
+            epic_title TEXT, parent_key TEXT, priority TEXT, issue_type TEXT, story_points TEXT
+        );"#,
+        r#"CREATE TABLE pm_task_curation (task_key TEXT, decision TEXT);"#,
+        r#"CREATE TABLE app_sessions (
+            task_key TEXT, started_at TEXT, task_session_type TEXT
+        );"#,
+        r#"CREATE TABLE daily_plan (
+            plan_date TEXT NOT NULL, task_key TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0,
+            origin TEXT NOT NULL DEFAULT 'manual', task_snapshot TEXT,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            PRIMARY KEY (plan_date, task_key)
+        );"#,
+        r#"CREATE TABLE daily_plan_meta (
+            plan_date TEXT NOT NULL PRIMARY KEY, confirmed_at TEXT,
+            skipped INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );"#,
+    ] {
+        sqlx::query(ddl).execute(&pool).await.unwrap();
+    }
+    pool
+}
+
+/// Insert one board ticket (only the fields the scoring touches).
+async fn seed_task(pool: &SqlitePool, key: &str, status: &str, due: Option<&str>, terminal: i64) {
+    sqlx::query(
+        "INSERT INTO pm_tasks (task_key, title, provider, url, status_raw, is_terminal, due_date, updated_at) \
+         VALUES (?, ?, 'jira', '', ?, ?, ?, NULL)",
+    )
+    .bind(key)
+    .bind(format!("Title {key}"))
+    .bind(status)
+    .bind(terminal)
+    .bind(due)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// The plan clock the command resolves (now-ms + recent-work lookback bound).
+fn plan_clock() -> (i64, String) {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let recent_since = (chrono::Local::now()
+        - Duration::days(meridian_core::plan::RECENT_WORK_DAYS))
+    .format("%Y-%m-%d")
+    .to_string();
+    (now_ms, recent_since)
+}
+
+#[tokio::test]
+async fn build_available_scores_sorts_and_excludes() {
+    let pool = make_plan_pool().await;
+    let today = chrono::Local::now().date_naive();
+    let date = today.format("%Y-%m-%d").to_string();
+    let due_today = date.clone();
+    let due_far = (today + Duration::days(60)).format("%Y-%m-%d").to_string();
+
+    // A: due today (350, "due_soon"); B: in-progress (300); E: far-future (0, manual)
+    seed_task(&pool, "PROJ-A", "Backlog", Some(&due_today), 0).await;
+    seed_task(&pool, "PROJ-B", "In Progress", None, 0).await;
+    seed_task(&pool, "PROJ-E", "Backlog", Some(&due_far), 0).await;
+    // C: terminal → dropped. D: curation-excluded → dropped.
+    seed_task(&pool, "PROJ-C", "Done", None, 1).await;
+    seed_task(&pool, "PROJ-D", "In Progress", None, 0).await;
+    sqlx::query("INSERT INTO pm_task_curation (task_key, decision) VALUES ('PROJ-D','excluded')")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (now_ms, recent_since) = plan_clock();
+    let avail = meridian_core::plan::build_available(&pool, &date, today, now_ms, &recent_since)
+        .await
+        .unwrap();
+
+    // C (terminal) and D (excluded) are gone; A,B,E survive, sorted by score.
+    let keys: Vec<&str> = avail.iter().map(|a| a.key.as_str()).collect();
+    assert_eq!(keys, vec!["PROJ-A", "PROJ-B", "PROJ-E"]);
+    assert_eq!(avail[0].score, 350);
+    assert_eq!(avail[0].origin, "due_soon");
+    assert_eq!(avail[0].reason, "Due today");
+    assert_eq!(avail[1].score, 300);
+    assert_eq!(avail[1].origin, "in_progress");
+    assert_eq!(avail[2].score, 0);
+    assert_eq!(avail[2].origin, "manual");
+
+    // Suggestions drop the score-0 ticket.
+    let resp = meridian_core::plan::build_plan_response(&pool, &date, today, avail)
+        .await
+        .unwrap();
+    assert!(resp.has_table);
+    assert!(!resp.confirmed && !resp.skipped);
+    assert!(resp.plan.is_empty());
+    let sug: Vec<&str> = resp.suggestions.iter().map(|a| a.key.as_str()).collect();
+    assert_eq!(sug, vec!["PROJ-A", "PROJ-B"]);
+}
+
+#[tokio::test]
+async fn plan_write_confirm_then_reopen_roundtrip() {
+    let pool = make_plan_pool().await;
+    let today = chrono::Local::now().date_naive();
+    let date = today.format("%Y-%m-%d").to_string();
+    seed_task(&pool, "PROJ-A", "Backlog", Some(&date), 0).await;
+    seed_task(&pool, "PROJ-B", "In Progress", None, 0).await;
+
+    let (now_ms, recent_since) = plan_clock();
+    let now = chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+    let avail = || {
+        let pool = &pool;
+        let recent_since = recent_since.clone();
+        let date = date.clone();
+        async move {
+            meridian_core::plan::build_available(pool, &date, today, now_ms, &recent_since)
+                .await
+                .unwrap()
+        }
+    };
+
+    // confirm [B, A] → committed in that order, meta confirmed.
+    let body = meridian_core::plan::PlanBody {
+        action: "confirm".to_string(),
+        date: Some(date.clone()),
+        task_key: None,
+        task_keys: Some(vec!["PROJ-B".to_string(), "PROJ-A".to_string()]),
+    };
+    let resp =
+        meridian_core::plan::apply_plan_action(&pool, &body, &date, today, &now, avail().await)
+            .await
+            .unwrap();
+    assert!(resp.confirmed && !resp.skipped);
+    let plan_keys: Vec<&str> = resp.plan.iter().map(|p| p.task_key.as_str()).collect();
+    assert_eq!(plan_keys, vec!["PROJ-B", "PROJ-A"]); // position order preserved
+    assert_eq!(resp.plan[0].position, 0);
+    assert_eq!(resp.plan[1].position, 1);
+    // A committed ticket keeps its scored origin label (not bare "manual").
+    assert_eq!(resp.plan[0].origin, "in_progress");
+    // Confirmed tasks aren't re-suggested.
+    assert!(resp.suggestions.is_empty());
+
+    // reopen → confirmed cleared, committed rows kept.
+    let reopen = meridian_core::plan::PlanBody {
+        action: "reopen".to_string(),
+        date: Some(date.clone()),
+        task_key: None,
+        task_keys: None,
+    };
+    let resp =
+        meridian_core::plan::apply_plan_action(&pool, &reopen, &date, today, &now, avail().await)
+            .await
+            .unwrap();
+    assert!(!resp.confirmed && !resp.skipped);
+    assert_eq!(resp.plan.len(), 2, "reopen keeps the committed rows");
+
+    // remove one → drops just that key.
+    let remove = meridian_core::plan::PlanBody {
+        action: "remove".to_string(),
+        date: Some(date.clone()),
+        task_key: Some("PROJ-A".to_string()),
+        task_keys: None,
+    };
+    let resp =
+        meridian_core::plan::apply_plan_action(&pool, &remove, &date, today, &now, avail().await)
+            .await
+            .unwrap();
+    let plan_keys: Vec<&str> = resp.plan.iter().map(|p| p.task_key.as_str()).collect();
+    assert_eq!(plan_keys, vec!["PROJ-B"]);
+}
+
+#[tokio::test]
+async fn plan_write_rejects_missing_keys_and_unready_storage() {
+    let pool = make_plan_pool().await;
+    let today = chrono::Local::now().date_naive();
+    let date = today.format("%Y-%m-%d").to_string();
+    let now = chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+
+    // confirm without task_keys → error (must not wipe the day).
+    let bad = meridian_core::plan::PlanBody {
+        action: "confirm".to_string(),
+        date: Some(date.clone()),
+        task_key: None,
+        task_keys: None,
+    };
+    let err = meridian_core::plan::apply_plan_action(&pool, &bad, &date, today, &now, vec![])
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("task_keys array required"));
+
+    // unknown action → error.
+    let unknown = meridian_core::plan::PlanBody {
+        action: "frobnicate".to_string(),
+        date: Some(date.clone()),
+        task_key: None,
+        task_keys: None,
+    };
+    let err = meridian_core::plan::apply_plan_action(&pool, &unknown, &date, today, &now, vec![])
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("unknown action"));
+}

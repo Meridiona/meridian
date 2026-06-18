@@ -11,6 +11,7 @@ import { GripHandle } from '@/components/plan/parts'
 import { TaskCardBody, type CardTask } from '@/components/plan/TaskCard'
 import TaskDialog from '@/components/plan/TaskDialog'
 import type { PlanResponse, AvailableTask, PlanItem } from '@/lib/daily-plan'
+import { load as loadBridge, mutate } from '@/lib/bridge'
 
 // ── normalisation ────────────────────────────────────────────────────────────
 function fromAvailable(a: AvailableTask): CardTask {
@@ -115,10 +116,9 @@ export default function PlanView() {
   // user's in-progress edits. Skipped entirely during an active drag.
   const load = useCallback((initial = false) => {
     if (!initial && draggingRef.current) return
-    fetch('/api/plan').then(r => {
-      if (!r.ok) throw new Error(`plan load failed: ${r.status}`)  // 500 = real backend error, not an empty day
-      return r.json()
-    }).then((d: PlanResponse) => {
+    // Dual-path: get_plan (Rust) in the app, /api/plan in a browser. A thrown
+    // error = real backend failure (not an empty day) → surface, don't render empty.
+    loadBridge<PlanResponse>('/api/plan', 'get_plan').then((d: PlanResponse) => {
       setData(d); setLoadFailed(false)
       if (initial) derive(d)
     }).catch(() => { if (initial) setLoadFailed(true) })
@@ -132,18 +132,14 @@ export default function PlanView() {
 
   // Persist a Today ordering (live mode only); roll back to server truth on error.
   const persist = useCallback((keys: string[]) => {
-    fetch('/api/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'set', task_keys: keys }) })
-      .then(r => { if (!r.ok) { setSaveError(true); load(true) } else setSaveError(false) })   // rollback to server truth
-      .catch(() => { setSaveError(true); load(true) })
+    mutate('/api/plan', 'plan_action', { action: 'set', task_keys: keys })
+      .then(() => setSaveError(false))
+      .catch(() => { setSaveError(true); load(true) })   // rollback to server truth
   }, [load])
 
   const metaAction = useCallback((action: string, keys: string[]) => {
-    fetch('/api/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, task_keys: keys }) })
-      .then(async r => {
-        if (!r.ok) { setSaveError(true); return }
-        setSaveError(false)
-        const d: PlanResponse = await r.json(); setData(d); derive(d)
-      })
+    mutate<PlanResponse>('/api/plan', 'plan_action', { action, task_keys: keys })
+      .then(d => { setSaveError(false); setData(d); derive(d) })
       .catch(() => setSaveError(true))
   }, [derive])
 
