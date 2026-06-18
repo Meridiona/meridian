@@ -1,3 +1,10 @@
+## [1.61.1](https://github.com/Meridiona/meridian/compare/v1.61.0...v1.61.1) (2026-06-18)
+
+
+### Bug Fixes
+
+* **mlx-server:** serialize model calls + raise worklog timeout + fix coding metrics rows ([#313](https://github.com/Meridiona/meridian/issues/313)) ([dd2a043](https://github.com/Meridiona/meridian/commit/dd2a0436195698c9eff2a2ba31b73587abf165ac))
+
 # [1.61.0](https://github.com/Meridiona/meridian/compare/v1.60.0...v1.61.0) (2026-06-18)
 
 
