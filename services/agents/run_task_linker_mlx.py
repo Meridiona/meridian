@@ -46,7 +46,7 @@ from typing import Any, Literal, Optional, Iterator
 
 from opentelemetry import trace
 from opentelemetry.trace import StatusCode
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 _SERVICES_DIR = Path(__file__).parent.parent
 
@@ -248,6 +248,23 @@ class SessionClassification(BaseModel):
             "this is the single source of truth the PM updater will compose from."
         ),
     )
+
+    @field_validator("confidence", "category_confidence", mode="before")
+    @classmethod
+    def _clamp_unit_interval(cls, v: object) -> float:
+        """Clamp a confidence into [0, 1] instead of rejecting it.
+
+        Outlines' FSM constrains the JSON STRUCTURE and TYPE but NOT a float's
+        numeric range, so a model can emit e.g. -0.85 or 1.3. Without this,
+        model_validate_json() raises on the `ge=0/le=1` bound and the ENTIRE
+        classification is lost (observed: loop eval seed 34371 → confidence
+        -0.85). Clamping mirrors the downstream guards in _classify_one and keeps
+        a usable verdict. Falls back to 0.7 for a non-numeric value.
+        """
+        try:
+            return max(0.0, min(1.0, float(v)))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 0.7
 
 
 # ---------------------------------------------------------------------------
