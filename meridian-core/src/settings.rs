@@ -45,6 +45,17 @@ pub struct RuntimeSettings {
     pub otlp_endpoint: Option<String>,
     pub oo_email: Option<String>,
     pub oo_password: Option<String>,
+    // Notification preferences — the master switch + per-type toggles + quiet
+    // hours. Read by [`crate::notifications`] (the policy ported from
+    // ui/lib/notifications.ts) to decide whether an event may surface.
+    // `quiet_hours_*` are 'HH:MM' local time (start inclusive, end exclusive).
+    pub notifications_enabled: bool,
+    pub notify_plan_nudge: bool,
+    pub notify_worklog_ready: bool,
+    pub notify_system_fault: bool,
+    pub quiet_hours_enabled: bool,
+    pub quiet_hours_start: String,
+    pub quiet_hours_end: String,
 }
 
 impl Default for RuntimeSettings {
@@ -66,6 +77,15 @@ impl Default for RuntimeSettings {
             otlp_endpoint: None,
             oo_email: None,
             oo_password: None,
+            // Notifications on by default; quiet hours off (22:00–08:00 when
+            // enabled). Must match SETTINGS_DEFAULTS in ui/lib/settings.ts.
+            notifications_enabled: true,
+            notify_plan_nudge: true,
+            notify_worklog_ready: true,
+            notify_system_fault: true,
+            quiet_hours_enabled: false,
+            quiet_hours_start: "22:00".to_string(),
+            quiet_hours_end: "08:00".to_string(),
         }
     }
 }

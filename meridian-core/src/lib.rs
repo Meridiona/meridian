@@ -30,6 +30,9 @@ mod util;
 /// Runtime settings (settings.json) — shared by the daemon (re-exported) and the app.
 pub mod settings;
 
+/// Notification delivery policy + native pending queue (ported from lib/notifications.ts).
+pub mod notifications;
+
 // ── Curated public API: flat module paths, stable across file moves ──────────
 pub use db::{get_active_session, open_existing, ActiveSession};
 
