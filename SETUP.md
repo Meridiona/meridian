@@ -163,7 +163,7 @@ meridian update             # update to the latest release
 meridian uninstall          # stop services and remove the CLI
 ```
 
-**Log targets:** `daemon`, `daemon-error`, `screenpipe`, `screenpipe-error`, `ui`, `ui-error`, `mlx-server`, `mlx-server-error`
+**Log targets:** `daemon`, `daemon-error`, `screenpipe`, `screenpipe-error`, `mlx-server`, `mlx-server-error`
 
 ---
 
@@ -174,7 +174,7 @@ meridian uninstall          # stop services and remove the CLI
 | **screenpipe** | captures screen activity (the data source) |
 | **meridian daemon** | ETL pipeline, classification, coding-agent ingest, worklog drafting |
 | **MLX server** | on-device model for classification and worklog synthesis |
-| **dashboard** | web UI at http://localhost:3939 |
+| **dashboard** | embedded in the Meridian tray app (open from the menu-bar icon) |
 
 > **8 GB M1/M2 Air (macOS 26+):** the MLX server uses Apple Intelligence — no model download needed.
 > Requires macOS 26 and Apple Intelligence enabled in System Settings.
@@ -196,7 +196,7 @@ meridian uninstall          # stop services and remove the CLI
 
 ## Troubleshooting
 
-- **Dashboard not loading** — wait ~15 s after start; check `meridian logs ui-error -f`
+- **Dashboard not loading** — the dashboard is bundled inside the tray app; quit and relaunch the Meridian tray (a stale instance can show blank)
 - **Empty Tasks board** — connect a tracker (see above), confirm with `meridian doctor`
 - **No categories** — model still loading; run `meridian logs mlx-server -f` and wait for `server: MLX model ready`
 - **`meridian: command not found`** — open a new terminal or run `source ~/.zshrc`
@@ -215,7 +215,7 @@ All settings are environment variables in `~/.meridian/app/.env`; defaults work 
 | `CLASSIFICATION_ENABLED` | `true` | Enable session → task classification (set `false` to run capture + categorisation only, no model needed) |
 | `MLX_SERVER_PORT` | `7823` | Port the on-device model server listens on |
 | `CLASSIFICATION_TIMEOUT_S` | `120` | Per-session inference timeout |
-| `MERIDIAN_UI_PORT` | `3939` | Dashboard port |
+| `MERIDIAN_UI_PORT` | `3939` | Dev-only: `next dev` / Tauri devUrl port (no effect on installed builds — the dashboard is bundled in the tray) |
 
 Edit with `meridian config edit`, then `meridian restart`.
 
