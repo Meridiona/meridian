@@ -1,3 +1,10 @@
+# [1.62.0](https://github.com/Meridiona/meridian/compare/v1.61.1...v1.62.0) (2026-06-19)
+
+
+### Features
+
+* **observability:** summariser continuity dashboard + install-time auto-import ([#316](https://github.com/Meridiona/meridian/issues/316)) ([0ba45e1](https://github.com/Meridiona/meridian/commit/0ba45e1c5fe1687b70a41fcc12025466ebea5740))
+
 ## [1.61.1](https://github.com/Meridiona/meridian/compare/v1.61.0...v1.61.1) (2026-06-18)
 
 
