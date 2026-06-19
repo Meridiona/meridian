@@ -42,6 +42,10 @@ use tracing::Instrument;
 /// `~/.meridian/oauth/<p>.json` is the connect/disconnect surface.
 const OAUTH_PROVIDERS: [&str; 2] = ["jira", "trello"];
 
+/// Providers connected via the `gh` CLI — `meridian oauth-login github`
+/// writes `GITHUB_TOKEN` to `~/.meridian/.env` instead of a `.json` store.
+const GH_CLI_PROVIDERS: [&str; 1] = ["github"];
+
 /// Providers connected via `.env` keys. Disconnecting strips every listed key
 /// from the active `.env`. Mirrors the route's `TOKEN_KEYS`.
 const TOKEN_KEYS: &[(&str, &[&str])] = &[
@@ -382,7 +386,7 @@ pub struct StartOAuthResponse {
 #[tracing::instrument(fields(provider = %body.provider))]
 pub async fn start_oauth(body: StartOAuthBody) -> Result<StartOAuthResponse, String> {
     let provider = body.provider.as_str();
-    if !OAUTH_PROVIDERS.contains(&provider) {
+    if !OAUTH_PROVIDERS.contains(&provider) && !GH_CLI_PROVIDERS.contains(&provider) {
         return Err(format!("Unknown provider: {provider}"));
     }
 
@@ -500,10 +504,19 @@ pub struct OAuthStatus {
 #[tauri::command]
 #[tracing::instrument]
 pub async fn get_oauth_status(provider: String) -> Result<OAuthStatus, String> {
-    if !OAUTH_PROVIDERS.contains(&provider.as_str()) {
+    if !OAUTH_PROVIDERS.contains(&provider.as_str())
+        && !GH_CLI_PROVIDERS.contains(&provider.as_str())
+    {
         return Err(format!("Unknown provider: {provider}"));
     }
-    let connected = oauth_file_exists(&provider);
+    // gh-CLI providers write a token to .env rather than a .json store.
+    let connected = if GH_CLI_PROVIDERS.contains(&provider.as_str()) {
+        let mode = crate::install::detect_install_mode();
+        let env = mode.env_path().map(parse_env).unwrap_or_default();
+        is_set(&env, "GITHUB_TOKEN")
+    } else {
+        oauth_file_exists(&provider)
+    };
     let error = if connected {
         None
     } else {

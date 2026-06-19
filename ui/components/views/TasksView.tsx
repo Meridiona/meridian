@@ -554,10 +554,14 @@ const TRACKERS: Array<{
     name: 'GitHub',
     glyph: 'Gh',
     color: '#24292F',
-    tokenHint: 'Easiest: run meridian setup — it pulls your token from the gh CLI (no PAT) and adds the read:project scope. Or create a classic PAT with repo, read:org, read:project scopes.',
+    oauth: {
+      command: 'meridian oauth-login github',
+      hint: 'Connects via the gh CLI — opens your browser, no PAT to create. Requires gh to be installed (cli.github.com). After connecting, add GITHUB_PROJECT_IDS to ~/.meridian/.env to sync GitHub Projects v2 tasks.',
+    },
+    tokenHint: 'Create a classic PAT with repo, read:org, read:project scopes.',
     tokenUrl: 'https://github.com/settings/tokens/new',
     env: 'GITHUB_TOKEN=ghp_your_token\nGITHUB_PROJECT_IDS=PVT_your_project_id',
-    note: 'GITHUB_PROJECT_IDS is a comma-separated list of GitHub Projects v2 node IDs. meridian setup lists your projects to pick from, or find them with: gh api graphql -f query=\'{ viewer { projectsV2(first:10){nodes{id title}} } }\'',
+    note: 'GITHUB_PROJECT_IDS is a comma-separated list of GitHub Projects v2 node IDs. Find them with: gh api graphql -f query=\'{ viewer { projectsV2(first:10){nodes{id title}} } }\'',
   },
   {
     id: 'trello',

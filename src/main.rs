@@ -204,8 +204,20 @@ async fn main() -> Result<()> {
                     }
                 }
             }
+            "github" => {
+                println!("Starting GitHub authorization via gh CLI…");
+                match meridian::intelligence::oauth::github::login().await {
+                    Ok(()) => {}
+                    Err(e) => {
+                        eprintln!("oauth-login github failed: {e:#}");
+                        std::process::exit(1);
+                    }
+                }
+            }
             other => {
-                eprintln!("oauth-login: unknown provider {other:?} (supported: jira, trello)");
+                eprintln!(
+                    "oauth-login: unknown provider {other:?} (supported: jira, trello, github)"
+                );
                 std::process::exit(1);
             }
         }
