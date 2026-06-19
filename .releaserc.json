@@ -1,16 +1,20 @@
 {
-  "branches": ["main"],
+  "branches": ["main", { "name": "staging", "prerelease": "staging" }],
   "tagFormat": "v${version}",
   "plugins": [
     "@semantic-release/commit-analyzer",
     "@semantic-release/release-notes-generator",
     ["@semantic-release/changelog", { "changelogFile": "CHANGELOG.md" }],
-    "@semantic-release/github",
     ["@semantic-release/exec", {
-      "prepareCmd": "cargo build --release && (cd ui && npm ci --no-audit --no-fund && npm run build) && (cd tray && bash create-icons.sh && npm ci --no-audit --no-fund && npm run build) && bash scripts/set-version.sh ${nextRelease.version} && bash scripts/package-release.sh ${nextRelease.version} && bash scripts/verify-release-bundle.sh ${nextRelease.version}",
-      "publishCmd": "npm publish ./npm/meridian-darwin-arm64 --access public"
+      "prepareCmd": "cargo build --release && (cd ui && npm ci --no-audit --no-fund && npm run build) && (cd tray && bash create-icons.sh && npm ci --no-audit --no-fund && npm run build) && bash scripts/set-version.sh ${nextRelease.version} && bash scripts/package-release.sh ${nextRelease.version} && bash scripts/verify-release-bundle.sh ${nextRelease.version} && tar -czf meridian-${nextRelease.version}-aarch64.tar.gz -C npm meridian-darwin-arm64"
     }],
-    ["@semantic-release/npm", { "pkgRoot": "npm/meridian" }],
+    ["@semantic-release/github", {
+      "successComment": false,
+      "failComment": false,
+      "assets": [
+        { "path": "meridian-*-aarch64.tar.gz", "label": "Meridian staging build (macOS arm64) — ${nextRelease.gitTag}" }
+      ]
+    }],
     ["@semantic-release/git", {
       "assets": [
         "CHANGELOG.md",

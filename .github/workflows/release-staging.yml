@@ -1,0 +1,84 @@
+name: Release (staging)
+
+# Staging-channel releases via semantic-release. On every push to `staging`,
+# semantic-release analyzes commits and — when a release is warranted — cuts a
+# PRERELEASE version (X.Y.Z-staging.N, above main's stable because `staging`
+# records main@v1.62.0 as merged via `-s ours`), builds the macOS arm64 payload,
+# attaches it to a GitHub prerelease, writes the CHANGELOG, and commits the
+# version bump back to `staging` ([skip ci] so it doesn't re-trigger).
+#
+# Differs from release.yml (the production/main flow) only in: it triggers on
+# `staging`, checks out the staging tip (NOT the default branch), and the staging
+# `.releaserc.json` is GitHub-only — NO npm publish. Same macos-26 runner because
+# the prepare step builds the Swift Foundation Models bridge + Metal/MLX + the
+# dashboard, exactly like main.
+
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write       # tags, the GitHub prerelease, the version-bump commit
+
+concurrency:
+  group: release-staging
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-26
+    env:
+      SQLX_OFFLINE: "true"
+      # Baked into the staging binary at compile time (see release.yml); same
+      # secret. Absent → Jira OAuth simply unavailable in the staging build.
+      MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: staging           # release the staging tip — NOT the default branch
+          fetch-depth: 0          # full history — semantic-release needs commits
+          fetch-tags: true        # see main's v* tags (reachable via the -s ours merge)
+          persist-credentials: false
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: |
+            package-lock.json
+            ui/package-lock.json
+            tray/package-lock.json
+
+      - name: Cache uv packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ hashFiles('services/uv.lock') }}
+          restore-keys: uv-
+
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: ui/.next/cache
+          key: nextjs-${{ hashFiles('ui/package-lock.json') }}-${{ hashFiles('ui/**/*.ts', 'ui/**/*.tsx') }}
+          restore-keys: |
+            nextjs-${{ hashFiles('ui/package-lock.json') }}-
+            nextjs-
+
+      - name: Install release tooling
+        run: npm ci --no-audit --no-fund
+
+      - name: semantic-release (staging channel)
+        env:
+          # PAT to push the bump commit to staging past branch protection; falls
+          # back to GITHUB_TOKEN. No npm token — the staging channel is GitHub-only.
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: npx semantic-release
