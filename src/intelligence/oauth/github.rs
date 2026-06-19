@@ -18,6 +18,22 @@ const HOSTNAME: &str = "github.com";
 /// Scopes needed for issue/PR reads and GitHub Projects v2 node-ID listing.
 const REQUIRED_SCOPES: &str = "repo,read:org,read:project";
 
+/// Resolve the `gh` CLI binary. Probes Homebrew paths first so the tray app
+/// (which runs with a minimal launchd PATH, not the user's shell PATH) finds
+/// it on Apple Silicon and Intel Macs without requiring it on `/usr/bin`.
+fn gh_bin() -> String {
+    for candidate in [
+        "/opt/homebrew/bin/gh",              // Apple Silicon Homebrew
+        "/usr/local/bin/gh",                 // Intel Homebrew / manual install
+        "/home/linuxbrew/.linuxbrew/bin/gh", // Linux Homebrew
+    ] {
+        if std::path::Path::new(candidate).exists() {
+            return candidate.to_string();
+        }
+    }
+    "gh".to_string() // fallback to PATH
+}
+
 /// The interactive `meridian oauth-login github` flow.
 ///
 /// Fails fast with a user-friendly message if `gh` is not installed. Opens
@@ -28,46 +44,39 @@ pub async fn login() -> Result<()> {
     let home = std::env::var("HOME").context("HOME not set")?;
     let env_path = format!("{home}/.meridian/.env");
 
-    // Fail fast if gh is not on PATH.
-    let ver = tokio::process::Command::new("gh")
+    // Fail fast if gh is not available (tray runs with a minimal PATH — probe
+    // Homebrew locations via gh_bin() before falling back to bare "gh").
+    //
+    // GITHUB_TOKEN is unset from every gh child process: if the daemon loaded
+    // it from .env, gh sees it as an ambient credential and refuses to run
+    // `auth refresh` / `auth token` with "clear the value from the environment".
+    let bin = gh_bin();
+    let gh_found = tokio::process::Command::new(&bin)
         .arg("--version")
+        .env_remove("GITHUB_TOKEN")
         .output()
         .await
-        .context("gh CLI not found — install it from https://cli.github.com then try again")?;
-    if !ver.status.success() {
-        bail!("gh CLI not found — install it from https://cli.github.com");
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !gh_found {
+        bail!(
+            "gh CLI not found — install it from https://cli.github.com then try again \
+             (looked for: {bin})"
+        );
     }
 
-    let already_authed = tokio::process::Command::new("gh")
+    let already_authed = tokio::process::Command::new(&bin)
         .args(["auth", "status", "--hostname", HOSTNAME])
+        .env_remove("GITHUB_TOKEN")
         .output()
         .await
         .map(|o| o.status.success())
         .unwrap_or(false);
 
-    if already_authed {
-        // Already authenticated — just ensure the required scopes are present.
-        // gh auth refresh exits 0 immediately if the token already has them;
-        // opens a browser only if new scopes are actually needed.
-        let st = tokio::process::Command::new("gh")
-            .args([
-                "auth",
-                "refresh",
-                "--hostname",
-                HOSTNAME,
-                "--scopes",
-                REQUIRED_SCOPES,
-            ])
-            .status()
-            .await
-            .context("gh auth refresh failed")?;
-        if !st.success() {
-            bail!("Failed to add required GitHub scopes — try running `gh auth login` in your terminal");
-        }
-    } else {
+    if !already_authed {
         // Not yet authenticated — open the browser-based login flow.
         // --web opens the browser directly (no Enter prompt on modern gh).
-        let st = tokio::process::Command::new("gh")
+        let st = tokio::process::Command::new(&bin)
             .args([
                 "auth",
                 "login",
@@ -79,6 +88,7 @@ pub async fn login() -> Result<()> {
                 "--scopes",
                 REQUIRED_SCOPES,
             ])
+            .env_remove("GITHUB_TOKEN")
             .status()
             .await
             .context("failed to run gh auth login")?;
@@ -88,8 +98,9 @@ pub async fn login() -> Result<()> {
     }
 
     // Extract the stored token.
-    let out = tokio::process::Command::new("gh")
+    let out = tokio::process::Command::new(&bin)
         .args(["auth", "token", "--hostname", HOSTNAME])
+        .env_remove("GITHUB_TOKEN")
         .output()
         .await
         .context("gh auth token failed")?;
