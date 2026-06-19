@@ -21,17 +21,48 @@ const REQUIRED_SCOPES: &str = "repo,read:org,read:project";
 /// Resolve the `gh` CLI binary. Probes Homebrew paths first so the tray app
 /// (which runs with a minimal launchd PATH, not the user's shell PATH) finds
 /// it on Apple Silicon and Intel Macs without requiring it on `/usr/bin`.
-fn gh_bin() -> String {
+fn gh_bin() -> Option<String> {
     for candidate in [
-        "/opt/homebrew/bin/gh",              // Apple Silicon Homebrew
-        "/usr/local/bin/gh",                 // Intel Homebrew / manual install
-        "/home/linuxbrew/.linuxbrew/bin/gh", // Linux Homebrew
+        "/opt/homebrew/bin/gh",
+        "/usr/local/bin/gh",
+        "/home/linuxbrew/.linuxbrew/bin/gh",
     ] {
         if std::path::Path::new(candidate).exists() {
-            return candidate.to_string();
+            return Some(candidate.to_string());
         }
     }
-    "gh".to_string() // fallback to PATH
+    None
+}
+
+/// Resolve the `brew` binary (same PATH problem as `gh_bin`).
+fn brew_bin() -> Option<String> {
+    for candidate in [
+        "/opt/homebrew/bin/brew",
+        "/usr/local/bin/brew",
+        "/home/linuxbrew/.linuxbrew/bin/brew",
+    ] {
+        if std::path::Path::new(candidate).exists() {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+/// Install `gh` via Homebrew if Homebrew is available; returns the installed binary path.
+async fn brew_install_gh() -> Result<String> {
+    let brew = brew_bin()
+        .context("Homebrew not found — install gh from https://cli.github.com then try again")?;
+    eprintln!("Installing gh CLI via Homebrew (brew install gh)…");
+    let st = tokio::process::Command::new(&brew)
+        .args(["install", "gh"])
+        .status()
+        .await
+        .context("brew install gh failed")?;
+    if !st.success() {
+        bail!("brew install gh failed — install gh manually from https://cli.github.com");
+    }
+    // Re-probe after install.
+    gh_bin().context("gh not found even after brew install — check your Homebrew setup")
 }
 
 /// The interactive `meridian oauth-login github` flow.
@@ -44,26 +75,16 @@ pub async fn login() -> Result<()> {
     let home = std::env::var("HOME").context("HOME not set")?;
     let env_path = format!("{home}/.meridian/.env");
 
-    // Fail fast if gh is not available (tray runs with a minimal PATH — probe
-    // Homebrew locations via gh_bin() before falling back to bare "gh").
+    // Resolve gh binary (tray has a minimal launchd PATH — no Homebrew).
+    // If gh is missing, auto-install via Homebrew; bail only if Homebrew is
+    // also absent (rare for a developer on macOS).
     //
-    // GITHUB_TOKEN is unset from every gh child process: if the daemon loaded
-    // it from .env, gh sees it as an ambient credential and refuses to run
-    // `auth refresh` / `auth token` with "clear the value from the environment".
-    let bin = gh_bin();
-    let gh_found = tokio::process::Command::new(&bin)
-        .arg("--version")
-        .env_remove("GITHUB_TOKEN")
-        .output()
-        .await
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if !gh_found {
-        bail!(
-            "gh CLI not found — install it from https://cli.github.com then try again \
-             (looked for: {bin})"
-        );
-    }
+    // GITHUB_TOKEN is unset from every gh child: if the daemon loaded it from
+    // .env, gh treats it as an ambient credential and refuses auth operations.
+    let bin = match gh_bin() {
+        Some(b) => b,
+        None => brew_install_gh().await?,
+    };
 
     let already_authed = tokio::process::Command::new(&bin)
         .args(["auth", "status", "--hostname", HOSTNAME])
