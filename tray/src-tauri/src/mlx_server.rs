@@ -774,4 +774,65 @@ mod tests {
         assert_eq!(m.size, 173466456);
         assert!(m.sha256.len() == 64);
     }
+
+    /// Live end-to-end pull of the published `runtime-staging` runtime — the
+    /// exact path a staging app build takes (`MERIDIAN_RUNTIME_MANIFEST_URL`
+    /// overrides the compiled `runtime-latest` default). Exercises the real
+    /// production code: fetch manifest → preflight (arch + macOS floor) →
+    /// download → **verify SHA-256** → extract → version marker → resolve, then
+    /// the version-skip on a second call. `HOME` is sandboxed to a temp dir so
+    /// the real `~/.meridian/runtime` is never touched.
+    ///
+    /// `#[ignore]` — downloads ~156 MB over the network. Run explicitly:
+    ///   cargo test -p meridian-tray --lib live_pull_from_runtime_staging -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "live: downloads the runtime-staging tarball (~156MB) from GitHub"]
+    async fn live_pull_from_runtime_staging() {
+        let tmp = std::env::temp_dir().join(format!("mlx-live-staging-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // edition 2021 → set_var is safe; this ignored test runs in isolation.
+        std::env::set_var("HOME", &tmp);
+        std::env::set_var(
+            "MERIDIAN_RUNTIME_MANIFEST_URL",
+            "https://github.com/Meridiona/meridian/releases/download/runtime-staging/runtime-manifest.json",
+        );
+
+        // First pull: manifest → preflight → download → sha256 verify → extract.
+        let outcome = download_runtime(|p| {
+            let pct = if p.total > 0 {
+                p.received * 100 / p.total
+            } else {
+                0
+            };
+            eprintln!("  [{pct:>3}%] {}", p.message);
+        })
+        .await
+        .expect("runtime-staging should download and verify");
+        assert_eq!(outcome, DownloadOutcome::Installed);
+        assert!(runtime_installed(), "runtime should be provisioned");
+
+        let version = installed_version().expect("version marker written");
+        eprintln!("  installed runtime version = {version}");
+        assert!(!version.is_empty());
+
+        // Resolves INTO the sandbox (the downloaded runtime), not a dev fallback.
+        let (python, server) = resolve_mlx_command().expect("resolve downloaded runtime");
+        assert!(
+            python.starts_with(&tmp),
+            "python should be in the sandbox: {python:?}"
+        );
+        assert!(
+            server.starts_with(&tmp),
+            "server.py should be in the sandbox: {server:?}"
+        );
+
+        // Second pull: installed version matches the manifest → skip re-download.
+        let again = download_runtime(|_| {})
+            .await
+            .expect("second call succeeds");
+        assert_eq!(again, DownloadOutcome::AlreadyCurrent);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
