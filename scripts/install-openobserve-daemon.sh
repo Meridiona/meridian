@@ -221,6 +221,83 @@ _otlp_enabled() {
     return 1
 }
 
+# Provision the bundled dashboards (services/observability/dashboards/*.json)
+# into OpenObserve via its REST API. Idempotent: a dashboard is created only if
+# no dashboard with the same title already exists (create endpoint always mints
+# a fresh dashboardId, so a blind POST on every install would duplicate). Runs
+# only once the service is up and reachable; degrades silently (never fails the
+# install) when OpenObserve is unreachable or export is off.
+_import_dashboards() {
+    local dash_dir
+    dash_dir="$(cd "${SCRIPT_DIR}/.." && pwd)/services/observability/dashboards"
+    [[ -d "${dash_dir}" ]] || return 0
+    OO_EMAIL="${OO_EMAIL}" OO_PASSWORD="${OO_PASSWORD}" python3 - "${dash_dir}" <<'PYEOF'
+import base64, glob, json, os, sys, time, urllib.request, urllib.error
+
+dash_dir = sys.argv[1]
+base = "http://localhost:5080"
+org = "default"
+auth = base64.b64encode(f'{os.environ["OO_EMAIL"]}:{os.environ["OO_PASSWORD"]}'.encode()).decode()
+
+def call(method, path, body=None):
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        base + path, data=data, method=method,
+        headers={"Authorization": "Basic " + auth, "Content-Type": "application/json"},
+    )
+    try:
+        r = urllib.request.urlopen(req, timeout=15)
+        return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+    except Exception as e:  # connection refused, DNS, timeout, …
+        return None, str(e).encode()
+
+# Wait for the service to accept authenticated requests (just-kickstarted).
+for _ in range(30):
+    st, _b = call("GET", "/config")
+    if st == 200:
+        break
+    time.sleep(1)
+else:
+    print("  ⚠ OpenObserve not reachable — skipping dashboard import (import later by re-running this script)")
+    sys.exit(0)
+
+st, body = call("GET", f"/api/{org}/dashboards")
+if st != 200:
+    print(f"  ⚠ could not list dashboards ({st}) — skipping dashboard import")
+    sys.exit(0)
+existing = set()
+for d in json.loads(body).get("dashboards", []):
+    for v in ("v1", "v2", "v3", "v4", "v5", "v6"):
+        if d.get(v) and d[v].get("title"):
+            existing.add(d[v]["title"])
+
+created = skipped = failed = 0
+for path in sorted(glob.glob(os.path.join(dash_dir, "*.json"))):
+    try:
+        dash = json.load(open(path))
+    except Exception as e:
+        print(f"  ⚠ {os.path.basename(path)}: invalid JSON ({e}) — skipped")
+        failed += 1
+        continue
+    title = dash.get("title", "")
+    if title in existing:
+        skipped += 1
+        continue
+    st, resp = call("POST", f"/api/{org}/dashboards?folder=default", dash)
+    if st in (200, 201):
+        created += 1
+        print(f"  ✓ imported dashboard: {title}")
+    else:
+        failed += 1
+        print(f"  ⚠ failed to import {os.path.basename(path)} ({st}): {resp[:200].decode(errors='replace')}")
+
+print(f"→ dashboards: {created} imported, {skipped} already present, {failed} failed")
+PYEOF
+    return 0
+}
+
 if [[ "${_no_creds}" -eq 0 ]] && _otlp_enabled; then
     echo "→ bootstrap ${LABEL} (OpenObserve Export is enabled in settings)"
     launchctl bootstrap "${GUI_TARGET}" "${PLIST_DEST}"
@@ -228,6 +305,8 @@ if [[ "${_no_creds}" -eq 0 ]] && _otlp_enabled; then
     launchctl kickstart -k "${GUI_TARGET}/${LABEL}"
     echo
     echo "✓ OpenObserve installed and started"
+    echo "→ importing bundled dashboards"
+    _import_dashboards || true
 else
     launchctl disable "${GUI_TARGET}/${LABEL}" 2>/dev/null || true
     echo
