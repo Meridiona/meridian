@@ -42,7 +42,7 @@ pub(crate) fn build_tray_menu<R: Runtime>(
     let setup_item = MenuItemBuilder::with_id("open_setup", "Setup…").build(app)?;
     let worklogs_item = MenuItemBuilder::with_id("open_worklogs", "Review Drafts").build(app)?;
     let restart_item = MenuItemBuilder::with_id("restart_daemon", "Restart Daemon").build(app)?;
-    let quit_item = MenuItemBuilder::with_id("quit", "Quit Meridian Tray").build(app)?;
+    let quit_item = MenuItemBuilder::with_id("quit", "Quit Meridian").build(app)?;
     MenuBuilder::new(app)
         .items(&[
             &toggle_item,
