@@ -20,6 +20,11 @@ pub struct OAuthTokens {
     /// The public client_id this token was minted for — needed to refresh, so we
     /// persist it rather than depending on an env var at refresh time.
     pub client_id: String,
+    /// The client_secret used during login — needed for refresh on source builds where
+    /// the daemon's process env may not have `JIRA_OAUTH_CLIENT_SECRET`. Stored so
+    /// `ensure_fresh()` works without re-reading the env.
+    #[serde(default)]
+    pub client_secret: String,
     pub access_token: String,
     pub refresh_token: String,
     /// Unix seconds at which `access_token` expires.
@@ -129,6 +134,7 @@ mod tests {
         let t = OAuthTokens {
             provider: "jira".into(),
             client_id: "cid".into(),
+            client_secret: String::new(),
             access_token: "a".into(),
             refresh_token: "r".into(),
             expires_at: 1_000,
@@ -149,6 +155,7 @@ mod tests {
         let t = OAuthTokens {
             provider: "jira".into(),
             client_id: "cid".into(),
+            client_secret: String::new(),
             access_token: "access".into(),
             refresh_token: "refresh".into(),
             expires_at: 12345,

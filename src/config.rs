@@ -620,6 +620,7 @@ mod tests {
         crate::intelligence::oauth::store::save(&crate::intelligence::oauth::store::OAuthTokens {
             provider: "jira".into(),
             client_id: "cid".into(),
+            client_secret: String::new(),
             access_token: "a".into(),
             refresh_token: "r".into(),
             expires_at: 9_999_999_999,

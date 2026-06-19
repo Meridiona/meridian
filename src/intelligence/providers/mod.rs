@@ -27,7 +27,9 @@ pub async fn stamp_sync_error(pool: &SqlitePool, provider: &str, error: &str) ->
     let (title, remedy): (&str, Option<&str>) = match provider {
         "jira" => (
             "Jira sync failing",
-            Some("Set JIRA_API_TOKEN and JIRA_BASE_URL in .env"),
+            Some(
+                "Re-run `meridian oauth-login jira`, or set JIRA_API_TOKEN / JIRA_BASE_URL / JIRA_EMAIL in .env",
+            ),
         ),
         "linear" => ("Linear sync failing", Some("Set LINEAR_API_KEY in .env")),
         "trello" => (

@@ -75,6 +75,7 @@ pub async fn login(app_key: &str, port: u16) -> Result<()> {
     let tokens = store::OAuthTokens {
         provider: "trello".to_string(),
         client_id: app_key.to_string(),
+        client_secret: String::new(), // Trello has no client_secret
         access_token: token,
         refresh_token: String::new(),
         expires_at: TRELLO_EXPIRES_NEVER,

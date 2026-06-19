@@ -185,6 +185,7 @@ pub async fn login(client_id: &str, port: u16) -> Result<String> {
     let stored = OAuthTokens {
         provider: "jira".to_string(),
         client_id: client_id.to_string(),
+        client_secret: client_secret(),
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
         expires_at: now_unix() + tokens.expires_in,
@@ -207,7 +208,14 @@ pub async fn ensure_fresh() -> Result<OAuthTokens> {
         return Ok(t);
     }
     tracing::debug!("jira OAuth access token expired — refreshing");
-    let resp = flow::refresh(&t.client_id, &spec(), &t.refresh_token)
+    // Prefer the secret stored at login time so the daemon can refresh even when
+    // JIRA_OAUTH_CLIENT_SECRET is absent from its process env (e.g. bundle installs
+    // where the daemon reads ~/.meridian/app/.env, not ~/.meridian/.env).
+    let mut refresh_spec = spec();
+    if !t.client_secret.is_empty() {
+        refresh_spec.client_secret = Some(t.client_secret.clone());
+    }
+    let resp = flow::refresh(&t.client_id, &refresh_spec, &t.refresh_token)
         .await
         .context(
             "refreshing Jira OAuth token — re-run `meridian oauth-login jira` if this persists",
