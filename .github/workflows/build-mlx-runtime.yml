@@ -55,9 +55,19 @@ jobs:
           retention-days: 7
 
   smoke:
-    name: Smoke test (macos-15 arm64 — clean machine)
+    name: Smoke test (${{ matrix.os }})
     needs: build
-    runs-on: macos-15
+    # Run on every hosted arm64 macOS version so a deployment-target / ABI /
+    # relocation regression is caught across the supported range — and on boxes
+    # that did NOT build the tarball (build is macos-14). macos-13 is Intel, so
+    # the 13.5 manifest floor itself can't be exercised on hosted runners;
+    # macos-14 (Sonoma) is the closest available. fail-fast off so one version
+    # failing still reports the others.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
