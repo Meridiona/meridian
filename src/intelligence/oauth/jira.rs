@@ -209,8 +209,8 @@ pub async fn ensure_fresh() -> Result<OAuthTokens> {
     }
     tracing::debug!("jira OAuth access token expired — refreshing");
     // Prefer the secret stored at login time so the daemon can refresh even when
-    // JIRA_OAUTH_CLIENT_SECRET is absent from its process env (e.g. bundle installs
-    // where the daemon reads ~/.meridian/app/.env, not ~/.meridian/.env).
+    // JIRA_OAUTH_CLIENT_SECRET is absent from its process env (e.g. source builds
+    // where DEFAULT_CLIENT_SECRET is empty and the env var may not be loaded).
     let mut refresh_spec = spec();
     if !t.client_secret.is_empty() {
         refresh_spec.client_secret = Some(t.client_secret.clone());

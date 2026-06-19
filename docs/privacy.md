@@ -27,7 +27,7 @@ Meridian itself collects **no data**. Instead:
 - **Activity sessions** are stored in `~/.meridian/meridian.db` (SQLite, on your local disk)
 - **OAuth tokens** (for Jira, Linear, GitHub integrations) are stored in `~/.meridian/oauth/` (mode 0600, encrypted by your OS keychain where available)
 - **Logs** are stored in `~/.meridian/logs/`
-- Your API tokens (if using legacy API-key auth instead of OAuth) are stored in `~/.meridian/app/.env` (plain text, only readable by you)
+- Your API tokens (if using legacy API-key auth instead of OAuth) are stored in `~/.meridian/.env` (plain text, only readable by you)
 
 **You own all this data.** You can delete it, export it, or migrate it at any time.
 

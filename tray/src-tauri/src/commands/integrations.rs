@@ -13,18 +13,14 @@
 //! Env-path note (load-bearing): both the GET *and* the DELETE resolve the
 //! credential `.env` through the SAME [`crate::install::detect_install_mode`] —
 //! canonical `~/.meridian/.env` (all install types) or a repo `.env` (dev). The
-//! daemon reads that same file (dotenvy walks up from `~/.meridian/app`, finding
-//! `~/.meridian/.env`), so a disconnect the GET reflects is also one the daemon
-//! sees on its next SIGHUP restart. Read-target and write-target MUST stay one
-//! resolver — never write creds to one file and read status from another.
+//! daemon reads that same file via `dotenvy::dotenv_override()`, so a disconnect
+//! the GET reflects is also one the daemon sees on its next SIGHUP restart.
+//! Read-target and write-target MUST stay one resolver — never write creds to one
+//! file and read status from another.
 //!
-//! Deliberate divergence from the route: the Next route's prod `activeEnvPath()`
-//! still points at the legacy `~/.meridian/app/.env`. The installer migrated
-//! creds to `~/.meridian/.env` (`meridian-npm-setup.sh`), so the route path is
-//! stale; this port uses the post-migration canonical location for both read and
-//! write. (The `/api/auth/token` write route has no UI consumer — the token-setup
-//! UI tells users to run `meridian config edit` — so it is intentionally NOT
-//! ported; porting it would add dead Rust.)
+//! (The `/api/auth/token` write route has no UI consumer — the token-setup UI
+//! tells users to run `meridian config edit` — so it is intentionally NOT ported;
+//! porting it would add dead Rust.)
 //!
 //! # Who calls this
 //! Registered in `lib.rs`'s `invoke_handler!`; consumed by

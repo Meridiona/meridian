@@ -48,6 +48,6 @@ Meridian is designed to contain blast radius by default:
 
 - **No telemetry or analytics servers** — nothing phones home to Meridiana
 - **Capture and classification are on-device** — screen content does not leave the machine unless you configure an optional cloud LLM
-- **OAuth tokens** are stored in `~/.meridian/oauth/` at mode `0600`; API keys go in `~/.meridian/app/.env` with the same restriction
+- **OAuth tokens** are stored in `~/.meridian/oauth/` at mode `0600`; API keys go in `~/.meridian/.env` with the same restriction
 - **The only outbound network calls** are approved ticket updates sent directly from your machine to the trackers you connect (Jira, GitHub, Linear) — documented in [docs/privacy.md](docs/privacy.md)
 - **The screenpipe database is opened read-only** — Meridian holds no write lock on it

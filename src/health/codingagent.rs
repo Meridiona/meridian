@@ -99,7 +99,7 @@ pub fn checks(_cfg: &Config) -> Vec<Check> {
                     "Cursor detected but cursor-agent not on PATH — Cursor summaries fall back to MLX",
                 )
                 .with_remedy(
-                    "install: curl https://cursor.com/install -fsS | bash; then: cursor-agent login — or set CURSOR_AGENT_AUTO_INSTALL=1 in ~/.meridian/app/.env to let the daemon install it",
+                    "install: curl https://cursor.com/install -fsS | bash; then: cursor-agent login — or set CURSOR_AGENT_AUTO_INSTALL=1 in ~/.meridian/.env to let the daemon install it",
                 ),
             );
         }

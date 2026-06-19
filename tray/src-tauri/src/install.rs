@@ -13,8 +13,8 @@
 //!
 //! # Related
 //! - [`crate::sys`] — other shared runtime helpers (uid, notify, ui_base).
-//! - The daemon's own env layering (`~/.meridian/app/.env` on a bundle install)
-//!   is mirrored by [`env_from_daemon_dotenv`].
+//! - The daemon reads `~/.meridian/.env` (canonical) or a repo `.env` (dev) via
+//!   `dotenvy::dotenv_override()`, mirrored here by [`env_from_daemon_dotenv`].
 
 /// Which install mode the tray is running in, inferred from the user's `.env` location.
 ///

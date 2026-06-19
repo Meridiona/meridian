@@ -405,7 +405,7 @@ New sources plug into the `AgentSource` enum in `sources/mod.rs` and are swept b
 
 Source-adapter env overrides: `COPILOT_SESSION_STATE_DIR`, `VSCODE_USER_DIR`, `CURSOR_STATE_VSCDB`, `CURSOR_CLI_CHATS_DIR`, `ANTIGRAVITY_APP_DIR`.
 
-> **Daemon config gotcha:** on a bundle install the daemon's `WorkingDirectory` is `~/.meridian/app`, and dotenvy stops at the FIRST `.env` walking up — so the daemon reads **`~/.meridian/app/.env`**, not the repo `.env`. Edit that file (then `meridian restart`) when tuning daemon env on an installed system.
+> **Daemon config:** the daemon reads `~/.meridian/.env` (canonical, all install types) or the repo `.env` (dev, found by `dotenvy::dotenv_override()` walking up from cwd). Edit `~/.meridian/.env` (then `meridian restart`) when tuning daemon env on an installed system.
 
 The pipeline is fully ported to Rust; the former Python `coding_agent_indexer` + `coding_agent_summariser` packages have been removed. The MLX server (`agents/server.py`) is the only remaining Python hop (it serves `/summarise` + `/classify_sessions`).
 
