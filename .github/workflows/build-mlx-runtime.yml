@@ -57,7 +57,7 @@ jobs:
     name: Build (macos-14 arm64)
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build runtime tarball
         env:
@@ -71,7 +71,7 @@ jobs:
         run: bash scripts/build-mlx-runtime.sh
 
       - name: Upload runtime artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mlx-runtime
           path: |
@@ -95,10 +95,10 @@ jobs:
         os: [macos-14, macos-15, macos-26]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download runtime artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: mlx-runtime
           path: dist
@@ -116,7 +116,7 @@ jobs:
       CHANNEL: ${{ startsWith(github.ref_name, 'runtime-staging-v') && 'runtime-staging' || 'runtime-latest' }}
     steps:
       - name: Download runtime artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: mlx-runtime
           path: dist
