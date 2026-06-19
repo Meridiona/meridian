@@ -124,7 +124,7 @@ pub async fn get_mlx_status(
     let m = mlx.lock().await;
     let runtime_found = mlx_server::resolve_mlx_command().is_some();
     let runtime_installed = mlx_server::runtime_installed();
-    let download_available = mlx_server::runtime_url().is_some();
+    let download_available = mlx_server::manifest_url().is_some();
     tracing::debug!(
         status = ?m.status,
         runtime_found,
@@ -141,21 +141,25 @@ pub async fn get_mlx_status(
     })
 }
 
-/// Download and provision the MLX runtime into `~/.meridian/runtime/` (Approach C).
+/// Download, verify, and provision the MLX runtime into `~/.meridian/runtime/`
+/// (Approach C). Manifest-driven: skips the download when the installed version
+/// already matches, and verifies the tarball's SHA-256 before extracting.
 ///
 /// Streams progress to the frontend via the `mlx-download-progress` Tauri event
-/// (payload: [`crate::mlx_server::DownloadProgress`]). On success, the wizard's
+/// (payload: [`crate::mlx_server::DownloadProgress`]). On success the wizard's
 /// next `get_mlx_status` poll sees `runtime_installed = true` and can start the
-/// server. Idempotent — re-extracts over an existing runtime if called again.
+/// server. A checksum mismatch returns an error and installs nothing.
 #[tauri::command]
 #[tracing::instrument(skip(app))]
 pub async fn download_runtime_cmd(app: tauri::AppHandle) -> Result<(), String> {
     let handle = app.clone();
-    mlx_server::download_runtime(move |p| {
+    let outcome = mlx_server::download_runtime(move |p| {
         let _ = handle.emit("mlx-download-progress", p);
     })
     .await
-    .inspect_err(|e| tracing::warn!(error = %e, "mlx: runtime download failed"))
+    .inspect_err(|e| tracing::warn!(error = %e, "mlx: runtime download failed"))?;
+    tracing::info!(?outcome, "mlx: runtime download finished");
+    Ok(())
 }
 
 /// Start the MLX server if it isn't already running. The wizard's Model step
