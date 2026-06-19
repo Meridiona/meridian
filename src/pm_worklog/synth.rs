@@ -41,7 +41,8 @@ pub async fn synthesise(bundle: &SessionBundle, cfg: &PmWorklogConfig) -> Result
         .await
         .with_context(|| {
             format!(
-                "synth endpoint unreachable at {url} — is the MLX server running with --backend mlx?"
+                "synth endpoint unreachable at {url} — is the MLX server running? \
+                 Start: cd services && .venv/bin/python -m agents.server --port 7823"
             )
         })?;
 

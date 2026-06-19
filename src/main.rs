@@ -774,7 +774,7 @@ async fn main() -> Result<()> {
                                     "warning",
                                     "MLX classifier is not responding",
                                     &format!("Failed to classify session {session_id} after {count} attempts — classification is paused"),
-                                    Some("Start MLX server: cd services && .venv313/bin/meridian-server --backend mlx"),
+                                    Some("Start MLX server: cd services && .venv/bin/python -m agents.server --port 7823"),
                                 ).await;
                                 if let Err(e) =
                                     mark_session_subprocess_error(&meridian_linker, session_id)
@@ -889,7 +889,7 @@ async fn main() -> Result<()> {
                         "warning",
                         "Classifier offline",
                         "The MLX classifier server isn't responding — new sessions are recorded but won't be tagged until it's back.",
-                        Some("Restart it: cd services && .venv313/bin/meridian-server --backend mlx"),
+                        Some("Restart it: cd services && .venv/bin/python -m agents.server --port 7823"),
                     )
                     .await;
                 }

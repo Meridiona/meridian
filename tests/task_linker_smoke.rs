@@ -5,7 +5,7 @@
 //   - prefilter tests verify trivial/short sessions are handled without any LLM call
 //   - integration tests (marked #[ignore]) require the persistent MLX server running on
 //     MLX_SERVER_PORT (default 7823): start with
-//     cd services && .venv313/bin/meridian-server --backend mlx --port 7823
+//     cd services && .venv/bin/python -m agents.server --port 7823
 
 mod common;
 
@@ -116,7 +116,7 @@ fn make_cfg(db_path: &str) -> Config {
 /// Does NOT assert a specific task_key — that is LLM output and may vary.
 #[tokio::test]
 #[serial]
-#[ignore = "requires live MLX server — start with: cd services && .venv313/bin/meridian-server --backend mlx --port 7823"]
+#[ignore = "requires live MLX server — start with: cd services && .venv/bin/python -m agents.server --port 7823"]
 async fn real_classification_writes_task_and_advances_cursor() {
     let (_tmp, pool, db_path) = make_file_db().await;
 
@@ -201,7 +201,7 @@ async fn real_classification_writes_task_and_advances_cursor() {
 /// Running the classification cycle twice must not re-classify an already-processed session.
 #[tokio::test]
 #[serial]
-#[ignore = "requires live MLX server — start with: cd services && .venv313/bin/meridian-server --backend mlx --port 7823"]
+#[ignore = "requires live MLX server — start with: cd services && .venv/bin/python -m agents.server --port 7823"]
 async fn real_classification_does_not_reprocess_classified_session() {
     let (_tmp, pool, db_path) = make_file_db().await;
 
