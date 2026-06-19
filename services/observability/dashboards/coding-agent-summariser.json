@@ -1,0 +1,621 @@
+{
+  "version": 8,
+  "title": "Coding-Agent Summariser — Continuity",
+  "description": "Every sealed coding-agent segment turned into a prose summary, newest first. The continuity signal: `prior_present=true` means the segment was summarised WITH the previous burst's summary injected as context (a resumed session reading as one story); `prior_chars` is how much context carried over. Backed by the `summarise_segment` spans (service meridian — the Rust daemon's in-process summariser). Copy a row's trace_id and open it in Traces for the full span. Filter by session UUID or agent above; use Continuity = 'with prior' to see only resumed-session summaries.",
+  "tabs": [
+    {
+      "tabId": "default",
+      "name": "Default",
+      "panels": [
+        {
+          "id": "stat_total",
+          "type": "metric",
+          "title": "Segments summarised",
+          "description": "Total summarise_segment spans in range",
+          "config": {
+            "show_legends": false,
+            "legends_position": null,
+            "decimals": 0.0,
+            "base_map": null,
+            "map_view": null,
+            "no_value_replacement": "0"
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as \"y_axis_1\" FROM \"default\" WHERE operation_name='summarise_segment'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Segments",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "type": "custom",
+                    "color": "#5960b2",
+                    "args": [],
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 0,
+            "w": 32,
+            "h": 18,
+            "i": 1
+          }
+        },
+        {
+          "id": "stat_with_prior",
+          "type": "metric",
+          "title": "With continuity",
+          "description": "Segments summarised with the prior burst's summary as context",
+          "config": {
+            "show_legends": false,
+            "legends_position": null,
+            "decimals": 0.0,
+            "base_map": null,
+            "map_view": null,
+            "no_value_replacement": "0"
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as \"y_axis_1\" FROM \"default\" WHERE operation_name='summarise_segment' AND prior_present='true'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [],
+                "y": [
+                  {
+                    "label": "With continuity",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "type": "custom",
+                    "color": "#59b27a",
+                    "args": [],
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 32,
+            "y": 0,
+            "w": 32,
+            "h": 18,
+            "i": 2
+          }
+        },
+        {
+          "id": "stat_continuity_rate",
+          "type": "metric",
+          "title": "Continuity rate %",
+          "description": "Share of segments that carried prior-burst context",
+          "config": {
+            "show_legends": false,
+            "legends_position": null,
+            "unit": "percent",
+            "decimals": 1.0,
+            "base_map": null,
+            "map_view": null,
+            "no_value_replacement": "0"
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT round(100.0 * sum(CASE WHEN prior_present='true' THEN 1 ELSE 0 END) / count(*), 1) as \"y_axis_1\" FROM \"default\" WHERE operation_name='summarise_segment'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Continuity rate",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "type": "custom",
+                    "color": "#b29959",
+                    "args": [],
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 64,
+            "y": 0,
+            "w": 32,
+            "h": 18,
+            "i": 3
+          }
+        },
+        {
+          "id": "stat_fallback",
+          "type": "metric",
+          "title": "MLX fallback %",
+          "description": "Share summarised by the MLX fallback (primary agent CLI unavailable) — primary-engine health",
+          "config": {
+            "show_legends": false,
+            "legends_position": null,
+            "decimals": 1.0,
+            "base_map": null,
+            "map_view": null,
+            "no_value_replacement": "0",
+            "unit": "percent"
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT round(100.0 * sum(CASE WHEN summary_source='mlx' THEN 1 ELSE 0 END) / count(*), 1) as \"y_axis_1\" FROM \"default\" WHERE operation_name='summarise_segment'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [],
+                "y": [
+                  {
+                    "label": "MLX fallback %",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "type": "custom",
+                    "color": "#9959b2",
+                    "args": [],
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 96,
+            "y": 0,
+            "w": 32,
+            "h": 18,
+            "i": 4
+          }
+        },
+        {
+          "id": "stat_avg_summary",
+          "type": "metric",
+          "title": "Avg summary chars",
+          "description": "Mean length of produced summaries (successful only)",
+          "config": {
+            "show_legends": false,
+            "legends_position": null,
+            "decimals": 0.0,
+            "base_map": null,
+            "map_view": null,
+            "no_value_replacement": "0"
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT round(avg(CAST(summary_chars AS DOUBLE))) as \"y_axis_1\" FROM \"default\" WHERE operation_name='summarise_segment' AND is_error='false'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Avg summary chars",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "type": "custom",
+                    "color": "#59a0b2",
+                    "args": [],
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 128,
+            "y": 0,
+            "w": 32,
+            "h": 18,
+            "i": 5
+          }
+        },
+        {
+          "id": "stat_errors",
+          "type": "metric",
+          "title": "Errors",
+          "description": "Segments that failed to summarise (is_error=true)",
+          "config": {
+            "show_legends": false,
+            "legends_position": null,
+            "decimals": 0.0,
+            "base_map": null,
+            "map_view": null,
+            "no_value_replacement": "0"
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as \"y_axis_1\" FROM \"default\" WHERE operation_name='summarise_segment' AND is_error='true'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Errors",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "type": "custom",
+                    "color": "#b25959",
+                    "args": [],
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 160,
+            "y": 0,
+            "w": 32,
+            "h": 18,
+            "i": 6
+          }
+        },
+        {
+          "id": "table_all",
+          "type": "table",
+          "title": "All segments (newest first)",
+          "description": "Filter with the Session UUID / Agent / Continuity variables above. 'Prior' = whether the previous burst's summary was injected; 'Prior chars' = how much context carried over. Click any row → opens that trace's spans.",
+          "config": {
+            "show_legends": false,
+            "legends_position": null,
+            "base_map": null,
+            "map_view": null,
+            "drilldown": [
+              {
+                "name": "Open this trace's spans",
+                "type": "byUrl",
+                "targetBlank": true,
+                "findBy": "name",
+                "data": {
+                  "url": "/web/traces?org_identifier=default&stream=default&search_type=ui&search_mode=spans&period=30d&query=${row.field.trace_filter}",
+                  "folder": "",
+                  "dashboard": "",
+                  "tab": "",
+                  "passAllVariables": false,
+                  "variables": []
+                }
+              }
+            ],
+            "wrap_table_cells": false,
+            "table_dynamic_columns": false
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT to_char(to_timestamp_micros(_timestamp + 19800000000),'%Y-%m-%d %H:%M:%S') as \"Time\", substr(session_uuid,1,8) as \"Session\", agent as \"Agent\", prior_present as \"Prior\", prior_chars as \"Prior chars\", transcript_chars as \"Transcript chars\", prompt_chars as \"Prompt chars\", summary_chars as \"Summary chars\", summary_source as \"Engine\", is_error as \"Error\", round(CAST(duration AS DOUBLE)/1000000,2) as \"Time taken (s)\", trace_id as \"trace_id\", encode(concat('trace_id=''', trace_id, ''''),'base64') as \"trace_filter\" FROM \"default\" WHERE operation_name='summarise_segment' AND ('$session_uuid'='' OR session_uuid LIKE '%$session_uuid%') AND ('$agent'='' OR agent LIKE '%$agent%') AND ('$continuity'='' OR prior_present='$continuity') ORDER BY _timestamp DESC",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [
+                  {
+                    "label": "Time",
+                    "alias": "Time",
+                    "column": "_timestamp",
+                    "type": "custom",
+                    "color": null,
+                    "args": [],
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Session",
+                    "alias": "Session",
+                    "column": "session_uuid",
+                    "type": "custom",
+                    "color": null,
+                    "args": [],
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Agent",
+                    "alias": "Agent",
+                    "column": "agent",
+                    "type": "custom",
+                    "color": null,
+                    "args": [],
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Prior",
+                    "alias": "Prior",
+                    "column": "prior_present",
+                    "type": "custom",
+                    "color": null,
+                    "args": [],
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Prior chars",
+                    "alias": "Prior chars",
+                    "column": "prior_chars",
+                    "type": "custom",
+                    "color": null,
+                    "args": [],
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Transcript chars",
+                    "alias": "Transcript chars",
+                    "column": "transcript_chars",
+                    "type": "custom",
+                    "color": null,
+                    "args": [],
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Prompt chars",
+                    "alias": "Prompt chars",
+                    "column": "prompt_chars",
+                    "type": "custom",
+                    "color": null,
+                    "args": [],
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Summary chars",
+                    "alias": "Summary chars",
+                    "column": "summary_chars",
+                    "type": "custom",
+                    "color": null,
+                    "args": [],
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Engine",
+                    "alias": "Engine",
+                    "column": "summary_source",
+                    "type": "custom",
+                    "color": null,
+                    "args": [],
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Error",
+                    "alias": "Error",
+                    "column": "is_error",
+                    "type": "custom",
+                    "color": null,
+                    "args": [],
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Time taken (s)",
+                    "alias": "Time taken (s)",
+                    "column": "duration",
+                    "type": "custom",
+                    "color": null,
+                    "args": [],
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Trace ID",
+                    "alias": "trace_id",
+                    "column": "trace_id",
+                    "type": "custom",
+                    "color": null,
+                    "args": [],
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "trace_filter",
+                    "alias": "trace_filter",
+                    "column": "trace_filter",
+                    "type": "custom",
+                    "color": null,
+                    "args": [],
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "y": [],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 18,
+            "w": 192,
+            "h": 40,
+            "i": 7
+          }
+        }
+      ]
+    }
+  ],
+  "variables": {
+    "list": [
+      {
+        "type": "textbox",
+        "name": "session_uuid",
+        "label": "Session UUID",
+        "query_data": null,
+        "value": "",
+        "options": [],
+        "multiSelect": false,
+        "hideOnDashboard": false,
+        "selectAllValueForMultiSelect": "custom",
+        "customMultiSelectValue": [],
+        "escapeSingleQuotes": true
+      },
+      {
+        "type": "textbox",
+        "name": "agent",
+        "label": "Agent",
+        "query_data": null,
+        "value": "",
+        "options": [],
+        "multiSelect": false,
+        "hideOnDashboard": false,
+        "selectAllValueForMultiSelect": "custom",
+        "customMultiSelectValue": [],
+        "escapeSingleQuotes": true
+      },
+      {
+        "type": "custom",
+        "name": "continuity",
+        "label": "Continuity",
+        "query_data": null,
+        "value": "",
+        "options": [
+          {
+            "label": "All",
+            "value": "",
+            "selected": true
+          },
+          {
+            "label": "With prior",
+            "value": "true",
+            "selected": false
+          },
+          {
+            "label": "Fresh burst",
+            "value": "false",
+            "selected": false
+          }
+        ],
+        "multiSelect": false,
+        "hideOnDashboard": false,
+        "selectAllValueForMultiSelect": "custom",
+        "customMultiSelectValue": [],
+        "escapeSingleQuotes": true
+      }
+    ],
+    "showDynamicFilters": true
+  },
+  "defaultDatetimeDuration": {
+    "type": "relative",
+    "relativeTimePeriod": "12h"
+  }
+}
