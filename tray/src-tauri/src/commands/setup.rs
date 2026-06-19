@@ -14,6 +14,7 @@
 
 use crate::mlx_server::{self, MlxStatus, SharedMlxManager};
 use serde::Serialize;
+use tauri::Emitter;
 
 /// Response shape for the wizard's Model step poll.
 #[derive(Debug, Serialize)]
@@ -24,6 +25,10 @@ pub struct MlxStatusResponse {
     pub port: u16,
     /// Whether a resolvable Python binary was found on this machine.
     pub runtime_found: bool,
+    /// Whether the downloadable runtime is provisioned in `~/.meridian/runtime/`.
+    pub runtime_installed: bool,
+    /// Whether a runtime tarball URL is configured (download is possible).
+    pub download_available: bool,
 }
 
 /// Returns `true` on the first launch — no `~/.meridian/onboarded` flag exists.
@@ -118,12 +123,39 @@ pub async fn get_mlx_status(
     mlx_server::sync_status(&mlx).await;
     let m = mlx.lock().await;
     let runtime_found = mlx_server::resolve_mlx_command().is_some();
-    tracing::debug!(status = ?m.status, runtime_found, "mlx: status queried");
+    let runtime_installed = mlx_server::runtime_installed();
+    let download_available = mlx_server::runtime_url().is_some();
+    tracing::debug!(
+        status = ?m.status,
+        runtime_found,
+        runtime_installed,
+        download_available,
+        "mlx: status queried"
+    );
     Ok(MlxStatusResponse {
         status: m.status.clone(),
         port: m.port,
         runtime_found,
+        runtime_installed,
+        download_available,
     })
+}
+
+/// Download and provision the MLX runtime into `~/.meridian/runtime/` (Approach C).
+///
+/// Streams progress to the frontend via the `mlx-download-progress` Tauri event
+/// (payload: [`crate::mlx_server::DownloadProgress`]). On success, the wizard's
+/// next `get_mlx_status` poll sees `runtime_installed = true` and can start the
+/// server. Idempotent — re-extracts over an existing runtime if called again.
+#[tauri::command]
+#[tracing::instrument(skip(app))]
+pub async fn download_runtime_cmd(app: tauri::AppHandle) -> Result<(), String> {
+    let handle = app.clone();
+    mlx_server::download_runtime(move |p| {
+        let _ = handle.emit("mlx-download-progress", p);
+    })
+    .await
+    .inspect_err(|e| tracing::warn!(error = %e, "mlx: runtime download failed"))
 }
 
 /// Start the MLX server if it isn't already running. The wizard's Model step

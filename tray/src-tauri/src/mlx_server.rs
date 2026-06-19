@@ -1,20 +1,20 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-//! MLX inference server — child process management (Approach A: bundled venv).
+//! MLX inference server — child process management (Approach C: download-and-provision).
 //!
-//! Resolves, spawns, and health-monitors the MLX FastAPI server (`server.py`,
-//! port 7823) as a child process. The tray owns the server's lifecycle; the
-//! server is intentionally detached so a tray crash doesn't interrupt inflight
-//! classification.
+//! The tray ships pure-Rust + small. On first run the user clicks "Download" in
+//! the wizard and this module fetches a pre-built `meridian-mlx-runtime` tarball
+//! (CPython + venv + `server.py`) into `~/.meridian/runtime/`. After that, the
+//! tray manages the server as a child process on every launch — identical to how
+//! openhuman manages `ollama serve`.
 //!
 //! **Resolution order:**
-//! 1. `<app>.app/Contents/Resources/venv/bin/python` + `Resources/server.py`
-//!    — bundled venv (Approach A, the production target).
+//! 1. `~/.meridian/runtime/bin/python` + `runtime/server.py` — downloaded runtime (Approach C target).
 //! 2. `MERIDIAN_SERVICES_DIR` env override — CI / integration test override.
 //! 3. `~/.meridian/app/services/.venv/bin/python` — legacy bundle-install path.
 //! 4. Walk from CWD up for `services/.venv/bin/python` — dev mode.
 //!
 //! # Who calls this
-//! - [`crate::commands::setup`] — wizard status query + start button
+//! - [`crate::commands::setup`] — wizard status / download / start commands
 //! - [`crate::lib`] — `reclaim_orphan` on tray startup
 //!
 //! # Related
@@ -26,14 +26,30 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+/// URL of the pre-built `meridian-mlx-runtime` tarball (CPython + venv + server.py).
+/// `""` means "not yet published" — the wizard shows a "not available" state.
+/// Override at dev time with `MERIDIAN_RUNTIME_URL` env var.
+const RUNTIME_TARBALL_URL: &str = "";
+
+/// Download state emitted as progress events to the wizard.
+#[derive(Debug, Clone, Serialize)]
+pub struct DownloadProgress {
+    /// Bytes received so far.
+    pub received: u64,
+    /// Total bytes expected (`0` when the server omits Content-Length).
+    pub total: u64,
+    /// Human-readable status line shown under the progress bar.
+    pub message: String,
+}
+
 /// Status of the MLX inference server.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MlxStatus {
-    /// No runtime found or server not reachable.
+    /// Runtime not present; download required.
     #[default]
     Offline,
-    /// Binary found; server spawned but not yet responding.
+    /// Runtime present; server spawned but not yet responding.
     Starting,
     /// Server is responding to health probes.
     Running,
@@ -62,18 +78,28 @@ impl MlxManager {
 /// Arc-wrapped Tokio-locked manager — the Tauri managed-state type.
 pub type SharedMlxManager = Arc<Mutex<MlxManager>>;
 
+/// Returns the path where the downloaded runtime lives.
+pub fn runtime_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(format!("{home}/.meridian/runtime"))
+}
+
+/// Returns `true` when the downloaded runtime has been provisioned.
+pub fn runtime_installed() -> bool {
+    let dir = runtime_dir();
+    dir.join("bin/python").exists() && dir.join("server.py").exists()
+}
+
 /// Locate the Python binary and server script for the MLX server.
 /// Returns `(python_bin, server_script)` or `None` when no runtime is found.
 pub fn resolve_mlx_command() -> Option<(PathBuf, PathBuf)> {
-    // 1. Bundled venv in the running .app (Approach A — production path).
-    //    current_exe → Contents/MacOS/meridian-tray → parent×2 → Contents/
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(contents) = exe.parent().and_then(|p| p.parent()) {
-            let py = contents.join("Resources/venv/bin/python");
-            let srv = contents.join("Resources/server.py");
-            if py.exists() && srv.exists() {
-                return Some((py, srv));
-            }
+    // 1. Downloaded runtime — the production path for Approach C.
+    {
+        let dir = runtime_dir();
+        let py = dir.join("bin/python");
+        let srv = dir.join("server.py");
+        if py.exists() && srv.exists() {
+            return Some((py, srv));
         }
     }
 
@@ -114,6 +140,128 @@ pub fn resolve_mlx_command() -> Option<(PathBuf, PathBuf)> {
     None
 }
 
+/// Resolve the runtime tarball URL. `MERIDIAN_RUNTIME_URL` env var overrides
+/// the compiled-in constant (useful for testing with a locally-served tarball).
+pub fn runtime_url() -> Option<String> {
+    if let Ok(url) = std::env::var("MERIDIAN_RUNTIME_URL") {
+        if !url.is_empty() {
+            return Some(url);
+        }
+    }
+    if !RUNTIME_TARBALL_URL.is_empty() {
+        return Some(RUNTIME_TARBALL_URL.to_string());
+    }
+    None
+}
+
+/// Download the runtime tarball and extract it to `~/.meridian/runtime/`.
+///
+/// Streams download progress by calling `on_progress` with each chunk. When
+/// the server omits Content-Length, `total` in `DownloadProgress` is `0`.
+/// Extraction uses the system `tar` binary (always present on macOS).
+pub async fn download_runtime<F>(on_progress: F) -> Result<(), String>
+where
+    F: Fn(DownloadProgress) + Send + 'static,
+{
+    use futures_util::StreamExt;
+
+    let url = runtime_url().ok_or_else(|| {
+        "Runtime tarball URL not yet configured. Check back for updates.".to_string()
+    })?;
+
+    tracing::info!(url, "mlx: downloading runtime");
+    on_progress(DownloadProgress {
+        received: 0,
+        total: 0,
+        message: "Connecting…".to_string(),
+    });
+
+    let response = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("download request failed: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!("download failed: HTTP {}", response.status()));
+    }
+
+    let total = response.content_length().unwrap_or(0);
+    let home = std::env::var("HOME").unwrap_or_default();
+    let tmp_path = format!("{home}/.meridian/runtime.tar.gz");
+
+    let _ = tokio::fs::create_dir_all(format!("{home}/.meridian")).await;
+
+    let mut file = tokio::fs::File::create(&tmp_path)
+        .await
+        .map_err(|e| format!("create temp file: {e}"))?;
+
+    let mut stream = response.bytes_stream();
+    let mut received: u64 = 0;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("stream error: {e}"))?;
+        use tokio::io::AsyncWriteExt;
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("write error: {e}"))?;
+        received += chunk.len() as u64;
+        on_progress(DownloadProgress {
+            received,
+            total,
+            message: if total > 0 {
+                format!(
+                    "Downloading… {:.0}%",
+                    received as f64 / total as f64 * 100.0
+                )
+            } else {
+                format!("Downloading… {} MB", received / 1_048_576)
+            },
+        });
+    }
+
+    on_progress(DownloadProgress {
+        received,
+        total: received,
+        message: "Extracting…".to_string(),
+    });
+
+    // Extract tarball → ~/.meridian/runtime/
+    let runtime_dir = format!("{home}/.meridian/runtime");
+    tokio::fs::create_dir_all(&runtime_dir)
+        .await
+        .map_err(|e| format!("create runtime dir: {e}"))?;
+
+    let out = tokio::process::Command::new("tar")
+        .args([
+            "-xzf",
+            &tmp_path,
+            "-C",
+            &runtime_dir,
+            "--strip-components=1",
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("tar spawn: {e}"))?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("tar extraction failed: {stderr}"));
+    }
+
+    // Clean up the temp tarball.
+    let _ = tokio::fs::remove_file(&tmp_path).await;
+
+    on_progress(DownloadProgress {
+        received,
+        total: received,
+        message: "Runtime ready.".to_string(),
+    });
+
+    tracing::info!(%runtime_dir, "mlx: runtime extracted");
+    Ok(())
+}
+
 /// Probe the server's `/health` endpoint. Returns `true` on a 2xx response
 /// within 2 seconds.
 pub async fn health_check(port: u16) -> bool {
@@ -138,7 +286,7 @@ fn process_alive(pid: u32) -> bool {
 
 /// On tray startup, check if a server from a previous run is still alive.
 /// If it is and health-probe passes, adopt it into the manager (pid + Running)
-/// rather than spawning a fresh one. Removes the PID file if stale.
+/// rather than spawning a duplicate. Removes the PID file if stale.
 pub async fn reclaim_orphan(home: &str, port: u16, manager: &SharedMlxManager) {
     let pid_path = PathBuf::from(format!("{home}/.meridian/mlx-server.pid"));
     let pid_str = match tokio::fs::read_to_string(&pid_path).await {
@@ -171,9 +319,11 @@ pub async fn reclaim_orphan(home: &str, port: u16, manager: &SharedMlxManager) {
 /// and updates the manager status to `Starting`.
 pub async fn start(port: u16, manager: &SharedMlxManager) -> Result<(), String> {
     let Some((python, server)) = resolve_mlx_command() else {
-        return Err("MLX runtime not found. Bundle the venv in the app or set \
-             MERIDIAN_SERVICES_DIR to your services/ directory."
-            .to_string());
+        return Err(
+            "MLX runtime not found. Download the runtime from the wizard's Model step or \
+             set MERIDIAN_SERVICES_DIR to your services/ directory."
+                .to_string(),
+        );
     };
 
     tracing::info!(%port, python = %python.display(), "mlx: starting server");

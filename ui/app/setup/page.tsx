@@ -16,6 +16,14 @@ interface MlxStatusResponse {
   status: MlxStatus
   port: number
   runtime_found: boolean
+  runtime_installed: boolean
+  download_available: boolean
+}
+
+interface DownloadProgress {
+  received: number
+  total: number
+  message: string
 }
 
 export default function SetupWizard() {
@@ -27,8 +35,10 @@ export default function SetupWizard() {
   const [screenGrant, setScreenGrant] = useState<boolean | null>(null)
   const [a11yGrant, setA11yGrant] = useState<boolean | null>(null)
 
-  // Step 2: MLX server state
+  // Step 2: MLX server state + runtime download
   const [mlx, setMlx] = useState<MlxStatusResponse | null>(null)
+  const [downloading, setDownloading] = useState(false)
+  const [progress, setProgress] = useState<DownloadProgress | null>(null)
 
   // Poll Screen Recording + Accessibility on step 1
   useEffect(() => {
@@ -46,7 +56,8 @@ export default function SetupWizard() {
     return () => clearInterval(id)
   }, [step])
 
-  // Poll MLX status on step 2 and attempt start when runtime found but offline
+  // Poll MLX status on step 2; auto-start only when the runtime is provisioned.
+  // If no runtime is installed yet, the user downloads it via startDownload().
   useEffect(() => {
     if (step !== 2) return
     const poll = async () => {
@@ -64,6 +75,32 @@ export default function SetupWizard() {
     const id = setInterval(poll, 3000)
     return () => clearInterval(id)
   }, [step])
+
+  // Listen for runtime download progress events while a download is in flight.
+  useEffect(() => {
+    if (!downloading) return
+    let unlisten: (() => void) | undefined
+    tauri()
+      ?.event.listen<DownloadProgress>('mlx-download-progress', (e) => setProgress(e.payload))
+      .then((un) => { unlisten = un })
+      .catch(() => {})
+    return () => { if (unlisten) unlisten() }
+  }, [downloading])
+
+  const startDownload = async () => {
+    setErr('')
+    setDownloading(true)
+    setProgress({ received: 0, total: 0, message: 'Starting…' })
+    try {
+      await invoke('download_runtime_cmd')
+      // Runtime now provisioned — kick the server. The poll will reflect it.
+      invoke('start_mlx_server_cmd').catch(() => {})
+    } catch (e) {
+      setErr(String(e))
+    } finally {
+      setDownloading(false)
+    }
+  }
 
   const openPane = (pane: string) => {
     setErr('')
@@ -145,9 +182,15 @@ export default function SetupWizard() {
           <section>
             <h1 className="mb-1.5 text-2xl font-semibold">On-device model</h1>
             <p className="mb-3.5 text-[15px] opacity-70">
-              Meridian classifies your work with a local model so nothing is sent to the cloud.
+              Meridian classifies your work with a local model so nothing is sent to the cloud. The
+              runtime downloads once, then loads in the background.
             </p>
-            <MlxRow mlx={mlx} />
+            <MlxRow
+              mlx={mlx}
+              downloading={downloading}
+              progress={progress}
+              onDownload={startDownload}
+            />
           </section>
         )}
 
@@ -251,28 +294,71 @@ function PermissionCard({
   )
 }
 
-function MlxRow({ mlx }: { mlx: MlxStatusResponse | null }) {
+function MlxRow({
+  mlx,
+  downloading,
+  progress,
+  onDownload,
+}: {
+  mlx: MlxStatusResponse | null
+  downloading: boolean
+  progress: DownloadProgress | null
+  onDownload: () => void
+}) {
+  // Download in flight — show a progress bar instead of a status badge.
+  if (downloading) {
+    const pct = progress && progress.total > 0 ? (progress.received / progress.total) * 100 : 0
+    return (
+      <div className="mb-3 rounded-[10px] border border-current/15 px-4 py-3.5">
+        <div className="mb-2 flex items-center justify-between">
+          <span className="font-semibold text-[14px]">Downloading runtime</span>
+          <span className="text-xs opacity-60">{progress?.message ?? 'Starting…'}</span>
+        </div>
+        <div className="h-2 overflow-hidden rounded-full bg-current/10">
+          <div
+            className="h-full rounded-full bg-blue-500 transition-all"
+            style={{ width: progress && progress.total > 0 ? `${pct}%` : '100%' }}
+          />
+        </div>
+      </div>
+    )
+  }
+
   let badge: React.ReactNode
   let sub: string
 
   if (!mlx) {
     badge = <span className="rounded-full bg-current/10 px-2.5 py-1 text-xs opacity-50">checking…</span>
     sub = 'Checking server status…'
-  } else if (!mlx.runtime_found) {
-    badge = <span className="rounded-full bg-orange-500/20 px-2.5 py-1 text-xs font-semibold text-orange-600">not found</span>
-    sub = 'MLX runtime not installed. Install the dev environment (cd services && uv sync) or wait for the bundled release.'
   } else if (mlx.status === 'running') {
     badge = <span className="rounded-full bg-emerald-500/20 px-2.5 py-1 text-xs font-semibold text-emerald-600">running</span>
     sub = `Classifier ready on port ${mlx.port}.`
   } else if (mlx.status === 'starting') {
     badge = <span className="rounded-full bg-blue-500/20 px-2.5 py-1 text-xs font-semibold text-blue-600">starting…</span>
     sub = 'Server is loading the model — this may take a moment on first run.'
-  } else if (typeof mlx.status === 'object' && 'error' in mlx.status) {
-    badge = <span className="rounded-full bg-red-500/20 px-2.5 py-1 text-xs font-semibold text-red-600">error</span>
-    sub = mlx.status.error
-  } else {
+  } else if (mlx.runtime_found) {
+    // Runtime present (downloaded or dev), server just not up yet.
     badge = <span className="rounded-full bg-current/10 px-2.5 py-1 text-xs opacity-50">offline</span>
-    sub = 'Server found but not running — attempting to start…'
+    sub = 'Runtime installed — attempting to start the server…'
+  } else if (mlx.download_available) {
+    // No runtime, but a download is configured — offer the download button.
+    return (
+      <Row
+        title="Classifier model (Qwen3)"
+        sub="Download the on-device runtime (~750 MB) and model. This happens once."
+      >
+        <button
+          onClick={onDownload}
+          className="rounded-lg bg-blue-500 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-blue-600 transition-colors"
+        >
+          Download
+        </button>
+      </Row>
+    )
+  } else {
+    // No runtime and no download URL configured yet.
+    badge = <span className="rounded-full bg-orange-500/20 px-2.5 py-1 text-xs font-semibold text-orange-600">not available</span>
+    sub = 'The downloadable runtime is not published yet. For dev, run: cd services && uv sync.'
   }
 
   return <Row title="Classifier model (Qwen3)" sub={sub}>{badge}</Row>
