@@ -198,6 +198,7 @@ pub fn run() {
             commands::disconnect_integration,
             commands::discover_azure_devops,
             commands::start_oauth,
+            commands::get_oauth_status,
             // OS/window actions
             commands::open_permission_pane,
             // Setup wizard (first-run, permissions, MLX)

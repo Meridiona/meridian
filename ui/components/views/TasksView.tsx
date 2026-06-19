@@ -931,7 +931,7 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: (typeof TRACKERS)[number]
       // start_oauth (Rust) in the app, /api/auth/oauth/start POST in a browser.
       // Path-param route: provider rides the URL (browser) and the body (command).
       await mutate(`/api/auth/oauth/start?provider=${tracker.id}`, 'start_oauth', { provider: tracker.id })
-      // Poll until connected (up to 3 minutes).
+      // Poll until connected or failed (up to 3 minutes).
       // `stopped` prevents two async invocations of the same callback from both
       // resolving — e.g. tick N suspended at await while tick N+1 hits the deadline.
       const deadline = Date.now() + 180_000
@@ -941,6 +941,19 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: (typeof TRACKERS)[number]
         if (Date.now() > deadline) {
           stopped = true; clearInterval(id); pollRef.current = null
           setStatus('error'); setError('Timed out — try again'); return
+        }
+        // Check for a terminal error from the OAuth process first — surfaces
+        // failures (e.g. missing client_secret) immediately without waiting for
+        // the 3-minute timeout.
+        const oauthSt = await load<{ connected: boolean; error?: string | null }>(
+          `/api/auth/oauth/status?provider=${tracker.id}`,
+          'get_oauth_status',
+          { provider: tracker.id }
+        ).catch(() => null)
+        if (stopped) return
+        if (oauthSt?.error) {
+          stopped = true; clearInterval(id); pollRef.current = null
+          setStatus('error'); setError(oauthSt.error); return
         }
         const data = await load<Record<string, unknown>>('/api/integrations', 'get_integrations').catch(() => null)
         if (stopped) return  // re-check after await — timeout may have fired
