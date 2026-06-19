@@ -339,8 +339,53 @@ pub async fn start(port: u16, manager: &SharedMlxManager) -> Result<(), String> 
         .map_err(|e| format!("open log: {e}"))?;
     let log_err = log_file.try_clone().map_err(|e| e.to_string())?;
 
+    // Launch the way the layout demands. The dev layout
+    // (services/agents/server.py) MUST run as `python -m agents.server` from the
+    // services dir, or the top-level `from agents import …` fails with
+    // ModuleNotFoundError. A downloaded runtime that bundles the `agents` package
+    // runs the same way from its root; a flat runtime ships a self-contained
+    // server.py run directly. The port goes via `--port` — server.py's `main()`
+    // parses `--port` and does NOT read MLX_SERVER_PORT (we still set the env for
+    // any code path that wants it).
+    let parent = server
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let module_args = || {
+        vec![
+            "-m".to_string(),
+            "agents.server".to_string(),
+            "--port".to_string(),
+            port.to_string(),
+        ]
+    };
+    let (work_dir, launch_args): (PathBuf, Vec<String>) =
+        if parent.file_name().map(|n| n == "agents").unwrap_or(false) {
+            // dev: .../services/agents/server.py → run from services/ with -m
+            (
+                parent.parent().unwrap_or(parent.as_path()).to_path_buf(),
+                module_args(),
+            )
+        } else if parent.join("agents").is_dir() {
+            // downloaded runtime that bundles the agents package at its root
+            (parent.clone(), module_args())
+        } else {
+            // flat runtime: a self-contained server.py at the runtime root
+            let file = server
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "server.py".to_string());
+            (
+                parent.clone(),
+                vec![file, "--port".to_string(), port.to_string()],
+            )
+        };
+
+    tracing::info!(work_dir = %work_dir.display(), args = ?launch_args, "mlx: launch resolved");
+
     let mut cmd = tokio::process::Command::new(&python);
-    cmd.arg(&server)
+    cmd.current_dir(&work_dir)
+        .args(&launch_args)
         .env("MLX_SERVER_PORT", port.to_string())
         .stdout(log_file)
         .stderr(log_err)
@@ -391,4 +436,110 @@ pub async fn sync_status(manager: &SharedMlxManager) {
     } else {
         MlxStatus::Offline
     };
+}
+
+/// Whether *something* is accepting TCP connections on the port. A wedged server
+/// (socket bound, worker dead) still completes the TCP handshake even though
+/// `/health` times out, so this distinguishes "port held by someone" from "free"
+/// — letting [`supervise`] avoid spawning a duplicate that would just EADDRINUSE.
+async fn port_listening(port: u16) -> bool {
+    matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            tokio::net::TcpStream::connect(("127.0.0.1", port)),
+        )
+        .await,
+        Ok(Ok(_))
+    )
+}
+
+/// Terminate a process by PID (SIGTERM) — used to clear our own wedged server.
+fn kill_pid(pid: u32) {
+    let _ = std::process::Command::new("kill")
+        .arg(pid.to_string())
+        .output();
+}
+
+/// The result of one [`supervise`] cycle — drives the poll loop's logging and
+/// bounded-restart bookkeeping.
+#[derive(Debug, PartialEq)]
+pub enum SuperviseOutcome {
+    /// Server answered `/health`.
+    Healthy,
+    /// No runtime resolvable — nothing to supervise (the wizard download owns this).
+    NoRuntime,
+    /// Port is held by a process the tray doesn't manage (e.g. a hand-started dev
+    /// server, possibly wedged); not spawning a doomed duplicate.
+    PortHeldForeign,
+    /// Killed our own wedged server; a restart follows on the next cycle.
+    KilledWedged,
+    /// Spawned a fresh server.
+    Restarted,
+    /// A restart was attempted but the spawn failed.
+    RestartFailed(String),
+}
+
+/// One supervision cycle: keep the MLX server alive.
+///
+/// - Healthy → mark `Running`.
+/// - Down, no runtime → `Offline` (nothing to do; the wizard provisions it).
+/// - Down, our managed pid alive-but-wedged → kill it (restart next cycle).
+/// - Down, port held by a foreign process → report, don't fight it.
+/// - Down, port free, runtime available → (re)start.
+///
+/// The caller ([`crate::poll`]) bounds how many times it invokes this after a
+/// failure, so a server that refuses to come up doesn't spawn-storm.
+pub async fn supervise(manager: &SharedMlxManager) -> SuperviseOutcome {
+    let port = manager.lock().await.port;
+
+    if health_check(port).await {
+        manager.lock().await.status = MlxStatus::Running;
+        return SuperviseOutcome::Healthy;
+    }
+
+    if resolve_mlx_command().is_none() {
+        let mut m = manager.lock().await;
+        m.status = MlxStatus::Offline;
+        m.pid = None;
+        return SuperviseOutcome::NoRuntime;
+    }
+
+    // Down, but a runtime exists. Work out *why* the port isn't serving.
+    let our_pid = manager.lock().await.pid;
+    if let Some(pid) = our_pid {
+        if process_alive(pid) {
+            // Our server is alive but not answering — wedged. Kill it so the next
+            // cycle starts clean (avoids racing a still-bound socket → EADDRINUSE).
+            tracing::warn!(
+                pid,
+                "mlx: managed server wedged (alive, not serving) — killing"
+            );
+            kill_pid(pid);
+            let home = std::env::var("HOME").unwrap_or_default();
+            let _ = tokio::fs::remove_file(format!("{home}/.meridian/mlx-server.pid")).await;
+            let mut m = manager.lock().await;
+            m.pid = None;
+            m.status = MlxStatus::Starting;
+            return SuperviseOutcome::KilledWedged;
+        }
+    }
+
+    // No live managed process. If the port is still held, it's a foreign owner
+    // (e.g. a hand-started dev server) — don't spawn a duplicate that EADDRINUSEs.
+    if port_listening(port).await {
+        tracing::warn!(
+            port,
+            "mlx: port held by an unmanaged process — not restarting"
+        );
+        return SuperviseOutcome::PortHeldForeign;
+    }
+
+    // Stale pid recorded but the process is gone — clear it, then start fresh.
+    if our_pid.is_some() {
+        manager.lock().await.pid = None;
+    }
+    match start(port, manager).await {
+        Ok(()) => SuperviseOutcome::Restarted,
+        Err(e) => SuperviseOutcome::RestartFailed(e),
+    }
 }

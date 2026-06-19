@@ -24,6 +24,7 @@ mod refresh;
 pub(crate) use live::spawn_log_tailer;
 pub(crate) use notifications::notifications_allowed;
 
+use crate::mlx_server::{self, SharedMlxManager, SuperviseOutcome};
 use crate::state::{AppState, HealthStatus};
 use notifications::drain_notifications;
 use refresh::{refresh_active, refresh_health, refresh_today, refresh_worklogs};
@@ -33,12 +34,19 @@ use tauri::{Emitter, Manager};
 
 const TICK: Duration = Duration::from_secs(30);
 
+/// Cap on consecutive automatic MLX restarts before the tray stops spawning and
+/// just watches for recovery — prevents a server that won't come up from
+/// spawn-storming. Reset to 0 the moment `/health` answers.
+const MLX_MAX_RESTARTS: u32 = 5;
+
 pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
     let mut tick: u32 = 0;
     // Last-emitted JSON snapshots for the live events — emit only on change
     // (mirrors the SSE stores' change-only broadcast).
     let mut last_notices = String::new();
     let mut last_banners = String::new();
+    // Consecutive automatic MLX restart attempts (bounded by MLX_MAX_RESTARTS).
+    let mut mlx_restart_attempts: u32 = 0;
 
     loop {
         // Tick 0, 1, 2… every 30s.
@@ -57,6 +65,15 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
 
         if do_health {
             refresh_health(&app, &state).await;
+            // Keep the MLX classifier alive. The daemon *detects + surfaces*
+            // "Classifier offline"; the tray is what *fixes* it — restart on
+            // death, bounded so a server that won't start can't spawn-storm.
+            if let Some(mlx) = app
+                .try_state::<SharedMlxManager>()
+                .map(|s| s.inner().clone())
+            {
+                supervise_mlx(&mlx, &mut mlx_restart_attempts).await;
+            }
         }
         if let Some(pool) = &pool {
             refresh_active(pool, &state).await;
@@ -91,6 +108,47 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
 
         tokio::time::sleep(TICK).await;
         tick = tick.wrapping_add(1);
+    }
+}
+
+/// One bounded MLX supervision step (called every health tick).
+///
+/// Delegates the decision to [`mlx_server::supervise`] and maintains the
+/// consecutive-restart budget: reset on health, increment on each (re)start,
+/// and once the budget is spent stop spawning — keep cheaply probing `/health`
+/// so the tray resumes automatically if the server recovers (self-heal or a
+/// human fix). User-facing "offline" messaging stays with the daemon's notice;
+/// this loop only logs (and remediates).
+async fn supervise_mlx(mlx: &SharedMlxManager, attempts: &mut u32) {
+    if *attempts >= MLX_MAX_RESTARTS {
+        let port = mlx.lock().await.port;
+        if mlx_server::health_check(port).await {
+            *attempts = 0;
+            mlx.lock().await.status = mlx_server::MlxStatus::Running;
+            tracing::info!("mlx: recovered after restart budget exhausted");
+        } else {
+            tracing::warn!(
+                attempts = *attempts,
+                "mlx: restart budget exhausted — not restarting (see daemon's mlx.down notice)"
+            );
+        }
+        return;
+    }
+
+    match mlx_server::supervise(mlx).await {
+        SuperviseOutcome::Healthy => *attempts = 0,
+        SuperviseOutcome::Restarted | SuperviseOutcome::KilledWedged => {
+            *attempts += 1;
+            tracing::info!(attempt = *attempts, "mlx: supervision (re)start");
+        }
+        SuperviseOutcome::RestartFailed(e) => {
+            *attempts += 1;
+            tracing::warn!(error = %e, attempt = *attempts, "mlx: restart failed");
+        }
+        SuperviseOutcome::PortHeldForeign => {
+            tracing::debug!("mlx: port held by an unmanaged process — leaving it")
+        }
+        SuperviseOutcome::NoRuntime => tracing::trace!("mlx: no runtime to supervise"),
     }
 }
 
