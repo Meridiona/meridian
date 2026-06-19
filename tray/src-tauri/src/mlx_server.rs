@@ -28,9 +28,16 @@ use tokio::sync::Mutex;
 
 /// URL of the `runtime-manifest.json` describing the published runtime
 /// (version + tarball url + sha256 + floors — see `scripts/build-mlx-runtime.sh`).
-/// `""` means "not yet published" — the wizard shows a "not available" state.
-/// Override at dev time with `MERIDIAN_RUNTIME_MANIFEST_URL`.
-const RUNTIME_MANIFEST_URL: &str = "";
+///
+/// Points at the **rolling `runtime-latest` release** (not a version-pinned tag),
+/// so a shipped build keeps discovering newer runtimes without an app update —
+/// the cadence-decoupling that motivates Approach C. The workflow force-updates
+/// this release on every `runtime-v*` tag (`.github/workflows/build-mlx-runtime.yml`).
+/// NOT GitHub's `/releases/latest/` — that resolves to the app's semantic-release,
+/// which carries no runtime manifest. Override at dev time with
+/// `MERIDIAN_RUNTIME_MANIFEST_URL` (e.g. a locally-served manifest).
+const RUNTIME_MANIFEST_URL: &str =
+    "https://github.com/Meridiona/meridian/releases/download/runtime-latest/runtime-manifest.json";
 
 /// The published runtime descriptor (`runtime-manifest.json`). The download path
 /// fetches this FIRST, then verifies the tarball against `sha256` and compares

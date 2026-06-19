@@ -7,10 +7,23 @@ name: Build MLX runtime
 # macOS >= the floor in the manifest. The ~7 GB model is NOT bundled (downloaded
 # on first request).
 #
-# build (macos-14, arm64) → smoke (macos-15, arm64 — a DIFFERENT machine/OS, so
-# relocation + ABI + deployment-target are exercised on a box that didn't build
-# it) → publish (only on a `runtime-v*` tag) attaches the tarball + manifest to
-# the GitHub release. workflow_dispatch builds + smoke-tests without publishing.
+# build (macos-14, arm64) → smoke (macos-{14,15,26}, arm64 — DIFFERENT machines/OS,
+# so relocation + ABI + deployment-target are exercised on boxes that didn't build
+# it) → publish (only on a `runtime-v*` tag) force-updates the rolling
+# `runtime-latest` GitHub release with the tarball + manifest. workflow_dispatch
+# builds + smoke-tests without publishing.
+#
+# The app pins the `runtime-latest` release's runtime-manifest.json
+# (RUNTIME_MANIFEST_URL in mlx_server.rs) — a STABLE url so a shipped build keeps
+# discovering newer runtimes without an app update. We don't use GitHub's
+# /releases/latest/ because that resolves to the app's semantic-release (no runtime
+# manifest). So both the manifest url AND the tarball url it embeds are
+# runtime-latest urls (RUNTIME_TAG=runtime-latest at build time).
+#
+# To cut a runtime release:
+#   git tag runtime-v$(grep -m1 '^version' services/pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
+#   git push origin <that tag>
+# → builds, smoke-tests across macOS versions, republishes runtime-latest.
 
 on:
   workflow_dispatch:
@@ -39,8 +52,10 @@ jobs:
       - name: Build runtime tarball
         env:
           VERSION: ${{ github.event.inputs.version }}
-          # On a tag push, stamp the canonical release-download URL into the manifest.
-          RUNTIME_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          # Stamp the STABLE rolling-release URL into the manifest's tarball url,
+          # so the app (which pins runtime-latest) fetches a runtime-latest tarball
+          # — not a version-pinned one that would freeze it to a single runtime.
+          RUNTIME_TAG: runtime-latest
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: bash scripts/build-mlx-runtime.sh
 
@@ -81,7 +96,7 @@ jobs:
         run: bash scripts/smoke-test-mlx-runtime.sh dist/meridian-mlx-runtime-*-aarch64.tar.gz
 
   publish:
-    name: Publish to release
+    name: Publish runtime-latest
     needs: smoke
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
@@ -92,11 +107,22 @@ jobs:
           name: mlx-runtime
           path: dist
 
-      - name: Attach tarball + manifest to the release
+      - name: Force-update the rolling runtime-latest release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${GITHUB_REF_NAME}" \
+          # The app pins runtime-latest's runtime-manifest.json (RUNTIME_MANIFEST_URL).
+          # Create the rolling release once (prerelease, so it never competes with
+          # the app's semantic-release for the "Latest" slot), then clobber its
+          # assets on every runtime build. The triggering runtime-v* git tag is the
+          # version record; the version itself also lives inside the manifest.
+          gh release view runtime-latest --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 \
+            || gh release create runtime-latest \
+                 --repo "${GITHUB_REPOSITORY}" \
+                 --title "MLX runtime (latest)" \
+                 --prerelease \
+                 --notes "Rolling latest self-contained MLX runtime. Auto-updated by build-mlx-runtime.yml on every runtime-v* tag; the app pins this release's runtime-manifest.json."
+          gh release upload runtime-latest \
             dist/meridian-mlx-runtime-*-aarch64.tar.gz \
             dist/runtime-manifest.json \
             --clobber --repo "${GITHUB_REPOSITORY}"
