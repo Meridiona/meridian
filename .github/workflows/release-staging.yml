@@ -81,4 +81,9 @@ jobs:
           # PAT to push the bump commit to staging past branch protection; falls
           # back to GITHUB_TOKEN. No npm token — the staging channel is GitHub-only.
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          # Bake the staging runtime channel into the build at compile time
+          # (mlx_server::manifest_url reads this via option_env!). A packaged .app
+          # has no shell env, so the staging .app must compile in runtime-staging
+          # — otherwise it falls back to the unpublished runtime-latest default.
+          MERIDIAN_RUNTIME_MANIFEST_URL: "https://github.com/Meridiona/meridian/releases/download/runtime-staging/runtime-manifest.json"
         run: npx semantic-release
