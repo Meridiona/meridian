@@ -422,6 +422,16 @@ async fn main() -> Result<()> {
         std::process::exit(if critical { 1 } else { 0 });
     }
 
+    // `meridian uninstall [--purge] [--dry-run] [--yes]` — stop + remove the
+    // launchd agents and staged binaries (inverse of the tray's first-run
+    // install). One-shot, no daemon init; survives the .app being trashed because
+    // this binary lives at ~/.meridian/bin/meridian.
+    if std::env::args().nth(1).as_deref() == Some("uninstall") {
+        let args: Vec<String> = std::env::args().collect();
+        meridian::uninstall::run(&args);
+        return Ok(());
+    }
+
     // `meridian telemetry <status|export|import>` — telemetry spool management.
     // Read-only for status/export; import POSTs to OO. No daemon init needed.
     if std::env::args().nth(1).as_deref() == Some("telemetry") {
