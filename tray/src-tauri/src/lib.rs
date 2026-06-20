@@ -14,6 +14,7 @@
 //! - [`sys`]         — shared uid / notify / dashboard-URL helpers.
 //! - [`format`]      — duration formatting for the popover.
 
+mod backend_install;
 mod commands;
 pub(crate) mod format;
 mod install;
@@ -130,6 +131,18 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     let home = std::env::var("HOME").unwrap_or_default();
                     mlx_server::reclaim_orphan(&home, 7823, &mlx).await;
+                });
+            }
+
+            // Stage + register the bundled backend (daemon + a11y-helper) on the
+            // self-contained .app DMG path. No-op under dev/source (no bundled
+            // Resources/backend) and on launches where the binary is unchanged.
+            // Spawned off the setup hook because the launchd bootout-wait can
+            // take several seconds and must not block tray startup.
+            {
+                let backend_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    backend_install::ensure_backend_installed(&backend_handle).await;
                 });
             }
 

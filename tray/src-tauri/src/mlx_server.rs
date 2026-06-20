@@ -259,7 +259,7 @@ async fn running_macos() -> Option<String> {
 }
 
 /// Compute the lowercase-hex SHA-256 of a file, reading it in 1 MiB chunks.
-fn sha256_hex_of(path: &std::path::Path) -> std::io::Result<String> {
+pub(crate) fn sha256_hex_of(path: &std::path::Path) -> std::io::Result<String> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
     let mut file = std::fs::File::open(path)?;
