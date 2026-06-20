@@ -1,3 +1,10 @@
+# [1.63.0-staging.2](https://github.com/Meridiona/meridian/compare/v1.63.0-staging.1...v1.63.0-staging.2) (2026-06-20)
+
+
+### Features
+
+* **tray:** compile-time runtime-manifest channel override (option_env!) ([5e38746](https://github.com/Meridiona/meridian/commit/5e38746864bca5952f7016c0fe18d62172da8330))
+
 # [1.63.0-staging.1](https://github.com/Meridiona/meridian/compare/v1.62.0...v1.63.0-staging.1) (2026-06-19)
 
 
