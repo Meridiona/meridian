@@ -185,13 +185,24 @@ pub fn resolve_mlx_command() -> Option<(PathBuf, PathBuf)> {
     None
 }
 
-/// Resolve the runtime manifest URL. `MERIDIAN_RUNTIME_MANIFEST_URL` overrides
-/// the compiled-in constant (useful for testing against a locally-served
-/// manifest). `None` → no runtime is published yet (wizard shows "not available").
+/// Resolve the runtime manifest URL, in priority order:
+/// 1. **Runtime** `MERIDIAN_RUNTIME_MANIFEST_URL` — dev / tests (a packaged
+///    `.app` launched from Finder has no shell env, so this only fires in dev).
+/// 2. **Compile-time** `MERIDIAN_RUNTIME_MANIFEST_URL` (`option_env!`) — BAKED
+///    into a channel build. The staging release sets it at build time so the
+///    staging `.app` pins `runtime-staging`; production builds leave it unset.
+/// 3. The compiled-in `RUNTIME_MANIFEST_URL` default (`runtime-latest`).
+///
+/// `None` → no runtime published for this channel (wizard shows "not available").
 pub fn manifest_url() -> Option<String> {
     if let Ok(url) = std::env::var("MERIDIAN_RUNTIME_MANIFEST_URL") {
         if !url.is_empty() {
             return Some(url);
+        }
+    }
+    if let Some(url) = option_env!("MERIDIAN_RUNTIME_MANIFEST_URL") {
+        if !url.is_empty() {
+            return Some(url.to_string());
         }
     }
     if !RUNTIME_MANIFEST_URL.is_empty() {
