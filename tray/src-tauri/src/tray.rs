@@ -84,6 +84,11 @@ fn open_native_dashboard(app: &tauri::AppHandle) {
     )
     .title("Meridian — Dashboard")
     .inner_size(1100.0, 760.0)
+    .decorations(true)
+    .resizable(true)
+    .maximizable(true)
+    .minimizable(true)
+    .closable(true)
     .build()
     {
         eprintln!("tray: failed to open native dashboard: {e}");
