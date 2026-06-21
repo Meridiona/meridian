@@ -8,7 +8,6 @@ use std::time::Duration;
 use anyhow::Result;
 use meridian::config::Config;
 use meridian::db::meridian::{cleanup_incomplete_runs, setup_db};
-use meridian::db::screenpipe::open_screenpipe;
 use meridian::etl::run_etl;
 use meridian::intelligence::{
     check_classification_ready, mark_session_subprocess_error, run_coding_agent_classification,
@@ -452,8 +451,7 @@ async fn main() -> Result<()> {
 
     // 4. Log startup parameters
     tracing::info!(
-        screenpipe_db = %initial_cfg.screenpipe_db,
-        meridian_db   = %initial_cfg.meridian_db,
+        meridian_db = %initial_cfg.meridian_db,
         poll_interval_secs = initial_cfg.poll_interval_secs,
         "meridian daemon starting"
     );
@@ -483,17 +481,13 @@ async fn main() -> Result<()> {
         );
     }
 
-    // 4d. Open screenpipe pool (read-only)
-    let screenpipe = open_screenpipe(&initial_cfg.screenpipe_db_uri()).await?;
-
-    // 4e. Capture-layer (L1) preflight: surface degraded screen capture (revoked
-    //     Screen Recording / Accessibility permission, dead screenpipe, stale
-    //     frames) before the poll loop. Non-fatal — the daemon still runs; we log
-    //     the fault so misclassifications aren't blamed on the model.
-    meridian::health::Report::new(
-        meridian::health::capture::checks(&initial_cfg, Some(&screenpipe)).await,
-    )
-    .log("startup");
+    // 4d. Capture-layer (L1) preflight: surface degraded in-process capture
+    //     (revoked Screen Recording / Accessibility permission, the tray not
+    //     running, stale frames) before the poll loop. Reads meridian's own
+    //     capture tables — no screenpipe pool. Non-fatal — the daemon still runs;
+    //     we log the fault so misclassifications aren't blamed on the model.
+    meridian::health::Report::new(meridian::health::capture::checks(&meridian).await)
+        .log("startup");
 
     // 5b. Unix domain socket — health endpoint for the tray / UI.
     //     ~/.meridian/daemon.sock: connecting succeeds = daemon is running.
@@ -917,7 +911,6 @@ async fn main() -> Result<()> {
     // 9. Shutdown
     tracing::info!("shutting down");
     let _ = std::fs::remove_file(&sock_path_cleanup);
-    screenpipe.close().await;
     meridian.close().await;
 
     // Flush OTel exporters FIRST, while the runtime is alive — this writes the

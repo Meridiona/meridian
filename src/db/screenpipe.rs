@@ -7,16 +7,14 @@
 //! tables (written in-process by the tray — see `meridian_core::capture`), not
 //! screenpipe's `frames` / `ui_events`. The column layout is identical by design,
 //! so the cutover was a table-name + pool change. They take the **meridian** pool
-//! (source == sink now). `get_audio_snippets` is stubbed empty (Audio OFF).
-//! `open_screenpipe` survives only for the health module until slice 4b-2 retires
-//! it; the `db::screenpipe` → `db::capture_source` rename is deferred (pure churn).
+//! (source == sink now). `get_audio_snippets` is stubbed empty (Audio OFF). The
+//! daemon no longer opens screenpipe at all (slice 4b-2); the `db::screenpipe` →
+//! `db::capture_source` rename is deferred (pure churn).
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
-use std::str::FromStr;
 
 // ---------------------------------------------------------------------------
 // Structs
@@ -61,18 +59,6 @@ pub struct FrameText {
     pub timestamp: String,
     pub full_text: String,
     pub text_source: String,
-}
-
-// ---------------------------------------------------------------------------
-// Connection
-// ---------------------------------------------------------------------------
-
-/// Opens the screenpipe SQLite database at `path` in READ-ONLY mode.
-/// The pool will never issue any write to the database.
-pub async fn open_screenpipe(path: &str) -> Result<SqlitePool> {
-    let opts = SqliteConnectOptions::from_str(path)?.read_only(true);
-    let pool = SqlitePool::connect_with(opts).await?;
-    Ok(pool)
 }
 
 // ---------------------------------------------------------------------------

@@ -1,13 +1,14 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// L1 capture-layer health checks. Meridian reads screenpipe's frames read-only;
-// if capture is broken (screen-recording permission revoked → blank frames,
-// accessibility permission off → empty a11y tree, screenpipe dead → stale
-// frames), the classifier receives garbage and gets blamed for it. These probes
-// surface that as an L1 fault. All probes are content-free: they read counts,
-// timestamps, and text *presence* — never the captured text itself.
+// L1 capture-layer health checks. Since the slice-4b cutover, capture runs
+// in-process (the tray writes `capture_frames` / `capture_ui_events` in
+// meridian.db) — these probes read those tables. If capture is broken
+// (Screen-Recording revoked → blank frames, Accessibility off → empty a11y
+// tree, the tray not running → stale frames), the classifier receives garbage
+// and gets blamed for it; these surface that as an L1 fault. All probes are
+// content-free: they read counts, timestamps, and text *presence* — never the
+// captured text itself.
 
-use crate::config::Config;
 use crate::health::Check;
 use sqlx::SqlitePool;
 
@@ -18,70 +19,29 @@ const STALE_FRAMES_SECS: f64 = 600.0;
 /// so the checks still work when the machine has been idle/asleep.
 const RECENT_SAMPLE: i64 = 500;
 
-/// Run all L1 capture checks. `pool` is `None` when the screenpipe DB could not
-/// be opened read-only — the file-level check still runs and the rest report
-/// the open failure.
-pub async fn checks(cfg: &Config, pool: Option<&SqlitePool>) -> Vec<Check> {
-    // Prerequisites first (can capture run at all?), then runtime health.
-    let mut checks = vec![screenpipe_installed(), db_present(cfg)];
-    // Direct Accessibility-grant probe from screenpipe's own log (ground truth,
-    // unlike the DB a11y-yield proxy below). Catches a grant silently dropped by
-    // a reinstall/update before it shows up as OCR-only sessions.
-    if let Some(c) = screenpipe_accessibility_permission(cfg) {
-        checks.push(c);
-    }
-    checks.push(a11y_helper_status(cfg));
-    match pool {
-        Some(p) => {
-            let frames = frames_present(p).await;
-            // The ratio checks are only meaningful once frames exist.
-            let have_frames = frames.severity != crate::health::Severity::Critical;
-            checks.push(frames);
-            if have_frames {
-                // Runtime capture quality — these also serve as the permission
-                // proxies (blank rate → Screen Recording, a11y share → Accessibility).
-                checks.push(frame_freshness(p).await);
-                checks.push(blank_text_rate(p).await);
-                checks.extend(accessibility_checks(p).await);
-                checks.push(capture_coverage(p, "-1 day").await);
-            } else {
-                // Fresh install / nothing captured: the runtime proxies are blind,
-                // so surface the permission prerequisite explicitly.
-                checks.push(permissions_unverified());
-            }
-            checks.push(wal_size(cfg));
-        }
-        None => checks.push(
-            Check::critical(
-                "screenpipe.pool",
-                "L1",
-                "could not open screenpipe DB read-only (path wrong, locked, or corrupt)",
-            )
-            .with_remedy(
-                "check SCREENPIPE_DB points at ~/.screenpipe/db.sqlite and screenpipe is running",
-            ),
-        ),
+/// Run all L1 capture checks against meridian's own `capture_frames` /
+/// `capture_ui_events` tables. Since the slice-4b cutover the tray captures
+/// in-process and writes these tables directly — screenpipe is no longer
+/// involved, so the old screenpipe binary/DB-file/log/WAL prerequisite probes
+/// are gone. `pool` is the meridian pool (the daemon's own DB, always open).
+pub async fn checks(pool: &SqlitePool) -> Vec<Check> {
+    let frames = frames_present(pool).await;
+    // The ratio checks are only meaningful once frames exist.
+    let have_frames = frames.severity != crate::health::Severity::Critical;
+    let mut checks = vec![frames];
+    if have_frames {
+        // Runtime capture quality — these double as permission proxies
+        // (blank rate → Screen Recording, a11y share → Accessibility).
+        checks.push(frame_freshness(pool).await);
+        checks.push(blank_text_rate(pool).await);
+        checks.extend(accessibility_checks(pool).await);
+        checks.push(capture_coverage(pool, "-1 day").await);
+    } else {
+        // Fresh install / nothing captured yet: the runtime proxies are blind,
+        // so surface the permission prerequisite explicitly.
+        checks.push(permissions_unverified());
     }
     checks
-}
-
-/// Prerequisite: the screenpipe binary is installed (on PATH). Without it there
-/// is no capture at all. Content-free — a filesystem lookup only.
-fn screenpipe_installed() -> Check {
-    match which("screenpipe") {
-        Some(path) => Check::ok("screenpipe.installed", "L1", format!("{}", path.display())),
-        None => Check::critical("screenpipe.installed", "L1", "not found on PATH").with_remedy(
-            "install screenpipe (e.g. brew install screenpipe) and load its launchd service",
-        ),
-    }
-}
-
-/// Find an executable on PATH without pulling in the `which` crate.
-fn which(bin: &str) -> Option<std::path::PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(bin))
-        .find(|cand| cand.is_file())
 }
 
 /// Prerequisite for the fresh-install / no-frames case, where the runtime
@@ -90,116 +50,30 @@ fn which(bin: &str) -> Option<std::path::PathBuf> {
 /// prompt rather than a false pass.
 fn permissions_unverified() -> Check {
     Check::warn(
-        "screenpipe.permissions",
+        "capture.permissions",
         "L1",
-        "no frames captured yet — Screen Recording / Accessibility may not be granted",
+        "no frames captured yet — Screen Recording / Accessibility may not be granted to Meridian",
     )
     .with_remedy(
-        "System Settings ▸ Privacy & Security ▸ grant Screen Recording AND Accessibility to screenpipe, then restart it and re-run doctor",
+        "System Settings ▸ Privacy & Security ▸ grant Screen Recording AND Accessibility to Meridian, then re-run doctor",
     )
-}
-
-/// Direct Accessibility-permission probe from screenpipe's own log. macOS TCC
-/// state isn't readable from our process, but screenpipe logs
-/// `permission monitor started … accessibility=true|false` on every (re)start,
-/// and that line is ground truth. A reinstall/update can silently drop the grant
-/// (it attaches to a binary path/signature that changes), flipping a11y capture
-/// to OCR-only with no other symptom — this surfaces it loudly. Returns `None`
-/// when the log or the line can't be found (nothing to assert).
-fn screenpipe_accessibility_permission(cfg: &Config) -> Option<Check> {
-    let dir = std::path::Path::new(&cfg.screenpipe_db).parent()?;
-    // Newest screenpipe.<date>.N.log by mtime — that's the live one.
-    let mut newest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
-    for entry in std::fs::read_dir(dir).ok()?.flatten() {
-        let p = entry.path();
-        let is_sp_log = p
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|n| n.starts_with("screenpipe.") && n.ends_with(".log"))
-            .unwrap_or(false);
-        if !is_sp_log {
-            continue;
-        }
-        if let Ok(m) = entry.metadata().and_then(|md| md.modified()) {
-            if newest.as_ref().is_none_or(|(t, _)| m > *t) {
-                newest = Some((m, p));
-            }
-        }
-    }
-    let log_path = newest?.1;
-    let content = std::fs::read_to_string(&log_path).ok()?;
-    accessibility_verdict_from_log(&content)
-}
-
-/// Pure verdict from screenpipe log text: scan for the LAST `permission monitor
-/// started …` line (the current state after the most recent restart) and report
-/// the Accessibility grant. Split out from the file I/O so it is unit-testable.
-fn accessibility_verdict_from_log(content: &str) -> Option<Check> {
-    let last = content
-        .lines()
-        .rfind(|l| l.contains("permission monitor started"))?;
-
-    if last.contains("accessibility=false") {
-        Some(
-            Check::critical(
-                "screenpipe.accessibility_grant",
-                "L1",
-                "screenpipe reports accessibility=false — a11y tree capture is OFF (OCR-only); the grant was likely dropped by a reinstall/update",
-            )
-            .with_remedy(
-                "System Settings ▸ Privacy & Security ▸ Accessibility ▸ enable screenpipe, then restart it (meridian restart)",
-            ),
-        )
-    } else if last.contains("accessibility=true") {
-        Some(Check::ok(
-            "screenpipe.accessibility_grant",
-            "L1",
-            "screenpipe reports accessibility=true (a11y capture enabled)",
-        ))
-    } else {
-        None
-    }
-}
-
-/// The screenpipe DB file exists and is non-empty. File-stat only — no pool.
-fn db_present(cfg: &Config) -> Check {
-    let path = &cfg.screenpipe_db;
-    match std::fs::metadata(path) {
-        Ok(m) if m.len() > 0 => Check::ok(
-            "screenpipe.db_present",
-            "L1",
-            format!("{path} ({} KB)", m.len() / 1024),
-        ),
-        Ok(_) => Check::critical(
-            "screenpipe.db_present",
-            "L1",
-            format!("{path} exists but is empty — screenpipe never captured"),
-        )
-        .with_remedy("start screenpipe and grant it Screen Recording, then re-run doctor"),
-        Err(e) => Check::critical(
-            "screenpipe.db_present",
-            "L1",
-            format!("{path} not found ({e}) — is screenpipe installed/running?"),
-        )
-        .with_remedy("install + start screenpipe so it creates ~/.screenpipe/db.sqlite"),
-    }
 }
 
 /// The `frames` table is readable and non-empty. An unreadable table means
 /// screenpipe schema drift (renamed/missing table), which breaks every ETL tick.
 async fn frames_present(pool: &SqlitePool) -> Check {
-    match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM frames")
+    match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM capture_frames")
         .fetch_one(pool)
         .await
     {
         Ok(0) => Check::critical(
-            "screenpipe.frames",
+            "capture.frames",
             "L1",
             "frames table is empty — screenpipe has captured nothing",
         ),
-        Ok(n) => Check::ok("screenpipe.frames", "L1", format!("{n} frames total")),
+        Ok(n) => Check::ok("capture.frames", "L1", format!("{n} frames total")),
         Err(e) => Check::critical(
-            "screenpipe.frames",
+            "capture.frames",
             "L1",
             format!("frames table unreadable ({e}) — screenpipe schema drift?"),
         ),
@@ -211,13 +85,13 @@ async fn frames_present(pool: &SqlitePool) -> Check {
 /// clock/timezone skew rather than hiding it.
 async fn frame_freshness(pool: &SqlitePool) -> Check {
     let age = sqlx::query_scalar::<_, Option<f64>>(
-        "SELECT (julianday('now') - julianday(MAX(timestamp))) * 86400.0 FROM frames",
+        "SELECT (julianday('now') - julianday(MAX(timestamp))) * 86400.0 FROM capture_frames",
     )
     .fetch_one(pool)
     .await;
     match age {
         Ok(Some(secs)) if secs < -60.0 => Check::warn(
-            "screenpipe.freshness",
+            "capture.freshness",
             "L1",
             format!(
                 "newest frame is {:.0}s in the future — clock/timezone skew",
@@ -225,7 +99,7 @@ async fn frame_freshness(pool: &SqlitePool) -> Check {
             ),
         ),
         Ok(Some(secs)) if secs > STALE_FRAMES_SECS => Check::warn(
-            "screenpipe.freshness",
+            "capture.freshness",
             "L1",
             format!(
                 "newest frame is {:.0}s old (> {:.0}s) — capture stopped or machine asleep",
@@ -233,17 +107,13 @@ async fn frame_freshness(pool: &SqlitePool) -> Check {
             ),
         ),
         Ok(Some(secs)) => Check::ok(
-            "screenpipe.freshness",
+            "capture.freshness",
             "L1",
             format!("newest frame {:.0}s ago", secs.max(0.0)),
         ),
-        Ok(None) => Check::warn(
-            "screenpipe.freshness",
-            "L1",
-            "no frame timestamps to measure",
-        ),
+        Ok(None) => Check::warn("capture.freshness", "L1", "no frame timestamps to measure"),
         Err(e) => Check::warn(
-            "screenpipe.freshness",
+            "capture.freshness",
             "L1",
             format!("could not read frame freshness ({e})"),
         ),
@@ -259,19 +129,19 @@ async fn blank_text_rate(pool: &SqlitePool) -> Check {
                 COALESCE(SUM(CASE WHEN COALESCE(full_text, accessibility_text) IS NULL
                                    OR COALESCE(full_text, accessibility_text) = ''
                                   THEN 1 ELSE 0 END), 0)
-         FROM (SELECT full_text, accessibility_text FROM frames ORDER BY id DESC LIMIT ?1)",
+         FROM (SELECT full_text, accessibility_text FROM capture_frames ORDER BY id DESC LIMIT ?1)",
     )
     .bind(RECENT_SAMPLE)
     .fetch_one(pool)
     .await;
     match row {
-        Ok((0, _)) => Check::ok("screenpipe.text_present", "L1", "no recent frames sampled"),
+        Ok((0, _)) => Check::ok("capture.text_present", "L1", "no recent frames sampled"),
         Ok((total, blank)) => {
             let pct = 100.0 * blank as f64 / total as f64;
             let detail = format!("{blank}/{total} recent frames blank ({pct:.0}%)");
             if pct >= 90.0 {
                 Check::critical(
-                    "screenpipe.text_present",
+                    "capture.text_present",
                     "L1",
                     format!("{detail} — Screen Recording permission likely revoked"),
                 )
@@ -280,16 +150,16 @@ async fn blank_text_rate(pool: &SqlitePool) -> Check {
                 )
             } else if pct >= 50.0 {
                 Check::warn(
-                    "screenpipe.text_present",
+                    "capture.text_present",
                     "L1",
                     format!("{detail} — degraded OCR/capture"),
                 )
             } else {
-                Check::ok("screenpipe.text_present", "L1", detail)
+                Check::ok("capture.text_present", "L1", detail)
             }
         }
         Err(e) => Check::warn(
-            "screenpipe.text_present",
+            "capture.text_present",
             "L1",
             format!("could not sample frame text ({e})"),
         ),
@@ -335,7 +205,7 @@ async fn accessibility_checks(pool: &SqlitePool) -> Vec<Check> {
         "SELECT app_name, COUNT(*) AS n,
                 COALESCE(SUM(CASE WHEN COALESCE(text_source, '') = 'accessibility'
                                   THEN 1 ELSE 0 END), 0) AS a11y
-         FROM (SELECT app_name, text_source FROM frames ORDER BY id DESC LIMIT ?1)
+         FROM (SELECT app_name, text_source FROM capture_frames ORDER BY id DESC LIMIT ?1)
          WHERE app_name IS NOT NULL AND app_name != ''
          GROUP BY app_name
          HAVING n >= ?2
@@ -350,7 +220,7 @@ async fn accessibility_checks(pool: &SqlitePool) -> Vec<Check> {
         Ok(r) => r,
         Err(e) => {
             return vec![Check::warn(
-                "screenpipe.a11y",
+                "capture.a11y",
                 "L1",
                 format!("could not sample per-app a11y ({e})"),
             )]
@@ -358,7 +228,7 @@ async fn accessibility_checks(pool: &SqlitePool) -> Vec<Check> {
     };
     if rows.is_empty() {
         return vec![Check::ok(
-            "screenpipe.a11y",
+            "capture.a11y",
             "L1",
             "no app with a meaningful recent sample",
         )];
@@ -379,20 +249,20 @@ async fn accessibility_checks(pool: &SqlitePool) -> Vec<Check> {
     // Permission verdict: driven by the best-yielding app, not the average.
     let verdict = if best_pct >= A11Y_HEALTHY_PCT {
         Check::ok(
-            "screenpipe.a11y_permission",
+            "capture.a11y_permission",
             "L1",
             format!("Accessibility granted — best: {best_app} {best_pct:.0}%"),
         )
     } else if best_pct > 0.0 {
         Check::warn(
-            "screenpipe.a11y_permission",
+            "capture.a11y_permission",
             "L1",
             format!("weak a11y across all apps (best {best_app} {best_pct:.0}%) — Accessibility may be off"),
         )
         .with_remedy("grant Accessibility to screenpipe in System Settings, then restart it")
     } else {
         Check::critical(
-            "screenpipe.a11y_permission",
+            "capture.a11y_permission",
             "L1",
             "no app is yielding any a11y — Accessibility permission likely off",
         )
@@ -414,7 +284,7 @@ async fn accessibility_checks(pool: &SqlitePool) -> Vec<Check> {
         String::new()
     };
     let per_app = Check::info(
-        "screenpipe.a11y_per_app",
+        "capture.a11y_per_app",
         "L1",
         format!("{}{}", parts.join(" · "), suffix),
     );
@@ -425,13 +295,13 @@ async fn accessibility_checks(pool: &SqlitePool) -> Vec<Check> {
     let degraded = degraded_apps(&rows);
     let degraded_check = if degraded.is_empty() {
         Check::ok(
-            "screenpipe.a11y_degraded",
+            "capture.a11y_degraded",
             "L1",
             "active apps yield usable text",
         )
     } else {
         Check::info(
-            "screenpipe.a11y_degraded",
+            "capture.a11y_degraded",
             "L1",
             format!("OCR-only (degraded input): {}", degraded.join(" · ")),
         )
@@ -459,7 +329,7 @@ fn degraded_apps(rows: &[(String, i64, i64)]) -> Vec<String> {
 /// flag apps that were healthy then but OCR-only now. `recent_window`/
 /// `base_window` are frame counts (parameterised for testing).
 async fn a11y_regression(pool: &SqlitePool, recent_window: i64, base_window: i64) -> Check {
-    let max_id = sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM frames")
+    let max_id = sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM capture_frames")
         .fetch_one(pool)
         .await
         .unwrap_or(0);
@@ -472,7 +342,7 @@ async fn a11y_regression(pool: &SqlitePool, recent_window: i64, base_window: i64
                 SUM(CASE WHEN id > ?1 AND COALESCE(text_source,'')='accessibility' THEN 1 ELSE 0 END) AS recent_a,
                 SUM(CASE WHEN id <= ?1 THEN 1 ELSE 0 END) AS base_n,
                 SUM(CASE WHEN id <= ?1 AND COALESCE(text_source,'')='accessibility' THEN 1 ELSE 0 END) AS base_a
-         FROM frames
+         FROM capture_frames
          WHERE id > ?2 AND app_name IS NOT NULL AND app_name != ''
          GROUP BY app_name
          HAVING recent_n >= ?3 AND base_n >= 50",
@@ -487,7 +357,7 @@ async fn a11y_regression(pool: &SqlitePool, recent_window: i64, base_window: i64
         Ok(r) => r,
         Err(e) => {
             return Check::info(
-                "screenpipe.a11y_regression",
+                "capture.a11y_regression",
                 "L1",
                 format!("not available ({e})"),
             )
@@ -503,76 +373,25 @@ async fn a11y_regression(pool: &SqlitePool, recent_window: i64, base_window: i64
         })
         .collect();
     if regressed.is_empty() {
-        Check::ok("screenpipe.a11y_regression", "L1", "no a11y regressions")
+        Check::ok("capture.a11y_regression", "L1", "no a11y regressions")
     } else {
         Check::warn(
-            "screenpipe.a11y_regression",
+            "capture.a11y_regression",
             "L1",
             format!("a11y dropped for: {}", regressed.join(" · ")),
         )
-        .with_remedy("restart screenpipe to re-establish a11y capture; if the app updated it may have dropped a11y support")
-    }
-}
-
-/// State of the meridian a11y-helper — the agent that enables accessibility on
-/// Electron/Chromium apps (Claude, Codex, Slack, …) so screenpipe can capture
-/// them. Without a working helper those apps are invisible to capture: they
-/// ship with their AX tree disabled, never register with the AX focus tracker,
-/// and their frames get misattributed or dedup-dropped. The helper logs its
-/// trust state on every start/change; the last `AX trusted:` line is ground
-/// truth (macOS TCC state isn't readable from this process).
-fn a11y_helper_status(cfg: &Config) -> Check {
-    let logs = std::path::Path::new(&cfg.meridian_db)
-        .parent()
-        .map(|d| d.join("logs/a11y-helper.log"));
-    let content = logs.as_ref().and_then(|p| std::fs::read_to_string(p).ok());
-    match content {
-        None => Check::warn(
-            "a11y_helper.installed",
-            "L1",
-            "a11y-helper log not found — Electron apps (Claude, Codex, …) may be invisible to capture",
-        )
-        .with_remedy("run scripts/install-a11y-helper-daemon.sh, then grant ~/.meridian/bin/meridian-a11y-helper Accessibility in System Settings"),
-        Some(content) => a11y_helper_verdict_from_log(&content),
-    }
-}
-
-/// Pure verdict from the helper log: the LAST `AX trusted:` line wins (the
-/// helper re-logs on every state change). Split from the file I/O for tests.
-fn a11y_helper_verdict_from_log(content: &str) -> Check {
-    let last = content.lines().rfind(|l| l.contains("AX trusted:"));
-    match last {
-        Some(l) if l.contains("AX trusted: false") => Check::critical(
-            "a11y_helper.trusted",
-            "L1",
-            "a11y-helper is running but NOT granted Accessibility — Electron apps (Claude, Codex, …) are invisible to capture",
-        )
-        .with_remedy(
-            "System Settings ▸ Privacy & Security ▸ Accessibility ▸ add ~/.meridian/bin/meridian-a11y-helper and toggle it on",
-        ),
-        Some(_) => Check::ok(
-            "a11y_helper.trusted",
-            "L1",
-            "a11y-helper trusted — Electron apps get their accessibility enabled on focus",
-        ),
-        None => Check::warn(
-            "a11y_helper.trusted",
-            "L1",
-            "a11y-helper log has no trust-state line — helper may not be running",
-        )
-        .with_remedy("launchctl kickstart -k gui/$(id -u)/com.meridiona.a11y-helper, then re-run doctor"),
+        .with_remedy("quit and reopen the affected app to rebuild its accessibility tree (Electron apps build it only at launch); an app update can also drop a11y support")
     }
 }
 
 /// Capture-coverage cross-check: every app the user focuses must produce
-/// frames. `ui_events` records `app_switch`/`window_focus` with app names from
-/// screenpipe's notification observer (a fresh, push-based source), so it keeps
-/// seeing an app even when the frame pipeline has gone blind to it — exactly
-/// the Electron "ghost app" failure: a Chromium/Electron app with accessibility
-/// disabled never registers with the AX focus tracker, the walker attributes
-/// its frames to the previously focused app (or dedup drops them), and the
-/// app's activity silently vanishes from the timeline. Focused-but-frameless is
-/// the content-free signature of that whole failure class.
+/// frames. `capture_ui_events` records `app_switch`/`window_focus` from the
+/// in-process input recorder (a push-based source independent of the frame
+/// pipeline), so it keeps seeing an app even when frame capture has gone blind
+/// to it — the Electron "ghost app" failure: a Chromium/Electron app whose AX
+/// tree never built, whose frames get misattributed or dedup-dropped, so its
+/// activity silently vanishes from the timeline. Focused-but-frameless is the
+/// content-free signature of that whole failure class.
 ///
 /// Calibration (live data): healthy apps run ≥ 1 frame per focus event (each
 /// window_focus trigger writes a frame, plus click/typing captures); ghosted
@@ -598,14 +417,14 @@ async fn capture_coverage(pool: &SqlitePool, window: &str) -> Check {
     let rows = sqlx::query_as::<_, (String, i64, i64)>(
         "SELECT u.app_name, u.f, COALESCE(fr.n, 0)
          FROM (SELECT app_name, COUNT(*) AS f
-               FROM ui_events
+               FROM capture_ui_events
                WHERE event_type IN ('app_switch', 'window_focus')
                  AND timestamp > datetime('now', ?1)
                  AND app_name IS NOT NULL AND app_name != ''
                GROUP BY app_name
                HAVING f >= ?2) u
          LEFT JOIN (SELECT app_name, COUNT(*) AS n
-                    FROM frames
+                    FROM capture_frames
                     WHERE timestamp > datetime('now', ?1)
                     GROUP BY app_name) fr
            ON fr.app_name = u.app_name",
@@ -621,7 +440,7 @@ async fn capture_coverage(pool: &SqlitePool, window: &str) -> Check {
         // assert, not a fault.
         Err(_) => {
             return Check::info(
-                "screenpipe.capture_coverage",
+                "capture.capture_coverage",
                 "L1",
                 "ui_events not available — coverage cross-check skipped",
             )
@@ -643,7 +462,7 @@ async fn capture_coverage(pool: &SqlitePool, window: &str) -> Check {
 
     if !ghosted.is_empty() {
         Check::critical(
-            "screenpipe.capture_coverage",
+            "capture.capture_coverage",
             "L1",
             format!(
                 "focused but producing NO frames: {} — their activity is invisible to the timeline",
@@ -651,42 +470,21 @@ async fn capture_coverage(pool: &SqlitePool, window: &str) -> Check {
             ),
         )
         .with_remedy(
-            "quit and reopen the affected app (Electron apps build their accessibility tree only at launch); if it persists, restart screenpipe (meridian restart) and re-run doctor",
+            "quit and reopen the affected app (Electron apps build their accessibility tree only at launch); if it persists, restart Meridian (meridian restart) and re-run doctor",
         )
     } else if !degraded.is_empty() {
         Check::warn(
-            "screenpipe.capture_coverage",
+            "capture.capture_coverage",
             "L1",
             format!("low frame yield for: {}", degraded.join(" · ")),
         )
         .with_remedy("restart the affected app, then re-run doctor; persistent low yield means captures are being dropped or misattributed")
     } else {
         Check::ok(
-            "screenpipe.capture_coverage",
+            "capture.capture_coverage",
             "L1",
             format!("all {} actively-used apps are producing frames", rows.len()),
         )
-    }
-}
-
-/// screenpipe's WAL file size. An unbounded WAL (stalled checkpoint) means disk
-/// pressure and slow reads. Absent WAL is healthy (checkpointed).
-fn wal_size(cfg: &Config) -> Check {
-    let wal = format!("{}-wal", cfg.screenpipe_db);
-    match std::fs::metadata(&wal) {
-        Ok(m) => {
-            let mb = m.len() / 1_048_576;
-            if mb > 1024 {
-                Check::warn(
-                    "screenpipe.wal",
-                    "L1",
-                    format!("WAL is {mb} MB — checkpoint may be stalled"),
-                )
-            } else {
-                Check::ok("screenpipe.wal", "L1", format!("WAL {mb} MB"))
-            }
-        }
-        Err(_) => Check::ok("screenpipe.wal", "L1", "no WAL (checkpointed)"),
     }
 }
 
@@ -696,7 +494,7 @@ mod tests {
     use crate::health::Severity;
     use sqlx::sqlite::SqlitePoolOptions;
 
-    /// In-memory screenpipe-shaped DB. max_connections(1) keeps the one
+    /// In-memory capture-table DB. max_connections(1) keeps the one
     /// in-memory database alive across queries.
     async fn mem_pool() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
@@ -705,7 +503,7 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
-            "CREATE TABLE frames(
+            "CREATE TABLE capture_frames(
                 id INTEGER PRIMARY KEY,
                 app_name TEXT, timestamp TEXT,
                 full_text TEXT, accessibility_text TEXT, text_source TEXT)",
@@ -714,7 +512,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "CREATE TABLE ui_events(
+            "CREATE TABLE capture_ui_events(
                 id INTEGER PRIMARY KEY,
                 timestamp TEXT, event_type TEXT, app_name TEXT)",
         )
@@ -727,7 +525,7 @@ mod tests {
     async fn insert_focus(pool: &SqlitePool, app: &str, n: usize) {
         for _ in 0..n {
             sqlx::query(
-                "INSERT INTO ui_events(timestamp, event_type, app_name)
+                "INSERT INTO capture_ui_events(timestamp, event_type, app_name)
                  VALUES(strftime('%Y-%m-%dT%H:%M:%SZ','now'), 'window_focus', ?1)",
             )
             .bind(app)
@@ -747,7 +545,7 @@ mod tests {
     ) {
         for _ in 0..n {
             sqlx::query(
-                "INSERT INTO frames(app_name, timestamp, full_text, accessibility_text, text_source)
+                "INSERT INTO capture_frames(app_name, timestamp, full_text, accessibility_text, text_source)
                  VALUES(?1, strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?2, ?3, ?4)",
             )
             .bind(app)
@@ -801,7 +599,7 @@ mod tests {
         insert(&pool, "Chrome", Some("page text"), None, "ocr", 30).await;
         let checks = accessibility_checks(&pool).await;
         assert_eq!(checks[0].severity, Severity::Ok); // best app drives the verdict
-        assert!(checks.iter().any(|c| c.name == "screenpipe.a11y_per_app"));
+        assert!(checks.iter().any(|c| c.name == "capture.a11y_per_app"));
     }
 
     #[tokio::test]
@@ -812,12 +610,6 @@ mod tests {
         let checks = accessibility_checks(&pool).await;
         assert_eq!(checks[0].severity, Severity::Critical);
         assert!(checks[0].remedy.is_some());
-    }
-
-    #[test]
-    fn which_resolves_real_and_missing() {
-        assert!(which("sh").is_some());
-        assert!(which("definitely_not_a_real_binary_xyz123").is_none());
     }
 
     #[test]
@@ -899,44 +691,8 @@ mod tests {
         assert_eq!(c.severity, Severity::Ok);
     }
 
-    #[test]
-    fn a11y_helper_verdict_parses_trust_states() {
-        // Untrusted → critical with remedy.
-        let c = a11y_helper_verdict_from_log(
-            "2026-06-05T20:00:00Z a11y-helper: started (poll 3.0s)\n2026-06-05T20:00:00Z a11y-helper: AX trusted: false — grant Accessibility…\n",
-        );
-        assert_eq!(c.severity, Severity::Critical);
-        assert!(c.remedy.is_some());
-
-        // A later trusted:true overrides an earlier false — grants arrive mid-run.
-        let c = a11y_helper_verdict_from_log(
-            "a11y-helper: AX trusted: false — grant…\na11y-helper: AX trusted: true — poking enabled\n",
-        );
-        assert_eq!(c.severity, Severity::Ok);
-
-        // No trust line at all → helper likely not running.
-        let c = a11y_helper_verdict_from_log("unrelated noise\n");
-        assert_eq!(c.severity, Severity::Warn);
-    }
-
-    #[test]
-    fn accessibility_log_verdict_latest_line_wins() {
-        // No permission-monitor line at all → nothing to assert.
-        assert!(accessibility_verdict_from_log("nothing relevant here").is_none());
-
-        // accessibility=false → critical, with a remedy.
-        let c = accessibility_verdict_from_log(
-            "startup\npermission monitor started screen=true mic=false accessibility=false keychain=true\n",
-        )
-        .expect("verdict");
-        assert_eq!(c.severity, Severity::Critical);
-        assert!(c.remedy.is_some());
-
-        // A later true overrides an earlier false — the most-recent restart wins.
-        let c = accessibility_verdict_from_log(
-            "permission monitor started accessibility=false\nnoise\npermission monitor started accessibility=true\n",
-        )
-        .expect("verdict");
-        assert_eq!(c.severity, Severity::Ok);
-    }
+    // NOTE: `a11y_helper_verdict_parses_trust_states` and
+    // `accessibility_log_verdict_latest_line_wins` were removed in the slice-4b
+    // cutover along with the screenpipe/a11y-helper log probes they covered —
+    // capture is in-process now (no screenpipe log, no separate a11y-helper).
 }
