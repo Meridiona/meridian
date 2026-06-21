@@ -1,5 +1,15 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 // https://github.com/meridiona/meridian
+//! Capture-source readers for the ETL.
+//!
+//! **Cutover note (Gap-2 Bucket 2, slice 4b):** despite the module name, these
+//! readers now query meridian's own **`capture_frames` / `capture_ui_events`**
+//! tables (written in-process by the tray — see `meridian_core::capture`), not
+//! screenpipe's `frames` / `ui_events`. The column layout is identical by design,
+//! so the cutover was a table-name + pool change. They take the **meridian** pool
+//! (source == sink now). `get_audio_snippets` is stubbed empty (Audio OFF).
+//! `open_screenpipe` survives only for the health module until slice 4b-2 retires
+//! it; the `db::screenpipe` → `db::capture_source` rename is deferred (pure churn).
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -88,7 +98,7 @@ pub async fn get_frames_since(
         ),
     >(
         "SELECT id, app_name, window_name, browser_url, timestamp, capture_trigger
-         FROM frames
+         FROM capture_frames
          WHERE id > ? AND app_name IS NOT NULL AND app_name != ''
          ORDER BY id ASC
          LIMIT ?",
@@ -126,7 +136,7 @@ pub async fn count_frames_in_window(
     let row = sqlx::query_as::<_, (i64, i64)>(
         "SELECT COUNT(*),
                 COALESCE(SUM(CASE WHEN capture_trigger = 'idle' THEN 1 ELSE 0 END), 0)
-         FROM frames
+         FROM capture_frames
          WHERE timestamp > ? AND timestamp <= ?",
     )
     .bind(start_ts)
@@ -155,7 +165,7 @@ pub async fn get_window_titles(
         // localhost:3939/sessions to count as one entry, not two.
         let raw = sqlx::query_as::<_, (String, i64)>(
             "SELECT COALESCE(browser_url, window_name) as context, COUNT(*) as count
-             FROM frames
+             FROM capture_frames
              WHERE id BETWEEN ? AND ?
                AND app_name = ? COLLATE NOCASE
                AND (browser_url IS NOT NULL OR (window_name IS NOT NULL AND window_name != ''))
@@ -179,7 +189,7 @@ pub async fn get_window_titles(
         // the SQL level before Rust normalization strips the app-name suffix.
         sqlx::query_as::<_, (String, i64)>(
             "SELECT TRIM(window_name) as window_name, COUNT(*) as count
-             FROM frames
+             FROM capture_frames
              WHERE id BETWEEN ? AND ?
                AND app_name = ? COLLATE NOCASE
                AND window_name IS NOT NULL AND TRIM(window_name) != ''
@@ -249,38 +259,19 @@ fn is_browser_app(app_name: &str) -> bool {
     .any(|b| lc.contains(b))
 }
 
-/// Returns unique audio transcription snippets within the given timestamp range.
-/// Deduplicates on exact transcription text — repeated chunks are stored once (earliest timestamp).
-/// Hallucinations and very short snippets (<=10 chars) are excluded.
+/// Audio transcription snippets — **stubbed empty since the slice-4b cutover.**
+///
+/// In-process capture is text-only (Audio OFF — the privacy "we never record
+/// audio" property), so there is no audio source. Kept (rather than removed) so
+/// [`crate::etl::extractor`]'s `extract_block_context` and the session shape are
+/// unchanged; the returned `audio_snippets` is simply always empty. Revisit only
+/// if in-process audio capture is ever added.
 pub async fn get_audio_snippets(
-    pool: &SqlitePool,
-    start_ts: &str,
-    end_ts: &str,
+    _pool: &SqlitePool,
+    _start_ts: &str,
+    _end_ts: &str,
 ) -> Result<Vec<AudioSnippet>> {
-    let rows = sqlx::query_as::<_, (String, String, Option<i64>)>(
-        "SELECT transcription, MIN(timestamp) AS timestamp, MIN(speaker_id) AS speaker_id
-         FROM audio_transcriptions
-         WHERE timestamp BETWEEN ? AND ?
-           AND transcription IS NOT NULL AND length(transcription) > 10
-         GROUP BY transcription
-         ORDER BY timestamp
-         LIMIT 50",
-    )
-    .bind(start_ts)
-    .bind(end_ts)
-    .fetch_all(pool)
-    .await?;
-
-    let result = rows
-        .into_iter()
-        .map(|(transcription, timestamp, speaker_id)| AudioSnippet {
-            transcription,
-            timestamp,
-            speaker_id,
-        })
-        .collect();
-
-    Ok(result)
+    Ok(Vec::new())
 }
 
 /// Returns the timestamp of the last user-interaction ui_event for `app_name`
@@ -292,7 +283,7 @@ pub async fn get_last_ui_event_for_app(
     before_ts: &str,
 ) -> anyhow::Result<Option<String>> {
     let row: Option<(Option<String>,)> = sqlx::query_as(
-        "SELECT MAX(timestamp) FROM ui_events
+        "SELECT MAX(timestamp) FROM capture_ui_events
          WHERE app_name = ?1
            AND event_type IN ('click', 'key', 'text')
            AND timestamp > ?2
@@ -316,7 +307,7 @@ pub async fn get_frame_full_texts(
 ) -> Result<Vec<FrameText>> {
     let rows = sqlx::query_as::<_, (i64, String, String, String)>(
         "SELECT id, timestamp, COALESCE(full_text, accessibility_text), COALESCE(text_source, 'ocr')
-         FROM frames
+         FROM capture_frames
          WHERE id BETWEEN ?1 AND ?2
            AND COALESCE(full_text, accessibility_text) IS NOT NULL
            AND COALESCE(full_text, accessibility_text) != ''
@@ -348,7 +339,7 @@ pub async fn get_signals(
 ) -> Result<Vec<SignalEvent>> {
     let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>, String)>(
         "SELECT event_type, text_content, app_name, MIN(timestamp) AS timestamp
-         FROM ui_events
+         FROM capture_ui_events
          WHERE timestamp BETWEEN ? AND ?
            AND event_type IN ('clipboard', 'app_switch')
            AND (text_content IS NOT NULL OR app_name IS NOT NULL)

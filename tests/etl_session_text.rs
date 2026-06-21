@@ -28,11 +28,10 @@ fn count_markers(text: &str) -> usize {
 /// Frames from a single app with distinct full_text populate active_session.session_text.
 #[tokio::test]
 async fn test_session_text_populated_in_active_session() {
-    let sp = common::make_screenpipe_db().await;
     let md = common::make_meridian_db().await;
 
     common::insert_frames_with_text(
-        &sp,
+        &md,
         1,
         &[
             ("Code", "2026-01-01T10:00:00+00:00", "fn main() {}"),
@@ -42,7 +41,7 @@ async fn test_session_text_populated_in_active_session() {
     )
     .await;
 
-    run_etl(&sp, &md).await.unwrap();
+    run_etl(&md).await.unwrap();
 
     let row: (Option<String>,) =
         sqlx::query_as("SELECT session_text FROM active_session WHERE id = 1")
@@ -69,11 +68,10 @@ async fn test_session_text_populated_in_active_session() {
 /// An app switch forces a close; session_text must appear in app_sessions.
 #[tokio::test]
 async fn test_session_text_populated_in_closed_session() {
-    let sp = common::make_screenpipe_db().await;
     let md = common::make_meridian_db().await;
 
     common::insert_frames_with_text(
-        &sp,
+        &md,
         1,
         &[
             ("Code", "2026-01-01T10:00:00+00:00", "struct Foo {}"),
@@ -88,7 +86,7 @@ async fn test_session_text_populated_in_closed_session() {
     )
     .await;
 
-    run_etl(&sp, &md).await.unwrap();
+    run_etl(&md).await.unwrap();
 
     let row: (Option<String>,) =
         sqlx::query_as("SELECT session_text FROM app_sessions WHERE app_name = 'Code'")
@@ -112,12 +110,11 @@ async fn test_session_text_populated_in_closed_session() {
 /// Five frames with identical full_text — session_text must contain each line exactly once.
 #[tokio::test]
 async fn test_session_text_no_duplicates_across_frames() {
-    let sp = common::make_screenpipe_db().await;
     let md = common::make_meridian_db().await;
 
     let repeated_text = "Line A\nLine B";
     common::insert_frames_with_text(
-        &sp,
+        &md,
         1,
         &[
             ("Code", "2026-01-01T10:00:00+00:00", repeated_text),
@@ -131,7 +128,7 @@ async fn test_session_text_no_duplicates_across_frames() {
     )
     .await;
 
-    run_etl(&sp, &md).await.unwrap();
+    run_etl(&md).await.unwrap();
 
     let row: (Option<String>,) =
         sqlx::query_as("SELECT session_text FROM app_sessions WHERE app_name = 'Code'")
@@ -158,12 +155,11 @@ async fn test_session_text_no_duplicates_across_frames() {
 /// Two ETL runs on the same open session — session_text must contain lines from both batches.
 #[tokio::test]
 async fn test_session_text_merged_across_etl_runs() {
-    let sp = common::make_screenpipe_db().await;
     let md = common::make_meridian_db().await;
 
     // Batch 1: frames 1–3 (set A content)
     common::insert_frames_with_text(
-        &sp,
+        &md,
         1,
         &[
             ("Code", "2026-01-01T10:00:00+00:00", "set_a_line_one"),
@@ -173,11 +169,11 @@ async fn test_session_text_merged_across_etl_runs() {
     )
     .await;
 
-    run_etl(&sp, &md).await.unwrap(); // active_session built from set A
+    run_etl(&md).await.unwrap(); // active_session built from set A
 
     // Batch 2: frames 4–6 (set B content, no overlap with set A)
     common::insert_frames_with_text(
-        &sp,
+        &md,
         4,
         &[
             ("Code", "2026-01-01T10:01:00+00:00", "set_b_line_one"),
@@ -187,7 +183,7 @@ async fn test_session_text_merged_across_etl_runs() {
     )
     .await;
 
-    run_etl(&sp, &md).await.unwrap(); // merge into active_session
+    run_etl(&md).await.unwrap(); // merge into active_session
 
     let row: (Option<String>,) =
         sqlx::query_as("SELECT session_text FROM active_session WHERE id = 1")
@@ -230,7 +226,6 @@ async fn test_session_text_merged_across_etl_runs() {
 /// Frames with empty full_text produce no session_text content.
 #[tokio::test]
 async fn test_session_text_empty_when_no_full_text() {
-    let sp = common::make_screenpipe_db().await;
     let md = common::make_meridian_db().await;
 
     // Insert 3 frames with blank full_text via raw SQL (insert_frames_with_text inserts
@@ -238,26 +233,26 @@ async fn test_session_text_empty_when_no_full_text() {
     for i in 0i64..3 {
         let ts = format!("2026-01-01T10:00:0{}+00:00", i);
         sqlx::query(
-            "INSERT INTO frames (id, app_name, window_name, timestamp, full_text, text_source)
+            "INSERT INTO capture_frames (id, app_name, window_name, timestamp, full_text, text_source)
              VALUES (?, 'Code', NULL, ?, '', 'accessibility')",
         )
         .bind(i + 1)
         .bind(&ts)
-        .execute(&sp)
+        .execute(&md)
         .await
         .unwrap();
     }
 
     // App switch to force close
     sqlx::query(
-        "INSERT INTO frames (id, app_name, window_name, timestamp, full_text, text_source)
+        "INSERT INTO capture_frames (id, app_name, window_name, timestamp, full_text, text_source)
          VALUES (4, 'Slack', NULL, '2026-01-01T10:00:04+00:00', 'notifications', 'accessibility')",
     )
-    .execute(&sp)
+    .execute(&md)
     .await
     .unwrap();
 
-    run_etl(&sp, &md).await.unwrap();
+    run_etl(&md).await.unwrap();
 
     let row: (Option<String>,) =
         sqlx::query_as("SELECT session_text FROM app_sessions WHERE app_name = 'Code'")
@@ -281,11 +276,10 @@ async fn test_session_text_empty_when_no_full_text() {
 /// Two frames >30s apart with distinct content must produce exactly two markers.
 #[tokio::test]
 async fn test_session_text_marker_emitted_for_large_time_gap() {
-    let sp = common::make_screenpipe_db().await;
     let md = common::make_meridian_db().await;
 
     common::insert_frames_with_text(
-        &sp,
+        &md,
         1,
         &[
             // 60s apart — above the 30s threshold
@@ -297,7 +291,7 @@ async fn test_session_text_marker_emitted_for_large_time_gap() {
     )
     .await;
 
-    run_etl(&sp, &md).await.unwrap();
+    run_etl(&md).await.unwrap();
 
     let row: (Option<String>,) =
         sqlx::query_as("SELECT session_text FROM app_sessions WHERE app_name = 'Code'")
@@ -320,11 +314,10 @@ async fn test_session_text_marker_emitted_for_large_time_gap() {
 /// Two frames <30s apart with distinct content must produce exactly one marker.
 #[tokio::test]
 async fn test_session_text_marker_suppressed_for_small_gap() {
-    let sp = common::make_screenpipe_db().await;
     let md = common::make_meridian_db().await;
 
     common::insert_frames_with_text(
-        &sp,
+        &md,
         1,
         &[
             // 20s apart — below the 30s threshold
@@ -336,7 +329,7 @@ async fn test_session_text_marker_suppressed_for_small_gap() {
     )
     .await;
 
-    run_etl(&sp, &md).await.unwrap();
+    run_etl(&md).await.unwrap();
 
     let row: (Option<String>,) =
         sqlx::query_as("SELECT session_text FROM app_sessions WHERE app_name = 'Code'")

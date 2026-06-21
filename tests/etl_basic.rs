@@ -16,10 +16,9 @@ use meridian::etl::run_etl;
 /// An empty screenpipe DB must leave the cursor at 0 and create no sessions.
 #[tokio::test]
 async fn test_empty_screenpipe() {
-    let sp = common::make_screenpipe_db().await;
     let md = common::make_meridian_db().await;
 
-    run_etl(&sp, &md).await.unwrap();
+    run_etl(&md).await.unwrap();
 
     let cursor = get_cursor(&md).await.unwrap();
     assert_eq!(cursor.last_frame_id, 0);
@@ -39,11 +38,10 @@ async fn test_empty_screenpipe() {
 /// is written with the correct frame count.
 #[tokio::test]
 async fn test_single_app_no_switch() {
-    let sp = common::make_screenpipe_db().await;
     let md = common::make_meridian_db().await;
 
     common::insert_frames(
-        &sp,
+        &md,
         &[
             ("Terminal", "2026-01-01T10:00:00+00:00"),
             ("Terminal", "2026-01-01T10:00:10+00:00"),
@@ -54,7 +52,7 @@ async fn test_single_app_no_switch() {
     )
     .await;
 
-    run_etl(&sp, &md).await.unwrap();
+    run_etl(&md).await.unwrap();
 
     let closed: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM app_sessions")
         .fetch_one(&md)
@@ -75,11 +73,10 @@ async fn test_single_app_no_switch() {
 /// The new app stays open in active_session.
 #[tokio::test]
 async fn test_app_switch_creates_session() {
-    let sp = common::make_screenpipe_db().await;
     let md = common::make_meridian_db().await;
 
     common::insert_frames(
-        &sp,
+        &md,
         &[
             ("Terminal", "2026-01-01T10:00:00+00:00"),
             ("Terminal", "2026-01-01T10:00:10+00:00"),
@@ -91,7 +88,7 @@ async fn test_app_switch_creates_session() {
     )
     .await;
 
-    run_etl(&sp, &md).await.unwrap();
+    run_etl(&md).await.unwrap();
 
     let closed: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM app_sessions")
         .fetch_one(&md)
@@ -119,11 +116,10 @@ async fn test_app_switch_creates_session() {
 /// After a run the cursor must advance to the id of the last processed frame.
 #[tokio::test]
 async fn test_cursor_advances_to_last_frame() {
-    let sp = common::make_screenpipe_db().await;
     let md = common::make_meridian_db().await;
 
     common::insert_frames(
-        &sp,
+        &md,
         &[
             ("Terminal", "2026-01-01T10:00:00+00:00"),
             ("Chrome", "2026-01-01T10:00:10+00:00"),
@@ -131,7 +127,7 @@ async fn test_cursor_advances_to_last_frame() {
     )
     .await;
 
-    run_etl(&sp, &md).await.unwrap();
+    run_etl(&md).await.unwrap();
 
     let cursor = get_cursor(&md).await.unwrap();
     assert_eq!(cursor.last_frame_id, 2);

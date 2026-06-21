@@ -35,8 +35,9 @@ pub struct BlockContext {
 // ---------------------------------------------------------------------------
 
 /// Fetches all enrichment data for a single contiguous block of frames in
-/// parallel.  All three screenpipe query functions are called concurrently via
-/// `tokio::join!`.
+/// parallel.  The query functions are called concurrently via `tokio::join!`.
+/// Reads come from meridian's capture_* tables since the slice-4b cutover (see
+/// the cutover note in [`crate::db::screenpipe`]).
 #[tracing::instrument(
     skip_all,
     fields(
@@ -51,7 +52,7 @@ pub struct BlockContext {
     )
 )]
 pub async fn extract_block_context(
-    screenpipe: &SqlitePool,
+    meridian: &SqlitePool,
     app_name: &str,
     started_at: &str,
     ended_at: &str,
@@ -60,10 +61,10 @@ pub async fn extract_block_context(
     frame_count: i64,
 ) -> Result<BlockContext> {
     let (window_titles_res, audio_res, signals_res, frames_res) = tokio::join!(
-        get_window_titles(screenpipe, min_frame_id, max_frame_id, app_name),
-        get_audio_snippets(screenpipe, started_at, ended_at),
-        get_signals(screenpipe, started_at, ended_at),
-        get_frame_full_texts(screenpipe, min_frame_id, max_frame_id),
+        get_window_titles(meridian, min_frame_id, max_frame_id, app_name),
+        get_audio_snippets(meridian, started_at, ended_at),
+        get_signals(meridian, started_at, ended_at),
+        get_frame_full_texts(meridian, min_frame_id, max_frame_id),
     );
 
     let session_text = build_session_text(&frames_res?);

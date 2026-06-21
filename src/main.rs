@@ -582,7 +582,7 @@ async fn main() -> Result<()> {
         *etl_tick_span.lock().unwrap() = Some(startup_tick.clone());
         let _guard = startup_tick.enter();
         tracing::info!("running initial ETL pass");
-        if let Err(e) = run_etl(&screenpipe, &meridian).await {
+        if let Err(e) = run_etl(&meridian).await {
             tracing::error!(error = %e, "ETL run failed");
             let _ = meridian::notices::raise(
                 &meridian,
@@ -866,7 +866,7 @@ async fn main() -> Result<()> {
                 *etl_tick_span.lock().unwrap() = Some(poll_tick.clone());
                 let _guard = poll_tick.enter();
                 tracing::debug!("starting ETL tick");
-                if let Err(e) = run_etl(&screenpipe, &meridian).await {
+                if let Err(e) = run_etl(&meridian).await {
                     tracing::error!(error = %e, "ETL run failed");
                     let _ = meridian::notices::raise(
                         &meridian, "etl.failed", "error",
