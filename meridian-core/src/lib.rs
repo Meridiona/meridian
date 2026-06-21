@@ -40,7 +40,9 @@ pub mod capture;
 // ── Curated public API: flat module paths, stable across file moves ──────────
 pub use db::{get_active_session, open_existing, ActiveSession};
 
-pub use capture::{insert_capture_frame, CaptureFrameInsert};
+pub use capture::{
+    insert_capture_frame, insert_capture_ui_event, CaptureFrameInsert, CaptureUiEventInsert,
+};
 
 pub use util::{date, hygiene, intervals};
 

@@ -89,8 +89,51 @@ pub async fn insert_capture_frame(pool: &SqlitePool, frame: &CaptureFrameInsert)
     }
 }
 
+/// One input event to persist into `capture_ui_events`. Maps onto the
+/// read-subset of screenpipe's `ui_events`: `get_signals` (clipboard/app_switch)
+/// and `get_last_ui_event_for_app` (click/key/text timestamps). `text_content`
+/// is set only for `"clipboard"` — every other type carries no typed text.
+#[derive(Debug, Clone)]
+pub struct CaptureUiEventInsert {
+    /// Event instant. Stored as RFC3339 UTC, microsecond precision.
+    pub timestamp: DateTime<Utc>,
+    /// `"click"` | `"key"` | `"text"` | `"app_switch"` | `"window_focus"` | `"clipboard"`.
+    pub event_type: String,
+    /// App the event belongs to (for `app_switch`, the activated app).
+    pub app_name: Option<String>,
+    /// Clipboard text preview (truncated/filtered upstream); NULL otherwise.
+    pub text_content: Option<String>,
+}
+
+/// Insert one input event into `capture_ui_events`. Same graceful missing-table
+/// behaviour as [`insert_capture_frame`] (a schema lag never crashes the tray).
+pub async fn insert_capture_ui_event(pool: &SqlitePool, ev: &CaptureUiEventInsert) -> Result<()> {
+    let ts = ev.timestamp.to_rfc3339_opts(SecondsFormat::Micros, true);
+    let res = sqlx::query(
+        "INSERT INTO capture_ui_events (timestamp, event_type, app_name, text_content)
+         VALUES (?1, ?2, ?3, ?4)",
+    )
+    .bind(&ts)
+    .bind(&ev.event_type)
+    .bind(&ev.app_name)
+    .bind(&ev.text_content)
+    .execute(pool)
+    .await;
+
+    match res {
+        Ok(_) => Ok(()),
+        Err(e) if is_missing_table(&e) => {
+            tracing::debug!(
+                "capture_ui_events absent (daemon not yet migrated to 047) — event dropped"
+            );
+            Ok(())
+        }
+        Err(e) => Err(e).context("insert capture_ui_event"),
+    }
+}
+
 /// True when the error is SQLite's "no such table" — the schema-lag case
-/// [`insert_capture_frame`] swallows.
+/// [`insert_capture_frame`] / [`insert_capture_ui_event`] swallow.
 fn is_missing_table(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.message().contains("no such table"))
 }
@@ -211,5 +254,184 @@ mod tests {
         insert_capture_frame(&pool, &frame("ocr", "x"))
             .await
             .expect("missing table must return Ok, not Err");
+    }
+
+    // ── capture_ui_events ───────────────────────────────────────────────────
+
+    /// In-memory pool with the migration-047 DDL applied inline.
+    async fn mem_pool_ui() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE capture_ui_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                app_name TEXT,
+                text_content TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    fn ui_event(
+        ts: &str,
+        event_type: &str,
+        app: Option<&str>,
+        text: Option<&str>,
+    ) -> CaptureUiEventInsert {
+        CaptureUiEventInsert {
+            timestamp: DateTime::parse_from_rfc3339(ts)
+                .unwrap()
+                .with_timezone(&Utc),
+            event_type: event_type.into(),
+            app_name: app.map(Into::into),
+            text_content: text.map(Into::into),
+        }
+    }
+
+    /// Clipboard → text_content; app_switch → app_name. Verified by running the
+    /// DAEMON's actual `get_signals` query body against `capture_ui_events` (the
+    /// 4b repoint target), so this proves the write satisfies the read.
+    #[tokio::test]
+    async fn get_signals_query_resolves_clipboard_and_app_switch() {
+        let pool = mem_pool_ui().await;
+        // clipboard carries the copied text; app_switch carries the activated app.
+        insert_capture_ui_event(
+            &pool,
+            &ui_event(
+                "2026-06-21T10:00:00.000000Z",
+                "clipboard",
+                Some("Code"),
+                Some("copied snippet"),
+            ),
+        )
+        .await
+        .unwrap();
+        insert_capture_ui_event(
+            &pool,
+            &ui_event(
+                "2026-06-21T10:00:01.000000Z",
+                "app_switch",
+                Some("Slack"),
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+        // click is NOT a signal — must be excluded by the event_type filter.
+        insert_capture_ui_event(
+            &pool,
+            &ui_event("2026-06-21T10:00:02.000000Z", "click", Some("Code"), None),
+        )
+        .await
+        .unwrap();
+
+        // Verbatim get_signals body (src/db/screenpipe.rs) with FROM repointed.
+        let rows: Vec<(String, Option<String>, Option<String>, String)> = sqlx::query_as(
+            "SELECT event_type, text_content, app_name, MIN(timestamp) AS timestamp
+             FROM capture_ui_events
+             WHERE timestamp BETWEEN ? AND ?
+               AND event_type IN ('clipboard', 'app_switch')
+               AND (text_content IS NOT NULL OR app_name IS NOT NULL)
+             GROUP BY event_type, COALESCE(text_content, app_name)
+             ORDER BY timestamp",
+        )
+        .bind("2026-06-21T00:00:00.000000Z")
+        .bind("2026-06-21T23:59:59.000000Z")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            rows.len(),
+            2,
+            "click must be filtered out; clipboard + app_switch remain"
+        );
+        // value = text_content for clipboard, app_name for app_switch (the reader's mapping).
+        assert_eq!(rows[0].0, "clipboard");
+        assert_eq!(rows[0].1.as_deref(), Some("copied snippet"));
+        assert_eq!(rows[1].0, "app_switch");
+        assert_eq!(rows[1].2.as_deref(), Some("Slack"));
+    }
+
+    /// `get_last_ui_event_for_app` returns the latest click/key/text timestamp
+    /// for an app — proving the timestamp-only rows (no typed text) suffice.
+    #[tokio::test]
+    async fn get_last_ui_event_query_returns_latest_interaction() {
+        let pool = mem_pool_ui().await;
+        insert_capture_ui_event(
+            &pool,
+            &ui_event("2026-06-21T10:00:00.000000Z", "text", Some("Code"), None),
+        )
+        .await
+        .unwrap();
+        insert_capture_ui_event(
+            &pool,
+            &ui_event("2026-06-21T10:05:00.000000Z", "click", Some("Code"), None),
+        )
+        .await
+        .unwrap();
+        // A different app + a clipboard (not in the click/key/text set) must be ignored.
+        insert_capture_ui_event(
+            &pool,
+            &ui_event("2026-06-21T10:09:00.000000Z", "click", Some("Slack"), None),
+        )
+        .await
+        .unwrap();
+        insert_capture_ui_event(
+            &pool,
+            &ui_event(
+                "2026-06-21T10:08:00.000000Z",
+                "clipboard",
+                Some("Code"),
+                Some("x"),
+            ),
+        )
+        .await
+        .unwrap();
+
+        // Verbatim get_last_ui_event_for_app body with FROM repointed.
+        let last: Option<(Option<String>,)> = sqlx::query_as(
+            "SELECT MAX(timestamp) FROM capture_ui_events
+             WHERE app_name = ?1
+               AND event_type IN ('click', 'key', 'text')
+               AND timestamp > ?2
+               AND timestamp < ?3",
+        )
+        .bind("Code")
+        .bind("2026-06-21T09:00:00.000000Z")
+        .bind("2026-06-21T11:00:00.000000Z")
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        let last = last.and_then(|(t,)| t);
+        assert_eq!(
+            last.as_deref(),
+            Some("2026-06-21T10:05:00.000000Z"),
+            "latest click/text for Code"
+        );
+    }
+
+    /// Missing table is swallowed for ui events too.
+    #[tokio::test]
+    async fn ui_event_missing_table_is_swallowed() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        insert_capture_ui_event(
+            &pool,
+            &ui_event("2026-06-21T10:00:00.000000Z", "click", Some("Code"), None),
+        )
+        .await
+        .expect("missing table must return Ok, not Err");
     }
 }
