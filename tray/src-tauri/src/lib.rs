@@ -45,6 +45,20 @@ pub fn run() {
         tauri::async_runtime::block_on(async { meridian::observability::init("meridian-tray") })
             .ok();
 
+    // Capture builds without otel have no subscriber, so the `capture: …` logs
+    // would be invisible. Install a console fmt subscriber (RUST_LOG-filtered,
+    // default info) so a `cargo run --features capture` runtime check is
+    // observable. Skipped under otel (which installs its own subscriber).
+    #[cfg(all(feature = "capture", not(feature = "otel")))]
+    {
+        use tracing_subscriber::{fmt, EnvFilter};
+        let _ = fmt()
+            .with_env_filter(
+                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            )
+            .try_init();
+    }
+
     let app_state = Arc::new(Mutex::new(AppState::default()));
     let mlx_manager: mlx_server::SharedMlxManager =
         Arc::new(tokio::sync::Mutex::new(mlx_server::MlxManager::new(7823)));

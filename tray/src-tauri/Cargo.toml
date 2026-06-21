@@ -43,6 +43,9 @@ meridian = { path = "../..", optional = true }
 # feature (heavy: ScreenCaptureKit/cidre/sck-rs). Private repo: local builds use
 # the user's git credentials; CI needs a deploy token (future).
 screenpipe-screen = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e", optional = true }
+# Console log subscriber for capture-enabled non-otel runs (otel installs its
+# own). Makes the `capture: …` logs visible during a `cargo run --features capture`.
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
 [features]
 otel = ["dep:meridian"]
@@ -50,4 +53,4 @@ otel = ["dep:meridian"]
 # forked screenpipe-screen stack (ScreenCaptureKit/cidre) only when building the
 # capture-enabled app. Slice 1 ships the engine-agnostic boundary; slice 2 adds
 # the screenpipe-screen engine.
-capture = ["dep:screenpipe-screen"]
+capture = ["dep:screenpipe-screen", "dep:tracing-subscriber"]

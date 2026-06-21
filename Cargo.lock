@@ -4464,6 +4464,7 @@ dependencies = [
  "tauri-plugin-positioner",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
