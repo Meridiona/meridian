@@ -15,6 +15,8 @@
 //! - [`format`]      — duration formatting for the popover.
 
 mod backend_install;
+#[cfg(feature = "capture")]
+mod capture;
 mod commands;
 pub(crate) mod format;
 mod install;
@@ -143,6 +145,37 @@ pub fn run() {
                 let backend_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     backend_install::ensure_backend_installed(&backend_handle).await;
+                });
+            }
+
+            // In-process capture (Gap-2 Bucket 2, behind the `capture` feature).
+            // Spawns the screenpipe-screen engine + a frame consumer on isolated
+            // tasks — a capture panic ends only that task, never the tray (we
+            // gave up the screenpipe daemon's process isolation, so this matters).
+            // Slice 2: the consumer logs frames; slice 4 writes them to meridian.db.
+            #[cfg(feature = "capture")]
+            {
+                use capture::{screenpipe::ScreenpipeEngine, CaptureEngine};
+                let (tx, mut rx) = tokio::sync::mpsc::channel::<capture::CapturedFrame>(64);
+                tauri::async_runtime::spawn(async move {
+                    while let Some(frame) = rx.recv().await {
+                        // Slice 2: log the full frame. Slice 4 replaces this
+                        // consumer with the meridian.db capture-table writer.
+                        tracing::info!(
+                            ts = %frame.timestamp,
+                            app = ?frame.app_name,
+                            window = ?frame.window_name,
+                            url = ?frame.browser_url,
+                            chars = frame.text.len(),
+                            source = frame.text_source.as_str(),
+                            "capture: frame received"
+                        );
+                    }
+                });
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = ScreenpipeEngine.run(tx).await {
+                        tracing::error!(error = %e, "capture: engine exited with error");
+                    }
                 });
             }
 

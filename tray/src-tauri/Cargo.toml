@@ -29,6 +29,7 @@ futures-util = "0.3"
 # SHA-256 verification of the downloaded runtime tarball against the manifest.
 sha2 = "0.10"
 chrono = { version = "0.4", features = ["clock"] }
+anyhow = "1"
 # Lean shared data layer (DB row types + read queries) — NOT the full daemon.
 meridian-core = { path = "../../meridian-core" }
 # Instrumentation facade for tray commands (no-op without a subscriber).
@@ -37,6 +38,16 @@ tracing = "0.1"
 # OpenObserve OTLP export (observability::init) — zero duplication. OFF by
 # default so release builds stay lean (no OTel in the shipped tray).
 meridian = { path = "../..", optional = true }
+# Forked screenpipe @ last-MIT 892199f74 (Meridiona/screenpipe-fork). In-process
+# screen capture + Apple Vision OCR. Optional → only pulled by the `capture`
+# feature (heavy: ScreenCaptureKit/cidre/sck-rs). Private repo: local builds use
+# the user's git credentials; CI needs a deploy token (future).
+screenpipe-screen = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e", optional = true }
 
 [features]
 otel = ["dep:meridian"]
+# In-process screen capture (Gap-2 Bucket 2). OFF by default — pulls the heavy
+# forked screenpipe-screen stack (ScreenCaptureKit/cidre) only when building the
+# capture-enabled app. Slice 1 ships the engine-agnostic boundary; slice 2 adds
+# the screenpipe-screen engine.
+capture = ["dep:screenpipe-screen"]
