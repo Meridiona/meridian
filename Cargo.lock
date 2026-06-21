@@ -4449,10 +4449,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "cidre 0.13.1",
  "futures-util",
  "meridian",
  "meridian-core",
  "reqwest 0.12.28",
+ "screenpipe-a11y",
  "screenpipe-screen",
  "serde",
  "serde_json",

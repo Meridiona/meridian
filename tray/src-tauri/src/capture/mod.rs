@@ -37,7 +37,8 @@ pub enum TextSource {
     /// Apple Vision OCR of the screen image.
     Ocr,
     /// Accessibility-tree text (primary signal for Electron/Chromium apps).
-    #[allow(dead_code)] // constructed in slice 3 (a11y-tree capture)
+    /// Constructed by the a11y-tree walker (slice 3b) — preferred over OCR
+    /// whenever the focused window exposes a usable tree.
     Accessibility,
 }
 
@@ -63,7 +64,8 @@ pub struct CapturedFrame {
     pub window_name: Option<String>,
     /// Active browser URL when the foreground app is a browser, if detected.
     pub browser_url: Option<String>,
-    /// Extracted on-screen text (OCR today; a11y-tree text in a later slice).
+    /// Extracted text — a11y-tree text when the focused window exposes one,
+    /// else Apple Vision OCR. See [`text_source`](Self::text_source).
     pub text: String,
     /// Provenance of `text`.
     pub text_source: TextSource,

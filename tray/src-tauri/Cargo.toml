@@ -43,6 +43,17 @@ meridian = { path = "../..", optional = true }
 # feature (heavy: ScreenCaptureKit/cidre/sck-rs). Private repo: local builds use
 # the user's git credentials; CI needs a deploy token (future).
 screenpipe-screen = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e", optional = true }
+# Sibling crate in the same fork: the accessibility-tree walker (slice 3b).
+# `tree::create_tree_walker` walks the focused window's AX tree → structured
+# text — the PRIMARY signal for Electron/Chromium apps (VS Code, Slack), which
+# expose nothing to OCR-free a11y until the walker sets AXManualAccessibility
+# itself. Optional → only the `capture` feature pulls it.
+screenpipe-a11y = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e", optional = true }
+# CoreFoundation/Apple-frameworks bindings. Used ONLY for the in-process
+# Accessibility-trust prompt (`ax::is_process_trusted_with_prompt`) — the AX
+# analogue of `CGRequestScreenCaptureAccess`. Pinned to the same 0.13 line
+# screenpipe-a11y uses so Cargo unifies to one cidre build. Optional → capture only.
+cidre = { version = "0.13", features = ["ax"], optional = true }
 # Console log subscriber for capture-enabled non-otel runs (otel installs its
 # own). Makes the `capture: …` logs visible during a `cargo run --features capture`.
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
@@ -53,4 +64,9 @@ otel = ["dep:meridian"]
 # forked screenpipe-screen stack (ScreenCaptureKit/cidre) only when building the
 # capture-enabled app. Slice 1 ships the engine-agnostic boundary; slice 2 adds
 # the screenpipe-screen engine.
-capture = ["dep:screenpipe-screen", "dep:tracing-subscriber"]
+capture = [
+    "dep:screenpipe-screen",
+    "dep:screenpipe-a11y",
+    "dep:cidre",
+    "dep:tracing-subscriber",
+]
