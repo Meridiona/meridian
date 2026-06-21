@@ -88,7 +88,14 @@ pub async fn setup_db(uri: &str) -> anyhow::Result<SqlitePool> {
         .with_context(|| format!("invalid SQLite URI: {uri}"))?
         .create_if_missing(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+        // Since the Bucket-2 cutover the tray writes capture_frames/
+        // capture_ui_events into THIS db concurrently with the daemon's ETL
+        // writes (app_sessions, cursor). Without a busy_timeout the daemon would
+        // get an immediate SQLITE_BUSY (default timeout 0) whenever the tray
+        // holds the WAL write lock, failing the ETL run. Wait instead — matches
+        // the tray's open_existing (5s).
+        .busy_timeout(std::time::Duration::from_secs(5));
 
     let pool = SqlitePool::connect_with(opts)
         .await
