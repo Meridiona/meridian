@@ -92,6 +92,10 @@ pub fn run() {
             let db_pool = tauri::async_runtime::block_on(meridian_core::open_existing(&db_path))
                 .map_err(|e| eprintln!("tray: meridian.db not opened ({db_path}): {e}"))
                 .ok();
+            // Capture (slice 4a) writes to the SAME read-write pool the commands
+            // use — clone the handle before it's moved into managed state.
+            #[cfg(feature = "capture")]
+            let capture_pool = db_pool.clone();
             app.manage(db_pool);
 
             // Single source of truth for the tray menu lives in `tray.rs`, so the
@@ -171,11 +175,14 @@ pub fn run() {
             {
                 use capture::{screenpipe::ScreenpipeEngine, CaptureEngine};
                 let (tx, mut rx) = tokio::sync::mpsc::channel::<capture::CapturedFrame>(64);
+                // Persist each frame into meridian.db's capture_frames (slice 4a).
+                // Low-rate writer (~1 row / 2 s) sharing the commands' RW pool;
+                // the 5 s busy_timeout serializes it against the daemon's writes.
+                // No-op when the pool is absent or the table isn't migrated yet.
+                let consumer_pool = capture_pool;
                 tauri::async_runtime::spawn(async move {
                     while let Some(frame) = rx.recv().await {
-                        // Slice 2: log the full frame. Slice 4 replaces this
-                        // consumer with the meridian.db capture-table writer.
-                        tracing::info!(
+                        tracing::debug!(
                             ts = %frame.timestamp,
                             app = ?frame.app_name,
                             window = ?frame.window_name,
@@ -184,6 +191,20 @@ pub fn run() {
                             source = frame.text_source.as_str(),
                             "capture: frame received"
                         );
+                        let Some(pool) = consumer_pool.as_ref() else {
+                            continue;
+                        };
+                        let row = meridian_core::CaptureFrameInsert {
+                            timestamp: frame.timestamp,
+                            app_name: frame.app_name,
+                            window_name: frame.window_name,
+                            browser_url: frame.browser_url,
+                            text: frame.text,
+                            text_source: frame.text_source.as_str().to_string(),
+                        };
+                        if let Err(e) = meridian_core::insert_capture_frame(pool, &row).await {
+                            tracing::warn!(error = %e, "capture: failed to persist frame");
+                        }
                     }
                 });
                 tauri::async_runtime::spawn(async move {

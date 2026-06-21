@@ -33,8 +33,14 @@ pub mod settings;
 /// Notification delivery policy + native pending queue (ported from lib/notifications.ts).
 pub mod notifications;
 
+/// In-process capture-frame writer (Gap-2 Bucket 2). Inverted ownership: the
+/// tray writes `capture_frames`, the daemon's ETL reads it.
+pub mod capture;
+
 // ── Curated public API: flat module paths, stable across file moves ──────────
 pub use db::{get_active_session, open_existing, ActiveSession};
+
+pub use capture::{insert_capture_frame, CaptureFrameInsert};
 
 pub use util::{date, hygiene, intervals};
 
