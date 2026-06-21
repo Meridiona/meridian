@@ -167,10 +167,11 @@ pub fn run() {
             }
 
             // In-process capture (Gap-2 Bucket 2, behind the `capture` feature).
-            // Spawns the screenpipe-screen engine + a frame consumer on isolated
-            // tasks — a capture panic ends only that task, never the tray (we
-            // gave up the screenpipe daemon's process isolation, so this matters).
-            // Slice 2: the consumer logs frames; slice 4 writes them to meridian.db.
+            // Spawns the screenpipe-screen frame engine + the input recorder, each
+            // with its own consumer, on isolated tasks — a capture panic ends only
+            // that task, never the tray (we gave up the screenpipe daemon's process
+            // isolation, so this matters). Frames → capture_frames (slice 4a),
+            // input events → capture_ui_events (slice 3c).
             #[cfg(feature = "capture")]
             {
                 use capture::{screenpipe::ScreenpipeEngine, CaptureEngine};
@@ -179,7 +180,7 @@ pub fn run() {
                 // Low-rate writer (~1 row / 2 s) sharing the commands' RW pool;
                 // the 5 s busy_timeout serializes it against the daemon's writes.
                 // No-op when the pool is absent or the table isn't migrated yet.
-                let consumer_pool = capture_pool;
+                let consumer_pool = capture_pool.clone();
                 tauri::async_runtime::spawn(async move {
                     while let Some(frame) = rx.recv().await {
                         tracing::debug!(
@@ -212,6 +213,25 @@ pub fn run() {
                         tracing::error!(error = %e, "capture: engine exited with error");
                     }
                 });
+
+                // Input recorder (slice 3c): ui events → capture_ui_events. The
+                // recorder is blocking (its own CGEventTap thread + a crossbeam
+                // Receiver we poll), so it runs on a dedicated OS thread and
+                // forwards mapped rows over a tokio channel to this async writer.
+                let (ui_tx, mut ui_rx) =
+                    tokio::sync::mpsc::channel::<meridian_core::CaptureUiEventInsert>(256);
+                let ui_pool = capture_pool;
+                tauri::async_runtime::spawn(async move {
+                    while let Some(ev) = ui_rx.recv().await {
+                        let Some(pool) = ui_pool.as_ref() else {
+                            continue;
+                        };
+                        if let Err(e) = meridian_core::insert_capture_ui_event(pool, &ev).await {
+                            tracing::warn!(error = %e, "capture: failed to persist ui event");
+                        }
+                    }
+                });
+                std::thread::spawn(move || capture::ui_events::run_ui_event_recorder(ui_tx));
             }
 
             // Auto-open the setup wizard on first launch (no ~/.meridian/onboarded).

@@ -27,6 +27,7 @@
 // crate root (`lib.rs`), so everything here is already in a capture-enabled
 // build — no per-item cfg needed.
 pub mod screenpipe;
+pub mod ui_events;
 
 use chrono::{DateTime, Utc};
 
