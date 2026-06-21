@@ -18,6 +18,7 @@
 use std::time::Duration;
 
 use chrono::Utc;
+use screenpipe_screen::capture_screenshot_by_window::{capture_all_visible_windows, WindowFilters};
 use tracing::{debug, info, warn};
 
 use super::{CaptureEngine, CapturedFrame, FrameTx, TextSource};
@@ -54,41 +55,44 @@ impl CaptureEngine for ScreenpipeEngine {
     }
 }
 
-/// One capture + OCR pass over the primary monitor. Best-effort: a failed tick
-/// is logged and retried, never fatal (capture must not crash the tray).
+/// One capture + OCR pass over the **focused window(s)** of the primary monitor.
+/// Per-window (not monitor-level) so each frame carries the app/window/url the
+/// classifier keys on — matching meridian's per-app ETL model. Best-effort: a
+/// failed tick is logged and retried, never fatal (capture must not crash the tray).
 async fn capture_once(tx: &FrameTx) -> anyhow::Result<()> {
     let monitors = screenpipe_screen::monitor::list_monitors().await;
     let Some(monitor) = monitors.into_iter().next() else {
         anyhow::bail!("no monitors enumerated (Screen Recording not granted yet?)");
     };
 
-    let (image, capture_dur) =
-        screenpipe_screen::utils::capture_monitor_image(&monitor, &[]).await?;
-    let (text, _json, confidence) = screenpipe_screen::perform_ocr_apple(&image, &[]);
-    debug!(
-        chars = text.len(),
-        confidence = ?confidence,
-        capture_ms = capture_dur.as_millis() as u64,
-        "capture: frame OCR'd"
-    );
+    // No app/title/url filters; focused window(s) only (`capture_unfocused = false`)
+    // — we capture what the user is actively on, not every background window.
+    let filters = WindowFilters::new(&[], &[], &[]);
+    let windows = capture_all_visible_windows(&monitor, &filters, false)
+        .await
+        .map_err(|e| anyhow::anyhow!("capture_all_visible_windows: {e}"))?;
 
-    if text.trim().is_empty() {
-        return Ok(()); // nothing legible on screen — skip the frame
-    }
-
-    let frame = CapturedFrame {
-        timestamp: Utc::now(),
-        app_name: None, // slice 3: window metadata
-        window_name: None,
-        browser_url: None,
-        text,
-        text_source: TextSource::Ocr,
-    };
-
-    // Non-blocking send: drop the frame under backpressure rather than stall the
-    // capture loop (frames are sampled, not transactional).
-    if let Err(e) = tx.try_send(frame) {
-        debug!(error = %e, "capture: frame dropped (consumer backpressure / gone)");
+    let now = Utc::now();
+    for win in windows {
+        let (text, _json, _confidence) = screenpipe_screen::perform_ocr_apple(&win.image, &[]);
+        if text.trim().is_empty() {
+            continue; // nothing legible in this window — skip it
+        }
+        debug!(app = %win.app_name, chars = text.len(), "capture: window OCR'd");
+        let frame = CapturedFrame {
+            timestamp: now,
+            app_name: Some(win.app_name),
+            window_name: Some(win.window_name),
+            browser_url: win.browser_url,
+            text,
+            text_source: TextSource::Ocr,
+        };
+        // Non-blocking send: under backpressure drop the frame and end this tick
+        // rather than stall the capture loop (frames are sampled, not transactional).
+        if let Err(e) = tx.try_send(frame) {
+            debug!(error = %e, "capture: frame dropped (consumer backpressure / gone)");
+            break;
+        }
     }
     Ok(())
 }
