@@ -59,8 +59,8 @@ fn permissions_unverified() -> Check {
     )
 }
 
-/// The `frames` table is readable and non-empty. An unreadable table means
-/// screenpipe schema drift (renamed/missing table), which breaks every ETL tick.
+/// The `capture_frames` table is readable and non-empty. An unreadable table
+/// means a schema/migration problem, which breaks every ETL tick.
 async fn frames_present(pool: &SqlitePool) -> Check {
     match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM capture_frames")
         .fetch_one(pool)
@@ -69,13 +69,13 @@ async fn frames_present(pool: &SqlitePool) -> Check {
         Ok(0) => Check::critical(
             "capture.frames",
             "L1",
-            "frames table is empty — screenpipe has captured nothing",
+            "capture_frames is empty — the tray has captured nothing yet",
         ),
         Ok(n) => Check::ok("capture.frames", "L1", format!("{n} frames total")),
         Err(e) => Check::critical(
             "capture.frames",
             "L1",
-            format!("frames table unreadable ({e}) — screenpipe schema drift?"),
+            format!("capture_frames unreadable ({e}) — schema/migration problem?"),
         ),
     }
 }
@@ -146,7 +146,7 @@ async fn blank_text_rate(pool: &SqlitePool) -> Check {
                     format!("{detail} — Screen Recording permission likely revoked"),
                 )
                 .with_remedy(
-                    "re-grant Screen Recording to screenpipe in System Settings, then restart it",
+                    "re-grant Screen Recording to Meridian in System Settings, then restart it",
                 )
             } else if pct >= 50.0 {
                 Check::warn(
@@ -259,7 +259,7 @@ async fn accessibility_checks(pool: &SqlitePool) -> Vec<Check> {
             "L1",
             format!("weak a11y across all apps (best {best_app} {best_pct:.0}%) — Accessibility may be off"),
         )
-        .with_remedy("grant Accessibility to screenpipe in System Settings, then restart it")
+        .with_remedy("grant Accessibility to Meridian in System Settings, then restart it")
     } else {
         Check::critical(
             "capture.a11y_permission",
@@ -267,7 +267,7 @@ async fn accessibility_checks(pool: &SqlitePool) -> Vec<Check> {
             "no app is yielding any a11y — Accessibility permission likely off",
         )
         .with_remedy(
-            "System Settings ▸ Privacy & Security ▸ Accessibility ▸ enable screenpipe, then restart it",
+            "System Settings ▸ Privacy & Security ▸ Accessibility ▸ enable Meridian, then restart it",
         )
     };
 
