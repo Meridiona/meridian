@@ -96,3 +96,27 @@ jobs:
             exit 1
           fi
           echo "OK — no existing migrations were modified, renamed, or deleted."
+
+  # screenpipe relicensed MIT → Commercial on 2026-06-10. 0.4.6 (2026-06-05) is
+  # the last MIT npm release; >= 0.4.17 is Commercial (its "competing product"
+  # clause would then bind our users). Meridian ships zero screenpipe code, so
+  # staying on MIT 0.4.6 keeps the install license-clean. Enforce the pin
+  # server-side so it can't silently drift across the relicense boundary.
+  screenpipe-license-pin:
+    name: screenpipe MIT pin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert SCREENPIPE_VERSION stays on the last MIT release (0.4.6)
+        run: |
+          expected="0.4.6"
+          fail=0
+          for f in install.sh scripts/install-from-bundle.sh; do
+            v=$(grep -E '^SCREENPIPE_VERSION=' "$f" | head -1 | cut -d'"' -f2)
+            if [ "$v" != "$expected" ]; then
+              echo "::error file=$f::SCREENPIPE_VERSION='$v' but must be '$expected' — the last MIT npm release. screenpipe >= 0.4.17 is Commercial-licensed; bumping the pin ships users a commercial dependency. Changing this requires legal review (and editing this guard). See the LICENSE PIN comment at the pin."
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] && echo "OK — screenpipe pinned to the last MIT release ($expected)."

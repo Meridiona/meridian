@@ -16,6 +16,14 @@ USE_MLX=1   # MLX inference server is the only backend (powers classify + PM-wor
 MLX_PORT=7823
 # Pinned screenpipe version — the launchd plist expects this exact build
 # (`screenpipe record`). Installed via npm only when screenpipe is absent.
+#
+# ⚠️ LICENSE PIN — DO NOT BUMP past 0.4.6 without legal review.
+# screenpipe relicensed MIT → Commercial on 2026-06-10. 0.4.6 (published
+# 2026-06-05) is the LAST MIT npm release; >= 0.4.17 (2026-06-11+) is under the
+# Commercial license, whose "competing product" clause would then bind our users.
+# Meridian ships zero screenpipe code, so staying on MIT 0.4.6 keeps the whole
+# install license-clean. Bumping this is a deliberate legal decision, not a chore.
+# CI enforces this pin — see .github/workflows/ci.yml `screenpipe-license-pin`.
 SCREENPIPE_VERSION="0.4.6"
 
 # ---------------------------------------------------------------------------
