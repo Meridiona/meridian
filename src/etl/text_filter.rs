@@ -32,6 +32,16 @@ fn ascii_icontains(haystack: &str, needle: &str) -> bool {
     })
 }
 
+/// Case-insensitive prefix check — no allocation.
+#[inline]
+fn ascii_istarts_with(line: &str, prefix: &str) -> bool {
+    line.len() >= prefix.len()
+        && line.as_bytes()[..prefix.len()]
+            .iter()
+            .zip(prefix.as_bytes())
+            .all(|(h, n)| h.eq_ignore_ascii_case(n))
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 /// Lines appearing in this many or more distinct frames are persistent UI chrome
@@ -116,11 +126,125 @@ pub fn is_landmark(line: &str) -> bool {
         return true;
     }
 
+    // Ticket keys: Jira/Linear style — 2+ uppercase letters, dash, 1+ digits (e.g. KAN-141).
+    // Critical: the classifier's core job is task-linking; losing a visible ticket key
+    // from session_text is the worst possible false-negative.
+    if contains_ticket_key(line) {
+        return true;
+    }
+
+    // Code filenames: a word containing a dot followed by a known source extension.
+    // Short filenames like `main.rs` or `app.py` are under MIN_LINE_LEN but carry
+    // high signal about what file the developer was editing.
+    if contains_code_filename(line) {
+        return true;
+    }
+
     // Commit hash: 7–40 hex chars with ≥1 letter a–f (excludes pure-digit dates)
     if contains_commit_hash(line) {
         return true;
     }
 
+    false
+}
+
+/// Returns `true` for Jira/Linear-style ticket keys: 2+ uppercase ASCII letters
+/// followed by a dash and at least one digit (e.g. `KAN-141`, `PROJ-1`, `MER-42`).
+fn contains_ticket_key(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let n = bytes.len();
+    let mut i = 0;
+    while i < n {
+        if bytes[i].is_ascii_uppercase() {
+            let alpha_start = i;
+            while i < n && bytes[i].is_ascii_uppercase() {
+                i += 1;
+            }
+            let alpha_len = i - alpha_start;
+            if alpha_len >= 2 && i < n && bytes[i] == b'-' {
+                i += 1; // skip dash
+                let digit_start = i;
+                while i < n && bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
+                if i > digit_start {
+                    return true;
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
+/// Returns `true` if `line` contains a word with a known source-code file extension.
+/// Catches short filenames (`main.rs`, `app.py`) that would otherwise fall below
+/// `MIN_LINE_LEN` and lose meaningful "what file was open" signal.
+fn contains_code_filename(line: &str) -> bool {
+    const EXTS: &[&str] = &[
+        ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".toml", ".sql", ".sh", ".yaml", ".yml",
+    ];
+    EXTS.iter().any(|ext| line.contains(ext))
+}
+
+/// Tighter landmark check used only inside `build_chrome_set` to decide
+/// whether a frequently-repeating line should be exempted from chrome detection.
+///
+/// Differences from `is_landmark`:
+/// - `# ` and `> ` prefixes are **excluded** — they appear in status bars and
+///   blockquotes and would prevent common UI chrome from being filtered.
+/// - SQL keywords are **anchored to line start** — substring matches on prose
+///   like "last update" or "select all" should not protect a chrome line.
+/// - Ticket keys and code filenames are included (high signal, exempt from chrome).
+pub(crate) fn is_chrome_exempt(line: &str) -> bool {
+    if line.contains("http://") || line.contains("https://") {
+        return true;
+    }
+    // Only unambiguous interactive prompts — not `#` (comment) or `>` (blockquote)
+    if line.starts_with("$ ") || line.starts_with("% ") || line.starts_with("❯ ") {
+        return true;
+    }
+    if ascii_icontains(line, "error")
+        || ascii_icontains(line, "warning")
+        || ascii_icontains(line, "failed")
+        || ascii_icontains(line, "traceback")
+    {
+        return true;
+    }
+    if line.contains("def ")
+        || line.contains("fn ")
+        || line.contains("class ")
+        || line.contains("impl ")
+        || line.contains("function ")
+    {
+        return true;
+    }
+    // SQL anchored to line start to avoid prose false-positives
+    if ascii_istarts_with(line, "select ")
+        || ascii_istarts_with(line, "insert ")
+        || ascii_istarts_with(line, "update ")
+        || ascii_istarts_with(line, "delete ")
+        || ascii_istarts_with(line, "create table")
+    {
+        return true;
+    }
+    if line.contains("feat/")
+        || line.contains("fix/")
+        || line.contains("chore/")
+        || line.contains("refactor/")
+    {
+        return true;
+    }
+    // Ticket keys and issue refs are high-signal enough to protect from chrome detection.
+    // Code filenames are intentionally excluded: short filenames like `# main.py` appear
+    // in VS Code tab bars (chrome) and should not be unconditionally exempted.
+    if contains_issue_ref(line) || contains_ticket_key(line) {
+        return true;
+    }
+    if contains_commit_hash(line) {
+        return true;
+    }
     false
 }
 
@@ -362,9 +486,12 @@ pub fn build_chrome_set(frames: &[FrameText]) -> HashSet<String> {
         }
     }
 
-    // Keep only lines that exceed the threshold AND are not landmarks.
+    // Keep only lines that exceed the threshold AND are not chrome-exempt.
+    // `is_chrome_exempt` is tighter than `is_landmark`: it excludes `# ` / `> `
+    // prefixes and anchors SQL keywords to line start, so common UI chrome lines
+    // that would have been protected by `is_landmark` are now correctly filtered.
     freq.into_iter()
-        .filter(|(line, count)| *count >= CHROME_FREQ_THRESHOLD && !is_landmark(line))
+        .filter(|(line, count)| *count >= CHROME_FREQ_THRESHOLD && !is_chrome_exempt(line))
         .map(|(line, _)| line)
         .collect()
 }
@@ -693,6 +820,73 @@ mod tests {
         assert!(
             !chrome.contains("repeated line"),
             "intra-frame repeats must not inflate count"
+        );
+    }
+
+    // ── contains_ticket_key ───────────────────────────────────────────────────
+
+    #[test]
+    fn ticket_key_jira_linear_style() {
+        assert!(is_landmark("KAN-141"));
+        assert!(is_landmark("MER-42"));
+        assert!(is_landmark("PROJ-1"));
+        assert!(is_landmark("AB-999"));
+        assert!(is_landmark("fixing KAN-141 in this session")); // embedded in prose
+    }
+
+    #[test]
+    fn ticket_key_negative_cases() {
+        assert!(!is_landmark("KAN")); // no dash or digits
+        assert!(!is_landmark("K-42")); // only 1 uppercase letter before dash
+        assert!(!is_landmark("123-456")); // digits before dash, not uppercase
+        assert!(!is_landmark("kan-141")); // lowercase
+    }
+
+    // ── is_chrome_exempt ──────────────────────────────────────────────────────
+
+    #[test]
+    fn chrome_exempt_excludes_hash_and_gt_prefixes() {
+        // `# main.py` was incorrectly protected as a shell prompt by is_landmark
+        // (which accepts `# ` prefix). is_chrome_exempt must NOT protect it.
+        assert!(!is_chrome_exempt("# main.py"));
+        assert!(!is_chrome_exempt("> blockquote text here"));
+    }
+
+    #[test]
+    fn chrome_exempt_keeps_interactive_prompts() {
+        assert!(is_chrome_exempt("$ cargo build --release"));
+        assert!(is_chrome_exempt("% npm run dev"));
+        assert!(is_chrome_exempt("❯ git status"));
+    }
+
+    #[test]
+    fn chrome_exempt_anchors_sql_to_line_start() {
+        // "last update" contains "update" but is NOT anchored to line start → not exempt
+        assert!(!is_chrome_exempt("last update was three days ago"));
+        // "select all" → same, contains "select" in the middle
+        assert!(!is_chrome_exempt("press select all to copy text here"));
+        // Anchored SQL → exempt
+        assert!(is_chrome_exempt("SELECT id, name FROM users"));
+        assert!(is_chrome_exempt("UPDATE sessions SET status = 'done'"));
+    }
+
+    #[test]
+    fn chrome_exempt_ticket_keys_exempt() {
+        assert!(is_chrome_exempt("KAN-141"));
+        assert!(is_chrome_exempt("fixing MER-42 with this commit"));
+    }
+
+    #[test]
+    fn chrome_set_uses_tighter_exemption() {
+        // "# main.py" repeats in 5 frames — with the old is_landmark it would be
+        // protected (starts with "# "); with is_chrome_exempt it should be chrome.
+        let frames: Vec<FrameText> = (0..5)
+            .map(|_| ft("# main.py\nsome other content line here"))
+            .collect();
+        let chrome = build_chrome_set(&frames);
+        assert!(
+            chrome.contains("# main.py"),
+            "# main.py is not chrome-exempt and must be filtered as chrome"
         );
     }
 }
