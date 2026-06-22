@@ -34,6 +34,7 @@ export default function SetupWizard() {
   // Step 1: live permission state
   const [screenGrant, setScreenGrant] = useState<boolean | null>(null)
   const [a11yGrant, setA11yGrant] = useState<boolean | null>(null)
+  const [inputMonGrant, setInputMonGrant] = useState<boolean | null>(null)
 
   // Step 2: MLX server state + runtime download
   const [mlx, setMlx] = useState<MlxStatusResponse | null>(null)
@@ -44,7 +45,7 @@ export default function SetupWizard() {
   useEffect(() => {
     if (step !== 1) return
     const poll = async () => {
-      const [sr, ax] = await Promise.all([
+      const [sr, ax, im] = await Promise.all([
         invoke<boolean>('check_screen_recording').catch(() => false),
         invoke<boolean>('check_accessibility').catch(() => false),
       ])
@@ -52,9 +53,11 @@ export default function SetupWizard() {
       setA11yGrant(ax)
     }
     poll()
+        invoke<boolean>('check_input_monitoring').catch(() => false),
     const id = setInterval(poll, 2000)
     return () => clearInterval(id)
   }, [step])
+      setInputMonGrant(im)
 
   // Poll MLX status on step 2; auto-start only when the runtime is provisioned.
   // If no runtime is installed yet, the user downloads it via startDownload().
@@ -156,7 +159,7 @@ export default function SetupWizard() {
           <section>
             <h1 className="mb-1.5 text-2xl font-semibold">Permissions</h1>
             <p className="mb-3.5 text-[15px] opacity-70">
-              Meridian needs two macOS permissions. Open each in System Settings and toggle Meridian on.
+              Meridian needs three macOS permissions. Open each in System Settings and toggle Meridian on.
             </p>
             <PermissionCard
               title="Screen Recording"
@@ -170,9 +173,15 @@ export default function SetupWizard() {
               granted={a11yGrant}
               onOpen={() => openPane('accessibility')}
             />
-            {screenGrant && a11yGrant && (
+            <PermissionCard
+              title="Input Monitoring"
+              sub="Detects clicks and typing to mark when you switch tasks."
+              granted={inputMonGrant}
+              onOpen={() => openPane('input_monitoring')}
+            />
+            {screenGrant && a11yGrant && inputMonGrant && (
               <p className="mt-3 text-[13px] text-emerald-600 font-medium">
-                Both permissions granted — ready to continue.
+                All permissions granted — ready to continue.
               </p>
             )}
           </section>

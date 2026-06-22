@@ -59,6 +59,9 @@ pub async fn open_permission_pane(app: tauri::AppHandle, pane: String) -> Result
         "accessibility" => {
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
         }
+        "input_monitoring" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
+        }
         other => return Err(format!("unknown permission pane: {other}")),
     };
     app.opener()

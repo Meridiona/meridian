@@ -106,6 +106,37 @@ pub async fn check_screen_recording() -> bool {
     unsafe { CGPreflightScreenCaptureAccess() }
 }
 
+/// Returns `true` when the tray holds macOS **Input Monitoring** permission.
+///
+/// The in-process input recorder (`capture::ui_events::run_ui_event_recorder`)
+/// runs a `CGEventTap` listener, which macOS gates behind Input Monitoring.
+/// Without it the recorder degrades silently and `capture_ui_events` stays empty,
+/// so the daemon's Option C `ended_at` refinement never fires — hence the wizard
+/// must surface it as its own card. `IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)`
+/// reads the grant directly (no prompt, no side effects), mirroring the
+/// `CGPreflightScreenCaptureAccess` / `AXIsProcessTrusted` probes above. The
+/// *grant* action is the wizard's "Open in System Settings" button
+/// ([`crate::commands::system::open_permission_pane`] `"input_monitoring"`).
+#[tauri::command]
+#[tracing::instrument]
+pub async fn check_input_monitoring() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        #[link(name = "IOKit", kind = "framework")]
+        extern "C" {
+            fn IOHIDCheckAccess(request_type: u32) -> u32;
+        }
+        // kIOHIDRequestTypeListenEvent = 1 (Input Monitoring);
+        // kIOHIDAccessTypeGranted = 0.
+        const LISTEN_EVENT: u32 = 1;
+        const GRANTED: u32 = 0;
+        // Safety: IOHIDCheckAccess is a pure status read — no prompt, no side effects.
+        unsafe { IOHIDCheckAccess(LISTEN_EVENT) == GRANTED }
+    }
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
 /// Query the current MLX server status. Polled every 3 seconds by the wizard's
 /// Model step. Returns `runtime_found` alongside status so the UI can distinguish
 /// "not installed" from "installed but offline".

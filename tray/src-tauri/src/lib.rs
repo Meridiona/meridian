@@ -307,6 +307,7 @@ pub fn run() {
             commands::mark_setup_complete,
             commands::check_accessibility,
             commands::check_screen_recording,
+            commands::check_input_monitoring,
             commands::get_mlx_status,
             commands::start_mlx_server_cmd,
             commands::download_runtime_cmd,
