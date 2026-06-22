@@ -127,6 +127,15 @@ export default function SetupWizard() {
     invoke('open_permission_pane', { pane }).catch((e) => setErr(String(e)))
   }
 
+  // Input Monitoring needs an explicit IOHIDRequestAccess to register the app +
+  // surface the prompt (a status read alone leaves the Settings pane empty —
+  // "No Items"). Request first so the app appears, then open the pane to toggle.
+  const grantInputMonitoring = async () => {
+    setErr('')
+    try { await invoke('request_input_monitoring') } catch { /* prompt is best-effort */ }
+    invoke('open_permission_pane', { pane: 'input_monitoring' }).catch((e) => setErr(String(e)))
+  }
+
   const connectTracker = (provider: string) => {
     setErr('')
     invoke('start_oauth', { provider }).catch((e) => setErr(String(e)))
@@ -194,7 +203,7 @@ export default function SetupWizard() {
               title="Input Monitoring"
               sub="Detects clicks and typing to mark when you switch tasks."
               granted={inputMonGrant}
-              onOpen={() => openPane('input_monitoring')}
+              onOpen={grantInputMonitoring}
             />
             {screenGrant && a11yGrant && inputMonGrant && (
               <p className="mt-3 text-[13px] text-emerald-600 font-medium">

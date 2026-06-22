@@ -137,6 +137,38 @@ pub async fn check_input_monitoring() -> bool {
     false
 }
 
+/// Surface the macOS Input Monitoring prompt **and register the app** so it
+/// appears in the Input Monitoring list, then return the resulting grant state.
+///
+/// [`check_input_monitoring`] only *reads* status (`IOHIDCheckAccess`) — it never
+/// registers the app, so on a fresh install the System Settings pane shows
+/// "No Items" and the user has nothing to toggle. `IOHIDRequestAccess` is the
+/// grant analogue of `CGRequestScreenCaptureAccess`: on first call it shows the
+/// system prompt and registers the app; thereafter it's a no-op returning the
+/// current state. The wizard calls this from the Input Monitoring card's button
+/// (alongside opening the pane). Note `IOHIDRequestAccess` returns a `Boolean`
+/// (granted/not) — unlike `IOHIDCheckAccess`, which returns the access-type enum.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn request_input_monitoring() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        #[link(name = "IOKit", kind = "framework")]
+        extern "C" {
+            fn IOHIDRequestAccess(request_type: u32) -> bool;
+        }
+        // kIOHIDRequestTypeListenEvent = 1 (Input Monitoring).
+        const LISTEN_EVENT: u32 = 1;
+        // Safety: IOHIDRequestAccess surfaces the TCC prompt + registers the app,
+        // then returns a Boolean grant state — no UB.
+        let granted = unsafe { IOHIDRequestAccess(LISTEN_EVENT) };
+        tracing::info!(granted, "setup: requested Input Monitoring access");
+        granted
+    }
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
 /// Query the current MLX server status. Polled every 3 seconds by the wizard's
 /// Model step. Returns `runtime_found` alongside status so the UI can distinguish
 /// "not installed" from "installed but offline".
