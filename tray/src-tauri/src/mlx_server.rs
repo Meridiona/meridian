@@ -483,20 +483,40 @@ where
         message: "Selecting the best model for this Mac…".to_string(),
     });
     // The POST resolves the model id + total size before returning, so give it room.
-    client
+    let resp = client
         .post(format!("{base}/prefetch_model"))
         .timeout(std::time::Duration::from_secs(60))
         .send()
         .await
         .map_err(|e| format!("prefetch_model request failed: {e}"))?;
+    // A runtime tarball predating these endpoints answers 404. Eager prefetch is a
+    // best-effort optimization — the model still lazy-loads on the first classify —
+    // so degrade SILENTLY (return Ok) rather than surfacing an error in the wizard.
+    if !resp.status().is_success() {
+        tracing::info!(
+            status = resp.status().as_u16(),
+            "mlx: /prefetch_model unavailable (older runtime?) — model will load lazily on first use"
+        );
+        return Ok(());
+    }
 
     loop {
-        let st: PrefetchStatus = client
+        let resp = client
             .get(format!("{base}/prefetch_status"))
             .timeout(std::time::Duration::from_secs(10))
             .send()
             .await
-            .map_err(|e| format!("prefetch_status request failed: {e}"))?
+            .map_err(|e| format!("prefetch_status request failed: {e}"))?;
+        // Same graceful-degrade: never JSON-decode a non-2xx body (that produced the
+        // "decode failed: error decoding response body" wizard error on old runtimes).
+        if !resp.status().is_success() {
+            tracing::info!(
+                status = resp.status().as_u16(),
+                "mlx: /prefetch_status unavailable — stopping prefetch poll, model loads lazily"
+            );
+            return Ok(());
+        }
+        let st: PrefetchStatus = resp
             .json()
             .await
             .map_err(|e| format!("prefetch_status decode failed: {e}"))?;
