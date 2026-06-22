@@ -268,7 +268,9 @@ pub fn system_checks(_cfg: &Config) -> Vec<Check> {
         os,
         env_check,
         node_check(),
-        disk_check("disk (screenpipe)", &home().join(".screenpipe")),
+        // Capture data lives in meridian.db under ~/.meridian (the in-process
+        // cutover retired ~/.screenpipe), so the meridian disk check below
+        // already covers the capture volume — no separate screenpipe check.
         disk_check("disk (meridian)", &home().join(".meridian")),
     ]
 }
