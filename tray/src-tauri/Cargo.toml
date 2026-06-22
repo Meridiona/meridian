@@ -59,11 +59,18 @@ cidre = { version = "0.13", features = ["ax"], optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
 [features]
+# In-process screen capture is ON by default (Gap-2 Bucket 2 cutover): the
+# daemon now reads ONLY the capture tables, so a tray built without `capture`
+# is a silent no-op (it produces no frames → no sessions). Every release path
+# (`tauri build`, `npm run build`, `npm run tauri build`) builds with default
+# features, so defaulting it on is the single source of truth — there is no
+# per-call `--features` flag to forget. Build a lean, capture-free tray with
+# `--no-default-features`. (ubuntu CI never compiles this crate — `cargo
+# clippy`/`test` at the workspace root select the `meridian` package only — so
+# the macOS-only cidre/screenpipe-screen stack is not pulled into CI.)
+default = ["capture"]
 otel = ["dep:meridian"]
-# In-process screen capture (Gap-2 Bucket 2). OFF by default — pulls the heavy
-# forked screenpipe-screen stack (ScreenCaptureKit/cidre) only when building the
-# capture-enabled app. Slice 1 ships the engine-agnostic boundary; slice 2 adds
-# the screenpipe-screen engine.
+# Pulls the heavy forked screenpipe-screen stack (ScreenCaptureKit/cidre).
 capture = [
     "dep:screenpipe-screen",
     "dep:screenpipe-a11y",
