@@ -45,7 +45,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "macOS": {},
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "resources": {
       "../../target/release/meridian": "backend/meridian",
       "../../scripts/a11y-helper/meridian-a11y-helper": "backend/meridian-a11y-helper",
