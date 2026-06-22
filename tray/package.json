@@ -4,7 +4,8 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
-    "build": "tauri build"
+    "build": "tauri build",
+    "build:staging": "MERIDIAN_RUNTIME_MANIFEST_URL=https://github.com/Meridiona/meridian/releases/download/runtime-staging/runtime-manifest.json tauri build"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.2"
