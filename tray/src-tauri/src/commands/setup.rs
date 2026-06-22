@@ -86,30 +86,24 @@ fn ax_is_trusted() -> bool {
     unsafe { AXIsProcessTrusted() }
 }
 
-/// Returns `true` when screen capture appears available.
+/// Returns `true` when the tray itself holds macOS Screen Recording permission.
 ///
-/// **Current proxy:** checks if a `screenpipe` process is running, since
-/// screenpipe is the current capture process that holds Screen Recording
-/// permission. When the B-in-process track lands this switches to
-/// `CGPreflightScreenCaptureAccess()` on the tray process itself.
+/// Post-cutover (Gap-2 Bucket 2) capture runs in-process, so the **tray** is
+/// the process that needs Screen Recording. `CGPreflightScreenCaptureAccess()`
+/// reads that grant directly — no prompt, no side effects — replacing the old
+/// `pgrep screenpipe` / `~/.screenpipe/db.sqlite` proxy, which misreported on
+/// an in-process install (no screenpipe process or DB ever exists). The
+/// wizard's *grant* action (which surfaces the system prompt via
+/// `CGRequestScreenCaptureAccess`) is separate slice-5 work.
 #[tauri::command]
 #[tracing::instrument]
 pub async fn check_screen_recording() -> bool {
-    // Primary: live screenpipe process?
-    if let Ok(out) = tokio::process::Command::new("pgrep")
-        .args(["-f", "screenpipe"])
-        .output()
-        .await
-    {
-        if out.status.success() && !out.stdout.is_empty() {
-            return true;
-        }
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGPreflightScreenCaptureAccess() -> bool;
     }
-    // Fallback: screenpipe DB present — was running at some point and likely has
-    // permission. Better than blocking the wizard on a clean install where the
-    // user granted permission but restarted screenpipe since.
-    let home = std::env::var("HOME").unwrap_or_default();
-    std::path::Path::new(&format!("{home}/.screenpipe/db.sqlite")).exists()
+    // Safety: preflight is a pure status read — no prompt, no side effects.
+    unsafe { CGPreflightScreenCaptureAccess() }
 }
 
 /// Query the current MLX server status. Polled every 3 seconds by the wizard's
