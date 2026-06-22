@@ -447,6 +447,93 @@ where
     Ok(DownloadOutcome::Installed)
 }
 
+/// Prefetch status reported by the MLX server's `/prefetch_status`
+/// (mirrors the Python `_prefetch_state`).
+#[derive(Debug, Clone, Deserialize)]
+struct PrefetchStatus {
+    /// `idle` | `downloading` | `done` | `error`.
+    state: String,
+    /// Bytes on disk so far.
+    received: u64,
+    /// Authoritative total (`0` when the size probe failed → indeterminate bar).
+    total: u64,
+    /// Failure detail when `state == "error"`.
+    error: Option<String>,
+}
+
+/// Trigger the server's eager, spec-aware model download and stream progress
+/// until it finishes. The model id is chosen server-side by `llm_selector`, so
+/// this prefetches exactly the weights the first classification will load —
+/// with a progress bar instead of a silent ~7 GB download mid-inference.
+///
+/// POSTs `/prefetch_model` (idempotent — a re-trigger adopts the in-flight
+/// download rather than starting a second), then polls `/prefetch_status` ~1 Hz,
+/// forwarding each sample to `on_progress`. Returns `Ok` when the server reports
+/// `done`, or `Err` on `error`. The server requires the runtime to be running.
+pub async fn prefetch_model<F>(port: u16, on_progress: F) -> Result<(), String>
+where
+    F: Fn(DownloadProgress) + Send + 'static,
+{
+    let base = format!("http://127.0.0.1:{port}");
+    let client = reqwest::Client::new();
+
+    on_progress(DownloadProgress {
+        received: 0,
+        total: 0,
+        message: "Selecting the best model for this Mac…".to_string(),
+    });
+    // The POST resolves the model id + total size before returning, so give it room.
+    client
+        .post(format!("{base}/prefetch_model"))
+        .timeout(std::time::Duration::from_secs(60))
+        .send()
+        .await
+        .map_err(|e| format!("prefetch_model request failed: {e}"))?;
+
+    loop {
+        let st: PrefetchStatus = client
+            .get(format!("{base}/prefetch_status"))
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|e| format!("prefetch_status request failed: {e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("prefetch_status decode failed: {e}"))?;
+
+        match st.state.as_str() {
+            "done" => {
+                on_progress(DownloadProgress {
+                    received: st.received,
+                    total: st.total,
+                    message: "Model ready.".to_string(),
+                });
+                tracing::info!(received = st.received, "mlx: model prefetch complete");
+                return Ok(());
+            }
+            "error" => {
+                let msg = st.error.unwrap_or_else(|| "unknown error".to_string());
+                tracing::warn!(error = %msg, "mlx: model prefetch failed");
+                return Err(format!("model prefetch failed: {msg}"));
+            }
+            _ => {
+                let mb = st.received / 1_048_576;
+                let message = if st.total > 0 {
+                    format!("Downloading model… {mb} / {} MB", st.total / 1_048_576)
+                } else {
+                    format!("Downloading model… {mb} MB")
+                };
+                on_progress(DownloadProgress {
+                    received: st.received,
+                    total: st.total,
+                    message,
+                });
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    }
+}
+
 /// Probe the server's `/health` endpoint. Returns `true` on a 2xx response
 /// within 2 seconds.
 pub async fn health_check(port: u16) -> bool {

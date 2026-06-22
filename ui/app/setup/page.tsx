@@ -5,7 +5,7 @@
 // (the "setup" window opened from tray.rs::open_wizard_window). Talks to Rust
 // exclusively over the Tauri `invoke` bridge — no /api fetch, no Node server.
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { invoke, tauri } from '@/lib/bridge'
 
 const STEPS = ['Welcome', 'Permissions', 'Model', 'Connect', 'Done'] as const
@@ -40,6 +40,11 @@ export default function SetupWizard() {
   const [mlx, setMlx] = useState<MlxStatusResponse | null>(null)
   const [downloading, setDownloading] = useState(false)
   const [progress, setProgress] = useState<DownloadProgress | null>(null)
+  // Step 2b: eager model prefetch (kicks off once the server is up). The ref
+  // guards one-shot triggering from inside the polling closure (which captures
+  // stale state); `prefetching` drives the progress UI.
+  const [prefetching, setPrefetching] = useState(false)
+  const prefetchStarted = useRef(false)
 
   // Poll Screen Recording + Accessibility on step 1
   useEffect(() => {
@@ -48,16 +53,16 @@ export default function SetupWizard() {
       const [sr, ax, im] = await Promise.all([
         invoke<boolean>('check_screen_recording').catch(() => false),
         invoke<boolean>('check_accessibility').catch(() => false),
+        invoke<boolean>('check_input_monitoring').catch(() => false),
       ])
       setScreenGrant(sr)
       setA11yGrant(ax)
+      setInputMonGrant(im)
     }
     poll()
-        invoke<boolean>('check_input_monitoring').catch(() => false),
     const id = setInterval(poll, 2000)
     return () => clearInterval(id)
   }, [step])
-      setInputMonGrant(im)
 
   // Poll MLX status on step 2; auto-start only when the runtime is provisioned.
   // If no runtime is installed yet, the user downloads it via startDownload().
@@ -70,6 +75,17 @@ export default function SetupWizard() {
         if (s.runtime_found && s.status === 'offline') {
           invoke('start_mlx_server_cmd').catch(() => {})
         }
+        // Server up → eagerly prefetch the spec-aware model (once). The download
+        // runs server-side, so it continues in the background after Continue;
+        // the model is only needed at the first classification.
+        if (s.status === 'running' && !prefetchStarted.current) {
+          prefetchStarted.current = true
+          setPrefetching(true)
+          setProgress({ received: 0, total: 0, message: 'Preparing model…' })
+          invoke('prefetch_model_cmd')
+            .catch((e) => setErr(String(e)))
+            .finally(() => setPrefetching(false))
+        }
       } catch (_) {
         // no-op: server not yet available
       }
@@ -79,16 +95,17 @@ export default function SetupWizard() {
     return () => clearInterval(id)
   }, [step])
 
-  // Listen for runtime download progress events while a download is in flight.
+  // Listen for download progress events (shared by the runtime download and the
+  // model prefetch) while either phase is in flight.
   useEffect(() => {
-    if (!downloading) return
+    if (!downloading && !prefetching) return
     let unlisten: (() => void) | undefined
     tauri()
       ?.event.listen<DownloadProgress>('mlx-download-progress', (e) => setProgress(e.payload))
       .then((un) => { unlisten = un })
       .catch(() => {})
     return () => { if (unlisten) unlisten() }
-  }, [downloading])
+  }, [downloading, prefetching])
 
   const startDownload = async () => {
     setErr('')
@@ -192,11 +209,13 @@ export default function SetupWizard() {
             <h1 className="mb-1.5 text-2xl font-semibold">On-device model</h1>
             <p className="mb-3.5 text-[15px] opacity-70">
               Meridian classifies your work with a local model so nothing is sent to the cloud. The
-              runtime downloads once, then loads in the background.
+              runtime and model download once; the model keeps downloading in the background, so you
+              can continue.
             </p>
             <MlxRow
               mlx={mlx}
               downloading={downloading}
+              prefetching={prefetching}
               progress={progress}
               onDownload={startDownload}
             />
@@ -306,21 +325,24 @@ function PermissionCard({
 function MlxRow({
   mlx,
   downloading,
+  prefetching,
   progress,
   onDownload,
 }: {
   mlx: MlxStatusResponse | null
   downloading: boolean
+  prefetching: boolean
   progress: DownloadProgress | null
   onDownload: () => void
 }) {
-  // Download in flight — show a progress bar instead of a status badge.
-  if (downloading) {
+  // Download in flight — show a progress bar instead of a status badge. Covers
+  // both phases: the runtime tarball, then the eager model prefetch.
+  if (downloading || prefetching) {
     const pct = progress && progress.total > 0 ? (progress.received / progress.total) * 100 : 0
     return (
       <div className="mb-3 rounded-[10px] border border-current/15 px-4 py-3.5">
         <div className="mb-2 flex items-center justify-between">
-          <span className="font-semibold text-[14px]">Downloading runtime</span>
+          <span className="font-semibold text-[14px]">{prefetching ? 'Downloading model' : 'Downloading runtime'}</span>
           <span className="text-xs opacity-60">{progress?.message ?? 'Starting…'}</span>
         </div>
         <div className="h-2 overflow-hidden rounded-full bg-current/10">
@@ -354,7 +376,7 @@ function MlxRow({
     return (
       <Row
         title="Classifier model (Qwen3)"
-        sub="Download the on-device runtime (~750 MB) and model. This happens once."
+        sub="Downloads the on-device runtime, then the classifier model (~7 GB) chosen for this Mac. One-time setup; the model finishes in the background."
       >
         <button
           onClick={onDownload}
