@@ -122,6 +122,12 @@ async fn install(backend: &Path, home: &Path) -> Result<(), String> {
         .await
         .map_err(|e| format!("mkdir {}: {e}", launch_agents.display()))?;
 
+    // Purge any leftover pre-cutover screenpipe install before staging the
+    // in-process backend, so the old capturer can't race it or double-prompt for
+    // Screen Recording (the mixed-install mess seen when updating over an old
+    // screenpipe install).
+    cleanup_legacy_screenpipe(home).await;
+
     let daemon_bin = home.join(".meridian/bin/meridian");
     let helper_bin = home.join(".meridian/bin/meridian-a11y-helper");
     stage_binary(&backend.join("meridian"), &daemon_bin).await?;
@@ -157,6 +163,32 @@ async fn install(backend: &Path, home: &Path) -> Result<(), String> {
         register_agent(label, &launch_agents.join(plist)).await?;
     }
     Ok(())
+}
+
+/// Purge a leftover **pre-cutover screenpipe install**. Before the in-process
+/// cutover, capture ran as a separate `screenpipe` binary under a
+/// `com.meridiona.screenpipe` launchd agent (staged by `install-from-bundle.sh`).
+/// The in-process build doesn't use screenpipe, but an *update* over such an
+/// install leaves that agent running — it respawns `screenpipe record`, which
+/// requests Screen Recording (a duplicate prompt) and races the tray's in-process
+/// capture. Boot it out, remove its plist + binary, and kill any live process.
+/// Entirely best-effort and non-fatal — a launchctl hiccup must not abort install.
+async fn cleanup_legacy_screenpipe(home: &Path) {
+    let label = "com.meridiona.screenpipe";
+    let target = format!("gui/{}/{label}", crate::sys::uid_str());
+    if launchctl(&["print", &target]).await.is_ok_and(|s| s) {
+        let _ = launchctl(&["bootout", &target]).await;
+        tracing::info!(label, "backend_install: removed leftover screenpipe agent");
+    }
+    let _ =
+        tokio::fs::remove_file(home.join("Library/LaunchAgents/com.meridiona.screenpipe.plist"))
+            .await;
+    let _ = tokio::fs::remove_file(home.join(".meridian/bin/screenpipe")).await;
+    // Kill any still-running screenpipe the agent had spawned (best-effort).
+    let _ = tokio::process::Command::new("pkill")
+        .args(["-f", "screenpipe record"])
+        .output()
+        .await;
 }
 
 /// Copy `src` → `dest` only when the bytes differ, then `chmod 0755`.
