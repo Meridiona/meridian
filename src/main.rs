@@ -21,6 +21,14 @@ use tokio::sync::Notify;
 /// write a `subprocess_error` sentinel and advance the cursor past it.
 const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 
+/// User-facing remediation hint for the `mlx.down` notice. The tray auto-restarts
+/// the MLX server (see `tray/src-tauri/src/poll/mod.rs::supervise_mlx`), so an
+/// installed user has nothing to type — the only manual fallback is relaunching
+/// Meridian. Deliberately NOT the dev `cd services && .venv/bin/python …` command,
+/// which is meaningless on a packaged install (no `services/` or `.venv`).
+const MLX_DOWN_FIX_HINT: &str =
+    "Meridian restarts the classifier automatically. If it keeps happening, quit and reopen Meridian.";
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // 1. Load the repo-local .env — the single source of config, shared by this
@@ -778,7 +786,7 @@ async fn main() -> Result<()> {
                                     "warning",
                                     "MLX classifier is not responding",
                                     &format!("Failed to classify session {session_id} after {count} attempts — classification is paused"),
-                                    Some("Start MLX server: cd services && .venv/bin/python -m agents.server --port 7823"),
+                                    Some(MLX_DOWN_FIX_HINT),
                                 ).await;
                                 if let Err(e) =
                                     mark_session_subprocess_error(&meridian_linker, session_id)
@@ -884,7 +892,16 @@ async fn main() -> Result<()> {
                 // when a classify happens to fail) so the fault surfaces promptly
                 // on the dashboard banner AND — via the notices→outbox bridge — as
                 // a desktop toast + in-app banner. Auto-clears when it recovers.
-                if meridian::intelligence::mlx_ready(&cfg).await {
+                // Suppress this alarm during first-run onboarding: the MLX server
+                // is still being provisioned (runtime downloading), so "offline" is
+                // expected, not a fault — surfacing it (banner + desktop toast) in
+                // the setup wizard is just noise. Only raise once setup is complete.
+                // A genuine post-setup outage still surfaces reactively via the
+                // task-linker's mlx.down notice above, so this gate hides nothing.
+                let onboarded = std::env::var("HOME")
+                    .map(|h| std::path::Path::new(&h).join(".meridian/onboarded").exists())
+                    .unwrap_or(true);
+                if meridian::intelligence::mlx_ready(&cfg).await || !onboarded {
                     let _ = meridian::notices::clear(&meridian, "mlx.down").await;
                 } else {
                     let _ = meridian::notices::raise(
@@ -893,7 +910,7 @@ async fn main() -> Result<()> {
                         "warning",
                         "Classifier offline",
                         "The MLX classifier server isn't responding — new sessions are recorded but won't be tagged until it's back.",
-                        Some("Restart it: cd services && .venv/bin/python -m agents.server --port 7823"),
+                        Some(MLX_DOWN_FIX_HINT),
                     )
                     .await;
                 }
