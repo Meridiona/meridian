@@ -73,14 +73,35 @@ fn recorder_config() -> UiCaptureConfig {
     c
 }
 
+/// Whether this process already holds macOS Input Monitoring — a pure status read
+/// (`IOHIDCheckAccess`, no prompt) used to skip re-requesting an existing grant.
+fn input_monitoring_granted() -> bool {
+    #[link(name = "IOKit", kind = "framework")]
+    extern "C" {
+        fn IOHIDCheckAccess(request_type: u32) -> u32;
+    }
+    // kIOHIDRequestTypeListenEvent = 1 (Input Monitoring); kIOHIDAccessTypeGranted = 0.
+    const LISTEN_EVENT: u32 = 1;
+    const GRANTED: u32 = 0;
+    // Safety: IOHIDCheckAccess is a pure status read — no prompt, no side effects.
+    unsafe { IOHIDCheckAccess(LISTEN_EVENT) == GRANTED }
+}
+
 /// Run the input recorder until `tx` closes. **Blocking** — call on a dedicated
-/// OS thread. Requests Input Monitoring + Accessibility itself; degrades to a
-/// no-op recorder (emits nothing) when they're not granted, rather than failing.
+/// OS thread. Requests Input Monitoring only when not already granted; degrades
+/// to a no-op recorder (emits nothing) when it's denied, rather than failing.
 pub(crate) fn run_ui_event_recorder(tx: UiEventTx) {
     let recorder = UiRecorder::new(recorder_config());
-    let perms = recorder.request_permissions();
-    if !perms.input_monitoring {
-        warn!("capture: input monitoring not granted — ui events unavailable until the user grants it");
+    // Check Input Monitoring first; only call request_permissions() (which can
+    // prompt) when it isn't already granted, so a granted permission never
+    // re-triggers the system prompt on launch.
+    if input_monitoring_granted() {
+        info!("capture: input monitoring already granted — not prompting");
+    } else {
+        let perms = recorder.request_permissions();
+        if !perms.input_monitoring {
+            warn!("capture: input monitoring not granted — ui events unavailable until the user grants it");
+        }
     }
     let handle = match recorder.start() {
         Ok(h) => h,

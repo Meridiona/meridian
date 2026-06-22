@@ -204,33 +204,45 @@ fn send_frame(tx: &FrameTx, frame: CapturedFrame) -> bool {
     }
 }
 
-/// CoreGraphics: register for + prompt Screen Recording. Idempotent; returns
-/// `true` if already/now granted. Without it the capture lib silently sees zero
-/// monitors on first run.
+/// Register for Screen Recording, but **only prompt when it isn't already
+/// granted**. Preflights with `CGPreflightScreenCaptureAccess` (a pure status
+/// read) first and only calls the prompting `CGRequestScreenCaptureAccess` when
+/// needed, so a granted permission never re-triggers the system prompt on launch
+/// (Apple's preflight-then-request pattern). Returns `true` if already/now granted.
 fn request_screen_capture_access() -> bool {
     #[link(name = "CoreGraphics", kind = "framework")]
     extern "C" {
+        fn CGPreflightScreenCaptureAccess() -> bool;
         fn CGRequestScreenCaptureAccess() -> bool;
     }
-    // Safety: a pure CoreGraphics TCC status/prompt call — no args, no UB.
+    // Safety: pure CoreGraphics TCC calls — no args, no UB.
+    if unsafe { CGPreflightScreenCaptureAccess() } {
+        debug!("capture: screen-recording already granted — not prompting");
+        return true;
+    }
     let granted = unsafe { CGRequestScreenCaptureAccess() };
     if granted {
-        debug!("capture: screen-recording access granted");
+        debug!("capture: screen-recording granted after prompt");
     } else {
         warn!("capture: screen-recording not granted yet — frames stay empty until the user grants it");
     }
     granted
 }
 
-/// Accessibility (AX) trust prompt for THIS process — the AX analogue of
-/// [`request_screen_capture_access`]. The tree walker reads nothing until the
-/// tray is a trusted AX client; `is_process_trusted_with_prompt(true)` shows the
-/// system Accessibility prompt on first run and is idempotent once granted.
-/// Not fatal when denied: OCR still works, only a11y-tree text is unavailable.
+/// Accessibility (AX) trust for THIS process — the AX analogue of
+/// [`request_screen_capture_access`]. Checks `is_process_trusted_with_prompt(false)`
+/// (no prompt) first and only shows the system Accessibility prompt
+/// (`…with_prompt(true)`) when not already trusted, so a granted permission never
+/// re-prompts on launch. Not fatal when denied: OCR still works, only a11y-tree
+/// text is unavailable.
 fn request_accessibility_access() -> bool {
+    if cidre::ax::is_process_trusted_with_prompt(false) {
+        debug!("capture: accessibility (AX) already trusted — not prompting");
+        return true;
+    }
     let trusted = cidre::ax::is_process_trusted_with_prompt(true);
     if trusted {
-        debug!("capture: accessibility (AX) trust granted");
+        debug!("capture: accessibility (AX) trust granted after prompt");
     } else {
         warn!("capture: accessibility not granted yet — a11y-tree text unavailable until granted (OCR still works)");
     }
