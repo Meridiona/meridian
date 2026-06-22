@@ -5,8 +5,8 @@
     "tauri": "tauri",
     "dev": "tauri dev",
     "build:daemon": "cargo build --release --bin meridian --manifest-path ../Cargo.toml",
-    "build": "npm run build:daemon && tauri build",
-    "build:staging": "npm run build:daemon && MERIDIAN_RUNTIME_MANIFEST_URL=https://github.com/Meridiona/meridian/releases/download/runtime-staging/runtime-manifest.json tauri build"
+    "build": "npm run build:daemon && APPLE_SIGNING_IDENTITY=\"${APPLE_SIGNING_IDENTITY:-$(bash ../scripts/dev-signing.sh identity)}\" tauri build",
+    "build:staging": "npm run build:daemon && APPLE_SIGNING_IDENTITY=\"${APPLE_SIGNING_IDENTITY:-$(bash ../scripts/dev-signing.sh identity)}\" MERIDIAN_RUNTIME_MANIFEST_URL=https://github.com/Meridiona/meridian/releases/download/runtime-staging/runtime-manifest.json tauri build"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.2"
