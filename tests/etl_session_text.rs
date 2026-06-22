@@ -35,9 +35,21 @@ async fn test_session_text_populated_in_active_session() {
         &sp,
         1,
         &[
-            ("Code", "2026-01-01T10:00:00+00:00", "fn main() {}"),
-            ("Code", "2026-01-01T10:00:01+00:00", "let x = 1;"),
-            ("Code", "2026-01-01T10:00:02+00:00", "println!(\"hi\");"),
+            (
+                "Code",
+                "2026-01-01T10:00:00+00:00",
+                "fn main() -> Result<()> {",
+            ),
+            (
+                "Code",
+                "2026-01-01T10:00:01+00:00",
+                "let result = compute_value();",
+            ),
+            (
+                "Code",
+                "2026-01-01T10:00:02+00:00",
+                "println!(\"build succeeded\");",
+            ),
         ],
     )
     .await;
@@ -52,12 +64,15 @@ async fn test_session_text_populated_in_active_session() {
 
     let text = row.0.expect("active_session.session_text must be set");
     assert!(
-        text.contains("fn main() {}"),
+        text.contains("fn main() -> Result<()> {"),
         "must contain frame 1 content"
     );
-    assert!(text.contains("let x = 1;"), "must contain frame 2 content");
     assert!(
-        text.contains("println!(\"hi\");"),
+        text.contains("let result = compute_value();"),
+        "must contain frame 2 content"
+    );
+    assert!(
+        text.contains("println!(\"build succeeded\");"),
         "must contain frame 3 content"
     );
 }
@@ -76,13 +91,21 @@ async fn test_session_text_populated_in_closed_session() {
         &sp,
         1,
         &[
-            ("Code", "2026-01-01T10:00:00+00:00", "struct Foo {}"),
+            (
+                "Code",
+                "2026-01-01T10:00:00+00:00",
+                "struct FooConfig { value: u32 }",
+            ),
             (
                 "Code",
                 "2026-01-01T10:00:01+00:00",
-                "impl Foo { fn bar() {} }",
+                "impl FooConfig { fn new() -> Self {} }",
             ),
-            ("Code", "2026-01-01T10:00:02+00:00", "use std::io;"),
+            (
+                "Code",
+                "2026-01-01T10:00:02+00:00",
+                "use std::io::BufReader;",
+            ),
             ("Slack", "2026-01-01T10:00:03+00:00", "Channel: #general"),
         ],
     )
@@ -97,12 +120,18 @@ async fn test_session_text_populated_in_closed_session() {
             .unwrap();
 
     let text = row.0.expect("closed session must have session_text");
-    assert!(text.contains("struct Foo {}"), "missing frame 1 content");
     assert!(
-        text.contains("impl Foo { fn bar() {} }"),
+        text.contains("struct FooConfig { value: u32 }"),
+        "missing frame 1 content"
+    );
+    assert!(
+        text.contains("impl FooConfig { fn new() -> Self {} }"),
         "missing frame 2 content"
     );
-    assert!(text.contains("use std::io;"), "missing frame 3 content");
+    assert!(
+        text.contains("use std::io::BufReader;"),
+        "missing frame 3 content"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -115,7 +144,9 @@ async fn test_session_text_no_duplicates_across_frames() {
     let sp = common::make_screenpipe_db().await;
     let md = common::make_meridian_db().await;
 
-    let repeated_text = "Line A\nLine B";
+    // 3 frames share the same content (below chrome threshold of 4 — not filtered as chrome).
+    // Deduplication must still keep each line only once.
+    let repeated_text = "first unique content line for dedup test\nsecond unique content for dedup";
     common::insert_frames_with_text(
         &sp,
         1,
@@ -123,10 +154,12 @@ async fn test_session_text_no_duplicates_across_frames() {
             ("Code", "2026-01-01T10:00:00+00:00", repeated_text),
             ("Code", "2026-01-01T10:00:01+00:00", repeated_text),
             ("Code", "2026-01-01T10:00:02+00:00", repeated_text),
-            ("Code", "2026-01-01T10:00:03+00:00", repeated_text),
-            ("Code", "2026-01-01T10:00:04+00:00", repeated_text),
             // app switch forces close
-            ("Slack", "2026-01-01T10:00:05+00:00", "notifications"),
+            (
+                "Slack",
+                "2026-01-01T10:00:03+00:00",
+                "notifications panel opened",
+            ),
         ],
     )
     .await;
@@ -145,10 +178,22 @@ async fn test_session_text_no_duplicates_across_frames() {
         .filter(|l| !l.starts_with('[') || l.len() != 10)
         .collect();
 
-    let line_a_count = content_lines.iter().filter(|&&l| l == "Line A").count();
-    let line_b_count = content_lines.iter().filter(|&&l| l == "Line B").count();
-    assert_eq!(line_a_count, 1, "\"Line A\" must appear exactly once");
-    assert_eq!(line_b_count, 1, "\"Line B\" must appear exactly once");
+    let line_a_count = content_lines
+        .iter()
+        .filter(|&&l| l == "first unique content line for dedup test")
+        .count();
+    let line_b_count = content_lines
+        .iter()
+        .filter(|&&l| l == "second unique content for dedup")
+        .count();
+    assert_eq!(
+        line_a_count, 1,
+        "first content line must appear exactly once"
+    );
+    assert_eq!(
+        line_b_count, 1,
+        "second content line must appear exactly once"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -166,9 +211,21 @@ async fn test_session_text_merged_across_etl_runs() {
         &sp,
         1,
         &[
-            ("Code", "2026-01-01T10:00:00+00:00", "set_a_line_one"),
-            ("Code", "2026-01-01T10:00:01+00:00", "set_a_line_two"),
-            ("Code", "2026-01-01T10:00:02+00:00", "set_a_line_three"),
+            (
+                "Code",
+                "2026-01-01T10:00:00+00:00",
+                "alpha batch first content line",
+            ),
+            (
+                "Code",
+                "2026-01-01T10:00:01+00:00",
+                "alpha batch second content line",
+            ),
+            (
+                "Code",
+                "2026-01-01T10:00:02+00:00",
+                "alpha batch third content line",
+            ),
         ],
     )
     .await;
@@ -180,9 +237,21 @@ async fn test_session_text_merged_across_etl_runs() {
         &sp,
         4,
         &[
-            ("Code", "2026-01-01T10:01:00+00:00", "set_b_line_one"),
-            ("Code", "2026-01-01T10:01:01+00:00", "set_b_line_two"),
-            ("Code", "2026-01-01T10:01:02+00:00", "set_b_line_three"),
+            (
+                "Code",
+                "2026-01-01T10:01:00+00:00",
+                "beta batch first content line",
+            ),
+            (
+                "Code",
+                "2026-01-01T10:01:01+00:00",
+                "beta batch second content line",
+            ),
+            (
+                "Code",
+                "2026-01-01T10:01:02+00:00",
+                "beta batch third content line",
+            ),
         ],
     )
     .await;
@@ -200,23 +269,41 @@ async fn test_session_text_merged_across_etl_runs() {
         .expect("active_session.session_text must be set after merge");
 
     // Set A lines must be present
-    assert!(text.contains("set_a_line_one"), "missing set A line 1");
-    assert!(text.contains("set_a_line_two"), "missing set A line 2");
-    assert!(text.contains("set_a_line_three"), "missing set A line 3");
+    assert!(
+        text.contains("alpha batch first content line"),
+        "missing set A line 1"
+    );
+    assert!(
+        text.contains("alpha batch second content line"),
+        "missing set A line 2"
+    );
+    assert!(
+        text.contains("alpha batch third content line"),
+        "missing set A line 3"
+    );
 
     // Set B lines must be present
-    assert!(text.contains("set_b_line_one"), "missing set B line 1");
-    assert!(text.contains("set_b_line_two"), "missing set B line 2");
-    assert!(text.contains("set_b_line_three"), "missing set B line 3");
+    assert!(
+        text.contains("beta batch first content line"),
+        "missing set B line 1"
+    );
+    assert!(
+        text.contains("beta batch second content line"),
+        "missing set B line 2"
+    );
+    assert!(
+        text.contains("beta batch third content line"),
+        "missing set B line 3"
+    );
 
     // No duplicates — each line appears exactly once
     for line in &[
-        "set_a_line_one",
-        "set_a_line_two",
-        "set_a_line_three",
-        "set_b_line_one",
-        "set_b_line_two",
-        "set_b_line_three",
+        "alpha batch first content line",
+        "alpha batch second content line",
+        "alpha batch third content line",
+        "beta batch first content line",
+        "beta batch second content line",
+        "beta batch third content line",
     ] {
         let count = text.matches(line).count();
         assert_eq!(count, 1, "'{line}' must appear exactly once in merged text");
@@ -289,10 +376,22 @@ async fn test_session_text_marker_emitted_for_large_time_gap() {
         1,
         &[
             // 60s apart — above the 30s threshold
-            ("Code", "2026-01-01T10:00:00+00:00", "early_content"),
-            ("Code", "2026-01-01T10:01:00+00:00", "late_content"),
+            (
+                "Code",
+                "2026-01-01T10:00:00+00:00",
+                "early content from first frame",
+            ),
+            (
+                "Code",
+                "2026-01-01T10:01:00+00:00",
+                "late content from second frame",
+            ),
             // app switch forces close
-            ("Slack", "2026-01-01T10:01:01+00:00", "messages"),
+            (
+                "Slack",
+                "2026-01-01T10:01:01+00:00",
+                "new messages in channel",
+            ),
         ],
     )
     .await;
@@ -328,10 +427,22 @@ async fn test_session_text_marker_suppressed_for_small_gap() {
         1,
         &[
             // 20s apart — below the 30s threshold
-            ("Code", "2026-01-01T10:00:00+00:00", "first_line"),
-            ("Code", "2026-01-01T10:00:20+00:00", "second_line"),
+            (
+                "Code",
+                "2026-01-01T10:00:00+00:00",
+                "first content line of session",
+            ),
+            (
+                "Code",
+                "2026-01-01T10:00:20+00:00",
+                "second content line of session",
+            ),
             // app switch forces close
-            ("Slack", "2026-01-01T10:00:21+00:00", "messages"),
+            (
+                "Slack",
+                "2026-01-01T10:00:21+00:00",
+                "new messages in channel",
+            ),
         ],
     )
     .await;

@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 
+use super::text_filter::{build_chrome_set, is_landmark, is_quality_line};
 use crate::db::screenpipe::FrameText;
 
 /// Minimum elapsed seconds between consecutive [HH:MM:SS] markers.
@@ -12,16 +13,24 @@ const MARKER_GAP_SECS: i64 = 30;
 // ---------------------------------------------------------------------------
 
 /// Build session_text from scratch from an ordered sequence of frames.
-/// Every unique line across all frames appears exactly once, in the order
-/// it first appeared.  Timestamp markers ([HH:MM:SS]) are injected when
-/// new content appears more than MARKER_GAP_SECS after the previous marker.
+///
+/// Runs a chrome pre-pass (lines appearing in ≥4 frames that are not landmarks
+/// are classified as persistent UI chrome and dropped).  Each remaining unique
+/// non-noise line appears exactly once, in the order it first appeared.
+/// Timestamp markers ([HH:MM:SS]) are injected when new content appears more
+/// than MARKER_GAP_SECS after the previous marker.
 pub fn build_session_text(frames: &[FrameText]) -> String {
+    // Chrome pre-pass: build the persistent-UI-chrome set before processing any frame.
+    // This is a single O(N·L) scan where N=frames and L=lines per frame.
+    // The HashSet is freed at the end of this function — ~400KB peak for 1000-frame blocks.
+    let chrome = build_chrome_set(frames);
+
     let mut seen: HashSet<String> = HashSet::with_capacity(4096);
     let mut out = String::with_capacity(8192);
     let mut last_marker_secs: Option<i64> = None;
 
     for frame in frames {
-        process_frame(frame, &mut seen, &mut out, &mut last_marker_secs);
+        process_frame(frame, &mut seen, &mut out, &mut last_marker_secs, &chrome);
     }
     dedup_cursor_prefixes(out)
 }
@@ -92,9 +101,10 @@ fn process_frame(
     seen: &mut HashSet<String>,
     out: &mut String,
     last_marker_secs: &mut Option<i64>,
+    chrome: &HashSet<String>,
 ) {
     let frame_secs = ts_to_secs(&frame.timestamp);
-    let new_lines = split_lines(&frame.full_text);
+    let new_lines = split_lines(&frame.full_text, chrome);
     let mut any_new = false;
     let mut fresh: Vec<String> = Vec::new();
 
@@ -135,51 +145,46 @@ fn process_frame(
 }
 
 /// Split full_text into trimmed, non-empty lines, dropping OCR noise.
+///
+/// Noise removed at this layer:
+///  - Lines in `chrome`: persistent UI elements (sidebars, toolbars, status bars)
+///    that appear in ≥4 frames across the block but are not landmarks.
+///  - Lines that don't pass `is_quality_line` AND are not `is_landmark`:
+///    short fragments (< 15 chars), log noise, low alpha-ratio symbol runs.
+///
+/// Landmarks (URLs, shell prompts, errors, code signatures, SQL, git refs,
+/// commit hashes) always survive regardless of length or alpha ratio.
+///
 /// Terminal OCR pathology: a single long string with no newlines is split
 /// on 2+ consecutive spaces to recover phrase boundaries.
-fn split_lines(full_text: &str) -> Vec<String> {
+fn split_lines(full_text: &str, chrome: &HashSet<String>) -> Vec<String> {
     let mut result: Vec<String> = Vec::new();
     for raw_line in full_text.split('\n') {
         let trimmed = raw_line.trim();
         if trimmed.is_empty() {
             continue;
         }
+        // Drop persistent-UI chrome before any further work.
+        if chrome.contains(trimmed) {
+            continue;
+        }
         if trimmed.len() > 200 && trimmed.contains("  ") {
+            // Long concatenated OCR line (Electron sidebars, browser tab bars) —
+            // split into fragments then filter each one individually.
             for part in trimmed.split("  ") {
                 let p = part.trim();
-                if !p.is_empty() && is_meaningful_line(p) {
+                if p.is_empty() {
+                    continue;
+                }
+                if is_landmark(p) || is_quality_line(p) {
                     result.push(p.to_owned());
                 }
             }
-        } else if is_meaningful_line(trimmed) {
+        } else if is_landmark(trimmed) || is_quality_line(trimmed) {
             result.push(trimmed.to_owned());
         }
     }
     result
-}
-
-/// Returns true if a line contains real content worth storing.
-/// Filters out VS Code sidebar icons (•, ›), short OCR fragments (Ca, La),
-/// and other screenpipe UI-chrome noise.
-///
-/// A line is meaningful when it is at least 3 chars long AND contains a run
-/// of 2+ consecutive alphanumeric/underscore characters (i.e., a real word).
-fn is_meaningful_line(line: &str) -> bool {
-    if line.len() < 3 {
-        return false;
-    }
-    let mut run = 0u32;
-    for c in line.chars() {
-        if c.is_alphanumeric() || c == '_' {
-            run += 1;
-            if run >= 2 {
-                return true;
-            }
-        } else {
-            run = 0;
-        }
-    }
-    false
 }
 
 /// Format an ISO 8601 timestamp to "HH:MM:SS" for marker output.
@@ -317,21 +322,38 @@ mod tests {
         }
     }
 
+    // ── Helper: build an empty chrome set for unit tests that don't need chrome filtering
+    fn no_chrome() -> HashSet<String> {
+        HashSet::new()
+    }
+
     #[test]
     fn build_deduplicates_lines() {
         let frames = vec![
-            frame("2024-01-01T10:00:00Z", "alpha\nbeta\ngamma"),
-            frame("2024-01-01T10:00:01Z", "beta\ngamma\ndelta"),
-            frame("2024-01-01T10:00:02Z", "alpha\ndelta\nepsilon"),
+            frame("2024-01-01T10:00:00Z", "running cargo build release\nborrowing mutable reference\ncompiler diagnostics output"),
+            frame("2024-01-01T10:00:01Z", "borrowing mutable reference\ncompiler diagnostics output\nno errors found in source"),
+            frame("2024-01-01T10:00:02Z", "running cargo build release\nno errors found in source\ntests passed successfully"),
         ];
         let text = build_session_text(&frames);
         let lines: Vec<&str> = text.lines().filter(|l| !is_marker_line(l)).collect();
-        assert_eq!(lines, ["alpha", "beta", "gamma", "delta", "epsilon"]);
+        assert_eq!(
+            lines,
+            [
+                "running cargo build release",
+                "borrowing mutable reference",
+                "compiler diagnostics output",
+                "no errors found in source",
+                "tests passed successfully",
+            ]
+        );
     }
 
     #[test]
     fn build_emits_marker_on_first_frame() {
-        let frames = vec![frame("2024-01-01T10:05:30Z", "hello")];
+        let frames = vec![frame(
+            "2024-01-01T10:05:30Z",
+            "cargo build completed successfully",
+        )];
         let text = build_session_text(&frames);
         assert!(text.contains("[10:05:30]"), "expected marker; got:\n{text}");
     }
@@ -339,8 +361,8 @@ mod tests {
     #[test]
     fn build_suppresses_marker_within_threshold() {
         let frames = vec![
-            frame("2024-01-01T10:00:00Z", "line1"),
-            frame("2024-01-01T10:00:20Z", "line2"), // 20s < 30s threshold
+            frame("2024-01-01T10:00:00Z", "first content line of session"),
+            frame("2024-01-01T10:00:20Z", "second content line of session"), // 20s < 30s threshold
         ];
         let text = build_session_text(&frames);
         let markers: Vec<&str> = text.lines().filter(|l| is_marker_line(l)).collect();
@@ -350,8 +372,8 @@ mod tests {
     #[test]
     fn build_emits_marker_beyond_threshold() {
         let frames = vec![
-            frame("2024-01-01T10:00:00Z", "line1"),
-            frame("2024-01-01T10:01:00Z", "line2"), // 60s > 30s threshold
+            frame("2024-01-01T10:00:00Z", "first content line of session"),
+            frame("2024-01-01T10:01:00Z", "second content line of session"), // 60s > 30s threshold
         ];
         let text = build_session_text(&frames);
         let markers: Vec<&str> = text.lines().filter(|l| is_marker_line(l)).collect();
@@ -401,39 +423,83 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // split_lines edge cases
-    // -------------------------------------------------------------------------
+    // ── split_lines edge cases ────────────────────────────────────────────────
 
     #[test]
     fn split_lines_filters_ui_noise() {
-        // VS Code sidebar icons, short OCR fragments — all dropped
+        // VS Code sidebar icons, short OCR fragments — all dropped.
+        // "fn main() {" is a code-signature landmark and must survive.
         let noisy = "•\n›\nCa\nLa\n@\nfn main() {\n";
-        let result = split_lines(noisy);
+        let result = split_lines(noisy, &no_chrome());
         assert_eq!(result, ["fn main() {"]);
     }
 
     #[test]
-    fn split_lines_keeps_short_meaningful_words() {
-        // "cmd" (len 3, word run 3) must survive; "ok" (len 2) and "•" must not
-        let result = split_lines("ok\ncmd\n•\n");
-        assert_eq!(result, ["cmd"]);
+    fn split_lines_drops_short_non_landmark_words() {
+        // "ok" (len 2) and "•" (len 1) are always dropped.
+        // "cmd" (len 3, not a landmark) is dropped by MIN_LINE_LEN=15.
+        // Only landmark lines would survive — none present here.
+        let result = split_lines("ok\ncmd\n•\n", &no_chrome());
+        assert!(
+            result.is_empty(),
+            "short non-landmark words must be dropped; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn split_lines_keeps_quality_content() {
+        // Long enough, high alpha ratio, not log noise.
+        let result = split_lines(
+            "cargo build released the binary\nrunning unit tests now",
+            &no_chrome(),
+        );
+        assert_eq!(
+            result,
+            ["cargo build released the binary", "running unit tests now"]
+        );
+    }
+
+    #[test]
+    fn split_lines_drops_log_noise() {
+        let noisy =
+            "INFO:agents.server: request received from the client\ncargo build released the binary";
+        let result = split_lines(noisy, &no_chrome());
+        assert_eq!(result, ["cargo build released the binary"]);
+    }
+
+    #[test]
+    fn split_lines_keeps_landmark_error() {
+        // Error line is a landmark — survives regardless of alpha or length.
+        let result = split_lines("error: unused variable in function body", &no_chrome());
+        assert_eq!(result, ["error: unused variable in function body"]);
+    }
+
+    #[test]
+    fn split_lines_chrome_dropped() {
+        let mut chrome = HashSet::new();
+        chrome.insert("File  Edit  View  Window".to_owned());
+        let text = "File  Edit  View  Window\ncargo build completed successfully";
+        let result = split_lines(text, &chrome);
+        assert_eq!(result, ["cargo build completed successfully"]);
     }
 
     #[test]
     fn split_lines_empty_string() {
-        assert_eq!(split_lines(""), Vec::<String>::new());
+        assert_eq!(split_lines("", &no_chrome()), Vec::<String>::new());
     }
 
     #[test]
     fn split_lines_whitespace_only() {
-        assert_eq!(split_lines("  \n  \n  "), Vec::<String>::new());
+        assert_eq!(
+            split_lines("  \n  \n  ", &no_chrome()),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
     fn split_lines_short_line_with_spaces_not_split() {
         let line = "word1  word2  word3"; // 19 chars — well under 200
-        let result = split_lines(line);
+        let result = split_lines(line, &no_chrome());
         assert_eq!(
             result.len(),
             1,
@@ -447,7 +513,7 @@ mod tests {
         let part_a = "a".repeat(100);
         let part_b = "b".repeat(100);
         let long = format!("{part_a}  {part_b}"); // 202 chars with "  " in the middle
-        let result = split_lines(&long);
+        let result = split_lines(&long, &no_chrome());
         assert_eq!(
             result.len(),
             2,
@@ -462,7 +528,7 @@ mod tests {
         // 240 chars of meaningful content, single spaces only — must not split on spaces
         let long = "ab cd ".repeat(40);
         let trimmed = long.trim();
-        let result = split_lines(trimmed);
+        let result = split_lines(trimmed, &no_chrome());
         assert_eq!(
             result.len(),
             1,
@@ -470,9 +536,7 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // ts_to_secs edge cases
-    // -------------------------------------------------------------------------
+    // ── ts_to_secs edge cases ─────────────────────────────────────────────────
 
     #[test]
     fn ts_to_secs_midnight() {
@@ -490,9 +554,7 @@ mod tests {
         assert_eq!(ts_to_secs(""), None);
     }
 
-    // -------------------------------------------------------------------------
-    // is_marker_line edge cases
-    // -------------------------------------------------------------------------
+    // ── is_marker_line edge cases ─────────────────────────────────────────────
 
     #[test]
     fn is_marker_line_valid() {
@@ -514,9 +576,7 @@ mod tests {
         assert!(!is_marker_line("[10:05-30]")); // mixed separators
     }
 
-    // -------------------------------------------------------------------------
-    // extract_last_marker_secs edge cases
-    // -------------------------------------------------------------------------
+    // ── extract_last_marker_secs edge cases ───────────────────────────────────
 
     #[test]
     fn extract_last_marker_multiple() {
@@ -538,9 +598,7 @@ mod tests {
         assert_eq!(extract_last_marker_secs(""), None);
     }
 
-    // -------------------------------------------------------------------------
-    // dedup_cursor_prefixes
-    // -------------------------------------------------------------------------
+    // ── dedup_cursor_prefixes ─────────────────────────────────────────────────
 
     #[test]
     fn dedup_cursor_removes_typing_increments() {
@@ -600,10 +658,17 @@ mod tests {
     #[test]
     fn dedup_cursor_build_session_text_integration() {
         // build_session_text must emit only the final version of a typed message.
+        // ❯ lines are landmarks and always survive quality filtering.
         let frames = vec![
-            frame("2024-01-01T10:00:00Z", "❯ fix\noutput1"),
-            frame("2024-01-01T10:00:01Z", "❯ fix bug\noutput1"),
-            frame("2024-01-01T10:00:02Z", "❯ fix bug now\noutput1"),
+            frame("2024-01-01T10:00:00Z", "❯ fix\noutput line from process"),
+            frame(
+                "2024-01-01T10:00:01Z",
+                "❯ fix bug\noutput line from process",
+            ),
+            frame(
+                "2024-01-01T10:00:02Z",
+                "❯ fix bug now\noutput line from process",
+            ),
         ];
         let text = build_session_text(&frames);
         let cursor: Vec<&str> = text.lines().filter(|l| l.starts_with("❯ ")).collect();
@@ -614,9 +679,66 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // merge — pending_marker and all-duplicate cases
-    // -------------------------------------------------------------------------
+    // ── chrome filtering integration ──────────────────────────────────────────
+
+    #[test]
+    fn build_drops_chrome_ui_lines() {
+        // "File  Edit  View  Window  Help" appears in all 5 frames → chrome.
+        // Content lines vary per frame so they appear in fewer than 4 frames → kept.
+        let frames = vec![
+            frame(
+                "2024-01-01T10:00:00Z",
+                "File  Edit  View  Window  Help\ncargo build completed successfully",
+            ),
+            frame(
+                "2024-01-01T10:00:01Z",
+                "File  Edit  View  Window  Help\nrunning unit tests for the module",
+            ),
+            frame(
+                "2024-01-01T10:00:02Z",
+                "File  Edit  View  Window  Help\ncompiler finished without any errors",
+            ),
+            frame(
+                "2024-01-01T10:00:03Z",
+                "File  Edit  View  Window  Help\ndeploying release binary to target",
+            ),
+            frame(
+                "2024-01-01T10:00:04Z",
+                "File  Edit  View  Window  Help\ndependency graph resolved successfully",
+            ),
+        ];
+        let text = build_session_text(&frames);
+        let content: Vec<&str> = text.lines().filter(|l| !is_marker_line(l)).collect();
+        assert!(
+            !content.contains(&"File  Edit  View  Window  Help"),
+            "chrome line must be dropped; got content:\n{content:?}"
+        );
+        assert!(
+            content.contains(&"cargo build completed successfully"),
+            "real content must survive; got content:\n{content:?}"
+        );
+    }
+
+    #[test]
+    fn build_keeps_landmark_that_repeats_across_frames() {
+        // An error message persisting across 5 frames is landmark — must NOT be chrome
+        let frames: Vec<FrameText> = (0..5)
+            .map(|i| {
+                frame(
+                    &format!("2024-01-01T10:00:{i:02}Z"),
+                    "error: borrow checker failed on line 42\nFile  Edit  View  Window  Help",
+                )
+            })
+            .collect();
+        let text = build_session_text(&frames);
+        let content: Vec<&str> = text.lines().filter(|l| !is_marker_line(l)).collect();
+        assert!(
+            content.contains(&"error: borrow checker failed on line 42"),
+            "landmark repeated across frames must be kept; got content:\n{content:?}"
+        );
+    }
+
+    // ── merge — pending_marker and all-duplicate cases ────────────────────────
 
     #[test]
     fn merge_only_marker_in_new_not_flushed() {
