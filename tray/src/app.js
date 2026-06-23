@@ -5,6 +5,12 @@
 const invoke = (cmd, args) => __TAURI__.core.invoke(cmd, args)
 const listen = (evt, cb) => __TAURI__.event.listen(evt, cb)
 
+// Forward JS exceptions to the tray's stderr log (no devtools in a packaged
+// build). Diagnostic only — safe to keep.
+const dbg = (msg) => { try { invoke('tray_debug', { msg: String(msg) }) } catch {} }
+window.onerror = (m, src, line, col) => dbg(`popover onerror: ${m} @${line}:${col}`)
+window.addEventListener('unhandledrejection', (e) => dbg(`popover rejection: ${e.reason}`))
+
 // ── Reference data (mirrors the design's data.jsx, trimmed to what the tray draws) ──
 const APPS = {
   'Antigravity':   { mono: 'Aᴳ', color: '#7C3AED' },
@@ -275,8 +281,10 @@ function resizeToContent() {
   lastFitH = h
   try {
     const { LogicalSize, getCurrentWindow } = window.__TAURI__.window
-    getCurrentWindow().setSize(new LogicalSize(384, h)).catch(() => {})
-  } catch {}
+    getCurrentWindow().setSize(new LogicalSize(384, h))
+      .then(() => dbg(`popover resize -> measured pop height=${h}`))
+      .catch((e) => dbg(`popover setSize FAILED: ${e}`))
+  } catch (e) { dbg(`popover resize threw: ${e}`) }
 }
 
 // Re-fit on ANY card height change — web-font swap (Instrument Serif / mono load

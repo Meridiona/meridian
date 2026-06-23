@@ -135,12 +135,15 @@ pub fn run() {
                             button_state: MouseButtonState::Up,
                             ..
                         } => {
+                            tracing::info!("tray.event: Click");
                             // Hide the hover tooltip on click (popover takes over).
                             if let Some(tt) = app.get_webview_window("tray-tooltip") {
                                 let _ = tt.hide();
                             }
                             if let Some(win) = app.get_webview_window("main") {
-                                if win.is_visible().unwrap_or(false) {
+                                let visible = win.is_visible().unwrap_or(false);
+                                tracing::info!(popover_visible = visible, "tray.click: toggling popover");
+                                if visible {
                                     let _ = win.hide();
                                 } else {
                                     // Re-assert fullscreen-aux collection behavior on the
@@ -149,18 +152,25 @@ pub fn run() {
                                     #[cfg(target_os = "macos")]
                                     make_visible_over_fullscreen(&win);
                                     let _ = win.move_window(Position::TrayCenter);
-                                    let _ = win.show();
+                                    let shown = win.show();
                                     let _ = win.set_focus();
+                                    tracing::info!(
+                                        ok = shown.is_ok(),
+                                        size = ?win.inner_size().ok(),
+                                        "tray.click: popover shown"
+                                    );
                                 }
                             }
                         }
                         TrayIconEvent::Enter { rect, .. } => {
+                            tracing::info!("tray.event: Enter");
                             // Only show the tooltip when the main popover is closed.
                             let popover_open = app
                                 .get_webview_window("main")
                                 .map(|w| w.is_visible().unwrap_or(false))
                                 .unwrap_or(false);
                             if popover_open {
+                                tracing::info!("tray.enter: popover already open — tooltip suppressed");
                                 return;
                             }
                             if let Some(tt) = app.get_webview_window("tray-tooltip") {
@@ -177,7 +187,8 @@ pub fn run() {
                                 ));
                                 #[cfg(target_os = "macos")]
                                 make_visible_over_fullscreen(&tt);
-                                let _ = tt.show();
+                                let shown = tt.show();
+                                tracing::info!(ok = shown.is_ok(), x, y, "tray.enter: tooltip shown");
                                 // Push the latest status so the tooltip renders fresh data.
                                 let _ = app.emit("status-update",
                                     app.try_state::<Arc<Mutex<AppState>>>()
@@ -187,6 +198,7 @@ pub fn run() {
                             }
                         }
                         TrayIconEvent::Leave { .. } => {
+                            tracing::info!("tray.event: Leave — hiding tooltip");
                             if let Some(tt) = app.get_webview_window("tray-tooltip") {
                                 let _ = tt.hide();
                             }
@@ -493,9 +505,24 @@ pub fn run() {
             commands::detect_system_specs,
             commands::set_model_preference,
             commands::get_model_preference,
+            tray_debug,
         ])
         .run(tauri::generate_context!())
         .expect("error running meridian tray");
+}
+
+/// Debug bridge: lets the popover/tooltip JS forward `window.onerror` reports and
+/// the measured card height to the tray's stderr log, so GUI-only faults (a JS
+/// exception, a window/card size mismatch) are diagnosable without devtools. The
+/// injected `window` names the caller and exposes its actual size for comparison.
+#[tauri::command]
+fn tray_debug(window: tauri::Window, msg: String) {
+    tracing::info!(
+        label = %window.label(),
+        size = ?window.inner_size().ok(),
+        msg = %msg,
+        "tray_debug"
+    );
 }
 
 /// Set the window's macOS `collectionBehavior` so it renders over another app's
@@ -516,21 +543,35 @@ fn make_visible_over_fullscreen(win: &tauri::WebviewWindow) {
     // AppKit NSWindowCollectionBehavior bit flags (stable since 10.x).
     const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
     const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
+    // NSStatusWindowLevel (25): just above the menu-bar level, the natural level
+    // for menu-bar-spawned UI. A floating-level window (what `alwaysOnTop` sets)
+    // can sit *under* another app's full-screen content even with the aux flag;
+    // raising the level ensures the popover renders above it.
+    const NS_STATUS_WINDOW_LEVEL: isize = 25;
 
     let ptr = match win.ns_window() {
         Ok(p) if !p.is_null() => p as *const AnyObject,
         _ => {
-            tracing::warn!("make_visible_over_fullscreen: ns_window unavailable");
+            tracing::warn!(label = %win.label(), "make_visible_over_fullscreen: ns_window unavailable");
             return;
         }
     };
     // Safety: `ptr` is a live NSWindow for the lifetime of this call (we hold
     // `win`), and we are on the main thread. `collectionBehavior` /
-    // `setCollectionBehavior:` are NSUInteger get/set with no ownership transfer.
+    // `setCollectionBehavior:` / `setLevel:` are NSUInteger/NSInteger get/sets
+    // with no ownership transfer.
     unsafe {
         let ns = &*ptr;
         let current: usize = msg_send![ns, collectionBehavior];
         let next = current | CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY;
         let _: () = msg_send![ns, setCollectionBehavior: next];
+        let _: () = msg_send![ns, setLevel: NS_STATUS_WINDOW_LEVEL];
+        tracing::info!(
+            label = %win.label(),
+            behavior_before = current,
+            behavior_after = next,
+            level = NS_STATUS_WINDOW_LEVEL,
+            "make_visible_over_fullscreen: applied"
+        );
     }
 }

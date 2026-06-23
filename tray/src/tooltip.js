@@ -5,6 +5,13 @@
 const listen = (evt, cb) => __TAURI__.event.listen(evt, cb)
 const invoke = (cmd, args) => __TAURI__.core.invoke(cmd, args)
 
+// Forward JS exceptions to the tray's stderr log (no devtools in a packaged
+// build). Diagnostic only — safe to keep.
+const dbg = (msg) => { try { invoke('tray_debug', { msg: String(msg) }) } catch {} }
+window.onerror = (m, src, line, col) => dbg(`tooltip onerror: ${m} @${line}:${col}`)
+window.addEventListener('unhandledrejection', (e) => dbg(`tooltip rejection: ${e.reason}`))
+dbg('tooltip.js loaded')
+
 const card     = document.getElementById('tt-card')
 const ttKey    = document.getElementById('tt-key')
 const ttStatus = document.getElementById('tt-status')
@@ -133,12 +140,14 @@ function renderTask(status) {
 // the card never overflows and the shadow is never clipped into a rectangle.
 function resize() {
   const h = Math.ceil(card.getBoundingClientRect().height) + PAD_V
-  if (h < 50) return
+  if (h < 50) { dbg(`tooltip resize skipped, card height=${h}`); return }
   try {
     const { LogicalSize, getCurrentWindow } = window.__TAURI__.window
-    getCurrentWindow().setSize(new LogicalSize(WIN_W, h)).catch(() => {})
-  } catch {}
+    getCurrentWindow().setSize(new LogicalSize(WIN_W, h))
+      .then(() => dbg(`tooltip resize -> ${WIN_W}x${h}`))
+      .catch((e) => dbg(`tooltip setSize FAILED: ${e}`))
+  } catch (e) { dbg(`tooltip resize threw: ${e}`) }
 }
 
-listen('status-update', (e) => render(e.payload))
-invoke('get_status').then(render).catch(() => {})
+listen('status-update', (e) => { dbg('tooltip status-update received'); render(e.payload) })
+invoke('get_status').then((s) => { dbg('tooltip get_status ok'); render(s) }).catch((e) => dbg(`tooltip get_status failed: ${e}`))
