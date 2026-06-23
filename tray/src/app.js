@@ -264,16 +264,30 @@ pauseBtn.addEventListener('click', () => {
 
 // ── Window sizing ─────────────────────────────────────────────────────────────
 // Resize the Tauri window to exactly match the card's rendered height so no
-// transparent gap appears below the popup (transparent window + light wallpaper
-// = looks like a white band). Called after every render so show/hide of the
-// worklogs row also keeps the window tight.
+// transparent gap appears below the popup (a gap reads as a white band over the
+// wallpaper) and the card's rounded bottom corners are never clipped by the
+// window edge (which would make them look square + introduce a scrollbar).
+const popEl = document.getElementById('pop')
+let lastFitH = 0
 function resizeToContent() {
-  const h = Math.ceil(document.getElementById('pop').getBoundingClientRect().height)
-  if (h < 100) return // guard against a layout that hasn't painted yet
+  const h = Math.ceil(popEl.getBoundingClientRect().height)
+  if (h < 100 || h === lastFitH) return // not painted yet, or already this tall
+  lastFitH = h
   try {
     const { LogicalSize, getCurrentWindow } = window.__TAURI__.window
     getCurrentWindow().setSize(new LogicalSize(384, h)).catch(() => {})
   } catch {}
+}
+
+// Re-fit on ANY card height change — web-font swap (Instrument Serif / mono load
+// after first paint and change metrics), the worklog row showing/hiding, etc.
+// Without this the window keeps its first (pre-font) height and the taller card
+// overflows → clipped rounded bottom + scrollbar.
+if (window.ResizeObserver) {
+  new ResizeObserver(() => resizeToContent()).observe(popEl)
+}
+if (document.fonts && document.fonts.ready) {
+  document.fonts.ready.then(() => resizeToContent()).catch(() => {})
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────

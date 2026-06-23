@@ -71,6 +71,9 @@ html, body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   color: var(--ink);
+  /* The window is sized to the card; never show a scrollbar even if the fit
+     lags a reflow by a frame — a scroll would clip the card's rounded bottom. */
+  overflow: hidden;
 }
 
 .font-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
