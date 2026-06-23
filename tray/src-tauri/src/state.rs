@@ -37,6 +37,10 @@ pub struct TodayBreakdown {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusPayload {
+    /// `false` on the very first `get_status` call before the poll loop has
+    /// completed its first tick — lets the frontend show "Connecting…" instead
+    /// of a misleading "PAUSED / Offline" during the 1–3 s startup window.
+    pub has_polled: bool,
     pub healthy: bool,
     pub active_app: Option<String>,
     pub active_elapsed_s: u64,
@@ -120,6 +124,7 @@ impl AppState {
             .map(|a| format::describe_active(&a.app_name, a.elapsed_s));
         let active = self.active_session.as_ref();
         StatusPayload {
+            has_polled: self.last_poll.is_some(),
             healthy: self.health == HealthStatus::Healthy,
             active_app: active.map(|a| a.app_name.clone()),
             active_elapsed_s: elapsed_s,

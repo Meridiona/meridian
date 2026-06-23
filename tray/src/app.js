@@ -150,7 +150,15 @@ function render(status) {
   live.classList.remove('paused', 'idle')
   isTracking = healthy && hasActive
 
-  if (!healthy) {
+  if (!status.has_polled) {
+    // First-tick hasn't completed yet — show a neutral connecting state so the
+    // user doesn't see a misleading "PAUSED / Offline" during the 1–3 s startup
+    // window before the poll loop delivers its first real status.
+    live.classList.add('idle')
+    liveLabelText.textContent = 'CONNECTING'
+    liveMatch.textContent = ''
+    elapsed = 0
+  } else if (!healthy) {
     // Daemon is off / unreachable — tracking is effectively paused.
     live.classList.add('paused')
     liveLabelText.textContent = 'PAUSED'
@@ -185,10 +193,12 @@ function render(status) {
     appGlyph.style.background = 'var(--surface-2)'
     appGlyph.style.color = 'var(--ink-4)'
     liveCatDot.style.background = 'var(--ink-4)'
-    liveCatLabel.textContent = healthy ? 'Idle' : 'Offline'
-    liveTitle.textContent = healthy
-      ? 'Meridian is watching — nothing to track yet.'
-      : "Meridian's gone quiet."
+    liveCatLabel.textContent = !status.has_polled ? '' : healthy ? 'Idle' : 'Offline'
+    liveTitle.textContent = !status.has_polled
+      ? ''
+      : healthy
+        ? 'Meridian is watching — nothing to track yet.'
+        : "Meridian's gone quiet."
   }
   paintTimer()
 
@@ -234,7 +244,7 @@ function render(status) {
 }
 
 // ── Events + actions ─────────────────────────────────────────────────────────
-listen('status-update', (event) => render(event.payload))
+listen('status-update', (event) => { render(event.payload); resizeToContent() })
 
 $('btn-open-head').addEventListener('click', () => invoke('open_dashboard'))
 $('btn-open').addEventListener('click', () => invoke('open_dashboard'))
@@ -252,6 +262,20 @@ pauseBtn.addEventListener('click', () => {
   invoke('toggle_daemon', { is_running: running }).catch(console.error)
 })
 
+// ── Window sizing ─────────────────────────────────────────────────────────────
+// Resize the Tauri window to exactly match the card's rendered height so no
+// transparent gap appears below the popup (transparent window + light wallpaper
+// = looks like a white band). Called after every render so show/hide of the
+// worklogs row also keeps the window tight.
+function resizeToContent() {
+  const h = Math.ceil(document.getElementById('pop').getBoundingClientRect().height)
+  if (h < 100) return // guard against a layout that hasn't painted yet
+  try {
+    const { LogicalSize, getCurrentWindow } = window.__TAURI__.window
+    getCurrentWindow().setSize(new LogicalSize(384, h)).catch(() => {})
+  } catch {}
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 startTicker()
-invoke('get_status').then(render).catch(() => {})
+invoke('get_status').then((s) => { render(s); resizeToContent() }).catch(() => {})
