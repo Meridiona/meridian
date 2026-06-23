@@ -15,12 +15,28 @@ const ttPct    = document.getElementById('tt-pct')
 const ttFill   = document.getElementById('tt-bar-fill')
 const ttCtx    = document.getElementById('tt-ctx')
 
+// Window is 300px wide; body has 10px top + 24px bottom transparent padding for
+// the card's drop-shadow (mirrors tooltip.css). Resize must add that back.
+const WIN_W = 300
+const PAD_V = 10 + 24
+
 const STATUS_LABELS = {
   todo:        'To do',
   in_progress: 'In progress',
   in_review:   'In review',
   done:        'Done',
   cancelled:   'Cancelled',
+}
+
+const CAT_LABELS = {
+  coding:        'Coding',
+  code_review:   'Code review',
+  communication: 'Comms',
+  research:      'Research',
+  meeting:       'Meeting',
+  design:        'Design',
+  writing:       'Writing',
+  learning:      'Learning',
 }
 
 function fmtDur(s) {
@@ -32,6 +48,11 @@ function fmtDur(s) {
   return rm ? `${h}h ${rm}m` : `${h}h`
 }
 
+function prettyCat(c) {
+  if (!c) return 'Live'
+  return CAT_LABELS[c] || (c[0].toUpperCase() + c.slice(1).replace(/_/g, ' '))
+}
+
 function priClass(p) {
   if (!p) return ''
   const l = p.toLowerCase()
@@ -41,20 +62,43 @@ function priClass(p) {
 }
 
 function render(status) {
-  const hasTask = !!status.task_key
-
-  if (!hasTask) {
-    card.classList.add('empty')
-    ttKey.textContent = '—'
-    ttStatus.textContent = ''
-    ttPri.textContent = ''
-    ttTitle.textContent = 'No task tracked today'
-    ttCtx.textContent = ''
+  // ── State 1: a classified task today → the full task card. ──
+  if (status.task_key) {
+    card.classList.remove('empty', 'live')
+    renderTask(status)
+    resize()
     return
   }
 
-  card.classList.remove('empty')
+  // ── State 2: no task, but a live session → show what you're doing now. ──
+  if (status.has_polled && status.healthy && status.active_app) {
+    card.classList.remove('empty')
+    card.classList.add('live')
+    ttKey.textContent   = prettyCat(status.active_category)
+    ttStatus.textContent = ''
+    ttPri.textContent   = ''
+    ttPri.className     = 'tt-priority'
+    ttTitle.textContent = status.active_desc || `Working in ${status.active_app}`
+    ttCtx.textContent   = status.active_title || status.active_app || ''
+    resize()
+    return
+  }
 
+  // ── State 3: nothing to track (idle / connecting / offline). ──
+  card.classList.remove('live')
+  card.classList.add('empty')
+  ttKey.textContent    = '—'
+  ttStatus.textContent = ''
+  ttPri.textContent    = ''
+  ttPri.className      = 'tt-priority'
+  ttTitle.textContent  = !status.has_polled ? 'Connecting…'
+    : !status.healthy  ? "Meridian's paused"
+    : 'Watching — nothing to track yet'
+  ttCtx.textContent    = ''
+  resize()
+}
+
+function renderTask(status) {
   ttKey.textContent = status.task_key
   ttStatus.textContent = STATUS_LABELS[status.task_status_category] || (status.task_status_category || '')
   const priLabel = status.task_priority || ''
@@ -62,7 +106,6 @@ function render(status) {
   ttPri.className = `tt-priority ${priClass(priLabel)}`
   ttTitle.textContent = status.task_title || status.task_key
 
-  // Progress
   const spent = status.task_spent_today_s || 0
   const est   = status.task_estimate_s || 0
   const pct   = status.task_percent != null
@@ -83,17 +126,18 @@ function render(status) {
     ttFill.style.width = '0%'
   }
 
-  // Context: active window title or fallback
   ttCtx.textContent = status.active_title || ''
+}
 
-  // Resize window to card height.
-  const h = Math.ceil(card.getBoundingClientRect().height)
-  if (h > 50) {
-    try {
-      const { LogicalSize, getCurrentWindow } = window.__TAURI__.window
-      getCurrentWindow().setSize(new LogicalSize(288, h)).catch(() => {})
-    } catch {}
-  }
+// Size the window to the card's height plus the transparent body padding, so
+// the card never overflows and the shadow is never clipped into a rectangle.
+function resize() {
+  const h = Math.ceil(card.getBoundingClientRect().height) + PAD_V
+  if (h < 50) return
+  try {
+    const { LogicalSize, getCurrentWindow } = window.__TAURI__.window
+    getCurrentWindow().setSize(new LogicalSize(WIN_W, h)).catch(() => {})
+  } catch {}
 }
 
 listen('status-update', (e) => render(e.payload))

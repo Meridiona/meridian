@@ -162,7 +162,7 @@ pub fn run() {
                                 // Position the tooltip centred below the tray icon.
                                 // scale_factor 1.0 because the tray_icon crate already
                                 // gives us physical pixel coords before the dpi wrapper.
-                                let tt_w = 288_i32;
+                                let tt_w = 300_i32;
                                 let icon_pos = rect.position.to_physical::<i32>(1.0);
                                 let icon_size = rect.size.to_physical::<i32>(1.0);
                                 let x = (icon_pos.x + icon_size.width / 2 - tt_w / 2).max(0);

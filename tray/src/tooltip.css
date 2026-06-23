@@ -1,9 +1,16 @@
 /* ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity */
 
+/* The window is transparent and intentionally LARGER than the card: the body
+   padding gives the card's drop-shadow room to render. Without it the shadow
+   is clipped at the window bounds and reads as a hard rectangular border. */
 html, body {
-  width: 288px;
+  width: 300px;
   background: transparent;
   overflow: hidden;
+}
+body {
+  margin: 0;
+  padding: 10px 16px 24px;   /* top · sides · bottom — shadow breathing room */
 }
 
 .tt-card {
@@ -11,10 +18,9 @@ html, body {
   border-radius: 14px;
   border: 0.5px solid var(--rule-2);
   box-shadow:
-    0 1px 1px rgba(0, 0, 0, .04),
-    0 8px 20px -4px rgba(20, 18, 14, .20),
-    0 24px 48px -8px rgba(20, 18, 14, .26);
-  padding: 14px 16px 12px;
+    0 1px 2px rgba(20, 18, 14, .08),
+    0 10px 28px -10px rgba(20, 18, 14, .28);
+  padding: 13px 15px 12px;
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -136,12 +142,24 @@ html, body {
   flex-shrink: 0;
 }
 
-/* When there's no task tracked today */
+/* ── Non-task states ──────────────────────────────────────────────────────
+   `live`  = no classified task but a session is active → show what you're doing.
+   `empty` = nothing to track (idle / connecting / offline).
+   Both hide the task-only progress block. */
+.tt-card.live .tt-prog,
+.tt-card.live .tt-bar-wrap,
+.tt-card.empty .tt-prog,
+.tt-card.empty .tt-bar-wrap { display: none; }
+
+/* Live: the chip becomes a category pill with an accent dot. */
+.tt-card.live .tt-key {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
+.tt-card.empty .tt-key { opacity: .5; }
 .tt-card.empty .tt-title {
   color: var(--ink-3);
   font-style: italic;
-}
-.tt-card.empty .tt-prog,
-.tt-card.empty .tt-bar-wrap {
-  display: none;
 }
