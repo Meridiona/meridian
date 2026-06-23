@@ -64,7 +64,7 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "signingIdentity": "-"
+      "signingIdentity": null
     },
     "resources": {
       "../../target/release/meridian": "backend/meridian",
