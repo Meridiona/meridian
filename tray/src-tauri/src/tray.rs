@@ -42,6 +42,9 @@ pub(crate) fn build_tray_menu<R: Runtime>(
     let setup_item = MenuItemBuilder::with_id("open_setup", "Setup…").build(app)?;
     let worklogs_item = MenuItemBuilder::with_id("open_worklogs", "Review Drafts").build(app)?;
     let restart_item = MenuItemBuilder::with_id("restart_daemon", "Restart Daemon").build(app)?;
+    // DMG auto-update (handled by tauri-plugin-updater). A no-op toast in a
+    // source/dev run; the real swap+relaunch only happens for a packaged `.app`.
+    let update_item = MenuItemBuilder::with_id("check_updates", "Check for Updates…").build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", "Quit Meridian").build(app)?;
     MenuBuilder::new(app)
         .items(&[
@@ -50,6 +53,7 @@ pub(crate) fn build_tray_menu<R: Runtime>(
             &setup_item,
             &worklogs_item,
             &restart_item,
+            &update_item,
             &quit_item,
         ])
         .build()
@@ -65,6 +69,7 @@ pub(crate) fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
         "open_worklogs" => open_native_dashboard(app),
         "toggle_daemon" => toggle_from_menu(app),
         "restart_daemon" => restart_from_menu(),
+        "check_updates" => crate::update::check_for_updates(app),
         "quit" => app.exit(0),
         _ => {}
     }

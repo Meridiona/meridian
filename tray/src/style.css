@@ -298,6 +298,29 @@ button:focus-visible {
 .wl-text { font-size: 13px; color: var(--ink); font-weight: 450; white-space: nowrap; }
 .wl-arrow { color: var(--ink-3); font-size: 15px; flex-shrink: 0; }
 
+/* DMG update-available banner — a slim accent bar under the header. Hidden
+   (via [hidden]) until check_update finds a newer version. */
+.upd {
+  display: flex; align-items: center; justify-content: space-between;
+  width: 100%; text-align: left;
+  padding: 9px 16px;
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--rule);
+  transition: filter .12s;
+}
+.upd:hover { filter: brightness(0.98); }
+.upd-left { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.upd-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex-shrink: 0; width: 18px; height: 18px; border-radius: 6px;
+  font-size: 12px; font-weight: 700; color: #fff; background: var(--accent);
+}
+.upd-text { font-size: 12px; color: var(--ink); font-weight: 500; white-space: nowrap; }
+.upd-ver {
+  font-family: var(--font-mono); font-size: 10px; color: var(--ink-3);
+  flex-shrink: 0; white-space: nowrap;
+}
+
 /* ── Footer ─────────────────────────────────────────────────────────────── */
 .pop-foot {
   display: flex; align-items: center; justify-content: space-between;

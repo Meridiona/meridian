@@ -19,6 +19,14 @@ tauri = { version = "2.11", features = ["tray-icon", "image-png", "macos-private
 tauri-plugin-positioner = { version = "2.3", features = ["tray-icon"] }
 tauri-plugin-notification = "2"
 tauri-plugin-opener = "2"
+# DMG auto-update (Step 1 of the public-distribution plan). Checks the GitHub
+# `latest.json` against the running version, downloads the signed `.app.tar.gz`,
+# verifies it against the minisign pubkey in tauri.conf.json, swaps it in, and
+# relaunches via core `app.restart()` (no separate process plugin needed).
+# `rustls-tls` matches the rest of the crate (reqwest above) so we don't pull
+# native-tls. This is the DMG path; npm installs still update via `meridian
+# update` in a Terminal (commands::run_update) — the two are independent.
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # `process` is needed by parents.rs (spawns `meridian ticket-parents`); without

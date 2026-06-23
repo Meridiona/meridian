@@ -230,6 +230,27 @@ fn write_and_open(script_path: &std::path::Path, script: &str) -> std::io::Resul
         .map(|_| ())
 }
 
+/// DMG auto-update check for the in-app banners (sidebar + popover). Wraps
+/// [`crate::update::check_status`] — a structured, never-throwing status
+/// (`available` / `uptodate` / `unsupported` / `error`). Distinct from
+/// [`get_version`] above: that compares the npm-bundle version against the npm
+/// registry (the `meridian update` Terminal path); this checks the GitHub
+/// `latest.json` the packaged `.app` updates from.
+#[tauri::command]
+#[tracing::instrument(skip(app))]
+pub async fn check_update(app: tauri::AppHandle) -> crate::update::UpdateStatus {
+    crate::update::check_status(&app).await
+}
+
+/// Download + install the available DMG update, then relaunch. Emits
+/// `update-progress` events the banners render as a bar. Returns `Err(String)`
+/// only on a pre-relaunch failure (success never returns — the app re-execs).
+#[tauri::command]
+#[tracing::instrument(skip(app))]
+pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    crate::update::download_and_apply(&app).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::is_newer;

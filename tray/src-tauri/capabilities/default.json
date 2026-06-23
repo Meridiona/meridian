@@ -8,6 +8,7 @@
     "core:window:allow-set-size",
     "positioner:default",
     "notification:default",
-    "opener:default"
+    "opener:default",
+    "updater:default"
   ]
 }
