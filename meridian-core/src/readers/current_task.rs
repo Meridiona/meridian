@@ -77,15 +77,22 @@ pub async fn get_current_task(
 
     // Story points (free text, migration 039) as the hour budget. Tolerates a DB
     // that predates the column — a missing column means no estimate, not a crash.
-    let story_points: Option<String> = sqlx::query_scalar::<_, Option<String>>(
+    let story_points: Option<String> = match sqlx::query_scalar::<_, Option<String>>(
         "SELECT story_points FROM pm_tasks WHERE task_key = ?1",
     )
     .bind(&key)
     .fetch_optional(pool)
     .instrument(tracing::debug_span!("current_task.read.story_points"))
     .await
-    .unwrap_or(None)
-    .flatten();
+    {
+        Ok(v) => v.flatten(),
+        Err(e) => {
+            // A missing table/column (pre-migration-039 DB) is expected and silenced;
+            // other errors (pool exhaustion, busy timeout) are worth surfacing.
+            tracing::warn!(error = %e, task_key = %key, "current_task: story_points fetch failed");
+            None
+        }
+    };
 
     // Foreground seconds spent on this task today.
     let spent_s: i64 = sqlx::query_scalar::<_, i64>(
@@ -105,7 +112,7 @@ pub async fn get_current_task(
     .context("current_task: sum today's seconds on task")?;
 
     let percent = compute_percent(spent_s, story_points.as_deref());
-    tracing::debug!(key = %key, spent_s, ?percent, "current_task.resolved");
+    tracing::info!(key = %key, spent_s, ?percent, "current_task.resolved");
 
     Ok(Some(CurrentTask { key, percent }))
 }

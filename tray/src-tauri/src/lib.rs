@@ -205,7 +205,12 @@ pub fn run() {
                             let pct = (bucket >= 0).then(|| bucket as f64 / 100.0);
                             if tray.set_icon(Some(tray_icon::ring_image(pct))).is_ok() {
                                 // Runtime set_icon drops the template flag; re-arm it.
-                                let _ = tray.set_icon_as_template(true);
+                                if let Err(e) = tray.set_icon_as_template(true) {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "tray: set_icon_as_template failed — ring may render full-colour"
+                                    );
+                                }
                             }
                             last_bucket = bucket;
                         }
