@@ -26,6 +26,7 @@ mod state;
 mod sys;
 mod tray;
 mod tray_icon;
+mod update;
 
 use state::{AppState, HealthStatus};
 use std::sync::{Arc, Mutex};
@@ -72,6 +73,10 @@ pub fn run() {
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        // DMG auto-update: reads endpoint + minisign pubkey from tauri.conf.json.
+        // Registered unconditionally; the check is a no-op in a source/dev run
+        // (the running binary isn't a packaged `.app` for the updater to swap).
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(app_state.clone())
         .manage(mlx_manager.clone())
         .setup(move |app| {
@@ -187,8 +192,11 @@ pub fn run() {
                                 ));
                                 #[cfg(target_os = "macos")]
                                 make_visible_over_fullscreen(&tt);
-                                let shown = tt.show();
-                                tracing::info!(ok = shown.is_ok(), x, y, "tray.enter: tooltip shown");
+                                #[cfg(target_os = "macos")]
+                                show_no_focus(&tt);
+                                #[cfg(not(target_os = "macos"))]
+                                let _ = tt.show();
+                                tracing::info!(x, y, "tray.enter: tooltip shown");
                                 // Push the latest status so the tooltip renders fresh data.
                                 let _ = app.emit("status-update",
                                     app.try_state::<Arc<Mutex<AppState>>>()
@@ -434,6 +442,18 @@ pub fn run() {
                 });
             }
 
+            // Silent DMG update check shortly after launch. Stays quiet when
+            // there's nothing new; on an update it installs in place and applies
+            // on the next launch (no forced restart mid-session). The 5 s delay
+            // keeps the network call off the startup-critical path.
+            {
+                let update_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    update::check_for_updates(&update_handle, false);
+                });
+            }
+
             Ok(())
         })
         // Hand-maintained command list (grouped by domain). Adding a command
@@ -525,17 +545,20 @@ fn tray_debug(window: tauri::Window, msg: String) {
     );
 }
 
-/// Set the window's macOS `collectionBehavior` so it renders over another app's
-/// full-screen Space, not just normal Spaces.
+/// Set the window's macOS `collectionBehavior` and level so it renders over
+/// another app's full-screen Space, not just normal Spaces.
 ///
 /// `WebviewWindow::set_visible_on_all_workspaces(true)` (tao) only OR-s in
 /// `NSWindowCollectionBehaviorCanJoinAllSpaces`. A window over a full-screen app
 /// also needs `NSWindowCollectionBehaviorFullScreenAuxiliary`, which tao never
 /// sets — so the popover/tooltip silently fail to appear when a full-screen app
 /// owns the active Space. We send `setCollectionBehavior:` directly, OR-ing both
-/// flags onto whatever is already there. Combined with the window's floating
-/// level (`alwaysOnTop`), this is the standard menu-bar-popover-over-fullscreen
-/// recipe. Must run on the main thread (the `setup` hook does).
+/// flags onto whatever is already there, and raise the window level to
+/// `NSPopUpMenuWindowLevel` (101) so it sits above full-screen app content.
+/// `NSStatusWindowLevel` (25) is above the menu bar on normal Spaces but can sit
+/// *below* a full-screen app's compositor layer — pop-up menu level is the safe
+/// choice and is what Spotlight / Alfred / 1Password mini use.
+/// Must run on the main thread (the `setup` hook and tray-event handlers do).
 #[cfg(target_os = "macos")]
 fn make_visible_over_fullscreen(win: &tauri::WebviewWindow) {
     use objc2::{msg_send, runtime::AnyObject};
@@ -543,11 +566,10 @@ fn make_visible_over_fullscreen(win: &tauri::WebviewWindow) {
     // AppKit NSWindowCollectionBehavior bit flags (stable since 10.x).
     const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
     const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
-    // NSStatusWindowLevel (25): just above the menu-bar level, the natural level
-    // for menu-bar-spawned UI. A floating-level window (what `alwaysOnTop` sets)
-    // can sit *under* another app's full-screen content even with the aux flag;
-    // raising the level ensures the popover renders above it.
-    const NS_STATUS_WINDOW_LEVEL: isize = 25;
+    // NSPopUpMenuWindowLevel (101): above all normal app content and above
+    // full-screen app compositor layers. NSStatusWindowLevel (25) is not
+    // reliably above full-screen content on macOS 14+.
+    const NS_POPUP_MENU_WINDOW_LEVEL: isize = 101;
 
     let ptr = match win.ns_window() {
         Ok(p) if !p.is_null() => p as *const AnyObject,
@@ -565,13 +587,37 @@ fn make_visible_over_fullscreen(win: &tauri::WebviewWindow) {
         let current: usize = msg_send![ns, collectionBehavior];
         let next = current | CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY;
         let _: () = msg_send![ns, setCollectionBehavior: next];
-        let _: () = msg_send![ns, setLevel: NS_STATUS_WINDOW_LEVEL];
+        let _: () = msg_send![ns, setLevel: NS_POPUP_MENU_WINDOW_LEVEL];
         tracing::info!(
             label = %win.label(),
             behavior_before = current,
             behavior_after = next,
-            level = NS_STATUS_WINDOW_LEVEL,
+            level = NS_POPUP_MENU_WINDOW_LEVEL,
             "make_visible_over_fullscreen: applied"
         );
+    }
+}
+
+/// Show a window without stealing focus from the currently active app.
+///
+/// `WebviewWindow::show()` calls `makeKeyAndOrderFront:` which signals the
+/// active app to deactivate — if the active app is in full-screen this can
+/// cause macOS to switch away from its Space before our window appears.
+/// `orderFrontRegardless` shows the window at its current level without
+/// changing the key-window status, so the full-screen app stays active.
+/// Used for the hover tooltip; the click-triggered popover uses `show()` +
+/// `set_focus()` because it deliberately takes focus for interaction.
+#[cfg(target_os = "macos")]
+fn show_no_focus(win: &tauri::WebviewWindow) {
+    use objc2::{msg_send, runtime::AnyObject};
+    match win.ns_window() {
+        Ok(p) if !p.is_null() => unsafe {
+            let ns = &*(p as *const AnyObject);
+            let _: () = msg_send![ns, orderFrontRegardless];
+        },
+        _ => {
+            // Fall back to normal show if ns_window is unavailable.
+            let _ = win.show();
+        }
     }
 }
