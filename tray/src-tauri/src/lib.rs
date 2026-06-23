@@ -124,7 +124,7 @@ pub fn run() {
                 // Monochrome mark → render as a template so macOS tints it to the
                 // light/dark menu bar instead of showing it full-colour.
                 .icon_as_template(true)
-                .tooltip("Meridian")
+
                 .on_tray_icon_event(|tray_handle, event| {
                     let app = tray_handle.app_handle();
                     // Record the tray rect so the positioner can place the popover.
