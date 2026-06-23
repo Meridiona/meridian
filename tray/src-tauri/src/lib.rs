@@ -195,6 +195,16 @@ pub fn run() {
                 s.tray_id = Some(tray.id().clone());
             }
 
+            // Make the popover (and tooltip) appear on every macOS Space,
+            // including full-screen app spaces.  Without this the window is
+            // created in the login-session's main Space and remains there when
+            // the user clicks the tray icon while another app is full-screen.
+            for label in ["main", "tray-tooltip"] {
+                if let Some(win) = app.get_webview_window(label) {
+                    let _ = win.set_visible_on_all_workspaces(true);
+                }
+            }
+
             // Live menu-bar pill: tick once a second and render the design's
             // "MER-142 · 2:05:11" — the current task key + the running session
             // elapsed (extrapolated from the last poll so it counts smoothly),
