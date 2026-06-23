@@ -72,6 +72,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = tr
 # fullscreen Space. Already in the tree via tao, so no new transitive cost.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
+# Global mouse-event monitor for click-outside dismiss on the non-activating NSPanel.
+# Already in the dep tree (transitive via objc2/tao); listed explicitly to use directly.
+block2 = "0.6"
 
 [features]
 # In-process screen capture is ON by default (Gap-2 Bucket 2 cutover): the

@@ -30,9 +30,11 @@ mod update;
 
 use state::{AppState, HealthStatus};
 use std::sync::{Arc, Mutex};
+#[cfg(not(target_os = "macos"))]
+use tauri::WindowEvent;
 use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, WindowEvent,
+    Emitter, Manager,
 };
 
 pub fn run() {
@@ -322,10 +324,16 @@ pub fn run() {
                 });
             }
 
-            // Hide the popover when it loses focus (user clicked outside).
-            // NSPanel without the non-activating mask CAN become key, so
-            // Focused(false) fires normally on click-outside. The tray-icon
-            // toggle and Escape key are additional dismiss paths.
+            // The popover is a non-activating NSPanel — it never becomes key so
+            // Focused(false) never fires. Dismiss paths:
+            //   • click-outside → global NSEvent monitor (macOS)
+            //   • tray-icon click → toggle in on_tray_icon_event above
+            //   • Escape key → app.js keydown → invoke('hide_popover')
+            #[cfg(target_os = "macos")]
+            if let Some(main_win) = app.get_webview_window("main") {
+                install_click_outside_monitor(main_win);
+            }
+            #[cfg(not(target_os = "macos"))]
             {
                 let main_win = app.get_webview_window("main").unwrap();
                 main_win.on_window_event({
@@ -647,21 +655,26 @@ fn show_no_focus(win: &tauri::WebviewWindow) {
     }
 }
 
-/// Convert an NSWindow to NSPanel.
+/// Convert an NSWindow to a non-activating NSPanel for fullscreen Space support.
 ///
-/// NSPanel is a direct `NSWindow` subclass with identical ivar layout, so
+/// A plain NSWindow shown via `makeKeyAndOrderFront:` activates the app, which
+/// macOS interprets as "switch to this app's Space" — causing a Space switch
+/// away from a fullscreen app. `NSWindowStyleMaskNonactivatingPanel` (bit 7)
+/// prevents the panel from ever becoming key or activating the app, so the
+/// fullscreen app's Space stays active and the panel appears within it when
+/// we call `orderFrontRegardless` (see `show_no_focus`).
+///
+/// NSPanel is a direct `NSWindow` subclass with identical ivar layout;
 /// `object_setClass` between them is safe (same technique as `tauri-nspanel`).
-/// Panels float above normal windows at the same level and are excluded from
-/// Expose/Mission Control thumbnails — the right semantics for a tray popover.
+/// The WKWebView IPC bridge is unaffected — it lives inside the view, not the
+/// window class.
 ///
-/// We do NOT set `NSWindowStyleMaskNonactivatingPanel` (bit 7): a non-activating
-/// panel never becomes key, so `Focused(false)` never fires and clicking outside
-/// the popover would not dismiss it. The Space-switch problem at show time is
-/// instead fixed by using `orderFrontRegardless` (see `show_no_focus`) rather
-/// than `makeKeyAndOrderFront`.
+/// `hidesOnDeactivate: NO` keeps the panel visible when the Accessory-policy
+/// process briefly backgrounds (otherwise it flickers).
 ///
-/// `hidesOnDeactivate` is set to `NO` so the panel stays visible when the
-/// Accessory-policy process briefly backgrounds.
+/// Since a non-activating panel never becomes key, `Focused(false)` never fires.
+/// Click-outside dismiss is handled instead by a global `NSEvent` monitor
+/// installed via `install_click_outside_monitor`.
 ///
 /// Must be called in the `setup` hook before the window is ever shown.
 #[cfg(target_os = "macos")]
@@ -688,7 +701,56 @@ fn init_as_nspanel(win: &tauri::WebviewWindow) {
     unsafe {
         object_setClass(ptr, class!(NSPanel));
         let ns = &*ptr;
+        // NSWindowStyleMaskNonactivatingPanel = 1 << 7.
+        let current_mask: usize = msg_send![ns, styleMask];
+        let _: () = msg_send![ns, setStyleMask: current_mask | (1usize << 7)];
         let _: () = msg_send![ns, setHidesOnDeactivate: false];
-        tracing::info!(label = %win.label(), "init_as_nspanel: converted to NSPanel");
+        tracing::info!(
+            label = %win.label(),
+            new_mask = current_mask | (1usize << 7),
+            "init_as_nspanel: converted to non-activating NSPanel"
+        );
+    }
+}
+
+/// Install a global `NSEvent` monitor that hides the popover when the user
+/// clicks outside it (in any other app or window).
+///
+/// `addGlobalMonitorForEventsMatchingMask:handler:` fires for mouse-down events
+/// delivered to OTHER processes — it does NOT fire for clicks inside our own
+/// windows. This makes it a clean "click outside" detector: any click that
+/// doesn't land in the popover will hide it.
+///
+/// This replaces `Focused(false)` / `windowDidResignKey` which never fires for
+/// a non-activating NSPanel (the panel never becomes key in the first place).
+///
+/// The block is leaked and the monitor runs for the app's lifetime. CPU impact
+/// is negligible: the closure body only runs when the popover is visible.
+#[cfg(target_os = "macos")]
+fn install_click_outside_monitor(win: tauri::WebviewWindow) {
+    use block2::RcBlock;
+    use objc2::{class, msg_send, runtime::AnyObject};
+
+    // NSLeftMouseDown (1<<1) | NSRightMouseDown (1<<3)
+    let mask: u64 = (1u64 << 1) | (1u64 << 3);
+
+    let block = RcBlock::new(move |_event: *mut AnyObject| {
+        if win.is_visible().unwrap_or(false) {
+            let _ = win.hide();
+        }
+    });
+
+    // Leak the RcBlock so it lives for the app's lifetime.
+    // RcBlock<Dyn>: Deref<Target = Block<Dyn>>; the coercion gives &Block<Dyn>
+    // which implements RefEncode (encoding: @? = block pointer).
+    let block_ref: &'static block2::Block<dyn Fn(*mut AnyObject)> = Box::leak(Box::new(block));
+
+    unsafe {
+        let _monitor: *mut AnyObject = msg_send![
+            class!(NSEvent),
+            addGlobalMonitorForEventsMatchingMask: mask,
+            handler: block_ref,
+        ];
+        tracing::info!("install_click_outside_monitor: global NSEvent monitor installed");
     }
 }
