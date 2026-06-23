@@ -21,6 +21,9 @@ export interface RuntimeSettings {
   // LLM
   llm_prefer_local: boolean
   llm_budget_pct: number
+  // The setup wizard's on-device model choice (HuggingFace repo id). null →
+  // automatic spec-aware selection. Mirrors RuntimeSettings.llm_model_preference.
+  llm_model_preference: string | null
   // Jira updater
   jira_update_enabled: boolean
   // Notifications — master switch + per-event-type toggles + quiet hours.
@@ -51,6 +54,7 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   agent_queue_floor: 0.40,
   llm_prefer_local: true,
   llm_budget_pct: 0.5,
+  llm_model_preference: null,
   jira_update_enabled: true,
   notifications_enabled: true,
   notify_plan_nudge: true,

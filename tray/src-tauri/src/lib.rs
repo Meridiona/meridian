@@ -313,6 +313,9 @@ pub fn run() {
             commands::start_mlx_server_cmd,
             commands::download_runtime_cmd,
             commands::prefetch_model_cmd,
+            commands::detect_system_specs,
+            commands::set_model_preference,
+            commands::get_model_preference,
         ])
         .run(tauri::generate_context!())
         .expect("error running meridian tray");

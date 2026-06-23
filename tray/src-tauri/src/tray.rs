@@ -130,9 +130,11 @@ pub(crate) fn open_wizard_window(app: &tauri::AppHandle) {
         let _ = win.set_focus();
         return;
     }
+    // The wizard renders the "A · Rail" shell (a 948×628 onboarding window with a
+    // left step rail); size the host window to fit it with a little breathing room.
     if let Err(e) = WebviewWindowBuilder::new(app, "setup", WebviewUrl::App("setup".into()))
         .title("Meridian — Setup")
-        .inner_size(560.0, 660.0)
+        .inner_size(980.0, 660.0)
         .resizable(false)
         .build()
     {

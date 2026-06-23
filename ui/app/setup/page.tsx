@@ -1,405 +1,298 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 'use client'
 
-// The onboarding wizard — the first Next route rendered inside a Tauri window
-// (the "setup" window opened from tray.rs::open_wizard_window). Talks to Rust
-// exclusively over the Tauri `invoke` bridge — no /api fetch, no Node server.
+// The first-run onboarding wizard — the "A · Rail" shell from the Meridian Setup
+// design, wired to the real backend. Renders inside the Tauri "setup" window
+// (tray.rs::open_wizard_window) and talks to Rust exclusively over the `invoke`
+// bridge. Presentation comes from the design (atoms/steps/data); behaviour —
+// permission polling, MLX status + download, hardware specs, model selection,
+// OAuth — is all live. No fabricated state.
 
-import { useState, useEffect, useRef } from 'react'
-import { invoke, tauri } from '@/lib/bridge'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
+import { invoke, mutate, load, tauri } from '@/lib/bridge'
+import { STEPS, Welcome, Completion } from './steps'
+import type { Wiz } from './steps'
+import { MODELS, MODEL_BY_ID } from './data'
+import type { DownloadProgress, MlxStatusResponse, ModelTier, SystemSpecs } from './data'
+import { Btn, Check, Kicker } from './atoms'
 
-const STEPS = ['Welcome', 'Permissions', 'Model', 'Connect', 'Done'] as const
-
-type MlxStatus = 'offline' | 'starting' | 'running' | { error: string }
-
-interface MlxStatusResponse {
-  status: MlxStatus
-  port: number
-  runtime_found: boolean
-  runtime_installed: boolean
-  download_available: boolean
-}
-
-interface DownloadProgress {
-  received: number
-  total: number
-  message: string
-}
+const SERIF: CSSProperties = { fontFamily: 'var(--font-instrument-serif), Georgia, serif' }
+const OAUTH_PROVIDERS = ['jira', 'trello'] as const
 
 export default function SetupWizard() {
+  const [welcome, setWelcome] = useState(true)
   const [step, setStep] = useState(0)
+  const [done, setDone] = useState(false)
   const [err, setErr] = useState('')
-  const last = STEPS.length - 1
 
-  // Step 1: live permission state
-  const [screenGrant, setScreenGrant] = useState<boolean | null>(null)
-  const [a11yGrant, setA11yGrant] = useState<boolean | null>(null)
-  const [inputMonGrant, setInputMonGrant] = useState<boolean | null>(null)
+  // Step 1 — permissions (live)
+  const [perms, setPerms] = useState<Wiz['perms']>({ accessibility: null, screen: null, input: null })
 
-  // Step 2: MLX server state + runtime download
+  // Step 2 — specs + MLX + model
+  const [specs, setSpecs] = useState<SystemSpecs | null>(null)
   const [mlx, setMlx] = useState<MlxStatusResponse | null>(null)
   const [downloading, setDownloading] = useState(false)
-  const [progress, setProgress] = useState<DownloadProgress | null>(null)
-  // Step 2b: eager model prefetch (kicks off once the server is up). The ref
-  // guards one-shot triggering from inside the polling closure (which captures
-  // stale state); `prefetching` drives the progress UI.
   const [prefetching, setPrefetching] = useState(false)
+  const [modelReady, setModelReady] = useState(false)
+  const [progress, setProgress] = useState<DownloadProgress | null>(null)
+  const [model, setModel] = useState<ModelTier['id']>('core')
+  // The user must explicitly commit a model (the Download button) before we
+  // prefetch — otherwise an auto-prefetch would fetch the *default* before they
+  // pick, then a later pick would mislabel the row as "Ready" for a model the
+  // server never loaded. `wantModel` is that commit gate.
+  const [wantModel, setWantModel] = useState(false)
   const prefetchStarted = useRef(false)
 
-  // Poll Screen Recording + Accessibility on step 1
+  // Step 3 — integrations (live OAuth)
+  const [integrations, setIntegrations] = useState<Record<string, 'idle' | 'connecting' | 'connected'>>({})
+
+  const active = !welcome && !done
+
+  // Detect hardware once on mount + restore any persisted model choice. Both are
+  // cheap one-shots; specs are ready by the time the user reaches the Model step.
   useEffect(() => {
-    if (step !== 1) return
+    invoke<SystemSpecs>('detect_system_specs').then(setSpecs).catch(() => {})
+    invoke<string | null>('get_model_preference')
+      .then((id) => { const t = MODELS.find((m) => m.hfId === id); if (t) setModel(t.id) })
+      .catch(() => {})
+  }, [])
+
+  // Poll the three required permissions on the Permissions step.
+  useEffect(() => {
+    if (!active || step !== 0) return
     const poll = async () => {
-      const [sr, ax, im] = await Promise.all([
-        invoke<boolean>('check_screen_recording').catch(() => false),
+      const [accessibility, screen, input] = await Promise.all([
         invoke<boolean>('check_accessibility').catch(() => false),
+        invoke<boolean>('check_screen_recording').catch(() => false),
         invoke<boolean>('check_input_monitoring').catch(() => false),
       ])
-      setScreenGrant(sr)
-      setA11yGrant(ax)
-      setInputMonGrant(im)
+      setPerms({ accessibility, screen, input })
     }
     poll()
     const id = setInterval(poll, 2000)
     return () => clearInterval(id)
-  }, [step])
+  }, [active, step])
 
-  // Poll MLX status on step 2; auto-start only when the runtime is provisioned.
-  // If no runtime is installed yet, the user downloads it via startDownload().
+  // Poll MLX status while on the Model step OR while a commit is in flight (so a
+  // model that's still downloading keeps progressing after the user clicks
+  // Continue). Auto-starts the server when the runtime is present; only prefetches
+  // once the user has committed a model (`wantModel`), guaranteeing the chosen
+  // preference is on disk before the server resolves which model to fetch.
   useEffect(() => {
-    if (step !== 2) return
+    const polling = active && !modelReady && (step === 1 || wantModel || downloading || prefetching)
+    if (!polling) return
     const poll = async () => {
       try {
         const s = await invoke<MlxStatusResponse>('get_mlx_status')
         setMlx(s)
-        if (s.runtime_found && s.status === 'offline') {
-          invoke('start_mlx_server_cmd').catch(() => {})
-        }
-        // Server up → eagerly prefetch the spec-aware model (once). The download
-        // runs server-side, so it continues in the background after Continue;
-        // the model is only needed at the first classification.
-        if (s.status === 'running' && !prefetchStarted.current) {
+        if (s.runtime_found && s.status === 'offline') invoke('start_mlx_server_cmd').catch(() => {})
+        if (wantModel && s.status === 'running' && !prefetchStarted.current) {
           prefetchStarted.current = true
           setPrefetching(true)
           setProgress({ received: 0, total: 0, message: 'Preparing model…' })
           invoke('prefetch_model_cmd')
+            .then(() => setModelReady(true))
             .catch((e) => setErr(String(e)))
             .finally(() => setPrefetching(false))
         }
-      } catch (_) {
-        // no-op: server not yet available
-      }
+      } catch { /* server not yet available */ }
     }
     poll()
     const id = setInterval(poll, 3000)
     return () => clearInterval(id)
-  }, [step])
+  }, [active, step, modelReady, wantModel, downloading, prefetching])
 
-  // Listen for download progress events (shared by the runtime download and the
-  // model prefetch) while either phase is in flight.
+  // Stream download progress (shared by the runtime download + the model prefetch).
   useEffect(() => {
     if (!downloading && !prefetching) return
     let unlisten: (() => void) | undefined
-    tauri()
-      ?.event.listen<DownloadProgress>('mlx-download-progress', (e) => setProgress(e.payload))
-      .then((un) => { unlisten = un })
-      .catch(() => {})
+    tauri()?.event.listen<DownloadProgress>('mlx-download-progress', (e) => setProgress(e.payload))
+      .then((un) => { unlisten = un }).catch(() => {})
     return () => { if (unlisten) unlisten() }
   }, [downloading, prefetching])
 
-  const startDownload = async () => {
+  // Poll OAuth completion on the Integrations step so a browser-completed connect
+  // flips the row to "Connected" without the user clicking again.
+  useEffect(() => {
+    if (!active || step !== 2) return
+    const poll = async () => {
+      for (const provider of OAUTH_PROVIDERS) {
+        const st = await load<{ connected: boolean; error?: string | null }>(
+          `/api/auth/oauth/status?provider=${provider}`, 'get_oauth_status', { provider },
+        ).catch(() => null)
+        if (st?.error) { setErr(st.error); setIntegrations((s) => ({ ...s, [provider]: 'idle' })) }
+        else if (st?.connected) setIntegrations((s) => (s[provider] === 'connected' ? s : { ...s, [provider]: 'connected' }))
+      }
+    }
+    poll()
+    const id = setInterval(poll, 2000)
+    return () => clearInterval(id)
+  }, [active, step])
+
+  // ── Actions ────────────────────────────────────────────────────────────────
+  const openPane = useCallback((pane: string) => {
+    setErr(''); invoke('open_permission_pane', { pane }).catch((e) => setErr(String(e)))
+  }, [])
+
+  // Input Monitoring needs an explicit request to register the app before the
+  // Settings pane shows anything to toggle (mirrors the original wizard).
+  const grantInput = useCallback(async () => {
+    setErr('')
+    try { await invoke('request_input_monitoring') } catch { /* prompt is best-effort */ }
+    invoke('open_permission_pane', { pane: 'input_monitoring' }).catch((e) => setErr(String(e)))
+  }, [])
+
+  const selectModel = useCallback((id: ModelTier['id']) => {
+    setModel(id)
+    invoke('set_model_preference', { modelId: MODEL_BY_ID[id].hfId }).catch(() => {})
+  }, [])
+
+  // Provision the MLX runtime tarball, then bring the server up. No model is
+  // fetched here — that waits for an explicit Download (downloadModel).
+  const installRuntime = useCallback(async () => {
     setErr('')
     setDownloading(true)
     setProgress({ received: 0, total: 0, message: 'Starting…' })
     try {
       await invoke('download_runtime_cmd')
-      // Runtime now provisioned — kick the server. The poll will reflect it.
       invoke('start_mlx_server_cmd').catch(() => {})
-    } catch (e) {
-      setErr(String(e))
-    } finally {
-      setDownloading(false)
-    }
+    } catch (e) { setErr(String(e)) } finally { setDownloading(false) }
+  }, [])
+
+  // Commit the chosen model: persist the preference FIRST, then flag `wantModel`
+  // so the poll prefetches it once the server is running. Writing before the
+  // prefetch is what makes the "Ready" badge truthful about which model loaded.
+  const downloadModel = useCallback(async () => {
+    setErr('')
+    try { await invoke('set_model_preference', { modelId: MODEL_BY_ID[model].hfId }) } catch { /* best-effort */ }
+    invoke('start_mlx_server_cmd').catch(() => {})
+    setWantModel(true)
+    setProgress({ received: 0, total: 0, message: 'Preparing model…' })
+  }, [model])
+
+  const connect = useCallback((id: string) => {
+    setErr('')
+    setIntegrations((s) => ({ ...s, [id]: 'connecting' }))
+    mutate(`/api/auth/oauth/start?provider=${id}`, 'start_oauth', { provider: id })
+      .catch((e) => { setErr(String(e)); setIntegrations((s) => ({ ...s, [id]: 'idle' })) })
+  }, [])
+
+  const wiz: Wiz = {
+    perms, openPane, grantInput,
+    specs, mlx, model, selectModel, downloading, prefetching, modelReady, progress,
+    installRuntime, downloadModel,
+    integrations, connect,
   }
 
-  const openPane = (pane: string) => {
-    setErr('')
-    invoke('open_permission_pane', { pane }).catch((e) => setErr(String(e)))
+  // ── Navigation ───────────────────────────────────────────────────────────────
+  const meta = STEPS[step]
+  const last = step === STEPS.length - 1
+  const goStep = (i: number) => { setErr(''); setWelcome(false); setDone(false); setStep(i) }
+  const finish = async () => {
+    try { await invoke('mark_setup_complete') } catch { /* best-effort */ }
+    setDone(true)
   }
-
-  // Input Monitoring needs an explicit IOHIDRequestAccess to register the app +
-  // surface the prompt (a status read alone leaves the Settings pane empty —
-  // "No Items"). Request first so the app appears, then open the pane to toggle.
-  const grantInputMonitoring = async () => {
-    setErr('')
-    try { await invoke('request_input_monitoring') } catch { /* prompt is best-effort */ }
-    invoke('open_permission_pane', { pane: 'input_monitoring' }).catch((e) => setErr(String(e)))
-  }
-
-  const connectTracker = (provider: string) => {
-    setErr('')
-    invoke('start_oauth', { provider }).catch((e) => setErr(String(e)))
-  }
-
-  const next = async () => {
-    setErr('')
-    if (step === last) {
-      try {
-        await invoke('mark_setup_complete')
-      } catch (_) {
-        // best-effort — don't block the user if the write fails
-      }
-      tauri()?.window.getCurrentWindow().close()
-    } else {
-      setStep(step + 1)
-    }
-  }
+  const closeWindow = () => { tauri()?.window.getCurrentWindow().close() }
 
   return (
-    <div className="flex min-h-screen flex-col">
-      {/* Step rail */}
-      <div className="flex gap-2 px-6 pt-5">
-        {STEPS.map((s, i) => (
-          <div
-            key={s}
-            className={`h-[3px] flex-1 rounded-full transition-colors ${
-              i < step ? 'bg-emerald-500' : i === step ? 'bg-blue-500' : 'bg-current/15'
-            }`}
-          />
-        ))}
+    <div style={{ position: 'fixed', inset: 0, display: 'grid', placeItems: 'center', background: 'var(--paper)' }}>
+      <div className="rise" style={{
+        width: 948, height: 628, borderRadius: 18, background: 'var(--surface)',
+        border: '0.5px solid var(--rule-2)', overflow: 'hidden', color: 'var(--ink)',
+        boxShadow: 'var(--pop-shadow)',
+      }}>
+        {welcome ? (
+          <Welcome onBegin={() => { setWelcome(false); setStep(0) }} />
+        ) : (
+          <div className="flex" style={{ height: '100%' }}>
+            <Rail step={step} done={done} wiz={wiz} goStep={goStep} />
+            <div className="flex flex-col" style={{ flex: 1, minWidth: 0 }}>
+              {done ? (
+                <div className="nice-scroll" style={{ flex: 1, overflowY: 'auto', display: 'grid', placeItems: 'center', padding: '28px 32px' }}>
+                  <div className="flex flex-col items-center">
+                    <Completion wiz={wiz} />
+                    <Btn onClick={closeWindow} style={{ marginTop: 22, padding: '10px 24px', fontSize: 13.5 }}>Open Meridian</Btn>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div style={{ padding: '26px 32px 16px' }}>
+                    <Kicker style={{ marginBottom: 9 }}>{meta.kicker}</Kicker>
+                    <h1 style={{ ...SERIF, fontSize: 27, lineHeight: 1.04, letterSpacing: '-.01em', color: 'var(--ink)' }}>{meta.title}</h1>
+                    <p style={{ fontSize: 12.5, lineHeight: 1.5, color: 'var(--ink-2)', marginTop: 8, maxWidth: 460, textWrap: 'pretty' }}>{meta.subtitle}</p>
+                  </div>
+                  <div className="nice-scroll" style={{ flex: 1, overflowY: 'auto', padding: '4px 32px 22px' }}>
+                    <meta.Body wiz={wiz} />
+                  </div>
+                  <Footer step={step} last={last} canNext={meta.canNext(wiz)} err={err}
+                    onBack={() => { setErr(''); setStep(Math.max(0, step - 1)) }}
+                    onNext={() => (last ? finish() : (setErr(''), setStep(step + 1)))} />
+                </>
+              )}
+            </div>
+          </div>
+        )}
       </div>
-
-      <main className="flex-1 overflow-y-auto px-8 pt-7 pb-2">
-        {step === 0 && (
-          <section>
-            <h1 className="mb-1.5 text-2xl font-semibold">Welcome to Meridian</h1>
-            <p className="mb-3.5 text-[15px] opacity-60">
-              Meridian watches what you do and keeps your project tickets up to date — automatically,
-              on-device. Let&apos;s get a few things set up. It takes about a minute.
-            </p>
-            <p className="text-[15px] opacity-60">Nothing leaves your Mac unless you connect a tracker at the end.</p>
-          </section>
-        )}
-
-        {step === 1 && (
-          <section>
-            <h1 className="mb-1.5 text-2xl font-semibold">Permissions</h1>
-            <p className="mb-3.5 text-[15px] opacity-70">
-              Meridian needs three macOS permissions. Open each in System Settings and toggle Meridian on.
-            </p>
-            <PermissionCard
-              title="Screen Recording"
-              sub="Reads on-screen text to understand what you're working on."
-              granted={screenGrant}
-              onOpen={() => openPane('screen_recording')}
-            />
-            <PermissionCard
-              title="Accessibility"
-              sub="Reads window titles and UI labels for accurate context."
-              granted={a11yGrant}
-              onOpen={() => openPane('accessibility')}
-            />
-            <PermissionCard
-              title="Input Monitoring"
-              sub="Detects clicks and typing to mark when you switch tasks."
-              granted={inputMonGrant}
-              onOpen={grantInputMonitoring}
-            />
-            {screenGrant && a11yGrant && inputMonGrant && (
-              <p className="mt-3 text-[13px] text-emerald-600 font-medium">
-                All permissions granted — ready to continue.
-              </p>
-            )}
-          </section>
-        )}
-
-        {step === 2 && (
-          <section>
-            <h1 className="mb-1.5 text-2xl font-semibold">On-device model</h1>
-            <p className="mb-3.5 text-[15px] opacity-70">
-              Meridian classifies your work with a local model so nothing is sent to the cloud. The
-              runtime and model download once; the model keeps downloading in the background, so you
-              can continue.
-            </p>
-            <MlxRow
-              mlx={mlx}
-              downloading={downloading}
-              prefetching={prefetching}
-              progress={progress}
-              onDownload={startDownload}
-            />
-          </section>
-        )}
-
-        {step === 3 && (
-          <section>
-            <h1 className="mb-1.5 text-2xl font-semibold">Connect a tracker</h1>
-            <p className="mb-3.5 text-[15px] opacity-70">
-              Connect Jira or Trello so Meridian can update your tickets. Optional — do it later from Settings.
-            </p>
-            <Row title="Jira" sub="Opens a browser to authorize Meridian.">
-              <button
-                onClick={() => connectTracker('jira')}
-                className="rounded-lg border border-current/20 px-3 py-1.5 text-[13px] hover:bg-current/5 transition-colors"
-              >
-                Connect
-              </button>
-            </Row>
-            <Row title="Trello" sub="Opens a browser to authorize Meridian.">
-              <button
-                onClick={() => connectTracker('trello')}
-                className="rounded-lg border border-current/20 px-3 py-1.5 text-[13px] hover:bg-current/5 transition-colors"
-              >
-                Connect
-              </button>
-            </Row>
-            <p className="mt-3 text-[11px] opacity-55">Connecting a tracker is optional — skip with Continue.</p>
-          </section>
-        )}
-
-        {step === 4 && (
-          <section>
-            <h1 className="mb-1.5 text-2xl font-semibold">You&apos;re all set</h1>
-            <p className="mb-3.5 text-[15px] opacity-60">
-              Meridian is running in your menu bar. It&apos;ll start capturing sessions and drafting ticket
-              updates as you work.
-            </p>
-            <p className="text-[15px] opacity-60">Open the dashboard any time from the tray icon.</p>
-          </section>
-        )}
-      </main>
-
-      <footer className="flex items-center justify-between border-t border-current/10 px-8 pb-5 pt-3.5">
-        <button
-          onClick={() => { setErr(''); setStep(Math.max(0, step - 1)) }}
-          className={`rounded-lg border border-current/20 px-4 py-2 text-[14px] ${step === 0 ? 'invisible' : ''}`}
-        >
-          Back
-        </button>
-        <span className="text-xs text-red-600">{err}</span>
-        <button onClick={next} className="rounded-lg bg-blue-500 px-4 py-2 text-[14px] font-medium text-white hover:bg-blue-600 transition-colors">
-          {step === last ? 'Finish' : 'Continue'}
-        </button>
-      </footer>
     </div>
   )
 }
 
-function Row({ title, sub, children }: { title: string; sub: string; children: React.ReactNode }) {
+// ── Left step rail ────────────────────────────────────────────────────────────
+function Rail({ step, done, wiz, goStep }: { step: number; done: boolean; wiz: Wiz; goStep: (i: number) => void }) {
   return (
-    <div className="mb-3 flex items-center gap-3.5 rounded-[10px] border border-current/15 px-4 py-3.5">
-      <div className="flex-1">
-        <div className="font-semibold text-[14px]">{title}</div>
-        <div className="text-xs opacity-60 mt-0.5">{sub}</div>
+    <div className="flex flex-col" style={{ width: 250, flexShrink: 0, background: 'var(--surface-2)', borderRight: '1px solid var(--rule)', padding: '22px 18px' }}>
+      <div style={{ padding: '0 6px', marginBottom: 26 }}>
+        <div className="flex items-center" style={{ gap: 8 }}>
+          <span style={{ width: 8, height: 8, borderRadius: 99, background: 'var(--accent)' }} />
+          <span style={{ ...SERIF, fontSize: 21, lineHeight: 1, letterSpacing: '.01em', color: 'var(--ink)' }}>meridian</span>
+        </div>
       </div>
-      {children}
+      <div className="flex flex-col" style={{ gap: 2 }}>
+        {STEPS.map((s, i) => {
+          const isCur = i === step && !done
+          const reached = done || i <= step
+          const ok = done || i < step
+          return (
+            <button key={s.id} onClick={() => goStep(i)} className="flex items-start"
+              style={{ gap: 12, padding: '10px 8px', borderRadius: 10, textAlign: 'left',
+                background: isCur ? 'var(--tint)' : 'transparent', transition: 'background .14s' }}
+              onMouseEnter={(e) => { if (!isCur) e.currentTarget.style.background = 'var(--surface)' }}
+              onMouseLeave={(e) => { if (!isCur) e.currentTarget.style.background = 'transparent' }}>
+              <span className="flex items-center justify-center font-mono shrink-0" style={{
+                width: 24, height: 24, borderRadius: 99, fontSize: 11, fontWeight: 600, marginTop: 1,
+                background: ok ? 'var(--accent)' : isCur ? 'var(--surface)' : 'transparent',
+                color: ok ? '#fff' : isCur ? 'var(--accent)' : 'var(--ink-4)',
+                border: ok ? 'none' : `1px solid ${isCur ? 'var(--accent)' : 'var(--rule-2)'}`,
+              }}>{ok ? <Check size={13} color="#fff" /> : s.n}</span>
+              <div style={{ minWidth: 0, paddingTop: 1 }}>
+                <p style={{ fontSize: 13, fontWeight: isCur ? 500 : 400, color: reached ? 'var(--ink)' : 'var(--ink-3)' }}>{s.label}</p>
+                <p className="font-mono" style={{ fontSize: 10, color: ok ? 'var(--success)' : 'var(--ink-4)', marginTop: 2, letterSpacing: '.02em' }}>{s.status(wiz)}</p>
+              </div>
+            </button>
+          )
+        })}
+      </div>
+      <div style={{ flex: 1 }} />
+      <p className="font-mono" style={{ fontSize: 10, letterSpacing: '.12em', color: 'var(--ink-4)', padding: '0 8px', textTransform: 'uppercase' }}>First-run setup</p>
     </div>
   )
 }
 
-function PermissionCard({
-  title,
-  sub,
-  granted,
-  onOpen,
-}: {
-  title: string
-  sub: string
-  granted: boolean | null
-  onOpen: () => void
+// ── Footer ────────────────────────────────────────────────────────────────────
+function Footer({ step, last, canNext, err, onBack, onNext }: {
+  step: number; last: boolean; canNext: boolean; err: string; onBack: () => void; onNext: () => void
 }) {
   return (
-    <Row title={title} sub={sub}>
-      {granted === true ? (
-        <span className="rounded-full bg-emerald-500/20 px-2.5 py-1 text-xs font-semibold text-emerald-600">
-          granted
-        </span>
-      ) : (
-        <>
-          <span className="rounded-full bg-orange-500/20 px-2.5 py-1 text-xs font-semibold text-orange-600">
-            required
-          </span>
-          <button
-            onClick={onOpen}
-            className="rounded-lg border border-current/20 px-3 py-1.5 text-[13px] hover:bg-current/5 transition-colors"
-          >
-            Open Settings
-          </button>
-        </>
-      )}
-    </Row>
+    <div className="flex items-center justify-between" style={{ padding: '16px 28px', borderTop: '1px solid var(--rule)', background: 'var(--surface-2)' }}>
+      <Btn variant="ghost" disabled={step === 0} onClick={onBack}><ArrowL />Back</Btn>
+      <span style={{ fontSize: 11, color: 'var(--warn)', flex: 1, textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 12px' }}>{err}</span>
+      <Btn variant="primary" disabled={!canNext} onClick={onNext}>
+        {last ? 'Finish setup' : 'Continue'}{!last && <ArrowR />}
+      </Btn>
+    </div>
   )
 }
 
-function MlxRow({
-  mlx,
-  downloading,
-  prefetching,
-  progress,
-  onDownload,
-}: {
-  mlx: MlxStatusResponse | null
-  downloading: boolean
-  prefetching: boolean
-  progress: DownloadProgress | null
-  onDownload: () => void
-}) {
-  // Download in flight — show a progress bar instead of a status badge. Covers
-  // both phases: the runtime tarball, then the eager model prefetch.
-  if (downloading || prefetching) {
-    const pct = progress && progress.total > 0 ? (progress.received / progress.total) * 100 : 0
-    return (
-      <div className="mb-3 rounded-[10px] border border-current/15 px-4 py-3.5">
-        <div className="mb-2 flex items-center justify-between">
-          <span className="font-semibold text-[14px]">{prefetching ? 'Downloading model' : 'Downloading runtime'}</span>
-          <span className="text-xs opacity-60">{progress?.message ?? 'Starting…'}</span>
-        </div>
-        <div className="h-2 overflow-hidden rounded-full bg-current/10">
-          <div
-            className="h-full rounded-full bg-blue-500 transition-all"
-            style={{ width: progress && progress.total > 0 ? `${pct}%` : '100%' }}
-          />
-        </div>
-      </div>
-    )
-  }
-
-  let badge: React.ReactNode
-  let sub: string
-
-  if (!mlx) {
-    badge = <span className="rounded-full bg-current/10 px-2.5 py-1 text-xs opacity-50">checking…</span>
-    sub = 'Checking server status…'
-  } else if (mlx.status === 'running') {
-    badge = <span className="rounded-full bg-emerald-500/20 px-2.5 py-1 text-xs font-semibold text-emerald-600">running</span>
-    sub = `Classifier ready on port ${mlx.port}.`
-  } else if (mlx.status === 'starting') {
-    badge = <span className="rounded-full bg-blue-500/20 px-2.5 py-1 text-xs font-semibold text-blue-600">starting…</span>
-    sub = 'Server is loading the model — this may take a moment on first run.'
-  } else if (mlx.runtime_found) {
-    // Runtime present (downloaded or dev), server just not up yet.
-    badge = <span className="rounded-full bg-current/10 px-2.5 py-1 text-xs opacity-50">offline</span>
-    sub = 'Runtime installed — attempting to start the server…'
-  } else if (mlx.download_available) {
-    // No runtime, but a download is configured — offer the download button.
-    return (
-      <Row
-        title="Classifier model (Qwen3)"
-        sub="Downloads the on-device runtime, then the classifier model (~7 GB) chosen for this Mac. One-time setup; the model finishes in the background."
-      >
-        <button
-          onClick={onDownload}
-          className="rounded-lg bg-blue-500 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-blue-600 transition-colors"
-        >
-          Download
-        </button>
-      </Row>
-    )
-  } else {
-    // No runtime and no download URL configured yet.
-    badge = <span className="rounded-full bg-orange-500/20 px-2.5 py-1 text-xs font-semibold text-orange-600">not available</span>
-    sub = 'The downloadable runtime is not published yet. For dev, run: cd services && uv sync.'
-  }
-
-  return <Row title="Classifier model (Qwen3)" sub={sub}>{badge}</Row>
-}
+const ArrowL = (): ReactNode => (<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10 4 6 8l4 4" /></svg>)
+const ArrowR = (): ReactNode => (<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M6 4l4 4-4 4" /></svg>)
