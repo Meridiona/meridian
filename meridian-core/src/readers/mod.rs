@@ -17,6 +17,9 @@ pub mod active;
 /// The `/api/coding-agents` daily agent totals (ported from coding-agents/route.ts).
 pub mod coding_agents;
 
+/// The menu-bar pill's "current task" + progress-ring fill (tray-only; no route).
+pub mod current_task;
+
 /// The DB half of `/api/integrations` (pm_sync_state errors; ported from integrations/route.ts).
 pub mod integrations;
 

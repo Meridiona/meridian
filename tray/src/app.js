@@ -3,183 +3,255 @@
 'use strict'
 
 const invoke = (cmd, args) => __TAURI__.core.invoke(cmd, args)
-const listen  = (evt, cb)  => __TAURI__.event.listen(evt, cb)
+const listen = (evt, cb) => __TAURI__.event.listen(evt, cb)
 
-// ── State ────────────────────────────────────────────────────────────────────
-let elapsed = 0   // local 1-second counter synced on each status-update
-let elapsedTimerId = null
+// ── Reference data (mirrors the design's data.jsx, trimmed to what the tray draws) ──
+const APPS = {
+  'Antigravity':   { mono: 'Aᴳ', color: '#7C3AED' },
+  'Google Chrome': { mono: 'Ch', color: '#3B82F6' },
+  'Chrome':        { mono: 'Ch', color: '#3B82F6' },
+  'Safari':        { mono: 'Sf', color: '#1B9DF0' },
+  'Terminal':      { mono: '>_', color: '#111827' },
+  'iTerm2':        { mono: '>_', color: '#111827' },
+  'Warp':          { mono: '>_', color: '#01A4FF' },
+  'GitHub':        { mono: 'Gh', color: '#181717' },
+  'Claude':        { mono: 'Cl', color: '#D97757' },
+  'Cursor':        { mono: 'Cu', color: '#111827' },
+  'Code':          { mono: 'Co', color: '#3B82F6' },
+  'Visual Studio Code': { mono: 'Co', color: '#3B82F6' },
+  'Xcode':         { mono: 'Xc', color: '#1B7BE5' },
+  'Slack':         { mono: 'Sl', color: '#E01E5A' },
+  'Zoom':          { mono: 'Zm', color: '#2D8CFF' },
+  'Linear':        { mono: 'Li', color: '#5E6AD2' },
+  'Figma':         { mono: 'Fg', color: '#A259FF' },
+  'Notion':        { mono: 'No', color: '#111111' },
+  'Mail':          { mono: 'Ma', color: '#0EA5E9' },
+}
 
-// ── Elements ────────────────────────────────────────────────────────────────
-const dot          = document.getElementById('status-dot')
-const toggleBtn    = document.getElementById('toggle-btn')
-const toggleStatus = document.getElementById('toggle-status')
-const sessionApp   = document.getElementById('session-app')
-const sessionElapsed = document.getElementById('session-elapsed')
-const statFocus    = document.getElementById('stat-focus')
-const statSwitches = document.getElementById('stat-switches')
-const worklogsSection = document.getElementById('worklogs-section')
-const worklogsRule    = document.getElementById('worklogs-rule')
-const worklogsLabel   = document.getElementById('worklogs-label')
-const btnOpen      = document.getElementById('btn-open')
-const btnWorklogs  = document.getElementById('btn-worklogs')
-const worklogsBtn  = document.getElementById('worklogs-btn')
+const CAT_LABELS = {
+  coding: 'Coding',
+  code_review: 'Code review',
+  meeting: 'Meeting',
+  communication: 'Comms',
+  design: 'Design',
+  documentation: 'Docs',
+  planning: 'Planning',
+  deployment_devops: 'DevOps',
+  research: 'Research',
+  idle_personal: 'Idle',
+}
+
+// ── Elements ─────────────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id)
+const brandDot = $('brand-dot')
+const live = $('live')
+const liveLabelText = $('live-label-text')
+const liveMatch = $('live-match')
+const appGlyph = $('app-glyph')
+const liveCatDot = $('live-cat-dot')
+const liveCatLabel = $('live-cat-label')
+const liveTitle = $('live-title')
+const timerEl = $('timer')
+const liveSince = $('live-since')
+const pauseSec = $('pause')
+const pauseText = $('pause-text')
+const pauseSub = $('pause-sub')
+const pauseBtn = $('pause-btn')
+const tileFocus = $('tile-focus')
+const tileCoding = $('tile-coding')
+const tileCodingSub = $('tile-coding-sub')
+const tileReview = $('tile-review')
+const tileComms = $('tile-comms')
+const wlRule = $('wl-rule')
+const wl = $('wl')
+const wlBadge = $('wl-badge')
+const wlText = $('wl-text')
+
+// ── State for the local 1-second ticker ──────────────────────────────────────
+let elapsed = 0       // live session seconds; re-synced on every status payload
+let isTracking = false // healthy + has an active session
+let tickId = null
 
 // ── Formatters ───────────────────────────────────────────────────────────────
-function fmtDuration(secs) {
-  if (secs < 60) return 'Just getting started'
-  const m = Math.floor(secs / 60)
+// "6h 30m" / "30m" / "0m" — zero-pads minutes only when hours are present.
+function fmtTile(secs) {
+  const m = Math.floor((secs || 0) / 60)
   const h = Math.floor(m / 60)
   const rm = m % 60
-  if (h === 0) return m === 1 ? '1 minute' : `${m} minutes`
-  if (rm === 0) return h === 1 ? '1 hour' : `${h} hours`
-  const hStr = h === 1 ? '1 hour' : `${h} hours`
-  const mStr = rm === 1 ? '1 minute' : `${rm} minutes`
-  return `${hStr} ${mStr}`
+  if (h === 0) return `${rm}m`
+  return `${h}h ${String(rm).padStart(2, '0')}m`
 }
 
-function fmtElapsed(secs) {
-  if (secs < 60) return 'moments ago'
-  return 'for ' + fmtDuration(secs)
+// Big timer split so seconds can render smaller: "2:05" + ":12".
+function timerParts(secs) {
+  const h = Math.floor(secs / 3600)
+  const m = Math.floor((secs % 3600) / 60)
+  const s = secs % 60
+  return { hm: `${h}:${String(m).padStart(2, '0')}`, sec: `:${String(s).padStart(2, '0')}` }
 }
 
-function describeApp(appName, elapsedSecs) {
-  const lower = appName.toLowerCase()
-  const timeStr = fmtElapsed(elapsedSecs)
-  if (/claude|cursor|codex/i.test(lower)) return `In a session with ${appName} ${timeStr}`
-  if (/code|xcode|vim|neovim|emacs/i.test(lower)) return `Deep in ${appName} ${timeStr}`
-  if (/terminal|iterm|warp|kitty/i.test(lower)) return `In ${appName} — in the zone ${timeStr}`
-  if (/slack|teams|discord/i.test(lower)) return `In ${appName} ${timeStr}`
-  if (/figma|sketch/i.test(lower)) return `Designing in ${appName} ${timeStr}`
-  if (/notion|obsidian|notes/i.test(lower)) return `Writing in ${appName} ${timeStr}`
-  return `In ${appName} ${timeStr}`
+function clockOf(date) {
+  let h = date.getHours()
+  const m = date.getMinutes()
+  const period = h >= 12 ? 'PM' : 'AM'
+  h = ((h + 11) % 12) + 1
+  return `${h}:${String(m).padStart(2, '0')} ${period}`
 }
 
-// focusDesc is Rust's pre-formatted duration string (e.g. "6 hours 12 minutes").
-// We still apply the < 30 min threshold here for the "of real work today" copy.
-function fmtFocus(secs, focusDesc) {
-  if (secs < 1800) return 'Just getting started'  // < 30 min
-  return (focusDesc || fmtDuration(secs)) + ' of real work today'
+function glyphFor(app) {
+  return APPS[app] || { mono: (app || '?').slice(0, 2), color: '#6B6A67' }
 }
 
-function fmtSwitches(count) {
-  if (count === 0) return 'No context switches — focused day'
-  if (count === 1) return '1 context switch'
-  return `${count} context switches`
+// Several common dev apps (Terminal, Cursor, GitHub, Notion) ship near-black
+// brand colors that vanish on the dark popover. Lift very dark glyph colors so
+// the mark stays legible; light mode keeps the brand color untouched.
+function glyphColor(hex) {
+  const n = hex.replace('#', '')
+  const r = parseInt(n.slice(0, 2), 16)
+  const g = parseInt(n.slice(2, 4), 16)
+  const b = parseInt(n.slice(4, 6), 16)
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+  const dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+  if (!dark || lum >= 0.32) return hex
+  const lift = (c) => Math.round(c + (255 - c) * 0.55)
+  return '#' + [lift(r), lift(g), lift(b)].map((x) => x.toString(16).padStart(2, '0')).join('')
+}
+
+// ── Timer rendering ──────────────────────────────────────────────────────────
+function paintTimer() {
+  const { hm, sec } = timerParts(Math.max(0, elapsed))
+  timerEl.innerHTML = `${hm}<span class="timer-sec">${sec}</span>`
+  if (isTracking) {
+    const started = new Date(Date.now() - elapsed * 1000)
+    liveSince.textContent = `since ${clockOf(started)}`
+  } else {
+    liveSince.textContent = ''
+  }
+}
+
+function startTicker() {
+  if (tickId) return
+  tickId = setInterval(() => {
+    if (!isTracking) return
+    elapsed += 1
+    paintTimer()
+  }, 1000)
 }
 
 // ── Render ───────────────────────────────────────────────────────────────────
 function render(status) {
-  // Toggle button and status
-  const isHealthy = status.ui_reachable && status.healthy
-  toggleBtn.className = isHealthy ? 'toggle-btn active' : 'toggle-btn'
-  toggleStatus.textContent = isHealthy ? 'Connected' : 'Disconnected'
+  const healthy = status.ui_reachable && status.healthy
+  const hasActive = !!status.active_app
 
-  // Status dot
-  dot.className = 'status-dot'
-  if (!status.ui_reachable) {
-    dot.classList.add('unhealthy')
-  } else if (!status.healthy) {
-    dot.classList.add('unhealthy')
-  } else if (status.drafts_count > 0) {
-    dot.classList.add('pending')
-  } else {
-    dot.classList.add('healthy')
-  }
+  // Brand dot reflects daemon health.
+  brandDot.classList.toggle('down', !healthy)
 
-  // Active session
-  clearShimmer(sessionApp)
-  clearShimmer(statFocus)
-  clearShimmer(statSwitches)
+  // ── Live block state ──────────────────────────────────────────────────────
+  live.classList.remove('paused', 'idle')
+  isTracking = healthy && hasActive
 
-  if (status.active_app) {
-    elapsed = status.active_elapsed_s || 0
-    // Use Rust pre-formatted string on poll; 1s timer re-formats locally.
-    sessionApp.textContent = status.active_desc || describeApp(status.active_app, elapsed)
-    sessionElapsed.textContent = ''
-    startElapsedTimer(status.active_app)
-  } else {
+  if (!healthy) {
+    // Daemon is off / unreachable — tracking is effectively paused.
+    live.classList.add('paused')
+    liveLabelText.textContent = 'PAUSED'
+    liveMatch.textContent = ''
     elapsed = 0
-    stopElapsedTimer()
-    sessionApp.textContent = status.healthy
-      ? 'Nothing tracked right now'
-      : 'Meridian\'s gone quiet.'
-    sessionElapsed.textContent = ''
+  } else if (hasActive) {
+    liveLabelText.textContent = 'TRACKING NOW'
+    const pct = Math.round((status.active_confidence || 0) * 100)
+    liveMatch.textContent = pct > 0 ? `${pct}% match` : ''
+    elapsed = status.active_elapsed_s || 0
+  } else {
+    live.classList.add('idle')
+    liveLabelText.textContent = 'Nothing tracked right now'
+    liveMatch.textContent = ''
+    elapsed = 0
   }
 
-  // Stats — use Rust focus_desc, but apply the ≥30 min threshold for "real work" copy.
-  statFocus.textContent = fmtFocus(status.focus_s || 0, status.focus_desc)
-  statSwitches.textContent = fmtSwitches(status.switch_count || 0)
+  // App glyph + category + title — shown whenever we have an active app.
+  if (hasActive) {
+    const g = glyphFor(status.active_app)
+    const gc = glyphColor(g.color)
+    appGlyph.textContent = g.mono
+    appGlyph.style.background = gc + '1A'
+    appGlyph.style.color = gc
 
-  // Worklogs
+    const cat = status.active_category || 'idle_personal'
+    liveCatDot.style.background = `var(--cat-${cat}, var(--ink-4))`
+    liveCatLabel.textContent = CAT_LABELS[cat] || cat
+    liveTitle.textContent = status.active_title || status.active_app
+  } else {
+    appGlyph.textContent = '··'
+    appGlyph.style.background = 'var(--surface-2)'
+    appGlyph.style.color = 'var(--ink-4)'
+    liveCatDot.style.background = 'var(--ink-4)'
+    liveCatLabel.textContent = healthy ? 'Idle' : 'Offline'
+    liveTitle.textContent = healthy
+      ? 'Meridian is watching — nothing to track yet.'
+      : "Meridian's gone quiet."
+  }
+  paintTimer()
+
+  // ── Pause / tracking toggle ───────────────────────────────────────────────
+  if (healthy) {
+    pauseSec.classList.remove('paused')
+    pauseText.textContent = 'Pause tracking'
+    pauseSub.textContent = ''
+    pauseBtn.textContent = 'Pause'
+  } else {
+    pauseSec.classList.add('paused')
+    pauseText.textContent = 'Tracking paused'
+    pauseSub.textContent = "Meridian isn't recording"
+    pauseBtn.textContent = 'Resume'
+  }
+
+  // ── Time tracker tiles ────────────────────────────────────────────────────
+  tileFocus.textContent = fmtTile(status.focus_s)
+  tileCoding.textContent = fmtTile(status.coding_s)
+  tileReview.textContent = fmtTile(status.review_s)
+  tileComms.textContent = fmtTile(status.comms_s)
+
+  const auto = status.autonomous_s || 0
+  if (auto >= 60) {
+    tileCodingSub.textContent = `incl. ${fmtTile(auto)} autonomous AI`
+    tileCodingSub.classList.add('accent')
+  } else {
+    tileCodingSub.textContent = 'focused work'
+    tileCodingSub.classList.remove('accent')
+  }
+
+  // ── Worklogs awaiting (real drafts only) ──────────────────────────────────
   const drafts = status.drafts_count || 0
   if (drafts > 0) {
-    worklogsSection.style.display = ''
-    worklogsRule.style.display = ''
-    worklogsLabel.textContent = drafts === 1
-      ? '1 draft waiting on you'
-      : `${drafts} drafts waiting on you`
+    wl.hidden = false
+    wlRule.hidden = false
+    wlBadge.textContent = String(drafts)
+    wlText.textContent = drafts === 1 ? '1 worklog ready to approve' : 'Worklogs ready to approve'
   } else {
-    worklogsSection.style.display = 'none'
-    worklogsRule.style.display = 'none'
+    wl.hidden = true
+    wlRule.hidden = true
   }
 }
 
-// ── Elapsed timer (local 1s tick) ─────────────────────────────────────────────
-let _activeApp = null
+// ── Events + actions ─────────────────────────────────────────────────────────
+listen('status-update', (event) => render(event.payload))
 
-function startElapsedTimer(appName) {
-  _activeApp = appName
-  if (elapsedTimerId) return   // already running
-  elapsedTimerId = setInterval(() => {
-    elapsed += 1
-    if (_activeApp) {
-      sessionApp.textContent = describeApp(_activeApp, elapsed)
-    }
-  }, 1000)
-}
+$('btn-open-head').addEventListener('click', () => invoke('open_dashboard'))
+$('btn-open').addEventListener('click', () => invoke('open_dashboard'))
+$('btn-perms-head').addEventListener('click', () =>
+  invoke('open_permission_pane', { pane: 'screen_recording' }).catch(console.error))
+$('btn-perms').addEventListener('click', () =>
+  invoke('open_permission_pane', { pane: 'screen_recording' }).catch(console.error))
+$('btn-quit').addEventListener('click', () => invoke('quit_app').catch(console.error))
+wl.addEventListener('click', () => invoke('open_worklogs'))
 
-function stopElapsedTimer() {
-  _activeApp = null
-  if (elapsedTimerId) {
-    clearInterval(elapsedTimerId)
-    elapsedTimerId = null
-  }
-}
-
-// ── Shimmer helpers ──────────────────────────────────────────────────────────
-function clearShimmer(el) {
-  const s = el.querySelector('.shimmer')
-  if (s) s.remove()
-}
-
-// ── Events ───────────────────────────────────────────────────────────────────
-listen('status-update', (event) => {
-  render(event.payload)
+pauseBtn.addEventListener('click', () => {
+  // Healthy → tell the daemon it's running so it stops (Pause).
+  // Unhealthy → tell it it's stopped so it starts (Resume).
+  const running = !brandDot.classList.contains('down')
+  invoke('toggle_daemon', { is_running: running }).catch(console.error)
 })
-
-toggleBtn.addEventListener('click', () => {
-  const isCurrentlyActive = toggleBtn.classList.contains('active')
-  invoke('toggle_daemon', { is_running: isCurrentlyActive }).catch(console.error)
-})
-
-btnOpen.addEventListener('click', () => invoke('open_dashboard'))
-btnWorklogs.addEventListener('click', () => invoke('open_worklogs'))
-worklogsBtn.addEventListener('click', () => invoke('open_worklogs'))
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
+startTicker()
 invoke('get_status').then(render).catch(() => {})
-
-// ── Direct meridian.db read (proof of the Rust-command-over-SQLite path) ──────
-// Calls the get_active Tauri command, which reads meridian.db via the daemon's
-// own query layer — the pattern every ported dashboard route will follow.
-const dbActive = document.getElementById('db-active')
-function loadActiveFromDb() {
-  invoke('get_active')
-    .then((s) => {
-      dbActive.textContent = s
-        ? `DB · ${s.app_name} · ${s.frame_count} frames (direct read)`
-        : 'DB · nothing active (direct read)'
-    })
-    .catch((e) => { dbActive.textContent = 'DB · error: ' + String(e) })
-}
-loadActiveFromDb()
