@@ -486,10 +486,8 @@ pub fn build_chrome_set(frames: &[FrameText]) -> HashSet<String> {
         }
     }
 
-    // Keep only lines that exceed the threshold AND are not chrome-exempt.
-    // `is_chrome_exempt` is tighter than `is_landmark`: it excludes `# ` / `> `
-    // prefixes and anchors SQL keywords to line start, so common UI chrome lines
-    // that would have been protected by `is_landmark` are now correctly filtered.
+    // Keep lines at or above threshold that are not chrome-exempt (tighter than is_landmark:
+    // excludes `# `/`> ` prefixes, anchors SQL to line start).
     freq.into_iter()
         .filter(|(line, count)| *count >= CHROME_FREQ_THRESHOLD && !is_chrome_exempt(line))
         .map(|(line, _)| line)
