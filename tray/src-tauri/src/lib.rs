@@ -30,11 +30,9 @@ mod update;
 
 use state::{AppState, HealthStatus};
 use std::sync::{Arc, Mutex};
-#[cfg(not(target_os = "macos"))]
-use tauri::WindowEvent;
 use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager,
+    Emitter, Manager, WindowEvent,
 };
 
 pub fn run() {
@@ -324,12 +322,10 @@ pub fn run() {
                 });
             }
 
-            // NSPanel + NSWindowStyleMaskNonactivatingPanel never becomes the
-            // key window, so Focused(false) never fires. The popover is dismissed by:
-            //   • clicking the tray icon again (toggle in on_tray_icon_event above)
-            //   • Escape key (handled in app.js → invoke('hide_popover'))
-            // On non-macOS builds, keep the original focus-loss dismiss.
-            #[cfg(not(target_os = "macos"))]
+            // Hide the popover when it loses focus (user clicked outside).
+            // NSPanel without the non-activating mask CAN become key, so
+            // Focused(false) fires normally on click-outside. The tray-icon
+            // toggle and Escape key are additional dismiss paths.
             {
                 let main_win = app.get_webview_window("main").unwrap();
                 main_win.on_window_event({
@@ -651,21 +647,21 @@ fn show_no_focus(win: &tauri::WebviewWindow) {
     }
 }
 
-/// Convert an NSWindow to NSPanel with `NSWindowStyleMaskNonactivatingPanel`.
-///
-/// A plain NSWindow (what Tauri allocates) calls `makeKeyAndOrderFront:` when
-/// shown, which tells macOS to activate the owning process — and when the active
-/// Space is a full-screen app's Space, this forces macOS back to the home Space
-/// before the window can appear. NSPanel + `NSWindowStyleMaskNonactivatingPanel`
-/// (bit 7) breaks that cycle: the panel is shown via `orderFrontRegardless`
-/// and NEVER becomes the key window, so the fullscreen app's Space stays active
-/// and the panel appears within it.
+/// Convert an NSWindow to NSPanel.
 ///
 /// NSPanel is a direct `NSWindow` subclass with identical ivar layout, so
-/// `object_setClass` between them is safe. The Tauri IPC bridge lives inside
-/// the WKWebView, not the window class, and is unaffected. `hidesOnDeactivate`
-/// is set to `NO` so the panel stays visible even when the process (an Accessory
-/// app) cycles in and out of the background.
+/// `object_setClass` between them is safe (same technique as `tauri-nspanel`).
+/// Panels float above normal windows at the same level and are excluded from
+/// Expose/Mission Control thumbnails — the right semantics for a tray popover.
+///
+/// We do NOT set `NSWindowStyleMaskNonactivatingPanel` (bit 7): a non-activating
+/// panel never becomes key, so `Focused(false)` never fires and clicking outside
+/// the popover would not dismiss it. The Space-switch problem at show time is
+/// instead fixed by using `orderFrontRegardless` (see `show_no_focus`) rather
+/// than `makeKeyAndOrderFront`.
+///
+/// `hidesOnDeactivate` is set to `NO` so the panel stays visible when the
+/// Accessory-policy process briefly backgrounds.
 ///
 /// Must be called in the `setup` hook before the window is ever shown.
 #[cfg(target_os = "macos")]
@@ -687,21 +683,12 @@ fn init_as_nspanel(win: &tauri::WebviewWindow) {
         }
     };
     // Safety: NSPanel is a direct NSWindow subclass with identical ivar layout.
-    // object_setClass between them is safe when done before the window is first
-    // shown. We are on the main thread (setup hook). No ownership transfer.
+    // object_setClass between them is safe before the window is first shown.
+    // We are on the main thread (setup hook). No ownership transfer.
     unsafe {
         object_setClass(ptr, class!(NSPanel));
-
         let ns = &*ptr;
-        // NSWindowStyleMaskNonactivatingPanel = 1 << 7 (128).
-        let current_mask: usize = msg_send![ns, styleMask];
-        let _: () = msg_send![ns, setStyleMask: current_mask | (1usize << 7)];
-        // Keep visible when the Accessory-policy process backgrounds.
         let _: () = msg_send![ns, setHidesOnDeactivate: false];
-        tracing::info!(
-            label = %win.label(),
-            new_style_mask = current_mask | (1usize << 7),
-            "init_as_nspanel: converted to non-activating NSPanel"
-        );
+        tracing::info!(label = %win.label(), "init_as_nspanel: converted to NSPanel");
     }
 }
