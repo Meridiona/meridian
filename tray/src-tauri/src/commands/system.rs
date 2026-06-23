@@ -77,3 +77,13 @@ pub fn quit_app(app: tauri::AppHandle) {
     tracing::info!("quit_app: user requested app exit");
     app.exit(0);
 }
+
+/// Hide the popover (main) window. Called from app.js on Escape keydown.
+/// The popover runs as a non-activating NSPanel on macOS so Focused(false)
+/// never fires — Escape is the keyboard dismiss path.
+#[tauri::command]
+pub fn hide_popover(app: tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.hide();
+    }
+}

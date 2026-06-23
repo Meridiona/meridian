@@ -72,6 +72,9 @@ const wlRule = $('wl-rule')
 const wl = $('wl')
 const wlBadge = $('wl-badge')
 const wlText = $('wl-text')
+const upd = $('upd')
+const updText = $('upd-text')
+const updVer = $('upd-ver')
 
 // ── State for the local 1-second ticker ──────────────────────────────────────
 let elapsed = 0       // live session seconds; re-synced on every status payload
@@ -252,6 +255,12 @@ function render(status) {
 // ── Events + actions ─────────────────────────────────────────────────────────
 listen('status-update', (event) => { render(event.payload); resizeToContent() })
 
+// Escape closes the popover. The popover runs as a non-activating NSPanel so
+// Focused(false) never fires on macOS — Escape is the keyboard dismiss path.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') invoke('hide_popover').catch(() => {})
+})
+
 $('btn-open-head').addEventListener('click', () => invoke('open_dashboard'))
 $('btn-open').addEventListener('click', () => invoke('open_dashboard'))
 $('btn-perms-head').addEventListener('click', () =>
@@ -266,6 +275,39 @@ pauseBtn.addEventListener('click', () => {
   // Unhealthy → tell it it's stopped so it starts (Resume).
   const running = !brandDot.classList.contains('down')
   invoke('toggle_daemon', { is_running: running }).catch(console.error)
+})
+
+// ── DMG auto-update ───────────────────────────────────────────────────────────
+// Check on open; show the banner only when an update is actually available
+// (state 'uptodate'/'unsupported'/'error' stay silent in the compact popover —
+// the dashboard sidebar surfaces the diagnostic error text). Click → download +
+// install + relaunch, with live progress from `update-progress` events.
+let installing = false
+function checkUpdate() {
+  invoke('check_update').then((s) => {
+    if (s && s.state === 'available' && s.version) {
+      updVer.textContent = `v${s.currentVersion} → v${s.version}`
+      upd.hidden = false
+      resizeToContent()
+    }
+  }).catch(() => {})
+}
+listen('update-progress', (e) => {
+  const d = e.payload || {}
+  if (installing && d.contentLength) {
+    updText.textContent = `Downloading… ${Math.round((d.downloaded / d.contentLength) * 100)}%`
+  }
+})
+upd.addEventListener('click', () => {
+  if (installing) return
+  installing = true
+  updText.textContent = 'Starting…'
+  // Resolves only on failure — success re-execs the app (the relaunch).
+  invoke('install_update').catch((err) => {
+    installing = false
+    updText.textContent = 'Update failed'
+    dbg(`update install failed: ${err}`)
+  })
 })
 
 // ── Window sizing ─────────────────────────────────────────────────────────────
@@ -301,3 +343,4 @@ if (document.fonts && document.fonts.ready) {
 // ── Boot ──────────────────────────────────────────────────────────────────────
 startTicker()
 invoke('get_status').then((s) => { render(s); resizeToContent() }).catch(() => {})
+checkUpdate()

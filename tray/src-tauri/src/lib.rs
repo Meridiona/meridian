@@ -30,9 +30,11 @@ mod update;
 
 use state::{AppState, HealthStatus};
 use std::sync::{Arc, Mutex};
+#[cfg(not(target_os = "macos"))]
+use tauri::WindowEvent;
 use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, WindowEvent,
+    Emitter, Manager,
 };
 
 pub fn run() {
@@ -237,14 +239,23 @@ pub fn run() {
                 s.tray_id = Some(tray.id().clone());
             }
 
-            // Make the popover (and tooltip) appear on every macOS Space,
-            // INCLUDING another app's full-screen Space. `set_visible_on_all_workspaces`
-            // alone only sets `CanJoinAllSpaces` — over a full-screen app the window
-            // stays invisible until you also set `FullScreenAuxiliary`, which tao
-            // does not expose. Set the native collection behavior directly.
+            // Convert the popover + tooltip to NSPanel with non-activating style,
+            // then raise their collection behavior and level so they appear in
+            // fullscreen Spaces.
+            //
+            // Why NSPanel is necessary: a plain NSWindow (what Tauri creates) that
+            // calls makeKeyAndOrderFront causes macOS to switch back to the home Space
+            // before displaying the window, defeating fullscreen support. NSPanel +
+            // NSWindowStyleMaskNonactivatingPanel never steals key-window status so
+            // the fullscreen app's Space stays active and the panel appears within it.
+            // NSPanel is a direct NSWindow subclass with identical ivar layout;
+            // object_setClass between them is safe (the same technique used by
+            // tauri-nspanel). The Tauri IPC bridge (WKWebView + __TAURI__) is
+            // unaffected — it lives inside the view, not the window class.
             #[cfg(target_os = "macos")]
             for label in ["main", "tray-tooltip"] {
                 if let Some(win) = app.get_webview_window(label) {
+                    init_as_nspanel(&win);
                     make_visible_over_fullscreen(&win);
                 }
             }
@@ -313,16 +324,23 @@ pub fn run() {
                 });
             }
 
-            // Hide popover on focus loss.
-            let main_win = app.get_webview_window("main").unwrap();
-            main_win.on_window_event({
-                let win = main_win.clone();
-                move |event| {
-                    if let WindowEvent::Focused(false) = event {
-                        let _ = win.hide();
+            // NSPanel + NSWindowStyleMaskNonactivatingPanel never becomes the
+            // key window, so Focused(false) never fires. The popover is dismissed by:
+            //   • clicking the tray icon again (toggle in on_tray_icon_event above)
+            //   • Escape key (handled in app.js → invoke('hide_popover'))
+            // On non-macOS builds, keep the original focus-loss dismiss.
+            #[cfg(not(target_os = "macos"))]
+            {
+                let main_win = app.get_webview_window("main").unwrap();
+                main_win.on_window_event({
+                    let win = main_win.clone();
+                    move |event| {
+                        if let WindowEvent::Focused(false) = event {
+                            let _ = win.hide();
+                        }
                     }
-                }
-            });
+                });
+            }
 
             let app_handle = app.handle().clone();
             let state_clone = app_state.clone();
@@ -457,17 +475,10 @@ pub fn run() {
                 });
             }
 
-            // Silent DMG update check shortly after launch. Stays quiet when
-            // there's nothing new; on an update it installs in place and applies
-            // on the next launch (no forced restart mid-session). The 5 s delay
-            // keeps the network call off the startup-critical path.
-            {
-                let update_handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                    update::check_for_updates(&update_handle, false);
-                });
-            }
+            // No silent auto-install on launch: the DMG update surfaces as an
+            // in-app banner (sidebar + popover) that checks on open via the
+            // `check_update` command, so the user sees + consents to the update
+            // rather than the app restarting itself underneath them.
 
             Ok(())
         })
@@ -502,6 +513,8 @@ pub fn run() {
             commands::get_logs,
             commands::get_ticket_parents,
             commands::get_version,
+            commands::check_update,
+            commands::install_update,
             // DB writes (ported /api/* POSTs/PATCH/DELETE)
             commands::plan_action,
             commands::triage_decision,
@@ -525,6 +538,7 @@ pub fn run() {
             // OS/window actions
             commands::open_permission_pane,
             commands::quit_app,
+            commands::hide_popover,
             // Setup wizard (first-run, permissions, MLX)
             commands::is_first_run,
             commands::mark_setup_complete,
@@ -620,8 +634,9 @@ fn make_visible_over_fullscreen(win: &tauri::WebviewWindow) {
 /// cause macOS to switch away from its Space before our window appears.
 /// `orderFrontRegardless` shows the window at its current level without
 /// changing the key-window status, so the full-screen app stays active.
-/// Used for the hover tooltip; the click-triggered popover uses `show()` +
-/// `set_focus()` because it deliberately takes focus for interaction.
+/// For the NSPanel popover this is complementary to the non-activating mask
+/// (belt-and-suspenders): the mask prevents key-window steal, and this call
+/// prevents the ordering operation from triggering a Space switch.
 #[cfg(target_os = "macos")]
 fn show_no_focus(win: &tauri::WebviewWindow) {
     use objc2::{msg_send, runtime::AnyObject};
@@ -631,8 +646,62 @@ fn show_no_focus(win: &tauri::WebviewWindow) {
             let _: () = msg_send![ns, orderFrontRegardless];
         },
         _ => {
-            // Fall back to normal show if ns_window is unavailable.
             let _ = win.show();
         }
+    }
+}
+
+/// Convert an NSWindow to NSPanel with `NSWindowStyleMaskNonactivatingPanel`.
+///
+/// A plain NSWindow (what Tauri allocates) calls `makeKeyAndOrderFront:` when
+/// shown, which tells macOS to activate the owning process — and when the active
+/// Space is a full-screen app's Space, this forces macOS back to the home Space
+/// before the window can appear. NSPanel + `NSWindowStyleMaskNonactivatingPanel`
+/// (bit 7) breaks that cycle: the panel is shown via `orderFrontRegardless`
+/// and NEVER becomes the key window, so the fullscreen app's Space stays active
+/// and the panel appears within it.
+///
+/// NSPanel is a direct `NSWindow` subclass with identical ivar layout, so
+/// `object_setClass` between them is safe. The Tauri IPC bridge lives inside
+/// the WKWebView, not the window class, and is unaffected. `hidesOnDeactivate`
+/// is set to `NO` so the panel stays visible even when the process (an Accessory
+/// app) cycles in and out of the background.
+///
+/// Must be called in the `setup` hook before the window is ever shown.
+#[cfg(target_os = "macos")]
+fn init_as_nspanel(win: &tauri::WebviewWindow) {
+    use objc2::{class, msg_send, runtime::AnyObject};
+
+    extern "C" {
+        fn object_setClass(
+            obj: *mut AnyObject,
+            cls: *const objc2::runtime::AnyClass,
+        ) -> *const objc2::runtime::AnyClass;
+    }
+
+    let ptr = match win.ns_window() {
+        Ok(p) if !p.is_null() => p as *mut AnyObject,
+        _ => {
+            tracing::warn!(label = %win.label(), "init_as_nspanel: ns_window unavailable");
+            return;
+        }
+    };
+    // Safety: NSPanel is a direct NSWindow subclass with identical ivar layout.
+    // object_setClass between them is safe when done before the window is first
+    // shown. We are on the main thread (setup hook). No ownership transfer.
+    unsafe {
+        object_setClass(ptr, class!(NSPanel));
+
+        let ns = &*ptr;
+        // NSWindowStyleMaskNonactivatingPanel = 1 << 7 (128).
+        let current_mask: usize = msg_send![ns, styleMask];
+        let _: () = msg_send![ns, setStyleMask: current_mask | (1usize << 7)];
+        // Keep visible when the Accessory-policy process backgrounds.
+        let _: () = msg_send![ns, setHidesOnDeactivate: false];
+        tracing::info!(
+            label = %win.label(),
+            new_style_mask = current_mask | (1usize << 7),
+            "init_as_nspanel: converted to non-activating NSPanel"
+        );
     }
 }
