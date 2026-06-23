@@ -203,7 +203,7 @@ pub fn run() {
                                 let icon_pos = rect.position.to_physical::<i32>(1.0);
                                 let icon_size = rect.size.to_physical::<i32>(1.0);
                                 let x = (icon_pos.x + icon_size.width / 2 - tt_w / 2).max(0);
-                                let y = icon_pos.y + icon_size.height + 8;
+                                let y = icon_pos.y + icon_size.height;
                                 let _ = tt.set_position(tauri::Position::Physical(
                                     tauri::PhysicalPosition::new(x, y),
                                 ));
