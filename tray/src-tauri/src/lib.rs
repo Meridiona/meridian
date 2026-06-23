@@ -131,8 +131,6 @@ pub fn run() {
 
                 .on_tray_icon_event(|tray_handle, event| {
                     let app = tray_handle.app_handle();
-                    // Record the tray rect so the positioner can place the popover.
-                    tauri_plugin_positioner::on_tray_event(app, &event);
                     match &event {
                         TrayIconEvent::Click {
                             button: MouseButton::Left,
