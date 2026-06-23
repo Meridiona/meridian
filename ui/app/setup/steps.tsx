@@ -24,6 +24,7 @@ export interface Wiz {
   // Step 1 — permissions (live, polled every 2 s)
   perms: { accessibility: boolean | null; screen: boolean | null; input: boolean | null }
   openPane: (pane: string) => void
+  grantScreen: () => void
   grantInput: () => void
   // Step 2 — local intelligence (live MLX status + detected specs + model choice)
   specs: SystemSpecs | null
@@ -68,7 +69,7 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
             <div className="shrink-0">
               {granted
                 ? <span className="flex items-center" style={{ gap: 6, fontSize: 12, color: 'var(--success)', fontWeight: 500 }}><Check size={15} color="var(--success)" />Granted</span>
-                : <Btn size="sm" variant="secondary" onClick={() => p.id === 'input' ? wiz.grantInput() : wiz.openPane(p.pane)}>Open Settings</Btn>}
+                : <Btn size="sm" variant="secondary" onClick={() => p.id === 'input' ? wiz.grantInput() : p.id === 'screen' ? wiz.grantScreen() : wiz.openPane(p.pane)}>Open Settings</Btn>}
             </div>
           </Row>
         )

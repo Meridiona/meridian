@@ -106,6 +106,31 @@ pub async fn check_screen_recording() -> bool {
     unsafe { CGPreflightScreenCaptureAccess() }
 }
 
+/// Surface the macOS Screen Recording prompt **and register the app** so it
+/// appears in System Settings → Privacy → Screen Recording, then return the
+/// resulting grant state.
+///
+/// [`check_screen_recording`] uses `CGPreflightScreenCaptureAccess` — a pure
+/// status read that never registers the app. On a fresh install this means the
+/// list under Privacy → Screen Recording shows "No Items", because macOS only
+/// adds an entry the *first* time the app calls `CGRequestScreenCaptureAccess`.
+/// This command calls that request variant (analogous to `request_input_monitoring`)
+/// so clicking the wizard's grant button both registers the app and shows the
+/// system dialog in one shot.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn request_screen_recording() -> bool {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGRequestScreenCaptureAccess() -> bool;
+    }
+    // Safety: CGRequestScreenCaptureAccess shows the TCC prompt + registers the
+    // app, then returns the resulting grant state — no UB.
+    let granted = unsafe { CGRequestScreenCaptureAccess() };
+    tracing::info!(granted, "setup: requested Screen Recording access");
+    granted
+}
+
 /// Returns `true` when the tray holds macOS **Input Monitoring** permission.
 ///
 /// The in-process input recorder (`capture::ui_events::run_ui_event_recorder`)

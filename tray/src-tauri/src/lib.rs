@@ -474,6 +474,7 @@ pub fn run() {
             commands::mark_setup_complete,
             commands::check_accessibility,
             commands::check_screen_recording,
+            commands::request_screen_recording,
             commands::check_input_monitoring,
             commands::request_input_monitoring,
             commands::get_mlx_status,

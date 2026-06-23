@@ -160,6 +160,14 @@ export default function SetupWizard() {
     setErr(''); invoke('open_permission_pane', { pane }).catch((e) => setErr(String(e)))
   }, [])
 
+  // Screen Recording needs an explicit request to register the app before the
+  // Settings pane shows anything to toggle (same pattern as grantInput).
+  const grantScreen = useCallback(async () => {
+    setErr('')
+    try { await invoke('request_screen_recording') } catch { /* prompt is best-effort */ }
+    invoke('open_permission_pane', { pane: 'screen_recording' }).catch((e) => setErr(String(e)))
+  }, [])
+
   // Input Monitoring needs an explicit request to register the app before the
   // Settings pane shows anything to toggle (mirrors the original wizard).
   const grantInput = useCallback(async () => {
@@ -205,7 +213,7 @@ export default function SetupWizard() {
   }, [])
 
   const wiz: Wiz = {
-    perms, openPane, grantInput,
+    perms, openPane, grantScreen, grantInput,
     specs, mlx, model, selectModel, downloading, prefetching, modelReady, progress,
     committing: wantModel && !prefetching && !modelReady,
     installRuntime, downloadModel,
