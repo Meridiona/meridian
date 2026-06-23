@@ -68,3 +68,10 @@ pub async fn open_permission_pane(app: tauri::AppHandle, pane: String) -> Result
         .open_url(url, None::<&str>)
         .map_err(|e| e.to_string())
 }
+
+/// Quit the whole app — same exit path as the tray menu's "Quit Meridian".
+/// Invoked from the popover footer's Quit button.
+#[tauri::command]
+pub fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}

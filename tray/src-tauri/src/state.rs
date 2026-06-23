@@ -15,6 +15,24 @@ pub enum HealthStatus {
 pub struct ActiveSession {
     pub app_name: String,
     pub elapsed_s: u64,
+    /// Classifier category for the live block (e.g. "coding"); "idle_personal" default.
+    pub category: String,
+    /// Classifier confidence 0.0–1.0 — rendered as the "% match" readout.
+    pub confidence: f64,
+    /// Top foreground window title (the file/context line), if any.
+    pub title: Option<String>,
+}
+
+/// Today's active time split by category, for the popover's Time Tracker tiles.
+/// All seconds; aggregated in [`crate::poll::refresh::refresh_today`] from the
+/// same `get_today` response that feeds `focus_s`.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct TodayBreakdown {
+    pub coding_s: u64,
+    pub review_s: u64,
+    pub comms_s: u64,
+    /// Time an AI agent ran autonomously (drives the "incl. Xm autonomous AI agent" note).
+    pub autonomous_s: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -24,9 +42,20 @@ pub struct StatusPayload {
     pub active_elapsed_s: u64,
     /// Pre-formatted: "Deep in VS Code for 1 hour 24 minutes"
     pub active_desc: Option<String>,
+    /// Classifier category of the live session ("coding", "meeting", …).
+    pub active_category: Option<String>,
+    /// Classifier confidence 0.0–1.0 for the live session.
+    pub active_confidence: f64,
+    /// Top foreground window title for the live session.
+    pub active_title: Option<String>,
     pub focus_s: u64,
     /// Pre-formatted: "6 hours 12 minutes"
     pub focus_desc: String,
+    /// Today's per-category split for the Time Tracker tiles.
+    pub coding_s: u64,
+    pub review_s: u64,
+    pub comms_s: u64,
+    pub autonomous_s: u64,
     pub switch_count: u32,
     pub drafts_count: u32,
     pub ui_reachable: bool,
@@ -37,6 +66,7 @@ pub struct AppState {
     pub health: HealthStatus,
     pub active_session: Option<ActiveSession>,
     pub focus_s: u64,
+    pub today: TodayBreakdown,
     pub switch_count: u32,
     pub drafts_count: u32,
     pub ui_reachable: bool,
@@ -53,6 +83,7 @@ impl Default for AppState {
             health: HealthStatus::Unknown,
             active_session: None,
             focus_s: 0,
+            today: TodayBreakdown::default(),
             switch_count: 0,
             drafts_count: 0,
             ui_reachable: false,
@@ -75,13 +106,21 @@ impl AppState {
             .active_session
             .as_ref()
             .map(|a| format::describe_active(&a.app_name, a.elapsed_s));
+        let active = self.active_session.as_ref();
         StatusPayload {
             healthy: self.health == HealthStatus::Healthy,
-            active_app: self.active_session.as_ref().map(|a| a.app_name.clone()),
+            active_app: active.map(|a| a.app_name.clone()),
             active_elapsed_s: elapsed_s,
             active_desc,
+            active_category: active.map(|a| a.category.clone()),
+            active_confidence: active.map(|a| a.confidence).unwrap_or(0.0),
+            active_title: active.and_then(|a| a.title.clone()),
             focus_s: self.focus_s,
             focus_desc: format::format_duration(self.focus_s),
+            coding_s: self.today.coding_s,
+            review_s: self.today.review_s,
+            comms_s: self.today.comms_s,
+            autonomous_s: self.today.autonomous_s,
             switch_count: self.switch_count,
             drafts_count: self.drafts_count,
             ui_reachable: self.ui_reachable,

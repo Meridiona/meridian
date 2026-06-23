@@ -28,7 +28,12 @@ mod tray;
 
 use state::{AppState, HealthStatus};
 use std::sync::{Arc, Mutex};
-use tauri::{image::Image, tray::TrayIconBuilder, Manager, WindowEvent};
+use tauri::{
+    image::Image,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Manager, WindowEvent,
+};
+use tauri_plugin_positioner::{Position, WindowExt};
 
 pub fn run() {
     // Dev-only (`--features otel`): export tray spans to OpenObserve via the
@@ -106,13 +111,35 @@ pub fn run() {
             let tray_icon_bytes = include_bytes!("../icons/meridiona-mark.png");
             let tray_icon = Image::from_bytes(tray_icon_bytes)?;
 
+            // Left-click toggles the popover (positioned under the tray icon);
+            // right-click still opens the native menu. `show_menu_on_left_click`
+            // must be false so the left-click reaches our handler instead of
+            // auto-opening the menu and swallowing the popover.
             let tray = TrayIconBuilder::new()
                 .menu(&menu)
-                .show_menu_on_left_click(true)
+                .show_menu_on_left_click(false)
                 .icon(tray_icon)
                 .tooltip("Meridian")
                 .on_tray_icon_event(|tray_handle, event| {
-                    tauri_plugin_positioner::on_tray_event(tray_handle.app_handle(), &event);
+                    let app = tray_handle.app_handle();
+                    // Record the tray rect so the positioner can place the popover.
+                    tauri_plugin_positioner::on_tray_event(app, &event);
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = &event
+                    {
+                        if let Some(win) = app.get_webview_window("main") {
+                            if win.is_visible().unwrap_or(false) {
+                                let _ = win.hide();
+                            } else {
+                                let _ = win.move_window(Position::TrayCenter);
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                            }
+                        }
+                    }
                 })
                 .on_menu_event(|app, event| tray::handle_menu_event(app, event.id.as_ref()))
                 .build(app)?;
@@ -302,6 +329,7 @@ pub fn run() {
             commands::get_oauth_status,
             // OS/window actions
             commands::open_permission_pane,
+            commands::quit_app,
             // Setup wizard (first-run, permissions, MLX)
             commands::is_first_run,
             commands::mark_setup_complete,
