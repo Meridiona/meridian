@@ -82,10 +82,14 @@ pub(super) fn build_active_session(
 /// - `window_titles`: counts from identical titles are incremented; new titles are appended.
 /// - `audio_snippets`: appended, capped at `AUDIO_SNIPPET_CAP`.
 /// - `signals`: all new signals appended.
+/// - `session_text`: when `session_text_override` is `Some(text)`, that text is used
+///   directly (full rebuild from all frames — avoids chrome leaks from early sub-threshold
+///   batches). When `None`, falls back to the additive `merge_session_texts` path.
 pub(super) fn merge_into_active(
     existing: &ActiveSession,
     ctx: &BlockContext,
     new_idle_frame_count: i64,
+    session_text_override: Option<String>,
 ) -> Result<ActiveSession> {
     let now = ctx.ended_at.clone();
 
@@ -122,10 +126,13 @@ pub(super) fn merge_into_active(
         .unwrap_or_default();
     signals.extend(ctx.signals.iter().cloned());
 
-    let merged_session_text = merge_session_texts(
-        existing.session_text.as_deref().unwrap_or(""),
-        &ctx.session_text,
-    );
+    let merged_session_text = match session_text_override {
+        Some(text) => text,
+        None => merge_session_texts(
+            existing.session_text.as_deref().unwrap_or(""),
+            &ctx.session_text,
+        ),
+    };
 
     let (category, confidence) = classify(&ClassifyInput {
         app_name: &existing.app_name,
