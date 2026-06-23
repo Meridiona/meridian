@@ -143,6 +143,11 @@ pub fn run() {
                                 if win.is_visible().unwrap_or(false) {
                                     let _ = win.hide();
                                 } else {
+                                    // Re-assert fullscreen-aux collection behavior on the
+                                    // realized window right before showing — belt-and-suspenders
+                                    // in case the setup-time NSWindow wasn't fully configured.
+                                    #[cfg(target_os = "macos")]
+                                    make_visible_over_fullscreen(&win);
                                     let _ = win.move_window(Position::TrayCenter);
                                     let _ = win.show();
                                     let _ = win.set_focus();
@@ -170,6 +175,8 @@ pub fn run() {
                                 let _ = tt.set_position(tauri::Position::Physical(
                                     tauri::PhysicalPosition::new(x, y),
                                 ));
+                                #[cfg(target_os = "macos")]
+                                make_visible_over_fullscreen(&tt);
                                 let _ = tt.show();
                                 // Push the latest status so the tooltip renders fresh data.
                                 let _ = app.emit("status-update",

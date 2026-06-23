@@ -5,6 +5,7 @@
   "permissions": [
     "core:default",
     "core:window:allow-close",
+    "core:window:allow-set-size",
     "positioner:default",
     "notification:default",
     "opener:default"
