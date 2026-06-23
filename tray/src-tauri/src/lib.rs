@@ -34,7 +34,6 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, WindowEvent,
 };
-use tauri_plugin_positioner::{Position, WindowExt};
 
 pub fn run() {
     // Dev-only (`--features otel`): export tray spans to OpenObserve via the
@@ -138,6 +137,7 @@ pub fn run() {
                         TrayIconEvent::Click {
                             button: MouseButton::Left,
                             button_state: MouseButtonState::Up,
+                            rect,
                             ..
                         } => {
                             tracing::info!("tray.event: Click");
@@ -151,16 +151,25 @@ pub fn run() {
                                 if visible {
                                     let _ = win.hide();
                                 } else {
-                                    // Re-assert fullscreen-aux collection behavior on the
-                                    // realized window right before showing — belt-and-suspenders
-                                    // in case the setup-time NSWindow wasn't fully configured.
                                     #[cfg(target_os = "macos")]
                                     make_visible_over_fullscreen(&win);
-                                    let _ = win.move_window(Position::TrayCenter);
+                                    // Position the popover directly below the tray icon
+                                    // using the click rect — same approach as the tooltip.
+                                    // tauri-plugin-positioner's TrayCenter placed the window
+                                    // overlapping the menu bar on macOS 14+.
+                                    let pop_w = 384_i32;
+                                    let icon_pos = rect.position.to_physical::<i32>(1.0);
+                                    let icon_size = rect.size.to_physical::<i32>(1.0);
+                                    let x = (icon_pos.x + icon_size.width / 2 - pop_w / 2).max(0);
+                                    let y = icon_pos.y + icon_size.height;
+                                    let _ = win.set_position(tauri::Position::Physical(
+                                        tauri::PhysicalPosition::new(x, y),
+                                    ));
                                     let shown = win.show();
                                     let _ = win.set_focus();
                                     tracing::info!(
                                         ok = shown.is_ok(),
+                                        x, y,
                                         size = ?win.inner_size().ok(),
                                         "tray.click: popover shown"
                                     );
