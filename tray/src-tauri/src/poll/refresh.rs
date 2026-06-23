@@ -105,7 +105,17 @@ pub(super) async fn refresh_current_task(pool: &SqlitePool, state: &Arc<Mutex<Ap
         Ok(ct) => {
             let mut s = state.lock().unwrap();
             s.current_task_key = ct.as_ref().map(|c| c.key.clone());
-            s.task_percent = ct.and_then(|c| c.percent);
+            s.task_percent = ct.as_ref().and_then(|c| c.percent);
+            s.task_title = ct.as_ref().and_then(|c| c.title.clone());
+            s.task_status_category = ct.as_ref().and_then(|c| c.status_category.clone());
+            s.task_priority = ct.as_ref().and_then(|c| c.priority.clone());
+            s.task_spent_today_s = ct
+                .as_ref()
+                .map(|c| c.spent_today_s.max(0) as u64)
+                .unwrap_or(0);
+            s.task_estimate_s = ct
+                .as_ref()
+                .and_then(|c| c.estimate_s.map(|e| e.max(0) as u64));
         }
         Err(e) => tracing::warn!(error = %e, "refresh_current_task failed"),
     }

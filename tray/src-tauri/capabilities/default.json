@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Tray popover, in-app dashboard, and setup wizard windows",
-  "windows": ["main", "dashboard", "setup"],
+  "windows": ["main", "dashboard", "setup", "tray-tooltip"],
   "permissions": [
     "core:default",
     "core:window:allow-close",

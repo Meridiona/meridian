@@ -29,7 +29,7 @@ use anyhow::Context;
 use serde::Serialize;
 use tracing::Instrument;
 
-/// The current task plus its progress-ring fill, for the menu-bar pill.
+/// The current task plus its progress-ring fill and tooltip details.
 #[derive(Debug, Clone, Serialize)]
 pub struct CurrentTask {
     /// The tracker key, e.g. `MER-142`.
@@ -37,6 +37,17 @@ pub struct CurrentTask {
     /// Ring fill in `[0.0, 1.0]`, or `None` when no usable story-point budget
     /// exists (the caller then draws an un-filled ring, not `0%`).
     pub percent: Option<f64>,
+    /// Task title from `pm_tasks`. `None` when the task row is absent.
+    pub title: Option<String>,
+    /// Status category from `pm_tasks` (`"todo"`, `"in_progress"`, `"done"`, …).
+    pub status_category: Option<String>,
+    /// Priority string from `pm_tasks` (`"High"`, `"Medium"`, `"Low"`, …).
+    pub priority: Option<String>,
+    /// Seconds spent on this task today — the numerator of the progress %.
+    pub spent_today_s: i64,
+    /// Estimated duration in seconds (`story_points × 3600`), or `None` when
+    /// no usable story-point budget exists.
+    pub estimate_s: Option<i64>,
 }
 
 /// Resolve the current task for `today` (a local `YYYY-MM-DD`), or `None` when no
@@ -75,27 +86,46 @@ pub async fn get_current_task(
         None => return Ok(None),
     };
 
-    // Story points (free text, migration 039) as the hour budget. Tolerates a DB
-    // that predates the column — a missing column means no estimate, not a crash.
-    let story_points: Option<String> = match sqlx::query_scalar::<_, Option<String>>(
-        "SELECT story_points FROM pm_tasks WHERE task_key = ?1",
+    // Fetch title, status, priority, and story_points from pm_tasks in one shot.
+    // Tolerates a DB that predates migration 039 (missing story_points column) —
+    // any column error is silenced and treated as no-estimate / no-details.
+    struct TaskRow {
+        title: Option<String>,
+        status_category: Option<String>,
+        priority: Option<String>,
+        story_points: Option<String>,
+    }
+    let task_row: Option<TaskRow> = match sqlx::query_as::<
+        _,
+        (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
+        "SELECT title, status_category, priority, story_points FROM pm_tasks WHERE task_key = ?1",
     )
     .bind(&key)
     .fetch_optional(pool)
-    .instrument(tracing::debug_span!("current_task.read.story_points"))
+    .instrument(tracing::debug_span!("current_task.read.task_detail"))
     .await
     {
-        Ok(v) => v.flatten(),
+        Ok(Some((title, status_category, priority, story_points))) => Some(TaskRow {
+            title,
+            status_category,
+            priority,
+            story_points,
+        }),
+        Ok(None) => None,
         Err(e) => {
-            // A missing table/column (pre-migration-039 DB) is expected and silenced;
-            // other errors (pool exhaustion, busy timeout) are worth surfacing.
-            tracing::warn!(error = %e, task_key = %key, "current_task: story_points fetch failed");
+            tracing::warn!(error = %e, task_key = %key, "current_task: task detail fetch failed");
             None
         }
     };
 
     // Foreground seconds spent on this task today.
-    let spent_s: i64 = sqlx::query_scalar::<_, i64>(
+    let spent_today_s: i64 = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT COALESCE(SUM(duration_s), 0)
         FROM app_sessions
@@ -111,10 +141,24 @@ pub async fn get_current_task(
     .await
     .context("current_task: sum today's seconds on task")?;
 
-    let percent = compute_percent(spent_s, story_points.as_deref());
-    tracing::info!(key = %key, spent_s, ?percent, "current_task.resolved");
+    let story_points = task_row.as_ref().and_then(|r| r.story_points.as_deref());
+    let percent = compute_percent(spent_today_s, story_points);
+    let estimate_s = story_points
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|&p| p > 0.0)
+        .map(|p| (p * 3600.0).round() as i64);
 
-    Ok(Some(CurrentTask { key, percent }))
+    tracing::info!(key = %key, spent_today_s, ?percent, "current_task.resolved");
+
+    Ok(Some(CurrentTask {
+        key,
+        percent,
+        title: task_row.as_ref().and_then(|r| r.title.clone()),
+        status_category: task_row.as_ref().and_then(|r| r.status_category.clone()),
+        priority: task_row.as_ref().and_then(|r| r.priority.clone()),
+        spent_today_s,
+        estimate_s,
+    }))
 }
 
 /// `spent_s ÷ (story_points × 3600)`, clamped to `[0, 1]`. `None` when the points

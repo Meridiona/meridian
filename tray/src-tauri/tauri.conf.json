@@ -33,6 +33,24 @@
         "closable": false,
         "shadow": true,
         "focus": false
+      },
+      {
+        "label": "tray-tooltip",
+        "title": "Meridian",
+        "url": "popover/tooltip.html",
+        "width": 288,
+        "height": 180,
+        "decorations": false,
+        "transparent": true,
+        "visible": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "closable": false,
+        "shadow": false,
+        "focus": false
       }
     ]
   },

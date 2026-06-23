@@ -1,0 +1,32 @@
+<!doctype html>
+<!-- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity -->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Meridian</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="tooltip.css" />
+</head>
+<body>
+  <div class="tt-card" id="tt-card">
+    <div class="tt-head">
+      <span class="tt-key" id="tt-key">—</span>
+      <span class="tt-status" id="tt-status"></span>
+      <span class="tt-priority" id="tt-priority"></span>
+    </div>
+    <p class="tt-title" id="tt-title"></p>
+    <div class="tt-prog" id="tt-prog">
+      <span class="tt-time" id="tt-time"></span>
+      <span class="tt-pct" id="tt-pct"></span>
+    </div>
+    <div class="tt-bar-wrap" id="tt-bar-wrap">
+      <div class="tt-bar-fill" id="tt-bar-fill"></div>
+    </div>
+    <div class="tt-foot" id="tt-foot">
+      <span class="tt-ctx" id="tt-ctx"></span>
+      <span class="tt-hint">Click to open the panel</span>
+    </div>
+  </div>
+  <script src="tooltip.js"></script>
+</body>
+</html>

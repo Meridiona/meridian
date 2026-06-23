@@ -31,7 +31,7 @@ use state::{AppState, HealthStatus};
 use std::sync::{Arc, Mutex};
 use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, WindowEvent,
+    Emitter, Manager, WindowEvent,
 };
 use tauri_plugin_positioner::{Position, WindowExt};
 
@@ -129,21 +129,62 @@ pub fn run() {
                     let app = tray_handle.app_handle();
                     // Record the tray rect so the positioner can place the popover.
                     tauri_plugin_positioner::on_tray_event(app, &event);
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = &event
-                    {
-                        if let Some(win) = app.get_webview_window("main") {
-                            if win.is_visible().unwrap_or(false) {
-                                let _ = win.hide();
-                            } else {
-                                let _ = win.move_window(Position::TrayCenter);
-                                let _ = win.show();
-                                let _ = win.set_focus();
+                    match &event {
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } => {
+                            // Hide the hover tooltip on click (popover takes over).
+                            if let Some(tt) = app.get_webview_window("tray-tooltip") {
+                                let _ = tt.hide();
+                            }
+                            if let Some(win) = app.get_webview_window("main") {
+                                if win.is_visible().unwrap_or(false) {
+                                    let _ = win.hide();
+                                } else {
+                                    let _ = win.move_window(Position::TrayCenter);
+                                    let _ = win.show();
+                                    let _ = win.set_focus();
+                                }
                             }
                         }
+                        TrayIconEvent::Enter { rect, .. } => {
+                            // Only show the tooltip when the main popover is closed.
+                            let popover_open = app
+                                .get_webview_window("main")
+                                .map(|w| w.is_visible().unwrap_or(false))
+                                .unwrap_or(false);
+                            if popover_open {
+                                return;
+                            }
+                            if let Some(tt) = app.get_webview_window("tray-tooltip") {
+                                // Position the tooltip centred below the tray icon.
+                                // scale_factor 1.0 because the tray_icon crate already
+                                // gives us physical pixel coords before the dpi wrapper.
+                                let tt_w = 288_i32;
+                                let icon_pos = rect.position.to_physical::<i32>(1.0);
+                                let icon_size = rect.size.to_physical::<i32>(1.0);
+                                let x = (icon_pos.x + icon_size.width / 2 - tt_w / 2).max(0);
+                                let y = icon_pos.y + icon_size.height + 8;
+                                let _ = tt.set_position(tauri::Position::Physical(
+                                    tauri::PhysicalPosition::new(x, y),
+                                ));
+                                let _ = tt.show();
+                                // Push the latest status so the tooltip renders fresh data.
+                                let _ = app.emit("status-update",
+                                    app.try_state::<Arc<Mutex<AppState>>>()
+                                        .map(|s| s.inner().lock().unwrap().to_payload())
+                                        .unwrap_or_else(|| AppState::default().to_payload()),
+                                );
+                            }
+                        }
+                        TrayIconEvent::Leave { .. } => {
+                            if let Some(tt) = app.get_webview_window("tray-tooltip") {
+                                let _ = tt.hide();
+                            }
+                        }
+                        _ => {}
                     }
                 })
                 .on_menu_event(|app, event| tray::handle_menu_event(app, event.id.as_ref()))
