@@ -196,12 +196,14 @@ pub fn run() {
             }
 
             // Make the popover (and tooltip) appear on every macOS Space,
-            // including full-screen app spaces.  Without this the window is
-            // created in the login-session's main Space and remains there when
-            // the user clicks the tray icon while another app is full-screen.
+            // INCLUDING another app's full-screen Space. `set_visible_on_all_workspaces`
+            // alone only sets `CanJoinAllSpaces` — over a full-screen app the window
+            // stays invisible until you also set `FullScreenAuxiliary`, which tao
+            // does not expose. Set the native collection behavior directly.
+            #[cfg(target_os = "macos")]
             for label in ["main", "tray-tooltip"] {
                 if let Some(win) = app.get_webview_window(label) {
-                    let _ = win.set_visible_on_all_workspaces(true);
+                    make_visible_over_fullscreen(&win);
                 }
             }
 
@@ -487,4 +489,41 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error running meridian tray");
+}
+
+/// Set the window's macOS `collectionBehavior` so it renders over another app's
+/// full-screen Space, not just normal Spaces.
+///
+/// `WebviewWindow::set_visible_on_all_workspaces(true)` (tao) only OR-s in
+/// `NSWindowCollectionBehaviorCanJoinAllSpaces`. A window over a full-screen app
+/// also needs `NSWindowCollectionBehaviorFullScreenAuxiliary`, which tao never
+/// sets — so the popover/tooltip silently fail to appear when a full-screen app
+/// owns the active Space. We send `setCollectionBehavior:` directly, OR-ing both
+/// flags onto whatever is already there. Combined with the window's floating
+/// level (`alwaysOnTop`), this is the standard menu-bar-popover-over-fullscreen
+/// recipe. Must run on the main thread (the `setup` hook does).
+#[cfg(target_os = "macos")]
+fn make_visible_over_fullscreen(win: &tauri::WebviewWindow) {
+    use objc2::{msg_send, runtime::AnyObject};
+
+    // AppKit NSWindowCollectionBehavior bit flags (stable since 10.x).
+    const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
+    const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
+
+    let ptr = match win.ns_window() {
+        Ok(p) if !p.is_null() => p as *const AnyObject,
+        _ => {
+            tracing::warn!("make_visible_over_fullscreen: ns_window unavailable");
+            return;
+        }
+    };
+    // Safety: `ptr` is a live NSWindow for the lifetime of this call (we hold
+    // `win`), and we are on the main thread. `collectionBehavior` /
+    // `setCollectionBehavior:` are NSUInteger get/set with no ownership transfer.
+    unsafe {
+        let ns = &*ptr;
+        let current: usize = msg_send![ns, collectionBehavior];
+        let next = current | CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY;
+        let _: () = msg_send![ns, setCollectionBehavior: next];
+    }
 }

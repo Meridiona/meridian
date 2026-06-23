@@ -4453,6 +4453,7 @@ dependencies = [
  "futures-util",
  "meridian",
  "meridian-core",
+ "objc2",
  "reqwest 0.12.28",
  "screenpipe-a11y",
  "screenpipe-screen",
