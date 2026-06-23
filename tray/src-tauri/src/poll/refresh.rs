@@ -89,7 +89,26 @@ pub(super) async fn refresh_active(pool: &SqlitePool, state: &Arc<Mutex<AppState
             return;
         }
     };
-    state.lock().unwrap().active_session = session;
+    let mut s = state.lock().unwrap();
+    // Stamp the refresh time only while a session is live, so the tray-title
+    // ticker can extrapolate the running timer between polls.
+    s.active_set_at = session.as_ref().map(|_| std::time::Instant::now());
+    s.active_session = session;
+}
+
+/// Resolve the menu-bar pill's "current task" (most recently classified task
+/// today) and its progress-ring fill, storing both in [`AppState`]. On a read
+/// error we keep the previous value rather than blanking the pill on a blip.
+pub(super) async fn refresh_current_task(pool: &SqlitePool, state: &Arc<Mutex<AppState>>) {
+    let today = meridian_core::date::today_string();
+    match meridian_core::current_task::get_current_task(pool, &today).await {
+        Ok(ct) => {
+            let mut s = state.lock().unwrap();
+            s.current_task_key = ct.as_ref().map(|c| c.key.clone());
+            s.task_percent = ct.and_then(|c| c.percent);
+        }
+        Err(e) => tracing::warn!(error = %e, "refresh_current_task failed"),
+    }
 }
 
 /// First foreground window title from the active session's `window_titles` JSON.

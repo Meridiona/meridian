@@ -65,6 +65,15 @@ pub struct AppState {
     pub tray_id: Option<TrayIconId>,
     pub health: HealthStatus,
     pub active_session: Option<ActiveSession>,
+    /// When `active_session` was last refreshed — lets the 1 s tray-title
+    /// ticker advance the timer smoothly between the 30 s poll refreshes.
+    pub active_set_at: Option<Instant>,
+    /// Current task key for the menu-bar pill (e.g. `MER-142`) — the most
+    /// recently classified task today; `None` when nothing is classified yet.
+    pub current_task_key: Option<String>,
+    /// Progress-ring fill `[0.0, 1.0]` for that task, or `None` when the ticket
+    /// has no usable story-point budget (draw an un-filled ring then).
+    pub task_percent: Option<f64>,
     pub focus_s: u64,
     pub today: TodayBreakdown,
     pub switch_count: u32,
@@ -82,6 +91,9 @@ impl Default for AppState {
             tray_id: None,
             health: HealthStatus::Unknown,
             active_session: None,
+            active_set_at: None,
+            current_task_key: None,
+            task_percent: None,
             focus_s: 0,
             today: TodayBreakdown::default(),
             switch_count: 0,

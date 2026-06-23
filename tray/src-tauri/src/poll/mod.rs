@@ -31,7 +31,9 @@ pub(crate) use notifications::notifications_allowed;
 use crate::mlx_server::{self, SharedMlxManager, SuperviseOutcome};
 use crate::state::{AppState, HealthStatus};
 use notifications::drain_notifications;
-use refresh::{refresh_active, refresh_health, refresh_today, refresh_worklogs};
+use refresh::{
+    refresh_active, refresh_current_task, refresh_health, refresh_today, refresh_worklogs,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -107,6 +109,7 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
         }
         if let Some(pool) = &pool {
             refresh_active(pool, &state).await;
+            refresh_current_task(pool, &state).await;
             if do_health {
                 refresh_today(pool, &state).await;
             }

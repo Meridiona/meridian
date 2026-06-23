@@ -47,6 +47,6 @@ pub use capture::{
 pub use util::{date, hygiene, intervals};
 
 pub use readers::{
-    active, coding_agents, integrations, notices, plan, task_detail, tasks, today, triage, week,
-    worklogs,
+    active, coding_agents, current_task, integrations, notices, plan, task_detail, tasks, today,
+    triage, week, worklogs,
 };
