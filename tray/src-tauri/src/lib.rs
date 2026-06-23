@@ -163,10 +163,18 @@ pub fn run() {
                                     let _ = win.set_position(tauri::Position::Physical(
                                         tauri::PhysicalPosition::new(x, y),
                                     ));
-                                    let shown = win.show();
-                                    let _ = win.set_focus();
+                                    // Use orderFrontRegardless (same as the native right-click
+                                    // menu) so the popover appears in the current Space without
+                                    // signalling a Space switch. makeKeyAndOrderFront (what
+                                    // win.show() calls) causes macOS to switch back to the home
+                                    // Space when triggered from a fullscreen Space. Clicking
+                                    // inside the popover naturally makes it key, so
+                                    // Focused(false) auto-dismiss still works.
+                                    #[cfg(target_os = "macos")]
+                                    show_no_focus(&win);
+                                    #[cfg(not(target_os = "macos"))]
+                                    { let _ = win.show(); let _ = win.set_focus(); }
                                     tracing::info!(
-                                        ok = shown.is_ok(),
                                         x, y,
                                         size = ?win.inner_size().ok(),
                                         "tray.click: popover shown"
