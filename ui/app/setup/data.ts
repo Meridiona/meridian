@@ -144,15 +144,6 @@ export const INTEGRATIONS: Integration[] = [
   { id: 'asana',  mono: 'As', color: '#F06A6A', name: 'Asana',         account: 'Coming soon',               oauth: false },
 ]
 
-// ── Dock app marks (decorative, Welcome screen is text-only so unused there) ──
-
-export const APPS: Record<string, { mono: string; color: string }> = {
-  Antigravity: { mono: 'Aᴳ', color: '#7C3AED' },
-  'Google Chrome': { mono: 'Ch', color: '#3B82F6' },
-  Terminal: { mono: '>_', color: '#111827' },
-  Claude: { mono: 'Cl', color: '#D97757' },
-}
-
 /** Whole-GB / MB size label, matching the design's `fmtSize`. */
 export const fmtSize = (gb: number): string =>
   gb < 1 ? `${Math.round(gb * 1000)} MB` : gb < 100 ? `${gb.toFixed(1)} GB` : `${Math.round(gb)} GB`

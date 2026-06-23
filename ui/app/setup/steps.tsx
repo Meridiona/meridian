@@ -32,6 +32,7 @@ export interface Wiz {
   selectModel: (id: ModelTier['id']) => void
   downloading: boolean    // runtime tarball in flight
   prefetching: boolean    // model download in flight
+  committing: boolean     // committed (Download clicked) but server not yet running
   modelReady: boolean
   progress: DownloadProgress | null
   installRuntime: () => void  // provision the MLX runtime
@@ -211,7 +212,7 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
       <div style={{ opacity: runtimeInstalled ? 1 : 0.45, pointerEvents: runtimeInstalled ? 'auto' : 'none', transition: 'opacity .25s' }}>
         <div className="flex items-center justify-between" style={{ marginBottom: 7 }}>
           <Kicker>Model</Kicker>
-          {!picking && !wiz.modelReady && !wiz.prefetching && (
+          {!picking && !wiz.modelReady && !wiz.prefetching && !wiz.committing && (
             <button onClick={() => setPicking(true)} style={{ fontSize: 11, color: 'var(--ink-3)' }}
               onMouseEnter={(e) => e.currentTarget.style.color = 'var(--ink)'}
               onMouseLeave={(e) => e.currentTarget.style.color = 'var(--ink-3)'}>Change model</button>
@@ -252,7 +253,7 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
                 <span className="font-mono" style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>{sel.model} · {sel.spec}</span>
                 {sel.recommended && <span className="font-mono" style={{ fontSize: 8.5, letterSpacing: '.08em', color: 'var(--accent)', background: 'var(--accent-soft)', padding: '1px 5px', borderRadius: 4 }}>RECOMMENDED</span>}
               </div>
-              {wiz.prefetching && !wiz.modelReady ? (
+              {(wiz.prefetching || wiz.committing) && !wiz.modelReady ? (
                 <p className="font-mono tnum" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 3 }}>
                   {wiz.progress?.message ?? 'Downloading model…'}
                 </p>
@@ -263,9 +264,11 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
             <div className="shrink-0" style={{ minWidth: 100, textAlign: 'right' }}>
               {wiz.modelReady
                 ? <span className="flex items-center justify-end" style={{ gap: 6, fontSize: 12, color: 'var(--success)', fontWeight: 500 }}><Check size={15} color="var(--success)" />Ready</span>
-                : wiz.prefetching
-                  ? <span className="font-mono tnum" style={{ fontSize: 13, color: 'var(--accent)', fontWeight: 600 }}>{pct !== null ? `${pct}%` : '…'}</span>
-                  : <Btn size="sm" onClick={wiz.downloadModel}>Download</Btn>}
+                : wiz.committing
+                  ? <span className="flex items-center justify-end" style={{ gap: 7, fontSize: 11.5, color: 'var(--ink-2)' }}><Spinner />Starting…</span>
+                  : wiz.prefetching
+                    ? <span className="font-mono tnum" style={{ fontSize: 13, color: 'var(--accent)', fontWeight: 600 }}>{pct !== null ? `${pct}%` : '…'}</span>
+                    : <Btn size="sm" onClick={wiz.downloadModel}>Download</Btn>}
             </div>
           </Row>
         )}

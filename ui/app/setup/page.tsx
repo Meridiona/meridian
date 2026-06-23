@@ -13,12 +13,14 @@ import type { CSSProperties, ReactNode } from 'react'
 import { invoke, mutate, load, tauri } from '@/lib/bridge'
 import { STEPS, Welcome, Completion } from './steps'
 import type { Wiz } from './steps'
-import { MODELS, MODEL_BY_ID } from './data'
+import { INTEGRATIONS, MODELS, MODEL_BY_ID } from './data'
 import type { DownloadProgress, MlxStatusResponse, ModelTier, SystemSpecs } from './data'
 import { Btn, Check, Kicker } from './atoms'
 
 const SERIF: CSSProperties = { fontFamily: 'var(--font-instrument-serif), Georgia, serif' }
-const OAUTH_PROVIDERS = ['jira', 'trello'] as const
+// Single source of truth for "which trackers have a real OAuth flow".
+const OAUTH_PROVIDERS = INTEGRATIONS.filter((i) => i.oauth).map((i) => i.id)
+const OAUTH_DEADLINE_MS = 180_000  // mirrors TasksView's 3-minute connect window
 
 export default function SetupWizard() {
   const [welcome, setWelcome] = useState(true)
@@ -44,8 +46,10 @@ export default function SetupWizard() {
   const [wantModel, setWantModel] = useState(false)
   const prefetchStarted = useRef(false)
 
-  // Step 3 — integrations (live OAuth)
+  // Step 3 — integrations (live OAuth). `oauthDeadline` holds the per-provider
+  // timeout for an in-flight connect so the poll can resolve an abandoned flow.
   const [integrations, setIntegrations] = useState<Record<string, 'idle' | 'connecting' | 'connected'>>({})
+  const oauthDeadline = useRef<Record<string, number>>({})
 
   const active = !welcome && !done
 
@@ -93,7 +97,13 @@ export default function SetupWizard() {
           setProgress({ received: 0, total: 0, message: 'Preparing model…' })
           invoke('prefetch_model_cmd')
             .then(() => setModelReady(true))
-            .catch((e) => setErr(String(e)))
+            .catch((e) => {
+              setErr(String(e))
+              // Re-arm so the Download button can retry: clear the one-shot guard
+              // and the commit flag, dropping the row back to an actionable state.
+              prefetchStarted.current = false
+              setWantModel(false)
+            })
             .finally(() => setPrefetching(false))
         }
       } catch { /* server not yet available */ }
@@ -113,7 +123,10 @@ export default function SetupWizard() {
   }, [downloading, prefetching])
 
   // Poll OAuth completion on the Integrations step so a browser-completed connect
-  // flips the row to "Connected" without the user clicking again.
+  // flips the row to "Connected" without the user clicking again. A per-provider
+  // deadline (set in `connect`) resolves an abandoned flow to idle+error instead
+  // of spinning "Connecting…" forever, and we only `setErr`/transition on an
+  // actual state change so a persistent error doesn't re-fire every tick.
   useEffect(() => {
     if (!active || step !== 2) return
     const poll = async () => {
@@ -121,8 +134,20 @@ export default function SetupWizard() {
         const st = await load<{ connected: boolean; error?: string | null }>(
           `/api/auth/oauth/status?provider=${provider}`, 'get_oauth_status', { provider },
         ).catch(() => null)
-        if (st?.error) { setErr(st.error); setIntegrations((s) => ({ ...s, [provider]: 'idle' })) }
-        else if (st?.connected) setIntegrations((s) => (s[provider] === 'connected' ? s : { ...s, [provider]: 'connected' }))
+        if (st?.connected) {
+          delete oauthDeadline.current[provider]
+          setIntegrations((s) => (s[provider] === 'connected' ? s : { ...s, [provider]: 'connected' }))
+          continue
+        }
+        // Only act on a provider with an active connect attempt in flight.
+        const deadline = oauthDeadline.current[provider]
+        if (deadline === undefined) continue
+        const reason = st?.error ?? (Date.now() > deadline ? 'Timed out — try again' : null)
+        if (reason) {
+          delete oauthDeadline.current[provider]
+          setErr(reason)
+          setIntegrations((s) => ({ ...s, [provider]: 'idle' }))
+        }
       }
     }
     poll()
@@ -173,14 +198,16 @@ export default function SetupWizard() {
 
   const connect = useCallback((id: string) => {
     setErr('')
+    oauthDeadline.current[id] = Date.now() + OAUTH_DEADLINE_MS
     setIntegrations((s) => ({ ...s, [id]: 'connecting' }))
     mutate(`/api/auth/oauth/start?provider=${id}`, 'start_oauth', { provider: id })
-      .catch((e) => { setErr(String(e)); setIntegrations((s) => ({ ...s, [id]: 'idle' })) })
+      .catch((e) => { delete oauthDeadline.current[id]; setErr(String(e)); setIntegrations((s) => ({ ...s, [id]: 'idle' })) })
   }, [])
 
   const wiz: Wiz = {
     perms, openPane, grantInput,
     specs, mlx, model, selectModel, downloading, prefetching, modelReady, progress,
+    committing: wantModel && !prefetching && !modelReady,
     installRuntime, downloadModel,
     integrations, connect,
   }
