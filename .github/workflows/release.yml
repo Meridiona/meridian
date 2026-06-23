@@ -39,6 +39,15 @@ jobs:
       # JIRA_OAUTH_CLIENT_SECRET repo secret; rotate it together with the value in
       # the Atlassian developer console.
       MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
+      # Minisign key for the DMG auto-updater: `tauri build` (createUpdaterArtifacts)
+      # signs Meridian.app.tar.gz with these so the installed app can verify the
+      # update against the pubkey baked in tauri.conf.json. The build FAILS LOUDLY
+      # if these are unset (better than silently shipping a release that breaks
+      # auto-update) — set both repo secrets before this lands on main:
+      #   gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/meridian-updater.key
+      #   gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
         with:
