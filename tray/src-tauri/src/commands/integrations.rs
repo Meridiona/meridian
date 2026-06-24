@@ -187,15 +187,23 @@ fn strip_env_keys(path: &std::path::Path, keys: &[&str]) -> std::io::Result<()> 
 
 /// Disconnect a tracker (the ported /api/integrations DELETE). For an OAuth
 /// provider this deletes its `~/.meridian/oauth/<p>.json` token store; for a
-/// token provider it strips that provider's keys from the active `.env` (the
-/// same file [`get_integrations`] reads). Returns `{ ok: true }`; an unknown
-/// provider is the route's 400.
+/// token/gh-CLI provider it strips that provider's keys from the active `.env`
+/// (the same file [`get_integrations`] reads). After credentials are removed,
+/// clears the provider's tasks from the DB (best-effort — warns on failure but
+/// does not block the disconnect). Returns `{ ok: true }`; an unknown provider
+/// is the route's 400.
 #[tauri::command]
-#[tracing::instrument(skip(body), fields(provider = %body.provider))]
-pub async fn disconnect_integration(body: DisconnectBody) -> Result<serde_json::Value, String> {
+#[tracing::instrument(skip(body, pool), fields(provider = %body.provider))]
+pub async fn disconnect_integration(
+    body: DisconnectBody,
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+) -> Result<serde_json::Value, String> {
     let provider = body.provider.as_str();
     let token_keys = TOKEN_KEYS.iter().find(|(p, _)| *p == provider);
-    if !OAUTH_PROVIDERS.contains(&provider) && token_keys.is_none() {
+    if !OAUTH_PROVIDERS.contains(&provider)
+        && !GH_CLI_PROVIDERS.contains(&provider)
+        && token_keys.is_none()
+    {
         return Err("Invalid provider".to_string());
     }
 
@@ -207,6 +215,10 @@ pub async fn disconnect_integration(body: DisconnectBody) -> Result<serde_json::
             // Not-present is a no-op (route swallows the unlink error).
             let _ = std::fs::remove_file(&token);
         }
+        // Clear the error sentinel so a future connect attempt starts clean.
+        if let Some(sentinel) = oauth_error_path(provider) {
+            let _ = std::fs::remove_file(&sentinel);
+        }
         tracing::info!("disconnected OAuth provider (token store removed)");
     } else if let Some((_, keys)) = token_keys {
         match crate::install::detect_install_mode().env_path() {
@@ -216,7 +228,19 @@ pub async fn disconnect_integration(body: DisconnectBody) -> Result<serde_json::
             })?,
             None => tracing::warn!("no .env detected — nothing to strip"),
         }
+        // Clear the error sentinel for gh-CLI providers too.
+        if let Some(sentinel) = oauth_error_path(provider) {
+            let _ = std::fs::remove_file(&sentinel);
+        }
         tracing::info!("disconnected token provider (.env keys stripped)");
+    }
+
+    // Best-effort: remove the provider's tasks so they don't linger in the UI.
+    // A missing DB or uninitialised tables are logged but never block disconnect.
+    if let Some(p) = pool.inner() {
+        if let Err(e) = meridian_core::integrations::clear_provider_tasks(p, provider).await {
+            tracing::warn!(error = %e, provider, "could not clear provider tasks from DB");
+        }
     }
 
     Ok(serde_json::json!({ "ok": true }))
