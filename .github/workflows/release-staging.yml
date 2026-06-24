@@ -48,6 +48,11 @@ jobs:
     runs-on: macos-26
     env:
       SQLX_OFFLINE: "true"
+      # The tray pulls screenpipe-screen/-a11y from the PRIVATE Meridiona/
+      # screenpipe-fork (a git dep). Force cargo to fetch via the git CLI so it
+      # honors the credential the "Authenticate ... screenpipe-fork" step installs
+      # — libgit2 would not pick up the url.insteadOf rewrite.
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       # Baked into the staging binary at compile time (see release.yml); same
       # secret. Absent → Jira OAuth simply unavailable in the staging build.
       MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
@@ -100,6 +105,21 @@ jobs:
 
       - name: Install release tooling
         run: npm ci --no-audit --no-fund
+
+      - name: Authenticate git for the private screenpipe-fork dependency
+        # The tray's capture stack (screenpipe-screen/-a11y) is a git dep on the
+        # PRIVATE Meridiona/screenpipe-fork. checkout uses persist-credentials:
+        # false and the default GITHUB_TOKEN is scoped to this repo only, so
+        # cargo's `git fetch` of the fork 403s. Rewrite just that URL to embed a
+        # PAT with read access. REQUIRES the GH_TOKEN secret to be able to read
+        # Meridiona/screenpipe-fork (org-member classic PAT with `repo`, or a
+        # fine-grained PAT granting both meridian AND screenpipe-fork).
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
 
       - name: Use staging release config
         # Ephemeral in CI — .releaserc.json is not in any git-asset list, so this
