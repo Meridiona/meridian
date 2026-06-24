@@ -7,10 +7,31 @@ name: Build MLX runtime
 # macOS >= the floor in the manifest. The ~7 GB model is NOT bundled (downloaded
 # on first request).
 #
-# build (macos-14, arm64) → smoke (macos-15, arm64 — a DIFFERENT machine/OS, so
-# relocation + ABI + deployment-target are exercised on a box that didn't build
-# it) → publish (only on a `runtime-v*` tag) attaches the tarball + manifest to
-# the GitHub release. workflow_dispatch builds + smoke-tests without publishing.
+# build (macos-14, arm64) → smoke (macos-{14,15,26}, arm64 — DIFFERENT machines/OS,
+# so relocation + ABI + deployment-target are exercised on boxes that didn't build
+# it) → publish (only on a release tag) force-updates the channel's rolling
+# GitHub release with the tarball + manifest. workflow_dispatch builds +
+# smoke-tests without publishing.
+#
+# CHANNELS (selected by the tag prefix; tag events run the workflow from the
+# tagged commit, so the staging channel works off the `staging` branch without
+# touching main):
+#   runtime-staging-v*  →  rolling `runtime-staging` release   (staging channel)
+#   runtime-v*          →  rolling `runtime-latest`  release   (production channel)
+#
+# The app pins a channel's runtime-manifest.json (RUNTIME_MANIFEST_URL in
+# mlx_server.rs = runtime-latest; a staging build overrides via
+# MERIDIAN_RUNTIME_MANIFEST_URL → runtime-staging). The url is STABLE per channel
+# so a shipped build keeps discovering newer runtimes without an app update. We
+# don't use GitHub's /releases/latest/ — that resolves to the app's
+# semantic-release (no runtime manifest). RUNTIME_TAG (the channel release name)
+# is stamped into the manifest's tarball url at build time so it points at the
+# same channel release.
+#
+# To cut a STAGING runtime release (from the `staging` branch):
+#   git tag runtime-staging-v$(grep -m1 '^version' services/pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
+#   git push origin <that tag>
+# Production is the same with a `runtime-v*` tag (once the workflow is on main).
 
 on:
   workflow_dispatch:
@@ -20,7 +41,9 @@ on:
         required: false
         default: ""
   push:
-    tags: ["runtime-v*"]
+    tags:
+      - "runtime-v*"          # production channel → runtime-latest
+      - "runtime-staging-v*"  # staging channel → runtime-staging
 
 permissions:
   contents: write   # publish job attaches assets to the release
@@ -34,18 +57,21 @@ jobs:
     name: Build (macos-14 arm64)
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build runtime tarball
         env:
           VERSION: ${{ github.event.inputs.version }}
-          # On a tag push, stamp the canonical release-download URL into the manifest.
-          RUNTIME_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          # The channel's rolling-release name, by tag prefix. Stamped into the
+          # manifest's tarball url so it points at the SAME stable channel release
+          # the app fetches — not a version-pinned url that would freeze it.
+          # (workflow_dispatch → runtime-latest; it doesn't publish anyway.)
+          RUNTIME_TAG: ${{ startsWith(github.ref_name, 'runtime-staging-v') && 'runtime-staging' || 'runtime-latest' }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: bash scripts/build-mlx-runtime.sh
 
       - name: Upload runtime artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mlx-runtime
           path: |
@@ -69,10 +95,10 @@ jobs:
         os: [macos-14, macos-15, macos-26]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download runtime artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: mlx-runtime
           path: dist
@@ -81,22 +107,37 @@ jobs:
         run: bash scripts/smoke-test-mlx-runtime.sh dist/meridian-mlx-runtime-*-aarch64.tar.gz
 
   publish:
-    name: Publish to release
+    name: Publish runtime channel
     needs: smoke
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    env:
+      # Channel rolling-release name, by tag prefix (matches the build step).
+      CHANNEL: ${{ startsWith(github.ref_name, 'runtime-staging-v') && 'runtime-staging' || 'runtime-latest' }}
     steps:
       - name: Download runtime artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: mlx-runtime
           path: dist
 
-      - name: Attach tarball + manifest to the release
+      - name: Force-update the channel's rolling release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${GITHUB_REF_NAME}" \
+          # The app pins the channel's runtime-manifest.json (RUNTIME_MANIFEST_URL,
+          # or MERIDIAN_RUNTIME_MANIFEST_URL for staging). Create the rolling release
+          # once — always a prerelease, so it never competes with the app's
+          # semantic-release for the "Latest" slot — then clobber its assets on every
+          # build. The triggering git tag is the version record; the version also
+          # lives inside the manifest.
+          gh release view "${CHANNEL}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 \
+            || gh release create "${CHANNEL}" \
+                 --repo "${GITHUB_REPOSITORY}" \
+                 --title "MLX runtime (${CHANNEL#runtime-})" \
+                 --prerelease \
+                 --notes "Rolling ${CHANNEL#runtime-} self-contained MLX runtime. Auto-updated by build-mlx-runtime.yml; the app pins this release's runtime-manifest.json."
+          gh release upload "${CHANNEL}" \
             dist/meridian-mlx-runtime-*-aarch64.tar.gz \
             dist/runtime-manifest.json \
             --clobber --repo "${GITHUB_REPOSITORY}"

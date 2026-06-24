@@ -21,15 +21,43 @@
 //! - [`crate::commands::setup`] — the Tauri commands the wizard calls
 //! - `services/agents/server.py` — the FastAPI server this module manages
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// URL of the pre-built `meridian-mlx-runtime` tarball (CPython + venv + server.py).
-/// `""` means "not yet published" — the wizard shows a "not available" state.
-/// Override at dev time with `MERIDIAN_RUNTIME_URL` env var.
-const RUNTIME_TARBALL_URL: &str = "";
+/// URL of the `runtime-manifest.json` describing the published runtime
+/// (version + tarball url + sha256 + floors — see `scripts/build-mlx-runtime.sh`).
+///
+/// Points at the **rolling `runtime-latest` release** (not a version-pinned tag),
+/// so a shipped build keeps discovering newer runtimes without an app update —
+/// the cadence-decoupling that motivates Approach C. The workflow force-updates
+/// this release on every `runtime-v*` tag (`.github/workflows/build-mlx-runtime.yml`).
+/// NOT GitHub's `/releases/latest/` — that resolves to the app's semantic-release,
+/// which carries no runtime manifest. Override at dev time with
+/// `MERIDIAN_RUNTIME_MANIFEST_URL` (e.g. a locally-served manifest).
+const RUNTIME_MANIFEST_URL: &str =
+    "https://github.com/Meridiona/meridian/releases/download/runtime-latest/runtime-manifest.json";
+
+/// The published runtime descriptor (`runtime-manifest.json`). The download path
+/// fetches this FIRST, then verifies the tarball against `sha256` and compares
+/// `version` to skip a redundant re-download.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RuntimeManifest {
+    /// Runtime version (the services package version it was built from).
+    pub version: String,
+    /// Target architecture — always `aarch64` (we only ship Apple Silicon).
+    pub arch: String,
+    /// Minimum macOS version (e.g. `13.5`) the bundled MLX stack requires.
+    pub min_macos: String,
+    /// Direct download URL of the tarball.
+    pub url: String,
+    /// Lowercase hex SHA-256 of the tarball — the integrity gate.
+    pub sha256: String,
+    /// Tarball size in bytes (informational / disk preflight).
+    #[serde(default)]
+    pub size: u64,
+}
 
 /// Download state emitted as progress events to the wizard.
 #[derive(Debug, Clone, Serialize)]
@@ -90,6 +118,23 @@ pub fn runtime_installed() -> bool {
     dir.join("bin/python").exists() && dir.join("server.py").exists()
 }
 
+/// Path of the version marker written after a successful install.
+fn version_marker() -> PathBuf {
+    runtime_dir().join("runtime.version")
+}
+
+/// The version of the currently-installed runtime (the marker written on the
+/// last successful download), or `None` if no runtime / marker is present.
+pub fn installed_version() -> Option<String> {
+    if !runtime_installed() {
+        return None;
+    }
+    std::fs::read_to_string(version_marker())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Locate the Python binary and server script for the MLX server.
 /// Returns `(python_bin, server_script)` or `None` when no runtime is found.
 pub fn resolve_mlx_command() -> Option<(PathBuf, PathBuf)> {
@@ -140,36 +185,157 @@ pub fn resolve_mlx_command() -> Option<(PathBuf, PathBuf)> {
     None
 }
 
-/// Resolve the runtime tarball URL. `MERIDIAN_RUNTIME_URL` env var overrides
-/// the compiled-in constant (useful for testing with a locally-served tarball).
-pub fn runtime_url() -> Option<String> {
-    if let Ok(url) = std::env::var("MERIDIAN_RUNTIME_URL") {
+/// Resolve the runtime manifest URL, in priority order:
+/// 1. **Runtime** `MERIDIAN_RUNTIME_MANIFEST_URL` — dev / tests (a packaged
+///    `.app` launched from Finder has no shell env, so this only fires in dev).
+/// 2. **Compile-time** `MERIDIAN_RUNTIME_MANIFEST_URL` (`option_env!`) — BAKED
+///    into a channel build. The staging release sets it at build time so the
+///    staging `.app` pins `runtime-staging`; production builds leave it unset.
+/// 3. The compiled-in `RUNTIME_MANIFEST_URL` default (`runtime-latest`).
+///
+/// `None` → no runtime published for this channel (wizard shows "not available").
+pub fn manifest_url() -> Option<String> {
+    if let Ok(url) = std::env::var("MERIDIAN_RUNTIME_MANIFEST_URL") {
         if !url.is_empty() {
             return Some(url);
         }
     }
-    if !RUNTIME_TARBALL_URL.is_empty() {
-        return Some(RUNTIME_TARBALL_URL.to_string());
+    if let Some(url) = option_env!("MERIDIAN_RUNTIME_MANIFEST_URL") {
+        if !url.is_empty() {
+            return Some(url.to_string());
+        }
+    }
+    if !RUNTIME_MANIFEST_URL.is_empty() {
+        return Some(RUNTIME_MANIFEST_URL.to_string());
     }
     None
 }
 
-/// Download the runtime tarball and extract it to `~/.meridian/runtime/`.
+/// Fetch + parse the runtime manifest from [`manifest_url`].
+async fn fetch_manifest() -> Result<RuntimeManifest, String> {
+    let url = manifest_url().ok_or_else(|| {
+        "Runtime manifest URL not configured yet. Check back for updates.".to_string()
+    })?;
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|e| format!("manifest request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("manifest fetch failed: HTTP {}", resp.status()));
+    }
+    resp.json::<RuntimeManifest>()
+        .await
+        .map_err(|e| format!("manifest parse failed: {e}"))
+}
+
+/// Whether the running macOS version is at least `required` (compares
+/// major.minor numerically; trailing components are ignored). Defaults to
+/// permitting the install if either version can't be parsed — we'd rather let
+/// the OS surface an incompatibility than wrongly block a valid machine.
+fn macos_at_least(running: &str, required: &str) -> bool {
+    fn major_minor(v: &str) -> Option<(u32, u32)> {
+        let mut it = v.split('.');
+        let major = it.next()?.trim().parse().ok()?;
+        let minor = it.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+        Some((major, minor))
+    }
+    match (major_minor(running), major_minor(required)) {
+        (Some(r), Some(req)) => r >= req,
+        _ => true,
+    }
+}
+
+/// The running macOS product version (e.g. `14.5`), via `sw_vers`.
+async fn running_macos() -> Option<String> {
+    let out = tokio::process::Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .await
+        .ok()?;
+    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!v.is_empty()).then_some(v)
+}
+
+/// Compute the lowercase-hex SHA-256 of a file, reading it in 1 MiB chunks.
+fn sha256_hex_of(path: &std::path::Path) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1024 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
+/// Outcome of [`download_runtime`].
+#[derive(Debug, PartialEq)]
+pub enum DownloadOutcome {
+    /// The installed runtime already matches the manifest version — nothing done.
+    AlreadyCurrent,
+    /// A new runtime was downloaded, verified, and extracted.
+    Installed,
+}
+
+/// Provision the MLX runtime into `~/.meridian/runtime/` from the published
+/// manifest — the integrity-checked download path (Approach C, Step 3).
 ///
-/// Streams download progress by calling `on_progress` with each chunk. When
-/// the server omits Content-Length, `total` in `DownloadProgress` is `0`.
-/// Extraction uses the system `tar` binary (always present on macOS).
-pub async fn download_runtime<F>(on_progress: F) -> Result<(), String>
+/// Flow: fetch the manifest → preflight (arch + macOS floor) → skip if the
+/// installed version already matches → stream the tarball (reporting progress)
+/// → **verify SHA-256 against the manifest** → extract only on a match → write
+/// the version marker. A corrupted, truncated, or tampered download fails loudly
+/// and is deleted, never extracted.
+///
+/// `on_progress` is called with each chunk; `total` is `0` when the server omits
+/// Content-Length. Extraction uses the system `tar`.
+pub async fn download_runtime<F>(on_progress: F) -> Result<DownloadOutcome, String>
 where
     F: Fn(DownloadProgress) + Send + 'static,
 {
     use futures_util::StreamExt;
 
-    let url = runtime_url().ok_or_else(|| {
-        "Runtime tarball URL not yet configured. Check back for updates.".to_string()
-    })?;
+    let manifest = fetch_manifest().await?;
+    tracing::info!(version = %manifest.version, url = %manifest.url, "mlx: runtime manifest");
 
-    tracing::info!(url, "mlx: downloading runtime");
+    // ── Preflight: don't download a runtime this machine can't run. ───────────
+    if manifest.arch != std::env::consts::ARCH {
+        return Err(format!(
+            "runtime is for {} but this machine is {}",
+            manifest.arch,
+            std::env::consts::ARCH
+        ));
+    }
+    if let Some(running) = running_macos().await {
+        if !macos_at_least(&running, &manifest.min_macos) {
+            return Err(format!(
+                "this runtime needs macOS {} or newer (you have {running})",
+                manifest.min_macos
+            ));
+        }
+    }
+
+    // ── Version skip: already on the published version → nothing to do. ───────
+    if installed_version().as_deref() == Some(manifest.version.as_str()) {
+        tracing::info!(version = %manifest.version, "mlx: runtime already current");
+        on_progress(DownloadProgress {
+            received: 0,
+            total: 0,
+            message: "Runtime already up to date.".to_string(),
+        });
+        return Ok(DownloadOutcome::AlreadyCurrent);
+    }
+
     on_progress(DownloadProgress {
         received: 0,
         total: 0,
@@ -177,19 +343,17 @@ where
     });
 
     let response = reqwest::Client::new()
-        .get(&url)
+        .get(&manifest.url)
         .send()
         .await
         .map_err(|e| format!("download request failed: {e}"))?;
-
     if !response.status().is_success() {
         return Err(format!("download failed: HTTP {}", response.status()));
     }
 
-    let total = response.content_length().unwrap_or(0);
+    let total = response.content_length().unwrap_or(manifest.size);
     let home = std::env::var("HOME").unwrap_or_default();
     let tmp_path = format!("{home}/.meridian/runtime.tar.gz");
-
     let _ = tokio::fs::create_dir_all(format!("{home}/.meridian")).await;
 
     let mut file = tokio::fs::File::create(&tmp_path)
@@ -198,7 +362,6 @@ where
 
     let mut stream = response.bytes_stream();
     let mut received: u64 = 0;
-
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("stream error: {e}"))?;
         use tokio::io::AsyncWriteExt;
@@ -219,47 +382,69 @@ where
             },
         });
     }
+    use tokio::io::AsyncWriteExt;
+    file.flush().await.map_err(|e| format!("flush: {e}"))?;
+    drop(file);
 
+    // ── Integrity gate: verify SHA-256 BEFORE extracting anything. ────────────
+    on_progress(DownloadProgress {
+        received,
+        total: received,
+        message: "Verifying…".to_string(),
+    });
+    let tmp = PathBuf::from(&tmp_path);
+    let actual = {
+        let p = tmp.clone();
+        tokio::task::spawn_blocking(move || sha256_hex_of(&p))
+            .await
+            .map_err(|e| format!("hash task: {e}"))?
+            .map_err(|e| format!("hash read: {e}"))?
+    };
+    if !actual.eq_ignore_ascii_case(&manifest.sha256) {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        tracing::error!(expected = %manifest.sha256, actual = %actual, "mlx: checksum mismatch");
+        return Err(format!(
+            "checksum mismatch — download corrupted or tampered \
+             (expected {}, got {actual}). The runtime was not installed.",
+            manifest.sha256
+        ));
+    }
+    tracing::info!(sha256 = %actual, "mlx: tarball verified");
+
+    // ── Extract (verified) → ~/.meridian/runtime/, then stamp the version. ────
     on_progress(DownloadProgress {
         received,
         total: received,
         message: "Extracting…".to_string(),
     });
-
-    // Extract tarball → ~/.meridian/runtime/
-    let runtime_dir = format!("{home}/.meridian/runtime");
+    let runtime_dir = runtime_dir();
     tokio::fs::create_dir_all(&runtime_dir)
         .await
         .map_err(|e| format!("create runtime dir: {e}"))?;
-
     let out = tokio::process::Command::new("tar")
-        .args([
-            "-xzf",
-            &tmp_path,
-            "-C",
-            &runtime_dir,
-            "--strip-components=1",
-        ])
+        .arg("-xzf")
+        .arg(&tmp)
+        .arg("-C")
+        .arg(&runtime_dir)
+        .arg("--strip-components=1")
         .output()
         .await
         .map_err(|e| format!("tar spawn: {e}"))?;
-
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(format!("tar extraction failed: {stderr}"));
     }
 
-    // Clean up the temp tarball.
-    let _ = tokio::fs::remove_file(&tmp_path).await;
+    let _ = tokio::fs::write(version_marker(), &manifest.version).await;
+    let _ = tokio::fs::remove_file(&tmp).await;
 
     on_progress(DownloadProgress {
         received,
         total: received,
         message: "Runtime ready.".to_string(),
     });
-
-    tracing::info!(%runtime_dir, "mlx: runtime extracted");
-    Ok(())
+    tracing::info!(version = %manifest.version, dir = %runtime_dir.display(), "mlx: runtime installed");
+    Ok(DownloadOutcome::Installed)
 }
 
 /// Probe the server's `/health` endpoint. Returns `true` on a 2xx response
@@ -541,5 +726,124 @@ pub async fn supervise(manager: &SharedMlxManager) -> SuperviseOutcome {
     match start(port, manager).await {
         Ok(()) => SuperviseOutcome::Restarted,
         Err(e) => SuperviseOutcome::RestartFailed(e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macos_version_floor() {
+        // Meets or exceeds → ok.
+        assert!(macos_at_least("13.5", "13.5"));
+        assert!(macos_at_least("14.0", "13.5"));
+        assert!(macos_at_least("26.5.1", "13.5")); // extra components ignored
+        assert!(macos_at_least("14", "13.5")); // missing minor → treated as .0
+                                               // Below the floor → blocked.
+        assert!(!macos_at_least("13.4", "13.5"));
+        assert!(!macos_at_least("12.7", "13.5"));
+        // Unparseable → permit (let the OS surface any real incompatibility).
+        assert!(macos_at_least("garbage", "13.5"));
+        assert!(macos_at_least("14.0", ""));
+    }
+
+    #[test]
+    fn sha256_matches_known_vector() {
+        // SHA-256("abc") — the canonical NIST test vector.
+        let dir = std::env::temp_dir().join(format!("mlx-sha-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("abc.txt");
+        std::fs::write(&f, b"abc").unwrap();
+        let got = sha256_hex_of(&f).unwrap();
+        assert_eq!(
+            got,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        // Verifies the case-insensitive compare the download path relies on.
+        assert!(got.eq_ignore_ascii_case(&got.to_uppercase()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_parses_build_script_shape() {
+        // Mirrors scripts/build-mlx-runtime.sh's runtime-manifest.json.
+        let json = r#"{
+            "version": "1.59.0",
+            "arch": "aarch64",
+            "python": "3.11.15",
+            "min_macos": "13.5",
+            "tarball": "meridian-mlx-runtime-1.59.0-aarch64.tar.gz",
+            "url": "https://example.com/r.tar.gz",
+            "sha256": "e24d9bdf95bcb108ef852de3c9658bb0387f70571d9360945783070e28098dbe",
+            "size": 173466456
+        }"#;
+        let m: RuntimeManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(m.version, "1.59.0");
+        assert_eq!(m.arch, "aarch64");
+        assert_eq!(m.min_macos, "13.5");
+        assert_eq!(m.size, 173466456);
+        assert!(m.sha256.len() == 64);
+    }
+
+    /// Live end-to-end pull of the published `runtime-staging` runtime — the
+    /// exact path a staging app build takes (`MERIDIAN_RUNTIME_MANIFEST_URL`
+    /// overrides the compiled `runtime-latest` default). Exercises the real
+    /// production code: fetch manifest → preflight (arch + macOS floor) →
+    /// download → **verify SHA-256** → extract → version marker → resolve, then
+    /// the version-skip on a second call. `HOME` is sandboxed to a temp dir so
+    /// the real `~/.meridian/runtime` is never touched.
+    ///
+    /// `#[ignore]` — downloads ~156 MB over the network. Run explicitly:
+    ///   cargo test -p meridian-tray --lib live_pull_from_runtime_staging -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "live: downloads the runtime-staging tarball (~156MB) from GitHub"]
+    async fn live_pull_from_runtime_staging() {
+        let tmp = std::env::temp_dir().join(format!("mlx-live-staging-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // edition 2021 → set_var is safe; this ignored test runs in isolation.
+        std::env::set_var("HOME", &tmp);
+        std::env::set_var(
+            "MERIDIAN_RUNTIME_MANIFEST_URL",
+            "https://github.com/Meridiona/meridian/releases/download/runtime-staging/runtime-manifest.json",
+        );
+
+        // First pull: manifest → preflight → download → sha256 verify → extract.
+        let outcome = download_runtime(|p| {
+            let pct = if p.total > 0 {
+                p.received * 100 / p.total
+            } else {
+                0
+            };
+            eprintln!("  [{pct:>3}%] {}", p.message);
+        })
+        .await
+        .expect("runtime-staging should download and verify");
+        assert_eq!(outcome, DownloadOutcome::Installed);
+        assert!(runtime_installed(), "runtime should be provisioned");
+
+        let version = installed_version().expect("version marker written");
+        eprintln!("  installed runtime version = {version}");
+        assert!(!version.is_empty());
+
+        // Resolves INTO the sandbox (the downloaded runtime), not a dev fallback.
+        let (python, server) = resolve_mlx_command().expect("resolve downloaded runtime");
+        assert!(
+            python.starts_with(&tmp),
+            "python should be in the sandbox: {python:?}"
+        );
+        assert!(
+            server.starts_with(&tmp),
+            "server.py should be in the sandbox: {server:?}"
+        );
+
+        // Second pull: installed version matches the manifest → skip re-download.
+        let again = download_runtime(|_| {})
+            .await
+            .expect("second call succeeds");
+        assert_eq!(again, DownloadOutcome::AlreadyCurrent);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
