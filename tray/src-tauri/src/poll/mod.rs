@@ -6,6 +6,10 @@
 //! notification outbox, pushes the live notice/banner sets to the dashboard
 //! webview, then syncs the tray (event emit + tooltip + menu).
 //!
+//! The health tick also keeps the MLX classifier alive ([`supervise_mlx`]) and,
+//! on a slow ~6 h cadence ([`MLX_RUNTIME_CHECK_TICKS`]), swaps in a newer
+//! published runtime in the background ([`maybe_upgrade_runtime`]).
+//!
 //! - [`refresh`] — the per-tick fetch-and-store functions (also emits
 //!   `health-update`, the ported `/api/health/stream`).
 //! - [`notifications`] — outbox drain + the quiet-hours policy check
@@ -27,7 +31,10 @@ pub(crate) use notifications::notifications_allowed;
 use crate::mlx_server::{self, SharedMlxManager, SuperviseOutcome};
 use crate::state::{AppState, HealthStatus};
 use notifications::drain_notifications;
-use refresh::{refresh_active, refresh_health, refresh_today, refresh_worklogs};
+use refresh::{
+    refresh_active, refresh_current_task, refresh_health, refresh_today, refresh_worklogs,
+};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
@@ -39,6 +46,11 @@ const TICK: Duration = Duration::from_secs(30);
 /// spawn-storming. Reset to 0 the moment `/health` answers.
 const MLX_MAX_RESTARTS: u32 = 5;
 
+/// How often (in ticks) to check for a newer published MLX runtime and upgrade in
+/// the background. `720 * 30 s = 6 h`. Also fires at tick 0, so a relaunch checks
+/// immediately. The check is a single small manifest GET when already current.
+const MLX_RUNTIME_CHECK_TICKS: u32 = 720;
+
 pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
     let mut tick: u32 = 0;
     // Last-emitted JSON snapshots for the live events — emit only on change
@@ -47,6 +59,10 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
     let mut last_banners = String::new();
     // Consecutive automatic MLX restart attempts (bounded by MLX_MAX_RESTARTS).
     let mut mlx_restart_attempts: u32 = 0;
+    // True while a background runtime upgrade is downloading/swapping. Supervision
+    // stands down while set so it doesn't fight the upgrade over the server +
+    // runtime dir; the upgrade itself restarts the server when it's done.
+    let mlx_upgrade_inflight = Arc::new(AtomicBool::new(false));
 
     loop {
         // Tick 0, 1, 2… every 30s.
@@ -72,11 +88,23 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
                 .try_state::<SharedMlxManager>()
                 .map(|s| s.inner().clone())
             {
-                supervise_mlx(&mlx, &mut mlx_restart_attempts).await;
+                // Pause supervision while an upgrade owns the server (else it would
+                // restart the very server the upgrade just stopped to swap).
+                if mlx_upgrade_inflight.load(Ordering::SeqCst) {
+                    tracing::trace!("mlx: supervision paused — runtime upgrade in flight");
+                } else {
+                    supervise_mlx(&mlx, &mut mlx_restart_attempts).await;
+                }
+                // Check for a newer runtime on a slow cadence (and at tick 0).
+                // Runs AFTER supervise so a healthy old server is observed first.
+                if tick.is_multiple_of(MLX_RUNTIME_CHECK_TICKS) {
+                    maybe_upgrade_runtime(mlx, mlx_upgrade_inflight.clone());
+                }
             }
         }
         if let Some(pool) = &pool {
             refresh_active(pool, &state).await;
+            refresh_current_task(pool, &state).await;
             if do_health {
                 refresh_today(pool, &state).await;
             }
@@ -150,6 +178,38 @@ async fn supervise_mlx(mlx: &SharedMlxManager, attempts: &mut u32) {
         }
         SuperviseOutcome::NoRuntime => tracing::trace!("mlx: no runtime to supervise"),
     }
+}
+
+/// Spawn a background runtime auto-upgrade unless one is already running.
+///
+/// Detached so a multi-minute download never stalls the 30 s poll cadence. The
+/// in-flight flag (set synchronously before the spawn) prevents the next
+/// scheduled check from starting a second upgrade, and a drop guard clears it on
+/// completion, early return, AND panic — so a crashing upgrade can never latch
+/// the flag and silently disable the feature (which would also leave supervision
+/// permanently paused).
+///
+/// Deliberately **not** wrapped in an outer timeout: cancelling the upgrade
+/// future mid-swap could leave the machine with no live runtime, then clear the
+/// flag and resume supervision against a missing install. Instead
+/// [`mlx_server::auto_upgrade_runtime`] bounds only its network download phase
+/// internally and runs the stop→swap→restart to completion (all bounded,
+/// non-network steps), so the unbounded part is capped without risking the swap.
+fn maybe_upgrade_runtime(mlx: SharedMlxManager, inflight: Arc<AtomicBool>) {
+    if inflight.swap(true, Ordering::SeqCst) {
+        return; // a previous upgrade is still running
+    }
+    tauri::async_runtime::spawn(async move {
+        struct ResetOnDrop(Arc<AtomicBool>);
+        impl Drop for ResetOnDrop {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+        let _reset = ResetOnDrop(inflight);
+
+        mlx_server::auto_upgrade_runtime(&mlx).await;
+    });
 }
 
 fn emit_update(app: &tauri::AppHandle, state: &Arc<Mutex<AppState>>) {

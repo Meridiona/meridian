@@ -477,3 +477,113 @@ async fn plan_write_rejects_missing_keys_and_unready_storage() {
         .unwrap_err();
     assert!(err.to_string().contains("unknown action"));
 }
+
+// ---------------------------------------------------------------------------
+// current_task reader
+// ---------------------------------------------------------------------------
+
+/// Pool with the schema slices `current_task::get_current_task` needs.
+async fn make_current_task_pool() -> SqlitePool {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open in-memory db");
+    sqlx::query(
+        r#"
+        CREATE TABLE app_sessions (
+            id INTEGER PRIMARY KEY, app_name TEXT, started_at TEXT, ended_at TEXT,
+            duration_s INTEGER, task_key TEXT, task_session_type TEXT
+        );
+        CREATE TABLE pm_tasks (
+            task_key TEXT PRIMARY KEY,
+            title TEXT,
+            status_category TEXT,
+            priority TEXT,
+            story_points TEXT NOT NULL DEFAULT ''
+        );
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool
+}
+
+#[tokio::test]
+async fn current_task_returns_most_recent_classified_task_today() {
+    let pool = make_current_task_pool().await;
+    let today = meridian_core::date::today_string();
+    let (day_start, _) = meridian_core::date::local_day_bounds(&today);
+
+    // Two task sessions today — the later one should win.
+    let base: DateTime<chrono::Utc> = DateTime::parse_from_rfc3339(&day_start).unwrap().into();
+    let earlier = base.to_rfc3339_opts(SecondsFormat::Millis, true);
+    let later = (base + Duration::minutes(1)).to_rfc3339_opts(SecondsFormat::Millis, true);
+    sqlx::query("INSERT INTO app_sessions VALUES (1,'VS Code',?1,?1,1800,'MER-001','task')")
+        .bind(&earlier)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO app_sessions VALUES (2,'VS Code',?1,?1,3600,'MER-002','task')")
+        .bind(&later)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // MER-002 has 3 story points → 3h budget; 3600s spent today → 33%.
+    sqlx::query("INSERT INTO pm_tasks (task_key, story_points) VALUES ('MER-002','3')")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let ct = meridian_core::current_task::get_current_task(&pool, &today)
+        .await
+        .unwrap()
+        .expect("should resolve a current task");
+    assert_eq!(ct.key, "MER-002");
+    let pct = ct.percent.expect("story_points='3' and spent=3600 → ~33%");
+    assert!((pct - 1.0 / 3.0).abs() < 0.01, "got {pct}");
+}
+
+#[tokio::test]
+async fn current_task_none_without_task_sessions_today() {
+    let pool = make_current_task_pool().await;
+    let today = meridian_core::date::today_string();
+    // Session exists but task_session_type is NULL → not a task session.
+    let (day_start, _) = meridian_core::date::local_day_bounds(&today);
+    let base: DateTime<chrono::Utc> = DateTime::parse_from_rfc3339(&day_start).unwrap().into();
+    let ts = base.to_rfc3339_opts(SecondsFormat::Millis, true);
+    sqlx::query("INSERT INTO app_sessions VALUES (1,'Slack',?1,?1,600,NULL,NULL)")
+        .bind(&ts)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let ct = meridian_core::current_task::get_current_task(&pool, &today)
+        .await
+        .unwrap();
+    assert!(ct.is_none(), "no task sessions today → should return None");
+}
+
+#[tokio::test]
+async fn current_task_percent_none_without_story_points() {
+    let pool = make_current_task_pool().await;
+    let today = meridian_core::date::today_string();
+    let (day_start, _) = meridian_core::date::local_day_bounds(&today);
+    let base: DateTime<chrono::Utc> = DateTime::parse_from_rfc3339(&day_start).unwrap().into();
+    let ts = base.to_rfc3339_opts(SecondsFormat::Millis, true);
+    sqlx::query("INSERT INTO app_sessions VALUES (1,'VS Code',?1,?1,3600,'MER-003','task')")
+        .bind(&ts)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // No pm_tasks row → story_points lookup returns None → percent is None.
+    let ct = meridian_core::current_task::get_current_task(&pool, &today)
+        .await
+        .unwrap()
+        .expect("should resolve a current task");
+    assert_eq!(ct.key, "MER-003");
+    assert!(
+        ct.percent.is_none(),
+        "no pm_tasks row → percent should be None"
+    );
+}

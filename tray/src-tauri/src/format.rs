@@ -33,6 +33,15 @@ pub fn format_duration(secs: u64) -> String {
     }
 }
 
+/// Compact running-timer readout for the menu-bar title — `H:MM:SS`
+/// (e.g. `2:05:09`), matching the design's live tray pill.
+pub fn format_timer(secs: u64) -> String {
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    format!("{h}:{m:02}:{s:02}")
+}
+
 pub fn format_elapsed(secs: u64) -> String {
     if secs < 60 {
         return "moments ago".to_string();

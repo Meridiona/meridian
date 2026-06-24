@@ -16,6 +16,10 @@
 //! # Who calls this
 //! - [`crate::commands::setup`] — wizard status / download / start commands
 //! - [`crate::lib`] — `reclaim_orphan` on tray startup
+//! - [`crate::poll`] — `supervise` keeps the server alive each tick, and
+//!   `auto_upgrade_runtime` swaps in a newer published runtime in the background
+//!   (~6 h cadence) so installed machines pick up runtime republishes without an
+//!   app update.
 //!
 //! # Related
 //! - [`crate::commands::setup`] — the Tauri commands the wizard calls
@@ -38,6 +42,13 @@ use tokio::sync::Mutex;
 /// `MERIDIAN_RUNTIME_MANIFEST_URL` (e.g. a locally-served manifest).
 const RUNTIME_MANIFEST_URL: &str =
     "https://github.com/Meridiona/meridian/releases/download/runtime-latest/runtime-manifest.json";
+
+/// Hard cap on the runtime download+verify+extract phase (the only unbounded,
+/// network-bound step of a provision/upgrade). A stalled tarball stream is
+/// abandoned after this so first-run setup can't hang and a background upgrade
+/// can't latch its in-flight flag. Only the *download* is bounded — the
+/// subsequent stop→swap→restart runs to completion (see [`auto_upgrade_runtime`]).
+const RUNTIME_DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// The published runtime descriptor (`runtime-manifest.json`). The download path
 /// fetches this FIRST, then verifies the tarball against `sha256` and compares
@@ -288,18 +299,44 @@ pub enum DownloadOutcome {
     Installed,
 }
 
-/// Provision the MLX runtime into `~/.meridian/runtime/` from the published
-/// manifest — the integrity-checked download path (Approach C, Step 3).
+/// Outcome of [`download_and_stage`] — the download+verify+extract half, split
+/// from the swap so the background auto-upgrade can extract a new runtime while
+/// the OLD server is still serving, then take the live runtime offline only for
+/// the instant rename in [`commit_staged_runtime`].
+#[derive(Debug, PartialEq)]
+enum StageOutcome {
+    /// Installed runtime already matches the manifest — nothing staged.
+    AlreadyCurrent,
+    /// A verified runtime is extracted in [`staging_dir`], ready to commit.
+    Staged { version: String },
+}
+
+/// Where a freshly-downloaded runtime is extracted before being swapped into
+/// [`runtime_dir`] — a sibling so the swap is a same-filesystem atomic rename.
+fn staging_dir() -> PathBuf {
+    runtime_dir().with_file_name("runtime.incoming")
+}
+
+/// Where the previous runtime is moved during a swap, then deleted — keeps a
+/// rollback target if the rename-in fails mid-commit.
+fn backup_dir() -> PathBuf {
+    runtime_dir().with_file_name("runtime.old")
+}
+
+/// Download + verify + extract the published runtime into [`staging_dir`] — the
+/// integrity-checked half of provisioning (Approach C, Step 3), split from the
+/// swap so a background upgrade can do this while the old server keeps serving.
 ///
 /// Flow: fetch the manifest → preflight (arch + macOS floor) → skip if the
 /// installed version already matches → stream the tarball (reporting progress)
-/// → **verify SHA-256 against the manifest** → extract only on a match → write
-/// the version marker. A corrupted, truncated, or tampered download fails loudly
-/// and is deleted, never extracted.
+/// → **verify SHA-256 against the manifest** → extract only on a match into the
+/// staging dir. A corrupted, truncated, or tampered download fails loudly and is
+/// deleted, never extracted. The live `runtime/` is untouched here — the caller
+/// commits the staged copy via [`commit_staged_runtime`].
 ///
 /// `on_progress` is called with each chunk; `total` is `0` when the server omits
 /// Content-Length. Extraction uses the system `tar`.
-pub async fn download_runtime<F>(on_progress: F) -> Result<DownloadOutcome, String>
+async fn download_and_stage<F>(on_progress: F) -> Result<StageOutcome, String>
 where
     F: Fn(DownloadProgress) + Send + 'static,
 {
@@ -333,7 +370,7 @@ where
             total: 0,
             message: "Runtime already up to date.".to_string(),
         });
-        return Ok(DownloadOutcome::AlreadyCurrent);
+        return Ok(StageOutcome::AlreadyCurrent);
     }
 
     on_progress(DownloadProgress {
@@ -411,31 +448,33 @@ where
     }
     tracing::info!(sha256 = %actual, "mlx: tarball verified");
 
-    // ── Extract (verified) → ~/.meridian/runtime/, then stamp the version. ────
+    // ── Extract (verified) → staging dir. The live runtime/ is NOT touched;
+    //    commit_staged_runtime swaps it in. ─────────────────────────────────────
     on_progress(DownloadProgress {
         received,
         total: received,
         message: "Extracting…".to_string(),
     });
-    let runtime_dir = runtime_dir();
-    tokio::fs::create_dir_all(&runtime_dir)
+    let staging = staging_dir();
+    // Clear any leftover from a prior interrupted attempt before extracting.
+    let _ = tokio::fs::remove_dir_all(&staging).await;
+    tokio::fs::create_dir_all(&staging)
         .await
-        .map_err(|e| format!("create runtime dir: {e}"))?;
+        .map_err(|e| format!("create staging dir: {e}"))?;
     let out = tokio::process::Command::new("tar")
         .arg("-xzf")
         .arg(&tmp)
         .arg("-C")
-        .arg(&runtime_dir)
+        .arg(&staging)
         .arg("--strip-components=1")
         .output()
         .await
         .map_err(|e| format!("tar spawn: {e}"))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
+        let _ = tokio::fs::remove_dir_all(&staging).await;
         return Err(format!("tar extraction failed: {stderr}"));
     }
-
-    let _ = tokio::fs::write(version_marker(), &manifest.version).await;
     let _ = tokio::fs::remove_file(&tmp).await;
 
     on_progress(DownloadProgress {
@@ -443,8 +482,303 @@ where
         total: received,
         message: "Runtime ready.".to_string(),
     });
-    tracing::info!(version = %manifest.version, dir = %runtime_dir.display(), "mlx: runtime installed");
-    Ok(DownloadOutcome::Installed)
+    tracing::info!(version = %manifest.version, dir = %staging.display(), "mlx: runtime staged");
+    Ok(StageOutcome::Staged {
+        version: manifest.version,
+    })
+}
+
+/// Swap a staged runtime (from [`download_and_stage`]) into place as the live
+/// `~/.meridian/runtime/`, then stamp the version marker. The rename is an instant
+/// same-filesystem operation, so the caller's "server offline" window is just the
+/// stop→swap→restart, not the whole download. Rolls the previous runtime back if
+/// the rename-in fails, so a botched swap never leaves the machine runtime-less.
+async fn commit_staged_runtime(version: &str) -> Result<(), String> {
+    let runtime = runtime_dir();
+    let staging = staging_dir();
+    let backup = backup_dir();
+
+    // Guard: never commit a half-extracted staging dir.
+    if !staging.join("bin/python").exists() || !staging.join("server.py").exists() {
+        return Err("staged runtime is incomplete — refusing to commit".to_string());
+    }
+
+    let _ = tokio::fs::remove_dir_all(&backup).await;
+    if runtime.exists() {
+        tokio::fs::rename(&runtime, &backup)
+            .await
+            .map_err(|e| format!("move current runtime aside: {e}"))?;
+    }
+    if let Err(e) = tokio::fs::rename(&staging, &runtime).await {
+        // Roll back so we don't leave the machine with no runtime at all. If the
+        // rollback ALSO fails the machine is now runtime-less — surface that as a
+        // distinct, louder error rather than swallowing it behind the first.
+        if backup.exists() {
+            if let Err(re) = tokio::fs::rename(&backup, &runtime).await {
+                tracing::error!(error = %re, "mlx: runtime rollback FAILED — no live runtime");
+                return Err(format!(
+                    "swap staged runtime into place: {e}; rollback also failed: {re} \
+                     — no live runtime remains (backup at {})",
+                    backup.display()
+                ));
+            }
+        }
+        return Err(format!("swap staged runtime into place: {e}"));
+    }
+
+    // A failed version stamp isn't fatal (the runtime IS live), but if it's lost
+    // every future check sees a version mismatch and reinstalls the same runtime
+    // on a loop — so warn loudly instead of silently dropping the error.
+    if let Err(e) = tokio::fs::write(version_marker(), version).await {
+        tracing::warn!(error = %e, version, "mlx: version marker write failed — runtime live but may be re-fetched next check");
+    }
+    let _ = tokio::fs::remove_dir_all(&backup).await;
+    tracing::info!(version, dir = %runtime.display(), "mlx: runtime committed");
+    Ok(())
+}
+
+/// Provision the MLX runtime into `~/.meridian/runtime/` from the published
+/// manifest — the wizard's first-run download path. Stages the verified runtime
+/// then commits it in one shot (the first install has no running server to keep
+/// alive, so there's nothing to confine the offline window for).
+///
+/// `on_progress` is reported during the download/extract; `total` is `0` when the
+/// server omits Content-Length.
+pub async fn download_runtime<F>(on_progress: F) -> Result<DownloadOutcome, String>
+where
+    F: Fn(DownloadProgress) + Send + 'static,
+{
+    // Bound the network phase so a stalled tarball stream can't wedge first-run
+    // setup indefinitely (the background upgrade path is bounded the same way).
+    let staged =
+        match tokio::time::timeout(RUNTIME_DOWNLOAD_TIMEOUT, download_and_stage(on_progress)).await
+        {
+            Ok(res) => res?,
+            Err(_) => {
+                let _ = tokio::fs::remove_dir_all(staging_dir()).await;
+                return Err(format!(
+                    "runtime download timed out after {}s",
+                    RUNTIME_DOWNLOAD_TIMEOUT.as_secs()
+                ));
+            }
+        };
+    match staged {
+        StageOutcome::AlreadyCurrent => Ok(DownloadOutcome::AlreadyCurrent),
+        StageOutcome::Staged { version } => {
+            commit_staged_runtime(&version).await?;
+            tracing::info!(version = %version, "mlx: runtime installed");
+            Ok(DownloadOutcome::Installed)
+        }
+    }
+}
+
+/// Stop our managed MLX server (SIGTERM + clear the pid marker). Used by the
+/// background upgrade to take the old runtime offline for the swap; a no-op when
+/// no server is recorded.
+async fn stop_server(manager: &SharedMlxManager) {
+    let pid = manager.lock().await.pid.take();
+    if let Some(pid) = pid {
+        kill_pid(pid);
+        tracing::info!(pid, "mlx: stopped server for runtime upgrade");
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let _ = tokio::fs::remove_file(format!("{home}/.meridian/mlx-server.pid")).await;
+    manager.lock().await.status = MlxStatus::Offline;
+}
+
+/// Background runtime auto-upgrade: if a newer runtime than the installed one is
+/// published, fetch it and swap the MLX server onto it — the cadence-decoupling
+/// that lets a shipped app pick up runtime republishes (new model, server fix)
+/// without an app update.
+///
+/// **No-op when no runtime is installed yet** — the first provision stays the
+/// wizard's job (it needs the user's consent and a progress bar; a silent ~156 MB
+/// background pull is not appropriate). Only ever *upgrades* an existing runtime.
+///
+/// The daemon probes `/health` every ~60 s with no debounce, so a stop-then-
+/// download window (60–120 s offline) would *guarantee* its "Classifier offline"
+/// notice. To avoid that, the download + verify + extract all happen with the
+/// **old server still serving**; only the instant swap + restart takes it offline
+/// — the same few-second blip any `supervise` restart already produces. A brief
+/// transient toast during that restart is still possible (the daemon probes
+/// independently of this flag) but self-clears on the next tick. The poll loop
+/// pauses MLX supervision while this runs so the two don't fight over the server.
+pub async fn auto_upgrade_runtime(manager: &SharedMlxManager) {
+    // Never auto-provision: the wizard owns the first install.
+    if !runtime_installed() {
+        return;
+    }
+
+    // Download + verify + extract to staging with the current server still up.
+    // Only THIS phase is time-bounded (it's the unbounded network step). The
+    // swap/restart below runs un-cancelled — cancelling it mid-rename could leave
+    // the machine with no live runtime.
+    let staged = match tokio::time::timeout(
+        RUNTIME_DOWNLOAD_TIMEOUT,
+        download_and_stage(|p| {
+            tracing::debug!(received = p.received, total = p.total, message = %p.message, "mlx: runtime upgrade progress");
+        }),
+    )
+    .await
+    {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "mlx: runtime upgrade download failed — keeping current runtime");
+            let _ = tokio::fs::remove_dir_all(staging_dir()).await;
+            return;
+        }
+        Err(_) => {
+            tracing::warn!(
+                secs = RUNTIME_DOWNLOAD_TIMEOUT.as_secs(),
+                "mlx: runtime upgrade download timed out — keeping current runtime"
+            );
+            let _ = tokio::fs::remove_dir_all(staging_dir()).await;
+            return;
+        }
+    };
+    let version = match staged {
+        StageOutcome::AlreadyCurrent => return, // common path — already on latest
+        StageOutcome::Staged { version } => version,
+    };
+    tracing::info!(version = %version, "mlx: newer runtime staged — swapping in");
+
+    // Confine the offline window: stop → swap (instant rename) → start new runtime.
+    stop_server(manager).await;
+    if let Err(e) = commit_staged_runtime(&version).await {
+        // Swap failed; the previous runtime was rolled back, so restart on it.
+        tracing::error!(error = %e, "mlx: runtime swap failed — restarting current runtime");
+    } else {
+        tracing::info!(version = %version, "mlx: runtime upgraded");
+    }
+    let port = manager.lock().await.port;
+    match start(port, manager).await {
+        Ok(()) => {
+            // Hold the upgrade in-flight (the caller keeps supervision paused
+            // until this returns) until the new server actually answers /health.
+            // Without this, a server that's slow to bind would look "wedged"
+            // (pid alive, not serving) to a supervise tick landing in the startup
+            // window and get killed. Bounded to ~60 s, well inside the caller's
+            // 600 s timeout; the model still lazy-loads on first classify.
+            for _ in 0..30 {
+                if health_check(port).await {
+                    manager.lock().await.status = MlxStatus::Running;
+                    tracing::info!(port, "mlx: upgraded server healthy");
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "mlx: post-upgrade restart failed — supervise will retry")
+        }
+    }
+}
+
+/// Prefetch status reported by the MLX server's `/prefetch_status`
+/// (mirrors the Python `_prefetch_state`).
+#[derive(Debug, Clone, Deserialize)]
+struct PrefetchStatus {
+    /// `idle` | `downloading` | `done` | `error`.
+    state: String,
+    /// Bytes on disk so far.
+    received: u64,
+    /// Authoritative total (`0` when the size probe failed → indeterminate bar).
+    total: u64,
+    /// Failure detail when `state == "error"`.
+    error: Option<String>,
+}
+
+/// Trigger the server's eager, spec-aware model download and stream progress
+/// until it finishes. The model id is chosen server-side by `llm_selector`, so
+/// this prefetches exactly the weights the first classification will load —
+/// with a progress bar instead of a silent ~7 GB download mid-inference.
+///
+/// POSTs `/prefetch_model` (idempotent — a re-trigger adopts the in-flight
+/// download rather than starting a second), then polls `/prefetch_status` ~1 Hz,
+/// forwarding each sample to `on_progress`. Returns `Ok` when the server reports
+/// `done`, or `Err` on `error`. The server requires the runtime to be running.
+pub async fn prefetch_model<F>(port: u16, on_progress: F) -> Result<(), String>
+where
+    F: Fn(DownloadProgress) + Send + 'static,
+{
+    let base = format!("http://127.0.0.1:{port}");
+    let client = reqwest::Client::new();
+
+    on_progress(DownloadProgress {
+        received: 0,
+        total: 0,
+        message: "Selecting the best model for this Mac…".to_string(),
+    });
+    // The POST resolves the model id + total size before returning, so give it room.
+    let resp = client
+        .post(format!("{base}/prefetch_model"))
+        .timeout(std::time::Duration::from_secs(60))
+        .send()
+        .await
+        .map_err(|e| format!("prefetch_model request failed: {e}"))?;
+    // A runtime tarball predating these endpoints answers 404. Eager prefetch is a
+    // best-effort optimization — the model still lazy-loads on the first classify —
+    // so degrade SILENTLY (return Ok) rather than surfacing an error in the wizard.
+    if !resp.status().is_success() {
+        tracing::info!(
+            status = resp.status().as_u16(),
+            "mlx: /prefetch_model unavailable (older runtime?) — model will load lazily on first use"
+        );
+        return Ok(());
+    }
+
+    loop {
+        let resp = client
+            .get(format!("{base}/prefetch_status"))
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|e| format!("prefetch_status request failed: {e}"))?;
+        // Same graceful-degrade: never JSON-decode a non-2xx body (that produced the
+        // "decode failed: error decoding response body" wizard error on old runtimes).
+        if !resp.status().is_success() {
+            tracing::info!(
+                status = resp.status().as_u16(),
+                "mlx: /prefetch_status unavailable — stopping prefetch poll, model loads lazily"
+            );
+            return Ok(());
+        }
+        let st: PrefetchStatus = resp
+            .json()
+            .await
+            .map_err(|e| format!("prefetch_status decode failed: {e}"))?;
+
+        match st.state.as_str() {
+            "done" => {
+                on_progress(DownloadProgress {
+                    received: st.received,
+                    total: st.total,
+                    message: "Model ready.".to_string(),
+                });
+                tracing::info!(received = st.received, "mlx: model prefetch complete");
+                return Ok(());
+            }
+            "error" => {
+                let msg = st.error.unwrap_or_else(|| "unknown error".to_string());
+                tracing::warn!(error = %msg, "mlx: model prefetch failed");
+                return Err(format!("model prefetch failed: {msg}"));
+            }
+            _ => {
+                let mb = st.received / 1_048_576;
+                let message = if st.total > 0 {
+                    format!("Downloading model… {mb} / {} MB", st.total / 1_048_576)
+                } else {
+                    format!("Downloading model… {mb} MB")
+                };
+                on_progress(DownloadProgress {
+                    received: st.received,
+                    total: st.total,
+                    message,
+                });
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    }
 }
 
 /// Probe the server's `/health` endpoint. Returns `true` on a 2xx response

@@ -31,7 +31,7 @@ const GAP_THRESHOLD_SECS: i64 = 300;
         sessions_closed = tracing::field::Empty,
     )
 )]
-pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<Vec<i64>> {
+pub async fn run_etl(meridian: &SqlitePool) -> Result<Vec<i64>> {
     let cursor = get_cursor(meridian).await?;
     let mut last_processed_id = cursor.last_frame_id;
     let run_start_cursor = last_processed_id;
@@ -39,7 +39,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<V
     tracing::Span::current().record("from_frame_id", run_start_cursor);
     info!(from_frame_id = last_processed_id, "ETL run starting");
 
-    let first_batch = get_frames_since(screenpipe, last_processed_id, BATCH_SIZE).await?;
+    let first_batch = get_frames_since(meridian, last_processed_id, BATCH_SIZE).await?;
     if first_batch.is_empty() {
         info!("no new frames — nothing to do");
         return Ok(vec![]);
@@ -80,7 +80,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<V
                     );
                 } else if gap_secs > GAP_THRESHOLD_SECS {
                     let (total, idle) = count_frames_in_window(
-                        screenpipe,
+                        meridian,
                         &stale.last_seen_at,
                         &first_frame.timestamp,
                     )
@@ -180,7 +180,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<V
                             );
                         } else if gap > GAP_THRESHOLD_SECS {
                             let (total, idle) = count_frames_in_window(
-                                screenpipe,
+                                meridian,
                                 &block_last_ts,
                                 &frame.timestamp,
                             )
@@ -221,7 +221,6 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<V
                             let closing_app = current_app.take().unwrap();
                             current_window = None;
                             let (sid, cnt) = close_block(
-                                screenpipe,
                                 meridian,
                                 run_id,
                                 &BlockBounds {
@@ -304,7 +303,6 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<V
                         }
 
                         let (sid, cnt) = close_block(
-                            screenpipe,
                             meridian,
                             run_id,
                             &BlockBounds {
@@ -344,7 +342,7 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<V
 
             last_processed_id = batch.last().map(|f| f.id).unwrap_or(last_processed_id);
 
-            let next = get_frames_since(screenpipe, last_processed_id, BATCH_SIZE).await?;
+            let next = get_frames_since(meridian, last_processed_id, BATCH_SIZE).await?;
             if next.is_empty() {
                 break;
             }
@@ -356,7 +354,6 @@ pub async fn run_etl(screenpipe: &SqlitePool, meridian: &SqlitePool) -> Result<V
             if block_frame_count > 0 {
                 debug!(app_name = open_app, frame_count = block_frame_count, "upserting open block into active_session");
                 sessions_closed += upsert_open_block(
-                    screenpipe,
                     meridian,
                     run_id,
                     &BlockBounds {

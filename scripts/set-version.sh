@@ -7,8 +7,11 @@
 #   scripts/set-version.sh <version>
 #
 # Updates: Cargo.toml, services/pyproject.toml, ui/package.json,
-# packages/meridian-mcp/package.json, the two npm packages, and the main npm
-# package's optionalDependencies pin. Uses BSD sed (the release runs on macOS).
+# packages/meridian-mcp/package.json, the two npm packages, the main npm
+# package's optionalDependencies pin, and tray/src-tauri/tauri.conf.json (the
+# version the DMG auto-updater compares against — MUST be bumped BEFORE the tray
+# build so the packaged .app bakes the release version, not a stale 0.1.0).
+# Uses BSD sed (the release runs on macOS).
 set -euo pipefail
 
 VER="${1:?usage: set-version.sh <version>}"
@@ -30,6 +33,11 @@ targets = {
     "packages/meridian-mcp/package.json": False,
     "npm/meridian/package.json": True,            # also pin the optionalDependency
     "npm/meridian-darwin-arm64/package.json": False,
+    # The tray app version — baked into the .app at build time and what
+    # tauri-plugin-updater compares against the GitHub latest.json. Top-level
+    # "version" key, same shape as a package.json, so the same d["version"] = ver
+    # applies. Reformatted to 2-space JSON like the rest (a one-time diff).
+    "tray/src-tauri/tauri.conf.json": False,
 }
 for path, pin_optdep in targets.items():
     with open(path) as fh:

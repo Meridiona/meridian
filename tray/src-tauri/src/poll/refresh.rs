@@ -12,7 +12,7 @@
 //! - [`crate::commands::health::check_health`] — the direct health check.
 
 use crate::commands::health::check_health;
-use crate::state::{ActiveSession, AppState, HealthStatus};
+use crate::state::{ActiveSession, AppState, HealthStatus, TodayBreakdown};
 use crate::sys::notify;
 use meridian_core::SqlitePool;
 use std::sync::{Arc, Mutex};
@@ -39,7 +39,10 @@ pub(super) async fn refresh_health(app: &tauri::AppHandle, state: &Arc<Mutex<App
     };
 
     let (notify_down, notify_back) = {
-        let mut s = state.lock().unwrap();
+        let Ok(mut s) = state.lock() else {
+            tracing::warn!("refresh_health: state lock poisoned");
+            return;
+        };
         let now_healthy = new_health == HealthStatus::Healthy;
 
         let notify_down = if !now_healthy {
@@ -79,6 +82,9 @@ pub(super) async fn refresh_active(pool: &SqlitePool, state: &Arc<Mutex<AppState
         Ok(Some(v)) => Some(ActiveSession {
             app_name: v.app_name,
             elapsed_s: v.elapsed_s.max(0) as u64,
+            title: top_title(&v.window_titles),
+            category: v.category,
+            confidence: v.confidence,
         }),
         Ok(None) => None,
         Err(e) => {
@@ -86,18 +92,91 @@ pub(super) async fn refresh_active(pool: &SqlitePool, state: &Arc<Mutex<AppState
             return;
         }
     };
-    state.lock().unwrap().active_session = session;
+    let Ok(mut s) = state.lock() else {
+        tracing::warn!("refresh_active: state lock poisoned");
+        return;
+    };
+    // Stamp the refresh time only while a session is live, so the tray-title
+    // ticker can extrapolate the running timer between polls.
+    s.active_set_at = session.as_ref().map(|_| std::time::Instant::now());
+    s.active_session = session;
 }
 
-/// Read today's totals (focus seconds + switch count) into [`AppState`] (direct DB).
+/// Resolve the menu-bar pill's "current task" (most recently classified task
+/// today) and its progress-ring fill, storing both in [`AppState`]. On a read
+/// error we keep the previous value rather than blanking the pill on a blip.
+pub(super) async fn refresh_current_task(pool: &SqlitePool, state: &Arc<Mutex<AppState>>) {
+    let today = meridian_core::date::today_string();
+    match meridian_core::current_task::get_current_task(pool, &today).await {
+        Ok(ct) => {
+            let Ok(mut s) = state.lock() else {
+                tracing::warn!("refresh_current_task: state lock poisoned");
+                return;
+            };
+            s.current_task_key = ct.as_ref().map(|c| c.key.clone());
+            s.task_percent = ct.as_ref().and_then(|c| c.percent);
+            s.task_title = ct.as_ref().and_then(|c| c.title.clone());
+            s.task_status_category = ct.as_ref().and_then(|c| c.status_category.clone());
+            s.task_priority = ct.as_ref().and_then(|c| c.priority.clone());
+            s.task_spent_today_s = ct
+                .as_ref()
+                .map(|c| c.spent_today_s.max(0) as u64)
+                .unwrap_or(0);
+            s.task_estimate_s = ct
+                .as_ref()
+                .and_then(|c| c.estimate_s.map(|e| e.max(0) as u64));
+        }
+        Err(e) => tracing::warn!(error = %e, "refresh_current_task failed"),
+    }
+}
+
+/// First foreground window title from the active session's `window_titles` JSON.
+/// Tolerates both shapes the column has carried — `["title", …]` and
+/// `[{"title": "…", "count": n}, …]` — and drops empties.
+fn top_title(titles: &serde_json::Value) -> Option<String> {
+    titles.as_array()?.iter().find_map(|e| {
+        e.as_str()
+            .map(str::to_string)
+            .or_else(|| e.get("title").and_then(|t| t.as_str()).map(str::to_string))
+            .filter(|s| !s.is_empty())
+    })
+}
+
+/// Read today's totals into [`AppState`]: the headline focus seconds + switch
+/// count, plus the per-category split (Coding / Review / Comms) and autonomous
+/// agent time that drive the popover's Time Tracker tiles. The split sums the
+/// closed sessions and folds in the live one, so it tracks `focus_s`.
 pub(super) async fn refresh_today(pool: &SqlitePool, state: &Arc<Mutex<AppState>>) {
     let date = meridian_core::date::today_string();
     let now = chrono::Utc::now().to_rfc3339();
     match meridian_core::today::get_today(pool, &date, &now).await {
         Ok(t) => {
-            let mut s = state.lock().unwrap();
+            let mut bd = TodayBreakdown {
+                autonomous_s: t.autonomous_s.max(0) as u64,
+                ..TodayBreakdown::default()
+            };
+            let mut add = |cat: &str, dur: i64| {
+                let d = dur.max(0) as u64;
+                match cat {
+                    "coding" => bd.coding_s += d,
+                    "code_review" => bd.review_s += d,
+                    "communication" => bd.comms_s += d,
+                    _ => {}
+                }
+            };
+            for sess in &t.sessions {
+                add(&sess.cat, sess.dur);
+            }
+            if let Some(a) = &t.active {
+                add(&a.cat, a.elapsed_s);
+            }
+            let Ok(mut s) = state.lock() else {
+                tracing::warn!("refresh_today: state lock poisoned");
+                return;
+            };
             s.focus_s = t.focus_s.max(0) as u64;
             s.switch_count = t.switch_count.max(0) as u32;
+            s.today = bd;
         }
         Err(e) => tracing::warn!(error = %e, "refresh_today failed"),
     }
@@ -112,7 +191,11 @@ pub(super) async fn refresh_worklogs(pool: &SqlitePool, state: &Arc<Mutex<AppSta
     match meridian_core::worklogs::get_worklogs(pool, &today).await {
         Ok(w) => {
             let count = w.items.iter().filter(|i| i.state == "drafted").count() as u32;
-            state.lock().unwrap().drafts_count = count;
+            let Ok(mut s) = state.lock() else {
+                tracing::warn!("refresh_worklogs: state lock poisoned");
+                return;
+            };
+            s.drafts_count = count;
         }
         Err(e) => tracing::warn!(error = %e, "refresh_worklogs failed"),
     }

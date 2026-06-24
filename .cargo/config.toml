@@ -3,3 +3,10 @@ SQLX_OFFLINE = "true"
 
 [build]
 rustflags = ["-D", "warnings"]
+
+# The tray's optional `capture` feature pulls a PRIVATE git dependency
+# (Meridiona/screenpipe-fork). cargo's built-in fetcher can't authenticate to a
+# private repo; the git CLI uses the user's credential helper (gh/keychain).
+# Harmless for non-git sources (crates.io fetches are unaffected).
+[net]
+git-fetch-with-cli = true

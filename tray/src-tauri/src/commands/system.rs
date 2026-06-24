@@ -27,6 +27,11 @@ pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
     WebviewWindowBuilder::new(&app, "dashboard", WebviewUrl::App("today".into()))
         .title("Meridian — Dashboard")
         .inner_size(1100.0, 760.0)
+        .decorations(true)
+        .resizable(true)
+        .maximizable(true)
+        .minimizable(true)
+        .closable(true)
         .build()
         .map(|_win| ())
         .map_err(|e| e.to_string())
@@ -54,9 +59,31 @@ pub async fn open_permission_pane(app: tauri::AppHandle, pane: String) -> Result
         "accessibility" => {
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
         }
+        "input_monitoring" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
+        }
         other => return Err(format!("unknown permission pane: {other}")),
     };
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|e| e.to_string())
+}
+
+/// Quit the whole app — same exit path as the tray menu's "Quit Meridian".
+/// Invoked from the popover footer's Quit button.
+#[tracing::instrument(skip(app))]
+#[tauri::command]
+pub fn quit_app(app: tauri::AppHandle) {
+    tracing::info!("quit_app: user requested app exit");
+    app.exit(0);
+}
+
+/// Hide the popover (main) window. Called from app.js on Escape keydown.
+/// The popover runs as a non-activating NSPanel on macOS so Focused(false)
+/// never fires — Escape is the keyboard dismiss path.
+#[tauri::command]
+pub fn hide_popover(app: tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.hide();
+    }
 }

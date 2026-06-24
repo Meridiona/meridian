@@ -8,7 +8,6 @@ use std::time::Duration;
 use anyhow::Result;
 use meridian::config::Config;
 use meridian::db::meridian::{cleanup_incomplete_runs, setup_db};
-use meridian::db::screenpipe::open_screenpipe;
 use meridian::etl::run_etl;
 use meridian::intelligence::{
     check_classification_ready, mark_session_subprocess_error, run_coding_agent_classification,
@@ -21,6 +20,14 @@ use tokio::sync::Notify;
 /// After this many consecutive subprocess failures for the same session,
 /// write a `subprocess_error` sentinel and advance the cursor past it.
 const MAX_CONSECUTIVE_FAILURES: u32 = 3;
+
+/// User-facing remediation hint for the `mlx.down` notice. The tray auto-restarts
+/// the MLX server (see `tray/src-tauri/src/poll/mod.rs::supervise_mlx`), so an
+/// installed user has nothing to type — the only manual fallback is relaunching
+/// Meridian. Deliberately NOT the dev `cd services && .venv/bin/python …` command,
+/// which is meaningless on a packaged install (no `services/` or `.venv`).
+const MLX_DOWN_FIX_HINT: &str =
+    "Meridian restarts the classifier automatically. If it keeps happening, quit and reopen Meridian.";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -173,13 +180,24 @@ async fn main() -> Result<()> {
                         "\n✓ Jira connected: {site}\n  Tokens saved to ~/.meridian/oauth/jira.json — run `meridian restart` to pick them up."
                     ),
                     Err(e) => {
-                        eprintln!("oauth-login jira failed: {e:#}");
-                        eprintln!(
-                            "\nIf your Atlassian org blocks third-party OAuth apps (a \"site admin \
-                             must authorize\" message, or app installs disabled), use the API-token \
-                             fallback instead: set JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN via \
-                             `meridian config edit`."
-                        );
+                        let msg = format!("{e:#}");
+                        eprintln!("oauth-login jira failed: {msg}");
+                        // Only show the admin-block hint when the failure is a
+                        // consent-phase denial (Atlassian redirects with
+                        // error=access_denied when the org policy blocks the app).
+                        // Token-exchange errors (invalid_client, missing secret,
+                        // network issues) have their own clear messages above.
+                        if msg.contains("access_denied")
+                            || msg.contains("provider returned OAuth error")
+                        {
+                            eprintln!(
+                                "\nIf your Atlassian org blocks third-party OAuth apps (a \
+                                 \"site admin must authorize\" message, or app installs \
+                                 disabled), use the API-token fallback instead: set \
+                                 JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN via \
+                                 `meridian config edit`."
+                            );
+                        }
                         std::process::exit(1);
                     }
                 }
@@ -452,8 +470,7 @@ async fn main() -> Result<()> {
 
     // 4. Log startup parameters
     tracing::info!(
-        screenpipe_db = %initial_cfg.screenpipe_db,
-        meridian_db   = %initial_cfg.meridian_db,
+        meridian_db = %initial_cfg.meridian_db,
         poll_interval_secs = initial_cfg.poll_interval_secs,
         "meridian daemon starting"
     );
@@ -483,17 +500,13 @@ async fn main() -> Result<()> {
         );
     }
 
-    // 4d. Open screenpipe pool (read-only)
-    let screenpipe = open_screenpipe(&initial_cfg.screenpipe_db_uri()).await?;
-
-    // 4e. Capture-layer (L1) preflight: surface degraded screen capture (revoked
-    //     Screen Recording / Accessibility permission, dead screenpipe, stale
-    //     frames) before the poll loop. Non-fatal — the daemon still runs; we log
-    //     the fault so misclassifications aren't blamed on the model.
-    meridian::health::Report::new(
-        meridian::health::capture::checks(&initial_cfg, Some(&screenpipe)).await,
-    )
-    .log("startup");
+    // 4d. Capture-layer (L1) preflight: surface degraded in-process capture
+    //     (revoked Screen Recording / Accessibility permission, the tray not
+    //     running, stale frames) before the poll loop. Reads meridian's own
+    //     capture tables — no screenpipe pool. Non-fatal — the daemon still runs;
+    //     we log the fault so misclassifications aren't blamed on the model.
+    meridian::health::Report::new(meridian::health::capture::checks(&meridian).await)
+        .log("startup");
 
     // 5b. Unix domain socket — health endpoint for the tray / UI.
     //     ~/.meridian/daemon.sock: connecting succeeds = daemon is running.
@@ -582,7 +595,7 @@ async fn main() -> Result<()> {
         *etl_tick_span.lock().unwrap() = Some(startup_tick.clone());
         let _guard = startup_tick.enter();
         tracing::info!("running initial ETL pass");
-        if let Err(e) = run_etl(&screenpipe, &meridian).await {
+        if let Err(e) = run_etl(&meridian).await {
             tracing::error!(error = %e, "ETL run failed");
             let _ = meridian::notices::raise(
                 &meridian,
@@ -784,7 +797,7 @@ async fn main() -> Result<()> {
                                     "warning",
                                     "MLX classifier is not responding",
                                     &format!("Failed to classify session {session_id} after {count} attempts — classification is paused"),
-                                    Some("Start MLX server: cd services && .venv/bin/python -m agents.server --port 7823"),
+                                    Some(MLX_DOWN_FIX_HINT),
                                 ).await;
                                 if let Err(e) =
                                     mark_session_subprocess_error(&meridian_linker, session_id)
@@ -866,7 +879,7 @@ async fn main() -> Result<()> {
                 *etl_tick_span.lock().unwrap() = Some(poll_tick.clone());
                 let _guard = poll_tick.enter();
                 tracing::debug!("starting ETL tick");
-                if let Err(e) = run_etl(&screenpipe, &meridian).await {
+                if let Err(e) = run_etl(&meridian).await {
                     tracing::error!(error = %e, "ETL run failed");
                     let _ = meridian::notices::raise(
                         &meridian, "etl.failed", "error",
@@ -890,7 +903,16 @@ async fn main() -> Result<()> {
                 // when a classify happens to fail) so the fault surfaces promptly
                 // on the dashboard banner AND — via the notices→outbox bridge — as
                 // a desktop toast + in-app banner. Auto-clears when it recovers.
-                if meridian::intelligence::mlx_ready(&cfg).await {
+                // Suppress this alarm during first-run onboarding: the MLX server
+                // is still being provisioned (runtime downloading), so "offline" is
+                // expected, not a fault — surfacing it (banner + desktop toast) in
+                // the setup wizard is just noise. Only raise once setup is complete.
+                // A genuine post-setup outage still surfaces reactively via the
+                // task-linker's mlx.down notice above, so this gate hides nothing.
+                let onboarded = std::env::var("HOME")
+                    .map(|h| std::path::Path::new(&h).join(".meridian/onboarded").exists())
+                    .unwrap_or(true);
+                if meridian::intelligence::mlx_ready(&cfg).await || !onboarded {
                     let _ = meridian::notices::clear(&meridian, "mlx.down").await;
                 } else {
                     let _ = meridian::notices::raise(
@@ -899,7 +921,7 @@ async fn main() -> Result<()> {
                         "warning",
                         "Classifier offline",
                         "The MLX classifier server isn't responding — new sessions are recorded but won't be tagged until it's back.",
-                        Some("Restart it: cd services && .venv/bin/python -m agents.server --port 7823"),
+                        Some(MLX_DOWN_FIX_HINT),
                     )
                     .await;
                 }
@@ -917,7 +939,6 @@ async fn main() -> Result<()> {
     // 9. Shutdown
     tracing::info!("shutting down");
     let _ = std::fs::remove_file(&sock_path_cleanup);
-    screenpipe.close().await;
     meridian.close().await;
 
     // Flush OTel exporters FIRST, while the runtime is alive — this writes the

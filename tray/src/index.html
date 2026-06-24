@@ -8,56 +8,129 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="popover" id="popover">
-    <header class="popover-header">
-      <span class="wordmark">meridian</span>
-      <div class="toggle-container">
-        <span class="toggle-status" id="toggle-status">Connected</span>
-        <button class="toggle-btn" id="toggle-btn" title="Toggle Meridian connection">
-          <span class="toggle-switch"></span>
+  <div class="pop" id="pop">
+    <!-- ── Header ─────────────────────────────────────────────────────────── -->
+    <header class="pop-head">
+      <div class="brand">
+        <span class="brand-dot" id="brand-dot" title="Daemon status"></span>
+        <span class="wordmark">meridian</span>
+      </div>
+      <div class="head-actions">
+        <button class="icon-btn" id="btn-open-head" title="Open Meridian">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+               stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 3H3.5A1.5 1.5 0 0 0 2 4.5v8A1.5 1.5 0 0 0 3.5 14h8a1.5 1.5 0 0 0 1.5-1.5V10" />
+            <path d="M9.5 2.5H13.5V6.5" /><path d="M13.5 2.5 7.5 8.5" />
+          </svg>
+        </button>
+        <button class="icon-btn" id="btn-perms-head" title="Permissions">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+               stroke-width="1.3" aria-hidden="true">
+            <circle cx="8" cy="8" r="2.1" />
+            <path d="M8 1.4v1.8M8 12.8v1.8M14.6 8h-1.8M3.2 8H1.4M12.7 3.3l-1.3 1.3M4.6 11.4l-1.3 1.3M12.7 12.7l-1.3-1.3M4.6 4.6 3.3 3.3" stroke-linecap="round" />
+          </svg>
         </button>
       </div>
     </header>
 
-    <section class="session-section" id="session-section">
-      <div class="session-line shimmer-wrap">
-        <p class="session-app" id="session-app">
-          <span class="shimmer"></span>
-        </p>
-        <p class="session-elapsed" id="session-elapsed"></p>
-      </div>
-    </section>
+    <!-- ── Update available (DMG auto-update; hidden until check_update finds one) ─ -->
+    <button class="upd" id="upd" hidden>
+      <span class="upd-left">
+        <span class="upd-icon" aria-hidden="true">↑</span>
+        <span class="upd-text" id="upd-text">Update available</span>
+      </span>
+      <span class="upd-ver" id="upd-ver"></span>
+    </button>
 
-    <!-- Proof of the dashboard-fold path: this line is read straight from
-         meridian.db through a Rust command (get_active), not the Node UI API. -->
-    <section class="db-direct" id="db-direct"
-             style="padding:2px 14px 6px;font-size:11px;color:#6b8;opacity:.85">
-      <span id="db-active">DB · reading…</span>
+    <!-- ── Live "now" block ───────────────────────────────────────────────── -->
+    <section class="live" id="live">
+      <div class="live-top">
+        <span class="live-label" id="live-label">
+          <span class="live-dot" id="live-dot"></span><span id="live-label-text">Reading…</span>
+        </span>
+        <span class="live-match" id="live-match"></span>
+      </div>
+
+      <div class="live-body" id="live-body">
+        <div class="app-glyph" id="app-glyph" aria-hidden="true"></div>
+        <div class="live-meta">
+          <div class="cat-row">
+            <span class="cat-chip" id="live-cat">
+              <span class="cat-dot" id="live-cat-dot"></span><span id="live-cat-label"></span>
+            </span>
+          </div>
+          <p class="live-title" id="live-title"></p>
+        </div>
+      </div>
+
+      <div class="timer" id="timer">0:00<span class="timer-sec" id="timer-sec">:00</span></div>
+      <div class="live-foot">
+        <span class="live-since" id="live-since"></span>
+      </div>
     </section>
 
     <div class="rule"></div>
 
-    <section class="stats-section">
-      <p class="stat-primary" id="stat-focus">
-        <span class="shimmer"></span>
-      </p>
-      <p class="stat-secondary" id="stat-switches">
-        <span class="shimmer"></span>
-      </p>
+    <!-- ── Pause / tracking toggle (real on/off) ──────────────────────────── -->
+    <section class="pause" id="pause">
+      <div class="pause-info">
+        <p class="pause-text" id="pause-text">Pause tracking</p>
+        <p class="pause-sub" id="pause-sub"></p>
+      </div>
+      <button class="pause-btn" id="pause-btn">Pause</button>
     </section>
 
-    <div class="rule" id="worklogs-rule" style="display:none"></div>
+    <div class="rule"></div>
 
-    <section class="worklogs-section" id="worklogs-section" style="display:none">
-      <button class="worklogs-btn" id="worklogs-btn">
-        <span id="worklogs-label">Loading…</span>
-        <span class="arrow">→</span>
+    <!-- ── Time tracker tiles ─────────────────────────────────────────────── -->
+    <section class="tt">
+      <div class="tt-head">
+        <span class="kicker">TIME TRACKER</span>
+        <span class="tt-scope">Today</span>
+      </div>
+      <div class="tt-grid">
+        <div class="tile tile-br tile-bb">
+          <div class="tile-label">FOCUS</div>
+          <div class="tile-value" id="tile-focus">0m</div>
+          <div class="tile-sub">active today</div>
+        </div>
+        <div class="tile tile-bb">
+          <div class="tile-label">CODING</div>
+          <div class="tile-value" id="tile-coding">0m</div>
+          <div class="tile-sub" id="tile-coding-sub">focused work</div>
+        </div>
+        <div class="tile tile-br">
+          <div class="tile-label">REVIEW</div>
+          <div class="tile-value" id="tile-review">0m</div>
+          <div class="tile-sub">code review</div>
+        </div>
+        <div class="tile">
+          <div class="tile-label">COMMS</div>
+          <div class="tile-value" id="tile-comms">0m</div>
+          <div class="tile-sub">Slack · meetings</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Worklogs awaiting (conditional on real drafts) ─────────────────── -->
+    <div class="rule" id="wl-rule" hidden></div>
+    <button class="wl" id="wl" hidden>
+      <span class="wl-left">
+        <span class="wl-badge" id="wl-badge">0</span>
+        <span class="wl-text" id="wl-text">Worklogs ready to approve</span>
+      </span>
+      <span class="wl-arrow">→</span>
+    </button>
+
+    <!-- ── Footer ─────────────────────────────────────────────────────────── -->
+    <footer class="pop-foot">
+      <button class="foot-open" id="btn-open">
+        Open Meridian <span class="kbd">⌘⏎</span>
       </button>
-    </section>
-
-    <footer class="popover-footer">
-      <button class="btn-secondary" id="btn-open">Open Dashboard</button>
-      <button class="btn-primary" id="btn-worklogs">Review Drafts</button>
+      <div class="foot-right">
+        <button class="foot-btn" id="btn-perms">Permissions</button>
+        <button class="foot-btn" id="btn-quit">Quit</button>
+      </div>
     </footer>
   </div>
 
