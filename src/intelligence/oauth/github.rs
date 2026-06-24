@@ -163,7 +163,8 @@ fn upsert_env_key(path: &str, key: &str, value: &str) -> Result<()> {
             .lines()
             .any(|l| l.trim_start().starts_with(prefix.as_str()))
         {
-            let updated = contents
+            // Replace in-place. Restore trailing newline that .lines() strips.
+            let mut updated = contents
                 .lines()
                 .map(|l| {
                     if l.trim_start().starts_with(prefix.as_str()) {
@@ -174,17 +175,30 @@ fn upsert_env_key(path: &str, key: &str, value: &str) -> Result<()> {
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
+            if contents.ends_with('\n') {
+                updated.push('\n');
+            }
             std::fs::write(p, updated).context("write .env")?;
             return Ok(());
         }
+        // Key not present — append. Ensure we start on a new line so we don't
+        // run onto the tail of a file that has no trailing newline.
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(p)
+            .context("open .env for append")?;
+        let sep = if contents.ends_with('\n') { "" } else { "\n" };
+        writeln!(f, "{sep}{new_line}").context("append to .env")?;
+        return Ok(());
     }
 
-    // Key not present — append.
+    // File doesn't exist — create and write.
     let mut f = std::fs::OpenOptions::new()
         .create(true)
-        .append(true)
+        .truncate(true)
+        .write(true)
         .open(p)
-        .context("open .env for append")?;
-    writeln!(f, "{new_line}").context("append to .env")?;
+        .context("open .env for create")?;
+    writeln!(f, "{new_line}").context("write to new .env")?;
     Ok(())
 }

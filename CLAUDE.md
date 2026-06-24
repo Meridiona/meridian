@@ -405,7 +405,7 @@ New sources plug into the `AgentSource` enum in `sources/mod.rs` and are swept b
 
 Source-adapter env overrides: `COPILOT_SESSION_STATE_DIR`, `VSCODE_USER_DIR`, `CURSOR_STATE_VSCDB`, `CURSOR_CLI_CHATS_DIR`, `ANTIGRAVITY_APP_DIR`.
 
-> **Daemon config gotcha:** on a bundle install the daemon's `WorkingDirectory` is `~/.meridian/app`, and dotenvy stops at the FIRST `.env` walking up — so the daemon reads **`~/.meridian/app/.env`**, not the repo `.env`. Edit that file (then `meridian restart`) when tuning daemon env on an installed system.
+> **Daemon config gotcha:** the daemon loads env via `dotenvy::dotenv_override()`, which walks UP from its launchd `WorkingDirectory` and stops at the first `.env`. All install types converge on the **canonical `~/.meridian/.env`** (the same file the tray writes tracker creds to): the **npm bundle**'s `WorkingDirectory` is `~/.meridian/app` but no `~/.meridian/app/.env` is written (the installer creates `~/.meridian/.env`), so dotenvy walks up to it; the **`.app` DMG** (the tray stages the daemon via `tray/src-tauri/src/backend_install.rs`) sets `WorkingDirectory` to `~/.meridian` and reads it directly; **source/dev** reads the repo `.env`. Edit `~/.meridian/.env` (then `meridian restart`) to tune daemon env on an installed system.
 
 The pipeline is fully ported to Rust; the former Python `coding_agent_indexer` + `coding_agent_summariser` packages have been removed. The MLX server (`agents/server.py`) is the only remaining Python hop (it serves `/summarise` + `/classify_sessions`).
 
