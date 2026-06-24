@@ -69,6 +69,25 @@ sleep 1   # let sockets / ports free before the new windows bind them
 echo "  ✓ previous dev run stopped"
 
 # ---------------------------------------------------------------------------
+# Ensure screenpipe is up — meridian stop disables it via launchctl, so it
+# won't auto-restart. Re-enable + bootstrap + kickstart it here so the daemon
+# has frames to read. Idempotent: safe to run when screenpipe is already live.
+# ---------------------------------------------------------------------------
+LABEL_SCREENPIPE="com.meridiona.screenpipe"
+GUI_TARGET="gui/$(id -u)"
+SP_PLIST="${HOME}/Library/LaunchAgents/${LABEL_SCREENPIPE}.plist"
+if [[ -f "$SP_PLIST" ]]; then
+    echo "→ ensuring screenpipe is running…"
+    launchctl enable    "${GUI_TARGET}/${LABEL_SCREENPIPE}" 2>/dev/null || true
+    launchctl bootstrap "${GUI_TARGET}" "$SP_PLIST"        2>/dev/null || true
+    # bootstrap + RunAtLoad starts screenpipe immediately; no kickstart needed
+    # (kickstart -k would block waiting for screenpipe to re-initialise camera/screen capture)
+    echo "  ✓ screenpipe (re)started"
+else
+    echo "  ⚠ screenpipe plist not found — run: bash install-dev.sh"
+fi
+
+# ---------------------------------------------------------------------------
 # Launch each service in its own Terminal window
 # ---------------------------------------------------------------------------
 

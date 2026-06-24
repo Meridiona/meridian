@@ -1,3 +1,38 @@
+# [1.63.0](https://github.com/Meridiona/meridian/compare/v1.62.0...v1.63.0) (2026-06-23)
+
+
+### Features
+
+* **etl:** noise filter — clean session_text at ingest time ([#325](https://github.com/Meridiona/meridian/issues/325)) ([7b56e66](https://github.com/Meridiona/meridian/commit/7b56e66db4323b6eb55b81aa8b71be38de682614))
+
+# [1.62.0](https://github.com/Meridiona/meridian/compare/v1.61.1...v1.62.0) (2026-06-19)
+
+
+### Features
+
+* **observability:** summariser continuity dashboard + install-time auto-import ([#316](https://github.com/Meridiona/meridian/issues/316)) ([0ba45e1](https://github.com/Meridiona/meridian/commit/0ba45e1c5fe1687b70a41fcc12025466ebea5740))
+
+## [1.61.1](https://github.com/Meridiona/meridian/compare/v1.61.0...v1.61.1) (2026-06-18)
+
+
+### Bug Fixes
+
+* **mlx-server:** serialize model calls + raise worklog timeout + fix coding metrics rows ([#313](https://github.com/Meridiona/meridian/issues/313)) ([dd2a043](https://github.com/Meridiona/meridian/commit/dd2a0436195698c9eff2a2ba31b73587abf165ac))
+
+# [1.61.0](https://github.com/Meridiona/meridian/compare/v1.60.0...v1.61.0) (2026-06-18)
+
+
+### Features
+
+* **cleanup:** mark overdue tickets as done or cancelled from the cleanup page ([#312](https://github.com/Meridiona/meridian/issues/312)) ([5998324](https://github.com/Meridiona/meridian/commit/5998324c5d4447e057fcdb530e90bbe880138356))
+
+# [1.60.0](https://github.com/Meridiona/meridian/compare/v1.59.0...v1.60.0) (2026-06-18)
+
+
+### Features
+
+* **classifier:** TASK GATE prompt + DeepEval untracked-guard eval (70%→96% guard) ([#310](https://github.com/Meridiona/meridian/issues/310)) ([9fad7b5](https://github.com/Meridiona/meridian/commit/9fad7b5d7cfabc6b315b72bf07a98110ef7cf2cd))
+
 # [1.59.0](https://github.com/Meridiona/meridian/compare/v1.58.1...v1.59.0) (2026-06-17)
 
 

@@ -5,6 +5,7 @@ mod block_ops;
 pub mod extractor;
 pub mod runner;
 mod session_builder;
+mod text_filter;
 pub mod text_merge;
 
 pub use runner::run_etl;

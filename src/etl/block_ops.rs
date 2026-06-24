@@ -7,8 +7,9 @@ use tracing::{debug, info, warn};
 use crate::db::meridian::{
     close_active_session_with, get_active_session, upsert_active_session, write_session_traceparent,
 };
-use crate::db::screenpipe::get_last_ui_event_for_app;
+use crate::db::screenpipe::{get_frame_full_texts, get_last_ui_event_for_app};
 use crate::etl::extractor::extract_block_context;
+use crate::etl::text_merge::build_session_text;
 
 use super::session_builder::{build_active_session, merge_into_active};
 
@@ -169,7 +170,16 @@ pub(super) async fn close_block(
     let result: (i64, i64) = match existing {
         Some(ref active) if active.app_name == ctx.app_name => {
             debug!(app = ctx.app_name, "merging and closing continuation block");
-            let merged = merge_into_active(active, &ctx, b.idle_frame_count)?;
+            // Re-fetch ALL frames for the session's full lifetime and rebuild session_text
+            // from scratch. The additive merge path can leave chrome lines from early
+            // sub-threshold batches (< CHROME_FREQ_THRESHOLD frames) permanently in the
+            // stored text; a full rebuild sees the complete frame set so the chrome
+            // pre-pass correctly identifies and removes them.
+            let all_frames = get_frame_full_texts(meridian, active.min_frame_id, b.max_frame_id)
+                .await
+                .context("re-fetch frames for session_text rebuild on close")?;
+            let rebuilt_text = build_session_text(&all_frames);
+            let merged = merge_into_active(active, &ctx, b.idle_frame_count, Some(rebuilt_text))?;
             let new_id = close_active_session_with(meridian, &merged, run_id).await?;
             info!(
                 app_name = ctx.app_name,
@@ -262,7 +272,8 @@ pub(super) async fn upsert_open_block(
                 app = ctx.app_name,
                 "merging new frames into existing active_session"
             );
-            merge_into_active(active, &ctx, b.idle_frame_count)?
+            // Open block — additive merge (no rebuild needed; chrome is re-evaluated on close).
+            merge_into_active(active, &ctx, b.idle_frame_count, None)?
         }
 
         Some(ref active) => {

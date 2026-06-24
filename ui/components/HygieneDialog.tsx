@@ -102,40 +102,45 @@ function FixRow({ issue, index, task, onApplied }: { issue: HygieneIssue; index:
   const [value, setValue] = useState('')
   const [state, setState] = useState<RowState>('idle')
   const [msg, setMsg] = useState('')
+  // Tracks which terminal action button is pending ('close' | 'cancel' | null).
+  const [terminalPending, setTerminalPending] = useState<string | null>(null)
 
   const needsValue = fix?.control !== 'assign_self'
   const canApply = !!fix && state !== 'saving' && state !== 'applied' && (!needsValue || value.trim().length > 0)
 
-  // Apply a concrete value for this field (the epic picker passes the epic key
-  // directly; the standard controls pass their own input).
-  const applyValue = async (val: string) => {
-    if (!fix) return
+  const callApply = async (field: string, val: string) => {
     setState('saving'); setMsg('')
     try {
-      const payload = {
-        provider: task.provider,
-        key: task.key,
-        field: fix.field,
-        value: fix.control === 'assign_self' ? '@me' : val.trim(),
-      }
+      const payload = { provider: task.provider, key: task.key, field, value: val }
       // Dual-path: apply_ticket_fix (Rust) in the app, /api/triage/apply in a
       // browser. mutate throws the route's error text on failure → show it.
       const data = await mutate<{ result: { status: string; browse_url?: string; reason?: string } }>(
         '/api/triage/apply', 'apply_ticket_fix', payload)
       const result = data.result
       if (result.status === 'applied') {
-        setState('applied'); setMsg('Saved to tracker')
+        setState('applied'); setTerminalPending(null); setMsg('Saved to tracker')
         onApplied?.()
       } else {
-        // Provider can't write this field — open the card so the dev finishes there.
-        setState('redirected')
+        setState('redirected'); setTerminalPending(null)
         setMsg(result.reason ?? 'Finish this in your tracker')
         const url = result.browse_url || task.url
         if (url) window.open(url, '_blank', 'noopener')
       }
     } catch (e) {
-      setState('error'); setMsg(e instanceof Error ? e.message : 'Network error')
+      setState('error'); setTerminalPending(null); setMsg(e instanceof Error ? e.message : 'Network error')
     }
+  }
+
+  // Apply a concrete value for this field (the epic picker passes the epic key
+  // directly; the standard controls pass their own input).
+  const applyValue = async (val: string) => {
+    if (!fix) return
+    await callApply(fix.field, fix.control === 'assign_self' ? '@me' : val.trim())
+  }
+
+  const applyTerminal = (action: 'close' | 'cancel') => {
+    setTerminalPending(action)
+    callApply(action, '')
   }
 
   const apply = () => applyValue(value)
@@ -186,9 +191,28 @@ function FixRow({ issue, index, task, onApplied }: { issue: HygieneIssue; index:
                 color: canApply ? '#fff' : 'var(--ink-4)',
                 cursor: canApply ? 'pointer' : 'not-allowed',
               }}>
-              {state === 'saving' ? 'Saving…' : (fix?.label ?? 'Fix')}
+              {state === 'saving' && terminalPending === null ? 'Saving…' : (fix?.label ?? 'Fix')}
             </button>
           </div>
+          {issue.code === 'overdue' && (
+            <div className="flex items-center gap-2 mt-2.5 pt-2.5" style={{ borderTop: '1px solid var(--rule)' }}>
+              <span className="text-[11px]" style={{ color: 'var(--ink-4)' }}>or mark as</span>
+              <button
+                disabled={state === 'saving'}
+                onClick={() => applyTerminal('close')}
+                className="text-[12px] px-3 py-1.5 rounded-md border transition-colors"
+                style={{ borderColor: 'var(--rule)', color: 'var(--ink-2)', background: 'var(--paper)' }}>
+                {terminalPending === 'close' ? 'Saving…' : 'Done'}
+              </button>
+              <button
+                disabled={state === 'saving'}
+                onClick={() => applyTerminal('cancel')}
+                className="text-[12px] px-3 py-1.5 rounded-md border transition-colors"
+                style={{ borderColor: 'var(--rule)', color: 'var(--ink-2)', background: 'var(--paper)' }}>
+                {terminalPending === 'cancel' ? 'Saving…' : 'Cancelled'}
+              </button>
+            </div>
+          )}
           {(state === 'error' || state === 'redirected') && (
             <p className="text-[11px] mt-2" style={{ color: state === 'error' ? 'var(--warn)' : 'var(--ink-3)' }}>{msg}</p>
           )}
