@@ -496,7 +496,11 @@ async fn make_current_task_pool() -> SqlitePool {
             duration_s INTEGER, task_key TEXT, task_session_type TEXT
         );
         CREATE TABLE pm_tasks (
-            task_key TEXT PRIMARY KEY, story_points TEXT NOT NULL DEFAULT ''
+            task_key TEXT PRIMARY KEY,
+            title TEXT,
+            status_category TEXT,
+            priority TEXT,
+            story_points TEXT NOT NULL DEFAULT ''
         );
         "#,
     )
@@ -527,7 +531,7 @@ async fn current_task_returns_most_recent_classified_task_today() {
         .await
         .unwrap();
     // MER-002 has 3 story points → 3h budget; 3600s spent today → 33%.
-    sqlx::query("INSERT INTO pm_tasks VALUES ('MER-002','3')")
+    sqlx::query("INSERT INTO pm_tasks (task_key, story_points) VALUES ('MER-002','3')")
         .execute(&pool)
         .await
         .unwrap();

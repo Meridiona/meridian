@@ -115,7 +115,7 @@ export const PERMISSIONS: PermissionMeta[] = [
   },
   {
     id: 'screen', icon: 'screen', name: 'Screen Recording', pane: 'screen_recording',
-    desc: 'Reads on-screen text to understand your work. Frames stay on-device, never stored.',
+    desc: 'Reads on-screen text to understand your work. Pixels/video are never stored; extracted text stays on-device.',
   },
   {
     id: 'input', icon: 'power', name: 'Input Monitoring', pane: 'input_monitoring',

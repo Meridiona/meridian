@@ -224,7 +224,7 @@ def _run_prefetch(model_id: str) -> None:
                 _prefetch_state["state"] = "error"
                 _prefetch_state["error"] = str(exc)
             span.set_status(trace.Status(trace.StatusCode.ERROR, str(exc)))
-            log.error("server: model prefetch failed: %s", exc, extra={"model_id": model_id})
+            log.error("server: model prefetch failed", extra={"model_id": model_id, "error": str(exc)})
 
 
 @app.post("/prefetch_model")
@@ -244,7 +244,11 @@ async def prefetch_model() -> dict:
         return {"state": "done", "model_id": model_id, "received": 0, "total": 0, "error": None}
 
     with _prefetch_lock:
-        if _prefetch_state["state"] in ("downloading", "done"):
+        # Idempotent only for the SAME model: a completed/in-flight prefetch for
+        # one model must not block starting a different one after the user changes
+        # their model preference (which changes what _resolve_model_id() returns).
+        same_model = _prefetch_state.get("model_id") == model_id
+        if same_model and _prefetch_state["state"] in ("downloading", "done"):
             return dict(_prefetch_state)  # idempotent — no duplicate downloads
         _prefetch_state.update(state="downloading", model_id=model_id, received=0, total=0, error=None)
 
@@ -252,7 +256,7 @@ async def prefetch_model() -> dict:
         total = await run_in_threadpool(_prefetch_total_bytes, model_id)
     except Exception as exc:  # noqa: BLE001 — size probe is best-effort; download still runs
         total = 0
-        log.warning("server: prefetch size-probe failed (bar will be indeterminate): %s", exc)
+        log.warning("server: prefetch size-probe failed (bar will be indeterminate)", extra={"error": str(exc)})
     with _prefetch_lock:
         _prefetch_state["total"] = total
 

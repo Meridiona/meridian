@@ -43,6 +43,13 @@ use tokio::sync::Mutex;
 const RUNTIME_MANIFEST_URL: &str =
     "https://github.com/Meridiona/meridian/releases/download/runtime-latest/runtime-manifest.json";
 
+/// Hard cap on the runtime download+verify+extract phase (the only unbounded,
+/// network-bound step of a provision/upgrade). A stalled tarball stream is
+/// abandoned after this so first-run setup can't hang and a background upgrade
+/// can't latch its in-flight flag. Only the *download* is bounded — the
+/// subsequent stop→swap→restart runs to completion (see [`auto_upgrade_runtime`]).
+const RUNTIME_DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// The published runtime descriptor (`runtime-manifest.json`). The download path
 /// fetches this FIRST, then verifies the tarball against `sha256` and compares
 /// `version` to skip a redundant re-download.
@@ -503,14 +510,28 @@ async fn commit_staged_runtime(version: &str) -> Result<(), String> {
             .map_err(|e| format!("move current runtime aside: {e}"))?;
     }
     if let Err(e) = tokio::fs::rename(&staging, &runtime).await {
-        // Roll back so we don't leave the machine with no runtime at all.
+        // Roll back so we don't leave the machine with no runtime at all. If the
+        // rollback ALSO fails the machine is now runtime-less — surface that as a
+        // distinct, louder error rather than swallowing it behind the first.
         if backup.exists() {
-            let _ = tokio::fs::rename(&backup, &runtime).await;
+            if let Err(re) = tokio::fs::rename(&backup, &runtime).await {
+                tracing::error!(error = %re, "mlx: runtime rollback FAILED — no live runtime");
+                return Err(format!(
+                    "swap staged runtime into place: {e}; rollback also failed: {re} \
+                     — no live runtime remains (backup at {})",
+                    backup.display()
+                ));
+            }
         }
         return Err(format!("swap staged runtime into place: {e}"));
     }
 
-    let _ = tokio::fs::write(version_marker(), version).await;
+    // A failed version stamp isn't fatal (the runtime IS live), but if it's lost
+    // every future check sees a version mismatch and reinstalls the same runtime
+    // on a loop — so warn loudly instead of silently dropping the error.
+    if let Err(e) = tokio::fs::write(version_marker(), version).await {
+        tracing::warn!(error = %e, version, "mlx: version marker write failed — runtime live but may be re-fetched next check");
+    }
     let _ = tokio::fs::remove_dir_all(&backup).await;
     tracing::info!(version, dir = %runtime.display(), "mlx: runtime committed");
     Ok(())
@@ -527,7 +548,21 @@ pub async fn download_runtime<F>(on_progress: F) -> Result<DownloadOutcome, Stri
 where
     F: Fn(DownloadProgress) + Send + 'static,
 {
-    match download_and_stage(on_progress).await? {
+    // Bound the network phase so a stalled tarball stream can't wedge first-run
+    // setup indefinitely (the background upgrade path is bounded the same way).
+    let staged =
+        match tokio::time::timeout(RUNTIME_DOWNLOAD_TIMEOUT, download_and_stage(on_progress)).await
+        {
+            Ok(res) => res?,
+            Err(_) => {
+                let _ = tokio::fs::remove_dir_all(staging_dir()).await;
+                return Err(format!(
+                    "runtime download timed out after {}s",
+                    RUNTIME_DOWNLOAD_TIMEOUT.as_secs()
+                ));
+            }
+        };
+    match staged {
         StageOutcome::AlreadyCurrent => Ok(DownloadOutcome::AlreadyCurrent),
         StageOutcome::Staged { version } => {
             commit_staged_runtime(&version).await?;
@@ -575,14 +610,28 @@ pub async fn auto_upgrade_runtime(manager: &SharedMlxManager) {
     }
 
     // Download + verify + extract to staging with the current server still up.
-    let staged = match download_and_stage(|p| {
-        tracing::debug!(received = p.received, total = p.total, message = %p.message, "mlx: runtime upgrade progress");
-    })
+    // Only THIS phase is time-bounded (it's the unbounded network step). The
+    // swap/restart below runs un-cancelled — cancelling it mid-rename could leave
+    // the machine with no live runtime.
+    let staged = match tokio::time::timeout(
+        RUNTIME_DOWNLOAD_TIMEOUT,
+        download_and_stage(|p| {
+            tracing::debug!(received = p.received, total = p.total, message = %p.message, "mlx: runtime upgrade progress");
+        }),
+    )
     .await
     {
-        Ok(s) => s,
-        Err(e) => {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
             tracing::warn!(error = %e, "mlx: runtime upgrade download failed — keeping current runtime");
+            let _ = tokio::fs::remove_dir_all(staging_dir()).await;
+            return;
+        }
+        Err(_) => {
+            tracing::warn!(
+                secs = RUNTIME_DOWNLOAD_TIMEOUT.as_secs(),
+                "mlx: runtime upgrade download timed out — keeping current runtime"
+            );
             let _ = tokio::fs::remove_dir_all(staging_dir()).await;
             return;
         }

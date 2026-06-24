@@ -12,11 +12,17 @@ import type { CSSProperties, ReactNode } from 'react'
 export function Mark({ mono, color, size = 34, radius }: {
   mono: string; color: string; size?: number; radius?: number
 }) {
+  // `color` may be a hex literal (#rrggbb) or a CSS variable (var(--accent)).
+  // Appending an alpha suffix only works for hex; for anything else use
+  // color-mix so the tint renders instead of becoming an invalid value.
+  const background = color.startsWith('#')
+    ? `${color}16`
+    : `color-mix(in srgb, ${color} 9%, transparent)`
   return (
     <span className="inline-flex items-center justify-center font-mono shrink-0"
       style={{
         width: size, height: size, borderRadius: radius ?? size * 0.28,
-        background: color + '16', color,
+        background, color,
         fontSize: Math.max(11, size * 0.4), fontWeight: 600, letterSpacing: '-0.02em',
       }}>{mono}</span>
   )

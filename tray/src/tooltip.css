@@ -1,5 +1,12 @@
 /* ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity */
 
+/* border-box so width:300px + the body's 16px side padding stay inside the
+   300px native window (style.css applies the same reset for the popover) —
+   without it the body is 332px and the card off-centres / clips its shadow. */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
 /* The window is transparent and intentionally LARGER than the card: the body
    padding gives the card's drop-shadow room to render. Without it the shadow
    is clipped at the window bounds and reads as a hard rectangular border. */

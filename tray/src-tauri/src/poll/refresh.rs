@@ -39,7 +39,10 @@ pub(super) async fn refresh_health(app: &tauri::AppHandle, state: &Arc<Mutex<App
     };
 
     let (notify_down, notify_back) = {
-        let mut s = state.lock().unwrap();
+        let Ok(mut s) = state.lock() else {
+            tracing::warn!("refresh_health: state lock poisoned");
+            return;
+        };
         let now_healthy = new_health == HealthStatus::Healthy;
 
         let notify_down = if !now_healthy {
@@ -89,7 +92,10 @@ pub(super) async fn refresh_active(pool: &SqlitePool, state: &Arc<Mutex<AppState
             return;
         }
     };
-    let mut s = state.lock().unwrap();
+    let Ok(mut s) = state.lock() else {
+        tracing::warn!("refresh_active: state lock poisoned");
+        return;
+    };
     // Stamp the refresh time only while a session is live, so the tray-title
     // ticker can extrapolate the running timer between polls.
     s.active_set_at = session.as_ref().map(|_| std::time::Instant::now());
@@ -103,7 +109,10 @@ pub(super) async fn refresh_current_task(pool: &SqlitePool, state: &Arc<Mutex<Ap
     let today = meridian_core::date::today_string();
     match meridian_core::current_task::get_current_task(pool, &today).await {
         Ok(ct) => {
-            let mut s = state.lock().unwrap();
+            let Ok(mut s) = state.lock() else {
+                tracing::warn!("refresh_current_task: state lock poisoned");
+                return;
+            };
             s.current_task_key = ct.as_ref().map(|c| c.key.clone());
             s.task_percent = ct.as_ref().and_then(|c| c.percent);
             s.task_title = ct.as_ref().and_then(|c| c.title.clone());
@@ -125,15 +134,12 @@ pub(super) async fn refresh_current_task(pool: &SqlitePool, state: &Arc<Mutex<Ap
 /// Tolerates both shapes the column has carried — `["title", …]` and
 /// `[{"title": "…", "count": n}, …]` — and drops empties.
 fn top_title(titles: &serde_json::Value) -> Option<String> {
-    titles
-        .as_array()?
-        .first()
-        .and_then(|e| {
-            e.as_str()
-                .map(str::to_string)
-                .or_else(|| e.get("title").and_then(|t| t.as_str()).map(str::to_string))
-        })
-        .filter(|s| !s.is_empty())
+    titles.as_array()?.iter().find_map(|e| {
+        e.as_str()
+            .map(str::to_string)
+            .or_else(|| e.get("title").and_then(|t| t.as_str()).map(str::to_string))
+            .filter(|s| !s.is_empty())
+    })
 }
 
 /// Read today's totals into [`AppState`]: the headline focus seconds + switch
@@ -164,7 +170,10 @@ pub(super) async fn refresh_today(pool: &SqlitePool, state: &Arc<Mutex<AppState>
             if let Some(a) = &t.active {
                 add(&a.cat, a.elapsed_s);
             }
-            let mut s = state.lock().unwrap();
+            let Ok(mut s) = state.lock() else {
+                tracing::warn!("refresh_today: state lock poisoned");
+                return;
+            };
             s.focus_s = t.focus_s.max(0) as u64;
             s.switch_count = t.switch_count.max(0) as u32;
             s.today = bd;
@@ -182,7 +191,11 @@ pub(super) async fn refresh_worklogs(pool: &SqlitePool, state: &Arc<Mutex<AppSta
     match meridian_core::worklogs::get_worklogs(pool, &today).await {
         Ok(w) => {
             let count = w.items.iter().filter(|i| i.state == "drafted").count() as u32;
-            state.lock().unwrap().drafts_count = count;
+            let Ok(mut s) = state.lock() else {
+                tracing::warn!("refresh_worklogs: state lock poisoned");
+                return;
+            };
+            s.drafts_count = count;
         }
         Err(e) => tracing::warn!(error = %e, "refresh_worklogs failed"),
     }

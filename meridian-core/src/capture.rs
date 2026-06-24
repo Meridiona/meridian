@@ -53,9 +53,19 @@ pub struct CaptureFrameInsert {
 /// in dev: the frame is dropped with a debug log and `Ok` is returned, so a
 /// schema lag never crashes the tray's capture loop. All other errors propagate.
 pub async fn insert_capture_frame(pool: &SqlitePool, frame: &CaptureFrameInsert) -> Result<()> {
+    // Normalise to the 'ocr' | 'accessibility' contract before persisting: an
+    // a11y source lands in accessibility_text, anything else is treated as OCR.
+    // Bind the *normalised* source (not the raw input) so an out-of-contract
+    // value can never reach the column and drift the reader's COALESCE /
+    // downstream analytics.
+    let normalized_source = if frame.text_source == "accessibility" {
+        "accessibility"
+    } else {
+        "ocr"
+    };
     // Mirror screenpipe's split text columns: exactly one is populated, so the
     // reader's COALESCE(full_text, accessibility_text) returns this row's text.
-    let (full_text, accessibility_text) = if frame.text_source == "accessibility" {
+    let (full_text, accessibility_text) = if normalized_source == "accessibility" {
         (None, Some(frame.text.as_str()))
     } else {
         (Some(frame.text.as_str()), None)
@@ -73,7 +83,7 @@ pub async fn insert_capture_frame(pool: &SqlitePool, frame: &CaptureFrameInsert)
     .bind(&frame.browser_url)
     .bind(full_text)
     .bind(accessibility_text)
-    .bind(&frame.text_source)
+    .bind(normalized_source)
     .execute(pool)
     .await;
 
@@ -105,9 +115,41 @@ pub struct CaptureUiEventInsert {
     pub text_content: Option<String>,
 }
 
+/// The only event types `capture_ui_events` accepts — the read-subset the daemon
+/// queries (`get_signals` / `get_last_ui_event_for_app`). Anything else is an
+/// upstream mapper bug; we drop it rather than poison downstream signal extraction.
+const VALID_UI_EVENT_TYPES: &[&str] = &[
+    "click",
+    "key",
+    "text",
+    "app_switch",
+    "window_focus",
+    "clipboard",
+];
+
 /// Insert one input event into `capture_ui_events`. Same graceful missing-table
 /// behaviour as [`insert_capture_frame`] (a schema lag never crashes the tray).
+///
+/// Enforces the table's contract at the write boundary, so an upstream mapper
+/// regression can't corrupt it:
+/// - an unrecognised `event_type` is dropped with a warning (the capture loop
+///   keeps running, matching the missing-table swallow below);
+/// - `text_content` is clipboard-only — it is nulled for every other event type
+///   so typed text from a `text`/`key` event can never be persisted. This is the
+///   privacy contract of `capture_ui_events`, enforced here rather than trusted.
 pub async fn insert_capture_ui_event(pool: &SqlitePool, ev: &CaptureUiEventInsert) -> Result<()> {
+    if !VALID_UI_EVENT_TYPES.contains(&ev.event_type.as_str()) {
+        tracing::warn!(
+            event_type = %ev.event_type,
+            "capture_ui_events: dropping event with unknown event_type"
+        );
+        return Ok(());
+    }
+    let text_content = if ev.event_type == "clipboard" {
+        ev.text_content.as_deref()
+    } else {
+        None
+    };
     let ts = ev.timestamp.to_rfc3339_opts(SecondsFormat::Micros, true);
     let res = sqlx::query(
         "INSERT INTO capture_ui_events (timestamp, event_type, app_name, text_content)
@@ -116,7 +158,7 @@ pub async fn insert_capture_ui_event(pool: &SqlitePool, ev: &CaptureUiEventInser
     .bind(&ts)
     .bind(&ev.event_type)
     .bind(&ev.app_name)
-    .bind(&ev.text_content)
+    .bind(text_content)
     .execute(pool)
     .await;
 
@@ -417,6 +459,48 @@ mod tests {
             Some("2026-06-21T10:05:00.000000Z"),
             "latest click/text for Code"
         );
+    }
+
+    /// Privacy contract: typed text on a non-clipboard event is nulled at the
+    /// boundary, never persisted — even if an upstream mapper sets text_content.
+    #[tokio::test]
+    async fn text_content_is_nulled_for_non_clipboard_events() {
+        let pool = mem_pool_ui().await;
+        insert_capture_ui_event(
+            &pool,
+            &ui_event(
+                "2026-06-21T10:00:00.000000Z",
+                "text",
+                Some("Code"),
+                Some("secret typed text"),
+            ),
+        )
+        .await
+        .unwrap();
+        let stored: Option<String> =
+            sqlx::query_scalar("SELECT text_content FROM capture_ui_events WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored, None, "non-clipboard text_content must be NULL");
+    }
+
+    /// An unrecognised event_type is dropped (warn) rather than inserted — a bad
+    /// mapper can't poison the table, and the call still returns Ok.
+    #[tokio::test]
+    async fn unknown_event_type_is_dropped() {
+        let pool = mem_pool_ui().await;
+        insert_capture_ui_event(
+            &pool,
+            &ui_event("2026-06-21T10:00:00.000000Z", "scroll", Some("Code"), None),
+        )
+        .await
+        .expect("unknown event_type must return Ok, not Err");
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM capture_ui_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "unknown event_type must not be inserted");
     }
 
     /// Missing table is swallowed for ui events too.

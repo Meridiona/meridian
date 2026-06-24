@@ -36,6 +36,13 @@ use tauri_plugin_updater::UpdaterExt;
 /// Guards the tray-menu path against re-entry (a second click mid-download).
 static CHECKING: AtomicBool = AtomicBool::new(false);
 
+/// Guards the non-idempotent install across *all* UI surfaces (tray menu + both
+/// banners). [`CHECKING`] only covers the tray-menu path; the `install_update`
+/// command can fire from the sidebar and popover too, so the single-flight guard
+/// has to wrap the install itself or parallel `download_and_install` + restart
+/// attempts would race.
+static INSTALLING: AtomicBool = AtomicBool::new(false);
+
 /// Structured result of an update check, for the in-app banners. Deliberately
 /// NOT a `Result` — a failed check is data (`state = "error"` + `error`) the UI
 /// renders, not a thrown command that the banner would have to swallow. `state`
@@ -131,6 +138,20 @@ pub async fn check_status(app: &AppHandle) -> UpdateStatus {
 /// the success path never returns (`restart()` re-execs the app).
 #[tracing::instrument(skip(app))]
 pub async fn download_and_apply(app: &AppHandle) -> Result<(), String> {
+    // Single-flight: refuse a concurrent install. On the happy path `restart()`
+    // re-execs the process so the guard's reset never matters; on every error
+    // path the drop guard clears it so a failed install can be retried.
+    if INSTALLING.swap(true, Ordering::SeqCst) {
+        return Err("An update is already being installed.".to_string());
+    }
+    struct ResetOnDrop;
+    impl Drop for ResetOnDrop {
+        fn drop(&mut self) {
+            INSTALLING.store(false, Ordering::SeqCst);
+        }
+    }
+    let _reset = ResetOnDrop;
+
     let updater = app.updater().map_err(|e| e.to_string())?;
     let update = updater
         .check()

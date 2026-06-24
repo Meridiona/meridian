@@ -117,9 +117,13 @@ export default function SetupWizard() {
   useEffect(() => {
     if (!downloading && !prefetching) return
     let unlisten: (() => void) | undefined
+    // Guard against the listener resolving AFTER this effect has been cleaned up
+    // (downloading/prefetching flipped false): without `cancelled`, the late
+    // `unlisten` would never run and a stale listener would double-fire progress.
+    let cancelled = false
     tauri()?.event.listen<DownloadProgress>('mlx-download-progress', (e) => setProgress(e.payload))
-      .then((un) => { unlisten = un }).catch(() => {})
-    return () => { if (unlisten) unlisten() }
+      .then((un) => { if (cancelled) un(); else unlisten = un }).catch(() => {})
+    return () => { cancelled = true; if (unlisten) unlisten() }
   }, [downloading, prefetching])
 
   // Poll OAuth completion on the Integrations step so a browser-completed connect
@@ -198,7 +202,17 @@ export default function SetupWizard() {
   // prefetch is what makes the "Ready" badge truthful about which model loaded.
   const downloadModel = useCallback(async () => {
     setErr('')
-    try { await invoke('set_model_preference', { modelId: MODEL_BY_ID[model].hfId }) } catch { /* best-effort */ }
+    // The preference MUST persist before the server prefetches — otherwise a
+    // failed write would let the server download the old/default model while the
+    // UI marks the newly-selected one ready. Stop the commit if the write fails.
+    try {
+      await invoke('set_model_preference', { modelId: MODEL_BY_ID[model].hfId })
+    } catch (e) {
+      setErr(String(e))
+      setWantModel(false)
+      prefetchStarted.current = false
+      return
+    }
     invoke('start_mlx_server_cmd').catch(() => {})
     setWantModel(true)
     setProgress({ received: 0, total: 0, message: 'Preparing model…' })
@@ -225,8 +239,16 @@ export default function SetupWizard() {
   const last = step === STEPS.length - 1
   const goStep = (i: number) => { setErr(''); setWelcome(false); setDone(false); setStep(i) }
   const finish = async () => {
-    try { await invoke('mark_setup_complete') } catch { /* best-effort */ }
-    setDone(true)
+    // `mark_setup_complete` writes the onboarded flag that stops the wizard
+    // reopening next launch. Only show "complete" if it actually persisted —
+    // otherwise the user would think they're done but the wizard would reappear.
+    setErr('')
+    try {
+      await invoke('mark_setup_complete')
+      setDone(true)
+    } catch (e) {
+      setErr(String(e))
+    }
   }
   const closeWindow = () => { tauri()?.window.getCurrentWindow().close() }
 
@@ -288,11 +310,16 @@ function Rail({ step, done, wiz, goStep }: { step: number; done: boolean; wiz: W
           const isCur = i === step && !done
           const reached = done || i <= step
           const ok = done || i < step
+          // A future step is reachable only once every step between the current
+          // one and it satisfies its gate — so the rail can't skip a required
+          // step (e.g. permissions) that the Footer's "Continue" would block.
+          const reachable = done || i <= step || STEPS.slice(step, i).every((p) => p.canNext(wiz))
           return (
-            <button key={s.id} onClick={() => goStep(i)} className="flex items-start"
+            <button key={s.id} disabled={!reachable} onClick={() => { if (reachable) goStep(i) }} className="flex items-start"
               style={{ gap: 12, padding: '10px 8px', borderRadius: 10, textAlign: 'left',
+                cursor: reachable ? 'pointer' : 'not-allowed', opacity: reachable ? 1 : 0.55,
                 background: isCur ? 'var(--tint)' : 'transparent', transition: 'background .14s' }}
-              onMouseEnter={(e) => { if (!isCur) e.currentTarget.style.background = 'var(--surface)' }}
+              onMouseEnter={(e) => { if (!isCur && reachable) e.currentTarget.style.background = 'var(--surface)' }}
               onMouseLeave={(e) => { if (!isCur) e.currentTarget.style.background = 'transparent' }}>
               <span className="flex items-center justify-center font-mono shrink-0" style={{
                 width: 24, height: 24, borderRadius: 99, fontSize: 11, fontWeight: 600, marginTop: 1,

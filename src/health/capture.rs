@@ -25,23 +25,35 @@ const RECENT_SAMPLE: i64 = 500;
 /// involved, so the old screenpipe binary/DB-file/log/WAL prerequisite probes
 /// are gone. `pool` is the meridian pool (the daemon's own DB, always open).
 pub async fn checks(pool: &SqlitePool) -> Vec<Check> {
-    let frames = frames_present(pool).await;
-    // The ratio checks are only meaningful once frames exist.
-    let have_frames = frames.severity != crate::health::Severity::Critical;
+    let (frames, state) = frames_present(pool).await;
     let mut checks = vec![frames];
-    if have_frames {
-        // Runtime capture quality — these double as permission proxies
-        // (blank rate → Screen Recording, a11y share → Accessibility).
-        checks.push(frame_freshness(pool).await);
-        checks.push(blank_text_rate(pool).await);
-        checks.extend(accessibility_checks(pool).await);
-        checks.push(capture_coverage(pool, "-1 day").await);
-    } else {
+    match state {
+        // Frames exist — the runtime quality proxies are meaningful (blank rate →
+        // Screen Recording, a11y share → Accessibility).
+        FramesState::Present => {
+            checks.push(frame_freshness(pool).await);
+            checks.push(blank_text_rate(pool).await);
+            checks.extend(accessibility_checks(pool).await);
+            checks.push(capture_coverage(pool, "-1 day").await);
+        }
         // Fresh install / nothing captured yet: the runtime proxies are blind,
         // so surface the permission prerequisite explicitly.
-        checks.push(permissions_unverified());
+        FramesState::Empty => checks.push(permissions_unverified()),
+        // The table is unreadable (schema/migration fault) — NOT a macOS
+        // permission problem, so a permission remedy would mislead. The critical
+        // `capture.frames` message already names the real cause; stand alone.
+        FramesState::Unreadable => {}
     }
     checks
+}
+
+/// Why `capture_frames` is not yielding rows — distinguishes the cases that look
+/// identical at `Severity::Critical` but need different remediation: an empty
+/// table (grant permissions) vs an unreadable one (fix the schema/migration).
+enum FramesState {
+    Present,
+    Empty,
+    Unreadable,
 }
 
 /// Prerequisite for the fresh-install / no-frames case, where the runtime
@@ -60,22 +72,33 @@ fn permissions_unverified() -> Check {
 }
 
 /// The `capture_frames` table is readable and non-empty. An unreadable table
-/// means a schema/migration problem, which breaks every ETL tick.
-async fn frames_present(pool: &SqlitePool) -> Check {
+/// means a schema/migration problem, which breaks every ETL tick. Returns the
+/// [`FramesState`] alongside the [`Check`] so the caller can tell an empty table
+/// (permission prerequisite) apart from an unreadable one (schema fault).
+async fn frames_present(pool: &SqlitePool) -> (Check, FramesState) {
     match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM capture_frames")
         .fetch_one(pool)
         .await
     {
-        Ok(0) => Check::critical(
-            "capture.frames",
-            "L1",
-            "capture_frames is empty — the tray has captured nothing yet",
+        Ok(0) => (
+            Check::critical(
+                "capture.frames",
+                "L1",
+                "capture_frames is empty — the tray has captured nothing yet",
+            ),
+            FramesState::Empty,
         ),
-        Ok(n) => Check::ok("capture.frames", "L1", format!("{n} frames total")),
-        Err(e) => Check::critical(
-            "capture.frames",
-            "L1",
-            format!("capture_frames unreadable ({e}) — schema/migration problem?"),
+        Ok(n) => (
+            Check::ok("capture.frames", "L1", format!("{n} frames total")),
+            FramesState::Present,
+        ),
+        Err(e) => (
+            Check::critical(
+                "capture.frames",
+                "L1",
+                format!("capture_frames unreadable ({e}) — schema/migration problem?"),
+            ),
+            FramesState::Unreadable,
         ),
     }
 }
@@ -125,9 +148,11 @@ async fn frame_freshness(pool: &SqlitePool) -> Check {
 /// (screenpipe captures black frames → OCR yields nothing).
 async fn blank_text_rate(pool: &SqlitePool) -> Check {
     let row = sqlx::query_as::<_, (i64, i64)>(
+        // NULLIF('') treats an empty string as absent, so an empty full_text does
+        // not mask a non-empty accessibility_text (and vice versa) — only a frame
+        // with NO usable text in either column counts as blank.
         "SELECT COUNT(*),
-                COALESCE(SUM(CASE WHEN COALESCE(full_text, accessibility_text) IS NULL
-                                   OR COALESCE(full_text, accessibility_text) = ''
+                COALESCE(SUM(CASE WHEN COALESCE(NULLIF(full_text, ''), NULLIF(accessibility_text, '')) IS NULL
                                   THEN 1 ELSE 0 END), 0)
          FROM (SELECT full_text, accessibility_text FROM capture_frames ORDER BY id DESC LIMIT ?1)",
     )
@@ -561,7 +586,9 @@ mod tests {
     #[tokio::test]
     async fn empty_frames_is_critical() {
         let pool = mem_pool().await;
-        assert_eq!(frames_present(&pool).await.severity, Severity::Critical);
+        let (check, state) = frames_present(&pool).await;
+        assert_eq!(check.severity, Severity::Critical);
+        assert!(matches!(state, FramesState::Empty));
     }
 
     #[tokio::test]
@@ -575,7 +602,9 @@ mod tests {
     async fn healthy_a11y_capture_is_ok() {
         let pool = mem_pool().await;
         insert(&pool, "A", None, Some("button: Save"), "accessibility", 20).await;
-        assert_eq!(frames_present(&pool).await.severity, Severity::Ok);
+        let (check, state) = frames_present(&pool).await;
+        assert_eq!(check.severity, Severity::Ok);
+        assert!(matches!(state, FramesState::Present));
         assert_eq!(blank_text_rate(&pool).await.severity, Severity::Ok);
         assert_eq!(frame_freshness(&pool).await.severity, Severity::Ok);
         let checks = accessibility_checks(&pool).await;

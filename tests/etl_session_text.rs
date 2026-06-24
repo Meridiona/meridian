@@ -233,7 +233,7 @@ async fn test_session_text_empty_when_no_full_text() {
     for i in 0i64..3 {
         let ts = format!("2026-01-01T10:00:0{}+00:00", i);
         sqlx::query(
-            "INSERT INTO capture_frames (id, app_name, window_name, timestamp, full_text, text_source)
+            "INSERT INTO capture_frames (id, app_name, window_name, timestamp, accessibility_text, text_source)
              VALUES (?, 'Code', NULL, ?, '', 'accessibility')",
         )
         .bind(i + 1)
@@ -245,7 +245,7 @@ async fn test_session_text_empty_when_no_full_text() {
 
     // App switch to force close
     sqlx::query(
-        "INSERT INTO capture_frames (id, app_name, window_name, timestamp, full_text, text_source)
+        "INSERT INTO capture_frames (id, app_name, window_name, timestamp, accessibility_text, text_source)
          VALUES (4, 'Slack', NULL, '2026-01-01T10:00:04+00:00', 'notifications', 'accessibility')",
     )
     .execute(&md)

@@ -160,8 +160,8 @@ def _resolve_model_id() -> str:
         preferred_id = user_pref or _DEFAULT_MLX_MODEL_ID
         if user_pref:
             log.info(
-                "run_task_linker_mlx: model preference from settings.json=%s",
-                user_pref,
+                "run_task_linker_mlx: model preference from settings.json",
+                extra={"model_preference": user_pref},
             )
         entry = resolve_model(preferred_id)
         preferred_min_ram = (

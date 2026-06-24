@@ -98,12 +98,17 @@ fn ax_is_trusted() -> bool {
 #[tauri::command]
 #[tracing::instrument]
 pub async fn check_screen_recording() -> bool {
-    #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
-        fn CGPreflightScreenCaptureAccess() -> bool;
+    #[cfg(target_os = "macos")]
+    {
+        #[link(name = "CoreGraphics", kind = "framework")]
+        extern "C" {
+            fn CGPreflightScreenCaptureAccess() -> bool;
+        }
+        // Safety: preflight is a pure status read — no prompt, no side effects.
+        unsafe { CGPreflightScreenCaptureAccess() }
     }
-    // Safety: preflight is a pure status read — no prompt, no side effects.
-    unsafe { CGPreflightScreenCaptureAccess() }
+    #[cfg(not(target_os = "macos"))]
+    false
 }
 
 /// Surface the macOS Screen Recording prompt **and register the app** so it
@@ -120,15 +125,20 @@ pub async fn check_screen_recording() -> bool {
 #[tauri::command]
 #[tracing::instrument]
 pub async fn request_screen_recording() -> bool {
-    #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
-        fn CGRequestScreenCaptureAccess() -> bool;
+    #[cfg(target_os = "macos")]
+    {
+        #[link(name = "CoreGraphics", kind = "framework")]
+        extern "C" {
+            fn CGRequestScreenCaptureAccess() -> bool;
+        }
+        // Safety: CGRequestScreenCaptureAccess shows the TCC prompt + registers the
+        // app, then returns the resulting grant state — no UB.
+        let granted = unsafe { CGRequestScreenCaptureAccess() };
+        tracing::info!(granted, "setup: requested Screen Recording access");
+        granted
     }
-    // Safety: CGRequestScreenCaptureAccess shows the TCC prompt + registers the
-    // app, then returns the resulting grant state — no UB.
-    let granted = unsafe { CGRequestScreenCaptureAccess() };
-    tracing::info!(granted, "setup: requested Screen Recording access");
-    granted
+    #[cfg(not(target_os = "macos"))]
+    false
 }
 
 /// Returns `true` when the tray holds macOS **Input Monitoring** permission.
@@ -357,8 +367,9 @@ fn detect_specs_blocking() -> SystemSpecs {
         .parse()
         .unwrap_or(0);
     let mem_bytes: u64 = run("sysctl", &["-n", "hw.memsize"]).parse().unwrap_or(0);
-    // Round to the nearest whole GB (16 GB reports as 17179869184 bytes ≈ 16.0).
-    let ram_gb = ((mem_bytes as f64) / 1e9).round() as u32;
+    // hw.memsize is bytes of unified memory; divide by 1024³ (GiB) so a 16 GiB
+    // Mac (17179869184 bytes) reads as 16 — dividing by 1e9 would round it to 17.
+    let ram_gb = ((mem_bytes as f64) / 1_073_741_824.0).round() as u32;
 
     // GPU cores live in `system_profiler SPDisplaysDataType` as a
     // "Total Number of Cores: <n>" line on Apple Silicon.
@@ -400,8 +411,24 @@ fn detect_specs_blocking() -> SystemSpecs {
 #[tauri::command]
 #[tracing::instrument]
 pub async fn set_model_preference(model_id: Option<String>) -> Result<(), String> {
+    // Boundary validation: this persists a value the MLX server later resolves and
+    // downloads, so reject anything that isn't a plausible HuggingFace repo id
+    // rather than letting a malformed invoke poison the setting or trigger an
+    // unintended download. Trim first so trailing whitespace can't smuggle a bad
+    // id past the check (or into settings.json).
+    let cleaned = match model_id
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        Some(id) if is_valid_hf_repo_id(&id) => Some(id),
+        Some(id) => {
+            tracing::warn!(model = %id, "set_model_preference: rejected malformed model id");
+            return Err(format!("invalid model id: {id}"));
+        }
+        // Clearing the preference → spec-aware automatic selection.
+        None => None,
+    };
     let mut v = meridian_core::settings::read_settings_value();
-    let cleaned = model_id.filter(|s| !s.trim().is_empty());
     if let Some(obj) = v.as_object_mut() {
         obj.insert(
             "llm_model_preference".to_string(),
@@ -419,6 +446,25 @@ pub async fn set_model_preference(model_id: Option<String>) -> Result<(), String
     Ok(())
 }
 
+/// True for a plausible HuggingFace repo id — `org/name`, each segment non-empty
+/// and using only `[A-Za-z0-9._-]`. Guards [`set_model_preference`] against
+/// malformed values (path traversal, whitespace, extra slashes) reaching
+/// `settings.json` / the model downloader. Intentionally a *format* check, not an
+/// exact catalog allowlist: the supported-model list lives in the wizard UI, and
+/// duplicating it here would drift.
+fn is_valid_hf_repo_id(id: &str) -> bool {
+    let mut parts = id.split('/');
+    let (Some(org), Some(name), None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    let seg_ok = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    };
+    seg_ok(org) && seg_ok(name)
+}
+
 /// Read the persisted model preference (HF repo id), or `None` when unset /
 /// blank. The wizard calls this on the Model step to pre-select the matching
 /// tile after a relaunch.
@@ -430,4 +476,26 @@ pub async fn get_model_preference() -> Option<String> {
         .and_then(|x| x.as_str())
         .map(str::to_string)
         .filter(|s| !s.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_valid_hf_repo_id;
+
+    #[test]
+    fn accepts_real_repo_ids() {
+        assert!(is_valid_hf_repo_id("mlx-community/Phi-4-4bit"));
+        assert!(is_valid_hf_repo_id("Qwen/Qwen2.5-7B-Instruct-MLX"));
+    }
+
+    #[test]
+    fn rejects_malformed_ids() {
+        assert!(!is_valid_hf_repo_id("no-slash"));
+        assert!(!is_valid_hf_repo_id("too/many/slashes"));
+        assert!(!is_valid_hf_repo_id("/leading"));
+        assert!(!is_valid_hf_repo_id("trailing/"));
+        assert!(!is_valid_hf_repo_id("org/na me")); // whitespace
+        assert!(!is_valid_hf_repo_id("../etc/passwd")); // path traversal
+        assert!(!is_valid_hf_repo_id(""));
+    }
 }

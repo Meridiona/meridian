@@ -351,7 +351,7 @@ function IntegrationsBody({ wiz }: { wiz: Wiz }) {
 // ── Welcome (pre-step intro) ──────────────────────────────────────────────────
 export function Welcome({ onBegin }: { onBegin: () => void }) {
   const points = [
-    { t: 'On-device', d: 'Runs on Apple MLX. Nothing leaves your Mac.' },
+    { t: 'On-device', d: 'Runs on Apple MLX. Classifier input stays local unless you explicitly connect your tools.' },
     { t: 'Automatic', d: 'Recognises your work and drafts worklogs you approve.' },
     { t: 'Connected', d: 'Jira and Trello today, more trackers soon.' },
   ]

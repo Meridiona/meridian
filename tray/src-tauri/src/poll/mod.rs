@@ -51,11 +51,6 @@ const MLX_MAX_RESTARTS: u32 = 5;
 /// immediately. The check is a single small manifest GET when already current.
 const MLX_RUNTIME_CHECK_TICKS: u32 = 720;
 
-/// Hard cap on one background runtime upgrade. The tarball stream has no per-chunk
-/// deadline, so a stalled download would otherwise pin the in-flight flag (and
-/// suspend supervision) for the process lifetime — this bounds it.
-const MLX_UPGRADE_TIMEOUT: Duration = Duration::from_secs(600);
-
 pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
     let mut tick: u32 = 0;
     // Last-emitted JSON snapshots for the live events — emit only on change
@@ -190,9 +185,16 @@ async fn supervise_mlx(mlx: &SharedMlxManager, attempts: &mut u32) {
 /// Detached so a multi-minute download never stalls the 30 s poll cadence. The
 /// in-flight flag (set synchronously before the spawn) prevents the next
 /// scheduled check from starting a second upgrade, and a drop guard clears it on
-/// completion, early return, timeout, AND panic — so a stalled or crashing
-/// upgrade can never latch the flag and silently disable the feature (which would
-/// also leave supervision permanently paused).
+/// completion, early return, AND panic — so a crashing upgrade can never latch
+/// the flag and silently disable the feature (which would also leave supervision
+/// permanently paused).
+///
+/// Deliberately **not** wrapped in an outer timeout: cancelling the upgrade
+/// future mid-swap could leave the machine with no live runtime, then clear the
+/// flag and resume supervision against a missing install. Instead
+/// [`mlx_server::auto_upgrade_runtime`] bounds only its network download phase
+/// internally and runs the stop→swap→restart to completion (all bounded,
+/// non-network steps), so the unbounded part is capped without risking the swap.
 fn maybe_upgrade_runtime(mlx: SharedMlxManager, inflight: Arc<AtomicBool>) {
     if inflight.swap(true, Ordering::SeqCst) {
         return; // a previous upgrade is still running
@@ -206,15 +208,7 @@ fn maybe_upgrade_runtime(mlx: SharedMlxManager, inflight: Arc<AtomicBool>) {
         }
         let _reset = ResetOnDrop(inflight);
 
-        if tokio::time::timeout(MLX_UPGRADE_TIMEOUT, mlx_server::auto_upgrade_runtime(&mlx))
-            .await
-            .is_err()
-        {
-            tracing::warn!(
-                secs = MLX_UPGRADE_TIMEOUT.as_secs(),
-                "mlx: runtime auto-upgrade timed out — abandoning this attempt"
-            );
-        }
+        mlx_server::auto_upgrade_runtime(&mlx).await;
     });
 }
 

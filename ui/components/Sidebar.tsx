@@ -67,6 +67,9 @@ export default function Sidebar({ onOpenCmd }: Props) {
   const [installing, setInstalling] = useState(false)
   const [pct, setPct] = useState<number | null>(null)
   const [updErr, setUpdErr] = useState<string | null>(null)
+  // Whether the DMG update check has settled — the npm fallback banner must wait
+  // for it so it doesn't flash on a packaged build that the DMG updater handles.
+  const [updChecked, setUpdChecked] = useState(false)
 
   useEffect(() => {
     function load() {
@@ -82,7 +85,10 @@ export default function Sidebar({ onOpenCmd }: Props) {
     // get_version (Rust) in the Tauri window, /api/version in a browser — same shape.
     loadData<VersionInfo>('/api/version', 'get_version').then(setVer).catch(() => {})
     // DMG auto-update check (Tauri-only; no-op / unsupported in a browser).
-    invoke<UpdateStatus>('check_update').then(setUpd).catch(() => {})
+    invoke<UpdateStatus>('check_update')
+      .then(setUpd)
+      .catch(() => setUpd(null))
+      .finally(() => setUpdChecked(true))
   }, [])
 
   async function runUpdate() {
@@ -177,8 +183,11 @@ export default function Sidebar({ onOpenCmd }: Props) {
         </div>
       )}
 
-      {/* npm fallback banner — opens a Terminal running `meridian update` (npm install). */}
-      {upd?.state !== 'available' && ver?.updateAvailable && ver.latest && (
+      {/* npm fallback banner — opens a Terminal running `meridian update` (npm install).
+          Only for non-DMG runs (browser → upd null, or a non-packaged `unsupported`
+          run); a packaged DMG (available/uptodate/error) self-updates via the banner
+          above, so the npm path must not show there. */}
+      {updChecked && (upd == null || upd.state === 'unsupported') && ver?.updateAvailable && ver.latest && (
         <div className="mx-3 mb-1 p-3 rounded-lg"
           style={{ background: 'var(--surface)', border: '1px solid var(--accent)' }}>
           <div className="flex items-center gap-2">

@@ -29,6 +29,9 @@ case "${1:-identity}" in
   setup)
     if has_cert; then echo "✓ '$CN' code-signing identity already exists"; exit 0; fi
     dir="$(mktemp -d)"; pw="meridiandev"
+    # Clean up the temp key material on ANY exit (including an early `set -e`
+    # failure before the explicit rm below), so the private key never lingers.
+    trap 'rm -rf "$dir"' EXIT
     cat > "$dir/c.conf" <<EOF
 [req]
 distinguished_name=dn
@@ -47,9 +50,11 @@ EOF
       -keyout "$dir/k.pem" -out "$dir/c.pem" -config "$dir/c.conf" >/dev/null 2>&1
     /usr/bin/openssl pkcs12 -export -inkey "$dir/k.pem" -in "$dir/c.pem" \
       -name "$CN" -out "$dir/c.p12" -passout "pass:$pw" >/dev/null 2>&1
+    # -T /usr/bin/codesign grants ONLY codesign access to the imported key; do not
+    # add -A (which would let any local app use this signing key).
     security import "$dir/c.p12" -k "$HOME/Library/Keychains/login.keychain-db" \
-      -P "$pw" -T /usr/bin/codesign -A >/dev/null
-    rm -rf "$dir"
+      -P "$pw" -T /usr/bin/codesign >/dev/null
+    rm -rf "$dir"; trap - EXIT
     echo "✓ created '$CN' code-signing identity (self-signed; 'not trusted' is expected & fine)."
     echo "  Next: 'npm run build:staging' → grant the 3 macOS permissions ONCE → done."
     echo "  Every future rebuild now keeps the grants (same stable identity)."

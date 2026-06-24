@@ -215,9 +215,11 @@ pub fn run() {
                                 let _ = tt.show();
                                 tracing::info!(x, y, "tray.enter: tooltip shown");
                                 // Push the latest status so the tooltip renders fresh data.
+                                // Fall back to a default payload if the state lock is
+                                // poisoned rather than panicking this tray-event handler.
                                 let _ = app.emit("status-update",
                                     app.try_state::<Arc<Mutex<AppState>>>()
-                                        .map(|s| s.inner().lock().unwrap().to_payload())
+                                        .and_then(|s| s.inner().lock().ok().map(|g| g.to_payload()))
                                         .unwrap_or_else(|| AppState::default().to_payload()),
                                 );
                             }
