@@ -18,7 +18,10 @@
 //! Unlike the npm bundle (WorkingDirectory `~/.meridian/app`, daemon reads
 //! `~/.meridian/app/.env`), the DMG daemon's WorkingDirectory is `~/.meridian`,
 //! so `dotenvy` self-loads the **canonical** `~/.meridian/.env` the tray already
-//! writes to — unifying tray and daemon on one credential file.
+//! writes to — unifying tray and daemon on one credential file. A bundle→DMG
+//! migrant's pre-existing `~/.meridian/app/.env` is copied across once
+//! ([`migrate_legacy_bundle_env`]) and stale bundle launchd agents
+//! (screenpipe / MLX / UI server) are booted out during [`install`].
 //!
 //! # Who calls this
 //! [`crate::run`]'s Tauri `setup` hook spawns [`ensure_backend_installed`] once,
@@ -122,11 +125,20 @@ async fn install(backend: &Path, home: &Path) -> Result<(), String> {
         .await
         .map_err(|e| format!("mkdir {}: {e}", launch_agents.display()))?;
 
-    // Purge any leftover pre-cutover screenpipe install before staging the
-    // in-process backend, so the old capturer can't race it or double-prompt for
-    // Screen Recording (the mixed-install mess seen when updating over an old
-    // screenpipe install).
+    // Purge leftovers from a pre-fold / pre-cutover **bundle** install before
+    // staging the in-process backend. A user migrating from the old npm/curl
+    // bundle to this DMG carries launchd agents the new topology either replaced
+    // (the in-process capturer supersedes screenpipe; the tray supervises MLX
+    // itself) or retired (the embedded dashboard replaced the standalone UI
+    // server). Left running they race the tray, contend for :7823, or burn RAM.
+    // `install-from-bundle.sh` boots these out for the bundle path; the DMG path
+    // needs the same. All best-effort + non-fatal.
     cleanup_legacy_screenpipe(home).await;
+    cleanup_legacy_mlx_server(home).await;
+    cleanup_legacy_ui(home).await;
+    // Recover tracker credentials the bundle wrote to ~/.meridian/app/.env so the
+    // DMG daemon (which reads the canonical ~/.meridian/.env) doesn't lose them.
+    migrate_legacy_bundle_env(home).await;
 
     let daemon_bin = home.join(".meridian/bin/meridian");
     let helper_bin = home.join(".meridian/bin/meridian-a11y-helper");
@@ -189,6 +201,70 @@ async fn cleanup_legacy_screenpipe(home: &Path) {
         .args(["-f", "screenpipe record"])
         .output()
         .await;
+}
+
+/// Purge a leftover **bundle MLX launchd agent**. The npm/curl bundle registers
+/// the MLX inference server as `com.meridiona.mlx-server` (via
+/// `install-mlx-server-daemon.sh`) on port 7823. The DMG instead supervises MLX
+/// **in-process** through [`crate::mlx_server::MlxManager`] on that *same* port,
+/// so a leftover launchd agent contends for :7823 — the tray's spawn hits
+/// `EADDRINUSE` and the agent's `KeepAlive` keeps respawning, producing retry
+/// churn + log spam. Boot it out and remove its plist so the tray owns the port.
+/// We do **not** `pkill` by name — the tray's own MLX child also listens on 7823,
+/// and `bootout` already stops only the launchd-spawned one. Best-effort.
+async fn cleanup_legacy_mlx_server(home: &Path) {
+    let label = "com.meridiona.mlx-server";
+    let target = format!("gui/{}/{label}", crate::sys::uid_str());
+    if launchctl(&["print", &target]).await.is_ok_and(|s| s) {
+        let _ = launchctl(&["bootout", &target]).await;
+        tracing::info!(label, "backend_install: removed leftover MLX launchd agent");
+    }
+    let _ =
+        tokio::fs::remove_file(home.join("Library/LaunchAgents/com.meridiona.mlx-server.plist"))
+            .await;
+}
+
+/// Purge a leftover **standalone UI server agent**. Pre-fold, the Next.js
+/// dashboard ran as `com.meridiona.ui` (a `KeepAlive` Node server on
+/// localhost:3939). The fold embeds the dashboard in the tray webview, so a
+/// leftover agent is a zombie Node process burning ~150 MB indefinitely (no port
+/// clash — 3939 is dev-only). Boot it out and remove its plist. Mirrors the
+/// `install-from-bundle.sh` cleanup for the bundle path. Best-effort.
+async fn cleanup_legacy_ui(home: &Path) {
+    let label = "com.meridiona.ui";
+    let target = format!("gui/{}/{label}", crate::sys::uid_str());
+    if launchctl(&["print", &target]).await.is_ok_and(|s| s) {
+        let _ = launchctl(&["bootout", &target]).await;
+        tracing::info!(label, "backend_install: removed leftover UI server agent");
+    }
+    let _ = tokio::fs::remove_file(home.join("Library/LaunchAgents/com.meridiona.ui.plist")).await;
+}
+
+/// Recover tracker credentials when migrating from a **bundle** install. The
+/// npm/curl bundle writes its `.env` to `~/.meridian/app/.env` (its daemon's
+/// WorkingDirectory); the DMG daemon's WorkingDirectory is `~/.meridian`, so it
+/// reads the **canonical** `~/.meridian/.env`. Without a copy, a bundle→DMG
+/// migrant's Jira/GitHub/Linear tokens would silently vanish and need re-entering
+/// via the setup wizard. Copy the bundle file across **only when the canonical
+/// one doesn't already exist** — never clobber creds the tray already wrote.
+/// Best-effort + non-fatal.
+async fn migrate_legacy_bundle_env(home: &Path) {
+    let canonical = home.join(".meridian/.env");
+    let bundle = home.join(".meridian/app/.env");
+    if tokio::fs::metadata(&canonical).await.is_ok() {
+        return; // canonical creds already present — leave them untouched
+    }
+    if tokio::fs::metadata(&bundle).await.is_err() {
+        return; // no bundle .env to migrate (fresh install / source run)
+    }
+    match tokio::fs::copy(&bundle, &canonical).await {
+        Ok(_) => tracing::info!(
+            src = %bundle.display(),
+            dest = %canonical.display(),
+            "backend_install: migrated bundle .env to the canonical path"
+        ),
+        Err(e) => tracing::warn!(error = %e, "backend_install: could not migrate bundle .env"),
+    }
 }
 
 /// Copy `src` → `dest` only when the bytes differ, then `chmod 0755`.
@@ -308,6 +384,64 @@ async fn launchctl(args: &[&str]) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `migrate_legacy_bundle_env` must: copy the bundle `.env` to the canonical
+    /// path when only the bundle exists; **never clobber** an existing canonical
+    /// file; and no-op when there's nothing to migrate. The clobber guard is the
+    /// load-bearing case — overwriting would wipe creds the tray already wrote.
+    #[tokio::test]
+    async fn migrate_bundle_env_copies_but_never_clobbers() {
+        let base = std::env::temp_dir().join(format!("meridian-bundle-env-{}", std::process::id()));
+        let _ = tokio::fs::remove_dir_all(&base).await; // clean slate if a prior run died
+        let mk = |name: &str| base.join(name);
+
+        // Case 1: bundle present, canonical absent → copies content across.
+        let h1 = mk("copy");
+        tokio::fs::create_dir_all(h1.join(".meridian/app"))
+            .await
+            .unwrap();
+        tokio::fs::write(h1.join(".meridian/app/.env"), "JIRA_API_TOKEN=abc")
+            .await
+            .unwrap();
+        migrate_legacy_bundle_env(&h1).await;
+        assert_eq!(
+            tokio::fs::read_to_string(h1.join(".meridian/.env"))
+                .await
+                .unwrap(),
+            "JIRA_API_TOKEN=abc"
+        );
+
+        // Case 2: both present → canonical is left untouched (no clobber).
+        let h2 = mk("noclobber");
+        tokio::fs::create_dir_all(h2.join(".meridian/app"))
+            .await
+            .unwrap();
+        tokio::fs::write(h2.join(".meridian/app/.env"), "FROM=bundle")
+            .await
+            .unwrap();
+        tokio::fs::write(h2.join(".meridian/.env"), "FROM=canonical")
+            .await
+            .unwrap();
+        migrate_legacy_bundle_env(&h2).await;
+        assert_eq!(
+            tokio::fs::read_to_string(h2.join(".meridian/.env"))
+                .await
+                .unwrap(),
+            "FROM=canonical"
+        );
+
+        // Case 3: nothing to migrate → canonical stays absent, no error.
+        let h3 = mk("noop");
+        tokio::fs::create_dir_all(h3.join(".meridian"))
+            .await
+            .unwrap();
+        migrate_legacy_bundle_env(&h3).await;
+        assert!(tokio::fs::metadata(h3.join(".meridian/.env"))
+            .await
+            .is_err());
+
+        let _ = tokio::fs::remove_dir_all(&base).await;
+    }
 
     #[test]
     fn apply_subs_replaces_every_occurrence() {
