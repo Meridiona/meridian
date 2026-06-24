@@ -1,0 +1,102 @@
+name: Build MLX runtime
+
+# Builds the self-contained MLX runtime tarball for Approach C
+# (download-and-provision): a python-build-standalone CPython + the MLX venv +
+# the agents package, packed for download into ~/.meridian/runtime/ on first run.
+# The customer machine needs no system Python/Node/uv — only Apple Silicon +
+# macOS >= the floor in the manifest. The ~7 GB model is NOT bundled (downloaded
+# on first request).
+#
+# build (macos-14, arm64) → smoke (macos-15, arm64 — a DIFFERENT machine/OS, so
+# relocation + ABI + deployment-target are exercised on a box that didn't build
+# it) → publish (only on a `runtime-v*` tag) attaches the tarball + manifest to
+# the GitHub release. workflow_dispatch builds + smoke-tests without publishing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Runtime version label (defaults to services/pyproject.toml)"
+        required: false
+        default: ""
+  push:
+    tags: ["runtime-v*"]
+
+permissions:
+  contents: write   # publish job attaches assets to the release
+
+concurrency:
+  group: mlx-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (macos-14 arm64)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build runtime tarball
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+          # On a tag push, stamp the canonical release-download URL into the manifest.
+          RUNTIME_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: bash scripts/build-mlx-runtime.sh
+
+      - name: Upload runtime artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlx-runtime
+          path: |
+            dist/meridian-mlx-runtime-*-aarch64.tar.gz
+            dist/runtime-manifest.json
+          if-no-files-found: error
+          retention-days: 7
+
+  smoke:
+    name: Smoke test (${{ matrix.os }})
+    needs: build
+    # Run on every hosted arm64 macOS version so a deployment-target / ABI /
+    # relocation regression is caught across the supported range — and on boxes
+    # that did NOT build the tarball (build is macos-14). macos-13 is Intel, so
+    # the 13.5 manifest floor itself can't be exercised on hosted runners;
+    # macos-14 (Sonoma) is the closest available. fail-fast off so one version
+    # failing still reports the others.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download runtime artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mlx-runtime
+          path: dist
+
+      - name: Smoke test on a fresh extraction
+        run: bash scripts/smoke-test-mlx-runtime.sh dist/meridian-mlx-runtime-*-aarch64.tar.gz
+
+  publish:
+    name: Publish to release
+    needs: smoke
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download runtime artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mlx-runtime
+          path: dist
+
+      - name: Attach tarball + manifest to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            dist/meridian-mlx-runtime-*-aarch64.tar.gz \
+            dist/runtime-manifest.json \
+            --clobber --repo "${GITHUB_REPOSITORY}"

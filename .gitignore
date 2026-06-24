@@ -85,3 +85,6 @@ dist/
 
 # root release-tooling deps
 /node_modules/
+
+# MLX runtime build scratch (scripts/build-mlx-runtime.sh)
+.mlx-runtime-build/
