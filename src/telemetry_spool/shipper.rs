@@ -195,7 +195,9 @@ async fn run_tick() -> Result<()> {
                     );
                     let _ = std::fs::remove_file(&file_path);
                 } else {
-                    tracing::debug!(file = %filename, signal, "telemetry file shipped");
+                    // TRACE: one per shipped file (~1/s while draining) — per-file
+                    // success is spool-debugging detail, not wanted at `meridian=debug`.
+                    tracing::trace!(file = %filename, signal, "telemetry file shipped");
                 }
             }
             Err(ShipError::Terminal(msg)) => {

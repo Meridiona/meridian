@@ -17,6 +17,7 @@ import argparse
 import logging
 import os
 import sqlite3 as _sqlite3
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -148,6 +149,151 @@ async def info() -> dict:
         "model_resident":   m.model_resident() if m else False,
         "active_memory_gb": m.model_active_memory_gb() if m else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Model prefetch — eager, spec-aware download for the onboarding wizard
+# ---------------------------------------------------------------------------
+#
+# The wizard's Model step calls /prefetch_model right after the runtime is
+# provisioned so the ~7 GB classifier weights are on disk before the first
+# classification — instead of the lazy, progress-less download that otherwise
+# fires mid-inference. The model id is resolved by `_resolve_model_id()`, which
+# is ALREADY spec-aware (picks the best fit for this machine's Metal headroom /
+# RAM / chip via `llm_selector.select_mlx_model_id`), so eager == spec-aware
+# without any manifest change.
+#
+# We download to the HF cache WITHOUT loading weights into Metal memory: the
+# download primitive is `mlx_lm.utils._download(model_id)` — the SAME call (and
+# therefore the same `allow_patterns` fileset) that `mlx_lm.load()` resolves on
+# the non-sharded path — so the first real `load()` finds everything cached and
+# never touches the network. A bare `snapshot_download` could fetch a different
+# set and leave `load()` to re-download silently; we only fall back to it (with
+# the identical pattern list replicated) if the private primitive is missing.
+
+# MUST stay in sync with `mlx_lm.utils._download`'s default `allow_patterns`
+# (used by `load()` on the non-sharded path) — the fallback relies on parity.
+_MODEL_ALLOW_PATTERNS = [
+    "*.json", "model*.safetensors", "*.py", "tokenizer.model",
+    "*.tiktoken", "tiktoken.model", "*.txt", "*.jsonl", "*.jinja",
+]
+
+# Shared prefetch progress, guarded by _prefetch_lock. states: idle|downloading|done|error
+_prefetch_state: dict[str, Any] = {
+    "state": "idle", "model_id": None, "received": 0, "total": 0, "error": None,
+}
+_prefetch_lock = threading.Lock()
+
+
+def _hf_cache_dir_for(model_id: str) -> Path:
+    """The HF hub cache directory for `model_id` (where partial + complete blobs land)."""
+    from huggingface_hub.constants import HF_HUB_CACHE
+    return Path(HF_HUB_CACHE) / ("models--" + model_id.replace("/", "--"))
+
+
+def _dir_size_bytes(path: Path) -> int:
+    """Sum of all file sizes under `path` (includes HF `.incomplete` partials → live progress)."""
+    total = 0
+    if path.exists():
+        for f in path.rglob("*"):
+            try:
+                if f.is_file():
+                    total += f.stat().st_size
+            except OSError:
+                pass
+    return total
+
+
+def _prefetch_total_bytes(model_id: str) -> int:
+    """Authoritative download size: sum HF sibling sizes filtered to the load() patterns.
+
+    Computed upfront so the wizard's progress bar has a stable denominator, instead
+    of summing concurrent per-file tqdm totals (which lurch as new bars spawn).
+    """
+    import fnmatch
+    from huggingface_hub import HfApi
+    info = HfApi().model_info(model_id, files_metadata=True)
+    total = 0
+    for sib in info.siblings or []:
+        if any(fnmatch.fnmatch(sib.rfilename, pat) for pat in _MODEL_ALLOW_PATTERNS):
+            total += sib.size or 0
+    return total
+
+
+def _run_prefetch(model_id: str) -> None:
+    """Background worker: download the model's weights to the HF cache (no load)."""
+    tracer = trace.get_tracer(__name__)
+    with tracer.start_as_current_span("model_prefetch") as span:
+        span.set_attribute("model_id", model_id)
+        try:
+            try:
+                from mlx_lm.utils import _download as _mlx_download
+                _mlx_download(model_id)  # exact fileset load() resolves; download-only
+            except (ImportError, AttributeError):
+                # Private primitive unavailable — replicate load()'s default patterns.
+                from huggingface_hub import snapshot_download
+                snapshot_download(model_id, allow_patterns=_MODEL_ALLOW_PATTERNS)
+            received = _dir_size_bytes(_hf_cache_dir_for(model_id))
+            with _prefetch_lock:
+                _prefetch_state["received"] = received or _prefetch_state["total"]
+                _prefetch_state["state"] = "done"
+            span.set_attribute("received_bytes", received)
+            log.info("server: model prefetch complete", extra={"model_id": model_id, "received_bytes": received})
+        except Exception as exc:  # noqa: BLE001 — report, never crash the server
+            with _prefetch_lock:
+                _prefetch_state["state"] = "error"
+                _prefetch_state["error"] = str(exc)
+            span.set_status(trace.Status(trace.StatusCode.ERROR, str(exc)))
+            log.error("server: model prefetch failed", extra={"model_id": model_id, "error": str(exc)})
+
+
+@app.post("/prefetch_model")
+async def prefetch_model() -> dict:
+    """Start the eager, spec-aware model download (idempotent). Returns current status.
+
+    Apple Intelligence backend → nothing to download (no-op `done`). Re-POSTing
+    while `downloading`/`done` returns the live state without spawning a second
+    download; an earlier `error` is retried.
+    """
+    from fastapi.concurrency import run_in_threadpool
+
+    from agents.llm_selector import APPLE_INTELLIGENCE_ID
+    m = _app_state.get("mlx_module")
+    model_id = m._resolve_model_id() if m else None
+    if model_id == APPLE_INTELLIGENCE_ID or model_id is None:
+        return {"state": "done", "model_id": model_id, "received": 0, "total": 0, "error": None}
+
+    with _prefetch_lock:
+        # Idempotent only for the SAME model: a completed/in-flight prefetch for
+        # one model must not block starting a different one after the user changes
+        # their model preference (which changes what _resolve_model_id() returns).
+        same_model = _prefetch_state.get("model_id") == model_id
+        if same_model and _prefetch_state["state"] in ("downloading", "done"):
+            return dict(_prefetch_state)  # idempotent — no duplicate downloads
+        _prefetch_state.update(state="downloading", model_id=model_id, received=0, total=0, error=None)
+
+    try:
+        total = await run_in_threadpool(_prefetch_total_bytes, model_id)
+    except Exception as exc:  # noqa: BLE001 — size probe is best-effort; download still runs
+        total = 0
+        log.warning("server: prefetch size-probe failed (bar will be indeterminate)", extra={"error": str(exc)})
+    with _prefetch_lock:
+        _prefetch_state["total"] = total
+
+    threading.Thread(target=_run_prefetch, args=(model_id,), daemon=True).start()
+    log.info("server: model prefetch started", extra={"model_id": model_id, "total_bytes": total})
+    with _prefetch_lock:
+        return dict(_prefetch_state)
+
+
+@app.get("/prefetch_status")
+async def prefetch_status() -> dict:
+    """Live prefetch progress. `received` is recomputed from the cache dir while downloading."""
+    with _prefetch_lock:
+        st = dict(_prefetch_state)
+    if st["state"] == "downloading" and st["model_id"]:
+        st["received"] = _dir_size_bytes(_hf_cache_dir_for(st["model_id"]))
+    return st
 
 
 # ---------------------------------------------------------------------------

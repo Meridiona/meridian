@@ -7,6 +7,7 @@ import { Switch } from '@/components/ui/Switch'
 import { NumberStepper } from '@/components/ui/NumberStepper'
 import { TextInput } from '@/components/ui/TextInput'
 import type { RuntimeSettings } from '@/lib/settings'
+import { load, mutate } from '@/lib/bridge'
 
 type SaveStatus = 'idle' | 'saved' | 'error'
 type ReloadStatus = 'idle' | 'saving' | 'installing' | 'reloading' | 'done' | 'error'
@@ -16,8 +17,10 @@ type ReloadStatus = 'idle' | 'saving' | 'installing' | 'reloading' | 'done' | 'e
 async function pollOpenObserveReady(): Promise<boolean> {
   for (let i = 0; i < 60; i++) {
     try {
-      const r = await fetch('/api/openobserve')
-      const s = await r.json() as { reachable?: boolean; failed?: boolean }
+      const s = await load<{ reachable?: boolean; failed?: boolean }>(
+        '/api/openobserve',
+        'get_openobserve_status',
+      )
       if (s.reachable) return true
       if (s.failed) return false
     } catch { /* keep polling */ }
@@ -106,9 +109,9 @@ export default function SettingsView() {
   const [notifStatus, setNotifStatus] = useState<SaveStatus>('idle')
 
   useEffect(() => {
-    fetch('/api/settings')
-      .then(r => r.json())
-      .then((d: RuntimeSettings) => setSettings(d))
+    // get_settings (Rust) in the Tauri window, /api/settings in a browser.
+    load<RuntimeSettings>('/api/settings', 'get_settings')
+      .then(setSettings)
       .catch(() => {})
   }, [])
 
@@ -120,13 +123,8 @@ export default function SettingsView() {
   async function save(fields: Partial<RuntimeSettings>, setStatus: (s: SaveStatus) => void) {
     setStatus('idle')
     try {
-      const res = await fetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(fields),
-      })
-      if (!res.ok) throw new Error('non-ok')
-      const updated: RuntimeSettings = await res.json()
+      // Dual-path: update_settings (Rust) in the app, /api/settings PUT in a browser.
+      const updated = await mutate<RuntimeSettings>('/api/settings', 'update_settings', fields, 'PUT')
       setSettings(updated)
       setStatus('saved')
       setTimeout(() => setStatus('idle'), 2000)
@@ -145,19 +143,13 @@ export default function SettingsView() {
     setReloadMsg(null)
     setReloadStatus('saving')
     try {
-      const res = await fetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          log_level: settings.log_level,
-          otlp_enabled: settings.otlp_enabled,
-          otlp_endpoint: settings.otlp_endpoint,
-          oo_email: settings.oo_email,
-          oo_password: settings.oo_password,
-        }),
-      })
-      if (!res.ok) throw new Error('save failed')
-      const updated: RuntimeSettings = await res.json()
+      const updated = await mutate<RuntimeSettings>('/api/settings', 'update_settings', {
+        log_level: settings.log_level,
+        otlp_enabled: settings.otlp_enabled,
+        otlp_endpoint: settings.otlp_endpoint,
+        oo_email: settings.oo_email,
+        oo_password: settings.oo_password,
+      }, 'PUT')
       setSettings(updated)
     } catch {
       setReloadStatus('error')
@@ -171,22 +163,13 @@ export default function SettingsView() {
     // start is a real error the user must see — otherwise "Apply" reports
     // success while OpenObserve is down.
     try {
-      const ooRes = await fetch('/api/openobserve', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: settings.otlp_enabled }),
-      })
-      if (!ooRes.ok) {
-        const b = await ooRes.json().catch(() => ({})) as { error?: string }
-        setReloadMsg(b.error ?? 'OpenObserve start failed')
-        setReloadStatus('error')
-        setTimeout(() => { setReloadStatus('idle'); setReloadMsg(null) }, 8000)
-        return
-      }
+      // Dual-path: set_openobserve (Rust) in the app, /api/openobserve POST in a
+      // browser. mutate throws the server's error text on failure — surface it.
+      const ooBody = await mutate<{ installing?: boolean }>(
+        '/api/openobserve', 'set_openobserve', { enabled: settings.otlp_enabled })
       // Fresh machine: the server is downloading + installing OpenObserve in
       // the background. Poll until it is reachable (binary download can take
       // ~30 s) before continuing to the daemon reload.
-      const ooBody = await ooRes.json() as { installing?: boolean }
       if (ooBody.installing) {
         setReloadStatus('installing')
         const ready = await pollOpenObserveReady()
@@ -196,22 +179,28 @@ export default function SettingsView() {
           return
         }
       }
-    } catch {
+    } catch (e) {
+      // A failed start is a real error the user must see (8 s) — otherwise "Apply"
+      // reports success while OpenObserve is down.
+      setReloadMsg(e instanceof Error ? e.message : 'OpenObserve start failed')
       setReloadStatus('error')
-      setTimeout(() => setReloadStatus('idle'), 3000)
+      setTimeout(() => { setReloadStatus('idle'); setReloadMsg(null) }, 8000)
       return
     }
 
     setReloadStatus('reloading')
-    const reloadRes = await fetch('/api/daemon/reload', { method: 'POST' })
-    if (reloadRes.status === 503) {
-      // Daemon not running (e.g. dev session with the stack down) — settings
-      // are saved and will be read at the next daemon start. Not an error.
-      setReloadStatus('done')
-      setTimeout(() => setReloadStatus('idle'), 3000)
-      return
-    }
-    if (!reloadRes.ok) {
+    try {
+      // Dual-path: reload_daemon (Rust) in the app, /api/daemon/reload POST in a
+      // browser. Both signal SIGHUP; both report "daemon not running" when down.
+      await mutate('/api/daemon/reload', 'reload_daemon', {})
+    } catch (e) {
+      // Daemon not running (e.g. a dev session with the stack down) — settings
+      // are saved and read at the next daemon start, so this is NOT an error.
+      if (e instanceof Error && e.message.includes('daemon not running')) {
+        setReloadStatus('done')
+        setTimeout(() => setReloadStatus('idle'), 3000)
+        return
+      }
       setReloadStatus('error')
       setTimeout(() => setReloadStatus('idle'), 3000)
       return
@@ -223,8 +212,10 @@ export default function SettingsView() {
     pollRef.current = setInterval(async () => {
       attempts++
       try {
-        const s = await fetch('/api/daemon/status')
-        const { running } = await s.json() as { running: boolean }
+        const { running } = await load<{ running: boolean }>(
+          '/api/daemon/status',
+          'get_daemon_status',
+        )
         if (running) {
           clearInterval(pollRef.current!)
           pollRef.current = null

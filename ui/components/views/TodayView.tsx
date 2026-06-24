@@ -12,7 +12,8 @@ import TaskBadge from '@/components/TaskBadge'
 import ShapeOfDay from '@/components/ShapeOfDay'
 import DayTimeline from '@/components/DayTimeline'
 import TodayMetrics from '@/components/TodayMetrics'
-import type { TodayResponse, AgentSummary } from '@/app/api/today/route'
+import type { TodayResponse, AgentSummary } from '@/lib/api-types'
+import { load } from '@/lib/bridge'
 
 interface BucketSession {
   id: number | string
@@ -442,8 +443,12 @@ export default function TodayView() {
   const [data, setData] = useState<TodayResponse | null>(null)
 
   useEffect(() => {
-    fetch('/api/today').then(r => r.json()).then(setData).catch(() => {})
-    const id = setInterval(() => fetch('/api/today').then(r => r.json()).then(setData).catch(() => {}), 30_000)
+    // Dual-path: get_today (Rust) inside the Tauri window, /api/today in a
+    // browser. Same shape — get_today is a byte-identical port of the route.
+    const refresh = () =>
+      load<TodayResponse>('/api/today', 'get_today').then(setData).catch(() => {})
+    refresh()
+    const id = setInterval(refresh, 30_000)
     return () => clearInterval(id)
   }, [])
 

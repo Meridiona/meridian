@@ -16,6 +16,12 @@ use sqlx::{Row, SqlitePool};
 
 use super::{TicketSignals, TriageVerdict};
 
+// Single source of truth: the curation-decision write + its `Decision` enum live
+// in meridian-core (shared with the tray's `triage_decision` command). They had
+// no live daemon caller — only this module's tests — so re-exporting keeps that
+// SQL defined once. Callers/tests still name `store::{Decision, record_decision}`.
+pub use meridian_core::triage::{record_decision, Decision};
+
 /// One board row plus its owning provider — the input to a triage pass.
 pub struct CurationInput {
     pub provider: String,
@@ -34,34 +40,6 @@ pub struct CuratedTask {
     pub decision: Option<String>,
     pub snoozed_until: Option<String>,
     pub enriched_description: Option<String>,
-}
-
-/// A human decision on a triaged ticket. `keep` returns it to the working set;
-/// `excluded` drops it from classification candidates; `snoozed` defers it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Decision {
-    Keep,
-    Excluded,
-    Snoozed,
-}
-
-impl Decision {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Decision::Keep => "keep",
-            Decision::Excluded => "excluded",
-            Decision::Snoozed => "snoozed",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "keep" => Some(Decision::Keep),
-            "excluded" => Some(Decision::Excluded),
-            "snoozed" => Some(Decision::Snoozed),
-            _ => None,
-        }
-    }
 }
 
 /// Read every cached ticket out of `pm_tasks` as triage input.
@@ -128,35 +106,6 @@ pub async fn save_verdict(
     .execute(pool)
     .await
     .with_context(|| format!("saving triage verdict for {}", verdict.task_key))?;
-    Ok(())
-}
-
-/// Record a human decision on a ticket. Written once per user action; idempotent.
-/// Errors if no curation row exists for `task_key` (the ticket hasn't been triaged
-/// yet) — otherwise the UPDATE would match 0 rows and the decision would be
-/// silently lost, only for the ticket to reappear on the next load.
-pub async fn record_decision(
-    pool: &SqlitePool,
-    task_key: &str,
-    decision: Decision,
-    snoozed_until: Option<&str>,
-    now: &str,
-) -> Result<()> {
-    let res = sqlx::query(
-        "UPDATE pm_task_curation \
-         SET decision = ?, decided_at = ?, snoozed_until = ? \
-         WHERE task_key = ?",
-    )
-    .bind(decision.as_str())
-    .bind(now)
-    .bind(snoozed_until)
-    .bind(task_key)
-    .execute(pool)
-    .await
-    .with_context(|| format!("recording decision for {task_key}"))?;
-    if res.rows_affected() == 0 {
-        anyhow::bail!("no curation row for {task_key} — it hasn't been triaged yet");
-    }
     Ok(())
 }
 

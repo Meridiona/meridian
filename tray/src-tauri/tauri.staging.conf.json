@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/Meridiona/meridian/releases/download/updater-staging/latest.json"
+      ]
+    }
+  }
+}

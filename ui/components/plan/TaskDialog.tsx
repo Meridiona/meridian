@@ -5,7 +5,8 @@ import { useEffect, useState } from 'react'
 import { TaskKey, ProviderGlyph, StatusPill } from '@/components/atoms'
 import { MetaChip } from '@/components/plan/parts'
 import type { CardTask } from '@/components/plan/TaskCard'
-import type { TaskDetail } from '@/app/api/plan/task/route'
+import type { TaskDetail } from '@/lib/api-types'
+import { load } from '@/lib/bridge'
 
 // Full-ticket dialog opened from a plan card. Shows the complete description and
 // acceptance criteria (the list only carries an excerpt) and lets the dev add the
@@ -38,9 +39,9 @@ export default function TaskDialog({
   useEffect(() => {
     let alive = true
     setLoading(true)
-    fetch(`/api/plan/task?key=${encodeURIComponent(task.key)}`)
-      .then(r => r.ok ? r.json() : null)
-      .then((d: TaskDetail | null) => { if (alive) { setDetail(d); setLoading(false) } })
+    // Dual-path: get_task_detail (Rust) in the app, /api/plan/task in a browser.
+    load<TaskDetail | null>('/api/plan/task', 'get_task_detail', { key: task.key })
+      .then((d) => { if (alive) { setDetail(d); setLoading(false) } })
       .catch(() => { if (alive) setLoading(false) })
     return () => { alive = false }
   }, [task.key])

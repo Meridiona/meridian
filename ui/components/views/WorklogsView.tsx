@@ -3,7 +3,8 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { fmtDur, fmtClock, TaskKey, ConfidenceRing } from '@/components/atoms'
-import type { WorklogItem, WorklogsResponse } from '@/app/api/worklogs/route'
+import type { WorklogItem, WorklogsResponse } from '@/lib/api-types'
+import { load as loadData, mutate } from '@/lib/bridge'
 
 // Local YYYY-MM-DD for `d` days from today (negative = past).
 function dayString(offsetDays = 0): string {
@@ -45,9 +46,11 @@ export default function WorklogsView() {
   const [busy, setBusy] = useState<number | null>(null)
 
   const load = useCallback((d: string) => {
-    fetch(`/api/worklogs?day=${d}`)
-      .then(r => r.json())
-      .then((res: WorklogsResponse) => { setItems(res.items ?? []); setCounts(res.counts ?? {}); setLoading(false) })
+    // get_worklogs (Rust) in the Tauri window, /api/worklogs in a browser.
+    // Mutations (/api/worklogs/[id], below) stay on fetch until those write
+    // routes are ported.
+    loadData<WorklogsResponse>(`/api/worklogs?day=${d}`, 'get_worklogs', { day: d })
+      .then((res) => { setItems(res.items ?? []); setCounts(res.counts ?? {}); setLoading(false) })
       .catch(() => setLoading(false))
   }, [])
 
@@ -59,14 +62,16 @@ export default function WorklogsView() {
     return () => clearInterval(id)
   }, [day, load])
 
-  async function mutate(id: number, fn: () => Promise<Response>) {
+  // Run a worklog write (dual-path via the bridge `mutate`), with busy state +
+  // reload-on-settle. The bridge throws the server's error text on failure;
+  // surface it. Each call bakes `id` into both the URL (browser) and the body
+  // (command). PATCH/POST/DELETE pick the browser verb.
+  async function run(id: number, fn: () => Promise<unknown>) {
     setBusy(id)
     try {
-      const res = await fn()
-      if (!res.ok) {
-        const e = await res.json().catch(() => ({}))
-        alert(e.error ?? 'Action failed')
-      }
+      await fn()
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Action failed')
     } finally {
       setBusy(null)
       load(day)
@@ -74,32 +79,23 @@ export default function WorklogsView() {
   }
 
   const act = (id: number, action: 'approve' | 'unapprove') =>
-    mutate(id, () => fetch(`/api/worklogs/${id}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action }),
-    }))
+    run(id, () => mutate(`/api/worklogs/${id}`, 'worklog_action', { id, action }))
 
   // Reject carries an optional attribution correction: where the time should
   // have gone. Empty object = a plain dismissal with no target supplied.
   const reject = (id: number, correction: RejectCorrection) =>
-    mutate(id, () => fetch(`/api/worklogs/${id}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'reject', ...correction }),
-    }))
+    run(id, () => mutate(`/api/worklogs/${id}`, 'worklog_action', { id, action: 'reject', ...correction }))
 
   const saveEdit = (id: number, summary: string) =>
-    mutate(id, () => fetch(`/api/worklogs/${id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ summary }),
-    }))
+    run(id, () => mutate(`/api/worklogs/${id}`, 'edit_worklog', { id, summary }, 'PATCH'))
 
   const draftedIds = items.filter(i => i.state === 'drafted' && i.summary.trim()).map(i => i.id)
   async function approveAll() {
     setBusy(-1)
-    try { await Promise.all(draftedIds.map(id => fetch(`/api/worklogs/${id}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'approve' }),
-    }))) } finally { setBusy(null); load(day) }
+    try {
+      await Promise.all(draftedIds.map(id =>
+        mutate(`/api/worklogs/${id}`, 'worklog_action', { id, action: 'approve' })))
+    } finally { setBusy(null); load(day) }
   }
 
   const isToday = day === dayString(0)
@@ -203,11 +199,11 @@ function WorklogCard({ w, busy, onApprove, onReject, onUnapprove, onSave }: {
     setTarget('__unknown__')
     if (candidates == null) {
       try {
-        const res = await fetch('/api/tasks')
-        const data = await res.json()
+        // get_tasks (Rust) in the Tauri window, /api/tasks in a browser.
+        const data = await loadData<{ tasks: { key: string; title: string }[] }>('/api/tasks', 'get_tasks')
         // Don't offer the worklog's own ticket as the "should have gone" target.
         setCandidates((data.tasks ?? [])
-          .map((t: { key: string; title: string }) => ({ key: t.key, title: t.title }))
+          .map((t) => ({ key: t.key, title: t.title }))
           .filter((c: Candidate) => c.key !== w.task_key))
       } catch { setCandidates([]) }
     }

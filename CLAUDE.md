@@ -1,6 +1,6 @@
 # Meridian — Claude Code Instructions
 
-Meridian is a single-process Rust daemon that reads screenpipe's SQLite database and normalises raw screen-capture frames into structured, app-based activity sessions stored in its own SQLite database at `~/.meridian/meridian.db`. A Next.js dashboard and a TypeScript MCP server sit alongside the daemon.
+Meridian is a single-process Rust daemon that normalises raw screen-capture frames into structured, app-based activity sessions stored in its own SQLite database at `~/.meridian/meridian.db`. A Next.js dashboard and a TypeScript MCP server sit alongside the daemon. (Capture source: historically screenpipe's SQLite DB; since the Bucket-2 cutover on `feat/in-process-capture` the frames are produced **in-process by the tray** and the daemon reads `meridian.db`'s own capture tables — see "Capture source — in-process" below.)
 
 ---
 
@@ -57,6 +57,18 @@ meridian/
     migrations/
       001_initial.sql    # app_sessions, active_session, etl_runs, etl_cursor
       002_gaps.sql       # gaps table, idle_frame_count columns
+  meridian-core/         # lean shared data layer — used by BOTH the daemon and the Tauri dashboard
+    src/
+      lib.rs             # thin manifest: declares modules + curated `pub use` re-exports (stable public API)
+      db.rs              # ActiveSession + open_existing + get_active_session (daemon re-exports these)
+      settings.rs        # settings.json runtime config reader (daemon re-exports)
+      util/              # DB-free helpers, re-exported flat (meridian_core::{intervals,date,hygiene})
+        intervals.rs     # wall-clock interval math (port of ui/lib/intervals.ts)
+        date.rs          # local-day bounds (port of ui/lib/date-utils.ts)
+        hygiene.rs       # board-hygiene reason → hint/fix mapping
+      readers/           # the ported /api/* DB readers, re-exported flat (meridian_core::today, ::tasks, …)
+        active.rs  coding_agents.rs  integrations.rs  tasks.rs  triage.rs  week.rs  worklogs.rs
+        today/           # mod.rs + types.rs (size split — types co-located per module)
   tests/
     integration_etl.rs   # integration tests — in-memory SQLite, no network
   ui/
@@ -74,11 +86,22 @@ meridian/
     src-tauri/           # Tauri shell (Rust + Tauri framework)
       src/
         main.rs          # Tauri entry point
-        lib.rs           # Tauri library root
-        poll.rs          # polling loop for /api/health, /api/today
-        commands.rs      # Tauri commands (get_status, open_dashboard, etc.)
-        format.rs        # duration formatting helpers (with unit tests)
+        lib.rs           # thin app bootstrap (builder, db pool, tray install, invoke_handler)
+        tray.rs          # tray menu builder + menu-event dispatch + window openers
+        sys.rs           # shared helpers: uid_str, notify, ui_base (deduped)
+        install.rs       # install-mode detection + meridian_db_path / .env resolution
         state.rs         # app state and health tracking
+        format.rs        # duration formatting helpers (with unit tests)
+        poll/            # background poll loop
+          mod.rs         # loop + tick cadence + tray-sync (emit/tooltip/menu)
+          refresh.rs     # refresh_health/active/today/worklogs
+          notifications.rs # outbox drain + notifications_allowed
+        commands.rs      # commands module root: declares submodules + glob re-exports (commands::<fn>)
+        commands/        # the #[tauri::command] surface, grouped by domain
+          dashboard.rs   # DB reads (get_active/today/week/coding_agents/worklogs/tasks/triage/settings)
+          daemon.rs      # restart/toggle/get_status/get_daemon_status
+          system.rs      # open_dashboard/open_worklogs/open_permission_pane
+          health.rs  logs.rs  openobserve.rs  integrations.rs  parents.rs  version.rs
       Cargo.toml         # Tauri dependencies
     src/
       index.html         # popover UI template
@@ -87,6 +110,29 @@ meridian/
     package.json         # npm/Node build config
     create-icons.sh      # icon generation script
 ```
+
+> **Dashboard → Tauri fold (cutover landed — branch `spike/meridian-core`).** The Next.js dashboard now
+> runs **only inside the Tauri webview** as a **static export** (`output: 'export'` → `ui/out`) — **no Node
+> server, no `/api` routes**. **DB-backed reads live in `meridian-core`** as the single source of truth (the
+> daemon **re-exports** them, its code unchanged; the tray depends on them directly); **file/env/process
+> routes are tray commands** (`tray/src-tauri/src/`). Frontend consumers reach Rust **only** via Tauri
+> `invoke`/events through `ui/lib/bridge.ts` (`load`/`mutate` → `invoke`; `subscribe` → the event bus —
+> the browser `/api` fetch + `EventSource` fallbacks were removed at cutover). The four SSE streams
+> (health/notices/notifications/logs) are now **Tauri events** the tray poll loop emits (`tray/src-tauri/src/poll/live.rs`
+> + the `log-tail` tailer); the tray poll loop is HTTP-free (direct `meridian-core` reads). Response types
+> live in `ui/lib/api-types.ts` (moved out of the deleted routes). **Asset layout:** `frontendDist` →
+> `../../ui/out`; the build copies the tray popover into `out/popover/` and the main window loads
+> `popover/index.html`; dashboard/setup windows load `WebviewUrl::App("today"/"setup")` → `out/<route>/index.html`
+> (`trailingSlash: true`). **Known limitation:** the popover 404s under `tauri dev` (next dev doesn't serve
+> `popover/`); it renders in a packaged build. **When adding a route, follow the playbook in Coding
+> Conventions → "Porting a dashboard route to Rust"**; exemplars: `meridian-core/src/readers/triage.rs`,
+> `tray/src-tauri/src/commands/parents.rs`. The dashboard ships **embedded in the tray binary** (`tauri
+> build` → `generate_context!` bundles `ui/out`); the standalone-Node-server release machinery (the
+> `com.meridiona.ui` plist, `ui-start.sh`, the `ui.tar.gz` packing, the pinned Node runtime + better-sqlite3
+> ABI dance) was retired, and `install-from-bundle.sh` boots out any leftover `com.meridiona.ui` agent on
+> update. Dev-only `--features otel` on the tray exports spans to OpenObserve
+> (`service.name = meridian-tray`) — release builds omit it. Rationale + full scope: Obsidian
+> `Decisions/Dashboard frontend - keep Next in Tauri.md`, `~/.claude/plans/meridian-next-fold.md`.
 
 ---
 
@@ -156,7 +202,7 @@ There are no JS/TS test suites yet. When adding them, place them under `ui/__tes
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `SCREENPIPE_DB` | `~/.screenpipe/db.sqlite` | Path to screenpipe's SQLite file (read-only) |
+| `SCREENPIPE_DB` | `~/.screenpipe/db.sqlite` | **Vestigial after the Bucket-2 cutover** — the daemon no longer reads screenpipe (capture is in-process → `meridian.db` capture tables). Still parsed into `Config` with a default; slated for removal. |
 | `MERIDIAN_DB` | `~/.meridian/meridian.db` | Path to meridian's output SQLite file |
 | `POLL_INTERVAL_SECS` | `60` | ETL poll cadence in seconds |
 | `RUST_LOG` | `meridian=info` | Tracing filter |
@@ -211,9 +257,11 @@ Tilde expansion is handled by `Config::from_env()`. Never hardcode paths.
 
 JSON columns (`window_titles`, `ocr_samples`, `elements_samples`, `audio_snippets`, `signals`) store structured sub-documents. `ocr_samples` and `elements_samples` are capped at 20 entries per session via `OCR_SAMPLE_CAP`. Audio snippets are uncapped. Window title counts are merged and re-sorted descending on each upsert.
 
-### Screenpipe schema (read-only)
+### Capture source — in-process (Gap-2 Bucket 2 cutover, branch `feat/in-process-capture`)
 
-Key tables: `frames`, `ocr_text`, `elements`, `audio_transcriptions`, `ui_events`. Never write to this database. `screenpipe.rs` is the only file that should query these tables.
+> **The daemon no longer reads screenpipe.** Since the slice-4b cutover, capture runs **in-process in the tray** (behind the `capture` feature): the forked `screenpipe-screen` + `screenpipe-a11y` crates produce a11y-tree/OCR frames + input events, which `meridian_core::capture` writes into **`capture_frames` / `capture_ui_events`** in `meridian.db`. The daemon ETL reads *those* tables (via `src/db/screenpipe.rs`, name unchanged for now) from the meridian pool — there is no screenpipe DB/process/pool anymore. **Implication:** a build with the `capture` feature OFF has **no data source** (the daemon produces no sessions); the shipping DMG must enable it. **Audio is dropped** (`get_audio_snippets` stubbed empty) and **gaps all classify `system_sleep`** (no in-process idle detection yet — `capture_trigger` is NULL); both are accepted v1 degradations with idle-detection/audio as future slices. `SCREENPIPE_DB` is now vestigial for the daemon.
+>
+> Column contract: `capture_frames` mirrors screenpipe's `frames` read-subset (`app_name`/`window_name`/`browser_url`/`timestamp`/`capture_trigger` + `full_text`(OCR)/`accessibility_text`(a11y)/`text_source`, resolved by `COALESCE(full_text, accessibility_text)`); `capture_ui_events` mirrors the `ui_events` read-subset (`event_type`/`app_name`/`text_content`/`timestamp`). **Inverted ownership:** these tables are written by the *tray*, read by the *daemon*.
 
 ---
 
@@ -249,6 +297,18 @@ Read `VISION.md` first.
 - Argument limit: clippy's 7-argument limit applies; group related params into a struct (see `BlockBounds` in `runner.rs`)
 - Avoid `unwrap()` outside tests; use `?` or explicit error handling
 - ETL state machine lives in `runner.rs` — add sub-step helpers inside that module rather than new top-level modules
+
+### Porting a dashboard route to Rust (Next-fold playbook)
+
+The fold replaces every `ui/app/api/*` route with a Rust command the frontend calls over Tauri `invoke`. **This is the standard for the work — follow every step when porting a route.** Exemplars to copy: `meridian-core/src/readers/triage.rs` (DB read) and `tray/src-tauri/src/commands/parents.rs` (shell-out).
+
+1. **Place it by data source.** A **DB-backed read** → a new module under `meridian-core/src/readers/`, added to `readers/mod.rs` and re-exported flat from `lib.rs` (`pub use readers::<name>;`) so the public path stays `meridian_core::<name>` (the daemon re-exports it if it needs it too). Reuse `meridian-core::{intervals,date}` — never re-derive time/day math. Anything reading **files / env / a process / external HTTP** (`settings.json`, `.env`, `launchctl`, npm registry, shelling out to `meridian`) → a module under `tray/src-tauri/src/commands/` (grouped by domain), declared + glob-re-exported in `commands.rs`; keep `meridian-core` DB-only.
+2. **Match the route byte-for-byte.** Replicate its shaping exactly: defaults, `null → ''` coercions, truncation, ordering, and graceful missing-table/column detection (`sqlite_master` / `pragma_table_info`). Comment any deliberate divergence (e.g. a `BTreeMap` sorts keys vs the route's insertion order — fine when consumers read by key).
+3. **Thin command wrapper.** A `#[tauri::command]` resolves request-scoped values (today / now / day) and calls the core fn, so the core stays deterministic and testable. Register it in `lib.rs`'s `invoke_handler!`. Every new window label must be added to `capabilities/default.json` or its `invoke`s are silently denied.
+4. **Document it (required).** Module `//!` header with: one-line purpose + which route it ports, a **`# Who calls this`** (the command + the frontend consumer), and a **`# Related`** section linking sibling modules / dependent fns via intra-doc links (`` [`crate::tasks`] ``). Every `pub` fn/struct gets a `///` covering purpose, key params, return, and any non-obvious behaviour carried from the source.
+5. **Trace it (required).** `#[tracing::instrument(skip(pool))]` on **both** the command and the core fn; wrap each query in `.instrument(tracing::debug_span!("<module>.read.<table>"))`; `tracing::debug!(rows = …)` after a query; a `tracing::info!(…)` summary on serve; `tracing::warn!(error = %e, …)` on the command's error path. All of it exports to OpenObserve under the tray `otel` feature / the daemon's `observability::init`.
+6. **Wire the consumer.** Call the command through `@/lib/bridge`: `load(apiPath, 'command', args)` for a read, `mutate(apiPath, 'command', body, method)` for a write, `subscribe(apiPath, 'command'|null, eventName, onData)` for a live stream. These are Tauri-only now (the `/api` fetch/`EventSource` fallbacks were removed at cutover); `apiPath` is vestigial (documents the former route). Response types go in `ui/lib/api-types.ts`, never a route file. A live stream also needs an emitter in `tray/src-tauri/src/poll/live.rs` (or the log tailer) and the event covered by the window's `core:event` permission.
+7. **Test it.** Pure mappers/parsers → `#[cfg(test)]` unit tests in-module (see `hygiene.rs`). DB readers → an in-memory seeded test in `meridian-core/tests/readers.rs` (single-connection `:memory:` pool, hand-computed rows; place date-bounded rows *relative to* `local_day_bounds(today)` so the test is timezone-independent).
 
 ### TypeScript / Next.js
 
@@ -347,7 +407,7 @@ New sources plug into the `AgentSource` enum in `sources/mod.rs` and are swept b
 
 Source-adapter env overrides: `COPILOT_SESSION_STATE_DIR`, `VSCODE_USER_DIR`, `CURSOR_STATE_VSCDB`, `CURSOR_CLI_CHATS_DIR`, `ANTIGRAVITY_APP_DIR`.
 
-> **Daemon config gotcha:** on a bundle install the daemon's `WorkingDirectory` is `~/.meridian/app`, and dotenvy stops at the FIRST `.env` walking up — so the daemon reads **`~/.meridian/app/.env`**, not the repo `.env`. Edit that file (then `meridian restart`) when tuning daemon env on an installed system.
+> **Daemon config gotcha:** the daemon loads env via `dotenvy::dotenv_override()`, which walks UP from its launchd `WorkingDirectory` and stops at the first `.env`. All install types converge on the **canonical `~/.meridian/.env`** (the same file the tray writes tracker creds to): the **npm bundle**'s `WorkingDirectory` is `~/.meridian/app` but no `~/.meridian/app/.env` is written (the installer creates `~/.meridian/.env`), so dotenvy walks up to it; the **`.app` DMG** (the tray stages the daemon via `tray/src-tauri/src/backend_install.rs`) sets `WorkingDirectory` to `~/.meridian` and reads it directly; **source/dev** reads the repo `.env`. Edit `~/.meridian/.env` (then `meridian restart`) to tune daemon env on an installed system.
 
 The pipeline is fully ported to Rust; the former Python `coding_agent_indexer` + `coding_agent_summariser` packages have been removed. The MLX server (`agents/server.py`) is the only remaining Python hop (it serves `/summarise` + `/classify_sessions`).
 

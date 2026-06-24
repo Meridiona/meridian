@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { fmtDurDecimal, AppGlyph, TaskKey, LiveDot, useTick } from '@/components/atoms'
+import { load as loadData, invoke, subscribe } from '@/lib/bridge'
 
 interface Props {
   onOpenCmd: () => void
@@ -44,16 +45,36 @@ interface VersionInfo {
   updateAvailable: boolean
 }
 
+// DMG auto-update status (check_update command → crate::update::UpdateStatus).
+// `state`: 'available' | 'uptodate' | 'unsupported' | 'error'. Distinct from
+// VersionInfo (the npm-registry / `meridian update` Terminal path).
+interface UpdateStatus {
+  state: 'available' | 'uptodate' | 'unsupported' | 'error'
+  currentVersion: string
+  version: string | null
+  notes: string | null
+  error: string | null
+}
+
 export default function Sidebar({ onOpenCmd }: Props) {
   const pathname = usePathname()
   const router = useRouter()
   const [active, setActive] = useState<ActiveInfo | null>(null)
   const [ver, setVer] = useState<VersionInfo | null>(null)
   const [updating, setUpdating] = useState(false)
+  // DMG auto-update (check_update / install_update).
+  const [upd, setUpd] = useState<UpdateStatus | null>(null)
+  const [installing, setInstalling] = useState(false)
+  const [pct, setPct] = useState<number | null>(null)
+  const [updErr, setUpdErr] = useState<string | null>(null)
+  // Whether the DMG update check has settled — the npm fallback banner must wait
+  // for it so it doesn't flash on a packaged build that the DMG updater handles.
+  const [updChecked, setUpdChecked] = useState(false)
 
   useEffect(() => {
     function load() {
-      fetch('/api/active').then(r => r.json()).then((d: ActiveInfo | null) => setActive(d)).catch(() => {})
+      // get_active (Rust) in the Tauri window, /api/active in a browser — same shape.
+      loadData<ActiveInfo | null>('/api/active', 'get_active').then(setActive).catch(() => {})
     }
     load()
     const id = setInterval(load, 30_000)
@@ -61,15 +82,41 @@ export default function Sidebar({ onOpenCmd }: Props) {
   }, [])
 
   useEffect(() => {
-    fetch('/api/version').then(r => r.json()).then((d: VersionInfo) => setVer(d)).catch(() => {})
+    // get_version (Rust) in the Tauri window, /api/version in a browser — same shape.
+    loadData<VersionInfo>('/api/version', 'get_version').then(setVer).catch(() => {})
+    // DMG auto-update check (Tauri-only; no-op / unsupported in a browser).
+    invoke<UpdateStatus>('check_update')
+      .then(setUpd)
+      .catch(() => setUpd(null))
+      .finally(() => setUpdChecked(true))
   }, [])
 
   async function runUpdate() {
     setUpdating(true)
     try {
-      await fetch('/api/update', { method: 'POST' })
+      await invoke('run_update')
     } catch {
       /* ignore — banner keeps the copyable command as fallback */
+    }
+  }
+
+  // Download + install the DMG update, then the app relaunches. A live progress
+  // bar comes from `update-progress` events; the invoke promise never resolves
+  // on success (the app re-execs), so we only handle the error path here.
+  async function installUpdate() {
+    setInstalling(true)
+    setUpdErr(null)
+    const unsub = subscribe<{ downloaded: number; contentLength: number | null }>(
+      '/x', null, 'update-progress', (d) => {
+        if (d.contentLength) setPct(Math.round((d.downloaded / d.contentLength) * 100))
+      })
+    try {
+      await invoke('install_update')
+    } catch (e) {
+      setInstalling(false)
+      setPct(null)
+      setUpdErr(String(e))
+      unsub()
     }
   }
 
@@ -93,12 +140,54 @@ export default function Sidebar({ onOpenCmd }: Props) {
           <span className="type-wordmark" style={{ color: 'var(--ink)' }}>meridian</span>
         </div>
         <p className="text-[10px] uppercase tracking-[0.2em] mt-2" style={{ color: 'var(--ink-3)' }}>
-          local · v{ver?.current ?? '…'}
+          local · v{upd?.currentVersion ?? ver?.current ?? '…'}
         </p>
       </div>
 
-      {/* Update-available banner — notify + one-click (opens Terminal running `meridian update`) */}
-      {ver?.updateAvailable && ver.latest && (
+      {/* DMG auto-update banner — in-app download + restart (the primary path). */}
+      {upd?.state === 'available' && upd.version && (
+        <div className="mx-3 mb-1 p-3 rounded-lg"
+          style={{ background: 'var(--surface)', border: '1px solid var(--accent)' }}>
+          <div className="flex items-center gap-2">
+            <span className="text-[12px]" style={{ color: 'var(--accent)' }}>↑</span>
+            <span className="text-[11px]" style={{ color: 'var(--ink)' }}>Update available</span>
+            <span className="ml-auto font-mono tnum text-[10px]" style={{ color: 'var(--ink-3)' }}>
+              v{upd.currentVersion} → v{upd.version}
+            </span>
+          </div>
+          {upd.notes && (
+            <p className="text-[10px] mt-1.5 leading-snug" style={{
+              color: 'var(--ink-3)', display: '-webkit-box', WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical', overflow: 'hidden',
+            }}>
+              {upd.notes}
+            </p>
+          )}
+          <button onClick={installUpdate} disabled={installing}
+            className="w-full mt-2 px-2 py-1.5 rounded-md text-[11px] transition-colors"
+            style={{ background: 'var(--accent)', color: 'var(--paper)', opacity: installing ? 0.6 : 1 }}>
+            {installing ? (pct != null ? `Downloading… ${pct}%` : 'Starting…') : 'Restart & Update'}
+          </button>
+          {updErr && (
+            <p className="text-[9px] mt-1.5 font-mono break-all" style={{ color: '#c0392b' }}>{updErr}</p>
+          )}
+        </div>
+      )}
+
+      {/* Diagnostic: surface a failed DMG check verbatim (network / manifest). */}
+      {upd?.state === 'error' && upd.error && (
+        <div className="mx-3 mb-1 px-3 py-2 rounded-lg"
+          style={{ background: 'var(--surface)', border: '1px solid var(--rule)' }}>
+          <span className="text-[10px]" style={{ color: 'var(--ink-3)' }}>Update check failed</span>
+          <p className="text-[9px] mt-1 font-mono break-all" style={{ color: 'var(--ink-3)' }}>{upd.error}</p>
+        </div>
+      )}
+
+      {/* npm fallback banner — opens a Terminal running `meridian update` (npm install).
+          Only for non-DMG runs (browser → upd null, or a non-packaged `unsupported`
+          run); a packaged DMG (available/uptodate/error) self-updates via the banner
+          above, so the npm path must not show there. */}
+      {updChecked && (upd == null || upd.state === 'unsupported') && ver?.updateAvailable && ver.latest && (
         <div className="mx-3 mb-1 p-3 rounded-lg"
           style={{ background: 'var(--surface)', border: '1px solid var(--accent)' }}>
           <div className="flex items-center gap-2">

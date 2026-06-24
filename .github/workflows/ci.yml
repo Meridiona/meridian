@@ -20,8 +20,29 @@ jobs:
   rust:
     name: Rust
     runs-on: ubuntu-latest
+    env:
+      # The tray pulls screenpipe-screen/-a11y from the PRIVATE Meridiona/
+      # screenpipe-fork (a git dep). They are optional/capture-gated, but cargo
+      # still RESOLVES them for the workspace (fmt/clippy/test), so it must fetch
+      # the source. Force the git CLI so cargo honors the url.insteadOf rewrite
+      # the auth step installs — libgit2 would not pick it up.
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
     steps:
       - uses: actions/checkout@v4
+
+      - name: Authenticate git for the private screenpipe-fork dependency
+        # checkout's persist-credentials and the default GITHUB_TOKEN are both
+        # scoped to THIS repo, so cargo's `git fetch` of the fork 403s. Rewrite
+        # just that URL to embed a PAT with read access. REQUIRES the GH_TOKEN
+        # secret to read Meridiona/screenpipe-fork (org-member classic PAT with
+        # `repo`, or a fine-grained PAT granting both meridian AND screenpipe-fork).
+        # Same secret + mechanism as release.yml / release-staging.yml.
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
 
       - name: Install Rust 1.93.1
         uses: dtolnay/rust-toolchain@master
@@ -96,3 +117,27 @@ jobs:
             exit 1
           fi
           echo "OK — no existing migrations were modified, renamed, or deleted."
+
+  # screenpipe relicensed MIT → Commercial on 2026-06-10. 0.4.6 (2026-06-05) is
+  # the last MIT npm release; >= 0.4.17 is Commercial (its "competing product"
+  # clause would then bind our users). Meridian ships zero screenpipe code, so
+  # staying on MIT 0.4.6 keeps the install license-clean. Enforce the pin
+  # server-side so it can't silently drift across the relicense boundary.
+  screenpipe-license-pin:
+    name: screenpipe MIT pin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert SCREENPIPE_VERSION stays on the last MIT release (0.4.6)
+        run: |
+          expected="0.4.6"
+          fail=0
+          for f in install.sh scripts/install-from-bundle.sh; do
+            v=$(grep -E '^SCREENPIPE_VERSION=' "$f" | head -1 | cut -d'"' -f2)
+            if [ "$v" != "$expected" ]; then
+              echo "::error file=$f::SCREENPIPE_VERSION='$v' but must be '$expected' — the last MIT npm release. screenpipe >= 0.4.17 is Commercial-licensed; bumping the pin ships users a commercial dependency. Changing this requires legal review (and editing this guard). See the LICENSE PIN comment at the pin."
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] && echo "OK — screenpipe pinned to the last MIT release ($expected)."

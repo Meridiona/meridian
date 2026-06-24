@@ -11,8 +11,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const LABEL_DAEMON: &str = "com.meridiona.daemon";
-const LABEL_SCREENPIPE: &str = "com.meridiona.screenpipe";
-const LABEL_UI: &str = "com.meridiona.ui";
 const LABEL_MLX: &str = "com.meridiona.mlx-server";
 
 // ── shared helpers ──────────────────────────────────────────────────────────
@@ -77,14 +75,6 @@ fn plist_valid(label: &str) -> bool {
             .unwrap_or(false)
 }
 
-fn process_running(name: &str) -> bool {
-    Command::new("pgrep")
-        .args(["-x", name])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 fn cmd_output(bin: &str, args: &[&str]) -> Option<String> {
     let out = Command::new(bin).args(args).output().ok()?;
     out.status
@@ -135,15 +125,6 @@ pub fn daemon_service() -> Vec<Check> {
         plist_check(LABEL_DAEMON, "daemon plist"),
         run_check,
     ]
-}
-
-pub fn screenpipe_service() -> Vec<Check> {
-    let run = if process_running("screenpipe") {
-        Check::ok("screenpipe service", "L1", "process alive")
-    } else {
-        Check::critical("screenpipe service", "L1", "not running").with_remedy("meridian start")
-    };
-    vec![plist_check(LABEL_SCREENPIPE, "screenpipe plist"), run]
 }
 
 /// MLX capability recorded by the installers in `~/.meridian/capabilities`.
@@ -222,32 +203,16 @@ fn venv_check() -> Check {
     }
 }
 
+/// Returns a single Info check confirming the dashboard is embedded in the
+/// Tauri binary. The `com.meridiona.ui` launchd agent was retired with the
+/// Next-fold (PR #298); probing for its plist always produces a false CRITICAL
+/// on healthy post-fold installs.
 pub fn ui_service() -> Vec<Check> {
-    let run = match launchd_pid(LABEL_UI) {
-        Some(pid) => Check::ok("ui service", "system", format!("pid {pid}")),
-        None => Check::warn("ui service", "system", "not loaded — dashboard unavailable")
-            .with_remedy("meridian start"),
-    };
-    let build_check = if let Some(root) = repo_root() {
-        // Dev / source-checkout install: ui/.next must exist.
-        if root.join("ui/.next").is_dir() {
-            Check::ok("ui built", "system", ".next present")
-        } else {
-            Check::warn("ui built", "system", "not built")
-                .with_remedy("cd ui && npm ci && npm run build")
-        }
-    } else {
-        // Bundle install: the standalone server.js is extracted from ui.tar.gz
-        // into ~/.meridian/app/ui/ — no Cargo.toml, so repo_root() is None.
-        let bundle_server = home().join(".meridian/app/ui/server.js");
-        if bundle_server.is_file() {
-            Check::ok("ui built", "system", "bundle server.js present")
-        } else {
-            Check::warn("ui built", "system", "bundle not extracted")
-                .with_remedy("re-run the installer: curl -fsSL https://raw.githubusercontent.com/Meridiona/meridian/main/scripts/bootstrap.sh | bash")
-        }
-    };
-    vec![plist_check(LABEL_UI, "ui plist"), run, build_check]
+    vec![Check::info(
+        "ui service",
+        "system",
+        "dashboard embedded in the Tauri binary (no separate service)",
+    )]
 }
 
 pub fn mcp_service() -> Vec<Check> {
@@ -286,7 +251,9 @@ pub fn system_checks(_cfg: &Config) -> Vec<Check> {
         os,
         env_check,
         node_check(),
-        disk_check("disk (screenpipe)", &home().join(".screenpipe")),
+        // Capture data lives in meridian.db under ~/.meridian (the in-process
+        // cutover retired ~/.screenpipe), so the meridian disk check below
+        // already covers the capture volume — no separate screenpipe check.
         disk_check("disk (meridian)", &home().join(".meridian")),
     ]
 }
