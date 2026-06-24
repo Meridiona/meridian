@@ -1196,7 +1196,7 @@ wheels = [
 
 [[package]]
 name = "meridian-agents"
-version = "1.48.2"
+version = "1.56.0"
 source = { editable = "." }
 dependencies = [
     { name = "mcp" },
