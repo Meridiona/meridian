@@ -37,7 +37,7 @@ def _reconstruct_prompt(db_path: str, session_id: int) -> str | None:
     # Import lazily so the common path (no --show-prompt) needs no agents deps.
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # services/
     from agents._prompts import build_user_message
-    from agents.run_task_linker_mlx import (
+    from agents.mlx_classifier import (
         _fetch_pm_tasks,
         _fetch_recent_ticket_activity,
         _fetch_session,

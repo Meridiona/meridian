@@ -20,7 +20,7 @@ _SERVICES_DIR = Path(__file__).resolve().parent.parent
 if str(_SERVICES_DIR) not in sys.path:
     sys.path.insert(0, str(_SERVICES_DIR))
 
-from agents import run_task_linker_mlx as rtl  # noqa: E402
+from agents import mlx_classifier as rtl  # noqa: E402
 from agents import _prompts  # noqa: E402
 
 ANCHOR = "2026-06-17T10:00:00+00:00"

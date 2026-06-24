@@ -1,0 +1,62 @@
+  REPORT:
+
+## Time Blocks
+09:00–09:00 · Code · 9 min active
+Narrative: Analyzed and refined `_SYSTEM_FREE` prompt logic to distinguish between "free" and "think" modes, ensuring structured summaries via the `free`/`think` check in `_SYSTEM_FREE` and `_SYSTEM_FSM` definitions.
+
+09:00–09:00 · Code · 10 min active
+Narrative: Identified 2B model hallucinations in session counts; implemented a strict 4-minute total limit in prompt validation (`total_minutes` schema) and confirmed the "time arithmetic hard rule" is enforced at the token/token level to prevent inflated summaries like the 61-min error.
+
+09:00–09:00 · Code · 12 min active
+Narrative: Removed 9B model code (`fsm` override) and set the system prompt to exclusively use `_SYSTEM_FREE` for both "think" and "free" modes. Confirmed the updated logic in `agents/config.py` where `mode in ("free", "think")` triggers the structured summary generator.
+
+09:00–09:00 · Code · 8 min active
+Narrative: Updated `_MODELS` and `_run_model` to only use 2B (`qwen3.5-2b`) for the next session, removing the 9B code path. Ensured `run_task_linker_mlx.py` and `session_distiller.py` are included in the final metrics report.
+
+---
+
+## Research & References
+Read: `agents/config.py` (110 lines) → Determined `_SYSTEM_FREE` handles both "free" and "think" cases; `_SYSTEM_FSM` handles pure "fsm" modes.
+Read: `tests/evals/cluster/eval_model_comparison.py` (339 lines) → Confirmed JSON vs Free-form output distinction; identified that `eval_model_comparison` proved the pipeline works without complex schemas.
+Read: `tests/evals/cluster/hour_text.py` → Dismissed for `/build_hour_text` endpoint absence and OpenObserve span instrumentation.
+Read: `tests/agents/session_distiller.py` → Included in final metrics as part of the "session distillation" metric.
+Read: `tests/evals/cluster/audit_facts.py` → Checked for lingering 9B memory artifacts.
+Read: `tests/agents/session_distiller.py` → `mx.get_active_memory()` follow-up confirmed 0 lingering Metal memory.
+
+---
+
+## Architecture Decisions
+Decision → Rationale
+- **System Prompt Logic:** `if mode in ("free", "think")` then `_SYSTEM_FREE`, else `_SYSTEM_FSM`.
+  Rationale: Necessary to handle the "free" use case (human-readable, no strict schema) while retaining the structured "think" output for evals, ensuring both modes produce the desired output type.
+- **Time Limitation Enforcement:** Added `total_minutes` validation field and hardcoded 4-minute maximum in `_SYSTEM_FSM`.
+  Rationale: Solves the "self-contradictory" 61-min vs 23-min hallucinations where models generated overly verbose histories; fixes the "free" mode to also respect hard time limits via prompt schema validation.
+- **Model Selection:** 9B code removed; system configured to use `qwen3.5-2b` exclusively for `free`/`think` modes.
+  Rationale: 2B models were identified as struggling to fill structured fields reliably under token constraints; the 9B code path introduced errors and inflated metrics that needed removal.
+- **Prompt Modification for Eval:** Explicit instruction added by user to ensure named sections (`## Time Blocks`, `## Research`, etc.) and named entities (ticket keys, PR numbers) are preserved.
+  Rationale: Required to extract concrete facts (files, lines, functions) for the PM Worklog; the model had to infer the format of the prompt response.
+
+---
+
+## Tasks & Tickets
+Task: Refine and finalize `_SYSTEM_FREE` prompt structure for 2B model.
+- Progress: Completed prompt rewrite to enforce `total_minutes` field and standard sections.
+- Decision: Switch 9B off, keep 2B on.
+- Notes: Eval script `eval_model_comparison.py` proves the pipeline works with current prompt structure (markdown/JSON free-form mix depending on mode).
+Task: Remove 9B model code from `agents/config.py` and `_MODELS`.
+- Progress: 9B logic removed.
+- Note: Only 2B remains, configured with `_SYSTEM_FREE`.
+Task: Verify trace format and metric fields.
+- Notes: Confirmed `trace_id`, `time_taken`, `method` fields match the 2B expected schema from `eval_model_comparison.py`.
+
+---
+
+## Time Summary
+09:00–09:00  Update(system prompts, model selection logic)              8 min
+09:00–09:00  Update(system prompts, model selection logic)              10 min
+09:00–09:00  Update(system prompts, model selection logic)              9 min
+09:00–09:00  Update(system prompts, model selection logic)              12 min
+09:00–09:00  Update(system prompts, model selection logic)              11 min
+09:00–09:00  Update(system prompts, model selection logic)              4 min
+
+════════════════════════════════════════════════════════════════════════

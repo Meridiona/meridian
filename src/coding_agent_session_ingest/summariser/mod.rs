@@ -1,8 +1,9 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Summariser: turn each sealed coding-agent segment into a factual prose summary
-// for the PM work-log, then hand it to the classifier (task_method →
-// 'pending_classifier'). Port of the former Python summariser.
+// for the PM work-log (task_method → 'mlx_direct'). The per-session classifier
+// step has been removed — the worklog pipeline does its own matching on the
+// summary. Port of the former Python summariser.
 //
 // Engine routing per segment: Codex sessions → `codex exec`, else → `claude -p`
 // (both Rust subprocesses on the user's subscription). Each primary engine is

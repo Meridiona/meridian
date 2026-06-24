@@ -103,12 +103,20 @@ pub async fn run_claude(
     }
 
     let structured = payload.get("structured_output");
-    let summary = structured
+    // strip_tool_markup: even with --json-schema, the model occasionally writes
+    // a literal `<invoke …>/<parameter …>` block INTO the summary string; cut it
+    // off so the leaked markup never reaches the work-log (fix-forward).
+    let raw_summary = structured
         .and_then(|s| s.get("summary"))
         .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string();
+        .unwrap_or("");
+    let summary = prompts::strip_tool_markup(raw_summary);
+    if summary.len() < raw_summary.trim().len() {
+        tracing::warn!(
+            stripped_chars = raw_summary.trim().len() - summary.len(),
+            "claude summary contained leaked tool-call markup — stripped"
+        );
+    }
     if summary.is_empty() {
         return Err(SummariserError::Failed(
             "claude returned no usable structured summary".into(),

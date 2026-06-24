@@ -27,7 +27,7 @@ if str(_SERVICES_DIR) not in sys.path:
 import sqlite3  # noqa: E402
 
 from agents._prompts import build_user_message  # noqa: E402
-from agents.run_task_linker_mlx import _fetch_recent_ticket_activity  # noqa: E402
+from agents.mlx_classifier import _fetch_recent_ticket_activity  # noqa: E402
 
 EVAL_DIR = Path(__file__).parent
 SEED_DIR = EVAL_DIR / "data" / "seeds"

@@ -11,12 +11,9 @@ opentelemetry-sdk>=1.27,<2
 opentelemetry-exporter-otlp-proto-http>=1.27,<2
 opentelemetry-instrumentation-logging>=0.48b0
 python-json-logger>=2.0,<3
-
-# AIAgent (run_agent.py) and the broader Hermes framework pull in many things;
-# the canonical dependency list is in pyproject.toml. Install with:
-#   pip install -e .
-# This requirements.txt is the bare minimum to drive agents/ in development.
-hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git@v2026.4.30
+# agno-native tracing: OpenInference auto-instruments agno Agent/Workflow runs
+# (prompt, output, tokens, step path) onto our existing OTel provider.
+openinference-instrumentation-agno>=0.1,<1
 
 # Eval harness — LLM benchmarking and prompt comparison (services/eval/).
 # Not imported by the daemon; install manually: pip install deepeval ollama

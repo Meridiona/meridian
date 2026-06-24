@@ -89,37 +89,35 @@ def _resolve_server(model_arg: str | None, port: int = 7823) -> "tuple[str, str,
     the MLX_MODEL_ID env var if /info is unavailable (e.g. older server build).
     If model_arg is given, warns when it doesn't match the loaded model.
     """
-    from agents.llm_selector import discover_mlx_eval_server, resolve_model
+    import urllib.request
 
     env_url = os.environ.get("MLX_SERVER_URL")
     if env_url:
         server_url = env_url.rstrip("/")
         source = "env"
     else:
-        discovered = discover_mlx_eval_server(port)
-        if not discovered:
+        candidate = f"http://127.0.0.1:{port}"
+        try:
+            urllib.request.urlopen(f"{candidate}/health", timeout=2)
+            server_url = candidate
+            source = "auto-discovered"
+        except Exception:
             print(
                 f"ERROR: no MLX eval server found on port {port}.\n"
-                f"  Start with: python -m agents.server --backend mlx --port {port}\n"
+                f"  Start with: python -m agents.server --port {port}\n"
                 f"  Or set:     MLX_SERVER_URL=http://127.0.0.1:{port}",
                 file=sys.stderr,
             )
             return None
-        server_url = discovered
-        source = "auto-discovered"
 
     info = _query_model_info(server_url)
     model_id: str = info.get("model_id") or os.environ.get("MLX_MODEL_ID", "unknown")
 
-    if model_arg:
-        entry = resolve_model(model_arg)
-        target_hf_id = (entry["hf_id"] if entry else model_arg) or model_arg
-        if target_hf_id != model_id:
-            print(
-                f"WARNING: --model {model_arg!r} ({target_hf_id}) "
-                f"but server has {model_id!r}",
-                file=sys.stderr,
-            )
+    if model_arg and model_arg != model_id:
+        print(
+            f"WARNING: --model {model_arg!r} but server has {model_id!r}",
+            file=sys.stderr,
+        )
 
     return server_url, model_id, source
 

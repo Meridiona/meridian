@@ -2,11 +2,10 @@
 //
 // Fallback summariser — the local MLX server's schema-constrained /summarise
 // endpoint (the ONLY remaining Python hop). Used when claude/codex are
-// rate-limited or fail. The local model is a reasoner, so we (1) feed it only
-// the TAIL of the transcript (most recent activity / outcome) and (2) keep a
-// cheap reasoning-leak filter as defence even though the endpoint's outlines FSM
-// already forces the {summary} shape. Port of
-// the former Python summariser/mlx_fallback.py.
+// rate-limited or fail. Sends the full transcript (head+tail, 70/30 split) up
+// to 25k tokens so nothing is silently dropped. Keeps a cheap reasoning-leak
+// filter as defence even though the endpoint's outlines FSM already forces the
+// {summary} shape. Port of the former Python summariser/mlx_fallback.py.
 
 use std::time::Duration;
 
@@ -22,7 +21,7 @@ pub async fn run_mlx(stdin_text: &str, cfg: &SummariserConfig) -> Result<String,
 
     let url = format!("http://{}:{}/summarise", cfg.mlx_host, cfg.mlx_port);
     let body = json!({
-        "transcript": tail_cap(stdin_text, cfg),  // MLX-only: tail of the session
+        "transcript": full_cap(stdin_text, cfg),  // head+tail up to mlx_input_max_tokens
         "system": prompts::SUMMARY_RULES,
         "max_tokens": cfg.mlx_max_tokens,
         "temperature": 0.2,
@@ -66,16 +65,20 @@ pub async fn run_mlx(stdin_text: &str, cfg: &SummariserConfig) -> Result<String,
     Ok(text)
 }
 
-/// Keep only the TAIL (~mlx_input_max_tokens) of the transcript for MLX. The
-/// bottom of a session holds the most recent activity / outcome. Char-counted.
-fn tail_cap(text: &str, cfg: &SummariserConfig) -> String {
+/// Cap transcript to mlx_input_max_tokens for MLX, keeping the head (task setup)
+/// and tail (outcome) — 70/30 split matches the primary-engine cap_transcript.
+fn full_cap(text: &str, cfg: &SummariserConfig) -> String {
     let max_chars = cfg.mlx_input_max_tokens * cfg.mlx_chars_per_token;
     let chars: Vec<char> = text.chars().collect();
     if chars.len() <= max_chars {
         return text.to_string();
     }
-    let tail: String = chars[chars.len() - max_chars..].iter().collect();
-    format!("…[earlier session truncated — most recent activity below]…\n\n{tail}")
+    let head_len = max_chars * 7 / 10;
+    let tail_len = max_chars - head_len;
+    let elided = chars.len() - max_chars;
+    let head: String = chars[..head_len].iter().collect();
+    let tail: String = chars[chars.len() - tail_len..].iter().collect();
+    format!("{head}\n\n…[{elided} chars elided — long autonomous stretch omitted]…\n\n{tail}")
 }
 
 const REASONING_MARKERS: &[&str] = &[

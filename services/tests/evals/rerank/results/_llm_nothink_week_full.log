@@ -1,0 +1,161 @@
+WEEK dataset: 101 sessions  |  model=mlx-community/Qwen3.5-2B-OptiQ-4bit  think=False  multi=False
+(reranker bench: Qwen3-Reranker-0.6B = 94%, 0 false-binds, 1.5GB)
+
+Loading mlx-community/Qwen3.5-2B-OptiQ-4bit ...
+Fetching 9 files:   0%|          | 0/9 [00:00<?, ?it/s]Fetching 9 files: 100%|██████████| 9/9 [00:00<00:00, 149796.57it/s]
+Active mem: 1.53 GB
+[  1/101] ✗ truth=KAN-230   pred=KAN-239            think=    0c gen= 1.0s  designed candidate-set logic + morning c
+[  2/101] ✗ truth=KAN-230   pred=NONE               think=    0c gen= 0.5s  candidate-set problem: minimizing tasks 
+[  3/101] ✓ truth=KAN-230   pred=KAN-239            think=    0c gen= 0.5s  sprint-adoption research → adapting cand
+[  4/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.5s  created KAN-230 + KAN-231 Jira tickets v
+[  5/101] ✗ truth=KAN-239   pred=NONE               think=    0c gen= 0.5s  designed morning task-setup flow (devs d
+[  6/101] ✓ truth=KAN-239   pred=KAN-239            think=    0c gen= 0.5s  implemented ticket-triage morning-setup 
+[  7/101] ✗ truth=KAN-239   pred=NONE               think=    0c gen= 0.6s  replaced dnd-kit drag-and-drop on /plan 
+[  8/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  researched Claude Code UI testing tools 
+[  9/101] ✗ truth=KAN-239   pred=NONE               think=    0c gen= 0.5s  fixed outer page scrollbar on /plan rout
+[ 10/101] ✓ truth=KAN-239   pred=KAN-239            think=    0c gen= 1.5s  30s background polling for /plan page bo
+[ 11/101] ✗ truth=KAN-239   pred=NONE               think=    0c gen= 0.4s  replaced SSE with polling on /plan page 
+[ 12/101] ✗ truth=KAN-239   pred=NONE               think=    0c gen= 0.5s  Confirm-locks-plan UX redesign + PR#288 
+[ 13/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.5s  notification system macOS toast renderin
+[ 14/101] ✗ truth=NONE      pred=KAN-199            think=    0c gen= 0.5s  dev-tooling: fixed binary version mismat
+[ 15/101] ✗ truth=KAN-239   pred=NONE               think=    0c gen= 0.5s  sidebar keyboard shortcut numbering fix 
+[ 16/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.5s  one-line Q&A confirming code comments in
+[ 17/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  created KAN-239 Jira ticket (plan-boost)
+[ 18/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  reviewed PR#290 (notifications system) +
+[ 19/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  screenpipe TCC/permission toggles missin
+[ 20/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  CONTRIBUTING.md typo fix + plan-integrat
+[ 21/101] ✗ truth=KAN-240   pred=NONE               think=    0c gen= 0.4s  KAN-240: migrated observability.py OTLP 
+[ 22/101] ✓ truth=KAN-240   pred=KAN-240            think=    0c gen= 0.5s  KAN-240: debugged classifier dashboard '
+[ 23/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  Metal GPU hang / wedged uvicorn zombie i
+[ 24/101] ✗ truth=KAN-240   pred=KAN-239            think=    0c gen= 0.5s  KAN-240: classifier dashboard drilldown 
+[ 25/101] ✗ truth=KAN-240   pred=NONE               think=    0c gen= 0.4s  KAN-240: scalable classifier observabili
+[ 26/101] ✗ truth=NONE      pred=KAN-241            think=    0c gen= 0.4s  worklog synthesis agent bug fix (PII gua
+[ 27/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  branch cleanup: extracted KAN-241 worklo
+[ 28/101] ✗ truth=KAN-240   pred=KAN-239            think=    0c gen= 0.5s  KAN-240: verified compile + post-edit cl
+[ 29/101] ✓ truth=KAN-240   pred=KAN-240            think=    0c gen= 0.5s  KAN-240: nested child spans (system_prom
+[ 30/101] ✓ truth=KAN-240   pred=KAN-241            think=    0c gen= 0.5s  KAN-240: OTel naming audit against OO do
+[ 31/101] ✗ truth=KAN-241   pred=NONE               think=    0c gen= 0.4s  KAN-241: durable OTLP spool (disk-buffer
+[ 32/101] ✗ truth=KAN-241   pred=NONE               think=    0c gen= 0.3s  KAN-241: completed spool + worklog linea
+[ 33/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  created KAN-241 Jira ticket (worklog OO 
+[ 34/101] ✗ truth=KAN-241   pred=NONE               think=    0c gen= 0.4s  KAN-241: fixed worklog trace lineage — w
+[ 35/101] ✓ truth=KAN-241   pred=KAN-241            think=    0c gen= 0.5s  KAN-241: unified worklog trace structure
+[ 36/101] ✗ truth=KAN-239   pred=KAN-240            think=    0c gen= 0.5s  plan page: closed-task card rendering bu
+[ 37/101] ✓ truth=KAN-239   pred=KAN-239            think=    0c gen= 0.5s  plan page: done tasks stay visible but h
+[ 38/101] ✗ truth=KAN-241   pred=NONE               think=    0c gen= 0.4s  KAN-241: committed worklog/spool/lineage
+[ 39/101] ✗ truth=KAN-241   pred=NONE               think=    0c gen= 0.4s  KAN-241: PR#299 + addressed all 14 PR#29
+[ 40/101] ✗ truth=KAN-241   pred=NONE               think=    0c gen= 0.4s  KAN-241: responded to 18 inline comments
+[ 41/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  PR/branch state investigation — git over
+[ 42/101] ✗ truth=NONE      pred=KAN-231            think=    0c gen= 0.4s  overdue task severity reclassified as 'm
+[ 43/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  investigated whether worklog fixes were 
+[ 44/101] ✗ truth=NONE      pred=KAN-239            think=    0c gen= 0.5s  code review of PR#298 (meridian-core cra
+[ 45/101] ✗ truth=NONE      pred=KAN-241            think=    0c gen= 0.5s  classifier-debug OO dashboard showing em
+[ 46/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  extracted agents.py worklog fix to PR#30
+[ 47/101] ✗ truth=KAN-239   pred=NONE               think=    0c gen= 0.4s  recovered lost migration 044_daily_plan_
+[ 48/101] ✗ truth=NONE      pred=KAN-231            think=    0c gen= 0.4s  classifier trace: multiple classify_sess
+[ 49/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  Today page: surface Claude Code activity
+[ 50/101] ✗ truth=NONE      pred=KAN-239            think=    0c gen= 0.5s  per-session classify trace fix (many blo
+[ 51/101] ✗ truth=NONE      pred=KAN-239            think=    0c gen= 0.4s  ShapeOfDay 'Longest block' → 'Top catego
+[ 52/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  PR#304: self-contained classify traces w
+[ 53/101] ✓ truth=KAN-239   pred=KAN-239            think=    0c gen= 0.5s  implemented plan-only candidate filter i
+[ 54/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  added coding-agent fields to db_fetch sp
+[ 55/101] ✗ truth=KAN-231   pred=KAN-239            think=    0c gen= 0.5s  verified ChatML token format in classifi
+[ 56/101] ✗ truth=NONE      pred=KAN-231            think=    0c gen= 0.4s  verified MLX server auto-reload + new co
+[ 57/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  fixed empty recent_context spans showing
+[ 58/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  cross-cutting DB rename claude_session_u
+[ 59/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  committed UI Today coding-metrics change
+[ 60/101] ✗ truth=KAN-231   pred=NONE               think=    0c gen= 0.4s  improved Meridian primary-role phrasing 
+[ 61/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  raised PR#309 continuity classifier — mo
+[ 62/101] ✗ truth=KAN-231   pred=NONE               think=    0c gen= 0.4s  rewrote session-task classification syst
+[ 63/101] ✗ truth=KAN-231   pred=NONE               think=    0c gen= 0.4s  set up DeepEval harness + hand-labeled 3
+[ 64/101] ✗ truth=KAN-231   pred=KAN-239            think=    0c gen= 0.4s  expanded golden dataset 30→49 + iterativ
+[ 65/101] ✗ truth=KAN-231   pred=KAN-241            think=    0c gen= 0.5s  iterative refinement loop: task gate + N
+[ 66/101] ✗ truth=KAN-231   pred=NONE               think=    0c gen= 0.5s  iter04: 0.851 objective, 0.950 untracked
+[ 67/101] ✗ truth=KAN-231   pred=NONE               think=    0c gen= 0.4s  iter04 held-out validation on 28 unseen 
+[ 68/101] ✗ truth=KAN-231   pred=KAN-239            think=    0c gen= 0.5s  combined eval 103 sessions (49 tuning + 
+[ 69/101] ✗ truth=KAN-199   pred=NONE               think=    0c gen= 0.4s  wired DeepEval BaseMetric harness + ran 
+[ 70/101] ✓ truth=KAN-199   pred=KAN-231            think=    0c gen= 0.4s  DeepEval e2e run (33 min, 103 sessions) 
+[ 71/101] ✗ truth=KAN-231   pred=NONE               think=    0c gen= 0.4s  committed classifier/eval work to PR#310
+[ 72/101] ✗ truth=NONE      pred=KAN-231            think=    0c gen= 0.4s  git hooks fix + overdue/done/cancel UI f
+[ 73/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  screenpipe not restarting in dev-start.s
+[ 74/101] ✗ truth=KAN-231   pred=NONE               think=    0c gen= 0.4s  PR#310 reviewer triage: investigated 3 f
+[ 75/101] ✗ truth=KAN-231   pred=NONE               think=    0c gen= 0.4s  PR#310 triage + deep RAM/CPU reduction r
+[ 76/101] ✗ truth=KAN-231   pred=NONE               think=    0c gen= 0.5s  PR#310 triage + RAM-reduction research (
+[ 77/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  security audit of run_task_linker_mlx.py
+[ 78/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  PR cleanup (stale commits) + Trello URL 
+[ 79/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  security audit of 7 ticket management fi
+[ 80/101] ✗ truth=KAN-231   pred=NONE               think=    0c gen= 0.4s  added 'time-to-process' column to classi
+[ 81/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  security audit of ticket update integrat
+[ 82/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  security audit of ticket-update module a
+[ 83/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  summariser continuity OTel: made continu
+[ 84/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  synthesise_worklog timeout after 546s cl
+[ 85/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  MLX classifier server offline (wedged uv
+[ 86/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  MLX server unresponsive (GPU saturation 
+[ 87/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  fixed concurrent GPU contention (Rust se
+[ 88/101] ✗ truth=NONE      pred=KAN-241            think=    0c gen= 0.5s  GPU contention fix: three server-side ch
+[ 89/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  security audit of 4 files (config.py, se
+[ 90/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  committed GPU contention changes + raise
+[ 91/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  reverse-engineered Pieces/PiecesOS archi
+[ 92/101] ✗ truth=NONE      pred=KAN-151            think=    0c gen= 0.5s  designed E2E test plan for all 7 IDE cod
+[ 93/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  deep research on Pieces architecture (10
+[ 94/101] ✗ truth=KAN-231   pred=NONE               think=    0c gen= 0.5s  deep research on OCR-noise preprocessing
+[ 95/101] ✓ truth=KAN-231   pred=KAN-231            think=    0c gen= 0.5s  confirmed prior-burst continuity in MLX 
+[ 96/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  diagnosed 'Classifier offline' banner — 
+[ 97/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  Obsidian integration research + agent Se
+[ 98/101] ✓ truth=KAN-200   pred=KAN-200            think=    0c gen= 0.5s  explored untracked sessions feature in c
+[ 99/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  cleaned up uncommitted observability wor
+[100/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  committed OO dashboard JSON + install-ti
+[101/101] ✓ truth=NONE      pred=NONE               think=    0c gen= 0.4s  fixed Session→Task Classifier debug dash
+
+=== Qwen3.5-2B think=False multi=False | 101 sessions ===
+  THR=0.5: 61/101=60%  conf 48/81=59%  false-binds=12  recall-misses=20
+  BEST: 61/101=60% @ THR=0.5 (false-binds=12)
+
+  Per-type @ THR=0.5:
+    overhead  : 18/19 = 95%
+    task      : 20/48 = 42%
+    untracked : 23/34 = 68%
+
+  Misses (40):
+    31310 [task] truth=KAN-230 pred=KAN-239 sc=1.0  designed candidate-set logic + morning cleanup UX — dir
+    31326 [task] truth=KAN-230 pred=NONE sc=0.0  candidate-set problem: minimizing tasks to classifier w
+    31387 [task] truth=KAN-239 pred=NONE sc=0.0  designed morning task-setup flow (devs declare tasks → 
+    31665 [task] truth=KAN-239 pred=NONE sc=0.0  replaced dnd-kit drag-and-drop on /plan page + enriched
+    31841 [task] truth=KAN-239 pred=NONE sc=0.0  fixed outer page scrollbar on /plan route — KAN-239 UI 
+    31840 [task] truth=KAN-239 pred=NONE sc=0.0  replaced SSE with polling on /plan page data-refresh (K
+    31839 [task] truth=KAN-239 pred=NONE sc=0.0  Confirm-locks-plan UX redesign + PR#288 — KAN-239 core 
+    32100 [untracked] truth=NONE pred=KAN-199 sc=1.0  dev-tooling: fixed binary version mismatch blocking Syn
+    32571 [task] truth=KAN-240 pred=NONE sc=0.0  KAN-240: migrated observability.py OTLP export from env
+    32824 [task] truth=KAN-240 pred=KAN-239 sc=1.0  KAN-240: classifier dashboard drilldown UX with trace_i
+    32856 [task] truth=KAN-240 pred=NONE sc=0.0  KAN-240: scalable classifier observability trace cleanu
+    32911 [untracked] truth=NONE pred=KAN-241 sc=1.0  worklog synthesis agent bug fix (PII guardrail + FSM JS
+    33118 [task] truth=KAN-240 pred=KAN-239 sc=1.0  KAN-240: verified compile + post-edit classify produces
+    33418 [task] truth=KAN-241 pred=NONE sc=0.0  KAN-241: fixed worklog trace lineage — worklog_draft sp
+    33425 [task] truth=KAN-239 pred=KAN-240 sc=1.0  plan page: closed-task card rendering bug (missing titl
+    33462 [untracked] truth=NONE pred=KAN-231 sc=1.0  overdue task severity reclassified as 'must fix' in tri
+    33456 [untracked] truth=NONE pred=KAN-239 sc=1.0  code review of PR#298 (meridian-core crate extraction, 
+    33458 [untracked] truth=NONE pred=KAN-241 sc=1.0  classifier-debug OO dashboard showing empty — KAN-240 w
+    33463 [task] truth=KAN-239 pred=NONE sc=0.0  recovered lost migration 044_daily_plan_snapshot for /p
+    33762 [untracked] truth=NONE pred=KAN-231 sc=1.0  classifier trace: multiple classify_session blocks + mi
+    33581 [untracked] truth=NONE pred=KAN-239 sc=1.0  per-session classify trace fix (many blocks per trace) 
+    33705 [overhead] truth=NONE pred=KAN-239 sc=1.0  ShapeOfDay 'Longest block' → 'Top category' metric rena
+    34038 [task] truth=KAN-231 pred=KAN-239 sc=1.0  verified ChatML token format in classifier LLM input — 
+    34115 [untracked] truth=NONE pred=KAN-231 sc=1.0  verified MLX server auto-reload + new coding-agent clas
+    34349 [task] truth=KAN-231 pred=NONE sc=0.0  rewrote session-task classification system prompt + pip
+    34427 [task] truth=KAN-231 pred=NONE sc=0.0  set up DeepEval harness + hand-labeled 30 goldens for u
+    34443 [task] truth=KAN-231 pred=KAN-239 sc=1.0  expanded golden dataset 30→49 + iterative prompt improv
+    34454 [task] truth=KAN-231 pred=KAN-241 sc=1.0  iterative refinement loop: task gate + NOT-evidence lis
+    34467 [task] truth=KAN-231 pred=NONE sc=0.0  iter04: 0.851 objective, 0.950 untracked_guard (2 false
+    34480 [task] truth=KAN-231 pred=NONE sc=0.0  iter04 held-out validation on 28 unseen sessions — conf
+    34494 [task] truth=KAN-231 pred=KAN-239 sc=1.0  combined eval 103 sessions (49 tuning + 28 HO1 + 26 HO2
+    34496 [task] truth=KAN-199 pred=NONE sc=0.0  wired DeepEval BaseMetric harness + ran 103 goldens to 
+    34504 [task] truth=KAN-231 pred=NONE sc=0.0  committed classifier/eval work to PR#310 + two-pass spe
+    34506 [untracked] truth=NONE pred=KAN-231 sc=1.0  git hooks fix + overdue/done/cancel UI feature — real w
+    34601 [task] truth=KAN-231 pred=NONE sc=0.0  PR#310 reviewer triage: investigated 3 findings, fixed 
+    34602 [task] truth=KAN-231 pred=NONE sc=0.0  PR#310 triage + deep RAM/CPU reduction research for phi
+    34830 [task] truth=KAN-231 pred=NONE sc=0.0  PR#310 triage + RAM-reduction research (dup session con
+    35143 [untracked] truth=NONE pred=KAN-241 sc=1.0  GPU contention fix: three server-side changes (reasonin
+    35173 [untracked] truth=NONE pred=KAN-151 sc=1.0  designed E2E test plan for all 7 IDE coding-agent inges
+    35288 [task] truth=KAN-231 pred=NONE sc=0.0  deep research on OCR-noise preprocessing for noisy scre
+
+  total 45s  avg gen 0.4s/session  avg think 0 chars  multi-binds=0  peak mem 2.66 GB
+  results → llm_think_week_single_nothink.json

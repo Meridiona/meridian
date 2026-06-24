@@ -60,6 +60,11 @@ echo "→ stopping any previous dev run…"
 pkill -f 'cargo-watch.*--bin meridian'  2>/dev/null || true   # daemon file-watcher
 pkill -f 'target/debug/meridian$'       2>/dev/null || true   # daemon binary (not -tray / -server)
 pkill -f 'uvicorn agents.server:app'    2>/dev/null || true   # MLX dev server (uvicorn --reload)
+# Stop the launchd MLX server so the dev uvicorn can bind port 7823.
+launchctl stop "gui/$(id -u)/com.meridiona.mlx-server" 2>/dev/null || true
+# Kill any stray process still holding port 7823.
+_mlx_pids="$(lsof -ti tcp:7823 2>/dev/null || true)"
+[[ -n "${_mlx_pids}" ]] && kill ${_mlx_pids} 2>/dev/null || true
 pkill -f 'tauri dev'                    2>/dev/null || true    # tray file-watcher
 pkill -f 'target/debug/meridian-tray$'  2>/dev/null || true   # tray binary
 # Free the dashboard port if a prior `next dev` still holds it.
@@ -119,4 +124,5 @@ echo "  4. Tauri tray    — hot reload"
 echo ""
 echo "  screenpipe + a11y-helper running via launchd (no restarts needed)."
 echo ""
-echo "  To stop: Ctrl-C in each window + meridian stop (for launchd services)"
+echo "  To stop: Ctrl-C in each window + meridian stop (for launchd services)
+  To restore production MLX daemon: meridian start"

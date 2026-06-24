@@ -1,0 +1,7 @@
+Auditing 12 peak hours with judge=qwen3.5:4b
+['2026-06-18T07', '2026-06-16T03', '2026-06-17T07', '2026-06-17T08', '2026-06-19T05', '2026-06-16T09', '2026-06-16T02', '2026-06-18T11', '2026-06-23T05', '2026-06-16T11', '2026-06-22T11', '2026-06-16T06']
+
+── 2026-06-18T07  43s 404k→38k (90%)  gold=43 dropout=0  FULL=19 PARTIAL=19 MISSING=5 recall=66%  (42s)
+── 2026-06-16T03  43s 375k→30k (92%)  gold=43 dropout=0  FULL=16 PARTIAL=22 MISSING=4 recall=63%  (56s)
+  loading Qwen/Qwen3-Embedding-0.6B ...
+── 2026-06-17T07  42s 246k→27k (89%)  gold=42 dropout=0  FULL=16 PARTIAL=20 MISSING=6 recall=62%  (40s)

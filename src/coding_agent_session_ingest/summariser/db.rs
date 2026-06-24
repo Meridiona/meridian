@@ -12,9 +12,6 @@ use super::config::SummariserConfig;
 
 /// task_method the indexer sets on a sealed row awaiting summary.
 pub const TASK_METHOD_PENDING: &str = "pending_summariser";
-/// task_method we set after summarising — the classifier's queue (P3). NOT the
-/// Python terminal 'summarised': summarising is no longer the end of the line.
-pub const TASK_METHOD_PENDING_CLASSIFIER: &str = "pending_classifier";
 /// task_method we set when a row fails MAX_ROW_ATTEMPTS — permanently excluded
 /// from auto-drain across daemon restarts.
 pub const TASK_METHOD_DEAD_LETTER: &str = "subprocess_error";
@@ -147,7 +144,8 @@ pub async fn fetch_prior_summary(
     Ok(s.filter(|x| !x.is_empty()))
 }
 
-/// Persist summary + engine source + flip task_method to the classifier queue.
+/// Persist summary + engine source. Does NOT touch task_method — the worklog
+/// pipeline gates on `session_summary IS NOT NULL`, not on task_method state.
 /// Idempotent: returns true if this call wrote the row, false if already
 /// summarised (another worker / retry won the race).
 pub async fn write_summary(
@@ -158,11 +156,10 @@ pub async fn write_summary(
 ) -> Result<bool> {
     let res = sqlx::query(
         "UPDATE app_sessions
-         SET    session_summary = ?, task_method = ?, summary_source = ?
+         SET    session_summary = ?, summary_source = ?
          WHERE  id = ? AND session_summary IS NULL",
     )
     .bind(summary)
-    .bind(TASK_METHOD_PENDING_CLASSIFIER)
     .bind(source)
     .bind(row_id)
     .execute(pool)
@@ -247,7 +244,7 @@ mod tests {
         assert_eq!(rows[0].id, id);
         assert_eq!(rows[0].agent, "Claude Code"); // app_name
 
-        // Write summary → row leaves the summariser queue for the classifier queue.
+        // Write summary → row leaves the summariser queue; task_method unchanged.
         assert!(write_summary(&pool, id, "did the work", "claude")
             .await
             .unwrap());
@@ -258,7 +255,7 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(method, TASK_METHOD_PENDING_CLASSIFIER);
+        assert_eq!(method, TASK_METHOD_PENDING); // task_method untouched
         assert_eq!(src.as_deref(), Some("claude"));
         assert_eq!(summ.as_deref(), Some("did the work"));
 

@@ -1,0 +1,320 @@
+{
+  "title": "Worklog Pipeline — Debug",
+  "description": "Every hour-level worklog pipeline run, newest first. Each worklog.hour span is the root of one /worklog_hour call: distil → activity report → candidates(+rerank) → tiered match → worklog draft per matched task (or propose a new ticket) → persist. Click a row → opens the full trace waterfall: distil.run (+distil.session per input session, with compressed-text preview), activity_report, worklog.candidates(+rerank), worklog.match (+ agno OpenInference spans carrying the rendered prompt, raw output, token counts and tier path), worklog.persist → worklog.draft / worklog.propose. Free-text previews are secret-scrubbed + capped. Outcome columns show matched task_keys + worklog IDs, or the proposed ticket title. Spans are emitted by the MLX server process (service name meridian-task-linker-mlx, since run_task_linker_mlx wins the process service.name); panels query by operation_name so service name is irrelevant.",
+  "version": 6,
+  "variables": {
+    "list": [
+      {
+        "type": "textbox",
+        "name": "hour",
+        "label": "Hour (YYYY-MM-DDTHH)",
+        "query_data": null,
+        "value": "",
+        "options": [],
+        "multiSelect": false,
+        "hideOnDashboard": false,
+        "selectAllValueForMultiSelect": "custom",
+        "customMultiSelectValue": [],
+        "escapeSingleQuotes": true
+      },
+      {
+        "type": "textbox",
+        "name": "task_key",
+        "label": "Task key",
+        "query_data": null,
+        "value": "",
+        "options": [],
+        "multiSelect": false,
+        "hideOnDashboard": false,
+        "selectAllValueForMultiSelect": "custom",
+        "customMultiSelectValue": [],
+        "escapeSingleQuotes": true
+      },
+      {
+        "type": "custom",
+        "name": "errors_only",
+        "label": "Errors only",
+        "query_data": null,
+        "value": "",
+        "options": [
+          {"label": "All", "value": "", "selected": true},
+          {"label": "Errors only", "value": "true", "selected": false}
+        ],
+        "multiSelect": false,
+        "hideOnDashboard": false,
+        "selectAllValueForMultiSelect": "custom",
+        "customMultiSelectValue": [],
+        "escapeSingleQuotes": true
+      }
+    ],
+    "showDynamicFilters": true
+  },
+  "defaultDatetimeDuration": {"type": "relative", "relativeTimePeriod": "24h", "startTime": null, "endTime": null},
+  "refresh": 30,
+  "tabs": [
+    {
+      "tabId": "default",
+      "name": "Default",
+      "panels": [
+        {
+          "id": "stat_hours_run",
+          "type": "metric",
+          "title": "Hours run",
+          "description": "Total worklog.hour spans in range",
+          "config": {"show_legends": false, "unit": null, "decimals": 0, "no_value_replacement": "0"},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as \"y_axis_1\" FROM \"default\" WHERE operation_name='worklog.hour'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [], "y": [{"label": "Hours", "alias": "y_axis_1", "column": "y_axis_1", "color": "#5960b2", "aggregationFunction": null, "isDerived": false, "havingConditions": []}], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 0, "y": 0, "w": 8, "h": 6, "i": 1}
+        },
+        {
+          "id": "stat_hours_matched",
+          "type": "metric",
+          "title": "Hours matched",
+          "description": "worklog.hour runs that bound at least one task",
+          "config": {"show_legends": false, "unit": null, "decimals": 0, "no_value_replacement": "0"},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as \"y_axis_1\" FROM \"default\" WHERE operation_name='worklog.hour' AND is_error='false' AND CAST(wl_n_matched AS INTEGER) > 0",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [], "y": [{"label": "Matched", "alias": "y_axis_1", "column": "y_axis_1", "color": "#59b27a", "aggregationFunction": null, "isDerived": false, "havingConditions": []}], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 8, "y": 0, "w": 8, "h": 6, "i": 2}
+        },
+        {
+          "id": "stat_hours_proposed",
+          "type": "metric",
+          "title": "Hours → new ticket",
+          "description": "worklog.hour runs that proposed a new ticket (no existing task fit)",
+          "config": {"show_legends": false, "unit": null, "decimals": 0, "no_value_replacement": "0"},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as \"y_axis_1\" FROM \"default\" WHERE operation_name='worklog.hour' AND wl_proposed='true'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [], "y": [{"label": "Proposed", "alias": "y_axis_1", "column": "y_axis_1", "color": "#b29959", "aggregationFunction": null, "isDerived": false, "havingConditions": []}], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 16, "y": 0, "w": 8, "h": 6, "i": 3}
+        },
+        {
+          "id": "stat_errors",
+          "type": "metric",
+          "title": "Errors",
+          "description": "worklog.hour runs that raised an exception",
+          "config": {"show_legends": false, "unit": null, "decimals": 0, "no_value_replacement": "0"},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as \"y_axis_1\" FROM \"default\" WHERE operation_name='worklog.hour' AND is_error='true'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [], "y": [{"label": "Errors", "alias": "y_axis_1", "column": "y_axis_1", "color": "#b25959", "aggregationFunction": null, "isDerived": false, "havingConditions": []}], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 24, "y": 0, "w": 8, "h": 6, "i": 4}
+        },
+        {
+          "id": "stat_avg_elapsed",
+          "type": "metric",
+          "title": "Avg elapsed (s)",
+          "description": "Mean wall-clock per hour run",
+          "config": {"show_legends": false, "unit": null, "decimals": 1, "no_value_replacement": "0"},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT round(avg(CAST(wl_elapsed_s AS DOUBLE)), 1) as \"y_axis_1\" FROM \"default\" WHERE operation_name='worklog.hour' AND is_error='false'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [], "y": [{"label": "Avg s", "alias": "y_axis_1", "column": "y_axis_1", "color": "#5994b2", "aggregationFunction": null, "isDerived": false, "havingConditions": []}], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 32, "y": 0, "w": 8, "h": 6, "i": 5}
+        },
+        {
+          "id": "stat_llm_tokens",
+          "type": "metric",
+          "title": "LLM tokens (sum)",
+          "description": "Total tokens across all agno LLM calls (OpenInference prompt + completion)",
+          "config": {"show_legends": false, "unit": null, "decimals": 0, "no_value_replacement": "0"},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT sum(coalesce(CAST(llm_token_count_prompt AS INTEGER),0) + coalesce(CAST(llm_token_count_completion AS INTEGER),0)) as \"y_axis_1\" FROM \"default\" WHERE llm_token_count_prompt IS NOT NULL",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [], "y": [{"label": "Tokens", "alias": "y_axis_1", "column": "y_axis_1", "color": "#9959b2", "aggregationFunction": null, "isDerived": false, "havingConditions": []}], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 40, "y": 0, "w": 8, "h": 6, "i": 6}
+        },
+        {
+          "id": "table_runs",
+          "type": "table",
+          "title": "Worklog hours (newest first)",
+          "description": "One row per /worklog_hour call. Filter by Hour above. Outcome at a glance: Matched keys + Worklog IDs for bound tasks, or Proposed title when a new ticket was drafted. Click a row → opens the full trace waterfall (distil → report → candidates → match → persist, with the agno prompt/output/token spans inside match & draft).",
+          "config": {
+            "show_legends": false,
+            "wrap_table_cells": false,
+            "table_dynamic_columns": false,
+            "drilldown": [
+              {
+                "name": "Open full trace waterfall",
+                "type": "byUrl",
+                "targetBlank": true,
+                "findBy": "name",
+                "data": {
+                  "url": "/web/traces?org_identifier=default&stream=default&search_type=ui&search_mode=spans&period=30d&query=${row.field.trace_filter}",
+                  "folder": "", "dashboard": "", "tab": "", "passAllVariables": false, "variables": []
+                }
+              }
+            ]
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT to_char(to_timestamp_micros(_timestamp + 19800000000),'%Y-%m-%d %H:%M:%S') as \"Time\", wl_hour as \"Hour\", CAST(wl_nsess AS INTEGER) as \"Sessions\", CAST(wl_tier_used AS INTEGER) as \"Tier\", CAST(wl_n_matched AS INTEGER) as \"Matched\", wl_matched_keys as \"Matched keys\", wl_worklog_ids as \"Worklog IDs\", wl_proposed as \"Proposed\", wl_proposed_title as \"Proposed title\", wl_note as \"Note\", round(CAST(wl_elapsed_s AS DOUBLE),1) as \"Elapsed (s)\", is_error as \"Error\", trace_id as \"trace_id\", encode(concat('trace_id=''', trace_id, ''''),'base64') as \"trace_filter\" FROM \"default\" WHERE operation_name='worklog.hour' AND ('$hour'='' OR wl_hour LIKE '%$hour%') AND ('$errors_only'='' OR is_error='$errors_only') ORDER BY _timestamp DESC",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default", "stream_type": "traces",
+                "x": [
+                  {"label": "Time", "alias": "Time", "column": "_timestamp", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "Hour", "alias": "Hour", "column": "wl_hour", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "Sessions", "alias": "Sessions", "column": "wl_nsess", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "Tier", "alias": "Tier", "column": "wl_tier_used", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "Matched", "alias": "Matched", "column": "wl_n_matched", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "Matched keys", "alias": "Matched keys", "column": "wl_matched_keys", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "Worklog IDs", "alias": "Worklog IDs", "column": "wl_worklog_ids", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "Proposed", "alias": "Proposed", "column": "wl_proposed", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "Proposed title", "alias": "Proposed title", "column": "wl_proposed_title", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "Note", "alias": "Note", "column": "wl_note", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "Elapsed (s)", "alias": "Elapsed (s)", "column": "wl_elapsed_s", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "Error", "alias": "Error", "column": "is_error", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "trace_id", "alias": "trace_id", "column": "trace_id", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "trace_filter", "alias": "trace_filter", "column": "trace_filter", "color": null, "isDerived": false, "havingConditions": []}
+                ],
+                "y": [], "z": [], "breakdown": [],
+                "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}
+              },
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 0, "y": 6, "w": 48, "h": 14, "i": 7}
+        },
+        {
+          "id": "table_drafts",
+          "type": "table",
+          "title": "Worklog drafts (matched tasks)",
+          "description": "One row per worklog.draft span — a task this pipeline bound an hour's work to. Filter by Task key above. Summary is the scrubbed+capped draft preview. Worklog id links to the persisted pm_worklogs row. Click → full trace (parent worklog.hour, with the agno worklog-agent prompt/output inside).",
+          "config": {
+            "show_legends": false,
+            "wrap_table_cells": false,
+            "table_dynamic_columns": false,
+            "drilldown": [
+              {
+                "name": "Open trace (parent worklog.hour)",
+                "type": "byUrl",
+                "targetBlank": true,
+                "findBy": "name",
+                "data": {
+                  "url": "/web/traces?org_identifier=default&stream=default&search_type=ui&search_mode=spans&period=30d&query=${row.field.trace_filter}",
+                  "folder": "", "dashboard": "", "tab": "", "passAllVariables": false, "variables": []
+                }
+              }
+            ]
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT to_char(to_timestamp_micros(_timestamp + 19800000000),'%Y-%m-%d %H:%M:%S') as \"Time\", task_key as \"Task\", round(CAST(confidence AS DOUBLE),2) as \"Confidence\", CAST(tier AS INTEGER) as \"Tier\", parsed as \"Parsed\", CAST(worklog_id AS INTEGER) as \"Worklog id\", summary_preview as \"Summary\", trace_id as \"trace_id\", encode(concat('trace_id=''', trace_id, ''''),'base64') as \"trace_filter\" FROM \"default\" WHERE operation_name='worklog.draft' AND ('$task_key'='' OR task_key='$task_key') ORDER BY _timestamp DESC",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default", "stream_type": "traces",
+                "x": [
+                  {"label": "Time", "alias": "Time", "column": "_timestamp", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "Task", "alias": "Task", "column": "task_key", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "Confidence", "alias": "Confidence", "column": "confidence", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "Tier", "alias": "Tier", "column": "tier", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "Parsed", "alias": "Parsed", "column": "parsed", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "Worklog id", "alias": "Worklog id", "column": "worklog_id", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "Summary", "alias": "Summary", "column": "summary_preview", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "trace_id", "alias": "trace_id", "column": "trace_id", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "trace_filter", "alias": "trace_filter", "column": "trace_filter", "color": null, "isDerived": false, "havingConditions": []}
+                ],
+                "y": [], "z": [], "breakdown": [],
+                "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}
+              },
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 0, "y": 20, "w": 48, "h": 12, "i": 8}
+        },
+        {
+          "id": "table_proposed",
+          "type": "table",
+          "title": "Proposed new tickets (no existing task fit)",
+          "description": "One row per worklog.propose span — an hour whose work advanced no candidate, so a new ticket was drafted (proposed, never auto-created). Description is the scrubbed+capped preview. Click → full trace.",
+          "config": {
+            "show_legends": false,
+            "wrap_table_cells": false,
+            "table_dynamic_columns": false,
+            "drilldown": [
+              {
+                "name": "Open trace (parent worklog.hour)",
+                "type": "byUrl",
+                "targetBlank": true,
+                "findBy": "name",
+                "data": {
+                  "url": "/web/traces?org_identifier=default&stream=default&search_type=ui&search_mode=spans&period=30d&query=${row.field.trace_filter}",
+                  "folder": "", "dashboard": "", "tab": "", "passAllVariables": false, "variables": []
+                }
+              }
+            ]
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT to_char(to_timestamp_micros(_timestamp + 19800000000),'%Y-%m-%d %H:%M:%S') as \"Time\", proposed_title as \"Title\", CAST(proposed_id AS INTEGER) as \"Proposed id\", parsed as \"Parsed\", proposed_desc_preview as \"Description\", trace_id as \"trace_id\", encode(concat('trace_id=''', trace_id, ''''),'base64') as \"trace_filter\" FROM \"default\" WHERE operation_name='worklog.propose' ORDER BY _timestamp DESC",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default", "stream_type": "traces",
+                "x": [
+                  {"label": "Time", "alias": "Time", "column": "_timestamp", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "Title", "alias": "Title", "column": "proposed_title", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "Proposed id", "alias": "Proposed id", "column": "proposed_id", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "Parsed", "alias": "Parsed", "column": "parsed", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "Description", "alias": "Description", "column": "proposed_desc_preview", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "trace_id", "alias": "trace_id", "column": "trace_id", "color": null, "isDerived": false, "havingConditions": []},
+                  {"label": "trace_filter", "alias": "trace_filter", "column": "trace_filter", "color": null, "isDerived": false, "havingConditions": []}
+                ],
+                "y": [], "z": [], "breakdown": [],
+                "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}
+              },
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 0, "y": 32, "w": 48, "h": 10, "i": 9}
+        }
+      ]
+    }
+  ]
+}

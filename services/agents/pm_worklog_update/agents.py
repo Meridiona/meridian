@@ -13,13 +13,13 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agents.pm_worklog_update import config
-from agents.pm_worklog_update.hooks import (
+from agents.pm_worklog_update_legacy import config
+from agents.pm_worklog_update_legacy.hooks import (
     ProjectSecretGuard,
     SessionBundleSizeGuard,
     time_spent_sanity_check,
 )
-from agents.pm_worklog_update.models import JiraUpdate
+from agents.pm_worklog_update_legacy.models import JiraUpdate
 
 if TYPE_CHECKING:
     from agno.agent import Agent

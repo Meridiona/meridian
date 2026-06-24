@@ -119,10 +119,11 @@ pub async fn upstream_settled(
     //       coding_agent_session_uuid IS NULL AND task_method IS NULL AND duration_s > min
     //     (exactly the classifier's candidate condition — by construction the hour
     //      settles when the classify queue for this window drains).
-    //   * coding-agent row still moving through summarise/classify:
-    //       task_method IN ('coding_agent_live','pending_summariser','pending_classifier')
-    //     (only the terminal `mlx_direct`/sentinel — or a set task_session_type —
-    //      counts as done).
+    //   * coding-agent row not yet sealed or not yet summarised:
+    //       coding_agent_session_uuid IS NOT NULL
+    //         AND (sealed_at IS NULL OR session_summary IS NULL)
+    //     task_method is NOT used here — the worklog pipeline only needs the
+    //     summary to be present; per-session classification is not in this path.
     // A sub-threshold regular blip (duration_s <= min) is ignored: the classifier
     // never touches it, so there is nothing to wait for. It also never becomes a
     // `task` row, so excluding it loses no worklog content.
@@ -135,8 +136,7 @@ pub async fn upstream_settled(
                     AND task_method IS NULL \
                     AND duration_s > ?) \
               OR (coding_agent_session_uuid IS NOT NULL \
-                    AND task_method IN \
-                        ('coding_agent_live', 'pending_summariser', 'pending_classifier')) \
+                    AND (sealed_at IS NULL OR session_summary IS NULL)) \
            )",
     )
     .bind(hour_start)
@@ -205,6 +205,32 @@ mod tests {
         task_method: Option<&str>,
         task_session_type: Option<&str>,
     ) {
+        insert_session_full(
+            pool,
+            started_at,
+            ended_at,
+            duration_s,
+            claude_uuid,
+            task_method,
+            task_session_type,
+            None,
+            None,
+        )
+        .await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_session_full(
+        pool: &SqlitePool,
+        started_at: &str,
+        ended_at: &str,
+        duration_s: i64,
+        claude_uuid: Option<&str>,
+        task_method: Option<&str>,
+        task_session_type: Option<&str>,
+        sealed_at: Option<&str>,
+        session_summary: Option<&str>,
+    ) {
         sqlx::query(
             "INSERT INTO etl_runs (started_at, from_frame_id, to_frame_id, status) \
              VALUES ('t', 0, 0, 'success')",
@@ -217,9 +243,10 @@ mod tests {
                 app_name, started_at, ended_at, duration_s, \
                 window_titles, audio_snippets, signals, \
                 min_frame_id, max_frame_id, frame_count, idle_frame_count, etl_run_id, \
-                coding_agent_session_uuid, task_method, task_session_type \
+                coding_agent_session_uuid, task_method, task_session_type, \
+                sealed_at, session_summary \
              ) VALUES ('App', ?, ?, ?, '[]', '[]', '{}', 1, 1, 1, 0, \
-                       (SELECT MAX(id) FROM etl_runs), ?, ?, ?)",
+                       (SELECT MAX(id) FROM etl_runs), ?, ?, ?, ?, ?)",
         )
         .bind(started_at)
         .bind(ended_at)
@@ -227,6 +254,8 @@ mod tests {
         .bind(claude_uuid)
         .bind(task_method)
         .bind(task_session_type)
+        .bind(sealed_at)
+        .bind(session_summary)
         .execute(pool)
         .await
         .unwrap();
@@ -268,11 +297,12 @@ mod tests {
         assert!(upstream_settled(&pool, HS, HE, MIN_DUR).await.unwrap());
     }
 
-    /// A coding-agent row still moving through the pipeline blocks the hour.
+    /// A coding-agent row not yet sealed blocks the hour.
     #[tokio::test]
-    async fn coding_pending_blocks() {
+    async fn coding_unsealed_blocks() {
         let pool = fresh_db().await;
-        insert_session(
+        // sealed_at=NULL → still live, session_summary=NULL → not summarised.
+        insert_session_full(
             &pool,
             IN_HOUR,
             PAST_BOUNDARY,
@@ -280,24 +310,46 @@ mod tests {
             Some("uuid-1"),
             Some("pending_summariser"),
             None,
+            None,
+            None,
         )
         .await;
         assert!(!upstream_settled(&pool, HS, HE, MIN_DUR).await.unwrap());
     }
 
-    /// A coding-agent row that reached the terminal `mlx_direct` is settled even
-    /// before its task_session_type is read (the task_method terminal path).
+    /// A sealed but not-yet-summarised coding-agent row blocks the hour.
     #[tokio::test]
-    async fn coding_terminal_settles() {
+    async fn coding_sealed_but_unsummarised_blocks() {
         let pool = fresh_db().await;
-        insert_session(
+        insert_session_full(
             &pool,
             IN_HOUR,
             PAST_BOUNDARY,
             120,
             Some("uuid-1"),
-            Some("mlx_direct"),
+            Some("pending_summariser"),
             None,
+            Some(PAST_BOUNDARY),
+            None, // sealed_at set, session_summary=NULL
+        )
+        .await;
+        assert!(!upstream_settled(&pool, HS, HE, MIN_DUR).await.unwrap());
+    }
+
+    /// A sealed + summarised coding-agent row is settled — task_method is ignored.
+    #[tokio::test]
+    async fn coding_summarised_settles() {
+        let pool = fresh_db().await;
+        insert_session_full(
+            &pool,
+            IN_HOUR,
+            PAST_BOUNDARY,
+            120,
+            Some("uuid-1"),
+            Some("pending_summariser"),
+            None,
+            Some(PAST_BOUNDARY),
+            Some("did the work"), // sealed + summary present
         )
         .await;
         assert!(upstream_settled(&pool, HS, HE, MIN_DUR).await.unwrap());

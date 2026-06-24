@@ -12,8 +12,7 @@ A single `setup(agent_name)` call wires up:
     agent can pick up the Rust daemon's `traceparent` and continue the trace
   * `LoggingInstrumentor` so every `logging.LogRecord` carries
     `otelTraceID` / `otelSpanID` attributes for OpenObserve correlation
-  * a JSON formatter (`python-json-logger`) writing daily-rotated JSONL files
-    under `~/.meridian/logs/{agent_name}.jsonl` plus stderr — both ingestable
+  * a JSON formatter (`python-json-logger`) writing to stdout/stderr — ingestable
     by OpenObserve's log pipeline without further parsing.
 
 Export is gated by the SAME `~/.meridian/settings.json` the Rust daemon reads —
@@ -41,8 +40,8 @@ from __future__ import annotations
 
 import json
 import logging
-import logging.handlers
 import os
+import re
 import sys
 import threading
 import time
@@ -63,6 +62,92 @@ from opentelemetry.trace.propagation.tracecontext import (
     TraceContextTextMapPropagator,
 )
 from pythonjsonlogger import jsonlogger
+
+
+# ──────────────────────── Secret scrubbing + previews ───────────────────────────
+#
+# Span text attributes ship raw screen OCR and rendered LLM prompts/outputs to
+# OpenObserve. Before any of that leaves the process we (1) redact known secret
+# token shapes and (2) cap the length. `preview()` is the helper call sites use
+# for attributes we set by hand; `_scrub_span_attributes()` is applied to EVERY
+# exported span (in SpoolSpanExporter) so agno's auto-captured OpenInference
+# text attributes (`input.value` / `output.value` / `llm.*_messages.*`) get the
+# same treatment without each call site having to know about them.
+
+_PREVIEW_CAP = 4000
+
+# Ported from the old pm_worklog_update ProjectSecretGuard. Each pattern redacts
+# a credential shape to «redacted:KIND» so a leaked token can't reach OO.
+_SECRET_PATTERNS: tuple[tuple["re.Pattern[str]", str], ...] = (
+    (re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),        "openai-key"),
+    (re.compile(r"ATATT3[A-Za-z0-9_\-=.]{16,}"),   "atlassian-token"),
+    (re.compile(r"gh[poasu]_[A-Za-z0-9]{20,}"),    "github-token"),
+    (re.compile(r"AKIA[0-9A-Z]{16}"),              "aws-access-key"),
+)
+
+
+def scrub_secrets(text: str) -> str:
+    """Redact known secret token shapes from `text`. Idempotent."""
+    if not text:
+        return text
+    for pat, kind in _SECRET_PATTERNS:
+        text = pat.sub(f"«redacted:{kind}»", text)
+    return text
+
+
+def preview(text: object, cap: int = _PREVIEW_CAP) -> str:
+    """Scrub secrets, then cap to `cap` chars with a `…(+N chars)` marker.
+
+    Use for EVERY free-text span attribute set by hand (prompts, outputs,
+    compressed session_text). Accepts any object — coerced to str first.
+    """
+    if text is None:
+        return ""
+    s = scrub_secrets(str(text))
+    if len(s) > cap:
+        return f"{s[:cap]}…(+{len(s) - cap} chars)"
+    return s
+
+
+# Attribute keys whose values are free text captured from the model/user and so
+# must be scrubbed+capped before export. Covers OpenInference's conventions (which
+# vary by version: `input.value`/`output.value` on chain/agent spans, AND
+# `llm.input`/`llm.output`/`llm.input_messages.*` on the LLM span) plus our own
+# `*_preview` keys (already scrubbed at source — re-scrub is harmless).
+_SCRUB_KEY_EXACT = frozenset({"input.value", "output.value"})
+# Prefixes that mark FREE-TEXT prompt/output content. Note `llm.input`/`llm.output`
+# are caught here, while `llm.token_count.*` / `llm.model_name` /
+# `llm.invocation_parameters` are NOT (they don't start with these) — so numbers
+# and config stay intact.
+_SCRUB_KEY_PREFIX = ("llm.input", "llm.output", "llm.prompt")
+_SCRUB_KEY_SUFFIX = ("_preview",)
+
+
+def _scrub_span_attributes(span) -> None:
+    """In-place scrub+cap of free-text attributes on a ReadableSpan before export.
+
+    Mutates the span's backing attribute map. This is the only safe interception
+    point for agno's auto-captured prompt/output values (they're set deep inside
+    OpenInference, never through `preview()`).
+    """
+    attrs = getattr(span, "_attributes", None)
+    if not attrs:
+        return
+    try:
+        for key in list(attrs.keys()):
+            val = attrs[key]
+            if not isinstance(val, str):
+                continue
+            if (
+                key in _SCRUB_KEY_EXACT
+                or key.startswith(_SCRUB_KEY_PREFIX)
+                or key.endswith(_SCRUB_KEY_SUFFIX)
+                or key.endswith(".value")
+                or ".message.content" in key
+            ):
+                attrs[key] = preview(val)
+    except Exception:  # noqa: BLE001 — scrubbing must never break export
+        pass
 
 
 # ──────────────────────── Spool exporters ──────────────────────────────────────
@@ -157,6 +242,10 @@ class SpoolSpanExporter:
             from opentelemetry.exporter.otlp.proto.common.trace_encoder import (
                 encode_spans,
             )
+            # Scrub+cap free-text attributes (incl. agno's auto-captured prompts
+            # / outputs) before they're serialised and shipped to OpenObserve.
+            for _s in spans:
+                _scrub_span_attributes(_s)
             payload = encode_spans(spans).SerializeToString()
             _write_spool("traces", payload)
         except Exception as exc:
@@ -199,7 +288,6 @@ class SpoolLogExporter:
 
 
 # ──────────────────────── Config ───────────────────────────────────────────────
-DEFAULT_LOG_DIR = Path.home() / ".meridian" / "logs"
 # Single source of truth for the export TOGGLE — the SAME file the Rust daemon
 # reads (see `src/observability.rs::resolve_otlp_target`). Delivery credentials
 # live there too: the dashboard Settings page writes here and the Rust shipper
@@ -308,6 +396,155 @@ def extract_parent_context(traceparent: Optional[str]) -> Optional[Context]:
     return TraceContextTextMapPropagator().extract({"traceparent": traceparent})
 
 
+def current_traceparent() -> Optional[str]:
+    """W3C `traceparent` of the currently-active span, or `None` if none/invalid.
+
+    Used to hand a parent span's identity to an out-of-band continuation (e.g.
+    the loopback stage HTTP calls under /worklog_hour, so they nest under the
+    root span rather than under the original Rust caller).
+    """
+    ctx = trace.get_current_span().get_span_context()
+    if not ctx.is_valid:
+        return None
+    return (
+        f"00-{ctx.trace_id:032x}-{ctx.span_id:016x}-{int(ctx.trace_flags):02x}"
+    )
+
+
+_AGNO_INSTRUMENTED = False
+
+
+# agno builds three FLAT (non-dotted, so non-hierarchical) loggers, each with its
+# own console RichHandler and `propagate=False` — so by default agno's run/step
+# logs never reach Meridian's root handlers (file / stdout / the OTLP spool →
+# OpenObserve). They must be adopted explicitly to be queryable in OO.
+_AGNO_LOGGERS = ("agno", "agno-team", "agno-workflow")
+
+
+def _route_agno_logs_to_root() -> None:
+    """Re-parent agno's loggers onto Meridian's root handlers.
+
+    Drops agno's console-only RichHandler and enables propagation, so agno's
+    Agent/Workflow log records flow through the same file + stdout + OTLP-spool
+    handlers as the rest of the service — landing in OpenObserve with the active
+    span's trace_id/span_id attached (via LoggingInstrumentor). Idempotent.
+    """
+    for name in _AGNO_LOGGERS:
+        lg = logging.getLogger(name)
+        lg.handlers.clear()
+        lg.propagate = True
+
+
+_AGNO_DB_ATTACHED = False
+
+
+def _agno_trace_db_file() -> str:
+    """Path for agno's native traces DB (`agno_traces`/`agno_spans` tables).
+
+    `AGNO_TRACE_DB` overrides; otherwise a dedicated sibling of meridian.db
+    (NOT meridian.db itself — agno's docs warn against mixing observability into
+    the app DB).
+    """
+    explicit = os.environ.get("AGNO_TRACE_DB")
+    if explicit:
+        return str(Path(explicit).expanduser())
+    base = os.environ.get("MERIDIAN_DB") or "~/.meridian/meridian.db"
+    return str(Path(base).expanduser().parent / "agno_traces.db")
+
+
+def _attach_agno_db_exporter() -> bool:
+    """Add agno's `DatabaseSpanExporter` as a SECOND sink on our existing
+    provider, so agno's Agent/Model/tool spans land in the native
+    `agno_traces`/`agno_spans` tables in addition to OpenObserve.
+
+    A second processor on the same provider — NOT agno's `setup_tracing()`, which
+    would create its own bare provider and (via its `isinstance` guard /
+    `set_tracer_provider`) either no-op or clobber ours, killing the OpenObserve
+    export. This sink is local-only and independent of the OTLP toggle. Set
+    `AGNO_TRACE_DB=` (empty) — handled by the caller — to skip. Best-effort:
+    a missing agno DB module just logs a warning and is skipped.
+
+    NOTE: this local DB is written UNSCRUBBED (full prompts/outputs), matching the
+    trust level of meridian.db which already holds raw transcripts on the same
+    disk. Only the OpenObserve sink is secret-scrubbed (data leaving the host).
+    """
+    global _AGNO_DB_ATTACHED
+    if _AGNO_DB_ATTACHED:
+        return True
+    if os.environ.get("AGNO_TRACE_DB") == "":  # explicit opt-out
+        return False
+    provider = trace.get_tracer_provider()
+    if not isinstance(provider, TracerProvider):
+        logging.getLogger(__name__).warning(
+            "agno trace DB sink skipped — no SDK TracerProvider (call setup() first)"
+        )
+        return False
+    try:
+        from agno.db.sqlite import SqliteDb
+        from agno.tracing.exporter import DatabaseSpanExporter
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "agno trace DB sink unavailable", extra={"error": str(exc)}
+        )
+        return False
+    try:
+        db_file = _agno_trace_db_file()
+        Path(db_file).parent.mkdir(parents=True, exist_ok=True)
+        exporter = DatabaseSpanExporter(db=SqliteDb(db_file=db_file))
+        provider.add_span_processor(BatchSpanProcessor(exporter))
+        _AGNO_DB_ATTACHED = True
+        logging.getLogger(__name__).info(
+            "agno trace DB sink attached", extra={"db_file": db_file}
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "agno trace DB sink failed", extra={"error": str(exc)}
+        )
+        return False
+
+
+def instrument_agno() -> bool:
+    """Auto-instrument agno (Agent/Workflow runs) onto the global TracerProvider.
+
+    Routes agno's OpenInference spans — rendered prompt, raw output, token
+    counts, step path — through the same `SpoolSpanExporter` → OpenObserve as the
+    rest of Meridian's telemetry, attaches agno's native `DatabaseSpanExporter` as
+    a second local sink (see `_attach_agno_db_exporter`), AND re-parents agno's own
+    loggers so its logs reach OO too (see `_route_agno_logs_to_root`). Idempotent
+    and best-effort: if the optional `openinference-instrumentation-agno` package
+    is absent, logs a warning and returns False so the server still boots — but
+    log routing + the DB sink are applied regardless, since they're independent of
+    the tracing package. Free-text values are scrubbed+capped on export to
+    OpenObserve by `_scrub_span_attributes`.
+    """
+    global _AGNO_INSTRUMENTED
+    # Always route agno logs to OO + attach the local DB sink, even if the
+    # OpenInference tracing package is unavailable.
+    _route_agno_logs_to_root()
+    _attach_agno_db_exporter()
+    if _AGNO_INSTRUMENTED:
+        return True
+    try:
+        from openinference.instrumentation.agno import AgnoInstrumentor
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "agno tracing disabled — openinference-instrumentation-agno missing",
+            extra={"error": str(exc)},
+        )
+        return False
+    try:
+        AgnoInstrumentor().instrument(tracer_provider=trace.get_tracer_provider())
+        _AGNO_INSTRUMENTED = True
+        logging.getLogger(__name__).info("agno OpenTelemetry instrumentation enabled")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "agno instrumentation failed", extra={"error": str(exc)}
+        )
+        return False
+
+
 # ──────────────────────── Tracing setup ────────────────────────────────────────
 def _configure_tracing(agent_name: str) -> None:
     resource = Resource.create({"service.name": agent_name})
@@ -351,10 +588,6 @@ def _configure_log_export(agent_name: str) -> Optional[logging.Handler]:
 
 # ──────────────────────── Logging setup ────────────────────────────────────────
 def _configure_logging(agent_name: str) -> None:
-    log_dir = Path(os.environ.get("MERIDIAN_LOG_DIR") or DEFAULT_LOG_DIR)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"{agent_name}.jsonl"
-
     level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
 
@@ -383,15 +616,8 @@ def _configure_logging(agent_name: str) -> None:
             record.__dict__.setdefault("service.name", agent_name)
             return True
 
-    file_h = logging.handlers.TimedRotatingFileHandler(
-        log_path, when="midnight", backupCount=14, encoding="utf-8",
-    )
-    file_h.setFormatter(formatter)
-    file_h.addFilter(_ServiceFilter())
-
     # Split streams by level so the launchd plist can route them to separate
-    # files: INFO/DEBUG → stdout (mlx-server.log), WARNING+ → stderr
-    # (mlx-server-error.log). Errors still appear in the file/JSONL handler too.
+    # files: INFO/DEBUG → stdout, WARNING+ → stderr.
     stdout_h = logging.StreamHandler(sys.stdout)
     stdout_h.setFormatter(formatter)
     stdout_h.addFilter(_ServiceFilter())
@@ -407,7 +633,6 @@ def _configure_logging(agent_name: str) -> None:
     # third-party libs (mcp, etc.) often leave a default basicConfig handler
     # behind that would duplicate every line.
     root.handlers.clear()
-    root.addHandler(file_h)
     root.addHandler(stdout_h)
     root.addHandler(stderr_h)
     # Spool every record for OpenObserve via OTLP/HTTP logs too, when export is
@@ -422,7 +647,7 @@ def _configure_logging(agent_name: str) -> None:
         # the spool: on a hiccup httpx/urllib3/opentelemetry emit WARNING+
         # records which this root handler would try to spool → more failures (a
         # log→export→log loop). Drop those from THIS handler only — they still
-        # reach the file/stderr handlers.
+        # reach stderr.
         _otlp_excluded = ("httpx", "httpcore", "urllib3", "grpc", "opentelemetry")
         otlp_log_h.addFilter(lambda r: not r.name.startswith(_otlp_excluded))
         root.addHandler(otlp_log_h)
@@ -432,4 +657,11 @@ def _configure_logging(agent_name: str) -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
-__all__ = ["setup", "extract_parent_context"]
+__all__ = [
+    "setup",
+    "extract_parent_context",
+    "current_traceparent",
+    "instrument_agno",
+    "scrub_secrets",
+    "preview",
+]

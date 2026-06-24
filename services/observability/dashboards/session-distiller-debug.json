@@ -1,0 +1,796 @@
+{
+  "title": "Session Distiller \u2014 Debug",
+  "description": "Every session-distiller run, newest first. Each distil.run span covers one distil_hour() or distil_range() call: nsess, raw/out chars, input/output token estimates, reduction %, funnel counts, entity rescue, and elapsed time. Click a row \u2192 opens the full trace waterfall (distil.run \u2192 distil.embed + one distil.session per input session). distil.session spans carry per-session metadata (app, task_key, task_session_type, duration, chars, spans selected, entity rescued) without session_text. Service name: meridian-session-distiller.",
+  "version": 5,
+  "variables": {
+    "list": [
+      {
+        "type": "textbox",
+        "name": "distil_label",
+        "label": "Distil label",
+        "query_data": null,
+        "value": "",
+        "options": [],
+        "multiSelect": false,
+        "hideOnDashboard": false,
+        "selectAllValueForMultiSelect": "custom",
+        "customMultiSelectValue": [],
+        "escapeSingleQuotes": true
+      },
+      {
+        "type": "textbox",
+        "name": "app_name",
+        "label": "App name",
+        "query_data": null,
+        "value": "",
+        "options": [],
+        "multiSelect": false,
+        "hideOnDashboard": false,
+        "selectAllValueForMultiSelect": "custom",
+        "customMultiSelectValue": [],
+        "escapeSingleQuotes": true
+      },
+      {
+        "type": "textbox",
+        "name": "task_key",
+        "label": "Task key",
+        "query_data": null,
+        "value": "",
+        "options": [],
+        "multiSelect": false,
+        "hideOnDashboard": false,
+        "selectAllValueForMultiSelect": "custom",
+        "customMultiSelectValue": [],
+        "escapeSingleQuotes": true
+      },
+      {
+        "type": "custom",
+        "name": "errors_only",
+        "label": "Errors only",
+        "query_data": null,
+        "value": "",
+        "options": [
+          {
+            "label": "All",
+            "value": "",
+            "selected": true
+          },
+          {
+            "label": "Errors only",
+            "value": "true",
+            "selected": false
+          }
+        ],
+        "multiSelect": false,
+        "hideOnDashboard": false,
+        "selectAllValueForMultiSelect": "custom",
+        "customMultiSelectValue": [],
+        "escapeSingleQuotes": true
+      }
+    ],
+    "showDynamicFilters": true
+  },
+  "defaultDatetimeDuration": {
+    "type": "relative",
+    "relativeTimePeriod": "24h",
+    "startTime": null,
+    "endTime": null
+  },
+  "tabs": [
+    {
+      "tabId": "default",
+      "name": "Default",
+      "panels": [
+        {
+          "id": "stat_total_runs",
+          "type": "metric",
+          "title": "Distil runs",
+          "description": "Total distil.run spans in range",
+          "config": {
+            "show_legends": false,
+            "unit": null,
+            "decimals": 0,
+            "no_value_replacement": "0"
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as \"y_axis_1\" FROM \"default\" WHERE operation_name='distil.run'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Runs",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "color": "#5960b2",
+                    "aggregationFunction": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 0,
+            "w": 12,
+            "h": 6,
+            "i": 1
+          }
+        },
+        {
+          "id": "stat_avg_reduction",
+          "type": "metric",
+          "title": "Avg reduction %",
+          "description": "Mean text reduction across all runs",
+          "config": {
+            "show_legends": false,
+            "unit": null,
+            "decimals": 1,
+            "no_value_replacement": "0"
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT round(avg(CAST(distil_reduction_pct AS DOUBLE)), 1) as \"y_axis_1\" FROM \"default\" WHERE operation_name='distil.run' AND is_error='false'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Avg reduction %",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "color": "#59b27a",
+                    "aggregationFunction": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1
+              }
+            }
+          ],
+          "layout": {
+            "x": 12,
+            "y": 0,
+            "w": 12,
+            "h": 6,
+            "i": 2
+          }
+        },
+        {
+          "id": "stat_total_sessions",
+          "type": "metric",
+          "title": "Sessions processed",
+          "description": "Sum of distil_nsess across all runs",
+          "config": {
+            "show_legends": false,
+            "unit": null,
+            "decimals": 0,
+            "no_value_replacement": "0"
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT sum(CAST(distil_nsess AS INTEGER)) as \"y_axis_1\" FROM \"default\" WHERE operation_name='distil.run' AND is_error='false'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Sessions",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "color": "#b29959",
+                    "aggregationFunction": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1
+              }
+            }
+          ],
+          "layout": {
+            "x": 24,
+            "y": 0,
+            "w": 12,
+            "h": 6,
+            "i": 3
+          }
+        },
+        {
+          "id": "stat_errors",
+          "type": "metric",
+          "title": "Errors",
+          "description": "Distil runs that raised an exception",
+          "config": {
+            "show_legends": false,
+            "unit": null,
+            "decimals": 0,
+            "no_value_replacement": "0"
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as \"y_axis_1\" FROM \"default\" WHERE operation_name='distil.run' AND is_error='true'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Errors",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "color": "#b25959",
+                    "aggregationFunction": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1
+              }
+            }
+          ],
+          "layout": {
+            "x": 36,
+            "y": 0,
+            "w": 12,
+            "h": 6,
+            "i": 4
+          }
+        },
+        {
+          "id": "table_runs",
+          "type": "table",
+          "title": "Distillation runs (newest first)",
+          "description": "One row per distil_hour / distil_range call. Filter by Distil label above. Click a row \u2192 opens the full trace waterfall (distil.embed + one distil.session child per session). Input/output token estimates use chars\u00f74.",
+          "config": {
+            "show_legends": false,
+            "wrap_table_cells": false,
+            "table_dynamic_columns": false,
+            "drilldown": [
+              {
+                "name": "Open full trace waterfall",
+                "type": "byUrl",
+                "targetBlank": true,
+                "findBy": "name",
+                "data": {
+                  "url": "/web/traces?org_identifier=default&stream=default&search_type=ui&search_mode=spans&period=30d&query=${row.field.trace_filter}",
+                  "folder": "",
+                  "dashboard": "",
+                  "tab": "",
+                  "passAllVariables": false,
+                  "variables": []
+                }
+              }
+            ]
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT to_char(to_timestamp_micros(_timestamp + 19800000000),'%Y-%m-%d %H:%M:%S') as \"Time\", distil_label as \"Label\", CAST(distil_nsess AS INTEGER) as \"Sessions\", round(CAST(distil_raw_chars AS DOUBLE)/1000,1) as \"Raw (k chars)\", round(CAST(distil_out_chars AS DOUBLE)/1000,1) as \"Out (k chars)\", CAST(distil_input_tokens_est AS INTEGER) as \"In tokens est\", CAST(distil_output_tokens_est AS INTEGER) as \"Out tokens est\", round(CAST(distil_reduction_pct AS DOUBLE),1) as \"Reduction %\", CAST(distil_n_selected AS INTEGER) as \"Spans selected\", CAST(distil_n_entity_rescued AS INTEGER) as \"Entity rescued\", CAST(distil_n_session_rescued AS INTEGER) as \"Sess rescued\", round(CAST(distil_elapsed_s AS DOUBLE),1) as \"Elapsed (s)\", is_error as \"Error\", trace_id as \"trace_id\", encode(concat('trace_id=''', trace_id, ''''),'base64') as \"trace_filter\" FROM \"default\" WHERE operation_name='distil.run' AND ('$distil_label'='' OR distil_label LIKE '%$distil_label%') AND ('$errors_only'='' OR is_error='$errors_only') ORDER BY _timestamp DESC",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [
+                  {
+                    "label": "Time",
+                    "alias": "Time",
+                    "column": "_timestamp",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Label",
+                    "alias": "Label",
+                    "column": "distil_label",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Sessions",
+                    "alias": "Sessions",
+                    "column": "distil_nsess",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Raw (k chars)",
+                    "alias": "Raw (k chars)",
+                    "column": "distil_raw_chars",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Out (k chars)",
+                    "alias": "Out (k chars)",
+                    "column": "distil_out_chars",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "In tokens est",
+                    "alias": "In tokens est",
+                    "column": "distil_input_tokens_est",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Out tokens est",
+                    "alias": "Out tokens est",
+                    "column": "distil_output_tokens_est",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Reduction %",
+                    "alias": "Reduction %",
+                    "column": "distil_reduction_pct",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Spans selected",
+                    "alias": "Spans selected",
+                    "column": "distil_n_selected",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Entity rescued",
+                    "alias": "Entity rescued",
+                    "column": "distil_n_entity_rescued",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Sess rescued",
+                    "alias": "Sess rescued",
+                    "column": "distil_n_session_rescued",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Elapsed (s)",
+                    "alias": "Elapsed (s)",
+                    "column": "distil_elapsed_s",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Error",
+                    "alias": "Error",
+                    "column": "is_error",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "trace_id",
+                    "alias": "trace_id",
+                    "column": "trace_id",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "trace_filter",
+                    "alias": "trace_filter",
+                    "column": "trace_filter",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "y": [],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 6,
+            "w": 48,
+            "h": 14,
+            "i": 5
+          }
+        },
+        {
+          "id": "table_funnel",
+          "type": "table",
+          "title": "Compression funnel per run",
+          "description": "Pipeline stage counts per distil run: junk gate \u2192 DF boilerplate cut \u2192 lexical dedup \u2192 SemDeDup \u2192 facility-location selected. Use to detect over-aggressive filtering (recall drops) or under-filtering (output too long).",
+          "config": {
+            "show_legends": false,
+            "wrap_table_cells": false,
+            "table_dynamic_columns": false,
+            "drilldown": []
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT to_char(to_timestamp_micros(_timestamp + 19800000000),'%Y-%m-%d %H:%M:%S') as \"Time\", distil_label as \"Label\", CAST(distil_nsess AS INTEGER) as \"Sessions\", CAST(distil_n_after_junk AS INTEGER) as \"After junk\", CAST(distil_n_after_df AS INTEGER) as \"After DF\", CAST(distil_n_after_lex AS INTEGER) as \"After lex\", CAST(distil_n_after_sem AS INTEGER) as \"After sem\", CAST(distil_n_selected AS INTEGER) as \"Selected\", CAST(distil_n_entity_rescued AS INTEGER) as \"Entity rescued\", round(CAST(distil_elapsed_s AS DOUBLE),1) as \"Elapsed (s)\" FROM \"default\" WHERE operation_name='distil.run' AND is_error='false' AND ('$distil_label'='' OR distil_label LIKE '%$distil_label%') ORDER BY _timestamp DESC",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [
+                  {
+                    "label": "Time",
+                    "alias": "Time",
+                    "column": "_timestamp",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Label",
+                    "alias": "Label",
+                    "column": "distil_label",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Sessions",
+                    "alias": "Sessions",
+                    "column": "distil_nsess",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "After junk",
+                    "alias": "After junk",
+                    "column": "distil_n_after_junk",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "After DF",
+                    "alias": "After DF",
+                    "column": "distil_n_after_df",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "After lex",
+                    "alias": "After lex",
+                    "column": "distil_n_after_lex",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "After sem",
+                    "alias": "After sem",
+                    "column": "distil_n_after_sem",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Selected",
+                    "alias": "Selected",
+                    "column": "distil_n_selected",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Entity rescued",
+                    "alias": "Entity rescued",
+                    "column": "distil_n_entity_rescued",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Elapsed (s)",
+                    "alias": "Elapsed (s)",
+                    "column": "distil_elapsed_s",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "y": [],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 20,
+            "w": 48,
+            "h": 10,
+            "i": 6
+          }
+        },
+        {
+          "id": "table_sessions",
+          "type": "table",
+          "title": "Per-session detail (distil.session spans)",
+          "description": "One row per session included in any distil run. Filter by App name or Task key above. session_text is NOT stored in spans \u2014 use sid to look up the session in meridian.db. session_rescued=true means the session had no spans after the pipeline and fell back to raw fallback text. Click a row \u2192 full trace to see the parent distil.run context.",
+          "config": {
+            "show_legends": false,
+            "wrap_table_cells": false,
+            "table_dynamic_columns": false,
+            "drilldown": [
+              {
+                "name": "Open trace (parent distil.run)",
+                "type": "byUrl",
+                "targetBlank": true,
+                "findBy": "name",
+                "data": {
+                  "url": "/web/traces?org_identifier=default&stream=default&search_type=ui&search_mode=spans&period=30d&query=${row.field.trace_filter}",
+                  "folder": "",
+                  "dashboard": "",
+                  "tab": "",
+                  "passAllVariables": false,
+                  "variables": []
+                }
+              }
+            ]
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT to_char(to_timestamp_micros(_timestamp + 19800000000),'%Y-%m-%d %H:%M:%S') as \"Time\", distil_label as \"Distil run\", CAST(sid AS INTEGER) as \"Session ID\", app_name as \"App\", task_key as \"Task\", task_session_type as \"Type\", started_at as \"Started at\", CAST(duration_s AS INTEGER) as \"Duration (s)\", window_title as \"Window\", CAST(session_text_chars AS INTEGER) as \"Text chars\", CAST(n_spans_selected AS INTEGER) as \"Spans selected\", CAST(n_entity_rescued AS INTEGER) as \"Entity rescued\", session_rescued as \"Rescued\", trace_id as \"trace_id\", encode(concat('trace_id=''', trace_id, ''''),'base64') as \"trace_filter\" FROM \"default\" WHERE operation_name='distil.session' AND ('$app_name'='' OR app_name LIKE '%$app_name%') AND ('$task_key'='' OR task_key='$task_key') AND ('$distil_label'='' OR distil_label LIKE '%$distil_label%') ORDER BY _timestamp DESC",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [
+                  {
+                    "label": "Time",
+                    "alias": "Time",
+                    "column": "_timestamp",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Distil run",
+                    "alias": "Distil run",
+                    "column": "distil_label",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Session ID",
+                    "alias": "Session ID",
+                    "column": "sid",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "App",
+                    "alias": "App",
+                    "column": "app_name",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Task",
+                    "alias": "Task",
+                    "column": "task_key",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Type",
+                    "alias": "Type",
+                    "column": "task_session_type",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Started at",
+                    "alias": "Started at",
+                    "column": "started_at",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Duration (s)",
+                    "alias": "Duration (s)",
+                    "column": "duration_s",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Window",
+                    "alias": "Window",
+                    "column": "window_title",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Text chars",
+                    "alias": "Text chars",
+                    "column": "session_text_chars",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Spans selected",
+                    "alias": "Spans selected",
+                    "column": "n_spans_selected",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Entity rescued",
+                    "alias": "Entity rescued",
+                    "column": "n_entity_rescued",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Rescued",
+                    "alias": "Rescued",
+                    "column": "session_rescued",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "trace_id",
+                    "alias": "trace_id",
+                    "column": "trace_id",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "trace_filter",
+                    "alias": "trace_filter",
+                    "column": "trace_filter",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "y": [],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 30,
+            "w": 48,
+            "h": 14,
+            "i": 7
+          }
+        }
+      ]
+    }
+  ],
+  "refreshInterval": 30
+}

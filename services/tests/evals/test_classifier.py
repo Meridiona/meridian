@@ -104,7 +104,7 @@ def _run_mlx(prompt_input: str) -> str:
     # Attach test case data to the span and trace so DeepEval can render
     # per-call metrics in the trace tree. Include system prompt so it's
     # visible in Confident AI traces alongside the user message.
-    from agents.run_task_linker_mlx import _SYSTEM_PROMPT as _sys
+    from agents.mlx_classifier import _SYSTEM_PROMPT as _sys
     full_input = json.dumps([
         {"role": "system", "content": _sys},
         {"role": "user",   "content": prompt_input},
@@ -166,7 +166,7 @@ if os.environ.get("MLX_SERVER_URL"):
 def mlx_test_cases(tmp_path_factory: pytest.TempPathFactory) -> list[LLMTestCase]:
     """Warm the in-process model once and build test cases for all goldens."""
     if not os.environ.get("MLX_SERVER_URL"):
-        import agents.run_task_linker_mlx as m
+        import agents.mlx_classifier as m
         m._get_model()
     return _build_test_cases()
 
@@ -226,7 +226,7 @@ def test_metric_session_type() -> None:
 @pytest.mark.integration
 def test_session_classification_schema() -> None:
     """SessionClassification Pydantic schema has all required fields."""
-    from agents.run_task_linker_mlx import SessionClassification
+    from agents.mlx_classifier import SessionClassification
     fields = SessionClassification.model_fields
     for f in ("task_key", "confidence", "session_type", "reasoning", "dimensions"):
         assert f in fields, f"missing field: {f}"
@@ -235,7 +235,7 @@ def test_session_classification_schema() -> None:
 @pytest.mark.integration
 def test_system_prompt_not_empty() -> None:
     """_SYSTEM_PROMPT contains SYSTEM_CONTEXT + SKILL.md content."""
-    from agents.run_task_linker_mlx import _SYSTEM_PROMPT
+    from agents.mlx_classifier import _SYSTEM_PROMPT
     assert len(_SYSTEM_PROMPT) > 100, "system prompt looks empty"
 
 
@@ -285,7 +285,7 @@ def test_mlx_per_golden(test_case: LLMTestCase, mlx_test_cases: list[LLMTestCase
 
 if __name__ == "__main__":
     print("Loading MLX model…")
-    import agents.run_task_linker_mlx as _m
+    import agents.mlx_classifier as _m
     _m._get_model()
     print("Model ready.\n")
 

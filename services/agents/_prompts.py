@@ -38,7 +38,7 @@ CANDIDATE_DESC_CAP = int(os.environ.get("CANDIDATE_DESC_CAP", "0"))
 # tracked work in this many minutes BEFORE the current session, aggregated per
 # ticket, as a weak continuity prior. Time-windowed (not count-windowed) on
 # purpose: session length is wildly variable, so "last N sessions" can be 90s of
-# micro-glances or 3h of deep work. Shared with run_task_linker_mlx.py, which
+# micro-glances or 3h of deep work. Shared with mlx_classifier.py, which
 # fetches the window. Override via CONTINUITY_WINDOW_MIN.
 _CONTINUITY_WINDOW_MIN = int(os.environ.get("CONTINUITY_WINDOW_MIN", "30"))
 

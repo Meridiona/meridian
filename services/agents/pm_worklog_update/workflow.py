@@ -1,4 +1,4 @@
-"""Synth helper for the Rust pm-worklog stage.
+"""[LEGACY] Synth helper for the Rust pm-worklog stage. See pm_worklog_update/__init__.py.
 
 The full PM-worklog pipeline (collect → synth → ground → post) now lives in
 the Rust daemon (`src/pm_worklog/`). This module is reduced to a thin synth
@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import logging
 
-from agents.pm_worklog_update import config
-from agents.pm_worklog_update.models import (
+from agents.pm_worklog_update_legacy import config
+from agents.pm_worklog_update_legacy.models import (
     GroundedNarrative,
     JiraUpdate,
     SessionBundle,

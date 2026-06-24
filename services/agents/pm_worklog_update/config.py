@@ -2,7 +2,7 @@
 
 All tunables are read from the environment (loaded by the parent
 `agents.config` module). This file exposes them as typed constants so the
-rest of the package can `from agents.pm_worklog_update.config import X`.
+rest of the package can `from agents.pm_worklog_update_legacy.config import X`.
 
 The defaults are chosen for a single-user laptop setup with the local 9B
 MLX server on :7823 and the user's screen-capture history in

@@ -1,0 +1,154 @@
+loaded 1607 usable sessions over 10 days (764 labeled)
+
+model       st time  tau  thr   #clu #sing #big  grp%  avgN  PREC   REC  homo  vmes
+-----------------------------------------------------------------------------------
+bge-small   Y  none  0    0.3     77    23  970 0.986 29.33 0.124 0.769 0.133 0.186
+bge-small   Y  none  0    0.4      9     2 1576 0.999 229.29 0.118   1.0   0.0   0.0
+bge-small   Y  none  0    0.5      1     0 1607   1.0 1607.0 0.118   1.0   0.0   0.0
+bge-small   Y  gate  30   0.3    708   311   11 0.806  3.26 0.839 0.054 0.949 0.545
+bge-small   Y  gate  30   0.4    384    95   17 0.941  5.23 0.819  0.12 0.911 0.567
+bge-small   Y  gate  30   0.5    203    21   26 0.987  8.71 0.791   0.2 0.881 0.585
+bge-small   Y  gate  60   0.3    542   203   15 0.874  4.14 0.836 0.089 0.929 0.558
+bge-small   Y  gate  60   0.4    252    54   25 0.966  7.84 0.802 0.199 0.886 0.586
+bge-small   Y  gate  60   0.5    126    15   47 0.991 14.34 0.766 0.379 0.843 0.609
+bge-small   Y  gate  120  0.3    404   139   22 0.914  5.54 0.799 0.144 0.899 0.569
+bge-small   Y  gate  120  0.4    172    42   44 0.974 12.04 0.777 0.354 0.849 0.605
+bge-small   Y  gate  120  0.5     81     9   64 0.994 22.19 0.753 0.557 0.814 0.628
+qwen3-0.6b  Y  none  0    0.3     53    25 1390 0.984  56.5 0.118 0.967 0.015 0.029
+qwen3-0.6b  Y  none  0    0.4     16     9 1576 0.994 228.29 0.118   1.0   0.0   0.0
+qwen3-0.6b  Y  none  0    0.5      4     3 1604 0.998 1604.0 0.118   1.0   0.0   0.0
+qwen3-0.6b  Y  gate  30   0.3    490   169   14 0.895  4.48 0.833 0.105 0.921 0.563
+qwen3-0.6b  Y  gate  30   0.4    283    56   20 0.965  6.83 0.821 0.169 0.891 0.578
+qwen3-0.6b  Y  gate  30   0.5    178    24   29 0.985 10.28 0.793  0.25 0.869 0.594
+qwen3-0.6b  Y  gate  60   0.3    341   107   18 0.933  6.41 0.814 0.181 0.896 0.583
+qwen3-0.6b  Y  gate  60   0.4    192    43   34 0.973  10.5 0.762 0.288 0.851 0.593
+qwen3-0.6b  Y  gate  60   0.5    116    19   52 0.988 16.37 0.726 0.407 0.827 0.611
+qwen3-0.6b  Y  gate  120  0.3    247    88   36 0.945  9.55 0.791 0.312 0.858   0.6
+qwen3-0.6b  Y  gate  120  0.4    127    32   52  0.98 16.58 0.716 0.436  0.82 0.615
+qwen3-0.6b  Y  gate  120  0.5     77    13   79 0.992 24.91 0.747 0.613 0.805 0.634
+  loading jinaai/jina-embeddings-v3 ...
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+!! embed jina-v3 strip=True failed: [Errno 2] No such file or directory: '/Users/adityaharish/.cache/huggingface/modules/transformers_modules/jinaai/xlm_hyphen_roberta_hyphen_flash_hyphen_implementation/845308d0fd72a8406a3e378450e1a09522790419/mha.py'
+
+=== BEST by v_measure+ari: {'model': 'bge-small', 'strip': 'Y', 'time': 'gate', 'tau': 30, 'thr': 0.3, 'n_sessions': 1607, 'n_clusters': 708, 'singletons': 311, 'largest': 11, 'labeled': 764, 'grouped_frac': 0.806, 'mean_multi': np.float64(3.26), 'pair_prec': 0.839, 'pair_rec': 0.054, 'homogeneity': 0.949, 'completeness': 0.383, 'v_measure': 0.545, 'ari': 0.033} ===
+
+● cluster n=11 span=8min apps={'Google Chrome': 11} task_keys=- ent_tickets=-
+    [04:23] Google Chrome  tk=-        •→MarketingY Ask HN: How areth X|F FablePool - poolm x in Feed | LinkedinXDEV DEV Communit
+    [04:24] Google Chrome  tk=-        MarketingY Ask HN: How are thF FablePool - poolm x= news.ycombinator.com/item?id=48434240Y
+    [04:25] Google Chrome  tk=-        MarketingY Ask HN: How are thF FablePool - poolm x= news.ycombinator.com/item?id=48434240Y
+    [04:26] Google Chrome  tk=-        •MarketingY Ask HN: How areth x[F FablePool - poolm xiin Feed | LinkedinXDEV DEV Community
+    [04:27] Google Chrome  tk=-        ChromeFileEditMarketing→ViewHistoryBookmarksProfilesTabWindowHelpY Ask HN: How are thFable
+    [04:27] Google Chrome  tk=-        MarketingAsk HN: How ar[F FablePool - po xin Feed | Linkedln x= news.ycombinator.com/item?
+
+● cluster n=10 span=7min apps={'Google Chrome': 10} task_keys=- ent_tickets=-
+    [04:58] Google Chrome  tk=-        Open sidebarQMarketingYSuomit Hac X in Notiticati xI ) Post analytic x|C DEV Commu x |(Mer
+    [04:59] Google Chrome  tk=-        MarketingYSubmit|Hac x= news.ycombinator.com/submitY Submittitle Ask HN: Has AI writling m
+    [04:59] Google Chrome  tk=-         ChromeFile EditViewHistoryBookmarks ProfileslabWindowHelp• • • v (Marketing)Y] Submit | 
+    [05:00] Google Chrome  tk=-        →MarketingY Submit | Hac xin (9) Notificati XI Post analytic x© DEV Commu x | Meridian= ch
+    [05:00] Google Chrome  tk=-        MarketingY Submit | Hac xin (9) Notificati x= news.ycombinator.com/submitY Submittitle Ask
+    [05:01] Google Chrome  tk=-        →MarketingY Submit | Hac x@Ask HN Titlexin (9) Notificati= chatgpt.com/c/6a29afb8-0ec0-832
+
+● cluster n=10 span=10min apps={'Code': 10} task_keys={'KAN-199': 1, 'KAN-231': 7} ent_tickets={'UTF-8': 10, 'KAN-193': 1, 'KAN-209': 1, 'KAN-210': 1}
+    [11:10] Code           tk=KAN-199  UQHXPRRV MERIDIAN .agents .cargoclande .claude-flow .deepeval .githooks .github docs npm p
+    [11:11] Code           tk=KAN-231  UQHXPRRV MERIDIAN .agents .cargoclande .claude-flow .deepeval .githooks .github docs npm p
+    [11:12] Code           tk=KAN-231  UQHXPRRV MERIDIAN .agents .cargoclande .claude-flow .deepeval .githooks .github docs npm p
+    [11:13] Code           tk=KAN-231  UQHXPRRV MERIDIAN .agents .cargoclande .claude-flow .deepeval .githooks .github docs npm p
+    [11:15] Code           tk=KAN-231  UQHXPRRV MERIDIAN .agents .cargoclande .claude-flow .deepeval .githooks .github docs npm p
+    [11:15] Code           tk=KAN-231  HXPRRV MERIDIAN .agents .cargoclande .claude-flow deepeval .githooks .github docs npm pack
+
+● cluster n=9 span=9min apps={'Code': 9} task_keys={'KAN-200': 7} ent_tickets={'KAN-212': 3, 'UTF-8': 1, 'KAN-231': 1, 'KAN-97': 1}
+    [16:37] Code           tk=-        meridianQEXPLORERV MERIDIAN .agents .cargo .claude .claude-flow .deepeval githooksV .githu
+    [16:38] Code           tk=KAN-200  meridian 116 v Update DDOD QEXPLORERV MERIDIAN .agents .cargo .claude .claude-flow deepeva
+    [16:39] Code           tk=KAN-200  meridian 116 C Update 0 000 QEXPLORERV MERIDIAN .agents .cargo .claude .claude-flow .deepe
+    [16:41] Code           tk=KAN-200  meridian 117 Updite 0 000 QEXPLORERV MERIDIAN .agents .cargo .claude .claude-flow .deepeva
+    [16:41] Code           tk=KAN-200  meridian 117 v Update 0 000 QEXPLORERV MERIDIAN .agents .cargo .claude .claude-flow .deepe
+    [16:43] Code           tk=-        meridianUpdite 0 000 EXPLORERV MERIDIANI .agents .cargo .claude .claude-flow .deepeval git
+
+● cluster n=8 span=9min apps={'Code': 7, 'Terminal': 1} task_keys={'KAN-203': 1} ent_tickets={'UTF-8': 5, 'KAN-199': 1, 'KAN-200': 1, 'KAN-203': 1}
+    [03:19] Code           tk=-        Explorer E Search F Source Control G Run and Debug D Extensions X - Invalid extensions det
+    [03:19] Terminal       tk=KAN-203  Last login Thu Jun 11 19 54 30 on ttys012 meridian oauth-login jira Starting Jira browser 
+    [03:20] Code           tk=-        Explorer E Search F Source Control G Run and Debug D Extensions X - Invalid extensions det
+    [03:22] Code           tk=-        Explorer E Search F Source Control G - 2 pending changes Run and Debug D Extensions X - In
+    [03:22] Code           tk=-        Explorer E Search F Source Control G - 2 pending changes Run and Debug D Extensions X - In
+    [03:26] Code           tk=-        Explorer E Search F Source Control G - 2 pending changes Run and Debug D Extensions X - In
+
+● cluster n=8 span=7min apps={'Google Chrome': 8} task_keys=- ent_tickets={'AGI-2': 1}
+    [05:05] Google Chrome  tk=-        →MarketingY New Links |F X@Ask HN Titlexin (9) NotificatiI ) Post analytic x(Ey: DEV Commu
+    [05:07] Google Chrome  tk=-        • • • v = Meridian Users - Google Shee x |M Akarsh hegde - adithya@meri x• Be for real: If
+    [05:08] Google Chrome  tk=-        →MarketingY Ask HN: H: x | Y Submissio x® Ask HN Tit xchatgpt.com/c/6a29afb8-0ec0-8322-b52
+    [05:09] Google Chrome  tk=-        →MarketingY ASk HN: x | [Y] Submissi x® Ask HN1xin (9) Notif Xin) Post ana x= chatgpt.com/
+    [05:09] Google Chrome  tk=-        →MarketingY ASk HN: x | [Y] Submissi x® Ask HNin (9) Notif X(in) Post ana xchatgpt.com/c/6
+    [05:10] Google Chrome  tk=-        MarketingNew LinkY Submissi |in (9) NotifPost ana X(y DEV Con xMeridian• Chat|Cl x |® AskH
+
+● cluster n=8 span=6min apps={'Code': 4, 'Google Chrome': 4} task_keys={'KAN-239': 8} ent_tickets={'KAN-239': 7, 'KAN-241': 5, 'KAN-231': 5, 'KAN-202': 3}
+    [09:06] Code           tk=KAN-239  The app_name attribute on the classify_session span is the change from PR 305 the same bra
+    [09:07] Google Chrome  tk=KAN-239  MarketingMeridianMeri x O Ope xO OpeO Ope x |O Pull x ||П прm xº Regi x NVIC x • (332 x Pu
+    [09:08] Code           tk=KAN-239  882 db_span.set_attribute pm_tasks_count len pm_tasks 883 db_span.set_attribute today_focu
+    [09:09] Google Chrome  tk=KAN-239  • • • vMarketingMeridianMerix• Ope x O Ope x1O Ope xl Pull xПрxRegxVXPull x@ Chat xc oper 
+    [09:10] Google Chrome  tk=KAN-239  MarketingMeridianMeri xO Ope x O Ope xl O Ope xQ Pull xlocalhost:3939/worklogsПрxRegxVX• (
+    [09:11] Code           tk=KAN-239  One thing to note in that specific example The trace you pasted is itself slightly self-re
+
+● cluster n=8 span=7min apps={'Google Chrome': 2, 'Code': 6} task_keys={'KAN-239': 8} ent_tickets={'UTF-8': 8, 'KAN-231': 1, 'KAN-239': 1, 'KAN-241': 1}
+    [14:17] Google Chrome  tk=KAN-239  CodeFileEditSelectionViewGoRunTerminalWindowHelp*•Wed Jun 17 7:47PM• run_task_linker_mix.p
+    [14:18] Google Chrome  tk=KAN-239  |< →• meridianlodavPlanTasksWorklogsSessionsWeekClean-upouck cultchMarketingMeridian]• Mer
+    [14:18] Code           tk=KAN-239  UFXPRERIV MERIDIAN .cargoclade .claude-flow .githooks .github docs npm packages scriptsV s
+    [14:19] Code           tk=KAN-239  HXPRRV MERIDIAN .cargoclade .claude-flow .githooks .github docs nom packages scriptsV serv
+    [14:20] Code           tk=KAN-239  run_task_linker_mlx.py - meridian - Modified Uupdate08 0 43 0 _system_context.py M run_tas
+    [14:21] Code           tk=KAN-239  HXPRRV MERIDIAN .cargocladeclaude-flow .githooksgithub docs nom packages scriptsV services
+
+● cluster n=7 span=4min apps={'Google Chrome': 7} task_keys=- ent_tickets={'BANUI-942': 5, 'XXXX-6006': 5, 'XXXX-8002': 5}
+    [12:09] Google Chrome  tk=-        • • • v< > caMarketingMeridian= portal.registerkaro.in/dashboard•: Pull requests • Meridio
+    [12:09] Google Chrome  tk=-        + →*Dv MoreLabelsMarketingMeridianO: Pull requests • Meridiona/meri x | • (309) finance in
+    [12:11] Google Chrome  tk=-        + →*DvMoreLabelsMarketingMeridian: Pull requests • Meridiona/meri x | • (309) finance infl
+    [12:11] Google Chrome  tk=-        • • • vMarketing< →IOPDFMeridian |) Pull requests • Meridiona/meri x | • (309) finance inf
+    [12:11] Google Chrome  tk=-        < →*DvMoreLabelsMarketingMeridianO: Pull requests • Meridiona/meri x | (309) finance influ
+    [12:13] Google Chrome  tk=-        + →MarketingMeridianO: Pull requests • Meridiona/meri x | (309) finance influencer viralx 
+
+● cluster n=7 span=10min apps={'Code': 7} task_keys={'KAN-200': 3} ent_tickets=-
+    [16:40] Code           tk=KAN-200  Bug Fixes Here s what the research found and a key correction first Qwen3 vs Qwen3.5 there
+    [16:41] Code           tk=KAN-200  Speed Tokens/sec on Apple Silicon From a published research paper M4 Max 128 GB mlx-lm 4-b
+    [16:43] Code           tk=KAN-200  Qwen3.5-9B-MLX-4bit pure 4-bit 5.6 GB 7 9 GB baseline Qwen3.5-9B-OptiQ-4bit mixed 4/8-bit 
+    [16:45] Code           tk=-        - Noticeably better output quality especially on reasoning tasks closer to 8-bit than 4-bi
+    [16:47] Code           tk=-        - Noticeably better output quality especially on reasoning tasks closer to 8-bit than 4-bi
+    [16:50] Code           tk=-        Cooked for 20s Bash top -l 1 -n 0 grep -E CPU usage PhysMem Interrupted What should Claude
+
+● cluster n=7 span=8min apps={'Code': 7} task_keys={'KAN-202': 5, 'KAN-203': 2} ent_tickets={'UTF-8': 1}
+    [06:40] Code           tk=KAN-202  /Documents/Meridiona/meridian cat /.meridian/logs/openobserve-error.log memory cache confi
+    [06:40] Code           tk=KAN-202  thread main panicked at src/config/src/config.rs 1952 9 memory cache config error ZO_MEMOR
+    [06:41] Code           tk=KAN-202  OpenObserve is panicking at startup because the ZO_MEMORY_CACHE_MAX_SIZE env var is set to
+    [06:41] Code           tk=KAN-202  Searched for 2 patterns ctrl o to expand Bash sysctl hw.memsize awk print 2/1073741824 GB 
+    [06:42] Code           tk=KAN-202  memory at that moment this can happen if the OS reported low available memory or if the Op
+    [06:45] Code           tk=KAN-203  export ZO_MEMORY_CACHE_MAX_SIZE 2147483648 2 GB cache layer 2147483648 2 GB cache layer wh
+
+● cluster n=7 span=6min apps={'Google Chrome': 7} task_keys=- ent_tickets={'SF-26': 2, 'KAN-230': 1}
+    [10:39] Google Chrome  tk=-        •® Meridian Develo xMarketingMeridianMeridianx |@: OpenObserve x |C) Meridian - Log: x• Me
+    [10:40] Google Chrome  tk=-        Hamilton's Barcelona WIN Just SILENCED Everyone - Data REVEALS Ferrari Is A REAL Title Thr
+    [10:42] Google Chrome  tk=-        OHUPCNNTZUMDCERILLAPCELARIPETRONAS©TeamViewerHAMILTON LOVING.HAMICHHMPONNI CU MONDEDERDRNL
+    [10:43] Google Chrome  tk=-        Hamilton's Barcelona WIN Just SILENCED Everyone - Data REVEALS Ferrari Is A REAL Title Thr
+    [10:43] Google Chrome  tk=-        Hamilton's Barcelona WIN Just SILENCED Everyone - Data REVEALS Ferrari Is A REAL Title Thr
+    [10:45] Google Chrome  tk=-        Hamilton's Barcelona WIN Just SILENCED Everyone - Data REVEALS Ferrari Is A REAL Title Thr
+
+● cluster n=7 span=5min apps={'Code': 4, 'Google Chrome': 3} task_keys={'KAN-231': 4} ent_tickets={'UTF-8': 3, 'KAN-202': 2, 'KAN-231': 2, 'KAN-239': 2}
+    [08:24] Code           tk=-        meridian 92 Update 0000 QEXPLORERV MERIDIANLiguuc-HIUV deepeval .githooks github docs npm 
+    [08:25] Code           tk=KAN-231  meridianUpdate DDOD QEXPLORERV MERIDIANI .deepeval .githooks .github docs packages scripts
+    [08:26] Code           tk=KAN-231  run_task_linker_mlx.py - meridian 92Update0 0 HXPRRV MERIDIANI.deepeval .githooks github d
+    [08:27] Google Chrome  tk=-        ® Reducing Memo xMarketinglocalhost:3939/todayMeridianMeridian• OpenObserve - x |) Meridio
+    [08:28] Google Chrome  tk=-        ® Reducing Memo xMarketingMeridianMeridian• localhost:3939/todayO OpenObserve - x | Meridi
+    [08:29] Google Chrome  tk=KAN-231  ® Reducing Memo xMarketingMeridianlocalhost:3939/worklogsMeridianO OpenObserve - x | Merid
+
+● cluster n=7 span=3min apps={'Google Chrome': 5, 'Claude': 2} task_keys=- ent_tickets={'ACY-7839': 1}
+    [05:18] Google Chrome  tk=-        • • ~B Meridiona_LLP_Agreement - x +< > c:odocs.google.com/document/d/1Qq4x4q0cpWPBsxbp1uX
+    [05:18] Google Chrome  tk=-        • • • vE Meridiona_LLP_Agreement - x ++G=docs.google.com/document/d/1Qq4x4q0cpWPBsxbp1uXva
+    [05:18] Claude         tk=-        You said use the same draft and format i need help fixing thsi document first mine is a st
+    [05:19] Google Chrome  tk=-        ® LLPa x> LLPA xMarketingMeridianMerid xO Open x O Open x ) Merid x6 Temp x• What x |^ 7lm
+    [05:19] Google Chrome  tk=-        E Meridiona_LLP_Agreement - x ++G=docs.google.com/document/d/1Qq4x4q0cpWPBsxbp1uXvalkRK7Ew
+    [05:20] Google Chrome  tk=-        ® LLPa x> LLPA xMarketingMeridianMerid x | O Open x | O Open x |@ Meric x |@) npm| x | @) 
+
+● cluster n=7 span=4min apps={'Google Chrome': 3, 'Code': 4} task_keys={'KAN-200': 1} ent_tickets={'KAN-109': 7, 'KAN-241': 7, 'KAN-23': 6, 'UTF-8': 5}
+    [17:49] Google Chrome  tk=-        • •Model for Tas x• LLP Agreeme xMarketingMeridianchatgpt.com/c/6a357402-e530-83ee-98b8-c5
+    [17:50] Code           tk=-        ground_truth.json - meridian - DeletedUpdate 0 000 .QHXPRRV MERIDIANI .deepeval .githooks 
+    [17:50] Code           tk=-        ground_truth.json - meridian - Deleted 117 C Update DDOD QEXPLORERV MERIDIANI .deepeval .g
+    [17:52] Google Chrome  tk=-        < → ground_truth.json — meridian — Deleted• 117|C* ~Updateng°QEXPLORERV MERIDIAN› .deepeva
+    [17:52] Code           tk=-        ground_truth.json meridian - Deleted 117 Update 0 0 0QEXPLORERV MERIDIAN .deepeval .githoo
+    [17:53] Google Chrome  tk=-        Fri Jun 19 11:22PM...→• Model for Tas xO LLP Agreeme xMalKellyMeridian• Meridian• OpenObse

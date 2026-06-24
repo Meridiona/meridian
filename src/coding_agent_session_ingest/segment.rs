@@ -1,32 +1,47 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// Segmentation: a single coding-agent JSONL is sliced into SEGMENTS split on
-// idle gaps > `segment_gap_seconds` (default 1h) AND on a `max_segment_seconds`
-// time-box (default 1h), so a long continuous burst still seals on a
-// predictable cadence. One `app_sessions` row per segment, keyed on
-// (coding_agent_session_uuid, segment_started_at).
+// Segmentation: a single coding-agent JSONL is sliced into SEGMENTS aligned to
+// UTC clock hours so that one hour of coding work maps to exactly one
+// `app_sessions` row, bucketed by `started_at` exactly like screen-capture rows.
 //
-// Originally ported from the Python indexer's `parse_session_segments`; the
-// tests below (mirrored from the old `test_segmentation.py`) pin the behaviour.
+// The indivisible unit is an EXCHANGE: a real user prompt followed by all the
+// assistant/tool work it triggers, up to (but not including) the next prompt.
+// An exchange is never split mid-stream — it belongs WHOLE to the clock hour of
+// its COMPLETION (its last/most-recent record). So a prompt at 10:55 whose reply
+// lands at 11:03 is all hour 11. Consecutive exchanges that complete in the same
+// hour share one segment; a new completion hour opens a new segment. A >1h idle
+// silence also ends an exchange (a "walked away" boundary), but since that gap
+// necessarily crosses an hour it never merges into the same segment anyway.
+//
+// `segment_started_at`/`started_at` is the COMPLETION-HOUR FLOOR (e.g.
+// `…T10:00:00`), which makes the `(uuid, segment_started_at)` key precisely
+// "one row per conversation per hour" and every downstream hour-bucket query
+// (`distil_hour`, the worklog readiness gate, the ledger) exact with no special
+// casing. `ended_at` stays the real last-completion instant and `duration_s`
+// stays real active-seconds — a boundary-crossing exchange's full active time
+// counts toward its completion hour.
+//
+// Originally ported from the Python indexer's `parse_session_segments`.
 
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Timelike, Utc};
 
 use super::jsonl::{infer_agent, iter_normalised_with_title, NormRecord};
 
 // Defaults mirror the former Python indexer/config.py.
 pub const ACTIVE_TIME_GAP_CAP_SECONDS: i64 = 120;
 pub const SEGMENT_GAP_SECONDS: i64 = 3600;
-pub const MAX_SEGMENT_SECONDS: i64 = 3600;
 
-/// Tunables for one parse pass (mirrors the keyword args of the Python fn).
+/// Tunables for one parse pass.
 #[derive(Debug, Clone)]
 pub struct SegmentParams {
     pub agent: Option<String>,
     pub active_gap_cap_seconds: i64,
+    /// A gap longer than this between two consecutive records ends the current
+    /// exchange (a "walked away" boundary). Such a gap always crosses an hour,
+    /// so it also lands the next exchange in a fresh segment.
     pub segment_gap_seconds: i64,
-    pub max_segment_seconds: i64,
     pub start_after_ts: Option<String>,
 }
 
@@ -36,15 +51,15 @@ impl Default for SegmentParams {
             agent: None,
             active_gap_cap_seconds: ACTIVE_TIME_GAP_CAP_SECONDS,
             segment_gap_seconds: SEGMENT_GAP_SECONDS,
-            max_segment_seconds: MAX_SEGMENT_SECONDS,
             start_after_ts: None,
         }
     }
 }
 
-/// One continuous work burst of a session. One app_sessions row per segment,
-/// keyed on (session_uuid, segment_started_at). `is_last` marks the final
-/// segment — the only one that may still be live (unsealed).
+/// One UTC clock-hour of a session's work. One app_sessions row per segment,
+/// keyed on (session_uuid, segment_started_at) where `segment_started_at` is the
+/// completion-hour floor. `is_last` marks the final segment — the only one that
+/// may still be live (unsealed); its hour may not have elapsed yet.
 #[derive(Debug, Clone)]
 pub struct Segment {
     pub session_uuid: String,
@@ -122,43 +137,82 @@ pub fn norm_iso(ts: &str) -> String {
 }
 
 /// Signed seconds between two instants as float, preserving sub-second
-/// precision — matches Python's `(a - b).total_seconds()` so gap/time-box
-/// boundary comparisons are byte-for-byte equivalent.
+/// precision — matches Python's `(a - b).total_seconds()` so gap boundary
+/// comparisons are byte-for-byte equivalent.
 fn delta_secs(a: DateTime<Utc>, b: DateTime<Utc>) -> f64 {
     (a - b).num_milliseconds() as f64 / 1000.0
 }
 
-// ──────────────────────── Builder ──────────────────────────────────────────
-
-struct SegBuilder {
-    segment_started_at: String,
-    ended_at: Option<String>,
-    user_turns: u32,
-    assistant_turns: u32,
-    active_seconds: f64,
-    records: Vec<(Option<String>, NormRecord)>,
+/// Floor an instant to the top of its UTC hour — the segment's bucket key.
+fn hour_floor(dt: DateTime<Utc>) -> DateTime<Utc> {
+    // with_minute/second/nanosecond(0) only fail on out-of-range inputs (never
+    // for 0); fall back to the input unchanged on the impossible None.
+    dt.with_minute(0)
+        .and_then(|d| d.with_second(0))
+        .and_then(|d| d.with_nanosecond(0))
+        .unwrap_or(dt)
 }
 
-impl SegBuilder {
-    fn new(segment_started_at: String) -> Self {
+// ──────────────────────── Builder ──────────────────────────────────────────
+
+/// One exchange: a real user prompt and the work it triggers, up to the next
+/// prompt (or a >1h silence). The indivisible unit of attribution — it belongs
+/// whole to the clock hour of `completion`.
+struct Exchange {
+    records: Vec<(Option<String>, NormRecord)>,
+    completion: DateTime<Utc>, // max record ts → robust to out-of-order timestamps
+    user_turns: u32,
+    assistant_turns: u32,
+}
+
+impl Exchange {
+    fn new(anchor: DateTime<Utc>) -> Self {
         Self {
-            segment_started_at,
-            ended_at: None,
+            records: Vec::new(),
+            completion: anchor,
             user_turns: 0,
             assistant_turns: 0,
-            active_seconds: 0.0,
-            records: Vec::new(),
         }
     }
 
-    fn add_turn(&mut self, ts: Option<String>, rec: NormRecord) {
-        if rec.is_user {
-            self.user_turns += 1;
-        } else {
-            self.assistant_turns += 1;
+    /// Push a record, advancing the completion instant (max, not last-seen, so
+    /// non-monotonic JSONL timestamps can't drag the bucket hour backwards).
+    fn push(&mut self, ts: Option<String>, cur_dt: Option<DateTime<Utc>>, rec: NormRecord) {
+        if let Some(d) = cur_dt {
+            if d > self.completion {
+                self.completion = d;
+            }
+        }
+        if rec.is_turn {
+            if rec.is_user {
+                self.user_turns += 1;
+            } else {
+                self.assistant_turns += 1;
+            }
         }
         self.records.push((ts, rec));
     }
+}
+
+/// Active seconds over a segment's record stream: the sum of inter-record gaps,
+/// each capped, counting only forward (positive) gaps. Matches the legacy
+/// per-segment accumulation — the cap absorbs idle pauses, and the gap between
+/// two same-hour exchanges still counts (capped) since they share a segment.
+fn active_seconds_of(records: &[(Option<String>, NormRecord)], gap_cap: i64) -> i64 {
+    let mut acc = 0.0_f64;
+    let mut prev: Option<DateTime<Utc>> = None;
+    for (ts, _) in records {
+        if let Some(dt) = ts.as_deref().and_then(parse_iso) {
+            if let Some(p) = prev {
+                let gap = delta_secs(dt, p);
+                if gap > 0.0 {
+                    acc += gap.min(gap_cap as f64);
+                }
+            }
+            prev = Some(dt);
+        }
+    }
+    acc as i64 // int() truncation toward zero
 }
 
 // ──────────────────────── Public API ───────────────────────────────────────
@@ -218,9 +272,11 @@ pub fn segment_records(
     let mut assistant_turns_overall: u32 = 0;
     let mut total_records: u64 = 0;
     let mut prev_dt: Option<DateTime<Utc>> = None; // ts of previous KEPT record (gap calc)
-    let mut seg_start_dt: Option<DateTime<Utc>> = None; // start ts of current segment (time-box)
-    let mut builders: Vec<SegBuilder> = Vec::new();
-    let mut cur: Option<usize> = None; // index into `builders`
+
+    // Phase 1 — group records into exchanges. A new exchange opens at a real
+    // user prompt, on the first kept record, or after a >1h silence.
+    let mut exchanges: Vec<Exchange> = Vec::new();
+    let mut cur: Option<Exchange> = None;
 
     for rec in records {
         total_records += 1;
@@ -234,7 +290,7 @@ pub fn segment_records(
         let cur_dt: Option<DateTime<Utc>> = ts.as_deref().and_then(parse_iso);
 
         // Already-sealed content is immutable history — skip it and reset the
-        // gap anchor so the first kept record opens a fresh segment.
+        // gap anchor so the first kept record opens a fresh exchange.
         if let (Some(c), Some(sa)) = (cur_dt, start_after_dt) {
             if c <= sa {
                 prev_dt = None;
@@ -249,84 +305,114 @@ pub fn segment_records(
             ended_overall = ts.clone();
         }
 
-        // Records with no usable timestamp can't anchor a segment; attach to the
-        // current one if it exists (so a body isn't lost), else drop.
+        // Records with no usable timestamp can't anchor an exchange; attach to
+        // the current one if it exists (so a body isn't lost), else drop.
         let cur_dt = match cur_dt {
             Some(d) => d,
             None => {
-                if let Some(ci) = cur {
-                    if rec.is_turn {
-                        builders[ci].add_turn(ts, rec);
-                    }
+                if let Some(ex) = cur.as_mut() {
+                    ex.push(ts, None, rec);
                 }
                 continue;
             }
         };
 
-        // Time-box: once a segment has run for max_segment_seconds, it should
-        // split — but only AT THE NEXT REAL USER PROMPT, so the prior row ends on
-        // a complete assistant turn and the new row opens on a user message
-        // (continuity). Splitting on raw time would cut mid-exchange. Tool-result
-        // `user` records don't count (is_user_prompt is false for them). If the
-        // agent runs autonomously past the box with no new prompt, the segment
-        // simply extends until the next prompt (or a >1h gap closes it).
-        let time_box_due = params.max_segment_seconds > 0
-            && seg_start_dt.is_some()
-            && delta_secs(cur_dt, seg_start_dt.unwrap()) >= params.max_segment_seconds as f64;
-        let start_new = cur.is_none()
-            || prev_dt.is_none()
-            || delta_secs(cur_dt, prev_dt.unwrap()) > params.segment_gap_seconds as f64
-            || (time_box_due && rec.is_user_prompt);
-
-        if start_new {
-            builders.push(SegBuilder::new(ts.clone().unwrap_or_default()));
-            cur = Some(builders.len() - 1);
-            seg_start_dt = Some(cur_dt);
-        } else {
-            let gap = delta_secs(cur_dt, prev_dt.unwrap());
-            if gap > 0.0 {
-                let ci = cur.unwrap();
-                builders[ci].active_seconds += gap.min(params.active_gap_cap_seconds as f64);
+        let gap_break = prev_dt
+            .map(|p| delta_secs(cur_dt, p) > params.segment_gap_seconds as f64)
+            .unwrap_or(false);
+        if cur.is_none() || rec.is_user_prompt || gap_break {
+            if let Some(ex) = cur.take() {
+                exchanges.push(ex);
             }
+            cur = Some(Exchange::new(cur_dt));
         }
 
-        let ci = cur.unwrap();
-        builders[ci].ended_at = ts.clone();
-        prev_dt = Some(cur_dt);
-
         if rec.is_turn {
-            let is_user = rec.is_user;
-            builders[ci].add_turn(ts, rec);
-            if is_user {
+            if rec.is_user {
                 user_turns_overall += 1;
             } else {
                 assistant_turns_overall += 1;
             }
         }
+        cur.as_mut().unwrap().push(ts, Some(cur_dt), rec);
+        prev_dt = Some(cur_dt);
+    }
+    if let Some(ex) = cur.take() {
+        exchanges.push(ex);
     }
 
-    let n = builders.len();
-    let mut segments: Vec<Segment> = Vec::with_capacity(n);
+    // Phase 2 — fold consecutive same-completion-hour exchanges into segments.
+    let mut segments: Vec<Segment> = Vec::new();
     let mut active_total: i64 = 0;
-    for (i, b) in builders.into_iter().enumerate() {
-        let active = b.active_seconds as i64; // int() truncation toward zero
-        active_total += active;
-        let seg_start = norm_iso(&b.segment_started_at);
-        let ended = norm_iso(b.ended_at.as_deref().unwrap_or(&b.segment_started_at));
+    let mut cur_hour: Option<DateTime<Utc>> = None;
+    let mut buf: Vec<(Option<String>, NormRecord)> = Vec::new();
+    let mut buf_user = 0_u32;
+    let mut buf_asst = 0_u32;
+    let mut buf_last: Option<DateTime<Utc>> = None;
+
+    let flush = |hour: DateTime<Utc>,
+                 records: Vec<(Option<String>, NormRecord)>,
+                 user_turns: u32,
+                 assistant_turns: u32,
+                 last: DateTime<Utc>,
+                 segments: &mut Vec<Segment>,
+                 active_total: &mut i64| {
+        let active = active_seconds_of(&records, params.active_gap_cap_seconds);
+        *active_total += active;
+        let seg_start = iso_utc(hour);
         segments.push(Segment {
             session_uuid: session_uuid.to_string(),
             agent: agent.to_string(),
             cwd: cwd.clone(),
             segment_started_at: seg_start.clone(),
             started_at: seg_start,
-            ended_at: ended,
-            user_turns: b.user_turns,
-            assistant_turns: b.assistant_turns,
+            ended_at: iso_utc(last),
+            user_turns,
+            assistant_turns,
             active_seconds: active,
-            transcript: render_records(&b.records),
-            is_last: i == n - 1,
+            transcript: render_records(&records),
+            is_last: false, // fixed up after the loop
             title: None,
         });
+    };
+
+    for ex in exchanges {
+        let hour = hour_floor(ex.completion);
+        if cur_hour != Some(hour) {
+            if let Some(h) = cur_hour.take() {
+                flush(
+                    h,
+                    std::mem::take(&mut buf),
+                    buf_user,
+                    buf_asst,
+                    buf_last.unwrap_or(h),
+                    &mut segments,
+                    &mut active_total,
+                );
+                buf_user = 0;
+                buf_asst = 0;
+                buf_last = None;
+            }
+            cur_hour = Some(hour);
+        }
+        buf.extend(ex.records);
+        buf_user += ex.user_turns;
+        buf_asst += ex.assistant_turns;
+        buf_last = Some(buf_last.map_or(ex.completion, |l| l.max(ex.completion)));
+    }
+    if let Some(h) = cur_hour {
+        flush(
+            h,
+            std::mem::take(&mut buf),
+            buf_user,
+            buf_asst,
+            buf_last.unwrap_or(h),
+            &mut segments,
+            &mut active_total,
+        );
+    }
+    if let Some(last) = segments.last_mut() {
+        last.is_last = true;
     }
 
     let meta = SessionMeta {
@@ -442,9 +528,15 @@ mod tests {
         d
     }
 
+    /// Hour floor of BASE+offset, as the canonical `…+00:00` string segments use.
+    fn hour_floor_iso(offset_s: i64) -> String {
+        iso_utc(hour_floor(base() + Duration::seconds(offset_s)))
+    }
+
     #[test]
     fn single_segment_no_split() {
         let d = tmp();
+        // base = 08:00:00; all three records inside hour 8 → one segment, floored.
         let p = write_claude_jsonl(
             &d,
             "u1",
@@ -459,7 +551,131 @@ mod tests {
         assert_eq!(segs[0].user_turns, 2);
         assert_eq!(segs[0].assistant_turns, 1);
         assert!(segs[0].is_last);
+        // started_at is the completion-hour FLOOR (08:00:00), not the first ts.
         assert_eq!(segs[0].segment_started_at, iso_utc(base()));
+        assert_eq!(segs[0].started_at, "2026-05-20T08:00:00.000000+00:00");
+        // ended_at stays the real last-completion instant.
+        assert_eq!(segs[0].ended_at, iso_utc(base() + Duration::seconds(120)));
+    }
+
+    #[test]
+    fn exchange_crossing_hour_belongs_to_completion_hour() {
+        let d = tmp();
+        // BASE 08:00. A single exchange: prompt at 08:55, reply at 09:03. The
+        // whole exchange (prompt + reply) belongs to hour 9 (its completion).
+        let p = write_claude_jsonl(
+            &d,
+            "x1",
+            &[
+                rec(55 * 60, "user", "do the thing"), // 08:55
+                rec(63 * 60, "assistant", "done"),    // 09:03 → completion hour 9
+            ],
+        );
+        let (_m, segs) = parse_session_segments(&p, &SegmentParams::default());
+        assert_eq!(
+            segs.len(),
+            1,
+            "one exchange → one segment, not split mid-exchange"
+        );
+        assert_eq!(segs[0].started_at, hour_floor_iso(63 * 60)); // 09:00:00 floor
+        assert_eq!(segs[0].started_at, "2026-05-20T09:00:00.000000+00:00");
+        assert_eq!(
+            segs[0].ended_at,
+            iso_utc(base() + Duration::seconds(63 * 60))
+        );
+        // The 08:55 prompt is still in the transcript even though the row is hour 9.
+        assert!(segs[0].transcript.contains("[user] do the thing"));
+    }
+
+    #[test]
+    fn two_exchanges_split_at_completion_hour() {
+        let d = tmp();
+        // Exchange A completes in hour 8, exchange B (next prompt) completes in
+        // hour 9 → two segments, each floored to its completion hour.
+        let p = write_claude_jsonl(
+            &d,
+            "x2",
+            &[
+                rec(10 * 60, "user", "a-prompt"),     // 08:10
+                rec(15 * 60, "assistant", "a-reply"), // 08:15 → hour 8
+                rec(58 * 60, "user", "b-prompt"),     // 08:58
+                rec(65 * 60, "assistant", "b-reply"), // 09:05 → hour 9
+            ],
+        );
+        let (_m, segs) = parse_session_segments(&p, &SegmentParams::default());
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].started_at, "2026-05-20T08:00:00.000000+00:00");
+        assert!(!segs[0].is_last);
+        assert!(segs[0].transcript.contains("a-reply"));
+        assert!(!segs[0].transcript.contains("b-prompt"));
+        assert_eq!(segs[1].started_at, "2026-05-20T09:00:00.000000+00:00");
+        assert!(segs[1].is_last);
+        assert!(segs[1].transcript.contains("[user] b-prompt"));
+        assert!(segs[1].transcript.contains("b-reply"));
+    }
+
+    #[test]
+    fn late_start_creates_no_sliver() {
+        let d = tmp();
+        // A session whose first (and only) exchange starts at 08:56 but completes
+        // at 09:10 → ONE hour-9 row, NO 4-minute hour-8 sliver.
+        let p = write_claude_jsonl(
+            &d,
+            "x3",
+            &[
+                rec(56 * 60, "user", "start late"),    // 08:56
+                rec(70 * 60, "assistant", "finished"), // 09:10 → hour 9
+            ],
+        );
+        let (_m, segs) = parse_session_segments(&p, &SegmentParams::default());
+        assert_eq!(segs.len(), 1, "no sliver segment in the start hour");
+        assert_eq!(segs[0].started_at, "2026-05-20T09:00:00.000000+00:00");
+    }
+
+    #[test]
+    fn long_autonomous_exchange_goes_to_completion_hour() {
+        let d = tmp();
+        // One prompt, then the agent runs autonomously every 10 min for ~2.5h
+        // with NO new user prompt and no >1h gap → ONE exchange → ONE segment in
+        // the FINAL completion hour (Option-A: whole exchange by completion).
+        let mut lines = vec![rec(0, "user", "go")]; // 08:00
+        for i in 1..16 {
+            lines.push(rec(i * 600, "assistant", &format!("step {i}"))); // up to 10:30
+        }
+        let p = write_claude_jsonl(&d, "x4", &lines);
+        let (_m, segs) = parse_session_segments(&p, &SegmentParams::default());
+        assert_eq!(
+            segs.len(),
+            1,
+            "no user prompt → single exchange → one segment"
+        );
+        // 15*600 = 9000s after 08:00 → 10:30 → hour 10.
+        assert_eq!(segs[0].started_at, "2026-05-20T10:00:00.000000+00:00");
+    }
+
+    #[test]
+    fn out_of_order_timestamps_do_not_drag_bucket_back() {
+        let d = tmp();
+        // A late assistant record stamped EARLIER than a prior one (clock skew).
+        // Completion = max ts, so the bucket hour can't go backwards and the
+        // segment stays valid (started_at floor <= ended_at).
+        let p = write_claude_jsonl(
+            &d,
+            "x5",
+            &[
+                rec(50 * 60, "user", "q"),           // 08:50
+                rec(65 * 60, "assistant", "late"),   // 09:05 (real completion)
+                rec(62 * 60, "assistant", "skewed"), // 09:02 (out of order, earlier)
+            ],
+        );
+        let (_m, segs) = parse_session_segments(&p, &SegmentParams::default());
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].started_at, "2026-05-20T09:00:00.000000+00:00");
+        assert_eq!(
+            segs[0].ended_at,
+            iso_utc(base() + Duration::seconds(65 * 60))
+        );
+        assert!(parse_iso(&segs[0].started_at).unwrap() <= parse_iso(&segs[0].ended_at).unwrap());
     }
 
     #[test]
@@ -508,50 +724,38 @@ mod tests {
     #[test]
     fn split_on_gap_over_threshold() {
         let d = tmp();
-        // 2h gap (7200s > 3600s) → two segments.
+        // 2h gap (7200s > 3600s): the silence ends the first exchange and the
+        // afternoon work lands two hours later → two segments, each floored.
         let p = write_claude_jsonl(
             &d,
             "u2",
             &[
-                rec(0, "user", "morning work"),
-                rec(60, "assistant", "done"),
-                rec(60 + 7200, "user", "afternoon work"),
-                rec(60 + 7200 + 30, "assistant", "done2"),
+                rec(0, "user", "morning work"),            // 08:00 → hour 8
+                rec(60, "assistant", "done"),              // 08:01
+                rec(60 + 7200, "user", "afternoon work"),  // 10:01 → hour 10
+                rec(60 + 7200 + 30, "assistant", "done2"), // 10:01:30
             ],
         );
         let (_m, segs) = parse_session_segments(&p, &SegmentParams::default());
         assert_eq!(segs.len(), 2);
         assert!(!segs[0].is_last);
         assert!(segs[1].is_last);
-        assert_eq!(segs[0].segment_started_at, iso_utc(base()));
+        assert_eq!(
+            segs[0].segment_started_at,
+            "2026-05-20T08:00:00.000000+00:00"
+        );
         assert_eq!(
             segs[1].segment_started_at,
-            iso_utc(base() + Duration::seconds(7260))
+            "2026-05-20T10:00:00.000000+00:00"
         );
     }
 
     #[test]
-    fn no_split_at_exact_threshold() {
+    fn continuous_session_splits_into_hourly_chunks() {
         let d = tmp();
-        // Exactly 3600s gap, time-box disabled → stays one segment (strict >).
-        let p = write_claude_jsonl(
-            &d,
-            "u3",
-            &[rec(0, "user", "a"), rec(3600, "assistant", "b")],
-        );
-        let params = SegmentParams {
-            max_segment_seconds: 0,
-            ..Default::default()
-        };
-        let (_m, segs) = parse_session_segments(&p, &params);
-        assert_eq!(segs.len(), 1);
-    }
-
-    #[test]
-    fn time_box_splits_continuous_session() {
-        let d = tmp();
-        // 16 records, 10 min apart = 150 min continuous, no >1h gap.
-        // Time-box at 3600s → boundaries at 0, 3600, 7200 → 3 segments.
+        // 16 records 10 min apart = 150 min continuous, no >1h gap. Exchanges
+        // (user→assistant pairs) complete across hours 8, 9, 10 → 3 segments,
+        // each floored to its hour, each spanning < 1h of wall clock.
         let mut lines = Vec::new();
         for i in 0..16 {
             let role = if i % 2 == 0 { "user" } else { "assistant" };
@@ -559,88 +763,44 @@ mod tests {
         }
         let p = write_claude_jsonl(&d, "u4", &lines);
         let (_m, segs) = parse_session_segments(&p, &SegmentParams::default());
-        assert_eq!(
-            segs.len(),
-            3,
-            "150min continuous should time-box into 3 hourly chunks"
-        );
-        // No segment spans >= 1h.
+        assert_eq!(segs.len(), 3, "150min continuous → 3 hourly chunks");
+        assert_eq!(segs[0].started_at, "2026-05-20T08:00:00.000000+00:00");
+        assert_eq!(segs[1].started_at, "2026-05-20T09:00:00.000000+00:00");
+        assert_eq!(segs[2].started_at, "2026-05-20T10:00:00.000000+00:00");
+        // Each row's real completion stays within its bucket hour.
         for s in &segs {
-            let span = delta_secs(
-                parse_iso(&s.ended_at).unwrap(),
-                parse_iso(&s.started_at).unwrap(),
-            );
-            assert!(span < 3600.0, "segment span {} must be < time-box", span);
+            let start = parse_iso(&s.started_at).unwrap();
+            let end = parse_iso(&s.ended_at).unwrap();
+            assert!(end >= start && delta_secs(end, start) < 3600.0);
         }
     }
 
     #[test]
-    fn time_box_splits_at_user_prompt_not_mid_exchange() {
+    fn tool_result_does_not_open_a_new_exchange() {
         let d = tmp();
-        // seg starts at 0; time-box boundary = 3600. After the boundary the agent
-        // is mid-work (assistant turns + a tool_result), and the next REAL user
-        // prompt is at 4000 → the split must land there, not at the raw boundary.
+        // A tool_result `user` record is NOT a real prompt, so it must not start a
+        // new exchange. All within hour 8 → exactly one segment.
         let p = write_claude_jsonl(
             &d,
-            "u",
+            "u_tool",
             &[
-                rec(0, "user", "do the task"),
-                rec(100, "assistant", "working"),
-                rec(3500, "assistant", "still working"), // before boundary
-                rec(3700, "assistant", "ran a tool"),    // after boundary, not a prompt
-                rec_tool_result(3750),                   // tool_result user → not a prompt
-                rec(3800, "assistant", "more work"),     // last assistant before the prompt
-                rec(4000, "user", "next request"),       // real prompt after boundary → SPLIT
-                rec(4100, "assistant", "on it"),
+                rec(0, "user", "do the task"), // real prompt → exchange 1
+                rec(100, "assistant", "calling tool"),
+                rec_tool_result(150), // tool_result user → NOT a new exchange
+                rec(200, "assistant", "more work"),
             ],
         );
         let (_m, segs) = parse_session_segments(&p, &SegmentParams::default());
-        assert_eq!(segs.len(), 2, "exactly one split, at the user prompt");
-
-        // Prior row ends on the complete assistant turn (3800), keeps the in-flight
-        // exchange, and does NOT contain the next prompt.
-        assert_eq!(segs[0].ended_at, iso_utc(base() + Duration::seconds(3800)));
-        assert!(segs[0].transcript.contains("more work"));
-        assert!(!segs[0].transcript.contains("next request"));
-
-        // New row opens AT the user prompt.
         assert_eq!(
-            segs[1].segment_started_at,
-            iso_utc(base() + Duration::seconds(4000))
+            segs.len(),
+            1,
+            "tool_result must not split into a new segment"
         );
-        assert!(segs[1].transcript.contains("[user] next request"));
-        assert!(!segs[1].transcript.contains("more work"));
-    }
-
-    #[test]
-    fn time_box_extends_when_no_user_prompt_after_boundary() {
-        let d = tmp();
-        // Agent runs autonomously ~3h past the box with no new prompt and no >1h
-        // gap → stays ONE segment (continuity beats a mid-stream cut).
-        let mut lines = vec![rec(0, "user", "go")];
-        for i in 1..20 {
-            lines.push(rec(i * 600, "assistant", &format!("step {i}")));
-        }
-        let p = write_claude_jsonl(&d, "u", &lines);
-        let (_m, segs) = parse_session_segments(&p, &SegmentParams::default());
-        assert_eq!(segs.len(), 1, "no user prompt after the box → no split");
-    }
-
-    #[test]
-    fn time_box_disabled_keeps_one_segment() {
-        let d = tmp();
-        let mut lines = Vec::new();
-        for i in 0..16 {
-            let role = if i % 2 == 0 { "user" } else { "assistant" };
-            lines.push(rec(i * 600, role, &format!("turn {}", i)));
-        }
-        let p = write_claude_jsonl(&d, "u5", &lines);
-        let params = SegmentParams {
-            max_segment_seconds: 0,
-            ..Default::default()
-        };
-        let (_m, segs) = parse_session_segments(&p, &params);
-        assert_eq!(segs.len(), 1);
+        assert_eq!(
+            segs[0].user_turns, 2,
+            "the real prompt + the tool_result user turn"
+        );
+        assert!(segs[0].transcript.contains("more work"));
     }
 
     #[test]
@@ -703,9 +863,11 @@ mod tests {
         assert_eq!(segs.len(), 1);
         assert!(segs[0].transcript.contains("fresh turn"));
         assert!(!segs[0].transcript.contains("sealed"));
+        // The fresh turn (08:02) completes in hour 8 → floored to 08:00:00.
         assert_eq!(
             segs[0].segment_started_at,
-            iso_utc(base() + Duration::seconds(120))
+            "2026-05-20T08:00:00.000000+00:00"
         );
+        assert_eq!(segs[0].ended_at, iso_utc(base() + Duration::seconds(120)));
     }
 }

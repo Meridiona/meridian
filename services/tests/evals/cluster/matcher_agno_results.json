@@ -1,0 +1,196 @@
+[
+  {
+    "hour": "2026-06-16T03",
+    "label": "KAN-239",
+    "matched": [
+      "KAN-239",
+      "KAN-240"
+    ],
+    "conf": {
+      "KAN-239": 1.0,
+      "KAN-240": 0.95
+    },
+    "propose_new": false,
+    "ok": true,
+    "t": 5.1
+  },
+  {
+    "hour": "2026-06-16T09",
+    "label": "KAN-240",
+    "matched": [
+      "KAN-240"
+    ],
+    "conf": {
+      "KAN-240": 0.95
+    },
+    "propose_new": false,
+    "ok": true,
+    "t": 4.6
+  },
+  {
+    "hour": "2026-06-17T07",
+    "label": "KAN-241",
+    "matched": [
+      "KAN-241"
+    ],
+    "conf": {
+      "KAN-241": 0.94
+    },
+    "propose_new": false,
+    "ok": true,
+    "t": 4.9
+  },
+  {
+    "hour": "2026-06-18T07",
+    "label": "KAN-231",
+    "matched": [
+      "KAN-231"
+    ],
+    "conf": {
+      "KAN-231": 1.0
+    },
+    "propose_new": false,
+    "ok": true,
+    "t": 4.5
+  },
+  {
+    "hour": "2026-06-18T11",
+    "label": "untracked",
+    "matched": [],
+    "conf": {},
+    "propose_new": true,
+    "ok": true,
+    "t": 4.1
+  },
+  {
+    "hour": "2026-06-19T05",
+    "label": "untracked",
+    "matched": [],
+    "conf": {},
+    "propose_new": true,
+    "ok": true,
+    "t": 4.4
+  },
+  {
+    "hour": "2026-06-23T09",
+    "label": "untracked",
+    "matched": [],
+    "conf": {},
+    "propose_new": true,
+    "ok": true,
+    "t": 4.3
+  },
+  {
+    "hour": "2026-06-23T11",
+    "label": "untracked",
+    "matched": [],
+    "conf": {},
+    "propose_new": true,
+    "ok": true,
+    "t": 4.3
+  },
+  {
+    "hour": "2026-06-19T18",
+    "label": "KAN-109",
+    "matched": [],
+    "conf": {},
+    "propose_new": true,
+    "ok": false,
+    "t": 4.6
+  },
+  {
+    "hour": "2026-06-21T08",
+    "label": "KAN-242",
+    "matched": [],
+    "conf": {},
+    "propose_new": true,
+    "ok": false,
+    "t": 4.1
+  },
+  {
+    "hour": "2026-06-21T15",
+    "label": "KAN-243",
+    "matched": [],
+    "conf": {},
+    "propose_new": true,
+    "ok": false,
+    "t": 4.4
+  },
+  {
+    "hour": "2026-06-22T04",
+    "label": "KAN-243",
+    "matched": [],
+    "conf": {},
+    "propose_new": true,
+    "ok": false,
+    "t": 5.4
+  },
+  {
+    "hour": "2026-06-22T09",
+    "label": "KAN-243",
+    "matched": [],
+    "conf": {},
+    "propose_new": true,
+    "ok": false,
+    "t": 4.5
+  },
+  {
+    "hour": "2026-06-22T11",
+    "label": "KAN-242",
+    "matched": [
+      "KAN-242",
+      "KAN-200"
+    ],
+    "conf": {
+      "KAN-242": 0.85,
+      "KAN-200": 0.75
+    },
+    "propose_new": false,
+    "ok": true,
+    "t": 5.1
+  },
+  {
+    "hour": "2026-06-23T05",
+    "label": "untracked",
+    "matched": [
+      "KAN-239"
+    ],
+    "conf": {
+      "KAN-239": 0.85
+    },
+    "propose_new": false,
+    "ok": false,
+    "t": 5.1
+  },
+  {
+    "hour": "2026-06-23T14",
+    "label": "untracked",
+    "matched": [
+      "KAN-243"
+    ],
+    "conf": {
+      "KAN-243": 0.85
+    },
+    "propose_new": false,
+    "ok": false,
+    "t": 4.4
+  },
+  {
+    "hour": "2026-06-23T17",
+    "label": "untracked",
+    "matched": [],
+    "conf": {},
+    "propose_new": true,
+    "ok": true,
+    "t": 4.7
+  },
+  {
+    "hour": "2026-06-24T04",
+    "label": "untracked",
+    "matched": [],
+    "conf": {},
+    "propose_new": true,
+    "ok": true,
+    "t": 4.9
+  }
+]

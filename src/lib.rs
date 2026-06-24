@@ -14,3 +14,4 @@ pub mod notifications;
 pub mod observability;
 pub mod pm_worklog;
 pub mod telemetry_spool;
+pub mod worklog_pipeline;

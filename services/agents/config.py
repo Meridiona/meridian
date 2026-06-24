@@ -97,3 +97,13 @@ def today_start_utc_iso() -> str:
     local_now = datetime.now().astimezone()
     midnight_local = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
     return midnight_local.astimezone(timezone.utc).isoformat()
+
+
+# ── Session distiller (session_distiller.py) ──────────────────────────────────
+# Coding-agent sessions are excluded — their transcripts are indexed separately.
+DISTILLER_EXCLUDE_APPS: tuple[str, ...] = (
+    "Claude Code", "Codex", "GitHub Copilot", "Cursor Agent",
+)
+DISTILLER_MIN_SESSION_DUR: int  = int(os.getenv("DISTILLER_MIN_SESSION_DUR", "15"))
+DISTILLER_SEM_DEDUP_THR:   float = float(os.getenv("DISTILLER_SEM_DEDUP_THR", "0.86"))
+DISTILLER_DF_FRAC:         float = float(os.getenv("DISTILLER_DF_FRAC", "0.25"))

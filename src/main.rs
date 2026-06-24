@@ -243,6 +243,30 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `meridian worklog-pipeline-run [--day YYYY-MM-DD]` — one-shot run of the new
+    // hour-level worklog pipeline driver (the daemon's default loop). POSTs
+    // /worklog_hour for each ready hour; drafts land in pm_worklogs for approval.
+    if std::env::args().nth(1).as_deref() == Some("worklog-pipeline-run") {
+        let args: Vec<String> = std::env::args().collect();
+        let day = args
+            .iter()
+            .position(|a| a == "--day")
+            .and_then(|i| args.get(i + 1).cloned());
+        let cfg = Config::from_env();
+        let obs_guard = observability::init("meridian-rust").ok();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                meridian::worklog_pipeline::cli_run(&pool, &cfg.meridian_db, day.as_deref()).await;
+                pool.close().await;
+            }
+            Err(e) => eprintln!("worklog-pipeline-run: open db: {e}"),
+        }
+        if let Some(g) = obs_guard {
+            g.shutdown().await;
+        }
+        return Ok(());
+    }
+
     // `meridian worklog-post-approved` — post every worklog the user approved in
     // the dashboard to Jira now (the same sweep the daemon runs every ~60s). This
     // is the only path that writes to real Jira.
@@ -575,6 +599,8 @@ async fn main() -> Result<()> {
             let _ = meridian::notices::clear(&meridian, "etl.failed").await;
         }
         etl_notify.notify_one();
+        // Wake the worklog driver (legacy classifier, when on, also fires this).
+        worklog_notify.notify_one();
         if let Err(e) = run_pm_sync(&meridian, &cfg).await {
             tracing::error!("intelligence run failed: {}", e);
         }
@@ -617,15 +643,29 @@ async fn main() -> Result<()> {
         });
     }
 
-    // 7d. PM-worklog driver (Stage 4): the hour-driven loop that DRAFTS one Jira
-    //     worklog per task per settled hour. Never posts — drafted worklogs wait
-    //     for a human to approve them in the dashboard. Independent of the ETL tick.
-    {
+    // P4 sunset switch: the new hour-level worklog pipeline (agno Workflow via
+    //     /worklog_hour) REPLACES the per-session classifier + per-task pm_worklog
+    //     synth. The legacy path is kept but dormant — set MERIDIAN_LEGACY_PIPELINE=1
+    //     to run the old classifier + per-task drafter instead.
+    let legacy_pipeline = std::env::var("MERIDIAN_LEGACY_PIPELINE").is_ok();
+
+    // 7d. Worklog driver (Stage 4): hour-driven loop that DRAFTS worklogs for each
+    //     settled hour. Never posts — drafts wait for human approval in the
+    //     dashboard. New default = worklog_pipeline (one /worklog_hour per hour).
+    if legacy_pipeline {
         let pool_pm = meridian.clone();
         let rx_pm = shutdown_rx.clone();
         let notify_pm = worklog_notify.clone();
         tokio::spawn(async move {
             meridian::pm_worklog::run_loop(pool_pm, rx_pm, notify_pm).await;
+        });
+    } else {
+        let pool_wl = meridian.clone();
+        let rx_wl = shutdown_rx.clone();
+        let notify_wl = worklog_notify.clone();
+        let db_path_wl = initial_cfg.meridian_db.clone();
+        tokio::spawn(async move {
+            meridian::worklog_pipeline::run_loop(pool_wl, db_path_wl, rx_wl, notify_wl).await;
         });
     }
 
@@ -658,7 +698,10 @@ async fn main() -> Result<()> {
         });
     }
 
-    {
+    // 8a. Per-session task classifier — SUNSET. Kept but dormant unless
+    //     MERIDIAN_LEGACY_PIPELINE=1; the new worklog_pipeline does its own
+    //     hour-level matching, so per-session classification is no longer needed.
+    if legacy_pipeline {
         let mut shutdown_rx = shutdown_rx;
         let meridian_linker = meridian.clone();
         let notify_linker = etl_notify.clone();
@@ -857,6 +900,8 @@ async fn main() -> Result<()> {
                 }
                 // Wake the background task linker to drain newly-created sessions.
                 etl_notify.notify_one();
+                // Wake the worklog driver (legacy classifier, when on, also fires this).
+                worklog_notify.notify_one();
 
                 // Morning plan nudge — idempotent per day, gated to working hours.
                 if let Err(e) = meridian::daily_plan::maybe_nudge(&meridian).await {

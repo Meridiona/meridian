@@ -34,7 +34,7 @@ if str(_SERVICES_DIR) not in sys.path:
     sys.path.insert(0, str(_SERVICES_DIR))
 
 from agents._prompts import build_user_message
-from agents.run_task_linker_mlx import _fetch_recent_ticket_activity
+from agents.mlx_classifier import _fetch_recent_ticket_activity
 
 MERIDIAN_DB = Path(os.environ.get("MERIDIAN_DB", Path.home() / ".meridian/meridian.db"))
 SESSION_IDS: list[int] = [

@@ -1,4 +1,9 @@
-"""pm_worklog_update — synth-helper layer for the Rust pm-worklog stage.
+"""[LEGACY] pm_worklog_update — synth-helper layer for the Rust pm-worklog stage.
+
+Superseded by services/agents/worklog_pipeline/ (the new agno-native hour-level
+pipeline). This package is retained only because the MLX server's
+/synthesise_worklog endpoint still calls workflow._render_workflow_input and
+workflow._coerce_jira. All new worklog logic lives in worklog_pipeline/.
 
 The full PM-worklog pipeline (collect → synth → ground → post) now lives in
 the Rust daemon (`src/pm_worklog/`). This package is reduced to the synth

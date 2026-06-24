@@ -181,28 +181,40 @@ pub async fn upsert_segment(
     Ok(id)
 }
 
-/// Seal every LIVE coding-agent row whose last activity is > `idle_seconds`
-/// old. The robust backstop that does NOT require re-parsing the JSONL: seals
-/// rows left open by crashes, force-quits, macOS sleep, or a deleted file.
-/// Idempotent (already-sealed rows excluded). Returns rows sealed.
+/// Seal every LIVE coding-agent row that is settled, by either rule (no JSONL
+/// re-parse needed; idempotent — sealed rows are excluded; returns rows sealed):
+///
+/// 1. idle — last activity is > `idle_seconds` old: the crash / force-quit /
+///    sleep / deleted-file backstop.
+/// 2. hour-elapsed — its bucket hour has fully passed. Coding rows are floored
+///    to their completion-hour (`started_at` = `…:00:00`), so once
+///    `started_at + 1h + hour_grace_seconds` is in the past, no future exchange
+///    can join the row; it is final and seals promptly without waiting out the
+///    idle window. This is what lets an hour's worklog run shortly after the
+///    hour ends. The current hour's live row never matches (its floor is < 1h
+///    old), so this can't seal mid-hour work.
 pub async fn seal_stale_open_rows(
     pool: &SqlitePool,
     now_iso: &str,
     idle_seconds: i64,
+    hour_grace_seconds: i64,
 ) -> Result<u64> {
-    let cutoff = shift_iso(now_iso, -idle_seconds);
+    const HOUR_SECONDS: i64 = 3600;
+    let idle_cutoff = shift_iso(now_iso, -idle_seconds);
+    let hour_cutoff = shift_iso(now_iso, -(HOUR_SECONDS + hour_grace_seconds));
     let res = sqlx::query(
         r#"
         UPDATE app_sessions
         SET    sealed_at = ?, task_method = ?
         WHERE  coding_agent_session_uuid IS NOT NULL
           AND  sealed_at IS NULL
-          AND  ended_at < ?
+          AND  (ended_at < ? OR started_at < ?)
         "#,
     )
     .bind(now_iso)
     .bind(TASK_METHOD_PENDING)
-    .bind(&cutoff)
+    .bind(&idle_cutoff)
+    .bind(&hour_cutoff)
     .execute(pool)
     .await
     .context("seal stale open coding-agent rows")?;
@@ -587,7 +599,7 @@ mod tests {
             .unwrap();
 
         let now = "2026-05-20T08:00:00.000000+00:00";
-        let n = seal_stale_open_rows(&pool, now, 3600).await.unwrap();
+        let n = seal_stale_open_rows(&pool, now, 3600, 90).await.unwrap();
         assert_eq!(n, 1);
         assert!(
             row_fields(&pool, old_id).await.0.is_some(),
@@ -596,6 +608,48 @@ mod tests {
         assert!(
             row_fields(&pool, recent_id).await.0.is_none(),
             "recent row stays live"
+        );
+    }
+
+    #[tokio::test]
+    async fn seal_stale_seals_elapsed_hour_even_when_not_idle() {
+        let pool = fresh_db().await;
+        // A PAST hour's row, floored to its hour, with RECENT activity (33 min
+        // ago → not idle). The hour-elapsed rule must still seal it promptly.
+        let past_hour = seg(
+            "past",
+            "2026-05-20T06:00:00.000000+00:00", // hour floor
+            "2026-05-20T06:58:00.000000+00:00", // last completion 33 min before now
+            2,
+        );
+        let past_id = upsert_segment(&pool, &past_hour, false, None)
+            .await
+            .unwrap()
+            .unwrap();
+        // The CURRENT hour's live row must NOT seal (its floor is < 1h old).
+        let cur_hour = seg(
+            "cur",
+            "2026-05-20T07:00:00.000000+00:00",
+            "2026-05-20T07:30:00.000000+00:00",
+            2,
+        );
+        let cur_id = upsert_segment(&pool, &cur_hour, false, None)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let now = "2026-05-20T07:31:00.000000+00:00";
+        // idle_seconds huge (1 day) so the idle rule can't fire — only the
+        // hour-elapsed rule can.
+        let n = seal_stale_open_rows(&pool, now, 86_400, 90).await.unwrap();
+        assert_eq!(n, 1, "only the elapsed-hour row seals");
+        assert!(
+            row_fields(&pool, past_id).await.0.is_some(),
+            "past-hour row sealed by the hour-elapsed rule"
+        );
+        assert!(
+            row_fields(&pool, cur_id).await.0.is_none(),
+            "current-hour live row stays live"
         );
     }
 

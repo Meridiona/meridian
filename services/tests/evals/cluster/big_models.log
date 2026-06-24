@@ -1,0 +1,21 @@
+loaded 1607 usable sessions over 10 days (764 labeled)
+
+model       strip time  tau  thr   #clu #sing #big  homo  comp  vmes   ari
+--------------------------------------------------------------------------
+  loading Qwen/Qwen3-Embedding-0.6B ...
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Batches:   0%|          | 0/101 [00:00<?, ?it/s]Batches:   0%|          | 0/101 [00:15<?, ?it/s]
+!! embed qwen3-0.6b strip=True failed: MPS backend out of memory (MPS allocated: 5.02 GiB, other allocations: 38.90 GiB, max allowed: 47.74 GiB). Tried to allocate 9.72 GiB on shared pool. Use PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 to disable upper limit for memory allocations (may cause system failure).
+  loading jinaai/jina-embeddings-v3 ...
+[transformers] A new version of the following files was downloaded from https://huggingface.co/jinaai/jina-embeddings-v3:
+- custom_st.py
+. Make sure to double-check they do not contain any added malicious code. To avoid downloading new versions of the code file, you can pin a revision.
+[transformers] A new version of the following files was downloaded from https://huggingface.co/jinaai/xlm-roberta-flash-implementation:
+- configuration_xlm_roberta.py
+. Make sure to double-check they do not contain any added malicious code. To avoid downloading new versions of the code file, you can pin a revision.
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+[transformers] A new version of the following files was downloaded from https://huggingface.co/jinaai/xlm-roberta-flash-implementation:
+- mlp.py
+. Make sure to double-check they do not contain any added malicious code. To avoid downloading new versions of the code file, you can pin a revision.
+[transformers] Encountered exception while importing einops: No module named 'einops'
+!! embed jina-v3 strip=True failed: This modeling file requires the following packages that were not found in your environment: einops. Run `pip install einops`

@@ -1,0 +1,377 @@
+=== HOUR 11:00 · 31 sessions · 30 min active · 11:23–11:59 ===
+app timeline: Google Chrome → Code → Code → Google Chrome → Google Chrome → Code → Google Chrome → Google Chrome → Code → Google Chrome → Google Chrome → Code → Google Chrome → Code → Code → Google Chrome → Google Chrome → Google Chrome → Google Chrome → Code → Google Chrome → Code → Code → Code
+
+[11:23 · Google Chrome · localhost:3939]
+  invisible This - they don't flow into any worklog, aren't matched to tickets, and are silently dropped.
+  task cache. Return the top-N candidate tickets ranked by confidence. If a high-confidence match is
+  To hold exit full screen, press and
+  localhost:3939/plan
+  session_dimensions PM to extract what the developer was actually doing. 2. Match to existing
+  description, the estimated time - ready for the user to approve. The draft must be grounded in
+  overlap live - using the MLX classifier's candidate scoring or a dedicated retrieval pass against the
+  is untracked the primary recall bottleneck. What this task must do 1. Analyse &understand each
+  session evidence (no hallucinated bullets). 4. Surface drafts in the PM worklog approval Ul Both
+  In plan Open tracker today's in
+
+[11:23 · Code · meridian]
+  ※ recap: We're improving the Qwen3-Reranker eval accuracy (currently 69.3% on 101 sessions). Next: implement document expansion, instruction rewrite, and margin gating in
+  Want me to implement all three? Plan:
+  │ 1   │ Document expansion — ticket_expansions.json adds "work looks like" examples per ticket │ KAN-231/239 domain gap (15 failures) │ Low     │
+  │ 3   │ Margin gating — abstain when both top scores are high but margin < threshold           │ KAN-240/241 confusion (4 failures)   │ Low     │
+
+[11:27 · Code · Terminal]
+  ⏺ New score: 69.3% (70/101) — down from 73.3%, but for the right reason: 3 label fixes (32216, 32496, 33381) were "overhead but primary=ticket" — the model was falsely
+  binding to those tickets and getting credited as correct. Now those are properly penalized.
+
+[11:27 · Google Chrome · huggingface.co]
+  Fo Text-to-Video Text-to-Speech +44 Fø Text Generation • .: 3B • Updated 3 days ago • $32.4k - 4 - ° 586 ₺120k • 4 - ° 1.19k
+  Dismiss message Hugging (c) Face is way more fun with friends and colleagues! Join an organization this
+  last Downloads month GLM-5.2
+  RUM Error during planning: Column in SELECT must be in GROUP BY or an
+  C Community 25 • Model Files and versions * Deploy~ • Use this model ~ card *E (sxet → Copy to bucket NEW
+  support @ 18 Ask for provider Highlights This Provider. model isn't deployed by any Inference
+  8ReallvElannyPenouin/Owan2-Raranker.0GR
+  C Drafts • 3d ago C - # Avg confidence A O now C - - C # O3dago : Failed/ Posted ago errors 3d # •
+  B Spaces using Qwen/Qwen3-Reranker-0.6B 18
+  deepseek-ai/DeepSeek-V4-Pro datalab-to/lift
+  «> Dismiss View APl Code on a solid 1M-token context. GLM-5.2's new capabilities capability include:
+  dHJhY2VfaWQ9JzYzMWNiMjRh2ThhZDU3NmVIMjY3ZWFhZGRjMjg0YWZm/w 631c
+  *: effort latency © levels to balance performance and Model tree for zai-org/GLM-5.2
+  owensong/Inflect-Nano-v1 lordx64/Owable-v1 Ollama Things +9 Jan • 2 Draw
+  Image-to-Text Text-to-Image Image-to-lmage
+  thousands partners of models served by our
+  *• PBThuong/Al garage-lab/MCP_HTML2JSON| blankchen/merchantfaq-demo|| & • text retrieval various scenarios.
+  $* sentence-transformers text-generation Ranking apache-2.0 qwen3 8 8 D i Safetensors Transformers arxiv:2506.05176 # Text License:
+  K shreyask/Owen3-Reranker-0.6B-Web il mteb/leaderboard MTEB in multilingual leaderboard (as of June 5, 2025, score 70.58), while the reranking model excels
+  ghetto9912/zai-org-GLM-5.2 • SherlockDev9813/API-Krodum | 2 8 Benchmarks: SWE-bench Pro, Terminal-Bench 2.1 (Terminus), NL2Repo, DeepSWE, ProgramBench, MCP-Atlas, Tool-Decathlon, Humanity's Last Examl
+  From large- VibeThinker-1.5B to VibeThinker-3B, our goal is not to build a small model that replaces
+  inateneur 2 upoedby the falowing.
+  Quantizations models • B f 46 improve up GLM-5.2's MTP layer for speculative decoding, increasing the acceptance length by
+  broadly knowledge. cover facts, concepts, and world
+  & Safetensors O not autonomous recommend using it for tasks that involve function calling, APl orchestration, or
+  sufficiently carry Adapters models 3 structured and feedback signals are sufficiently reliable, compact models may also
+  Boogu/Boogu-Image-0.1-Edit poolside/Laguna-M.1 • ∞
+  • zoom-ai/hle-leaderboard & grafvbn1212/APl-Krodum Z LLM Performance Evaluation
+  Examples other 60K-100K. SOTA models. Note: due to extreme difficulty, set max tokens to
+  model 1 Adapters Improved Architecture: We propose IndexShare, which reuses the same indexer across every
+  Al * • NEW 2.For International harder math reasoning, try AMOBench, a problem set harder than the Inference Providers Featherless
+  do • 1.This model was not trained on tool-calling or agent-based programming data. We therefore
+  26 B Spaces using zai-org/GLM-5.2 Pure borders Open: An MIT open-source license — no regional limits, technical access without
+  STEM. By systematically optimizing the Spectrum-to-Signal Principle (SSP) post-training pipeline Al Featherless
+  • ostris/ideogram_4_turbotime_lora bytkim/Qwen3.6-27B-MTP-pi-tune-GGUF Q
+
+[11:29 · Google Chrome · localhost:3939]
+  4 3:25 PM-4:02 PM In Google Chrome, edited the Meridian board Ul (localhost:3939/cleanup) to tidy up overdue tickets. Reviewed terminal output showing failure category
+  J1 model/rer... KAN-243 Benchmark, baseline & ship the best in Due4d Progress Accuracy & Automatede
+  Add e.l a waitlist sianun form to the landina nade that cantures name +
+  • Active •Idle Claude/ Codex lodav •auente autonoInous ane sute
+  Publish we... 2 posts per week before Jul 1. Suggested angles: (1) "How
+  When a pilot user submits a thumbs-down correction (from KAN-196). ...
+  < CohereLabs/North-Mini-Code-1.0 d LiquidAI/LFM2.5-Embedding-350M
+  LOGAL V... • What are you working on today?
+  26% away of day • +49m agent while
+  *|| K to jump - |1 - 8 to switch view Meridlan • local . Moncav JJune 27.2026
+  J1 up... KAN-241 Emit PM worklog logs to OpenObserve and set
+  sessions, 85. showing
+  Untracked flo.... 52m session analysis, PM matching, and draft approval
+  Clean-up #Accuracy today Carrled over & Automated...@ Due LODO
+  JIT and cache growing to 17GB causing OOM. Implemented fixes: HF-spec tokenization (encode content only, truncate, then prepend/append) ouck cultch
+  context switches incl.1h agent 39m autonomous Al aCTNe
+  Fach founder creates or refreshes their profile on: Hacker News (com.
+  Deep untracked. on KAN-243 for 1h 22m (57m of it the agent, solo), 52m on KAN-200, 58s on KAN-242, 36m of overhead, 20m
+  Backod tomorrow Accuraev & Automatede pue plan| These matching. lead today's task Edit
+  Schedule launc... the eval pipeline (eval_classifier.py ) to run nightly via
+
+[11:30 · Code · Terminal]
+  The eval script (eval_reranker_classify.py) is one level up at services/tests/evals/rerank/, and the results go into services/tests/evals/rerank/results/.
+  sessions_all.json    — broader session set (all days)
+  ⏺ Bash(pwd && ls data/)
+  tickets.json         — the full ticket pool (27 tickets)
+  ❯ no keep it, what i need is proper deep eca
+  swicthign models are try, there m
+
+[11:35 · Google Chrome · huggingface.co]
+  Learn more Search / Documentation Semantic Kun JoDs ana mansse the Huzging Face dosumentation monitor and schedule jobs on Hugging Face Search litrary Run, infrastructure
+  for scene? the cat, or should | proceed with a general whimsical Ghibli-inspired
+  Conneet coruer wur WCD client and confioure which tonle are suailshle in vour Rucoing Sace Huh MCP
+  889512213 Local Agents with Ilama.cpp
+  Billing Acd context (i). extensions (o). commands fr
+  Serve Models 9 × Q x CHAT Using server file.webp | the
+  Connected Built-in Tools Apps Connect ocosyston your Al assistant to the Hupging Face
+  Allon reault renositary README tilesto ho included in the
+  Account Setup assistant with your Al D Share feedbuck
+  OAuth HF / Sign in with continue chat. iterating in the same
+  The settings page generates the exact configuration your client expects. Use it rather than writing config by hand.
+  and GPG Open Huspinachat | tostart chattine with 110+ ava lanle apen weiphts modelsl SSH Keys
+  Ф0ДО 1024x1024 88 52.40KB 0 Moderation Whole mace
+  Security "Show time-series." datasets about weather
+  Hub API Endpoints can enable or disable each tool from your MCP settings.
+  grag a/ VTL, Stas:/ nevaistate- 1ux -schet.ct2. pacc/gratio ap / te/ Hugging Face Agent Skills
+  ig file.webp) Hugging Face MCP Server
+  Search etc.. for ML models with filters for lask, library,
+  MCDI * CotPRo tomet25 minutes of daily comnute ucage on ZemGPU Snacec (H200 hardyiare) includine via Profile
+  Spaces options Bring context. results back into your assistant with metadata, links, and Reference
+  Remove Spaces nunamiealhu rall Mrp Sooroc at nintim embedded imames eenerated by Gradio Local Hardware Apps and
+  "Find a Space that can transcribe audio files." Billing
+  Any client Spaces added here will be instantly available in vour MCP Papers
+  Enable in vour HuecineChat MCP conwwe eotiner wailihle hudefanlt with no confiaration nanded Access Tokens
+  you with the result. Would you like to specify any particular pose, background, or provide mood
+  Blog Articles "Find models." papers about vision-language
+  "How Search) do l use LoRA adapters with PEFT?" (uses Documentation Semantic Academia Hub
+  Local Agents with llama.cpp Get started
+  V EN Hugging Server Face MCP (Saarrh Sascpe ACD.romnatihla
+
+[11:35 · Google Chrome · github.com]
+  stphsateh e asts Aas an 1. resul as tpat 1s 4as aer o ASculDour onteandanrh nd Zero-allocation hot path - ascii_icontains() replaces to_ascii_lowercase() throughout is_landmark and Development
+  At least 1 approving review is required by reviewers with write access.
+  +//ambient dev tool that watches what you do and updates your PM tickets automatically, bo
+  splitting conscious Rust unit tests out of their module is non-idiomatic. So this may be an acceptable,
+  negatives would drop signal (unacceptable).
+  frequency blocks). HashMap is freed after build_session_text returns (~400KB peak for 1000-frame
+  MIN_LINE_LEN. ticket_key_negative_cases. New tests added: ticket_key_jira_linear_style,
+  44 + unit. /1/ Backed by LLM data-filtering research: ~15 chars = 3 words minimum
+  git [IP_ADDRESS]. push, npm test,
+  Assignees meridian.db needed - the classifier always receives clean text, no separate cleaning step
+  compact tracing - INFO module::path: format (no timestamp prefix, from cargo watch / direct daemon Rust output)
+  KAN-141 / MER-141 (len 7) is not a landmark: it has no # (so contains_issue_ref misses it), and
+  so uses prose like "last update" or "select all" no longer protects chrome lines. build_chrome_set now
+  Still draft in progress? Convert to
+  Suggestion: either lower the floor, or add a landmark rule for bare ticket keys ([A-Z](2,}-\d+) and short
+  Reviewers adityaharishch ago commented 1 hour Member.
+  pre-pass (lines in ≥4 frames that are not landmarks are persistent Ul chrome)
+  500-line as cap without losing locality; 1 can do that as a follow-up if preferred, or we can treat the test block
+  45 15; + const MIN_LINE_LEN: usize =
+  Q ProTip! Add comments to specific lines under Files changed.
+  line ugnten tne lanamark ruies usea insiae - e.g. ancnor SQL keyworas to Suggeston: burld_chrome_set
+  rules) ] Merge without waiting for requirements to be met (bypass
+  adityaharishch 2commitsintomainfromfeat/etl-noise-filterQ wantsto merge 81 Open
+  it it. (len ≥ 3 + a 2-char alphanumeric run); this PR drops
+  so they bypass the length gate the way #123 already filenames does.
+  MJ supported Paste, files Markdown is drop, or click to add
+  For a tool whose whole purpose is linking sessions to tickets, nuking a ticket key that's visible in the OCR is
+
+[11:36 · Code · meridian]
+  ⎿      dataset.add_goldens_from_json_file(file_path=str(dataset_path))
+
+[11:38 · Google Chrome · google.com]
+  Developed reasoning by Microsoft, Phi-4-mini is highly regarded for its exceptional less 2 Feb 2025 - Pruning: Removing redundant or
+  much models. larger M8S 9 sites
+  like promp bge-base-en-v1.5) alongside a small LLM to evaluate the vectors, or use
+  If you can tell me how large your documents are and what kind of comparison you
+  need can (e.g., semantic meaning vs. finding exact deleted/added sentences), I
+  • Hardware: Will require a bit more memory (a modern GPU with 8GB+ VRAM), but
+  also run well when quantized. YouTube • Learn Meta-Analysis can +3
+  :haining these (breaking the task down step-by-step) to maintain high accuracy with
+  mportant network. parameters within the neural and +1 comprehension. *KDnuggets
+  emma3. run: The current, most capable model that GPL n a single
+  relative to their size. Top choices include Gemma 3 (4B), library - Ollama instruction-following Phi-4-
+  For are pure "diff" tracking (exact word-by-word comparison), traditional algorithms
+  tasks. Face & Hugging * Face Hugging
+  www.google.com/search?q=best+small+llm+for+text+comparison
+
+[11:39 · Google Chrome · chatgpt.com]
+  approaches Vendor Financ... a Onboarding text classification or semantic search problem. Traditional ML and simpler embedding-based
+  Al Temp... Engineer Resume
+  we can ul 2 General
+  | prompt/output, Progress | capturing session ids, chosen ticket, LLM Library 0
+  _cache_offset code-quality annotation, andimported the Agentic Develop... Mobile OS
+  error • Installation permission Where begin? should we
+  comprimise tahn on accuracy, i am finding a model which uses less O Scheduled
+  edit • Write or # Look something up • Create an image Google I/0 2025 Summary
+  And if I had to place money before running experiments: @ Al journal
+  vid @ strong. Very
+  •.. More Research searches completed in 5m • 0 citations • 0
+  Library 0 are this? there any small llms which can do
+  (millions a of vector multiplies per second on m J | CPU) and often "surprisingly competitive" as
+  2. BGE-Reranker-v2-m3
+  your exact problem, I would not frame it For as: Series • M
+  we can use combination of embedder 2 General
+  Flipkart Vendor Rate Card feat/classifier-prompt-rewrite, added fixed Cl cargo-fmt issues,
+  Apps 00 keep search it open and
+  O New chat Pasted text(29).txt
+  closer only to reasoning about engineering intent than traditional retrieval. The caveat is that the gain may 2 General
+  ChatGPT v I Share I would actually bet on a fine-tuned cross-encoder beating both, because session→ticket matching is a
+  4. MiniLM Fine-tuned E mid
+  What first I would personally test (0 Library
+  informative k- ones) is effective in many domain-specific cases. Paired with a linear model (or even a
+
+[11:39 · Code · Terminal]
+  │ Endpoint     │ /classify (pre-rendered prompts)        │ /classify_sessions (same as Rust daemon)                      │
+  ❯ here it is using eh production route and also
+
+[11:41 · Google Chrome · chatgpt.com]
+  a untracked, and KAN-200 is explicitly about matching untracked sessions to an existing ticket or drafting Agentic Develop... Mobile OS
+  For the small-LMM/LLM layer, the most realistic opf ) | would try are:
+  This for. is literally what E5 was trained Al Templ... Engineer Resume
+  Vendor Financ... review • Onboarding Threshold + human
+  classification, forDe...+2 and clustering.GGoogle Al Series • M
+  If format, ChatGPT v you want, I can turn this into a concrete scoring pipeline for your 25 Jira tasks, including prompt I Share •*•
+  parameters. Face 8 Hugging
+  + | ineed a model for text compariison of intent to match screen summary to
+  "This KAN-241" session was primarily working on O Scheduled
+  E mid Yes - for your case, a hybrid pipeline is the right fit, not a single tiny LLM.
+  checking the current small-model options and, separately, grounding the answer in your task list so l I'm •.. More
+  E mid • edge Gemma 4 2B / 4B effective-parameter models, which Google positions for ultra-mobile and
+  Apps Take the entailment score. 00
+  I would NOT What do vid •
+  Apps 00 what bm25 is
+  @ Al journal An top. embedder will retrieve all of them near the
+  Series • M This baseline. is probably the strongest
+  •. More ın Python D Run
+  Total ChatGPT V I Share < 2GB.
+  • error Installation permission reranker + 0.6 *
+  •.. More two-pass architecture
+  Why enough embeddings alone are not
+  That's ticket usually where you get from ~85-90% accuracy into the low-to-mid 90s on this kind of O New chat
+  General • Term frequency saturation (seeing "OpenObserve" 20 times isn't 20x better than seeing it twice
+  • How rare those terms are vid @
+  Series • M 2B generation. chat model such as Qwen or Gemma because it is doing semantic matching, not text
+  either/or. Not E mid
+  miss identifiers. important engineering-specific Series • M
+  are related. @ Al journal
+  0.15 *bm25+ Flipkart Vendor Rate Card
+
+[11:43 · Code · meridian]
+  B. Pass the per-session candidates as a focus_keys filter by setting a confirmed daily plan in the DB before each session eval, so the server uses the 3-5 candidates
+  gate. These are measuring different things.
+  1. Label mismatch — a label like primary=KAN-239, okset={KAN-239} was written assuming those specific 3-5 tickets were in scope. With 22 candidates, the LLM might
+
+[11:44 · Code · Terminal]
+  ❯ i need both the datasets, one that sends all pm tasks
+
+[11:45 · Google Chrome · chatgpt.com]
+  Prom candidates su hatasetse sis measdiestene rea foersu papiline at centioiled cafirade sily plan in the DB before each session eval, so the server uses the 3-5 • test_continuity_context.py
+  Small LLMs and Embedders i liek yoru appraocjh but search intenrte an dgiev me the best model and latest for all teh cate
+  Google 1/02025 Summary
+  High differ. score because the meanings are related even Vugh the words
+  requirements-mlx.txt
+  meridian_agents.egg-info
+  Apps 00 and defined latest for all teh categories you have
+  test_Ilm_selector.py • 47s * Baked tor
+  - 221.185 compare_pipeline.py e candidates 22 candidates | Jun 18 | 4
+
+[11:45 · Google Chrome · google.com]
+  or • Literal/Code Diffing: For checking exact word changes, version control, Comparing with SLMs and LLMs
+  7 days ago - Discover the 7 best open-weight Al models under 10B parameters in 2026. Compare
+  hours of work into mere seconds. Read transforming more
+  3 Nov 2023 Which posts LLM and what approach would you take to figure.. 3
+  2 2020 answers 6Apr Semantic Stack... similarity (text comparison) in NLP -
+  ana comalns. olner open-endea
+  MTEB different Leaderboard for matching concepts and meanings across
+  https://www.siliconflow.com› best-small-LL. articles›
+  The literal "best" model for text comparison depends on whether you are analyzing sites 3 BDV
+  This choosing comprehensive article delves into the intricacies of LLM selection, providing a roadmap for
+  Choosing start, a model. If you're not sure where to making it exceptionally accurate at parsing complex user intents without requiring
+  Pavorle am. mnodel under 8. auen 25 8 Brece @ LLM.
+  World Cup 2026: The art of the long ball
+  of 0.50. 14 in terms of F-Score, with a weighted average of
+  2. Best for Cloud APls & Production Show all
+  G Research at Google cost. +2
+  blog, https://www.bentoml.com› the-best-open-sourc..
+  • How many distinct intents you are trying to compare
+  ntation of this system will Q classification rag intent
+  fits checking easily in 2 GB of RAM. It is a great choice for basic, on-device intent vorite mod
+  Advancing Classification Single and Multi-task Text training +4 data. X arXiv
+  through Large... using similarity. cosine
+  Q best model for text to sql
+  Comprehensive Overview Here are the top options based on your computational and latency needs:
+  where +2 speed is the primary priority. Hugging Face • r/LocalLLaMA Reddit •
+  Q best model for text extraction from image ntation of this system will
+  understand better what people ask, you give better answers. Read more
+  9 May 2025 - The implementation of this system will Sonnet, or Gemini 1.5 Pro) are preferred. X arXiv+2
+  • GPT-4o-mini / GPT-5.4 mini: OpenAl's most practical liahtweiaht models. Thev are l
+  DataCamp https://www.datacamp.com/ top-small-anguage.../ blog>
+
+[11:47 · Google Chrome · bentoml.com]
+  Are production? SLMs good enough for tasks • Small-model limits still apply. At 0.8B, it is much more suitable for lightweight multimodal and general assistant
+  For generations production deployments, you should tune sampling carefully and use guardrails to catch abnormal
+  summarization workloads. What are the main differences between
+  Table Contents of Now, SLMs. let's take a look at the top
+  * announcement. BentoML is now part of Modular. Read the x
+  If multimodal you can afford a bit more compute, I also recommend Owen3.5-2B and Owen3.5-4B. They keep the same Share
+  Points about: to be cautious
+  They operational power chatbots, agent pipelines, and high-throughput automation workflows where latency, cost, and
+  What are the main differences between Why should
+  in У agent and traces.
+  to matters. understand what actually drives quality at 3B, that
+  commercial systems without restrictive terms.
+  • Language performance varies. Although it supports multiple languages, performance outside English can be uneven.
+  budgeting chunking. and
+  • Fully open recipe. The model is released under the Apache 2 license plus detailed training notes, public data mixture, in У
+  inaccurate or or outdated facts, especially for knowledge-heavy or long-tail queries. I suggest you pair it with RAG
+  tools for production external use.
+  tasks. • Post-training techniques such as reinforcement learning refine behavior for real-world
+  speech these Table Contents of translation can vary by language, accent, noise, and domain. You should always benchmark the model in
+  Gemma-3n-E2B-IT Points to be cautious about:
+  formats. use Otherwise, it can negatively impact instruction adherence and output quality. For example, you should
+  and derivative. configs. These reduce guesswork if you want to fine-tune or build a
+  global coverage, benchmark carefully and consider broader alternatives.
+  The support Gemma 3n family is trained on data spanning 140+ languages, which is a big deal if you need multilingual
+  Why SmolLM3-3B: should you use
+  Share fit for use cases like long-running agent strong sessions.
+  This strong tension brings teams back to self-hosting. The good news is that you no longer need large models to get
+  closer to a traditional 2B model in many deployments.
+  Ministral-3-3B-Instruct-2512 What are small language models?
+  What it, also sets SmolLM3 apart is the level of transparency. Hugging Face published the full engineering blueprint of
+  Hoyesmal is 'smal for language
+  ve it, ts s sin a io te tever tanspareny, nuggig race puvnsneu ue tun engmeerng viueprun or
+  Why Ministral-3-3B-Instruct-2512: should you use
+  • Lower inference cost. Smaller parameter counts mean less GPU memory usage and lower KV-cache pressure, which Share
+  deployments. 3 family, designed specifically for edge and resource-constrained
+  offline use cases and ensuring data privacy.
+  triliot even -euedreds of bilins of parameters, or Typical size
+  The type key differences come down to scale, cost, and operational complexity, which directly affect how and where each in У
+  Samninr long-horizon for deep reasoning and Good for many tasks, weaker on very complex
+  or quantization. even less with further
+  operate models. and debug than large
+  architecture • Contact us to discuss your use case and
+
+[11:51 · Google Chrome · arxiv.org]
+  Why HTML? Report Download PDF Back Abstract Issue to This conversions. is experimental HTMLto improve accessibility. Weinvite you to report rendering errors. Learn more about this project and help imp
+  fier having superior performance compared to the best performing few-shot generative LLM. The study provides a
+  Mistral-7B-v0.1 BertFSC
+  0.3227 0.178 Similarity 0.379 Jaccard
+  the formatting of the original dataset, we can consider that this has few effects on the experiment. The relatively poor
+  mo these of performance in differences the on focuses approach Our instructions. some with prompt the in xamples
+  3: Multi-label intent classification report on user utterances of MultiWOZ 2.1 test data Table set
+  Evaluation Results 10623 Berlin, Berlin, Germany, Adnan Möller Ahmad and Philine Kowol and Stefan Hillmann and Sebastian
+  e can't directly compare these results with the previous works as most previous approaches report Joint Goal Accurac Abstract
+  potential emerging in few-shot learning fewshot. The sheer amount of data and model parameters leads to the model's institutetext: Technisch Issue Report
+
+[11:51 · Code · meridian]
+  My recommendation: build both, but the full-pool dataset is primarily a false-bind stress test (53 overhead/untracked sessions + 8 scoreable tasks). Want me to:
+  labels_full_pool.py generated and eval_week_classify.py updated to support both modes.
+
+[11:53 · Google Chrome · localhost:3939]
+  K) * logic or (HF-spec tokenisation) and a comment about 'Empty summaries: O', indicating work on building the eval dataset from production sessions. No file edits auck cultch
+  24 pending irts_with(line, [NULL] mlx_direct KAN-200 0.85 "delete
+  meridian • and analyze accuracy. The...
+  [NULL]) :shipper::tests::list_pe [NULL] [NULL] [NULL] [NULL]
+  Settings posting. untracked No specific draft content was visible in the session, but the activity aligns with KAN-200's scope of managing the draft approval flow for
+  Bal Diagrams 0.65 mlx_direct labels" (session came [NULL] pending 37 [NULL]
+  30 sian.net/browse/KAN- [NULL] [NULL] [NULL] [NULL] [NULL]
+  Clean-up 1n Your keyboard coding at the
+  overhead: h.task=48 [NULL] 25 [NULL] [NULL] [NULL] [NULL]
+  •Active autonomous Idle • • Claude / Codex agent under an idle stretch =
+  direct ıg a Jira ticket for a fe [NULL] pending 0.7 39 [NULL] mlx
+  lodav Analyzed untracked session classification and PM matching logic. Reviewed board health cleanup (KAN-243, KAN-242, KAN-200), investigated false bind
+  bx +0/OGoogleSearct 31 [NULL] [NULL] [NULL] [NULL] [NULL] • Files - General X
+  binds, confusion). Launched research agent to surface 7 inference-time improvement techniques (document expansion, instruction rewrite, margin gating).
+  16 [NULL) [NULL] [NULL] [NULL] ngin Let [NULL] is correct ?4® |
+
+[11:54 · Code · Terminal]
+  The core problem for a good dataset: Jun 15–19 sessions (the existing sessions_week.json) work on tickets KAN-230, 231, 239, 240 — none of which are in the current
+  ❯ no hwo good is our current data set taht has claude ssion an
+
+[11:57 · Code · eval_week_classify.py — meridian — Untracked]
+  Extensions (⇧⌘X) - Invalid extensions detected. Review them. Extensions (⇧⌘X) - Invalid extensions detected. Review them.
+  ⎿  Task sessions where primary IS in candidates: 48/48
+  The dataset is good for the daily-plan eval. It is NOT usable for the full-pool eval.
+  test_fetch_pm_tasks.py
+
+[11:57 · Code · Terminal]
+  1. Jun 18 is not really "daily plan" — it has 19 candidates (the full pool), not 2-5. Jun 15–17 have 3-5 properly.
+  - sessions_week.json + labels_week.py = solid daily-plan eval dataset ✓
+  right ticket is in the candidate set, does the classifier pick it?"
+  │ 34116 │ 43m      │ 84-ref DB rename (claude_session_uuid→coding_agent_session_uuid) — this is a major refactor, clearly task work. Labeled overhead because the    │
+  Let me re-audit all 25 with that rule:

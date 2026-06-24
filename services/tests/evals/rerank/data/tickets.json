@@ -1,0 +1,245 @@
+{
+"KAN-40": {
+"task_key": "KAN-40",
+"issue_type": "Feature",
+"status": "Done",
+"parent": "KAN-20",
+"title": "F6.3 — Weekly AI coaching report generator",
+"description_text": "Runs weekly. Aggregates ai_interactions for the past 7 days per developer. Identifies: (1) patterns in high edit_ratio interactions (what made prompts work), (2) patterns in high re_prompt_rate sessions (what causes retries), (3) tool usage distribution across Claude Code / Cursor / Copilot, (4) improvement trajectory vs prior weeks. Generates 3–5 specific, actionable recommendations. Writes to insights table, type='ai_coaching'.",
+"epic_title": "[Meridian] E6 — AI Interaction Tracking"
+},
+"KAN-62": {
+"task_key": "KAN-62",
+"issue_type": "Feature",
+"status": "Done",
+"parent": "KAN-59",
+"title": "PM Provider Infrastructure",
+"description_text": "Foundation layer for connecting Meridian to external PM tools. Includes the multi-provider config architecture, the database schema for caching task data, and the Jira REST connector that fetches and refreshes tasks automatically. This work is functionally complete — the feature is kept open so Meridian can update it autonomously as the system self-tracks.\\\\n\\\\n**Acceptance Criteria**\\\\n- `pm_providers: Vec<PmProviderConfig>` drives provider dispatch in `run_intelligence()`\\\\n- Jira tasks are fetched, stored in `pm_tasks`, and refreshed every 30 minutes\\\\n- GitHub and Linear stubs compile and are ready for implementation\\\\n- `pm_tasks` and `ticket_links` migrations run cleanly on daemon star",
+"epic_title": "Session Intelligence Engine(Session to task categorizer)"
+},
+"KAN-64": {
+"task_key": "KAN-64",
+"issue_type": "Feature",
+"status": "Done",
+"parent": "KAN-59",
+"title": "Session-to-Task Mapping Engine",
+"description_text": "Design and implement the pipeline that takes a classified session and produces a confident match to a PM task (or a deliberate skip). The mapping engine runs inline after each ETL cycle and writes results to `ticket_links`.\\\\n\\\\n**Why this matters**: This is the core value proposition of Meridian Intelligence — automating the attribution of developer time to PM tasks without manual entry.\\\\n\\\\n**Acceptance Criteria**\\\\n- A mapping approach is selected after research (see sub-tasks)\\\\n- Sessions with confidence >= 0.85 are auto-routed; 0.55–0.85 are queued; below 0.55 are skipped\\\\n- `ticket_links` rows are written for every processed session with `task_key`, `confidence`, `method`, and `rout",
+"epic_title": "Session Intelligence Engine(Session to task categorizer)"
+},
+"KAN-86": {
+"task_key": "KAN-86",
+"issue_type": "Task",
+"status": "Done",
+"parent": "",
+"title": "Migrate active-intelligence code in hermes-activity-agent to meridian",
+"description_text": "Meridian has the optimised screenpipe and active-intelligence has the agent to pull the cleaned from meridian and update the jira task Push the code into meridian repo",
+"epic_title": ""
+},
+"KAN-96": {
+"task_key": "KAN-96",
+"issue_type": "Task",
+"status": "Done",
+"parent": "KAN-90",
+"title": "Design and implement cleaned-context FM classification prompt",
+"description_text": "**Context** The Foundation Model classifier (`src/intelligence/classifier/`) currently receives session context built from the raw ETL output — which, before KAN-94 cleaning improvements, contains noise. Even after cleaning, the prompt needs to be redesigned to send structured, high-signal context rather than raw text dumps. **The problem with the current approach** Sending raw OCR text, full element trees, and unfiltered audio transcriptions to the FM is expensive (tokens) and noisy (the model must filter the garbage itself, reducing accuracy). **What to build** Design a canonical \"session context\" payload that the prompt builder assembles from cleaned session data: ``` App: {app_name} Dura",
+"epic_title": "ETL Data Audit & AI Classification Quality Initiative"
+},
+"KAN-97": {
+"task_key": "KAN-97",
+"issue_type": "Task",
+"status": "Done",
+"parent": "",
+"title": "Dynamic llm choice and download logic for the agent based on the machine specs",
+"description_text": "## <custom data-type=\"emoji\" data-id=\"id-0\">:memo:</custom> Summary The issue involves updating the agent design for macOS on Apple Silicon. The goal is to limit the agent's resource usage to approximately 20% of the machine's CPU, memory, and GPU capacity. ## <custom data-type=\"emoji\" data-id=\"id-1\">:bulb:</custom> Context This task specifically targets macOS running on Apple Silicon (M-series chips). It focuses on the agent process and its child processes. Other operating systems and CPU architectures are not included in this scope. ## <custom data-type=\"emoji\" data-id=\"id-2\">:white_check_mark:</custom> Acceptance Criteria The following criteria must be satisfied on macOS Apple Silicon hos",
+"epic_title": ""
+},
+"KAN-105": {
+"task_key": "KAN-105",
+"issue_type": "Task",
+"status": "Backlog",
+"parent": "",
+"title": "Tagging multiple tasks to a single session",
+"description_text": "If the user is using 2 claude code sessions open in the terminal in parallel is doing both the tasks. Need to identify and split the session content into 2 updated for the respective tasks",
+"epic_title": ""
+},
+"KAN-106": {
+"task_key": "KAN-106",
+"issue_type": "Task",
+"status": "Done",
+"parent": "",
+"title": "Improve agent with context layer to classify the task better",
+"description_text": "If the task is vague and doesnt have description then the need to get project context is required for the hermes agent",
+"epic_title": ""
+},
+"KAN-107": {
+"task_key": "KAN-107",
+"issue_type": "Task",
+"status": "Done",
+"parent": "",
+"title": "Add agent reasoning to the session to task mapping for stage 3 and display it on the UI",
+"description_text": "and also mark the task as todo → inprogress",
+"epic_title": ""
+},
+"KAN-108": {
+"task_key": "KAN-108",
+"issue_type": "Task",
+"status": "Done",
+"parent": "",
+"title": "Agent to push update to JIRA from meridian ",
+"description_text": "Update the task with a summary of what was done every 4 hours during the working duration of the day (9am-5pm), so at 1pm and 5pm",
+"epic_title": ""
+},
+"KAN-109": {
+"task_key": "KAN-109",
+"issue_type": "Task",
+"status": "In Progress",
+"parent": "KAN-174",
+"title": "LLM benchmarking and prompt evaluation framework for Session-Task classifier",
+"description_text": "Set up an offline evaluation harness (DeepEval + local LLm) to compare model quality and prompt variants for the session→task classification pipeline. **Goal:** Make model-swap decisions data-driven rather than intuition-based. The results feed directly into KAN-97 (dynamic LLM choice). **Scope:** * Install DeepEval + ollama Python client into services/.venv * Build a labeled evaluation dataset from real meridian.db sessions (task_routing = 'auto' as ground truth) * Run a model comparison grid: current hermes model vs open-source alternatives (llama3.1, mistral, qwen2.5, gemma2, etc.) * Run a prompt variant comparison on the best-performing models * Analyse accuracy + latency results and doc",
+"epic_title": "Accuracy & Automated Deep-Eval"
+},
+"KAN-136": {
+"task_key": "KAN-136",
+"issue_type": "Task",
+"status": "Done",
+"parent": "",
+"title": "Add observability and tracing for agents and later processes",
+"description_text": "Need to check: - [ ] pm tasks sync in observability - [ ] dynamic model choice - [ ] agent runtime - [ ] OO in the UI with enable/disable, log level choice option",
+"epic_title": ""
+},
+"KAN-138": {
+"task_key": "KAN-138",
+"issue_type": "Task",
+"status": "Done",
+"parent": "",
+"title": "Merge the code from feat/mlx-persistent-server branch into a new branch from  KAN-136-add-observability-and-tracing-for-agents-and-later-processes ",
+"description_text": "",
+"epic_title": ""
+},
+"KAN-141": {
+"task_key": "KAN-141",
+"issue_type": "Task",
+"status": "To Do",
+"parent": "",
+"title": "Run deepeval on the golden dataset",
+"description_text": "choose 2-3 local mlx-lm models, apple foundation model (apple intelligence) to compare, benchmark and see the accuracy and performace",
+"epic_title": ""
+},
+"KAN-151": {
+"task_key": "KAN-151",
+"issue_type": "Task",
+"status": "Done",
+"parent": "",
+"title": "Create a framework for improving the product for each user",
+"description_text": "Design the way we can pull the right relevant failure that will improve the product in general",
+"epic_title": ""
+},
+"KAN-163": {
+"task_key": "KAN-163",
+"issue_type": "Task",
+"status": "To Do",
+"parent": "KAN-229",
+"title": "Have the meridian setup happen on the UI",
+"description_text": "Enhancements in the setup: 1\\. cursor → cursor chat needs to be differentiated from cursor-agent cli in the db 2\\. secrets need to have an update option 3\\. add model budget in the UI",
+"epic_title": "Meridian setup enhancements"
+},
+"KAN-166": {
+"task_key": "KAN-166",
+"issue_type": "Task",
+"status": "Done",
+"parent": "",
+"title": "Update the today tab on UI for the sessions to show the task summary",
+"description_text": "Needs to show the task title instead of KAN in the title Reverse the chronology of the sessions Add summary tab to see what work was done for those sessions if summary exists",
+"epic_title": ""
+},
+"KAN-184": {
+"task_key": "KAN-184",
+"issue_type": "Task",
+"status": "Done",
+"parent": "KAN-171",
+"title": "Wire OTLP export to OpenObserve (pilot environment)",
+"description_text": "Configure the existing `MERIDIAN_OTLP_ENDPOINT` + `MERIDIAN_OO_AUTH` env vars to point at the pilot OpenObserve instance. Verify spans arrive and are queryable. Confirm the export pipeline is disabled when the vars are unset (no silent data drop, no crash). Document the endpoint and auth setup in the pilot onboarding runbook.",
+"epic_title": "Observability & Log Pipeline"
+},
+"KAN-194": {
+"task_key": "KAN-194",
+"issue_type": "Task",
+"status": "To Do",
+"parent": "KAN-173",
+"title": "Add in-app feedback form to the dashboard",
+"description_text": "Add a persistent \"Send feedback\" button to the Next.js dashboard (nav bar or floating button). On click, open a lightweight modal with: a free-text field (what happened / what you expected), a severity selector (P0 crash / P1 wrong data / P2 inconvenience / P3 suggestion), and an optional email field. On submit, POST to a `/api/feedback` route that writes to a local `feedback.db` or forwards to a webhook. No third-party analytics SDK — keep it local-first.",
+"epic_title": "Feedback Loop"
+},
+"KAN-199": {
+"task_key": "KAN-199",
+"issue_type": "Task",
+"status": "Backlog",
+"parent": "KAN-174",
+"title": "Establish baseline classifier accuracy on current Golden dataset",
+"description_text": "Run the eval pipeline against both Golden sets (goldens_a_meridian.json + goldens_b_generic.json) and record the baseline accuracy scores before any pilot changes. Log: overall accuracy, per-difficulty breakdown (easy/medium/hard/decoy), recall on hard-decoy cases, and untracked-bucket false-positive rate. These numbers are the before-state; all accuracy work in this epic is measured against them.",
+"epic_title": "Accuracy & Automated Deep-Eval"
+},
+"KAN-200": {
+"task_key": "KAN-200",
+"issue_type": "Task",
+"status": "Backlog",
+"parent": "KAN-174",
+"title": "Untracked session analysis, PM matching, and draft approval flow",
+"description_text": "## Problem Sessions classified as `untracked` (45h+ identified in pilot gap analysis) are currently invisible — they don't flow into any worklog, aren't matched to tickets, and are silently dropped. This is the primary recall bottleneck. ## What this task must do ### 1. Analyse & understand each untracked session For every `app_sessions` row where `task_session_type = 'untracked'`, run a structured analysis pass using the session's `session_summary`, `window_titles`, `ocr_samples`, `category`, and `session_dimensions` to extract what the developer was actually doing. ### 2. Match to existing PM tasks Using the analysed content, attempt to match each untracked session to an **existing open ti",
+"epic_title": "Accuracy & Automated Deep-Eval"
+},
+"KAN-216": {
+"task_key": "KAN-216",
+"issue_type": "Task",
+"status": "Done",
+"parent": "KAN-229",
+"title": "Write Jira and Linear integration setup guides",
+"description_text": "Step-by-step guides for connecting Meridian to Jira and Linear. For Jira: generating an API token, adding to `.env`, running `meridian doctor` to verify. For Linear: OAuth setup or API key, project mapping. Each guide should end with: \"you'll know it's working when…\" confirmation step. These are the highest-demand integration docs for the pilot users — all 6 contacts use either Jira or Linear.",
+"epic_title": "Meridian setup enhancements"
+},
+"KAN-230": {
+"task_key": "KAN-230",
+"issue_type": "Task",
+"status": "Done",
+"parent": "KAN-174",
+"title": "Clean candidate-set selection of PM tasks feeding the task classifier (research rules, then implement)",
+"description_text": "## Problem The task classifier currently receives **all open** `pm_tasks` (\\~33) per session, unranked and undifferentiated. This is noisy context (LLMs degrade on noisy candidate sets) and risks candidate starvation. We want the **fewest sensible candidates** sent per classification **without hurting recall** (recall is the measured worklog-accuracy bottleneck — silent drops, not precision). ## Approach (two-stage retrieval) Narrowing must be done by **ranking + a recall-safe floor**, never by hard-deleting plausibly-active tickets. 1. **Stage 1 — recall (day working set):** built once per morning. Shrink the universe to the \\~10–20 tickets a dev could plausibly touch today, from existing s",
+"epic_title": "Accuracy & Automated Deep-Eval"
+},
+"KAN-231": {
+"task_key": "KAN-231",
+"issue_type": "Task",
+"status": "Done",
+"parent": "KAN-174",
+"title": "Audit task-classification accuracy and improve it",
+"description_text": "## Problem We do not have a current, structured picture of where the session→task classifier is wrong. Before (and alongside) the candidate-set change, we need to **audit classification accuracy on real data**, understand the failure modes, then **drive accuracy up** against a fixed baseline. ## Scope 1. **Audit:** measure current classifier accuracy on (a) the Golden eval datasets and (b) real production sessions / pilot misclassifications. Produce a **failure taxonomy** (e.g. keyword-mention false positives, same-app context switch, decoy resistance, untracked-with-tempting-candidate, recall/silent-drop). 2. **Root-cause** the top failure clusters (prompt, candidate set, summary/episode qu",
+"epic_title": "Accuracy & Automated Deep-Eval"
+},
+"KAN-239": {
+"task_key": "KAN-239",
+"issue_type": "Task",
+"status": "Done",
+"parent": "KAN-174",
+"title": "Pass confirmed daily plan (today's tasks) to the session-task classifier as Tier-1 candidates",
+"description_text": "Feed the developer's confirmed daily plan (today's tasks) into the session->task classifier as the Tier-1 candidate set, so each session is matched against what the dev declared they're working on today. The /plan page lets a dev confirm today's working set (daily_plan tables). Boost (float plan tickets to top, mark today's focus) but never hard-filter, so a mid-day pivot to an undeclared task stays matchable (recall preserved). Validate with eval Goldens that the boost improves recall without focus-bias false positives.",
+"epic_title": "Accuracy & Automated Deep-Eval"
+},
+"KAN-240": {
+"task_key": "KAN-240",
+"issue_type": "Task",
+"status": "Done",
+"parent": "KAN-171",
+"title": "Emit session-task classifier logs to OpenObserve and set up proper debug tracing",
+"description_text": "Get full debug visibility into the session-task classifier (run_task_linker_mlx.py / MLX /classify_sessions) by streaming its logs into OpenObserve and wiring queryable debug spans per classify call: session_id, candidate count, today_focus_count, chosen task_key, confidence, category, method, model raw output. Make the per-session decision trail filterable so a single misclassified session can be traced end-to-end; verify the trace tree renders and document the dashboard.",
+"epic_title": "Observability & Log Pipeline"
+},
+"KAN-241": {
+"task_key": "KAN-241",
+"issue_type": "Task",
+"status": "In Progress",
+"parent": "KAN-171",
+"title": "Emit PM worklog logs to OpenObserve and set up proper debug tracing",
+"description_text": "Get full debug visibility into the PM worklog synthesis pipeline (services/agents/pm_worklog_update/ + Rust src/pm_worklog/ synth/post/route) by streaming its logs into OpenObserve and wiring queryable debug spans per synthesis run: session ids, candidate ticket(s), chosen ticket, time attributed, the LLM's exact input prompt and raw output, posted comment body, worklog seconds, target tracker/provider. Make the per-ticket decision trail filterable so a single wrong worklog entry can be traced end-to-end. Sibling of KAN-240.",
+"epic_title": "Observability & Log Pipeline"
+}
+}

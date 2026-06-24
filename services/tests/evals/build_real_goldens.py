@@ -41,7 +41,7 @@ if str(_SERVICES_DIR) not in sys.path:
     sys.path.insert(0, str(_SERVICES_DIR))
 
 from agents._prompts import build_user_message  # noqa: E402
-from agents.run_task_linker_mlx import _fetch_recent_ticket_activity  # noqa: E402
+from agents.mlx_classifier import _fetch_recent_ticket_activity  # noqa: E402
 
 _EVAL_DIR = Path(__file__).parent
 MERIDIAN_DB = Path(os.environ.get("MERIDIAN_DB", Path.home() / ".meridian/meridian.db")).expanduser()

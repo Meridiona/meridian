@@ -51,7 +51,7 @@ def main(argv: list[str]) -> int:
         return 0
     try:
         import mlx_lm  # noqa: F401
-        import agents.run_task_linker_mlx as rtl
+        import agents.mlx_classifier as rtl
     except Exception as exc:  # noqa: BLE001
         print(f"SKIP: MLX unavailable ({exc})")
         return 0
