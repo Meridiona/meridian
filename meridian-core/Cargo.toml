@@ -1,0 +1,26 @@
+[package]
+name = "meridian-core"
+version = "0.1.0"
+edition = "2021"
+description = "Lean shared data layer (DB types + read queries) for the Meridian daemon and dashboard"
+
+[dependencies]
+# Deliberately minimal — only what the shared read layer needs. NO daemon deps
+# (no screenpipe, MLX, trackers, OTel), so the Tauri app can depend on this
+# without pulling the whole daemon tree.
+sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls"] }
+libsqlite3-sys = { version = "0.26", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0.86"
+chrono = "0.4.31"
+# Instrumentation facade only (~no-op without a subscriber) — the heavy OTLP
+# exporter is wired by the binary (daemon, or the tray's `otel` dev feature).
+tracing = "0.1"
+
+[dev-dependencies]
+# For the #[ignore]d golden-compare smoke test (runs get_today against the real DB).
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# Integration tests build an in-memory schema + seed rows to exercise the
+# readers (sqlx is a regular dep, but integration tests need it in scope too).
+sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls"] }

@@ -1,15 +1,16 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // In-app notification banner — the banner-channel half of the notification
-// outbox (the redundant counterpart to the tray's macOS toast). Opens one SSE
-// connection to /api/notifications/stream and renders a dismissible banner per
-// active notification. Distinct from NoticeBar (stateful faults, auto-clear):
+// outbox (the redundant counterpart to the tray's macOS toast). Subscribes to
+// the `notifications-update` Tauri event (via bridge.subscribe) and renders a
+// dismissible banner per active notification. Distinct from NoticeBar (stateful faults, auto-clear):
 // these are discrete events the user dismisses, or that expire on their own.
 
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
-import type { BannerNotification } from '@/lib/notifications-banner-store'
+import { useEffect, useState } from 'react'
+import type { BannerNotification } from '@/lib/api-types'
+import { invoke, subscribe } from '@/lib/bridge'
 
 const SEVERITY_STYLES: Record<string, { bg: string; border: string; text: string; dot: string }> = {
   info:    { bg: '#eff6ff', border: '#bfdbfe', text: '#1d4ed8', dot: '#2563eb' },
@@ -19,38 +20,24 @@ const SEVERITY_STYLES: Record<string, { bg: string; border: string; text: string
 
 export default function NotificationBanner() {
   const [items, setItems] = useState<BannerNotification[]>([])
-  const esRef = useRef<EventSource | null>(null)
-  const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
-    let cancelled = false
-    function connect() {
-      if (cancelled) return
-      const es = new EventSource('/api/notifications/stream')
-      esRef.current = es
-      es.onmessage = (e) => {
-        try { setItems(JSON.parse(e.data) as BannerNotification[]) } catch { /* ignore */ }
-      }
-      es.onerror = () => {
-        es.close(); esRef.current = null
-        // Reconnect after a backoff, but record the timer so unmount can cancel
-        // it — otherwise it fires connect() after cleanup, leaking an
-        // unclosed EventSource and calling setItems on an unmounted component.
-        retryRef.current = setTimeout(connect, 5_000)
-      }
-    }
-    connect()
-    return () => {
-      cancelled = true
-      if (retryRef.current) { clearTimeout(retryRef.current); retryRef.current = null }
-      esRef.current?.close()
-    }
+    // notifications-update (Tauri event) in the app, /api/notifications/stream
+    // SSE in a browser. subscribe() owns the reconnect/teardown.
+    return subscribe<BannerNotification[]>(
+      '/api/notifications/stream',
+      'get_banner_notifications',
+      'notifications-update',
+      setItems,
+    )
   }, [])
 
   async function dismiss(id: number) {
-    // Optimistic remove; the SSE refresh will reconcile.
+    // Optimistic remove; the next notifications-update reconciles.
     setItems(prev => prev.filter(i => i.id !== id))
-    try { await fetch(`/api/notifications/${id}/dismiss`, { method: 'POST' }) } catch { /* ignore */ }
+    try {
+      await invoke('dismiss_notification', { id })
+    } catch { /* ignore — optimistic UI already updated */ }
   }
 
   if (items.length === 0) return null

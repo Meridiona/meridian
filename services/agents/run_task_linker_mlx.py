@@ -101,6 +101,31 @@ _DEFAULT_MLX_MODEL_MIN_RAM_GB = 6.5
 # runtime by llm_selector.select_mlx_model_id() based on available compute.
 _MLX_MODEL_ID_PIN = os.environ.get("MLX_MODEL_ID")
 
+# `~/.meridian/settings.json` — the SAME file the Rust daemon + tray read/write.
+# We read only `llm_model_preference` here: the HuggingFace repo id the user
+# chose in the setup wizard (written by the tray's `set_model_preference`).
+_SETTINGS_PATH = Path(
+    os.environ.get("MERIDIAN_SETTINGS_PATH")
+    or (Path.home() / ".meridian" / "settings.json")
+)
+
+
+def _settings_model_preference() -> "str | None":
+    """Return the user's chosen model HF id from settings.json, or None.
+
+    A blank/absent value means "no preference" → fall through to dynamic
+    selection. Never raises — a malformed or missing file is treated as unset.
+    """
+    try:
+        with _SETTINGS_PATH.open(encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    pref = data.get("llm_model_preference")
+    return pref if isinstance(pref, str) and pref.strip() else None
+
 # Resolved lazily and cached for the process lifetime by _resolve_model_id().
 # Kept as a module attribute (not just a function return) so /info, /v1/models,
 # and the llm_inference span all report the same, truthful id.
@@ -127,12 +152,23 @@ def _resolve_model_id() -> str:
         from agents.llm_selector import (
             APPLE_INTELLIGENCE_ID, resolve_model, select_mlx_model_id,
         )
-        entry = resolve_model(_DEFAULT_MLX_MODEL_ID)
+        # The user's wizard choice (if any) becomes the preferred model; otherwise
+        # fall back to the eval-tuned default. Either way `select_mlx_model_id`
+        # keeps the preference when Metal budget allows and degrades when it can't,
+        # so an over-ambitious choice on a small Mac never OOMs.
+        user_pref = _settings_model_preference()
+        preferred_id = user_pref or _DEFAULT_MLX_MODEL_ID
+        if user_pref:
+            log.info(
+                "run_task_linker_mlx: model preference from settings.json",
+                extra={"model_preference": user_pref},
+            )
+        entry = resolve_model(preferred_id)
         preferred_min_ram = (
             entry["min_ram_gb"] if entry else _DEFAULT_MLX_MODEL_MIN_RAM_GB
         )
         selected = select_mlx_model_id(
-            preferred_hf_id=_DEFAULT_MLX_MODEL_ID,
+            preferred_hf_id=preferred_id,
             preferred_min_ram_gb=preferred_min_ram,
         )
         # Propagate the Apple Intelligence sentinel as-is; fall back to the

@@ -83,6 +83,29 @@ export function mergeIntervals(intervals: Interval[]): Interval[] {
 }
 
 /**
+ * Clamp every interval to the window `[lo, hi]` (RFC3339), keeping only the
+ * portion inside it and dropping any interval entirely outside. Used to bound a
+ * daily total to `[start_of_day, min(now, end_of_day)]` so a stale or
+ * cross-midnight block can't inflate "today" — e.g. an `active_session` left
+ * open by a stopped daemon would otherwise span days. Unparseable bounds degrade
+ * to a no-op (returns the input unchanged) rather than zeroing totals.
+ */
+export function clampIntervals(intervals: Interval[], lo: string, hi: string): Interval[] {
+  const loMs = new Date(lo).getTime()
+  const hiMs = new Date(hi).getTime()
+  if (!Number.isFinite(loMs) || !Number.isFinite(hiMs)) return intervals
+  const out: Interval[] = []
+  for (const r of intervals) {
+    const s = Math.max(new Date(r.started_at).getTime(), loMs)
+    const e = Math.min(new Date(r.ended_at).getTime(), hiMs)
+    if (Number.isFinite(s) && Number.isFinite(e) && e > s) {
+      out.push({ started_at: new Date(s).toISOString(), ended_at: new Date(e).toISOString() })
+    }
+  }
+  return out
+}
+
+/**
  * Total seconds where set `a` and set `b` overlap — e.g. agent time that fell
  * inside foreground-active time (supervised / "AI-assisted") vs outside it
  * (autonomous). Both sides are normalized first, then swept together in linear

@@ -3,7 +3,7 @@
 
 import { useMemo, useState } from 'react'
 import { fmtDur } from '@/components/atoms'
-import type { TodayResponse } from '@/app/api/today/route'
+import type { TodayResponse } from '@/lib/api-types'
 
 // The hero visual of the Today view. Two aligned tracks tell the whole story at
 // a glance, with overlap shown rather than summed:

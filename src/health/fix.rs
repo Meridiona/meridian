@@ -83,12 +83,12 @@ pub fn fix_for(c: &Check) -> Option<FixAction> {
             &["bash", "-lc", "cd ui && npm ci && npm run build"],
         ),
         // a11y regression — re-establishing capture often fixes it (guided).
-        ("screenpipe", name) if name.contains("a11y_regression") => {
-            guided("restart screenpipe to re-establish a11y capture", &["meridian", "restart"])
+        ("capture", name) if name.contains("a11y_regression") => {
+            guided("restart Meridian to re-establish a11y capture", &["meridian", "restart"])
         }
         // a11y permission off — a human must grant it in System Settings.
-        ("screenpipe", name) if name.contains("a11y_permission") => manual(
-            "System Settings ▸ Privacy & Security ▸ Accessibility ▸ enable screenpipe, then restart it",
+        ("capture", name) if name.contains("a11y_permission") => manual(
+            "System Settings ▸ Privacy & Security ▸ Accessibility ▸ enable Meridian, then restart it",
         ),
         // Token/permission/config — a human must act.
         ("jira", name) if name.contains("auth") => {
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn unknown_check_has_no_fix() {
-        let c = Check::warn("a11y_per_app", "L1", "x").in_group("screenpipe");
+        let c = Check::warn("a11y_per_app", "L1", "x").in_group("capture");
         assert!(fix_for(&c).is_none());
     }
 }

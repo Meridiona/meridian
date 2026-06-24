@@ -1,102 +1,67 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-use crate::state::{AppState, StatusPayload};
-use std::sync::{Arc, Mutex};
-use tauri::State;
-use tauri_plugin_opener::OpenerExt;
+//! Tauri command surface, grouped by domain.
+//!
+//! This module is the root for every `#[tauri::command]` the tray exposes. The
+//! commands live in domain submodules; this file re-exports each command at the
+//! `crate::commands::*` path so `lib.rs`'s `invoke_handler!` and other callers
+//! name them flatly regardless of which submodule they sit in.
+//!
+//! - [`dashboard`] — the ported `/api/*` DB reads (active/today/week/tasks/…).
+//! - [`daemon`]    — daemon lifecycle (restart/pause/resume) + status probes.
+//! - [`system`]    — OS/window actions (open URLs, System Settings panes).
+//! - [`health`]    — the `/api/health` check (also reused by [`crate::poll`]).
+//! - [`logs`]      — the `/api/logs` tail.
+//! - [`openobserve`] — the `/api/openobserve` service status probe.
+//! - [`integrations`] — which trackers are connected (`/api/integrations`).
+//! - [`notices`]   — clear a fault banner (`/api/notices/[id]` DELETE).
+//! - [`notifications`] — the in-app banner dismiss write.
+//! - [`parents`]   — valid parent tickets for the hygiene "link a parent" fix.
+//! - [`settings`]  — runtime settings read + write (`/api/settings` GET/PUT).
+//! - [`tasks`]     — board re-sync action (`/api/tasks/sync`, spawns `meridian`).
+//! - [`triage`]    — cleanup working set + the decision/ignore DB writes.
+//! - [`setup`]     — first-run detection, permission probes, MLX status/start.
+//! - [`version`]   — installed vs. published version (`/api/version`).
+//! - [`worklogs`]  — worklog review read + edit/approve/reject/unapprove writes.
+//!
+//! # Related
+//! - [`crate::install`] — install-mode + db-path resolution the commands consume.
+//! - [`crate::sys`] — shared uid / notify / ui_base helpers.
+//! - [`crate::mlx_server`] — the MLX process manager the setup commands drive.
 
-fn ui_base() -> String {
-    let port = std::env::var("MERIDIAN_UI_PORT").unwrap_or_else(|_| "3939".to_string());
-    format!("http://127.0.0.1:{}", port)
-}
+pub mod daemon;
+pub mod dashboard;
+pub mod health;
+pub mod integrations;
+pub mod logs;
+pub mod notices;
+pub mod notifications;
+pub mod openobserve;
+pub mod parents;
+pub mod settings;
+pub mod setup;
+pub mod system;
+pub mod tasks;
+pub mod triage;
+pub mod version;
+pub mod worklogs;
 
-#[tauri::command]
-pub fn get_status(state: State<'_, Arc<Mutex<AppState>>>) -> Result<StatusPayload, String> {
-    state
-        .lock()
-        .map(|s| s.to_payload())
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
-    app.opener()
-        .open_url(ui_base(), None::<&str>)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn open_worklogs(app: tauri::AppHandle) -> Result<(), String> {
-    let url = format!("{}/worklogs", ui_base());
-    app.opener()
-        .open_url(&url, None::<&str>)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn restart_daemon() -> Result<(), String> {
-    let uid = uid_str();
-    let status = std::process::Command::new("launchctl")
-        .args([
-            "kickstart",
-            "-k",
-            &format!("gui/{}/com.meridiona.daemon", uid),
-        ])
-        .status()
-        .map_err(|e| format!("launchctl failed: {}", e))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err("launchctl kickstart returned non-zero".to_string())
-    }
-}
-
-#[tauri::command]
-pub async fn toggle_daemon(app: tauri::AppHandle, is_running: bool) -> Result<(), String> {
-    let uid = uid_str();
-    let service = format!("gui/{}/com.meridiona.daemon", uid);
-
-    let status = if is_running {
-        std::process::Command::new("launchctl")
-            .args(["stop", &service])
-            .status()
-    } else {
-        std::process::Command::new("launchctl")
-            .args(["start", &service])
-            .status()
-    }
-    .map_err(|e| format!("launchctl failed: {}", e))?;
-
-    if status.success() {
-        let (title, body) = if is_running {
-            ("Paused", "Meridian is paused. Click to resume.")
-        } else {
-            ("Resumed", "Meridian is back tracking.")
-        };
-        // Honor the user's notification prefs (master switch + quiet hours) for
-        // this direct toast, same policy as the outbox notifications.
-        if crate::poll::notifications_allowed("system.pause").await {
-            notify_user(&app, title, body);
-        }
-        Ok(())
-    } else {
-        Err(format!(
-            "launchctl {} returned non-zero",
-            if is_running { "stop" } else { "start" }
-        ))
-    }
-}
-
-fn notify_user(app: &tauri::AppHandle, title: &str, body: &str) {
-    use tauri_plugin_notification::NotificationExt;
-    let _ = app.notification().builder().title(title).body(body).show();
-}
-
-fn uid_str() -> String {
-    std::process::Command::new("id")
-        .arg("-u")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "501".to_string())
-}
+// Glob re-exports so callers use `crate::commands::<fn>` regardless of submodule.
+// Globs (not explicit names) are required: the `#[tauri::command]` macro emits
+// hidden sibling items (`__cmd__*`) that `generate_handler!` resolves through
+// this path, and only a glob carries them along with the command fn.
+pub use daemon::*;
+pub use dashboard::*;
+pub use health::*;
+pub use integrations::*;
+pub use logs::*;
+pub use notices::*;
+pub use notifications::*;
+pub use openobserve::*;
+pub use parents::*;
+pub use settings::*;
+pub use setup::*;
+pub use system::*;
+pub use tasks::*;
+pub use triage::*;
+pub use version::*;
+pub use worklogs::*;

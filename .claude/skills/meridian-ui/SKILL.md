@@ -6,6 +6,15 @@ allowed-tools: Bash, Read, Edit, Grep, Write
 
 # Meridian UI Skill
 
+> ⚠️ **Migration in progress (branch `spike/meridian-core`).** The API routes below are
+> being ported to **Rust** so the dashboard can fold into the Tauri app (no Node server at
+> runtime). Shared read queries live in the `meridian-core` crate (single source of truth;
+> the daemon re-exports them, the tray calls them). `/api/active` and `/api/today` are ported
+> (`meridian_core::{get_active_session, today}` + `tray` commands `get_active`/`get_today`),
+> verified byte-identical via golden-compare. This skill still describes the **current Node
+> dashboard** (accurate on `main`); when the migration lands it should be revised/split. See
+> `CLAUDE.md` → "Dashboard → Tauri migration".
+
 ## Stack
 
 - **Next.js** (App Router) with React Server Components

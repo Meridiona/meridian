@@ -25,7 +25,6 @@ pub mod ui;
 pub mod worklog;
 
 use crate::config::Config;
-use crate::db::screenpipe::open_screenpipe;
 
 /// Severity of a single check. Ordered Ok < Info < Warn < Critical. `Info` is a
 /// non-actionable diagnostic line (e.g. a per-app breakdown) — it never trips a
@@ -310,15 +309,23 @@ pub async fn run_all(cfg: &Config) -> Report {
         checks.extend(tag("meridian daemon", g));
     }
 
-    // screenpipe — service + L1 capture content (screenpipe DB, read-only).
+    // capture — L1 in-process capture content. Since the slice-4b cutover the
+    // tray writes capture_frames/capture_ui_events into meridian.db, so the
+    // checks read the same read-only meridian pool the daemon block uses (no
+    // separate screenpipe DB, no screenpipe process to probe).
     {
-        let sp = open_screenpipe(&cfg.screenpipe_db_uri()).await.ok();
-        let mut g = platform::screenpipe_service();
-        g.extend(capture::checks(cfg, sp.as_ref()).await);
-        checks.extend(tag("screenpipe", g));
-        if let Some(p) = sp {
-            p.close().await;
-        }
+        let g = match md.as_ref() {
+            Some(p) => capture::checks(p).await,
+            None => vec![Check::critical(
+                "capture.pool",
+                "L1",
+                "meridian.db not open — cannot read capture tables",
+            )
+            .with_remedy(
+                "ensure the daemon has created ~/.meridian/meridian.db, then re-run doctor",
+            )],
+        };
+        checks.extend(tag("capture", g));
     }
 
     // mlx-server — service + HTTP readiness probes. Hardware that can never
@@ -384,11 +391,11 @@ mod tests {
 
     fn sample() -> Report {
         Report::new(vec![
-            Check::ok("screenpipe.frames", "L1", "100").in_group("screenpipe"),
+            Check::ok("capture.frames", "L1", "100").in_group("capture"),
             Check::warn("queue", "L2", "deep")
                 .with_remedy("fix it")
                 .in_group("meridian daemon"),
-            Check::info("a11y", "L1", "x").in_group("screenpipe"),
+            Check::info("a11y", "L1", "x").in_group("capture"),
             Check::critical("auth", "L2", "401").in_group("jira"),
         ])
     }
@@ -406,18 +413,18 @@ mod tests {
         let cols: Vec<&str> = out.lines().next().unwrap().split('\t').collect();
         assert_eq!(cols.len(), 5);
         assert_eq!(cols[0], "ok"); // status
-        assert_eq!(cols[1], "screenpipe"); // group
-        assert_eq!(cols[2], "screenpipe.frames"); // name (full, not stripped)
+        assert_eq!(cols[1], "capture"); // group
+        assert_eq!(cols[2], "capture.frames"); // name (full, not stripped)
     }
 
     #[test]
     fn render_groups_strips_prefix_and_shows_remedy() {
         let out = sample().render(false);
-        assert!(out.contains("▸ screenpipe"));
+        assert!(out.contains("▸ capture"));
         assert!(out.contains("▸ meridian daemon"));
         // group prefix stripped in the table
         assert!(out.contains(" frames "));
-        assert!(!out.contains("screenpipe.frames"));
+        assert!(!out.contains("capture.frames"));
         // remedy under the warn
         assert!(out.contains("→ fix it"));
         // counts summary present

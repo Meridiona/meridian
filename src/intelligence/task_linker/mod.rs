@@ -100,7 +100,7 @@ pub fn check_classification_ready(cfg: &Config) -> Result<()> {
             Err(_) => {
                 anyhow::bail!(
                     "MLX server not running on port {port}\n\
-                     Fix: cd services && .venv313/bin/meridian-server --backend mlx --port {port}"
+                     Fix: cd services && .venv/bin/python -m agents.server --port {port}"
                 );
             }
         }
@@ -212,7 +212,7 @@ async fn call_mlx_server(
         .with_context(|| {
             format!(
                 "MLX server unreachable at {url} — start it with: \
-                 cd services && .venv313/bin/meridian-server --backend mlx --port {port}"
+                 cd services && .venv/bin/python -m agents.server --port {port}"
             )
         })?;
 

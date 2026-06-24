@@ -20,11 +20,10 @@ use meridian::etl::run_etl;
 /// Two frames 600 s apart with nothing in between → one system_sleep gap row.
 #[tokio::test]
 async fn test_gap_detection() {
-    let sp = common::make_screenpipe_db().await;
     let md = common::make_meridian_db().await;
 
     common::insert_frames(
-        &sp,
+        &md,
         &[
             ("Terminal", "2026-01-01T10:00:00+00:00"),
             ("Terminal", "2026-01-01T10:10:00+00:00"), // 600 s gap
@@ -32,7 +31,7 @@ async fn test_gap_detection() {
     )
     .await;
 
-    run_etl(&sp, &md).await.unwrap();
+    run_etl(&md).await.unwrap();
 
     let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM gaps")
         .fetch_one(&md)
@@ -61,11 +60,10 @@ async fn test_gap_detection() {
 /// but counted by `count_frames_in_window`.
 #[tokio::test]
 async fn test_gap_classification_user_idle() {
-    let sp = common::make_screenpipe_db().await;
     let md = common::make_meridian_db().await;
 
     common::insert_frames_with_trigger(
-        &sp,
+        &md,
         1,
         &[
             (Some("Terminal"), "2026-01-01T10:00:00+00:00", None), // pre-gap
@@ -76,7 +74,7 @@ async fn test_gap_classification_user_idle() {
 
     // In-gap NULL-app frames: 3 idle, 1 non-idle → idle*2=6 >= total(4) → user_idle.
     common::insert_frames_with_trigger(
-        &sp,
+        &md,
         3,
         &[
             (None, "2026-01-01T10:01:00+00:00", Some("idle")),
@@ -87,7 +85,7 @@ async fn test_gap_classification_user_idle() {
     )
     .await;
 
-    run_etl(&sp, &md).await.unwrap();
+    run_etl(&md).await.unwrap();
 
     let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM gaps")
         .fetch_one(&md)
@@ -110,11 +108,10 @@ async fn test_gap_classification_user_idle() {
 /// count_frames_in_window returns (0, 0) → must be system_sleep.
 #[tokio::test]
 async fn test_gap_classification_system_sleep() {
-    let sp = common::make_screenpipe_db().await;
     let md = common::make_meridian_db().await;
 
     common::insert_frames_with_trigger(
-        &sp,
+        &md,
         1,
         &[
             (Some("Chrome"), "2026-01-01T12:00:00+00:00", None),
@@ -123,7 +120,7 @@ async fn test_gap_classification_system_sleep() {
     )
     .await;
 
-    run_etl(&sp, &md).await.unwrap();
+    run_etl(&md).await.unwrap();
 
     let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM gaps")
         .fetch_one(&md)
@@ -149,11 +146,10 @@ async fn test_gap_classification_system_sleep() {
 /// The closed session's duration_s must be 30, not 430.
 #[tokio::test]
 async fn test_session_duration_excludes_gap() {
-    let sp = common::make_screenpipe_db().await;
     let md = common::make_meridian_db().await;
 
     common::insert_frames_with_trigger(
-        &sp,
+        &md,
         1,
         &[
             (Some("VSCode"), "2026-01-01T10:00:00+00:00", None),
@@ -167,7 +163,7 @@ async fn test_session_duration_excludes_gap() {
     )
     .await;
 
-    run_etl(&sp, &md).await.unwrap();
+    run_etl(&md).await.unwrap();
 
     let closed: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM app_sessions")
         .fetch_one(&md)
@@ -196,11 +192,10 @@ async fn test_session_duration_excludes_gap() {
 /// No gap row must be inserted.
 #[tokio::test]
 async fn test_no_gap_below_threshold() {
-    let sp = common::make_screenpipe_db().await;
     let md = common::make_meridian_db().await;
 
     common::insert_frames_with_trigger(
-        &sp,
+        &md,
         1,
         &[
             (Some("Finder"), "2026-01-01T09:00:00+00:00", None),
@@ -209,7 +204,7 @@ async fn test_no_gap_below_threshold() {
     )
     .await;
 
-    run_etl(&sp, &md).await.unwrap();
+    run_etl(&md).await.unwrap();
 
     let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM gaps")
         .fetch_one(&md)

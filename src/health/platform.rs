@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const LABEL_DAEMON: &str = "com.meridiona.daemon";
-const LABEL_SCREENPIPE: &str = "com.meridiona.screenpipe";
 const LABEL_UI: &str = "com.meridiona.ui";
 const LABEL_MLX: &str = "com.meridiona.mlx-server";
 
@@ -77,14 +76,6 @@ fn plist_valid(label: &str) -> bool {
             .unwrap_or(false)
 }
 
-fn process_running(name: &str) -> bool {
-    Command::new("pgrep")
-        .args(["-x", name])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 fn cmd_output(bin: &str, args: &[&str]) -> Option<String> {
     let out = Command::new(bin).args(args).output().ok()?;
     out.status
@@ -135,15 +126,6 @@ pub fn daemon_service() -> Vec<Check> {
         plist_check(LABEL_DAEMON, "daemon plist"),
         run_check,
     ]
-}
-
-pub fn screenpipe_service() -> Vec<Check> {
-    let run = if process_running("screenpipe") {
-        Check::ok("screenpipe service", "L1", "process alive")
-    } else {
-        Check::critical("screenpipe service", "L1", "not running").with_remedy("meridian start")
-    };
-    vec![plist_check(LABEL_SCREENPIPE, "screenpipe plist"), run]
 }
 
 /// MLX capability recorded by the installers in `~/.meridian/capabilities`.
@@ -286,7 +268,9 @@ pub fn system_checks(_cfg: &Config) -> Vec<Check> {
         os,
         env_check,
         node_check(),
-        disk_check("disk (screenpipe)", &home().join(".screenpipe")),
+        // Capture data lives in meridian.db under ~/.meridian (the in-process
+        // cutover retired ~/.screenpipe), so the meridian disk check below
+        // already covers the capture volume — no separate screenpipe check.
         disk_check("disk (meridian)", &home().join(".meridian")),
     ]
 }

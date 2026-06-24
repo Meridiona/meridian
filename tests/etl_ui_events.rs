@@ -20,11 +20,10 @@ use meridian::etl::run_etl;
 /// Expected: ended_at = 10:01:45, duration_s = 105.
 #[tokio::test]
 async fn test_ui_event_refines_session_end() {
-    let sp = common::make_screenpipe_db().await;
     let md = common::make_meridian_db().await;
 
     common::insert_frames(
-        &sp,
+        &md,
         &[
             ("Terminal", "2026-01-01T10:00:00+00:00"),
             ("Terminal", "2026-01-01T10:01:00+00:00"),
@@ -34,14 +33,14 @@ async fn test_ui_event_refines_session_end() {
     .await;
 
     sqlx::query(
-        "INSERT INTO ui_events (id, timestamp, event_type, app_name)
+        "INSERT INTO capture_ui_events (id, timestamp, event_type, app_name)
          VALUES (1, '2026-01-01T10:01:45+00:00', 'click', 'Terminal')",
     )
-    .execute(&sp)
+    .execute(&md)
     .await
     .unwrap();
 
-    run_etl(&sp, &md).await.unwrap();
+    run_etl(&md).await.unwrap();
 
     let closed: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM app_sessions")
         .fetch_one(&md)
@@ -79,11 +78,10 @@ async fn test_ui_event_refines_session_end() {
 /// Expected: ended_at = 10:02:00, duration_s = 120.
 #[tokio::test]
 async fn test_ui_event_before_last_frame_ignored() {
-    let sp = common::make_screenpipe_db().await;
     let md = common::make_meridian_db().await;
 
     common::insert_frames(
-        &sp,
+        &md,
         &[
             ("Terminal", "2026-01-01T10:00:00+00:00"),
             ("Terminal", "2026-01-01T10:01:30+00:00"),
@@ -93,14 +91,14 @@ async fn test_ui_event_before_last_frame_ignored() {
     .await;
 
     sqlx::query(
-        "INSERT INTO ui_events (id, timestamp, event_type, app_name)
+        "INSERT INTO capture_ui_events (id, timestamp, event_type, app_name)
          VALUES (1, '2026-01-01T10:00:45+00:00', 'click', 'Terminal')",
     )
-    .execute(&sp)
+    .execute(&md)
     .await
     .unwrap();
 
-    run_etl(&sp, &md).await.unwrap();
+    run_etl(&md).await.unwrap();
 
     let closed: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM app_sessions")
         .fetch_one(&md)

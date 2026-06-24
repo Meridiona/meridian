@@ -16,7 +16,7 @@ const CAT_COLORS: Record<string, string> = {
   research:          '#4F46E5',
   idle_personal:     '#78716C',
 }
-import type { TodayResponse } from '@/app/api/today/route'
+import type { TodayResponse } from '@/lib/api-types'
 
 export default function ShapeOfDay({ data }: { data: TodayResponse }) {
   const toH = (iso: string) => new Date(iso).getHours() + new Date(iso).getMinutes() / 60
