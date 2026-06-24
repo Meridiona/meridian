@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 # Dev-mode install: build deps and register the infrastructure launchd agents
-# (screenpipe, a11y-helper, OpenObserve) plus the Claude Code integrations the
-# production install ships (SessionEnd hook, session-summary command). The Rust
-# daemon, MLX server, UI, and tray are NOT registered as launchd agents — run
-# them in watch mode via: bash dev-start.sh
+# (OpenObserve) plus the Claude Code integrations the production install ships
+# (SessionEnd hook, session-summary command). The Rust daemon, MLX server, and
+# Tauri tray are NOT registered as launchd agents — run them in watch mode via:
+#   bash dev-start.sh
+#
+# Capture (v1.64.0+): runs in-process inside the Tauri tray binary — no
+# separate screenpipe or a11y-helper launchd agent is needed or registered.
+# If you have those agents from a previous dev setup, remove them:
+#   launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.meridiona.screenpipe.plist
+#   launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.meridiona.a11y-helper.plist
 #
 # Parity rule: everything a production install provides must exist in dev too —
 # infrastructure under launchd, actively-developed services via dev-start.sh
@@ -16,8 +22,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Run main install: builds Rust (debug), installs UI/tray deps, sets up Python
-# venv + MLX. --no-daemon skips all launchd registration so we can selectively
-# register only screenpipe and a11y-helper below.
+# venv + MLX. --no-daemon skips all launchd registration (capture agents are
+# not needed — capture runs in-process inside the Tauri tray).
 bash "${REPO_ROOT}/install.sh" --dev --no-daemon "$@"
 
 # Write 'dev' into ~/.meridian/app/VERSION so the UI update-available banner
@@ -25,15 +31,6 @@ bash "${REPO_ROOT}/install.sh" --dev --no-daemon "$@"
 mkdir -p "${HOME}/.meridian/app"
 echo "dev" > "${HOME}/.meridian/app/VERSION"
 echo "  ✓ ~/.meridian/app/VERSION set to 'dev' (suppresses update banner)"
-
-# Register only the infrastructure agents that we don't actively develop.
-# The Rust daemon, MLX server, UI, and tray are intentionally excluded —
-# dev-start.sh runs them with hot-reload instead.
-echo ""
-echo "→ Installing infrastructure launchd agents (screenpipe + a11y-helper)..."
-bash "${REPO_ROOT}/scripts/install-screenpipe-daemon.sh"
-bash "${REPO_ROOT}/scripts/install-a11y-helper-daemon.sh"
-echo "  ✓ screenpipe + a11y-helper registered"
 
 # OpenObserve — same guard as install.sh's daemon block: register the agent only
 # when the binary is present (install.sh's prereq step offers the download).
@@ -75,10 +72,10 @@ echo ""
 echo "Start all services with hot-reload:"
 echo "  bash dev-start.sh"
 echo ""
-echo "What dev-start.sh opens (4 Terminal windows):"
+echo "What dev-start.sh opens (3 Terminal windows):"
 echo "  1. Rust daemon   — cargo watch, rebuilds on every .rs save"
 echo "  2. MLX server    — uvicorn --reload, reloads on .py changes"
-echo "  3. Next.js UI    — http://localhost:3939 (hot reload)"
-echo "  4. Tauri tray    — hot reload"
+echo "  3. Tauri tray    — npm run tauri dev (starts Next.js hot-reload automatically)"
 echo ""
-echo "screenpipe + a11y-helper + OpenObserve run via launchd and restart automatically."
+echo "OpenObserve runs via launchd and restarts automatically (if installed)."
+echo "Capture runs in-process inside the Tauri tray — no separate agent needed."

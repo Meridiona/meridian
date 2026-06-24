@@ -3,16 +3,23 @@
 # Start all Meridian services in watch/hot-reload mode for local development.
 #
 # Prereqs (run once):
-#   bash install-dev.sh          # installs deps, screenpipe + a11y-helper launchd agents
+#   bash install-dev.sh          # installs deps, Claude Code integrations
 #   cargo install cargo-watch    # Rust file watcher
 #
-# What this opens (4 Terminal windows):
-#   1. Rust daemon   — cargo watch, rebuilds + restarts on every .rs save
-#   2. MLX server    — uvicorn --reload, reloads on every .py save in services/agents/
-#   3. Next.js UI    — npm run dev, hot reload at http://localhost:3939
-#   4. Tauri tray    — npm run tauri dev, hot reload
+# What this opens (3 Terminal windows):
+#   1. Rust daemon  — cargo watch, rebuilds + restarts on every .rs save
+#   2. MLX server   — uvicorn --reload, reloads on every .py save in services/agents/
+#   3. Tauri tray   — npm run tauri dev (automatically starts Next.js hot-reload
+#                     on port 3939 via beforeDevCommand; dashboard loads in the
+#                     native Tauri webview)
 #
-# screenpipe + a11y-helper run via launchd and do not need restarting.
+# Capture (v1.64.0+) runs in-process inside the Tauri tray binary — no separate
+# screenpipe or a11y-helper agent is needed.
+#
+# Known limitation: the tray popover 404s under `tauri dev` because the Next.js
+# dev server does not serve the popover/ directory. The main dashboard window
+# works normally. Use a production build (`npm run tauri build`) to test the
+# popover.
 
 set -euo pipefail
 
@@ -38,54 +45,25 @@ if [[ ! -d "${REPO_ROOT}/services/.venv" ]]; then
     exit 1
 fi
 
-if [[ ! -d "${REPO_ROOT}/ui/node_modules" ]]; then
-    echo "✗ ui/node_modules not found — run: bash install-dev.sh" >&2
-    exit 1
-fi
-
 if [[ ! -d "${REPO_ROOT}/tray/node_modules" ]]; then
     echo "✗ tray/node_modules not found — run: bash install-dev.sh" >&2
     exit 1
 fi
 
 # ---------------------------------------------------------------------------
-# Stop any previous dev run FIRST so re-running this is idempotent. The Rust
-# daemon binds a unix socket (~/.meridian/daemon.sock), NOT a TCP port, and just
-# removes+rebinds it on launch — so a daemon from an earlier run keeps running
-# silently and races the same DB / etl_cursor (you'd accumulate N daemons after
-# N runs, stalling classification). Kill the backend watchers + binaries here.
+# Stop any previous dev run FIRST so re-running is idempotent.
+# The Rust daemon binds a unix socket (~/.meridian/daemon.sock) and the MLX
+# server binds port 7823. `npm run tauri dev` manages the Next.js dev server
+# lifecycle internally (beforeDevCommand) — killing it here is enough.
 # ---------------------------------------------------------------------------
-UI_PORT="${MERIDIAN_UI_PORT:-3939}"
 echo "→ stopping any previous dev run…"
 pkill -f 'cargo-watch.*--bin meridian'  2>/dev/null || true   # daemon file-watcher
-pkill -f 'target/debug/meridian$'       2>/dev/null || true   # daemon binary (not -tray / -server)
-pkill -f 'uvicorn agents.server:app'    2>/dev/null || true   # MLX dev server (uvicorn --reload)
-pkill -f 'tauri dev'                    2>/dev/null || true    # tray file-watcher
+pkill -f 'target/debug/meridian$'       2>/dev/null || true   # daemon binary
+pkill -f 'uvicorn agents.server:app'    2>/dev/null || true   # MLX dev server
+pkill -f 'tauri dev'                    2>/dev/null || true   # tray file-watcher
 pkill -f 'target/debug/meridian-tray$'  2>/dev/null || true   # tray binary
-# Free the dashboard port if a prior `next dev` still holds it.
-_ui_pids="$(lsof -ti "tcp:${UI_PORT}" 2>/dev/null || true)"
-[[ -n "${_ui_pids}" ]] && kill ${_ui_pids} 2>/dev/null || true
 sleep 1   # let sockets / ports free before the new windows bind them
 echo "  ✓ previous dev run stopped"
-
-# ---------------------------------------------------------------------------
-# Ensure screenpipe is up — meridian stop disables it via launchctl, so it
-# won't auto-restart. Re-enable + bootstrap + kickstart it here so the daemon
-# has frames to read. Idempotent: safe to run when screenpipe is already live.
-# ---------------------------------------------------------------------------
-LABEL_SCREENPIPE="com.meridiona.screenpipe"
-GUI_TARGET="gui/$(id -u)"
-SP_PLIST="${HOME}/Library/LaunchAgents/${LABEL_SCREENPIPE}.plist"
-if [[ -f "$SP_PLIST" ]]; then
-    echo "→ ensuring screenpipe is running…"
-    launchctl enable    "${GUI_TARGET}/${LABEL_SCREENPIPE}" 2>/dev/null || true
-    launchctl bootstrap "${GUI_TARGET}" "$SP_PLIST"        2>/dev/null || true
-    # bootstrap + RunAtLoad starts screenpipe immediately; no kickstart needed
-    # (kickstart -k would block waiting for screenpipe to re-initialise camera/screen capture)
-    echo "  ✓ screenpipe (re)started"
-else
-    echo "  ⚠ screenpipe plist not found — run: bash install-dev.sh"
-fi
 
 # ---------------------------------------------------------------------------
 # Launch each service in its own Terminal window
@@ -101,22 +79,19 @@ tell application "Terminal"
     -- 2. MLX server (uvicorn --reload, watches services/agents/ only)
     do script "echo '=== MLX server (uvicorn --reload) ===' && cd '${REPO_ROOT}/services' && .venv/bin/uvicorn agents.server:app --reload --reload-dir '${REPO_ROOT}/services/agents' --host 127.0.0.1 --port 7823"
 
-    -- 3. Next.js UI (hot reload)
-    do script "echo '=== Next.js UI ===' && cd '${REPO_ROOT}/ui' && npm run dev"
-
-    -- 4. Tauri tray (hot reload)
-    do script "echo '=== Tauri tray ===' && cd '${REPO_ROOT}/tray' && npm run tauri dev"
+    -- 3. Tauri tray (hot reload — also starts Next.js dev server automatically via beforeDevCommand)
+    do script "echo '=== Tauri tray (tauri dev) ===' && cd '${REPO_ROOT}/tray' && npm run tauri dev"
 end tell
 APPLESCRIPT
 
 echo ""
-echo "✓ Dev services starting in 4 Terminal windows:"
+echo "✓ Dev services starting in 3 Terminal windows:"
 echo ""
-echo "  1. Rust daemon   — rebuilds automatically on .rs save"
-echo "  2. MLX server    — reloads on .py changes in services/agents/"
-echo "  3. Next.js UI    — http://localhost:3939 (hot reload)"
-echo "  4. Tauri tray    — hot reload"
+echo "  1. Rust daemon  — rebuilds automatically on .rs save"
+echo "  2. MLX server   — reloads on .py changes in services/agents/"
+echo "  3. Tauri tray   — hot reload (Next.js dev server starts automatically)"
 echo ""
-echo "  screenpipe + a11y-helper running via launchd (no restarts needed)."
+echo "  Dashboard: open the Meridian tray icon → Open Dashboard"
+echo "  Capture runs in-process inside the tray — no separate agent needed."
 echo ""
-echo "  To stop: Ctrl-C in each window + meridian stop (for launchd services)"
+echo "  To stop: Ctrl-C in each window"

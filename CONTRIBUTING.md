@@ -22,9 +22,10 @@ For anything beyond a small fix, **open an issue first**.
 | Path | What it is |
 |---|---|
 | `src/` | Rust daemon — ETL pipeline, coding-agent ingest, classification, worklog drafting |
-| `ui/` | Next.js dashboard |
+| `meridian-core/` | Shared Rust crate — DB readers used by both the daemon and the tray |
+| `ui/` | Next.js dashboard (static export, embedded in the Tauri binary — no Node server) |
 | `packages/meridian-mcp/` | TypeScript MCP server |
-| `tray/` | Tauri menu-bar app |
+| `tray/` | Tauri menu-bar app — in-process capture, dashboard webview, MLX supervision |
 | `services/` | Python services — MLX model server and worklog synthesiser |
 | `tests/` | Rust integration tests |
 
@@ -42,12 +43,18 @@ See **[CLAUDE.md](CLAUDE.md)** for the full architecture and per-task recipes.
 git clone https://github.com/Meridiona/meridian
 cd meridian
 cp .env.example .env
-bash install-dev.sh          # builds deps, registers screenpipe + a11y-helper launchd agents
+bash install-dev.sh          # builds deps, installs Claude Code integrations
 cargo install cargo-watch    # Rust file watcher (one-time)
 bash scripts/setup-hooks.sh  # install git hooks — do this before your first commit
 ```
 
-`install-dev.sh` installs everything but does **not** register the Rust daemon or MLX server as launchd agents — those run in watch mode instead.
+`install-dev.sh` builds all deps but does **not** register the daemon, MLX server, or tray as launchd agents — those run in watch mode instead. Capture runs in-process inside the Tauri tray; no screenpipe or a11y-helper agent is needed.
+
+> **Upgrading from an older dev setup?** If you have screenpipe or a11y-helper registered from before v1.64.0, remove them:
+> ```bash
+> launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.meridiona.screenpipe.plist
+> launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.meridiona.a11y-helper.plist
+> ```
 
 ### Starting the dev environment
 
@@ -55,34 +62,31 @@ bash scripts/setup-hooks.sh  # install git hooks — do this before your first c
 bash dev-start.sh
 ```
 
-This opens 4 Terminal windows, one per service:
+This opens **3 Terminal windows**:
 
 | Window | Command | Triggers on |
 |---|---|---|
 | Rust daemon | `cargo watch -x 'run --bin meridian'` | any `.rs` save |
 | MLX server | `uvicorn --reload --reload-dir services/agents/` | any `.py` save in `services/agents/` |
-| Next.js UI | `npm run dev` | any `.ts`/`.tsx` save |
-| Tauri tray | `npm run tauri dev` | any Rust or JS/CSS save |
+| Tauri tray | `npm run tauri dev` | any Rust or frontend save |
 
-screenpipe and a11y-helper run via launchd and restart automatically — you don't need to touch them.
+`npm run tauri dev` automatically starts the Next.js dev server on port 3939 (via `beforeDevCommand` in `tray/src-tauri/tauri.conf.json`) and opens the dashboard in a native Tauri webview — no separate `npm run dev` terminal is needed.
+
+> **Known limitation:** the tray popover 404s under `tauri dev` because the Next.js dev server does not serve `popover/`. The main dashboard window works normally. Use `npm run tauri build` to test the popover.
 
 ### Stopping the dev environment
 
-- **Ctrl-C** in each Terminal window to stop the watch processes
-- `meridian stop` to stop the launchd agents (screenpipe, a11y-helper)
+**Ctrl-C** in each Terminal window. `dev-start.sh` also kills any previous run at start, so re-running it is safe.
 
-### Installed package vs dev mode
+### Installed app vs dev mode
 
-These are two distinct setups — do not mix them:
-
-| | Installed package (`curl … | bash`) | Dev mode (`install-dev.sh`) |
+| | Installed app (`.dmg` / `bootstrap.sh`) | Dev mode (`install-dev.sh`) |
 |---|---|---|
 | Rust daemon | launchd agent, release binary | `cargo watch` in terminal |
-| MLX server | launchd agent | `uvicorn --reload` in terminal |
-| Next.js UI | launchd agent, production build | `npm run dev` in terminal |
-| Tauri tray | launchd agent, production build | `npm run tauri dev` in terminal |
-| screenpipe | launchd agent | launchd agent |
-| a11y-helper | launchd agent | launchd agent |
+| MLX server | launchd agent, provisioned runtime | `uvicorn --reload` in terminal |
+| Dashboard | static export embedded in tray binary | Next.js dev server (auto-started by `tauri dev`) |
+| Tauri tray | installed `.app` | `npm run tauri dev` in terminal |
+| Capture | in-process inside tray | in-process inside tray |
 
 ---
 
@@ -149,7 +153,7 @@ Maintainers never merge their own PRs. Leave the final merge to a reviewer.
 ## Coding conventions
 
 - **Rust** — `anyhow::Result` with `.context("…")` on every DB call; `tracing` with structured fields; avoid `unwrap()` outside tests.
-- **TypeScript** — no `any` unless justified with a comment; keep UI API routes thin (query, transform, return JSON).
+- **TypeScript** — no `any` unless justified with a comment. The dashboard reaches Rust only via `ui/lib/bridge.ts` (`load`/`mutate` → `invoke`; `subscribe` → Tauri events). No `/api` fetch or `EventSource` — those routes are gone.
 - **SQL** — add a new numbered migration; never edit an existing one.
 - **Keep files under ~500 lines** — split when they grow past that.
 

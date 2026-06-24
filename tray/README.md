@@ -1,121 +1,100 @@
 # Meridian Tray App
 
-A Tauri-based macOS menu bar application that shows Meridian daemon status, displays today's top app, and enables quick access to worklog drafting.
+A Tauri-based macOS menu bar application that owns screen capture, serves the embedded dashboard, supervises the MLX runtime, and drives the live data streams the UI consumes.
 
-## Architecture
+## Architecture (v1.64.0+)
 
-- **Rust backend** (`src-tauri/`): Polls health, status, and worklog APIs every 60 seconds
-- **Web UI** (`src/`): Lightweight HTML/CSS/JavaScript popover
-- **Launchd integration**: Registered as `com.meridiona.tray` to auto-start on login
+The tray is the central process — it replaces the old Node UI server and the external screenpipe process:
+
+```
+Tauri tray binary
+├── In-process capture (screenpipe-screen + screenpipe-a11y)
+│     └── writes capture_frames / capture_ui_events → meridian.db
+├── Embedded dashboard (static Next.js export in ui/out/)
+│     └── frontend reaches Rust via Tauri invoke / events only
+├── Poll loop (every 30 s)
+│     ├── refreshes health, active session, today stats, worklog drafts
+│     ├── supervises the MLX server (restart budget + cooling period)
+│     └── emits Tauri events: status-update, health-update, notices-update …
+└── meridian-core readers (shared with the daemon)
+      └── DB reads for dashboard commands — no HTTP, no Node
+```
+
+**Key source directories:**
+
+| Path | What it is |
+|---|---|
+| `src-tauri/src/poll/` | Background poll loop — tick cadence, health/session/worklog refresh, MLX supervision, live Tauri event emission |
+| `src-tauri/src/commands/` | `#[tauri::command]` surface, grouped by domain: `dashboard.rs` (DB reads), `daemon.rs`, `setup.rs`, `system.rs`, … |
+| `src-tauri/src/mlx_server.rs` | MLX child-process lifecycle — resolve, spawn, health-check, supervise, auto-upgrade |
+| `src-tauri/src/tray.rs` | Menu builder + menu-event dispatch + window openers |
+| `src-tauri/src/capture/` | In-process screen / a11y capture wired to the forked screenpipe-screen / screenpipe-a11y crates |
+| `src/` | Popover HTML/CSS/JS (lightweight web UI rendered in the menu-bar window) |
 
 ## Development
 
 ```bash
-# Install dependencies
+# From repo root — starts daemon + MLX + tray with hot reload in 3 Terminal windows
+bash dev-start.sh
+
+# Or run the tray alone (daemon + MLX must already be running)
+cd tray
 npm install
-
-# Start dev server with hot reload
 npm run tauri dev
+```
 
-# Lint and format (Rust)
+`npm run tauri dev` automatically runs `cd ../ui && npm run dev` as its `beforeDevCommand`, serving the Next.js dashboard on `http://localhost:3939`. The tray webview connects to that URL — no separate Next.js terminal is needed.
+
+**Known limitation:** the tray popover 404s under `tauri dev` (the Next.js dev server does not serve `popover/`). The main dashboard window works normally. Test the popover with a production build.
+
+### Rust linting and tests
+
+```bash
 cd src-tauri
-cargo fmt
+cargo fmt --check
 cargo clippy -- -D warnings
 cargo test
 ```
 
-## Building for Release
+## Production build
 
 ```bash
-# Generate icons
-bash create-icons.sh
-
-# Install dependencies
+cd tray
+bash create-icons.sh   # generate all icon sizes from tray/meridiona-mark.png
 npm install
-
-# Build (release binary)
-npm run tauri build
-
-# Output: src-tauri/target/release/meridian-tray
+npm run tauri build    # output: src-tauri/target/release/meridian-tray
 ```
 
-## Components
+The build bundles the static Next.js export (`ui/out/`) into the binary via Tauri's `frontendDist`. The popover HTML is copied into `ui/out/popover/` by the build step; the main window loads `WebviewUrl::App("today")`.
 
-### `src-tauri/src/poll.rs`
-60-second polling loop that:
-- Calls `/api/health` to check daemon + UI status
-- Calls `/api/active` to get current session
-- Calls `/api/today` to get focus stats
-- Calls `/api/worklogs` to count drafted items
+## Adding a new command
 
-### `src-tauri/src/commands.rs`
-Tauri commands exposed to the UI:
-- `get_status()` — returns current cached state
-- `open_dashboard()` — opens browser to http://127.0.0.1:3939
-- `open_worklogs()` — opens browser to worklogs view
-- `restart_daemon()` — `launchctl kickstart -k` the daemon
-- `toggle_daemon()` — pause/resume the daemon via `launchctl stop/start`
+1. Write the Rust fn in `src-tauri/src/commands/<domain>.rs` — DB reads belong in `meridian-core/src/readers/`, file/env/process actions stay in `commands/`.
+2. Register it in `src-tauri/src/commands.rs` (glob re-exports) and in `lib.rs`'s `invoke_handler!`.
+3. Add it to `capabilities/default.json` if it needs new permissions.
+4. Call it from the frontend via `load(apiPath, 'command_name', args)` in `ui/lib/bridge.ts`.
 
-### `src-tauri/src/state.rs`
-Shared app state:
-- `health`: daemon/UI health status
-- `active_session`: current app name + elapsed seconds
-- `focus_s`, `switch_count`: today's stats
-- `drafts_count`: pending worklog count
-
-### `src/app.js`
-Event handlers for the UI:
-- Listens for `status-update` events from the Rust backend
-- Handles menu/button clicks
-- Manages UI rendering and local elapsed-time timer
-
-## Installing as a LaunchAgent
-
-```bash
-# Production install (auto-starts on login)
-bash scripts/install-tray-daemon.sh
-
-# Uninstall
-bash scripts/uninstall-tray-daemon.sh
-
-# View logs
-tail -f ~/.meridian/logs/tray.log
-
-# Stop/restart manually
-launchctl stop com.meridiona.tray
-launchctl start com.meridiona.tray
-```
-
-## Notifications
-
-The tray app sends macOS notifications for:
-- **Daemon offline**: "Meridian went quiet" (after 2 consecutive health check failures)
-- **Daemon back online**: "Back online"
-- **Toggle actions**: "Paused" / "Resumed" when user clicks the toggle
-- **Worklog drafts**: "X drafts waiting on you" when new drafts appear
-
-Notifications appear in macOS Notification Center and the menu bar.
+See the full playbook in `CLAUDE.md` → "Porting a dashboard route to Rust".
 
 ## Troubleshooting
 
-### Tray app doesn't start
+**Tray icon not appearing / app won't launch**
 ```bash
-# Check if it's registered
-launchctl list com.meridiona.tray
-
-# View logs
+# View tray logs
 tail -f ~/.meridian/logs/tray.log
 
-# Restart manually
-launchctl stop com.meridiona.tray
-launchctl start com.meridiona.tray
+# Restart the tray launchd agent
+launchctl kickstart -k gui/$(id -u)/com.meridiona.tray
 ```
 
-### Health status not updating
-- The tray polls every 60 seconds
-- Check `/api/health` manually: `curl http://127.0.0.1:3939/api/health | jq`
-- Verify the UI is running: `curl http://127.0.0.1:3939/`
+**Dashboard shows blank / invoke errors in DevTools**
+- The tray starts before the daemon on fresh launch — the DB may not be ready yet. The `subscribe()` bridge retries once after 2 s automatically.
+- Check `meridian doctor` for L1 capture or daemon health faults.
 
-### Toggle doesn't work
-- Check Rust daemon logs: `tail -f ~/.meridian/logs/meridian.log`
-- Verify launchctl recognizes the daemon: `launchctl list | grep meridiona`
+**Capture not recording (no frames in `capture_frames`)**
+- Grant **Screen Recording** and **Accessibility** to **Meridian** in System Settings → Privacy & Security.
+- In dev mode, run `meridian doctor` — `capture.frames` shows the frame count and `capture.freshness` shows how recent the latest frame is.
+
+**MLX server stuck / not classifying**
+- `meridian logs mlx-server -f` — look for startup errors.
+- The tray supervises the MLX server with a 5-restart budget + 10-tick (~10 min) cooling period before retrying. A persistent failure usually means the runtime needs re-downloading: `meridian setup download-runtime`.
