@@ -64,21 +64,21 @@ export const TRACKERS: Tracker[] = [
     name: 'Jira',
     glyph: 'Ji',
     color: '#2684FF',
-    blurb: 'Cloud via browser, or any site with an API token.',
+    blurb: 'Jira Cloud — connect via browser or an API token.',
     oauth: {
       label: 'Browser OAuth',
       hint: 'Connect Jira Cloud with your browser — no API token to create.',
     },
     token: {
-      label: 'Site URL + Token',
-      hint: 'Self-hosted (Server / Data Center) or prefer a token? Use your site URL, email, and an API token.',
+      label: 'API Token',
+      hint: 'Prefer a token over OAuth? Use your Jira Cloud site URL, email, and an API token.',
       url: 'https://id.atlassian.com/manage-profile/security/api-tokens',
       fields: [
         { name: 'base_url', label: 'Site URL', placeholder: 'https://yourorg.atlassian.net', required: true },
         { name: 'email', label: 'Email', placeholder: 'you@yourorg.com', required: true },
         { name: 'api_token', label: 'API token', placeholder: 'ATATT3x…', password: true, required: true },
       ],
-      note: 'For Jira Cloud the token is created at id.atlassian.com. For Server/Data Center, use your instance URL and a personal access token.',
+      note: 'Works for Jira Cloud (create the API token at id.atlassian.com). Self-hosted Server / Data Center is not supported yet — it needs a different REST path and auth.',
     },
   },
   {

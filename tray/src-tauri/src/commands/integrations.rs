@@ -53,6 +53,10 @@ const GH_CLI_PROVIDERS: [&str; 1] = ["github"];
 /// Providers connected via `.env` keys. Disconnecting strips every listed key
 /// from the active `.env`. Mirrors the route's `TOKEN_KEYS`.
 const TOKEN_KEYS: &[(&str, &[&str])] = &[
+    // Jira connects via OAuth AND via API token (base URL + email + token), so a
+    // disconnect must strip these env keys in addition to removing the OAuth json
+    // — otherwise a token-connected Jira can never be disconnected.
+    ("jira", &["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"]),
     ("github", &["GITHUB_TOKEN", "GITHUB_PROJECT_IDS"]),
     ("linear", &["LINEAR_API_KEY", "LINEAR_TEAM_IDS"]),
     (
@@ -261,13 +265,13 @@ fn upsert_env(path: &std::path::Path, updates: &BTreeMap<String, String>) -> std
     std::fs::write(path, lines.join("\n"))
 }
 
-/// Disconnect a tracker (the ported /api/integrations DELETE). For an OAuth
-/// provider this deletes its `~/.meridian/oauth/<p>.json` token store; for a
-/// token/gh-CLI provider it strips that provider's keys from the active `.env`
-/// (the same file [`get_integrations`] reads). After credentials are removed,
-/// clears the provider's tasks from the DB (best-effort — warns on failure but
-/// does not block the disconnect). Returns `{ ok: true }`; an unknown provider
-/// is the route's 400.
+/// Disconnect a tracker (the ported /api/integrations DELETE). Removes the
+/// OAuth token store (`~/.meridian/oauth/<p>.json`) AND strips the provider's
+/// `.env` keys — Jira can be connected either way, so both run. (trello = json
+/// only; linear/github/azure = env keys only; jira = both.) After credentials
+/// are removed, clears the provider's tasks from the DB (best-effort — warns on
+/// failure but does not block the disconnect). Returns `{ ok: true }`; an unknown
+/// provider is the route's 400.
 #[tauri::command]
 #[tracing::instrument(skip(body, pool), fields(provider = %body.provider))]
 pub async fn disconnect_integration(
@@ -283,6 +287,9 @@ pub async fn disconnect_integration(
         return Err("Invalid provider".to_string());
     }
 
+    // A provider can have BOTH an OAuth token store and env-key credentials
+    // (Jira: OAuth json + JIRA_* keys), so run both cleanups independently rather
+    // than as an either/or — otherwise a token-connected Jira survives disconnect.
     if OAUTH_PROVIDERS.contains(&provider) {
         if let Some(home) = home() {
             let token = home
@@ -291,12 +298,9 @@ pub async fn disconnect_integration(
             // Not-present is a no-op (route swallows the unlink error).
             let _ = std::fs::remove_file(&token);
         }
-        // Clear the error sentinel so a future connect attempt starts clean.
-        if let Some(sentinel) = oauth_error_path(provider) {
-            let _ = std::fs::remove_file(&sentinel);
-        }
-        tracing::info!("disconnected OAuth provider (token store removed)");
-    } else if let Some((_, keys)) = token_keys {
+        tracing::info!("removed OAuth token store");
+    }
+    if let Some((_, keys)) = token_keys {
         match crate::install::detect_install_mode().env_path() {
             Some(env_path) => strip_env_keys(env_path, keys).map_err(|e| {
                 tracing::warn!(error = %e, "could not rewrite .env");
@@ -304,11 +308,11 @@ pub async fn disconnect_integration(
             })?,
             None => tracing::warn!("no .env detected — nothing to strip"),
         }
-        // Clear the error sentinel for gh-CLI providers too.
-        if let Some(sentinel) = oauth_error_path(provider) {
-            let _ = std::fs::remove_file(&sentinel);
-        }
-        tracing::info!("disconnected token provider (.env keys stripped)");
+        tracing::info!("stripped .env credential keys");
+    }
+    // Clear the error sentinel either way so a future connect starts clean.
+    if let Some(sentinel) = oauth_error_path(provider) {
+        let _ = std::fs::remove_file(&sentinel);
     }
 
     // Best-effort: remove the provider's tasks so they don't linger in the UI.
@@ -830,5 +834,86 @@ mod tests {
             "value": [{ "name": "Zebra" }, { "name": "Apple" }, { "other": "skip" }]
         });
         assert_eq!(sorted_names(&body, "name"), vec!["Apple", "Zebra"]);
+    }
+
+    fn tmp_env(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("meridian-int-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join(name)
+    }
+
+    #[test]
+    fn upsert_env_replaces_existing_and_appends_new() {
+        let path = tmp_env("upsert-replace.env");
+        std::fs::write(&path, "KEEP=1\nLINEAR_API_KEY=old\n").unwrap();
+        let mut updates = BTreeMap::new();
+        updates.insert("LINEAR_API_KEY".to_string(), "new".to_string());
+        updates.insert("LINEAR_TEAM_IDS".to_string(), "T1,T2".to_string());
+        upsert_env(&path, &updates).unwrap();
+
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(out.contains("KEEP=1"), "untouched line preserved");
+        assert!(
+            out.contains("LINEAR_API_KEY=new"),
+            "existing key replaced in place"
+        );
+        assert!(!out.contains("LINEAR_API_KEY=old"), "old value gone");
+        assert!(out.contains("LINEAR_TEAM_IDS=T1,T2"), "new key appended");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn upsert_env_preserves_comments_and_creates_missing() {
+        // Missing file → created with just the new key.
+        let path = tmp_env("upsert-create.env");
+        std::fs::remove_file(&path).ok();
+        let mut updates = BTreeMap::new();
+        updates.insert("GITHUB_TOKEN".to_string(), "ghp_x".to_string());
+        upsert_env(&path, &updates).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap().trim(),
+            "GITHUB_TOKEN=ghp_x"
+        );
+
+        // A comment line is preserved verbatim across an upsert.
+        std::fs::write(&path, "# my creds\nGITHUB_TOKEN=ghp_old\n").unwrap();
+        upsert_env(&path, &updates).unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(out.contains("# my creds"), "comment preserved");
+        assert!(out.contains("GITHUB_TOKEN=ghp_x"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn jira_token_keys_present_so_disconnect_strips_them() {
+        // Regression guard: a Jira connected via API token must be disconnectable.
+        // The disconnect path strips TOKEN_KEYS for jira IN ADDITION to removing
+        // the OAuth json, so jira MUST appear in TOKEN_KEYS with its three keys.
+        let jira = TOKEN_KEYS
+            .iter()
+            .find(|(p, _)| *p == "jira")
+            .expect("jira must be in TOKEN_KEYS so token-connected Jira can disconnect");
+        assert!(jira.1.contains(&"JIRA_BASE_URL"));
+        assert!(jira.1.contains(&"JIRA_EMAIL"));
+        assert!(jira.1.contains(&"JIRA_API_TOKEN"));
+
+        // Round-trip: connect (upsert) then disconnect (strip) leaves no Jira creds.
+        let path = tmp_env("jira-roundtrip.env");
+        let mut updates = BTreeMap::new();
+        updates.insert(
+            "JIRA_BASE_URL".to_string(),
+            "https://acme.atlassian.net".to_string(),
+        );
+        updates.insert("JIRA_EMAIL".to_string(), "a@b.com".to_string());
+        updates.insert("JIRA_API_TOKEN".to_string(), "ATATT".to_string());
+        updates.insert("KEEP".to_string(), "1".to_string());
+        upsert_env(&path, &updates).unwrap();
+        strip_env_keys(&path, jira.1).unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(out.contains("KEEP=1"), "unrelated key kept");
+        assert!(!out.contains("JIRA_BASE_URL"));
+        assert!(!out.contains("JIRA_EMAIL"));
+        assert!(!out.contains("JIRA_API_TOKEN"));
+        std::fs::remove_file(&path).ok();
     }
 }
