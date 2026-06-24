@@ -1,0 +1,39 @@
+{
+  "branches": ["main", { "name": "pre-main", "prerelease": "staging" }],
+  "tagFormat": "v${version}",
+  "plugins": [
+    ["@semantic-release/commit-analyzer", { "preset": "conventionalcommits" }],
+    ["@semantic-release/release-notes-generator", {
+      "preset": "conventionalcommits",
+      "presetConfig": {
+        "types": [
+          { "type": "feat", "section": "🚀 Features" },
+          { "type": "fix", "section": "🐛 Bug Fixes" },
+          { "type": "perf", "section": "⚡ Performance" },
+          { "type": "refactor", "section": "♻️ Refactoring" },
+          { "type": "build", "section": "📦 Build System" },
+          { "type": "ci", "section": "🤖 CI" },
+          { "type": "test", "section": "✅ Tests" },
+          { "type": "docs", "section": "📝 Documentation" },
+          { "type": "style", "section": "🎨 Styles" },
+          { "type": "chore", "section": "🔧 Chores" },
+          { "type": "revert", "section": "⏪ Reverts" }
+        ]
+      }
+    }],
+    ["@semantic-release/github", {
+      "successComment": false,
+      "failComment": false,
+      "assets": [
+        { "path": "target/release/bundle/dmg/Meridian.dmg", "label": "Meridian.dmg (macOS, Apple silicon) — staging ${nextRelease.gitTag}" },
+        { "path": "target/release/bundle/macos/Meridian.app.tar.gz", "label": "Meridian.app.tar.gz (updater)" },
+        { "path": "target/release/bundle/macos/Meridian.app.tar.gz.sig", "label": "Meridian.app.tar.gz.sig" },
+        { "path": "target/release/bundle/macos/latest.json", "label": "latest.json (updater manifest)" }
+      ]
+    }],
+    ["@semantic-release/exec", {
+      "prepareCmd": "bash scripts/set-version.sh ${nextRelease.version} && cargo build --release && (cd ui && npm ci --no-audit --no-fund && npm run build) && (cd tray && bash create-icons.sh && npm ci --no-audit --no-fund && npm run build -- --config src-tauri/tauri.staging.conf.json) && bash scripts/package-release.sh ${nextRelease.version} && bash scripts/package-updater.sh ${nextRelease.version} && bash scripts/verify-release-bundle.sh ${nextRelease.version}",
+      "publishCmd": "bash scripts/mirror-staging-release.sh ${nextRelease.version}"
+    }]
+  ]
+}

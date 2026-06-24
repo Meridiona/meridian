@@ -1,0 +1,105 @@
+name: Release (staging)
+
+# Staging-channel releases via semantic-release, on the `pre-main` branch.
+# Triggered MANUALLY (workflow_dispatch) — each run cuts a PRERELEASE version
+# (X.Y.Z-staging.N, computed from main's reachable v* tags) that builds the SAME
+# signed DMG + updater artifacts as the production flow, but:
+#   • bakes the STAGING updater endpoint (…/releases/download/updater-staging/
+#     latest.json) into the .app at build time via a --config overlay — never
+#     committed, so it cannot leak to `main`;
+#   • is GitHub-only (NO npm publish, NO version-bump commit back to pre-main);
+#   • mirrors latest.json onto the rolling `updater-staging` prerelease so an
+#     installed staging app self-updates staging→staging.
+#
+# Differs from release.yml (production/main) only in: it targets pre-main, cuts a
+# prerelease, swaps in .releaserc.staging.json, and publishes to GitHub only.
+# Same macos-26 runner because the prepare step builds the Swift Foundation
+# Models bridge + Metal/MLX + the dashboard, exactly like main.
+#
+# Manual only by design (a full macOS build is ~45 min); run it when you want a
+# staging cut: `gh workflow run release-staging.yml --ref pre-main`.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write       # tags, the GitHub prerelease(s), the rolling updater-staging release
+
+concurrency:
+  group: release-staging
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-26
+    env:
+      SQLX_OFFLINE: "true"
+      # Baked into the staging binary at compile time (see release.yml); same
+      # secret. Absent → Jira OAuth simply unavailable in the staging build.
+      MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
+      # Minisign key for the DMG auto-updater: `tauri build` (createUpdaterArtifacts)
+      # signs Meridian.app.tar.gz so the installed staging app can verify the
+      # update against the pubkey baked in tauri.conf.json. REQUIRED here (unlike
+      # the legacy staging flow) — without it package-updater.sh emits no
+      # latest.json and the mirror no-ops, so the staging channel can't update.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: pre-main           # release the pre-main tip — NOT the default branch
+          fetch-depth: 0          # full history — semantic-release needs commits
+          fetch-tags: true        # see main's v* tags (reachable: pre-main is off main)
+          persist-credentials: false
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: |
+            package-lock.json
+            ui/package-lock.json
+            tray/package-lock.json
+
+      - name: Cache uv packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ hashFiles('services/uv.lock') }}
+          restore-keys: uv-
+
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: ui/.next/cache
+          key: nextjs-${{ hashFiles('ui/package-lock.json') }}-${{ hashFiles('ui/**/*.ts', 'ui/**/*.tsx') }}
+          restore-keys: |
+            nextjs-${{ hashFiles('ui/package-lock.json') }}-
+            nextjs-
+
+      - name: Install release tooling
+        run: npm ci --no-audit --no-fund
+
+      - name: Use staging release config
+        # Ephemeral in CI — .releaserc.json is not in any git-asset list, so this
+        # is never committed. Keeps the staging config out of main's tree.
+        run: cp .releaserc.staging.json .releaserc.json
+
+      - name: semantic-release (staging channel)
+        env:
+          # PAT to create the tag/prerelease past branch protection; falls back
+          # to GITHUB_TOKEN. No npm token — the staging channel is GitHub-only.
+          # Also authenticates the `gh` calls in mirror-staging-release.sh.
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          # Bake the staging runtime channel into the build at compile time
+          # (mlx_server::manifest_url reads this via option_env!). A packaged .app
+          # has no shell env, so the staging .app must compile in runtime-staging.
+          MERIDIAN_RUNTIME_MANIFEST_URL: "https://github.com/Meridiona/meridian/releases/download/runtime-staging/runtime-manifest.json"
+        run: npx semantic-release
