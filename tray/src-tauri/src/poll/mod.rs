@@ -46,6 +46,14 @@ const TICK: Duration = Duration::from_secs(30);
 /// spawn-storming. Reset to 0 the moment `/health` answers.
 const MLX_MAX_RESTARTS: u32 = 5;
 
+/// After exhausting [`MLX_MAX_RESTARTS`], how many additional health ticks to
+/// wait before allowing another restart cycle (~10 min at 60 s / tick). Using
+/// the single `attempts` counter (letting it grow past `MLX_MAX_RESTARTS`)
+/// avoids a second mutable state variable. Once the window closes, `attempts`
+/// resets to 0 and supervision resumes — preventing a permanent wedge after an
+/// OOM / crash that keeps `/health` silent.
+const MLX_COOLING_TICKS: u32 = 10;
+
 /// How often (in ticks) to check for a newer published MLX runtime and upgrade in
 /// the background. `720 * 30 s = 6 h`. Also fires at tick 0, so a relaunch checks
 /// immediately. The check is a single small manifest GET when already current.
@@ -148,6 +156,17 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
 /// human fix). User-facing "offline" messaging stays with the daemon's notice;
 /// this loop only logs (and remediates).
 async fn supervise_mlx(mlx: &SharedMlxManager, attempts: &mut u32) {
+    // After the restart budget is exhausted, let `attempts` grow past
+    // MLX_MAX_RESTARTS to count out the cooling window. Once it reaches
+    // MLX_MAX_RESTARTS + MLX_COOLING_TICKS, reset to 0 so supervise() runs
+    // again and can kill any zombie on port 7823 before attempting a fresh
+    // restart cycle. This prevents a permanent wedge after an OOM / crash
+    // that keeps `/health` silent indefinitely.
+    if *attempts >= MLX_MAX_RESTARTS + MLX_COOLING_TICKS {
+        tracing::info!("mlx: cooling period elapsed — resetting restart budget for a new cycle");
+        *attempts = 0;
+    }
+
     if *attempts >= MLX_MAX_RESTARTS {
         let port = mlx.lock().await.port;
         if mlx_server::health_check(port).await {
@@ -155,9 +174,11 @@ async fn supervise_mlx(mlx: &SharedMlxManager, attempts: &mut u32) {
             mlx.lock().await.status = mlx_server::MlxStatus::Running;
             tracing::info!("mlx: recovered after restart budget exhausted");
         } else {
+            *attempts += 1;
             tracing::warn!(
                 attempts = *attempts,
-                "mlx: restart budget exhausted — not restarting (see daemon's mlx.down notice)"
+                cooling_remaining = MLX_MAX_RESTARTS + MLX_COOLING_TICKS - *attempts,
+                "mlx: restart budget exhausted — cooling before next cycle",
             );
         }
         return;

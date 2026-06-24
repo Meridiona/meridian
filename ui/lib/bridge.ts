@@ -91,7 +91,13 @@ export function subscribe<T = unknown>(
   let unlisten: UnlistenFn | null = null
   // Prime with the current snapshot so the view isn't empty until the next emit
   // (skipped for delta streams, where `command` is null and the caller primes).
-  if (command) t.core.invoke(command, args).then((d) => { if (!cancelled) onData(d as T) }).catch(() => {})
+  if (command) {
+    const prime = () => t.core.invoke(command, args).then((d) => { if (!cancelled) onData(d as T) })
+    // Retry once after 2 s on the first failure: the tray can beat the daemon
+    // on startup, leaving the DB not yet open. Log on second failure so it is
+    // visible in DevTools rather than silently swallowed.
+    prime().catch(() => setTimeout(() => { if (!cancelled) prime().catch((e) => console.warn(`subscribe('${apiPath}') snapshot prime failed:`, e)) }, 2000))
+  }
   t.event
     .listen<T>(eventName, (e) => { if (!cancelled) onData(e.payload) })
     .then((un) => { if (cancelled) un(); else unlisten = un })

@@ -439,18 +439,24 @@ const COVERAGE_IGNORE_APPS: &[&str] = &[
 ];
 
 async fn capture_coverage(pool: &SqlitePool, window: &str) -> Check {
+    // Use julianday() for both sides of the comparison: `datetime('now', ?1)`
+    // produces '2026-06-23 17:00:00' (space separator, no Z), but
+    // insert_capture_frame writes RFC 3339 '2026-06-24T16:00:00.000000Z'
+    // (T + Z). String comparison at index 10 would have 'T' (0x54) > ' '
+    // (0x20), so every row passes the filter regardless of date — the window
+    // never excludes anything. julianday() normalises both formats internally.
     let rows = sqlx::query_as::<_, (String, i64, i64)>(
         "SELECT u.app_name, u.f, COALESCE(fr.n, 0)
          FROM (SELECT app_name, COUNT(*) AS f
                FROM capture_ui_events
                WHERE event_type IN ('app_switch', 'window_focus')
-                 AND timestamp > datetime('now', ?1)
+                 AND julianday(timestamp) > julianday('now', ?1)
                  AND app_name IS NOT NULL AND app_name != ''
                GROUP BY app_name
                HAVING f >= ?2) u
          LEFT JOIN (SELECT app_name, COUNT(*) AS n
                     FROM capture_frames
-                    WHERE timestamp > datetime('now', ?1)
+                    WHERE julianday(timestamp) > julianday('now', ?1)
                     GROUP BY app_name) fr
            ON fr.app_name = u.app_name",
     )

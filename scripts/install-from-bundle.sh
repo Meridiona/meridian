@@ -260,10 +260,10 @@ ok "node + python ($(${PYTHON_BIN} --version 2>&1)) + uv ($(${UV_BIN} --version 
 if ! command -v screenpipe >/dev/null 2>&1; then
     info "Installing screenpipe ${SCREENPIPE_VERSION} via npm…"
     if npm_global_writable; then
-        npm install -g "screenpipe@${SCREENPIPE_VERSION}"
+        npm install -g --ignore-scripts "screenpipe@${SCREENPIPE_VERSION}"
     else
         warn "global npm prefix needs root — elevating just this install (you may be prompted)…"
-        sudo npm install -g "screenpipe@${SCREENPIPE_VERSION}"
+        sudo npm install -g --ignore-scripts "screenpipe@${SCREENPIPE_VERSION}"
     fi
 fi
 ok "screenpipe"

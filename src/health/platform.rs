@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const LABEL_DAEMON: &str = "com.meridiona.daemon";
-const LABEL_UI: &str = "com.meridiona.ui";
 const LABEL_MLX: &str = "com.meridiona.mlx-server";
 
 // ── shared helpers ──────────────────────────────────────────────────────────
@@ -204,32 +203,16 @@ fn venv_check() -> Check {
     }
 }
 
+/// Returns a single Info check confirming the dashboard is embedded in the
+/// Tauri binary. The `com.meridiona.ui` launchd agent was retired with the
+/// Next-fold (PR #298); probing for its plist always produces a false CRITICAL
+/// on healthy post-fold installs.
 pub fn ui_service() -> Vec<Check> {
-    let run = match launchd_pid(LABEL_UI) {
-        Some(pid) => Check::ok("ui service", "system", format!("pid {pid}")),
-        None => Check::warn("ui service", "system", "not loaded — dashboard unavailable")
-            .with_remedy("meridian start"),
-    };
-    let build_check = if let Some(root) = repo_root() {
-        // Dev / source-checkout install: ui/.next must exist.
-        if root.join("ui/.next").is_dir() {
-            Check::ok("ui built", "system", ".next present")
-        } else {
-            Check::warn("ui built", "system", "not built")
-                .with_remedy("cd ui && npm ci && npm run build")
-        }
-    } else {
-        // Bundle install: the standalone server.js is extracted from ui.tar.gz
-        // into ~/.meridian/app/ui/ — no Cargo.toml, so repo_root() is None.
-        let bundle_server = home().join(".meridian/app/ui/server.js");
-        if bundle_server.is_file() {
-            Check::ok("ui built", "system", "bundle server.js present")
-        } else {
-            Check::warn("ui built", "system", "bundle not extracted")
-                .with_remedy("re-run the installer: curl -fsSL https://raw.githubusercontent.com/Meridiona/meridian/main/scripts/bootstrap.sh | bash")
-        }
-    };
-    vec![plist_check(LABEL_UI, "ui plist"), run, build_check]
+    vec![Check::info(
+        "ui service",
+        "system",
+        "dashboard embedded in the Tauri binary (no separate service)",
+    )]
 }
 
 pub fn mcp_service() -> Vec<Check> {
