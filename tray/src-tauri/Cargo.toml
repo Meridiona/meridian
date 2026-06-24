@@ -40,6 +40,12 @@ chrono = { version = "0.4", features = ["clock"] }
 anyhow = "1"
 # Lean shared data layer (DB row types + read queries) — NOT the full daemon.
 meridian-core = { path = "../../meridian-core" }
+# Shared OAuth/token engine — lets the tray run the Jira/Trello browser login
+# IN-PROCESS (no `meridian oauth-login` subprocess). Config-free + DB-free, so it
+# adds only reqwest/tokio/sha2 (already in the tree). The Jira client_secret is
+# baked into THIS crate at compile time via MERIDIAN_JIRA_OAUTH_CLIENT_SECRET, so
+# the tray build must set that env (release.yml does) for packaged Jira OAuth.
+meridian-oauth = { path = "../../meridian-oauth" }
 # Instrumentation facade for tray commands (no-op without a subscriber).
 tracing = "0.1"
 # Dev-only: the `otel` feature pulls the full daemon lib JUST to reuse its

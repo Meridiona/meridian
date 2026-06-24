@@ -7,8 +7,13 @@
 //! - [`disconnect_integration`] — the DELETE: forget a tracker's credentials.
 //! - [`discover_azure_devops`] — the `azure-devops/discover` POST: probe the
 //!   Azure DevOps REST API for a PAT's orgs/projects (external HTTP).
-//! - [`start_oauth`] — the `auth/oauth/start` POST: launch `meridian oauth-login`
-//!   in the background; the browser flow writes the token store the GET reads.
+//! - [`start_oauth`] — the `auth/oauth/start` POST: browser OAuth. jira/trello
+//!   run IN-PROCESS via the shared `meridian-oauth` crate (no subprocess);
+//!   github shells `meridian oauth-login github` (gh-CLI). The flow writes the
+//!   token store the GET reads.
+//! - [`save_integration_token`] — the `auth/token` POST: write a token-based
+//!   tracker's creds to `.env` + reload the daemon (the in-app replacement for
+//!   "run `meridian config edit`"). Covers jira(token)/linear/github(PAT)/azure.
 //!
 //! Env-path note (load-bearing): both the GET *and* the DELETE resolve the
 //! credential `.env` through the SAME [`crate::install::detect_install_mode`] —
@@ -22,13 +27,12 @@
 //! still points at the legacy `~/.meridian/app/.env`. The installer migrated
 //! creds to `~/.meridian/.env` (`meridian-npm-setup.sh`), so the route path is
 //! stale; this port uses the post-migration canonical location for both read and
-//! write. (The `/api/auth/token` write route has no UI consumer — the token-setup
-//! UI tells users to run `meridian config edit` — so it is intentionally NOT
-//! ported; porting it would add dead Rust.)
+//! write — and [`save_integration_token`] writes through the SAME resolver.
 //!
 //! # Who calls this
-//! Registered in `lib.rs`'s `invoke_handler!`; consumed by
-//! `ui/components/views/TasksView.tsx` (the Connect-trackers panel) via
+//! Registered in `lib.rs`'s `invoke_handler!`; consumed by the shared
+//! `ui/components/IntegrationConnect.tsx` (`<ConnectTrackers>`, used by BOTH the
+//! dashboard `TasksView` and the first-run wizard `app/setup`) via
 //! `ui/lib/bridge.ts` (`load` for the GET, `mutate` for the writes).
 
 use serde::{Deserialize, Serialize};
@@ -61,6 +65,51 @@ const TOKEN_KEYS: &[(&str, &[&str])] = &[
             "AZURE_DEVOPS_ORG_URL",
         ],
     ),
+];
+
+/// Token-based connect map: `provider → [(ui_field, env_key)]`. This is the
+/// write side of [`get_integrations`] — pasting a token/PAT in the UI writes
+/// these `.env` keys (and reloads the daemon) so a tracker connects WITHOUT a
+/// terminal step. Mirrors the deleted `/api/auth/token` route's `FIELD_MAP`,
+/// plus an `azure_devops` entry (the route predated Azure). Jira here is the
+/// API-token / self-hosted path (base URL + email + token); Jira Cloud OAuth
+/// goes through [`start_oauth`] instead.
+const TOKEN_FIELD_MAP: &[(&str, &[(&str, &str)])] = &[
+    (
+        "jira",
+        &[
+            ("base_url", "JIRA_BASE_URL"),
+            ("email", "JIRA_EMAIL"),
+            ("api_token", "JIRA_API_TOKEN"),
+        ],
+    ),
+    (
+        "linear",
+        &[
+            ("api_key", "LINEAR_API_KEY"),
+            ("team_ids", "LINEAR_TEAM_IDS"),
+        ],
+    ),
+    (
+        "github",
+        &[
+            ("token", "GITHUB_TOKEN"),
+            ("project_ids", "GITHUB_PROJECT_IDS"),
+        ],
+    ),
+    (
+        "azure_devops",
+        &[("url", "AZURE_DEVOPS_URL"), ("pat", "AZURE_DEVOPS_PAT")],
+    ),
+];
+
+/// Env keys that MUST be present for a provider to count as connected. Optional
+/// keys (team/project IDs) are absent here. Mirrors the route's `required`.
+const TOKEN_REQUIRED: &[(&str, &[&str])] = &[
+    ("jira", &["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"]),
+    ("linear", &["LINEAR_API_KEY"]),
+    ("github", &["GITHUB_TOKEN"]),
+    ("azure_devops", &["AZURE_DEVOPS_URL", "AZURE_DEVOPS_PAT"]),
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -185,6 +234,33 @@ fn strip_env_keys(path: &std::path::Path, keys: &[&str]) -> std::io::Result<()> 
     std::fs::write(path, kept.join("\n"))
 }
 
+/// Insert-or-replace `KEY=value` lines for `updates` in `path`, preserving every
+/// other line and comment. A key already present is rewritten in place; a new key
+/// is appended (deterministic order — `BTreeMap`). Creates the file (and parent
+/// dir) if missing. Mirrors the deleted route's `upsertEnv` (replace-then-append)
+/// so the daemon reads exactly the same shape.
+fn upsert_env(path: &std::path::Path, updates: &BTreeMap<String, String>) -> std::io::Result<()> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let mut remaining = updates.clone();
+    let mut lines: Vec<String> = existing
+        .lines()
+        .map(|line| {
+            let key = line.split('=').next().unwrap_or("").trim();
+            match remaining.remove(key) {
+                Some(val) => format!("{key}={val}"),
+                None => line.to_string(),
+            }
+        })
+        .collect();
+    for (key, val) in remaining {
+        lines.push(format!("{key}={val}"));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, lines.join("\n"))
+}
+
 /// Disconnect a tracker (the ported /api/integrations DELETE). For an OAuth
 /// provider this deletes its `~/.meridian/oauth/<p>.json` token store; for a
 /// token/gh-CLI provider it strips that provider's keys from the active `.env`
@@ -241,6 +317,100 @@ pub async fn disconnect_integration(
         if let Err(e) = meridian_core::integrations::clear_provider_tasks(p, provider).await {
             tracing::warn!(error = %e, provider, "could not clear provider tasks from DB");
         }
+    }
+
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+/// POST body for [`save_integration_token`] (`{ provider, fields }`).
+#[derive(Debug, Deserialize)]
+pub struct SaveTokenBody {
+    pub provider: String,
+    /// UI field name → value, e.g. `{"api_key": "lin_…", "team_ids": "T1,T2"}`.
+    #[serde(default)]
+    pub fields: HashMap<String, String>,
+}
+
+/// Write a token-based tracker's credentials to the active `.env` and reload the
+/// daemon — the in-app replacement for "run `meridian config edit`" (ports the
+/// deleted `/api/auth/token` route). Covers jira (API-token / self-hosted),
+/// linear, github (PAT), and azure_devops. Browser-OAuth providers (Jira Cloud
+/// OAuth, Trello) connect via [`start_oauth`] instead.
+///
+/// Validation mirrors the route: required keys must be non-empty; CR/LF are
+/// stripped from each value (an env file is line-oriented). For jira, any stored
+/// OAuth token is removed so the freshly-set API token wins (matching
+/// `resolve()`'s "API token beats stored OAuth"). Writes go through the SAME
+/// `detect_install_mode().env_path()` resolver [`get_integrations`] reads, so a
+/// connect the GET reflects is one the daemon sees on its next reload.
+#[tauri::command]
+#[tracing::instrument(skip(body), fields(provider = %body.provider))]
+pub async fn save_integration_token(body: SaveTokenBody) -> Result<serde_json::Value, String> {
+    let provider = body.provider.as_str();
+    let field_map = TOKEN_FIELD_MAP
+        .iter()
+        .find(|(p, _)| *p == provider)
+        .map(|(_, m)| *m)
+        .ok_or_else(|| format!("Unknown provider: {provider}"))?;
+
+    // Build env updates from the submitted fields (trimmed, newline-free).
+    let mut updates: BTreeMap<String, String> = BTreeMap::new();
+    for (field, env_key) in field_map {
+        if let Some(raw) = body.fields.get(*field) {
+            let val = raw.replace(['\r', '\n'], "").trim().to_string();
+            if !val.is_empty() {
+                updates.insert((*env_key).to_string(), val);
+            }
+        }
+    }
+    if updates.is_empty() {
+        return Err("No fields provided".to_string());
+    }
+
+    // Required-field check (the route's 400 on a partial submit).
+    let required = TOKEN_REQUIRED
+        .iter()
+        .find(|(p, _)| *p == provider)
+        .map(|(_, r)| *r)
+        .unwrap_or(&[]);
+    let missing: Vec<&str> = required
+        .iter()
+        .copied()
+        .filter(|k| !updates.contains_key(*k))
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!("Missing: {}", missing.join(", ")));
+    }
+
+    // Jira API token must win over a stale OAuth session: resolve() already
+    // prefers the token, but removing the store keeps the UI/get_integrations
+    // unambiguous about which auth is live.
+    if provider == "jira" {
+        if let Some(home) = home() {
+            let _ = std::fs::remove_file(home.join(".meridian/oauth/jira.json"));
+        }
+    }
+
+    // Resolve + write inside a scope so the &Path borrow of `mode` is released
+    // before the daemon-reload await below.
+    {
+        let mode = crate::install::detect_install_mode();
+        let env_path = mode.env_path().ok_or("could not resolve .env path")?;
+        upsert_env(env_path, &updates).map_err(|e| {
+            tracing::warn!(error = %e, "could not write .env");
+            format!("could not write .env: {e}")
+        })?;
+    }
+    tracing::info!(
+        provider,
+        keys = updates.len(),
+        "integration token saved to .env"
+    );
+
+    // Best-effort daemon reload so credentials take effect now (not next restart).
+    // A down daemon is fine — it reads .env on its next start.
+    if let Err(e) = crate::commands::daemon::reload_daemon().await {
+        tracing::debug!(error = %e, "daemon reload after token save (non-fatal)");
     }
 
     Ok(serde_json::json!({ "ok": true }))
@@ -400,20 +570,106 @@ pub struct StartOAuthResponse {
     pub provider: String,
 }
 
-/// Launch `meridian oauth-login <provider>` in the background (the ported
-/// /api/auth/oauth/start POST). The CLI opens the browser, serves the OAuth
-/// callback on a local port, and writes `~/.meridian/oauth/<provider>.json`.
-/// Detached so it outlives this command; output is appended to
-/// `~/.meridian/logs/oauth-<provider>.log` for debugging. Only jira/trello
-/// connect via OAuth (the route's 400 for anything else).
+/// Start a browser-OAuth connect (the ported /api/auth/oauth/start POST).
+/// `started=true` means the flow was launched; the UI then polls
+/// [`get_oauth_status`] until the token store appears (success) or a `.error`
+/// sentinel is written (failure).
+///
+/// **jira/trello run IN-PROCESS** via the shared `meridian-oauth` crate — the
+/// tray opens the browser, serves the loopback callback in its OWN runtime, and
+/// writes `~/.meridian/oauth/<provider>.json` directly. No `meridian oauth-login`
+/// subprocess (which depended on resolving the daemon binary on launchd's PATH
+/// and on log-tailing to surface errors). **github stays a subprocess**: its
+/// `gh`-CLI flow lives in the daemon, so the tray shells out to
+/// `meridian oauth-login github` exactly as before.
 #[tauri::command]
 #[tracing::instrument(fields(provider = %body.provider))]
 pub async fn start_oauth(body: StartOAuthBody) -> Result<StartOAuthResponse, String> {
-    let provider = body.provider.as_str();
-    if !OAUTH_PROVIDERS.contains(&provider) && !GH_CLI_PROVIDERS.contains(&provider) {
-        return Err(format!("Unknown provider: {provider}"));
+    match body.provider.as_str() {
+        "jira" | "trello" => start_oauth_in_process(body.provider),
+        "github" => start_oauth_github_subprocess(body.provider),
+        other => Err(format!("Unknown provider: {other}")),
+    }
+}
+
+/// Forward connect-time OAuth creds from the active `.env` into the tray's
+/// process env so the in-process `meridian_oauth` resolvers (`client_id`,
+/// `client_secret`, `redirect_port`, `app_key` — they read `std::env`) pick them
+/// up. Packaged builds bake the Jira secret at compile time and inject
+/// `TRELLO_APP_KEY` into the bundle `.env`; this is the dev/source path and the
+/// bundle-`.env` path, mirroring the env the old subprocess flow forwarded. Only
+/// sets a key absent from the process env, so a real env var always wins.
+fn forward_oauth_env() {
+    let mode = crate::install::detect_install_mode();
+    let dot_env = mode.env_path().map(parse_env).unwrap_or_default();
+    for key in [
+        "JIRA_OAUTH_CLIENT_SECRET",
+        "JIRA_OAUTH_CLIENT_ID",
+        "JIRA_OAUTH_REDIRECT_PORT",
+        "TRELLO_APP_KEY",
+        "TRELLO_OAUTH_REDIRECT_PORT",
+    ] {
+        if std::env::var_os(key).is_none() {
+            if let Some(val) = dot_env.get(key) {
+                std::env::set_var(key, val);
+            }
+        }
+    }
+}
+
+/// Run the jira/trello browser login in-process on the tray's runtime. Returns
+/// immediately (`started=true`); a spawned task drives the flow and writes the
+/// token store on success or the `.error` sentinel (with the REAL error string —
+/// no log-tail guessing) on failure, which [`get_oauth_status`] surfaces.
+fn start_oauth_in_process(provider: String) -> Result<StartOAuthResponse, String> {
+    forward_oauth_env();
+    // Clear any previous error sentinel before launching a fresh flow.
+    if let Some(sentinel) = oauth_error_path(&provider) {
+        let _ = std::fs::remove_file(&sentinel);
     }
 
+    let task_provider = provider.clone();
+    tauri::async_runtime::spawn(async move {
+        let result: anyhow::Result<()> = match task_provider.as_str() {
+            "jira" => meridian_oauth::jira::login(
+                &meridian_oauth::jira::client_id(),
+                meridian_oauth::jira::redirect_port(),
+            )
+            .await
+            .map(|_site_url| ()),
+            "trello" => {
+                meridian_oauth::trello::login(
+                    &meridian_oauth::trello::app_key(),
+                    meridian_oauth::trello::redirect_port(),
+                )
+                .await
+            }
+            _ => Ok(()),
+        };
+        match result {
+            Ok(()) => tracing::info!(provider = %task_provider, "in-process OAuth login succeeded"),
+            Err(e) => {
+                let msg = format!("{e:#}");
+                tracing::warn!(provider = %task_provider, error = %msg, "in-process OAuth login failed");
+                if let Some(sentinel) = oauth_error_path(&task_provider) {
+                    let _ = std::fs::write(&sentinel, &msg);
+                }
+            }
+        }
+    });
+
+    tracing::info!(provider = %provider, "in-process OAuth login launched");
+    Ok(StartOAuthResponse {
+        started: true,
+        provider,
+    })
+}
+
+/// Launch `meridian oauth-login github` as a detached subprocess (the `gh`-CLI
+/// flow lives in the daemon, not the shared crate). Output goes to
+/// `~/.meridian/logs/oauth-github.log`; a non-zero exit writes the `.error`
+/// sentinel from the log's last line so the UI can surface it.
+fn start_oauth_github_subprocess(provider: String) -> Result<StartOAuthResponse, String> {
     let log_dir = std::env::var("MERIDIAN_LOG_DIR")
         .ok()
         .map(PathBuf::from)
@@ -429,33 +685,17 @@ pub async fn start_oauth(body: StartOAuthBody) -> Result<StartOAuthResponse, Str
     let err_log = log.try_clone().map_err(|e| e.to_string())?;
 
     // Clear any previous error sentinel before launching a fresh flow.
-    if let Some(sentinel) = oauth_error_path(provider) {
+    if let Some(sentinel) = oauth_error_path(&provider) {
         let _ = std::fs::remove_file(&sentinel);
     }
 
     let bin = crate::install::meridian_bin();
     let mut cmd = tokio::process::Command::new(&bin);
-    cmd.args(["oauth-login", provider])
+    cmd.args(["oauth-login", &provider])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(log))
         .stderr(std::process::Stdio::from(err_log))
         .kill_on_drop(false);
-
-    // Forward OAuth credentials from the .env so the spawned process can
-    // exchange the authorization code even when they're not in the process env
-    // (dev builds don't bake MERIDIAN_JIRA_OAUTH_CLIENT_SECRET at compile time).
-    let mode = crate::install::detect_install_mode();
-    let dot_env = mode.env_path().map(parse_env).unwrap_or_default();
-    for key in [
-        "JIRA_OAUTH_CLIENT_SECRET",
-        "JIRA_OAUTH_CLIENT_ID",
-        "JIRA_OAUTH_REDIRECT_PORT",
-        "TRELLO_APP_KEY",
-    ] {
-        if let Some(val) = dot_env.get(key) {
-            cmd.env(key, val);
-        }
-    }
 
     let mut child = cmd.spawn().map_err(|e| {
         tracing::warn!(bin = %bin, error = %e, "oauth-login spawn failed");
@@ -463,9 +703,9 @@ pub async fn start_oauth(body: StartOAuthBody) -> Result<StartOAuthResponse, Str
     })?;
 
     // Watch the child; write a .error sentinel if it exits non-zero so the UI
-    // can surface the reason without waiting for the 3-minute poll timeout.
+    // can surface the reason without waiting for the poll timeout.
     let log_path_bg = log_path.clone();
-    let provider_bg = body.provider.clone();
+    let provider_bg = provider.clone();
     tauri::async_runtime::spawn(async move {
         match child.wait().await {
             Ok(status) if status.success() => {
@@ -500,7 +740,7 @@ pub async fn start_oauth(body: StartOAuthBody) -> Result<StartOAuthResponse, Str
     tracing::info!(log = %log_path.display(), "oauth-login launched");
     Ok(StartOAuthResponse {
         started: true,
-        provider: body.provider,
+        provider,
     })
 }
 

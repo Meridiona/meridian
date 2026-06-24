@@ -11,11 +11,14 @@ import { useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { Btn, Bar, Check, Kicker, Mark, PermIcon, Row, Spinner } from './atoms'
 import {
-  APP, INTEGRATIONS, MODELS, MODEL_BY_ID, PERMISSIONS, fmtSize, recommendTier,
+  APP, MODELS, MODEL_BY_ID, PERMISSIONS, fmtSize, recommendTier,
 } from './data'
 import type {
-  DownloadProgress, Integration, MlxStatusResponse, ModelTier, SystemSpecs,
+  DownloadProgress, MlxStatusResponse, ModelTier, SystemSpecs,
 } from './data'
+import type { IntegrationsResponse } from '@/lib/api-types'
+import { TRACKERS } from '@/lib/integrations'
+import ConnectTrackers from '@/components/IntegrationConnect'
 
 const SERIF: CSSProperties = { fontFamily: 'var(--font-instrument-serif), Georgia, serif' }
 
@@ -38,9 +41,9 @@ export interface Wiz {
   progress: DownloadProgress | null
   installRuntime: () => void  // provision the MLX runtime
   downloadModel: () => void   // commit the chosen model, then prefetch it
-  // Step 3 — integrations (live OAuth state)
-  integrations: Record<string, 'idle' | 'connecting' | 'connected'>
-  connect: (id: string) => void
+  // Step 3 — integrations (live connected-state from get_integrations)
+  integrations: IntegrationsResponse | null
+  refetchIntegrations: () => void
 }
 
 // ── STEP 1 — Permissions ──────────────────────────────────────────────────────
@@ -310,39 +313,18 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
 }
 
 // ── STEP 3 — Integrations ─────────────────────────────────────────────────────
-function IntegrationRow({ it, wiz }: { it: Integration; wiz: Wiz }) {
-  const st = wiz.integrations[it.id] || 'idle'
-  const on = st === 'connected'
-  return (
-    <Row tone={on ? 'tint' : 'surface'} style={it.oauth ? undefined : { opacity: 0.55 }}>
-      <Mark mono={it.mono} color={it.color} size={34} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <p style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--ink)' }}>{it.name}</p>
-        <p className="font-mono" style={{ fontSize: 11, color: on ? 'var(--ink-2)' : 'var(--ink-3)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.account}</p>
-      </div>
-      <div className="shrink-0">
-        {!it.oauth
-          ? <span className="font-mono" style={{ fontSize: 10, letterSpacing: '.08em', color: 'var(--ink-4)', textTransform: 'uppercase' }}>Soon</span>
-          : on
-            ? <span className="flex items-center" style={{ gap: 6, fontSize: 12, color: 'var(--success)', fontWeight: 500 }}><Check size={15} color="var(--success)" />Connected</span>
-            : st === 'connecting'
-              ? <span className="flex items-center" style={{ gap: 7, fontSize: 11.5, color: 'var(--ink-2)' }}><Spinner />Connecting…</span>
-              : <Btn size="sm" variant="secondary" onClick={() => wiz.connect(it.id)}>Connect</Btn>}
-      </div>
-    </Row>
-  )
-}
-
+// The whole connect surface is the shared <ConnectTrackers> (same component the
+// dashboard uses), so all 5 providers + every connect flow live in one place.
 function IntegrationsBody({ wiz }: { wiz: Wiz }) {
-  const connected = INTEGRATIONS.filter((i) => wiz.integrations[i.id] === 'connected').length
+  const connected = TRACKERS.filter((t) => wiz.integrations?.[t.id]).length
   return (
     <div className="flex flex-col" style={{ gap: 9 }}>
-      {INTEGRATIONS.map((it) => <IntegrationRow key={it.id} it={it} wiz={wiz} />)}
+      <ConnectTrackers integrations={wiz.integrations} onChanged={wiz.refetchIntegrations} compact />
       <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--ink-3)', marginTop: 3 }}>
         <span style={{ width: 5, height: 5, borderRadius: 99, background: connected ? 'var(--success)' : 'var(--ink-4)' }} />
         {connected > 0
           ? `${connected} connected · Meridian will match sessions and draft worklogs.`
-          : 'Connect Jira or Trello to auto-draft worklogs — or skip and add later from Settings.'}
+          : 'Connect your trackers to auto-draft worklogs — or skip and add later from Settings.'}
       </p>
     </div>
   )
@@ -388,7 +370,7 @@ export function Welcome({ onBegin }: { onBegin: () => void }) {
 
 // ── Completion ────────────────────────────────────────────────────────────────
 export function Completion({ wiz }: { wiz: Wiz }) {
-  const connected = INTEGRATIONS.filter((i) => wiz.integrations[i.id] === 'connected')
+  const connected = TRACKERS.filter((t) => wiz.integrations?.[t.id])
   const model = MODEL_BY_ID[wiz.model]
   const grantedCount = [wiz.perms.accessibility, wiz.perms.screen, wiz.perms.input].filter(Boolean).length
   const lines = [
@@ -455,7 +437,7 @@ export const STEPS: StepMeta[] = [
     title: 'Connect your trackers',
     subtitle: 'Link the tools you already use. Meridian matches each session to an issue and drafts a worklog you approve.',
     Body: IntegrationsBody,
-    status: (s) => { const c = INTEGRATIONS.filter((i) => s.integrations[i.id] === 'connected').length; return c ? `${c} connected` : 'Optional' },
+    status: (s) => { const c = TRACKERS.filter((t) => s.integrations?.[t.id]).length; return c ? `${c} connected` : 'Optional' },
     canNext: () => true,
   },
 ]

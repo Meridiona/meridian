@@ -14,7 +14,7 @@ use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use super::pkce;
+use crate::pkce;
 
 /// Provider-specific OAuth endpoints and scopes. The flow engine is otherwise
 /// generic over these.

@@ -10,17 +10,15 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
-import { invoke, mutate, load, tauri } from '@/lib/bridge'
+import { invoke, load, tauri } from '@/lib/bridge'
 import { STEPS, Welcome, Completion } from './steps'
 import type { Wiz } from './steps'
-import { INTEGRATIONS, MODELS, MODEL_BY_ID } from './data'
+import { MODELS, MODEL_BY_ID } from './data'
 import type { DownloadProgress, MlxStatusResponse, ModelTier, SystemSpecs } from './data'
+import type { IntegrationsResponse } from '@/lib/api-types'
 import { Btn, Check, Kicker } from './atoms'
 
 const SERIF: CSSProperties = { fontFamily: 'var(--font-instrument-serif), Georgia, serif' }
-// Single source of truth for "which trackers have a real OAuth flow".
-const OAUTH_PROVIDERS = INTEGRATIONS.filter((i) => i.oauth).map((i) => i.id)
-const OAUTH_DEADLINE_MS = 180_000  // mirrors TasksView's 3-minute connect window
 
 export default function SetupWizard() {
   const [welcome, setWelcome] = useState(true)
@@ -46,10 +44,10 @@ export default function SetupWizard() {
   const [wantModel, setWantModel] = useState(false)
   const prefetchStarted = useRef(false)
 
-  // Step 3 — integrations (live OAuth). `oauthDeadline` holds the per-provider
-  // timeout for an in-flight connect so the poll can resolve an abandoned flow.
-  const [integrations, setIntegrations] = useState<Record<string, 'idle' | 'connecting' | 'connected'>>({})
-  const oauthDeadline = useRef<Record<string, number>>({})
+  // Step 3 — integrations. The shared <ConnectTrackers> drives the actual
+  // connect flows (OAuth + token save); this just holds the live connected-state
+  // (get_integrations) so the rail status + completion summary stay accurate.
+  const [integrations, setIntegrations] = useState<IntegrationsResponse | null>(null)
 
   const active = !welcome && !done
 
@@ -126,38 +124,22 @@ export default function SetupWizard() {
     return () => { cancelled = true; if (unlisten) unlisten() }
   }, [downloading, prefetching])
 
-  // Poll OAuth completion on the Integrations step so a browser-completed connect
-  // flips the row to "Connected" without the user clicking again. A per-provider
-  // deadline (set in `connect`) resolves an abandoned flow to idle+error instead
-  // of spinning "Connecting…" forever, and we only `setErr`/transition on an
-  // actual state change so a persistent error doesn't re-fire every tick.
+  // Keep the live connected-state fresh while on the Integrations step, so the
+  // rail status + completion summary reflect connects made via <ConnectTrackers>
+  // (which also calls refetchIntegrations on success). A light poll also catches
+  // a browser-OAuth completion the component's own poll already resolved.
+  const refetchIntegrations = useCallback(() => {
+    load<IntegrationsResponse>('/api/integrations', 'get_integrations')
+      .then(setIntegrations)
+      .catch(() => {})
+  }, [])
+
   useEffect(() => {
     if (!active || step !== 2) return
-    const poll = async () => {
-      for (const provider of OAUTH_PROVIDERS) {
-        const st = await load<{ connected: boolean; error?: string | null }>(
-          `/api/auth/oauth/status?provider=${provider}`, 'get_oauth_status', { provider },
-        ).catch(() => null)
-        if (st?.connected) {
-          delete oauthDeadline.current[provider]
-          setIntegrations((s) => (s[provider] === 'connected' ? s : { ...s, [provider]: 'connected' }))
-          continue
-        }
-        // Only act on a provider with an active connect attempt in flight.
-        const deadline = oauthDeadline.current[provider]
-        if (deadline === undefined) continue
-        const reason = st?.error ?? (Date.now() > deadline ? 'Timed out — try again' : null)
-        if (reason) {
-          delete oauthDeadline.current[provider]
-          setErr(reason)
-          setIntegrations((s) => ({ ...s, [provider]: 'idle' }))
-        }
-      }
-    }
-    poll()
-    const id = setInterval(poll, 2000)
+    refetchIntegrations()
+    const id = setInterval(refetchIntegrations, 3000)
     return () => clearInterval(id)
-  }, [active, step])
+  }, [active, step, refetchIntegrations])
 
   // ── Actions ────────────────────────────────────────────────────────────────
   const openPane = useCallback((pane: string) => {
@@ -218,20 +200,12 @@ export default function SetupWizard() {
     setProgress({ received: 0, total: 0, message: 'Preparing model…' })
   }, [model])
 
-  const connect = useCallback((id: string) => {
-    setErr('')
-    oauthDeadline.current[id] = Date.now() + OAUTH_DEADLINE_MS
-    setIntegrations((s) => ({ ...s, [id]: 'connecting' }))
-    mutate(`/api/auth/oauth/start?provider=${id}`, 'start_oauth', { provider: id })
-      .catch((e) => { delete oauthDeadline.current[id]; setErr(String(e)); setIntegrations((s) => ({ ...s, [id]: 'idle' })) })
-  }, [])
-
   const wiz: Wiz = {
     perms, openPane, grantScreen, grantInput,
     specs, mlx, model, selectModel, downloading, prefetching, modelReady, progress,
     committing: wantModel && !prefetching && !modelReady,
     installRuntime, downloadModel,
-    integrations, connect,
+    integrations, refetchIntegrations,
   }
 
   // ── Navigation ───────────────────────────────────────────────────────────────
