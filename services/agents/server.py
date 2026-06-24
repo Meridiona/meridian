@@ -7,9 +7,6 @@ Usage:
 
 Endpoints:
     GET  /health
-    POST /classify   {"input": "<fully-formatted user_message string>"}
-                     → {"task_key": ..., "session_type": ..., "reasoning": ...,
-                        "confidence": ..., "dimensions": {...}}
 """
 from __future__ import annotations
 
@@ -152,97 +149,6 @@ async def info() -> dict:
 # ---------------------------------------------------------------------------
 # MLX backend — direct in-process inference, model pre-loaded at startup
 # ---------------------------------------------------------------------------
-
-_MAX_INPUT_CHARS = 128_000  # ~32k tokens; hard ceiling to prevent resource exhaustion
-
-
-class ClassifyRequest(BaseModel):
-    input: str = Field(..., max_length=_MAX_INPUT_CHARS)  # fully-formatted user_message string
-
-
-class ClassifyResponse(BaseModel):
-    task_key: str | None
-    session_type: str
-    reasoning: str
-    confidence: float
-    dimensions: dict
-
-
-@app.post("/classify", response_model=ClassifyResponse)
-async def classify(req: ClassifyRequest) -> ClassifyResponse:
-
-    import json as _json
-    import time as _time
-    from fastapi.concurrency import run_in_threadpool
-    from outlines.inputs import Chat
-    from mlx_lm.sample_utils import make_sampler
-
-    m = _app_state["mlx_module"]
-    messages = [
-        {"role": "system", "content": m._SYSTEM_PROMPT},
-        {"role": "user",   "content": req.input},
-    ]
-    t0 = _time.time()
-
-    def _run_classify() -> "m.SessionClassification":
-        # Use the SAME inference core as the production classify_session path:
-        # the FSM logits-processor is compiled once and cached (~6 s/call saved)
-        # and _generate_constrained reuses the static system+skill prefix's KV
-        # cache across sessions. The previous naive model(Chat, output_type=...)
-        # call rebuilt the FSM and re-prefilled the whole prompt every request,
-        # making /classify ~3x slower than production for identical output.
-        with m.model_session() as model:
-            sampler = make_sampler(temp=m._TEMPERATURE)
-            try:
-                logits_processors = m._get_constrained_logits_processors(model)
-                full_ids = m._get_tokenizer().apply_chat_template(
-                    messages, tokenize=True, add_generation_prompt=True
-                )
-                raw, _gen_stats, _hit = m._generate_constrained(
-                    model, full_ids, logits_processors, sampler
-                )
-            except Exception as stream_exc:  # noqa: BLE001
-                # Mirror classify_session's fallback: if outlines' internals shift,
-                # drop the shared prefix cache and fall back to the high-level call
-                # so classification never breaks just because the fast path did.
-                log.warning(
-                    "classify: stream-stats path failed (%s) — falling back to "
-                    "model(...) without prefix cache",
-                    stream_exc,
-                )
-                with m._prompt_cache_lock:
-                    m._invalidate_prompt_cache()
-                raw = model(
-                    Chat(messages),
-                    output_type=m.SessionClassification,
-                    max_tokens=m._MAX_TOKENS,
-                    sampler=sampler,
-                    verbose=False,
-                )
-        return m.SessionClassification.model_validate_json(raw)
-
-    try:
-        result = await run_in_threadpool(_run_classify)
-    except Exception as exc:
-        log.warning("classify: inference error: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    elapsed = _time.time() - t0
-    response = ClassifyResponse(
-        task_key=result.task_key,
-        session_type=result.session_type,
-        reasoning=result.reasoning,
-        confidence=max(0.0, min(1.0, result.confidence)),
-        dimensions=result.dimensions,
-    )
-
-    log.info(
-        "classify: task_key=%s session_type=%s confidence=%.2f elapsed=%.2fs",
-        result.task_key, result.session_type, result.confidence, elapsed,
-    )
-
-    return response
-
 
 # ---------------------------------------------------------------------------
 # OpenAI-compatible chat completions

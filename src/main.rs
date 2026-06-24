@@ -1,7 +1,6 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 // https://github.com/meridiona/meridian
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,17 +9,10 @@ use meridian::config::Config;
 use meridian::db::meridian::{cleanup_incomplete_runs, setup_db};
 use meridian::db::screenpipe::open_screenpipe;
 use meridian::etl::run_etl;
-use meridian::intelligence::{
-    check_classification_ready, mark_session_subprocess_error, run_coding_agent_classification,
-    run_pm_force_sync, run_pm_sync, run_task_linking, TaskLinkOutcome,
-};
+use meridian::intelligence::{run_pm_force_sync, run_pm_sync};
 use meridian::observability;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::Notify;
-
-/// After this many consecutive subprocess failures for the same session,
-/// write a `subprocess_error` sentinel and advance the cursor past it.
-const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -65,35 +57,6 @@ async fn main() -> Result<()> {
                 pool.close().await;
             }
             Err(e) => eprintln!("coding-agent-summarise: open db: {e}"),
-        }
-        return Ok(());
-    }
-
-    // `meridian coding-agent-classify` — one-shot: classify every summarised
-    // coding-agent row (the pending_classifier queue) via the MLX server. Manual
-    // backfill of the last link in seal→summarise→classify.
-    if std::env::args().nth(1).as_deref() == Some("coding-agent-classify") {
-        let cfg = Config::from_env();
-        match meridian::coding_agent_session_ingest::open_meridian_pool().await {
-            Ok(pool) => {
-                let mut total = 0usize;
-                loop {
-                    match run_coding_agent_classification(&pool, &cfg, None).await {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            total += n;
-                            println!("classified {n} (total {total})");
-                        }
-                        Err(e) => {
-                            eprintln!("coding-agent-classify: {e}");
-                            break;
-                        }
-                    }
-                }
-                println!("coding-agent-classify: {total} classified");
-                pool.close().await;
-            }
-            Err(e) => eprintln!("coding-agent-classify: open db: {e}"),
         }
         return Ok(());
     }
@@ -468,23 +431,6 @@ async fn main() -> Result<()> {
     //     created its own database.
     let meridian = setup_db(&initial_cfg.meridian_db_uri()).await?;
 
-    // 4c. Preflight: verify the classification stack. NON-FATAL — classification
-    //     is an enhancement layer; ETL must keep recording sessions while the
-    //     MLX server is down. Unclassified sessions stay pending and the task
-    //     linker's 5-minute fallback drains them once the server is reachable.
-    //     (Exiting here put launchd in a 120s-wait → exit → respawn loop on any
-    //     machine where the MLX server could not start.)
-    if let Err(e) = check_classification_ready(&initial_cfg) {
-        tracing::error!(
-            error = %e,
-            "classification preflight failed — continuing with classification degraded"
-        );
-        eprintln!(
-            "\nWARNING: {e}\n\
-             Sessions will be recorded but not classified until the MLX server is reachable.\n"
-        );
-    }
-
     // 4d. Open screenpipe pool (read-only)
     let screenpipe = open_screenpipe(&initial_cfg.screenpipe_db_uri()).await?;
 
@@ -561,19 +507,9 @@ async fn main() -> Result<()> {
         Err(e) => tracing::error!("cleanup_incomplete_runs failed: {}", e),
     }
 
-    // 7b. A background task drains the classification queue without blocking the
-    //     poll loop (each session can take ~16 s). The poll loop notifies it after
-    //     every ETL pass; it calls the persistent MLX classifier server.
-    let etl_notify: Arc<Notify> = Arc::new(Notify::new());
-    // Shared slot: main task clones the current tick span here so the linker task
-    // can parent its run_task_linking spans under poll_tick / startup_tick.
-    let etl_tick_span: Arc<std::sync::Mutex<Option<tracing::Span>>> =
-        Arc::new(std::sync::Mutex::new(None));
-
-    // Wakes the PM-worklog driver the moment the classifier settles a session: an
-    // hour becomes draftable exactly when its last in-flight session is classified,
-    // so the driver reacts in seconds instead of waiting up to a full interval. The
-    // driver's interval timer is kept as a fallback (aging escape + day rollover).
+    // 7b. Notify that wakes the worklog driver after each ETL pass so an hour that
+    //     just became complete drafts immediately instead of waiting for the next
+    //     interval tick.
     let worklog_notify: Arc<Notify> = Arc::new(Notify::new());
 
     // 7c. Run ETL once immediately before entering the loop.
@@ -581,7 +517,6 @@ async fn main() -> Result<()> {
     {
         let cfg = Config::from_env();
         let startup_tick = tracing::info_span!("startup_tick");
-        *etl_tick_span.lock().unwrap() = Some(startup_tick.clone());
         let _guard = startup_tick.enter();
         tracing::info!("running initial ETL pass");
         if let Err(e) = run_etl(&screenpipe, &meridian).await {
@@ -598,24 +533,12 @@ async fn main() -> Result<()> {
         } else {
             let _ = meridian::notices::clear(&meridian, "etl.failed").await;
         }
-        etl_notify.notify_one();
-        // Wake the worklog driver (legacy classifier, when on, also fires this).
         worklog_notify.notify_one();
         if let Err(e) = run_pm_sync(&meridian, &cfg).await {
             tracing::error!("intelligence run failed: {}", e);
         }
     }
 
-    // 8a. MLX only: spawn the task linker loop.
-    //     Wakes immediately when ETL signals new sessions; drains oldest-first
-    //     (preserving the 5-session context window) until caught up, then waits
-    //     for the next ETL notification. A 5-min fallback ensures recovery if a
-    //     notify was missed (e.g. daemon restart with existing backlog).
-    //
-    //     Failure handling:
-    //       - Transient failure  → cursor stays, retry on next notify
-    //       - Permanent failure  → sentinel written after MAX_CONSECUTIVE_FAILURES,
-    //                              cursor advances, drain continues
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     // 8a-bis. Coding-agent tasks (both gated — dormant if neither agent is
@@ -643,23 +566,10 @@ async fn main() -> Result<()> {
         });
     }
 
-    // P4 sunset switch: the new hour-level worklog pipeline (agno Workflow via
-    //     /worklog_hour) REPLACES the per-session classifier + per-task pm_worklog
-    //     synth. The legacy path is kept but dormant — set MERIDIAN_LEGACY_PIPELINE=1
-    //     to run the old classifier + per-task drafter instead.
-    let legacy_pipeline = std::env::var("MERIDIAN_LEGACY_PIPELINE").is_ok();
-
     // 7d. Worklog driver (Stage 4): hour-driven loop that DRAFTS worklogs for each
     //     settled hour. Never posts — drafts wait for human approval in the
-    //     dashboard. New default = worklog_pipeline (one /worklog_hour per hour).
-    if legacy_pipeline {
-        let pool_pm = meridian.clone();
-        let rx_pm = shutdown_rx.clone();
-        let notify_pm = worklog_notify.clone();
-        tokio::spawn(async move {
-            meridian::pm_worklog::run_loop(pool_pm, rx_pm, notify_pm).await;
-        });
-    } else {
+    //     dashboard.
+    {
         let pool_wl = meridian.clone();
         let rx_wl = shutdown_rx.clone();
         let notify_wl = worklog_notify.clone();
@@ -698,157 +608,6 @@ async fn main() -> Result<()> {
         });
     }
 
-    // 8a. Per-session task classifier — SUNSET. Kept but dormant unless
-    //     MERIDIAN_LEGACY_PIPELINE=1; the new worklog_pipeline does its own
-    //     hour-level matching, so per-session classification is no longer needed.
-    if legacy_pipeline {
-        let mut shutdown_rx = shutdown_rx;
-        let meridian_linker = meridian.clone();
-        let notify_linker = etl_notify.clone();
-        let tick_span_linker = etl_tick_span.clone();
-        let notify_worklog = worklog_notify.clone();
-        tokio::spawn(async move {
-            // Tracks consecutive subprocess failures per session_id.
-            // Reset to zero whenever any session is successfully classified.
-            // Persists across drain cycles within this daemon run (lost on restart,
-            // which is fine — transient failures before restart won't be double-counted).
-            let mut failure_counts: HashMap<i64, u32> = HashMap::new();
-
-            loop {
-                // Take the tick span written by the main task so run_task_linking spans
-                // appear as children of the triggering poll_tick / startup_tick.
-                let parent_span: tracing::Span = tokio::select! {
-                    _ = shutdown_rx.changed() => break,
-                    _ = notify_linker.notified() => {
-                        tick_span_linker.lock().unwrap().take()
-                            .unwrap_or_else(tracing::Span::none)
-                    }
-                    _ = tokio::time::sleep(Duration::from_secs(300)) => tracing::Span::none(),
-                };
-
-                // Each classification below runs as its OWN root trace (not a child
-                // of this tick), so a backlog drain produces one self-contained trace
-                // per session instead of N siblings collapsed into one tick trace.
-                // We still want the daemon→session relationship, so capture the tick's
-                // span context here and pass it down as a span LINK. `Span::none()`
-                // (the 5-min fallback wake) yields no context → no link, which is fine.
-                let tick_link = parent_span
-                    .in_scope(meridian::observability::current_traceparent)
-                    .as_deref()
-                    .and_then(meridian::observability::span_context_from_traceparent);
-
-                // Whether this wake settled at least one session — if so, wake the
-                // PM-worklog driver afterwards so a now-complete hour drafts at once.
-                let mut classified_any = false;
-
-                // Drain: classify oldest-first until nothing is left or a failure stops us.
-                loop {
-                    let cfg = Config::from_env();
-                    // No `.instrument(parent_span)` here on purpose: run_task_linking's
-                    // own #[tracing::instrument] span is created with no ambient parent,
-                    // so it starts a fresh root trace. `tick_link` (the tick's span
-                    // context) is passed as a LINK instead — daemon→session stays
-                    // navigable without merging every drained session into one trace.
-                    match run_task_linking(&meridian_linker, &cfg, tick_link.clone()).await {
-                        Ok(TaskLinkOutcome::Classified) => {
-                            failure_counts.clear();
-                            classified_any = true;
-                            let _ = meridian::notices::clear(&meridian_linker, "mlx.down").await;
-                            // Loop immediately — more sessions may be waiting.
-                        }
-                        Ok(TaskLinkOutcome::NoPendingWork) => {
-                            // Cursor work is caught up — now drain the coding-agent
-                            // classify queue (summarised rows → task linking), the
-                            // last link of seal→summarise→classify. Repeat until empty.
-                            loop {
-                                match run_coding_agent_classification(
-                                    &meridian_linker,
-                                    &cfg,
-                                    tick_link.clone(),
-                                )
-                                .await
-                                {
-                                    Ok(0) => break,
-                                    Ok(n) => {
-                                        classified_any = true;
-                                        tracing::info!(
-                                            classified = n,
-                                            "coding-agent rows classified"
-                                        )
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(error = %e, "coding-agent classification failed");
-                                        break;
-                                    }
-                                }
-                            }
-                            break; // Caught up — go back to waiting for next notify.
-                        }
-                        Ok(TaskLinkOutcome::SubprocessFailed {
-                            session_id,
-                            pending,
-                        }) => {
-                            let count = failure_counts.entry(session_id).or_insert(0);
-                            *count += 1;
-
-                            if *count >= MAX_CONSECUTIVE_FAILURES {
-                                tracing::warn!(
-                                    session_id,
-                                    failures = *count,
-                                    pending,
-                                    "max consecutive failures — writing subprocess_error sentinel \
-                                 and advancing cursor"
-                                );
-                                let _ = meridian::notices::raise(
-                                    &meridian_linker,
-                                    "mlx.down",
-                                    "warning",
-                                    "MLX classifier is not responding",
-                                    &format!("Failed to classify session {session_id} after {count} attempts — classification is paused"),
-                                    Some("Start MLX server: cd services && .venv313/bin/meridian-server --backend mlx"),
-                                ).await;
-                                if let Err(e) =
-                                    mark_session_subprocess_error(&meridian_linker, session_id)
-                                        .await
-                                {
-                                    tracing::error!(
-                                        session_id,
-                                        error = %e,
-                                        "failed to write error sentinel — will retry next tick"
-                                    );
-                                    break;
-                                }
-                                failure_counts.remove(&session_id);
-                                // Loop again — cursor advanced, try the next session.
-                            } else {
-                                tracing::warn!(
-                                    session_id,
-                                    failures = *count,
-                                    max = MAX_CONSECUTIVE_FAILURES,
-                                    pending,
-                                    "subprocess failed — cursor held, will retry on next ETL tick"
-                                );
-                                break; // Stop drain, wait for next notify / 5-min fallback.
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!(error = %e, "classification run error");
-                            break;
-                        }
-                    }
-                }
-
-                // This wake settled at least one session — nudge the PM-worklog
-                // driver so an hour that just became complete drafts immediately
-                // instead of waiting for the next interval tick.
-                if classified_any {
-                    notify_worklog.notify_one();
-                }
-            }
-            tracing::info!("task linker loop stopped");
-        });
-    }
-
     // 8b. Poll loop — ETL, PM sync, and FM categorization on the configured interval.
     // Track the last-applied log level so we can detect changes and hot-reload
     // the EnvFilter without restarting the daemon.
@@ -884,7 +643,6 @@ async fn main() -> Result<()> {
                     "poll_tick",
                     poll_interval_secs = cfg.runtime.poll_interval_secs
                 );
-                *etl_tick_span.lock().unwrap() = Some(poll_tick.clone());
                 let _guard = poll_tick.enter();
                 tracing::debug!("starting ETL tick");
                 if let Err(e) = run_etl(&screenpipe, &meridian).await {
@@ -898,9 +656,7 @@ async fn main() -> Result<()> {
                 } else {
                     let _ = meridian::notices::clear(&meridian, "etl.failed").await;
                 }
-                // Wake the background task linker to drain newly-created sessions.
-                etl_notify.notify_one();
-                // Wake the worklog driver (legacy classifier, when on, also fires this).
+                // Wake the worklog driver after each ETL pass.
                 worklog_notify.notify_one();
 
                 // Morning plan nudge — idempotent per day, gated to working hours.

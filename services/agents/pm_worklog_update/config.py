@@ -14,7 +14,7 @@ import os
 
 # Re-export the shared paths so callers don't have to know about the parent
 # config module.
-from agents.config import LOG_DIR, MERIDIAN_DB, MERIDIAN_HOME  # noqa: F401
+from agents.config import MERIDIAN_DB, MERIDIAN_HOME  # noqa: F401
 
 # ── Cadence ───────────────────────────────────────────────────────────────────
 # How often the daemon should fire a new PM update cycle, in hours.
