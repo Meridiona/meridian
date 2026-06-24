@@ -11,11 +11,12 @@ REPO_ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
 # --- constants ---
 LABEL_SCREENPIPE="com.meridiona.screenpipe"
 LABEL_DAEMON="com.meridiona.daemon"
-LABEL_UI="com.meridiona.ui"
+LABEL_UI="com.meridiona.ui"   # retired (dashboard now embedded in the tray) — kept only to boot out a leftover legacy agent
 LABEL_MLX="com.meridiona.mlx-server"
-# Jira worklogs and coding-agent ingest run inside the Rust daemon — no
-# separate launchd agents. Only these four are managed.
-readonly LABELS=("${LABEL_SCREENPIPE}" "${LABEL_DAEMON}" "${LABEL_UI}" "${LABEL_MLX}")
+# Jira worklogs and coding-agent ingest run inside the Rust daemon, and the
+# dashboard is embedded in the tray binary — no separate UI launchd agent. Only
+# these three production services are managed.
+readonly LABELS=("${LABEL_SCREENPIPE}" "${LABEL_DAEMON}" "${LABEL_MLX}")
 GUI_TARGET="gui/$(id -u)"
 LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
 LOG_DIR="${HOME}/.meridian/logs"
@@ -273,7 +274,6 @@ _doctor_fallback() {
     _plist_row "$LABEL_DAEMON" "daemon plist"
     _plist_row "$LABEL_SCREENPIPE" "screenpipe plist"
     _plist_row "$LABEL_MLX" "mlx plist"
-    _plist_row "$LABEL_UI" "ui plist"
     _group "builds"
     _row "$([[ -f "${REPO_ROOT}/packages/meridian-mcp/dist/index.js" ]] && echo ok || echo fail)" "mcp built" ""
     _row "$([[ -d "${REPO_ROOT}/ui/.next" ]] && echo ok || echo fail)" "ui built" ""
@@ -497,7 +497,9 @@ cmd_uninstall() {
     set +e
 
     # 1. Stop and remove all launchd agents
-    bash "${REPO_ROOT}/scripts/uninstall-ui-daemon.sh" 2>/dev/null
+    # Legacy UI server (retired — dashboard is now in the tray): boot out + remove inline.
+    launchctl bootout "${GUI_TARGET}/${LABEL_UI}" 2>/dev/null || true
+    rm -f "${HOME}/Library/LaunchAgents/${LABEL_UI}.plist" 2>/dev/null || true
     bash "${REPO_ROOT}/services/scripts/uninstall-mlx-server-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/scripts/uninstall-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/scripts/uninstall-screenpipe-daemon.sh" 2>/dev/null

@@ -126,10 +126,11 @@ meridian/
 > (`trailingSlash: true`). **Known limitation:** the popover 404s under `tauri dev` (next dev doesn't serve
 > `popover/`); it renders in a packaged build. **When adding a route, follow the playbook in Coding
 > Conventions → "Porting a dashboard route to Rust"**; exemplars: `meridian-core/src/readers/triage.rs`,
-> `tray/src-tauri/src/commands/parents.rs`. **Follow-ups not yet done:** dead Node lib singletons
-> (`ui/lib/notices-store.ts`, `notifications-banner-store.ts`, `notifications.ts`, `db.ts` — now only
-> type-imported) and the release/packaging migration off the standalone UI server (`package-release.sh`,
-> the UI launchd plist). Dev-only `--features otel` on the tray exports spans to OpenObserve
+> `tray/src-tauri/src/commands/parents.rs`. The dashboard ships **embedded in the tray binary** (`tauri
+> build` → `generate_context!` bundles `ui/out`); the standalone-Node-server release machinery (the
+> `com.meridiona.ui` plist, `ui-start.sh`, the `ui.tar.gz` packing, the pinned Node runtime + better-sqlite3
+> ABI dance) was retired, and `install-from-bundle.sh` boots out any leftover `com.meridiona.ui` agent on
+> update. Dev-only `--features otel` on the tray exports spans to OpenObserve
 > (`service.name = meridian-tray`) — release builds omit it. Rationale + full scope: Obsidian
 > `Decisions/Dashboard frontend - keep Next in Tauri.md`, `~/.claude/plans/meridian-next-fold.md`.
 
