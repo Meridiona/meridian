@@ -4448,6 +4448,7 @@ name = "meridian-tray"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "block2",
  "chrono",
  "cidre 0.13.1",
  "futures-util",
