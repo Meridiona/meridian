@@ -168,6 +168,15 @@ async fn discover_cloud(access_token: &str) -> Result<(String, String)> {
 /// Run the interactive browser login and persist the resulting tokens. Returns
 /// the chosen site URL for a friendly confirmation message.
 pub async fn login(client_id: &str, port: u16) -> Result<String> {
+    let secret = client_secret();
+    if secret.trim().is_empty() {
+        bail!(
+            "Jira OAuth requires a client secret that is baked in at build time via \
+             MERIDIAN_JIRA_OAUTH_CLIENT_SECRET. This is a source build without that \
+             secret — set JIRA_OAUTH_CLIENT_SECRET in your environment to supply one, \
+             or use the API-token fallback (JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN)."
+        );
+    }
     let tokens = flow::run_authcode_flow(client_id, &spec(), port).await?;
 
     // No refresh token ⇒ `offline_access` wasn't granted (app misconfigured or the

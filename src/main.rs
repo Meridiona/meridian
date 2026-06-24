@@ -180,13 +180,24 @@ async fn main() -> Result<()> {
                         "\n✓ Jira connected: {site}\n  Tokens saved to ~/.meridian/oauth/jira.json — run `meridian restart` to pick them up."
                     ),
                     Err(e) => {
-                        eprintln!("oauth-login jira failed: {e:#}");
-                        eprintln!(
-                            "\nIf your Atlassian org blocks third-party OAuth apps (a \"site admin \
-                             must authorize\" message, or app installs disabled), use the API-token \
-                             fallback instead: set JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN via \
-                             `meridian config edit`."
-                        );
+                        let msg = format!("{e:#}");
+                        eprintln!("oauth-login jira failed: {msg}");
+                        // Only show the admin-block hint when the failure is a
+                        // consent-phase denial (Atlassian redirects with
+                        // error=access_denied when the org policy blocks the app).
+                        // Token-exchange errors (invalid_client, missing secret,
+                        // network issues) have their own clear messages above.
+                        if msg.contains("access_denied")
+                            || msg.contains("provider returned OAuth error")
+                        {
+                            eprintln!(
+                                "\nIf your Atlassian org blocks third-party OAuth apps (a \
+                                 \"site admin must authorize\" message, or app installs \
+                                 disabled), use the API-token fallback instead: set \
+                                 JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN via \
+                                 `meridian config edit`."
+                            );
+                        }
                         std::process::exit(1);
                     }
                 }
