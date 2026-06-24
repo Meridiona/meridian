@@ -10,6 +10,12 @@
 set -euo pipefail
 
 APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# ⚠️ LICENSE PIN — DO NOT BUMP past 0.4.6 without legal review.
+# screenpipe relicensed MIT → Commercial on 2026-06-10. 0.4.6 (published
+# 2026-06-05) is the LAST MIT npm release; >= 0.4.17 (2026-06-11+) is Commercial,
+# whose "competing product" clause would then bind our users. Meridian ships zero
+# screenpipe code, so MIT 0.4.6 keeps the install license-clean. Bumping this is a
+# deliberate legal decision. CI enforces it — .github/workflows/ci.yml `screenpipe-license-pin`.
 SCREENPIPE_VERSION="0.4.6"
 MLX_PORT="${MLX_PORT:-7823}"
 UI_PORT="${MERIDIAN_UI_PORT:-3939}"   # dashboard port (override via MERIDIAN_UI_PORT)
