@@ -152,6 +152,100 @@ fn frontend_js_parses() {
     }
 }
 
+// ── Dev-setup contract guards (v1.64.0 fold) ──────────────────────────────
+// These lock invariants of the dev-script changes that landed with the fold.
+// A future edit that accidentally reverts the topology (re-adding a separate
+// Next.js window, re-enabling screenpipe agents) should break `cargo test`
+// rather than silently breaking new-contributor setup.
+
+/// GUARD: `dev-start.sh` must no longer bootstrap screenpipe as a launchd
+/// agent. v1.64.0 runs capture in-process inside the Tauri tray binary — a
+/// screenpipe launchd agent conflicts and is unneeded. The old 80-line block
+/// (`Ensure screenpipe is up`) was removed; this assertion prevents it from
+/// creeping back.
+#[test]
+fn dev_start_no_screenpipe_launchd_bootstrap() {
+    let src = read_text("dev-start.sh");
+    assert!(
+        !src.contains("LABEL_SCREENPIPE"),
+        "dev-start.sh must not bootstrap a screenpipe launchd agent \
+         (capture is in-process inside the Tauri tray since v1.64.0). \
+         Remove the LABEL_SCREENPIPE / launchctl bootstrap block."
+    );
+    assert!(
+        !src.contains("install-screenpipe-daemon.sh"),
+        "dev-start.sh must not call install-screenpipe-daemon.sh"
+    );
+}
+
+/// GUARD: `dev-start.sh` must not open a separate Next.js terminal window.
+/// `npm run tauri dev` starts the Next.js dev server automatically via
+/// `beforeDevCommand` in `tauri.conf.json` — a second window runs it twice.
+/// The fold removed window 3 ("Next.js UI"); this prevents it returning.
+#[test]
+fn dev_start_no_separate_nextjs_window() {
+    let src = read_text("dev-start.sh");
+    assert!(
+        !src.contains("npm run dev"),
+        "dev-start.sh must not start a separate `npm run dev` window — \
+         `npm run tauri dev` handles this via beforeDevCommand. \
+         Running both starts two Next.js processes on the same port."
+    );
+}
+
+/// GUARD: `dev-start.sh` must open exactly 3 Terminal windows (daemon, MLX,
+/// tray). The old 4-window setup had a redundant Next.js window; the new fold
+/// topology has 3. Counts `do script` calls in the embedded AppleScript block.
+#[test]
+fn dev_start_opens_three_terminal_windows() {
+    let src = read_text("dev-start.sh");
+    let count = src.matches("do script \"").count();
+    assert_eq!(
+        count, 3,
+        "dev-start.sh must open exactly 3 Terminal windows (daemon, MLX, tray). \
+         Found {count} `do script` calls. If you added a new service window, \
+         update this test to reflect the new expected count."
+    );
+}
+
+/// GUARD: `install-dev.sh` must not register screenpipe or a11y-helper as
+/// launchd agents. Both are unneeded since v1.64.0 (capture is in-process);
+/// registering them causes a duplicate-capture conflict.
+#[test]
+fn install_dev_skips_screenpipe_agents() {
+    let src = read_text("install-dev.sh");
+    assert!(
+        !src.contains("install-screenpipe-daemon.sh"),
+        "install-dev.sh must not call install-screenpipe-daemon.sh \
+         (screenpipe is no longer a separate process — capture is in-process \
+         inside the Tauri tray since v1.64.0)."
+    );
+    assert!(
+        !src.contains("install-a11y-helper-daemon.sh"),
+        "install-dev.sh must not call install-a11y-helper-daemon.sh \
+         (a11y capture is in-process inside the Tauri tray since v1.64.0)."
+    );
+}
+
+/// GUARD: `tauri.conf.json`'s `beforeDevCommand` must start the Next.js dev
+/// server. This is what removes the need for a separate Next.js terminal in
+/// `dev-start.sh` — if the beforeDevCommand is removed or changed, the
+/// dashboard would be blank in dev mode without an explicit `npm run dev`.
+#[test]
+fn tauri_before_dev_command_starts_nextjs() {
+    let conf = read_json(CONF);
+    let before_dev = conf["build"]["beforeDevCommand"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        before_dev.contains("npm run dev"),
+        "tauri.conf.json build.beforeDevCommand must start the Next.js dev \
+         server (contain `npm run dev`). Without it, `npm run tauri dev` opens \
+         a blank webview and a separate Next.js terminal is needed again. \
+         Found: {before_dev:?}"
+    );
+}
+
 /// Collect element ids referenced from a JS file via `getElementById('x')` and
 /// the `$('x')` helper the popover defines (`const $ = (id) => ...`).
 fn referenced_ids(js: &str) -> Vec<String> {
