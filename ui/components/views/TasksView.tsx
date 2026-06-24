@@ -554,10 +554,14 @@ const TRACKERS: Array<{
     name: 'GitHub',
     glyph: 'Gh',
     color: '#24292F',
-    tokenHint: 'Easiest: run meridian setup — it pulls your token from the gh CLI (no PAT) and adds the read:project scope. Or create a classic PAT with repo, read:org, read:project scopes.',
+    oauth: {
+      command: 'meridian oauth-login github',
+      hint: 'Connects via the gh CLI — opens your browser, no PAT to create. Requires gh to be installed (cli.github.com). After connecting, add GITHUB_PROJECT_IDS to ~/.meridian/.env to sync GitHub Projects v2 tasks.',
+    },
+    tokenHint: 'Create a classic PAT with repo, read:org, read:project scopes.',
     tokenUrl: 'https://github.com/settings/tokens/new',
     env: 'GITHUB_TOKEN=ghp_your_token\nGITHUB_PROJECT_IDS=PVT_your_project_id',
-    note: 'GITHUB_PROJECT_IDS is a comma-separated list of GitHub Projects v2 node IDs. meridian setup lists your projects to pick from, or find them with: gh api graphql -f query=\'{ viewer { projectsV2(first:10){nodes{id title}} } }\'',
+    note: 'GITHUB_PROJECT_IDS is a comma-separated list of GitHub Projects v2 node IDs. Find them with: gh api graphql -f query=\'{ viewer { projectsV2(first:10){nodes{id title}} } }\'',
   },
   {
     id: 'trello',
@@ -931,7 +935,7 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: (typeof TRACKERS)[number]
       // start_oauth (Rust) in the app, /api/auth/oauth/start POST in a browser.
       // Path-param route: provider rides the URL (browser) and the body (command).
       await mutate(`/api/auth/oauth/start?provider=${tracker.id}`, 'start_oauth', { provider: tracker.id })
-      // Poll until connected (up to 3 minutes).
+      // Poll until connected or failed (up to 3 minutes).
       // `stopped` prevents two async invocations of the same callback from both
       // resolving — e.g. tick N suspended at await while tick N+1 hits the deadline.
       const deadline = Date.now() + 180_000
@@ -941,6 +945,19 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: (typeof TRACKERS)[number]
         if (Date.now() > deadline) {
           stopped = true; clearInterval(id); pollRef.current = null
           setStatus('error'); setError('Timed out — try again'); return
+        }
+        // Check for a terminal error from the OAuth process first — surfaces
+        // failures (e.g. missing client_secret) immediately without waiting for
+        // the 3-minute timeout.
+        const oauthSt = await load<{ connected: boolean; error?: string | null }>(
+          `/api/auth/oauth/status?provider=${tracker.id}`,
+          'get_oauth_status',
+          { provider: tracker.id }
+        ).catch(() => null)
+        if (stopped) return
+        if (oauthSt?.error) {
+          stopped = true; clearInterval(id); pollRef.current = null
+          setStatus('error'); setError(oauthSt.error); return
         }
         const data = await load<Record<string, unknown>>('/api/integrations', 'get_integrations').catch(() => null)
         if (stopped) return  // re-check after await — timeout may have fired

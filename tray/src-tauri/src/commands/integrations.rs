@@ -42,6 +42,10 @@ use tracing::Instrument;
 /// `~/.meridian/oauth/<p>.json` is the connect/disconnect surface.
 const OAUTH_PROVIDERS: [&str; 2] = ["jira", "trello"];
 
+/// Providers connected via the `gh` CLI — `meridian oauth-login github`
+/// writes `GITHUB_TOKEN` to `~/.meridian/.env` instead of a `.json` store.
+const GH_CLI_PROVIDERS: [&str; 1] = ["github"];
+
 /// Providers connected via `.env` keys. Disconnecting strips every listed key
 /// from the active `.env`. Mirrors the route's `TOKEN_KEYS`.
 const TOKEN_KEYS: &[(&str, &[&str])] = &[
@@ -116,6 +120,10 @@ fn oauth_file_exists(provider: &str) -> bool {
         .map(|h| h.join(".meridian/oauth").join(format!("{provider}.json")))
         .map(|p| p.exists())
         .unwrap_or(false)
+}
+
+fn oauth_error_path(provider: &str) -> Option<PathBuf> {
+    home().map(|h| h.join(".meridian/oauth").join(format!("{provider}.error")))
 }
 
 /// Which trackers are connected (the ported /api/integrations GET).
@@ -378,7 +386,7 @@ pub struct StartOAuthResponse {
 #[tracing::instrument(fields(provider = %body.provider))]
 pub async fn start_oauth(body: StartOAuthBody) -> Result<StartOAuthResponse, String> {
     let provider = body.provider.as_str();
-    if !OAUTH_PROVIDERS.contains(&provider) {
+    if !OAUTH_PROVIDERS.contains(&provider) && !GH_CLI_PROVIDERS.contains(&provider) {
         return Err(format!("Unknown provider: {provider}"));
     }
 
@@ -396,25 +404,129 @@ pub async fn start_oauth(body: StartOAuthBody) -> Result<StartOAuthResponse, Str
         .map_err(|e| format!("Could not start OAuth flow: {e}"))?;
     let err_log = log.try_clone().map_err(|e| e.to_string())?;
 
+    // Clear any previous error sentinel before launching a fresh flow.
+    if let Some(sentinel) = oauth_error_path(provider) {
+        let _ = std::fs::remove_file(&sentinel);
+    }
+
     let bin = crate::install::meridian_bin();
-    // Detached: stdin null, stdout/stderr to the log; we drop the handle and
-    // never wait, so the login survives this command returning.
-    std::process::Command::new(&bin)
-        .args(["oauth-login", provider])
+    let mut cmd = tokio::process::Command::new(&bin);
+    cmd.args(["oauth-login", provider])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(log))
         .stderr(std::process::Stdio::from(err_log))
-        .spawn()
-        .map_err(|e| {
-            tracing::warn!(bin = %bin, error = %e, "oauth-login spawn failed");
-            format!("Could not start OAuth flow: {e}")
-        })?;
+        .kill_on_drop(false);
+
+    // Forward OAuth credentials from the .env so the spawned process can
+    // exchange the authorization code even when they're not in the process env
+    // (dev builds don't bake MERIDIAN_JIRA_OAUTH_CLIENT_SECRET at compile time).
+    let mode = crate::install::detect_install_mode();
+    let dot_env = mode.env_path().map(parse_env).unwrap_or_default();
+    for key in [
+        "JIRA_OAUTH_CLIENT_SECRET",
+        "JIRA_OAUTH_CLIENT_ID",
+        "JIRA_OAUTH_REDIRECT_PORT",
+        "TRELLO_APP_KEY",
+    ] {
+        if let Some(val) = dot_env.get(key) {
+            cmd.env(key, val);
+        }
+    }
+
+    let mut child = cmd.spawn().map_err(|e| {
+        tracing::warn!(bin = %bin, error = %e, "oauth-login spawn failed");
+        format!("Could not start OAuth flow: {e}")
+    })?;
+
+    // Watch the child; write a .error sentinel if it exits non-zero so the UI
+    // can surface the reason without waiting for the 3-minute poll timeout.
+    let log_path_bg = log_path.clone();
+    let provider_bg = body.provider.clone();
+    tauri::async_runtime::spawn(async move {
+        match child.wait().await {
+            Ok(status) if status.success() => {
+                tracing::info!(provider = %provider_bg, "oauth-login succeeded");
+            }
+            Ok(status) => {
+                tracing::warn!(
+                    provider = %provider_bg,
+                    code = ?status.code(),
+                    "oauth-login failed"
+                );
+                let msg = std::fs::read_to_string(&log_path_bg)
+                    .ok()
+                    .and_then(|s| {
+                        s.lines()
+                            .rfind(|l| !l.trim().is_empty())
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_else(|| {
+                        format!("OAuth login failed (exit {})", status.code().unwrap_or(-1))
+                    });
+                if let Some(sentinel) = oauth_error_path(&provider_bg) {
+                    let _ = std::fs::write(&sentinel, &msg);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(provider = %provider_bg, error = %e, "oauth-login wait error");
+            }
+        }
+    });
 
     tracing::info!(log = %log_path.display(), "oauth-login launched");
     Ok(StartOAuthResponse {
         started: true,
         provider: body.provider,
     })
+}
+
+/// Status returned by [`get_oauth_status`].
+#[derive(Debug, Serialize)]
+pub struct OAuthStatus {
+    pub connected: bool,
+    pub error: Option<String>,
+}
+
+/// Poll the completion status of an OAuth login for `provider`.
+///
+/// Returns `connected=true` once `~/.meridian/oauth/<provider>.json` exists,
+/// or `error` with the last non-empty line from the OAuth log if the child
+/// process exited with a non-zero status. The UI polls this every 2 s after
+/// [`start_oauth`] returns so failures surface immediately instead of waiting
+/// for the 3-minute timeout.
+///
+/// # Who calls this
+/// `ui/components/views/TasksView.tsx` `OAuthSetup`.
+///
+/// # Related
+/// - [`start_oauth`] — launches the background `meridian oauth-login` process.
+/// - [`get_integrations`] — broader connected-status check (used for success).
+#[tauri::command]
+#[tracing::instrument]
+pub async fn get_oauth_status(provider: String) -> Result<OAuthStatus, String> {
+    if !OAUTH_PROVIDERS.contains(&provider.as_str())
+        && !GH_CLI_PROVIDERS.contains(&provider.as_str())
+    {
+        return Err(format!("Unknown provider: {provider}"));
+    }
+    // gh-CLI providers write a token to .env rather than a .json store.
+    let connected = if GH_CLI_PROVIDERS.contains(&provider.as_str()) {
+        let mode = crate::install::detect_install_mode();
+        let env = mode.env_path().map(parse_env).unwrap_or_default();
+        is_set(&env, "GITHUB_TOKEN")
+    } else {
+        oauth_file_exists(&provider)
+    };
+    let error = if connected {
+        None
+    } else {
+        oauth_error_path(&provider)
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    tracing::debug!(provider = %provider, connected, error = ?error, "get_oauth_status");
+    Ok(OAuthStatus { connected, error })
 }
 
 #[cfg(test)]

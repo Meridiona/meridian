@@ -274,7 +274,7 @@ prompt_permissions() {
     run open "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
     echo "    → Scroll to the bottom and turn ON"
     echo "      'Allow notifications when mirroring or sharing the display'."
-    echo "    → When 'Meridian Tray' appears in the app list, make sure its"
+    echo "    → When 'Meridian' appears in the app list, make sure its"
     echo "      notifications are allowed (style Banners or Alerts, not None)."
     read -r -p "  Press Enter when done… " _
     ok "Notifications acknowledged"

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Meridian Tray",
+  "productName": "Meridian",
   "version": "0.1.0",
   "identifier": "com.meridiona.tray",
   "build": {

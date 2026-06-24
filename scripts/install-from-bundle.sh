@@ -463,7 +463,7 @@ if [[ "${SKIP_PERMISSIONS}" -eq 0 ]]; then
     open "x-apple.systempreferences:com.apple.Notifications-Settings.extension" 2>/dev/null || true
     echo "  → Scroll to the bottom and turn ON"
     echo "    'Allow notifications when mirroring or sharing the display'."
-    echo "  → When 'Meridian Tray' appears, ensure its notifications are allowed"
+    echo "  → When 'Meridian' appears, ensure its notifications are allowed"
     echo "    (style Banners or Alerts, not None)."
     read -r -p "  Press Enter when done… " _ || true
 fi
@@ -570,7 +570,7 @@ if [[ -x "${APP_ROOT}/bin/meridian-tray" ]]; then
     if [[ "${_tray_changed}" -eq 0 ]]; then
         ok "Tray app unchanged — skipping restart"
     else
-        info "Installing Meridian Tray launchd agent…"
+        info "Installing Meridian tray agent…"
         bash "${APP_ROOT}/scripts/install-tray-daemon.sh" || warn "tray agent install failed"
     fi
 else

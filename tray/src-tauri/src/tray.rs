@@ -9,10 +9,9 @@
 //! # Related
 //! - [`crate::commands::system`] — the same open-actions exposed as Tauri commands.
 //! - [`crate::commands::daemon`] — `toggle_daemon`, invoked by the toggle menu item.
-//! - [`crate::sys::ui_base`] — the dashboard base URL the open items target.
 
 use crate::state::{AppState, HealthStatus};
-use crate::sys::{self, ui_base};
+use crate::sys;
 use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{Menu, MenuBuilder, MenuItemBuilder},
@@ -37,21 +36,17 @@ pub(crate) fn build_tray_menu<R: Runtime>(
     health: &HealthStatus,
 ) -> tauri::Result<Menu<R>> {
     let toggle_item = MenuItemBuilder::with_id("toggle_daemon", toggle_label(health)).build(app)?;
-    let open_item = MenuItemBuilder::with_id("open_dashboard", "Open Dashboard").build(app)?;
-    // Native (in-app) dashboard — renders Today/Week from Rust commands, no
-    // browser, no Node server. The fold-into-Tauri end-state.
-    let native_item =
-        MenuItemBuilder::with_id("open_native", "Open Dashboard (native)").build(app)?;
+    // Opens the in-app dashboard window (no browser, no Node server).
+    let dashboard_item = MenuItemBuilder::with_id("open_dashboard", "Open Dashboard").build(app)?;
     // First-run / re-run onboarding wizard (permissions, model, tracker auth).
     let setup_item = MenuItemBuilder::with_id("open_setup", "Setup…").build(app)?;
     let worklogs_item = MenuItemBuilder::with_id("open_worklogs", "Review Drafts").build(app)?;
     let restart_item = MenuItemBuilder::with_id("restart_daemon", "Restart Daemon").build(app)?;
-    let quit_item = MenuItemBuilder::with_id("quit", "Quit Meridian Tray").build(app)?;
+    let quit_item = MenuItemBuilder::with_id("quit", "Quit Meridian").build(app)?;
     MenuBuilder::new(app)
         .items(&[
             &toggle_item,
-            &open_item,
-            &native_item,
+            &dashboard_item,
             &setup_item,
             &worklogs_item,
             &restart_item,
@@ -64,10 +59,10 @@ pub(crate) fn build_tray_menu<R: Runtime>(
 /// (so it stays a free function, not a closure capturing the world).
 pub(crate) fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
     match id {
-        "open_dashboard" => open_in_browser(app, &ui_base()),
-        "open_native" => open_native_dashboard(app),
+        "open_dashboard" => open_native_dashboard(app),
         "open_setup" => open_wizard_window(app),
-        "open_worklogs" => open_in_browser(app, &format!("{}/worklogs", ui_base())),
+        // Review Drafts: open the dashboard (user navigates to Worklogs from there).
+        "open_worklogs" => open_native_dashboard(app),
         "toggle_daemon" => toggle_from_menu(app),
         "restart_daemon" => restart_from_menu(),
         "quit" => app.exit(0),
@@ -120,15 +115,11 @@ fn restart_from_menu() {
         .spawn();
 }
 
-fn open_in_browser(app: &tauri::AppHandle, url: &str) {
-    use tauri_plugin_opener::OpenerExt;
-    let _ = app.opener().open_url(url, None::<&str>);
-}
-
 /// Open (or focus) the in-app onboarding wizard window. Loads the Next `/setup`
 /// route; the wizard drives permissions, model status, and tracker auth entirely
-/// through Tauri commands (no Node server).
-fn open_wizard_window(app: &tauri::AppHandle) {
+/// through Tauri commands (no Node server). `pub(crate)` so `lib.rs` can call it
+/// for the first-run auto-open.
+pub(crate) fn open_wizard_window(app: &tauri::AppHandle) {
     if let Some(win) = app.get_webview_window("setup") {
         let _ = win.show();
         let _ = win.set_focus();
