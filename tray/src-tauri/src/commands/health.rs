@@ -40,7 +40,7 @@ pub struct HealthResponse {
 pub async fn check_health() -> HealthResponse {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let (db, a11y, daemon) = tokio::join!(
-        check_database(&home),
+        check_database(),
         check_a11y_trusted(&home),
         check_daemon_running(&home),
     );
@@ -60,10 +60,15 @@ pub async fn check_health() -> HealthResponse {
     }
 }
 
-/// Check whether `~/.meridian/meridian.db` is readable.
-async fn check_database(home: &str) -> (bool, Option<String>) {
-    let db = std::env::var("MERIDIAN_DB_PATH")
-        .unwrap_or_else(|_| format!("{}/.meridian/meridian.db", home));
+/// Check whether the meridian DB is readable.
+///
+/// Resolves the path through [`crate::install::meridian_db_path`] — the same
+/// `MERIDIAN_DB` / `~/.meridian/.env` / default chain the daemon and the tray's
+/// own DB pool use — rather than re-deriving it inline. (The old inline lookup
+/// read a non-existent `MERIDIAN_DB_PATH` var and the hardcoded default, so it
+/// reported "not found" on any installed system with a custom `MERIDIAN_DB`.)
+async fn check_database() -> (bool, Option<String>) {
+    let db = crate::install::meridian_db_path();
     match tokio::fs::metadata(&db).await {
         Ok(_) => (true, None),
         Err(_) => (

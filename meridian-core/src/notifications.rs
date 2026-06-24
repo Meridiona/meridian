@@ -56,8 +56,19 @@ pub fn event_allowed(event_key: &str, s: &RuntimeSettings) -> bool {
 }
 
 /// Minutes since midnight for an 'HH:MM' string, or `None` if malformed.
+///
+/// Strict by design: mirrors the original route's `/^(\d{1,2}):(\d{2})$/` —
+/// 1–2 ASCII-digit hours, exactly 2 ASCII-digit minutes, nothing else. A plain
+/// `split_once(':') + parse` would be more lenient (accepting `"8:5"`, `"+8:00"`,
+/// `"8:00:00"`) and diverge from the dashboard's silence/notify decision.
 fn hhmm_to_minutes(hhmm: &str) -> Option<i64> {
     let (h, m) = hhmm.trim().split_once(':')?;
+    let valid_digits = |s: &str, max_len: usize| -> bool {
+        (1..=max_len).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit())
+    };
+    if !valid_digits(h, 2) || m.len() != 2 || !m.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
     let h: i64 = h.parse().ok()?;
     let m: i64 = m.parse().ok()?;
     if h > 23 || m > 59 {
@@ -433,5 +444,22 @@ mod tests {
         // malformed bounds → fail open (not quiet)
         s.quiet_hours_start = "nope".into();
         assert!(!in_quiet_hours_at(&s, 12 * 60));
+    }
+
+    #[test]
+    fn hhmm_parser_is_strict_like_the_route_regex() {
+        // Accepts 1–2 digit hours, exactly 2 digit minutes.
+        assert_eq!(hhmm_to_minutes("8:00"), Some(8 * 60));
+        assert_eq!(hhmm_to_minutes("08:00"), Some(8 * 60));
+        assert_eq!(hhmm_to_minutes("23:59"), Some(23 * 60 + 59));
+        assert_eq!(hhmm_to_minutes(" 09:30 "), Some(9 * 60 + 30)); // outer trim only
+                                                                   // Rejects everything the original /^(\d{1,2}):(\d{2})$/ rejected.
+        assert_eq!(hhmm_to_minutes("8:5"), None); // 1-digit minutes
+        assert_eq!(hhmm_to_minutes("8:0"), None);
+        assert_eq!(hhmm_to_minutes("+8:00"), None); // sign
+        assert_eq!(hhmm_to_minutes("8:00:00"), None); // trailing seconds
+        assert_eq!(hhmm_to_minutes("24:00"), None); // hour out of range
+        assert_eq!(hhmm_to_minutes("8:60"), None); // minute out of range
+        assert_eq!(hhmm_to_minutes("nope"), None);
     }
 }

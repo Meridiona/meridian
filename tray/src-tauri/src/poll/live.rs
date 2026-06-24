@@ -107,8 +107,15 @@ pub(crate) fn spawn_log_tailer(app: tauri::AppHandle) {
 
 /// Read complete new lines from `path` starting at `*offset`, parse them, and
 /// advance `*offset` past the last consumed newline (a partial trailing line is
-/// left for the next read). Best-effort: any IO/UTF-8 error yields no entries
-/// and leaves the offset untouched, so the next tick retries.
+/// left for the next read). Best-effort: an IO error yields no entries and leaves
+/// the offset untouched, so the next tick retries.
+///
+/// Splitting happens at the **byte** level (find the last `\n`, decode only the
+/// complete prefix) — never `read_to_string` over the whole `offset..EOF` region.
+/// A `read_to_string` would fail the entire decode when the writer is mid-flush
+/// on a multibyte char in the not-yet-complete trailing line, silently dropping
+/// the complete lines that precede it. The prefix is decoded lossily so a single
+/// corrupt byte can never wedge the tail either.
 fn read_new_lines(path: &str, offset: &mut u64) -> Vec<crate::commands::logs::LogEntry> {
     let Ok(mut file) = std::fs::File::open(path) else {
         return Vec::new();
@@ -116,17 +123,18 @@ fn read_new_lines(path: &str, offset: &mut u64) -> Vec<crate::commands::logs::Lo
     if file.seek(SeekFrom::Start(*offset)).is_err() {
         return Vec::new();
     }
-    let mut buf = String::new();
-    if file.read_to_string(&mut buf).is_err() {
+    let mut bytes = Vec::new();
+    if file.read_to_end(&mut bytes).is_err() {
         return Vec::new();
     }
-    // Consume only up to the last complete line; keep any partial tail for later.
-    let consume_to = match buf.rfind('\n') {
+    // Consume only up to the last complete line (last `\n` byte); keep any partial
+    // tail — possibly a half-flushed multibyte char — for the next read.
+    let consume_to = match bytes.iter().rposition(|&b| b == b'\n') {
         Some(i) => i + 1,
         None => return Vec::new(),
     };
     *offset += consume_to as u64;
-    buf[..consume_to]
+    String::from_utf8_lossy(&bytes[..consume_to])
         .lines()
         .filter(|l| !l.is_empty())
         .filter_map(crate::commands::logs::parse_line)

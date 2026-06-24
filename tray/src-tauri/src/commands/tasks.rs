@@ -39,6 +39,11 @@ pub async fn sync_tasks() -> Result<SyncResult, String> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        // On timeout below, `tokio::time::timeout` drops the output future; without
+        // this the orphaned `meridian tasks-sync` keeps running (and can still mutate
+        // the board) after the UI reports a failure. The deleted /api/tasks/sync route
+        // called child.kill() on its 30s timer — kill_on_drop preserves that contract.
+        .kill_on_drop(true)
         .output();
 
     let output = match tokio::time::timeout(Duration::from_secs(30), child).await {
