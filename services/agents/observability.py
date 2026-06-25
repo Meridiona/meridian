@@ -308,6 +308,31 @@ def extract_parent_context(traceparent: Optional[str]) -> Optional[Context]:
     return TraceContextTextMapPropagator().extract({"traceparent": traceparent})
 
 
+def instrument_agno() -> None:
+    """Attach agno's OpenInference instrumentor to the global TracerProvider.
+
+    Requires ``openinference-instrumentation-agno`` — if it isn't installed the
+    call is a no-op (warning logged).  The package is optional because the MLX
+    server works fine without OpenInference spans; it just won't export
+    Agent/Workflow run spans to OpenObserve.
+
+    Must be called after :func:`setup` so the global TracerProvider is already
+    configured.
+    """
+    try:
+        from openinference.instrumentation.agno import AgnoInstrumentor  # type: ignore
+    except ImportError:
+        logging.getLogger(__name__).warning(
+            "instrument_agno: openinference-instrumentation-agno not installed; "
+            "agno Agent/Workflow spans will not be exported. "
+            "Install with: pip install openinference-instrumentation-agno"
+        )
+        return
+
+    provider = trace.get_tracer_provider()
+    AgnoInstrumentor().instrument(tracer_provider=provider)
+
+
 # ──────────────────────── Tracing setup ────────────────────────────────────────
 def _configure_tracing(agent_name: str) -> None:
     resource = Resource.create({"service.name": agent_name})
