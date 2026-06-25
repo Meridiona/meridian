@@ -18,29 +18,16 @@ from typing import Any, Iterator
 
 from agents import observability
 
-log = logging.getLogger("agents.run_task_linker_mlx")
-tracer = observability.setup("meridian-task-linker-mlx")
+log = logging.getLogger("agents.mlx_classifier")
+tracer = observability.setup("meridian-mlx-classifier")
 
-# Default model — override with MLX_MODEL_ID env var.
-_DEFAULT_MLX_MODEL_ID = "mlx-community/Qwen3.5-2B-OptiQ-4bit"
-
-_MLX_MODEL_ID_PIN = os.environ.get("MLX_MODEL_ID")
-_MLX_MODEL_ID: str | None = None
+# Default model — the agent server runs a single hardcoded model.
+MODEL_ID = "mlx-community/Qwen3.5-2B-OptiQ-4bit"
 
 _MAX_TOKENS = 1024
 _TEMPERATURE = 0.0
 
 _IDLE_EVICT_S = float(os.environ.get("MLX_IDLE_EVICT_S", "120"))
-
-
-def _resolve_model_id() -> str:
-    """Return the MLX model id — MLX_MODEL_ID env pin or the hardcoded default."""
-    global _MLX_MODEL_ID
-    if _MLX_MODEL_ID is not None:
-        return _MLX_MODEL_ID
-    _MLX_MODEL_ID = _MLX_MODEL_ID_PIN or _DEFAULT_MLX_MODEL_ID
-    log.info("run_task_linker_mlx: resolved MLX model=%s", _MLX_MODEL_ID)
-    return _MLX_MODEL_ID
 
 
 class _ModelBundle:
@@ -65,7 +52,7 @@ def _get_model() -> _ModelBundle:
     Cache-miss load is done under _model_lock (double-checked) so concurrent
     callers can't double-load and the idle evictor can't race the load.
     """
-    model_id = _resolve_model_id()
+    model_id = MODEL_ID
     cached = _model_cache.get(model_id)
     if cached is not None:
         return cached
@@ -98,7 +85,7 @@ def _get_model() -> _ModelBundle:
 
 def _get_tokenizer() -> Any:
     """Return the HF tokenizer for the current model, loading the model if needed."""
-    model_id = _resolve_model_id()
+    model_id = MODEL_ID
     tok = _tokenizer_cache.get(model_id)
     if tok is not None:
         return tok

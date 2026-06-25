@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the meridian MLX inference server as a launchd LaunchAgent.
 #
-# The server loads Qwen3.5-9B once at startup and keeps it in memory.
+# The server loads Qwen3.5-2B lazily on first request and keeps it in memory.
 # The Rust daemon connects to it via POST /classify_sessions on the
 # configured port instead of cold-loading the model per session.
 #

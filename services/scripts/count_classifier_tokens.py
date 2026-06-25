@@ -34,7 +34,7 @@ from pathlib import Path
 
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs" / "mlx"
 SERVICES_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_MODEL_ID = "mlx-community/Qwen3.5-9B-OptiQ-4bit"
+DEFAULT_MODEL_ID = "mlx-community/Qwen3.5-2B-OptiQ-4bit"
 EXCERPT_CAP = 2_000   # fallback cap for rows without session_summary
 TOP_TITLES_N = 3
 

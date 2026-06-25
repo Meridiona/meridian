@@ -19,7 +19,7 @@ app_sessions row (Rust ETL writes it)
         ▼           on the persistent MLX server
 ┌──────────────────────────────────────────────┐
 │ MLX inference server (FastAPI, port 7823)    │ Apple Silicon only
-│   model: mlx-community/Qwen3.5-9B-OptiQ-4bit│
+│   model: mlx-community/Qwen3.5-2B-OptiQ-4bit│
 │   loaded once at startup, served until killed│
 │   returns: task_key, session_type, confidence│
 └──────────────────────────────────────────────┘
@@ -74,7 +74,7 @@ RUST_LOG=meridian=debug CLASSIFIER_BACKEND=mlx cargo run --bin meridian
 python -m agents.server --backend mlx --port 7823
 ```
 
-The model (`Qwen3.5-9B-OptiQ-4bit`) is downloaded from Hugging Face on first run (~4 GB). Subsequent starts load from local cache in ~5 s.
+The model (`Qwen3.5-2B-OptiQ-4bit`) is downloaded from Hugging Face on first run. Subsequent starts load from local cache in ~5 s.
 
 ---
 

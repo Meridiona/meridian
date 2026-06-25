@@ -563,7 +563,7 @@ PYEOF
         "models--mlx-community--phi-4-4bit"
         "models--mlx-community--DeepSeek-R1-Distill-Qwen-14B-4bit"
         "models--mlx-community--gemma-3-12b-it-qat-4bit"
-        "models--mlx-community--Qwen3.5-9B-OptiQ-4bit"
+        "models--mlx-community--Qwen3.5-2B-OptiQ-4bit"
         "models--mlx-community--Qwen3.5-4B-MLX-4bit"
         "models--mlx-community--Llama-3.2-3B-Instruct-4bit"
     )
