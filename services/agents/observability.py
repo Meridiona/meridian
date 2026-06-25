@@ -257,6 +257,9 @@ def setup(agent_name: str) -> trace.Tracer:
     This compromise matches OTel's "one resource per process" model while
     keeping `setup` idempotent in shared-library imports.
     """
+    import re
+    if not re.fullmatch(r"[A-Za-z0-9_\-]+", agent_name):
+        raise ValueError(f"agent_name must be alphanumeric/dash/underscore only: {agent_name!r}")
     global _PROCESS_SERVICE_NAME
 
     if agent_name in _INITIALISED:
