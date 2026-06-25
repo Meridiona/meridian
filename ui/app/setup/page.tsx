@@ -13,8 +13,8 @@ import type { CSSProperties, ReactNode } from 'react'
 import { invoke, mutate, load, tauri } from '@/lib/bridge'
 import { STEPS, Welcome, Completion } from './steps'
 import type { Wiz } from './steps'
-import { INTEGRATIONS, MODELS, MODEL_BY_ID } from './data'
-import type { DownloadProgress, MlxStatusResponse, ModelTier, SystemSpecs } from './data'
+import { INTEGRATIONS } from './data'
+import type { DownloadProgress, MlxStatusResponse, SystemSpecs } from './data'
 import { Btn, Check, Kicker } from './atoms'
 
 const SERIF: CSSProperties = { fontFamily: 'var(--font-instrument-serif), Georgia, serif' }
@@ -38,11 +38,7 @@ export default function SetupWizard() {
   const [prefetching, setPrefetching] = useState(false)
   const [modelReady, setModelReady] = useState(false)
   const [progress, setProgress] = useState<DownloadProgress | null>(null)
-  const [model, setModel] = useState<ModelTier['id']>('core')
-  // The user must explicitly commit a model (the Download button) before we
-  // prefetch — otherwise an auto-prefetch would fetch the *default* before they
-  // pick, then a later pick would mislabel the row as "Ready" for a model the
-  // server never loaded. `wantModel` is that commit gate.
+  // The user must explicitly commit (the Download button) before we prefetch.
   const [wantModel, setWantModel] = useState(false)
   const prefetchStarted = useRef(false)
 
@@ -53,13 +49,9 @@ export default function SetupWizard() {
 
   const active = !welcome && !done
 
-  // Detect hardware once on mount + restore any persisted model choice. Both are
-  // cheap one-shots; specs are ready by the time the user reaches the Model step.
+  // Detect hardware once on mount.
   useEffect(() => {
     invoke<SystemSpecs>('detect_system_specs').then(setSpecs).catch(() => {})
-    invoke<string | null>('get_model_preference')
-      .then((id) => { const t = MODELS.find((m) => m.hfId === id); if (t) setModel(t.id) })
-      .catch(() => {})
   }, [])
 
   // Poll the three required permissions on the Permissions step.
@@ -180,11 +172,6 @@ export default function SetupWizard() {
     invoke('open_permission_pane', { pane: 'input_monitoring' }).catch((e) => setErr(String(e)))
   }, [])
 
-  const selectModel = useCallback((id: ModelTier['id']) => {
-    setModel(id)
-    invoke('set_model_preference', { modelId: MODEL_BY_ID[id].hfId }).catch(() => {})
-  }, [])
-
   // Provision the MLX runtime tarball, then bring the server up. No model is
   // fetched here — that waits for an explicit Download (downloadModel).
   const installRuntime = useCallback(async () => {
@@ -197,26 +184,13 @@ export default function SetupWizard() {
     } catch (e) { setErr(String(e)) } finally { setDownloading(false) }
   }, [])
 
-  // Commit the chosen model: persist the preference FIRST, then flag `wantModel`
-  // so the poll prefetches it once the server is running. Writing before the
-  // prefetch is what makes the "Ready" badge truthful about which model loaded.
-  const downloadModel = useCallback(async () => {
+  // Commit: start the server and flag `wantModel` so the poll prefetches it.
+  const downloadModel = useCallback(() => {
     setErr('')
-    // The preference MUST persist before the server prefetches — otherwise a
-    // failed write would let the server download the old/default model while the
-    // UI marks the newly-selected one ready. Stop the commit if the write fails.
-    try {
-      await invoke('set_model_preference', { modelId: MODEL_BY_ID[model].hfId })
-    } catch (e) {
-      setErr(String(e))
-      setWantModel(false)
-      prefetchStarted.current = false
-      return
-    }
     invoke('start_mlx_server_cmd').catch(() => {})
     setWantModel(true)
     setProgress({ received: 0, total: 0, message: 'Preparing model…' })
-  }, [model])
+  }, [])
 
   const connect = useCallback((id: string) => {
     setErr('')
@@ -228,7 +202,7 @@ export default function SetupWizard() {
 
   const wiz: Wiz = {
     perms, openPane, grantScreen, grantInput,
-    specs, mlx, model, selectModel, downloading, prefetching, modelReady, progress,
+    specs, mlx, downloading, prefetching, modelReady, progress,
     committing: wantModel && !prefetching && !modelReady,
     installRuntime, downloadModel,
     integrations, connect,
