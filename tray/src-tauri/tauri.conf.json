@@ -6,7 +6,7 @@
   "build": {
     "frontendDist": "../../ui/out",
     "devUrl": "http://localhost:3939",
-    "beforeDevCommand": "mkdir -p ../ui/public/popover && cp -r src/. ../ui/public/popover && cd ../ui && npm run dev",
+    "beforeDevCommand": "rm -rf ../ui/public/popover && mkdir -p ../ui/public/popover && cp -r src/. ../ui/public/popover && cd ../ui && npm run dev",
     "beforeBuildCommand": "cd ../ui && npm run build"
   },
   "app": {

@@ -239,9 +239,9 @@ fn before_dev_command_copies_popover() {
         .as_str()
         .unwrap_or_default();
     assert!(
-        before_dev.contains("cp") && before_dev.contains("popover"),
-        "tauri.conf.json build.beforeDevCommand must copy tray/src into \
-         ui/public/popover so the popover window resolves under `tauri dev`. \
+        before_dev.contains("src/.") && before_dev.contains("../ui/public/popover"),
+        "tauri.conf.json build.beforeDevCommand must copy `src/.` into \
+         `../ui/public/popover` so the popover window resolves under `tauri dev`. \
          Found: {before_dev:?}"
     );
 }
