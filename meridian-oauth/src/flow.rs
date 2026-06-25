@@ -40,7 +40,9 @@ pub struct TokenResponse {
     pub access_token: String,
     #[serde(default)]
     pub refresh_token: String,
-    /// Lifetime in seconds of `access_token`.
+    /// Lifetime in seconds of `access_token`. Some providers omit the field;
+    /// default 0 means expires_at = now, triggering a refresh on next use.
+    #[serde(default)]
     pub expires_in: i64,
     #[serde(default)]
     pub scope: String,

@@ -185,13 +185,20 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
   const [status, setStatus] = useState<'idle' | 'waiting' | 'done' | 'error'>('idle')
   const [error, setError] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // mountedRef lets the async startOAuth body detect an unmount that happened
+  // while awaiting mutate — before the interval is created and pollRef assigned.
+  const mountedRef = useRef(true)
 
-  useEffect(() => () => { if (pollRef.current != null) clearInterval(pollRef.current) }, [])
+  useEffect(() => () => {
+    mountedRef.current = false
+    if (pollRef.current != null) clearInterval(pollRef.current)
+  }, [])
 
   const startOAuth = async () => {
     setStatus('waiting'); setError(null)
     try {
       await mutate(`/api/auth/oauth/start?provider=${tracker.id}`, 'start_oauth', { provider: tracker.id })
+      if (!mountedRef.current) return
       const deadline = Date.now() + OAUTH_DEADLINE_MS
       let stopped = false
       const id = setInterval(async () => {
@@ -252,7 +259,8 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
 
 // ── Token / PAT (save_integration_token — writes .env, reloads daemon) ────────
 function TokenSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () => void }) {
-  const method = tracker.token!
+  const method = tracker.token
+  if (!method) return null
   const [values, setValues] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)

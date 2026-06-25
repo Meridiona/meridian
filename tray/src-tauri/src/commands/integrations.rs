@@ -396,6 +396,13 @@ pub async fn save_integration_token(body: SaveTokenBody) -> Result<serde_json::V
             let _ = std::fs::remove_file(home.join(".meridian/oauth/jira.json"));
         }
     }
+    // Clear any OAuth error sentinel — a previous failed OAuth attempt writes a
+    // sentinel that get_oauth_status surfaces as an error. Token connect succeeds
+    // independently of OAuth, so the sentinel must be cleared or the dashboard
+    // shows a broken OAuth state even though the API token is working.
+    if let Some(sentinel) = oauth_error_path(provider) {
+        let _ = std::fs::remove_file(&sentinel);
+    }
 
     // Resolve + write inside a scope so the &Path borrow of `mode` is released
     // before the daemon-reload await below.
@@ -650,7 +657,7 @@ fn start_oauth_in_process(provider: String) -> Result<StartOAuthResponse, String
                 )
                 .await
             }
-            _ => Ok(()),
+            _ => anyhow::bail!("unhandled OAuth provider: {task_provider}"),
         };
         match result {
             Ok(()) => tracing::info!(provider = %task_provider, "in-process OAuth login succeeded"),
