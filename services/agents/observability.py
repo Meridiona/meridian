@@ -432,4 +432,42 @@ def _configure_logging(agent_name: str) -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
-__all__ = ["setup", "extract_parent_context"]
+def current_traceparent() -> Optional[str]:
+    """Return the W3C traceparent header for the currently active OTel span.
+
+    Returns ``None`` when no span is active or the span context is invalid.
+    Callers pass this to loopback HTTP requests so downstream stages attach
+    their spans to the same trace (same pattern the Rust daemon uses via
+    ``crate::observability::current_traceparent()``).
+    """
+    span = trace.get_current_span()
+    ctx = span.get_span_context()
+    if ctx is None or not ctx.is_valid:
+        return None
+    trace_flags = "01" if ctx.trace_flags.sampled else "00"
+    return f"00-{ctx.trace_id:032x}-{ctx.span_id:016x}-{trace_flags}"
+
+
+def instrument_agno() -> None:
+    """Instrument the agno framework for OpenTelemetry tracing.
+
+    No-op when openinference-instrumentation-agno is not installed; the package
+    is optional and the server must start cleanly without it.
+    """
+    try:
+        from opentelemetry.instrumentation.agno import AgnoInstrumentor  # type: ignore[import]
+        AgnoInstrumentor().instrument()
+    except ImportError:
+        logging.getLogger(__name__).debug(
+            "opentelemetry-instrumentation-agno not installed; agno spans will not be exported"
+        )
+
+
+def preview(text: Optional[str], max_chars: int = 200) -> str:
+    """Truncate text to `max_chars` for use as a span attribute value."""
+    if not text:
+        return ""
+    return text[:max_chars] + ("…" if len(text) > max_chars else "")
+
+
+__all__ = ["setup", "extract_parent_context", "instrument_agno", "current_traceparent", "preview"]
