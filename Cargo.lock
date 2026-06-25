@@ -4467,6 +4467,7 @@ dependencies = [
  "block2",
  "chrono",
  "cidre 0.13.1",
+ "dotenvy",
  "futures-util",
  "meridian",
  "meridian-core",
