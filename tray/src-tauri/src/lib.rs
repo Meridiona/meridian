@@ -497,6 +497,7 @@ pub fn run() {
             commands::get_status,
             commands::open_dashboard,
             commands::open_worklogs,
+            commands::open_setup,
             commands::restart_daemon,
             commands::toggle_daemon,
             commands::get_daemon_status,

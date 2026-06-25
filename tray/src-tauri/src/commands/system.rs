@@ -15,8 +15,10 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_opener::OpenerExt;
 
 /// Open (or focus) the in-app dashboard window (Today/Week from Rust commands,
-/// no browser, no Node server). Replaces the old `open_in_browser(ui_base())`
-/// which pointed at localhost:3939 — the Node server was retired in Stage 5.
+/// no browser, no Node server). Opens maximized so the app appears in the dock;
+/// switches activation policy to Regular to support dock icon + window activation.
+/// Replaces the old `open_in_browser(ui_base())` which pointed at localhost:3939
+/// — the Node server was retired in Stage 5.
 #[tauri::command]
 pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("dashboard") {
@@ -24,6 +26,8 @@ pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
         let _ = win.set_focus();
         return Ok(());
     }
+    #[cfg(target_os = "macos")]
+    app.set_activation_policy(tauri::ActivationPolicy::Regular);
     WebviewWindowBuilder::new(&app, "dashboard", WebviewUrl::App("today".into()))
         .title("Meridian — Dashboard")
         .inner_size(1100.0, 760.0)
@@ -32,6 +36,7 @@ pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
         .maximizable(true)
         .minimizable(true)
         .closable(true)
+        .maximized(true)
         .build()
         .map(|_win| ())
         .map_err(|e| e.to_string())
@@ -44,6 +49,16 @@ pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
 pub async fn open_worklogs(app: tauri::AppHandle) -> Result<(), String> {
     // Reuse the dashboard window; the user navigates to Worklogs from there.
     open_dashboard(app).await
+}
+
+/// Open (or focus) the in-app onboarding setup wizard window. Loads the Next
+/// `/setup` route; the wizard drives permissions, model status, and tracker
+/// auth entirely through Tauri commands (no Node server). Called from settings
+/// page to allow re-running setup from the dashboard.
+#[tauri::command]
+pub async fn open_setup(app: tauri::AppHandle) -> Result<(), String> {
+    crate::tray::open_wizard_window(&app);
+    Ok(())
 }
 
 /// Deep-link straight to a macOS privacy pane in System Settings. `pane` is
