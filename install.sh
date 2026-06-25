@@ -565,9 +565,10 @@ fi
 
 if [[ "${NO_UI}" -eq 0 ]]; then
     if [[ "${DEV_MODE}" -eq 1 ]]; then
-        info "Installing tray app dependencies (dev mode — skipping build)..."
+        info "Installing tray + UI dependencies (dev mode — skipping build)..."
         run bash -c "cd '${REPO_ROOT}/tray' && npm install"
-        ok "Tray dependencies installed (run manually: cd tray && npm run tauri dev)"
+        run bash -c "cd '${REPO_ROOT}/ui' && npm install"
+        ok "Tray + UI dependencies installed (run manually: cd tray && npm run tauri dev)"
     else
         info "Building tray app..."
         run bash -c "cd '${REPO_ROOT}/tray' && bash create-icons.sh && npm install && npm run build"

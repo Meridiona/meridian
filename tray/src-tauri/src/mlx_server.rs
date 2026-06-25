@@ -693,10 +693,9 @@ struct PrefetchStatus {
     error: Option<String>,
 }
 
-/// Trigger the server's eager, spec-aware model download and stream progress
-/// until it finishes. The model id is chosen server-side by `llm_selector`, so
-/// this prefetches exactly the weights the first classification will load —
-/// with a progress bar instead of a silent ~7 GB download mid-inference.
+/// Trigger the model download and stream progress until it finishes. Prefetches
+/// the fixed classifier weights so the first classification doesn't stall on a
+/// silent download mid-inference.
 ///
 /// POSTs `/prefetch_model` (idempotent — a re-trigger adopts the in-flight
 /// download rather than starting a second), then polls `/prefetch_status` ~1 Hz,

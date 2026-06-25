@@ -579,15 +579,15 @@ async fn main() -> Result<()> {
         });
     }
 
-    // 7d. PM-worklog driver (Stage 4): the hour-driven loop that DRAFTS one Jira
-    //     worklog per task per settled hour. Never posts — drafted worklogs wait
-    //     for a human to approve them in the dashboard. Independent of the ETL tick.
+    // 7d. PM-worklog driver: hour-level pipeline — POSTs /worklog_hour to the
+    //     MLX server once per settled hour; Python does full classify→draft→post.
     {
         let pool_pm = meridian.clone();
+        let db_path_pm = initial_cfg.meridian_db.clone();
         let rx_pm = shutdown_rx.clone();
         let notify_pm = worklog_notify.clone();
         tokio::spawn(async move {
-            meridian::pm_worklog::run_loop(pool_pm, rx_pm, notify_pm).await;
+            meridian::worklog_pipeline::run_loop(pool_pm, db_path_pm, rx_pm, notify_pm).await;
         });
     }
 
