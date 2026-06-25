@@ -13,8 +13,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Build Rust (debug), install UI/tray npm deps, set up Python venv + MLX.
-# --no-daemon skips all launchd registration (capture is in-process in the tray).
-bash "${REPO_ROOT}/install.sh" --dev --no-daemon "$@"
+# --no-daemon: skip launchd registration (capture is in-process in the tray).
+# --skip-permissions: the tray handles Screen Recording/Accessibility on first
+# launch via its onboarding wizard — no manual permission prompts needed here.
+bash "${REPO_ROOT}/install.sh" --dev --no-daemon --skip-permissions "$@"
 
 # Suppress the update-available banner in dev mode.
 mkdir -p "${HOME}/.meridian/app"
