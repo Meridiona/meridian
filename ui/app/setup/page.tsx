@@ -250,7 +250,12 @@ export default function SetupWizard() {
       setErr(String(e))
     }
   }
-  const closeWindow = () => { tauri()?.window.getCurrentWindow().close() }
+  const closeWindow = async () => {
+    try {
+      await invoke('open_dashboard')
+    } catch { /* ignore if dashboard fails to open */ }
+    tauri()?.window.getCurrentWindow().close()
+  }
 
   return (
     <div style={{ position: 'fixed', inset: 0, display: 'grid', placeItems: 'center', background: 'var(--paper)' }}>
