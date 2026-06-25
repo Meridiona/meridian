@@ -38,6 +38,7 @@ futures-util = "0.3"
 sha2 = "0.10"
 chrono = { version = "0.4", features = ["clock"] }
 anyhow = "1"
+dotenvy = "0.15"
 # Lean shared data layer (DB row types + read queries) — NOT the full daemon.
 meridian-core = { path = "../../meridian-core" }
 # Shared OAuth/token engine — lets the tray run the Jira/Trello browser login

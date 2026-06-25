@@ -38,9 +38,16 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::State;
 use tracing::Instrument;
+
+// Per-provider in-flight guard: prevents two concurrent OAuth flows from racing
+// to bind the same loopback port or write the same token file. Checked before
+// spawning; cleared (success or failure) inside the spawned task.
+static JIRA_OAUTH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static TRELLO_OAUTH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
 /// Providers connected via browser OAuth — their token store under
 /// `~/.meridian/oauth/<p>.json` is the connect/disconnect surface.
@@ -130,30 +137,15 @@ fn home() -> Option<PathBuf> {
     std::env::var("HOME").ok().map(PathBuf::from)
 }
 
+/// Parse a `.env` file using dotenvy so edge cases (export prefix, quoted
+/// values, backslash continuation) are handled the same way the daemon handles
+/// them via `dotenvy::dotenv_override()`. The old hand-rolled parser diverged
+/// on these cases, which could cause the tray and daemon to read different
+/// values for the same key.
 fn parse_env(path: &std::path::Path) -> HashMap<String, String> {
-    let mut out = HashMap::new();
-    let Ok(contents) = std::fs::read_to_string(path) else {
-        return out;
-    };
-    for line in contents.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if let Some(eq) = trimmed.find('=') {
-            if eq < 1 {
-                continue;
-            }
-            let key = trimmed[..eq].trim();
-            // Strip surrounding quotes so KEY="" and KEY='' register as empty.
-            let raw = trimmed[eq + 1..].trim();
-            let val = raw.trim_matches('"').trim_matches('\'').trim();
-            if !key.is_empty() && !val.is_empty() {
-                out.insert(key.to_string(), val.to_string());
-            }
-        }
-    }
-    out
+    dotenvy::from_path_iter(path)
+        .map(|iter| iter.filter_map(|item| item.ok()).collect())
+        .unwrap_or_default()
 }
 
 /// A value counts as "set" only if present and not a leftover `.env.example`
@@ -404,19 +396,26 @@ pub async fn save_integration_token(body: SaveTokenBody) -> Result<serde_json::V
         let _ = std::fs::remove_file(&sentinel);
     }
 
-    // Resolve + write inside a scope so the &Path borrow of `mode` is released
-    // before the daemon-reload await below.
+    // Resolve + write. `upsert_env` is synchronous std::fs I/O; run it on the
+    // blocking thread pool so we don't stall the Tokio reactor.
+    let key_count = updates.len();
     {
         let mode = crate::install::detect_install_mode();
-        let env_path = mode.env_path().ok_or("could not resolve .env path")?;
-        upsert_env(env_path, &updates).map_err(|e| {
-            tracing::warn!(error = %e, "could not write .env");
-            format!("could not write .env: {e}")
-        })?;
+        let env_path = mode
+            .env_path()
+            .ok_or("could not resolve .env path")?
+            .to_owned();
+        tokio::task::spawn_blocking(move || upsert_env(&env_path, &updates))
+            .await
+            .map_err(|e| format!("spawn_blocking panicked: {e}"))?
+            .map_err(|e| {
+                tracing::warn!(error = %e, "could not write .env");
+                format!("could not write .env: {e}")
+            })?;
     }
     tracing::info!(
         provider,
-        keys = updates.len(),
+        keys = key_count,
         "integration token saved to .env"
     );
 
@@ -605,37 +604,75 @@ pub async fn start_oauth(body: StartOAuthBody) -> Result<StartOAuthResponse, Str
     }
 }
 
-/// Forward connect-time OAuth creds from the active `.env` into the tray's
-/// process env so the in-process `meridian_oauth` resolvers (`client_id`,
-/// `client_secret`, `redirect_port`, `app_key` — they read `std::env`) pick them
-/// up. Packaged builds bake the Jira secret at compile time and inject
-/// `TRELLO_APP_KEY` into the bundle `.env`; this is the dev/source path and the
-/// bundle-`.env` path, mirroring the env the old subprocess flow forwarded. Only
-/// sets a key absent from the process env, so a real env var always wins.
-fn forward_oauth_env() {
-    let mode = crate::install::detect_install_mode();
-    let dot_env = mode.env_path().map(parse_env).unwrap_or_default();
-    for key in [
-        "JIRA_OAUTH_CLIENT_SECRET",
-        "JIRA_OAUTH_CLIENT_ID",
-        "JIRA_OAUTH_REDIRECT_PORT",
-        "TRELLO_APP_KEY",
-        "TRELLO_OAUTH_REDIRECT_PORT",
-    ] {
-        if std::env::var_os(key).is_none() {
-            if let Some(val) = dot_env.get(key) {
-                std::env::set_var(key, val);
-            }
-        }
-    }
-}
-
 /// Run the jira/trello browser login in-process on the tray's runtime. Returns
 /// immediately (`started=true`); a spawned task drives the flow and writes the
 /// token store on success or the `.error` sentinel (with the REAL error string —
 /// no log-tail guessing) on failure, which [`get_oauth_status`] surfaces.
+///
+/// Credentials are read from `.env` and passed explicitly to `meridian_oauth`
+/// functions — avoiding `std::env::set_var` on a Tokio worker thread (POSIX
+/// setenv is not thread-safe under concurrent env reads). A per-provider
+/// [`AtomicBool`] prevents two flows from racing to bind the same loopback port.
 fn start_oauth_in_process(provider: String) -> Result<StartOAuthResponse, String> {
-    forward_oauth_env();
+    // Resolve credentials from .env WITHOUT mutating process env.
+    let mode = crate::install::detect_install_mode();
+    let dot_env = mode.env_path().map(parse_env).unwrap_or_default();
+    let jira_secret = dot_env
+        .get("JIRA_OAUTH_CLIENT_SECRET")
+        .cloned()
+        .unwrap_or_else(meridian_oauth::jira::client_secret);
+    let jira_client_id = dot_env
+        .get("JIRA_OAUTH_CLIENT_ID")
+        .cloned()
+        .unwrap_or_else(meridian_oauth::jira::client_id);
+    let jira_port = dot_env
+        .get("JIRA_OAUTH_REDIRECT_PORT")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(meridian_oauth::jira::redirect_port);
+    let trello_key = dot_env
+        .get("TRELLO_APP_KEY")
+        .cloned()
+        .unwrap_or_else(meridian_oauth::trello::app_key);
+    let trello_port = dot_env
+        .get("TRELLO_OAUTH_REDIRECT_PORT")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(meridian_oauth::trello::redirect_port);
+
+    // Validate credentials before spawning — surface "not configured" immediately
+    // rather than letting the user wait for a browser callback that never works.
+    if provider == "jira" && jira_secret.trim().is_empty() {
+        return Err(
+            "Jira OAuth requires a client secret baked in at build time \
+             (MERIDIAN_JIRA_OAUTH_CLIENT_SECRET). Source builds must set \
+             JIRA_OAUTH_CLIENT_SECRET in ~/.meridian/.env, or use the API-token path instead."
+                .to_string(),
+        );
+    }
+    if provider == "trello" && trello_key.trim().is_empty() {
+        return Err(
+            "Trello OAuth requires a Power-Up app key. Set TRELLO_APP_KEY in \
+             ~/.meridian/.env. Register a Power-Up at https://trello.com/power-ups/admin \
+             and add http://127.0.0.1:9123/ as an allowed origin."
+                .to_string(),
+        );
+    }
+
+    // Claim the per-provider in-flight slot. A second start_oauth call while
+    // a flow is running returns an error — port 9123 can't be shared and the
+    // token file would be written by two racing tasks.
+    let in_flight: &'static AtomicBool = match provider.as_str() {
+        "trello" => &TRELLO_OAUTH_IN_FLIGHT,
+        _ => &JIRA_OAUTH_IN_FLIGHT,
+    };
+    if in_flight
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err(format!(
+            "{provider} OAuth is already in progress — check your browser"
+        ));
+    }
+
     // Clear any previous error sentinel before launching a fresh flow.
     if let Some(sentinel) = oauth_error_path(&provider) {
         let _ = std::fs::remove_file(&sentinel);
@@ -644,21 +681,16 @@ fn start_oauth_in_process(provider: String) -> Result<StartOAuthResponse, String
     let task_provider = provider.clone();
     tauri::async_runtime::spawn(async move {
         let result: anyhow::Result<()> = match task_provider.as_str() {
-            "jira" => meridian_oauth::jira::login(
-                &meridian_oauth::jira::client_id(),
-                meridian_oauth::jira::redirect_port(),
-            )
-            .await
-            .map(|_site_url| ()),
-            "trello" => {
-                meridian_oauth::trello::login(
-                    &meridian_oauth::trello::app_key(),
-                    meridian_oauth::trello::redirect_port(),
-                )
+            "jira" => meridian_oauth::jira::login(&jira_client_id, &jira_secret, jira_port)
                 .await
-            }
-            _ => anyhow::bail!("unhandled OAuth provider: {task_provider}"),
+                .map(|_site_url| ()),
+            "trello" => meridian_oauth::trello::login(&trello_key, trello_port).await,
+            // Return an Err VALUE — `bail!` would `return` from the whole async
+            // block, forcing it to be Result-typed and breaking the trailing match.
+            _ => Err(anyhow::anyhow!("unhandled OAuth provider: {task_provider}")),
         };
+        // Always clear the in-flight flag before returning, regardless of outcome.
+        in_flight.store(false, Ordering::SeqCst);
         match result {
             Ok(()) => tracing::info!(provider = %task_provider, "in-process OAuth login succeeded"),
             Err(e) => {

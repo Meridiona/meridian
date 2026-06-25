@@ -138,7 +138,8 @@ async fn main() -> Result<()> {
                 println!(
                     "Starting Jira browser authorization (redirect http://127.0.0.1:{port}/callback)…"
                 );
-                match meridian::intelligence::oauth::jira::login(&client_id, port).await {
+                let client_secret = meridian::intelligence::oauth::jira::client_secret();
+                match meridian::intelligence::oauth::jira::login(&client_id, &client_secret, port).await {
                     Ok(site) => println!(
                         "\n✓ Jira connected: {site}\n  Tokens saved to ~/.meridian/oauth/jira.json — run `meridian restart` to pick them up."
                     ),

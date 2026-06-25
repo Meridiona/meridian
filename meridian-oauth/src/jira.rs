@@ -24,7 +24,14 @@ use tokio::sync::Mutex;
 use crate::flow::{self, ProviderSpec};
 use crate::store::{self, OAuthTokens};
 
-// Static mutex serializes concurrent token refreshes to avoid race conditions.
+// FIXME(cross-process-lock): this mutex is per-process. The daemon and the tray
+// each compile meridian-oauth and hold independent mutex instances. If both call
+// ensure_fresh() simultaneously (daemon background sync + tray user action), both
+// read the same expired token store, both POST to Atlassian's token endpoint, and
+// the second POST 401s because the first call already rotated and consumed the
+// refresh token — permanently invalidating the pair. Fix requires a file lock on
+// the OAuth store path (e.g. via the `fd-lock` crate) to serialise across processes.
+// Tracked as a follow-up; in practice the race requires exact timing overlap.
 fn refresh_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -99,7 +106,14 @@ const ACCESSIBLE_RESOURCES_URL: &str = "https://api.atlassian.com/oauth/token/ac
 /// fetch, `write:jira-work` powers worklog/comment posting, `read:jira-user`
 /// powers the `/myself` health probe (`meridian doctor`), and `offline_access` is
 /// what yields a refresh token at all.
+///
+/// Used by `ensure_fresh()` which resolves the secret from env — fine for the
+/// daemon. Interactive `login()` takes the secret explicitly to avoid `set_var`.
 fn spec() -> ProviderSpec {
+    spec_with_secret(client_secret())
+}
+
+fn spec_with_secret(secret: String) -> ProviderSpec {
     ProviderSpec {
         authorize_url: "https://auth.atlassian.com/authorize",
         token_url: "https://auth.atlassian.com/oauth/token",
@@ -108,7 +122,7 @@ fn spec() -> ProviderSpec {
             ("audience", "api.atlassian.com".to_string()),
             ("prompt", "consent".to_string()),
         ],
-        client_secret: Some(client_secret()),
+        client_secret: Some(secret),
     }
 }
 
@@ -174,9 +188,13 @@ async fn discover_cloud(access_token: &str) -> Result<(String, String)> {
 
 /// Run the interactive browser login and persist the resulting tokens. Returns
 /// the chosen site URL for a friendly confirmation message.
-pub async fn login(client_id: &str, port: u16) -> Result<String> {
-    let secret = client_secret();
-    if secret.trim().is_empty() {
+///
+/// `client_secret` is passed explicitly rather than read from `std::env` so
+/// callers (the tray's in-process flow) can source it from `.env` without
+/// calling `std::env::set_var` on a Tokio worker thread (POSIX setenv is not
+/// thread-safe). Pass [`client_secret()`] when you want the env-var resolution.
+pub async fn login(client_id: &str, client_secret: &str, port: u16) -> Result<String> {
+    if client_secret.trim().is_empty() {
         bail!(
             "Jira OAuth requires a client secret that is baked in at build time via \
              MERIDIAN_JIRA_OAUTH_CLIENT_SECRET. This is a source build without that \
@@ -184,7 +202,12 @@ pub async fn login(client_id: &str, port: u16) -> Result<String> {
              or use the API-token fallback (JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN)."
         );
     }
-    let tokens = flow::run_authcode_flow(client_id, &spec(), port).await?;
+    let tokens = flow::run_authcode_flow(
+        client_id,
+        &spec_with_secret(client_secret.to_string()),
+        port,
+    )
+    .await?;
 
     // No refresh token ⇒ `offline_access` wasn't granted (app misconfigured or the
     // scope wasn't consented). Fail NOW with a clear message rather than letting
@@ -236,7 +259,22 @@ pub async fn ensure_fresh() -> Result<OAuthTokens> {
     if !resp.scope.is_empty() {
         t.scopes = resp.scope;
     }
-    store::save(&t).context("persisting refreshed Jira OAuth tokens")?;
+    // Save the rotated tokens. If save fails (disk full, permissions), log a
+    // critical error and return the in-memory tokens anyway — the access token
+    // is valid for ~1h so the current request succeeds. On the next expiry the
+    // stored (now-invalid) refresh token will cause a 401 and the user must
+    // re-authenticate. A critical log surfaces this before it happens.
+    match store::save(&t) {
+        Ok(()) => {}
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                "CRITICAL: failed to persist rotated Jira refresh token — access token \
+                 valid for ~1h but re-authentication required after expiry. Fix \
+                 permissions at ~/.meridian/oauth/ then re-run `meridian oauth-login jira`."
+            );
+        }
+    }
     Ok(t)
 }
 
