@@ -378,7 +378,10 @@ def _configure_log_export(agent_name: str) -> Optional[logging.Handler]:
 def _configure_logging(agent_name: str) -> None:
     log_dir = Path(os.environ.get("MERIDIAN_LOG_DIR") or DEFAULT_LOG_DIR)
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"{agent_name}.jsonl"
+    # Sanitise agent_name to prevent path traversal — only allow chars that are
+    # safe as a filename component (alphanumeric, hyphen, underscore).
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in agent_name)
+    log_path = log_dir / f"{safe_name}.jsonl"
 
     level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
