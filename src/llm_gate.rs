@@ -2,9 +2,9 @@
 //
 // The single global LLM gate.
 //
-// Every call to the local MLX model server — Stage 1 classify
-// (`/classify_sessions`), Stage 2/3 summarise fallback (`/summarise`), and the
-// Stage 4 pm-worklog synth (`/synthesise_worklog`) — must hold this one permit
+// Every call to the local MLX model server — Stage 2/3 summarise fallback
+// (`/summarise`) and the Stage 4 pm-worklog synth (`/synthesise_worklog`) —
+// must hold this one permit
 // for the duration of the HTTP request. The MLX server hosts a single model on a
 // single GPU; serialising at the client guarantees **exactly one model call is
 // ever in flight**, so the stages can never contend (the classifier and the

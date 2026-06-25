@@ -26,7 +26,7 @@ new app_sessions row (Rust ETL, every ~60s)
        │     trivial overhead → ticket_links overhead/skip, no agent
        │
        └─ Classification Engine (services/agents/agent_tiebreaker.py)
-             • single-shot via the MLX classifier server (/classify_sessions)
+             • single-shot via the Rust task linker (src/intelligence/task_linker/)
              • matches session to task based on screen content + history
              • writes ticket_links with task assignment or overhead marker
              • infers session_dimensions (multi-label activity tags)

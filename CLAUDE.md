@@ -349,13 +349,13 @@ Source-adapter env overrides: `COPILOT_SESSION_STATE_DIR`, `VSCODE_USER_DIR`, `C
 
 > **Daemon config gotcha:** on a bundle install the daemon's `WorkingDirectory` is `~/.meridian/app`, and dotenvy stops at the FIRST `.env` walking up — so the daemon reads **`~/.meridian/app/.env`**, not the repo `.env`. Edit that file (then `meridian restart`) when tuning daemon env on an installed system.
 
-The pipeline is fully ported to Rust; the former Python `coding_agent_indexer` + `coding_agent_summariser` packages have been removed. The MLX server (`agents/server.py`) is the only remaining Python hop (it serves `/summarise` + `/classify_sessions`).
+The pipeline is fully ported to Rust; the former Python `coding_agent_indexer` + `coding_agent_summariser` packages have been removed. The MLX server (`agents/server.py`) is the only remaining Python hop (it serves `/summarise` and `/synthesise_worklog`).
 
 ## Python agent service (`services/`)
 
 These Python services still run alongside the Rust daemon:
 
-1. **MLX classifier + summariser** (`agents/server.py`, `run_task_linker_mlx.py`) — the persistent FastAPI model server (`com.meridiona.mlx-server.plist`). Exposes `/classify_sessions` (Rust calls it to classify) and `/summarise` (the coding-agent summariser's MLX fallback). The one Python piece the pipeline can't replace (outlines + mlx-lm are Python-only).
+1. **MLX summariser + worklog synth** (`agents/server.py`, `run_task_linker_mlx.py`) — the persistent FastAPI model server (`com.meridiona.mlx-server.plist`). Exposes `/summarise` (the coding-agent summariser's MLX fallback) and `/synthesise_worklog`. The one Python piece the pipeline can't replace (outlines + mlx-lm are Python-only).
 2. **Jira updater** (`agents/pm_worklog_update/`) — agno-powered synthesis workflow that generates Jira comments + worklogs from classified sessions. Runs on an office-hours slot schedule.
 
 For the deep technical reference (classification logic, scoring formulas, recipes for tuning prompts / debugging misclassifications), see `services/agents/README.md`.
@@ -374,11 +374,6 @@ For the deep technical reference (classification logic, scoring formulas, recipe
 echo '{"transcript_path":"~/.claude/projects/.../<uuid>.jsonl"}' | meridian coding-agent-hook  # SessionEnd: seal one session
 meridian coding-agent-summarise [--dry-run] [--day YYYY-MM-DD] [--limit N]                     # summarise the pending queue
 meridian coding-agent-classify                                                                  # classify summarised rows
-
-# MLX classifier — call the running server directly
-curl -s -X POST http://127.0.0.1:7823/classify_sessions \
-  -H "Content-Type: application/json" \
-  -d '{"session_ids": [<ID>]}' | jq .
 
 # Classifier eval pipeline (see TESTING.md §9, services/tests/evals/README.md)
 services/.venv/bin/python services/tests/evals/render_seeds.py            # seeds → Goldens

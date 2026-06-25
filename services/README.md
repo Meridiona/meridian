@@ -4,7 +4,7 @@ The model layer that runs alongside the Rust daemon. A persistent MLX inference 
 
 The Rust daemon owns all DDL; this service only does SELECT/INSERT/UPDATE on its agent-side tables.
 
-> **Note:** the coding-agent indexer + summariser, and the pm-worklog (Stage 4) driver, all run **inside the Rust daemon** (`src/coding_agent_session_ingest/`, `src/pm_worklog/`). This service is the model layer: `agents/server.py` is the persistent MLX server, which serves `/classify_sessions` (classification), `/summarise` (the summariser's fallback), and `/synthesise_worklog` (the agno worklog synthesiser). The Rust daemon drives all three over HTTP.
+> **Note:** the coding-agent indexer + summariser, and the pm-worklog (Stage 4) driver, all run **inside the Rust daemon** (`src/coding_agent_session_ingest/`, `src/pm_worklog/`). This service is the model layer: `agents/server.py` is the persistent MLX server, which serves `/summarise` (the summariser's fallback) and `/synthesise_worklog` (the agno worklog synthesiser). The Rust daemon drives both over HTTP.
 
 For the deep technical reference (classification logic, schema, recipes), see [`agents/README.md`](agents/README.md).
 
@@ -15,14 +15,8 @@ For the deep technical reference (classification logic, schema, recipes), see [`
 ```
 app_sessions row (Rust ETL writes it)
         │
-        │  Rust daemon calls POST /classify_sessions
-        ▼           on the persistent MLX server
-┌──────────────────────────────────────────────┐
-│ MLX inference server (FastAPI, port 7823)    │ Apple Silicon only
-│   model: mlx-community/Qwen3.5-2B-OptiQ-4bit│
-│   loaded once at startup, served until killed│
-│   returns: task_key, session_type, confidence│
-└──────────────────────────────────────────────┘
+        ▼
+Rust daemon classifies sessions (src/intelligence/task_linker/)
         │
         ▼
 Rust writes ticket_links + session_dimensions → meridian.db
@@ -50,7 +44,7 @@ The `hermes-agent` package is fetched from GitHub at the pinned tag; an internet
 
 ## MLX server
 
-The Rust daemon calls the MLX server for every classification. It must be running before the daemon starts.
+The Rust daemon calls the MLX server for summarisation and worklog synthesis. It must be running before the daemon starts.
 
 ### Install as a launchd daemon (recommended)
 
@@ -96,7 +90,7 @@ Additional variables are documented in [`agents/README.md`](agents/README.md#con
 
 ### Task classifier
 
-The task classifier runs automatically — the Rust daemon calls `POST /classify_sessions` on the MLX server on each intelligence tick. To inspect or re-run classification:
+The task classifier runs automatically inside the Rust daemon on each intelligence tick. To inspect or re-run classification:
 
 ```bash
 # Re-run classification with full logging — does NOT write to DB

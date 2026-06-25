@@ -11,7 +11,7 @@ For a higher-level overview (installation, daemon ops, configuration), see [`ser
 The Rust daemon owns the pipeline (ETL, coding-agent ingest, classification
 trigger, pm-worklog driver) and the database. This service is the **model
 layer**: one persistent MLX server (`server.py`) that the daemon calls over HTTP
-for the three jobs that need a local LLM.
+for the two jobs that need a local LLM.
 
 ```
 screenpipe.db (read-only)
@@ -29,16 +29,10 @@ meridian.db  →  app_sessions
         │    MLX server's /summarise is the fallback. Rows walk task_method:
         │    coding_agent_live → pending_summariser → pending_classifier.
         │
-        ├── classification  (src/intelligence/task_linker/, Rust → MLX)
+        ├── classification  (src/intelligence/task_linker/, Rust)
         │    Rust reads unclassified rows and the pending_classifier queue,
-        │    then sends:
-        │      POST http://127.0.0.1:7823/classify_sessions
-        │           {session_ids: [...], meridian_db: ...}
-        │    MLX server (Qwen3.5-2B-OptiQ-4bit, FSM-constrained outlines):
-        │      fetch session + pm_tasks + recent context
-        │      → SessionClassification {task_key, session_type, confidence,
-        │                               reasoning, method, dimensions}
-        │    Rust writes ticket_links + session_dimensions, advances cursor.
+        │    classifies them internally, and writes ticket_links +
+        │    session_dimensions, then advances the cursor.
         │
         └── pm-worklog (Stage 4)  (src/pm_worklog/, Rust → MLX)
              The Rust hour-driven driver collects each (task, hour) bundle and
@@ -350,11 +344,9 @@ pip install -e ".[local-llm]"
    FROM ticket_links WHERE session_id = <ID>;
    ```
 
-2. **Re-run the classifier against a live session** — call the MLX server directly with the session id:
+2. **Re-run the classifier against a live session** using the daemon CLI:
    ```bash
-   curl -s -X POST http://127.0.0.1:7823/classify_sessions \
-     -H "Content-Type: application/json" \
-     -d "{\"session_ids\": [<ID>]}" | jq .
+   meridian coding-agent-classify
    ```
 
    Or use the standalone MLX script (reads from stdin, prints JSON to stdout):

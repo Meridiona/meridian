@@ -25,7 +25,7 @@ dependencies = [
 [project.optional-dependencies]
 # Apple Silicon MLX inference server — install with: pip install -e ".[mlx]"
 # Installs the model runtime (mlx-lm + outlines) and the FastAPI server
-# (fastapi + uvicorn) that the Rust daemon calls via POST /classify_sessions.
+# (fastapi + uvicorn) that the Rust daemon calls for summarisation and worklog synthesis.
 # Requires arm64 macOS; outlines 1.x is incompatible with Python 3.14+.
 mlx = [
     "mlx-lm>=0.31,<1",
@@ -54,7 +54,7 @@ meridian-server = "agents.server:main"
 [tool.uv]
 # Lock all extras so `uv lock` produces a complete, reproducible uv.lock.
 # At install time both extras are synced — `uv sync --extra mlx --extra
-# pm_worklog_update` — because the one MLX server serves /classify_sessions
+# pm_worklog_update` — because the one MLX server serves /summarise
 # (mlx) AND /synthesise_worklog (agno, pm_worklog_update).
 constraint-dependencies = []
 
