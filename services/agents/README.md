@@ -53,7 +53,7 @@ meridian.db  →  app_sessions
 
 **Skips:** sessions shorter than `MIN_LLM_DURATION_S` (default 30 s) return `routing=skip` without an LLM call.
 
-The system prompt is loaded from `services/skills/activity/task-classifier/SKILL.md` (or `~/.meridian/skills/activity/task-classifier/SKILL.md` for user-level overrides). hermes `AIAgent` config: `enabled_toolsets=[]`, `max_iterations=1`, `quiet_mode=True`, `skip_context_files=True`, `skip_memory=True`, `load_soul_identity=False`.
+The system prompt is loaded from `services/skills/activity/task-classifier/SKILL.md` (or `~/.meridian/skills/activity/task-classifier/SKILL.md` for user-level overrides).
 
 Routing thresholds (env-overridable):
 
@@ -81,7 +81,7 @@ All tables below live in `meridian.db`. The Rust daemon owns DDL (`src/migration
 | `agent_runs` | Python agents | Audit log per classification batch. `'running'` rows are swept to `'aborted'` on next run. |
 | `agent_cursor` | Python agents | Single-row high-water mark `last_session_id`. Advanced by Rust after each batch; never decreases. |
 | `activity_context` | Legacy | Single-row "current focus" snapshot — written by the old synthesizer, read by the (deferred) jira_keeper drainer. |
-| `context_graph_nodes` | Legacy | Persistent knowledge graph from the old hermes-style synthesizer. Currently unused by the 3-stage pipeline. |
+| `context_graph_nodes` | Legacy | Persistent knowledge graph from the old synthesizer. Currently unused by the 3-stage pipeline. |
 | `session_summaries` | Legacy | One LLM-derived narrative summary per session. Stage 1+2+3 don't write this — left in place for a future summariser. |
 
 Migrations: `003_intelligence.sql` (pm_tasks, ticket_links), `005_agents.sql` (agent_runs, agent_cursor, dispatch_queue, etc.), `007_session_dimensions.sql`, `008_session_embeddings.sql` (single-vec, superseded), `009_multi_sample_embeddings.sql` (drops + recreates `session_embeddings` as multi-vec).
@@ -122,7 +122,7 @@ All env vars are read in `agents/config.py`. `.env` files are loaded in priority
 |---|---|---|
 | `AGENT_AUTO_FLOOR` | `0.65` | Confidence ≥ this → `routing=auto` (high-confidence match). |
 | `AGENT_QUEUE_FLOOR` | `0.40` | Confidence ≥ this → `routing=queue` (low-confidence, human review). |
-| `AGENT_MAX_TOKENS` | `4000` | Per-response token cap for the hermes AIAgent call. |
+| `AGENT_MAX_TOKENS` | `4000` | Per-response token cap for the LLM call. |
 | `AGENT_SKILL_NAME` | `task-classifier` | Subdir under `skills/activity/` to load the system prompt from. |
 
 ---
@@ -133,18 +133,17 @@ All env vars are read in `agents/config.py`. `.env` files are loaded in priority
 |---|---|
 | `config.py` | Env loading, paths (`MERIDIAN_DB`, `LOG_DIR`), LLM config (`LLM_PREFER_LOCAL`, `LLM_BUDGET_PCT`, cloud fallback `OLLAMA_*`), Jira updater tunables. |
 | `observability.py` | OpenTelemetry + JSON structured logging bootstrap. Single `setup(agent_name)` call per process. |
-| `llm_selector.py` | Dynamic local LLM selection — server discovery (Ollama, LM Studio, llama.cpp, mlx_lm), MLX model catalog, managed `mlx_lm.server` lifecycle, `select_model_for_hermes()`. |
-| `task_classifier_agent.py` | hermes AIAgent wrapper; calls `select_model_for_hermes()` for every invocation, falls back to cloud config when no local endpoint is available. Returns `ClassifierDecision`. |
+| `llm_selector.py` | Dynamic local LLM selection — server discovery (Ollama, LM Studio, llama.cpp, mlx_lm), MLX model catalog, managed `mlx_lm.server` lifecycle, `select_model_for_local()`. |
+| `task_classifier_agent.py` | AIAgent wrapper; calls `select_model_for_local()` for every invocation, falls back to cloud config when no local endpoint is available. Returns `ClassifierDecision`. |
 | `run_task_linker.py` | Subprocess entry point spawned by the Rust daemon. Reads JSON from stdin (sessions + pm_tasks), calls `classify_session()` for each, writes JSON to stdout. |
 | `_parser.py` | `parse_response()` — extracts `{task_key, confidence, reasoning}` from raw LLM output; truncation-tolerant. |
 | `_prompts.py` | `build_user_message()` — formats a session + candidate tasks into the prompt for the task classifier. |
-| `_hermes_setup.py` | Ensures the `run_agent` module is importable; switches between installed package and `services/.hermes/` dev checkout. |
 | `db/` | SQLite read/write layer. Six submodules: `sessions`, `agent_runs`, `dispatch`, `jira_updates`, `context`, `connections`. Schema owned by the Rust daemon. |
-| `jira_updater.py` | `run_update()` — fetches in-progress Jira tickets, queries Meridian MCP for session data, generates hermes summary, posts comment. |
+| `jira_updater.py` | `run_update()` — fetches in-progress Jira tickets, queries Meridian MCP for session data, generates summary, posts comment. |
 | `jira_updater_daemon.py` | Long-running daemon wrapping `run_update()` on office-hour slots. CLI: `--trigger-now`, `--task`, `--dry-run`, `--interval`. |
 | `run_jira_updater.py` | One-shot CLI entry point spawned by the Rust daemon for Jira updates. |
 | `jira_mcp.py` | Fallback Jira task fetcher (boots `uvx mcp-atlassian` over stdio) used when `pm_tasks` is empty. |
-| `jira_keeper.py` | Legacy hermes-era synthesizer. Not exercised by the current pipeline; kept for eventual dispatch_queue drainer port. |
+| `jira_keeper.py` | Legacy synthesizer. Not exercised by the current pipeline; kept for eventual dispatch_queue drainer port. |
 | `bootstrap.py` | Legacy DB sanity-check script. Verifies required tables exist. |
 
 ---
@@ -200,7 +199,7 @@ If the new model emits chain-of-thought before its JSON answer, the parser in `_
 
 ## Dynamic local LLM selection
 
-`llm_selector.py` implements `select_model_for_hermes()`, called by `task_classifier_agent.py` at the start of every Stage 3 invocation. It returns a `LocalModelEndpoint` (model, base_url, api_key, runtime) or `None` to fall back to cloud.
+`llm_selector.py` implements `select_model_for_local()`, called by `task_classifier_agent.py` at the start of every Stage 3 invocation. It returns a `LocalModelEndpoint` (model, base_url, api_key, runtime) or `None` to fall back to cloud.
 
 ### Decision flow
 
@@ -278,12 +277,12 @@ print(f'Would load: {model}')
 ```bash
 cd services
 .venv/bin/python -c "
-from agents.llm_selector import discover_running_servers, select_model_for_hermes, probe_compute
+from agents.llm_selector import discover_running_servers, select_model_for_local, probe_compute
 stats = probe_compute()
 print(f'Headroom: {stats.metal_headroom_gb:.1f} GB  chip: {stats.chip_name}')
 for s in discover_running_servers():
     print(f'  running: {s.runtime} @ {s.base_url}  loaded={s.models}')
-ep = select_model_for_hermes()
+ep = select_model_for_local()
 print(f'Selected: {ep.model}  runtime={ep.runtime}' if ep else 'No local model — cloud fallback')
 "
 ```

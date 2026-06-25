@@ -38,8 +38,6 @@ python3.11 -m venv .venv
 .venv/bin/pip install -e ".[mlx]"
 ```
 
-The `hermes-agent` package is fetched from GitHub at the pinned tag; an internet connection is needed on first install.
-
 ---
 
 ## MLX server
@@ -122,7 +120,7 @@ tail -f ~/.meridian/logs/tagger-daemon.err
 
 ## Jira updater
 
-Fetches in-progress Jira tasks (via `mcp-atlassian`), queries Meridian MCP for session data on each task, generates a bullet-point summary via hermes, and posts as timed comments to Jira. All updates are logged to `jira_update_log` for idempotent deduplication per (task_key, period_start, period_end) slot.
+Fetches in-progress Jira tasks (via `mcp-atlassian`), queries Meridian MCP for session data on each task, generates a bullet-point summary, and posts as timed comments to Jira. All updates are logged to `jira_update_log` for idempotent deduplication per (task_key, period_start, period_end) slot.
 
 Default schedule: fires at 1 PM and 5 PM within office hours (9–17), looking back over the preceding interval window (default: 4 hours).
 
@@ -188,34 +186,6 @@ python -m agents.jira_updater_daemon
 launchctl print gui/$(id -u)/com.meridiona.jira-updater-daemon
 tail -f ~/.meridian/logs/jira-updater.log
 ```
-
----
-
-## Dev mode (hermes source)
-
-By default the pipeline imports `run_agent` and related modules from the installed `hermes-agent` package. To step into hermes internals instead:
-
-1. Clone the hermes source into `services/.hermes/` (gitignored — do not commit it):
-
-   ```bash
-   git clone --branch v2026.4.30 https://github.com/NousResearch/hermes-agent.git services/.hermes
-   ```
-
-2. Set `HERMES_DEV_MODE=1`:
-
-   ```bash
-   echo "HERMES_DEV_MODE=1" >> services/.env
-   ```
-
-`agents/_hermes_setup.py` then prepends `services/.hermes/` to `sys.path` so local source takes precedence over the installed package. All other behaviour is identical. Unset or set `HERMES_DEV_MODE=0` to revert.
-
-### Recovery if the pinned tag disappears
-
-`requirements.txt` pins `hermes-agent` to a Git tag on the NousResearch public repo (`@v2026.4.30`). If that tag is ever deleted or the repo changes visibility, `pip install` will fail. To recover:
-
-1. Obtain the source at that revision (from a team member's local clone or a fork).
-2. Point the dependency at your mirror: replace the `git+https://github.com/NousResearch/...@v2026.4.30` URL in `requirements.txt` with your mirror URL.
-3. Alternatively, use dev mode (above) with a local copy in `services/.hermes/`.
 
 ---
 

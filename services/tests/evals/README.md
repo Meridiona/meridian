@@ -32,7 +32,7 @@ For the full failure-mode taxonomy and reasoning-about-evals primer, see [`TESTI
 | File | Role |
 |---|---|
 | `eval_classifier.py` | Interactive eval runner — scores Goldens against the MLX server, emits OTel spans to OpenObserve, prints per-tier accuracy table. Use this for experimentation. |
-| `eval_agent.py` | hermes-agent eval — runs real DB sessions through the hermes AIAgent, emits deepeval `@observe` traces to Confident AI. Standalone, not in CI. |
+| `eval_agent.py` | Agent eval — runs real DB sessions through the AIAgent, emits deepeval `@observe` traces to Confident AI. Standalone, not in CI. |
 
 ### Pytest suites
 
@@ -45,7 +45,7 @@ For the full failure-mode taxonomy and reasoning-about-evals primer, see [`TESTI
 
 | File | Role |
 |---|---|
-| `metrics.py` | `TaskKeyMatchMetric`, `SessionTypeMatchMetric` (exact-match, no LLM), plus `AGENT_E2E_METRICS` (Ollama-judged `TaskCompletionMetric` for hermes-agent eval). |
+| `metrics.py` | `TaskKeyMatchMetric`, `SessionTypeMatchMetric` (exact-match, no LLM), plus `AGENT_E2E_METRICS` (Ollama-judged `TaskCompletionMetric` for agent eval). |
 | `strategies.py` | `EvalStrategy` base class + `DirectHttpStrategy` + `REGISTRY` + `from_env()`. Selected via `EVAL_STRATEGY` env var. |
 | `conftest.py` | pytest path setup only. |
 
