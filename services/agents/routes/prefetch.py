@@ -100,10 +100,9 @@ async def prefetch_model() -> dict:
     """
     from fastapi.concurrency import run_in_threadpool
 
-    from agents.llm_selector import APPLE_INTELLIGENCE_ID
     m = app_state.get("mlx_module")
     model_id = m.MODEL_ID if m else None
-    if model_id == APPLE_INTELLIGENCE_ID or model_id is None:
+    if model_id is None:
         return {"state": "done", "model_id": model_id, "received": 0, "total": 0, "error": None}
 
     with prefetch_lock:

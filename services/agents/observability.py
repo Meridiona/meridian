@@ -257,6 +257,9 @@ def setup(agent_name: str) -> trace.Tracer:
     This compromise matches OTel's "one resource per process" model while
     keeping `setup` idempotent in shared-library imports.
     """
+    import re
+    if not re.fullmatch(r"[A-Za-z0-9_\-]+", agent_name):
+        raise ValueError(f"agent_name must be alphanumeric/dash/underscore only: {agent_name!r}")
     global _PROCESS_SERVICE_NAME
 
     if agent_name in _INITIALISED:
@@ -308,6 +311,37 @@ def extract_parent_context(traceparent: Optional[str]) -> Optional[Context]:
     return TraceContextTextMapPropagator().extract({"traceparent": traceparent})
 
 
+def instrument_agno() -> None:
+    """Attach agno's OpenInference instrumentor to the global TracerProvider.
+
+    Requires ``openinference-instrumentation-agno`` — if it isn't installed the
+    call is a no-op (warning logged).  The package is optional because the MLX
+    server works fine without OpenInference spans; it just won't export
+    Agent/Workflow run spans to OpenObserve.
+
+    Must be called after :func:`setup` so the global TracerProvider is already
+    configured.
+    """
+    try:
+        from openinference.instrumentation.agno import AgnoInstrumentor  # type: ignore
+    except ImportError:
+        span = trace.get_current_span()
+        if span.is_recording():
+            span.set_status(trace.StatusCode.ERROR, "openinference-instrumentation-agno not installed")
+        logging.getLogger(__name__).warning(
+            "instrument_agno: agno spans will not be exported",
+            extra={
+                "package": "openinference-instrumentation-agno",
+                "reason": "not installed",
+                "fix": "pip install openinference-instrumentation-agno",
+            },
+        )
+        return
+
+    provider = trace.get_tracer_provider()
+    AgnoInstrumentor().instrument(tracer_provider=provider)
+
+
 # ──────────────────────── Tracing setup ────────────────────────────────────────
 def _configure_tracing(agent_name: str) -> None:
     resource = Resource.create({"service.name": agent_name})
@@ -353,7 +387,12 @@ def _configure_log_export(agent_name: str) -> Optional[logging.Handler]:
 def _configure_logging(agent_name: str) -> None:
     log_dir = Path(os.environ.get("MERIDIAN_LOG_DIR") or DEFAULT_LOG_DIR)
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"{agent_name}.jsonl"
+    # Sanitise agent_name to prevent path traversal — only allow chars that are
+    # safe as a filename component (alphanumeric, hyphen, underscore).
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in agent_name)
+    if not safe_name:
+        safe_name = "agent"
+    log_path = log_dir / f"{safe_name}.jsonl"
 
     level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
@@ -432,4 +471,42 @@ def _configure_logging(agent_name: str) -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
-__all__ = ["setup", "extract_parent_context"]
+def current_traceparent() -> Optional[str]:
+    """Return the W3C traceparent header for the currently active OTel span.
+
+    Returns ``None`` when no span is active or the span context is invalid.
+    Callers pass this to loopback HTTP requests so downstream stages attach
+    their spans to the same trace (same pattern the Rust daemon uses via
+    ``crate::observability::current_traceparent()``).
+    """
+    span = trace.get_current_span()
+    if not span.get_span_context().is_valid:
+        return None
+    carrier: dict[str, str] = {}
+    TraceContextTextMapPropagator().inject(carrier)
+    return carrier.get("traceparent")
+
+
+def instrument_agno() -> None:
+    """Instrument the agno framework for OpenTelemetry tracing.
+
+    No-op when openinference-instrumentation-agno is not installed; the package
+    is optional and the server must start cleanly without it.
+    """
+    try:
+        from opentelemetry.instrumentation.agno import AgnoInstrumentor  # type: ignore[import]
+        AgnoInstrumentor().instrument()
+    except ImportError:
+        logging.getLogger(__name__).debug(
+            "opentelemetry-instrumentation-agno not installed; agno spans will not be exported"
+        )
+
+
+def preview(text: Optional[str], max_chars: int = 200) -> str:
+    """Truncate text to `max_chars` for use as a span attribute value."""
+    if not text:
+        return ""
+    return text[:max_chars] + ("…" if len(text) > max_chars else "")
+
+
+__all__ = ["setup", "extract_parent_context", "instrument_agno", "current_traceparent", "preview"]
