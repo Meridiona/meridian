@@ -11,12 +11,11 @@ REPO_ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
 # --- constants ---
 LABEL_SCREENPIPE="com.meridiona.screenpipe"
 LABEL_DAEMON="com.meridiona.daemon"
-LABEL_UI="com.meridiona.ui"   # retired (dashboard now embedded in the tray) — kept only to boot out a leftover legacy agent
+LABEL_UI="com.meridiona.ui"
 LABEL_MLX="com.meridiona.mlx-server"
-# Jira worklogs and coding-agent ingest run inside the Rust daemon, and the
-# dashboard is embedded in the tray binary — no separate UI launchd agent. Only
-# these three production services are managed.
-readonly LABELS=("${LABEL_SCREENPIPE}" "${LABEL_DAEMON}" "${LABEL_MLX}")
+# Jira worklogs and coding-agent ingest run inside the Rust daemon — no
+# separate launchd agents. Only these four are managed.
+readonly LABELS=("${LABEL_SCREENPIPE}" "${LABEL_DAEMON}" "${LABEL_UI}" "${LABEL_MLX}")
 GUI_TARGET="gui/$(id -u)"
 LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
 LOG_DIR="${HOME}/.meridian/logs"
@@ -269,11 +268,12 @@ _doctor_fallback() {
     printf "  ════════════════════════════════════════════════════════\n"
     _group "system"
     _row "$([[ "$(uname -s)" == "Darwin" ]] && echo ok || echo fail)" "macOS" ""
-    _row "$([[ -f "${HOME}/.meridian/.env" || -f "${REPO_ROOT}/.env" ]] && echo ok || echo fail)" "config (.env)" ""
+    _row "$([[ -f "${REPO_ROOT}/.env" ]] && echo ok || echo fail)" "config (.env)" ""
     _group "services (plists)"
     _plist_row "$LABEL_DAEMON" "daemon plist"
     _plist_row "$LABEL_SCREENPIPE" "screenpipe plist"
     _plist_row "$LABEL_MLX" "mlx plist"
+    _plist_row "$LABEL_UI" "ui plist"
     _group "builds"
     _row "$([[ -f "${REPO_ROOT}/packages/meridian-mcp/dist/index.js" ]] && echo ok || echo fail)" "mcp built" ""
     _row "$([[ -d "${REPO_ROOT}/ui/.next" ]] && echo ok || echo fail)" "ui built" ""
@@ -288,9 +288,7 @@ _doctor_fallback() {
 #   (no flag)        full run: classification + worklog synthesis
 
 _smoke_read_env() {
-    local key="$1"
-    local env_file="${HOME}/.meridian/.env"
-    [[ -f "$env_file" ]] || env_file="${REPO_ROOT}/.env"
+    local key="$1" env_file="${REPO_ROOT}/.env"
     [[ -f "$env_file" ]] || return 0
     grep -E "^${key}=" "$env_file" 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
@@ -454,10 +452,9 @@ cmd_config() {
         err "usage: meridian config edit"
         exit 1
     fi
-    local env_file="${HOME}/.meridian/.env"
-    [[ -f "$env_file" ]] || env_file="${REPO_ROOT}/.env"
+    local env_file="${REPO_ROOT}/.env"
     if [[ ! -f "$env_file" ]]; then
-        err "~/.meridian/.env not found — run the installer first"
+        err "${env_file} not found — run ./install.sh first"
         exit 1
     fi
     "${EDITOR:-nano}" "$env_file"
@@ -497,9 +494,7 @@ cmd_uninstall() {
     set +e
 
     # 1. Stop and remove all launchd agents
-    # Legacy UI server (retired — dashboard is now in the tray): boot out + remove inline.
-    launchctl bootout "${GUI_TARGET}/${LABEL_UI}" 2>/dev/null || true
-    rm -f "${HOME}/Library/LaunchAgents/${LABEL_UI}.plist" 2>/dev/null || true
+    bash "${REPO_ROOT}/scripts/uninstall-ui-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/services/scripts/uninstall-mlx-server-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/scripts/uninstall-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/scripts/uninstall-screenpipe-daemon.sh" 2>/dev/null
@@ -568,7 +563,7 @@ PYEOF
         "models--mlx-community--phi-4-4bit"
         "models--mlx-community--DeepSeek-R1-Distill-Qwen-14B-4bit"
         "models--mlx-community--gemma-3-12b-it-qat-4bit"
-        "models--mlx-community--Qwen3.5-9B-OptiQ-4bit"
+        "models--mlx-community--Qwen3.5-2B-OptiQ-4bit"
         "models--mlx-community--Qwen3.5-4B-MLX-4bit"
         "models--mlx-community--Llama-3.2-3B-Instruct-4bit"
     )

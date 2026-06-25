@@ -42,7 +42,6 @@ pub async fn checks(_cfg: &Config, pool: Option<&SqlitePool>) -> Vec<Check> {
         etl_freshness(p).await,
         etl_cursor(p).await,
         queue_depth(p, "pending_summariser", "summariser queue").await,
-        queue_depth(p, "pending_classifier", "classifier queue").await,
         subprocess_errors(p).await,
     ]
 }
