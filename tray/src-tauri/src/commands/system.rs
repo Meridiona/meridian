@@ -11,7 +11,7 @@
 //! # Related
 //! - [`crate::tray`] — the tray menu also opens these targets (same native window path).
 
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_opener::OpenerExt;
 
 /// Open (or focus) the in-app dashboard window (Today/Week from Rust commands,
@@ -28,7 +28,7 @@ pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
     }
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-    WebviewWindowBuilder::new(&app, "dashboard", WebviewUrl::App("today".into()))
+    match WebviewWindowBuilder::new(&app, "dashboard", WebviewUrl::App("today".into()))
         .title("Meridian — Dashboard")
         .inner_size(1100.0, 760.0)
         .decorations(true)
@@ -38,8 +38,25 @@ pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
         .closable(true)
         .maximized(true)
         .build()
-        .map(|_win| ())
-        .map_err(|e| e.to_string())
+    {
+        Ok(win) => {
+            // Revert to Accessory (no dock icon) when the dashboard is closed
+            // so the tray-only UX is restored.
+            let app_handle = app.clone();
+            win.on_window_event(move |event| {
+                if let WindowEvent::Destroyed = event {
+                    #[cfg(target_os = "macos")]
+                    let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                }
+            });
+            Ok(())
+        }
+        Err(e) => {
+            #[cfg(target_os = "macos")]
+            let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            Err(e.to_string())
+        }
+    }
 }
 
 /// Open (or focus) the in-app dashboard window and navigate to the Worklogs
@@ -55,6 +72,7 @@ pub async fn open_worklogs(app: tauri::AppHandle) -> Result<(), String> {
 /// `/setup` route; the wizard drives permissions, model status, and tracker
 /// auth entirely through Tauri commands (no Node server). Called from settings
 /// page to allow re-running setup from the dashboard.
+#[tracing::instrument(skip(app))]
 #[tauri::command]
 pub async fn open_setup(app: tauri::AppHandle) -> Result<(), String> {
     crate::tray::open_wizard_window(&app);

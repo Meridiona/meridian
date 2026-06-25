@@ -15,7 +15,7 @@ use crate::sys;
 use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{Menu, MenuBuilder, MenuItemBuilder},
-    Manager, Runtime, WebviewUrl, WebviewWindowBuilder,
+    Manager, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 
 /// The toggle item's label for a given daemon health. Kept next to the menu
@@ -86,7 +86,7 @@ fn open_native_dashboard(app: &tauri::AppHandle) {
     } else {
         #[cfg(target_os = "macos")]
         let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-        if let Err(e) = WebviewWindowBuilder::new(app, "dashboard", WebviewUrl::App("today".into()))
+        match WebviewWindowBuilder::new(app, "dashboard", WebviewUrl::App("today".into()))
             .title("Meridian — Dashboard")
             .inner_size(1100.0, 760.0)
             .decorations(true)
@@ -97,9 +97,23 @@ fn open_native_dashboard(app: &tauri::AppHandle) {
             .maximized(true)
             .build()
         {
-            eprintln!("tray: failed to open native dashboard: {e}");
-            #[cfg(target_os = "macos")]
-            let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            Ok(win) => {
+                // Revert to Accessory (no dock icon) when the dashboard is closed
+                // so the tray-only UX is restored.
+                let app_handle = app.clone();
+                win.on_window_event(move |event| {
+                    if let WindowEvent::Destroyed = event {
+                        #[cfg(target_os = "macos")]
+                        let _ =
+                            app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                    }
+                });
+            }
+            Err(e) => {
+                eprintln!("tray: failed to open native dashboard: {e}");
+                #[cfg(target_os = "macos")]
+                let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            }
         }
     }
 }
