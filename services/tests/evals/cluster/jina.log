@@ -1,8 +1,0 @@
-loaded 1607 usable sessions over 10 days (764 labeled)
-
-model       st time  tau  thr   #clu #sing #big  grp%  avgN  PREC   REC  homo  vmes
------------------------------------------------------------------------------------
-  loading jinaai/jina-embeddings-v3 ...
-Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
-!! embed jina-v3 strip=True failed: [Errno 2] No such file or directory: '/Users/adityaharish/.cache/huggingface/modules/transformers_modules/jinaai/xlm_hyphen_roberta_hyphen_flash_hyphen_implementation/845308d0fd72a8406a3e378450e1a09522790419/xlm_padding.py'
