@@ -13,7 +13,7 @@
 
 use anyhow::{Context, Result};
 
-use super::{flow, store};
+use crate::{flow, store};
 
 /// Empty sentinel — the real key is never stored in source. Set TRELLO_APP_KEY
 /// in the bundle .env at package time (scripts/package-release.sh injects it).

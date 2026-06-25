@@ -72,26 +72,10 @@ export const PERMISSIONS: PermissionMeta[] = [
   },
 ]
 
-// ── Project-management integrations ──────────────────────────────────────────
-// Only jira + trello have a real OAuth flow (`start_oauth`). The rest render in
-// the same style but explicitly disabled — never wired to error on click.
-
-export interface Integration {
-  id: string
-  mono: string
-  color: string
-  name: string
-  account: string
-  oauth: boolean    // true → real start_oauth/get_oauth_status flow
-}
-
-export const INTEGRATIONS: Integration[] = [
-  { id: 'jira',   mono: 'Ji', color: '#2684FF', name: 'Jira',          account: 'Authorize in your browser', oauth: true },
-  { id: 'trello', mono: 'Tr', color: '#0079BF', name: 'Trello',        account: 'Authorize in your browser', oauth: true },
-  { id: 'linear', mono: 'Li', color: '#5E6AD2', name: 'Linear',        account: 'Coming soon',               oauth: false },
-  { id: 'github', mono: 'Gh', color: '#181717', name: 'GitHub Issues', account: 'Coming soon',               oauth: false },
-  { id: 'asana',  mono: 'As', color: '#F06A6A', name: 'Asana',         account: 'Coming soon',               oauth: false },
-]
+// Project-management integrations now live in the shared single source of truth
+// `@/lib/integrations` (`TRACKERS`), rendered by the shared <ConnectTrackers>
+// component in both the wizard (step 3) and the dashboard. The old wizard-only
+// `INTEGRATIONS` list was removed in the centralisation.
 
 /** Whole-GB / MB size label, matching the design's `fmtSize`. */
 export const fmtSize = (gb: number): string =>

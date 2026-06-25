@@ -4404,6 +4404,7 @@ dependencies = [
  "http",
  "libsqlite3-sys",
  "meridian-core",
+ "meridian-oauth",
  "once_cell",
  "opentelemetry",
  "opentelemetry-appender-tracing",
@@ -4444,6 +4445,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "meridian-oauth"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "rand 0.8.6",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "meridian-tray"
 version = "0.1.0"
 dependencies = [
@@ -4451,9 +4467,11 @@ dependencies = [
  "block2",
  "chrono",
  "cidre 0.13.1",
+ "dotenvy",
  "futures-util",
  "meridian",
  "meridian-core",
+ "meridian-oauth",
  "objc2",
  "reqwest 0.12.28",
  "screenpipe-a11y",
