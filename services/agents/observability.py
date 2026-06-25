@@ -322,10 +322,16 @@ def instrument_agno() -> None:
     try:
         from openinference.instrumentation.agno import AgnoInstrumentor  # type: ignore
     except ImportError:
+        span = trace.get_current_span()
+        if span.is_recording():
+            span.set_status(trace.StatusCode.ERROR, "openinference-instrumentation-agno not installed")
         logging.getLogger(__name__).warning(
-            "instrument_agno: openinference-instrumentation-agno not installed; "
-            "agno Agent/Workflow spans will not be exported. "
-            "Install with: pip install openinference-instrumentation-agno"
+            "instrument_agno: agno spans will not be exported",
+            extra={
+                "package": "openinference-instrumentation-agno",
+                "reason": "not installed",
+                "fix": "pip install openinference-instrumentation-agno",
+            },
         )
         return
 
@@ -381,6 +387,8 @@ def _configure_logging(agent_name: str) -> None:
     # Sanitise agent_name to prevent path traversal — only allow chars that are
     # safe as a filename component (alphanumeric, hyphen, underscore).
     safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in agent_name)
+    if not safe_name:
+        safe_name = "agent"
     log_path = log_dir / f"{safe_name}.jsonl"
 
     level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
