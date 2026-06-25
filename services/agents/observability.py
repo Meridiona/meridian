@@ -441,11 +441,11 @@ def current_traceparent() -> Optional[str]:
     ``crate::observability::current_traceparent()``).
     """
     span = trace.get_current_span()
-    ctx = span.get_span_context()
-    if ctx is None or not ctx.is_valid:
+    if not span.get_span_context().is_valid:
         return None
-    trace_flags = "01" if ctx.trace_flags.sampled else "00"
-    return f"00-{ctx.trace_id:032x}-{ctx.span_id:016x}-{trace_flags}"
+    carrier: dict[str, str] = {}
+    TraceContextTextMapPropagator().inject(carrier)
+    return carrier.get("traceparent")
 
 
 def instrument_agno() -> None:
