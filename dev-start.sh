@@ -16,10 +16,6 @@
 # Capture (v1.64.0+) runs in-process inside the Tauri tray binary — no separate
 # screenpipe or a11y-helper agent is needed.
 #
-# Known limitation: the tray popover 404s under `tauri dev` because the Next.js
-# dev server does not serve the popover/ directory. The main dashboard window
-# works normally. Use a production build (`npm run tauri build`) to test the
-# popover.
 
 set -euo pipefail
 

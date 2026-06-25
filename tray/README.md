@@ -43,9 +43,7 @@ npm install
 npm run tauri dev
 ```
 
-`npm run tauri dev` automatically runs `cd ../ui && npm run dev` as its `beforeDevCommand`, serving the Next.js dashboard on `http://localhost:3939`. The tray webview connects to that URL — no separate Next.js terminal is needed.
-
-**Known limitation:** the tray popover 404s under `tauri dev` (the Next.js dev server does not serve `popover/`). The main dashboard window works normally. Test the popover with a production build.
+`npm run tauri dev` automatically runs the `beforeDevCommand` which copies `tray/src/` into `ui/public/popover/` then starts the Next.js dev server on `http://localhost:3939`. The tray webview connects to that URL — no separate Next.js terminal is needed, and the popover works in dev mode.
 
 ### Rust linting and tests
 

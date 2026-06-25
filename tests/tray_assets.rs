@@ -227,6 +227,25 @@ fn install_dev_skips_screenpipe_agents() {
     );
 }
 
+/// GUARD: `beforeDevCommand` must copy `tray/src/` into `ui/public/popover/`
+/// before starting the Next.js dev server. Without this copy the popover window
+/// 404s under `tauri dev` (Next.js dev server doesn't serve `out/popover/` —
+/// only `public/` is served at the root). The production build is unaffected
+/// (uses beforeBuildCommand which already does the cp via `npm run build`).
+#[test]
+fn before_dev_command_copies_popover() {
+    let conf = read_json(CONF);
+    let before_dev = conf["build"]["beforeDevCommand"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        before_dev.contains("cp") && before_dev.contains("popover"),
+        "tauri.conf.json build.beforeDevCommand must copy tray/src into \
+         ui/public/popover so the popover window resolves under `tauri dev`. \
+         Found: {before_dev:?}"
+    );
+}
+
 /// GUARD: `tauri.conf.json`'s `beforeDevCommand` must start the Next.js dev
 /// server. This is what removes the need for a separate Next.js terminal in
 /// `dev-start.sh` — if the beforeDevCommand is removed or changed, the

@@ -70,9 +70,7 @@ This opens **3 Terminal windows**:
 | MLX server | `uvicorn --reload --reload-dir services/agents/` | any `.py` save in `services/agents/` |
 | Tauri tray | `npm run tauri dev` | any Rust or frontend save |
 
-`npm run tauri dev` automatically starts the Next.js dev server on port 3939 (via `beforeDevCommand` in `tray/src-tauri/tauri.conf.json`) and opens the dashboard in a native Tauri webview — no separate `npm run dev` terminal is needed.
-
-> **Known limitation:** the tray popover 404s under `tauri dev` because the Next.js dev server does not serve `popover/`. The main dashboard window works normally. Use `npm run tauri build` to test the popover.
+`npm run tauri dev` automatically starts the Next.js dev server on port 3939 (via `beforeDevCommand` in `tray/src-tauri/tauri.conf.json`) and opens the dashboard in a native Tauri webview — no separate `npm run dev` terminal is needed. The `beforeDevCommand` also copies `tray/src/` into `ui/public/popover/` so the popover window resolves correctly in dev mode.
 
 ### Stopping the dev environment
 
