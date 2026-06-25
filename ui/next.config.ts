@@ -10,30 +10,43 @@ const nextConfig = (phase: string): NextConfig => ({
   turbopack: {
     root: path.join(__dirname),
   },
-  // Static HTML export (Next-fold end-state). The dashboard ships as plain
-  // files rendered inside the Tauri webview — no Node server, no `/api` routes
-  // (data comes from Rust commands over Tauri `invoke`). The build emits `out/`,
-  // which `package.json`'s build step augments with the tray popover under
-  // `out/popover/`; `tauri.conf.json` points `frontendDist` at `out/`.
+  // Emit a self-contained server bundle (`.next/standalone/`) so the dashboard
+  // ships prebuilt and runs with `node server.js` — no `npm ci` / native rebuild
+  // of better-sqlite3 on the user's machine.
+  //
+  // NOTE on distribution: the production build uses Turbopack (the Next 16
+  // default). Turbopack references serverExternalPackages (better-sqlite3, pino,
+  // @opentelemetry/*) via relative SYMLINKS under `.next/node_modules`. Those
+  // symlinks are stripped by `npm publish` (vercel/next.js#87737, #93849), which
+  // crash-loops the standalone server. So package-release.sh packs the standalone
+  // into `ui.tar.gz` (tar preserves symlinks; npm ships it as one opaque file) and
+  // install-from-bundle.sh extracts it on the user's machine — keeping Turbopack.
   //
   // Gate on the build phase, NOT process.env.NODE_ENV: a stray NODE_ENV=production
-  // in the shell otherwise enables export during `next dev`, which double-joins
+  // in the shell otherwise enables standalone during `next dev`, which double-joins
   // the dev distDir (`.next/dev/dev`) and panics Turbopack with
   // "Invalid distDirRoot: .next" (vercel/next.js#87881).
-  output: phase === PHASE_PRODUCTION_BUILD ? 'export' : undefined,
-  // Export has no image optimizer (that needs a server) — serve images as-is.
-  images: { unoptimized: true },
-  // Emit each route as `<route>/index.html` (e.g. `out/today/index.html`) so the
-  // Tauri asset protocol resolves directory-style URLs (`WebviewUrl::App("today")`)
-  // and client-side navigation alike.
-  trailingSlash: true,
+  output: phase === PHASE_PRODUCTION_BUILD ? 'standalone' : undefined,
+  // Pin the standalone file-tracing root to this `ui/` dir. The repo root also
+  // has a package-lock.json, so Next otherwise infers the monorepo root and
+  // nests the output as `.next/standalone/ui/server.js` — which breaks the
+  // launchd plist + package-release.sh (both expect `ui/server.js` at the top).
+  // Mirrors the `turbopack.root` pin above.
+  outputFileTracingRoot: path.join(__dirname),
+  serverExternalPackages: [
+    'better-sqlite3',
+    '@opentelemetry/sdk-node',
+    '@opentelemetry/sdk-trace-node',
+    '@opentelemetry/sdk-trace-base',
+    '@opentelemetry/exporter-trace-otlp-http',
+    '@opentelemetry/resources',
+    '@opentelemetry/api',
+    '@opentelemetry/semantic-conventions',
+    'require-in-the-middle',
+    'import-in-the-middle',
+    'pino',
+  ],
   reactStrictMode: true,
-  // Allow the dashboard to be loaded over 127.0.0.1 in dev. Next 16 blocks
-  // cross-origin access to internal dev resources (fonts, HMR, /__nextjs_*)
-  // unless the requesting host is allow-listed; the dev server trusts
-  // `localhost` by default but not the `127.0.0.1` alias the Tauri webview /
-  // browser uses. Dev-only — Next ignores this in production builds.
-  allowedDevOrigins: ['127.0.0.1', 'localhost'],
   logging: {
     fetches: { fullUrl: false },
   },

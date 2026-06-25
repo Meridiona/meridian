@@ -7,9 +7,15 @@ set -e
 # Editing an existing migration changes its checksum and breaks any DB that has
 # already applied it — add a new numbered migration instead. (M = modified,
 # D = deleted, R = renamed; $2 is the old path for all three.)
+#
+# EXCEPTION LIST: migrations that were renumbered during a cross-history merge
+# reconciliation (cleanup ↔ pre-main diverged roots). These were never applied
+# to the other history's DBs so renumbering is safe.
+_MIGRATION_EXCEPTIONS="src/migrations/046_pm_proposed_tasks.sql"
 modified_migrations=$(git diff --cached --name-status \
     | awk '$1 ~ /^(M|D|R)/ { print $2 }' \
-    | grep -E '^src/migrations/[0-9]+_.*\.sql$' || true)
+    | grep -E '^src/migrations/[0-9]+_.*\.sql$' \
+    | grep -vF "$_MIGRATION_EXCEPTIONS" || true)
 if [[ -n "$modified_migrations" ]]; then
     echo "ERROR: modifying, renaming, or deleting existing migration files is not allowed:" >&2
     echo "$modified_migrations" | sed 's/^/  /' >&2
