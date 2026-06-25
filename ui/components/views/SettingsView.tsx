@@ -249,6 +249,30 @@ export default function SettingsView() {
         <p style={{ fontSize: '12px', color: 'var(--ink-3)', marginTop: '4px' }}>Runtime configuration — changes take effect on the next daemon tick.</p>
       </div>
 
+      {/* Setup & Onboarding */}
+      <SectionCard>
+        <SectionHeader>Setup & Onboarding</SectionHeader>
+        <FieldRow label="Re-run Setup" description="Return to the onboarding wizard to reconfigure permissions, update integrations, or re-check the local model.">
+          <button
+            type="button"
+            onClick={() => mutate('/api/setup', 'open_setup', {}).catch(() => {})}
+            style={{
+              background: 'var(--accent)',
+              color: '#fff',
+              fontSize: '12px',
+              fontWeight: 500,
+              padding: '5px 14px',
+              borderRadius: '6px',
+              border: 'none',
+              cursor: 'default',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
+            }}
+          >
+            Go to Setup
+          </button>
+        </FieldRow>
+      </SectionCard>
+
       {/* Observability */}
       <SectionCard>
         <SectionHeader>Observability</SectionHeader>
@@ -463,29 +487,6 @@ export default function SettingsView() {
         />
       </SectionCard>
 
-      {/* Setup & Onboarding */}
-      <SectionCard>
-        <SectionHeader>Setup & Onboarding</SectionHeader>
-        <FieldRow label="Re-run Setup" description="Return to the onboarding wizard to reconfigure permissions, update integrations, or re-check the local model.">
-          <button
-            type="button"
-            onClick={() => mutate('/api/setup', 'open_setup', {}).catch(() => {})}
-            style={{
-              background: 'var(--accent)',
-              color: '#fff',
-              fontSize: '12px',
-              fontWeight: 500,
-              padding: '5px 14px',
-              borderRadius: '6px',
-              border: 'none',
-              cursor: 'default',
-              boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
-            }}
-          >
-            Go to Setup
-          </button>
-        </FieldRow>
-      </SectionCard>
     </div>
   )
 }

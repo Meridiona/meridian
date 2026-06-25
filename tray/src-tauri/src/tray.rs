@@ -85,25 +85,21 @@ fn open_native_dashboard(app: &tauri::AppHandle) {
         let _ = win.set_focus();
     } else {
         #[cfg(target_os = "macos")]
-        app.set_activation_policy(tauri::ActivationPolicy::Regular);
-        if let Err(e) = WebviewWindowBuilder::new(
-            app,
-            "dashboard",
-            WebviewUrl::App("today".into()),
-        )
-        .title("Meridian — Dashboard")
-        .inner_size(1100.0, 760.0)
-        .decorations(true)
-        .resizable(true)
-        .maximizable(true)
-        .minimizable(true)
-        .closable(true)
-        .maximized(true)
-        .build()
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+        if let Err(e) = WebviewWindowBuilder::new(app, "dashboard", WebviewUrl::App("today".into()))
+            .title("Meridian — Dashboard")
+            .inner_size(1100.0, 760.0)
+            .decorations(true)
+            .resizable(true)
+            .maximizable(true)
+            .minimizable(true)
+            .closable(true)
+            .maximized(true)
+            .build()
         {
             eprintln!("tray: failed to open native dashboard: {e}");
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
         }
     }
 }

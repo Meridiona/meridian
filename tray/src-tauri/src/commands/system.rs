@@ -27,7 +27,7 @@ pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     }
     #[cfg(target_os = "macos")]
-    app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     WebviewWindowBuilder::new(&app, "dashboard", WebviewUrl::App("today".into()))
         .title("Meridian — Dashboard")
         .inner_size(1100.0, 760.0)
