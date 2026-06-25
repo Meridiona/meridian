@@ -11,12 +11,9 @@ DRY_RUN=0
 NO_DAEMON=0
 SKIP_PERMISSIONS=0
 SKIP_ENV=0
-DEV_MODE=0  # --dev: debug binary + npm ci only; background services (MLX, screenpipe) still use launchd
+DEV_MODE=0  # --dev: debug binary + npm ci only; MLX server + Rust daemon run via launchd
 USE_MLX=1   # MLX inference server is the only backend (powers classify + PM-worklog synth)
 MLX_PORT=7823
-# Pinned screenpipe version — the launchd plist expects this exact build
-# (`screenpipe record`). Installed via npm only when screenpipe is absent.
-SCREENPIPE_VERSION="0.4.6"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -238,137 +235,23 @@ prompt_permissions() {
         info "Skipping permissions walkthrough (--skip-permissions)"
         return 0
     fi
-    local sp_bin="${HOME}/.meridian/bin/screenpipe"
-    info "screenpipe needs three macOS permissions to record activity"
-    echo "    binary path: ${sp_bin}"
+    info "Meridian needs two macOS permissions to capture activity"
     echo
-    echo "    Screen Recording + Accessibility panes: click '+' → ⌘⇧G → paste"
-    echo "    the path above → Open → toggle ON."
-    echo "    Microphone pane has no '+'. screenpipe will appear there only after"
-    echo "    it tries to use the mic — then toggle it ON. If it isn't listed yet,"
-    echo "    grant Screen Recording first and screenpipe will request mic access."
+    echo "    Grant both to Meridian in System Settings → Privacy & Security:"
+    echo "      • Screen Recording"
+    echo "      • Accessibility"
+    echo "    Click '+', press ⌘⇧G, paste the app path, Open, toggle ON."
     echo
-    read -r -p "  Press Enter to open Screen Recording pane (1/3)… " _
+    read -r -p "  Press Enter to open Screen Recording pane (1/2)… " _
     run open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
     read -r -p "  Press Enter when Screen Recording is granted… " _
     ok "Screen Recording acknowledged"
-    read -r -p "  Press Enter to open Accessibility pane (2/3)… " _
+    read -r -p "  Press Enter to open Accessibility pane (2/2)… " _
     run open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
     read -r -p "  Press Enter when Accessibility is granted… " _
     ok "Accessibility acknowledged"
-    read -r -p "  Press Enter to open Microphone pane (3/3, optional)… " _
-    run open "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
-    read -r -p "  Press Enter when Microphone is granted (or skip if screenpipe isn't listed yet)… " _
-    ok "Microphone acknowledged"
-
-    # Notifications: the tray surfaces desktop toasts (plan nudges, worklog
-    # drafts, faults). macOS HIDES all notifications while the screen is being
-    # shared/recorded unless this is on — and screenpipe records continuously, so
-    # without it every Meridian toast is silently suppressed. There is no API to
-    # set this toggle and no prompt for it, so we can only walk the user there.
-    echo
-    echo "    Meridian's menu-bar tray shows desktop notifications. Because"
-    echo "    screenpipe records the screen, macOS hides notifications during"
-    echo "    screen sharing unless you explicitly allow them."
-    read -r -p "  Press Enter to open the Notifications pane… " _
-    run open "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
-    echo "    → Scroll to the bottom and turn ON"
-    echo "      'Allow notifications when mirroring or sharing the display'."
-    echo "    → When 'Meridian Tray' appears in the app list, make sure its"
-    echo "      notifications are allowed (style Banners or Alerts, not None)."
-    read -r -p "  Press Enter when done… " _
-    ok "Notifications acknowledged"
 }
 
-# Check if a11y-helper has accessibility permission granted by reading its log
-is_a11y_helper_trusted() {
-    if [[ "${DRY_RUN}" -eq 1 ]]; then
-        return 0
-    fi
-    # Check the a11y-helper log file for the latest trust state
-    local log_file="${HOME}/.meridian/logs/a11y-helper.log"
-    if [[ ! -f "${log_file}" ]]; then
-        # Log doesn't exist yet, assume not trusted
-        return 1
-    fi
-    # Get the LAST occurrence of "AX trusted:" line (most recent state)
-    local last_line
-    last_line="$(grep "AX trusted:" "${log_file}" | tail -1)"
-    if [[ -z "${last_line}" ]]; then
-        # No trust state logged yet
-        return 1
-    fi
-    # Check if the last line says "true"
-    if echo "${last_line}" | grep -q "AX trusted: true"; then
-        return 0
-    fi
-    return 1
-}
-
-# Prompt user to grant accessibility permission to a11y-helper
-prompt_a11y_helper_permission() {
-    if [[ "${SKIP_PERMISSIONS:-0}" == "1" ]]; then
-        return 0
-    fi
-
-    local a11y_helper_path="${HOME}/.meridian/bin/meridian-a11y-helper"
-
-    # If already trusted, skip
-    if is_a11y_helper_trusted; then
-        ok "a11y-helper accessibility permission already granted"
-        return 0
-    fi
-
-    if [[ "${DRY_RUN}" -eq 1 ]]; then
-        info "[DRY-RUN] would prompt: Grant accessibility to a11y-helper"
-        return 0
-    fi
-
-    echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "  Electron apps (Claude, Codex, VS Code, …) need one more permission"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
-    echo "  The a11y-helper daemon enables accessibility on Electron apps so"
-    echo "  screenpipe can capture them. This requires a one-time macOS permission."
-    echo ""
-
-    read -r -p "  Press Enter to open System Settings → Accessibility… " _
-    run open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-
-    echo ""
-    echo "  Steps:"
-    echo "    1. Click '+' to add an app"
-    echo "    2. Navigate to and select: ${a11y_helper_path}"
-    echo "    3. Toggle the switch ON (to the right)"
-    echo ""
-
-    read -r -p "  Press Enter when the toggle is ON… " _
-
-    # Auto-restart the daemon to pick up the new permission
-    if [[ -n "$(command -v launchctl)" ]]; then
-        local gui_target="gui/$(id -u)"
-        local label="com.meridiona.a11y-helper"
-
-        info "Restarting a11y-helper daemon to activate permission…"
-        launchctl kickstart -k "${gui_target}/${label}" 2>/dev/null || true
-        sleep 1
-    fi
-
-    # Verify the permission was granted
-    if is_a11y_helper_trusted; then
-        echo ""
-        echo "  ✓ Success! a11y-helper is now trusted."
-        echo "    Electron apps will be captured on your next focus."
-        echo ""
-        ok "a11y-helper accessibility permission granted"
-    else
-        echo ""
-        warn "a11y-helper still not trusted — ensure the toggle is fully ON"
-        echo "    Then run: meridian doctor"
-        echo ""
-    fi
-}
 
 # ---------------------------------------------------------------------------
 # Arg parsing
@@ -389,8 +272,8 @@ while [[ $# -gt 0 ]]; do
 Usage: bash install.sh [OPTIONS]
 
   --dev                Dev mode: debug Rust binary (faster builds), npm ci only for UI
-                       (no next build). screenpipe + MLX server + Rust daemon run via
-                       launchd as usual; UI runs manually (cd ui && npm run dev).
+                       (no next build). MLX server + Rust daemon run via launchd;
+                       tray + UI run with hot-reload via dev-start.sh.
   --no-ui              Skip the Next.js build/install step entirely
   --dry-run            Print every action with [DRY-RUN] prefix; create/run nothing
   --no-daemon          Build everything but skip launchd registration
@@ -408,7 +291,7 @@ After permissions, install.sh walks you through collecting credentials interacti
 are never overwritten. Press Enter on any prompt to skip it. Use --skip-env to
 bypass this step entirely (e.g. in CI or when credentials are already in place).
 
-screenpipe is installed automatically via npm (pinned to a known-good version) if not already present.
+Capture runs in-process inside the Meridian tray — no separate screenpipe process needed.
 EOF
             exit 0
             ;;
@@ -506,66 +389,6 @@ if [[ "${_py_ok}" -eq 0 ]]; then
 fi
 ok "Python 3.11+"
 
-_sp_npm_ver="$(npm list -g --depth=0 screenpipe 2>/dev/null | grep -o 'screenpipe@[^ ]*' | cut -d@ -f2 || true)"
-if ! command -v screenpipe >/dev/null 2>&1; then
-    if [[ "${_sp_npm_ver}" == "${SCREENPIPE_VERSION}" ]]; then
-        ok "screenpipe ${SCREENPIPE_VERSION} already installed via npm (restart shell if 'screenpipe' is not on PATH)"
-    else
-        warn "screenpipe not found."
-        echo "    Note: Homebrew's screenpipe formula is deprecated (0.2.x). We install the"
-        echo "    pinned ${SCREENPIPE_VERSION} via npm, which is what the launchd plist expects."
-        if prompt_install "Install screenpipe via npm (npm install -g screenpipe@${SCREENPIPE_VERSION})?"; then
-            run npm install -g "screenpipe@${SCREENPIPE_VERSION}"
-        else
-            err "screenpipe required — install via https://docs.screenpi.pe"
-            exit 1
-        fi
-    fi
-else
-    _sp_ver="$(screenpipe --version 2>/dev/null | awk '{print $2}' || true)"
-    _sp_major="$(echo "${_sp_ver}" | cut -d. -f1)"
-    _sp_minor="$(echo "${_sp_ver}" | cut -d. -f2)"
-    if [[ "${_sp_ver}" == "${SCREENPIPE_VERSION}" ]]; then
-        : # exact pinned version — nothing to do
-    elif [[ -n "${_sp_ver}" && "${_sp_major:-0}" -eq 0 && "${_sp_minor:-0}" -lt 3 ]]; then
-        warn "screenpipe ${_sp_ver} is from the deprecated Homebrew formula."
-        echo "    The launchd plist expects 0.3+ (uses 'screenpipe record')."
-        if prompt_install "Upgrade screenpipe via npm (npm install -g screenpipe@${SCREENPIPE_VERSION})?"; then
-            run npm install -g "screenpipe@${SCREENPIPE_VERSION}"
-        fi
-    elif [[ "${_sp_npm_ver}" == "${SCREENPIPE_VERSION}" ]]; then
-        : # pinned version installed via npm, different binary on PATH — fine
-    fi
-fi
-ok "screenpipe"
-# Stage the real screenpipe Mach-O to ~/.meridian/bin/screenpipe — stable path
-# independent of npm prefix (nvm users have a version-specific path that breaks
-# on `nvm use` and is too deep to navigate in System Settings).
-mkdir -p "${HOME}/.meridian/bin"
-_sp_npm_root="$(npm root -g 2>/dev/null || true)"
-_sp_real=""
-if [[ -n "${_sp_npm_root}" && -d "${_sp_npm_root}/screenpipe" ]]; then
-    while IFS= read -r _sp_cand; do
-        if file "${_sp_cand}" 2>/dev/null | grep -q "Mach-O"; then _sp_real="${_sp_cand}"; break; fi
-    done < <(find "${_sp_npm_root}/screenpipe" -type f -name screenpipe -perm +0111 2>/dev/null)
-fi
-if [[ -n "${_sp_real}" ]]; then
-    cmp -s "${_sp_real}" "${HOME}/.meridian/bin/screenpipe" 2>/dev/null \
-        || cp "${_sp_real}" "${HOME}/.meridian/bin/screenpipe"
-    chmod +x "${HOME}/.meridian/bin/screenpipe"
-    ok "screenpipe staged → ${HOME}/.meridian/bin/screenpipe"
-fi
-
-if ! command -v ffmpeg >/dev/null 2>&1 || [[ ! -x /opt/homebrew/bin/ffmpeg && ! -x /usr/local/bin/ffmpeg ]]; then
-    warn "ffmpeg not found on the launchd PATH (screenpipe can't auto-install it from a daemon context)."
-    if prompt_install "Install ffmpeg via Homebrew?"; then
-        run brew install ffmpeg
-    else
-        err "ffmpeg required by screenpipe — install via 'brew install ffmpeg' and re-run."
-        exit 1
-    fi
-fi
-ok "ffmpeg"
 
 # OpenObserve — optional local backend for traces + logs. Not on Homebrew; we
 # download the latest release from GitHub directly to ~/.openobserve/.
@@ -632,13 +455,16 @@ fi
 [[ "$_oo_installed" -eq 1 ]] && ok "OpenObserve" || info "OpenObserve skipped (optional)"
 
 # ---------------------------------------------------------------------------
-# Permissions walkthrough (skipped in --dry-run or --skip-permissions)
+# Permissions walkthrough (skipped in --dry-run, --skip-permissions, or --dev)
+# In dev mode the tray's onboarding wizard handles permissions on first launch.
 # ---------------------------------------------------------------------------
 
-if [[ "${DRY_RUN}" -eq 0 ]]; then
-    prompt_permissions
-else
+if [[ "${DRY_RUN}" -eq 1 ]]; then
     info "Skipping permissions walkthrough (--dry-run)"
+elif [[ "${DEV_MODE}" -eq 1 ]]; then
+    info "Skipping permissions walkthrough (--dev: tray onboarding handles this on first launch)"
+else
+    prompt_permissions
 fi
 
 # ---------------------------------------------------------------------------
@@ -772,21 +598,6 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
             ok "OpenObserve launchd agent installed"
         fi
     fi
-
-    info "Installing screenpipe launchd agent..."
-    run bash "${REPO_ROOT}/scripts/install-screenpipe-daemon.sh"
-    ok "screenpipe launchd agent installed"
-
-    # a11y-helper: enables accessibility on Electron apps (Claude, Codex,
-    # Slack, …) so screenpipe can capture their a11y tree — without it those
-    # apps are invisible to capture. Needs a one-time Accessibility grant for
-    # ~/.meridian/bin/meridian-a11y-helper (the script prints the reminder).
-    info "Installing a11y-helper launchd agent..."
-    run bash "${REPO_ROOT}/scripts/install-a11y-helper-daemon.sh"
-    ok "a11y-helper launchd agent installed"
-
-    # Prompt user to grant accessibility permission if not already done
-    prompt_a11y_helper_permission
 
     # MLX server must be running before the Rust daemon starts — the daemon
     # TCP-connects to it on startup and exits hard if the port is not reachable.
@@ -944,8 +755,7 @@ echo ""
 if [[ "${DEV_MODE}" -eq 1 ]]; then
     echo "✓ Meridian installed (dev mode)."
     echo ""
-    echo "  screenpipe + a11y-helper running via launchd (infrastructure — auto-restart)."
-    echo "  Rust daemon + MLX server + UI + tray run with hot-reload via dev-start.sh."
+    echo "  Rust daemon + MLX server + tray run with hot-reload via dev-start.sh."
     echo ""
     echo "Start all services with hot-reload:"
     echo "  bash dev-start.sh"
@@ -961,7 +771,7 @@ if [[ "${DEV_MODE}" -eq 1 ]]; then
 else
     echo "✓ Meridian installed."
     echo ""
-    echo "  meridian start          # start all daemons (screenpipe + Rust daemon + MLX server + UI)"
+    echo "  meridian start          # start all daemons (Rust daemon + MLX server)"
     echo "  meridian permissions    # re-run the permissions walkthrough"
     echo "  meridian status         # check running state"
     echo "  meridian logs           # tail Rust daemon log"

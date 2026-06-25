@@ -133,7 +133,10 @@ jobs:
         run: |
           expected="0.4.6"
           fail=0
-          for f in install.sh scripts/install-from-bundle.sh; do
+          # install.sh no longer installs screenpipe (capture is in-process in
+          # the tray since v1.64.0). install-from-bundle.sh still uses it for
+          # the legacy npm-based install path — the pin must stay there.
+          for f in scripts/install-from-bundle.sh; do
             v=$(grep -E '^SCREENPIPE_VERSION=' "$f" | head -1 | cut -d'"' -f2)
             if [ "$v" != "$expected" ]; then
               echo "::error file=$f::SCREENPIPE_VERSION='$v' but must be '$expected' — the last MIT npm release. screenpipe >= 0.4.17 is Commercial-licensed; bumping the pin ships users a commercial dependency. Changing this requires legal review (and editing this guard). See the LICENSE PIN comment at the pin."

@@ -40,7 +40,7 @@ Commands:
   restart            Stop, wait 1s, start
   status             Show running state of all daemons
   logs [target]      Tail log files
-                     target: daemon|daemon-error|screenpipe|screenpipe-error|ui|ui-error|mlx-server|mlx-server-error
+                     target: daemon|daemon-error|mlx-server|mlx-server-error|tray|tray-error
     -f               Follow (stream)
     -n N             Last N lines (default 100)
   doctor             Run environment health checks (includes pipeline smoke)
@@ -179,7 +179,12 @@ cmd_logs() {
         ui-error)          log_file="${LOG_DIR}/ui-error.log" ;;
         mlx-server)        log_file="${LOG_DIR}/mlx-server.log" ;;
         mlx-server-error)  log_file="${LOG_DIR}/mlx-server-error.log" ;;
-        *) err "unknown log target: ${target} (daemon|daemon-error|screenpipe|screenpipe-error|ui|ui-error|mlx-server|mlx-server-error)"; exit 1 ;;
+        tray)              log_file="${LOG_DIR}/tray.log" ;;
+        tray-error)        log_file="${LOG_DIR}/tray-error.log" ;;
+        # screenpipe/ui are retired post-v1.64.0 (capture is in-process in the
+        # tray; the dashboard is embedded) — kept here so old log files remain
+        # tailable, but `tray`/`tray-error` are the live targets now.
+        *) err "unknown log target: ${target} (daemon|daemon-error|mlx-server|mlx-server-error|tray|tray-error)"; exit 1 ;;
     esac
 
     if [[ ! -f "$log_file" ]]; then
