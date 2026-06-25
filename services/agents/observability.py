@@ -311,6 +311,37 @@ def extract_parent_context(traceparent: Optional[str]) -> Optional[Context]:
     return TraceContextTextMapPropagator().extract({"traceparent": traceparent})
 
 
+def instrument_agno() -> None:
+    """Attach agno's OpenInference instrumentor to the global TracerProvider.
+
+    Requires ``openinference-instrumentation-agno`` — if it isn't installed the
+    call is a no-op (warning logged).  The package is optional because the MLX
+    server works fine without OpenInference spans; it just won't export
+    Agent/Workflow run spans to OpenObserve.
+
+    Must be called after :func:`setup` so the global TracerProvider is already
+    configured.
+    """
+    try:
+        from openinference.instrumentation.agno import AgnoInstrumentor  # type: ignore
+    except ImportError:
+        span = trace.get_current_span()
+        if span.is_recording():
+            span.set_status(trace.StatusCode.ERROR, "openinference-instrumentation-agno not installed")
+        logging.getLogger(__name__).warning(
+            "instrument_agno: agno spans will not be exported",
+            extra={
+                "package": "openinference-instrumentation-agno",
+                "reason": "not installed",
+                "fix": "pip install openinference-instrumentation-agno",
+            },
+        )
+        return
+
+    provider = trace.get_tracer_provider()
+    AgnoInstrumentor().instrument(tracer_provider=provider)
+
+
 # ──────────────────────── Tracing setup ────────────────────────────────────────
 def _configure_tracing(agent_name: str) -> None:
     resource = Resource.create({"service.name": agent_name})
@@ -356,7 +387,12 @@ def _configure_log_export(agent_name: str) -> Optional[logging.Handler]:
 def _configure_logging(agent_name: str) -> None:
     log_dir = Path(os.environ.get("MERIDIAN_LOG_DIR") or DEFAULT_LOG_DIR)
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"{agent_name}.jsonl"
+    # Sanitise agent_name to prevent path traversal — only allow chars that are
+    # safe as a filename component (alphanumeric, hyphen, underscore).
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in agent_name)
+    if not safe_name:
+        safe_name = "agent"
+    log_path = log_dir / f"{safe_name}.jsonl"
 
     level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
