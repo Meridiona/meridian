@@ -43,13 +43,22 @@ clone_dir() { # <src> <dst>
 }
 
 mkdir -p "${STAGE}"
-# Copy the prebuilt payload (bin/ ui.tar.gz services/ scripts/ .env.example VERSION).
+# Copy the prebuilt payload (bin/ services/ scripts/ .env.example VERSION).
 cp -R "${BUNDLE}/." "${STAGE}/"
 # Drop npm-package metadata that isn't part of the app.
 rm -f "${STAGE}/package.json" "${STAGE}/README.md" "${STAGE}/.gitignore" "${STAGE}/.npmignore"
 
-# Preserve an existing .env across re-installs/updates.
-[[ -f "${APP}/.env" ]] && cp "${APP}/.env" "${STAGE}/.env"
+# One-time migration: move credentials from the old app/.env location to the
+# canonical ~/.meridian/.env (outside the swap area — untouched by updates).
+# If both exist, the canonical wins and the old copy is removed.
+if [[ -f "${APP}/.env" ]]; then
+    if [[ ! -f "${HOME}/.meridian/.env" ]]; then
+        mv "${APP}/.env" "${HOME}/.meridian/.env"
+        echo "migrated credentials: ~/.meridian/app/.env → ~/.meridian/.env"
+    else
+        rm -f "${APP}/.env"
+    fi
+fi
 
 # Preserve the Python venv across updates. The venv is built from PyPI via
 # uv sync at install time; preserving it means install-from-bundle.sh only
@@ -60,35 +69,9 @@ if [[ -d "${APP}/services/.venv" ]]; then
     clone_dir "${APP}/services/.venv" "${STAGE}/services/.venv"
 fi
 
-# UI. Two cases, mirroring install-from-bundle.sh's contract:
-#   * unchanged (tarball hash matches the recorded one, or no tarball shipped):
-#     clone the existing ui/ and drop the tarball — the installer reads
-#     "no tarball + ui/ present" as unchanged and skips re-extraction.
-#   * changed: pre-extract the tarball into staging AND keep the tarball. The
-#     stage is then complete BEFORE the swap, so an installer crash after the
-#     swap still leaves a runnable dashboard; the installer's own extraction
-#     (which records the new hash) re-does only a few seconds of work.
-_hash_file="${HOME}/.meridian/.component-hashes"
-_ui_preserved=0
-if [[ -d "${APP}/ui" ]]; then
-    if [[ -f "${STAGE}/ui.tar.gz" ]] && [[ -f "${_hash_file}" ]]; then
-        _old_ui_hash="$(grep '^ui_tarball=' "${_hash_file}" 2>/dev/null | cut -d= -f2 || true)"
-        _new_ui_hash="$(shasum -a 256 "${STAGE}/ui.tar.gz" | cut -d' ' -f1)"
-        if [[ -n "${_old_ui_hash}" && "${_new_ui_hash}" == "${_old_ui_hash}" ]]; then
-            clone_dir "${APP}/ui" "${STAGE}/ui"
-            rm -f "${STAGE}/ui.tar.gz"
-            _ui_preserved=1
-        fi
-    elif [[ ! -f "${STAGE}/ui.tar.gz" ]]; then
-        # No tarball in bundle = UI unchanged since last release; keep existing build.
-        clone_dir "${APP}/ui" "${STAGE}/ui"
-        _ui_preserved=1
-    fi
-fi
-if [[ "${_ui_preserved}" -eq 0 && -f "${STAGE}/ui.tar.gz" ]]; then
-    mkdir -p "${STAGE}/ui"
-    tar -xzf "${STAGE}/ui.tar.gz" -C "${STAGE}/ui"
-fi
+# The dashboard is no longer staged here: it's embedded in the tray binary, so
+# the bundle ships neither ui.tar.gz nor a ui/ dir. Any old ~/.meridian/app/ui
+# from a pre-fold install is discarded by the swap below (APP → OLD → rm).
 
 # The swap: two renames on one filesystem. Running daemons keep their open
 # inodes from the old tree until they restart; the installer (exec'd next)

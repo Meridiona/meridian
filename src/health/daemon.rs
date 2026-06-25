@@ -43,6 +43,7 @@ pub async fn checks(_cfg: &Config, pool: Option<&SqlitePool>) -> Vec<Check> {
         etl_cursor(p).await,
         queue_depth(p, "pending_summariser", "summariser queue").await,
         queue_depth(p, "pending_classifier", "classifier queue").await,
+        subprocess_errors(p).await,
     ]
 }
 
@@ -122,5 +123,23 @@ async fn queue_depth(pool: &SqlitePool, method: &str, label: &'static str) -> Ch
             .with_remedy("check the MLX server / claude+codex CLIs are reachable"),
         Ok(n) => Check::info(label, "L2", format!("{n} pending")),
         Err(e) => Check::warn(label, "L2", format!("could not read queue ({e})")),
+    }
+}
+
+async fn subprocess_errors(pool: &SqlitePool) -> Check {
+    match sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM app_sessions WHERE task_method = 'subprocess_error'",
+    )
+    .fetch_one(pool)
+    .await
+    {
+        Ok(0) => Check::ok("classify errors", "L2", "no sentinel errors"),
+        Ok(n) => Check::warn(
+            "classify errors",
+            "L2",
+            format!("{n} sessions sentinelled — usually a sustained MLX outage, not the model"),
+        )
+        .with_remedy("verify the MLX server, then re-classify those sessions"),
+        Err(e) => Check::warn("classify errors", "L2", format!("could not read ({e})")),
     }
 }

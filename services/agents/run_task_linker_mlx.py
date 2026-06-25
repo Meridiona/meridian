@@ -1,0 +1,1873 @@
+#!/usr/bin/env python3
+"""run_task_linker_mlx — direct MLX in-process inference for session classification.
+
+Reads a JSON payload from stdin:
+    {"session_ids": [int, ...], "meridian_db": str, "traceparent": str | null}
+
+Loads the MLX model in-process via outlines + mlx_lm , and uses FSM-constrained decoding to guarantee the response is
+always a valid SessionClassification JSON object.
+
+OTel span hierarchy (when invoked as a script via main()):
+    run_task_linker_mlx          ← root span, parented to Rust traceparent
+        classify_session         ← one per session_id
+            db_fetch
+            classifier_input     ← the COMPLETE model input (system + user)
+                system_prompt        — classifier skill + context
+                recent_context       — 30-min per-ticket continuity prior
+                session_block        — the input session being classified
+                candidate_tickets    — ranked candidate tickets (★ = today)
+            llm_inference
+            classifier_output    ← the COMPLETE raw model output
+                reasoning            — chain-of-thought that drove the verdict (emitted first)
+                category             — the category (+ category_confidence)
+                dimensions           — inferred activity tags
+                session_summary      — PM-facing prose deliverable
+
+When imported by server.py the same child spans are emitted under whatever
+parent span the server establishes (propagated via contextvars).
+
+Requires: outlines[mlxlm]>=1.3, mlx-lm>=0.22 (installed in .venv).
+Method tag in results: "mlx_direct".
+"""
+from __future__ import annotations
+
+import datetime as _dt
+import gc
+import json
+import logging
+import os
+import sqlite3 as _sqlite3
+import sys
+import threading
+import time
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, Literal, Optional, Iterator
+
+from opentelemetry import trace
+from opentelemetry.trace import StatusCode
+from pydantic import BaseModel, Field, field_validator
+
+_SERVICES_DIR = Path(__file__).parent.parent
+
+from agents import observability
+from agents._prompts import (
+    build_user_message,
+    _format_candidates,
+    _format_continuity,
+    _format_session,
+    _CONTINUITY_WINDOW_MIN,
+)
+from agents._system_context import SYSTEM_CONTEXT
+
+log = logging.getLogger("agents.run_task_linker_mlx")
+tracer = observability.setup("meridian-task-linker-mlx")
+
+# Recent-work continuity: only count a prior session toward the continuity block
+# if its task link is confident enough to trust (a shaky 0.5 generic match
+# shouldn't compound into a continuity nudge). 0.7 sits at the top of the SKILL's
+# "generic project-level match" band (0.50-0.65), so this keeps real alignments
+# and drops weak guesses. The window length lives in _prompts._CONTINUITY_WINDOW_MIN
+# (shared with the prompt label). Override via CONTINUITY_MIN_CONFIDENCE.
+_CONTINUITY_MIN_CONFIDENCE = float(os.environ.get("CONTINUITY_MIN_CONFIDENCE", "0.7"))
+_MAX_TOKENS = 1024
+_TEMPERATURE = 0.0  # greedy decoding — deterministic classification
+
+# Candidate-set policy. When the dev has CONFIRMED a daily plan, restrict the
+# classifier's candidate tickets to exactly those planned tickets instead of
+# offering every open ticket (the historical "boost-never-filter" behaviour).
+# Rationale: a focused candidate set sharpens precision on the day's declared
+# work; off-plan work then intentionally falls through to `untracked` — a
+# deliberate holding state — rather than being mis-linked onto an unrelated open
+# ticket. NOTE: until a recall-recovery stage exists, `untracked` sessions do
+# not produce PM worklogs, so off-plan work is not written back while this is on.
+#   "1" (default) → plan-only filtering whenever a plan is confirmed
+#   "0"           → legacy boost-never-filter (plan tickets floated up, all kept)
+# Read once at import — flipping it requires an MLX-server restart. Only ever
+# active on days with a confirmed, non-empty plan; unplanned days are unaffected.
+_PLAN_ONLY_CANDIDATES = os.environ.get("CLASSIFY_PLAN_ONLY_CANDIDATES", "1") == "1"
+
+# The eval-tuned default classifier model. It lives in the llm_selector catalog
+# (_MODELS) as "qwen3.5-9b-optiq"; llm_selector keeps it on machines where it
+# fits and degrades only when Metal headroom can't accommodate it. The catalog
+# is the single source of truth for its working-set footprint — the constant
+# below is only the fallback used if the lookup ever fails (~5-6 GB resident for
+# the 9B-4bit weights, plus KV cache at our 1024-token generation budget).
+_DEFAULT_MLX_MODEL_ID = "mlx-community/Qwen3.5-9B-OptiQ-4bit"
+_DEFAULT_MLX_MODEL_MIN_RAM_GB = 6.5
+
+# Explicit pin — set MLX_MODEL_ID to bypass dynamic selection entirely (eval
+# experiments, reproducible benchmarks). When unset, the model is chosen at
+# runtime by llm_selector.select_mlx_model_id() based on available compute.
+_MLX_MODEL_ID_PIN = os.environ.get("MLX_MODEL_ID")
+
+# `~/.meridian/settings.json` — the SAME file the Rust daemon + tray read/write.
+# We read only `llm_model_preference` here: the HuggingFace repo id the user
+# chose in the setup wizard (written by the tray's `set_model_preference`).
+_SETTINGS_PATH = Path(
+    os.environ.get("MERIDIAN_SETTINGS_PATH")
+    or (Path.home() / ".meridian" / "settings.json")
+)
+
+
+def _settings_model_preference() -> "str | None":
+    """Return the user's chosen model HF id from settings.json, or None.
+
+    A blank/absent value means "no preference" → fall through to dynamic
+    selection. Never raises — a malformed or missing file is treated as unset.
+    """
+    try:
+        with _SETTINGS_PATH.open(encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    pref = data.get("llm_model_preference")
+    return pref if isinstance(pref, str) and pref.strip() else None
+
+# Resolved lazily and cached for the process lifetime by _resolve_model_id().
+# Kept as a module attribute (not just a function return) so /info, /v1/models,
+# and the llm_inference span all report the same, truthful id.
+_MLX_MODEL_ID: str | None = None
+
+
+def _resolve_model_id() -> str:
+    """Resolve the MLX model id for this process — once, then cached.
+
+    Order: explicit MLX_MODEL_ID pin → dynamic selection via llm_selector →
+    the hardcoded eval-tuned default on any failure. Never returns None so the
+    in-process load always has a concrete id to hand mlx_lm.load.
+    """
+    global _MLX_MODEL_ID
+    if _MLX_MODEL_ID is not None:
+        return _MLX_MODEL_ID
+
+    if _MLX_MODEL_ID_PIN:
+        _MLX_MODEL_ID = _MLX_MODEL_ID_PIN
+        log.info("run_task_linker_mlx: model pinned via MLX_MODEL_ID=%s", _MLX_MODEL_ID)
+        return _MLX_MODEL_ID
+
+    try:
+        from agents.llm_selector import (
+            APPLE_INTELLIGENCE_ID, resolve_model, select_mlx_model_id,
+        )
+        # The user's wizard choice (if any) becomes the preferred model; otherwise
+        # fall back to the eval-tuned default. Either way `select_mlx_model_id`
+        # keeps the preference when Metal budget allows and degrades when it can't,
+        # so an over-ambitious choice on a small Mac never OOMs.
+        user_pref = _settings_model_preference()
+        preferred_id = user_pref or _DEFAULT_MLX_MODEL_ID
+        if user_pref:
+            log.info(
+                "run_task_linker_mlx: model preference from settings.json",
+                extra={"model_preference": user_pref},
+            )
+        entry = resolve_model(preferred_id)
+        preferred_min_ram = (
+            entry["min_ram_gb"] if entry else _DEFAULT_MLX_MODEL_MIN_RAM_GB
+        )
+        selected = select_mlx_model_id(
+            preferred_hf_id=preferred_id,
+            preferred_min_ram_gb=preferred_min_ram,
+        )
+        # Propagate the Apple Intelligence sentinel as-is; fall back to the
+        # default MLX model only when nothing at all was selected (None).
+        _MLX_MODEL_ID = selected if selected is not None else _DEFAULT_MLX_MODEL_ID
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "run_task_linker_mlx: dynamic model selection failed (%s) — "
+            "using default %s", exc, _DEFAULT_MLX_MODEL_ID,
+        )
+        _MLX_MODEL_ID = _DEFAULT_MLX_MODEL_ID
+
+    log.info("run_task_linker_mlx: resolved MLX model=%s", _MLX_MODEL_ID)
+    return _MLX_MODEL_ID
+
+
+_SKILL_PATH = (
+    _SERVICES_DIR / "skills" / "activity" / "task-classifier" / "SKILL.md"
+)
+
+# If the persistent MLX server is running, use it for inference (avoids cold-load).
+_SERVER_PORT = int(os.environ.get("MLX_SERVER_PORT", "7823"))
+_SERVER_URL = f"http://127.0.0.1:{_SERVER_PORT}/classify"
+
+
+# ---------------------------------------------------------------------------
+# Pydantic schema — outlines uses this for FSM-constrained decoding, which
+# guarantees the model output is always a valid instance of this class.
+# ---------------------------------------------------------------------------
+
+class SessionClassification(BaseModel):
+    # FSM-constrained decoding emits these fields in declaration order, so the
+    # ORDER is load-bearing. `reasoning` is declared FIRST on purpose: it turns
+    # those tokens into genuine chain-of-thought the model produces BEFORE it
+    # commits to task_key/session_type/category — the verdict is then conditioned
+    # on the reasoning instead of being a blind one-shot match the reasoning only
+    # justifies after the fact. The long `session_summary` stays LAST so that if
+    # generation ever hits the _MAX_TOKENS ceiling, the full verdict has already
+    # been emitted and only the prose deliverable is truncated.
+    reasoning: str = Field(
+        ..., min_length=1, max_length=600,
+        description=(
+            "Think FIRST, before deciding. In 1-4 sentences, reason over the "
+            "evidence (window titles, OCR/a11y text, file/branch names, recent "
+            "work context) toward the classification: does it clearly match one "
+            "candidate ticket's scope, is it real work with no matching ticket "
+            "(untracked), or is it idle/personal (overhead)? Cite the specific "
+            "evidence you used. Bounded so it can't consume the whole generation "
+            "budget before the verdict fields below are emitted."
+        ),
+    )
+    task_key: Optional[str] = Field(
+        None,
+        description="One of the supplied candidate task keys, or null if none fit.",
+    )
+    confidence: float = Field(
+        ..., ge=0.0, le=1.0,
+        description="How certain you are. See scoring heuristics for ranges.",
+    )
+    session_type: Literal["task", "overhead", "untracked"] = Field(
+        ...,
+        description=(
+            "'task' = matched to a ticket; "
+            "'overhead' = idle/personal/unrelated — discarded; "
+            "'untracked' = real work with no matching ticket — retained."
+        ),
+    )
+    category: Literal[
+        "coding", "code_review", "meeting", "communication", "design",
+        "documentation", "planning", "deployment_devops", "research",
+        "idle_personal",
+    ] = Field(
+        ...,
+        description=(
+            "The single best activity category for this session. Derive it from "
+            "the evidence (app, window titles, screen content); no category is "
+            "supplied in the input."
+        ),
+    )
+    category_confidence: float = Field(
+        ..., ge=0.0, le=1.0,
+        description="How certain you are about `category` (0.0-1.0).",
+    )
+    dimensions: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Inferred activity tags. Keys: activity, intent, engagement, "
+            "collaboration, tool, topic, practice. "
+            "Values: lowercase snake_case lists. Omit keys with no evidence."
+        ),
+    )
+    session_summary: str = Field(
+        ..., min_length=100,
+        description=(
+            "A factual prose summary of EVERYTHING the user did in this "
+            "session, written for downstream project-management updates. "
+            "Length is adaptive: aim for ~10 sentences for short trivial "
+            "sessions and up to ~40-80 sentences for content-rich sessions; "
+            "match depth to the evidence. Past tense, third person. "
+            "PRESERVE every SDLC-relevant signal: "
+            "(1) specific files, paths, modules touched; "
+            "(2) commands, scripts, queries run + their outcome; "
+            "(3) errors hit, stack traces, failing tests; "
+            "(4) technical decisions made and the alternative considered; "
+            "(5) tests written or run + pass/fail; "
+            "(6) commits, branches, PRs opened/merged; "
+            "(7) blockers and unanswered questions; "
+            "(8) external research / docs / Stack Overflow / Claude advice consulted; "
+            "(9) validations, manual QA, screenshots reviewed; "
+            "(10) design choices, schema changes, migrations. "
+            "DO NOT write marketing language, vague claims, or speculation "
+            "about future work. Cite the evidence you saw in the session_text — "
+            "this is the single source of truth the PM updater will compose from."
+        ),
+    )
+
+    @field_validator("confidence", "category_confidence", mode="before")
+    @classmethod
+    def _clamp_unit_interval(cls, v: object) -> float:
+        """Clamp a confidence into [0, 1] instead of rejecting it.
+
+        Outlines' FSM constrains the JSON STRUCTURE and TYPE but NOT a float's
+        numeric range, so a model can emit e.g. -0.85 or 1.3. Without this,
+        model_validate_json() raises on the `ge=0/le=1` bound and the ENTIRE
+        classification is lost (observed: loop eval seed 34371 → confidence
+        -0.85). Clamping mirrors the downstream guards in _classify_one and keeps
+        a usable verdict. Falls back to 0.7 for a non-numeric value.
+        """
+        try:
+            return max(0.0, min(1.0, float(v)))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 0.7
+
+
+# ---------------------------------------------------------------------------
+# Skill content — read once at module load, injected into every system prompt.
+# ---------------------------------------------------------------------------
+
+def _load_skill() -> str:
+    try:
+        return _SKILL_PATH.read_text(encoding="utf-8")
+    except OSError:
+        log.warning("run_task_linker_mlx: SKILL.md not found at %s", _SKILL_PATH)
+        return ""
+
+
+_SKILL_CONTENT = _load_skill()
+
+_SYSTEM_PROMPT = (
+    SYSTEM_CONTEXT
+    + ("\n\n---\n\n" + _SKILL_CONTENT if _SKILL_CONTENT else "")
+)
+
+
+# ---------------------------------------------------------------------------
+# Model loading — loaded lazily on first use, evicted when idle.
+#
+# The MLX model holds ~7 GB of Metal unified memory while resident (measured;
+# note `ps`/Activity Monitor RSS does NOT show it). Classification is bursty,
+# so we keep the model only while it's being used: load on first inference,
+# and evict after MLX_IDLE_EVICT_S of inactivity (server.py runs the evictor).
+# `del + gc.collect() + mx.clear_cache()` reclaims the full 7 GB; cold reload
+# is ~3 s. `_model_lock` + `_in_flight` guarantee the evictor never frees the
+# model out from under an in-flight inference.
+# ---------------------------------------------------------------------------
+
+_model_cache: dict[str, Any] = {}
+# Tokenizer kept alongside the model so we can render the EXACT chat-template
+# prompt (the wire format outlines feeds the model) for the classifier_input span.
+_tokenizer_cache: dict[str, Any] = {}
+_model_lock = threading.Lock()       # guards _model_cache mutation, _in_flight, _last_used, eviction
+_in_flight = 0                       # inferences currently using the model
+_last_used = time.monotonic()        # monotonic ts of the last finished inference
+
+# Aggressive default (2 min): the model is present only during active bursts.
+# Tune via env without a code change; 0 disables idle eviction entirely.
+_IDLE_EVICT_S = float(os.environ.get("MLX_IDLE_EVICT_S", "120"))
+
+# ---------------------------------------------------------------------------
+# Prompt-cache for the static system+skill prefix.
+#
+# Every classification shares the SAME ~3.1k-token system+skill prefix; mlx_lm
+# reprocesses the whole prompt each call by default. Caching that prefix's KV and
+# reprocessing only the per-session suffix is a large, accuracy-NEUTRAL CPU saving
+# — greedy decoding (temp 0) makes cached and uncached output byte-identical
+# (verified by services/tests/test_prompt_cache_equivalence.py).
+#
+# Mechanism: the public trim_prompt_cache multi-turn idiom (NOT private cache
+# `.state`). We keep one persistent KV cache plus the token ids it currently
+# holds; each call reuses the longest common prefix with the PREVIOUS prompt,
+# reprocesses only the divergent suffix, then trims the generated tokens back off
+# so the cache again holds exactly the prompt. The runtime common-prefix check is
+# what makes this correctness-proof: if anything diverges earlier than the shared
+# prefix it simply reprocesses from the first differing token — never reuses KV
+# for a token that wasn't actually there. A non-blocking lock guards the shared
+# cache: an overlapping call that can't take the lock falls back to an uncached
+# full-prompt generation rather than corrupting it. Invalidated on model
+# evict/reload (the KV is tied to the resident model instance).
+_prompt_cache: "list | None" = None
+_prompt_cache_ids: "list[int] | None" = None
+_prompt_cache_lock = threading.Lock()
+_PROMPT_CACHE_ENABLED = os.environ.get("CLASSIFY_PROMPT_CACHE", "1") == "1"
+
+# ---------------------------------------------------------------------------
+# Constrained-generation FSM cache.
+#
+# outlines compiles the SessionClassification schema into a token-level FSM
+# (the OutlinesCoreLogitsProcessor `index`). Measured: building that Generator
+# costs ~6 s — and the schema is STATIC, so rebuilding it per session was burning
+# ~6 s/classification (≈30% of wall-clock) for nothing. We build it ONCE per
+# resident model and reuse it, calling the processor's own reset() before each
+# generation to clear the per-sequence FSM state (greedy decoding → reused-FSM
+# output is byte-identical to a freshly built one). Tied to the model instance,
+# so it's invalidated alongside the KV cache on evict/reload.
+_generator_cache: dict[str, tuple] = {}
+_generator_lock = threading.Lock()
+
+
+def _invalidate_prompt_cache() -> None:
+    """Drop the per-model caches (prefix KV + compiled FSM generator). Call
+    whenever the resident model is freed or swapped — both are valid only for that
+    exact model instance.
+    """
+    global _prompt_cache, _prompt_cache_ids
+    _prompt_cache = None
+    _prompt_cache_ids = None
+    _generator_cache.clear()
+
+
+def _get_constrained_logits_processors(model: Any) -> "list":
+    """Return the cached FSM logits-processor list for SessionClassification,
+    building it once per resident model. The processor carries per-generation
+    state, so it is reset() before being handed back — making reuse equivalent to
+    a freshly built generator while skipping the ~6 s FSM compile each call.
+    """
+    mid = _resolve_model_id()
+    cached = _generator_cache.get(mid)
+    if cached is None:
+        with _generator_lock:
+            cached = _generator_cache.get(mid)  # re-check under lock
+            if cached is None:
+                from outlines.generator import Generator
+
+                t0 = time.time()
+                gen = Generator(model, SessionClassification)
+                lp = model.type_adapter.format_output_type(gen.logits_processor)
+                _generator_cache[mid] = (gen, lp)
+                cached = _generator_cache[mid]
+                log.info(
+                    "run_task_linker_mlx: compiled classification FSM in %.1fs "
+                    "(cached for process lifetime)", time.time() - t0,
+                )
+    _gen, lp = cached
+    # Clear per-sequence FSM state so this generation starts clean.
+    reset = getattr(_gen.logits_processor, "reset", None)
+    if callable(reset):
+        reset()
+    for p in lp:
+        p_reset = getattr(p, "reset", None)
+        if callable(p_reset) and p is not _gen.logits_processor:
+            p_reset()
+    return lp
+
+
+def _common_prefix_len(a: "list[int] | None", b: "list[int] | None") -> int:
+    """Length of the longest shared leading run of two token-id sequences."""
+    if not a or not b:
+        return 0
+    n = min(len(a), len(b))
+    i = 0
+    while i < n and a[i] == b[i]:
+        i += 1
+    return i
+
+
+_prompt_cache_trimmable: "bool | None" = None  # lazily detected per model
+
+
+def _cache_offset(prompt_cache: "list") -> int:
+    """Current cached sequence length, across cache implementations. Standard
+    KVCache exposes `.offset`; batched caches (ArraysCache) expose `.lengths`.
+    Returns -1 when neither is available (→ caller must not reuse)."""
+    c0 = prompt_cache[0]
+    off = getattr(c0, "offset", None)
+    if isinstance(off, int):
+        return off
+    lengths = getattr(c0, "lengths", None)  # ArraysCache: per-batch lengths
+    try:
+        if lengths is not None:
+            return int(max(lengths))
+    except (TypeError, ValueError):
+        # `lengths` may be non-numeric or malformed on some cache variants;
+        # treat as unsupported and fall through to -1 (caller skips reuse).
+        pass
+    return -1
+
+
+def _generate_constrained(
+    model: Any,
+    full_ids: "list[int]",
+    logits_processors: "list",
+    sampler: Any,
+) -> "tuple[str, Any, int]":
+    """FSM-constrained generation for `full_ids`, reusing the cached system+skill
+    prefix's KV across sessions WHEN the model's cache supports trimming.
+
+    Returns ``(raw_text, gen_stats, cache_hit_tokens)`` where ``cache_hit_tokens``
+    is the number of leading prompt tokens served from the persistent KV cache
+    (0 → full reprocess / uncached path). Greedy decoding makes the cached and
+    uncached outputs byte-identical.
+
+    Prefix reuse uses the public trim_prompt_cache multi-turn idiom: keep one
+    persistent cache + the token ids it holds; reuse the longest common prefix
+    with the previous prompt, reprocess only the divergent suffix, then trim the
+    generated tail back off. Models whose cache is NOT trimmable (e.g. the batched
+    ArraysCache some quantized builds use) can't support this safely, so we detect
+    that ONCE and fall back to plain uncached generation — correct, just without
+    the prefill saving (which is then better recovered via speculative decoding /
+    a smaller prompt).
+    """
+    from mlx_lm import stream_generate
+    from mlx_lm.models import cache as _kc
+
+    global _prompt_cache, _prompt_cache_ids, _prompt_cache_trimmable
+
+    gen_kwargs = dict(
+        max_tokens=_MAX_TOKENS,
+        logits_processors=logits_processors,
+        sampler=sampler,
+    )
+
+    def _stream(prompt_ids: "list[int]", prompt_cache: Any) -> "tuple[str, Any]":
+        kw = dict(gen_kwargs)
+        if prompt_cache is not None:
+            kw["prompt_cache"] = prompt_cache
+        parts: list[str] = []
+        gen_stats: Any = None
+        for gr in stream_generate(model.model, model.mlx_tokenizer, prompt_ids, **kw):
+            parts.append(gr.text)
+            gen_stats = gr
+        return "".join(parts), gen_stats
+
+    # One-time capability probe: is this model's KV cache trimmable? If not, prefix
+    # reuse can't work, so don't even take the lock — run uncached every call.
+    if _prompt_cache_trimmable is None:
+        try:
+            _prompt_cache_trimmable = bool(
+                _kc.can_trim_prompt_cache(_kc.make_prompt_cache(model.model))
+            )
+        except Exception:  # noqa: BLE001
+            _prompt_cache_trimmable = False
+        if not _prompt_cache_trimmable:
+            log.info(
+                "run_task_linker_mlx: model KV cache is not trimmable — prefix "
+                "prompt-caching disabled (FSM-compile cache still active)"
+            )
+
+    # Uncached path: caching disabled, cache not trimmable, or another call holds
+    # the shared cache. A fresh per-call cache (mlx_lm makes one internally) is
+    # correct in every case.
+    if not (
+        _PROMPT_CACHE_ENABLED
+        and _prompt_cache_trimmable
+        and _prompt_cache_lock.acquire(blocking=False)
+    ):
+        raw, gen_stats = _stream(full_ids, None)
+        return raw, gen_stats, 0
+
+    try:
+        if _prompt_cache is None:
+            _prompt_cache = _kc.make_prompt_cache(model.model)
+            _prompt_cache_ids = []
+
+        common = _common_prefix_len(_prompt_cache_ids, full_ids)
+        # Drop any cached tail that doesn't match this prompt, so the cache holds
+        # exactly full_ids[:common] before the suffix is processed.
+        extra = len(_prompt_cache_ids or []) - common
+        if extra > 0:
+            _kc.trim_prompt_cache(_prompt_cache, extra)
+
+        suffix = full_ids[common:]
+        # stream_generate needs ≥1 token to process. An identical-to-previous
+        # prompt (no suffix) is vanishingly unlikely (the per-session block always
+        # differs), but handle it: back the cache off one token and reprocess it.
+        if not suffix:
+            if common > 0:
+                _kc.trim_prompt_cache(_prompt_cache, 1)
+                common -= 1
+                suffix = full_ids[common:]
+            else:
+                _prompt_cache = _kc.make_prompt_cache(model.model)
+                common, suffix = 0, full_ids
+
+        try:
+            raw, gen_stats = _stream(suffix, _prompt_cache)
+        except Exception:
+            # Generation failed mid-stream → the shared cache is now inconsistent.
+            _invalidate_prompt_cache()
+            raise
+
+        # Restore the cache to exactly the prompt boundary using its OWN physical
+        # offset — not a count of generated tokens, which would risk an off-by-one
+        # and silently corrupt the reused prefix. After this, the cache holds
+        # exactly full_ids, ready for the next session to reuse.
+        cur_offset = _cache_offset(_prompt_cache)
+        trim_amount = cur_offset - len(full_ids)
+        if trim_amount > 0:
+            _kc.trim_prompt_cache(_prompt_cache, trim_amount)
+            _prompt_cache_ids = list(full_ids)
+        elif trim_amount == 0:
+            _prompt_cache_ids = list(full_ids)
+        else:
+            # Couldn't realign the cache to the prompt boundary — rebuild next call
+            # rather than risk reusing a misaligned prefix.
+            _invalidate_prompt_cache()
+        return raw, gen_stats, common
+    finally:
+        _prompt_cache_lock.release()
+
+
+def _get_model() -> Any:
+    """Return an outlines-wrapped model, loading from disk on the first call.
+
+    Cache-miss load is done under _model_lock (double-checked) so concurrent
+    callers can't double-load and the idle evictor can't race the load.
+    """
+    model_id = _resolve_model_id()
+    cached = _model_cache.get(model_id)
+    if cached is not None:
+        return cached
+
+    with _model_lock:
+        cached = _model_cache.get(model_id)   # re-check under lock
+        if cached is not None:
+            return cached
+        try:
+            import mlx_lm
+            import outlines
+        except ImportError as exc:
+            raise ImportError(
+                f"Required package not installed: {exc}. "
+                "Install with: pip install 'mlx-lm>=0.22' 'outlines[mlxlm]>=1.3'"
+            ) from exc
+
+        log.info(
+            "run_task_linker_mlx: loading %s (first call this process)", model_id
+        )
+        t0 = time.time()
+        mlx_model, tokenizer = mlx_lm.load(
+            model_id,
+            tokenizer_config={"trust_remote_code": True},
+        )
+        outlines_model = outlines.from_mlxlm(mlx_model, tokenizer)
+        log.info("run_task_linker_mlx: model loaded in %.1fs", time.time() - t0)
+
+        _model_cache[model_id] = outlines_model
+        _tokenizer_cache[model_id] = tokenizer
+        # Any prior prefix KV belongs to a now-gone model instance — drop it so
+        # the next classification rebuilds against this freshly loaded model.
+        _invalidate_prompt_cache()
+        return outlines_model
+
+
+@contextmanager
+def model_session() -> Iterator[Any]:
+    """Yield the loaded model, marking it in-flight so the idle evictor never
+    frees it mid-inference. Wrap every direct ``model(...)`` call in this.
+
+    Lock is held only briefly (to bump/clear the in-flight counter), never for
+    the duration of inference. NOTE: production serialises all MLX calls upstream
+    via the Rust llm_gate (1-permit semaphore), so inferences don't actually
+    overlap — this lock scope just avoids adding a second, redundant serialisation
+    point, NOT a claim that concurrent generation on the shared model is safe.
+    """
+    global _in_flight, _last_used
+    with _model_lock:
+        _in_flight += 1
+    try:
+        yield _get_model()
+    finally:
+        with _model_lock:
+            _in_flight -= 1
+            _last_used = time.monotonic()
+
+
+def maybe_evict_idle(idle_s: float | None = None) -> float | None:
+    """Evict the model if it's resident, nothing is in flight, and it's been
+    idle longer than ``idle_s`` (default MLX_IDLE_EVICT_S). Returns the GB freed,
+    or None if no eviction happened. Safe to call from a threadpool worker.
+
+    Uses a non-blocking lock acquire: if an inference/load is mutating state we
+    simply skip this tick and try again on the next one.
+    """
+    ttl = _IDLE_EVICT_S if idle_s is None else idle_s
+    if ttl <= 0:
+        return None
+    if not _model_lock.acquire(blocking=False):
+        return None
+    try:
+        if _in_flight > 0 or not _model_cache:
+            return None
+        if (time.monotonic() - _last_used) < ttl:
+            return None
+        try:
+            import mlx.core as mx
+            before = mx.get_active_memory()
+        except Exception:               # noqa: BLE001 — mx should always import here
+            mx, before = None, 0
+        _model_cache.clear()
+        # The prefix KV cache is tied to the model we're about to free — drop it
+        # too, or the next load would reuse KV from a dead model instance.
+        _invalidate_prompt_cache()
+        gc.collect()
+        freed = 0.0
+        if mx is not None:
+            mx.clear_cache()
+            freed = max(0.0, (before - mx.get_active_memory()) / 1e9)
+        log.info(
+            "run_task_linker_mlx: evicted idle model (idle ≥ %.0fs), freed ~%.1f GB",
+            ttl, freed,
+        )
+        return freed
+    finally:
+        _model_lock.release()
+
+
+def model_resident() -> bool:
+    """True if the MLX model is currently loaded in memory."""
+    return bool(_model_cache)
+
+
+def model_active_memory_gb() -> float | None:
+    """Live Metal active-memory footprint in GB, or None if MLX is unavailable.
+
+    Process-wide Metal active memory (≈ the model when resident — the model
+    dominates, though a transient load allocation can briefly inflate it), and
+    the only honest measure: `ps`/Activity Monitor can't see Metal unified
+    memory (they undercount by ~6.5 GB).
+    """
+    try:
+        import mlx.core as mx
+        return round(mx.get_active_memory() / 1e9, 2)
+    except Exception:  # noqa: BLE001 — mx absent on non-MLX machines
+        return None
+
+
+# Apple Foundation Models has a 4096-token combined context window (input + output).
+# The full _SYSTEM_PROMPT is ~19k chars / ~4800 tokens — it does NOT fit. Use a
+# compact prompt instead: ~500 tokens for instructions, ~2000 for user, ~500 for output.
+_APPLE_FM_USER_CHARS = 8_000   # ~2000 tokens — user message cap
+
+# Compact classifier prompt sized for Apple FM's 4096-token window.
+# Covers the essential decision logic; the full SKILL.md is used for larger models.
+# Schema matches SessionClassification exactly — wrong types cause Pydantic rejection.
+_APPLE_FM_SYSTEM_PROMPT = """\
+You are Meridian's session classifier. Return ONLY a JSON object — no markdown, no extra text.
+
+Required schema (all fields mandatory, in this order):
+{"reasoning": "<think first: 1-4 sentences reasoning over the evidence toward the verdict>", "task_key": <string or null>, "confidence": <float 0.0-1.0>, "session_type": <see below>, "category": <see below>, "category_confidence": <float 0.0-1.0>, "dimensions": {"activity": ["<tag>"], "tool": ["<tag>"]}, "session_summary": "<100-500 char factual past-tense prose>"}
+
+category must be exactly one of: coding, code_review, meeting, communication, design, documentation, planning, deployment_devops, research, idle_personal
+
+session_type must be exactly one of: task, overhead, untracked
+
+Rules:
+- task_key: ONLY copy a key from the supplied candidate list verbatim. null if no list or no clear match. NEVER invent a key.
+- session_type "task": session matches a candidate ticket. session_type "overhead": idle/personal/music/idle_personal → confidence ≥ 0.9. session_type "untracked": real work, no ticket match → confidence 0.65-0.75.
+- confidence: 0.95=certain, 0.80=probable, 0.65=likely, 0.50=uncertain
+- dimensions values must be lists of lowercase snake_case strings
+- session_summary must be factual past tense, cite specific files/tools/actions, minimum 2 sentences"""
+
+
+_VALID_CATEGORIES = frozenset({
+    "coding", "code_review", "meeting", "communication", "design",
+    "documentation", "planning", "deployment_devops", "research", "idle_personal",
+})
+
+
+def _coerce_apple_fm_result(data: dict, valid_keys: "frozenset[str] | set[str]") -> dict:
+    """Fill missing or malformed fields so Pydantic can validate Apple FM output.
+
+    Apple FM doesn't guarantee all required fields. This function synthesizes
+    missing ones from what was returned rather than failing.
+
+    Unlike the FSM path, Apple FM is NOT structurally constrained to the
+    candidate task_key set, so it can hallucinate a plausible-but-invalid key.
+    A hallucinated key would later trip the `task_key not in valid_keys` guard
+    in `_classify_one` and be HARD-DISCARDED as overhead (confidence 0.0) —
+    throwing away work the model genuinely recognised. We instead null the
+    out-of-set key here and downgrade the session to `untracked`, retaining it.
+    """
+    # session_type coercion
+    st = str(data.get("session_type", "untracked"))
+    if st not in ("task", "overhead", "untracked"):
+        st = "overhead" if st in ("idle", "personal") else "untracked"
+    data["session_type"] = st
+
+    # category coercion
+    cat = str(data.get("category", ""))
+    if cat not in _VALID_CATEGORIES:
+        cat = "idle_personal" if st == "overhead" else "coding"
+    data["category"] = cat
+
+    # confidence: clamp to [0, 1]
+    try:
+        data["confidence"] = max(0.0, min(1.0, float(data.get("confidence", 0.7))))
+    except (TypeError, ValueError):
+        data["confidence"] = 0.7
+
+    # category_confidence: derive from confidence if missing
+    if "category_confidence" not in data or not isinstance(data["category_confidence"], (int, float)):
+        data["category_confidence"] = round(data["confidence"] * 0.9, 2)
+    else:
+        data["category_confidence"] = max(0.0, min(1.0, float(data["category_confidence"])))
+
+    # reasoning: ensure it's a non-empty string (bounded to the schema's 600-char cap)
+    if not data.get("reasoning"):
+        data["reasoning"] = "Classified via Apple Foundation Models."
+    else:
+        data["reasoning"] = str(data["reasoning"])[:600]
+
+    # session_summary: must be at least 100 chars
+    summary = str(data.get("session_summary", ""))
+    if len(summary) < 100:
+        # Pad from reasoning
+        reasoning = str(data.get("reasoning", ""))
+        summary = (summary + " " + reasoning).strip()
+    if len(summary) < 100:
+        summary = summary + " The session was processed by Apple Foundation Models."
+    data["session_summary"] = summary
+
+    # dimensions: must be dict[str, list[str]]
+    dims = data.get("dimensions", {})
+    if not isinstance(dims, dict):
+        dims = {}
+    data["dimensions"] = {
+        k: ([str(i) for i in v] if isinstance(v, list) else [str(v)])
+        for k, v in dims.items()
+    }
+
+    # task_key: null if session_type is not "task"
+    if st != "task":
+        data["task_key"] = None
+    elif data.get("task_key") is not None:
+        data["task_key"] = str(data["task_key"])
+
+    # Validate the (now stringified) key against the candidate set. An
+    # out-of-set key on a "task" verdict means the model recognised real work
+    # but assigned a fabricated key — retain it as untracked rather than letting
+    # the downstream guard discard it as overhead.
+    if data["session_type"] == "task" and data.get("task_key") not in valid_keys:
+        data["task_key"] = None
+        data["session_type"] = "untracked"
+        data.setdefault("confidence", 0.65)
+
+    return data
+
+
+def _classify_apple_fm(
+    messages: list[dict[str, str]],
+    valid_keys: "frozenset[str] | set[str]",
+) -> "SessionClassification":
+    """Classify via Apple Foundation Models (non-FSM, JSON parsing with coercion).
+
+    Uses a compact system prompt sized for Apple FM's 4096-token context window.
+    The full _SYSTEM_PROMPT (~4800 tokens) does not fit; _APPLE_FM_SYSTEM_PROMPT
+    covers the essential decision logic in ~500 tokens.
+
+    Apple FM may omit fields. _coerce_apple_fm_result fills missing required
+    fields with sensible defaults before Pydantic validation.
+    """
+    import asyncio
+
+    from apple_fm_sdk import LanguageModelSession  # type: ignore[import]
+
+    # Always use the compact prompt — ignore whatever system message the caller sent.
+    system = _APPLE_FM_SYSTEM_PROMPT
+    user   = next((m["content"] for m in messages if m["role"] == "user"),   "")
+
+    # Truncate to stay within the 4096-token context window.
+    if len(user) > _APPLE_FM_USER_CHARS:
+        log.debug(
+            "run_task_linker_mlx: truncating Apple FM user message %d → %d chars",
+            len(user), _APPLE_FM_USER_CHARS,
+        )
+        user = user[:_APPLE_FM_USER_CHARS]
+
+    user_with_hint = (
+        user
+        + "\n\nRespond with a JSON object matching the schema above. "
+        "Output only valid JSON — no markdown fences, no extra text."
+    )
+
+    async def _run(prompt: str) -> str:
+        session = LanguageModelSession(instructions=system)
+        r = await session.respond(prompt)
+        return getattr(r, "content", r)
+
+    def _parse(text: str) -> "SessionClassification":
+        text = text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        data = json.loads(text)
+        return SessionClassification.model_validate(
+            _coerce_apple_fm_result(data, valid_keys)
+        )
+
+    def _call_apple_fm(prompt: str) -> str:
+        # anyio (used by FastAPI's run_in_threadpool) sets up its own event loop
+        # machinery in its worker threads. asyncio.run() raises
+        # "cannot be called from a running event loop" even inside a threadpool
+        # thread. Spawning a genuinely fresh OS thread with its own event loop
+        # avoids anyio's loop entirely.
+        import concurrent.futures
+        def _in_fresh_thread() -> str:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(_run(prompt))
+            finally:
+                loop.close()
+                asyncio.set_event_loop(None)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            return ex.submit(_in_fresh_thread).result(timeout=60)
+
+    raw = _call_apple_fm(user_with_hint)
+    try:
+        return _parse(raw)
+    except Exception:
+        # One retry: ask the model to complete any missing fields.
+        fix_prompt = (
+            "Your previous JSON was incomplete — it was missing required fields "
+            "(reasoning, category, category_confidence, session_summary). "
+            "Return a complete JSON with ALL fields from the schema:\n" + raw
+        )
+        raw2 = _call_apple_fm(fix_prompt)
+        return _parse(raw2)
+
+
+# ---------------------------------------------------------------------------
+# DB helpers
+# ---------------------------------------------------------------------------
+
+def _fetch_session(
+    con: _sqlite3.Connection, session_id: int
+) -> dict[str, Any] | None:
+    row = con.execute(
+        "SELECT id, app_name, started_at, ended_at, duration_s, session_text,"
+        "       session_text_source, window_titles, category, confidence,"
+        "       session_summary, coding_agent_session_uuid,"
+        "       segment_started_at, sealed_at, summary_source,"
+        "       min_frame_id, max_frame_id, frame_count"
+        " FROM app_sessions WHERE id = ?",
+        (session_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _fetch_recent_ticket_activity(
+    con: _sqlite3.Connection,
+    current_started_at: str,
+    candidate_keys: list[str],
+) -> list[dict[str, Any]]:
+    """The developer's tracked-ticket work in the _CONTINUITY_WINDOW_MIN minutes
+    before the current session, aggregated per ticket → a calibrated continuity
+    prior (NOT a raw session log).
+
+    Returns one entry per ticket worked in the window:
+        {"task_key", "total_s", "sessions", "last_ended_at", "ago_s"}
+    ordered by recency (most-recently-active ticket first). Empty when there is no
+    qualifying recent work — the caller then omits the block entirely rather than
+    asserting a continuity that doesn't exist.
+
+    A session counts only if it is (a) already CLASSIFIED to a ticket
+    (task_session_type='task' — "last classified", never pending/in-flight),
+    (b) confident enough to trust as a prior (task_confidence >=
+    _CONTINUITY_MIN_CONFIDENCE), and (c) mapped to a ticket in the CURRENT
+    candidate set — a prior on a ticket the model can't even pick is pure noise.
+    Windowing is done in Python (fromisoformat) so it's robust to the stored
+    timestamp's timezone/precision; the SQL only does the cheap "strictly before
+    current" + confidence prefilter (consistent ISO format → lexicographic '<' is
+    chronological).
+    """
+    candidates = set(candidate_keys)
+    if not current_started_at or not candidates:
+        return []
+    try:
+        anchor = _dt.datetime.fromisoformat(current_started_at)
+    except (ValueError, TypeError):
+        return []
+    window_start = anchor - _dt.timedelta(minutes=_CONTINUITY_WINDOW_MIN)
+    rows = con.execute(
+        "SELECT task_key, started_at, ended_at, duration_s, task_confidence"
+        " FROM app_sessions"
+        " WHERE started_at < ?"
+        "   AND task_key IS NOT NULL"
+        "   AND task_session_type = 'task'"
+        "   AND task_confidence >= ?"
+        " ORDER BY started_at DESC LIMIT 200",
+        (current_started_at, _CONTINUITY_MIN_CONFIDENCE),
+    ).fetchall()
+
+    agg: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        d = dict(r)
+        tk = d.get("task_key")
+        if tk not in candidates:
+            continue
+        try:
+            s_at = _dt.datetime.fromisoformat(d["started_at"])
+        except (ValueError, TypeError):
+            continue
+        if s_at < window_start:
+            continue  # outside the continuity window
+        try:
+            e_at = _dt.datetime.fromisoformat(d.get("ended_at") or d["started_at"])
+        except (ValueError, TypeError):
+            e_at = s_at
+        entry = agg.get(tk)
+        if entry is None:
+            entry = {"task_key": tk, "total_s": 0.0, "sessions": 0, "last_ended": e_at}
+            agg[tk] = entry
+        entry["total_s"] += float(d.get("duration_s") or 0.0)
+        entry["sessions"] += 1
+        if e_at > entry["last_ended"]:
+            entry["last_ended"] = e_at
+
+    result: list[dict[str, Any]] = []
+    for entry in agg.values():
+        ago_s = max(0.0, (anchor - entry["last_ended"]).total_seconds())
+        result.append(
+            {
+                "task_key":      entry["task_key"],
+                "total_s":       entry["total_s"],
+                "sessions":      entry["sessions"],
+                "last_ended_at": entry["last_ended"].isoformat(),
+                "ago_s":         ago_s,
+            }
+        )
+    result.sort(key=lambda e: e["ago_s"])  # most-recently-active ticket first
+    return result
+
+
+def _local_day(started_at: str) -> str:
+    """The local calendar day (YYYY-MM-DD) of a session's UTC `started_at`.
+
+    `daily_plan.plan_date` is the dev's *local* day (the dashboard stamps it from
+    the browser's local date), but `app_sessions.started_at` is stored UTC. We
+    convert UTC → local here so a session is matched to the plan the dev actually
+    declared for that day. Returns "" on an unparseable timestamp (→ no boost).
+    """
+    if not started_at:
+        return ""
+    try:
+        # `astimezone()` with no arg converts an aware datetime to the host's
+        # local zone — the same zone the dashboard used to compute plan_date.
+        return _dt.datetime.fromisoformat(started_at).astimezone().date().isoformat()
+    except ValueError:
+        return ""
+
+
+def _fetch_plan_focus(con: _sqlite3.Connection, plan_date: str) -> list[str]:
+    """Ordered task_keys the dev CONFIRMED as their focus for `plan_date`.
+
+    Empty (→ no boost, classification proceeds exactly as before) when the day is
+    unconfirmed, explicitly skipped, has no plan rows, or the plan tables don't
+    exist yet (pre-migration-041 DB). This is a ranking signal only — never a
+    filter — so an empty result can only ever cost the boost, never recall.
+    """
+    if not plan_date:
+        return []
+    try:
+        meta = con.execute(
+            "SELECT confirmed_at, skipped FROM daily_plan_meta WHERE plan_date = ?",
+            (plan_date,),
+        ).fetchone()
+        if meta is None or meta["skipped"] or not meta["confirmed_at"]:
+            return []
+        rows = con.execute(
+            "SELECT task_key FROM daily_plan WHERE plan_date = ? ORDER BY position",
+            (plan_date,),
+        ).fetchall()
+        return [r["task_key"] for r in rows]
+    except _sqlite3.OperationalError:
+        return []
+
+
+def _fetch_pm_tasks(
+    con: _sqlite3.Connection, focus_keys: list[str] | None = None
+) -> list[dict[str, Any]]:
+    # Candidate set for classification. Tickets the user explicitly EXCLUDED during
+    # onboarding board-cleanup (pm_task_curation.decision = 'excluded') are dropped
+    # so a cleaned-up dead ticket can never be a classification target. Everything
+    # else flows through, including not-yet-decided `looks_stale` rows — the triage
+    # only *proposes*; nothing is removed without the human's confirmed decision.
+    # LEFT JOIN keeps this safe if curation has no row for a ticket yet.
+    base_cols = (
+        "SELECT t.task_key, t.title,"
+        "       COALESCE(t.description_text,'') AS description_text,"
+        "       COALESCE(t.status_raw,'') AS status_raw,"
+        "       COALESCE(t.is_terminal,0) AS is_terminal,"
+        "       COALESCE(t.issue_type,'') AS issue_type,"
+        "       COALESCE(t.parent_key,'') AS parent_key,"
+        "       COALESCE(t.epic_title,'') AS epic_title,"
+        "       COALESCE(t.sprint_name,'') AS sprint_name,"
+        "       COALESCE(t.tags,'') AS tags"
+        " FROM pm_tasks t"
+    )
+    try:
+        rows = con.execute(
+            base_cols
+            + " LEFT JOIN pm_task_curation c ON c.task_key = t.task_key"
+            " WHERE c.decision IS NULL OR c.decision != 'excluded'",
+        ).fetchall()
+    except _sqlite3.OperationalError:
+        # Pre-migration-038 DB (no pm_task_curation): degrade to the unfiltered
+        # candidate set rather than crashing the whole /classify_sessions call.
+        rows = con.execute(base_cols).fetchall()
+    tasks = [dict(r) for r in rows]
+
+    # Candidate-set policy (see _PLAN_ONLY_CANDIDATES). `focus_keys` are the
+    # tickets the dev CONFIRMED for this session's day (empty when no plan).
+    focus = focus_keys or []
+    if not focus:
+        # No confirmed plan → offer every candidate. Unchanged behaviour for
+        # users who don't use the plan, or days that aren't confirmed yet.
+        # `is_today_focus` is left unset (falsy) on every ticket.
+        return tasks
+
+    order = {key: i for i, key in enumerate(focus)}
+
+    if _PLAN_ONLY_CANDIDATES:
+        # Plan-only: the candidate set IS the confirmed plan, in declared order.
+        # Off-plan work then has no candidate to match, so the model returns
+        # `untracked` (the intended holding state) instead of being shoehorned
+        # onto an unrelated ticket.
+        in_plan = [t for t in tasks if t["task_key"] in order]
+        # GUARD: never return an empty candidate set. If the confirmed plan's
+        # tickets are all absent from the live pool (curation-excluded, closed,
+        # or not yet synced), fall back to the full set — an empty list would
+        # force EVERY session that day to `untracked`.
+        if not in_plan:
+            log.warning(
+                "plan-only candidates: confirmed plan has no live candidate "
+                "tickets (focus=%s) — falling back to full candidate set",
+                focus,
+            )
+            return tasks
+        for t in in_plan:
+            t["is_today_focus"] = True
+        in_plan.sort(key=lambda t: order[t["task_key"]])
+        return in_plan
+
+    # Legacy boost-never-filter: tag the declared tickets and float them to the
+    # top in declared order, but keep every other candidate so recall is
+    # untouched. A focus key not in `tasks` (e.g. excluded by curation) simply
+    # has no effect — we never resurrect a filtered-out ticket.
+    for t in tasks:
+        t["is_today_focus"] = t["task_key"] in order
+    tasks.sort(key=lambda t: (0, order[t["task_key"]]) if t.get("is_today_focus") else (1, 0))
+    return tasks
+
+
+def _get_tokenizer() -> Any:
+    """The active model's tokenizer: the resident one if loaded, else a
+    weights-free transformers load from the local HF cache (cached). The model's
+    chat template matches what outlines/mlx_lm feed the model, so rendering and
+    token counts derived here are exact. Raises if no tokenizer is available.
+    """
+    model_id = _resolve_model_id()
+    tok = _tokenizer_cache.get(model_id)
+    if tok is None:
+        from transformers import AutoTokenizer
+        tok = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+        _tokenizer_cache[model_id] = tok
+    return tok
+
+
+def _render_model_prompt(messages: list[dict[str, str]]) -> str | None:
+    """EXACT text fed to the model: messages through the tokenizer's chat template
+    (role markers + special tokens), matching what outlines feeds it. None on
+    failure / Apple FM path so the caller can fall back to a plain rendering."""
+    try:
+        return _get_tokenizer().apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort observability
+        log.debug("run_task_linker_mlx: chat-template render failed: %s", exc)
+        return None
+
+
+def _count_prompt_tokens(text: str) -> int | None:
+    """Exact prompt token count — deterministic tokenization, so it equals MLX's
+    reported prompt_tokens (output tokens, by contrast, come from MLX's stats, not
+    a re-encode). None if no tokenizer is available (Apple FM path)."""
+    try:
+        return len(_get_tokenizer().encode(text))
+    except Exception as exc:  # noqa: BLE001 — best-effort observability
+        log.debug("run_task_linker_mlx: prompt token count failed: %s", exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Core classification
+# ---------------------------------------------------------------------------
+
+def _error_result(
+    session_id: int, reason: str, elapsed: float, method: str
+) -> dict[str, Any]:
+    return {
+        "session_id":           session_id,
+        "task_key":             None,
+        "confidence":           0.0,
+        "category":             "idle_personal",
+        "category_confidence":  0.0,
+        "session_type":         "overhead",
+        "reasoning":            reason,
+        "method":              method,
+        "dimensions":          {},
+        "session_summary":     "",
+        "elapsed_s":           elapsed,
+    }
+
+
+def _classify_one(
+    session_id: int,
+    con: _sqlite3.Connection,
+) -> dict[str, Any]:
+    # ── db_fetch ──────────────────────────────────────────────────────────────
+    with tracer.start_as_current_span("db_fetch") as db_span:
+        session_raw = _fetch_session(con, session_id)
+        if session_raw is None:
+            db_span.set_attribute("pm_tasks_count", 0)
+            db_span.set_attribute("recent_continuity_tickets", 0)
+            db_span.add_event("session_not_found", {"session_id": session_id})
+            db_span.set_status(StatusCode.ERROR, f"session {session_id} not found in DB")
+            return _error_result(
+                session_id, f"session {session_id} not found in DB", 0.0, "mlx_error"
+            )
+
+        plan_date  = _local_day(session_raw.get("started_at") or "")
+        focus_keys = _fetch_plan_focus(con, plan_date)
+        pm_tasks   = _fetch_pm_tasks(con, focus_keys)
+        # Continuity prior needs the candidate set up front (it only names tickets
+        # the model can actually pick), so compute candidate_keys before fetching.
+        candidate_keys = [t["task_key"] for t in pm_tasks]
+        recent     = _fetch_recent_ticket_activity(
+            con, session_raw.get("started_at") or "", candidate_keys
+        )
+
+        session_text = session_raw.get("session_text") or ""
+        # Coding-agent rows (Claude Code / Codex) carry the full transcript in
+        # session_text and a concise, high-quality prose summary in
+        # session_summary. Classify on the summary, not the multi-MB transcript:
+        # cheaper, faster, and it's already the distilled "what was done".
+        if session_raw.get("coding_agent_session_uuid") and (session_raw.get("session_summary") or "").strip():
+            session_text = session_raw["session_summary"]
+
+        # db_fetch is the SOLE source of "what the model was given" — recorded
+        # once, as attributes (no duplicate events repeating these numbers on
+        # build_prompt). `candidate_task_keys` is the highest-value debug signal:
+        # it answers "was the right ticket even offered, and where was it ranked?"
+        # without anyone having to read the prompt. Ranked order is preserved
+        # (today's-focus keys float to the front in _fetch_pm_tasks).
+        # candidate_keys computed above (the continuity fetch needs it).
+        recent_task_keys = [r.get("task_key") for r in recent if r.get("task_key")]
+        # Session identity + the app_sessions row metadata, so a trace is
+        # self-contained — you know WHICH session and its key fields (app, window
+        # titles, time span) without opening meridian.db.
+        db_span.set_attribute("session_id", session_id)
+        db_span.set_attribute("app_name", str(session_raw.get("app_name") or ""))
+        db_span.set_attribute("started_at", str(session_raw.get("started_at") or ""))
+        db_span.set_attribute("ended_at", str(session_raw.get("ended_at") or ""))
+        try:
+            _wts = json.loads(session_raw.get("window_titles") or "[]")
+            _wt_names = [str(w.get("window_name", "")) for w in _wts if w.get("window_name")]
+        except (TypeError, ValueError):
+            _wt_names = []
+        db_span.set_attribute("window_titles", " | ".join(_wt_names) if _wt_names else "-")
+        db_span.set_attribute("window_title_count", len(_wt_names))
+        db_span.set_attribute("duration_s", float(session_raw.get("duration_s") or 0.0))
+        db_span.set_attribute("text_source", str(session_raw.get("session_text_source") or ""))
+        db_span.set_attribute("session_text_chars", len(session_text))
+        # Frame-range attribution: the contiguous screenpipe frame_id window this
+        # session was built from (min..max, inclusive) plus the kept frame count.
+        # Answers "which capture window fed this classification" — the raw frames
+        # live in screenpipe keyed by these ids. Coding-agent rows have no frames
+        # (min/max = 0), so guard on a real range before stamping.
+        _min_fid = session_raw.get("min_frame_id")
+        _max_fid = session_raw.get("max_frame_id")
+        if isinstance(_min_fid, int) and isinstance(_max_fid, int) and _max_fid > 0:
+            db_span.set_attribute("min_frame_id", _min_fid)
+            db_span.set_attribute("max_frame_id", _max_fid)
+            db_span.set_attribute("frame_count", int(session_raw.get("frame_count") or 0))
+        # Coding-agent provenance: which agent conversation + segment this row came
+        # from, when the indexer sealed it, and who wrote the summary the model is
+        # classifying on. Only present on coding-agent rows (Claude Code / Codex /
+        # …); guard on coding_agent_session_uuid so screen-capture sessions stay clean.
+        _ca_uuid = session_raw.get("coding_agent_session_uuid")
+        if _ca_uuid:
+            db_span.set_attribute("coding_agent_session_uuid", str(_ca_uuid))
+            db_span.set_attribute("segment_started_at", str(session_raw.get("segment_started_at") or ""))
+            db_span.set_attribute("sealed_at", str(session_raw.get("sealed_at") or ""))
+            db_span.set_attribute("summary_source", str(session_raw.get("summary_source") or ""))
+        db_span.set_attribute("pm_tasks_count", len(pm_tasks))
+        db_span.set_attribute("today_focus_count", len(focus_keys))
+        # Continuity prior: how many tickets the dev worked in the prior window,
+        # and across how many classified sessions (0/0 when there's no qualifying
+        # recent work → the block is omitted from the prompt).
+        db_span.set_attribute("recent_continuity_tickets", len(recent))
+        db_span.set_attribute(
+            "recent_continuity_sessions", sum(int(r.get("sessions", 0) or 0) for r in recent)
+        )
+        db_span.set_attribute("candidate_task_keys", ", ".join(candidate_keys) if candidate_keys else "-")
+        db_span.set_attribute("today_focus_keys", ", ".join(focus_keys) if focus_keys else "-")
+        # Which candidate-set policy actually applied for this session, so a trace
+        # explains the candidate list without re-deriving it:
+        #   all               → no confirmed plan; every open ticket offered
+        #   plan_only         → narrowed to the confirmed plan
+        #   plan_fallback_all → plan confirmed but its tickets weren't live → fell back
+        #   boost             → legacy boost-never-filter (flag off)
+        if not focus_keys:
+            candidate_mode = "all"
+        elif not _PLAN_ONLY_CANDIDATES:
+            candidate_mode = "boost"
+        elif pm_tasks and all(t.get("is_today_focus") for t in pm_tasks):
+            candidate_mode = "plan_only"
+        else:
+            candidate_mode = "plan_fallback_all"
+        db_span.set_attribute("candidate_mode", candidate_mode)
+        db_span.set_attribute("recent_task_keys", ", ".join(recent_task_keys) if recent_task_keys else "-")
+
+    session = {
+        "id":                  session_id,
+        "app_name":            session_raw.get("app_name"),
+        "started_at":          session_raw.get("started_at", ""),
+        "ended_at":            session_raw.get("ended_at", ""),
+        "duration_s":          session_raw.get("duration_s"),
+        "session_text":        session_text,
+        "session_text_source": session_raw.get("session_text_source", "unknown"),
+        "window_titles":       json.loads(session_raw.get("window_titles") or "[]"),
+        "category":            session_raw.get("category"),
+        "confidence":          session_raw.get("confidence", 0.0),
+        "audio_snippets":      [],
+    }
+    valid_keys = {t["task_key"] for t in pm_tasks}
+
+    # ── classifier_input ────────────────────────────────────────────────────────
+    # The single drill-down span for "exactly what the classifier was asked".
+    # It carries the COMPLETE input, byte-for-byte as handed to the model:
+    #   • system_prompt — full system context + the task-classifier SKILL
+    #   • llm_input     — full user message: the input session block, the 30-min
+    #                     per-ticket continuity prior, and the ranked candidate tickets
+    # Both are captured POST-assembly, so any cap already applied while building
+    # the prompt (e.g. SESSION_TEXT_CAP truncating the OCR excerpt) is reflected
+    # here EXACTLY as the model saw it — never the pre-cap original. Concatenating
+    # system_prompt + llm_input reproduces the model input verbatim.
+    # (MLX path: system+user are passed verbatim to the model. The Apple FM
+    # fallback rewrites these inside _classify_apple_fm — compact system, user
+    # capped at ~8k chars — so on that path the on-span text is the assembled
+    # input, not the rewritten one.)
+    with tracer.start_as_current_span("classifier_input") as bp_span:
+        user_message = build_user_message(
+            session, pm_tasks, recent_activity=recent, now_iso=session.get("started_at")
+        )
+        messages = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user",   "content": user_message},
+        ]
+        # `llm_input` on the PARENT span is the input EXACTLY as sent to the model:
+        # the two messages run through the tokenizer's chat template (role markers
+        # + special tokens), i.e. the literal string the model decodes from. This
+        # powers OO's "Input" panel, so one click shows the real wire prompt.
+        # If the template can't be rendered (e.g. Apple FM path), fall back to a
+        # plain system+user rendering so the panel is never empty. Content is
+        # verbatim and post-cap either way. The child spans below break the same
+        # input into its readable pieces.
+        rendered = _render_model_prompt(messages)
+        full_input = rendered if rendered is not None else (
+            "===== SYSTEM MESSAGE (role: system) =====\n"
+            f"{_SYSTEM_PROMPT}\n\n"
+            "===== USER MESSAGE (role: user) =====\n"
+            f"{user_message}"
+        )
+        bp_span.set_attribute("prompt_chars", len(user_message))
+        bp_span.set_attribute("system_prompt_chars", len(_SYSTEM_PROMPT))
+        bp_span.set_attribute("full_input_chars", len(full_input))
+        bp_span.set_attribute("chat_template_rendered", rendered is not None)
+        bp_span.set_attribute("llm_input", full_input)
+        # Total input size in tokens (OTel GenAI semantic convention). Tokenizing
+        # the prompt is deterministic, so this equals MLX's reported input tokens.
+        _ptoks = _count_prompt_tokens(full_input)
+        if _ptoks is not None:
+            bp_span.set_attribute("gen_ai.usage.input_tokens", _ptoks)
+
+        # Each input component is emitted as its OWN child span, so in the OO
+        # waterfall `classifier_input` expands into clickable nodes — open any one
+        # to read just that section. Each carries the EXACT rendered text the
+        # model saw for that piece (same formatters/order as llm_input, post-cap),
+        # stored under `llm_input` so OO renders it in that node's Input panel.
+        def _input_part(name: str, text: str, **extra: Any) -> None:
+            with tracer.start_as_current_span(name) as part:
+                part.set_attribute("llm_input", text)
+                part.set_attribute("chars", len(text))
+                for _k, _v in extra.items():
+                    part.set_attribute(_k, _v)
+
+        _input_part("system_prompt", _SYSTEM_PROMPT)       # classifier skill + context
+        _input_part("recent_context",
+                    _format_continuity(recent, session.get("started_at")))   # 30-min continuity prior
+        _input_part("session_block", _format_session(session))           # the input session
+        _input_part("candidate_tickets", _format_candidates(pm_tasks),   # ranked candidates
+                    ticket_count=len(pm_tasks))
+
+    # `messages` (built above for the chat-template render) is reused verbatim by
+    # inference below — the same object that gets classified.
+
+    # ── llm_inference ─────────────────────────────────────────────────────────
+    t0 = time.time()
+    with tracer.start_as_current_span("llm_inference") as llm_span:
+        model_id = _resolve_model_id()
+        # OTel GenAI semantic conventions — the request/operation attributes live
+        # on the inference (operation) span; usage/response attrs are on
+        # classifier_output, the input token count on classifier_input.
+        llm_span.set_attribute("gen_ai.operation.name", "chat")
+        llm_span.set_attribute("gen_ai.provider.name", "mlx")
+        llm_span.set_attribute("gen_ai.request.model", model_id)
+        llm_span.set_attribute("gen_ai.request.max_tokens", _MAX_TOKENS)
+        llm_span.set_attribute("gen_ai.request.temperature", _TEMPERATURE)
+
+        # Apple Intelligence path — no in-process MLX model; JSON parsing with retry.
+        try:
+            from agents.llm_selector import APPLE_INTELLIGENCE_ID
+            _use_apple_fm = model_id == APPLE_INTELLIGENCE_ID
+        except Exception:
+            _use_apple_fm = False
+
+        gen_stats: Any = None  # MLX GenerationResponse (token counts + tok/s), mlx path only
+        prompt_cache_hit = False        # did we reuse the cached system+skill prefix?
+        prompt_cache_hit_tokens = 0     # prefix tokens served from cache (0 = full reprocess)
+        prompt_tokens_processed = 0     # tokens actually run through the model this call
+        try:
+            if _use_apple_fm:
+                result = _classify_apple_fm(messages, valid_keys)
+                raw = result.model_dump_json()
+            else:
+                from mlx_lm import stream_generate
+                from mlx_lm.sample_utils import make_sampler
+                from outlines.inputs import Chat
+
+                with model_session() as model:
+                    sampler = make_sampler(temp=_TEMPERATURE)
+                    try:
+                        # Drive mlx_lm.stream_generate directly with outlines' FSM
+                        # logits processor — identical constrained decoding to the
+                        # high-level model(...) call, but we KEEP MLX's own
+                        # GenerationResponse stats (prompt/generation token counts +
+                        # tok/s + finish_reason) instead of discarding them, AND we
+                        # control the prompt_cache so the static system+skill prefix
+                        # is reused across sessions (see _prompt_cache above). The
+                        # FSM logits processor is compiled ONCE per model and cached
+                        # (the ~6 s schema compile must not run per session);
+                        # _get_constrained_logits_processors resets its per-sequence
+                        # state before each use. We tokenize the chat prompt ourselves
+                        # (token ids, not a string) so we can do the prefix arithmetic
+                        # the KV cache needs.
+                        logits_processors = _get_constrained_logits_processors(model)
+                        full_ids = _get_tokenizer().apply_chat_template(
+                            messages, tokenize=True, add_generation_prompt=True
+                        )
+                        prompt_tokens_processed = len(full_ids)
+                        raw, gen_stats, prompt_cache_hit_tokens = _generate_constrained(
+                            model, full_ids, logits_processors, sampler
+                        )
+                        prompt_cache_hit = prompt_cache_hit_tokens > 0
+                        prompt_tokens_processed = len(full_ids) - prompt_cache_hit_tokens
+                    except Exception as stream_exc:  # noqa: BLE001
+                        # Fallback to the high-level call if outlines' internals
+                        # shift — text only, no stats — so classification never
+                        # breaks just because the metadata path did. Logged (not
+                        # silent) so the regression is visible. The shared prefix
+                        # cache may be mid-mutation, so drop it (next call rebuilds).
+                        log.warning(
+                            "run_task_linker_mlx: stream-stats path failed (%s) — "
+                            "falling back to model(...) without token stats",
+                            stream_exc,
+                        )
+                        with _prompt_cache_lock:
+                            _invalidate_prompt_cache()
+                        gen_stats = None
+                        prompt_cache_hit = False
+                        raw = model(
+                            Chat(messages),
+                            output_type=SessionClassification,
+                            max_tokens=_MAX_TOKENS,
+                            sampler=sampler,
+                            verbose=False,
+                        )
+        except Exception as exc:
+            elapsed = time.time() - t0
+            outcome = "apple_fm_error" if _use_apple_fm else "mlx_error"
+            llm_span.set_attribute("outcome", outcome)
+            llm_span.set_attribute("elapsed_s", elapsed)
+            llm_span.set_status(StatusCode.ERROR, str(exc))
+            llm_span.add_event("inference_error", {
+                "error_type":    type(exc).__name__,
+                "error_message": str(exc)[:500],
+                "elapsed_s":     elapsed,
+            })
+            log.warning(
+                "run_task_linker_mlx: inference failed for session %d: %s",
+                session_id, exc,
+            )
+            return _error_result(
+                session_id, f"inference error: {exc}", elapsed, outcome
+            )
+
+        elapsed = time.time() - t0
+        outcome = "apple_fm" if _use_apple_fm else "mlx_direct"
+        llm_span.set_attribute("outcome", outcome)
+        llm_span.set_attribute("elapsed_s", elapsed)
+        # Prompt-cache effectiveness: how much of the static system+skill prefix
+        # was served from the persistent KV cache vs reprocessed this call. A
+        # warm hit means ~3.1k prefix tokens skipped (the per-session suffix is
+        # all that's actually run through the model).
+        if not _use_apple_fm:
+            llm_span.set_attribute("prompt_cache_hit", prompt_cache_hit)
+            llm_span.set_attribute("prompt_cache_hit_tokens", prompt_cache_hit_tokens)
+            llm_span.set_attribute("prompt_tokens_processed", prompt_tokens_processed)
+        # MLX's OWN generation metadata (token counts, throughput, finish_reason)
+        # is carried by `gen_stats` and surfaced on the classifier_output span
+        # below, co-located with the output. raw size/content also lives there.
+
+    log.debug(
+        "run_task_linker_mlx: session %d raw (%.1fs): %.200s",
+        session_id, elapsed, raw,
+    )
+
+    # ── classifier_output ─────────────────────────────────────────────────────
+    with tracer.start_as_current_span("classifier_output") as pr_span:
+        # `llm_output` is the COMPLETE raw model output — never truncated, so you
+        # can see EXACTLY what came out. Named `llm_output` (mirroring the parent
+        # `llm_input`) so OpenObserve renders it in the span's "Output" panel. The
+        # verdict (task_key/confidence/session_type/category) lives on the root
+        # classify_session span, so it isn't repeated here.
+        pr_span.set_attribute("raw_chars", len(raw))
+        pr_span.set_attribute("llm_output", raw)
+        # MLX's OWN generation metadata, co-located with the output it describes —
+        # exact token counts + throughput as REPORTED BY the model (not
+        # re-tokenized by us), under the OTel GenAI semantic conventions. tok/s and
+        # peak memory have no standard attribute name, so they stay custom. None on
+        # the Apple FM path, which has no MLX stats.
+        if gen_stats is not None:
+            # These stats are TELEMETRY, never load-bearing — so a None/renamed/
+            # non-numeric field (early-truncated stream, an mlx_lm field rename)
+            # must NOT raise out of here and fail the whole classify batch (the
+            # server's _classify_all loop doesn't wrap the per-session call). Coerce
+            # defensively and drop any stat that won't convert.
+            try:
+                # `gen_stats.prompt_tokens` is the tokens the model actually
+                # PROCESSED this call — with a warm prefix cache that's only the
+                # per-session suffix, not the full input. gen_ai.usage.input_tokens
+                # must reflect the FULL logical input, so add back the cached prefix
+                # tokens; the processed/cached split lives on the llm_inference span.
+                _in = int(gen_stats.prompt_tokens) + int(prompt_cache_hit_tokens)
+                _out = int(gen_stats.generation_tokens)
+                pr_span.set_attribute("gen_ai.usage.input_tokens", _in)
+                pr_span.set_attribute("gen_ai.usage.output_tokens", _out)
+                pr_span.set_attribute("gen_ai.usage.total_tokens", _in + _out)
+                pr_span.set_attribute("gen_ai.response.model", _resolve_model_id())
+                pr_span.set_attribute("prompt_tps", round(float(gen_stats.prompt_tps), 2))
+                pr_span.set_attribute("generation_tps", round(float(gen_stats.generation_tps), 2))
+                pr_span.set_attribute("peak_memory_gb", round(float(gen_stats.peak_memory), 2))
+                if gen_stats.finish_reason is not None:
+                    pr_span.set_attribute(
+                        "gen_ai.response.finish_reason", str(gen_stats.finish_reason)
+                    )
+            except (TypeError, ValueError, AttributeError) as exc:
+                log.warning("classify: dropping unparseable gen_stats: %s", exc)
+
+        # Both paths converge on a JSON string in `raw`; parse to SessionClassification.
+        # Apple FM already validated once inside _classify_apple_fm; re-parsing from
+        # model_dump_json() is a no-op that keeps the two paths uniform.
+        try:
+            result = SessionClassification.model_validate_json(raw)
+        except Exception as exc:
+            pr_span.set_attribute("outcome", "schema_error")
+            pr_span.set_status(StatusCode.ERROR, str(exc))
+            # Full raw output is already on `llm_output_raw`; the event only adds
+            # the validation error message.
+            pr_span.add_event("parse_failure", {"error": str(exc)[:300]})
+            log.warning(
+                "run_task_linker_mlx: schema validation failed for session %d: %s",
+                session_id, exc,
+            )
+            return _error_result(
+                session_id, f"schema validation error: {exc}", elapsed, "mlx_parse_error"
+            )
+
+        # Semantic guard: task_key must be one of the supplied candidates.
+        task_key = result.task_key
+        if task_key is not None and task_key not in valid_keys:
+            pr_span.set_attribute("outcome", "invalid_task_key")
+            pr_span.set_status(StatusCode.ERROR, f"unknown task_key {task_key!r}")
+            pr_span.add_event("parse_failure", {
+                "error": f"model returned unknown task_key {task_key!r}",
+            })
+            log.warning(
+                "run_task_linker_mlx: model returned unknown task_key %r for session %d",
+                task_key, session_id,
+            )
+            return _error_result(
+                session_id,
+                f"model returned unknown task_key {task_key!r}",
+                elapsed,
+                "mlx_parse_error",
+            )
+
+        # Clamp confidence to [0, 1] in case the model sneaks past schema bounds.
+        # The routing VERDICT (task_key/confidence/session_type/category) is the
+        # one-line answer and is promoted onto the root classify_session span by
+        # _annotate_classification_span — not repeated here.
+        confidence = max(0.0, min(1.0, result.confidence))
+        pr_span.set_attribute("outcome", "ok")
+
+        # Each meaningful output field as its OWN child span, mirroring
+        # classifier_input — so classifier_output expands into clickable nodes.
+        # These carry the rich, readable output the model produced (the verdict
+        # itself stays on the root, above):
+        #   • reasoning       — the chain-of-thought that drove the verdict
+        #   • category        — the category + its confidence
+        #   • dimensions       — the inferred activity tags
+        #   • session_summary  — the PM-facing prose deliverable
+        def _output_part(name: str, text: str, **extra: Any) -> None:
+            with tracer.start_as_current_span(name) as part:
+                part.set_attribute("llm_output", text)
+                part.set_attribute("chars", len(text))
+                for _k, _v in extra.items():
+                    part.set_attribute(_k, _v)
+
+        _output_part("reasoning", result.reasoning)
+        _output_part(
+            "category", result.category,
+            category=result.category,
+            category_confidence=max(0.0, min(1.0, result.category_confidence)),
+        )
+        _output_part(
+            "dimensions", json.dumps(result.dimensions, default=str),
+            dimension_keys=", ".join(sorted(result.dimensions.keys())) or "-",
+        )
+        _output_part("session_summary", result.session_summary)
+
+    return {
+        "session_id":           session_id,
+        "task_key":             task_key,
+        "confidence":           confidence,
+        "category":             result.category,
+        "category_confidence":  max(0.0, min(1.0, result.category_confidence)),
+        "session_type":         result.session_type,
+        "reasoning":            result.reasoning,
+        "method":              outcome,
+        "dimensions":          result.dimensions,
+        "session_summary":     result.session_summary,
+        "elapsed_s":           elapsed,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Run log — one JSONL file per invocation written to ~/.meridian/logs/mlx/
+# Each line is a full record: session inputs + raw model output + final result.
+# ---------------------------------------------------------------------------
+
+def _open_run_log(db_path: str) -> "tuple[Path, Any]":
+    """Create the run log file and return (log_path, file_handle)."""
+    import datetime
+
+    ts = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+    log_dir = _SERVICES_DIR / "logs" / "mlx"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"run_{ts}.jsonl"
+    return log_path, log_path.open("w", encoding="utf-8")
+
+
+# `method` values that mean the model produced a usable classification.
+# Anything else is an error path the dashboard surfaces under errors-only. The
+# real error `method` values emitted by `_error_result` are `mlx_parse_error`
+# (schema validation / unknown task_key — those names are child-span `outcome`
+# attributes, NOT methods) and `mlx_error` (inference failure / session-not-found).
+_SUCCESS_METHODS = {"mlx_direct", "apple_fm"}
+
+
+def _annotate_classification_span(result: dict[str, Any]) -> None:
+    """Promote the classification result onto the enclosing `classify_session`
+    span so each session is ONE self-describing row in OpenObserve — filterable
+    by session_id / session_type / task_key / is_error without joining the child
+    spans. Both the server and CLI entry points wrap the call in a
+    `classify_session` span, so annotating the current span here covers both.
+    """
+    span = trace.get_current_span()
+    if not span.is_recording():
+        return
+    method = str(result.get("method", ""))
+    task_key = result.get("task_key")
+    is_error = method not in _SUCCESS_METHODS
+    span.set_attribute("session_id", int(result.get("session_id", 0)))
+    span.set_attribute("task_key", task_key or "-")
+    span.set_attribute("has_task", task_key is not None)
+    span.set_attribute("session_type", str(result.get("session_type", "")))
+    span.set_attribute("category", str(result.get("category", "")))
+    span.set_attribute("confidence", float(result.get("confidence", 0.0)))
+    span.set_attribute(
+        "category_confidence", float(result.get("category_confidence", 0.0))
+    )
+    span.set_attribute("method", method)
+    span.set_attribute("elapsed_s", float(result.get("elapsed_s", 0.0)))
+    span.set_attribute("is_error", is_error)
+    if is_error:
+        span.set_status(StatusCode.ERROR, str(result.get("reasoning", method))[:300])
+
+
+def _classify_one_logged(
+    session_id: int,
+    con: _sqlite3.Connection,
+    run_log: Any,
+) -> dict[str, Any]:
+    """Classify one session, marking the span is_error=true on ANY failure.
+
+    Wraps the inner worker so an UNHANDLED exception (a sqlite read error,
+    malformed window_titles JSON, …) still stamps is_error=true + ERROR status on
+    the enclosing classify_session span before propagating — otherwise the
+    dashboard's errors-only table (which filters is_error='true') silently misses
+    exactly the crashes an operator opens it to find. Handled failures already
+    return _error_result dicts that _annotate_classification_span marks.
+    """
+    try:
+        return _classify_one_logged_inner(session_id, con, run_log)
+    except Exception as exc:  # noqa: BLE001 — annotate, then re-raise unchanged
+        span = trace.get_current_span()
+        if span.is_recording():
+            span.set_attribute("session_id", int(session_id))
+            span.set_attribute("is_error", True)
+            span.set_attribute("method", "mlx_error")
+            span.set_status(StatusCode.ERROR, str(exc)[:300])
+        log.exception(
+            "run_task_linker_mlx: unhandled error classifying session %d", session_id
+        )
+        raise
+
+
+def _classify_one_logged_inner(
+    session_id: int,
+    con: _sqlite3.Connection,
+    run_log: Any,
+) -> dict[str, Any]:
+    """Classify one session and append a full record to the run log."""
+    # Gather inputs before classification so we can log them even on error.
+    session_raw = _fetch_session(con, session_id)
+    focus_keys = _fetch_plan_focus(con, _local_day(session_raw.get("started_at") or "")) if session_raw else []
+    pm_tasks = _fetch_pm_tasks(con, focus_keys) if session_raw else []
+    recent = (
+        _fetch_recent_ticket_activity(
+            con, session_raw.get("started_at") or "", [t["task_key"] for t in pm_tasks]
+        )
+        if session_raw
+        else []
+    )
+
+    if session_raw:
+        user_message = build_user_message(
+            {
+                "id":                  session_id,
+                "app_name":            session_raw.get("app_name"),
+                "started_at":          session_raw.get("started_at", ""),
+                "ended_at":            session_raw.get("ended_at", ""),
+                "duration_s":          session_raw.get("duration_s"),
+                "session_text":        session_raw.get("session_text", ""),
+                "session_text_source": session_raw.get("session_text_source", "unknown"),
+                "window_titles":       json.loads(session_raw.get("window_titles") or "[]"),
+                "category":            session_raw.get("category"),
+                "confidence":          session_raw.get("confidence", 0.0),
+                "audio_snippets":      [],
+            },
+            pm_tasks,
+            recent_activity=recent,
+            now_iso=session_raw.get("started_at", ""),
+        )
+    else:
+        user_message = ""
+
+    result = _classify_one(session_id, con)
+
+    record = {
+        "session_id":    session_id,
+        "session_raw":   dict(session_raw) if session_raw else None,
+        "pm_task_count": len(pm_tasks),
+        "pm_tasks":      pm_tasks,
+        "recent_count":  len(recent),
+        "recent":        recent,
+        "user_message":  user_message,
+        "system_prompt": _SYSTEM_PROMPT,
+        "result":        result,
+    }
+    run_log.write(json.dumps(record, default=str) + "\n")
+    run_log.flush()
+    # Promote app_name onto the classify_session span (the one row-per-session
+    # span the dashboards query), so app name is a filterable column there — not
+    # just on the child db_fetch span. session_raw is the DB row; current span
+    # here is classify_session (db_fetch's child span has already closed).
+    if session_raw:
+        _cs = trace.get_current_span()
+        if _cs.is_recording():
+            _cs.set_attribute("app_name", str(session_raw.get("app_name") or ""))
+    _annotate_classification_span(result)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    try:
+        payload = json.loads(sys.stdin.read())
+    except (json.JSONDecodeError, ValueError) as exc:
+        log.error("run_task_linker_mlx: malformed stdin JSON: %s", exc)
+        sys.exit(1)
+
+    session_ids: list[int] = payload.get("session_ids", [])
+    db_path: str = payload.get("meridian_db", "")
+    traceparent: str | None = payload.get("traceparent")
+
+    if not db_path:
+        log.error("run_task_linker_mlx: meridian_db path is empty")
+        sys.exit(1)
+
+    # Canonicalize and restrict to ~/.meridian/ to prevent path traversal.
+    try:
+        canonical = Path(db_path).expanduser().resolve()
+    except (OSError, ValueError) as exc:
+        log.error("run_task_linker_mlx: invalid db path: %s", exc)
+        sys.exit(1)
+    allowed_root = Path.home() / ".meridian"
+    if not str(canonical).startswith(str(allowed_root) + "/") and canonical != allowed_root:
+        log.error(
+            "run_task_linker_mlx: db path %s is outside allowed directory %s",
+            canonical, allowed_root,
+        )
+        sys.exit(1)
+    db_path = str(canonical)
+
+    if not Path(db_path).exists():
+        log.error("run_task_linker_mlx: db file does not exist: %s", db_path)
+        sys.exit(1)
+
+    if not session_ids:
+        log.info("run_task_linker_mlx: no session_ids provided, nothing to do")
+        sys.stdout.write(json.dumps({"results": []}) + "\n")
+        sys.stdout.flush()
+        return
+
+    log.info("run_task_linker_mlx: %d sessions, db=%s", len(session_ids), db_path)
+
+    ctx = observability.extract_parent_context(traceparent)
+    with tracer.start_as_current_span("run_task_linker_mlx", context=ctx) as root_span:
+        root_span.set_attribute("session_count", len(session_ids))
+        root_span.set_attribute("db_path", Path(db_path).name)
+
+        run_log_path, run_log_file = _open_run_log(db_path)
+        log.info("run_task_linker_mlx: writing run log to %s", run_log_path)
+
+        con = _sqlite3.connect(db_path)
+        con.row_factory = _sqlite3.Row
+        try:
+            results: list[dict[str, Any]] = []
+            for sid in session_ids:
+                with tracer.start_as_current_span("classify_session"):
+                    # _classify_one_logged enriches this span with the full
+                    # result (session_id, task_key, session_type, is_error, …).
+                    log.info("run_task_linker_mlx: classifying session %d", sid)
+                    result = _classify_one_logged(sid, con, run_log_file)
+                    results.append(result)
+                    log.info(
+                        "run_task_linker_mlx: session_id=%d task_key=%s "
+                        "session_type=%s elapsed_s=%.2f",
+                        result["session_id"],
+                        result["task_key"],
+                        result["session_type"],
+                        result["elapsed_s"],
+                    )
+        finally:
+            con.close()
+            run_log_file.close()
+
+        root_span.set_attribute("results_count", len(results))
+        sys.stdout.write(json.dumps({"results": results}) + "\n")
+        sys.stdout.flush()
+
+    observability.shutdown()
+
+
+if __name__ == "__main__":
+    main()

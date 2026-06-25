@@ -1,0 +1,33 @@
+# meridian — hermes AIAgent configuration
+# Generated from hermes-config/config.yaml by scripts/setup-hermes.sh
+# Do NOT edit .hermes/config.yaml directly — edit this template and re-run setup.
+
+model:
+  provider: ollama-cloud
+  default: mlx-community/Qwen3.5-9B-OptiQ-4bit
+  base_url: http://127.0.0.1:12000/v1
+  context_length: 131072
+
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200
+  user_char_limit: 1375
+
+skills:
+  external_dirs:
+    - __SKILLS_DIR__
+
+agent:
+  max_turns: 5
+  api_max_retries: 2
+  reasoning_effort: medium
+
+context:
+  engine: compressor
+
+compression:
+  enabled: true
+  threshold: 0.50
+  target_ratio: 0.3
+  protect_last_n: 10

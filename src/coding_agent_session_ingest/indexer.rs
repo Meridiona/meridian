@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use chrono::{DateTime, Local, Timelike, Utc};
+use chrono::{DateTime, Local, Utc};
 use sqlx::SqlitePool;
 use tokio::sync::{watch, Notify};
 
@@ -31,12 +31,6 @@ use super::segment::{
 
 const DEFAULT_POLL_INTERVAL_S: u64 = 600;
 const DEFAULT_SEAL_IDLE_S: i64 = 3600;
-/// Grace (s) past a clock-hour boundary before sealing that hour's coding row.
-/// Absorbs JSONL write-lag and clock skew so an exchange finishing at HH:59:5x
-/// is captured before the hour seals. The indexer also wakes at HH:00 + this so
-/// the just-finished hour seals — and its worklog can run — within ~this many
-/// seconds of the boundary, instead of up to a full poll interval later.
-const DEFAULT_SEAL_HOUR_GRACE_S: i64 = 90;
 /// Slack (s) on the mtime-vs-stored-ended_at change check: absorbs clock skew
 /// and ISO truncation so an unchanged file isn't needlessly re-parsed.
 const CHANGE_SLACK_SECS: f64 = 5.0;
@@ -48,7 +42,6 @@ pub struct IndexerConfig {
     pub codex_sessions_dir: PathBuf,
     pub poll_interval_secs: u64,
     pub seal_idle_seconds: i64,
-    pub seal_hour_grace_seconds: i64,
 }
 
 impl IndexerConfig {
@@ -66,8 +59,6 @@ impl IndexerConfig {
             poll_interval_secs: parse_env("INDEXER_POLL_INTERVAL_S")
                 .unwrap_or(DEFAULT_POLL_INTERVAL_S),
             seal_idle_seconds: parse_env("INDEXER_SEAL_IDLE_S").unwrap_or(DEFAULT_SEAL_IDLE_S),
-            seal_hour_grace_seconds: parse_env("INDEXER_SEAL_HOUR_GRACE_S")
-                .unwrap_or(DEFAULT_SEAL_HOUR_GRACE_S),
         }
     }
 }
@@ -253,14 +244,7 @@ fn should_seal(seg: &Segment, session_ended: bool, now: DateTime<Utc>) -> bool {
 pub async fn run_tick(pool: &SqlitePool, cfg: &IndexerConfig, now: DateTime<Utc>) -> (u64, u64) {
     let now_iso = iso_utc(now);
 
-    let sealed = match db::seal_stale_open_rows(
-        pool,
-        &now_iso,
-        cfg.seal_idle_seconds,
-        cfg.seal_hour_grace_seconds,
-    )
-    .await
-    {
+    let sealed = match db::seal_stale_open_rows(pool, &now_iso, cfg.seal_idle_seconds).await {
         Ok(n) => n,
         Err(e) => {
             tracing::warn!(error = %e, "seal sweep failed");
@@ -299,23 +283,11 @@ pub async fn run_tick(pool: &SqlitePool, cfg: &IndexerConfig, now: DateTime<Utc>
     (sealed, wrote)
 }
 
-/// All coding-agent sources eligible for end-of-session acceleration via
-/// process detection. When the backing process is gone every live row of that
-/// source is finished; when running, a newer session of the same source
-/// supersedes older ones (/clear, new tab, etc.).
-///
-/// `claude_jsonl`: hook fires on clean exit but crash/force-quit skips it —
-/// process-gone detection is the safety net. `cursor_vscdb` and
-/// `copilot_chat_jsonl` are IDE-resident (no end marker written) so
-/// process-gone is their primary acceleration path, not a backstop.
-const CLI_SOURCES: &[&str] = &[
-    "claude_jsonl",
-    "codex_jsonl",
-    "copilot_events_jsonl",
-    "copilot_chat_jsonl",
-    "cursor_vscdb",
-    "cursor_cli_store",
-];
+/// CLI-backed sources eligible for end-of-session acceleration. IDE-resident
+/// sources (cursor vscdb sidebar, VS Code chatSessions) and Claude
+/// (SessionEnd hook) are deliberately absent — their lifecycles are handled
+/// elsewhere.
+const CLI_SOURCES: &[&str] = &["codex_jsonl", "copilot_events_jsonl", "cursor_cli_store"];
 
 /// Prompt session completion for CLI agents — /clear and Ctrl+C, which write
 /// no end marker in most stores:
@@ -390,16 +362,12 @@ fn basename(token: &str) -> &str {
     token.rsplit('/').next().unwrap_or(token)
 }
 
-/// Does any process argv look like this source's agent? Matched on the argv[0]
-/// basename (or full line for IDE apps) to avoid env-noise false-positives.
-/// Known collisions excluded:
-///   - `codex app-server` is VS Code's ChatGPT extension, not the Codex CLI.
-///   - `copilot` argv[0] is `node`; the script path is argv[1].
-///   - `cursor-agent login` is auth plumbing, not a chat session.
-///   - `Cursor` basename covers the macOS IDE app binary; `cursor-agent` is
-///     the CLI sub-process and is handled by `cursor_cli_store` separately.
-///   - VS Code's Electron process path always contains "Visual Studio Code";
-///     plain `Electron` alone would false-match any other Electron app.
+/// Does any process argv look like this source's CLI? Matched on the argv[0]
+/// basename so env noise can't false-positive, with the known collisions
+/// excluded: VS Code's ChatGPT extension ships a binary literally named
+/// `codex` (runs as `codex app-server`), copilot is a node script (argv[0] is
+/// `node`, the script path is argv[1]), and a `cursor-agent login` child is
+/// auth plumbing, not a chat session.
 fn cli_running(argvs: &[String], source: &str) -> bool {
     argvs.iter().any(|line| {
         let mut toks = line.split_whitespace();
@@ -408,22 +376,9 @@ fn cli_running(argvs: &[String], source: &str) -> bool {
         };
         let bn0 = basename(first);
         match source {
-            // Claude Code CLI — also a safety net when the SessionEnd hook
-            // doesn't fire (crash, force-quit, SIGKILL).
-            "claude_jsonl" => bn0 == "claude",
             "codex_jsonl" => bn0 == "codex" && !line.contains("app-server"),
             "copilot_events_jsonl" => {
                 bn0 == "copilot" || (bn0 == "node" && toks.next().map(basename) == Some("copilot"))
-            }
-            // VS Code + Copilot extension: Electron app whose argv[0] path
-            // always contains "Visual Studio Code" on macOS/Linux.
-            "copilot_chat_jsonl" => line.contains("Visual Studio Code"),
-            // Cursor IDE (sidebar chats): macOS app binary is "Cursor".
-            // Exclude cursor-agent (the CLI) — that's cursor_cli_store.
-            "cursor_vscdb" => {
-                (bn0 == "Cursor" || bn0 == "cursor")
-                    && !line.contains("cursor-agent")
-                    && !line.contains("app-server")
             }
             "cursor_cli_store" => bn0 == "cursor-agent" && !line.contains(" login"),
             _ => false,
@@ -562,39 +517,15 @@ pub async fn run_loop(
     notify_if_work(sealed, wrote);
 
     loop {
-        // Wake at the sooner of: the routine poll, or the next clock-hour seal
-        // boundary (HH:00 + grace). The boundary wake seals the just-finished
-        // hour — so its worklog can run — within ~grace of the hour ending,
-        // while the poll stays the cheap between-hours backstop.
-        let wake = cfg
-            .poll_interval_secs
-            .min(secs_until_seal_wake(
-                Utc::now(),
-                cfg.seal_hour_grace_seconds,
-            ))
-            .max(1);
         tokio::select! {
             _ = shutdown_rx.changed() => break,
-            _ = tokio::time::sleep(Duration::from_secs(wake)) => {
+            _ = tokio::time::sleep(Duration::from_secs(cfg.poll_interval_secs)) => {
                 let (sealed, wrote) = guarded_tick(&pool, &cfg).await;
                 notify_if_work(sealed, wrote);
             }
         }
     }
     tracing::info!("coding-agent indexer stopped");
-}
-
-/// Seconds from `now` until the next per-hour seal wake (top-of-hour + grace).
-/// Clamped to >= 1 so the loop never busy-spins on a zero-length sleep.
-fn secs_until_seal_wake(now: DateTime<Utc>, grace_seconds: i64) -> u64 {
-    let grace = grace_seconds.clamp(0, 3599);
-    let into_hour = (now.minute() as i64) * 60 + now.second() as i64; // 0..3599
-    let target = if into_hour < grace {
-        grace
-    } else {
-        3600 + grace
-    };
-    (target - into_hour).max(1) as u64
 }
 
 /// run_tick with a hard ceiling. A tick that exceeds it is abandoned (warn,
@@ -746,7 +677,6 @@ mod tests {
             codex_sessions_dir: dir.join("nonexistent-codex"),
             poll_interval_secs: 600,
             seal_idle_seconds: 3600,
-            seal_hour_grace_seconds: 90,
         };
         assert!(coding_agents_present(&cfg));
 
@@ -755,28 +685,10 @@ mod tests {
             codex_sessions_dir: dir.join("nope-codex"),
             poll_interval_secs: 600,
             seal_idle_seconds: 3600,
-            seal_hour_grace_seconds: 90,
         };
         // Only false if neither dir exists AND no binary on PATH; binaries may be
         // installed on the dev box, so just assert the dir-absence branch is wired.
         let _ = coding_agents_present(&cfg_absent);
-    }
-
-    #[test]
-    fn seal_wake_lands_just_after_each_hour_boundary() {
-        let at = |h, m, s| Utc.with_ymd_and_hms(2026, 5, 20, h, m, s).unwrap();
-        // Mid-hour (10:30:00) → wait to 11:01:30 = 1890s.
-        assert_eq!(secs_until_seal_wake(at(10, 30, 0), 90), 1890);
-        // Exactly on the hour (11:00:00) → this hour's boundary is 90s away.
-        assert_eq!(secs_until_seal_wake(at(11, 0, 0), 90), 90);
-        // Inside the grace window (11:00:30) → 60s left to 11:01:30.
-        assert_eq!(secs_until_seal_wake(at(11, 0, 30), 90), 60);
-        // Exactly at the boundary (11:01:30) → next is the following hour.
-        assert_eq!(secs_until_seal_wake(at(11, 1, 30), 90), 3600);
-        // Never zero (would busy-spin): one second past the boundary.
-        assert_eq!(secs_until_seal_wake(at(11, 1, 31), 90), 3599);
-        // Zero grace → wakes right at the top of the next hour.
-        assert_eq!(secs_until_seal_wake(at(10, 30, 0), 0), 1800);
     }
 
     #[test]
@@ -791,11 +703,6 @@ mod tests {
             "/Users/u/.local/bin/cursor-agent --use-system-ca /idx.js login",
             // Env noise that pgrep -f used to false-match must NOT match here.
             "npm exec ruflo PATH=/Users/u/.codex/bin:/usr/bin",
-            // Claude Code CLI.
-            "/Users/u/.local/bin/claude --dangerously-skip-permissions",
-            // Cursor IDE app (macOS binary) and VS Code Electron app.
-            "/Applications/Cursor.app/Contents/MacOS/Cursor --enable-features=UseOzonePlatform",
-            "/Applications/Visual Studio Code.app/Contents/MacOS/Electron --no-sandbox",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -807,32 +714,14 @@ mod tests {
             !cli_running(&argvs, "cursor_cli_store"),
             "login child is not a session"
         );
-        assert!(cli_running(&argvs, "claude_jsonl"), "claude CLI matches");
-        assert!(cli_running(&argvs, "cursor_vscdb"), "Cursor IDE matches");
-        assert!(
-            cli_running(&argvs, "copilot_chat_jsonl"),
-            "VS Code Electron matches"
-        );
 
-        // Remove the genuine processes — only collisions/noise left → all gone.
+        // Remove the genuine CLIs — only collisions/noise left → all gone.
         let noise: Vec<String> = argvs
             .iter()
-            .filter(|l| {
-                !l.starts_with("codex exec")
-                    && !l.starts_with("node /opt")
-                    && !l.contains("/.local/bin/claude")
-                    && !l.contains("Cursor.app")
-                    && !l.contains("Visual Studio Code")
-            })
+            .filter(|l| !l.starts_with("codex exec") && !l.starts_with("node /opt"))
             .cloned()
             .collect();
         assert!(!cli_running(&noise, "codex_jsonl"), "app-server excluded");
         assert!(!cli_running(&noise, "copilot_events_jsonl"));
-        assert!(!cli_running(&noise, "claude_jsonl"));
-        assert!(
-            !cli_running(&noise, "cursor_vscdb"),
-            "Cursor app absent from noise"
-        );
-        assert!(!cli_running(&noise, "copilot_chat_jsonl"));
     }
 }

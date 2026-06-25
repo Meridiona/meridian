@@ -21,92 +21,23 @@ pub async fn make_meridian_db() -> SqlitePool {
     pool
 }
 
-pub async fn make_screenpipe_db() -> SqlitePool {
-    let opts = SqliteConnectOptions::from_str("sqlite::memory:")
-        .unwrap()
-        .create_if_missing(true);
-    let pool = SqlitePool::connect_with(opts).await.unwrap();
-
-    sqlx::query(
-        "CREATE TABLE frames (
-            id INTEGER PRIMARY KEY,
-            app_name TEXT,
-            window_name TEXT,
-            browser_url TEXT,
-            timestamp TEXT NOT NULL,
-            capture_trigger TEXT,
-            full_text TEXT,
-            accessibility_text TEXT,
-            text_source TEXT
-        )",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query("CREATE TABLE ocr_text (id INTEGER PRIMARY KEY, frame_id INTEGER, text TEXT)")
-        .execute(&pool)
-        .await
-        .unwrap();
-
-    sqlx::query(
-        "CREATE TABLE elements (
-            id INTEGER PRIMARY KEY,
-            frame_id INTEGER,
-            text TEXT,
-            role TEXT,
-            source TEXT
-        )",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query(
-        "CREATE TABLE audio_transcriptions (
-            id INTEGER PRIMARY KEY,
-            audio_chunk_id INTEGER NOT NULL DEFAULT 0,
-            offset_index INTEGER NOT NULL DEFAULT 0,
-            timestamp TEXT NOT NULL,
-            transcription TEXT NOT NULL,
-            device TEXT NOT NULL DEFAULT '',
-            is_input_device BOOLEAN NOT NULL DEFAULT 1,
-            speaker_id INTEGER,
-            transcription_engine TEXT NOT NULL DEFAULT 'Whisper'
-        )",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query(
-        "CREATE TABLE ui_events (
-            id INTEGER PRIMARY KEY,
-            timestamp TEXT NOT NULL,
-            session_id TEXT,
-            relative_ms INTEGER NOT NULL DEFAULT 0,
-            event_type TEXT NOT NULL,
-            text_content TEXT,
-            app_name TEXT
-        )",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    pool
-}
+// NOTE: `make_screenpipe_db` was removed in the slice-4b cutover. The ETL now
+// reads meridian's own `capture_frames` / `capture_ui_events` (created by
+// `make_meridian_db`'s migrations), so tests seed those via the helpers below —
+// there is no separate screenpipe-shaped source DB anymore.
 
 // ---------------------------------------------------------------------------
-// Frame insertion helpers
+// Frame insertion helpers (seed meridian's capture_* tables)
 // ---------------------------------------------------------------------------
 
-/// Inserts frames with sequential IDs starting from 1.
-/// Each entry is `(app_name, timestamp)`.
+/// Inserts capture frames with sequential IDs starting from 1.
+/// Each entry is `(app_name, timestamp)`. Post-4b the ETL reads meridian's
+/// `capture_frames`, so `pool` is the meridian pool. Explicit ids are allowed
+/// even though the column is AUTOINCREMENT (SQLite permits explicit PK inserts).
 pub async fn insert_frames(pool: &SqlitePool, frames: &[(&str, &str)]) {
     for (i, (app, ts)) in frames.iter().enumerate() {
         sqlx::query(
-            "INSERT INTO frames (id, app_name, window_name, timestamp) VALUES (?, ?, NULL, ?)",
+            "INSERT INTO capture_frames (id, app_name, window_name, timestamp) VALUES (?, ?, NULL, ?)",
         )
         .bind(i as i64 + 1)
         .bind(app)
@@ -117,8 +48,10 @@ pub async fn insert_frames(pool: &SqlitePool, frames: &[(&str, &str)]) {
     }
 }
 
-/// Inserts frames carrying `full_text` and `text_source = 'accessibility'`.
-/// Each entry is `(app_name, timestamp, full_text)`.
+/// Inserts capture frames carrying accessibility text (`text_source =
+/// 'accessibility'`). Each entry is `(app_name, timestamp, text)`. Mirrors the
+/// production writer: a11y text lands in `accessibility_text` (full_text NULL),
+/// which the reader resolves via `COALESCE(full_text, accessibility_text)`.
 /// `id_offset` is the ID of the first frame; subsequent frames increment by 1.
 pub async fn insert_frames_with_text(
     pool: &SqlitePool,
@@ -127,7 +60,7 @@ pub async fn insert_frames_with_text(
 ) {
     for (i, (app, ts, text)) in frames.iter().enumerate() {
         sqlx::query(
-            "INSERT INTO frames (id, app_name, window_name, timestamp, full_text, text_source)
+            "INSERT INTO capture_frames (id, app_name, window_name, timestamp, accessibility_text, text_source)
              VALUES (?, ?, NULL, ?, ?, 'accessibility')",
         )
         .bind(id_offset + i as i64)
@@ -151,8 +84,13 @@ pub async fn insert_frames_with_trigger(
     frames: &[(Option<&str>, &str, Option<&str>)],
 ) {
     for (i, (app, ts, trigger)) in frames.iter().enumerate() {
+        // NOTE: real in-process capture leaves capture_trigger NULL (idle
+        // detection isn't wired yet — see slice 4b notes), so the user_idle vs
+        // system_sleep split these tests exercise won't occur in production
+        // until in-process idle detection lands. The column + reader logic stay
+        // so that future idle detection works without a schema change.
         sqlx::query(
-            "INSERT INTO frames (id, app_name, window_name, timestamp, capture_trigger)
+            "INSERT INTO capture_frames (id, app_name, window_name, timestamp, capture_trigger)
              VALUES (?, ?, NULL, ?, ?)",
         )
         .bind(id_offset + i as i64)

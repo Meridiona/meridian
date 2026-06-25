@@ -1,14 +1,15 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// Global fault banner. Opens one SSE connection to /api/notices/stream and
-// renders a banner for each active system notice. Banners auto-disappear when
+// Global fault banner. Subscribes to the `notices-update` Tauri event (via
+// bridge.subscribe) and renders a banner for each active system notice. Banners auto-disappear when
 // the daemon clears the fault — no manual dismiss needed. Placed in the root
 // layout so it appears on every page.
 
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
-import type { Notice } from '@/lib/notices-store'
+import { useEffect, useState } from 'react'
+import { subscribe } from '@/lib/bridge'
+import type { Notice } from '@/lib/api-types'
 
 const SEVERITY_STYLES: Record<string, { bg: string; border: string; text: string; dot: string }> = {
   error: {
@@ -27,33 +28,10 @@ const SEVERITY_STYLES: Record<string, { bg: string; border: string; text: string
 
 export default function NoticeBar() {
   const [notices, setNotices] = useState<Notice[]>([])
-  const esRef = useRef<EventSource | null>(null)
 
   useEffect(() => {
-    function connect() {
-      const es = new EventSource('/api/notices/stream')
-      esRef.current = es
-
-      es.onmessage = (e) => {
-        try {
-          setNotices(JSON.parse(e.data) as Notice[])
-        } catch {
-          // malformed frame — ignore
-        }
-      }
-
-      es.onerror = () => {
-        // Connection dropped — close and reconnect after 5s
-        es.close()
-        esRef.current = null
-        setTimeout(connect, 5_000)
-      }
-    }
-
-    connect()
-    return () => {
-      esRef.current?.close()
-    }
+    // notices-update (Tauri event) in the app, /api/notices/stream SSE in a browser.
+    return subscribe<Notice[]>('/api/notices/stream', 'get_notices', 'notices-update', setNotices)
   }, [])
 
   if (notices.length === 0) return null

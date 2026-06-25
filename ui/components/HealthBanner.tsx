@@ -2,6 +2,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { subscribe } from '@/lib/bridge'
 
 interface HealthStatus {
   a11y_helper_trusted?: boolean
@@ -14,18 +15,11 @@ export default function HealthBanner() {
   const [dismissed, setDismissed] = useState(false)
 
   useEffect(() => {
-    const source = new EventSource('/api/health/stream')
-    source.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data) as HealthStatus
-        // Ignore empty objects ({}) sent on first call before data arrives
-        if (Object.keys(data).length > 0) setHealth(data)
-      } catch { /* malformed event */ }
-    }
-    source.onerror = () => {
-      // SSE auto-reconnects on error; no action needed
-    }
-    return () => source.close()
+    // health-update (Tauri event) in the app, /api/health/stream SSE in a browser.
+    return subscribe<HealthStatus>('/api/health/stream', 'get_health', 'health-update', (data) => {
+      // Ignore empty objects ({}) pushed before any check has data.
+      if (data && Object.keys(data).length > 0) setHealth(data)
+    })
   }, [])
 
   // Show banner if database is not ready (critical), or a11y-helper is not trusted, and not dismissed

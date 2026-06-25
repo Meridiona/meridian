@@ -1,0 +1,187 @@
+{
+  "title": "Session→Task Classifier — Debug",
+  "description": "Every session-task classification, newest first. Filter by session_id, session_type, or errors-only; copy a row's trace_id and open it in Traces for the full waterfall (db_fetch → classifier_input → llm_inference → classifier_output). classifier_input carries the complete model input as sent (llm_input = the chat-template wire prompt, plus system_prompt / recent_context / session_block / candidate_tickets as child spans); classifier_output carries llm_output (the raw model output) with reasoning / category / dimensions / session_summary as child spans. Backed by the enriched `classify_session` spans (service meridian-agent-server-mlx in-process, or meridian-task-linker-mlx from the standalone CLI). Drilldown keys on trace_id alone so it works for both.",
+  "version": 6,
+  "variables": {
+    "list": [
+      {
+        "type": "textbox",
+        "name": "session_id",
+        "label": "Session ID",
+        "query_data": null,
+        "value": "",
+        "options": [],
+        "multiSelect": false,
+        "hideOnDashboard": false,
+        "selectAllValueForMultiSelect": "custom",
+        "customMultiSelectValue": [],
+        "escapeSingleQuotes": true
+      },
+      {
+        "type": "textbox",
+        "name": "app_name",
+        "label": "App name",
+        "query_data": null,
+        "value": "",
+        "options": [],
+        "multiSelect": false,
+        "hideOnDashboard": false,
+        "selectAllValueForMultiSelect": "custom",
+        "customMultiSelectValue": [],
+        "escapeSingleQuotes": true
+      },
+      {
+        "type": "custom",
+        "name": "session_type",
+        "label": "Session type",
+        "query_data": null,
+        "value": "",
+        "options": [
+          {"label": "All", "value": "", "selected": true},
+          {"label": "task", "value": "task", "selected": false},
+          {"label": "overhead", "value": "overhead", "selected": false},
+          {"label": "untracked", "value": "untracked", "selected": false}
+        ],
+        "multiSelect": false,
+        "hideOnDashboard": false,
+        "selectAllValueForMultiSelect": "custom",
+        "customMultiSelectValue": [],
+        "escapeSingleQuotes": true
+      },
+      {
+        "type": "custom",
+        "name": "errors_only",
+        "label": "Errors only",
+        "query_data": null,
+        "value": "",
+        "options": [
+          {"label": "All", "value": "", "selected": true},
+          {"label": "Errors only", "value": "true", "selected": false}
+        ],
+        "multiSelect": false,
+        "hideOnDashboard": false,
+        "selectAllValueForMultiSelect": "custom",
+        "customMultiSelectValue": [],
+        "escapeSingleQuotes": true
+      }
+    ],
+    "showDynamicFilters": true
+  },
+  "defaultDatetimeDuration": {"type": "relative", "relativeTimePeriod": "12h", "startTime": null, "endTime": null},
+  "tabs": [
+    {
+      "tabId": "default",
+      "name": "Default",
+      "panels": [
+        {
+          "id": "stat_total",
+          "type": "metric",
+          "title": "Classifications",
+          "description": "Total classify_session spans in range",
+          "config": {"show_legends": false, "unit": null, "decimals": 0, "no_value_replacement": "0"},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as \"y_axis_1\" FROM \"default\" WHERE operation_name='classify_session'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [], "y": [{"label": "Classifications", "alias": "y_axis_1", "column": "y_axis_1", "color": "#5960b2", "aggregationFunction": null, "isDerived": false, "havingConditions": []}], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 0, "y": 0, "w": 12, "h": 6, "i": 1}
+        },
+        {
+          "id": "stat_errors",
+          "type": "metric",
+          "title": "Errors",
+          "description": "Classifications whose method failed (is_error=true)",
+          "config": {"show_legends": false, "unit": null, "decimals": 0, "no_value_replacement": "0"},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as \"y_axis_1\" FROM \"default\" WHERE operation_name='classify_session' AND is_error='true'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [], "y": [{"label": "Errors", "alias": "y_axis_1", "column": "y_axis_1", "color": "#b25959", "aggregationFunction": null, "isDerived": false, "havingConditions": []}], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 12, "y": 0, "w": 12, "h": 6, "i": 2}
+        },
+        {
+          "id": "stat_untracked",
+          "type": "metric",
+          "title": "Untracked",
+          "description": "Sessions classified as untracked (no ticket)",
+          "config": {"show_legends": false, "unit": null, "decimals": 0, "no_value_replacement": "0"},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as \"y_axis_1\" FROM \"default\" WHERE operation_name='classify_session' AND session_type='untracked'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [], "y": [{"label": "Untracked", "alias": "y_axis_1", "column": "y_axis_1", "color": "#b29959", "aggregationFunction": null, "isDerived": false, "havingConditions": []}], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 24, "y": 0, "w": 12, "h": 6, "i": 3}
+        },
+        {
+          "id": "stat_conf",
+          "type": "metric",
+          "title": "Avg confidence",
+          "description": "Mean confidence of successful classifications",
+          "config": {"show_legends": false, "unit": null, "decimals": 2, "no_value_replacement": "0"},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT round(avg(CAST(confidence AS DOUBLE)),2) as \"y_axis_1\" FROM \"default\" WHERE operation_name='classify_session' AND is_error='false'",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [], "y": [{"label": "Avg confidence", "alias": "y_axis_1", "column": "y_axis_1", "color": "#59b27a", "aggregationFunction": null, "isDerived": false, "havingConditions": []}], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 36, "y": 0, "w": 12, "h": 6, "i": 4}
+        },
+        {
+          "id": "table_all",
+          "type": "table",
+          "title": "All classifications (newest first)",
+          "description": "Filter with the Session ID / Session type / Errors only variables above. Click any row → opens the Traces view filtered to just that trace's spans.",
+          "config": {"show_legends": false, "wrap_table_cells": false, "table_dynamic_columns": false, "drilldown": [{"name": "Open this trace's spans", "type": "byUrl", "targetBlank": true, "findBy": "name", "data": {"url": "/web/traces?org_identifier=default&stream=default&search_type=ui&search_mode=spans&period=30d&query=${row.field.trace_filter}", "folder": "", "dashboard": "", "tab": "", "passAllVariables": false, "variables": []}}]},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT to_char(to_timestamp_micros(_timestamp + 19800000000),'%Y-%m-%d %H:%M:%S') as \"Time\", session_id as \"Session\", app_name as \"App\", task_key as \"Task\", session_type as \"Type\", category as \"Category\", confidence as \"Confidence\", round(CAST(elapsed_s AS DOUBLE),2) as \"Time taken (s)\", method as \"Method\", is_error as \"Error\", trace_id as \"trace_id\", encode(concat('trace_id=''', trace_id, ''''),'base64') as \"trace_filter\" FROM \"default\" WHERE operation_name='classify_session' AND ('$session_id'='' OR session_id='$session_id') AND ('$session_type'='' OR session_type='$session_type') AND ('$errors_only'='' OR is_error='$errors_only') AND ('$app_name'='' OR app_name LIKE '%$app_name%') ORDER BY _timestamp DESC",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [{"label": "Time", "alias": "Time", "column": "_timestamp", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Session", "alias": "Session", "column": "session_id", "color": null, "isDerived": false, "havingConditions": []}, {"label": "App", "alias": "App", "column": "app_name", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Task", "alias": "Task", "column": "task_key", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Type", "alias": "Type", "column": "session_type", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Category", "alias": "Category", "column": "category", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Confidence", "alias": "Confidence", "column": "confidence", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Time taken (s)", "alias": "Time taken (s)", "column": "elapsed_s", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Method", "alias": "Method", "column": "method", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Error", "alias": "Error", "column": "is_error", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Trace ID", "alias": "trace_id", "column": "trace_id", "color": null, "isDerived": false, "havingConditions": []}, {"label": "trace_filter", "alias": "trace_filter", "column": "trace_filter", "color": null, "isDerived": false, "havingConditions": []}], "y": [], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 0, "y": 6, "w": 48, "h": 14, "i": 5}
+        },
+        {
+          "id": "table_errors",
+          "type": "table",
+          "title": "Errors only",
+          "description": "Failed classifications — inference errors, schema errors, invalid task_key, session-not-found. Click a row → opens just that trace's spans.",
+          "config": {"show_legends": false, "wrap_table_cells": false, "table_dynamic_columns": false, "drilldown": [{"name": "Open this trace's spans", "type": "byUrl", "targetBlank": true, "findBy": "name", "data": {"url": "/web/traces?org_identifier=default&stream=default&search_type=ui&search_mode=spans&period=30d&query=${row.field.trace_filter}", "folder": "", "dashboard": "", "tab": "", "passAllVariables": false, "variables": []}}]},
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT to_char(to_timestamp_micros(_timestamp + 19800000000),'%Y-%m-%d %H:%M:%S') as \"Time\", session_id as \"Session\", app_name as \"App\", task_key as \"Task\", session_type as \"Type\", round(CAST(elapsed_s AS DOUBLE),2) as \"Time taken (s)\", method as \"Method\", trace_id as \"trace_id\", encode(concat('trace_id=''', trace_id, ''''),'base64') as \"trace_filter\" FROM \"default\" WHERE operation_name='classify_session' AND is_error='true' AND ('$app_name'='' OR app_name LIKE '%$app_name%') ORDER BY _timestamp DESC",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {"stream": "default", "stream_type": "traces", "x": [{"label": "Time", "alias": "Time", "column": "_timestamp", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Session", "alias": "Session", "column": "session_id", "color": null, "isDerived": false, "havingConditions": []}, {"label": "App", "alias": "App", "column": "app_name", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Task", "alias": "Task", "column": "task_key", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Type", "alias": "Type", "column": "session_type", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Time taken (s)", "alias": "Time taken (s)", "column": "elapsed_s", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Method", "alias": "Method", "column": "method", "color": null, "isDerived": false, "havingConditions": []}, {"label": "Trace ID", "alias": "trace_id", "column": "trace_id", "color": null, "isDerived": false, "havingConditions": []}, {"label": "trace_filter", "alias": "trace_filter", "column": "trace_filter", "color": null, "isDerived": false, "havingConditions": []}], "y": [], "z": [], "breakdown": [], "filter": {"filterType": "group", "logicalOperator": "AND", "conditions": []}},
+              "config": {"promql_legend": "", "layer_type": "scatter", "weight_fixed": 1}
+            }
+          ],
+          "layout": {"x": 0, "y": 20, "w": 48, "h": 10, "i": 6}
+        }
+      ]
+    }
+  ]
+}

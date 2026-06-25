@@ -13,7 +13,6 @@ use meridian::db::meridian::{
     close_active_session_with, get_active_session, insert_etl_run, upsert_active_session,
     ActiveSession,
 };
-use meridian::etl::run_etl;
 
 // ---------------------------------------------------------------------------
 // close_active_session_with — happy path
@@ -141,68 +140,8 @@ async fn test_close_active_session_with_stale_then_new() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Audio snippet cap
-// ---------------------------------------------------------------------------
-
-/// 60 audio transcriptions across 60 frames of the same app are ingested in
-/// a single ETL run. After an app switch forces the session to close, the
-/// stored `audio_snippets` JSON array must have ≤ 50 entries (AUDIO_SNIPPET_CAP).
-#[tokio::test]
-async fn test_audio_snippet_cap_across_runs() {
-    let sp = common::make_screenpipe_db().await;
-    let md = common::make_meridian_db().await;
-
-    for i in 0i64..60 {
-        let ts = format!("2026-01-01T10:{:02}:{:02}+00:00", i / 6, (i % 6) * 10);
-
-        sqlx::query(
-            "INSERT INTO frames (id, app_name, window_name, timestamp) VALUES (?, 'Code', NULL, ?)",
-        )
-        .bind(i + 1)
-        .bind(&ts)
-        .execute(&sp)
-        .await
-        .unwrap();
-
-        sqlx::query(
-            "INSERT INTO audio_transcriptions
-             (audio_chunk_id, offset_index, timestamp, transcription, device)
-             VALUES (?, 0, ?, 'working on the auth module right now', 'mic')",
-        )
-        .bind(i + 1)
-        .bind(&ts)
-        .execute(&sp)
-        .await
-        .unwrap();
-    }
-
-    // First run: all 60 Code frames are processed, session stays open.
-    run_etl(&sp, &md).await.unwrap();
-
-    // App switch: Slack frame forces Code session to close into app_sessions.
-    sqlx::query(
-        "INSERT INTO frames (id, app_name, window_name, timestamp)
-         VALUES (61, 'Slack', NULL, '2026-01-01T10:10:00+00:00')",
-    )
-    .execute(&sp)
-    .await
-    .unwrap();
-
-    run_etl(&sp, &md).await.unwrap();
-
-    let row: (Option<String>,) =
-        sqlx::query_as("SELECT audio_snippets FROM app_sessions WHERE app_name = 'Code'")
-            .fetch_one(&md)
-            .await
-            .unwrap();
-
-    let snippets: Vec<serde_json::Value> =
-        serde_json::from_str(row.0.as_deref().unwrap_or("[]")).unwrap();
-
-    assert!(
-        snippets.len() <= 50,
-        "expected ≤ 50 audio snippets (AUDIO_SNIPPET_CAP), got {}",
-        snippets.len()
-    );
-}
+// NOTE: `test_audio_snippet_cap_across_runs` was removed in the slice-4b cutover.
+// In-process capture is text-only (Audio OFF), so `get_audio_snippets` is stubbed
+// empty and `app_sessions.audio_snippets` is always `[]` — the AUDIO_SNIPPET_CAP
+// path is no longer reachable. The cap code remains in the extractor (harmless,
+// never triggered); re-add a test here if in-process audio is ever introduced.

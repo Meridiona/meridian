@@ -7,6 +7,11 @@ use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteConnectOptions, FromRow, SqlitePool};
 use std::str::FromStr;
 
+// ActiveSession + the read helpers now live in meridian-core (shared with the
+// Tauri dashboard, single source of truth). Re-exported so existing daemon code
+// keeps using `crate::db::meridian::{ActiveSession, open_existing, get_active_session}`.
+pub use meridian_core::{get_active_session, open_existing, ActiveSession};
+
 // ---------------------------------------------------------------------------
 // Sub-document types stored as JSON columns
 // ---------------------------------------------------------------------------
@@ -53,24 +58,6 @@ pub struct AppSession {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct ActiveSession {
-    pub id: i64,
-    pub app_name: String,
-    pub started_at: String,
-    pub last_seen_at: String,
-    pub window_titles: String,
-    pub audio_snippets: Option<String>,
-    pub signals: Option<String>,
-    pub min_frame_id: i64,
-    pub max_frame_id: i64,
-    pub frame_count: i64,
-    pub idle_frame_count: i64,
-    pub category: String,
-    pub confidence: f64,
-    pub session_text: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct EtlRun {
     pub id: i64,
     pub started_at: String,
@@ -101,7 +88,14 @@ pub async fn setup_db(uri: &str) -> anyhow::Result<SqlitePool> {
         .with_context(|| format!("invalid SQLite URI: {uri}"))?
         .create_if_missing(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+        // Since the Bucket-2 cutover the tray writes capture_frames/
+        // capture_ui_events into THIS db concurrently with the daemon's ETL
+        // writes (app_sessions, cursor). Without a busy_timeout the daemon would
+        // get an immediate SQLITE_BUSY (default timeout 0) whenever the tray
+        // holds the WAL write lock, failing the ETL run. Wait instead — matches
+        // the tray's open_existing (5s).
+        .busy_timeout(std::time::Duration::from_secs(5));
 
     let pool = SqlitePool::connect_with(opts)
         .await
@@ -414,23 +408,6 @@ pub async fn upsert_active_session(
     .context("upsert_active_session: upsert failed")?;
 
     Ok(())
-}
-
-pub async fn get_active_session(pool: &SqlitePool) -> anyhow::Result<Option<ActiveSession>> {
-    let row = sqlx::query_as::<_, ActiveSession>(
-        r#"
-        SELECT id, app_name, started_at, last_seen_at,
-               window_titles, audio_snippets, signals,
-               min_frame_id, max_frame_id, frame_count, idle_frame_count,
-               category, confidence, session_text
-        FROM active_session WHERE id = 1
-        "#,
-    )
-    .fetch_optional(pool)
-    .await
-    .context("get_active_session: fetch failed")?;
-
-    Ok(row)
 }
 
 /// Moves the active_session row into app_sessions and deletes it.

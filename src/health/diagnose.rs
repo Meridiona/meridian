@@ -54,6 +54,7 @@ pub fn root_causes(report: &Report) -> Vec<Diagnosis> {
             cause: "All classification and summarisation run through the MLX server. With it down, sealed sessions pile up, eventually get sentinelled, and worklog hours stall behind them.".into(),
             contributing: contributing(&[
                 ("meridian daemon", "queue"),
+                ("meridian daemon", "classify errors"),
                 ("worklog", "hour ledger"),
             ]),
             action: "Start it (`meridian start`), then `meridian doctor --fix` to drain the backlog.".into(),
@@ -71,6 +72,7 @@ pub fn root_causes(report: &Report) -> Vec<Diagnosis> {
             cause: "Sealed sessions aren't being summarised, so they never reach the classifier and the worklog hour-ledger backs up behind them.".into(),
             contributing: contributing(&[
                 ("meridian daemon", "summariser queue"),
+                ("meridian daemon", "classify errors"),
                 ("worklog", "hour ledger"),
             ]),
             action: "The claude/codex CLI or MLX /summarise is likely failing — inspect with `meridian coding-agent-summarise --dry-run`, or run `meridian doctor --fix`.".into(),

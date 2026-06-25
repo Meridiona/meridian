@@ -1,0 +1,172 @@
+/* ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity */
+
+/* border-box so width:300px + the body's 16px side padding stay inside the
+   300px native window (style.css applies the same reset for the popover) —
+   without it the body is 332px and the card off-centres / clips its shadow. */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+/* The window is transparent and intentionally LARGER than the card: the body
+   padding gives the card's drop-shadow room to render. Without it the shadow
+   is clipped at the window bounds and reads as a hard rectangular border. */
+html, body {
+  width: 300px;
+  background: transparent;
+  overflow: hidden;
+}
+body {
+  margin: 0;
+  padding: 10px 16px 24px;   /* top · sides · bottom — shadow breathing room */
+}
+
+.tt-card {
+  background: var(--surface);
+  border-radius: 14px;
+  border: 0.5px solid var(--rule-2);
+  box-shadow:
+    0 1px 2px rgba(20, 18, 14, .08),
+    0 10px 28px -10px rgba(20, 18, 14, .28);
+  padding: 13px 15px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* ── Header row ── */
+.tt-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.tt-key {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 0.5px solid var(--rule-2);
+  border-radius: 6px;
+  padding: 2px 7px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.tt-status {
+  font-size: 11.5px;
+  color: var(--ink-3);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tt-priority {
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.tt-priority.high   { color: #E5533C; }
+.tt-priority.medium { color: #E8963A; }
+.tt-priority.low    { color: var(--ink-3); }
+
+/* ── Title ── */
+.tt-title {
+  font-size: 13.5px;
+  font-weight: 450;
+  line-height: 1.35;
+  color: var(--ink);
+  margin-bottom: 11px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ── Progress row ── */
+.tt-prog {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.tt-time {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.tt-pct {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+/* ── Progress bar ── */
+.tt-bar-wrap {
+  height: 5px;
+  border-radius: 99px;
+  background: var(--rule);
+  overflow: hidden;
+  margin-bottom: 11px;
+}
+.tt-bar-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: var(--accent);
+  transition: width .4s ease;
+}
+
+/* ── Footer ── */
+.tt-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tt-ctx {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.tt-hint {
+  font-size: 10.5px;
+  color: var(--ink-4);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── Non-task states ──────────────────────────────────────────────────────
+   `live`  = no classified task but a session is active → show what you're doing.
+   `empty` = nothing to track (idle / connecting / offline).
+   Both hide the task-only progress block. */
+.tt-card.live .tt-prog,
+.tt-card.live .tt-bar-wrap,
+.tt-card.empty .tt-prog,
+.tt-card.empty .tt-bar-wrap { display: none; }
+
+/* Live: the chip becomes a category pill with an accent dot. */
+.tt-card.live .tt-key {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
+.tt-card.empty .tt-key { opacity: .5; }
+.tt-card.empty .tt-title {
+  color: var(--ink-3);
+  font-style: italic;
+}

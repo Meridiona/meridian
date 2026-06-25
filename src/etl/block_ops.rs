@@ -50,13 +50,12 @@ pub(super) struct BlockBounds<'a> {
     )
 )]
 pub(super) async fn close_block(
-    screenpipe: &SqlitePool,
     meridian: &SqlitePool,
     run_id: i64,
     b: &BlockBounds<'_>,
 ) -> Result<(i64, i64)> {
     let mut ctx = extract_block_context(
-        screenpipe,
+        meridian,
         b.app,
         b.started_at,
         b.ended_at,
@@ -76,7 +75,7 @@ pub(super) async fn close_block(
             search_window = format!("{}..{}", b.started_at, next_ts),
             "Option C: searching for ui_events (click/key/text)"
         );
-        match get_last_ui_event_for_app(screenpipe, b.app, b.started_at, next_ts).await {
+        match get_last_ui_event_for_app(meridian, b.app, b.started_at, next_ts).await {
             Ok(Some(ui_ts)) => {
                 if ui_ts.as_str() > b.ended_at {
                     debug!(
@@ -176,7 +175,7 @@ pub(super) async fn close_block(
             // sub-threshold batches (< CHROME_FREQ_THRESHOLD frames) permanently in the
             // stored text; a full rebuild sees the complete frame set so the chrome
             // pre-pass correctly identifies and removes them.
-            let all_frames = get_frame_full_texts(screenpipe, active.min_frame_id, b.max_frame_id)
+            let all_frames = get_frame_full_texts(meridian, active.min_frame_id, b.max_frame_id)
                 .await
                 .context("re-fetch frames for session_text rebuild on close")?;
             let rebuilt_text = build_session_text(&all_frames);
@@ -250,13 +249,12 @@ pub(super) async fn close_block(
     )
 )]
 pub(super) async fn upsert_open_block(
-    screenpipe: &SqlitePool,
     meridian: &SqlitePool,
     run_id: i64,
     b: &BlockBounds<'_>,
 ) -> Result<i64> {
     let ctx = extract_block_context(
-        screenpipe,
+        meridian,
         b.app,
         b.started_at,
         b.ended_at,

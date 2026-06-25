@@ -1,18 +1,33 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 // https://github.com/meridiona/meridian
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use meridian::config::Config;
 use meridian::db::meridian::{cleanup_incomplete_runs, setup_db};
-use meridian::db::screenpipe::open_screenpipe;
 use meridian::etl::run_etl;
-use meridian::intelligence::{run_pm_force_sync, run_pm_sync};
+use meridian::intelligence::{
+    check_classification_ready, mark_session_subprocess_error, run_coding_agent_classification,
+    run_pm_force_sync, run_pm_sync, run_task_linking, TaskLinkOutcome,
+};
 use meridian::observability;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::Notify;
+
+/// After this many consecutive subprocess failures for the same session,
+/// write a `subprocess_error` sentinel and advance the cursor past it.
+const MAX_CONSECUTIVE_FAILURES: u32 = 3;
+
+/// User-facing remediation hint for the `mlx.down` notice. The tray auto-restarts
+/// the MLX server (see `tray/src-tauri/src/poll/mod.rs::supervise_mlx`), so an
+/// installed user has nothing to type — the only manual fallback is relaunching
+/// Meridian. Deliberately NOT the dev `cd services && .venv/bin/python …` command,
+/// which is meaningless on a packaged install (no `services/` or `.venv`).
+const MLX_DOWN_FIX_HINT: &str =
+    "Meridian restarts the classifier automatically. If it keeps happening, quit and reopen Meridian.";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -57,6 +72,35 @@ async fn main() -> Result<()> {
                 pool.close().await;
             }
             Err(e) => eprintln!("coding-agent-summarise: open db: {e}"),
+        }
+        return Ok(());
+    }
+
+    // `meridian coding-agent-classify` — one-shot: classify every summarised
+    // coding-agent row (the pending_classifier queue) via the MLX server. Manual
+    // backfill of the last link in seal→summarise→classify.
+    if std::env::args().nth(1).as_deref() == Some("coding-agent-classify") {
+        let cfg = Config::from_env();
+        match meridian::coding_agent_session_ingest::open_meridian_pool().await {
+            Ok(pool) => {
+                let mut total = 0usize;
+                loop {
+                    match run_coding_agent_classification(&pool, &cfg, None).await {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            total += n;
+                            println!("classified {n} (total {total})");
+                        }
+                        Err(e) => {
+                            eprintln!("coding-agent-classify: {e}");
+                            break;
+                        }
+                    }
+                }
+                println!("coding-agent-classify: {total} classified");
+                pool.close().await;
+            }
+            Err(e) => eprintln!("coding-agent-classify: open db: {e}"),
         }
         return Ok(());
     }
@@ -136,13 +180,24 @@ async fn main() -> Result<()> {
                         "\n✓ Jira connected: {site}\n  Tokens saved to ~/.meridian/oauth/jira.json — run `meridian restart` to pick them up."
                     ),
                     Err(e) => {
-                        eprintln!("oauth-login jira failed: {e:#}");
-                        eprintln!(
-                            "\nIf your Atlassian org blocks third-party OAuth apps (a \"site admin \
-                             must authorize\" message, or app installs disabled), use the API-token \
-                             fallback instead: set JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN via \
-                             `meridian config edit`."
-                        );
+                        let msg = format!("{e:#}");
+                        eprintln!("oauth-login jira failed: {msg}");
+                        // Only show the admin-block hint when the failure is a
+                        // consent-phase denial (Atlassian redirects with
+                        // error=access_denied when the org policy blocks the app).
+                        // Token-exchange errors (invalid_client, missing secret,
+                        // network issues) have their own clear messages above.
+                        if msg.contains("access_denied")
+                            || msg.contains("provider returned OAuth error")
+                        {
+                            eprintln!(
+                                "\nIf your Atlassian org blocks third-party OAuth apps (a \
+                                 \"site admin must authorize\" message, or app installs \
+                                 disabled), use the API-token fallback instead: set \
+                                 JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN via \
+                                 `meridian config edit`."
+                            );
+                        }
                         std::process::exit(1);
                     }
                 }
@@ -167,8 +222,20 @@ async fn main() -> Result<()> {
                     }
                 }
             }
+            "github" => {
+                println!("Starting GitHub authorization via gh CLI…");
+                match meridian::intelligence::oauth::github::login().await {
+                    Ok(()) => {}
+                    Err(e) => {
+                        eprintln!("oauth-login github failed: {e:#}");
+                        std::process::exit(1);
+                    }
+                }
+            }
             other => {
-                eprintln!("oauth-login: unknown provider {other:?} (supported: jira, trello)");
+                eprintln!(
+                    "oauth-login: unknown provider {other:?} (supported: jira, trello, github)"
+                );
                 std::process::exit(1);
             }
         }
@@ -199,30 +266,6 @@ async fn main() -> Result<()> {
                 pool.close().await;
             }
             Err(e) => eprintln!("pm-worklog: open db: {e}"),
-        }
-        if let Some(g) = obs_guard {
-            g.shutdown().await;
-        }
-        return Ok(());
-    }
-
-    // `meridian worklog-pipeline-run [--day YYYY-MM-DD]` — one-shot run of the new
-    // hour-level worklog pipeline driver (the daemon's default loop). POSTs
-    // /worklog_hour for each ready hour; drafts land in pm_worklogs for approval.
-    if std::env::args().nth(1).as_deref() == Some("worklog-pipeline-run") {
-        let args: Vec<String> = std::env::args().collect();
-        let day = args
-            .iter()
-            .position(|a| a == "--day")
-            .and_then(|i| args.get(i + 1).cloned());
-        let cfg = Config::from_env();
-        let obs_guard = observability::init("meridian-rust").ok();
-        match setup_db(&cfg.meridian_db_uri()).await {
-            Ok(pool) => {
-                meridian::worklog_pipeline::cli_run(&pool, &cfg.meridian_db, day.as_deref()).await;
-                pool.close().await;
-            }
-            Err(e) => eprintln!("worklog-pipeline-run: open db: {e}"),
         }
         if let Some(g) = obs_guard {
             g.shutdown().await;
@@ -397,6 +440,16 @@ async fn main() -> Result<()> {
         std::process::exit(if critical { 1 } else { 0 });
     }
 
+    // `meridian uninstall [--purge] [--dry-run] [--yes]` — stop + remove the
+    // launchd agents and staged binaries (inverse of the tray's first-run
+    // install). One-shot, no daemon init; survives the .app being trashed because
+    // this binary lives at ~/.meridian/bin/meridian.
+    if std::env::args().nth(1).as_deref() == Some("uninstall") {
+        let args: Vec<String> = std::env::args().collect();
+        meridian::uninstall::run(&args);
+        return Ok(());
+    }
+
     // `meridian telemetry <status|export|import>` — telemetry spool management.
     // Read-only for status/export; import POSTs to OO. No daemon init needed.
     if std::env::args().nth(1).as_deref() == Some("telemetry") {
@@ -417,8 +470,7 @@ async fn main() -> Result<()> {
 
     // 4. Log startup parameters
     tracing::info!(
-        screenpipe_db = %initial_cfg.screenpipe_db,
-        meridian_db   = %initial_cfg.meridian_db,
+        meridian_db = %initial_cfg.meridian_db,
         poll_interval_secs = initial_cfg.poll_interval_secs,
         "meridian daemon starting"
     );
@@ -431,17 +483,30 @@ async fn main() -> Result<()> {
     //     created its own database.
     let meridian = setup_db(&initial_cfg.meridian_db_uri()).await?;
 
-    // 4d. Open screenpipe pool (read-only)
-    let screenpipe = open_screenpipe(&initial_cfg.screenpipe_db_uri()).await?;
+    // 4c. Preflight: verify the classification stack. NON-FATAL — classification
+    //     is an enhancement layer; ETL must keep recording sessions while the
+    //     MLX server is down. Unclassified sessions stay pending and the task
+    //     linker's 5-minute fallback drains them once the server is reachable.
+    //     (Exiting here put launchd in a 120s-wait → exit → respawn loop on any
+    //     machine where the MLX server could not start.)
+    if let Err(e) = check_classification_ready(&initial_cfg) {
+        tracing::error!(
+            error = %e,
+            "classification preflight failed — continuing with classification degraded"
+        );
+        eprintln!(
+            "\nWARNING: {e}\n\
+             Sessions will be recorded but not classified until the MLX server is reachable.\n"
+        );
+    }
 
-    // 4e. Capture-layer (L1) preflight: surface degraded screen capture (revoked
-    //     Screen Recording / Accessibility permission, dead screenpipe, stale
-    //     frames) before the poll loop. Non-fatal — the daemon still runs; we log
-    //     the fault so misclassifications aren't blamed on the model.
-    meridian::health::Report::new(
-        meridian::health::capture::checks(&initial_cfg, Some(&screenpipe)).await,
-    )
-    .log("startup");
+    // 4d. Capture-layer (L1) preflight: surface degraded in-process capture
+    //     (revoked Screen Recording / Accessibility permission, the tray not
+    //     running, stale frames) before the poll loop. Reads meridian's own
+    //     capture tables — no screenpipe pool. Non-fatal — the daemon still runs;
+    //     we log the fault so misclassifications aren't blamed on the model.
+    meridian::health::Report::new(meridian::health::capture::checks(&meridian).await)
+        .log("startup");
 
     // 5b. Unix domain socket — health endpoint for the tray / UI.
     //     ~/.meridian/daemon.sock: connecting succeeds = daemon is running.
@@ -507,9 +572,19 @@ async fn main() -> Result<()> {
         Err(e) => tracing::error!("cleanup_incomplete_runs failed: {}", e),
     }
 
-    // 7b. Notify that wakes the worklog driver after each ETL pass so an hour that
-    //     just became complete drafts immediately instead of waiting for the next
-    //     interval tick.
+    // 7b. A background task drains the classification queue without blocking the
+    //     poll loop (each session can take ~16 s). The poll loop notifies it after
+    //     every ETL pass; it calls the persistent MLX classifier server.
+    let etl_notify: Arc<Notify> = Arc::new(Notify::new());
+    // Shared slot: main task clones the current tick span here so the linker task
+    // can parent its run_task_linking spans under poll_tick / startup_tick.
+    let etl_tick_span: Arc<std::sync::Mutex<Option<tracing::Span>>> =
+        Arc::new(std::sync::Mutex::new(None));
+
+    // Wakes the PM-worklog driver the moment the classifier settles a session: an
+    // hour becomes draftable exactly when its last in-flight session is classified,
+    // so the driver reacts in seconds instead of waiting up to a full interval. The
+    // driver's interval timer is kept as a fallback (aging escape + day rollover).
     let worklog_notify: Arc<Notify> = Arc::new(Notify::new());
 
     // 7c. Run ETL once immediately before entering the loop.
@@ -517,9 +592,10 @@ async fn main() -> Result<()> {
     {
         let cfg = Config::from_env();
         let startup_tick = tracing::info_span!("startup_tick");
+        *etl_tick_span.lock().unwrap() = Some(startup_tick.clone());
         let _guard = startup_tick.enter();
         tracing::info!("running initial ETL pass");
-        if let Err(e) = run_etl(&screenpipe, &meridian).await {
+        if let Err(e) = run_etl(&meridian).await {
             tracing::error!(error = %e, "ETL run failed");
             let _ = meridian::notices::raise(
                 &meridian,
@@ -533,12 +609,22 @@ async fn main() -> Result<()> {
         } else {
             let _ = meridian::notices::clear(&meridian, "etl.failed").await;
         }
-        worklog_notify.notify_one();
+        etl_notify.notify_one();
         if let Err(e) = run_pm_sync(&meridian, &cfg).await {
             tracing::error!("intelligence run failed: {}", e);
         }
     }
 
+    // 8a. MLX only: spawn the task linker loop.
+    //     Wakes immediately when ETL signals new sessions; drains oldest-first
+    //     (preserving the 5-session context window) until caught up, then waits
+    //     for the next ETL notification. A 5-min fallback ensures recovery if a
+    //     notify was missed (e.g. daemon restart with existing backlog).
+    //
+    //     Failure handling:
+    //       - Transient failure  → cursor stays, retry on next notify
+    //       - Permanent failure  → sentinel written after MAX_CONSECUTIVE_FAILURES,
+    //                              cursor advances, drain continues
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     // 8a-bis. Coding-agent tasks (both gated — dormant if neither agent is
@@ -566,16 +652,15 @@ async fn main() -> Result<()> {
         });
     }
 
-    // 7d. Worklog driver (Stage 4): hour-driven loop that DRAFTS worklogs for each
-    //     settled hour. Never posts — drafts wait for human approval in the
-    //     dashboard.
+    // 7d. PM-worklog driver (Stage 4): the hour-driven loop that DRAFTS one Jira
+    //     worklog per task per settled hour. Never posts — drafted worklogs wait
+    //     for a human to approve them in the dashboard. Independent of the ETL tick.
     {
-        let pool_wl = meridian.clone();
-        let rx_wl = shutdown_rx.clone();
-        let notify_wl = worklog_notify.clone();
-        let db_path_wl = initial_cfg.meridian_db.clone();
+        let pool_pm = meridian.clone();
+        let rx_pm = shutdown_rx.clone();
+        let notify_pm = worklog_notify.clone();
         tokio::spawn(async move {
-            meridian::worklog_pipeline::run_loop(pool_wl, db_path_wl, rx_wl, notify_wl).await;
+            meridian::pm_worklog::run_loop(pool_pm, rx_pm, notify_pm).await;
         });
     }
 
@@ -605,6 +690,154 @@ async fn main() -> Result<()> {
     {
         tokio::spawn(async move {
             meridian::telemetry_spool::shipper::run_shipper(shipper_shutdown_rx).await;
+        });
+    }
+
+    {
+        let mut shutdown_rx = shutdown_rx;
+        let meridian_linker = meridian.clone();
+        let notify_linker = etl_notify.clone();
+        let tick_span_linker = etl_tick_span.clone();
+        let notify_worklog = worklog_notify.clone();
+        tokio::spawn(async move {
+            // Tracks consecutive subprocess failures per session_id.
+            // Reset to zero whenever any session is successfully classified.
+            // Persists across drain cycles within this daemon run (lost on restart,
+            // which is fine — transient failures before restart won't be double-counted).
+            let mut failure_counts: HashMap<i64, u32> = HashMap::new();
+
+            loop {
+                // Take the tick span written by the main task so run_task_linking spans
+                // appear as children of the triggering poll_tick / startup_tick.
+                let parent_span: tracing::Span = tokio::select! {
+                    _ = shutdown_rx.changed() => break,
+                    _ = notify_linker.notified() => {
+                        tick_span_linker.lock().unwrap().take()
+                            .unwrap_or_else(tracing::Span::none)
+                    }
+                    _ = tokio::time::sleep(Duration::from_secs(300)) => tracing::Span::none(),
+                };
+
+                // Each classification below runs as its OWN root trace (not a child
+                // of this tick), so a backlog drain produces one self-contained trace
+                // per session instead of N siblings collapsed into one tick trace.
+                // We still want the daemon→session relationship, so capture the tick's
+                // span context here and pass it down as a span LINK. `Span::none()`
+                // (the 5-min fallback wake) yields no context → no link, which is fine.
+                let tick_link = parent_span
+                    .in_scope(meridian::observability::current_traceparent)
+                    .as_deref()
+                    .and_then(meridian::observability::span_context_from_traceparent);
+
+                // Whether this wake settled at least one session — if so, wake the
+                // PM-worklog driver afterwards so a now-complete hour drafts at once.
+                let mut classified_any = false;
+
+                // Drain: classify oldest-first until nothing is left or a failure stops us.
+                loop {
+                    let cfg = Config::from_env();
+                    // No `.instrument(parent_span)` here on purpose: run_task_linking's
+                    // own #[tracing::instrument] span is created with no ambient parent,
+                    // so it starts a fresh root trace. `tick_link` (the tick's span
+                    // context) is passed as a LINK instead — daemon→session stays
+                    // navigable without merging every drained session into one trace.
+                    match run_task_linking(&meridian_linker, &cfg, tick_link.clone()).await {
+                        Ok(TaskLinkOutcome::Classified) => {
+                            failure_counts.clear();
+                            classified_any = true;
+                            let _ = meridian::notices::clear(&meridian_linker, "mlx.down").await;
+                            // Loop immediately — more sessions may be waiting.
+                        }
+                        Ok(TaskLinkOutcome::NoPendingWork) => {
+                            // Cursor work is caught up — now drain the coding-agent
+                            // classify queue (summarised rows → task linking), the
+                            // last link of seal→summarise→classify. Repeat until empty.
+                            loop {
+                                match run_coding_agent_classification(
+                                    &meridian_linker,
+                                    &cfg,
+                                    tick_link.clone(),
+                                )
+                                .await
+                                {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        classified_any = true;
+                                        tracing::info!(
+                                            classified = n,
+                                            "coding-agent rows classified"
+                                        )
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(error = %e, "coding-agent classification failed");
+                                        break;
+                                    }
+                                }
+                            }
+                            break; // Caught up — go back to waiting for next notify.
+                        }
+                        Ok(TaskLinkOutcome::SubprocessFailed {
+                            session_id,
+                            pending,
+                        }) => {
+                            let count = failure_counts.entry(session_id).or_insert(0);
+                            *count += 1;
+
+                            if *count >= MAX_CONSECUTIVE_FAILURES {
+                                tracing::warn!(
+                                    session_id,
+                                    failures = *count,
+                                    pending,
+                                    "max consecutive failures — writing subprocess_error sentinel \
+                                 and advancing cursor"
+                                );
+                                let _ = meridian::notices::raise(
+                                    &meridian_linker,
+                                    "mlx.down",
+                                    "warning",
+                                    "MLX classifier is not responding",
+                                    &format!("Failed to classify session {session_id} after {count} attempts — classification is paused"),
+                                    Some(MLX_DOWN_FIX_HINT),
+                                ).await;
+                                if let Err(e) =
+                                    mark_session_subprocess_error(&meridian_linker, session_id)
+                                        .await
+                                {
+                                    tracing::error!(
+                                        session_id,
+                                        error = %e,
+                                        "failed to write error sentinel — will retry next tick"
+                                    );
+                                    break;
+                                }
+                                failure_counts.remove(&session_id);
+                                // Loop again — cursor advanced, try the next session.
+                            } else {
+                                tracing::warn!(
+                                    session_id,
+                                    failures = *count,
+                                    max = MAX_CONSECUTIVE_FAILURES,
+                                    pending,
+                                    "subprocess failed — cursor held, will retry on next ETL tick"
+                                );
+                                break; // Stop drain, wait for next notify / 5-min fallback.
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "classification run error");
+                            break;
+                        }
+                    }
+                }
+
+                // This wake settled at least one session — nudge the PM-worklog
+                // driver so an hour that just became complete drafts immediately
+                // instead of waiting for the next interval tick.
+                if classified_any {
+                    notify_worklog.notify_one();
+                }
+            }
+            tracing::info!("task linker loop stopped");
         });
     }
 
@@ -643,9 +876,10 @@ async fn main() -> Result<()> {
                     "poll_tick",
                     poll_interval_secs = cfg.runtime.poll_interval_secs
                 );
+                *etl_tick_span.lock().unwrap() = Some(poll_tick.clone());
                 let _guard = poll_tick.enter();
                 tracing::debug!("starting ETL tick");
-                if let Err(e) = run_etl(&screenpipe, &meridian).await {
+                if let Err(e) = run_etl(&meridian).await {
                     tracing::error!(error = %e, "ETL run failed");
                     let _ = meridian::notices::raise(
                         &meridian, "etl.failed", "error",
@@ -656,8 +890,8 @@ async fn main() -> Result<()> {
                 } else {
                     let _ = meridian::notices::clear(&meridian, "etl.failed").await;
                 }
-                // Wake the worklog driver after each ETL pass.
-                worklog_notify.notify_one();
+                // Wake the background task linker to drain newly-created sessions.
+                etl_notify.notify_one();
 
                 // Morning plan nudge — idempotent per day, gated to working hours.
                 if let Err(e) = meridian::daily_plan::maybe_nudge(&meridian).await {
@@ -669,7 +903,16 @@ async fn main() -> Result<()> {
                 // when a classify happens to fail) so the fault surfaces promptly
                 // on the dashboard banner AND — via the notices→outbox bridge — as
                 // a desktop toast + in-app banner. Auto-clears when it recovers.
-                if meridian::intelligence::mlx_ready(&cfg).await {
+                // Suppress this alarm during first-run onboarding: the MLX server
+                // is still being provisioned (runtime downloading), so "offline" is
+                // expected, not a fault — surfacing it (banner + desktop toast) in
+                // the setup wizard is just noise. Only raise once setup is complete.
+                // A genuine post-setup outage still surfaces reactively via the
+                // task-linker's mlx.down notice above, so this gate hides nothing.
+                let onboarded = std::env::var("HOME")
+                    .map(|h| std::path::Path::new(&h).join(".meridian/onboarded").exists())
+                    .unwrap_or(true);
+                if meridian::intelligence::mlx_ready(&cfg).await || !onboarded {
                     let _ = meridian::notices::clear(&meridian, "mlx.down").await;
                 } else {
                     let _ = meridian::notices::raise(
@@ -678,7 +921,7 @@ async fn main() -> Result<()> {
                         "warning",
                         "Classifier offline",
                         "The MLX classifier server isn't responding — new sessions are recorded but won't be tagged until it's back.",
-                        Some("Restart it: cd services && .venv313/bin/meridian-server --backend mlx"),
+                        Some(MLX_DOWN_FIX_HINT),
                     )
                     .await;
                 }
@@ -696,7 +939,6 @@ async fn main() -> Result<()> {
     // 9. Shutdown
     tracing::info!("shutting down");
     let _ = std::fs::remove_file(&sock_path_cleanup);
-    screenpipe.close().await;
     meridian.close().await;
 
     // Flush OTel exporters FIRST, while the runtime is alive — this writes the

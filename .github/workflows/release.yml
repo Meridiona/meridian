@@ -32,6 +32,11 @@ jobs:
     runs-on: macos-26
     env:
       SQLX_OFFLINE: "true"
+      # The tray pulls screenpipe-screen/-a11y from the PRIVATE Meridiona/
+      # screenpipe-fork (a git dep). Force cargo to fetch via the git CLI so it
+      # honors the credential the "Authenticate ... screenpipe-fork" step installs
+      # — libgit2 would not pick up the url.insteadOf rewrite.
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       # Baked into the release binary at compile time (consumed by option_env! in
       # src/intelligence/oauth/jira.rs). Atlassian Cloud's 3LO token endpoint
       # requires a confidential client_secret even for desktop apps, so the shipped
@@ -39,6 +44,15 @@ jobs:
       # JIRA_OAUTH_CLIENT_SECRET repo secret; rotate it together with the value in
       # the Atlassian developer console.
       MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
+      # Minisign key for the DMG auto-updater: `tauri build` (createUpdaterArtifacts)
+      # signs Meridian.app.tar.gz with these so the installed app can verify the
+      # update against the pubkey baked in tauri.conf.json. The build FAILS LOUDLY
+      # if these are unset (better than silently shipping a release that breaks
+      # auto-update) — set both repo secrets before this lands on main:
+      #   gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/meridian-updater.key
+      #   gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -96,12 +110,20 @@ jobs:
       - name: Install release tooling
         run: npm ci --no-audit --no-fund
 
-      - name: Cache Node.js 22 arm64 tarball
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/node22-arm64
-          # Key matches _NODE22_VERSION in scripts/package-release.sh — update both together.
-          key: node22-22.22.3-darwin-arm64
+      - name: Authenticate git for the private screenpipe-fork dependency
+        # The tray's capture stack (screenpipe-screen/-a11y) is a git dep on the
+        # PRIVATE Meridiona/screenpipe-fork. checkout uses persist-credentials:
+        # false and the default GITHUB_TOKEN is scoped to this repo only, so
+        # cargo's `git fetch` of the fork 403s. Rewrite just that URL to embed a
+        # PAT with read access. REQUIRES the GH_TOKEN secret to be able to read
+        # Meridiona/screenpipe-fork (org-member classic PAT with `repo`, or a
+        # fine-grained PAT granting both meridian AND screenpipe-fork).
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
 
       - name: semantic-release
         env:

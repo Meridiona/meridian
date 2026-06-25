@@ -12,6 +12,7 @@
 //   jira  — Atlassian 3LO wiring: login, refresh-before-use, request-ctx resolver
 
 pub mod flow;
+pub mod github;
 pub mod jira;
 pub mod pkce;
 pub mod store;

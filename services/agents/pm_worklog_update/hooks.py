@@ -55,14 +55,14 @@ except ImportError:                                     # pragma: no cover
     RunInput  = Any                                     # type: ignore[misc]
     RunOutput = Any                                     # type: ignore[misc]
 
-from agents.pm_worklog_update_legacy.models import (
+from agents.pm_worklog_update.models import (
     BulletWithEvidence,
     GroundedNarrative,
     JiraUpdate,
     RiskFlag,
     SessionBundle,
 )
-from agents.pm_worklog_update_legacy import config
+from agents.pm_worklog_update import config
 
 log = logging.getLogger(__name__)
 

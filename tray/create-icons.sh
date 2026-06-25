@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-# Generate all Tauri icon sizes from a programmatic monochrome source.
+# Generate all Tauri icon sizes from the Meridian brand mark.
 # Run from the tray/ directory before building: bash create-icons.sh
-# Requires: Python 3 (stdlib only), sips (macOS built-in), iconutil (macOS built-in)
+# Requires: sips (macOS built-in), iconutil (macOS built-in)
 set -euo pipefail
 
 ICONS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/src-tauri/icons"
@@ -10,84 +10,24 @@ mkdir -p "${ICONS_DIR}"
 ICONSET="${ICONS_DIR}/icon.iconset"
 mkdir -p "${ICONSET}"
 
-# ── Generate a 1024×1024 RGBA PNG source icon using Python stdlib ────────────
-# Design: warm amber filled circle with a white "M" letterform, on transparent bg.
-python3 - <<'PYEOF'
-import struct, zlib, math, os
+# ── Master source: the real Meridian brand mark ─────────────────────────────
+# Every icon size is derived from the brand mark (the gradient spirograph on a
+# transparent background), NOT a synthetic placeholder. Swap MASTER to rebrand.
+MASTER="${ICONS_DIR}/meridiona-mark.png"
+if [[ ! -f "${MASTER}" ]]; then
+    echo "✗ brand mark not found: ${MASTER}" >&2
+    exit 1
+fi
 
-def png_chunk(tag, data):
-    crc_data = tag + data
-    return struct.pack('>I', len(data)) + crc_data + struct.pack('>I', zlib.crc32(crc_data) & 0xffffffff)
-
-def make_rgba_png(filename, size, draw_fn):
-    rows = []
-    for y in range(size):
-        row = [0]  # filter type = None
-        for x in range(size):
-            r, g, b, a = draw_fn(x, y, size)
-            row += [r, g, b, a]
-        rows.append(bytes(row))
-
-    raw = b''.join(rows)
-    compressed = zlib.compress(raw, 9)
-
-    ihdr = struct.pack('>IIBBBBB', size, size, 8, 6, 0, 0, 0)  # 8-bit RGBA
-    png = (
-        b'\x89PNG\r\n\x1a\n'
-        + png_chunk(b'IHDR', ihdr)
-        + png_chunk(b'IDAT', compressed)
-        + png_chunk(b'IEND', b'')
-    )
-    with open(filename, 'wb') as f:
-        f.write(png)
-
-AMBER_R, AMBER_G, AMBER_B = 196, 130, 42   # Meridian accent (#C4822A)
-
-def draw_app_icon(x, y, size):
-    cx, cy = size / 2, size / 2
-    radius = size * 0.45
-    # Circle (anti-aliased via distance)
-    dist = math.hypot(x - cx, y - cy)
-    if dist > radius + 1:
-        return 0, 0, 0, 0   # transparent
-    alpha = int(255 * max(0, min(1, radius + 1 - dist)))
-    # White "M" letterform — two outer posts + centre V
-    rel_x = (x - cx) / (size * 0.3)
-    rel_y = (y - cy) / (size * 0.3)
-    in_left   = -0.9 <= rel_x <= -0.55 and -0.8 <= rel_y <= 0.8
-    in_right  =  0.55 <= rel_x <=  0.9 and -0.8 <= rel_y <= 0.8
-    # V: left arm y = rel_x + 0.55 (for rel_x in [-0.55..0]), right arm mirrored
-    in_v_left  = -0.55 <= rel_x <= 0 and abs(rel_y - (rel_x + 0.55)) <= 0.18 and rel_y >= -0.3
-    in_v_right =   0 <= rel_x <= 0.55 and abs(rel_y - (-rel_x + 0.55)) <= 0.18 and rel_y >= -0.3
-    if in_left or in_right or in_v_left or in_v_right:
-        return 255, 255, 255, alpha    # white mark
-    return AMBER_R, AMBER_G, AMBER_B, alpha
-
-# Tray icon: smaller, monochrome, dark symbol on transparent (template image)
-def draw_tray_icon(x, y, size):
-    cx, cy = size / 2, size / 2
-    radius = size * 0.45
-    dist = math.hypot(x - cx, y - cy)
-    # No background fill — just the mark for template image rendering
-    rel_x = (x - cx) / (size * 0.3)
-    rel_y = (y - cy) / (size * 0.3)
-    in_left   = -0.9 <= rel_x <= -0.55 and -0.8 <= rel_y <= 0.8
-    in_right  =  0.55 <= rel_x <=  0.9 and -0.8 <= rel_y <= 0.8
-    in_v_left  = -0.55 <= rel_x <= 0 and abs(rel_y - (rel_x + 0.55)) <= 0.18 and rel_y >= -0.3
-    in_v_right =   0 <= rel_x <= 0.55 and abs(rel_y - (-rel_x + 0.55)) <= 0.18 and rel_y >= -0.3
-    if in_left or in_right or in_v_left or in_v_right:
-        if dist < radius:
-            return 0, 0, 0, 220    # near-black mark
-    return 0, 0, 0, 0
-
-icons_dir = os.environ.get('ICONS_DIR', 'src-tauri/icons')
-make_rgba_png(os.path.join(icons_dir, 'source-1024.png'), 1024, draw_app_icon)
-make_rgba_png(os.path.join(icons_dir, 'tray.png'), 32, draw_tray_icon)
-print('  · source-1024.png and tray.png generated')
-PYEOF
+# Normalise the master to a square 1024×1024 RGBA source (preserves alpha).
+SOURCE="${ICONS_DIR}/source-1024.png"
+sips -z 1024 1024 "${MASTER}" --out "${SOURCE}" >/dev/null 2>&1
+# Keep tray.png in sync with the mark (Tauri loads meridiona-mark.png directly,
+# but other tooling may expect tray.png).
+sips -z 32 32 "${MASTER}" --out "${ICONS_DIR}/tray.png" >/dev/null 2>&1
+echo "  · source-1024.png and tray.png derived from brand mark"
 
 # ── Resize using sips (macOS built-in) ──────────────────────────────────────
-SOURCE="${ICONS_DIR}/source-1024.png"
 
 resize() {
     local size="$1" dest="$2"

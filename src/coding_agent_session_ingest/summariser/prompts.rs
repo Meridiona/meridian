@@ -21,18 +21,15 @@ pub const SUMMARY_PROMPT_MARKER: &str =
 /// The shared rules, without an output-format clause (engines append their own).
 pub const SUMMARY_RULES: &str =
     "You summarise ONE work-burst of a developer's coding-agent session for a \
-Project management work-log. This summary is the SOLE input used to write that work-log, so \
-it must stand on its own. The transcript (provided on stdin) is timestamped as \
+Jira work-log. The transcript (provided on stdin) is timestamped as \
 `[<ISO ts>] [role] <message>`. Write a factual prose summary of 10-40 \
 sentences: name the files edited, commands run, errors hit, decisions \
 made, tests/validations performed, and any rework or blockers (an approach \
 abandoned, a failed build/test, something deleted and rebuilt). State ONLY \
 what is in the transcript — never invent files, tickets, commands, or \
-outcomes. If the burst covered more than one distinct task or piece of work, \
-write a separate paragraph for each so each can become its own work-log entry; \
-if it was all one task, a single set of paragraphs is fine. No preamble, no \
-markdown headings, no bullet lists — just clear paragraphs. If an 'EARLIER IN \
-THIS SESSION' section is present, do not repeat it; summarise only this burst.";
+outcomes. No preamble, no markdown headings, no bullet lists — just clear \
+paragraphs. If an 'EARLIER IN THIS SESSION' section is present, do not \
+repeat it; summarise only this burst.";
 
 /// For schema-enforced engines (Codex `--output-schema`): ask for JSON.
 pub fn summary_instruction() -> String {
@@ -116,35 +113,10 @@ pub fn extract_summary(text: &str) -> (String, Vec<String>) {
                         .collect()
                 })
                 .unwrap_or_default();
-            return (strip_tool_markup(summary), blockers);
+            return (summary.trim().to_string(), blockers);
         }
     }
-    (strip_tool_markup(text), Vec::new())
-}
-
-/// Strip leaked agent tool-call markup from a summary. A weaker model sometimes
-/// emits an Anthropic-style function-call block (`<invoke …>`, `<parameter …>`,
-/// `</parameter>`, `</invoke>`) as LITERAL text inside the `summary` value — the
-/// trailing fragment then bleeds into the work-log prose (observed live, e.g.
-/// "…Not yet committed.</parameter>\n<parameter name=\"blockers\">…"). The genuine
-/// prose always precedes the first such tag, so we cut there and trim. Idempotent
-/// on clean input (no marker → unchanged).
-pub fn strip_tool_markup(summary: &str) -> String {
-    const MARKERS: &[&str] = &[
-        "</parameter>",
-        "<parameter",
-        "</invoke>",
-        "<invoke",
-        "<function_calls>",
-        "</function_calls>",
-        "antml:",
-    ];
-    let cut = MARKERS
-        .iter()
-        .filter_map(|m| summary.find(m))
-        .min()
-        .unwrap_or(summary.len());
-    summary[..cut].trim().to_string()
+    (text.trim().to_string(), Vec::new())
 }
 
 fn try_json_object(text: &str) -> Option<serde_json::Value> {
@@ -184,31 +156,6 @@ mod tests {
         let (s, b) = extract_summary("The developer fixed auth.ts and reran the tests.");
         assert_eq!(s, "The developer fixed auth.ts and reran the tests.");
         assert!(b.is_empty());
-    }
-
-    #[test]
-    fn strip_tool_markup_cuts_leaked_function_call() {
-        // The exact shape observed live (row 39506): prose then a leaked
-        // `</parameter>` + blockers block bled into the summary string.
-        let leaked = "Implemented the fix. Not yet committed.</parameter>\n\
-            <parameter name=\"blockers\">[\"Test math error\"]</parameter>\n</invoke>";
-        assert_eq!(
-            strip_tool_markup(leaked),
-            "Implemented the fix. Not yet committed."
-        );
-    }
-
-    #[test]
-    fn strip_tool_markup_leaves_clean_prose_untouched() {
-        let clean = "Edited segment.rs and ran cargo test — 424 passed.";
-        assert_eq!(strip_tool_markup(clean), clean);
-    }
-
-    #[test]
-    fn extract_summary_strips_leaked_markup() {
-        let (s, _) =
-            extract_summary(r#"{"summary": "Did the work.<invoke name=\"x\">", "blockers": []}"#);
-        assert_eq!(s, "Did the work.");
     }
 
     /// The ingest-side circular-dependency guard matches on this marker; if

@@ -3,8 +3,9 @@
 
 import { useEffect, useState } from 'react'
 import { TaskKey, ProviderGlyph, StatusPill } from '@/components/atoms'
-import type { TaskSummary } from '@/app/api/tasks/route'
+import type { TaskSummary } from '@/lib/api-types'
 import type { HygieneIssue } from '@/lib/hygiene'
+import { load, mutate } from '@/lib/bridge'
 
 const PRIORITIES = ['Highest', 'High', 'Medium', 'Low', 'Lowest']
 
@@ -111,13 +112,11 @@ function FixRow({ issue, index, task, onApplied }: { issue: HygieneIssue; index:
     setState('saving'); setMsg('')
     try {
       const payload = { provider: task.provider, key: task.key, field, value: val }
-      const res = await fetch('/api/triage/apply', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-      const data = await res.json()
-      if (!res.ok) { setState('error'); setTerminalPending(null); setMsg(data.error ?? 'Save failed'); return }
-      const result = data.result as { status: string; browse_url?: string; reason?: string }
+      // Dual-path: apply_ticket_fix (Rust) in the app, /api/triage/apply in a
+      // browser. mutate throws the route's error text on failure → show it.
+      const data = await mutate<{ result: { status: string; browse_url?: string; reason?: string } }>(
+        '/api/triage/apply', 'apply_ticket_fix', payload)
+      const result = data.result
       if (result.status === 'applied') {
         setState('applied'); setTerminalPending(null); setMsg('Saved to tracker')
         onApplied?.()
@@ -127,8 +126,8 @@ function FixRow({ issue, index, task, onApplied }: { issue: HygieneIssue; index:
         const url = result.browse_url || task.url
         if (url) window.open(url, '_blank', 'noopener')
       }
-    } catch {
-      setState('error'); setTerminalPending(null); setMsg('Network error')
+    } catch (e) {
+      setState('error'); setTerminalPending(null); setMsg(e instanceof Error ? e.message : 'Network error')
     }
   }
 
@@ -244,9 +243,15 @@ function ParentPicker({ provider, taskKey, saving, onPick }: {
 
   useEffect(() => {
     let alive = true
-    fetch(`/api/triage/parents?provider=${encodeURIComponent(provider)}&key=${encodeURIComponent(taskKey)}`)
-      .then(r => r.json())
-      .then((d: { parents?: Parent[]; parent_label?: string; create_url?: string; error?: string }) => {
+    // get_ticket_parents (Rust, shells out to `meridian ticket-parents`) in the
+    // Tauri window; /api/triage/parents in a browser. Same shape — both relay
+    // the CLI's JSON and carry an `error` field on failure rather than throwing.
+    load<{ parents?: Parent[]; parent_label?: string; create_url?: string; error?: string }>(
+      `/api/triage/parents?provider=${encodeURIComponent(provider)}&key=${encodeURIComponent(taskKey)}`,
+      'get_ticket_parents',
+      { provider, key: taskKey },
+    )
+      .then((d) => {
         if (!alive) return
         setParents(d.parents ?? [])
         setLabel(d.parent_label || 'parent')

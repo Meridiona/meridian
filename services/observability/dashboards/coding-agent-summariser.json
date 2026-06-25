@@ -1,7 +1,7 @@
 {
-  "version": 5,
-  "title": "Coding-Agent Summariser \u2014 Continuity",
-  "description": "Every sealed coding-agent segment turned into a prose summary, newest first. The continuity signal: `prior_present=true` means the segment was summarised WITH the previous burst's summary injected as context (a resumed session reading as one story); `prior_chars` is how much context carried over. Backed by the `summarise_segment` spans (service meridian \u2014 the Rust daemon's in-process summariser). Copy a row's trace_id and open it in Traces for the full span. Filter by session UUID or agent above; use Continuity = 'with prior' to see only resumed-session summaries.",
+  "version": 8,
+  "title": "Coding-Agent Summariser — Continuity",
+  "description": "Every sealed coding-agent segment turned into a prose summary, newest first. The continuity signal: `prior_present=true` means the segment was summarised WITH the previous burst's summary injected as context (a resumed session reading as one story); `prior_chars` is how much context carried over. Backed by the `summarise_segment` spans (service meridian — the Rust daemon's in-process summariser). Copy a row's trace_id and open it in Traces for the full span. Filter by session UUID or agent above; use Continuity = 'with prior' to see only resumed-session summaries.",
   "tabs": [
     {
       "tabId": "default",
@@ -60,8 +60,8 @@
           "layout": {
             "x": 0,
             "y": 0,
-            "w": 12,
-            "h": 6,
+            "w": 32,
+            "h": 18,
             "i": 1
           }
         },
@@ -116,10 +116,10 @@
             }
           ],
           "layout": {
-            "x": 12,
+            "x": 32,
             "y": 0,
-            "w": 12,
-            "h": 6,
+            "w": 32,
+            "h": 18,
             "i": 2
           }
         },
@@ -175,10 +175,10 @@
             }
           ],
           "layout": {
-            "x": 24,
+            "x": 64,
             "y": 0,
-            "w": 12,
-            "h": 6,
+            "w": 32,
+            "h": 18,
             "i": 3
           }
         },
@@ -186,7 +186,7 @@
           "id": "stat_fallback",
           "type": "metric",
           "title": "MLX fallback %",
-          "description": "Share summarised by the MLX fallback (primary agent CLI unavailable) \u2014 primary-engine health",
+          "description": "Share summarised by the MLX fallback (primary agent CLI unavailable) — primary-engine health",
           "config": {
             "show_legends": false,
             "legends_position": null,
@@ -234,10 +234,10 @@
             }
           ],
           "layout": {
-            "x": 36,
+            "x": 96,
             "y": 0,
-            "w": 12,
-            "h": 6,
+            "w": 32,
+            "h": 18,
             "i": 4
           }
         },
@@ -292,10 +292,10 @@
             }
           ],
           "layout": {
-            "x": 0,
-            "y": 6,
-            "w": 24,
-            "h": 6,
+            "x": 128,
+            "y": 0,
+            "w": 32,
+            "h": 18,
             "i": 5
           }
         },
@@ -350,10 +350,10 @@
             }
           ],
           "layout": {
-            "x": 24,
-            "y": 6,
-            "w": 24,
-            "h": 6,
+            "x": 160,
+            "y": 0,
+            "w": 32,
+            "h": 18,
             "i": 6
           }
         },
@@ -361,7 +361,7 @@
           "id": "table_all",
           "type": "table",
           "title": "All segments (newest first)",
-          "description": "Filter with the Session UUID / Agent / Continuity variables above. 'Prior' = whether the previous burst's summary was injected; 'Prior chars' = how much context carried over. Click any row \u2192 opens that trace's spans.",
+          "description": "Filter with the Session UUID / Agent / Continuity variables above. 'Prior' = whether the previous burst's summary was injected; 'Prior chars' = how much context carried over. Click any row → opens that trace's spans.",
           "config": {
             "show_legends": false,
             "legends_position": null,
@@ -545,8 +545,8 @@
           ],
           "layout": {
             "x": 0,
-            "y": 12,
-            "w": 48,
+            "y": 18,
+            "w": 192,
             "h": 40,
             "i": 7
           }
@@ -617,6 +617,5 @@
   "defaultDatetimeDuration": {
     "type": "relative",
     "relativeTimePeriod": "12h"
-  },
-  "refreshInterval": 30
+  }
 }

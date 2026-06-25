@@ -51,9 +51,11 @@ pub async fn checks(cfg: &Config) -> Vec<Check> {
                     Check::warn(
                         "backend",
                         "L2",
-                        format!("'{backend}' (expected mlx) — MLX endpoints will 503"),
+                        format!("'{backend}' (expected mlx) — /classify_sessions will 503"),
                     )
-                    .with_remedy("start the server with --backend mlx"),
+                    .with_remedy(
+                        "restart in MLX mode: cd services && .venv/bin/python -m agents.server --port 7823",
+                    ),
                 );
             }
         }

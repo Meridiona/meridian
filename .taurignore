@@ -1,0 +1,13 @@
+# Tauri dev-watcher ignores (gitignore syntax). Tauri watches the whole cargo
+# workspace (this dir) to rebuild the Rust tray on source changes. The Next
+# frontend (ui/) churns ui/.next on every compile/route request — without these
+# ignores the watcher re-runs the tray binary on each cache write, thrashing the
+# app (and orphaning a menu-bar icon per restart). The frontend hot-reloads via
+# `next dev` independently; Tauri never needs to watch it.
+#
+# Globs (not bare folders) because tauri#8901: a folder pattern can fail to
+# exclude files inside it.
+ui/**
+ui/.next/**
+**/node_modules/**
+target/**

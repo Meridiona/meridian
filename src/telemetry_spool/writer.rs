@@ -100,7 +100,11 @@ pub fn write_pending(base: &Path, signal: &str, bytes: &[u8]) -> Result<PathBuf>
     }
     fsync_dir(&pending);
 
-    tracing::debug!(
+    // TRACE, not DEBUG: this fires on every batch export (~1/s) and, because the
+    // event is itself a log, the OTLP logs layer captures it → spools it → logs
+    // again, a self-feeding loop that floods the terminal at `meridian=debug`.
+    // Keep it for deep spool debugging only (`meridian=trace`).
+    tracing::trace!(
         signal,
         path = %final_path.display(),
         bytes = bytes.len(),

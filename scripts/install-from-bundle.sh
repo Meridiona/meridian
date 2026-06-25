@@ -10,9 +10,14 @@
 set -euo pipefail
 
 APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# ⚠️ LICENSE PIN — DO NOT BUMP past 0.4.6 without legal review.
+# screenpipe relicensed MIT → Commercial on 2026-06-10. 0.4.6 (published
+# 2026-06-05) is the LAST MIT npm release; >= 0.4.17 (2026-06-11+) is Commercial,
+# whose "competing product" clause would then bind our users. Meridian ships zero
+# screenpipe code, so MIT 0.4.6 keeps the install license-clean. Bumping this is a
+# deliberate legal decision. CI enforces it — .github/workflows/ci.yml `screenpipe-license-pin`.
 SCREENPIPE_VERSION="0.4.6"
 MLX_PORT="${MLX_PORT:-7823}"
-UI_PORT="${MERIDIAN_UI_PORT:-3939}"   # dashboard port (override via MERIDIAN_UI_PORT)
 SKIP_PERMISSIONS=0
 [[ "${1:-}" == "--skip-permissions" ]] && SKIP_PERMISSIONS=1
 
@@ -22,7 +27,6 @@ SKIP_PERMISSIONS=0
 _HASH_FILE="${HOME}/.meridian/.component-hashes"
 _load_old_hash() { grep "^$1=" "${_HASH_FILE}" 2>/dev/null | cut -d= -f2 || true; }
 _OLD_DAEMON_HASH="$(_load_old_hash daemon_bin)"
-_OLD_UI_HASH="$(_load_old_hash ui_tarball)"
 _OLD_TRAY_HASH="$(_load_old_hash tray_bin)"
 
 info() { echo "→ $*" >&2; }
@@ -125,111 +129,28 @@ source "${APP_ROOT}/scripts/lib-trello-setup.sh"
 GUI_TARGET="gui/$(id -u)"
 LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
 
-# Resolve the Node runtime the dashboard must run on. The better-sqlite3 addon in
-# ui.tar.gz is built against one exact Node version (recorded in
-# bin/node-runtime.meta by package-release.sh); running any other Node major
-# triggers a NODE_MODULE_VERSION (ABI) mismatch and the dashboard crash-loops.
-# The 113 MB Node binary is NOT shipped through npm (it would blow the registry
-# payload limit), so we download that exact official build from nodejs.org once,
-# verify the pinned SHA-256, and cache it under ~/.meridian (survives the APP_ROOT
-# rm-rf on `meridian update`). Echoes the node path on stdout. Failure fallbacks
-# to system node are LOUD because they may not match the addon's ABI.
-resolve_node_runtime() {
-    local meta="${APP_ROOT}/bin/node-runtime.meta"
-    # Dev/source install (no meta file): use system/Homebrew node as-is. Such a
-    # build compiles its own better-sqlite3 against that node, so ABI matches.
-    if [[ ! -f "${meta}" ]]; then
-        local _n
-        for _n in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
-            [[ -x "${_n}" ]] && { echo "${_n}"; return 0; }
-        done
-        return 1
-    fi
-    local ver sha
-    ver="$(grep '^NODE_RUNTIME_VERSION=' "${meta}" | cut -d= -f2 | tr -d '[:space:]')"
-    sha="$(grep '^NODE_RUNTIME_SHA=' "${meta}" | cut -d= -f2 | tr -d '[:space:]')"
-    if [[ -z "${ver}" || -z "${sha}" ]]; then
-        warn "node-runtime.meta is malformed (missing VERSION or SHA) — falling back to system node"
-        for _n in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
-            [[ -x "${_n}" ]] && { echo "${_n}"; return 0; }
-        done
-        return 1
-    fi
-    local cache_dir="${HOME}/.meridian/node-runtime/v${ver}"
-    local cache_bin="${cache_dir}/bin/node"
-    if [[ -x "${cache_bin}" ]]; then echo "${cache_bin}"; return 0; fi
-    local tmp tgz url got
-    tmp="$(mktemp -d)"; tgz="${tmp}/node.tar.gz"
-    url="https://nodejs.org/dist/v${ver}/node-v${ver}-darwin-arm64.tar.gz"
-    info "Downloading Node ${ver} runtime for the dashboard (one-time, ~40 MB)…"
-    if curl -fsSL --retry 3 "${url}" -o "${tgz}"; then
-        got="$(shasum -a 256 "${tgz}" | cut -d' ' -f1)"
-        if [[ "${got}" == "${sha}" ]]; then
-            tar -xzf "${tgz}" -C "${tmp}"
-            rm -rf "${cache_dir}"; mkdir -p "$(dirname "${cache_dir}")"
-            mv "${tmp}/node-v${ver}-darwin-arm64" "${cache_dir}"
-            rm -rf "${tmp}"
-            ok "Node ${ver} runtime cached (ABI-matched to the dashboard)"
-            echo "${cache_bin}"; return 0
-        fi
-        warn "Node ${ver} SHA-256 mismatch (expected ${sha}, got ${got}) — not using it"
-    else
-        warn "Node ${ver} download failed (offline?) — the dashboard needs it to match better-sqlite3's ABI"
-    fi
-    rm -rf "${tmp}"
-    local _n
-    for _n in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
-        if [[ -x "${_n}" ]]; then
-            warn "Falling back to ${_n} — if the dashboard fails to load, re-run 'meridian update' with a connection"
-            echo "${_n}"; return 0
-        fi
-    done
-    return 1
-}
-
-# Register the dashboard as a launchd agent that runs the prebuilt Next.js
-# standalone server (`node ui/server.js`) — no `npm start`, no node_modules
-# install. Mirrors the EIO-safe bootout/bootstrap pattern of the other agents.
-install_ui_standalone() {
+# Retire the legacy standalone dashboard Node server. The dashboard now ships
+# embedded INSIDE the tray binary (static export, no Node server), so any
+# `com.meridiona.ui` launchd agent from a pre-fold install is a zombie — a
+# KeepAlive=true Node server holding the old dashboard port. Boot it out + remove
+# its plist, and drop the now-orphaned ABI-matched Node runtime cache. Idempotent
+# (no-op when absent) and non-fatal (a launchctl hiccup must not abort the
+# update) — but logged, never silent.
+retire_legacy_ui_server() {
     local label="com.meridiona.ui"
     local plist="${LAUNCH_AGENTS}/${label}.plist"
-    # Resolve the ABI-matched Node runtime (downloads + caches it on first use).
-    local node_bin
-    node_bin="$(resolve_node_runtime)" || { err "node not found — install Node.js: brew install node"; return 1; }
-    local start_script="${APP_ROOT}/scripts/ui-start.sh"
-    chmod +x "${start_script}" 2>/dev/null || true
-    mkdir -p "${HOME}/.meridian/logs" "${LAUNCH_AGENTS}"
-    cat > "${plist}" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>${label}</string>
-  <key>ProgramArguments</key>
-  <array><string>${start_script}</string></array>
-  <key>WorkingDirectory</key><string>${APP_ROOT}/ui</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PORT</key><string>${UI_PORT}</string>
-    <key>HOSTNAME</key><string>127.0.0.1</string>
-    <key>MERIDIAN_DB_PATH</key><string>${HOME}/.meridian/meridian.db</string>
-    <key>MERIDIAN_NODE_BIN</key><string>${node_bin}</string>
-  </dict>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>${HOME}/.meridian/logs/ui.log</string>
-  <key>StandardErrorPath</key><string>${HOME}/.meridian/logs/ui-error.log</string>
-  <key>ProcessType</key><string>Background</string>
-</dict></plist>
-PLIST
-    plutil -lint "${plist}" >/dev/null 2>&1 || { warn "ui plist failed lint"; return 1; }
-    launchctl bootout "${GUI_TARGET}/${label}" 2>/dev/null || true
-    local w=0
-    while launchctl print "${GUI_TARGET}/${label}" >/dev/null 2>&1; do
-        sleep 1; w=$((w+1)); [[ $w -ge 15 ]] && break
-    done
-    launchctl enable "${GUI_TARGET}/${label}" 2>/dev/null || true
-    launchctl bootstrap "${GUI_TARGET}" "${plist}"
-    launchctl kickstart -k "${GUI_TARGET}/${label}" 2>/dev/null || true
+    if launchctl print "${GUI_TARGET}/${label}" >/dev/null 2>&1; then
+        info "Retiring the legacy dashboard server (now bundled in the tray app)…"
+        launchctl bootout "${GUI_TARGET}/${label}" 2>/dev/null \
+            || warn "could not bootout ${label} (continuing)"
+    fi
+    if [[ -f "${plist}" ]]; then
+        rm -f "${plist}" && ok "removed legacy ${label} launchd agent" \
+            || warn "could not remove ${plist} (continuing)"
+    fi
+    # The pinned Node runtime existed only to ABI-match better-sqlite3 in the old
+    # server; nothing uses it now.
+    rm -rf "${HOME}/.meridian/node-runtime" 2>/dev/null || true
 }
 
 # Enable accessibility mode in VS Code / Cursor / Antigravity so screenpipe
@@ -339,10 +260,10 @@ ok "node + python ($(${PYTHON_BIN} --version 2>&1)) + uv ($(${UV_BIN} --version 
 if ! command -v screenpipe >/dev/null 2>&1; then
     info "Installing screenpipe ${SCREENPIPE_VERSION} via npm…"
     if npm_global_writable; then
-        npm install -g "screenpipe@${SCREENPIPE_VERSION}"
+        npm install -g --ignore-scripts "screenpipe@${SCREENPIPE_VERSION}"
     else
         warn "global npm prefix needs root — elevating just this install (you may be prompted)…"
-        sudo npm install -g "screenpipe@${SCREENPIPE_VERSION}"
+        sudo npm install -g --ignore-scripts "screenpipe@${SCREENPIPE_VERSION}"
     fi
 fi
 ok "screenpipe"
@@ -367,22 +288,18 @@ fi
 if ! command -v ffmpeg >/dev/null 2>&1; then info "Installing ffmpeg…"; brew install ffmpeg; fi
 ok "ffmpeg"
 
-# ── 2. Config: single repo-local .env ────────────────────────────────────────
-ENV_FILE="${APP_ROOT}/.env"
+# ── 2. Config: user credential file ──────────────────────────────────────────
+# Canonical location is ~/.meridian/.env — install-independent, next to
+# meridian.db and settings.json, never inside app/ (the binary tree).
+ENV_FILE="${HOME}/.meridian/.env"
 if [[ ! -f "${ENV_FILE}" ]]; then
     cp "${APP_ROOT}/.env.example" "${ENV_FILE}"
-    info "created ${ENV_FILE} from template — add your Jira creds later: meridian config edit"
+    info "created ${ENV_FILE} from template — add your credentials: meridian config edit"
 fi
 # MLX is the default backend.
 grep -q '^CLASSIFIER_BACKEND=' "${ENV_FILE}" || echo "CLASSIFIER_BACKEND=mlx" >> "${ENV_FILE}"
 grep -q '^MLX_SERVER_PORT='    "${ENV_FILE}" || echo "MLX_SERVER_PORT=${MLX_PORT}" >> "${ENV_FILE}"
-# Dashboard port — honour an existing .env value, otherwise record the default.
-if grep -q '^MERIDIAN_UI_PORT=' "${ENV_FILE}"; then
-    UI_PORT="$(grep '^MERIDIAN_UI_PORT=' "${ENV_FILE}" | tail -n1 | cut -d= -f2 | tr -d '[:space:]')"
-else
-    echo "MERIDIAN_UI_PORT=${UI_PORT}" >> "${ENV_FILE}"
-fi
-ok "config at ${ENV_FILE} (dashboard port ${UI_PORT})"
+ok "config at ${ENV_FILE}"
 
 # Interactive tracker-credential walkthrough — parity with install.sh. A fresh
 # `meridian setup` collects Jira/GitHub/Linear keys here; `meridian update`
@@ -552,7 +469,7 @@ if [[ "${SKIP_PERMISSIONS}" -eq 0 ]]; then
     open "x-apple.systempreferences:com.apple.Notifications-Settings.extension" 2>/dev/null || true
     echo "  → Scroll to the bottom and turn ON"
     echo "    'Allow notifications when mirroring or sharing the display'."
-    echo "  → When 'Meridian Tray' appears, ensure its notifications are allowed"
+    echo "  → When 'Meridian' appears, ensure its notifications are allowed"
     echo "    (style Banners or Alerts, not None)."
     read -r -p "  Press Enter when done… " _ || true
 fi
@@ -561,30 +478,10 @@ fi
 # this, screenpipe falls back to OCR for those editors instead of their a11y tree.
 configure_editor_accessibility
 
-# ── 5b. Unpack the dashboard (Turbopack standalone, shipped as a tarball) ─────
-# The UI ships as ui.tar.gz rather than an expanded ui/ dir so that Turbopack's
-# relative symlinks under .next/node_modules (serverExternalPackages: better-
-# sqlite3, pino, @opentelemetry/*) survive `npm publish`, which strips symlinks.
-# When meridian-npm-setup.sh detected the tarball hash was unchanged it preserved
-# the existing ui/ dir and deleted ui.tar.gz — in that case skip extraction too.
-_ui_changed=1
-_new_ui_hash=""
-if [[ -f "${APP_ROOT}/ui.tar.gz" ]]; then
-    _new_ui_hash="$(shasum -a 256 "${APP_ROOT}/ui.tar.gz" | cut -d' ' -f1)"
-    info "Unpacking dashboard…"
-    rm -rf "${APP_ROOT}/ui"
-    mkdir -p "${APP_ROOT}/ui"
-    tar -xzf "${APP_ROOT}/ui.tar.gz" -C "${APP_ROOT}/ui"
-    rm -f "${APP_ROOT}/ui.tar.gz"
-    ok "dashboard unpacked ($(find "${APP_ROOT}/ui/.next/node_modules" -type l 2>/dev/null | wc -l | tr -d ' ') external symlink(s) restored)"
-elif [[ -d "${APP_ROOT}/ui" ]]; then
-    # ui/ was preserved by meridian-npm-setup.sh — hash matched, no re-extraction needed
-    ok "dashboard unchanged — reusing existing build"
-    _ui_changed=0
-else
-    err "Dashboard bundle missing from ${APP_ROOT} — re-run the installer: curl -fsSL https://raw.githubusercontent.com/Meridiona/meridian/main/scripts/bootstrap.sh | bash"
-    exit 1
-fi
+# ── 5b. Retire the legacy dashboard Node server (one-time, for pre-fold installs) ─
+# The dashboard is now embedded in the tray binary, so an old standalone UI agent
+# is a zombie. This runs on every (re)install/update — idempotent + non-fatal.
+retire_legacy_ui_server
 
 # ── 6. Daemons — restart only what changed ───────────────────────────────────
 # screenpipe: external npm binary, plist may have changed → always refresh.
@@ -679,7 +576,7 @@ if [[ -x "${APP_ROOT}/bin/meridian-tray" ]]; then
     if [[ "${_tray_changed}" -eq 0 ]]; then
         ok "Tray app unchanged — skipping restart"
     else
-        info "Installing Meridian Tray launchd agent…"
+        info "Installing Meridian tray agent…"
         bash "${APP_ROOT}/scripts/install-tray-daemon.sh" || warn "tray agent install failed"
     fi
 else
@@ -716,31 +613,16 @@ if command -v cursor >/dev/null 2>&1 || [[ -d "${HOME}/Library/Application Suppo
     else
         info "  Cursor detected but the cursor-agent CLI is missing — Cursor summaries will use the local model (MLX)."
         info "  To summarise with Cursor's own CLI:  curl https://cursor.com/install -fsS | bash  then: cursor-agent login"
-        info "  Or let the daemon install it on demand: add CURSOR_AGENT_AUTO_INSTALL=1 to ${HOME}/.meridian/app/.env"
+        info "  Or let the daemon install it on demand: add CURSOR_AGENT_AUTO_INSTALL=1 to ${HOME}/.meridian/.env"
     fi
 fi
-
-# UI: even when the build is unchanged we ALWAYS re-pin the Node runtime and
-# reload the launchd job. The better-sqlite3 addon is ABI-locked to one Node
-# version; skipping this reload is how a stale UI job survives `update` and ends
-# up running a mismatched system Node (NODE_MODULE_VERSION crash-loop). The
-# expensive re-extraction is already skipped above when unchanged, so this is
-# cheap — resolve_node_runtime hits the cache, then bootout/bootstrap reloads.
-if [[ "${_ui_changed}" -eq 0 ]]; then
-    info "Dashboard build unchanged — re-pinning Node runtime and reloading UI agent…"
-else
-    info "Installing the dashboard (UI) launchd agent…"
-fi
-install_ui_standalone
 
 # Persist component hashes for the next update's differential check.
 # Write to a temp file and rename atomically so a crash mid-write never leaves
 # a half-written or empty hash file (which would force a full reinstall).
-_final_ui_hash="${_new_ui_hash:-${_OLD_UI_HASH}}"
 _final_tray_hash="${_new_tray_hash:-${_OLD_TRAY_HASH}}"
 {
     [[ -n "${_new_daemon_hash}" ]] && printf 'daemon_bin=%s\n' "${_new_daemon_hash}"
-    [[ -n "${_final_ui_hash}" ]] && printf 'ui_tarball=%s\n' "${_final_ui_hash}"
     [[ -n "${_final_tray_hash}" ]] && printf 'tray_bin=%s\n' "${_final_tray_hash}"
 } > "${_HASH_FILE}.tmp" && mv "${_HASH_FILE}.tmp" "${_HASH_FILE}"
 
@@ -771,7 +653,7 @@ echo "✓ Meridian installed at ${APP_ROOT}"
 echo "  meridian status            # check the daemons"
 echo "  meridian logs -f           # watch the pipeline"
 echo "  meridian config edit       # add Jira creds"
-echo "  open http://localhost:${UI_PORT} # the dashboard"
+echo "  open the Meridian tray icon in the menu bar → Open Dashboard"
 echo ""
 echo "Jira worklogs are DRAFTED only — approve them in the dashboard (Worklogs"
 echo "view) and the daemon posts approved worklogs within ~60s."

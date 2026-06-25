@@ -3,12 +3,20 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { fmtDur, fmtClock, AppGlyph, CatDot, TaskKey, StatusPill, SectionHead, Card, CATS, PROVIDER_META } from '@/components/atoms'
-import type { TaskSummary, TasksResponse } from '@/app/api/tasks/route'
+import type { TaskSummary, TasksResponse } from '@/lib/api-types'
+import { load, invoke, mutate } from '@/lib/bridge'
 import HygieneDialog from '@/components/HygieneDialog'
-import type { TodayResponse } from '@/app/api/today/route'
-import type { IntegrationsResponse } from '@/app/api/integrations/route'
+import type { TodayResponse } from '@/lib/api-types'
+import type { IntegrationsResponse } from '@/lib/api-types'
 
 const TASKS_POLL_INTERVAL_MS = 60_000
+
+// Clear a provider's error notice immediately (don't wait for the next ETL poll).
+// Fire-and-forget — a failure just means the banner clears on the next poll.
+function clearProviderNotice(provider: string): void {
+  const noticeId = `pm.${provider}`
+  void invoke('delete_notice', { noticeId }).catch(() => {})
+}
 
 // Deterministic color from epic title — cycles through a palette of muted hues
 const EPIC_PALETTE = [
@@ -49,7 +57,8 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
   const [collapsedEpics, setCollapsedEpics] = useState<Set<string>>(new Set())
 
   const fetchTasks = () => {
-    fetch('/api/tasks').then(r => r.json()).then((d: TasksResponse) => {
+    // get_tasks (Rust) in the Tauri window, /api/tasks in a browser — same shape.
+    load<TasksResponse>('/api/tasks', 'get_tasks').then((d) => {
       setData(d)
       if (!selected && d.tasks.length > 0) {
         const first = d.tasks.find(t => t.today_s > 0) ?? d.tasks[0]
@@ -59,7 +68,8 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
   }
 
   const fetchIntegrations = () => {
-    fetch('/api/integrations').then(r => r.json()).then((d: IntegrationsResponse) => {
+    // get_integrations (Rust) in the Tauri window, /api/integrations in a browser.
+    load<IntegrationsResponse>('/api/integrations', 'get_integrations').then((d) => {
       setIntegrations(d)
     }).catch(() => {})
   }
@@ -68,23 +78,17 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
     if (syncing) return
     setSyncing(true)
     setSyncError(null)
-    fetch('/api/tasks/sync', { method: 'POST' })
-      .then(async r => {
-        const body = await r.json().catch(() => ({}))
-        if (!r.ok || body.ok === false) {
-          setSyncError(body.error ?? 'Sync failed — check daemon logs')
-        } else {
-          setLastSynced(new Date())
-          fetchTasks()
-        }
-      })
-      .catch(() => setSyncError('Could not reach the daemon — is it running?'))
+    // Dual-path: sync_tasks (Rust) in the app, /api/tasks/sync POST in a browser.
+    // mutate throws the CLI's stderr on failure; success re-fetches the board.
+    mutate('/api/tasks/sync', 'sync_tasks', {})
+      .then(() => { setLastSynced(new Date()); fetchTasks() })
+      .catch((e) => setSyncError(e instanceof Error ? e.message : 'Sync failed — check daemon logs'))
       .finally(() => setSyncing(false))
   }
 
   useEffect(() => {
     fetchTasks()
-    fetch('/api/today').then(r => r.json()).then((d: TodayResponse) => {
+    load<TodayResponse>('/api/today', 'get_today').then((d) => {
       setTodaySessions(d.sessions ?? [])
     }).catch(() => {})
     fetchIntegrations()
@@ -550,10 +554,14 @@ const TRACKERS: Array<{
     name: 'GitHub',
     glyph: 'Gh',
     color: '#24292F',
-    tokenHint: 'Easiest: run meridian setup — it pulls your token from the gh CLI (no PAT) and adds the read:project scope. Or create a classic PAT with repo, read:org, read:project scopes.',
+    oauth: {
+      command: 'meridian oauth-login github',
+      hint: 'Connects via the gh CLI — opens your browser, no PAT to create. Requires gh to be installed (cli.github.com). After connecting, add GITHUB_PROJECT_IDS to ~/.meridian/.env to sync GitHub Projects v2 tasks.',
+    },
+    tokenHint: 'Create a classic PAT with repo, read:org, read:project scopes.',
     tokenUrl: 'https://github.com/settings/tokens/new',
     env: 'GITHUB_TOKEN=ghp_your_token\nGITHUB_PROJECT_IDS=PVT_your_project_id',
-    note: 'GITHUB_PROJECT_IDS is a comma-separated list of GitHub Projects v2 node IDs. meridian setup lists your projects to pick from, or find them with: gh api graphql -f query=\'{ viewer { projectsV2(first:10){nodes{id title}} } }\'',
+    note: 'GITHUB_PROJECT_IDS is a comma-separated list of GitHub Projects v2 node IDs. Find them with: gh api graphql -f query=\'{ viewer { projectsV2(first:10){nodes{id title}} } }\'',
   },
   {
     id: 'trello',
@@ -585,7 +593,10 @@ function ConnectTrackers({ integrations, onDisconnect }: { integrations: Integra
 
   const handleDisconnect = (id: TrackerId) => {
     setDisconnecting(id)
-    fetch(`/api/integrations?provider=${id}`, { method: 'DELETE' })
+    // disconnect_integration (Rust) in the app, /api/integrations DELETE in a
+    // browser. Path-param route: provider rides the URL (browser) and the body
+    // (command), so both paths forget the same tracker.
+    mutate(`/api/integrations?provider=${id}`, 'disconnect_integration', { provider: id }, 'DELETE')
       .then(() => { onDisconnect?.(); setOpen(null) })
       .catch(() => {})
       .finally(() => setDisconnecting(null))
@@ -754,17 +765,17 @@ function AzureDevOpsSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
     setProjects(null)
     setSelectedProject('')
     try {
-      const r = await fetch('/api/integrations/azure-devops/discover', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pat: pat.trim() }),
-      })
-      const json = await r.json()
-      if (!r.ok) { setError(json.error ?? 'Failed to fetch organisations'); return }
+      // discover_azure_devops (Rust) in the app, /api/.../discover POST in a
+      // browser. mutate throws the server's error text on failure.
+      const json = await mutate<{ orgs?: string[] }>(
+        '/api/integrations/azure-devops/discover',
+        'discover_azure_devops',
+        { pat: pat.trim() },
+      )
       setOrgs(json.orgs ?? [])
-      if ((json.orgs ?? []).length === 1) setSelectedOrg(json.orgs[0])
-    } catch {
-      setError('Network error — check your connection')
+      if ((json.orgs ?? []).length === 1) setSelectedOrg(json.orgs![0])
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to fetch organisations')
     } finally {
       setLoading(null)
     }
@@ -777,17 +788,15 @@ function AzureDevOpsSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
     setProjects(null)
     setSelectedProject('')
     try {
-      const r = await fetch('/api/integrations/azure-devops/discover', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pat: pat.trim(), org }),
-      })
-      const json = await r.json()
-      if (!r.ok) { setError(json.error ?? 'Failed to fetch projects'); return }
+      const json = await mutate<{ projects?: string[] }>(
+        '/api/integrations/azure-devops/discover',
+        'discover_azure_devops',
+        { pat: pat.trim(), org },
+      )
       setProjects(json.projects ?? [])
-      if ((json.projects ?? []).length === 1) setSelectedProject(json.projects[0])
-    } catch {
-      setError('Network error — check your connection')
+      if ((json.projects ?? []).length === 1) setSelectedProject(json.projects![0])
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to fetch projects')
     } finally {
       setLoading(null)
     }
@@ -923,9 +932,10 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: (typeof TRACKERS)[number]
     setStatus('waiting')
     setError(null)
     try {
-      const r = await fetch(`/api/auth/oauth/start?provider=${tracker.id}`, { method: 'POST' })
-      if (!r.ok) { const b = await r.json(); setError(b.error ?? 'Failed to start'); setStatus('error'); return }
-      // Poll until connected (up to 3 minutes).
+      // start_oauth (Rust) in the app, /api/auth/oauth/start POST in a browser.
+      // Path-param route: provider rides the URL (browser) and the body (command).
+      await mutate(`/api/auth/oauth/start?provider=${tracker.id}`, 'start_oauth', { provider: tracker.id })
+      // Poll until connected or failed (up to 3 minutes).
       // `stopped` prevents two async invocations of the same callback from both
       // resolving — e.g. tick N suspended at await while tick N+1 hits the deadline.
       const deadline = Date.now() + 180_000
@@ -936,16 +946,26 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: (typeof TRACKERS)[number]
           stopped = true; clearInterval(id); pollRef.current = null
           setStatus('error'); setError('Timed out — try again'); return
         }
-        const ir = await fetch('/api/integrations').catch(() => null)
-        if (stopped) return  // re-check after await — timeout may have fired
-        if (!ir?.ok) return
-        const data = await ir.json()
+        // Check for a terminal error from the OAuth process first — surfaces
+        // failures (e.g. missing client_secret) immediately without waiting for
+        // the 3-minute timeout.
+        const oauthSt = await load<{ connected: boolean; error?: string | null }>(
+          `/api/auth/oauth/status?provider=${tracker.id}`,
+          'get_oauth_status',
+          { provider: tracker.id }
+        ).catch(() => null)
         if (stopped) return
+        if (oauthSt?.error) {
+          stopped = true; clearInterval(id); pollRef.current = null
+          setStatus('error'); setError(oauthSt.error); return
+        }
+        const data = await load<Record<string, unknown>>('/api/integrations', 'get_integrations').catch(() => null)
+        if (stopped) return  // re-check after await — timeout may have fired
+        if (!data) return
         if (data[tracker.id]) {
           stopped = true; clearInterval(id); pollRef.current = null
           setStatus('done')
-          // Clear the provider's error notice immediately — don't wait for next ETL poll
-          fetch(`/api/notices/pm.${tracker.id}`, { method: 'DELETE' }).catch(() => {})
+          clearProviderNotice(tracker.id)
           onSuccess?.()
         }
       }, 2_000)
@@ -999,15 +1019,11 @@ function TokenSetup({ tracker }: { tracker: (typeof TRACKERS)[number] }) {
   const checkConnection = async () => {
     setChecking(true)
     try {
-      const r = await fetch('/api/integrations')
-      if (r.ok) {
-        const data = await r.json()
-        const isConnected = !!data[tracker.id]
-        setConnected(isConnected)
-        if (isConnected) {
-          // Clear the provider's error notice immediately
-          fetch(`/api/notices/pm.${tracker.id}`, { method: 'DELETE' }).catch(() => {})
-        }
+      const data = await load<Record<string, unknown>>('/api/integrations', 'get_integrations')
+      const isConnected = !!data[tracker.id]
+      setConnected(isConnected)
+      if (isConnected) {
+        clearProviderNotice(tracker.id)
       }
     } catch { /* ignore */ }
     finally { setChecking(false) }

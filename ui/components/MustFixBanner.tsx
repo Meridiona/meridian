@@ -11,7 +11,8 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { hasMustFix } from '@/lib/hygiene'
-import type { TasksResponse } from '@/app/api/tasks/route'
+import type { TasksResponse } from '@/lib/api-types'
+import { load as loadData } from '@/lib/bridge'
 
 const POLL_MS = 60_000
 
@@ -22,9 +23,8 @@ export default function MustFixBanner() {
   useEffect(() => {
     let alive = true
     const load = () => {
-      fetch('/api/tasks')
-        .then(r => r.json())
-        .then((d: TasksResponse) => {
+      loadData<TasksResponse>('/api/tasks', 'get_tasks')
+        .then((d) => {
           if (!alive) return
           const n = (d.tasks ?? []).filter(t => t.hygiene && hasMustFix(t.hygiene.issues)).length
           setCount(n)
