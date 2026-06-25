@@ -43,7 +43,7 @@ See **[CLAUDE.md](CLAUDE.md)** for the full architecture and per-task recipes.
 git clone https://github.com/Meridiona/meridian
 cd meridian
 cp .env.example .env
-bash install-dev.sh          # builds deps, installs Claude Code integrations
+bash install-dev.sh          # builds deps, registers OpenObserve agent
 cargo install cargo-watch    # Rust file watcher (one-time)
 bash scripts/setup-hooks.sh  # install git hooks — do this before your first commit
 ```
