@@ -242,7 +242,8 @@ fn strip_env_keys(path: &std::path::Path, keys: &[&str]) -> std::io::Result<()> 
 /// other line and comment. A key already present is rewritten in place; a new key
 /// is appended (deterministic order — `BTreeMap`). Creates the file (and parent
 /// dir) if missing. Mirrors the deleted route's `upsertEnv` (replace-then-append)
-/// so the daemon reads exactly the same shape.
+/// so the daemon reads exactly the same shape. Always writes with a trailing
+/// newline so subsequent appends don't concatenate on the same line.
 fn upsert_env(path: &std::path::Path, updates: &BTreeMap<String, String>) -> std::io::Result<()> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
     let mut remaining = updates.clone();
@@ -262,7 +263,8 @@ fn upsert_env(path: &std::path::Path, updates: &BTreeMap<String, String>) -> std
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, lines.join("\n"))
+    let content = format!("{}\n", lines.join("\n"));
+    std::fs::write(path, content)
 }
 
 /// Disconnect a tracker (the ported /api/integrations DELETE). Removes the
