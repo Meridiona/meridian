@@ -10,20 +10,21 @@
 curl -fsSL https://raw.githubusercontent.com/Meridiona/meridian/main/scripts/bootstrap.sh | bash
 ```
 
-This installs Node if missing, installs the `meridian` CLI, then runs `meridian setup` automatically.
+This downloads the Meridian `.app`, installs the `meridian` CLI, then runs `meridian setup` automatically.
 
 `meridian setup` will walk you through:
-1. Granting **Screen Recording** and **Accessibility** permissions to screenpipe (required)
-2. Connecting your issue tracker (Jira, Linear, GitHub, Trello, or Azure DevOps)
+1. Granting **Screen Recording** and **Accessibility** permissions to **Meridian** (required)
+2. Downloading the on-device MLX runtime (~6 GB, first run only)
+3. Connecting your issue tracker (Jira, Linear, GitHub, Trello, or Azure DevOps)
 
 ---
 
 ## Grant macOS permissions
 
-screenpipe needs two permissions you must grant manually:
+Meridian needs two permissions you must grant manually (the onboarding wizard prompts for these):
 
-1. **Screen Recording** — System Settings → Privacy & Security → Screen Recording → click **+**, add screenpipe, toggle ON
-2. **Accessibility** — same pane, under Accessibility
+1. **Screen Recording** — System Settings → Privacy & Security → Screen Recording → click **+**, add **Meridian**, toggle ON
+2. **Accessibility** — same pane, under Accessibility → add **Meridian**
 
 After granting both, run:
 
@@ -163,7 +164,7 @@ meridian update             # update to the latest release
 meridian uninstall          # stop services and remove the CLI
 ```
 
-**Log targets:** `daemon`, `daemon-error`, `screenpipe`, `screenpipe-error`, `mlx-server`, `mlx-server-error`
+**Log targets:** `daemon`, `daemon-error`, `mlx-server`, `mlx-server-error`, `tray`, `tray-error`
 
 ---
 
@@ -171,10 +172,9 @@ meridian uninstall          # stop services and remove the CLI
 
 | Service | Role |
 |---|---|
-| **screenpipe** | captures screen activity (the data source) |
-| **meridian daemon** | ETL pipeline, classification, coding-agent ingest, worklog drafting |
-| **MLX server** | on-device model for classification and worklog synthesis |
-| **dashboard** | embedded in the Meridian tray app (open from the menu-bar icon) |
+| **Meridian tray** | In-process screen/a11y capture; serves the embedded dashboard; supervises the MLX server; drives the live data streams |
+| **meridian daemon** | ETL pipeline — reads `capture_frames` from `meridian.db`, produces `app_sessions`; coding-agent ingest; worklog drafting |
+| **MLX server** | On-device model for classification and worklog synthesis (provisioned to `~/.meridian/runtime/` on first run) |
 
 > **8 GB M1/M2 Air (macOS 26+):** the MLX server uses Apple Intelligence — no model download needed.
 > Requires macOS 26 and Apple Intelligence enabled in System Settings.

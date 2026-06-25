@@ -143,7 +143,8 @@ Builds the daemon and dashboard from source and registers the same services. See
 
 Meridian stands on excellent open-source work:
 
-- [**screenpipe**](https://screenpi.pe) — the local capture layer Meridian reads from.
+- [**screenpipe**](https://screenpi.pe) — the capture crates Meridian's in-process capture is forked from (pinned at the last MIT release, 0.4.6).
+- [**Tauri**](https://tauri.app) — the framework that wraps the dashboard and tray into a single native app.
 - [**MLX**](https://github.com/ml-explore/mlx) — Apple's framework powering the on-device model.
 
 Thank you to these communities. 🙏

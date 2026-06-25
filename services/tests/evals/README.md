@@ -96,13 +96,13 @@ Schema (flat JSON; all fields optional except `strategy`):
 
 ```json
 {
-  "name":             "baseline-b_generic-qwen35-9b",
+  "name":             "baseline-b_generic-qwen35-2b",
   "description":      "Baseline reference for comparing strategy/model swaps.",
   "strategy":         "direct_http",
   "dataset_path":     "services/tests/evals/data/generated/goldens_b_generic.json",
   "endpoint":         "http://localhost:7823/classify",
   "timeout":          120,
-  "model":            "Qwen3.5-9B-OptiQ-4bit",
+  "model":            "Qwen3.5-2B-OptiQ-4bit",
   "session_text_cap": 2500,
   "temperature":      0.0,
   "max_tokens":       1024,
@@ -124,14 +124,14 @@ Schema (flat JSON; all fields optional except `strategy`):
 ```json
 {
   "experiment": {
-    "name":        "baseline-b_generic-qwen35-9b",
+    "name":        "baseline-b_generic-qwen35-2b",
     "description": "Baseline reference for comparing strategy/model swaps.",
     "config_file": "services/tests/evals/configs/baseline_b_generic.json"
   },
   "config": {
     "...": "all the runner-applied + recorded-only fields",
     "recorded_from_config": {
-      "model":            "Qwen3.5-9B-OptiQ-4bit",
+      "model":            "Qwen3.5-2B-OptiQ-4bit",
       "session_text_cap": 2500,
       "temperature":      0.0,
       "max_tokens":       1024,
@@ -184,11 +184,11 @@ EVAL_DATASET_PATH=services/tests/evals/data/generated/goldens_a_meridian.json \
 services/.venv/bin/deepeval test run services/tests/evals/test_classifier.py \
   -k test_mlx_e2e \
   --override-ini "addopts=" \
-  --identifier "qwen35-9b-optiq-4bit-dev_a-baseline" \
+  --identifier "qwen35-2b-optiq-4bit-dev_a-baseline" \
   --ignore-errors
 ```
 
-**Identifier conventions:** `<model>-<dataset>-<purpose>` e.g. `qwen35-9b-optiq-4bit-dev_a-baseline`. Repeat to track the same config over time; vary when you change model, prompt, temperature, or dataset.
+**Identifier conventions:** `<model>-<dataset>-<purpose>` e.g. `qwen35-2b-optiq-4bit-dev_a-baseline`. Repeat to track the same config over time; vary when you change model, prompt, temperature, or dataset.
 
 ### Choosing between OpenObserve, Confident AI, and local results
 
@@ -219,7 +219,7 @@ Schema (flat, stable):
   "trace_id":  "8d1cbb64cd34079b189d34b336ff06af",
   "config": {
     "strategy":         "direct_http",
-    "model_id":         "Qwen3.5-9B-OptiQ-4bit",
+    "model_id":         "Qwen3.5-2B-OptiQ-4bit",
     "dataset_path":     "services/tests/evals/data/generated/goldens_b_generic.json",
     "dataset_name":     "goldens_b_generic.json",
     "persona":          "b_generic",
