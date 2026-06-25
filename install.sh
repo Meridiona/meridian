@@ -640,13 +640,16 @@ fi
 [[ "$_oo_installed" -eq 1 ]] && ok "OpenObserve" || info "OpenObserve skipped (optional)"
 
 # ---------------------------------------------------------------------------
-# Permissions walkthrough (skipped in --dry-run or --skip-permissions)
+# Permissions walkthrough (skipped in --dry-run, --skip-permissions, or --dev)
+# In dev mode the tray's onboarding wizard handles permissions on first launch.
 # ---------------------------------------------------------------------------
 
-if [[ "${DRY_RUN}" -eq 0 ]]; then
-    prompt_permissions
-else
+if [[ "${DRY_RUN}" -eq 1 ]]; then
     info "Skipping permissions walkthrough (--dry-run)"
+elif [[ "${DEV_MODE}" -eq 1 ]]; then
+    info "Skipping permissions walkthrough (--dev: tray onboarding handles this on first launch)"
+else
+    prompt_permissions
 fi
 
 # ---------------------------------------------------------------------------
