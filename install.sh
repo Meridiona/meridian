@@ -612,7 +612,7 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
         ok "MLX server launchd agent installed"
 
         if [[ "${DRY_RUN}" -eq 0 ]]; then
-            _model_cache="${HOME}/.cache/huggingface/hub/models--mlx-community--Qwen3.5-9B-OptiQ-4bit/snapshots"
+            _model_cache="${HOME}/.cache/huggingface/hub/models--mlx-community--Qwen3.5-2B-OptiQ-4bit/snapshots"
             if [[ -d "${_model_cache}" && -n "$(ls -A "${_model_cache}" 2>/dev/null)" ]]; then
                 info "MLX server starting (model cached, loading into Metal)..."
             else

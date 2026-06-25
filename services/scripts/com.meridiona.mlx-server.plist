@@ -2,9 +2,9 @@
 <!--
     com.meridiona.mlx-server — persistent MLX inference server.
 
-    Loads the Qwen3.5-9B model once at startup and serves POST /classify_sessions
-    to the Rust daemon. KeepAlive keeps it running across crashes; launchd
-    restarts it automatically.
+    Loads the Qwen3.5-2B model lazily on first request and serves the worklog
+    pipeline endpoints to the Rust daemon. KeepAlive keeps it running across
+    crashes; launchd restarts it automatically.
 
     Install:
         services/scripts/install-mlx-server-daemon.sh
