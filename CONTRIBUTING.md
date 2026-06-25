@@ -51,10 +51,12 @@ bash scripts/setup-hooks.sh  # install git hooks — do this before your first c
 `install-dev.sh` builds all deps but does **not** register the daemon, MLX server, or tray as launchd agents — those run in watch mode instead. Capture runs in-process inside the Tauri tray; no screenpipe or a11y-helper agent is needed.
 
 > **Upgrading from an older dev setup?** If you have screenpipe or a11y-helper registered from before v1.64.0, remove them:
+>
 > ```bash
 > launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.meridiona.screenpipe.plist
 > launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.meridiona.a11y-helper.plist
 > ```
+>
 
 ### Starting the dev environment
 

@@ -6,7 +6,7 @@ A Tauri-based macOS menu bar application that owns screen capture, serves the em
 
 The tray is the central process — it replaces the old Node UI server and the external screenpipe process:
 
-```
+```text
 Tauri tray binary
 ├── In-process capture (screenpipe-screen + screenpipe-a11y)
 │     └── writes capture_frames / capture_ui_events → meridian.db
@@ -77,6 +77,7 @@ See the full playbook in `CLAUDE.md` → "Porting a dashboard route to Rust".
 ## Troubleshooting
 
 **Tray icon not appearing / app won't launch**
+
 ```bash
 # View tray logs
 tail -f ~/.meridian/logs/tray.log
