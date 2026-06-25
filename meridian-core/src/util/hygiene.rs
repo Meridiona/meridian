@@ -34,11 +34,12 @@ pub struct Hygiene {
 
 /// Fields Meridian needs to track a ticket accurately (must-fix); the rest is
 /// optional good hygiene.
-const MUST_FIX: [&str; 4] = [
+const MUST_FIX: [&str; 5] = [
     "missing_description",
     "thin_description",
     "vague_title",
     "missing_due_date",
+    "overdue",
 ];
 
 fn reason_severity(code: &str) -> &'static str {
@@ -81,6 +82,13 @@ fn reason_hint(code: &str, detail: Option<&Map<String, Value>>) -> String {
         "vague_title" => "Title is generic — make it specific.".to_string(),
         "no_context_anchor" => "Not linked to an epic or parent.".to_string(),
         "missing_due_date" => "No due date — add one so Meridian knows when it's live.".to_string(),
+        "overdue" => {
+            let by = detail
+                .and_then(|d| d.get("by_days"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            format!("Overdue by {by} day(s) — reschedule or close it.")
+        }
         "missing_assignee" => "No assignee — who owns this?".to_string(),
         "missing_labels" => "No labels — add one to categorise it.".to_string(),
         "missing_priority" => "No priority set.".to_string(),
@@ -133,6 +141,7 @@ fn reason_fix(code: &str) -> Option<HygieneFix> {
             false,
         )),
         "missing_due_date" => Some(fix("date_picker", "duedate", "Add a due date", false)),
+        "overdue" => Some(fix("date_picker", "duedate", "Reschedule due date", false)),
         "missing_assignee" => Some(fix("assign_self", "assignee", "Assign to me", false)),
         "missing_labels" => Some(fix("edit_labels", "labels", "Add a label", false)),
         "missing_priority" => Some(fix("pick_priority", "priority", "Set priority", false)),

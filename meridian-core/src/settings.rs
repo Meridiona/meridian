@@ -45,12 +45,6 @@ pub struct RuntimeSettings {
     pub agent_queue_floor: f64,
     pub llm_prefer_local: bool,
     pub llm_budget_pct: f64,
-    // The on-device classifier model the user chose in the setup wizard, as a
-    // HuggingFace repo id (e.g. "mlx-community/Qwen3.5-9B-OptiQ-4bit"). `None`
-    // (the default) means "let `llm_selector` choose automatically". When set,
-    // the MLX server's `_resolve_model_id()` passes it as the preferred model —
-    // a strong bias that still degrades gracefully if it can't fit Metal budget.
-    pub llm_model_preference: Option<String>,
     pub poll_interval_secs: u64,
     pub jira_update_enabled: bool,
     // OpenObserve OTLP export — all three must be non-empty for export to
@@ -84,8 +78,6 @@ impl Default for RuntimeSettings {
             agent_queue_floor: 0.40,
             llm_prefer_local: true,
             llm_budget_pct: 0.5,
-            // Unset → automatic spec-aware selection (the eval-tuned default).
-            llm_model_preference: None,
             poll_interval_secs: 60,
             jira_update_enabled: true,
             // OpenObserve export is opt-in — off until enabled in Settings (the UI
