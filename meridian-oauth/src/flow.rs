@@ -76,7 +76,9 @@ pub async fn run_authcode_flow(
     );
 
     eprintln!("\nOpening your browser to authorize…");
-    eprintln!("If it doesn't open, paste this URL:\n\n{authorize}\n");
+    eprintln!(
+        "If it doesn't open automatically, check your default browser settings and try again."
+    );
     open_browser(&authorize);
 
     let (code, returned_state) = tokio::time::timeout(CONSENT_TIMEOUT, accept_redirect(&listener))
