@@ -50,6 +50,11 @@
              the default location, made explicit so the two paths can't diverge). -->
         <key>HF_HOME</key>
         <string>{{HOME}}/.cache/huggingface</string>
+        <!-- Rust-accelerated, parallel-chunk HF downloads (the hf_transfer dep).
+             Must be set before the process imports huggingface_hub, so it lives
+             here rather than in code. Faster + resilient to stalling shards. -->
+        <key>HF_HUB_ENABLE_HF_TRANSFER</key>
+        <string>1</string>
         <key>UV_PROJECT_ENVIRONMENT</key>
         <string>{{SERVICES_VENV}}</string>
         <key>MERIDIAN_DB</key>

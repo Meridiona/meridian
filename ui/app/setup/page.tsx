@@ -71,11 +71,13 @@ export default function SetupWizard() {
 
   // Drive the Model step end-to-end with no clicks: provision the runtime tarball
   // if missing, bring the server up, then prefetch every pipeline model — all
-  // automatically. The step gates `Continue` on `modelReady`, so the user waits
-  // here (watching aggregate progress) until the whole model set is on disk.
+  // automatically. Runs the WHOLE time the wizard is open (not just on the model
+  // step) so the ~2.4 GB downloads in the background while the user does
+  // Permissions + Integrations and is usually done by the time they reach the
+  // (last) Local-intelligence step, which gates Finish on `modelReady`.
   // One-shot refs guard each phase; `retryModel` re-arms them after an error.
   useEffect(() => {
-    const polling = active && !modelReady && (step === 1 || downloading || prefetching)
+    const polling = active && !modelReady
     if (!polling) return
     const poll = async () => {
       try {
@@ -86,7 +88,7 @@ export default function SetupWizard() {
         if (!runtimeInstalled && s.download_available && !downloading && !runtimeStarted.current) {
           runtimeStarted.current = true
           setDownloading(true)
-          setProgress({ received: 0, total: 0, message: 'Installing the on-device engine…' })
+          setProgress({ received: 0, total: 0, speed: 0, message: 'Installing the on-device engine…' })
           invoke('download_runtime_cmd')
             .then(() => invoke('start_mlx_server_cmd').catch(() => {}))
             .catch((e) => setErr(String(e)))
@@ -99,7 +101,7 @@ export default function SetupWizard() {
         if (runtimeInstalled && s.status === 'running' && !prefetchStarted.current) {
           prefetchStarted.current = true
           setPrefetching(true)
-          setProgress({ received: 0, total: 0, message: 'Preparing models…' })
+          setProgress({ received: 0, total: 0, speed: 0, message: 'Preparing models…' })
           invoke('prefetch_model_cmd')
             .then(() => setModelReady(true))
             // Leave the guard set on error so we don't hammer a failing download
@@ -112,7 +114,7 @@ export default function SetupWizard() {
     poll()
     const id = setInterval(poll, 3000)
     return () => clearInterval(id)
-  }, [active, step, modelReady, downloading, prefetching])
+  }, [active, modelReady, downloading, prefetching])
 
   // Stream download progress (shared by the runtime download + the model prefetch).
   useEffect(() => {
@@ -138,7 +140,7 @@ export default function SetupWizard() {
   }, [])
 
   useEffect(() => {
-    if (!active || step !== 2) return
+    if (!active || step !== 1) return  // Integrations is now step index 1 (2nd tab)
     refetchIntegrations()
     const id = setInterval(refetchIntegrations, 3000)
     return () => clearInterval(id)
@@ -171,12 +173,13 @@ export default function SetupWizard() {
     setErr('')
     runtimeStarted.current = false
     prefetchStarted.current = false
-    setProgress({ received: 0, total: 0, message: 'Retrying…' })
+    setProgress({ received: 0, total: 0, speed: 0, message: 'Retrying…' })
   }, [])
 
   const wiz: Wiz = {
     perms, openPane, grantScreen, grantInput,
     specs, mlx, downloading, prefetching, modelReady, progress,
+    speed: progress?.speed ?? null,
     err, retryModel,
     integrations, refetchIntegrations,
   }

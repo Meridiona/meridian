@@ -19,6 +19,9 @@ prefetch_state: dict[str, Any] = {
     "state": "idle",
     "received": 0,
     "total": 0,
+    # Live transfer rate in bytes/sec, sourced from HF's own tqdm progress
+    # (see routes/prefetch._SpeedTqdm); 0 when not actively transferring.
+    "speed": 0.0,
     "error": None,
     # Per-model rows: {"role", "model_id", "loader", "received", "total", "state"}.
     "models": [],

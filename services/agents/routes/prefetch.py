@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from pathlib import Path
 
 from fastapi import APIRouter
 from opentelemetry import trace
+from tqdm.auto import tqdm
 
 from agents import model_registry
 from agents._state import prefetch_lock, prefetch_state
@@ -27,6 +29,37 @@ from agents._state import prefetch_lock, prefetch_state
 log = logging.getLogger("agents.server")
 
 router = APIRouter()
+
+# Monotonic time of the last transfer-rate sample. Used to zero `speed` when a
+# download stalls — HF stops calling tqdm.update(), so the last rate would
+# otherwise linger and read as if bytes were still flowing.
+_last_rate_ts = 0.0
+
+
+class _SpeedTqdm(tqdm):
+    """Captures HuggingFace's own live transfer rate (bytes/sec) into prefetch_state.
+
+    Passed as ``tqdm_class`` to ``snapshot_download`` so the wizard reports the
+    ACTUAL download speed measured by huggingface_hub / hf_transfer, rather than a
+    client-side estimate from polled byte deltas. Byte bars only (``unit == "B"``);
+    best-effort — a progress hiccup must never fail the download.
+    """
+
+    def update(self, n: float = 1):  # type: ignore[override]
+        ret = super().update(n)
+        if getattr(self, "unit", "") == "B":
+            self._record_rate()
+        return ret
+
+    def _record_rate(self) -> None:
+        global _last_rate_ts
+        try:
+            rate = self.format_dict.get("rate")  # tqdm's smoothed bytes/sec
+            with prefetch_lock:
+                prefetch_state["speed"] = float(rate) if rate else 0.0
+                _last_rate_ts = time.monotonic()
+        except Exception:  # noqa: BLE001 — progress is best-effort
+            pass
 
 
 def _hf_cache_dir_for(model_id: str) -> Path:
@@ -36,12 +69,17 @@ def _hf_cache_dir_for(model_id: str) -> Path:
 
 
 def _dir_size_bytes(path: Path) -> int:
-    """Sum of all file sizes under `path` (includes HF `.incomplete` partials → live progress)."""
+    """Bytes actually downloaded under `path` (HF blobs + `.incomplete` partials).
+
+    Counts only real files, NEVER the ``snapshots/`` symlinks: HF stores each file
+    once in ``blobs/`` and symlinks it into ``snapshots/``, so following the links
+    would double-count every finished file and push progress past 100%.
+    """
     total = 0
     if path.exists():
         for f in path.rglob("*"):
             try:
-                if f.is_file():
+                if f.is_file() and not f.is_symlink():
                     total += f.stat().st_size
             except OSError:
                 pass  # file may be deleted mid-walk; skip silently
@@ -70,20 +108,14 @@ def _spec_total_bytes(spec: model_registry.ModelSpec) -> int:
 def _download_spec(spec: model_registry.ModelSpec) -> None:
     """Download one model's weights to the HF cache (no load into memory).
 
-    mlx_lm models use mlx_lm's private `_download` (the exact fileset `load()`
-    resolves); embeddings (and the fallback) use `snapshot_download` filtered to
-    the spec's allow_patterns. Either way only disk is touched — the single-slot
-    runtime loads each model lazily on first use.
+    All specs go through ``snapshot_download`` (filtered to the spec's
+    allow_patterns) so the ``_SpeedTqdm`` rate hook and ``hf_transfer`` apply
+    uniformly; ``mlx_lm.load`` / ``mlx_embeddings.load`` resolve the files straight
+    from the cache afterwards. Only disk is touched — the single-slot runtime
+    loads each model lazily on first use.
     """
-    if spec.loader == "mlx_lm":
-        try:
-            from mlx_lm.utils import _download as _mlx_download
-            _mlx_download(spec.model_id)  # exact fileset load() resolves; download-only
-            return
-        except (ImportError, AttributeError):
-            pass  # private primitive unavailable — fall through to snapshot_download
     from huggingface_hub import snapshot_download
-    snapshot_download(spec.model_id, allow_patterns=spec.allow_patterns)
+    snapshot_download(spec.model_id, allow_patterns=spec.allow_patterns, tqdm_class=_SpeedTqdm)
 
 
 def _run_prefetch(specs: list[model_registry.ModelSpec]) -> None:
@@ -115,12 +147,14 @@ def _run_prefetch(specs: list[model_registry.ModelSpec]) -> None:
                     sum(m["received"] for m in prefetch_state["models"]) or prefetch_state["total"]
                 )
                 prefetch_state["state"] = "done"
+                prefetch_state["speed"] = 0.0
             root.set_attribute("received_bytes", prefetch_state["received"])
             log.info("server: all model prefetch complete", extra={"received_bytes": prefetch_state["received"]})
         except Exception as exc:  # noqa: BLE001 — report, never crash the server
             with prefetch_lock:
                 prefetch_state["state"] = "error"
                 prefetch_state["error"] = str(exc)
+                prefetch_state["speed"] = 0.0
             root.set_status(trace.Status(trace.StatusCode.ERROR, str(exc)))
             log.error("server: model prefetch failed", extra={"error": str(exc)})
 
@@ -135,16 +169,19 @@ async def prefetch_model() -> dict:
     """
     from fastapi.concurrency import run_in_threadpool
 
+    global _last_rate_ts
     specs = list(model_registry.ALL_SPECS)
 
     with prefetch_lock:
         if prefetch_state["state"] in ("downloading", "done"):
             return dict(prefetch_state)  # idempotent — no duplicate downloads
+        _last_rate_ts = 0.0
         prefetch_state.update(
             state="downloading",
             received=0,
             total=0,
             error=None,
+            speed=0.0,
             models=[
                 {"role": s.role, "model_id": s.model_id, "loader": s.loader,
                  "received": 0, "total": 0, "state": "pending"}
@@ -181,10 +218,34 @@ async def prefetch_model() -> dict:
 @router.get("/prefetch_status")
 async def prefetch_status() -> dict:
     """Live prefetch progress. While downloading, `received` is recomputed from the
-    on-disk cache dirs of every model so the aggregate bar advances smoothly."""
+    on-disk cache dirs of every model so the aggregate bar advances smoothly.
+
+    The disk walk runs in a threadpool so this endpoint never blocks the event
+    loop — the wizard polls it ~1 Hz and must stay responsive even while a model
+    is downloading or loading.
+    """
+    from fastapi.concurrency import run_in_threadpool
+
     with prefetch_lock:
         st = dict(prefetch_state)
         models = list(st.get("models", []))
+        last_rate_ts = _last_rate_ts
     if st["state"] == "downloading" and models:
-        st["received"] = sum(_dir_size_bytes(_hf_cache_dir_for(m["model_id"])) for m in models)
+        def _recompute() -> int:
+            # Clamp each model's on-disk bytes to its probed total: a cache
+            # populated by an earlier full-repo pull can hold more than the
+            # patterns-filtered total, which would otherwise push the bar past 100%.
+            agg = 0
+            for mrow in models:
+                size = _dir_size_bytes(_hf_cache_dir_for(mrow["model_id"]))
+                cap = mrow.get("total") or 0
+                agg += min(size, cap) if cap > 0 else size
+            return agg
+
+        agg = await run_in_threadpool(_recompute)
+        st["received"] = min(agg, st["total"]) if st["total"] > 0 else agg
+    # Zero the speed unless a transfer rate was reported in the last few seconds —
+    # otherwise a finished/stalled download keeps showing its last MB/s.
+    if st["state"] != "downloading" or (time.monotonic() - last_rate_ts) > 3.0:
+        st["speed"] = 0.0
     return st

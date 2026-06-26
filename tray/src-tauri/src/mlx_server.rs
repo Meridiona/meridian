@@ -77,6 +77,9 @@ pub struct DownloadProgress {
     pub received: u64,
     /// Total bytes expected (`0` when the server omits Content-Length).
     pub total: u64,
+    /// Live transfer rate in bytes/sec (HF's own measured rate; `0` when idle/stalled).
+    #[serde(default)]
+    pub speed: f64,
     /// Human-readable status line shown under the progress bar.
     pub message: String,
 }
@@ -373,6 +376,7 @@ where
         on_progress(DownloadProgress {
             received: 0,
             total: 0,
+            speed: 0.0,
             message: "Runtime already up to date.".to_string(),
         });
         return Ok(StageOutcome::AlreadyCurrent);
@@ -381,6 +385,7 @@ where
     on_progress(DownloadProgress {
         received: 0,
         total: 0,
+        speed: 0.0,
         message: "Connecting…".to_string(),
     });
 
@@ -404,6 +409,7 @@ where
 
     let mut stream = response.bytes_stream();
     let mut received: u64 = 0;
+    let started = std::time::Instant::now();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("stream error: {e}"))?;
         use tokio::io::AsyncWriteExt;
@@ -411,9 +417,15 @@ where
             .await
             .map_err(|e| format!("write error: {e}"))?;
         received += chunk.len() as u64;
+        let secs = started.elapsed().as_secs_f64();
         on_progress(DownloadProgress {
             received,
             total,
+            speed: if secs > 0.0 {
+                received as f64 / secs
+            } else {
+                0.0
+            },
             message: if total > 0 {
                 format!(
                     "Downloading… {:.0}%",
@@ -432,6 +444,7 @@ where
     on_progress(DownloadProgress {
         received,
         total: received,
+        speed: 0.0,
         message: "Verifying…".to_string(),
     });
     let tmp = PathBuf::from(&tmp_path);
@@ -458,6 +471,7 @@ where
     on_progress(DownloadProgress {
         received,
         total: received,
+        speed: 0.0,
         message: "Extracting…".to_string(),
     });
     let staging = staging_dir();
@@ -485,6 +499,7 @@ where
     on_progress(DownloadProgress {
         received,
         total: received,
+        speed: 0.0,
         message: "Runtime ready.".to_string(),
     });
     tracing::info!(version = %manifest.version, dir = %staging.display(), "mlx: runtime staged");
@@ -689,6 +704,9 @@ struct PrefetchStatus {
     received: u64,
     /// Authoritative total (`0` when the size probe failed → indeterminate bar).
     total: u64,
+    /// Live transfer rate in bytes/sec (HF's measured rate; `0` when idle/stalled).
+    #[serde(default)]
+    speed: f64,
     /// Failure detail when `state == "error"`.
     error: Option<String>,
 }
@@ -712,6 +730,7 @@ where
     on_progress(DownloadProgress {
         received: 0,
         total: 0,
+        speed: 0.0,
         message: "Preparing models…".to_string(),
     });
     // The POST resolves the model id + total size before returning, so give it room.
@@ -758,6 +777,7 @@ where
                 on_progress(DownloadProgress {
                     received: st.received,
                     total: st.total,
+                    speed: 0.0,
                     message: "Models ready.".to_string(),
                 });
                 tracing::info!(received = st.received, "mlx: model prefetch complete");
@@ -778,6 +798,7 @@ where
                 on_progress(DownloadProgress {
                     received: st.received,
                     total: st.total,
+                    speed: st.speed,
                     message,
                 });
             }

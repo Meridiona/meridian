@@ -21,6 +21,8 @@ export interface MlxStatusResponse {
 export interface DownloadProgress {
   received: number
   total: number
+  /** Live transfer rate in bytes/sec (measured server-side by HF; 0 when idle/stalled). */
+  speed: number
   message: string
 }
 
@@ -36,15 +38,12 @@ export interface SystemSpecs {
 
 // ── On-device models ─────────────────────────────────────────────────────────
 // Meridian runs a fixed set of three models — the Qwen3.5-2B generative LLM
-// (which also does classification/matching), a reranker, and an embedder. No
-// user selection. They load one at a time (single-slot), so peak resident memory
-// is the LLM (MODEL_RAM_GB) while on-disk footprint is the whole set
-// (MODEL_SIZE_GB).
+// (which also does classification/matching), a reranker, and an embedder. They
+// load one at a time (single-slot), so peak resident memory is the LLM
+// (MODEL_RAM_GB). No user selection; the wizard auto-downloads the whole set and
+// shows live aggregate progress.
 
 export const MODEL_ID = 'mlx-community/Qwen3.5-2B-OptiQ-4bit'
-// Approx total on-disk size of all three models (llm ~1.4 + reranker ~0.4 +
-// embedder ~0.65 GB); the wizard's live progress bar shows the exact bytes.
-export const MODEL_SIZE_GB = 2.4
 export const MODEL_RAM_GB = 1.5
 
 /** Meridian's own resident footprint (background service), separate from the model. */
