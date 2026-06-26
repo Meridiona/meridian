@@ -33,10 +33,9 @@ router = APIRouter()
 # Speed is derived from the growth of on-disk `received` between /prefetch_status
 # polls — NOT from a tqdm hook. hf_xet (the Xet accelerator these models use) does
 # its download in Rust and bypasses the classic tqdm bar, so a tqdm_class never
-# fires; the byte-delta approach works for any backend. These hold the last
-# (received, monotonic-time) sample to diff against.
-_last_recv = 0
-_last_recv_ts = 0.0
+# fires; the byte-delta approach works for any backend. Stored as a dict so both
+# functions can mutate it in-place without `global` declarations.
+_speed_state: dict[str, float | int] = {"recv": 0, "ts": 0.0}
 
 
 def _hf_cache_dir_for(model_id: str) -> Path:
@@ -160,13 +159,13 @@ async def prefetch_model() -> dict:
 
     from fastapi.concurrency import run_in_threadpool
 
-    global _last_recv, _last_recv_ts
     specs = list(model_registry.ALL_SPECS)
 
     with prefetch_lock:
         if prefetch_state["state"] in ("downloading", "done"):
             return dict(prefetch_state)  # idempotent — no duplicate downloads
-        _last_recv, _last_recv_ts = 0, 0.0
+        _speed_state["recv"] = 0
+        _speed_state["ts"] = 0.0
         prefetch_state.update(
             state="downloading",
             received=0,
@@ -223,7 +222,6 @@ async def prefetch_status() -> dict:
     """
     from fastapi.concurrency import run_in_threadpool
 
-    global _last_recv, _last_recv_ts
     with prefetch_lock:
         st = dict(prefetch_state)
         models = list(st.get("models", []))
@@ -252,12 +250,13 @@ async def prefetch_status() -> dict:
     # EMA-smoothed; decays to 0 when bytes stop flowing (delta 0) or the run ends.
     now = time.monotonic()
     with prefetch_lock:
-        if st["state"] == "downloading" and _last_recv_ts and now > _last_recv_ts:
-            inst = max(0, st["received"] - _last_recv) / (now - _last_recv_ts)
+        if st["state"] == "downloading" and _speed_state["ts"] and now > _speed_state["ts"]:
+            inst = max(0, st["received"] - _speed_state["recv"]) / (now - _speed_state["ts"])
             prev = prefetch_state.get("speed", 0.0) or 0.0
             prefetch_state["speed"] = inst if prev == 0.0 else prev * 0.5 + inst * 0.5
         elif st["state"] != "downloading":
             prefetch_state["speed"] = 0.0
-        _last_recv, _last_recv_ts = st["received"], now
+        _speed_state["recv"] = st["received"]
+        _speed_state["ts"] = now
         st["speed"] = prefetch_state["speed"]
     return st
