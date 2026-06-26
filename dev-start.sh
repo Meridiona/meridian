@@ -74,12 +74,20 @@ echo "  ✓ previous dev run stopped"
 # Launch each service in its own Terminal window
 # ---------------------------------------------------------------------------
 
+# Optional: watch the screenpipe-fork alongside the daemon for hot-reload.
+# Set SCREENPIPE_FORK_PATH in your shell or .env to a local clone of the fork.
+# Example: export SCREENPIPE_FORK_PATH=~/src/screenpipe-fork
+FORK_WATCH_FLAG=""
+if [ -n "${SCREENPIPE_FORK_PATH:-}" ] && [ -d "${SCREENPIPE_FORK_PATH}" ]; then
+    FORK_WATCH_FLAG="--watch '${SCREENPIPE_FORK_PATH}'"
+fi
+
 osascript <<APPLESCRIPT
 tell application "Terminal"
     activate
 
     -- 1. Rust daemon (cargo watch)
-    do script "echo '=== Rust daemon (cargo watch) ===' && cd '${REPO_ROOT}' && cargo watch -x 'run --bin meridian'"
+    do script "echo '=== Rust daemon (cargo watch) ===' && cd '${REPO_ROOT}' && cargo watch --watch . ${FORK_WATCH_FLAG} -x 'run --bin meridian'"
 
     -- 2. MLX server (uvicorn --reload, watches services/agents/ only)
     do script "echo '=== MLX server (uvicorn --reload) ===' && cd '${REPO_ROOT}/services' && .venv/bin/uvicorn agents.server:app --reload --reload-dir '${REPO_ROOT}/services/agents' --host 127.0.0.1 --port 7823"

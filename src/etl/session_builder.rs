@@ -183,6 +183,84 @@ pub(super) fn url_domain(url: &str) -> &str {
     domain.strip_prefix("www.").unwrap_or(domain)
 }
 
+/// Process names coding agents use as their terminal tab label.
+/// VS Code sets the tab title to the foreground process name by default.
+/// Agents that override it via OSC escape sequences (Claude Code active task)
+/// are caught by the CLAUDE_SPINNERS check instead.
+///
+/// "q" (Amazon Q / Kiro) is absent here — it is matched by exact first-word
+/// to avoid false-positives on "qemu", "queue-worker", etc.
+const CODING_AGENT_NAMES: &[&str] = &[
+    "claude",       // Claude Code CLI
+    "codex",        // OpenAI Codex CLI
+    "cursor-agent", // Cursor agent CLI
+    "copilot",      // GitHub Copilot CLI
+    "gemini",       // Google Gemini CLI
+    "aider",        // Aider AI
+];
+
+/// Unicode spinner characters Claude Code emits via OSC escape sequences while
+/// a task is running. These appear at the START of the terminal tab label and
+/// are the most reliable per-frame signal that Claude Code is active.
+const CLAUDE_SPINNERS: &[char] = &[
+    '✳', '⠐', '⠂', '⠁', '⠄', '⠈', '⠘', '⠸', '⠴', '⠦', '⠧', '⠇', '⠏', '✢', '✻', '⏺',
+];
+
+/// Returns `true` when a VS Code terminal window title indicates the focused
+/// terminal tab is running a coding agent (Claude Code, Codex, Cursor agent,
+/// etc.) rather than a regular shell or build process.
+///
+/// The session label comes from the xterm.js `AXDescription` attribute read by
+/// the screenpipe a11y tree walker — it is the authoritative per-tab signal.
+///
+/// VS Code uses either `"Terminal - "` (ASCII hyphen, default) or
+/// `"Terminal — "` (em-dash, U+2014, some locales / custom title templates).
+/// Both separators are tried.
+///
+/// Detection tiers:
+///   1. Claude Code active: spinner char at the very start of the label via OSC
+///      escape sequences (e.g. "Terminal - ⠂ agentic-worklog-…").
+///   2. Agent name: the first space-delimited word of the label starts with a
+///      known agent binary name — anchored to avoid false-positives on tabs like
+///      "Terminal - decodex-runner" (contains "codex" but isn't Codex).
+///      "codex-aarch64-ap", "cursor-agent.2026", "copilot-node" all match.
+///   3. Amazon Q / Kiro ("q"): exact first-word match only.
+pub(super) fn is_coding_agent_terminal(window_name: &str) -> bool {
+    // Try ASCII hyphen then em-dash separator.
+    let session = window_name
+        .strip_prefix("Terminal - ")
+        .or_else(|| window_name.strip_prefix("Terminal \u{2014} "))
+        .map(str::trim);
+    let session = match session {
+        Some(s) if !s.is_empty() => s,
+        _ => return false,
+    };
+
+    // Tier 1 — Claude Code active: spinner char at the very start.
+    if session.starts_with(|c: char| CLAUDE_SPINNERS.contains(&c)) {
+        return true;
+    }
+
+    // Tier 2 & 3 — match on the first space-delimited word (the process name).
+    // starts_with anchors to the process-name prefix:
+    //   "codex-aarch64-ap".starts_with("codex")   → true  ✓
+    //   "decodex-runner".starts_with("codex")      → false ✓
+    //   "gitclaude".starts_with("claude")          → false ✓
+    let session_lower = session.to_lowercase();
+    let first_word = session_lower
+        .split_whitespace()
+        .next()
+        .unwrap_or(&session_lower);
+
+    if first_word == "q" {
+        return true; // Amazon Q / Kiro — exact match to avoid "qemu", "queue-worker"
+    }
+
+    CODING_AGENT_NAMES
+        .iter()
+        .any(|&name| first_word.starts_with(name))
+}
+
 /// Known VS Code-like editor app names (lowercase).
 const VSCODE_LIKE_APPS: &[&str] = &[
     "code",
@@ -231,5 +309,91 @@ pub(super) fn vscode_project(window_name: &str) -> Option<&str> {
         None
     } else {
         Some(bare)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_coding_agent_terminal;
+
+    #[test]
+    fn detects_claude_code_spinner() {
+        // Spinner at start — Claude Code active task
+        assert!(is_coding_agent_terminal(
+            "Terminal - ⠂ agentic-worklog-matcher-pipeline"
+        ));
+        assert!(is_coding_agent_terminal(
+            "Terminal - ✳ Fix PM sync start date..."
+        ));
+        assert!(is_coding_agent_terminal(
+            "Terminal - ⠐ Understand code capturing"
+        ));
+        assert!(is_coding_agent_terminal("Terminal - ⏺ Some other task"));
+    }
+
+    #[test]
+    fn detects_other_agents_by_process_name() {
+        assert!(is_coding_agent_terminal("Terminal - codex"));
+        assert!(is_coding_agent_terminal("Terminal - cursor-agent"));
+        assert!(is_coding_agent_terminal("Terminal - copilot"));
+        assert!(is_coding_agent_terminal("Terminal - gemini"));
+        assert!(is_coding_agent_terminal("Terminal - aider"));
+        assert!(is_coding_agent_terminal("Terminal - q"));
+        assert!(is_coding_agent_terminal("Terminal - claude")); // fallback when no OSC title
+    }
+
+    #[test]
+    fn detects_architecture_suffixed_binaries() {
+        // Codex ARM Mac binary: codex-aarch64-apple-darwin (VS Code truncates it)
+        assert!(is_coding_agent_terminal("Terminal - codex-aarch64-ap"));
+        assert!(is_coding_agent_terminal(
+            "Terminal - codex-aarch64-apple-darwin"
+        ));
+        assert!(is_coding_agent_terminal(
+            "Terminal - codex-x86_64-apple-darwin"
+        ));
+        // cursor-agent with version suffix
+        assert!(is_coding_agent_terminal("Terminal - cursor-agent.2026"));
+        // "q" stays exact-word to avoid matching "qemu", "queue-worker" etc.
+        assert!(!is_coding_agent_terminal("Terminal - qemu"));
+        assert!(!is_coding_agent_terminal("Terminal - queue-worker"));
+    }
+
+    #[test]
+    fn starts_with_anchoring_avoids_false_positives() {
+        // "decodex-runner" contains "codex" but does NOT start with it
+        assert!(!is_coding_agent_terminal("Terminal - decodex-runner"));
+        // "gitclaude" contains "claude" but does NOT start with it
+        assert!(!is_coding_agent_terminal("Terminal - gitclaude"));
+        // "aider-helper" starts with "aider" → matches (it likely IS aider)
+        assert!(is_coding_agent_terminal("Terminal - aider-helper"));
+        // Node REPL / Python interpreter bare versions — must NOT suppress
+        assert!(!is_coding_agent_terminal("Terminal - 20.11.0"));
+        assert!(!is_coding_agent_terminal("Terminal - 3.11.5"));
+        assert!(!is_coding_agent_terminal("Terminal - 1.0.0"));
+    }
+
+    #[test]
+    fn detects_em_dash_separator() {
+        // VS Code with custom terminal.integrated.tabs.title or certain locales
+        // uses U+2014 (—) instead of ASCII hyphen.
+        assert!(is_coding_agent_terminal("Terminal \u{2014} claude"));
+        assert!(is_coding_agent_terminal("Terminal \u{2014} ⠂ agentic-task"));
+        assert!(is_coding_agent_terminal(
+            "Terminal \u{2014} codex-aarch64-ap"
+        ));
+        assert!(!is_coding_agent_terminal("Terminal \u{2014} zsh"));
+    }
+
+    #[test]
+    fn does_not_suppress_normal_terminals() {
+        assert!(!is_coding_agent_terminal("Terminal - zsh"));
+        assert!(!is_coding_agent_terminal("Terminal - bash"));
+        assert!(!is_coding_agent_terminal("Terminal - npm"));
+        assert!(!is_coding_agent_terminal("Terminal - node"));
+        assert!(!is_coding_agent_terminal("Terminal - fish"));
+        assert!(!is_coding_agent_terminal("Terminal")); // bare terminal, no dash
+        assert!(!is_coding_agent_terminal("build.rs — screenpipe")); // editor tab, not terminal
+        assert!(!is_coding_agent_terminal("")); // empty
     }
 }

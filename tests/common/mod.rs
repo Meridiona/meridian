@@ -73,6 +73,28 @@ pub async fn insert_frames_with_text(
     }
 }
 
+/// Inserts frames with explicit `window_name`, used by coding-agent-skip tests
+/// that need to differentiate editor tabs from terminal tabs.
+/// Each entry is `(app_name, window_name, timestamp)`.
+pub async fn insert_frames_with_window(
+    pool: &SqlitePool,
+    id_offset: i64,
+    frames: &[(&str, &str, &str)],
+) {
+    for (i, (app, win, ts)) in frames.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO capture_frames (id, app_name, window_name, timestamp) VALUES (?, ?, ?, ?)",
+        )
+        .bind(id_offset + i as i64)
+        .bind(app)
+        .bind(win)
+        .bind(ts)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+}
+
 /// Inserts frames with a configurable `id_offset` and optional `capture_trigger`.
 /// Each entry is `(app_name, timestamp, capture_trigger)`.
 /// `app_name` may be `None` to insert NULL — such frames are skipped by
