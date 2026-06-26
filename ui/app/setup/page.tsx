@@ -32,7 +32,7 @@ export default function SetupWizard() {
   // Step 1 — permissions (live)
   const [perms, setPerms] = useState<Wiz['perms']>({ accessibility: null, screen: null, input: null })
 
-  // Step 2 — specs + MLX + model
+  // Step 3 — local intelligence (MLX runtime + model)
   const [specs, setSpecs] = useState<SystemSpecs | null>(null)
   const [mlx, setMlx] = useState<MlxStatusResponse | null>(null)
   const [downloading, setDownloading] = useState(false)
@@ -45,7 +45,7 @@ export default function SetupWizard() {
   const runtimeStarted = useRef(false)
   const prefetchStarted = useRef(false)
 
-  // Step 3 — integrations. The shared <ConnectTrackers> drives the actual
+  // Step 2 — integrations. The shared <ConnectTrackers> drives the actual
   // connect flows (OAuth + token save); this just holds the live connected-state
   // (get_integrations) so the rail status + completion summary stay accurate.
   const [integrations, setIntegrations] = useState<IntegrationsResponse | null>(null)

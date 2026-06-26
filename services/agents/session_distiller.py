@@ -96,7 +96,7 @@ _ENTITY_RESCUE_CAP = 4
 _embedder = None  # cached (model, tokenizer) tuple
 
 
-def _get_embedder():
+def _get_embedder() -> tuple:
     global _embedder
     if _embedder is None:
         import mlx_embeddings
@@ -135,7 +135,8 @@ def evict_embedder() -> None:
         _embedder = None
         gc.collect()
         try:
-            import mlx.core as mx; mx.clear_cache()
+            import mlx.core as mx
+            mx.clear_cache()
         except Exception:  # noqa: BLE001 — cache flush is best-effort; non-fatal if mlx absent
             pass
         log.info("session_distiller: embedding model evicted from memory")

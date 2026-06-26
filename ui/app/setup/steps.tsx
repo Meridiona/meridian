@@ -277,10 +277,12 @@ export const STEPS: StepMeta[] = [
     subtitle: 'Everything runs privately on your Mac with Apple MLX. The models started downloading when setup opened — this is just the finish line.',
     Body: MLXBody,
     status: (s) => s.modelReady ? 'Ready' : (s.mlx?.runtime_found || s.mlx?.runtime_installed) ? 'Downloading…' : 'Installing…',
-    // Block Finish until every model is on disk: the worklog pipeline (distill →
+    // Block Finish until every model is on disk — the worklog pipeline (distill →
     // rerank → match) can't run a cycle without all three, so the user must not
     // reach the dashboard early. The download has had the whole wizard to run, so
     // this is usually instant; visible progress + Retry keep it from being a dead end.
-    canNext: (s) => s.modelReady,
+    // Exception: if the runtime itself is unavailable (incompatible hardware, no
+    // download_available), gate open — there is no download to wait for.
+    canNext: (s) => s.modelReady || !!(s.mlx && !s.mlx.runtime_found && !s.mlx.runtime_installed && !s.mlx.download_available),
   },
 ]
