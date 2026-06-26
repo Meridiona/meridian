@@ -139,7 +139,7 @@ def _run_prefetch(specs: list[model_registry.ModelSpec]) -> None:
                 prefetch_state["error"] = str(exc)
                 prefetch_state["speed"] = 0.0
             root.set_status(trace.Status(trace.StatusCode.ERROR, str(exc)))
-            log.error("server: model prefetch failed", extra={"error": str(exc)})
+            log.exception("server: model prefetch failed", extra={"error": str(exc)})
 
 
 @router.post("/prefetch_model")
@@ -188,7 +188,7 @@ async def prefetch_model() -> dict:
         return_exceptions=True,
     )
     totals: list[int] = []
-    for spec, r in zip(specs, probe_results):
+    for spec, r in zip(specs, probe_results, strict=True):
         if isinstance(r, int):
             totals.append(r)
         else:
