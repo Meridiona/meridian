@@ -79,7 +79,7 @@ tell application "Terminal"
     activate
 
     -- 1. Rust daemon (cargo watch)
-    do script "echo '=== Rust daemon (cargo watch) ===' && cd '${REPO_ROOT}' && cargo watch -x 'run --bin meridian'"
+    do script "echo '=== Rust daemon (cargo watch) ===' && cd '${REPO_ROOT}' && cargo watch --watch . --watch '/Users/adityaharish/Documents/Meridiona/screenpipe-fork' -x 'run --bin meridian'"
 
     -- 2. MLX server (uvicorn --reload, watches services/agents/ only)
     do script "echo '=== MLX server (uvicorn --reload) ===' && cd '${REPO_ROOT}/services' && .venv/bin/uvicorn agents.server:app --reload --reload-dir '${REPO_ROOT}/services/agents' --host 127.0.0.1 --port 7823"

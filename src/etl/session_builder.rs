@@ -183,6 +183,86 @@ pub(super) fn url_domain(url: &str) -> &str {
     domain.strip_prefix("www.").unwrap_or(domain)
 }
 
+/// Process names coding agents use as their terminal tab label.
+/// VS Code sets the tab title to the foreground process name by default;
+/// agents that override it via OSC escape sequences (Claude Code) are caught
+/// by the spinner check below instead.
+const CODING_AGENT_NAMES: &[&str] = &[
+    "claude",       // Claude Code CLI
+    "codex",        // OpenAI Codex CLI
+    "cursor-agent", // Cursor agent CLI
+    "copilot",      // GitHub Copilot CLI
+    "gemini",       // Google Gemini CLI
+    "aider",        // Aider AI
+    "q",            // Amazon Q / Kiro CLI
+];
+
+/// Unicode spinner characters Claude Code emits via OSC escape sequences while
+/// a task is running. These appear at the START of the terminal tab label and
+/// are the most reliable per-frame signal that Claude Code is active.
+const CLAUDE_SPINNERS: &[char] = &[
+    '✳', '⠐', '⠂', '⠁', '⠄', '⠈', '⠘', '⠸', '⠴', '⠦', '⠧', '⠇', '⠏', '✢', '✻', '⏺',
+];
+
+/// Returns `true` when the session label is a bare semver/version string:
+/// "2.1.193", "0.139.0", "1.2.3.4", etc. Claude Code and Codex both use
+/// this format when idle, starting up, or when no task title has been set.
+fn is_version_label(s: &str) -> bool {
+    // Must be purely digits and dots, with at least two dots (N.N.N).
+    let parts: Vec<&str> = s.split('.').collect();
+    parts.len() >= 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Returns `true` when a VS Code terminal window title indicates the focused
+/// terminal tab is running a coding agent (Claude Code, Codex, Cursor agent,
+/// etc.) rather than a regular shell or build process.
+///
+/// The session label comes from the xterm.js `AXDescription` attribute read by
+/// the screenpipe a11y tree walker — it is the authoritative per-tab signal.
+///
+/// Detection:
+///   - Claude Code sets spinner chars at the start of the label via OSC escape
+///     sequences while a task runs (e.g. "Terminal - ⠂ agentic-worklog-…").
+///   - Other agents (codex, cursor-agent, copilot, gemini, aider, q) appear as
+///     their process name in the label when VS Code uses the default `${process}`
+///     title format (e.g. "Terminal - codex").
+pub(super) fn is_coding_agent_terminal(window_name: &str) -> bool {
+    let session = match window_name.strip_prefix("Terminal - ") {
+        Some(s) => s.trim(),
+        None => return false,
+    };
+    if session.is_empty() {
+        return false;
+    }
+    // Claude Code active: spinner char at the very start of the session label.
+    if session.starts_with(|c: char| CLAUDE_SPINNERS.contains(&c)) {
+        return true;
+    }
+    // Version-number-only label: "2.1.193", "0.139.0", etc.
+    // Both Claude Code and Codex use this format when idle or starting up.
+    if is_version_label(session) {
+        return true;
+    }
+    // Other agents: check if the session label contains the agent name.
+    // "codex-aarch64-apple-darwin", "cursor-agent", "copilot-node" etc. all match.
+    // "q" is kept as exact-word-only to avoid false-positives ("qemu", "queue-worker").
+    let session_lower = session.to_lowercase();
+    let first_word = session_lower
+        .split_whitespace()
+        .next()
+        .unwrap_or(&session_lower);
+    if first_word == "q" {
+        return true;
+    }
+    CODING_AGENT_NAMES
+        .iter()
+        .filter(|&&name| name != "q")
+        .any(|&name| session_lower.contains(name))
+}
+
 /// Known VS Code-like editor app names (lowercase).
 const VSCODE_LIKE_APPS: &[&str] = &[
     "code",
@@ -231,5 +311,79 @@ pub(super) fn vscode_project(window_name: &str) -> Option<&str> {
         None
     } else {
         Some(bare)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_coding_agent_terminal;
+
+    #[test]
+    fn detects_claude_code_spinner() {
+        // Spinner at start — Claude Code active task
+        assert!(is_coding_agent_terminal(
+            "Terminal - ⠂ agentic-worklog-matcher-pipeline"
+        ));
+        assert!(is_coding_agent_terminal(
+            "Terminal - ✳ Fix PM sync start date..."
+        ));
+        assert!(is_coding_agent_terminal(
+            "Terminal - ⠐ Understand code capturing"
+        ));
+        assert!(is_coding_agent_terminal("Terminal - ⏺ Some other task"));
+    }
+
+    #[test]
+    fn detects_other_agents_by_process_name() {
+        assert!(is_coding_agent_terminal("Terminal - codex"));
+        assert!(is_coding_agent_terminal("Terminal - cursor-agent"));
+        assert!(is_coding_agent_terminal("Terminal - copilot"));
+        assert!(is_coding_agent_terminal("Terminal - gemini"));
+        assert!(is_coding_agent_terminal("Terminal - aider"));
+        assert!(is_coding_agent_terminal("Terminal - q"));
+        assert!(is_coding_agent_terminal("Terminal - claude")); // fallback when no OSC title
+    }
+
+    #[test]
+    fn detects_version_number_labels() {
+        // Claude Code and Codex idle/startup tab titles
+        assert!(is_coding_agent_terminal("Terminal - 2.1.193"));
+        assert!(is_coding_agent_terminal("Terminal - 0.139.0"));
+        assert!(is_coding_agent_terminal("Terminal - 1.0.0"));
+        assert!(is_coding_agent_terminal("Terminal - 2.1.177"));
+        // Not a version label — normal terminals
+        assert!(!is_coding_agent_terminal("Terminal - zsh"));
+        assert!(!is_coding_agent_terminal("Terminal - npm"));
+        assert!(!is_coding_agent_terminal("Terminal - 1")); // single number
+        assert!(!is_coding_agent_terminal("Terminal - 1.2")); // only two parts
+    }
+
+    #[test]
+    fn detects_architecture_suffixed_binaries() {
+        // Codex ARM Mac binary: codex-aarch64-apple-darwin (VS Code truncates it)
+        assert!(is_coding_agent_terminal("Terminal - codex-aarch64-ap"));
+        assert!(is_coding_agent_terminal(
+            "Terminal - codex-aarch64-apple-darwin"
+        ));
+        assert!(is_coding_agent_terminal(
+            "Terminal - codex-x86_64-apple-darwin"
+        ));
+        // cursor-agent with version suffix
+        assert!(is_coding_agent_terminal("Terminal - cursor-agent.2026"));
+        // "q" stays exact-word to avoid matching "qemu", "queue-worker" etc.
+        assert!(!is_coding_agent_terminal("Terminal - qemu"));
+        assert!(!is_coding_agent_terminal("Terminal - queue-worker"));
+    }
+
+    #[test]
+    fn does_not_suppress_normal_terminals() {
+        assert!(!is_coding_agent_terminal("Terminal - zsh"));
+        assert!(!is_coding_agent_terminal("Terminal - bash"));
+        assert!(!is_coding_agent_terminal("Terminal - npm"));
+        assert!(!is_coding_agent_terminal("Terminal - node"));
+        assert!(!is_coding_agent_terminal("Terminal - fish"));
+        assert!(!is_coding_agent_terminal("Terminal")); // bare terminal, no dash
+        assert!(!is_coding_agent_terminal("build.rs — screenpipe")); // editor tab, not terminal
+        assert!(!is_coding_agent_terminal("")); // empty
     }
 }
