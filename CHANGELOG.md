@@ -1,3 +1,71 @@
+## [1.65.0](https://github.com/Meridiona/meridian/compare/v1.64.0...v1.65.0) (2026-06-26)
+
+### 🚀 Features
+
+* **integrations:** in-process OAuth + in-app token connect for all 5 trackers ([9e341e2](https://github.com/Meridiona/meridian/commit/9e341e2d72cb98fda3b170ef3774ae464173d526))
+* **intelligence:** gate task-linking + worklog on a working pipeline ([#147](https://github.com/Meridiona/meridian/issues/147)) ([22e74aa](https://github.com/Meridiona/meridian/commit/22e74aa0534b4ec5ca6bd2bb2e296dfc14733dca))
+* **oauth:** browser OAuth for Jira, tasks sync, health improvements ([e757977](https://github.com/Meridiona/meridian/commit/e7579770878c66f46542dd21b97dc39379276d29)), closes [#213](https://github.com/Meridiona/meridian/issues/213)
+* **observability:** auto-sync OO dashboards on git push ([0fabfa1](https://github.com/Meridiona/meridian/commit/0fabfa1bff93b13608f4b264f5d7dffed9f00055))
+* **setup:** remove llm model selector, fix single fixed model ([d1d09f1](https://github.com/Meridiona/meridian/commit/d1d09f1f649862d87208479e4d07b74846b48a47))
+* **ui:** dashboard full-screen with dock integration + go-to-setup button ([7e1389e](https://github.com/Meridiona/meridian/commit/7e1389e0c75d5f2d4a03315ea43a3dd4574266c3))
+* **worklog-pipeline:** restore missing service files from cleanup branch ([b6763a3](https://github.com/Meridiona/meridian/commit/b6763a38c3d7a726c464f1f1a7fab32cd79fd228))
+* **worklog-pipeline:** restore worklog_pipeline package from cleanup branch ([cf525ba](https://github.com/Meridiona/meridian/commit/cf525ba1b3b291b764f842210a673f2b6d3f41bb))
+
+### 🐛 Bug Fixes
+
+* **capture:** fall back to OCR when browser a11y tree is chrome-only ([#346](https://github.com/Meridiona/meridian/issues/346)) ([60cb64e](https://github.com/Meridiona/meridian/commit/60cb64e7790a9aad951e73ac6e7ac2d3a80f3d6d)), closes [#1](https://github.com/Meridiona/meridian/issues/1) [#2](https://github.com/Meridiona/meridian/issues/2) [#3](https://github.com/Meridiona/meridian/issues/3) [#4](https://github.com/Meridiona/meridian/issues/4) [#5](https://github.com/Meridiona/meridian/issues/5) [#6](https://github.com/Meridiona/meridian/issues/6) [#7](https://github.com/Meridiona/meridian/issues/7) [#9](https://github.com/Meridiona/meridian/issues/9) [#10](https://github.com/Meridiona/meridian/issues/10)
+* **ci:** drop install.sh from screenpipe MIT pin check + fix markdownlint ([a3884df](https://github.com/Meridiona/meridian/commit/a3884dff57e5f8d40f5a18f32a70b7da4e622357))
+* **cli:** add tray log targets to `meridian logs` ([f71d14a](https://github.com/Meridiona/meridian/commit/f71d14aec43474dd2ff8dd363bdb1a045b4c3705))
+* cut staging.2 for live auto-update test [staging-release] ([390e48f](https://github.com/Meridiona/meridian/commit/390e48f7b8a3a4f9877c36da1a3e2a7aece6134b))
+* **dev:** clean startup, worklog pipeline wiring, and a11y capture gate ([b72ed4b](https://github.com/Meridiona/meridian/commit/b72ed4b6572a1d94c0de3daf1f470dbb7c935932))
+* **dev:** fix popover 404 under tauri dev by copying tray/src into ui/public/popover ([72a7aa3](https://github.com/Meridiona/meridian/commit/72a7aa38878084fdad3576402dc0ed3960717871))
+* **dev:** harden popover copy — rm -rf before cp, tighten regression test ([6007672](https://github.com/Meridiona/meridian/commit/6007672e9cae3cdf885a41c148d04485614fff78))
+* **dev:** skip screenpipe permission prompts in install-dev.sh ([1cedc54](https://github.com/Meridiona/meridian/commit/1cedc54675b77c6052a9832afee3ee6bd23b3618))
+* **etl:** suppress VS Code frames when focused terminal is a coding agent ([#345](https://github.com/Meridiona/meridian/issues/345)) ([d183a8c](https://github.com/Meridiona/meridian/commit/d183a8ce048f8669221dfa1c2dca22f6afbf5f75)), closes [#1](https://github.com/Meridiona/meridian/issues/1) [#2](https://github.com/Meridiona/meridian/issues/2) [#3](https://github.com/Meridiona/meridian/issues/3) [#4](https://github.com/Meridiona/meridian/issues/4) [#5](https://github.com/Meridiona/meridian/issues/5) [#7](https://github.com/Meridiona/meridian/issues/7) [#9](https://github.com/Meridiona/meridian/issues/9) [#10](https://github.com/Meridiona/meridian/issues/10) [#8](https://github.com/Meridiona/meridian/issues/8)
+* **install:** skip permissions walkthrough by default in --dev mode ([6edb079](https://github.com/Meridiona/meridian/commit/6edb079c82eedcee154316dd4a8d1252e3af432e))
+* **install:** stage screenpipe binary to ~/.meridian/bin for stable TCC path ([#209](https://github.com/Meridiona/meridian/issues/209)) ([5b9aff3](https://github.com/Meridiona/meridian/commit/5b9aff3b97858cf601b5a699ff40d91932693084))
+* **integrations:** address deferred review findings from [#338](https://github.com/Meridiona/meridian/issues/338) ([899b75d](https://github.com/Meridiona/meridian/commit/899b75d5661519d8d78b5a351a4d2ecbaf986420))
+* **integrations:** address PR [#338](https://github.com/Meridiona/meridian/issues/338) review findings ([897b099](https://github.com/Meridiona/meridian/commit/897b0994a948ff7f456caafd4f1cf4c93806b7bf))
+* **integrations:** make token-connected Jira disconnectable; scope Jira self-hosted copy honestly ([721b52b](https://github.com/Meridiona/meridian/commit/721b52b0110f236a6813c3da4697eefcc71ac1c6))
+* **integrations:** write .env with trailing newline so appended keys don't concatenate ([d5ded63](https://github.com/Meridiona/meridian/commit/d5ded634c240c5ceaee6eacb8fc714b21f4fedaa))
+* **mlx-server:** add missing instrument_agno() to observability module ([4daba64](https://github.com/Meridiona/meridian/commit/4daba641be9069e2260ed5b90dce8c0330f88bd8))
+* **oauth:** remove authorize URL from stderr to clear CodeQL taint path ([1c9a541](https://github.com/Meridiona/meridian/commit/1c9a541018df4a62f6ff7c573c3465ceede7aa36))
+* **observability:** sanitise agent_name before using it as a log filename ([2320bf6](https://github.com/Meridiona/meridian/commit/2320bf62b49e488b583a921b07ab42abe586cb12))
+* **observability:** structured warning + empty safe_name fallback ([f652739](https://github.com/Meridiona/meridian/commit/f652739ad3a0dbac3626c59d34685f3cc93b8c18))
+* **observability:** use SDK propagator in current_traceparent for tracestate support ([f4740c2](https://github.com/Meridiona/meridian/commit/f4740c24316b203f248a7af8ff76e666d7f0a71e))
+* **observability:** validate agent_name to prevent path traversal in log file path ([1a66fa7](https://github.com/Meridiona/meridian/commit/1a66fa7215c9d8e5ecfe8ce9420fa5936798cac8))
+* remove model selector, fix overdue hygiene, drop stale eval artifacts ([13e6941](https://github.com/Meridiona/meridian/commit/13e6941ed3dc8120c58818ad53a513b8f9ef9a8d))
+* **review:** address PR [#341](https://github.com/Meridiona/meridian/issues/341) review comments and CodeQL security alert ([c50107a](https://github.com/Meridiona/meridian/commit/c50107a66dfd9fd969b40462fc7f5f20459243af))
+* **review:** address remaining PR [#341](https://github.com/Meridiona/meridian/issues/341) CodeRabbit findings ([49a56c6](https://github.com/Meridiona/meridian/commit/49a56c6c411d4ab95c8f295aaa2764e05c004a4f))
+* **review:** address remaining PR [#341](https://github.com/Meridiona/meridian/issues/341) review comments ([4ccd42f](https://github.com/Meridiona/meridian/commit/4ccd42f183bedfadd8642214c7d4edfa9cf42f1f))
+* **tray:** revert activation policy on dashboard close + tracing on open_setup ([94a3217](https://github.com/Meridiona/meridian/commit/94a3217027676ee40e3909823b5981a8e95b6655))
+* **ui:** handle activation policy Result + move Go to Setup to top of settings ([176353a](https://github.com/Meridiona/meridian/commit/176353a16544dd82565d451762166b469fa760a4))
+
+### ✅ Tests
+
+* auto-update target staging.2 [staging-release] ([b9600ad](https://github.com/Meridiona/meridian/commit/b9600ad71fef050f4a7f915d538eaa27f3b5fbfd))
+* **tray:** guard v1.64.0 dev-setup architecture contracts ([0f99905](https://github.com/Meridiona/meridian/commit/0f999055fce68f00330cdd7e7e85a7dbae5b2c59))
+
+### 📝 Documentation
+
+* **claude:** fix stale classify-trigger bullet — pending_classifier → summarised worklog pickup ([7f263c8](https://github.com/Meridiona/meridian/commit/7f263c86f06994518bf1bfa87e608d9e798d996a))
+* **claude:** fix stale pending_classifier lifecycle references ([a198dc4](https://github.com/Meridiona/meridian/commit/a198dc4d2a99e5b4b28fbc4481732fefc88ee407))
+* **claude:** remove stale coding-agent-classify CLI reference + update MLX server description ([9068c83](https://github.com/Meridiona/meridian/commit/9068c8353f8f8e0edecdf5a36635129be0394457))
+* update dev setup + all docs for v1.64.0 architecture ([cbfac64](https://github.com/Meridiona/meridian/commit/cbfac64377e4096ef0ede6a1b7fb4861e60a0f3b))
+
+### 🔧 Chores
+
+* **cleanup:** remove classifier pipeline + modularise MLX server + Qwen3.5-2B ([155b26c](https://github.com/Meridiona/meridian/commit/155b26c5e096c006a7711bec3df795c432afe305))
+* **dev:** skip PM tool credential prompts in install-dev.sh ([a11289b](https://github.com/Meridiona/meridian/commit/a11289b28ae52de9efb34002b2878da6e53638ff))
+* **dev:** strip Claude Code integrations from install-dev.sh ([31c07b2](https://github.com/Meridiona/meridian/commit/31c07b28a58de2a6af8fc16848e2592dc970fa22))
+* **install:** remove screenpipe and a11y-helper from install.sh ([9bc9595](https://github.com/Meridiona/meridian/commit/9bc95950aa0f1ef84615de41ab463ef8dae34feb))
+* **merge:** resolve conflicts merging pre-main into feat/in-process-oauth ([e647407](https://github.com/Meridiona/meridian/commit/e6474072812fd69a5af2c391e146cf57940d811a))
+* **merge:** resolve conflicts merging pre-main into feat/in-process-oauth ([70c88be](https://github.com/Meridiona/meridian/commit/70c88be892d0e142ac732ab42734f9f2cabc2e3a))
+* **release:** first staging cut [staging-release] ([fc691aa](https://github.com/Meridiona/meridian/commit/fc691aa760ac27cab0fe598b15589bbdcd1b740f))
+* **release:** retry staging [staging-release] ([be174ba](https://github.com/Meridiona/meridian/commit/be174ba0b5a3853c2908e57e6b135581a174b8d9))
+* remove classifier eval scratch files, rerank experiments, and stale tests ([ab8479c](https://github.com/Meridiona/meridian/commit/ab8479c20d8b465eaa56c83a1cea37de73d1d97c))
+* **summariser:** drop pending_classifier — summarised rows are terminal ([fa31b30](https://github.com/Meridiona/meridian/commit/fa31b30d975472e870f2d9d45e144f29a8ceec27))
+
 ## [1.64.0](https://github.com/Meridiona/meridian/compare/v1.63.0...v1.64.0) (2026-06-24)
 
 ### 🚀 Features
