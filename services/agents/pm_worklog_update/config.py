@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import os
 
+from agents import model_registry
+
 # Re-export the shared paths so callers don't have to know about the parent
 # config module.
 from agents.config import MERIDIAN_DB, MERIDIAN_HOME  # noqa: F401
@@ -27,7 +29,7 @@ PM_WORKLOG_INTERVAL_HOURS = float(os.environ.get("PM_WORKLOG_INTERVAL_HOURS", "1
 # OpenAILike. The port is the same one the classifier uses.
 MLX_SERVER_HOST   = os.environ.get("MLX_SERVER_HOST", "127.0.0.1")
 MLX_SERVER_PORT   = int(os.environ.get("MLX_SERVER_PORT", "7823"))
-MLX_SERVER_MODEL  = os.environ.get("MLX_SERVER_MODEL", "mlx-community/Qwen3.5-2B-OptiQ-4bit")
+MLX_SERVER_MODEL  = os.environ.get("MLX_SERVER_MODEL") or model_registry.llm_id()
 
 # Token caps. The MLX model exposes 128-262K context — a single Synthesise
 # call comfortably swallows even the heaviest hour of work.
