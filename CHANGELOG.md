@@ -1,3 +1,10 @@
+## [1.66.1](https://github.com/Meridiona/meridian/compare/v1.66.0...v1.66.1) (2026-06-26)
+
+### 🐛 Bug Fixes
+
+* **prefetch:** replace module-level globals with _speed_state dict ([bfc01e6](https://github.com/Meridiona/meridian/commit/bfc01e693ff0e59eabe09dce387be0f74564bbc6)), closes [#347](https://github.com/Meridiona/meridian/issues/347)
+* **setup:** address remaining CodeRabbit findings on PR [#347](https://github.com/Meridiona/meridian/issues/347) ([af2ced2](https://github.com/Meridiona/meridian/commit/af2ced2f2c7c1031928bb06a3ff097dd030f915a))
+
 ## [1.66.0](https://github.com/Meridiona/meridian/compare/v1.65.0...v1.66.0) (2026-06-26)
 
 ### 🚀 Features
