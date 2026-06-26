@@ -9,13 +9,19 @@ from typing import Any
 # and read by every route module.
 app_state: dict[str, Any] = {}
 
-# Shared prefetch progress, guarded by prefetch_lock. states: idle|downloading|done|error
+# Shared prefetch progress, guarded by prefetch_lock. states: idle|downloading|done|error.
+# `received`/`total` are AGGREGATE byte counts summed across every pipeline model
+# (llm + reranker + embedder), so the wizard's progress bar has a single honest
+# denominator. The wire contract the Rust tray decodes is exactly
+# state/received/total/error (tray/src-tauri/src/mlx_server.rs::PrefetchStatus);
+# `models` is an additive per-model breakdown the tray ignores.
 prefetch_state: dict[str, Any] = {
     "state": "idle",
-    "model_id": None,
     "received": 0,
     "total": 0,
     "error": None,
+    # Per-model rows: {"role", "model_id", "loader", "received", "total", "state"}.
+    "models": [],
 }
 prefetch_lock = threading.Lock()
 

@@ -45,6 +45,11 @@
     <dict>
         <key>HOME</key>
         <string>{{HOME}}</string>
+        <!-- Pin the HuggingFace cache so the wizard's eager prefetch and the
+             runtime's lazy model loads always resolve the SAME directory (this is
+             the default location, made explicit so the two paths can't diverge). -->
+        <key>HF_HOME</key>
+        <string>{{HOME}}/.cache/huggingface</string>
         <key>UV_PROJECT_ENVIRONMENT</key>
         <string>{{SERVICES_VENV}}</string>
         <key>MERIDIAN_DB</key>

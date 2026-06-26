@@ -1,9 +1,16 @@
 """Prefetch routes — /prefetch_model and /prefetch_status.
 
-Eager, spec-aware model download for the onboarding wizard. The wizard's Model
-step calls /prefetch_model right after the runtime is chosen, then polls
-/prefetch_status for live progress. Downloads run in a background thread so the
-event loop is never blocked; progress is shared via prefetch_state in agents._state.
+Eager, registry-driven download of EVERY model the end-to-end pipeline needs
+(llm + reranker + embedder — see agents.model_registry), so the onboarding wizard
+can fetch the whole set before the user reaches the dashboard and no first
+worklog run stalls on a silent mid-pipeline download.
+
+The wizard's Model step calls /prefetch_model once the runtime is up, then polls
+/prefetch_status for live progress. Downloads run in one background thread
+(sequential, so bandwidth isn't fragmented) and never block the event loop;
+progress is shared via prefetch_state in agents._state. `received`/`total` are
+aggregate byte counts across all models — the single denominator the wizard's
+progress bar renders.
 """
 from __future__ import annotations
 
@@ -14,7 +21,8 @@ from pathlib import Path
 from fastapi import APIRouter
 from opentelemetry import trace
 
-from agents._state import app_state, prefetch_state, prefetch_lock
+from agents import model_registry
+from agents._state import prefetch_lock, prefetch_state
 
 log = logging.getLogger("agents.server")
 
@@ -40,99 +48,143 @@ def _dir_size_bytes(path: Path) -> int:
     return total
 
 
-def _prefetch_total_bytes(model_id: str) -> int:
-    """Authoritative download size: sum HF sibling sizes filtered to the load() patterns.
+def _spec_total_bytes(spec: model_registry.ModelSpec) -> int:
+    """Authoritative download size for one model: sum HF sibling sizes filtered to
+    the spec's load() patterns.
 
     Computed upfront so the wizard's progress bar has a stable denominator, instead
     of summing concurrent per-file tqdm totals (which lurch as new bars spawn).
     """
     import fnmatch
+
     from huggingface_hub import HfApi
 
-    # Lazy import avoids a circular import: agents.server imports this module at
-    # load time, so prefetch.py cannot import from agents.server at module scope.
-    from agents.server import _MODEL_ALLOW_PATTERNS
-
-    info = HfApi().model_info(model_id, files_metadata=True)
+    info = HfApi().model_info(spec.model_id, files_metadata=True)
     total = 0
     for sib in info.siblings or []:
-        if any(fnmatch.fnmatch(sib.rfilename, pat) for pat in _MODEL_ALLOW_PATTERNS):
+        if any(fnmatch.fnmatch(sib.rfilename, pat) for pat in spec.allow_patterns):
             total += sib.size or 0
     return total
 
 
-def _run_prefetch(model_id: str) -> None:
-    """Background worker: download the model's weights to the HF cache (no load)."""
-    from agents.server import _MODEL_ALLOW_PATTERNS
+def _download_spec(spec: model_registry.ModelSpec) -> None:
+    """Download one model's weights to the HF cache (no load into memory).
 
-    tracer = trace.get_tracer(__name__)
-    with tracer.start_as_current_span("model_prefetch") as span:
-        span.set_attribute("model_id", model_id)
+    mlx_lm models use mlx_lm's private `_download` (the exact fileset `load()`
+    resolves); embeddings (and the fallback) use `snapshot_download` filtered to
+    the spec's allow_patterns. Either way only disk is touched — the single-slot
+    runtime loads each model lazily on first use.
+    """
+    if spec.loader == "mlx_lm":
         try:
-            try:
-                from mlx_lm.utils import _download as _mlx_download
-                _mlx_download(model_id)  # exact fileset load() resolves; download-only
-            except (ImportError, AttributeError):
-                # Private primitive unavailable — replicate load()'s default patterns.
-                from huggingface_hub import snapshot_download
-                snapshot_download(model_id, allow_patterns=_MODEL_ALLOW_PATTERNS)
-            received = _dir_size_bytes(_hf_cache_dir_for(model_id))
+            from mlx_lm.utils import _download as _mlx_download
+            _mlx_download(spec.model_id)  # exact fileset load() resolves; download-only
+            return
+        except (ImportError, AttributeError):
+            pass  # private primitive unavailable — fall through to snapshot_download
+    from huggingface_hub import snapshot_download
+    snapshot_download(spec.model_id, allow_patterns=spec.allow_patterns)
+
+
+def _run_prefetch(specs: list[model_registry.ModelSpec]) -> None:
+    """Background worker: download every model in `specs` to the HF cache in order."""
+    tracer = trace.get_tracer(__name__)
+    with tracer.start_as_current_span("model_prefetch_all") as root:
+        root.set_attribute("model_count", len(specs))
+        try:
+            for i, spec in enumerate(specs):
+                with prefetch_lock:
+                    prefetch_state["models"][i]["state"] = "downloading"
+                with tracer.start_as_current_span("model_prefetch") as span:
+                    span.set_attribute("role", spec.role)
+                    span.set_attribute("model_id", spec.model_id)
+                    _download_spec(spec)
+                    received = _dir_size_bytes(_hf_cache_dir_for(spec.model_id))
+                    span.set_attribute("received_bytes", received)
+                with prefetch_lock:
+                    row = prefetch_state["models"][i]
+                    row["received"] = received or row["total"]
+                    row["state"] = "done"
+                    prefetch_state["received"] = sum(m["received"] for m in prefetch_state["models"])
+                log.info(
+                    "server: model prefetch complete",
+                    extra={"role": spec.role, "model_id": spec.model_id, "received_bytes": received},
+                )
             with prefetch_lock:
-                prefetch_state["received"] = received or prefetch_state["total"]
+                prefetch_state["received"] = (
+                    sum(m["received"] for m in prefetch_state["models"]) or prefetch_state["total"]
+                )
                 prefetch_state["state"] = "done"
-            span.set_attribute("received_bytes", received)
-            log.info("server: model prefetch complete", extra={"model_id": model_id, "received_bytes": received})
+            root.set_attribute("received_bytes", prefetch_state["received"])
+            log.info("server: all model prefetch complete", extra={"received_bytes": prefetch_state["received"]})
         except Exception as exc:  # noqa: BLE001 — report, never crash the server
             with prefetch_lock:
                 prefetch_state["state"] = "error"
                 prefetch_state["error"] = str(exc)
-            span.set_status(trace.Status(trace.StatusCode.ERROR, str(exc)))
-            log.error("server: model prefetch failed", extra={"model_id": model_id, "error": str(exc)})
+            root.set_status(trace.Status(trace.StatusCode.ERROR, str(exc)))
+            log.error("server: model prefetch failed", extra={"error": str(exc)})
 
 
 @router.post("/prefetch_model")
 async def prefetch_model() -> dict:
-    """Start the eager, spec-aware model download (idempotent). Returns current status.
+    """Start the eager, registry-driven download of all pipeline models (idempotent).
 
-    Apple Intelligence backend → nothing to download (no-op `done`). Re-POSTing
-    while `downloading`/`done` returns the live state without spawning a second
+    The model set is fixed per run (the registry), so re-POSTing while
+    `downloading`/`done` returns the live state without spawning a second
     download; an earlier `error` is retried.
     """
     from fastapi.concurrency import run_in_threadpool
 
-    m = app_state.get("mlx_module")
-    model_id = m.MODEL_ID if m else None
-    if model_id is None:
-        return {"state": "done", "model_id": model_id, "received": 0, "total": 0, "error": None}
+    specs = list(model_registry.ALL_SPECS)
 
     with prefetch_lock:
-        # Idempotent only for the SAME model: a completed/in-flight prefetch for
-        # one model must not block starting a different one after the user changes
-        # their model preference (which changes what MODEL_ID returns).
-        same_model = prefetch_state.get("model_id") == model_id
-        if same_model and prefetch_state["state"] in ("downloading", "done"):
+        if prefetch_state["state"] in ("downloading", "done"):
             return dict(prefetch_state)  # idempotent — no duplicate downloads
-        prefetch_state.update(state="downloading", model_id=model_id, received=0, total=0, error=None)
+        prefetch_state.update(
+            state="downloading",
+            received=0,
+            total=0,
+            error=None,
+            models=[
+                {"role": s.role, "model_id": s.model_id, "loader": s.loader,
+                 "received": 0, "total": 0, "state": "pending"}
+                for s in specs
+            ],
+        )
 
-    try:
-        total = await run_in_threadpool(_prefetch_total_bytes, model_id)
-    except Exception as exc:  # noqa: BLE001 — size probe is best-effort; download still runs
-        total = 0
-        log.warning("server: prefetch size-probe failed (bar will be indeterminate)", extra={"error": str(exc)})
+    # Per-model size probe (best-effort; a failed probe just leaves that model's
+    # denominator at 0 — the download still runs).
+    totals: list[int] = []
+    for spec in specs:
+        try:
+            totals.append(await run_in_threadpool(_spec_total_bytes, spec))
+        except Exception as exc:  # noqa: BLE001
+            totals.append(0)
+            log.warning(
+                "server: prefetch size-probe failed (bar partially indeterminate)",
+                extra={"model_id": spec.model_id, "error": str(exc)},
+            )
     with prefetch_lock:
-        prefetch_state["total"] = total
+        for i, t in enumerate(totals):
+            prefetch_state["models"][i]["total"] = t
+        prefetch_state["total"] = sum(totals)
 
-    threading.Thread(target=_run_prefetch, args=(model_id,), daemon=True).start()
-    log.info("server: model prefetch started", extra={"model_id": model_id, "total_bytes": total})
+    threading.Thread(target=_run_prefetch, args=(specs,), daemon=True).start()
+    log.info(
+        "server: model prefetch started",
+        extra={"model_count": len(specs), "total_bytes": sum(totals)},
+    )
     with prefetch_lock:
         return dict(prefetch_state)
 
 
 @router.get("/prefetch_status")
 async def prefetch_status() -> dict:
-    """Live prefetch progress. `received` is recomputed from the cache dir while downloading."""
+    """Live prefetch progress. While downloading, `received` is recomputed from the
+    on-disk cache dirs of every model so the aggregate bar advances smoothly."""
     with prefetch_lock:
         st = dict(prefetch_state)
-    if st["state"] == "downloading" and st["model_id"]:
-        st["received"] = _dir_size_bytes(_hf_cache_dir_for(st["model_id"]))
+        models = list(st.get("models", []))
+    if st["state"] == "downloading" and models:
+        st["received"] = sum(_dir_size_bytes(_hf_cache_dir_for(m["model_id"])) for m in models)
     return st

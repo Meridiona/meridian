@@ -34,11 +34,17 @@ export interface SystemSpecs {
   free_disk_gb: number
 }
 
-// ── On-device model ──────────────────────────────────────────────────────────
-// Meridian uses a single fixed classifier model. No user selection.
+// ── On-device models ─────────────────────────────────────────────────────────
+// Meridian runs a fixed set of three models — the Qwen3.5-2B generative LLM
+// (which also does classification/matching), a reranker, and an embedder. No
+// user selection. They load one at a time (single-slot), so peak resident memory
+// is the LLM (MODEL_RAM_GB) while on-disk footprint is the whole set
+// (MODEL_SIZE_GB).
 
 export const MODEL_ID = 'mlx-community/Qwen3.5-2B-OptiQ-4bit'
-export const MODEL_SIZE_GB = 1.2
+// Approx total on-disk size of all three models (llm ~1.4 + reranker ~0.4 +
+// embedder ~0.65 GB); the wizard's live progress bar shows the exact bytes.
+export const MODEL_SIZE_GB = 2.4
 export const MODEL_RAM_GB = 1.5
 
 /** Meridian's own resident footprint (background service), separate from the model. */

@@ -15,13 +15,16 @@ import time
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from agents import observability
+from agents import model_registry, observability
 
 log = logging.getLogger("agents.mlx_classifier")
 tracer = observability.setup("meridian-mlx-classifier")
 
-# Default model — the agent server runs a single hardcoded model.
-MODEL_ID = "mlx-community/Qwen3.5-2B-OptiQ-4bit"
+# Generative/classifier checkpoint — resolved from the model registry (the single
+# source of truth for all three pipeline models), env-overridable via
+# MERIDIAN_LLM_ID. Read once at import, mirroring the previous module-constant
+# behaviour; routes and the prefetch path reference this as `mlx_module.MODEL_ID`.
+MODEL_ID = model_registry.llm_id()
 
 _IDLE_EVICT_S = float(os.environ.get("MLX_IDLE_EVICT_S", "120"))
 

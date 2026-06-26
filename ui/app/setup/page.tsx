@@ -35,8 +35,10 @@ export default function SetupWizard() {
   const [prefetching, setPrefetching] = useState(false)
   const [modelReady, setModelReady] = useState(false)
   const [progress, setProgress] = useState<DownloadProgress | null>(null)
-  // The user must explicitly commit (the Download button) before we prefetch.
-  const [wantModel, setWantModel] = useState(false)
+  // Onboarding auto-provisions the runtime + every model with no clicks; these
+  // one-shot guards stop each phase re-firing across poll ticks. `retryModel`
+  // re-arms them after an error.
+  const runtimeStarted = useRef(false)
   const prefetchStarted = useRef(false)
 
   // Step 3 — integrations. The shared <ConnectTrackers> drives the actual
@@ -67,32 +69,42 @@ export default function SetupWizard() {
     return () => clearInterval(id)
   }, [active, step])
 
-  // Poll MLX status while on the Model step OR while a commit is in flight (so a
-  // model that's still downloading keeps progressing after the user clicks
-  // Continue). Auto-starts the server when the runtime is present; only prefetches
-  // once the user has committed a model (`wantModel`), guaranteeing the chosen
-  // preference is on disk before the server resolves which model to fetch.
+  // Drive the Model step end-to-end with no clicks: provision the runtime tarball
+  // if missing, bring the server up, then prefetch every pipeline model — all
+  // automatically. The step gates `Continue` on `modelReady`, so the user waits
+  // here (watching aggregate progress) until the whole model set is on disk.
+  // One-shot refs guard each phase; `retryModel` re-arms them after an error.
   useEffect(() => {
-    const polling = active && !modelReady && (step === 1 || wantModel || downloading || prefetching)
+    const polling = active && !modelReady && (step === 1 || downloading || prefetching)
     if (!polling) return
     const poll = async () => {
       try {
         const s = await invoke<MlxStatusResponse>('get_mlx_status')
         setMlx(s)
-        if (s.runtime_found && s.status === 'offline') invoke('start_mlx_server_cmd').catch(() => {})
-        if (wantModel && s.status === 'running' && !prefetchStarted.current) {
+        const runtimeInstalled = s.runtime_found || s.runtime_installed
+        // Auto-install the runtime the moment we know it's missing (no click).
+        if (!runtimeInstalled && s.download_available && !downloading && !runtimeStarted.current) {
+          runtimeStarted.current = true
+          setDownloading(true)
+          setProgress({ received: 0, total: 0, message: 'Installing the on-device engine…' })
+          invoke('download_runtime_cmd')
+            .then(() => invoke('start_mlx_server_cmd').catch(() => {}))
+            .catch((e) => setErr(String(e)))
+            .finally(() => setDownloading(false))
+          return
+        }
+        // Bring the server up once the runtime is present.
+        if (runtimeInstalled && s.status === 'offline') invoke('start_mlx_server_cmd').catch(() => {})
+        // Auto-prefetch the full model set once the server is running (no click).
+        if (runtimeInstalled && s.status === 'running' && !prefetchStarted.current) {
           prefetchStarted.current = true
           setPrefetching(true)
-          setProgress({ received: 0, total: 0, message: 'Preparing model…' })
+          setProgress({ received: 0, total: 0, message: 'Preparing models…' })
           invoke('prefetch_model_cmd')
             .then(() => setModelReady(true))
-            .catch((e) => {
-              setErr(String(e))
-              // Re-arm so the Download button can retry: clear the one-shot guard
-              // and the commit flag, dropping the row back to an actionable state.
-              prefetchStarted.current = false
-              setWantModel(false)
-            })
+            // Leave the guard set on error so we don't hammer a failing download
+            // every tick; the visible Retry (retryModel) re-arms it deliberately.
+            .catch((e) => setErr(String(e)))
             .finally(() => setPrefetching(false))
         }
       } catch { /* server not yet available */ }
@@ -100,7 +112,7 @@ export default function SetupWizard() {
     poll()
     const id = setInterval(poll, 3000)
     return () => clearInterval(id)
-  }, [active, step, modelReady, wantModel, downloading, prefetching])
+  }, [active, step, modelReady, downloading, prefetching])
 
   // Stream download progress (shared by the runtime download + the model prefetch).
   useEffect(() => {
@@ -153,31 +165,19 @@ export default function SetupWizard() {
     invoke('open_permission_pane', { pane: 'input_monitoring' }).catch((e) => setErr(String(e)))
   }, [])
 
-  // Provision the MLX runtime tarball, then bring the server up. No model is
-  // fetched here — that waits for an explicit Download (downloadModel).
-  const installRuntime = useCallback(async () => {
+  // Retry after a runtime/model provisioning error: clear the one-shot guards so
+  // the poll re-drives install → start → prefetch from wherever it stalled.
+  const retryModel = useCallback(() => {
     setErr('')
-    setDownloading(true)
-    setProgress({ received: 0, total: 0, message: 'Starting…' })
-    try {
-      await invoke('download_runtime_cmd')
-      invoke('start_mlx_server_cmd').catch(() => {})
-    } catch (e) { setErr(String(e)) } finally { setDownloading(false) }
-  }, [])
-
-  // Commit: start the server and flag `wantModel` so the poll prefetches it.
-  const downloadModel = useCallback(() => {
-    setErr('')
-    invoke('start_mlx_server_cmd').catch(() => {})
-    setWantModel(true)
-    setProgress({ received: 0, total: 0, message: 'Preparing model…' })
+    runtimeStarted.current = false
+    prefetchStarted.current = false
+    setProgress({ received: 0, total: 0, message: 'Retrying…' })
   }, [])
 
   const wiz: Wiz = {
     perms, openPane, grantScreen, grantInput,
     specs, mlx, downloading, prefetching, modelReady, progress,
-    committing: wantModel && !prefetching && !modelReady,
-    installRuntime, downloadModel,
+    err, retryModel,
     integrations, refetchIntegrations,
   }
 

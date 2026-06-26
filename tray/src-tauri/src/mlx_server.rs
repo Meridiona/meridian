@@ -693,9 +693,10 @@ struct PrefetchStatus {
     error: Option<String>,
 }
 
-/// Trigger the model download and stream progress until it finishes. Prefetches
-/// the fixed classifier weights so the first classification doesn't stall on a
-/// silent download mid-inference.
+/// Trigger the model downloads and stream progress until they finish. Prefetches
+/// every pipeline model (llm + reranker + embedder — the server's model registry)
+/// so the first worklog run doesn't stall on a silent download mid-pipeline.
+/// `received`/`total` are aggregate byte counts across the whole set.
 ///
 /// POSTs `/prefetch_model` (idempotent — a re-trigger adopts the in-flight
 /// download rather than starting a second), then polls `/prefetch_status` ~1 Hz,
@@ -711,7 +712,7 @@ where
     on_progress(DownloadProgress {
         received: 0,
         total: 0,
-        message: "Selecting the best model for this Mac…".to_string(),
+        message: "Preparing models…".to_string(),
     });
     // The POST resolves the model id + total size before returning, so give it room.
     let resp = client
@@ -757,7 +758,7 @@ where
                 on_progress(DownloadProgress {
                     received: st.received,
                     total: st.total,
-                    message: "Model ready.".to_string(),
+                    message: "Models ready.".to_string(),
                 });
                 tracing::info!(received = st.received, "mlx: model prefetch complete");
                 return Ok(());
@@ -770,9 +771,9 @@ where
             _ => {
                 let mb = st.received / 1_048_576;
                 let message = if st.total > 0 {
-                    format!("Downloading model… {mb} / {} MB", st.total / 1_048_576)
+                    format!("Downloading models… {mb} / {} MB", st.total / 1_048_576)
                 } else {
-                    format!("Downloading model… {mb} MB")
+                    format!("Downloading models… {mb} MB")
                 };
                 on_progress(DownloadProgress {
                     received: st.received,

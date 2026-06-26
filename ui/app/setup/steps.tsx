@@ -32,12 +32,11 @@ export interface Wiz {
   specs: SystemSpecs | null
   mlx: MlxStatusResponse | null
   downloading: boolean    // runtime tarball in flight
-  prefetching: boolean    // model download in flight
-  committing: boolean     // committed (Download clicked) but server not yet running
-  modelReady: boolean
+  prefetching: boolean    // model-set download in flight
+  modelReady: boolean     // every pipeline model is on disk
   progress: DownloadProgress | null
-  installRuntime: () => void  // provision the MLX runtime
-  downloadModel: () => void   // commit the chosen model, then prefetch it
+  err: string             // last provisioning error ('' when none) — drives Retry
+  retryModel: () => void  // re-arm runtime/model provisioning after an error
   // Step 3 — integrations (live connected-state from get_integrations)
   integrations: IntegrationsResponse | null
   refetchIntegrations: () => void
@@ -195,9 +194,11 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
               ? <span className="flex items-center justify-end" style={{ gap: 6, fontSize: 12, color: 'var(--success)', fontWeight: 500 }}><Check size={15} color="var(--success)" />Installed</span>
               : wiz.downloading
                 ? <span className="flex items-center justify-end font-mono tnum" style={{ gap: 7, fontSize: 11.5, color: 'var(--ink-2)' }}><Spinner />{pct !== null ? `${pct}%` : '…'}</span>
-                : m && m.download_available
-                  ? <Btn size="sm" variant="secondary" onClick={wiz.installRuntime}>Install</Btn>
-                  : <span className="font-mono" style={{ fontSize: 11, color: 'var(--warn)' }}>Unavailable</span>}
+                : wiz.err
+                  ? <Btn size="sm" variant="secondary" onClick={wiz.retryModel}>Retry</Btn>
+                  : m && !m.download_available
+                    ? <span className="font-mono" style={{ fontSize: 11, color: 'var(--warn)' }}>Unavailable</span>
+                    : <span className="flex items-center justify-end" style={{ gap: 7, fontSize: 11.5, color: 'var(--ink-2)' }}><Spinner />Installing…</span>}
           </div>
         </Row>
         {wiz.downloading && pct !== null && (
@@ -205,8 +206,8 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
         )}
       </div>
 
-      {/* MODEL — fixed; no picker */}
-      <div style={{ opacity: runtimeInstalled ? 1 : 0.45, pointerEvents: runtimeInstalled ? 'auto' : 'none', transition: 'opacity .25s' }}>
+      {/* MODELS — fixed set (llm + reranker + embedder); no picker, auto-download */}
+      <div style={{ opacity: runtimeInstalled ? 1 : 0.45, transition: 'opacity .25s' }}>
         <Kicker style={{ marginBottom: 7 }}>Model</Kicker>
         <Row tone={wiz.modelReady ? 'tint' : 'surface'}>
           <Mark mono="m" color="var(--accent)" size={34} />
@@ -215,22 +216,22 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
               <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--ink)' }}>Qwen3.5 2B</span>
               <span className="font-mono" style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>2B · 4-bit</span>
             </div>
-            {(wiz.prefetching || wiz.committing) && !wiz.modelReady ? (
+            {wiz.prefetching && !wiz.modelReady ? (
               <p className="font-mono tnum" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 3 }}>
-                {wiz.progress?.message ?? 'Downloading model…'}
+                {wiz.progress?.message ?? 'Downloading models…'}
               </p>
             ) : (
-              <p className="font-mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{MODEL_SIZE_GB} GB download · ~90 tok/s on your Mac</p>
+              <p className="font-mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>Downloads with its reranker + embedder · ~90 tok/s on your Mac</p>
             )}
           </div>
           <div className="shrink-0" style={{ minWidth: 100, textAlign: 'right' }}>
             {wiz.modelReady
               ? <span className="flex items-center justify-end" style={{ gap: 6, fontSize: 12, color: 'var(--success)', fontWeight: 500 }}><Check size={15} color="var(--success)" />Ready</span>
-              : wiz.committing
-                ? <span className="flex items-center justify-end" style={{ gap: 7, fontSize: 11.5, color: 'var(--ink-2)' }}><Spinner />Starting…</span>
-                : wiz.prefetching
-                  ? <span className="font-mono tnum" style={{ fontSize: 13, color: 'var(--accent)', fontWeight: 600 }}>{pct !== null ? `${pct}%` : '…'}</span>
-                  : <Btn size="sm" onClick={wiz.downloadModel}>Download</Btn>}
+              : wiz.prefetching
+                ? <span className="font-mono tnum" style={{ fontSize: 13, color: 'var(--accent)', fontWeight: 600 }}>{pct !== null ? `${pct}%` : '…'}</span>
+                : wiz.err && runtimeInstalled
+                  ? <Btn size="sm" variant="secondary" onClick={wiz.retryModel}>Retry</Btn>
+                  : <span className="flex items-center justify-end" style={{ gap: 7, fontSize: 11.5, color: 'var(--ink-2)' }}><Spinner />Preparing…</span>}
           </div>
         </Row>
         {wiz.prefetching && !wiz.modelReady && pct !== null && (
@@ -384,9 +385,12 @@ export const STEPS: StepMeta[] = [
     title: 'Install the on-device engine',
     subtitle: "Meridian runs entirely on your Mac with Apple MLX. We've sized a model to your hardware — here's exactly what it will use.",
     Body: MLXBody,
-    status: (s) => s.modelReady ? 'Ready' : (s.mlx?.runtime_found || s.mlx?.runtime_installed) ? 'Model pending' : 'Not installed',
-    // Never trap the user: the model finishes downloading in the background.
-    canNext: () => true,
+    status: (s) => s.modelReady ? 'Ready' : (s.mlx?.runtime_found || s.mlx?.runtime_installed) ? 'Downloading…' : 'Installing…',
+    // Block until every model is on disk: the worklog pipeline (distill → rerank
+    // → match) can't run a cycle without all three, so the user must not reach
+    // the dashboard early. Auto-download + visible progress + Retry on error keep
+    // this gate from being a dead end.
+    canNext: (s) => s.modelReady,
   },
   {
     id: 'integrations', n: '03', label: 'Integrations', kicker: 'Project tools',
