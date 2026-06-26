@@ -1,3 +1,24 @@
+## [1.66.0](https://github.com/Meridiona/meridian/compare/v1.65.0...v1.66.0) (2026-06-26)
+
+### 🚀 Features
+
+* **onboarding:** minimal model step, early background download, real progress ([adc739c](https://github.com/Meridiona/meridian/commit/adc739c6f61e6cea042d2db4cf920b7a4ecf6e9e))
+* **onboarding:** provision all three models (llm + reranker + embedder) end-to-end ([546ca09](https://github.com/Meridiona/meridian/commit/546ca09fc04dcef034569d35c4761808745b5bbc))
+
+### 🐛 Bug Fixes
+
+* **onboarding:** address code review findings on model provisioning PR ([07f3514](https://github.com/Meridiona/meridian/commit/07f3514ffa974be5ed766bbc7d10d4c63ac3de26))
+* **onboarding:** derive download speed from byte deltas (hf_xet bypasses tqdm) ([bb0656a](https://github.com/Meridiona/meridian/commit/bb0656aedf4ac54b1202248c9647371e700c5208))
+* **onboarding:** use hf-xet for Xet-backed models, wire HF_TOKEN ([a93e87c](https://github.com/Meridiona/meridian/commit/a93e87ce860b87c97b4103b47ff3ff0cb13526a4))
+
+### 📝 Documentation
+
+* **contributing:** document re-triggering the onboarding wizard in dev ([91dbcd4](https://github.com/Meridiona/meridian/commit/91dbcd4454858092537bfcc623bdd27f09a100b7))
+
+### 🔧 Chores
+
+* **mlx:** fix stale run_task_linker_mlx log prefix in mlx_classifier ([9dbe661](https://github.com/Meridiona/meridian/commit/9dbe661a2b7294141be0144f80a374823593326c))
+
 ## [1.65.0](https://github.com/Meridiona/meridian/compare/v1.64.0...v1.65.0) (2026-06-26)
 
 ### 🚀 Features
