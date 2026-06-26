@@ -33,11 +33,13 @@ from dataclasses import dataclass
 # mlx_lm.load()'s default fileset — exactly what a generative or reranker MLX
 # repo resolves on load(). The mlx-community embedding repos are plain
 # transformer encoders shipping the same config/safetensors/tokenizer layout,
-# so this pattern set covers all three roles.
-_MLX_ALLOW_PATTERNS: list[str] = [
+# so this pattern set covers all three roles. Stored as a tuple (immutable) so
+# each ModelSpec gets independent identity — list mutation would silently corrupt
+# all three specs' snapshot_download filters simultaneously.
+_MLX_ALLOW_PATTERNS: tuple[str, ...] = (
     "*.json", "model*.safetensors", "*.py", "tokenizer.model",
     "*.tiktoken", "tiktoken.model", "*.txt", "*.jsonl", "*.jinja",
-]
+)
 
 
 @dataclass(frozen=True)
@@ -54,7 +56,7 @@ class ModelSpec:
     env_var: str
     default_id: str
     loader: str
-    allow_patterns: list[str]
+    allow_patterns: tuple[str, ...]
 
     @property
     def model_id(self) -> str:

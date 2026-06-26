@@ -24,6 +24,10 @@ export default function SetupWizard() {
   const [step, setStep] = useState(0)
   const [done, setDone] = useState(false)
   const [err, setErr] = useState('')
+  // Provisioning errors (runtime download, server start, model prefetch) are kept
+  // separate from step errors so they only surface on the MLX body, not on the
+  // footer of every other step the user navigates back to.
+  const [mlxErr, setMlxErr] = useState('')
 
   // Step 1 — permissions (live)
   const [perms, setPerms] = useState<Wiz['perms']>({ accessibility: null, screen: null, input: null })
@@ -90,8 +94,8 @@ export default function SetupWizard() {
           setDownloading(true)
           setProgress({ received: 0, total: 0, speed: 0, message: 'Installing the on-device engine…' })
           invoke('download_runtime_cmd')
-            .then(() => invoke('start_mlx_server_cmd').catch(() => {}))
-            .catch((e) => setErr(String(e)))
+            .then(() => invoke('start_mlx_server_cmd').catch((e) => setMlxErr(String(e))))
+            .catch((e) => setMlxErr(String(e)))
             .finally(() => setDownloading(false))
           return
         }
@@ -106,7 +110,7 @@ export default function SetupWizard() {
             .then(() => setModelReady(true))
             // Leave the guard set on error so we don't hammer a failing download
             // every tick; the visible Retry (retryModel) re-arms it deliberately.
-            .catch((e) => setErr(String(e)))
+            .catch((e) => setMlxErr(String(e)))
             .finally(() => setPrefetching(false))
         }
       } catch { /* server not yet available */ }
@@ -170,7 +174,7 @@ export default function SetupWizard() {
   // Retry after a runtime/model provisioning error: clear the one-shot guards so
   // the poll re-drives install → start → prefetch from wherever it stalled.
   const retryModel = useCallback(() => {
-    setErr('')
+    setMlxErr('')
     runtimeStarted.current = false
     prefetchStarted.current = false
     setProgress({ received: 0, total: 0, speed: 0, message: 'Retrying…' })
@@ -180,7 +184,7 @@ export default function SetupWizard() {
     perms, openPane, grantScreen, grantInput,
     specs, mlx, downloading, prefetching, modelReady, progress,
     speed: progress?.speed ?? null,
-    err, retryModel,
+    err: mlxErr, retryModel,
     integrations, refetchIntegrations,
   }
 

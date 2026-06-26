@@ -21,9 +21,9 @@ log = logging.getLogger("agents.mlx_classifier")
 tracer = observability.setup("meridian-mlx-classifier")
 
 # Generative/classifier checkpoint — resolved from the model registry (the single
-# source of truth for all three pipeline models), env-overridable via
-# MERIDIAN_LLM_ID. Read once at import, mirroring the previous module-constant
-# behaviour; routes and the prefetch path reference this as `mlx_module.MODEL_ID`.
+# source of truth for all three pipeline models), env-overridable via MERIDIAN_LLM_ID.
+# Exposed as a module attribute for external compatibility; the live value is read
+# from the registry per-call inside _get_model() so a runtime env change is honoured.
 MODEL_ID = model_registry.llm_id()
 
 _IDLE_EVICT_S = float(os.environ.get("MLX_IDLE_EVICT_S", "120"))
@@ -51,7 +51,7 @@ def _get_model() -> _ModelBundle:
     Cache-miss load is done under _model_lock (double-checked) so concurrent
     callers can't double-load and the idle evictor can't race the load.
     """
-    model_id = MODEL_ID
+    model_id = model_registry.llm_id()
     cached = _model_cache.get(model_id)
     if cached is not None:
         return cached
@@ -84,7 +84,7 @@ def _get_model() -> _ModelBundle:
 
 def _get_tokenizer() -> Any:
     """Return the HF tokenizer for the current model, loading the model if needed."""
-    model_id = MODEL_ID
+    model_id = model_registry.llm_id()
     tok = _tokenizer_cache.get(model_id)
     if tok is not None:
         return tok

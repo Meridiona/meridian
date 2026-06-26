@@ -740,15 +740,22 @@ where
         .send()
         .await
         .map_err(|e| format!("prefetch_model request failed: {e}"))?;
-    // A runtime tarball predating these endpoints answers 404. Eager prefetch is a
-    // best-effort optimization — the model still lazy-loads on the first classify —
-    // so degrade SILENTLY (return Ok) rather than surfacing an error in the wizard.
+    // A runtime tarball predating /prefetch_model answers 404 — gracefully degrade
+    // so the wizard can still advance (models lazy-load on first use). Any other
+    // non-2xx (5xx server crash, 401 auth, etc.) is a real failure and must be
+    // surfaced so the user sees an error + Retry rather than a phantom "done".
     if !resp.status().is_success() {
-        tracing::info!(
-            status = resp.status().as_u16(),
-            "mlx: /prefetch_model unavailable (older runtime?) — model will load lazily on first use"
-        );
-        return Ok(());
+        let status = resp.status().as_u16();
+        if status == 404 {
+            tracing::info!(
+                status,
+                "mlx: /prefetch_model unavailable (older runtime?) — model will load lazily on first use"
+            );
+            return Ok(());
+        }
+        return Err(format!(
+            "prefetch_model returned unexpected status {status} — check the MLX server logs"
+        ));
     }
 
     loop {
@@ -758,14 +765,20 @@ where
             .send()
             .await
             .map_err(|e| format!("prefetch_status request failed: {e}"))?;
-        // Same graceful-degrade: never JSON-decode a non-2xx body (that produced the
-        // "decode failed: error decoding response body" wizard error on old runtimes).
+        // Same 404-only graceful-degrade: if the status endpoint is missing on an old
+        // runtime we stop polling rather than crashing; other non-2xx are real errors.
         if !resp.status().is_success() {
-            tracing::info!(
-                status = resp.status().as_u16(),
-                "mlx: /prefetch_status unavailable — stopping prefetch poll, model loads lazily"
-            );
-            return Ok(());
+            let status = resp.status().as_u16();
+            if status == 404 {
+                tracing::info!(
+                    status,
+                    "mlx: /prefetch_status unavailable — stopping prefetch poll, model loads lazily"
+                );
+                return Ok(());
+            }
+            return Err(format!(
+                "prefetch_status returned unexpected status {status}"
+            ));
         }
         let st: PrefetchStatus = resp
             .json()

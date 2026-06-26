@@ -14,6 +14,7 @@ progress bar renders.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -23,7 +24,7 @@ from fastapi import APIRouter
 from opentelemetry import trace
 
 from agents import model_registry
-from agents._state import prefetch_lock, prefetch_state
+from agents._state import app_state, prefetch_lock, prefetch_state
 
 log = logging.getLogger("agents.server")
 
@@ -106,9 +107,16 @@ def _run_prefetch(specs: list[model_registry.ModelSpec]) -> None:
                 with tracer.start_as_current_span("model_prefetch") as span:
                     span.set_attribute("role", spec.role)
                     span.set_attribute("model_id", spec.model_id)
-                    _download_spec(spec)
-                    received = _dir_size_bytes(_hf_cache_dir_for(spec.model_id))
-                    span.set_attribute("received_bytes", received)
+                    try:
+                        _download_spec(spec)
+                        received = _dir_size_bytes(_hf_cache_dir_for(spec.model_id))
+                        span.set_attribute("received_bytes", received)
+                    except Exception as exc:
+                        span.set_status(trace.Status(trace.StatusCode.ERROR, str(exc)))
+                        span.record_exception(exc)
+                        with prefetch_lock:
+                            prefetch_state["models"][i]["state"] = "error"
+                        raise
                 with prefetch_lock:
                     row = prefetch_state["models"][i]
                     row["received"] = received or row["total"]
@@ -142,7 +150,14 @@ async def prefetch_model() -> dict:
     The model set is fixed per run (the registry), so re-POSTing while
     `downloading`/`done` returns the live state without spawning a second
     download; an earlier `error` is retried.
+
+    On Apple Intelligence / non-MLX backends, `mlx_module` is None and there
+    are no weights to download — return `done` immediately so the wizard
+    advances without trying to prefetch.
     """
+    if app_state.get("mlx_module") is None:
+        return {"state": "done", "received": 0, "total": 0, "speed": 0.0, "error": None, "models": []}
+
     from fastapi.concurrency import run_in_threadpool
 
     global _last_recv, _last_recv_ts
@@ -166,16 +181,22 @@ async def prefetch_model() -> dict:
         )
 
     # Per-model size probe (best-effort; a failed probe just leaves that model's
-    # denominator at 0 — the download still runs).
+    # denominator at 0 — the download still runs). All three probes fire in
+    # parallel so pre-download latency is bounded by the slowest single HF API
+    # call rather than tripling it.
+    probe_results = await asyncio.gather(
+        *[run_in_threadpool(_spec_total_bytes, s) for s in specs],
+        return_exceptions=True,
+    )
     totals: list[int] = []
-    for spec in specs:
-        try:
-            totals.append(await run_in_threadpool(_spec_total_bytes, spec))
-        except Exception as exc:  # noqa: BLE001
+    for spec, r in zip(specs, probe_results):
+        if isinstance(r, int):
+            totals.append(r)
+        else:
             totals.append(0)
             log.warning(
                 "server: prefetch size-probe failed (bar partially indeterminate)",
-                extra={"model_id": spec.model_id, "error": str(exc)},
+                extra={"model_id": spec.model_id, "error": str(r)},
             )
     with prefetch_lock:
         for i, t in enumerate(totals):
@@ -219,7 +240,13 @@ async def prefetch_status() -> dict:
             return agg
 
         agg = await run_in_threadpool(_recompute)
-        st["received"] = min(agg, st["total"]) if st["total"] > 0 else agg
+        with prefetch_lock:
+            # Re-check state: _run_prefetch may have finished while the disk
+            # walk was running. If so, return the authoritative completed state.
+            if prefetch_state["state"] != "downloading":
+                st = dict(prefetch_state)
+            else:
+                st["received"] = min(agg, st["total"]) if st["total"] > 0 else agg
 
     # Derive speed (bytes/sec) from how much `received` grew since the last poll.
     # EMA-smoothed; decays to 0 when bytes stop flowing (delta 0) or the run ends.

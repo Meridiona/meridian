@@ -112,6 +112,8 @@ def _embed(texts: list[str]) -> np.ndarray:
     forward pass over every span would spike unified memory. ``text_embeds`` come
     back already normalized, so downstream cosine similarity is a plain dot product.
     """
+    if not texts:
+        return np.zeros((0, 0), dtype=np.float32)
     import mlx.core as mx
     from mlx_embeddings import generate
 
