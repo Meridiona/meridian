@@ -68,14 +68,14 @@ def _get_model() -> _ModelBundle:
                 "Install with: pip install 'mlx-lm>=0.22'"
             ) from exc
 
-        log.info("run_task_linker_mlx: loading %s (first call this process)", model_id)
+        log.info("mlx_classifier: loading %s (first call this process)", model_id)
         t0 = time.time()
         mlx_model, tokenizer = mlx_lm.load(
             model_id,
             tokenizer_config={"trust_remote_code": True},
         )
         bundle = _ModelBundle(mlx_model, tokenizer)
-        log.info("run_task_linker_mlx: model loaded in %.1fs", time.time() - t0)
+        log.info("mlx_classifier: model loaded in %.1fs", time.time() - t0)
 
         _model_cache[model_id] = bundle
         _tokenizer_cache[model_id] = tokenizer
@@ -138,7 +138,7 @@ def maybe_evict_idle(idle_s: float | None = None) -> float | None:
             mx.clear_cache()
             freed = max(0.0, (before - mx.get_active_memory()) / 1e9)
         log.info(
-            "run_task_linker_mlx: evicted idle model (idle ≥ %.0fs), freed ~%.1f GB",
+            "mlx_classifier: evicted idle model (idle ≥ %.0fs), freed ~%.1f GB",
             ttl, freed,
         )
         return freed
@@ -172,7 +172,7 @@ def evict_resident_model() -> float | None:
         if mx is not None:
             mx.clear_cache()
             freed = max(0.0, (before - mx.get_active_memory()) / 1e9)
-        log.info("run_task_linker_mlx: force-evicted resident model, freed ~%.1f GB", freed)
+        log.info("mlx_classifier: force-evicted resident model, freed ~%.1f GB", freed)
         return freed
     finally:
         _model_lock.release()
