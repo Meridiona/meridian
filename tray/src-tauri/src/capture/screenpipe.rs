@@ -31,7 +31,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use screenpipe_a11y::tree::{
-    create_tree_walker, TreeWalkResult, TreeWalkerConfig, TreeWalkerPlatform,
+    create_tree_walker, TreeSnapshot, TreeWalkResult, TreeWalkerConfig, TreeWalkerPlatform,
 };
 use screenpipe_screen::capture_screenshot_by_window::{capture_all_visible_windows, WindowFilters};
 use tracing::{debug, info, warn};
@@ -109,6 +109,19 @@ fn try_walk_a11y(walker: &dyn TreeWalkerPlatform) -> A11yOutcome {
                 debug!(app = %snap.app_name, "capture: a11y tree empty (warm-up) — OCR fallback");
                 return A11yOutcome::FallBackToOcr;
             }
+            // Browsers return non-empty a11y text even when the page hasn't been
+            // exposed: the tab strip (AXTab/AXButton nodes) alone gives ~695 chars
+            // of tab titles. Without this check we'd emit chrome-only text and
+            // never capture actual page content. Fall back to OCR so the screen
+            // pixels give us real page content for this tick.
+            if a11y_content_is_thin(&snap) {
+                debug!(
+                    app = %snap.app_name,
+                    chars = snap.text_content.len(),
+                    "capture: a11y tree is browser-chrome-only — OCR fallback for page content"
+                );
+                return A11yOutcome::FallBackToOcr;
+            }
             debug!(
                 app = %snap.app_name,
                 chars = snap.text_content.len(),
@@ -136,6 +149,58 @@ fn try_walk_a11y(walker: &dyn TreeWalkerPlatform) -> A11yOutcome {
             A11yOutcome::FallBackToOcr
         }
     }
+}
+
+/// Returns `true` when the a11y snapshot contains mostly browser-chrome roles
+/// (tab strip, toolbar, buttons) rather than real page content. When this is
+/// the case, the tray falls back to OCR so we capture what's actually on screen.
+///
+/// Ported from `screenpipe-capture::paired_capture::a11y_content_is_thin` —
+/// the same heuristic used by the screenpipe CLI's paired-capture path.
+///
+/// Thresholds:
+/// - fewer than 100 total chars → always thin (no meaningful content)
+/// - content-role chars < 30 % of total → thin (mostly chrome)
+fn a11y_content_is_thin(snap: &TreeSnapshot) -> bool {
+    // AX roles that represent browser UI chrome rather than document content.
+    const CHROME_ROLES: &[&str] = &[
+        "AXButton",
+        "AXMenuItem",
+        "AXMenuBar",
+        "AXMenu",
+        "AXToolbar",
+        "AXTabGroup",
+        "AXTab",
+        "AXPopUpButton",
+        "AXCheckBox",
+        "AXRadioButton",
+        "AXDisclosureTriangle",
+        "AXSlider",
+        "AXIncrementor",
+        "AXComboBox",
+        "AXScrollBar",
+    ];
+
+    let mut content_chars: usize = 0;
+    let mut total_chars: usize = 0;
+
+    for node in &snap.nodes {
+        let len = node.text.len();
+        if len == 0 {
+            continue;
+        }
+        total_chars += len;
+        if !CHROME_ROLES.iter().any(|r| node.role == *r) {
+            content_chars += len;
+        }
+    }
+
+    if total_chars < 100 {
+        return true;
+    }
+
+    let ratio = content_chars as f64 / total_chars as f64;
+    ratio < 0.3
 }
 
 /// Route one tick's [`A11yOutcome`]: send the a11y frame, drop a privacy-skip,
