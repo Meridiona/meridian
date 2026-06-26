@@ -21,7 +21,6 @@ from pathlib import Path
 
 from fastapi import APIRouter
 from opentelemetry import trace
-from tqdm.auto import tqdm
 
 from agents import model_registry
 from agents._state import prefetch_lock, prefetch_state
@@ -30,36 +29,13 @@ log = logging.getLogger("agents.server")
 
 router = APIRouter()
 
-# Monotonic time of the last transfer-rate sample. Used to zero `speed` when a
-# download stalls — HF stops calling tqdm.update(), so the last rate would
-# otherwise linger and read as if bytes were still flowing.
-_last_rate_ts = 0.0
-
-
-class _SpeedTqdm(tqdm):
-    """Captures HuggingFace's own live transfer rate (bytes/sec) into prefetch_state.
-
-    Passed as ``tqdm_class`` to ``snapshot_download`` so the wizard reports the
-    ACTUAL download speed measured by huggingface_hub / hf_transfer, rather than a
-    client-side estimate from polled byte deltas. Byte bars only (``unit == "B"``);
-    best-effort — a progress hiccup must never fail the download.
-    """
-
-    def update(self, n: float = 1):  # type: ignore[override]
-        ret = super().update(n)
-        if getattr(self, "unit", "") == "B":
-            self._record_rate()
-        return ret
-
-    def _record_rate(self) -> None:
-        global _last_rate_ts
-        try:
-            rate = self.format_dict.get("rate")  # tqdm's smoothed bytes/sec
-            with prefetch_lock:
-                prefetch_state["speed"] = float(rate) if rate else 0.0
-                _last_rate_ts = time.monotonic()
-        except Exception:  # noqa: BLE001 — progress is best-effort
-            pass
+# Speed is derived from the growth of on-disk `received` between /prefetch_status
+# polls — NOT from a tqdm hook. hf_xet (the Xet accelerator these models use) does
+# its download in Rust and bypasses the classic tqdm bar, so a tqdm_class never
+# fires; the byte-delta approach works for any backend. These hold the last
+# (received, monotonic-time) sample to diff against.
+_last_recv = 0
+_last_recv_ts = 0.0
 
 
 def _hf_cache_dir_for(model_id: str) -> Path:
@@ -109,13 +85,13 @@ def _download_spec(spec: model_registry.ModelSpec) -> None:
     """Download one model's weights to the HF cache (no load into memory).
 
     All specs go through ``snapshot_download`` (filtered to the spec's
-    allow_patterns) so the ``_SpeedTqdm`` rate hook and ``hf_transfer`` apply
-    uniformly; ``mlx_lm.load`` / ``mlx_embeddings.load`` resolve the files straight
-    from the cache afterwards. Only disk is touched — the single-slot runtime
-    loads each model lazily on first use.
+    allow_patterns); ``hf-xet`` transparently accelerates the Xet-backed transfers.
+    ``mlx_lm.load`` / ``mlx_embeddings.load`` resolve the files straight from the
+    cache afterwards. Only disk is touched — the single-slot runtime loads each
+    model lazily on first use.
     """
     from huggingface_hub import snapshot_download
-    snapshot_download(spec.model_id, allow_patterns=spec.allow_patterns, tqdm_class=_SpeedTqdm)
+    snapshot_download(spec.model_id, allow_patterns=spec.allow_patterns)
 
 
 def _run_prefetch(specs: list[model_registry.ModelSpec]) -> None:
@@ -169,13 +145,13 @@ async def prefetch_model() -> dict:
     """
     from fastapi.concurrency import run_in_threadpool
 
-    global _last_rate_ts
+    global _last_recv, _last_recv_ts
     specs = list(model_registry.ALL_SPECS)
 
     with prefetch_lock:
         if prefetch_state["state"] in ("downloading", "done"):
             return dict(prefetch_state)  # idempotent — no duplicate downloads
-        _last_rate_ts = 0.0
+        _last_recv, _last_recv_ts = 0, 0.0
         prefetch_state.update(
             state="downloading",
             received=0,
@@ -226,10 +202,10 @@ async def prefetch_status() -> dict:
     """
     from fastapi.concurrency import run_in_threadpool
 
+    global _last_recv, _last_recv_ts
     with prefetch_lock:
         st = dict(prefetch_state)
         models = list(st.get("models", []))
-        last_rate_ts = _last_rate_ts
     if st["state"] == "downloading" and models:
         def _recompute() -> int:
             # Clamp each model's on-disk bytes to its probed total: a cache
@@ -244,8 +220,17 @@ async def prefetch_status() -> dict:
 
         agg = await run_in_threadpool(_recompute)
         st["received"] = min(agg, st["total"]) if st["total"] > 0 else agg
-    # Zero the speed unless a transfer rate was reported in the last few seconds —
-    # otherwise a finished/stalled download keeps showing its last MB/s.
-    if st["state"] != "downloading" or (time.monotonic() - last_rate_ts) > 3.0:
-        st["speed"] = 0.0
+
+    # Derive speed (bytes/sec) from how much `received` grew since the last poll.
+    # EMA-smoothed; decays to 0 when bytes stop flowing (delta 0) or the run ends.
+    now = time.monotonic()
+    with prefetch_lock:
+        if st["state"] == "downloading" and _last_recv_ts and now > _last_recv_ts:
+            inst = max(0, st["received"] - _last_recv) / (now - _last_recv_ts)
+            prev = prefetch_state.get("speed", 0.0) or 0.0
+            prefetch_state["speed"] = inst if prev == 0.0 else prev * 0.5 + inst * 0.5
+        elif st["state"] != "downloading":
+            prefetch_state["speed"] = 0.0
+        _last_recv, _last_recv_ts = st["received"], now
+        st["speed"] = prefetch_state["speed"]
     return st
