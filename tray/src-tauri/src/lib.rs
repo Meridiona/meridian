@@ -497,6 +497,7 @@ pub fn run() {
             commands::get_status,
             commands::open_dashboard,
             commands::open_worklogs,
+            commands::open_setup,
             commands::restart_daemon,
             commands::toggle_daemon,
             commands::get_daemon_status,
@@ -539,6 +540,7 @@ pub fn run() {
             // tracker connect/disconnect (ported /api/integrations + /api/auth/oauth)
             commands::disconnect_integration,
             commands::discover_azure_devops,
+            commands::save_integration_token,
             commands::start_oauth,
             commands::get_oauth_status,
             // OS/window actions
@@ -558,8 +560,6 @@ pub fn run() {
             commands::download_runtime_cmd,
             commands::prefetch_model_cmd,
             commands::detect_system_specs,
-            commands::set_model_preference,
-            commands::get_model_preference,
             tray_debug,
         ])
         .run(tauri::generate_context!())

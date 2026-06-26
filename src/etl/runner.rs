@@ -11,7 +11,9 @@ use crate::db::meridian::{
 use crate::db::screenpipe::{count_frames_in_window, get_frames_since};
 
 use super::block_ops::{close_block, timestamp_gap_secs, upsert_open_block, BlockBounds};
-use super::session_builder::{is_browser, is_vscode_like, url_domain, vscode_project};
+use super::session_builder::{
+    is_browser, is_coding_agent_terminal, is_vscode_like, url_domain, vscode_project,
+};
 
 const BATCH_SIZE: i64 = 100;
 const GAP_THRESHOLD_SECS: i64 = 300;
@@ -164,6 +166,33 @@ pub async fn run_etl(meridian: &SqlitePool) -> Result<Vec<i64>> {
                         block_last_frame_id = frame.id;
                     }
                     debug!(frame_id = frame.id, "skipping frame with empty app_name");
+                    continue;
+                }
+
+                // Skip VS Code frames where the focused terminal tab is running a
+                // coding agent (Claude Code, Codex, Cursor agent, etc.).  The coding
+                // agent indexer tracks those sessions separately; capturing them here
+                // would produce overlapping app_sessions rows.
+                //
+                // window_name is used directly (not the url_domain-resolved `window`)
+                // so the check fires even when VS Code's embedded browser is open and
+                // browser_url would otherwise shadow the terminal tab title.
+                //
+                // Advance the gap-detector clock on skip: without this, >300 s of
+                // skipped coding-agent frames would trigger a spurious system_sleep
+                // gap on the next real editor frame (mirrors the empty-app skip above).
+                let raw_window = frame.window_name.as_deref().unwrap_or("");
+                if is_vscode_like(app) && is_coding_agent_terminal(raw_window) {
+                    if current_app.is_some() {
+                        block_last_ts = frame.timestamp.clone();
+                        block_last_frame_id = frame.id;
+                    }
+                    debug!(
+                        frame_id = frame.id,
+                        app,
+                        window = raw_window,
+                        "skipping frame: coding agent terminal detected in VS Code"
+                    );
                     continue;
                 }
 

@@ -11,7 +11,7 @@ For a higher-level overview (installation, daemon ops, configuration), see [`ser
 The Rust daemon owns the pipeline (ETL, coding-agent ingest, classification
 trigger, pm-worklog driver) and the database. This service is the **model
 layer**: one persistent MLX server (`server.py`) that the daemon calls over HTTP
-for the three jobs that need a local LLM.
+for the two jobs that need a local LLM.
 
 ```
 screenpipe.db (read-only)
@@ -29,16 +29,10 @@ meridian.db  →  app_sessions
         │    MLX server's /summarise is the fallback. Rows walk task_method:
         │    coding_agent_live → pending_summariser → pending_classifier.
         │
-        ├── classification  (src/intelligence/task_linker/, Rust → MLX)
+        ├── classification  (src/intelligence/task_linker/, Rust)
         │    Rust reads unclassified rows and the pending_classifier queue,
-        │    then sends:
-        │      POST http://127.0.0.1:7823/classify_sessions
-        │           {session_ids: [...], meridian_db: ...}
-        │    MLX server (Qwen3.5-9B-OptiQ-4bit, FSM-constrained outlines):
-        │      fetch session + pm_tasks + recent context
-        │      → SessionClassification {task_key, session_type, confidence,
-        │                               reasoning, method, dimensions}
-        │    Rust writes ticket_links + session_dimensions, advances cursor.
+        │    classifies them internally, and writes ticket_links +
+        │    session_dimensions, then advances the cursor.
         │
         └── pm-worklog (Stage 4)  (src/pm_worklog/, Rust → MLX)
              The Rust hour-driven driver collects each (task, hour) bundle and
@@ -260,7 +254,7 @@ When the screen is locked the selector uses `min(0.8, budget_pct × 1.5)` as the
 2. **Largest cached model fits** — if the preferred is too large, return the largest catalog model whose files are already in the HF cache and whose `min_ram_gb ≤ budget`. Avoids surprising multi-GB downloads on constrained machines.
 3. **Largest catalog model that fits (may download)** — if nothing cached fits, return the largest catalog entry where `min_ram_gb ≤ budget`, regardless of cache. This triggers a one-time download of the best available model rather than loading an oversized one that exceeds available memory. Falls back to `preferred_hf_id` only when **no catalog model fits** at all (budget so low even the 1.8 GB model won't load).
 
-**Why stage 3 matters on low-RAM machines:** an M1 Air (8 GB) has Metal headroom ≈ 5.4 GB. At `LLM_BUDGET_PCT=0.5` the budget is ~2.7 GB. The default preferred model is 6.5 GB (`Qwen3.5-9B-OptiQ-4bit`). Without the fix, stage 3 returned the preferred unconditionally — the server then attempted to load a 6.5 GB model into a 2.7 GB budget, causing memory pressure or an outright load failure. With the fix, stage 3 selects `Qwen3.5-4B-MLX-4bit` (2.5 GB) or `Llama-3.2-3B-Instruct-4bit` (1.8 GB) — whichever is largest and fits — and downloads it on first use.
+**Why stage 3 matters on low-RAM machines:** an M1 Air (8 GB) has Metal headroom ≈ 5.4 GB. At `LLM_BUDGET_PCT=0.5` the budget is ~2.7 GB. The default preferred model is 6.5 GB (`Qwen3.5-2B-OptiQ-4bit`). Without the fix, stage 3 returned the preferred unconditionally — the server then attempted to load a 6.5 GB model into a 2.7 GB budget, causing memory pressure or an outright load failure. With the fix, stage 3 selects `Qwen3.5-4B-MLX-4bit` (2.5 GB) or `Llama-3.2-3B-Instruct-4bit` (1.8 GB) — whichever is largest and fits — and downloads it on first use.
 
 **Check what would be selected:**
 
@@ -270,7 +264,7 @@ cd services
 from agents.llm_selector import select_mlx_model_id, probe_compute
 snap = probe_compute()
 print(f'Headroom: {snap.metal_headroom_gb:.1f} GB  thermal: {snap.thermal_level}')
-model = select_mlx_model_id('mlx-community/Qwen3.5-9B-OptiQ-4bit', 6.5, 0.5)
+model = select_mlx_model_id('mlx-community/Qwen3.5-2B-OptiQ-4bit', 6.5, 0.5)
 print(f'Would load: {model}')
 "
 ```
@@ -350,14 +344,14 @@ pip install -e ".[local-llm]"
    FROM ticket_links WHERE session_id = <ID>;
    ```
 
-2. **Re-run the classifier against a live session** — call the MLX server directly with the session id:
+2. **Re-run the classifier against a live session** using the daemon CLI:
+
    ```bash
-   curl -s -X POST http://127.0.0.1:7823/classify_sessions \
-     -H "Content-Type: application/json" \
-     -d "{\"session_ids\": [<ID>]}" | jq .
+   meridian coding-agent-classify
    ```
 
    Or use the standalone MLX script (reads from stdin, prints JSON to stdout):
+
    ```bash
    cd services
    echo '{"session_ids": [<ID>], "meridian_db": "'"$HOME"'/.meridian/meridian.db"}' \

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+# Sync dashboard JSON files to the local OpenObserve instance after every push.
+# Skips silently when OO is not reachable (offline / OO not running) or creds not set.
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+PYTHON="${REPO_ROOT}/services/.venv/bin/python"
+
+if [[ ! -x "$PYTHON" ]]; then
+  # Fall back to system python3 — the script only uses stdlib
+  PYTHON="python3"
+fi
+
+if ! "$PYTHON" -c "import urllib.request; urllib.request.urlopen('http://localhost:5080/healthz', timeout=1)" \
+     >/dev/null 2>&1; then
+  exit 0  # OO not running — skip silently
+fi
+
+echo "→ syncing OpenObserve dashboards…"
+"$PYTHON" "${REPO_ROOT}/scripts/sync-oo-dashboards.py" || true

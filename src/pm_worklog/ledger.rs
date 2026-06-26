@@ -119,10 +119,9 @@ pub async fn upstream_settled(
     //       coding_agent_session_uuid IS NULL AND task_method IS NULL AND duration_s > min
     //     (exactly the classifier's candidate condition — by construction the hour
     //      settles when the classify queue for this window drains).
-    //   * coding-agent row still moving through summarise/classify:
-    //       task_method IN ('coding_agent_live','pending_summariser','pending_classifier')
-    //     (only the terminal `mlx_direct`/sentinel — or a set task_session_type —
-    //      counts as done).
+    //   * coding-agent row still moving through summarise:
+    //       task_method IN ('coding_agent_live','pending_summariser')
+    //     ('summarised' is terminal — agno workflow reads session_summary directly).
     // A sub-threshold regular blip (duration_s <= min) is ignored: the classifier
     // never touches it, so there is nothing to wait for. It also never becomes a
     // `task` row, so excluding it loses no worklog content.
@@ -136,7 +135,7 @@ pub async fn upstream_settled(
                     AND duration_s > ?) \
               OR (coding_agent_session_uuid IS NOT NULL \
                     AND task_method IN \
-                        ('coding_agent_live', 'pending_summariser', 'pending_classifier')) \
+                        ('coding_agent_live', 'pending_summariser')) \
            )",
     )
     .bind(hour_start)

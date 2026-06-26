@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "meridian-core", "tray/src-tauri"]
+members = [".", "meridian-core", "meridian-oauth", "tray/src-tauri"]
 resolver = "2"
 
 [package]
@@ -24,10 +24,6 @@ path = "src/main.rs"
 name = "cat_smoke"
 path = "src/bin/cat_smoke.rs"
 
-[[bin]]
-name = "backfill_task_classification"
-path = "src/bin/backfill_task_classification.rs"
-
 [dependencies]
 # DB — exact versions matching screenpipe
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls", "chrono", "migrate", "json"] }
@@ -37,6 +33,12 @@ sqlite-vec = "0.1.3"
 # Shared lean data layer (DB row types + read queries) — also depended on by the
 # Tauri dashboard, so the queries live in ONE place (single source of truth).
 meridian-core = { path = "meridian-core" }
+
+# Shared OAuth/token engine (Jira/Trello browser login + token store + refresh).
+# Also depended on by the Tauri tray so login runs in-process — single source of
+# truth for the flow, specs, and token store. The daemon re-exports it under
+# `crate::intelligence::oauth`.
+meridian-oauth = { path = "meridian-oauth" }
 
 # Async
 tokio = { version = "1.15", features = ["full"] }

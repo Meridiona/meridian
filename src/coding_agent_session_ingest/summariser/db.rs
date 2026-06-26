@@ -12,9 +12,9 @@ use super::config::SummariserConfig;
 
 /// task_method the indexer sets on a sealed row awaiting summary.
 pub const TASK_METHOD_PENDING: &str = "pending_summariser";
-/// task_method we set after summarising — the classifier's queue (P3). NOT the
-/// Python terminal 'summarised': summarising is no longer the end of the line.
-pub const TASK_METHOD_PENDING_CLASSIFIER: &str = "pending_classifier";
+/// task_method we set after summarising — terminal state; the agno worklog
+/// workflow picks rows up by querying `session_summary IS NOT NULL` directly.
+pub const TASK_METHOD_SUMMARISED: &str = "summarised";
 /// task_method we set when a row fails MAX_ROW_ATTEMPTS — permanently excluded
 /// from auto-drain across daemon restarts.
 pub const TASK_METHOD_DEAD_LETTER: &str = "subprocess_error";
@@ -147,7 +147,7 @@ pub async fn fetch_prior_summary(
     Ok(s.filter(|x| !x.is_empty()))
 }
 
-/// Persist summary + engine source + flip task_method to the classifier queue.
+/// Persist summary + engine source + flip task_method to 'summarised'.
 /// Idempotent: returns true if this call wrote the row, false if already
 /// summarised (another worker / retry won the race).
 pub async fn write_summary(
@@ -162,7 +162,7 @@ pub async fn write_summary(
          WHERE  id = ? AND session_summary IS NULL",
     )
     .bind(summary)
-    .bind(TASK_METHOD_PENDING_CLASSIFIER)
+    .bind(TASK_METHOD_SUMMARISED)
     .bind(source)
     .bind(row_id)
     .execute(pool)
@@ -258,7 +258,7 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(method, TASK_METHOD_PENDING_CLASSIFIER);
+        assert_eq!(method, TASK_METHOD_SUMMARISED);
         assert_eq!(src.as_deref(), Some("claude"));
         assert_eq!(summ.as_deref(), Some("did the work"));
 

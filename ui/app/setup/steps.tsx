@@ -7,15 +7,17 @@
 // real. Nothing here fabricates data: the spec panel and memory gauge render
 // detected hardware, and the model tiles map to real checkpoints.
 
-import { useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { Btn, Bar, Check, Kicker, Mark, PermIcon, Row, Spinner } from './atoms'
 import {
-  APP, INTEGRATIONS, MODELS, MODEL_BY_ID, PERMISSIONS, fmtSize, recommendTier,
+  APP, MODEL_SIZE_GB, MODEL_RAM_GB, PERMISSIONS, fmtSize,
 } from './data'
 import type {
-  DownloadProgress, Integration, MlxStatusResponse, ModelTier, SystemSpecs,
+  DownloadProgress, MlxStatusResponse, SystemSpecs,
 } from './data'
+import type { IntegrationsResponse } from '@/lib/api-types'
+import { TRACKERS } from '@/lib/integrations'
+import ConnectTrackers from '@/components/IntegrationConnect'
 
 const SERIF: CSSProperties = { fontFamily: 'var(--font-instrument-serif), Georgia, serif' }
 
@@ -26,11 +28,9 @@ export interface Wiz {
   openPane: (pane: string) => void
   grantScreen: () => void
   grantInput: () => void
-  // Step 2 — local intelligence (live MLX status + detected specs + model choice)
+  // Step 2 — local intelligence (live MLX status + detected specs)
   specs: SystemSpecs | null
   mlx: MlxStatusResponse | null
-  model: ModelTier['id']
-  selectModel: (id: ModelTier['id']) => void
   downloading: boolean    // runtime tarball in flight
   prefetching: boolean    // model download in flight
   committing: boolean     // committed (Download clicked) but server not yet running
@@ -38,9 +38,9 @@ export interface Wiz {
   progress: DownloadProgress | null
   installRuntime: () => void  // provision the MLX runtime
   downloadModel: () => void   // commit the chosen model, then prefetch it
-  // Step 3 — integrations (live OAuth state)
-  integrations: Record<string, 'idle' | 'connecting' | 'connected'>
-  connect: (id: string) => void
+  // Step 3 — integrations (live connected-state from get_integrations)
+  integrations: IntegrationsResponse | null
+  refetchIntegrations: () => void
 }
 
 // ── STEP 1 — Permissions ──────────────────────────────────────────────────────
@@ -142,16 +142,13 @@ function GaugeLegend({ color, label, sub, val }: { color: string; label: string;
 }
 
 function MLXBody({ wiz }: { wiz: Wiz }) {
-  const [picking, setPicking] = useState(false)
-  const sel = MODEL_BY_ID[wiz.model]
   const specs = wiz.specs
   const ram = specs?.ram_gb ?? 0
   const m = wiz.mlx
   const runtimeInstalled = !!(m && (m.runtime_found || m.runtime_installed))
-  const machineRec = recommendTier(ram)
   const pct = wiz.progress && wiz.progress.total > 0 ? Math.round(wiz.progress.received / wiz.progress.total * 100) : null
 
-  const memModel = sel.ramGB, memApp = APP.ramGB
+  const memModel = MODEL_RAM_GB, memApp = APP.ramGB
   const memFree = Math.max(0, ram - memModel - memApp)
   const tight = ram > 0 && memModel + memApp > ram * 0.85
 
@@ -208,72 +205,35 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
         )}
       </div>
 
-      {/* MODEL — interactive once the runtime is present; until then the picker
-          is dimmed (the server must be up before a model can be fetched). */}
+      {/* MODEL — fixed; no picker */}
       <div style={{ opacity: runtimeInstalled ? 1 : 0.45, pointerEvents: runtimeInstalled ? 'auto' : 'none', transition: 'opacity .25s' }}>
-        <div className="flex items-center justify-between" style={{ marginBottom: 7 }}>
-          <Kicker>Model</Kicker>
-          {!picking && !wiz.modelReady && !wiz.prefetching && !wiz.committing && (
-            <button onClick={() => setPicking(true)} style={{ fontSize: 11, color: 'var(--ink-3)' }}
-              onMouseEnter={(e) => e.currentTarget.style.color = 'var(--ink)'}
-              onMouseLeave={(e) => e.currentTarget.style.color = 'var(--ink-3)'}>Change model</button>
-          )}
-        </div>
-
-        {picking ? (
-          <div className="flex flex-col" style={{ gap: 7 }}>
-            {MODELS.map((mod) => {
-              const on = mod.id === wiz.model
-              return (
-                <button key={mod.id} onClick={() => { wiz.selectModel(mod.id); setPicking(false) }}
-                  style={{ textAlign: 'left', display: 'flex', alignItems: 'center', gap: 12, padding: '11px 13px',
-                    borderRadius: 12, border: `0.5px solid ${on ? 'var(--accent)' : 'var(--rule-2)'}`,
-                    background: on ? 'var(--tint)' : 'var(--surface)', transition: 'all .12s' }}>
-                  <span className="flex items-center justify-center shrink-0" style={{ width: 16, height: 16, borderRadius: 99, border: `1.5px solid ${on ? 'var(--accent)' : 'var(--rule-2)'}` }}>
-                    {on && <span style={{ width: 8, height: 8, borderRadius: 99, background: 'var(--accent)' }} />}
-                  </span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div className="flex items-center" style={{ gap: 8 }}>
-                      <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--ink)' }}>{mod.label}</span>
-                      <span className="font-mono" style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>{mod.model} · {mod.spec}</span>
-                      {mod.id === machineRec && <span className="font-mono" style={{ fontSize: 8.5, letterSpacing: '.08em', color: 'var(--accent)', background: 'var(--accent-soft)', padding: '1px 5px', borderRadius: 4 }}>BEST FOR YOU</span>}
-                    </div>
-                    <p style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{mod.blurb}</p>
-                  </div>
-                  <span className="font-mono tnum shrink-0" style={{ fontSize: 11, color: 'var(--ink-2)' }}>{mod.ramGB} GB RAM</span>
-                </button>
-              )
-            })}
+        <Kicker style={{ marginBottom: 7 }}>Model</Kicker>
+        <Row tone={wiz.modelReady ? 'tint' : 'surface'}>
+          <Mark mono="m" color="var(--accent)" size={34} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="flex items-center" style={{ gap: 8 }}>
+              <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--ink)' }}>Qwen3.5 2B</span>
+              <span className="font-mono" style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>2B · 4-bit</span>
+            </div>
+            {(wiz.prefetching || wiz.committing) && !wiz.modelReady ? (
+              <p className="font-mono tnum" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 3 }}>
+                {wiz.progress?.message ?? 'Downloading model…'}
+              </p>
+            ) : (
+              <p className="font-mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{MODEL_SIZE_GB} GB download · ~90 tok/s on your Mac</p>
+            )}
           </div>
-        ) : (
-          <Row tone={wiz.modelReady ? 'tint' : 'surface'}>
-            <Mark mono="m" color="var(--accent)" size={34} />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="flex items-center" style={{ gap: 8 }}>
-                <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--ink)' }}>{sel.label}</span>
-                <span className="font-mono" style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>{sel.model} · {sel.spec}</span>
-                {sel.recommended && <span className="font-mono" style={{ fontSize: 8.5, letterSpacing: '.08em', color: 'var(--accent)', background: 'var(--accent-soft)', padding: '1px 5px', borderRadius: 4 }}>RECOMMENDED</span>}
-              </div>
-              {(wiz.prefetching || wiz.committing) && !wiz.modelReady ? (
-                <p className="font-mono tnum" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 3 }}>
-                  {wiz.progress?.message ?? 'Downloading model…'}
-                </p>
-              ) : (
-                <p className="font-mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{sel.sizeGB} GB download · {sel.speed} on your Mac</p>
-              )}
-            </div>
-            <div className="shrink-0" style={{ minWidth: 100, textAlign: 'right' }}>
-              {wiz.modelReady
-                ? <span className="flex items-center justify-end" style={{ gap: 6, fontSize: 12, color: 'var(--success)', fontWeight: 500 }}><Check size={15} color="var(--success)" />Ready</span>
-                : wiz.committing
-                  ? <span className="flex items-center justify-end" style={{ gap: 7, fontSize: 11.5, color: 'var(--ink-2)' }}><Spinner />Starting…</span>
-                  : wiz.prefetching
-                    ? <span className="font-mono tnum" style={{ fontSize: 13, color: 'var(--accent)', fontWeight: 600 }}>{pct !== null ? `${pct}%` : '…'}</span>
-                    : <Btn size="sm" onClick={wiz.downloadModel}>Download</Btn>}
-            </div>
-          </Row>
-        )}
-        {wiz.prefetching && !wiz.modelReady && !picking && pct !== null && (
+          <div className="shrink-0" style={{ minWidth: 100, textAlign: 'right' }}>
+            {wiz.modelReady
+              ? <span className="flex items-center justify-end" style={{ gap: 6, fontSize: 12, color: 'var(--success)', fontWeight: 500 }}><Check size={15} color="var(--success)" />Ready</span>
+              : wiz.committing
+                ? <span className="flex items-center justify-end" style={{ gap: 7, fontSize: 11.5, color: 'var(--ink-2)' }}><Spinner />Starting…</span>
+                : wiz.prefetching
+                  ? <span className="font-mono tnum" style={{ fontSize: 13, color: 'var(--accent)', fontWeight: 600 }}>{pct !== null ? `${pct}%` : '…'}</span>
+                  : <Btn size="sm" onClick={wiz.downloadModel}>Download</Btn>}
+          </div>
+        </Row>
+        {wiz.prefetching && !wiz.modelReady && pct !== null && (
           <div style={{ marginTop: 8 }}><Bar pct={pct} /></div>
         )}
       </div>
@@ -292,15 +252,15 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
             <div className="flex items-center" style={{ gap: 18, padding: '16px 18px' }}>
               <MemoryGauge model={memModel} app={memApp} total={ram} />
               <div className="flex flex-col" style={{ flex: 1, minWidth: 0, gap: 11 }}>
-                <GaugeLegend color="var(--accent)" label={sel.label} sub={`${sel.model} · ${sel.spec}`} val={fmtSize(memModel)} />
+                <GaugeLegend color="var(--accent)" label="Qwen3.5 2B" sub="2B · 4-bit" val={fmtSize(memModel)} />
                 <GaugeLegend color="#7C3AED" label="Meridian app" sub="background service" val={fmtSize(memApp)} />
                 <GaugeLegend color="var(--rule-2)" label="Free for everything else" sub={`${Math.round(memFree / ram * 100)}% of memory`} val={fmtSize(memFree)} />
               </div>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', borderTop: '1px solid var(--rule)' }}>
-              <FootStat v={fmtSize(sel.sizeGB + APP.diskGB)} l="Install size" b />
-              <FootStat v={specs?.free_disk_gb ? fmtSize(specs.free_disk_gb - sel.sizeGB - APP.diskGB) : '—'} l="Disk free after" b />
-              <FootStat v={sel.speed} l="Inference" />
+              <FootStat v={fmtSize(MODEL_SIZE_GB + APP.diskGB)} l="Install size" b />
+              <FootStat v={specs?.free_disk_gb ? fmtSize(specs.free_disk_gb - MODEL_SIZE_GB - APP.diskGB) : '—'} l="Disk free after" b />
+              <FootStat v="~90 tok/s" l="Inference" />
             </div>
           </div>
         </div>
@@ -310,39 +270,18 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
 }
 
 // ── STEP 3 — Integrations ─────────────────────────────────────────────────────
-function IntegrationRow({ it, wiz }: { it: Integration; wiz: Wiz }) {
-  const st = wiz.integrations[it.id] || 'idle'
-  const on = st === 'connected'
-  return (
-    <Row tone={on ? 'tint' : 'surface'} style={it.oauth ? undefined : { opacity: 0.55 }}>
-      <Mark mono={it.mono} color={it.color} size={34} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <p style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--ink)' }}>{it.name}</p>
-        <p className="font-mono" style={{ fontSize: 11, color: on ? 'var(--ink-2)' : 'var(--ink-3)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.account}</p>
-      </div>
-      <div className="shrink-0">
-        {!it.oauth
-          ? <span className="font-mono" style={{ fontSize: 10, letterSpacing: '.08em', color: 'var(--ink-4)', textTransform: 'uppercase' }}>Soon</span>
-          : on
-            ? <span className="flex items-center" style={{ gap: 6, fontSize: 12, color: 'var(--success)', fontWeight: 500 }}><Check size={15} color="var(--success)" />Connected</span>
-            : st === 'connecting'
-              ? <span className="flex items-center" style={{ gap: 7, fontSize: 11.5, color: 'var(--ink-2)' }}><Spinner />Connecting…</span>
-              : <Btn size="sm" variant="secondary" onClick={() => wiz.connect(it.id)}>Connect</Btn>}
-      </div>
-    </Row>
-  )
-}
-
+// The whole connect surface is the shared <ConnectTrackers> (same component the
+// dashboard uses), so all 5 providers + every connect flow live in one place.
 function IntegrationsBody({ wiz }: { wiz: Wiz }) {
-  const connected = INTEGRATIONS.filter((i) => wiz.integrations[i.id] === 'connected').length
+  const connected = TRACKERS.filter((t) => wiz.integrations?.[t.id]).length
   return (
     <div className="flex flex-col" style={{ gap: 9 }}>
-      {INTEGRATIONS.map((it) => <IntegrationRow key={it.id} it={it} wiz={wiz} />)}
+      <ConnectTrackers integrations={wiz.integrations} onChanged={wiz.refetchIntegrations} compact />
       <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--ink-3)', marginTop: 3 }}>
         <span style={{ width: 5, height: 5, borderRadius: 99, background: connected ? 'var(--success)' : 'var(--ink-4)' }} />
         {connected > 0
           ? `${connected} connected · Meridian will match sessions and draft worklogs.`
-          : 'Connect Jira or Trello to auto-draft worklogs — or skip and add later from Settings.'}
+          : 'Connect your trackers to auto-draft worklogs — or skip and add later from Settings.'}
       </p>
     </div>
   )
@@ -388,13 +327,12 @@ export function Welcome({ onBegin }: { onBegin: () => void }) {
 
 // ── Completion ────────────────────────────────────────────────────────────────
 export function Completion({ wiz }: { wiz: Wiz }) {
-  const connected = INTEGRATIONS.filter((i) => wiz.integrations[i.id] === 'connected')
-  const model = MODEL_BY_ID[wiz.model]
+  const connected = TRACKERS.filter((t) => wiz.integrations?.[t.id])
   const grantedCount = [wiz.perms.accessibility, wiz.perms.screen, wiz.perms.input].filter(Boolean).length
   const lines = [
     { k: 'Permissions', v: `${grantedCount} of 3 granted` },
-    { k: 'Local model', v: `${model.label} · ${model.model}` },
-    { k: 'Footprint', v: `${fmtSize(model.ramGB + APP.ramGB)} memory` },
+    { k: 'Local model', v: 'Qwen3.5 2B · 2B · 4-bit' },
+    { k: 'Footprint', v: `${fmtSize(MODEL_RAM_GB + APP.ramGB)} memory` },
     { k: 'Connected', v: connected.length ? connected.map((c) => c.name).join(', ') : 'None yet' },
   ]
   return (
@@ -455,7 +393,7 @@ export const STEPS: StepMeta[] = [
     title: 'Connect your trackers',
     subtitle: 'Link the tools you already use. Meridian matches each session to an issue and drafts a worklog you approve.',
     Body: IntegrationsBody,
-    status: (s) => { const c = INTEGRATIONS.filter((i) => s.integrations[i.id] === 'connected').length; return c ? `${c} connected` : 'Optional' },
+    status: (s) => { const c = TRACKERS.filter((t) => s.integrations?.[t.id]).length; return c ? `${c} connected` : 'Optional' },
     canNext: () => true,
   },
 ]

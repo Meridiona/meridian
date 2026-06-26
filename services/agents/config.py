@@ -54,6 +54,14 @@ MERIDIAN_HOME = Path(os.environ.get("MERIDIAN_HOME", str(Path.home() / ".meridia
 MERIDIAN_DB   = Path(os.environ.get("MERIDIAN_DB",   str(MERIDIAN_HOME / "meridian.db")))
 LOG_DIR       = MERIDIAN_HOME / "logs"
 
+# ── Session distiller ─────────────────────────────────────────────────────────
+DISTILLER_EXCLUDE_APPS: tuple[str, ...] = (
+    "Claude Code", "Codex", "GitHub Copilot", "Cursor Agent",
+)
+DISTILLER_MIN_SESSION_DUR: int   = int(os.environ.get("DISTILLER_MIN_SESSION_DUR", "15"))
+DISTILLER_SEM_DEDUP_THR:   float = float(os.environ.get("DISTILLER_SEM_DEDUP_THR", "0.86"))
+DISTILLER_DF_FRAC:         float = float(os.environ.get("DISTILLER_DF_FRAC", "0.25"))
+
 # ── Loop tunables ─────────────────────────────────────────────────────────────
 CONFIDENCE_THRESHOLD = float(os.environ.get("CONFIDENCE_THRESHOLD", "0.65"))
 MIN_LLM_DURATION_S   = int(os.environ.get("MIN_LLM_DURATION_S", "30"))

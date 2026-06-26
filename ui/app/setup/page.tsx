@@ -10,17 +10,14 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
-import { invoke, mutate, load, tauri } from '@/lib/bridge'
+import { invoke, load, tauri } from '@/lib/bridge'
 import { STEPS, Welcome, Completion } from './steps'
 import type { Wiz } from './steps'
-import { INTEGRATIONS, MODELS, MODEL_BY_ID } from './data'
-import type { DownloadProgress, MlxStatusResponse, ModelTier, SystemSpecs } from './data'
+import type { DownloadProgress, MlxStatusResponse, SystemSpecs } from './data'
+import type { IntegrationsResponse } from '@/lib/api-types'
 import { Btn, Check, Kicker } from './atoms'
 
 const SERIF: CSSProperties = { fontFamily: 'var(--font-instrument-serif), Georgia, serif' }
-// Single source of truth for "which trackers have a real OAuth flow".
-const OAUTH_PROVIDERS = INTEGRATIONS.filter((i) => i.oauth).map((i) => i.id)
-const OAUTH_DEADLINE_MS = 180_000  // mirrors TasksView's 3-minute connect window
 
 export default function SetupWizard() {
   const [welcome, setWelcome] = useState(true)
@@ -38,28 +35,20 @@ export default function SetupWizard() {
   const [prefetching, setPrefetching] = useState(false)
   const [modelReady, setModelReady] = useState(false)
   const [progress, setProgress] = useState<DownloadProgress | null>(null)
-  const [model, setModel] = useState<ModelTier['id']>('core')
-  // The user must explicitly commit a model (the Download button) before we
-  // prefetch — otherwise an auto-prefetch would fetch the *default* before they
-  // pick, then a later pick would mislabel the row as "Ready" for a model the
-  // server never loaded. `wantModel` is that commit gate.
+  // The user must explicitly commit (the Download button) before we prefetch.
   const [wantModel, setWantModel] = useState(false)
   const prefetchStarted = useRef(false)
 
-  // Step 3 — integrations (live OAuth). `oauthDeadline` holds the per-provider
-  // timeout for an in-flight connect so the poll can resolve an abandoned flow.
-  const [integrations, setIntegrations] = useState<Record<string, 'idle' | 'connecting' | 'connected'>>({})
-  const oauthDeadline = useRef<Record<string, number>>({})
+  // Step 3 — integrations. The shared <ConnectTrackers> drives the actual
+  // connect flows (OAuth + token save); this just holds the live connected-state
+  // (get_integrations) so the rail status + completion summary stay accurate.
+  const [integrations, setIntegrations] = useState<IntegrationsResponse | null>(null)
 
   const active = !welcome && !done
 
-  // Detect hardware once on mount + restore any persisted model choice. Both are
-  // cheap one-shots; specs are ready by the time the user reaches the Model step.
+  // Detect hardware once on mount.
   useEffect(() => {
     invoke<SystemSpecs>('detect_system_specs').then(setSpecs).catch(() => {})
-    invoke<string | null>('get_model_preference')
-      .then((id) => { const t = MODELS.find((m) => m.hfId === id); if (t) setModel(t.id) })
-      .catch(() => {})
   }, [])
 
   // Poll the three required permissions on the Permissions step.
@@ -126,38 +115,22 @@ export default function SetupWizard() {
     return () => { cancelled = true; if (unlisten) unlisten() }
   }, [downloading, prefetching])
 
-  // Poll OAuth completion on the Integrations step so a browser-completed connect
-  // flips the row to "Connected" without the user clicking again. A per-provider
-  // deadline (set in `connect`) resolves an abandoned flow to idle+error instead
-  // of spinning "Connecting…" forever, and we only `setErr`/transition on an
-  // actual state change so a persistent error doesn't re-fire every tick.
+  // Keep the live connected-state fresh while on the Integrations step, so the
+  // rail status + completion summary reflect connects made via <ConnectTrackers>
+  // (which also calls refetchIntegrations on success). A light poll also catches
+  // a browser-OAuth completion the component's own poll already resolved.
+  const refetchIntegrations = useCallback(() => {
+    load<IntegrationsResponse>('/api/integrations', 'get_integrations')
+      .then(setIntegrations)
+      .catch(() => {})
+  }, [])
+
   useEffect(() => {
     if (!active || step !== 2) return
-    const poll = async () => {
-      for (const provider of OAUTH_PROVIDERS) {
-        const st = await load<{ connected: boolean; error?: string | null }>(
-          `/api/auth/oauth/status?provider=${provider}`, 'get_oauth_status', { provider },
-        ).catch(() => null)
-        if (st?.connected) {
-          delete oauthDeadline.current[provider]
-          setIntegrations((s) => (s[provider] === 'connected' ? s : { ...s, [provider]: 'connected' }))
-          continue
-        }
-        // Only act on a provider with an active connect attempt in flight.
-        const deadline = oauthDeadline.current[provider]
-        if (deadline === undefined) continue
-        const reason = st?.error ?? (Date.now() > deadline ? 'Timed out — try again' : null)
-        if (reason) {
-          delete oauthDeadline.current[provider]
-          setErr(reason)
-          setIntegrations((s) => ({ ...s, [provider]: 'idle' }))
-        }
-      }
-    }
-    poll()
-    const id = setInterval(poll, 2000)
+    refetchIntegrations()
+    const id = setInterval(refetchIntegrations, 3000)
     return () => clearInterval(id)
-  }, [active, step])
+  }, [active, step, refetchIntegrations])
 
   // ── Actions ────────────────────────────────────────────────────────────────
   const openPane = useCallback((pane: string) => {
@@ -180,11 +153,6 @@ export default function SetupWizard() {
     invoke('open_permission_pane', { pane: 'input_monitoring' }).catch((e) => setErr(String(e)))
   }, [])
 
-  const selectModel = useCallback((id: ModelTier['id']) => {
-    setModel(id)
-    invoke('set_model_preference', { modelId: MODEL_BY_ID[id].hfId }).catch(() => {})
-  }, [])
-
   // Provision the MLX runtime tarball, then bring the server up. No model is
   // fetched here — that waits for an explicit Download (downloadModel).
   const installRuntime = useCallback(async () => {
@@ -197,41 +165,20 @@ export default function SetupWizard() {
     } catch (e) { setErr(String(e)) } finally { setDownloading(false) }
   }, [])
 
-  // Commit the chosen model: persist the preference FIRST, then flag `wantModel`
-  // so the poll prefetches it once the server is running. Writing before the
-  // prefetch is what makes the "Ready" badge truthful about which model loaded.
-  const downloadModel = useCallback(async () => {
+  // Commit: start the server and flag `wantModel` so the poll prefetches it.
+  const downloadModel = useCallback(() => {
     setErr('')
-    // The preference MUST persist before the server prefetches — otherwise a
-    // failed write would let the server download the old/default model while the
-    // UI marks the newly-selected one ready. Stop the commit if the write fails.
-    try {
-      await invoke('set_model_preference', { modelId: MODEL_BY_ID[model].hfId })
-    } catch (e) {
-      setErr(String(e))
-      setWantModel(false)
-      prefetchStarted.current = false
-      return
-    }
     invoke('start_mlx_server_cmd').catch(() => {})
     setWantModel(true)
     setProgress({ received: 0, total: 0, message: 'Preparing model…' })
-  }, [model])
-
-  const connect = useCallback((id: string) => {
-    setErr('')
-    oauthDeadline.current[id] = Date.now() + OAUTH_DEADLINE_MS
-    setIntegrations((s) => ({ ...s, [id]: 'connecting' }))
-    mutate(`/api/auth/oauth/start?provider=${id}`, 'start_oauth', { provider: id })
-      .catch((e) => { delete oauthDeadline.current[id]; setErr(String(e)); setIntegrations((s) => ({ ...s, [id]: 'idle' })) })
   }, [])
 
   const wiz: Wiz = {
     perms, openPane, grantScreen, grantInput,
-    specs, mlx, model, selectModel, downloading, prefetching, modelReady, progress,
+    specs, mlx, downloading, prefetching, modelReady, progress,
     committing: wantModel && !prefetching && !modelReady,
     installRuntime, downloadModel,
-    integrations, connect,
+    integrations, refetchIntegrations,
   }
 
   // ── Navigation ───────────────────────────────────────────────────────────────
@@ -250,7 +197,12 @@ export default function SetupWizard() {
       setErr(String(e))
     }
   }
-  const closeWindow = () => { tauri()?.window.getCurrentWindow().close() }
+  const closeWindow = async () => {
+    try {
+      await invoke('open_dashboard')
+    } catch { /* ignore if dashboard fails to open */ }
+    tauri()?.window.getCurrentWindow().close()
+  }
 
   return (
     <div style={{ position: 'fixed', inset: 0, display: 'grid', placeItems: 'center', background: 'var(--paper)' }}>

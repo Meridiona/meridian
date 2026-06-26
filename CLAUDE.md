@@ -383,7 +383,7 @@ The dataset's value lives in **what it discriminates**, not how many cases it ha
 
 ## Coding-agent pipeline (`src/coding_agent_session_ingest/`)
 
-The coding-agent indexer + summariser run **inside the Rust daemon** (`src/coding_agent_session_ingest/`), spawned as gated tokio tasks from `main.rs`. They turn coding-agent conversations into segmented `app_sessions` rows, summarise sealed segments **with each agent's own CLI** (MLX as the shared fallback), and hand them to the classifier on their summary. Lifecycle is the `task_method` column: `coding_agent_live → pending_summariser → pending_classifier → mlx_direct`.
+The coding-agent indexer + summariser run **inside the Rust daemon** (`src/coding_agent_session_ingest/`), spawned as gated tokio tasks from `main.rs`. They turn coding-agent conversations into segmented `app_sessions` rows, summarise sealed segments **with each agent's own CLI** (MLX as the shared fallback), and write the summary for the agno worklog pipeline to pick up. Lifecycle is the `task_method` column: `coding_agent_live → pending_summariser → summarised`.
 
 ### Ingested agents
 
@@ -401,21 +401,21 @@ New sources plug into the `AgentSource` enum in `sources/mod.rs` and are swept b
 
 - **Indexer** (`indexer.rs`): per tick (`INDEXER_POLL_INTERVAL_S`, 600 s) seals settled rows, re-parses changed stores, sweeps the source adapters. Backfill is today-only. `meridian coding-agent-hook` is the Claude SessionEnd entry (seals one session immediately).
 - **Session completion**: Claude seals via hook; CLI agents (codex / copilot / cursor-agent) seal promptly on **Ctrl+C / exit** (Copilot's `session.shutdown` marker force-seals at registration; otherwise a per-tick `ps -axo args=` probe seals every live row of a CLI whose process is gone) and on **/clear · /new** (a newer session of the same source supersedes older live rows). IDE chats and crashes fall back to the idle seal (`INDEXER_SEAL_IDLE_S`, 1 h). All acceleration paths only hasten what the idle backstop would do — a wrong call costs a segment split, never data.
-- **Summariser** (`summariser/`): routes each row to its own agent CLI — `claude.rs` / `codex.rs` / `copilot.rs` / `cursor_agent.rs` (2 attempts) → `mlx.rs` fallback (`/summarise`); writes `session_summary` + `summary_source`, flips `task_method` to `pending_classifier`. cursor-agent is auth-probed lazily on first use, and auto-installed only behind the `CURSOR_AGENT_AUTO_INSTALL=1` opt-in (`cursor_agent_init.rs`). CLI: `meridian coding-agent-summarise`. See `summariser/README.md`.
+- **Summariser** (`summariser/`): routes each row to its own agent CLI — `claude.rs` / `codex.rs` / `copilot.rs` / `cursor_agent.rs` (2 attempts) → `mlx.rs` fallback (`/summarise`); writes `session_summary` + `summary_source`, flips `task_method` to `summarised`. cursor-agent is auth-probed lazily on first use, and auto-installed only behind the `CURSOR_AGENT_AUTO_INSTALL=1` opt-in (`cursor_agent_init.rs`). CLI: `meridian coding-agent-summarise`. See `summariser/README.md`.
 - **Self-ingest guard**: copilot/cursor-agent persist their own summary runs into stores we ingest; `sources::sweep()` drops any conversation whose first user prompt carries `SUMMARY_PROMPT_MARKER` (log: `skipping summariser-artifact session`). This is the loop cut — do not remove it.
-- **Classify trigger** (`src/intelligence/task_linker/`): a non-cursor branch classifies `pending_classifier` rows on the **summary** (not the transcript), preserving the summariser's summary. CLI: `meridian coding-agent-classify`.
+- **Worklog trigger**: `summarised` rows are picked up by the agno worklog pipeline (`worklog_pipeline/`) via `session_summary IS NOT NULL` — folded verbatim into the hour's activity summary alongside the distilled OCR sessions, then matched to tasks and drafted.
 
 Source-adapter env overrides: `COPILOT_SESSION_STATE_DIR`, `VSCODE_USER_DIR`, `CURSOR_STATE_VSCDB`, `CURSOR_CLI_CHATS_DIR`, `ANTIGRAVITY_APP_DIR`.
 
 > **Daemon config gotcha:** the daemon loads env via `dotenvy::dotenv_override()`, which walks UP from its launchd `WorkingDirectory` and stops at the first `.env`. All install types converge on the **canonical `~/.meridian/.env`** (the same file the tray writes tracker creds to): the **npm bundle**'s `WorkingDirectory` is `~/.meridian/app` but no `~/.meridian/app/.env` is written (the installer creates `~/.meridian/.env`), so dotenvy walks up to it; the **`.app` DMG** (the tray stages the daemon via `tray/src-tauri/src/backend_install.rs`) sets `WorkingDirectory` to `~/.meridian` and reads it directly; **source/dev** reads the repo `.env`. Edit `~/.meridian/.env` (then `meridian restart`) to tune daemon env on an installed system.
 
-The pipeline is fully ported to Rust; the former Python `coding_agent_indexer` + `coding_agent_summariser` packages have been removed. The MLX server (`agents/server.py`) is the only remaining Python hop (it serves `/summarise` + `/classify_sessions`).
+The pipeline is fully ported to Rust; the former Python `coding_agent_indexer` + `coding_agent_summariser` packages have been removed. The MLX server (`agents/server.py`) is the only remaining Python hop (it serves `/summarise`, `/distill_hour`, `/activity_report`, `/rerank`, `/worklog_hour`, and OpenAI-compatible `/v1/chat/completions`).
 
 ## Python agent service (`services/`)
 
 These Python services still run alongside the Rust daemon:
 
-1. **MLX classifier + summariser** (`agents/server.py`, `run_task_linker_mlx.py`) — the persistent FastAPI model server (`com.meridiona.mlx-server.plist`). Exposes `/classify_sessions` (Rust calls it to classify) and `/summarise` (the coding-agent summariser's MLX fallback). The one Python piece the pipeline can't replace (outlines + mlx-lm are Python-only).
+1. **MLX server** (`agents/server.py`) — the persistent FastAPI model server (`com.meridiona.mlx-server.plist`). Exposes `/summarise`, `/activity_report`, `/distill_hour`, `/rerank`, `/worklog_hour`, and OpenAI-compatible `/v1/chat/completions`. The one Python piece the pipeline can't replace (outlines + mlx-lm are Python-only).
 2. **Jira updater** (`agents/pm_worklog_update/`) — agno-powered synthesis workflow that generates Jira comments + worklogs from classified sessions. Runs on an office-hours slot schedule.
 
 For the deep technical reference (classification logic, scoring formulas, recipes for tuning prompts / debugging misclassifications), see `services/agents/README.md`.
@@ -433,12 +433,6 @@ For the deep technical reference (classification logic, scoring formulas, recipe
 # coding-agent ingest — runs inside the daemon; these are the one-shot CLIs
 echo '{"transcript_path":"~/.claude/projects/.../<uuid>.jsonl"}' | meridian coding-agent-hook  # SessionEnd: seal one session
 meridian coding-agent-summarise [--dry-run] [--day YYYY-MM-DD] [--limit N]                     # summarise the pending queue
-meridian coding-agent-classify                                                                  # classify summarised rows
-
-# MLX classifier — call the running server directly
-curl -s -X POST http://127.0.0.1:7823/classify_sessions \
-  -H "Content-Type: application/json" \
-  -d '{"session_ids": [<ID>]}' | jq .
 
 # Classifier eval pipeline (see TESTING.md §9, services/tests/evals/README.md)
 services/.venv/bin/python services/tests/evals/render_seeds.py            # seeds → Goldens

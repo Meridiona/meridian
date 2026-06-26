@@ -2,7 +2,7 @@
 
 All tunables are read from the environment (loaded by the parent
 `agents.config` module). This file exposes them as typed constants so the
-rest of the package can `from agents.pm_worklog_update.config import X`.
+rest of the package can `from agents.pm_worklog_update_legacy.config import X`.
 
 The defaults are chosen for a single-user laptop setup with the local 9B
 MLX server on :7823 and the user's screen-capture history in
@@ -14,7 +14,7 @@ import os
 
 # Re-export the shared paths so callers don't have to know about the parent
 # config module.
-from agents.config import LOG_DIR, MERIDIAN_DB, MERIDIAN_HOME  # noqa: F401
+from agents.config import MERIDIAN_DB, MERIDIAN_HOME  # noqa: F401
 
 # ── Cadence ───────────────────────────────────────────────────────────────────
 # How often the daemon should fire a new PM update cycle, in hours.
@@ -27,7 +27,7 @@ PM_WORKLOG_INTERVAL_HOURS = float(os.environ.get("PM_WORKLOG_INTERVAL_HOURS", "1
 # OpenAILike. The port is the same one the classifier uses.
 MLX_SERVER_HOST   = os.environ.get("MLX_SERVER_HOST", "127.0.0.1")
 MLX_SERVER_PORT   = int(os.environ.get("MLX_SERVER_PORT", "7823"))
-MLX_SERVER_MODEL  = os.environ.get("MLX_SERVER_MODEL", "qwen3.5-9b-instruct")
+MLX_SERVER_MODEL  = os.environ.get("MLX_SERVER_MODEL", "mlx-community/Qwen3.5-2B-OptiQ-4bit")
 
 # Token caps. The MLX model exposes 128-262K context — a single Synthesise
 # call comfortably swallows even the heaviest hour of work.

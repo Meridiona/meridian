@@ -39,12 +39,21 @@ pub struct HealthResponse {
 /// Called by both `get_health` (Tauri command) and `poll::refresh_health` (internal).
 pub async fn check_health() -> HealthResponse {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    // When the `capture` feature is enabled, a11y runs in-process inside the
+    // tray (screenpipe-screen crate). No separate a11y-helper binary is needed
+    // or expected — skip the trust check so the banner never fires falsely.
+    #[cfg(feature = "capture")]
+    let (db, daemon) = tokio::join!(check_database(), check_daemon_running(&home));
+    #[cfg(feature = "capture")]
+    let trusted: Option<bool> = None;
+
+    #[cfg(not(feature = "capture"))]
     let (db, a11y, daemon) = tokio::join!(
         check_database(),
         check_a11y_trusted(&home),
         check_daemon_running(&home),
     );
-
+    #[cfg(not(feature = "capture"))]
     let trusted = match a11y {
         Some(v) => Some(v),
         None => launchctl_a11y_trusted().await,
@@ -84,6 +93,7 @@ async fn check_database() -> (bool, Option<String>) {
 
 /// Walk the last 200 lines of `~/.meridian/logs/a11y-helper.log` for a trust
 /// entry. Returns `None` when the log is absent or has no trust line yet.
+#[cfg(not(feature = "capture"))]
 async fn check_a11y_trusted(home: &str) -> Option<bool> {
     let log_path = format!("{}/.meridian/logs/a11y-helper.log", home);
     let content = tokio::fs::read_to_string(&log_path).await.ok()?;
@@ -122,6 +132,7 @@ async fn check_daemon_running(home: &str) -> Option<bool> {
 
 /// Fallback: ask `launchctl print` for the a11y-helper trust state.
 /// Only called when the log scan is inconclusive (returns `None`).
+#[cfg(not(feature = "capture"))]
 async fn launchctl_a11y_trusted() -> Option<bool> {
     let uid = crate::sys::uid_str();
     let out = tokio::process::Command::new("launchctl")
