@@ -13,9 +13,10 @@ LABEL_SCREENPIPE="com.meridiona.screenpipe"
 LABEL_DAEMON="com.meridiona.daemon"
 LABEL_UI="com.meridiona.ui"
 LABEL_MLX="com.meridiona.mlx-server"
+# Capture runs in-process in the tray (no screenpipe launchd agent since Bucket-2).
 # Jira worklogs and coding-agent ingest run inside the Rust daemon — no
-# separate launchd agents. Only these four are managed.
-readonly LABELS=("${LABEL_SCREENPIPE}" "${LABEL_DAEMON}" "${LABEL_UI}" "${LABEL_MLX}")
+# separate launchd agents. Only these two are managed.
+readonly LABELS=("${LABEL_DAEMON}" "${LABEL_MLX}")
 GUI_TARGET="gui/$(id -u)"
 LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
 LOG_DIR="${HOME}/.meridian/logs"

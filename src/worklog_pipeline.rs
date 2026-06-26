@@ -77,7 +77,8 @@ async fn post_worklog_hour(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("/worklog_hour returned {status}: {body}");
+        let preview: String = body.chars().take(200).collect();
+        anyhow::bail!("/worklog_hour returned {status}: {preview}");
     }
     Ok(())
 }
@@ -100,7 +101,10 @@ pub async fn run_driver(
     let aging = Duration::minutes(cfg.readiness_aging_minutes);
     let day_utc = day.format("%Y-%m-%d").to_string();
 
-    let midnight = Utc.from_utc_datetime(&day.and_hms_opt(0, 0, 0).unwrap());
+    let midnight = Utc.from_utc_datetime(
+        &day.and_hms_opt(0, 0, 0)
+            .context("constructing midnight from date")?,
+    );
     let mut summary = DriverSummary::default();
 
     for i in 0..24i64 {
@@ -116,16 +120,23 @@ pub async fn run_driver(
         let cycle_index = i;
 
         summary.hours_seen += 1;
-        ledger::ensure_hour(pool, &day_utc, &hs, &he).await?;
+        ledger::ensure_hour(pool, &day_utc, &hs, &he)
+            .await
+            .with_context(|| format!("ensure_hour {hs}"))?;
 
-        if ledger::hour_is_done(pool, &hs).await? {
+        if ledger::hour_is_done(pool, &hs)
+            .await
+            .with_context(|| format!("hour_is_done {hs}"))?
+        {
             continue;
         }
         if now < he_utc {
             continue; // hour not over yet
         }
         let aged_out = now >= he_utc + aging;
-        let settled = ledger::upstream_settled(pool, &hs, &he, min_duration_s).await?;
+        let settled = ledger::upstream_settled(pool, &hs, &he, min_duration_s)
+            .await
+            .with_context(|| format!("upstream_settled {hs}"))?;
         if !settled && !aged_out {
             summary.hours_not_ready += 1;
             tracing::debug!(hour = %hs, "hour not ready — upstream still settling");
@@ -135,7 +146,9 @@ pub async fn run_driver(
         tracing::info!(hour = %label, aged_out, "running worklog pipeline for ready hour");
         match post_worklog_hour(cfg, db_path, &label, cycle_index).await {
             Ok(()) => {
-                ledger::mark_hour_done(pool, &hs, 0).await?;
+                ledger::mark_hour_done(pool, &hs, 0)
+                    .await
+                    .with_context(|| format!("mark_hour_done {hs}"))?;
                 summary.hours_processed += 1;
             }
             Err(e) => {
@@ -154,7 +167,16 @@ pub async fn run_driver(
 /// manual runs and integration testing without the full daemon.
 pub async fn cli_run(pool: &SqlitePool, db_path: &str, day: Option<&str>) {
     let cfg = PmWorklogConfig::from_env();
-    let day_parsed = day.and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
+    let day_parsed = match day {
+        None => None,
+        Some(d) => match NaiveDate::parse_from_str(d, "%Y-%m-%d") {
+            Ok(date) => Some(date),
+            Err(e) => {
+                eprintln!("worklog-pipeline: invalid --day value {d:?}: {e}");
+                return;
+            }
+        },
+    };
     match run_driver(pool, &cfg, db_path, 0, day_parsed).await {
         Ok(s) => println!(
             "worklog-pipeline: hours_seen={} processed={} not_ready={} errored={}",

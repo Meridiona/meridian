@@ -40,6 +40,3 @@ def generate_worklog(
                     type(draft).__name__, task_key)
         return None
     return draft
-
-
-WORKLOG_SYSTEM = WORKLOG_SYSTEM  # re-export for the workflow assembler

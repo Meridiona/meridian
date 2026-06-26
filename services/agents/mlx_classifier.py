@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """MLX model lifecycle — load, session context manager, idle eviction.
 
 Manages a single shared MLX generative model (Qwen3) for the agent server.
@@ -23,9 +22,6 @@ tracer = observability.setup("meridian-mlx-classifier")
 
 # Default model — the agent server runs a single hardcoded model.
 MODEL_ID = "mlx-community/Qwen3.5-2B-OptiQ-4bit"
-
-_MAX_TOKENS = 1024
-_TEMPERATURE = 0.0
 
 _IDLE_EVICT_S = float(os.environ.get("MLX_IDLE_EVICT_S", "120"))
 

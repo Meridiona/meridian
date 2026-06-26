@@ -345,11 +345,13 @@ pip install -e ".[local-llm]"
    ```
 
 2. **Re-run the classifier against a live session** using the daemon CLI:
+
    ```bash
    meridian coding-agent-classify
    ```
 
    Or use the standalone MLX script (reads from stdin, prints JSON to stdout):
+
    ```bash
    cd services
    echo '{"session_ids": [<ID>], "meridian_db": "'"$HOME"'/.meridian/meridian.db"}' \

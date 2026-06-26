@@ -30,7 +30,7 @@ Write the following sections in order. Skip a section only if there is truly
 nothing to report — do not write placeholder text.
 
 ## Session Summary
-2–4 sentences: what was the developer focused on, what got done, and what was
+2-4 sentences: what was the developer focused on, what got done, and what was
 the character of the session (exploration, deep build, debugging, review)?
 
 ## What Was Worked On

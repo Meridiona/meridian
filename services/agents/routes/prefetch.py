@@ -11,7 +11,7 @@ import logging
 import threading
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from opentelemetry import trace
 
 from agents._state import app_state, prefetch_state, prefetch_lock
@@ -36,7 +36,7 @@ def _dir_size_bytes(path: Path) -> int:
                 if f.is_file():
                     total += f.stat().st_size
             except OSError:
-                pass
+                pass  # file may be deleted mid-walk; skip silently
     return total
 
 

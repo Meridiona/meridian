@@ -27,7 +27,7 @@ PM_WORKLOG_INTERVAL_HOURS = float(os.environ.get("PM_WORKLOG_INTERVAL_HOURS", "1
 # OpenAILike. The port is the same one the classifier uses.
 MLX_SERVER_HOST   = os.environ.get("MLX_SERVER_HOST", "127.0.0.1")
 MLX_SERVER_PORT   = int(os.environ.get("MLX_SERVER_PORT", "7823"))
-MLX_SERVER_MODEL  = os.environ.get("MLX_SERVER_MODEL", "qwen3.5-2b-instruct")
+MLX_SERVER_MODEL  = os.environ.get("MLX_SERVER_MODEL", "mlx-community/Qwen3.5-2B-OptiQ-4bit")
 
 # Token caps. The MLX model exposes 128-262K context — a single Synthesise
 # call comfortably swallows even the heaviest hour of work.

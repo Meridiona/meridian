@@ -18,7 +18,6 @@ import logging
 from dataclasses import dataclass, field
 
 from agents.worklog_pipeline.models import build_match_result, match_keys
-from agents.worklog_pipeline.prompts.match_tasks import SYSTEM as MATCH_SYSTEM
 
 log = logging.getLogger("meridian.worklog.match")
 

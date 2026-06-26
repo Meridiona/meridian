@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from agents._state import app_state, model_sem
+from agents.mlx_classifier import MODEL_ID
 
 log = logging.getLogger("agents.server")
 
@@ -138,7 +139,7 @@ async def openai_chat_completions(req: _OAIChatRequest) -> dict:
         "id":      completion_id,
         "object":  "chat.completion",
         "created": int(_time.time()),
-        "model":   req.model or "qwen3.5-2b-instruct",
+        "model":   MODEL_ID,
         "choices": [
             {
                 "index":         0,

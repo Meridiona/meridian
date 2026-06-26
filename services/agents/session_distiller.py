@@ -109,7 +109,7 @@ def evict_embedder() -> None:
         gc.collect()
         try:
             import torch; torch.mps.empty_cache()
-        except Exception:
+        except Exception:  # noqa: BLE001 — MPS cache flush is best-effort; non-fatal if torch absent
             pass
         log.info("session_distiller: embedding model evicted from memory")
 

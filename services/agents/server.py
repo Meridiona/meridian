@@ -145,7 +145,7 @@ def main() -> None:
     app_state["backend"] = "mlx"
     # Loopback URL for endpoints that orchestrate other endpoints on this same
     # server (e.g. /worklog_hour calling /distill_hour, /activity_report, ...).
-    app_state["self_url"] = f"http://127.0.0.1:{args.port}"
+    app_state["self_url"] = f"http://{args.host}:{args.port}"
     tracer = observability.setup("meridian-agent-server-mlx")
     app_state["tracer"] = tracer
 

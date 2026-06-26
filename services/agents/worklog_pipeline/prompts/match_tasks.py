@@ -7,7 +7,7 @@ You are matching one hour of a developer's work to project-management tasks.
 Meridian passively captured this developer's screen over the last hour and distilled it
 into the ACTIVITY SUMMARY below. Your job is to decide which of the candidate tasks, if any,
 this hour's work actually moved forward.
-2
+
 The work this hour may map to:
   - ONE task, or
   - SEVERAL tasks (developers context-switch), or

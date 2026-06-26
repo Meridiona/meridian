@@ -285,6 +285,8 @@ def stage_draft_one(ctx: HourContext) -> None:
     i = ctx._draft_i
     if i >= len(bindings):
         return
+    # Divide the hour evenly across matched tasks so N tasks don't log N×3600s.
+    time_per_task = 3600 // max(1, len(bindings))
     # Mutual exclusion (idempotent re-run): on the FIRST draft, retract any stale
     # artifacts from a prior run of this hour — the now-superseded proposed ticket,
     # and drafted worklogs for tasks NOT matched this run. The matched set is fully
@@ -322,14 +324,14 @@ def stage_draft_one(ctx: HourContext) -> None:
             try:
                 payload = wdb.build_payload(
                     b.task_key, f"{ctx.hour}:00:00+00:00", f"{ctx.hour}:59:59+00:00",
-                    ctx.cycle_index, 3600, draft)
+                    ctx.cycle_index, time_per_task, draft)
                 wid = wdb.upsert_worklog(
                     conn, task_key=b.task_key, day_utc=ctx.day_utc,
                     cycle_index=ctx.cycle_index,
                     window_start=f"{ctx.hour}:00:00+00:00",
                     window_end=f"{ctx.hour}:59:59+00:00",
                     confidence=max(0.0, min(1.0, float(draft.confidence))),
-                    time_spent_seconds=3600,
+                    time_spent_seconds=time_per_task,
                     payload=payload, workflow_run_id=ctx.run_id or f"wl-{ctx.hour}")
                 if wid:
                     res.worklog_ids.append(wid)

@@ -66,7 +66,14 @@ pub async fn run_authcode_flow(
         })?;
 
     let pkce = pkce::generate();
-    let authorize = build_authorize_url(client_id, spec, &redirect_uri, &pkce);
+    let authorize = build_authorize_url(
+        client_id,
+        spec.authorize_url,
+        spec.scopes,
+        &spec.extra_authorize_params,
+        &redirect_uri,
+        &pkce,
+    );
 
     eprintln!("\nOpening your browser to authorize…");
     eprintln!("If it doesn't open, paste this URL:\n\n{authorize}\n");
@@ -106,7 +113,9 @@ pub async fn refresh(
 
 fn build_authorize_url(
     client_id: &str,
-    spec: &ProviderSpec,
+    authorize_url: &str,
+    scopes: &str,
+    extra_params: &[(&'static str, String)],
     redirect_uri: &str,
     pkce: &pkce::Pkce,
 ) -> String {
@@ -114,12 +123,12 @@ fn build_authorize_url(
         ("response_type", "code".to_string()),
         ("client_id", client_id.to_string()),
         ("redirect_uri", redirect_uri.to_string()),
-        ("scope", spec.scopes.to_string()),
+        ("scope", scopes.to_string()),
         ("state", pkce.state.clone()),
         ("code_challenge", pkce.challenge.clone()),
         ("code_challenge_method", "S256".to_string()),
     ];
-    for (k, v) in &spec.extra_authorize_params {
+    for (k, v) in extra_params {
         params.push((k, v.clone()));
     }
     let query = params
@@ -127,7 +136,7 @@ fn build_authorize_url(
         .map(|(k, v)| format!("{}={}", encode(k), encode(v)))
         .collect::<Vec<_>>()
         .join("&");
-    format!("{}?{}", spec.authorize_url, query)
+    format!("{}?{}", authorize_url, query)
 }
 
 async fn exchange_code(
@@ -453,10 +462,13 @@ mod tests {
 
     #[test]
     fn authorize_url_has_pkce_and_scope_params() {
+        let s = spec();
         let pkce = pkce::generate();
         let url = build_authorize_url(
             "client123",
-            &spec(),
+            s.authorize_url,
+            s.scopes,
+            &s.extra_authorize_params,
             "http://127.0.0.1:9123/callback",
             &pkce,
         );
