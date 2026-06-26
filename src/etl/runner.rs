@@ -173,11 +173,24 @@ pub async fn run_etl(meridian: &SqlitePool) -> Result<Vec<i64>> {
                 // coding agent (Claude Code, Codex, Cursor agent, etc.).  The coding
                 // agent indexer tracks those sessions separately; capturing them here
                 // would produce overlapping app_sessions rows.
-                if is_vscode_like(app) && is_coding_agent_terminal(window) {
+                //
+                // window_name is used directly (not the url_domain-resolved `window`)
+                // so the check fires even when VS Code's embedded browser is open and
+                // browser_url would otherwise shadow the terminal tab title.
+                //
+                // Advance the gap-detector clock on skip: without this, >300 s of
+                // skipped coding-agent frames would trigger a spurious system_sleep
+                // gap on the next real editor frame (mirrors the empty-app skip above).
+                let raw_window = frame.window_name.as_deref().unwrap_or("");
+                if is_vscode_like(app) && is_coding_agent_terminal(raw_window) {
+                    if current_app.is_some() {
+                        block_last_ts = frame.timestamp.clone();
+                        block_last_frame_id = frame.id;
+                    }
                     debug!(
                         frame_id = frame.id,
                         app,
-                        window,
+                        window = raw_window,
                         "skipping frame: coding agent terminal detected in VS Code"
                     );
                     continue;
