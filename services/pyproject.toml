@@ -32,6 +32,16 @@ dependencies = [
 # Requires arm64 macOS; outlines 1.x is incompatible with Python 3.14+.
 mlx = [
     "mlx-lm>=0.31,<1",
+    # MLX-native sentence embeddings for the session distiller's SemDeDup stage.
+    # Deliberately NOT sentence-transformers/torch — keeps the runtime lean
+    # (no ~2.5 GB torch) and on the single MLX backend. See agents.model_registry
+    # (embedder role) and agents.session_distiller.
+    "mlx-embeddings>=0.0.5,<1",
+    # Accelerator for HF "Xet"-backed repos (the mlx-community models use Xet, not
+    # legacy LFS — hf_transfer is deprecated/ignored on huggingface_hub 1.x and does
+    # NOT handle Xet). Pinned >=1.5.1: 1.5.0 ships a broken native import that hangs
+    # Xet downloads. Tuned harder with HF_XET_HIGH_PERFORMANCE=1 (MLX server plist).
+    "hf-xet>=1.5.1,<2",
     "outlines[mlxlm]>=1.3,<2",
     "pydantic>=2.10,<3",
     "fastapi>=0.115,<1",

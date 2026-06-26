@@ -16,16 +16,17 @@ from __future__ import annotations
 
 import gc
 import logging
-import os
 import threading
 import time
 from typing import Any
 
+from agents import model_registry
+
 log = logging.getLogger("meridian.reranker")
 
-_RERANKER_ID = os.environ.get(
-    "WORKLOG_RERANKER_ID", "kerncore/Qwen3-Reranker-0.6B-MLX-4bit"
-)
+# Reranker checkpoint — resolved from the model registry, still env-overridable
+# via WORKLOG_RERANKER_ID (the registry owns that env var).
+_RERANKER_ID = model_registry.reranker_id()
 
 # Reranker prompt scaffold — matches the calibration used in the offline
 # benchmark (services/tests/evals/cluster/test_matcher_benchmark.py).

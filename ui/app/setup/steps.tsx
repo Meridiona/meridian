@@ -8,9 +8,9 @@
 // detected hardware, and the model tiles map to real checkpoints.
 
 import type { CSSProperties, ReactNode } from 'react'
-import { Btn, Bar, Check, Kicker, Mark, PermIcon, Row, Spinner } from './atoms'
+import { Btn, Bar, Check, Kicker, PermIcon, Row, Spinner } from './atoms'
 import {
-  APP, MODEL_SIZE_GB, MODEL_RAM_GB, PERMISSIONS, fmtSize,
+  APP, MODEL_RAM_GB, PERMISSIONS, fmtSize,
 } from './data'
 import type {
   DownloadProgress, MlxStatusResponse, SystemSpecs,
@@ -32,12 +32,12 @@ export interface Wiz {
   specs: SystemSpecs | null
   mlx: MlxStatusResponse | null
   downloading: boolean    // runtime tarball in flight
-  prefetching: boolean    // model download in flight
-  committing: boolean     // committed (Download clicked) but server not yet running
-  modelReady: boolean
+  prefetching: boolean    // model-set download in flight
+  modelReady: boolean     // every pipeline model is on disk
   progress: DownloadProgress | null
-  installRuntime: () => void  // provision the MLX runtime
-  downloadModel: () => void   // commit the chosen model, then prefetch it
+  speed: number | null    // live download speed in bytes/sec (null until known)
+  err: string             // last provisioning error ('' when none) — drives Retry
+  retryModel: () => void  // re-arm runtime/model provisioning after an error
   // Step 3 — integrations (live connected-state from get_integrations)
   integrations: IntegrationsResponse | null
   refetchIntegrations: () => void
@@ -83,187 +83,66 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
 }
 
 // ── STEP 2 — Local intelligence ──────────────────────────────────────────────
-function SpecCell({ v, l, b }: { v: string | number; l: string; b?: boolean }) {
-  return (
-    <div style={{ padding: '11px 14px', borderRight: b ? '1px solid var(--rule)' : 'none' }}>
-      <p className="font-mono tnum" style={{ fontSize: 19, fontWeight: 500, letterSpacing: '-.02em', color: 'var(--ink)', lineHeight: 1 }}>{v}</p>
-      <p style={{ fontSize: 9.5, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--ink-3)', marginTop: 6 }}>{l}</p>
-    </div>
-  )
-}
-function FootStat({ v, l, b }: { v: string; l: string; b?: boolean }) {
-  return (
-    <div style={{ padding: '10px 14px', borderRight: b ? '1px solid var(--rule)' : 'none' }}>
-      <p className="font-mono tnum" style={{ fontSize: 15, fontWeight: 500, letterSpacing: '-.01em', color: 'var(--ink)', lineHeight: 1 }}>{v}</p>
-      <p style={{ fontSize: 9.5, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--ink-3)', marginTop: 5 }}>{l}</p>
-    </div>
-  )
-}
-function MemoryGauge({ model, app, total }: { model: number; app: number; total: number }) {
-  const size = 132, sw = 13
-  const cx = size / 2, cy = size / 2
-  const r = (size - sw) / 2 - 1
-  const C = 2 * Math.PI * r
-  const sweep = 0.72
-  const draw = sweep * C
-  const start = 270 - sweep * 180
-  const free = Math.max(0, total - model - app)
-  const modelLen = Math.max(0, (model / total) * draw)
-  const appLen = Math.max((app / total) * draw, app > 0 ? 3 : 0)
-  return (
-    <div style={{ position: 'relative', width: size, height: size, flexShrink: 0 }}>
-      <svg width={size} height={size} style={{ display: 'block' }}>
-        <g transform={`rotate(${start} ${cx} ${cy})`} fill="none" strokeLinecap="round">
-          <circle cx={cx} cy={cy} r={r} stroke="var(--rule)" strokeWidth={sw} strokeDasharray={`${draw} ${C}`} />
-          <circle cx={cx} cy={cy} r={r} stroke="#7C3AED" strokeWidth={sw} strokeDasharray={`${appLen} ${C}`} strokeDashoffset={`${-modelLen}`} style={{ transition: 'stroke-dasharray .4s, stroke-dashoffset .4s' }} />
-          <circle cx={cx} cy={cy} r={r} stroke="var(--accent)" strokeWidth={sw} strokeDasharray={`${modelLen} ${C}`} style={{ transition: 'stroke-dasharray .4s' }} />
-        </g>
-      </svg>
-      <div className="flex flex-col items-center justify-center" style={{ position: 'absolute', inset: 0 }}>
-        <span className="font-mono tnum" style={{ fontSize: 25, fontWeight: 500, letterSpacing: '-.02em', lineHeight: 1, color: 'var(--ink)' }}>
-          {free.toFixed(1)}<span style={{ fontSize: 11, color: 'var(--ink-3)', marginLeft: 2 }}>GB</span>
-        </span>
-        <span style={{ fontSize: 9.5, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginTop: 5 }}>free of {total} GB</span>
-      </div>
-    </div>
-  )
-}
-function GaugeLegend({ color, label, sub, val }: { color: string; label: string; sub: string; val: string }) {
-  return (
-    <div className="flex items-center" style={{ gap: 9 }}>
-      <span style={{ width: 9, height: 9, borderRadius: 3, background: color, flexShrink: 0 }} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <p style={{ fontSize: 12, color: 'var(--ink)', fontWeight: 450, lineHeight: 1.2 }}>{label}</p>
-        <p style={{ fontSize: 10, color: 'var(--ink-4)', marginTop: 1 }}>{sub}</p>
-      </div>
-      <span className="font-mono tnum" style={{ fontSize: 12, color: 'var(--ink-2)', flexShrink: 0 }}>{val}</span>
-    </div>
-  )
-}
-
 function MLXBody({ wiz }: { wiz: Wiz }) {
-  const specs = wiz.specs
-  const ram = specs?.ram_gb ?? 0
   const m = wiz.mlx
   const runtimeInstalled = !!(m && (m.runtime_found || m.runtime_installed))
-  const pct = wiz.progress && wiz.progress.total > 0 ? Math.round(wiz.progress.received / wiz.progress.total * 100) : null
-
-  const memModel = MODEL_RAM_GB, memApp = APP.ramGB
-  const memFree = Math.max(0, ram - memModel - memApp)
-  const tight = ram > 0 && memModel + memApp > ram * 0.85
+  const unavailable = !!(m && !runtimeInstalled && !m.download_available)
+  const pct = wiz.progress && wiz.progress.total > 0
+    ? Math.min(100, Math.round((wiz.progress.received / wiz.progress.total) * 100)) : null
+  const showErr = (!!wiz.err && !wiz.modelReady) || unavailable
+  const working = !wiz.modelReady && !showErr
 
   return (
-    <div className="flex flex-col" style={{ gap: 14 }}>
-      {/* YOUR MAC — detected specs */}
-      <div>
-        <Kicker style={{ marginBottom: 7 }}>Your Mac</Kicker>
-        <div style={{ border: '0.5px solid var(--rule-2)', borderRadius: 13, overflow: 'hidden', background: 'var(--surface)' }}>
-          <div className="flex items-center" style={{ gap: 11, padding: '12px 15px', borderBottom: '1px solid var(--rule)' }}>
-            <Mark mono="M" color="#7C3AED" size={30} />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <p style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--ink)' }}>{specs?.chip || 'Detecting your Mac…'}</p>
-              <p className="font-mono" style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 1 }}>{specs?.macos || '—'}</p>
-            </div>
-            {specs && (specs.chip || ram > 0) && (
-              <span className="flex items-center" style={{ gap: 5, fontSize: 10.5, color: 'var(--success)' }}>
-                <Check size={13} color="var(--success)" />Detected
-              </span>
-            )}
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)' }}>
-            <SpecCell v={specs?.cpu_cores || '—'} l="CPU cores" b />
-            <SpecCell v={specs?.gpu_cores || '—'} l="GPU cores" b />
-            <SpecCell v={ram ? `${ram} GB` : '—'} l="Unified memory" b />
-            <SpecCell v={specs?.free_disk_gb ? `${specs.free_disk_gb} GB` : '—'} l="Free storage" />
-          </div>
-        </div>
-      </div>
+    <div className="flex flex-col items-center justify-center" style={{ minHeight: 300, textAlign: 'center', padding: '8px 8px 4px' }}>
+      {/* State glyph — one calm circle, mirroring the Completion mark */}
+      <span className="flex items-center justify-center mer-pop" style={{
+        width: 60, height: 60, borderRadius: 99, marginBottom: 24,
+        background: showErr ? 'var(--surface-2)' : 'var(--accent-soft)',
+        color: showErr ? 'var(--warn)' : 'var(--accent)',
+        border: showErr ? '0.5px solid var(--rule-2)' : 'none',
+      }}>
+        {wiz.modelReady
+          ? <Check size={28} color="var(--accent)" w={2.2} />
+          : showErr
+            ? <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 7.5v6" /><circle cx="12" cy="17" r="0.7" fill="currentColor" stroke="none" /></svg>
+            : <Spinner size={24} width={2} />}
+      </span>
 
-      {/* RUNTIME */}
-      <div>
-        <Kicker style={{ marginBottom: 7 }}>Runtime</Kicker>
-        <Row tone={runtimeInstalled ? 'tint' : 'surface'}>
-          <Mark mono="MLX" color="#7C3AED" size={34} />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <p style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--ink)' }}>Apple MLX runtime</p>
-            <p className="font-mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
-              {specs?.gpu_cores ? `Accelerated on the ${specs.gpu_cores}-core GPU` : 'GPU-accelerated inference'}
-            </p>
-          </div>
-          <div className="shrink-0" style={{ minWidth: 96, textAlign: 'right' }}>
-            {runtimeInstalled
-              ? <span className="flex items-center justify-end" style={{ gap: 6, fontSize: 12, color: 'var(--success)', fontWeight: 500 }}><Check size={15} color="var(--success)" />Installed</span>
-              : wiz.downloading
-                ? <span className="flex items-center justify-end font-mono tnum" style={{ gap: 7, fontSize: 11.5, color: 'var(--ink-2)' }}><Spinner />{pct !== null ? `${pct}%` : '…'}</span>
-                : m && m.download_available
-                  ? <Btn size="sm" variant="secondary" onClick={wiz.installRuntime}>Install</Btn>
-                  : <span className="font-mono" style={{ fontSize: 11, color: 'var(--warn)' }}>Unavailable</span>}
-          </div>
-        </Row>
-        {wiz.downloading && pct !== null && (
-          <div style={{ marginTop: 8 }}><Bar pct={pct} height={4} /></div>
-        )}
-      </div>
-
-      {/* MODEL — fixed; no picker */}
-      <div style={{ opacity: runtimeInstalled ? 1 : 0.45, pointerEvents: runtimeInstalled ? 'auto' : 'none', transition: 'opacity .25s' }}>
-        <Kicker style={{ marginBottom: 7 }}>Model</Kicker>
-        <Row tone={wiz.modelReady ? 'tint' : 'surface'}>
-          <Mark mono="m" color="var(--accent)" size={34} />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="flex items-center" style={{ gap: 8 }}>
-              <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--ink)' }}>Qwen3.5 2B</span>
-              <span className="font-mono" style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>2B · 4-bit</span>
-            </div>
-            {(wiz.prefetching || wiz.committing) && !wiz.modelReady ? (
-              <p className="font-mono tnum" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 3 }}>
-                {wiz.progress?.message ?? 'Downloading model…'}
+      {/* Progress — only while working. The MB readout makes it tangibly alive:
+          the numbers climb even when % barely moves on a slow shard. */}
+      {working && (
+        <div style={{ width: 300, minHeight: 30 }}>
+          {pct !== null ? (
+            <>
+              <Bar pct={pct} />
+              <p className="font-mono tnum" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 9, letterSpacing: '.02em' }}>
+                {Math.round((wiz.progress?.received ?? 0) / 1_048_576)} / {Math.round((wiz.progress?.total ?? 0) / 1_048_576)} MB · {pct}%
+                {wiz.speed && wiz.speed > 0 ? ` · ${(wiz.speed / 1_048_576).toFixed(1)} MB/s` : ''}
               </p>
-            ) : (
-              <p className="font-mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{MODEL_SIZE_GB} GB download · ~90 tok/s on your Mac</p>
-            )}
-          </div>
-          <div className="shrink-0" style={{ minWidth: 100, textAlign: 'right' }}>
-            {wiz.modelReady
-              ? <span className="flex items-center justify-end" style={{ gap: 6, fontSize: 12, color: 'var(--success)', fontWeight: 500 }}><Check size={15} color="var(--success)" />Ready</span>
-              : wiz.committing
-                ? <span className="flex items-center justify-end" style={{ gap: 7, fontSize: 11.5, color: 'var(--ink-2)' }}><Spinner />Starting…</span>
-                : wiz.prefetching
-                  ? <span className="font-mono tnum" style={{ fontSize: 13, color: 'var(--accent)', fontWeight: 600 }}>{pct !== null ? `${pct}%` : '…'}</span>
-                  : <Btn size="sm" onClick={wiz.downloadModel}>Download</Btn>}
-          </div>
-        </Row>
-        {wiz.prefetching && !wiz.modelReady && pct !== null && (
-          <div style={{ marginTop: 8 }}><Bar pct={pct} /></div>
-        )}
-      </div>
-
-      {/* FOOTPRINT — real, against detected memory */}
-      {ram > 0 && (
-        <div>
-          <div className="flex items-center justify-between" style={{ marginBottom: 7 }}>
-            <Kicker>Estimated footprint</Kicker>
-            <span className="flex items-center font-mono" style={{ gap: 5, fontSize: 10, color: tight ? 'var(--warn)' : 'var(--success)' }}>
-              <span style={{ width: 5, height: 5, borderRadius: 99, background: tight ? 'var(--warn)' : 'var(--success)' }} />
-              {tight ? 'Heavy for this Mac' : 'Comfortable fit'}
-            </span>
-          </div>
-          <div style={{ border: '0.5px solid var(--rule-2)', borderRadius: 13, overflow: 'hidden', background: 'var(--surface)' }}>
-            <div className="flex items-center" style={{ gap: 18, padding: '16px 18px' }}>
-              <MemoryGauge model={memModel} app={memApp} total={ram} />
-              <div className="flex flex-col" style={{ flex: 1, minWidth: 0, gap: 11 }}>
-                <GaugeLegend color="var(--accent)" label="Qwen3.5 2B" sub="2B · 4-bit" val={fmtSize(memModel)} />
-                <GaugeLegend color="#7C3AED" label="Meridian app" sub="background service" val={fmtSize(memApp)} />
-                <GaugeLegend color="var(--rule-2)" label="Free for everything else" sub={`${Math.round(memFree / ram * 100)}% of memory`} val={fmtSize(memFree)} />
-              </div>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', borderTop: '1px solid var(--rule)' }}>
-              <FootStat v={fmtSize(MODEL_SIZE_GB + APP.diskGB)} l="Install size" b />
-              <FootStat v={specs?.free_disk_gb ? fmtSize(specs.free_disk_gb - MODEL_SIZE_GB - APP.diskGB) : '—'} l="Disk free after" b />
-              <FootStat v="~90 tok/s" l="Inference" />
-            </div>
-          </div>
+            </>
+          ) : (
+            <p className="font-mono" style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>{wiz.progress?.message ?? 'Preparing…'}</p>
+          )}
         </div>
+      )}
+
+      {/* Status line — reflects the live phase / outcome */}
+      <p style={{
+        fontSize: 13, lineHeight: 1.5, maxWidth: 300, marginTop: working ? 18 : 4,
+        color: wiz.modelReady ? 'var(--ink)' : 'var(--ink-2)', textWrap: 'pretty',
+      }}>
+        {wiz.modelReady
+          ? 'Your on-device engine is ready.'
+          : unavailable
+            ? 'The on-device runtime isn’t available for this Mac.'
+            : showErr
+              ? (wiz.err || 'The download didn’t finish.')
+              : 'Downloading the models that run privately on your Mac — just once.'}
+      </p>
+
+      {/* Retry on a recoverable error */}
+      {showErr && !unavailable && (
+        <Btn size="sm" variant="secondary" onClick={wiz.retryModel} style={{ marginTop: 18 }}>Try again</Btn>
       )}
     </div>
   )
@@ -370,6 +249,11 @@ export interface StepMeta {
   canNext: (w: Wiz) => boolean
 }
 
+// Local intelligence is LAST on purpose: the model download starts the moment
+// the wizard opens (see page.tsx), so it runs in the background while the user
+// handles Permissions + Integrations and is usually done — or nearly so — by the
+// time they arrive here. Permissions stays first (capture needs them); the
+// download-gated step sits at the end so the wait, if any, is the last thing.
 export const STEPS: StepMeta[] = [
   {
     id: 'permissions', n: '01', label: 'Permissions', kicker: 'Access',
@@ -380,20 +264,23 @@ export const STEPS: StepMeta[] = [
     canNext: (s) => !!(s.perms.accessibility && s.perms.screen && s.perms.input),
   },
   {
-    id: 'mlx', n: '02', label: 'Local intelligence', kicker: 'On-device AI',
-    title: 'Install the on-device engine',
-    subtitle: "Meridian runs entirely on your Mac with Apple MLX. We've sized a model to your hardware — here's exactly what it will use.",
-    Body: MLXBody,
-    status: (s) => s.modelReady ? 'Ready' : (s.mlx?.runtime_found || s.mlx?.runtime_installed) ? 'Model pending' : 'Not installed',
-    // Never trap the user: the model finishes downloading in the background.
-    canNext: () => true,
-  },
-  {
-    id: 'integrations', n: '03', label: 'Integrations', kicker: 'Project tools',
+    id: 'integrations', n: '02', label: 'Integrations', kicker: 'Project tools',
     title: 'Connect your trackers',
     subtitle: 'Link the tools you already use. Meridian matches each session to an issue and drafts a worklog you approve.',
     Body: IntegrationsBody,
     status: (s) => { const c = TRACKERS.filter((t) => s.integrations?.[t.id]).length; return c ? `${c} connected` : 'Optional' },
     canNext: () => true,
+  },
+  {
+    id: 'mlx', n: '03', label: 'Local intelligence', kicker: 'On-device AI',
+    title: 'Set up on-device intelligence',
+    subtitle: 'Everything runs privately on your Mac with Apple MLX. The models started downloading when setup opened — this is just the finish line.',
+    Body: MLXBody,
+    status: (s) => s.modelReady ? 'Ready' : (s.mlx?.runtime_found || s.mlx?.runtime_installed) ? 'Downloading…' : 'Installing…',
+    // Block Finish until every model is on disk: the worklog pipeline (distill →
+    // rerank → match) can't run a cycle without all three, so the user must not
+    // reach the dashboard early. The download has had the whole wizard to run, so
+    // this is usually instant; visible progress + Retry keep it from being a dead end.
+    canNext: (s) => s.modelReady,
   },
 ]

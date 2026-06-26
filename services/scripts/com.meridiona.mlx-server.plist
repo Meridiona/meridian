@@ -45,6 +45,19 @@
     <dict>
         <key>HOME</key>
         <string>{{HOME}}</string>
+        <!-- Pin the HuggingFace cache so the wizard's eager prefetch and the
+             runtime's lazy model loads always resolve the SAME directory (this is
+             the default location, made explicit so the two paths can't diverge).
+             An HF token from `hf auth login` is cached under here and read
+             automatically (no secret in this file) — used to lift the anonymous
+             download rate limit when one is present. -->
+        <key>HF_HOME</key>
+        <string>{{HOME}}/.cache/huggingface</string>
+        <!-- High-performance Xet transfers (the hf-xet dep). mlx-community models
+             are Xet-backed; this is the current accelerator (hf_transfer is
+             deprecated/ignored on huggingface_hub 1.x and does not handle Xet). -->
+        <key>HF_XET_HIGH_PERFORMANCE</key>
+        <string>1</string>
         <key>UV_PROJECT_ENVIRONMENT</key>
         <string>{{SERVICES_VENV}}</string>
         <key>MERIDIAN_DB</key>

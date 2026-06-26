@@ -77,6 +77,9 @@ pub struct DownloadProgress {
     pub received: u64,
     /// Total bytes expected (`0` when the server omits Content-Length).
     pub total: u64,
+    /// Live transfer rate in bytes/sec (HF's own measured rate; `0` when idle/stalled).
+    #[serde(default)]
+    pub speed: f64,
     /// Human-readable status line shown under the progress bar.
     pub message: String,
 }
@@ -373,6 +376,7 @@ where
         on_progress(DownloadProgress {
             received: 0,
             total: 0,
+            speed: 0.0,
             message: "Runtime already up to date.".to_string(),
         });
         return Ok(StageOutcome::AlreadyCurrent);
@@ -381,6 +385,7 @@ where
     on_progress(DownloadProgress {
         received: 0,
         total: 0,
+        speed: 0.0,
         message: "Connecting…".to_string(),
     });
 
@@ -404,6 +409,7 @@ where
 
     let mut stream = response.bytes_stream();
     let mut received: u64 = 0;
+    let started = std::time::Instant::now();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("stream error: {e}"))?;
         use tokio::io::AsyncWriteExt;
@@ -411,9 +417,15 @@ where
             .await
             .map_err(|e| format!("write error: {e}"))?;
         received += chunk.len() as u64;
+        let secs = started.elapsed().as_secs_f64();
         on_progress(DownloadProgress {
             received,
             total,
+            speed: if secs > 0.0 {
+                received as f64 / secs
+            } else {
+                0.0
+            },
             message: if total > 0 {
                 format!(
                     "Downloading… {:.0}%",
@@ -432,6 +444,7 @@ where
     on_progress(DownloadProgress {
         received,
         total: received,
+        speed: 0.0,
         message: "Verifying…".to_string(),
     });
     let tmp = PathBuf::from(&tmp_path);
@@ -458,6 +471,7 @@ where
     on_progress(DownloadProgress {
         received,
         total: received,
+        speed: 0.0,
         message: "Extracting…".to_string(),
     });
     let staging = staging_dir();
@@ -485,6 +499,7 @@ where
     on_progress(DownloadProgress {
         received,
         total: received,
+        speed: 0.0,
         message: "Runtime ready.".to_string(),
     });
     tracing::info!(version = %manifest.version, dir = %staging.display(), "mlx: runtime staged");
@@ -689,13 +704,17 @@ struct PrefetchStatus {
     received: u64,
     /// Authoritative total (`0` when the size probe failed → indeterminate bar).
     total: u64,
+    /// Live transfer rate in bytes/sec (HF's measured rate; `0` when idle/stalled).
+    #[serde(default)]
+    speed: f64,
     /// Failure detail when `state == "error"`.
     error: Option<String>,
 }
 
-/// Trigger the model download and stream progress until it finishes. Prefetches
-/// the fixed classifier weights so the first classification doesn't stall on a
-/// silent download mid-inference.
+/// Trigger the model downloads and stream progress until they finish. Prefetches
+/// every pipeline model (llm + reranker + embedder — the server's model registry)
+/// so the first worklog run doesn't stall on a silent download mid-pipeline.
+/// `received`/`total` are aggregate byte counts across the whole set.
 ///
 /// POSTs `/prefetch_model` (idempotent — a re-trigger adopts the in-flight
 /// download rather than starting a second), then polls `/prefetch_status` ~1 Hz,
@@ -711,7 +730,8 @@ where
     on_progress(DownloadProgress {
         received: 0,
         total: 0,
-        message: "Selecting the best model for this Mac…".to_string(),
+        speed: 0.0,
+        message: "Preparing models…".to_string(),
     });
     // The POST resolves the model id + total size before returning, so give it room.
     let resp = client
@@ -720,15 +740,22 @@ where
         .send()
         .await
         .map_err(|e| format!("prefetch_model request failed: {e}"))?;
-    // A runtime tarball predating these endpoints answers 404. Eager prefetch is a
-    // best-effort optimization — the model still lazy-loads on the first classify —
-    // so degrade SILENTLY (return Ok) rather than surfacing an error in the wizard.
+    // A runtime tarball predating /prefetch_model answers 404 — gracefully degrade
+    // so the wizard can still advance (models lazy-load on first use). Any other
+    // non-2xx (5xx server crash, 401 auth, etc.) is a real failure and must be
+    // surfaced so the user sees an error + Retry rather than a phantom "done".
     if !resp.status().is_success() {
-        tracing::info!(
-            status = resp.status().as_u16(),
-            "mlx: /prefetch_model unavailable (older runtime?) — model will load lazily on first use"
-        );
-        return Ok(());
+        let status = resp.status().as_u16();
+        if status == 404 {
+            tracing::info!(
+                status,
+                "mlx: /prefetch_model unavailable (older runtime?) — model will load lazily on first use"
+            );
+            return Ok(());
+        }
+        return Err(format!(
+            "prefetch_model returned unexpected status {status} — check the MLX server logs"
+        ));
     }
 
     loop {
@@ -738,14 +765,20 @@ where
             .send()
             .await
             .map_err(|e| format!("prefetch_status request failed: {e}"))?;
-        // Same graceful-degrade: never JSON-decode a non-2xx body (that produced the
-        // "decode failed: error decoding response body" wizard error on old runtimes).
+        // Same 404-only graceful-degrade: if the status endpoint is missing on an old
+        // runtime we stop polling rather than crashing; other non-2xx are real errors.
         if !resp.status().is_success() {
-            tracing::info!(
-                status = resp.status().as_u16(),
-                "mlx: /prefetch_status unavailable — stopping prefetch poll, model loads lazily"
-            );
-            return Ok(());
+            let status = resp.status().as_u16();
+            if status == 404 {
+                tracing::info!(
+                    status,
+                    "mlx: /prefetch_status unavailable — stopping prefetch poll, model loads lazily"
+                );
+                return Ok(());
+            }
+            return Err(format!(
+                "prefetch_status returned unexpected status {status}"
+            ));
         }
         let st: PrefetchStatus = resp
             .json()
@@ -757,7 +790,8 @@ where
                 on_progress(DownloadProgress {
                     received: st.received,
                     total: st.total,
-                    message: "Model ready.".to_string(),
+                    speed: 0.0,
+                    message: "Models ready.".to_string(),
                 });
                 tracing::info!(received = st.received, "mlx: model prefetch complete");
                 return Ok(());
@@ -770,13 +804,14 @@ where
             _ => {
                 let mb = st.received / 1_048_576;
                 let message = if st.total > 0 {
-                    format!("Downloading model… {mb} / {} MB", st.total / 1_048_576)
+                    format!("Downloading models… {mb} / {} MB", st.total / 1_048_576)
                 } else {
-                    format!("Downloading model… {mb} MB")
+                    format!("Downloading models… {mb} MB")
                 };
                 on_progress(DownloadProgress {
                     received: st.received,
                     total: st.total,
+                    speed: st.speed,
                     message,
                 });
             }
