@@ -109,12 +109,23 @@ fn try_walk_a11y(walker: &dyn TreeWalkerPlatform) -> A11yOutcome {
                 debug!(app = %snap.app_name, "capture: a11y tree empty (warm-up) — OCR fallback");
                 return A11yOutcome::FallBackToOcr;
             }
+            let app_lower = snap.app_name.to_lowercase();
+            // Canvas-rendered apps (Figma, design tools): content is GPU pixels,
+            // not in the AX tree. The a11y snapshot gives only toolbar/menu text;
+            // OCR is the only path to actual canvas content.
+            if is_canvas_app(&app_lower) {
+                debug!(
+                    app = %snap.app_name,
+                    "capture: canvas app — a11y can't reach GPU content, OCR fallback"
+                );
+                return A11yOutcome::FallBackToOcr;
+            }
             // Browsers return non-empty a11y text even when the page hasn't been
             // exposed: the tab strip (AXTab/AXButton nodes) alone gives ~695 chars
-            // of tab titles. Without this check we'd emit chrome-only text and
-            // never capture actual page content. Fall back to OCR so the screen
-            // pixels give us real page content for this tick.
-            if a11y_content_is_thin(&snap) {
+            // of tab titles. Gate on is_browser so we don't apply the density
+            // heuristic to non-browser apps (sparse dialogs, preferences panes, etc.)
+            // where thin a11y text is expected and OCR adds no value.
+            if is_browser(&app_lower) && a11y_content_is_thin(&snap) {
                 debug!(
                     app = %snap.app_name,
                     chars = snap.text_content.len(),
@@ -151,6 +162,32 @@ fn try_walk_a11y(walker: &dyn TreeWalkerPlatform) -> A11yOutcome {
     }
 }
 
+/// Returns `true` when `app_lower` is a known browser.
+fn is_browser(app_lower: &str) -> bool {
+    [
+        "chrome", "safari", "firefox", "arc", "edge", "brave", "opera", "vivaldi",
+    ]
+    .iter()
+    .any(|b| app_lower.contains(b))
+}
+
+/// Returns `true` when `app_lower` is a canvas-rendering design tool whose
+/// content is drawn to a GPU surface and is therefore absent from the AX tree.
+fn is_canvas_app(app_lower: &str) -> bool {
+    [
+        "figma",
+        "canva",
+        "miro",
+        "sketch",
+        "origami",
+        "principle",
+        "framer",
+        "penpot",
+    ]
+    .iter()
+    .any(|a| app_lower.contains(a))
+}
+
 /// Returns `true` when the a11y snapshot contains mostly browser-chrome roles
 /// (tab strip, toolbar, buttons) rather than real page content. When this is
 /// the case, the tray falls back to OCR so we capture what's actually on screen.
@@ -180,6 +217,13 @@ fn a11y_content_is_thin(snap: &TreeSnapshot) -> bool {
         "AXComboBox",
         "AXScrollBar",
     ];
+
+    // If the walker returned no node metadata (max-node budget exhausted and
+    // all nodes were elided), we have no role data to reason about — treat as
+    // non-thin so the text_content we do have is used rather than discarded.
+    if snap.nodes.is_empty() {
+        return false;
+    }
 
     let mut content_chars: usize = 0;
     let mut total_chars: usize = 0;
