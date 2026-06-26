@@ -24,6 +24,7 @@ import logging
 import re
 import sqlite3
 import time
+from datetime import datetime
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -483,6 +484,10 @@ def distil_hour(
     """
     if not _HOUR_RE.match(hour):
         raise ValueError(f"invalid hour format {hour!r}; expected YYYY-MM-DDTHH")
+    try:
+        datetime.strptime(hour, "%Y-%m-%dT%H")
+    except ValueError:
+        raise ValueError(f"invalid calendar hour {hour!r}; must be a real date")
     db = str(db_path or MERIDIAN_DB)
     rows = _load_rows(db, "started_at LIKE ?", (hour + "%",), exclude_coding)
     if not rows:
