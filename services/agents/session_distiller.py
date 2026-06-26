@@ -60,6 +60,7 @@ _JUNK_SUBSTRINGS = (
     "for agents", "shift+tab to cycle", "+ s ifi", "Type to", "tokens · ",
 )
 
+_HOUR_RE           = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}$')
 _SPINNER_RE        = re.compile(r"Photosynthesizing|Thinking|tokens\)|esc to interrupt|[↓✶✳⠂⏵]")
 _TIMESTAMP_ONLY_RE = re.compile(r"^\[\d\d:\d\d:\d\d\]\s*$")
 _URL_PREFIX_RE     = re.compile(r"^\[url\]\s*", re.I)
@@ -423,19 +424,21 @@ def _load_rows(
     ph = ",".join("?" * len(DISTILLER_EXCLUDE_APPS))
     coding_filter = " AND coding_agent_session_uuid IS NULL" if exclude_coding else ""
     con = sqlite3.connect(db)
-    rows = con.execute(
-        f"""SELECT id, app_name, started_at, duration_s, window_titles, session_text,
-                   COALESCE(task_key,'') as task_key,
-                   COALESCE(task_session_type,'') as task_session_type
-              FROM app_sessions
-             WHERE app_name NOT IN ({ph})
-               AND duration_s >= ?
-               AND session_text IS NOT NULL AND LENGTH(session_text) > 40
-               AND {where_clause}{coding_filter}
-             ORDER BY started_at""",
-        (*DISTILLER_EXCLUDE_APPS, DISTILLER_MIN_SESSION_DUR, *params),
-    ).fetchall()
-    con.close()
+    try:
+        rows = con.execute(
+            f"""SELECT id, app_name, started_at, duration_s, window_titles, session_text,
+                       COALESCE(task_key,'') as task_key,
+                       COALESCE(task_session_type,'') as task_session_type
+                  FROM app_sessions
+                 WHERE app_name NOT IN ({ph})
+                   AND duration_s >= ?
+                   AND session_text IS NOT NULL AND LENGTH(session_text) > 40
+                   AND {where_clause}{coding_filter}
+                 ORDER BY started_at""",
+            (*DISTILLER_EXCLUDE_APPS, DISTILLER_MIN_SESSION_DUR, *params),
+        ).fetchall()
+    finally:
+        con.close()
     return rows
 
 
@@ -478,6 +481,8 @@ def distil_hour(
 
     Returns (body, stats). Returns ('', empty_stats) for an empty hour.
     """
+    if not _HOUR_RE.match(hour):
+        raise ValueError(f"invalid hour format {hour!r}; expected YYYY-MM-DDTHH")
     db = str(db_path or MERIDIAN_DB)
     rows = _load_rows(db, "started_at LIKE ?", (hour + "%",), exclude_coding)
     if not rows:

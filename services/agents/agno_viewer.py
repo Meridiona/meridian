@@ -11,8 +11,11 @@ The DB path defaults to ~/.meridian/agno_traces.db (set AGNO_TRACE_DB to overrid
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 from agno.agent import Agent
 from agno.db.sqlite import SqliteDb
@@ -51,7 +54,7 @@ agent_os = AgentOS(
 app = agent_os.get_app()
 
 if __name__ == "__main__":
-    print(f"Trace DB : {_db_file}")
-    print("Dashboard: http://localhost:8000")
-    print("Control  : https://os.agno.com  → Add new OS → http://localhost:8000")
+    log.info("trace DB: %s", _db_file)
+    log.info("dashboard: http://localhost:8000")
+    log.info("control:   https://os.agno.com → Add new OS → http://localhost:8000")
     agent_os.serve(app="agno_viewer:app", reload=False, port=8000)

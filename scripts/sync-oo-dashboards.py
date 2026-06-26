@@ -119,7 +119,8 @@ def main() -> None:
             print(f"  ✓ {action}: {title!r}  → id={new_id}  ({path.name})")
             ok += 1
         else:
-            print(f"  ✗ {action}: {title!r} failed ({status}): {result.get('message', result)}")
+            msg = result.get("message", result) if isinstance(result, dict) else result
+            print(f"  ✗ {action}: {title!r} failed ({status}): {msg}")
             err += 1
 
     if not args.dry_run:
