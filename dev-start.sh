@@ -82,7 +82,7 @@ tell application "Terminal"
     do script "echo '=== Rust daemon (cargo watch) ===' && cd '${REPO_ROOT}' && cargo watch -x 'run --bin meridian'"
 
     -- 2. MLX server (uvicorn --reload, watches services/agents/ only)
-    do script "echo '=== MLX server (uvicorn --reload) ===' && cd '${REPO_ROOT}/services' && HF_HUB_ENABLE_HF_TRANSFER=1 .venv/bin/uvicorn agents.server:app --reload --reload-dir '${REPO_ROOT}/services/agents' --host 127.0.0.1 --port 7823"
+    do script "echo '=== MLX server (uvicorn --reload) ===' && cd '${REPO_ROOT}/services' && HF_TOKEN='${HF_TOKEN:-}' HF_XET_HIGH_PERFORMANCE=1 .venv/bin/uvicorn agents.server:app --reload --reload-dir '${REPO_ROOT}/services/agents' --host 127.0.0.1 --port 7823"
 
     -- 3. Tauri tray (hot reload — also starts Next.js dev server automatically via beforeDevCommand)
     do script "echo '=== Tauri tray (tauri dev) ===' && cd '${REPO_ROOT}/tray' && npm run tauri dev"
