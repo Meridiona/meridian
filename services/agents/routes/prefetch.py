@@ -83,10 +83,29 @@ def _spec_total_bytes(spec: model_registry.ModelSpec) -> int:
     return total
 
 
+def _env_positive_int(name: str, default: int) -> int:
+    """Read a positive-int env override, falling back to `default` on bad input.
+
+    Parsed at import, so a non-integer value (operator typo) must degrade to the
+    default rather than raise ValueError and brick MLX-server startup.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        log.warning(
+            "server: ignoring non-integer env override; using default",
+            extra={"env_var": name, "raw": raw, "default": default},
+        )
+        return default
+
+
 # How many times to (re)enter snapshot_download for one model before giving up.
 # Each retry resumes from the on-disk ``.incomplete`` partial (HF Range request),
 # so bytes already pulled are never re-downloaded. Env-overridable for ops.
-_PREFETCH_MAX_ATTEMPTS = max(1, int(os.environ.get("MERIDIAN_PREFETCH_MAX_ATTEMPTS", "5")))
+_PREFETCH_MAX_ATTEMPTS = _env_positive_int("MERIDIAN_PREFETCH_MAX_ATTEMPTS", 5)
 
 
 def _download_spec(spec: model_registry.ModelSpec) -> None:
@@ -125,13 +144,11 @@ def _download_spec(spec: model_registry.ModelSpec) -> None:
     # so ``os.environ`` here would be a no-op for an already-imported library.
     hf_constants.HF_HUB_DISABLE_XET = True
 
-    last_exc: Exception | None = None
     for attempt in range(1, _PREFETCH_MAX_ATTEMPTS + 1):
         try:
             snapshot_download(spec.model_id, allow_patterns=spec.allow_patterns)
             return
         except Exception as exc:  # noqa: BLE001 — retry-with-resume, re-raise if exhausted
-            last_exc = exc
             log.warning(
                 "server: prefetch download attempt failed; will resume from partial",
                 extra={
@@ -141,10 +158,9 @@ def _download_spec(spec: model_registry.ModelSpec) -> None:
                     "error": str(exc),
                 },
             )
-            if attempt < _PREFETCH_MAX_ATTEMPTS:
-                time.sleep(min(2**attempt, 30))  # 2s, 4s, 8s, 16s … capped at 30s
-    assert last_exc is not None  # loop ran ≥1 time; only reached on exhaustion
-    raise last_exc
+            if attempt >= _PREFETCH_MAX_ATTEMPTS:
+                raise  # all attempts exhausted — surface the active error to _run_prefetch
+            time.sleep(min(2**attempt, 30))  # 2s, 4s, 8s, 16s … capped at 30s
 
 
 def _run_prefetch(specs: list[model_registry.ModelSpec]) -> None:
