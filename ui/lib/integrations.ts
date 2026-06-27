@@ -155,6 +155,9 @@ export function filterByConnectedProviders<T extends { provider: string }>(
   integrations: IntegrationsResponse | null,
 ): T[] {
   if (!integrations) return tasks
-  const connected = new Set(TRACKER_IDS.filter(id => integrations[id]))
-  return tasks.filter(t => connected.has(t.provider as TrackerId))
+  // Cast to a plain map so future/unknown providers pass through rather than
+  // being silently dropped. TRACKER_IDS guards only the known five — any string
+  // outside that set would resolve false here even if the backend says connected.
+  const int = integrations as Record<string, boolean>
+  return tasks.filter(t => !(t.provider in int) || int[t.provider])
 }

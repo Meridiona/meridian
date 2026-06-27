@@ -121,6 +121,19 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
   // integrations is still loading (null), show everything to avoid a flash.
   const activeTasks = filterByConnectedProviders(data.tasks, integrations)
 
+  // All providers disconnected: show the connect panel instead of a blank detail pane.
+  if (activeTasks.length === 0 && integrations !== null) {
+    return (
+      <div className="space-y-8">
+        <header className="rise">
+          <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Tasks</p>
+          <h1 className="type-title mt-1" style={{ color: 'var(--ink)' }}>What you&apos;re working on</h1>
+        </header>
+        <ConnectTrackers integrations={integrations} onChanged={fetchIntegrations} />
+      </div>
+    )
+  }
+
   const touched = activeTasks.filter(t => t.today_s > 0).length
 
   // Derive the set of providers actually present in the active task list.
@@ -131,6 +144,8 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
     ? activeTasks
     : activeTasks.filter(t => t.provider === providerFilter)
 
+  // activeTasks is non-empty here (empty case returned above), so visibleTasks[0]
+  // is always defined unless the active provider filter matches nothing.
   const sel = visibleTasks.find(t => t.key === selected) ?? visibleTasks[0] ?? activeTasks[0]
 
   // Group tasks by epic_key (stable per-epic, not per-title) so cross-provider

@@ -169,12 +169,12 @@ fn try_walk_a11y(walker: &dyn TreeWalkerPlatform) -> A11yOutcome {
 
 /// Returns `true` when `app_lower` is Meridian's own tray process.
 ///
-/// The AX tree reports "meridian-tray" (binary name) in dev / inside the
-/// bundle, and "meridian" (lowercase of productName "Meridian") when running
-/// as a packaged .app. We never want to capture our own dashboard as a user
-/// work session.
+/// The AX tree reports `SELF_BINARY_NAME` ("meridian-tray") in dev / inside
+/// the bundle before `setProcessName:` fires, and `SELF_PRODUCT_NAME_LOWER`
+/// ("meridian") once it has. Both constants are declared in `crate::lib` next
+/// to the `set_process_display_name` call so a rename there is visible here.
 fn is_self_app(app_lower: &str) -> bool {
-    app_lower == "meridian-tray" || app_lower == "meridian"
+    app_lower == crate::SELF_PRODUCT_NAME_LOWER || app_lower == crate::SELF_BINARY_NAME
 }
 
 /// Returns `true` when `app_lower` is a known browser.

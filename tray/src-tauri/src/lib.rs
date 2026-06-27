@@ -18,6 +18,16 @@ mod backend_install;
 #[cfg(feature = "capture")]
 mod capture;
 mod commands;
+
+/// Lowercase product name as macOS reports it after [`set_process_display_name`].
+/// The capture engine uses this to skip self-capture — keep it in sync with the
+/// literal passed to that function.
+#[cfg(feature = "capture")]
+pub(crate) const SELF_PRODUCT_NAME_LOWER: &str = "meridian";
+
+/// Binary name Cargo embeds (dev / ad-hoc builds, before the display name is set).
+#[cfg(feature = "capture")]
+pub(crate) const SELF_BINARY_NAME: &str = "meridian-tray";
 pub(crate) mod format;
 mod install;
 pub(crate) mod mlx_server;
@@ -786,6 +796,9 @@ fn set_process_display_name(name: &str) {
             return;
         }
         let info: *const AnyObject = msg_send![class!(NSProcessInfo), processInfo];
+        if info.is_null() {
+            return;
+        }
         let _: () = msg_send![&*info, setProcessName: ns_name];
     }
     tracing::debug!(name, "set_process_display_name: applied");

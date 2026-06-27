@@ -24,15 +24,17 @@ export default function MustFixBanner() {
   useEffect(() => {
     let alive = true
     const load = () => {
+      // Fetch independently: a get_integrations failure must not suppress the
+      // must-fix count (the shared-catch pattern hides it silently).
       Promise.all([
-        loadData<TasksResponse>('/api/tasks', 'get_tasks'),
-        loadData<IntegrationsResponse>('/api/integrations', 'get_integrations'),
+        loadData<TasksResponse>('/api/tasks', 'get_tasks').catch(() => null),
+        loadData<IntegrationsResponse>('/api/integrations', 'get_integrations').catch(() => null),
       ]).then(([taskRes, intRes]) => {
-        if (!alive) return
+        if (!alive || !taskRes) return // tasks unavailable — don't reset count
         const n = filterByConnectedProviders(taskRes.tasks ?? [], intRes)
           .filter(t => t.hygiene && hasMustFix(t.hygiene.issues)).length
         setCount(n)
-      }).catch(() => {})
+      })
     }
     load()
     const timer = setInterval(load, POLL_MS)

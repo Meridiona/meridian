@@ -98,7 +98,9 @@ export default function CleanupView() {
 
   if (loading) return <div className="p-10 text-sm" style={{ color: 'var(--ink-3)' }}>Reading your board…</div>
 
-  const total = filterByConnectedProviders(tasks, integrations).length
+  // Exclude dismissed tasks so Board Score isn't inflated by "Keep / Later"
+  // deferrals — dismissed tasks leave the groups but must leave total too.
+  const total = filterByConnectedProviders(tasks, integrations).filter(t => !dismissed.has(t.key)).length
   const ready = total - (groups.must.length + groups.nice.length + groups.review.length)
   const attention = groups.must.length + groups.nice.length + groups.review.length
   const healthPct = total > 0 ? Math.round((ready / total) * 100) : 100

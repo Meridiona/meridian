@@ -111,6 +111,14 @@ describe('filterByConnectedProviders', () => {
     expect(tasks).toHaveLength(2)
   })
 
+  it('passes through tasks from a provider not in the known registry (future integration)', () => {
+    // Unknown providers must not be silently dropped once integrations loads —
+    // they should be treated as pass-through (not filtered out).
+    const tasks = [task('jira'), task('asana')]
+    const result = filterByConnectedProviders(tasks, JIRA_ONLY)
+    expect(result.map(t => t.provider).sort()).toEqual(['asana', 'jira'])
+  })
+
   it('preserves all fields on retained tasks (not just provider)', () => {
     const full = { provider: 'jira', today_s: 120, key: 'JIR-1', title: 'Do stuff' }
     const result = filterByConnectedProviders([full], JIRA_ONLY)
