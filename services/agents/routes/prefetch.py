@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -31,10 +32,11 @@ log = logging.getLogger("agents.server")
 router = APIRouter()
 
 # Speed is derived from the growth of on-disk `received` between /prefetch_status
-# polls — NOT from a tqdm hook. hf_xet (the Xet accelerator these models use) does
-# its download in Rust and bypasses the classic tqdm bar, so a tqdm_class never
-# fires; the byte-delta approach works for any backend. Stored as a dict so both
-# functions can mutate it in-place without `global` declarations.
+# polls — NOT from a tqdm hook (a tqdm_class override never fires reliably across
+# backends). The byte-delta approach is backend-agnostic; with Xet disabled for the
+# prefetch (see `_download_spec`) the classic path grows the blob linearly, so this
+# now reads as a smooth rate rather than the 0-then-burst pattern hf_xet produced.
+# Stored as a dict so both functions can mutate it in-place without `global`s.
 _speed_state: dict[str, float | int] = {"recv": 0, "ts": 0.0}
 
 
@@ -81,17 +83,84 @@ def _spec_total_bytes(spec: model_registry.ModelSpec) -> int:
     return total
 
 
+def _env_positive_int(name: str, default: int) -> int:
+    """Read a positive-int env override, falling back to `default` on bad input.
+
+    Parsed at import, so a non-integer value (operator typo) must degrade to the
+    default rather than raise ValueError and brick MLX-server startup.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        log.warning(
+            "server: ignoring non-integer env override; using default",
+            extra={"env_var": name, "raw": raw, "default": default},
+        )
+        return default
+
+
+# How many times to (re)enter snapshot_download for one model before giving up.
+# Each retry resumes from the on-disk ``.incomplete`` partial (HF Range request),
+# so bytes already pulled are never re-downloaded. Env-overridable for ops.
+_PREFETCH_MAX_ATTEMPTS = _env_positive_int("MERIDIAN_PREFETCH_MAX_ATTEMPTS", 5)
+
+
 def _download_spec(spec: model_registry.ModelSpec) -> None:
     """Download one model's weights to the HF cache (no load into memory).
 
-    All specs go through ``snapshot_download`` (filtered to the spec's
-    allow_patterns); ``hf-xet`` transparently accelerates the Xet-backed transfers.
+    Forces the classic (non-Xet) transfer path and retries with resume so a
+    stalled connection can never wedge the download indefinitely:
+
+    * **Xet is disabled for the pull.** ``hf_xet`` does its transfer in Rust with
+      no per-read timeout and can't be interrupted from Python, so a half-open
+      connection to the Xet CAS endpoint hangs forever (observed: a prefetch stuck
+      at 57% for 4h on a healthy 16 Mbps link — bytes never resumed). The classic
+      path caps every read at ``HF_HUB_DOWNLOAD_TIMEOUT`` (10s) and resumes from the
+      ``.incomplete`` partial via a Range request, so a stall raises and self-heals
+      instead of hanging. On a cold first-run pull of distinct model weights Xet's
+      chunk-dedup buys little, so this trades an unused fast-path for a bounded,
+      resumable one. (Bonus: the classic path grows the on-disk blob linearly, so
+      ``/prefetch_status``'s byte-delta speed reads smoothly instead of sitting at 0
+      then jumping in bursts as hf_xet flushes reconstructed chunks.)
+    * **Bounded retries** re-enter ``snapshot_download`` on any error; each attempt
+      resumes from the partial, so transient drops that exhaust the library's own
+      per-read retries still converge without re-pulling what's on disk.
+
     ``mlx_lm.load`` / ``mlx_embeddings.load`` resolve the files straight from the
     cache afterwards. Only disk is touched — the single-slot runtime loads each
-    model lazily on first use.
+    model lazily on first use. Disabling Xet here is process-global (it flips a
+    huggingface_hub module constant), so later in-process model loads inherit the
+    same bounded, resumable path — which is what we want on a network where Xet
+    stalls.
     """
+    from huggingface_hub import constants as hf_constants
     from huggingface_hub import snapshot_download
-    snapshot_download(spec.model_id, allow_patterns=spec.allow_patterns)
+
+    # Flip the *module attribute* (re-read per download at file_download.py call
+    # sites), NOT the env var: the env is parsed into this constant once at import,
+    # so ``os.environ`` here would be a no-op for an already-imported library.
+    hf_constants.HF_HUB_DISABLE_XET = True
+
+    for attempt in range(1, _PREFETCH_MAX_ATTEMPTS + 1):
+        try:
+            snapshot_download(spec.model_id, allow_patterns=spec.allow_patterns)
+            return
+        except Exception as exc:  # noqa: BLE001 — retry-with-resume, re-raise if exhausted
+            log.warning(
+                "server: prefetch download attempt failed; will resume from partial",
+                extra={
+                    "model_id": spec.model_id,
+                    "attempt": attempt,
+                    "max_attempts": _PREFETCH_MAX_ATTEMPTS,
+                    "error": str(exc),
+                },
+            )
+            if attempt >= _PREFETCH_MAX_ATTEMPTS:
+                raise  # all attempts exhausted — surface the active error to _run_prefetch
+            time.sleep(min(2**attempt, 30))  # 2s, 4s, 8s, 16s … capped at 30s
 
 
 def _run_prefetch(specs: list[model_registry.ModelSpec]) -> None:
