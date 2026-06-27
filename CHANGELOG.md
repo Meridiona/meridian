@@ -1,3 +1,10 @@
+## [1.66.2](https://github.com/Meridiona/meridian/compare/v1.66.1...v1.66.2) (2026-06-27)
+
+### 🐛 Bug Fixes
+
+* **prefetch:** disable Xet + bounded retry-with-resume to stop 4h hangs ([4778e7a](https://github.com/Meridiona/meridian/commit/4778e7a36e8d878aceb727d96cf84999ca879963))
+* **prefetch:** harden retry loop per self-review ([#350](https://github.com/Meridiona/meridian/issues/350)) ([4f4b944](https://github.com/Meridiona/meridian/commit/4f4b944c59c937553279d48cbfadd76403818a6c))
+
 ## [1.66.1](https://github.com/Meridiona/meridian/compare/v1.66.0...v1.66.1) (2026-06-26)
 
 ### 🐛 Bug Fixes
