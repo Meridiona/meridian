@@ -110,6 +110,11 @@ fn try_walk_a11y(walker: &dyn TreeWalkerPlatform) -> A11yOutcome {
                 return A11yOutcome::FallBackToOcr;
             }
             let app_lower = snap.app_name.to_lowercase();
+            // Never record Meridian capturing its own dashboard windows.
+            if is_self_app(&app_lower) {
+                debug!(app = %snap.app_name, "capture: skipping self (Meridian window)");
+                return A11yOutcome::Skip;
+            }
             // Canvas-rendered apps (Figma, design tools): content is GPU pixels,
             // not in the AX tree. The a11y snapshot gives only toolbar/menu text;
             // OCR is the only path to actual canvas content.
@@ -160,6 +165,16 @@ fn try_walk_a11y(walker: &dyn TreeWalkerPlatform) -> A11yOutcome {
             A11yOutcome::FallBackToOcr
         }
     }
+}
+
+/// Returns `true` when `app_lower` is Meridian's own tray process.
+///
+/// The AX tree reports "meridian-tray" (binary name) in dev / inside the
+/// bundle, and "meridian" (lowercase of productName "Meridian") when running
+/// as a packaged .app. We never want to capture our own dashboard as a user
+/// work session.
+fn is_self_app(app_lower: &str) -> bool {
+    app_lower == "meridian-tray" || app_lower == "meridian"
 }
 
 /// Returns `true` when `app_lower` is a known browser.
@@ -280,6 +295,9 @@ async fn capture_once_ocr(tx: &FrameTx) -> anyhow::Result<()> {
 
     let now = Utc::now();
     for win in windows {
+        if is_self_app(&win.app_name.to_lowercase()) {
+            continue;
+        }
         let (text, _json, _confidence) = screenpipe_screen::perform_ocr_apple(&win.image, &[]);
         if text.trim().is_empty() {
             continue; // nothing legible in this window — skip it
