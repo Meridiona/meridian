@@ -11,8 +11,9 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { hasMustFix } from '@/lib/hygiene'
-import type { TasksResponse } from '@/lib/api-types'
+import type { TasksResponse, IntegrationsResponse } from '@/lib/api-types'
 import { load as loadData } from '@/lib/bridge'
+import { filterByConnectedProviders } from '@/lib/integrations'
 
 const POLL_MS = 60_000
 
@@ -23,13 +24,15 @@ export default function MustFixBanner() {
   useEffect(() => {
     let alive = true
     const load = () => {
-      loadData<TasksResponse>('/api/tasks', 'get_tasks')
-        .then((d) => {
-          if (!alive) return
-          const n = (d.tasks ?? []).filter(t => t.hygiene && hasMustFix(t.hygiene.issues)).length
-          setCount(n)
-        })
-        .catch(() => {})
+      Promise.all([
+        loadData<TasksResponse>('/api/tasks', 'get_tasks'),
+        loadData<IntegrationsResponse>('/api/integrations', 'get_integrations'),
+      ]).then(([taskRes, intRes]) => {
+        if (!alive) return
+        const n = filterByConnectedProviders(taskRes.tasks ?? [], intRes)
+          .filter(t => t.hygiene && hasMustFix(t.hygiene.issues)).length
+        setCount(n)
+      }).catch(() => {})
     }
     load()
     const timer = setInterval(load, POLL_MS)

@@ -117,3 +117,85 @@ describe('filterByConnectedProviders', () => {
     expect(result[0]).toEqual(full)
   })
 })
+
+// ---------------------------------------------------------------------------
+// CleanupView: Board Score total and must-fix count exclude disconnected tasks
+// ---------------------------------------------------------------------------
+// These mirror the computations in CleanupView.tsx — total = filtered length,
+// groups are built from the filtered list. If these break, the board score and
+// must-fix badge would count tickets from disconnected integrations.
+
+const mustFixHygiene = { bucket: 'must_fix', issues: [{ code: 'no_due_date', severity: 'must_fix', hint: 'Add a due date' }] }
+const cleanHygiene   = { bucket: 'ready', issues: [] }
+
+const hygieneTask = (provider: string, hygiene: typeof mustFixHygiene | typeof cleanHygiene) =>
+  ({ provider, today_s: 0, hygiene })
+
+describe('cleanup board: total and must-fix count filter disconnected providers', () => {
+  it('total excludes tasks from disconnected providers', () => {
+    const tasks = [hygieneTask('jira', cleanHygiene), hygieneTask('github', cleanHygiene)]
+    const active = filterByConnectedProviders(tasks, JIRA_ONLY)
+    expect(active.length).toBe(1) // github excluded
+  })
+
+  it('must-fix count excludes must-fix tasks from a disconnected provider', () => {
+    const tasks = [hygieneTask('jira', cleanHygiene), hygieneTask('github', mustFixHygiene)]
+    const active = filterByConnectedProviders(tasks, JIRA_ONLY)
+    const mustCount = active.filter(t => t.hygiene?.issues.some(i => i.severity === 'must_fix')).length
+    expect(mustCount).toBe(0) // github's must-fix doesn't count
+  })
+
+  it('board score is 100% when all connected-provider tasks are clean', () => {
+    const tasks = [hygieneTask('jira', cleanHygiene), hygieneTask('github', mustFixHygiene)]
+    const active = filterByConnectedProviders(tasks, JIRA_ONLY)
+    const total = active.length
+    const withIssues = active.filter(t => (t.hygiene?.issues.length ?? 0) > 0).length
+    const ready = total - withIssues
+    const score = total > 0 ? Math.round((ready / total) * 100) : 100
+    expect(score).toBe(100)
+  })
+
+  it('board score is degraded only by connected-provider tasks with issues', () => {
+    const tasks = [
+      hygieneTask('jira', mustFixHygiene),  // connected, has issues
+      hygieneTask('github', mustFixHygiene), // disconnected — must not affect score
+    ]
+    const active = filterByConnectedProviders(tasks, JIRA_ONLY)
+    const total = active.length
+    const withIssues = active.filter(t => (t.hygiene?.issues.length ?? 0) > 0).length
+    const ready = total - withIssues
+    const score = total > 0 ? Math.round((ready / total) * 100) : 100
+    expect(score).toBe(0) // 0 ready out of 1 connected task
+  })
+})
+
+// ---------------------------------------------------------------------------
+// MustFixBanner: count excludes must-fix tasks from disconnected providers
+// ---------------------------------------------------------------------------
+
+describe('must-fix banner: count excludes disconnected providers', () => {
+  it('banner count is 0 when only disconnected providers have must-fix tasks', () => {
+    const tasks = [hygieneTask('github', mustFixHygiene), hygieneTask('linear', mustFixHygiene)]
+    const active = filterByConnectedProviders(tasks, JIRA_ONLY)
+    const count = active.filter(t => t.hygiene?.issues.some(i => i.severity === 'must_fix')).length
+    expect(count).toBe(0)
+  })
+
+  it('banner count reflects only connected-provider must-fix tasks', () => {
+    const tasks = [
+      hygieneTask('jira', mustFixHygiene),   // connected + must-fix → counted
+      hygieneTask('github', mustFixHygiene),  // disconnected → not counted
+      hygieneTask('jira', cleanHygiene),      // connected + clean → not counted
+    ]
+    const active = filterByConnectedProviders(tasks, JIRA_ONLY)
+    const count = active.filter(t => t.hygiene?.issues.some(i => i.severity === 'must_fix')).length
+    expect(count).toBe(1)
+  })
+
+  it('banner count is 0 while integrations loads (null) and no tasks have must-fix', () => {
+    const tasks = [hygieneTask('jira', cleanHygiene)]
+    const active = filterByConnectedProviders(tasks, null)
+    const count = active.filter(t => t.hygiene?.issues.some(i => i.severity === 'must_fix')).length
+    expect(count).toBe(0)
+  })
+})
