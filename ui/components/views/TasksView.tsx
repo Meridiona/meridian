@@ -116,17 +116,28 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
     )
   }
 
-  const touched = data.tasks.filter(t => t.today_s > 0).length
+  // Only include tasks from providers that are currently connected. While
+  // integrations is still loading (null), show everything to avoid a flash.
+  const connectedProviderSet: Set<string> | null = integrations
+    ? new Set(
+        (['jira', 'linear', 'github', 'trello', 'azure_devops'] as const).filter(p => integrations[p])
+      )
+    : null
+  const activeTasks = connectedProviderSet
+    ? data.tasks.filter(t => connectedProviderSet.has(t.provider))
+    : data.tasks
 
-  // Derive the set of providers actually present in the task list.
-  const presentProviders = Array.from(new Set(data.tasks.map(t => t.provider))).sort()
+  const touched = activeTasks.filter(t => t.today_s > 0).length
+
+  // Derive the set of providers actually present in the active task list.
+  const presentProviders = Array.from(new Set(activeTasks.map(t => t.provider))).sort()
   const showProviderTabs = presentProviders.length > 1
 
   const visibleTasks = providerFilter === 'all'
-    ? data.tasks
-    : data.tasks.filter(t => t.provider === providerFilter)
+    ? activeTasks
+    : activeTasks.filter(t => t.provider === providerFilter)
 
-  const sel = visibleTasks.find(t => t.key === selected) ?? visibleTasks[0] ?? data.tasks[0]
+  const sel = visibleTasks.find(t => t.key === selected) ?? visibleTasks[0] ?? activeTasks[0]
 
   // Group tasks by epic_key (stable per-epic, not per-title) so cross-provider
   // epics with the same title don't collide.
