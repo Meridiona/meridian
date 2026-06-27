@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import { fmtDur, fmtClock, AppGlyph, CatDot, TaskKey, StatusPill, SectionHead, Card, CATS, PROVIDER_META } from '@/components/atoms'
 import type { TaskSummary, TasksResponse } from '@/lib/api-types'
 import { load, mutate } from '@/lib/bridge'
+import { filterByConnectedProviders } from '@/lib/integrations'
 import HygieneDialog from '@/components/HygieneDialog'
 import ConnectTrackers from '@/components/IntegrationConnect'
 import type { TodayResponse } from '@/lib/api-types'
@@ -118,14 +119,7 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
 
   // Only include tasks from providers that are currently connected. While
   // integrations is still loading (null), show everything to avoid a flash.
-  const connectedProviderSet: Set<string> | null = integrations
-    ? new Set(
-        (['jira', 'linear', 'github', 'trello', 'azure_devops'] as const).filter(p => integrations[p])
-      )
-    : null
-  const activeTasks = connectedProviderSet
-    ? data.tasks.filter(t => connectedProviderSet.has(t.provider))
-    : data.tasks
+  const activeTasks = filterByConnectedProviders(data.tasks, integrations)
 
   const touched = activeTasks.filter(t => t.today_s > 0).length
 
