@@ -40,7 +40,8 @@ export default function MustFixBanner() {
   }, [])
 
   // Don't nag on the cleanup page — that's where you fix them.
-  if (count === 0 || pathname === '/cleanup') return null
+  // trailingSlash: true means the path is /cleanup/ in the static export.
+  if (count === 0 || pathname.startsWith('/cleanup')) return null
 
   return (
     <Link

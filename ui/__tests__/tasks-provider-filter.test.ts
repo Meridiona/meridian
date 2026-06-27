@@ -199,3 +199,36 @@ describe('must-fix banner: count excludes disconnected providers', () => {
     expect(count).toBe(0)
   })
 })
+
+// ---------------------------------------------------------------------------
+// MustFixBanner: suppress on the cleanup page (trailingSlash: true bug)
+// ---------------------------------------------------------------------------
+// With trailingSlash: true, usePathname() returns '/cleanup/' not '/cleanup'.
+// The old check (=== '/cleanup') never matched, so the banner stayed visible
+// on the very page where the user goes to fix things.
+
+const shouldShowBanner = (count: number, pathname: string) =>
+  !(count === 0 || pathname.startsWith('/cleanup'))
+
+describe('must-fix banner: suppress on cleanup page', () => {
+  it('hides when count is 0', () => {
+    expect(shouldShowBanner(0, '/today')).toBe(false)
+  })
+
+  it('shows on non-cleanup pages when count > 0', () => {
+    expect(shouldShowBanner(2, '/today')).toBe(true)
+    expect(shouldShowBanner(2, '/tasks')).toBe(true)
+  })
+
+  it('hides on /cleanup (no trailing slash)', () => {
+    expect(shouldShowBanner(2, '/cleanup')).toBe(false)
+  })
+
+  it('hides on /cleanup/ (trailing slash — the static-export path)', () => {
+    expect(shouldShowBanner(2, '/cleanup/')).toBe(false)
+  })
+
+  it('hides on /cleanup sub-paths if they ever exist', () => {
+    expect(shouldShowBanner(2, '/cleanup/detail')).toBe(false)
+  })
+})
