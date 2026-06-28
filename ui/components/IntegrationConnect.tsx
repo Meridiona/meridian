@@ -189,9 +189,20 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
   // while awaiting mutate — before the interval is created and pollRef assigned.
   const mountedRef = useRef(true)
 
-  useEffect(() => () => {
-    mountedRef.current = false
-    if (pollRef.current != null) clearInterval(pollRef.current)
+  // Set the flag TRUE on (re)mount, not just FALSE on unmount. Under React
+  // StrictMode (on in `next dev`, which `tauri dev` serves) effects run
+  // mount → cleanup → mount: the first cleanup flips this to false, and without
+  // re-arming it here the component stays alive with mountedRef.current === false.
+  // startOAuth's `if (!mountedRef.current) return` guard would then bail right
+  // after `await mutate('start_oauth')`, so the poll interval that detects
+  // success AND surfaces OAuth errors never starts — the UI hangs on "Waiting…"
+  // forever even though the backend already wrote the credentials.
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      if (pollRef.current != null) clearInterval(pollRef.current)
+    }
   }, [])
 
   const startOAuth = async () => {

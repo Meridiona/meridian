@@ -24,14 +24,15 @@ use tokio::sync::Mutex;
 use crate::flow::{self, ProviderSpec};
 use crate::store::{self, OAuthTokens};
 
-// FIXME(cross-process-lock): this mutex is per-process. The daemon and the tray
-// each compile meridian-oauth and hold independent mutex instances. If both call
-// ensure_fresh() simultaneously (daemon background sync + tray user action), both
-// read the same expired token store, both POST to Atlassian's token endpoint, and
-// the second POST 401s because the first call already rotated and consumed the
-// refresh token — permanently invalidating the pair. Fix requires a file lock on
-// the OAuth store path (e.g. via the `fd-lock` crate) to serialise across processes.
-// Tracked as a follow-up; in practice the race requires exact timing overlap.
+// This mutex serialises refreshes WITHIN a process. It is NOT sufficient on its
+// own: the daemon and the tray (and a stray second daemon) each compile
+// meridian-oauth and hold independent mutex instances, so two processes could
+// both read the same expired token, both POST to Atlassian, and the second POST
+// 401 because the first already rotated and consumed the refresh token. The
+// cross-process half of the fix lives in ensure_fresh(), which takes an advisory
+// FILE lock (`store::lock_provider`) and re-checks expiry under it; this mutex
+// stays as the cheap intra-process first gate so threads don't even reach the
+// file lock concurrently.
 fn refresh_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -237,14 +238,46 @@ pub async fn login(client_id: &str, client_secret: &str, port: u16) -> Result<St
 
 /// Load the stored tokens, refreshing the access token if it's within 120 s of
 /// expiry. Persists the rotated refresh token. Returns ready-to-use tokens.
-/// Serializes concurrent refresh requests via a static mutex to avoid
-/// double-refreshing and losing the rotated refresh token.
+///
+/// Refreshes are serialised on TWO levels so the rotating refresh token is never
+/// double-spent: a static mutex within this process, and an advisory FILE lock
+/// ([`store::lock_provider`]) across every Meridian process. After taking the file
+/// lock it RE-LOADS and re-checks expiry — so a process that waited on the lock
+/// adopts the peer's freshly-refreshed token instead of POSTing again with the
+/// now-consumed one (the old single-process-mutex behaviour caused that 401 loop).
 pub async fn ensure_fresh() -> Result<OAuthTokens> {
-    let _guard = refresh_lock().lock().await;
-    let mut t = store::load("jira")?;
+    let _guard = refresh_lock().lock().await; // intra-process serialisation
+
+    // Fast path: a still-fresh token needs neither a refresh nor the file lock.
+    let t = store::load("jira")?;
     if !t.is_expired(now_unix(), 120) {
         return Ok(t);
     }
+
+    // Slow path: enter the cross-process critical section. A peer (a second daemon,
+    // the tray's in-process refresh) may be rotating the SAME refresh token right
+    // now. Best-effort — if the lock can't be taken we log and proceed rather than
+    // turn the lock itself into a new way for Jira auth to fail.
+    let _flock = match store::lock_provider("jira").await {
+        Ok(g) => Some(g),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "could not acquire OAuth refresh lock — proceeding without cross-process serialisation"
+            );
+            None
+        }
+    };
+
+    // Re-load UNDER the lock and re-check: if a peer refreshed while we waited,
+    // adopt their token instead of refreshing again with the dead one. This
+    // double-check is what actually breaks the race.
+    let mut t = store::load("jira")?;
+    if !t.is_expired(now_unix(), 120) {
+        tracing::debug!("jira token already refreshed by another process — adopting it");
+        return Ok(t);
+    }
+
     tracing::debug!("jira OAuth access token expired — refreshing");
     let resp = flow::refresh(&t.client_id, &spec(), &t.refresh_token)
         .await
