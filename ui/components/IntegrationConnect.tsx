@@ -351,7 +351,7 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
       const json = await mutate<{ orgs?: string[] }>('/api/integrations/azure-devops/discover', 'discover_azure_devops', { pat: pat.trim() })
       setOrgs(json.orgs ?? [])
       if ((json.orgs ?? []).length === 1) { setSelectedOrg(json.orgs![0]); lookupProjects(json.orgs![0]) }
-    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to fetch organisations') }
+    } catch (e) { setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Failed to fetch organisations') }
     finally { setLoading(null) }
   }
 
@@ -362,7 +362,7 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
       const json = await mutate<{ projects?: string[] }>('/api/integrations/azure-devops/discover', 'discover_azure_devops', { pat: pat.trim(), org })
       setProjects(json.projects ?? [])
       if ((json.projects ?? []).length === 1) setSelectedProject(json.projects![0])
-    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to fetch projects') }
+    } catch (e) { setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Failed to fetch projects') }
     finally { setLoading(null) }
   }
 
@@ -377,7 +377,7 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
         fields: { url: `https://dev.azure.com/${selectedOrg}/${selectedProject}`, pat: pat.trim() },
       })
       setDone(true); clearProviderNotice('azure_devops'); onSuccess?.()
-    } catch (e) { setError(e instanceof Error ? e.message : 'Could not save credentials') }
+    } catch (e) { setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not save credentials') }
     finally { setLoading(null) }
   }
 
