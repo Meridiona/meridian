@@ -127,7 +127,8 @@ function FixRow({ issue, index, task, onApplied }: { issue: HygieneIssue; index:
         if (url) window.open(url, '_blank', 'noopener')
       }
     } catch (e) {
-      setState('error'); setTerminalPending(null); setMsg(e instanceof Error ? e.message : 'Network error')
+      // Tauri rejects with a plain string, not an Error object — handle both.
+      setState('error'); setTerminalPending(null); setMsg(e instanceof Error ? e.message : typeof e === 'string' ? e : 'Network error')
     }
   }
 

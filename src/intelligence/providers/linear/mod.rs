@@ -67,6 +67,8 @@ struct LinearIssue {
     labels: Option<LabelConnection>,
     #[serde(default)]
     cycle: Option<Cycle>,
+    #[serde(default)]
+    project: Option<Project>,
 }
 
 #[derive(Deserialize)]
@@ -108,6 +110,11 @@ struct LabelNode {
 
 #[derive(Deserialize)]
 struct Cycle {
+    name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Project {
     name: Option<String>,
 }
 
@@ -159,6 +166,7 @@ async fn fetch(linear: &LinearConfig) -> Result<Vec<LinearIssue>> {
            state {{ name type }} team {{ id key }} \
            parent {{ identifier title }} assignee {{ name }} \
            dueDate startedAt labels {{ nodes {{ name }} }} cycle {{ name }} \
+           project {{ name }} \
          }} }} }} }}"
     );
     let body = serde_json::json!({ "query": query });
@@ -219,16 +227,33 @@ async fn upsert(
             .as_ref()
             .map(|t| t.key.clone())
             .unwrap_or_default();
-        let (parent_key, epic_title) = issue
-            .parent
+        // parent.identifier → parent_key (stable grouping key).
+        // epic_title: prefer the parent's title; fall back to the Linear project
+        // name so tasks inside a project group correctly even without a parent
+        // issue hierarchy. When the project is used as the grouping anchor,
+        // parent_key is set to "project:<name>" so each project forms its own
+        // group in the tasks view (not collapsed into one "__none__" bucket).
+        let project_name: Option<String> = issue
+            .project
             .as_ref()
-            .map(|p| {
-                (
-                    Some(p.identifier.as_str()),
-                    p.title.clone().unwrap_or_default(),
-                )
-            })
-            .unwrap_or((None, String::new()));
+            .and_then(|pr| pr.name.clone())
+            .filter(|s| !s.is_empty());
+        let (parent_key, epic_title): (Option<&str>, String) = match issue.parent.as_ref() {
+            Some(p) => (
+                Some(p.identifier.as_str()),
+                p.title.clone().unwrap_or_default(),
+            ),
+            None => match &project_name {
+                Some(name) => (None, name.clone()),
+                None => (None, String::new()),
+            },
+        };
+        // Stable grouping key: parent identifier beats project prefix.
+        let epic_key_override: Option<String> = if parent_key.is_none() {
+            project_name.as_ref().map(|n| format!("project:{n}"))
+        } else {
+            None
+        };
         let assignee = issue.assignee.as_ref().and_then(|a| a.name.clone());
         let tags: Option<String> = issue.labels.as_ref().map(|lc| {
             lc.nodes
@@ -277,7 +302,9 @@ async fn upsert(
         .bind(status.is_terminal)
         .bind(&project_key)
         .bind(&url)
-        .bind(parent_key)
+        // Use the real parent_key when present; otherwise use the project prefix
+        // so the UI groups project-scoped issues together (not into __none__).
+        .bind(parent_key.or(epic_key_override.as_deref()))
         .bind(if epic_title.is_empty() {
             None
         } else {
