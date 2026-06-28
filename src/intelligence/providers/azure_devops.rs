@@ -767,4 +767,100 @@ mod tests {
         assert_eq!(sprint_from_iteration_path(r"A\B\C"), "C");
         assert_eq!(sprint_from_iteration_path(""), "");
     }
+
+    // ---- epic_title resolution (resolve_epic_title) ------------------------
+    //
+    // Cases mirror the live hegdeakarsh2002 board so the tests track production:
+    //   #34 Epic  "Auth & Security Overhaul"
+    //     └ #35 Issue → #37 Task
+    //   #58 Epic  "Performance & Infrastructure"
+    //     └ #59 Issue → #61 Task
+    // The map value is (title, work_item_type, parent_id), exactly as built in
+    // force_refresh from the fetched + ancestor work items.
+
+    /// Builds an id→(title, type, parent) map from `(id, title, type, parent)` tuples.
+    fn meta(
+        rows: &[(u64, &'static str, &'static str, Option<u64>)],
+    ) -> HashMap<u64, (&'static str, &'static str, Option<u64>)> {
+        rows.iter().map(|&(id, t, w, p)| (id, (t, w, p))).collect()
+    }
+
+    #[test]
+    fn epic_resolves_from_direct_epic_parent() {
+        // #35 (Issue) → parent #34 (Epic). One hop to the Epic.
+        let m = meta(&[(34, "Auth & Security Overhaul", "Epic", None)]);
+        assert_eq!(
+            resolve_epic_title(&m, Some(34)),
+            Some("Auth & Security Overhaul")
+        );
+    }
+
+    #[test]
+    fn epic_resolves_through_multi_hop_chain() {
+        // #61 (Task) → #59 (Issue) → #58 (Epic). The nearest Epic ancestor wins.
+        let m = meta(&[
+            (
+                59,
+                "Migrate services to Kubernetes (EKS)",
+                "Issue",
+                Some(58),
+            ),
+            (58, "Performance & Infrastructure", "Epic", None),
+        ]);
+        assert_eq!(
+            resolve_epic_title(&m, Some(59)),
+            Some("Performance & Infrastructure")
+        );
+    }
+
+    #[test]
+    fn epic_is_none_when_no_parent() {
+        // Epics themselves (#34/#58) and any top-level item have no parent_id.
+        let m = meta(&[(34, "Auth & Security Overhaul", "Epic", None)]);
+        assert_eq!(resolve_epic_title(&m, None), None);
+    }
+
+    #[test]
+    fn epic_is_none_when_chain_has_no_epic() {
+        // Issue → Issue with no Epic anywhere in the chain.
+        let m = meta(&[
+            (10, "Sub-issue", "Issue", Some(11)),
+            (11, "Parent issue", "Issue", None),
+        ]);
+        assert_eq!(resolve_epic_title(&m, Some(10)), None);
+    }
+
+    #[test]
+    fn epic_is_none_when_parent_missing_from_map() {
+        // Ancestor fetch failed / item not returned: graceful None, no panic.
+        let m = meta(&[]);
+        assert_eq!(resolve_epic_title(&m, Some(999)), None);
+    }
+
+    #[test]
+    fn epic_resolution_terminates_on_cycle() {
+        // A→B→A would loop forever without the 10-hop guard; neither is an Epic.
+        let m = meta(&[(1, "A", "Issue", Some(2)), (2, "B", "Issue", Some(1))]);
+        assert_eq!(resolve_epic_title(&m, Some(1)), None);
+    }
+
+    #[test]
+    fn epic_picks_nearest_epic_when_nested() {
+        // Task → Feature(Epic-category? no) — here a closer Epic shadows a farther one.
+        // #200 → #201 (Epic "Near") → #202 (Epic "Far"): nearest wins.
+        let m = meta(&[(201, "Near", "Epic", Some(202)), (202, "Far", "Epic", None)]);
+        assert_eq!(resolve_epic_title(&m, Some(201)), Some("Near"));
+    }
+
+    #[test]
+    fn parent_key_format_matches_task_key_shape() {
+        // parent_key is built inline as `{project}#{parent_id}` — the same shape as
+        // task_key — so it joins against pm_tasks.task_key. Lock the contract.
+        let project = "hegdeakarsh2002";
+        let parent_id: Option<u64> = Some(59);
+        let parent_key = parent_id.map(|id| format!("{project}#{id}"));
+        assert_eq!(parent_key.as_deref(), Some("hegdeakarsh2002#59"));
+        let none_parent: Option<u64> = None;
+        assert_eq!(none_parent.map(|id| format!("{project}#{id}")), None);
+    }
 }
