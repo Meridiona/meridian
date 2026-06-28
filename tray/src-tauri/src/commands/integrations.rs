@@ -401,10 +401,15 @@ pub async fn save_integration_token(body: SaveTokenBody) -> Result<serde_json::V
     let key_count = updates.len();
     {
         let mode = crate::install::detect_install_mode();
-        let env_path = mode
-            .env_path()
-            .ok_or("could not resolve .env path")?
-            .to_owned();
+        // On a fresh `.app` install no `.env` exists yet, so `detect_install_mode`
+        // returns `Bare` (no path). Credentials must be saveable before any `.env`
+        // exists — default to the canonical `~/.meridian/.env`, which `upsert_env`
+        // creates (parent dir + file). Dev/Canonical modes keep their resolved path.
+        let env_path = match mode.env_path() {
+            Some(p) => p.to_owned(),
+            None => crate::install::canonical_env_path()
+                .ok_or("could not resolve home directory for .env")?,
+        };
         tokio::task::spawn_blocking(move || upsert_env(&env_path, &updates))
             .await
             .map_err(|e| format!("spawn_blocking panicked: {e}"))?
