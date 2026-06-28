@@ -87,20 +87,22 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
 /** One provisioning sub-step (engine install / model download). The leading
  *  glyph updates live as the phase advances: hollow ○ (pending) → spinner
  *  (active) → ✓ (done), so the two steps visibly tick off in sequence. */
-type StepState = 'pending' | 'active' | 'done'
+type StepState = 'pending' | 'active' | 'done' | 'error'
 function ProvisionStep({ state, label }: { state: StepState; label: string }) {
   return (
     <div className="flex items-center" style={{ gap: 10 }}>
       <span className="flex items-center justify-center shrink-0" style={{ width: 20, height: 20 }}>
         {state === 'done'
           ? <Check size={16} color="var(--success)" w={2.2} />
-          : state === 'active'
-            ? <Spinner size={15} width={2} />
-            : <span style={{ width: 12, height: 12, borderRadius: 99, border: '1.5px solid var(--rule-2)' }} />}
+          : state === 'error'
+            ? <span style={{ width: 12, height: 12, borderRadius: 99, background: 'var(--warn)' }} />
+            : state === 'active'
+              ? <Spinner size={15} width={2} />
+              : <span style={{ width: 12, height: 12, borderRadius: 99, border: '1.5px solid var(--rule-2)' }} />}
       </span>
       <span style={{
         fontSize: 12.5,
-        color: state === 'pending' ? 'var(--ink-3)' : 'var(--ink)',
+        color: state === 'pending' ? 'var(--ink-3)' : state === 'error' ? 'var(--warn)' : 'var(--ink)',
         fontWeight: state === 'done' ? 500 : 400,
       }}>{label}</span>
     </div>
@@ -126,6 +128,10 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
     ? Math.min(100, Math.round((wiz.progress.received / wiz.progress.total) * 100)) : null
   const showErr = (!!wiz.err && !wiz.modelReady) || unavailable
   const working = !wiz.modelReady && !showErr
+  const installStepState: StepState =
+    runtimeInstalled ? 'done' : wiz.downloading ? 'active' : wiz.err ? 'error' : 'pending'
+  const modelStepState: StepState =
+    wiz.modelReady ? 'done' : wiz.prefetching ? 'active' : runtimeInstalled && !!wiz.err ? 'error' : 'pending'
 
   return (
     <div className="flex flex-col items-center justify-center" style={{ minHeight: 300, textAlign: 'center', padding: '8px 8px 4px' }}>
@@ -166,12 +172,8 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
           when the runtime can't be provisioned at all (nothing to track). */}
       {!unavailable && (
         <div className="flex flex-col" style={{ gap: 10, width: 250, margin: working ? '16px 0 2px' : '12px 0 2px', textAlign: 'left' }}>
-          <ProvisionStep
-            state={runtimeInstalled ? 'done' : wiz.downloading ? 'active' : 'pending'}
-            label="Install on-device engine" />
-          <ProvisionStep
-            state={wiz.modelReady ? 'done' : wiz.prefetching ? 'active' : 'pending'}
-            label="Download private models" />
+          <ProvisionStep state={installStepState} label="Install on-device engine" />
+          <ProvisionStep state={modelStepState} label="Download private models" />
         </div>
       )}
 

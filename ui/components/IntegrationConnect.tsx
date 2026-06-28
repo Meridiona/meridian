@@ -353,7 +353,11 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
       const json = await mutate<{ orgs?: string[] }>('/api/integrations/azure-devops/discover', 'discover_azure_devops', { pat: pat.trim() })
       setOrgs(json.orgs ?? [])
       if ((json.orgs ?? []).length === 1) { setSelectedOrg(json.orgs![0]); lookupProjects(json.orgs![0]) }
-    } catch (e) { setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Failed to fetch organisations'); setShowManualOrg(true) }
+    } catch (e) {
+      const message = typeof e === 'string' ? e : e instanceof Error ? e.message : 'Failed to fetch organisations'
+      setError(message)
+      setShowManualOrg(message.includes('enter your org name manually below'))
+    }
     finally { setLoading(null) }
   }
 
