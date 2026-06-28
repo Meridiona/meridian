@@ -84,6 +84,9 @@ struct WorkItemFields {
     team_project: Option<String>,
     #[serde(rename = "System.AssignedTo", default)]
     assigned_to: Option<AzureIdentity>,
+    /// Direct parent work item ID (set by the hierarchy relation).
+    #[serde(rename = "System.Parent", default)]
+    parent_id: Option<u64>,
     /// Start date — present on all process types (Scheduling namespace).
     #[serde(rename = "Microsoft.VSTS.Scheduling.StartDate", default)]
     start_date: Option<String>,
@@ -241,7 +244,7 @@ async fn fetch_batch(
         "{}/{}/_apis/wit/workitems?ids={}&\
          fields=System.Id,System.Title,System.WorkItemType,System.State,\
          System.ChangedDate,System.Description,System.Tags,System.IterationPath,\
-         System.TeamProject,System.AssignedTo,\
+         System.TeamProject,System.AssignedTo,System.Parent,\
          Microsoft.VSTS.Common.AcceptanceCriteria,\
          Microsoft.VSTS.TCM.ReproSteps,\
          Microsoft.VSTS.Scheduling.StartDate,\
@@ -367,6 +370,54 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         details.extend(batch);
     }
 
+    // 2b. Fetch ancestor items (parents not already in the WIQL set) so we can
+    //     resolve epic_title without a DB traversal. These are never upserted into
+    //     pm_tasks — they only populate the in-memory lookup used by resolve_epic_title.
+    let mut fetched_set: std::collections::HashSet<u64> = details.iter().map(|d| d.id).collect();
+    let mut ancestor_details: Vec<WorkItemDetail> = Vec::new();
+    let mut parents_needed: std::collections::HashSet<u64> = details
+        .iter()
+        .filter_map(|d| d.fields.parent_id)
+        .filter(|pid| !fetched_set.contains(pid))
+        .collect();
+    for _ in 0..4 {
+        if parents_needed.is_empty() {
+            break;
+        }
+        let ids_to_fetch: Vec<u64> = parents_needed.drain().collect();
+        match fetch_batch(&client, cfg, &ids_to_fetch).await {
+            Ok(batch) => {
+                let next: std::collections::HashSet<u64> = batch
+                    .iter()
+                    .filter_map(|d| d.fields.parent_id)
+                    .filter(|pid| !fetched_set.contains(pid))
+                    .collect();
+                fetched_set.extend(ids_to_fetch);
+                ancestor_details.extend(batch);
+                parents_needed = next;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "could not fetch ADO ancestor items — epic_title may be incomplete");
+                break;
+            }
+        }
+    }
+    // Build id → (title, work_item_type, parent_id) from all fetched items.
+    let id_meta: HashMap<u64, (&str, &str, Option<u64>)> = details
+        .iter()
+        .chain(ancestor_details.iter())
+        .map(|d| {
+            (
+                d.id,
+                (
+                    d.fields.title.as_str(),
+                    d.fields.work_item_type.as_str(),
+                    d.fields.parent_id,
+                ),
+            )
+        })
+        .collect();
+
     // 3. Per-type state→category maps (fetched once per type per sync).
     let mut type_states: HashMap<String, HashMap<String, String>> = HashMap::new();
     for item in &details {
@@ -455,13 +506,15 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         );
         let project_key = f.team_project.as_deref();
         let assignee_name = f.assigned_to.as_ref().map(|a| a.display_name.as_str());
+        let parent_key: Option<String> = f.parent_id.map(|id| format!("{}#{}", cfg.project, id));
+        let epic_title: Option<&str> = resolve_epic_title(&id_meta, f.parent_id);
 
         sqlx::query(
             "INSERT INTO pm_tasks
                (task_key, provider, title, description_text, status_raw, is_terminal,
                 issue_type, project_key, url, updated_at, sprint_name, tags,
-                assignee_name, start_date, due_date)
-             VALUES (?, 'azure_devops', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                assignee_name, start_date, due_date, parent_key, epic_title)
+             VALUES (?, 'azure_devops', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(task_key) DO UPDATE SET
                provider         = 'azure_devops',
                title            = excluded.title,
@@ -476,7 +529,9 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
                tags             = excluded.tags,
                assignee_name    = excluded.assignee_name,
                start_date       = excluded.start_date,
-               due_date         = excluded.due_date",
+               due_date         = excluded.due_date,
+               parent_key       = excluded.parent_key,
+               epic_title       = excluded.epic_title",
         )
         .bind(&task_key)
         .bind(&f.title)
@@ -492,6 +547,8 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         .bind(assignee_name)
         .bind(f.start_date.as_deref())
         .bind(f.target_date.as_deref())
+        .bind(parent_key.as_deref())
+        .bind(epic_title)
         .execute(pool)
         .await
         .with_context(|| format!("upserting Azure DevOps work item {}", u.detail.id))?;
@@ -509,6 +566,29 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         "azure_devops tasks refreshed"
     );
     Ok(kept)
+}
+
+// ---------------------------------------------------------------------------
+// Epic resolution
+// ---------------------------------------------------------------------------
+
+/// Walk the parent chain from `parent_id` and return the title of the nearest
+/// ancestor whose `work_item_type == "Epic"`. Returns `None` when `parent_id`
+/// is `None`, when no Epic is found in the chain, or when the chain exceeds 10
+/// hops (cycle guard).
+fn resolve_epic_title<'a>(
+    id_meta: &'a HashMap<u64, (&'a str, &'a str, Option<u64>)>,
+    parent_id: Option<u64>,
+) -> Option<&'a str> {
+    let mut current = parent_id?;
+    for _ in 0..10 {
+        let (title, wit, pid) = id_meta.get(&current)?;
+        if *wit == "Epic" {
+            return Some(title);
+        }
+        current = (*pid)?;
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------

@@ -28,7 +28,10 @@ pub use meridian_oauth::jira::*;
 /// env-var-first) and lets developers use a stable PAT in .env without being
 /// blocked by a stale OAuth session stored in ~/.meridian/oauth/jira.json.
 pub async fn resolve(jira: &JiraConfig) -> Result<JiraReqCtx> {
-    if !jira.base_url.is_empty() && !jira.email.is_empty() && !jira.api_token.is_empty() {
+    if !jira.base_url.trim().is_empty()
+        && !jira.email.trim().is_empty()
+        && !jira.api_token.trim().is_empty()
+    {
         tracing::debug!(auth_method = "api_token", "resolving Jira auth");
         return Ok(JiraReqCtx::Basic {
             base_url: jira.base_url.clone(),
@@ -106,6 +109,33 @@ mod tests {
         assert!(
             result.is_err() || matches!(result.as_ref().unwrap(), JiraReqCtx::OAuth { .. }),
             "expected error or OAuth, not Basic auth with empty base_url"
+        );
+    }
+
+    #[tokio::test]
+    async fn whitespace_api_token_does_not_use_basic_auth() {
+        let result = resolve(&cfg("https://acme.atlassian.net", "user@acme.com", "   ")).await;
+        assert!(
+            result.is_err() || matches!(result.as_ref().unwrap(), JiraReqCtx::OAuth { .. }),
+            "expected error or OAuth, not Basic auth with whitespace-only api_token"
+        );
+    }
+
+    #[tokio::test]
+    async fn whitespace_email_does_not_use_basic_auth() {
+        let result = resolve(&cfg("https://acme.atlassian.net", "   ", "tok")).await;
+        assert!(
+            result.is_err() || matches!(result.as_ref().unwrap(), JiraReqCtx::OAuth { .. }),
+            "expected error or OAuth, not Basic auth with whitespace-only email"
+        );
+    }
+
+    #[tokio::test]
+    async fn whitespace_base_url_does_not_use_basic_auth() {
+        let result = resolve(&cfg("   ", "user@acme.com", "tok")).await;
+        assert!(
+            result.is_err() || matches!(result.as_ref().unwrap(), JiraReqCtx::OAuth { .. }),
+            "expected error or OAuth, not Basic auth with whitespace-only base_url"
         );
     }
 }

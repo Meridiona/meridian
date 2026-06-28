@@ -39,6 +39,12 @@ export default function CleanupView() {
 
   useEffect(() => { load() }, [load])
 
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === 'visible') load() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [load])
+
   // Apply optimistic ignores/dismissals on top of server data.
   const visibleIssues = useCallback((t: TaskSummary): HygieneIssue[] => {
     const ig = ignored[t.key]

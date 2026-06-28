@@ -130,10 +130,16 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
   // Derive the set of providers actually present in the active task list.
   const presentProviders = Array.from(new Set(activeTasks.map(t => t.provider))).sort()
   const showProviderTabs = presentProviders.length > 1
+  // If the selected provider was disconnected, fall back to 'all' so the list
+  // never goes blank while the tabs are hidden.
+  const effectiveProviderFilter =
+    providerFilter === 'all' || presentProviders.includes(providerFilter)
+      ? providerFilter
+      : 'all'
 
-  const visibleTasks = providerFilter === 'all'
+  const visibleTasks = effectiveProviderFilter === 'all'
     ? activeTasks
-    : activeTasks.filter(t => t.provider === providerFilter)
+    : activeTasks.filter(t => t.provider === effectiveProviderFilter)
 
   // activeTasks is non-empty here (empty case returned above), so visibleTasks[0]
   // is always defined unless the active provider filter matches nothing.
@@ -181,9 +187,9 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
         <>
           {showProviderTabs && (
             <div className="flex items-center gap-1">
-              <ProviderTab id="all" active={providerFilter === 'all'} onClick={() => setProviderFilter('all')} />
+              <ProviderTab id="all" active={effectiveProviderFilter === 'all'} onClick={() => setProviderFilter('all')} />
               {presentProviders.map(p => (
-                <ProviderTab key={p} id={p} active={providerFilter === p} onClick={() => setProviderFilter(p)} />
+                <ProviderTab key={p} id={p} active={effectiveProviderFilter === p} onClick={() => setProviderFilter(p)} />
               ))}
             </div>
           )}

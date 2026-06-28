@@ -143,8 +143,6 @@ export const TRACKER_BY_ID: Record<TrackerId, Tracker> = Object.fromEntries(
   TRACKERS.map((t) => [t.id, t]),
 ) as Record<TrackerId, Tracker>
 
-const TRACKER_IDS = TRACKERS.map(t => t.id)
-
 /**
  * Filter a task list to only include tasks whose provider is currently
  * connected. Returns the full list unchanged while integrations is still
