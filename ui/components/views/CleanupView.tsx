@@ -5,8 +5,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { TaskKey, ProviderGlyph, Card, SectionHead } from '@/components/atoms'
 import HygieneDialog from '@/components/HygieneDialog'
 import { hasMustFix, type HygieneIssue } from '@/lib/hygiene'
-import type { TaskSummary, TasksResponse } from '@/lib/api-types'
+import type { TaskSummary, TasksResponse, IntegrationsResponse } from '@/lib/api-types'
 import { load as loadData, mutate } from '@/lib/bridge'
+import { filterByConnectedProviders } from '@/lib/integrations'
 
 // Severity → dot + tone. Warm editorial palette: warn (amber) is the alert.
 const TONE = {
@@ -17,6 +18,7 @@ const TONE = {
 
 export default function CleanupView() {
   const [tasks, setTasks] = useState<TaskSummary[]>([])
+  const [integrations, setIntegrations] = useState<IntegrationsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [fixTask, setFixTask] = useState<TaskSummary | null>(null)
   // Optimistic local removals so actions feel instant.
@@ -27,6 +29,12 @@ export default function CleanupView() {
     loadData<TasksResponse>('/api/tasks', 'get_tasks')
       .then((res) => { setTasks(res.tasks ?? []); setLoading(false) })
       .catch(() => setLoading(false))
+  }, [])
+
+  useEffect(() => {
+    loadData<IntegrationsResponse>('/api/integrations', 'get_integrations')
+      .then(setIntegrations)
+      .catch(() => {})
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -74,7 +82,8 @@ export default function CleanupView() {
   const keep = useCallback((taskKey: string) => decide(taskKey, { decision: 'keep' }), [decide])
 
   const groups = useMemo(() => {
-    const live = tasks.filter(t => t.hygiene && !dismissed.has(t.key))
+    const live = filterByConnectedProviders(tasks, integrations)
+      .filter(t => t.hygiene && !dismissed.has(t.key))
     const must: TaskSummary[] = []
     const nice: TaskSummary[] = []
     const review: TaskSummary[] = []
@@ -85,11 +94,13 @@ export default function CleanupView() {
       else if (t.hygiene!.bucket === 'looks_stale' || t.hygiene!.bucket === 'not_sure') review.push(t)
     }
     return { must, nice, review }
-  }, [tasks, dismissed, visibleIssues])
+  }, [tasks, integrations, dismissed, visibleIssues])
 
   if (loading) return <div className="p-10 text-sm" style={{ color: 'var(--ink-3)' }}>Reading your board…</div>
 
-  const total = tasks.length
+  // Exclude dismissed tasks so Board Score isn't inflated by "Keep / Later"
+  // deferrals — dismissed tasks leave the groups but must leave total too.
+  const total = filterByConnectedProviders(tasks, integrations).filter(t => !dismissed.has(t.key)).length
   const ready = total - (groups.must.length + groups.nice.length + groups.review.length)
   const attention = groups.must.length + groups.nice.length + groups.review.length
   const healthPct = total > 0 ? Math.round((ready / total) * 100) : 100

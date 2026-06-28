@@ -18,6 +18,16 @@ mod backend_install;
 #[cfg(feature = "capture")]
 mod capture;
 mod commands;
+
+/// Lowercase product name as macOS reports it after [`set_process_display_name`].
+/// The capture engine uses this to skip self-capture — keep it in sync with the
+/// literal passed to that function.
+#[cfg(feature = "capture")]
+pub(crate) const SELF_PRODUCT_NAME_LOWER: &str = "meridian";
+
+/// Binary name Cargo embeds (dev / ad-hoc builds, before the display name is set).
+#[cfg(feature = "capture")]
+pub(crate) const SELF_BINARY_NAME: &str = "meridian-tray";
 pub(crate) mod format;
 mod install;
 pub(crate) mod mlx_server;
@@ -83,6 +93,12 @@ pub fn run() {
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            // Dock tooltip, Activity Monitor, and the AX tree all key on the
+            // process name. In dev the binary is "meridian-tray"; production
+            // bundles show "Meridian" from productName — set it explicitly here
+            // so both modes are consistent.
+            #[cfg(target_os = "macos")]
+            set_process_display_name("Meridian");
 
             // Request OS notification authorization up front. Without this,
             // `.show()` is a silent no-op on macOS until the app has prompted at
@@ -755,4 +771,35 @@ fn install_click_outside_monitor(win: tauri::WebviewWindow) {
         ];
         tracing::info!("install_click_outside_monitor: global NSEvent monitor installed");
     }
+}
+
+/// Set the macOS process display name used by the dock, Activity Monitor, and
+/// the AX tree. Must be called early in the setup hook — before the first
+/// window is shown — so that every subsequent AX snapshot already sees the
+/// corrected name. Without this, `tauri dev` shows "meridian-tray" (the Cargo
+/// binary name); production `.app` bundles already use `productName = "Meridian"`
+/// from `tauri.conf.json`, but setting it here makes both modes identical.
+#[cfg(target_os = "macos")]
+fn set_process_display_name(name: &str) {
+    use objc2::{class, msg_send, runtime::AnyObject};
+    use std::ffi::CString;
+
+    let Ok(c_name) = CString::new(name) else {
+        return;
+    };
+    // Safety: NSProcessInfo is a process-lifetime singleton; setProcessName:
+    // copies the NSString immediately. Called once on the main thread (setup hook).
+    unsafe {
+        let ns_name: *const AnyObject =
+            msg_send![class!(NSString), stringWithUTF8String: c_name.as_ptr()];
+        if ns_name.is_null() {
+            return;
+        }
+        let info: *const AnyObject = msg_send![class!(NSProcessInfo), processInfo];
+        if info.is_null() {
+            return;
+        }
+        let _: () = msg_send![&*info, setProcessName: ns_name];
+    }
+    tracing::debug!(name, "set_process_display_name: applied");
 }

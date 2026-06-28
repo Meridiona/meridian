@@ -1,4 +1,5 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+import type { IntegrationsResponse } from './api-types'
 
 // Single source of truth for the PM tracker integrations — metadata + connect
 // method descriptors. Consumed by BOTH the dashboard (TasksView) and the
@@ -141,3 +142,22 @@ export const TRACKERS: Tracker[] = [
 export const TRACKER_BY_ID: Record<TrackerId, Tracker> = Object.fromEntries(
   TRACKERS.map((t) => [t.id, t]),
 ) as Record<TrackerId, Tracker>
+
+const TRACKER_IDS = TRACKERS.map(t => t.id)
+
+/**
+ * Filter a task list to only include tasks whose provider is currently
+ * connected. Returns the full list unchanged while integrations is still
+ * loading (null), so callers see no flash of empty state.
+ */
+export function filterByConnectedProviders<T extends { provider: string }>(
+  tasks: T[],
+  integrations: IntegrationsResponse | null,
+): T[] {
+  if (!integrations) return tasks
+  // Cast to a plain map so future/unknown providers pass through rather than
+  // being silently dropped. TRACKER_IDS guards only the known five — any string
+  // outside that set would resolve false here even if the backend says connected.
+  const int = integrations as unknown as Record<string, boolean>
+  return tasks.filter(t => !(t.provider in int) || int[t.provider])
+}
