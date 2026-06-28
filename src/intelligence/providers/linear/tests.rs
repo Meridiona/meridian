@@ -1,5 +1,6 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 
+use anyhow::{Context, Result};
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::SqlitePool;
 use std::str::FromStr;
@@ -12,13 +13,18 @@ use super::*;
 // Shared test helpers
 // ---------------------------------------------------------------------------
 
-async fn make_pool() -> SqlitePool {
+async fn make_pool() -> Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str("sqlite::memory:")
-        .unwrap()
+        .context("parse in-memory sqlite DSN")?
         .create_if_missing(true);
-    let pool = SqlitePool::connect_with(opts).await.unwrap();
-    sqlx::migrate!("src/migrations").run(&pool).await.unwrap();
-    pool
+    let pool = SqlitePool::connect_with(opts)
+        .await
+        .context("open in-memory sqlite pool")?;
+    sqlx::migrate!("src/migrations")
+        .run(&pool)
+        .await
+        .context("run linear test migrations")?;
+    Ok(pool)
 }
 
 fn make_issue(identifier: &str, state_type: &str) -> LinearIssue {
@@ -173,41 +179,45 @@ fn parses_labels_and_cycle() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn upsert_writes_basic_row() {
-    let pool = make_pool().await;
+async fn upsert_writes_basic_row() -> Result<()> {
+    let pool = make_pool().await?;
     let issue = make_issue("ENG-1", "started");
-    let kept = upsert(&pool, &[issue], &linear_cfg(&[])).await.unwrap();
+    let kept = upsert(&pool, &[issue], &linear_cfg(&[]))
+        .await
+        .context("upsert linear task")?;
     assert_eq!(kept, ["ENG-1"]);
     let (title, provider): (String, String) =
         sqlx::query_as("SELECT title, provider FROM pm_tasks WHERE task_key = 'ENG-1'")
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .context("fetch persisted linear task")?;
     assert_eq!(title, "Issue ENG-1");
     assert_eq!(provider, "linear");
+    Ok(())
 }
 
 #[tokio::test]
-async fn upsert_done_canceled_excluded() {
+async fn upsert_done_canceled_excluded() -> Result<()> {
     // Regression: completed/canceled issues must NOT land in pm_tasks.
-    let pool = make_pool().await;
+    let pool = make_pool().await?;
     let done = make_issue("ENG-2", "completed");
     let canceled = make_issue("ENG-3", "canceled");
     let kept = upsert(&pool, &[done, canceled], &linear_cfg(&[]))
         .await
-        .unwrap();
+        .context("upsert done/canceled")?;
     assert!(kept.is_empty(), "completed/canceled should be excluded");
     let (count,): (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM pm_tasks WHERE provider = 'linear'")
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .context("count linear tasks after exclusion")?;
     assert_eq!(count, 0);
+    Ok(())
 }
 
 #[tokio::test]
-async fn upsert_skips_team_filtered_issues() {
-    let pool = make_pool().await;
+async fn upsert_skips_team_filtered_issues() -> Result<()> {
+    let pool = make_pool().await?;
     let mut outside = make_issue("ENG-4", "started");
     outside.team = Some(Team {
         id: "other-uuid".into(),
@@ -215,38 +225,42 @@ async fn upsert_skips_team_filtered_issues() {
     });
     let kept = upsert(&pool, &[outside], &linear_cfg(&["ALLOWED"]))
         .await
-        .unwrap();
+        .context("upsert team-filtered issue")?;
     assert!(kept.is_empty());
     let (count,): (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM pm_tasks WHERE provider = 'linear'")
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .context("count linear tasks after team filter")?;
     assert_eq!(count, 0);
+    Ok(())
 }
 
 #[tokio::test]
-async fn upsert_maps_parent_to_epic() {
+async fn upsert_maps_parent_to_epic() -> Result<()> {
     // Regression: parent.identifier → parent_key, parent.title → epic_title.
-    let pool = make_pool().await;
+    let pool = make_pool().await?;
     let mut issue = make_issue("ENG-5", "started");
     issue.parent = Some(Parent {
         identifier: "ENG-1".into(),
         title: Some("Big Epic".into()),
     });
-    upsert(&pool, &[issue], &linear_cfg(&[])).await.unwrap();
+    upsert(&pool, &[issue], &linear_cfg(&[]))
+        .await
+        .context("upsert issue with parent")?;
     let (parent_key, epic_title): (Option<String>, Option<String>) =
         sqlx::query_as("SELECT parent_key, epic_title FROM pm_tasks WHERE task_key = 'ENG-5'")
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .context("fetch parent_key/epic_title")?;
     assert_eq!(parent_key.as_deref(), Some("ENG-1"));
     assert_eq!(epic_title.as_deref(), Some("Big Epic"));
+    Ok(())
 }
 
 #[tokio::test]
-async fn upsert_joins_labels_as_tags() {
-    let pool = make_pool().await;
+async fn upsert_joins_labels_as_tags() -> Result<()> {
+    let pool = make_pool().await?;
     let mut issue = make_issue("ENG-6", "started");
     issue.labels = Some(LabelConnection {
         nodes: vec![
@@ -254,74 +268,86 @@ async fn upsert_joins_labels_as_tags() {
             LabelNode { name: "P1".into() },
         ],
     });
-    upsert(&pool, &[issue], &linear_cfg(&[])).await.unwrap();
+    upsert(&pool, &[issue], &linear_cfg(&[]))
+        .await
+        .context("upsert issue with labels")?;
     let (tags,): (Option<String>,) =
         sqlx::query_as("SELECT tags FROM pm_tasks WHERE task_key = 'ENG-6'")
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .context("fetch tags")?;
     assert_eq!(tags.as_deref(), Some("bug, P1"));
+    Ok(())
 }
 
 #[tokio::test]
-async fn upsert_stores_sprint_name() {
-    let pool = make_pool().await;
+async fn upsert_stores_sprint_name() -> Result<()> {
+    let pool = make_pool().await?;
     let mut issue = make_issue("ENG-7", "started");
     issue.cycle = Some(Cycle {
         name: Some("Sprint 7".into()),
     });
-    upsert(&pool, &[issue], &linear_cfg(&[])).await.unwrap();
+    upsert(&pool, &[issue], &linear_cfg(&[]))
+        .await
+        .context("upsert issue with cycle")?;
     let (sprint_name,): (Option<String>,) =
         sqlx::query_as("SELECT sprint_name FROM pm_tasks WHERE task_key = 'ENG-7'")
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .context("fetch sprint_name")?;
     assert_eq!(sprint_name.as_deref(), Some("Sprint 7"));
+    Ok(())
 }
 
 #[tokio::test]
-async fn upsert_idempotent_on_conflict() {
-    let pool = make_pool().await;
+async fn upsert_idempotent_on_conflict() -> Result<()> {
+    let pool = make_pool().await?;
     let cfg = linear_cfg(&[]);
     upsert(&pool, &[make_issue("ENG-8", "started")], &cfg)
         .await
-        .unwrap();
+        .context("first upsert")?;
     let mut updated = make_issue("ENG-8", "started");
     updated.title = "Updated title".into();
-    upsert(&pool, &[updated], &cfg).await.unwrap();
+    upsert(&pool, &[updated], &cfg)
+        .await
+        .context("second upsert")?;
     let (count, title): (i64, String) =
         sqlx::query_as("SELECT COUNT(*), title FROM pm_tasks WHERE task_key = 'ENG-8'")
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .context("fetch conflict row")?;
     assert_eq!(count, 1, "ON CONFLICT must not duplicate the row");
     assert_eq!(title, "Updated title");
+    Ok(())
 }
 
 #[tokio::test]
-async fn prune_removes_stale_linear_tasks() {
-    let pool = make_pool().await;
+async fn prune_removes_stale_linear_tasks() -> Result<()> {
+    let pool = make_pool().await?;
     let cfg = linear_cfg(&[]);
     upsert(&pool, &[make_issue("ENG-10", "started")], &cfg)
         .await
-        .unwrap();
+        .context("upsert ENG-10")?;
     upsert(&pool, &[make_issue("ENG-11", "started")], &cfg)
         .await
-        .unwrap();
+        .context("upsert ENG-11")?;
     // ENG-11 is still live; ENG-10 is stale.
-    let pruned = prune(&pool, &["ENG-11".to_owned()]).await.unwrap();
+    let pruned = prune(&pool, &["ENG-11".to_owned()])
+        .await
+        .context("prune stale tasks")?;
     assert_eq!(pruned, 1);
     let keys: Vec<String> =
         sqlx::query_scalar("SELECT task_key FROM pm_tasks WHERE provider = 'linear'")
             .fetch_all(&pool)
             .await
-            .unwrap();
+            .context("fetch remaining keys")?;
     assert_eq!(keys, ["ENG-11"]);
+    Ok(())
 }
 
 #[tokio::test]
-async fn prune_leaves_other_providers_intact() {
-    let pool = make_pool().await;
+async fn prune_leaves_other_providers_intact() -> Result<()> {
+    let pool = make_pool().await?;
     // Seed a Jira task directly — prune('linear') must not touch it.
     sqlx::query(
         "INSERT INTO pm_tasks (task_key, provider, title, description_text, issue_type,
@@ -330,17 +356,20 @@ async fn prune_leaves_other_providers_intact() {
     )
     .execute(&pool)
     .await
-    .unwrap();
+    .context("seed jira task")?;
     // Also add a linear task, then prune it away.
     upsert(&pool, &[make_issue("ENG-12", "started")], &linear_cfg(&[]))
         .await
-        .unwrap();
+        .context("upsert ENG-12")?;
     // 'ENG-GONE' is not in the DB so ENG-12 gets pruned; JRA-1 must survive.
-    prune(&pool, &["ENG-GONE".to_owned()]).await.unwrap();
+    prune(&pool, &["ENG-GONE".to_owned()])
+        .await
+        .context("prune linear tasks")?;
     let providers: Vec<String> =
         sqlx::query_scalar("SELECT provider FROM pm_tasks ORDER BY provider")
             .fetch_all(&pool)
             .await
-            .unwrap();
+            .context("fetch surviving providers")?;
     assert_eq!(providers, ["jira"]);
+    Ok(())
 }
