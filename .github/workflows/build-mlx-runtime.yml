@@ -28,10 +28,15 @@ name: Build MLX runtime
 # is stamped into the manifest's tarball url at build time so it points at the
 # same channel release.
 #
-# To cut a STAGING runtime release (from the `staging` branch):
+# To cut a STAGING runtime release (tag a commit that has your services/ change):
 #   git tag runtime-staging-v$(grep -m1 '^version' services/pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
 #   git push origin <that tag>
-# Production is the same with a `runtime-v*` tag (once the workflow is on main).
+# Production is the same with a `runtime-v*` tag — this workflow lives on `main`,
+# so production tags publish today (the first `runtime-v*` push CREATES the
+# `runtime-latest` release). The app's version-skip is an EQUALITY check, so the
+# tagged commit's services/pyproject.toml version MUST differ from the currently
+# published runtime or every machine silently keeps the old code. Full playbook:
+# CLAUDE.md → Common Tasks → "Ship a services/ Python change to users".
 
 on:
   workflow_dispatch:
