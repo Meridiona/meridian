@@ -1,3 +1,46 @@
+## [1.67.0](https://github.com/Meridiona/meridian/compare/v1.66.2...v1.67.0) (2026-06-28)
+
+### 🚀 Features
+
+* **azure-devops:** populate parent_key from System.Parent field ([2010d76](https://github.com/Meridiona/meridian/commit/2010d7638113aeb6ecb6b4f2ca4a89d096271ff6))
+* **azure-devops:** resolve epic_title by walking parent chain ([25b9666](https://github.com/Meridiona/meridian/commit/25b9666cee8eb6b054c3df4d4ee3e163d693c128))
+* **setup:** two-step provision checklist + self-check causes on error ([23db097](https://github.com/Meridiona/meridian/commit/23db0978fec3d87bb32948599d01eb85f057425d))
+* **tasks:** add persistent refresh button + Jira OAuth resolve tests ([03bd591](https://github.com/Meridiona/meridian/commit/03bd591ac4f5a65fa2e8592272514beb04619037))
+
+### 🐛 Bug Fixes
+
+* **azure-devops:** address review findings from PR [#354](https://github.com/Meridiona/meridian/issues/354) ([a2e09d8](https://github.com/Meridiona/meridian/commit/a2e09d8acf26fdde5235ff94b48fd5f3feeabbb6))
+* **azure-devops:** surface network errors and add manual org entry fallback ([4675696](https://github.com/Meridiona/meridian/commit/46756963c04f284372af393f44c8e189d8cfa356))
+* **banner:** hide must-fix banner on cleanup page with trailing slash ([585c248](https://github.com/Meridiona/meridian/commit/585c248d3d60995fa7649c48b1095f482ef1fa26))
+* **capture:** skip self-capture and show Meridian as process name ([c893b8f](https://github.com/Meridiona/meridian/commit/c893b8f5a7ed73fd075574eb8a0e108f833a6650))
+* **cleanup:** hide disconnected-provider tasks from cleanup board and must-fix banner ([045e63c](https://github.com/Meridiona/meridian/commit/045e63ca89bb2c4b832fc06d6f2187cf37915e3b))
+* **integrations:** save API tokens on a fresh install (no .env yet) ([4bfbf06](https://github.com/Meridiona/meridian/commit/4bfbf06d5a73e7d196c827d9d07c53fcb925b93e))
+* **integrations:** surface real Azure DevOps error instead of generic fallback ([e495d14](https://github.com/Meridiona/meridian/commit/e495d1478710fa36206cb7b4f4fdf526e6cb9a07))
+* **integrations:** use double cast to satisfy TS strict type check ([a799a5a](https://github.com/Meridiona/meridian/commit/a799a5a5f9062671a6c8611f5d4dc52e095c5b49))
+* **linear/tests:** use anyhow::Result + context in DB integration tests ([1cea960](https://github.com/Meridiona/meridian/commit/1cea960c7647fda3e8041a2f711dd05fea897be4))
+* **oauth:** start connect poll under StrictMode + serialize Jira refresh across processes ([eee2e22](https://github.com/Meridiona/meridian/commit/eee2e22ccba4ba97eed77b11023515c4f4a216e1))
+* **prefetch:** reject non-positive env overrides instead of clamping to 1 ([ee81095](https://github.com/Meridiona/meridian/commit/ee81095d29d4b6ab4c69757d12350e52ceda49cd))
+* **review:** address code-review findings from PR [#352](https://github.com/Meridiona/meridian/issues/352) ([8d5752e](https://github.com/Meridiona/meridian/commit/8d5752e3fd45b3568f18861cb763174e6db3b632))
+* **review:** address CodeRabbit findings from PR [#357](https://github.com/Meridiona/meridian/issues/357) ([6f8630f](https://github.com/Meridiona/meridian/commit/6f8630f7f1cc141b2f042b31e7a5726b7c8fcc1c))
+* **review:** resolve coderabbit findings — azure chunking, epic key, auth helper, a11y, stale integrations ([367340c](https://github.com/Meridiona/meridian/commit/367340c39e52913818f167526818351b9f8e1c24))
+* **tasks:** hide provider tabs and tasks for disconnected integrations ([b7df9dc](https://github.com/Meridiona/meridian/commit/b7df9dc192ababdcf5bc1e0b224709424a2df1cf))
+* **tasks:** set cwd to ~/.meridian on tasks-sync spawn and refresh board on focus ([d233a7e](https://github.com/Meridiona/meridian/commit/d233a7e63d3b4b60cb5850f424ecc500255e63ca))
+* **tasks:** show 'no tasks assigned' hint when connected but board is empty ([3cada0d](https://github.com/Meridiona/meridian/commit/3cada0dd5bc93e0de25e78b617313283b34428a0))
+
+### 🤖 CI
+
+* **ui:** run bun test in the UI job ([9cd9951](https://github.com/Meridiona/meridian/commit/9cd995125dc73b05e18e753de7b4f128f801be75))
+
+### ✅ Tests
+
+* **linear:** add 16 tests for upsert/prune field mapping and filtering ([58f911a](https://github.com/Meridiona/meridian/commit/58f911a83c1da1d2144b019a3c261029be68198f))
+* **providers:** cover epic/parent linkage for azure-devops and jira ([f1aed97](https://github.com/Meridiona/meridian/commit/f1aed976aa45cdb1c1bffff0410a54fa9fe77514))
+* **tasks:** add regression tests for disconnected-provider filtering ([b1d8862](https://github.com/Meridiona/meridian/commit/b1d8862d2eaff2601fb6beff089a13a78bbd1722))
+
+### 📝 Documentation
+
+* document MLX runtime publish flow for services/ changes ([6cebd60](https://github.com/Meridiona/meridian/commit/6cebd60d64f6bbbf3f6eddf5b01ff04161cd6f4e))
+
 ## [1.66.2](https://github.com/Meridiona/meridian/compare/v1.66.1...v1.66.2) (2026-06-27)
 
 ### 🐛 Bug Fixes
