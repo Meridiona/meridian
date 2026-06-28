@@ -50,3 +50,62 @@ pub async fn resolve(jira: &JiraConfig) -> Result<JiraReqCtx> {
          or set JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN"
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::JiraConfig;
+
+    fn cfg(base_url: &str, email: &str, api_token: &str) -> JiraConfig {
+        JiraConfig {
+            base_url: base_url.into(),
+            email: email.into(),
+            api_token: api_token.into(),
+            project_keys: vec![],
+        }
+    }
+
+    /// When all three API-token fields are populated, `resolve()` must return
+    /// `JiraReqCtx::Basic` immediately — no OAuth store access, no network.
+    #[tokio::test]
+    async fn api_token_beats_oauth_when_fully_configured() {
+        let ctx = resolve(&cfg("https://acme.atlassian.net", "user@acme.com", "tok"))
+            .await
+            .expect("resolve should succeed with API token");
+        assert!(matches!(ctx, JiraReqCtx::Basic { .. }));
+    }
+
+    /// If any one of the three API-token fields is empty the basic-auth branch is
+    /// skipped — resolve() falls through to the OAuth / error path instead of
+    /// returning a half-configured Basic context.
+    #[tokio::test]
+    async fn missing_api_token_does_not_use_basic_auth() {
+        // All three required; missing api_token → must NOT return Basic.
+        // (store::exists("jira") will be false in the test environment, so we
+        // expect an error rather than OAuth — the important assertion is that
+        // Basic was not returned.)
+        let result = resolve(&cfg("https://acme.atlassian.net", "user@acme.com", "")).await;
+        assert!(
+            result.is_err() || matches!(result.as_ref().unwrap(), JiraReqCtx::OAuth { .. }),
+            "expected error or OAuth, not Basic auth with empty api_token"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_email_does_not_use_basic_auth() {
+        let result = resolve(&cfg("https://acme.atlassian.net", "", "tok")).await;
+        assert!(
+            result.is_err() || matches!(result.as_ref().unwrap(), JiraReqCtx::OAuth { .. }),
+            "expected error or OAuth, not Basic auth with empty email"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_base_url_does_not_use_basic_auth() {
+        let result = resolve(&cfg("", "user@acme.com", "tok")).await;
+        assert!(
+            result.is_err() || matches!(result.as_ref().unwrap(), JiraReqCtx::OAuth { .. }),
+            "expected error or OAuth, not Basic auth with empty base_url"
+        );
+    }
+}

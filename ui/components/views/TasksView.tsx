@@ -96,10 +96,7 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
   if (!data) {
     return (
       <div className="space-y-8">
-        <header className="rise">
-          <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Tasks</p>
-          <h1 className="type-title mt-1" style={{ color: 'var(--ink)' }}>What you&apos;re working on</h1>
-        </header>
+        <TasksHeader syncing={syncing} syncError={syncError} lastSynced={lastSynced} onSync={handleSync} onIntegrations={() => setShowIntegrations(s => !s)} showIntegrations={showIntegrations} />
         <p className="text-[13px]" style={{ color: 'var(--ink-3)' }}>Loading…</p>
       </div>
     )
@@ -108,10 +105,7 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
   if (data.tasks.length === 0) {
     return (
       <div className="space-y-8">
-        <header className="rise">
-          <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Tasks</p>
-          <h1 className="type-title mt-1" style={{ color: 'var(--ink)' }}>What you&apos;re working on</h1>
-        </header>
+        <TasksHeader syncing={syncing} syncError={syncError} lastSynced={lastSynced} onSync={handleSync} onIntegrations={() => setShowIntegrations(s => !s)} showIntegrations={showIntegrations} />
         <ConnectTrackers integrations={integrations} onChanged={fetchIntegrations} />
       </div>
     )
@@ -125,10 +119,7 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
   if (activeTasks.length === 0 && integrations !== null) {
     return (
       <div className="space-y-8">
-        <header className="rise">
-          <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Tasks</p>
-          <h1 className="type-title mt-1" style={{ color: 'var(--ink)' }}>What you&apos;re working on</h1>
-        </header>
+        <TasksHeader syncing={syncing} syncError={syncError} lastSynced={lastSynced} onSync={handleSync} onIntegrations={() => setShowIntegrations(s => !s)} showIntegrations={showIntegrations} />
         <ConnectTrackers integrations={integrations} onChanged={fetchIntegrations} />
       </div>
     )
@@ -169,55 +160,11 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
 
   return (
     <div className="space-y-8">
-      <header className="rise flex items-end justify-between">
-        <div>
-          <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Tasks</p>
-          <h1 className="type-title mt-1" style={{ color: 'var(--ink)' }}>
-            What you&apos;re working on
-          </h1>
-        </div>
-        <div className="flex items-center gap-4">
-          <p className="text-[12px]" style={{ color: 'var(--ink-3)' }}>
-            <span className="font-mono tnum">{touched}</span> touched today
-          </p>
-          <div className="flex flex-col items-end gap-1">
-            <button
-              onClick={handleSync}
-              disabled={syncing}
-              className="flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md transition-colors"
-              style={{
-                color: syncing ? 'var(--ink-4)' : syncError ? '#e53e3e' : 'var(--ink-3)',
-                background: 'var(--surface)',
-                border: `1px solid ${syncError ? '#e53e3e' : 'var(--rule)'}`,
-                cursor: syncing ? 'not-allowed' : 'pointer',
-              }}
-              title={lastSynced ? `Last synced ${lastSynced.toLocaleTimeString()}` : 'Sync tasks from Jira / Linear / GitHub'}
-            >
-              <span style={{ display: 'inline-block', animation: syncing ? 'spin 1s linear infinite' : 'none' }}>
-                {syncError ? '⚠' : '↻'}
-              </span>
-              {syncing ? 'Syncing…' : syncError ? 'Sync failed' : 'Sync'}
-            </button>
-            {syncError && (
-              <p className="text-[11px] max-w-[280px] text-right" style={{ color: '#e53e3e' }}>
-                {syncError}
-              </p>
-            )}
-          </div>
-          <button
-            onClick={() => setShowIntegrations(s => !s)}
-            className="flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md transition-colors"
-            style={{
-              color: showIntegrations ? 'var(--ink)' : 'var(--ink-3)',
-              background: showIntegrations ? 'var(--surface-2)' : 'var(--surface)',
-              border: '1px solid var(--rule)',
-              cursor: 'pointer',
-            }}
-          >
-            Integrations
-          </button>
-        </div>
-      </header>
+      <TasksHeader
+        syncing={syncing} syncError={syncError} lastSynced={lastSynced}
+        onSync={handleSync} onIntegrations={() => setShowIntegrations(s => !s)}
+        showIntegrations={showIntegrations} touched={touched}
+      />
 
       {showIntegrations ? (
         <div>
@@ -287,6 +234,70 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
 
       {fixTask && <HygieneDialog task={fixTask} onClose={() => setFixTask(null)} onApplied={fetchTasks} />}
     </div>
+  )
+}
+
+function TasksHeader({
+  syncing, syncError, lastSynced, onSync, onIntegrations, showIntegrations, touched,
+}: {
+  syncing: boolean
+  syncError: string | null
+  lastSynced: Date | null
+  onSync: () => void
+  onIntegrations: () => void
+  showIntegrations: boolean
+  touched?: number
+}) {
+  return (
+    <header className="rise flex items-end justify-between">
+      <div>
+        <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Tasks</p>
+        <h1 className="type-title mt-1" style={{ color: 'var(--ink)' }}>What you&apos;re working on</h1>
+      </div>
+      <div className="flex items-center gap-4">
+        {touched !== undefined && (
+          <p className="text-[12px]" style={{ color: 'var(--ink-3)' }}>
+            <span className="font-mono tnum">{touched}</span> touched today
+          </p>
+        )}
+        <div className="flex flex-col items-end gap-1">
+          <button
+            onClick={onSync}
+            disabled={syncing}
+            className="flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md transition-colors"
+            style={{
+              color: syncing ? 'var(--ink-4)' : syncError ? '#e53e3e' : 'var(--ink-3)',
+              background: 'var(--surface)',
+              border: `1px solid ${syncError ? '#e53e3e' : 'var(--rule)'}`,
+              cursor: syncing ? 'not-allowed' : 'pointer',
+            }}
+            title={lastSynced ? `Last synced ${lastSynced.toLocaleTimeString()}` : 'Pull latest tasks from Jira / Linear / GitHub'}
+          >
+            <span style={{ display: 'inline-block', animation: syncing ? 'spin 1s linear infinite' : 'none' }}>
+              {syncError ? '⚠' : '↻'}
+            </span>
+            {syncing ? 'Syncing…' : syncError ? 'Sync failed' : 'Refresh'}
+          </button>
+          {syncError && (
+            <p className="text-[11px] max-w-[280px] text-right" style={{ color: '#e53e3e' }}>
+              {syncError}
+            </p>
+          )}
+        </div>
+        <button
+          onClick={onIntegrations}
+          className="flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md transition-colors"
+          style={{
+            color: showIntegrations ? 'var(--ink)' : 'var(--ink-3)',
+            background: showIntegrations ? 'var(--surface-2)' : 'var(--surface)',
+            border: '1px solid var(--rule)',
+            cursor: 'pointer',
+          }}
+        >
+          Integrations
+        </button>
+      </div>
+    </header>
   )
 }
 
