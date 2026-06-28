@@ -158,6 +158,6 @@ export function filterByConnectedProviders<T extends { provider: string }>(
   // Cast to a plain map so future/unknown providers pass through rather than
   // being silently dropped. TRACKER_IDS guards only the known five — any string
   // outside that set would resolve false here even if the backend says connected.
-  const int = integrations as Record<string, boolean>
+  const int = integrations as unknown as Record<string, boolean>
   return tasks.filter(t => !(t.provider in int) || int[t.provider])
 }
