@@ -343,15 +343,17 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
   const [loading, setLoading] = useState<'orgs' | 'projects' | 'saving' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
+  const [showManualOrg, setShowManualOrg] = useState(false)
+  const [manualOrg, setManualOrg] = useState('')
 
   const lookupOrgs = async () => {
     if (!pat.trim()) return
-    setLoading('orgs'); setError(null); setOrgs(null); setSelectedOrg(''); setProjects(null); setSelectedProject('')
+    setLoading('orgs'); setError(null); setOrgs(null); setSelectedOrg(''); setProjects(null); setSelectedProject(''); setShowManualOrg(false); setManualOrg('')
     try {
       const json = await mutate<{ orgs?: string[] }>('/api/integrations/azure-devops/discover', 'discover_azure_devops', { pat: pat.trim() })
       setOrgs(json.orgs ?? [])
       if ((json.orgs ?? []).length === 1) { setSelectedOrg(json.orgs![0]); lookupProjects(json.orgs![0]) }
-    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to fetch organisations') }
+    } catch (e) { setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Failed to fetch organisations'); setShowManualOrg(true) }
     finally { setLoading(null) }
   }
 
@@ -362,11 +364,16 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
       const json = await mutate<{ projects?: string[] }>('/api/integrations/azure-devops/discover', 'discover_azure_devops', { pat: pat.trim(), org })
       setProjects(json.projects ?? [])
       if ((json.projects ?? []).length === 1) setSelectedProject(json.projects![0])
-    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to fetch projects') }
+    } catch (e) { setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Failed to fetch projects') }
     finally { setLoading(null) }
   }
 
   const handleOrgChange = (org: string) => { setSelectedOrg(org); if (org) lookupProjects(org) }
+
+  const submitManualOrg = () => {
+    const org = manualOrg.trim()
+    if (org) { setSelectedOrg(org); lookupProjects(org) }
+  }
 
   const connect = async () => {
     if (!selectedOrg || !selectedProject) return
@@ -377,7 +384,7 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
         fields: { url: `https://dev.azure.com/${selectedOrg}/${selectedProject}`, pat: pat.trim() },
       })
       setDone(true); clearProviderNotice('azure_devops'); onSuccess?.()
-    } catch (e) { setError(e instanceof Error ? e.message : 'Could not save credentials') }
+    } catch (e) { setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not save credentials') }
     finally { setLoading(null) }
   }
 
@@ -392,8 +399,8 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
   return (
     <div className="px-4 pb-4 pt-2 space-y-3" style={{ background: 'var(--surface-2)' }}>
       <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
-        In Azure DevOps go to User settings → Personal access tokens → New token, scope{' '}
-        <strong>Work Items → Read &amp; write</strong>.{' '}
+        In Azure DevOps go to User settings → Personal access tokens → New token, set scope to{' '}
+        <strong>All accessible organizations</strong> and enable <strong>Work Items → Read &amp; write</strong>.{' '}
         <a href="https://dev.azure.com" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>Open ↗</a>
       </p>
       <div className="flex gap-2">
@@ -443,6 +450,28 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
       )}
 
       {error && <p className="text-[11px]" style={{ color: '#e53e3e' }}>{error}</p>}
+
+      {showManualOrg && !orgs && (
+        <div className="space-y-1.5">
+          <p className="text-[11px]" style={{ color: 'var(--ink-3)' }}>Enter your org name manually:</p>
+          <div className="flex gap-2">
+            <input
+              value={manualOrg}
+              onChange={(e) => setManualOrg(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && submitManualOrg()}
+              placeholder="e.g. my-company"
+              className="flex-1 text-[11px] px-2 py-1.5 rounded-md border"
+              style={{ color: 'var(--ink)', background: 'var(--surface)', borderColor: 'var(--rule)', outline: 'none' }} />
+            <button
+              onClick={submitManualOrg}
+              disabled={!manualOrg.trim() || loading === 'projects'}
+              className="text-[11px] px-3 py-1.5 rounded-md shrink-0"
+              style={{ background: 'var(--accent)', color: '#fff', opacity: (!manualOrg.trim() || loading === 'projects') ? 0.5 : 1, cursor: (!manualOrg.trim() || loading === 'projects') ? 'not-allowed' : 'pointer' }}>
+              {loading === 'projects' ? 'Looking up…' : 'Look up projects'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {selectedOrg && selectedProject && (
         <button onClick={connect} disabled={loading === 'saving'} className="text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
