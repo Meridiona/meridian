@@ -379,6 +379,34 @@ Goldens are hand-authored seed sessions that target specific failure modes of th
 
 The dataset's value lives in **what it discriminates**, not how many cases it has. Each Golden should target a documented failure mode (keyword-mention false positive, same-app context switch, decoy resistance, untracked-with-tempting-candidate, etc.). 95% on easy cases hides the failures that matter.
 
+### Ship a `services/` Python change to users (rebuild + publish the MLX runtime)
+
+**A change under `services/` reaches NO existing user until you publish a new MLX runtime — an app release does not rebuild it.** The MLX server runs from `~/.meridian/runtime/` (a CPython + venv + the `agents` package), which is downloaded and **versioned independently of the app**. So `server.py`, anything in `agents/` (classifier, prompts, model registry, `routes/prefetch.py`, summariser), and the model set only update when the runtime tarball is republished. This is exactly how prod once ran app `1.66.2` against a stale runtime `1.60.0`.
+
+The runtime version is `services/pyproject.toml`'s `version`, bumped in lockstep with the app by `scripts/set-version.sh` on each release. Two channels, selected by tag prefix (`.github/workflows/build-mlx-runtime.yml`):
+
+| Audience | Tag prefix | Rolling release the app pins |
+|---|---|---|
+| Test machines (staging builds) | `runtime-staging-v*` | `runtime-staging` |
+| Production DMG users | `runtime-v*` | `runtime-latest` |
+
+To ship a `services/` change:
+
+1. Land it on `main` (and `pre-main` if it must hit staging). Confirm the target commit has both the change **and** a `pyproject.toml` version **different from the currently-published runtime** — check `gh release download <channel> -p runtime-manifest.json -O -` for the live `version`. If they match, step 4's auto-upgrade is silently skipped (see gotcha).
+2. Tag that commit and push — the version label must equal the pyproject version:
+   ```bash
+   VER=$(grep -m1 '^version' services/pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
+   git tag "runtime-staging-v${VER}" <commit> && git push origin "runtime-staging-v${VER}"   # → runtime-staging
+   git tag "runtime-v${VER}"         <commit> && git push origin "runtime-v${VER}"           # → runtime-latest
+   ```
+3. The workflow builds (macos-14) → smoke-tests on macos 14/15/26 → force-updates the channel's rolling release with the new tarball + `runtime-manifest.json`. `workflow_dispatch` builds without publishing.
+4. Each machine's tray (`auto_upgrade_runtime` in `tray/src-tauri/src/mlx_server.rs`) sees `manifest.version != installed` on next launch, re-downloads, and swaps the runtime in.
+
+**Gotchas:**
+- **Version-skip is an equality check** (`installed_version() == manifest.version` → skip). Republishing under the *same* version is a no-op for every machine already on it — always ship a **new** version, never reuse one.
+- **Two channels, two audiences.** A production build pins `runtime-latest`; a staging build pins `runtime-staging` (via `MERIDIAN_RUNTIME_MANIFEST_URL`). A fix published to only one channel never reaches users on the other — cut **both** tags when a fix must reach everyone. (`runtime-latest` is created on the first `runtime-v*` push; until then production has no runtime channel.)
+- **It is not the app binary.** Updating the `.app` alone ships nothing under `services/`; only a runtime republish does.
+
 ---
 
 ## Coding-agent pipeline (`src/coding_agent_session_ingest/`)
@@ -422,6 +450,7 @@ For the deep technical reference (classification logic, scoring formulas, recipe
 
 ### Hard rules
 
+- **A `services/` change ships NOTHING to users until the MLX runtime is rebuilt + published.** The runtime (`~/.meridian/runtime/`) is downloaded and versioned independently of the app; an app release does not rebuild it, and the app's runtime version-skip is an equality check — so the new runtime must carry a version different from the deployed one or every machine silently keeps the old code. After landing a `services/` change, cut a runtime release — see Common Tasks → "Ship a `services/` Python change to users (rebuild + publish the MLX runtime)".
 - **Every `.py` file in `services/agents/` must start with a `"""…"""` module docstring** describing its purpose. The Rust/TS file-header convention does not apply — Python uses docstrings. Match the prose style of existing modules (terse, opinionated).
 - **`ticket_links` and `session_dimensions` writes must be idempotent.** Both tables have UNIQUE / composite-PK constraints with explicit `ON CONFLICT … DO UPDATE` policies. New writers must use the same UPSERT pattern. Never `DELETE` then `INSERT` from the daemon path.
 - **Coding-agent segment idempotency:** the `(claude_session_uuid, segment_started_at)` unique index is the key (migration 027; `day_utc` was dropped in 028). The UPSERT refreshes a LIVE row but carries `WHERE sealed_at IS NULL`, so a SEALED row is immutable — the summariser/classifier only ever read sealed rows.

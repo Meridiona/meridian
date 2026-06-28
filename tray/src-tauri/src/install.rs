@@ -65,6 +65,17 @@ pub(crate) fn detect_install_mode() -> InstallMode {
     InstallMode::Bare
 }
 
+/// The canonical credential `.env` path (`~/.meridian/.env`) — the **write**
+/// target when no `.env` exists yet (a fresh `.app`/DMG install, where nothing
+/// pre-creates it). Saving credentials must work before any `.env` exists, so
+/// the write path defaults here rather than failing in [`InstallMode::Bare`]
+/// (whose [`InstallMode::env_path`] is `None`). `None` only when `$HOME` is unset.
+pub(crate) fn canonical_env_path() -> Option<std::path::PathBuf> {
+    std::env::var("HOME")
+        .ok()
+        .map(|h| std::path::PathBuf::from(h).join(".meridian/.env"))
+}
+
 /// Resolve the `meridian` CLI binary, native build first — the shared resolver
 /// for every command that shells out to it (`tasks-sync`, `ticket-update`,
 /// `ticket-parents`, …). Mirrors the Node `selectMeridianBinary(meridianCandidates())`:

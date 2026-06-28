@@ -34,8 +34,19 @@ pub struct SyncResult {
 #[tracing::instrument]
 pub async fn sync_tasks() -> Result<SyncResult, String> {
     let bin = crate::install::meridian_bin();
+    // Run from ~/.meridian so dotenvy finds the canonical .env (AZURE_DEVOPS_PAT,
+    // JIRA_API_TOKEN, etc. all live there). Without this the spawn inherits the
+    // tray's cwd, dotenvy walks up and may find the repo .env instead — which
+    // lacks provider credentials, silently dropping those providers from the sync.
+    let home = std::env::var("HOME")
+        .map_err(|_| "HOME env var not set — cannot locate ~/.meridian".to_string())?;
+    let cwd = std::path::PathBuf::from(&home).join(".meridian");
+    if !cwd.exists() {
+        std::fs::create_dir_all(&cwd).map_err(|e| format!("could not create ~/.meridian: {e}"))?;
+    }
     let child = tokio::process::Command::new(&bin)
         .arg("tasks-sync")
+        .current_dir(&cwd)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

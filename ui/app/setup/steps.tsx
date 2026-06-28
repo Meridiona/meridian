@@ -83,6 +83,43 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
 }
 
 // ── STEP 2 — Local intelligence ──────────────────────────────────────────────
+
+/** One provisioning sub-step (engine install / model download). The leading
+ *  glyph updates live as the phase advances: hollow ○ (pending) → spinner
+ *  (active) → ✓ (done), so the two steps visibly tick off in sequence. */
+type StepState = 'pending' | 'active' | 'done' | 'error'
+function ProvisionStep({ state, label }: { state: StepState; label: string }) {
+  return (
+    <div className="flex items-center" style={{ gap: 10 }}>
+      <span className="flex items-center justify-center shrink-0" style={{ width: 20, height: 20 }}>
+        {state === 'done'
+          ? <Check size={16} color="var(--success)" w={2.2} />
+          : state === 'error'
+            ? <span style={{ width: 12, height: 12, borderRadius: 99, background: 'var(--warn)' }} />
+            : state === 'active'
+              ? <Spinner size={15} width={2} />
+              : <span style={{ width: 12, height: 12, borderRadius: 99, border: '1.5px solid var(--rule-2)' }} />}
+      </span>
+      <span style={{
+        fontSize: 12.5,
+        color: state === 'pending' ? 'var(--ink-3)' : state === 'error' ? 'var(--warn)' : 'var(--ink)',
+        fontWeight: state === 'done' ? 500 : 400,
+      }}>{label}</span>
+    </div>
+  )
+}
+
+/** Self-checkable causes shown when provisioning hits a network/download error —
+ *  ordered most-likely first, phrased so a non-technical user can fix it during
+ *  setup (the download reaches GitHub over the network; corporate proxy/VPN/
+ *  captive-portal are the usual blockers). */
+const SETUP_NET_HINTS: { t: string; d: string }[] = [
+  { t: 'Internet connection', d: 'Confirm you’re online. On café or hotel Wi-Fi, open a browser and finish any “sign in to connect” page, then Try again.' },
+  { t: 'VPN or firewall', d: 'A work VPN or firewall can block the download. Pause the VPN or switch to another network.' },
+  { t: 'Network proxy', d: 'If your Mac uses a proxy (System Settings → Network → Proxies), Meridian may not pick it up. Try a network without a proxy.' },
+  { t: 'Security software', d: 'Tools that inspect secure connections can interrupt the download — allow Meridian or pause them briefly.' },
+]
+
 function MLXBody({ wiz }: { wiz: Wiz }) {
   const m = wiz.mlx
   const runtimeInstalled = !!(m && (m.runtime_found || m.runtime_installed))
@@ -91,6 +128,10 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
     ? Math.min(100, Math.round((wiz.progress.received / wiz.progress.total) * 100)) : null
   const showErr = (!!wiz.err && !wiz.modelReady) || unavailable
   const working = !wiz.modelReady && !showErr
+  const installStepState: StepState =
+    runtimeInstalled ? 'done' : wiz.downloading ? 'active' : wiz.err ? 'error' : 'pending'
+  const modelStepState: StepState =
+    wiz.modelReady ? 'done' : wiz.prefetching ? 'active' : runtimeInstalled && !!wiz.err ? 'error' : 'pending'
 
   return (
     <div className="flex flex-col items-center justify-center" style={{ minHeight: 300, textAlign: 'center', padding: '8px 8px 4px' }}>
@@ -126,6 +167,16 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
         </div>
       )}
 
+      {/* Two-step checklist — each row ticks to ✓ as that phase completes, so
+          "engine" and "models" read as distinct, sequential steps. Hidden only
+          when the runtime can't be provisioned at all (nothing to track). */}
+      {!unavailable && (
+        <div className="flex flex-col" style={{ gap: 10, width: 250, margin: working ? '16px 0 2px' : '12px 0 2px', textAlign: 'left' }}>
+          <ProvisionStep state={installStepState} label="Install on-device engine" />
+          <ProvisionStep state={modelStepState} label="Download private models" />
+        </div>
+      )}
+
       {/* Status line — reflects the live phase / outcome */}
       <p style={{
         fontSize: 13, lineHeight: 1.5, maxWidth: 300, marginTop: working ? 18 : 4,
@@ -140,9 +191,31 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
               : 'Downloading the models that run privately on your Mac — just once.'}
       </p>
 
-      {/* Retry on a recoverable error */}
+      {/* Recoverable error → show the likely causes the user can self-check
+          (most-likely first) plus a retry. Hidden for `unavailable` (a hardware
+          verdict, not a fixable network issue). */}
       {showErr && !unavailable && (
-        <Btn size="sm" variant="secondary" onClick={wiz.retryModel} style={{ marginTop: 18 }}>Try again</Btn>
+        <div className="flex flex-col items-center" style={{ marginTop: 16 }}>
+          <div style={{
+            width: 330, textAlign: 'left', background: 'var(--surface-2)',
+            border: '0.5px solid var(--rule-2)', borderRadius: 10, padding: '12px 14px',
+          }}>
+            <p className="font-mono" style={{ fontSize: 9.5, letterSpacing: '.1em', color: 'var(--ink-3)', marginBottom: 9 }}>
+              IF IT KEEPS FAILING, CHECK
+            </p>
+            <div className="flex flex-col" style={{ gap: 9 }}>
+              {SETUP_NET_HINTS.map((h, i) => (
+                <div key={h.t} className="flex items-start" style={{ gap: 8 }}>
+                  <span className="font-mono shrink-0" style={{ fontSize: 10.5, color: 'var(--ink-4)', fontWeight: 600, lineHeight: 1.55, width: 11 }}>{i + 1}</span>
+                  <p style={{ fontSize: 11.5, lineHeight: 1.45, color: 'var(--ink-2)' }}>
+                    <span style={{ fontWeight: 500, color: 'var(--ink)' }}>{h.t}</span> — {h.d}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+          <Btn size="sm" variant="secondary" onClick={wiz.retryModel} style={{ marginTop: 14 }}>Try again</Btn>
+        </div>
       )}
     </div>
   )

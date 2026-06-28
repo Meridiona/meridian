@@ -25,3 +25,11 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 # the tray stays lean; the daemon's `full` unifies over this.
 tokio = { version = "1.15", features = ["net", "io-util", "time", "sync"] }
 tracing = "0.1.40"
+# Cross-process advisory file lock for the rotating refresh token uses std's native
+# File::try_lock/unlock (stable since Rust 1.89; toolchain is pinned to 1.93.1), so
+# no external locking crate is needed — see store::lock_provider.
+
+[dev-dependencies]
+# A minimal current-thread runtime so the lock unit tests can drive the async
+# `lock_provider` fn (the lib itself needs no `rt`/`macros` — it polls try_lock).
+tokio = { version = "1.15", features = ["rt", "macros", "time"] }

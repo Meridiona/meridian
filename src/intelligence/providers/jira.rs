@@ -880,4 +880,82 @@ mod tests {
         assert_eq!(task_count(&pool, "KAN-61").await, 0);
         assert_eq!(task_count(&pool, "KAN-62").await, 0);
     }
+
+    // -----------------------------------------------------------------------
+    // Epic/parent linkage: the source for pm_tasks.parent_key + epic_title is
+    // the issue's `parent` object (key + parent.fields.summary). These tests
+    // lock that the response parses and the derivation matches force_refresh.
+    // -----------------------------------------------------------------------
+
+    /// Mirror force_refresh's inline `(parent_key, epic_title)` derivation so the
+    /// test tracks the production extraction, not a reimplementation.
+    fn derive_parent_link(issue: &super::JiraIssue) -> (Option<&str>, Option<&str>) {
+        issue
+            .fields
+            .parent
+            .as_ref()
+            .map(|p| {
+                let title = p.fields.as_ref().and_then(|f| f.summary.as_deref());
+                (Some(p.key.as_str()), title)
+            })
+            .unwrap_or((None, None))
+    }
+
+    #[test]
+    fn parses_issue_parent_for_epic_linkage() {
+        let json = r#"{
+            "key": "KAN-37",
+            "fields": {
+                "summary": "Implement token refresh with silent re-auth",
+                "status": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}},
+                "issuetype": {"name": "Task"},
+                "project": {"key": "KAN"},
+                "updated": "2026-06-28T00:00:00.000+0000",
+                "parent": {"key": "KAN-34", "fields": {"summary": "Auth & Security Overhaul"}}
+            }
+        }"#;
+        let issue: super::JiraIssue = serde_json::from_str(json).unwrap();
+        let (parent_key, epic_title) = derive_parent_link(&issue);
+        assert_eq!(parent_key, Some("KAN-34"));
+        assert_eq!(epic_title, Some("Auth & Security Overhaul"));
+    }
+
+    #[test]
+    fn issue_without_parent_yields_no_epic() {
+        let json = r#"{
+            "key": "KAN-34",
+            "fields": {
+                "summary": "Auth & Security Overhaul",
+                "status": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}},
+                "issuetype": {"name": "Epic"},
+                "project": {"key": "KAN"},
+                "updated": "2026-06-28T00:00:00.000+0000"
+            }
+        }"#;
+        let issue: super::JiraIssue = serde_json::from_str(json).unwrap();
+        let (parent_key, epic_title) = derive_parent_link(&issue);
+        assert_eq!(parent_key, None);
+        assert_eq!(epic_title, None);
+    }
+
+    /// A parent with no expanded `fields` (summary unavailable) still yields the
+    /// key for parent_key, with an empty epic_title — force_refresh stores NULL.
+    #[test]
+    fn parent_without_fields_keeps_key_drops_title() {
+        let json = r#"{
+            "key": "KAN-99",
+            "fields": {
+                "summary": "Some subtask",
+                "status": {"name": "To Do", "statusCategory": {"key": "new"}},
+                "issuetype": {"name": "Task"},
+                "project": {"key": "KAN"},
+                "updated": "2026-06-28T00:00:00.000+0000",
+                "parent": {"key": "KAN-50"}
+            }
+        }"#;
+        let issue: super::JiraIssue = serde_json::from_str(json).unwrap();
+        let (parent_key, epic_title) = derive_parent_link(&issue);
+        assert_eq!(parent_key, Some("KAN-50"));
+        assert_eq!(epic_title, None);
+    }
 }
