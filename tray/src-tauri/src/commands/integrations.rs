@@ -513,9 +513,11 @@ pub async fn discover_azure_devops(
         let body_json = azure_get(url, &body.pat)
             .instrument(tracing::debug_span!("integrations.azure.projects"))
             .await
-            .map_err(|(status, _detail)| {
+            .map_err(|(status, detail)| {
                 if status == 401 || status == 403 {
                     "PAT is invalid or lacks Work Items → Read & write scope".to_string()
+                } else if status == 0 {
+                    format!("Could not reach Azure DevOps: {detail}")
                 } else {
                     format!("Azure DevOps returned HTTP {status}")
                 }

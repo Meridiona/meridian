@@ -370,6 +370,11 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
 
   const handleOrgChange = (org: string) => { setSelectedOrg(org); if (org) lookupProjects(org) }
 
+  const submitManualOrg = () => {
+    const org = manualOrg.trim()
+    if (org) { setSelectedOrg(org); lookupProjects(org) }
+  }
+
   const connect = async () => {
     if (!selectedOrg || !selectedProject) return
     setLoading('saving'); setError(null)
@@ -453,21 +458,12 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
             <input
               value={manualOrg}
               onChange={(e) => setManualOrg(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && manualOrg.trim()) {
-                  const org = manualOrg.trim()
-                  setSelectedOrg(org)
-                  lookupProjects(org)
-                }
-              }}
+              onKeyDown={(e) => e.key === 'Enter' && submitManualOrg()}
               placeholder="e.g. my-company"
               className="flex-1 text-[11px] px-2 py-1.5 rounded-md border"
               style={{ color: 'var(--ink)', background: 'var(--surface)', borderColor: 'var(--rule)', outline: 'none' }} />
             <button
-              onClick={() => {
-                const org = manualOrg.trim()
-                if (org) { setSelectedOrg(org); lookupProjects(org) }
-              }}
+              onClick={submitManualOrg}
               disabled={!manualOrg.trim() || loading === 'projects'}
               className="text-[11px] px-3 py-1.5 rounded-md shrink-0"
               style={{ background: 'var(--accent)', color: '#fff', opacity: (!manualOrg.trim() || loading === 'projects') ? 0.5 : 1, cursor: (!manualOrg.trim() || loading === 'projects') ? 'not-allowed' : 'pointer' }}>
