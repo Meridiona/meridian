@@ -84,6 +84,9 @@ struct WorkItemFields {
     team_project: Option<String>,
     #[serde(rename = "System.AssignedTo", default)]
     assigned_to: Option<AzureIdentity>,
+    /// Direct parent work item ID (set by the hierarchy relation).
+    #[serde(rename = "System.Parent", default)]
+    parent_id: Option<u64>,
     /// Start date — present on all process types (Scheduling namespace).
     #[serde(rename = "Microsoft.VSTS.Scheduling.StartDate", default)]
     start_date: Option<String>,
@@ -241,7 +244,7 @@ async fn fetch_batch(
         "{}/{}/_apis/wit/workitems?ids={}&\
          fields=System.Id,System.Title,System.WorkItemType,System.State,\
          System.ChangedDate,System.Description,System.Tags,System.IterationPath,\
-         System.TeamProject,System.AssignedTo,\
+         System.TeamProject,System.AssignedTo,System.Parent,\
          Microsoft.VSTS.Common.AcceptanceCriteria,\
          Microsoft.VSTS.TCM.ReproSteps,\
          Microsoft.VSTS.Scheduling.StartDate,\
@@ -455,13 +458,14 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         );
         let project_key = f.team_project.as_deref();
         let assignee_name = f.assigned_to.as_ref().map(|a| a.display_name.as_str());
+        let parent_key: Option<String> = f.parent_id.map(|id| format!("{}#{}", cfg.project, id));
 
         sqlx::query(
             "INSERT INTO pm_tasks
                (task_key, provider, title, description_text, status_raw, is_terminal,
                 issue_type, project_key, url, updated_at, sprint_name, tags,
-                assignee_name, start_date, due_date)
-             VALUES (?, 'azure_devops', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                assignee_name, start_date, due_date, parent_key)
+             VALUES (?, 'azure_devops', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(task_key) DO UPDATE SET
                provider         = 'azure_devops',
                title            = excluded.title,
@@ -476,7 +480,8 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
                tags             = excluded.tags,
                assignee_name    = excluded.assignee_name,
                start_date       = excluded.start_date,
-               due_date         = excluded.due_date",
+               due_date         = excluded.due_date,
+               parent_key       = excluded.parent_key",
         )
         .bind(&task_key)
         .bind(&f.title)
@@ -492,6 +497,7 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         .bind(assignee_name)
         .bind(f.start_date.as_deref())
         .bind(f.target_date.as_deref())
+        .bind(parent_key.as_deref())
         .execute(pool)
         .await
         .with_context(|| format!("upserting Azure DevOps work item {}", u.detail.id))?;
