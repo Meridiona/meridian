@@ -226,6 +226,19 @@ pub async fn apply_ticket_fix(body: ApplyBody) -> Result<ApplyResponse, String> 
         return Err("provider, key and field are required".to_string());
     }
 
+    // meridian ticket-update reads provider credentials from ~/.meridian/.env via
+    // dotenvy, which walks UP from the process CWD. In a packaged .app the tray's
+    // CWD is inside the bundle — dotenvy never reaches ~/.meridian/.env from there,
+    // so LINEAR_API_KEY / GITHUB_TOKEN / AZURE_DEVOPS_PAT are never loaded and the
+    // subprocess bails "provider not configured". Anchoring to ~/.meridian fixes it.
+    let home = std::env::var("HOME")
+        .map_err(|_| "HOME env var not set — cannot locate ~/.meridian".to_string())?;
+    let meridian_home = std::path::PathBuf::from(&home).join(".meridian");
+    if !meridian_home.exists() {
+        std::fs::create_dir_all(&meridian_home)
+            .map_err(|e| format!("could not create ~/.meridian: {e}"))?;
+    }
+
     let bin = crate::install::meridian_bin();
     let child = tokio::process::Command::new(&bin)
         .args([
@@ -239,6 +252,7 @@ pub async fn apply_ticket_fix(body: ApplyBody) -> Result<ApplyResponse, String> 
             "--value",
             &body.value,
         ])
+        .current_dir(&meridian_home)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

@@ -235,4 +235,59 @@ mod tests {
         let nodes = vec![json!({ "id": "s1", "name": "Todo", "type": "unstarted" })];
         assert_eq!(pick_completed_state(&nodes), None);
     }
+
+    #[test]
+    fn picks_cancelled_state() {
+        let nodes = vec![
+            json!({ "id": "s1", "name": "In Progress", "type": "started" }),
+            json!({ "id": "s2", "name": "Cancelled", "type": "cancelled" }),
+        ];
+        assert_eq!(pick_cancelled_state(&nodes), Some("s2".into()));
+    }
+
+    #[test]
+    fn no_cancelled_state_is_none() {
+        let nodes = vec![json!({ "id": "s1", "name": "Done", "type": "completed" })];
+        assert_eq!(pick_cancelled_state(&nodes), None);
+    }
+
+    #[test]
+    fn priority_covers_all_common_names() {
+        // Ensure every name the hygiene UI might send is handled (not defaulted).
+        assert_eq!(priority_to_int("Critical"), 1);
+        assert_eq!(priority_to_int("Blocker"), 1);
+        assert_eq!(priority_to_int("High"), 2);
+        assert_eq!(priority_to_int("Medium"), 3);
+        assert_eq!(priority_to_int("Normal"), 3);
+        assert_eq!(priority_to_int("Low"), 4);
+        assert_eq!(priority_to_int("Lowest"), 4);
+        assert_eq!(priority_to_int("Minor"), 4);
+        assert_eq!(priority_to_int("None"), 0);
+        // Unknown → medium (safe default).
+        assert_eq!(priority_to_int("P99"), 3);
+    }
+
+    #[test]
+    fn field_name_round_trips() {
+        // Each WriteField must produce a non-empty field name label.
+        let cases: &[(&str, WriteField)] = &[
+            ("duedate", WriteField::DueDate("2026-01-01".into())),
+            ("assignee", WriteField::AssignMe),
+            ("labels", WriteField::AddLabel("bug".into())),
+            ("priority", WriteField::Priority("High".into())),
+            ("story_points", WriteField::StoryPoints(3.0)),
+            ("parent", WriteField::Parent("ENG-1".into())),
+            ("summary", WriteField::Summary("t".into())),
+            ("description", WriteField::Description("d".into())),
+            ("close", WriteField::Close),
+            ("cancel", WriteField::Cancel),
+        ];
+        for (expected, field) in cases {
+            assert_eq!(
+                field_name(field),
+                *expected,
+                "field_name mismatch for {expected}"
+            );
+        }
+    }
 }

@@ -223,4 +223,46 @@ mod tests {
             "https://github.com/acme/api/issues/42"
         );
     }
+
+    #[test]
+    fn field_name_round_trips() {
+        let cases: &[(&str, WriteField)] = &[
+            ("duedate", WriteField::DueDate("2026-01-01".into())),
+            ("assignee", WriteField::AssignMe),
+            ("labels", WriteField::AddLabel("bug".into())),
+            ("priority", WriteField::Priority("High".into())),
+            ("story_points", WriteField::StoryPoints(3.0)),
+            ("parent", WriteField::Parent("owner/repo#1".into())),
+            ("summary", WriteField::Summary("t".into())),
+            ("description", WriteField::Description("d".into())),
+            ("close", WriteField::Close),
+            ("cancel", WriteField::Cancel),
+        ];
+        for (expected, field) in cases {
+            assert_eq!(
+                field_name(field),
+                *expected,
+                "field_name mismatch for {expected}"
+            );
+        }
+    }
+
+    // DueDate / Priority / StoryPoints are redirected for GitHub (Projects v2 only).
+    // Assert they parse correctly — the apply path redirects them at the HTTP layer,
+    // so the parse must succeed (None would silently redirect as "unwritable field").
+    #[test]
+    fn github_redirect_fields_still_parse() {
+        assert!(matches!(
+            WriteField::parse("duedate", "2026-06-30"),
+            Some(WriteField::DueDate(_))
+        ));
+        assert!(matches!(
+            WriteField::parse("priority", "High"),
+            Some(WriteField::Priority(_))
+        ));
+        assert!(matches!(
+            WriteField::parse("story_points", "5"),
+            Some(WriteField::StoryPoints(_))
+        ));
+    }
 }
