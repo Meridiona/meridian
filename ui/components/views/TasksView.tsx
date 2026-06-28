@@ -70,6 +70,11 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
     }).catch(() => {})
   }
 
+  const refreshBoard = () => {
+    fetchTasks()
+    fetchIntegrations()
+  }
+
   const handleSync = () => {
     if (syncing) return
     setSyncing(true)
@@ -77,19 +82,18 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
     // Dual-path: sync_tasks (Rust) in the app, /api/tasks/sync POST in a browser.
     // mutate throws the CLI's stderr on failure; success re-fetches the board.
     mutate('/api/tasks/sync', 'sync_tasks', {})
-      .then(() => { setLastSynced(new Date()); fetchTasks() })
+      .then(() => { setLastSynced(new Date()); refreshBoard() })
       .catch((e) => setSyncError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Sync failed — check daemon logs'))
       .finally(() => setSyncing(false))
   }
 
   useEffect(() => {
-    fetchTasks()
+    refreshBoard()
     load<TodayResponse>('/api/today', 'get_today').then((d) => {
       setTodaySessions(d.sessions ?? [])
     }).catch(() => {})
-    fetchIntegrations()
 
-    const timer = setInterval(fetchTasks, TASKS_POLL_INTERVAL_MS)
+    const timer = setInterval(refreshBoard, TASKS_POLL_INTERVAL_MS)
     return () => { clearInterval(timer) }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -106,11 +110,13 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
     // If at least one provider is connected but the board is empty, the user
     // has synced but nothing is assigned to them — show a targeted hint rather
     // than the connect panel which implies nothing is wired up at all.
-    const anyConnected = integrations !== null && Object.values(integrations).some(Boolean)
+    const anyConnectedProvider =
+      integrations !== null &&
+      Object.entries(integrations).some(([key, value]) => key !== 'sync_errors' && Boolean(value))
     return (
       <div className="space-y-8">
         <TasksHeader syncing={syncing} syncError={syncError} lastSynced={lastSynced} onSync={handleSync} onIntegrations={() => setShowIntegrations(s => !s)} showIntegrations={showIntegrations} />
-        {anyConnected ? (
+        {anyConnectedProvider ? (
           <div style={{ paddingTop: 8 }}>
             <p className="text-[13px]" style={{ color: 'var(--ink-2)', marginBottom: 6 }}>No tasks assigned to you.</p>
             <p className="text-[12px]" style={{ color: 'var(--ink-3)' }}>

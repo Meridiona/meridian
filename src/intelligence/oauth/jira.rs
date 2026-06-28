@@ -21,6 +21,14 @@ use crate::config::JiraConfig;
 // existing `oauth::jira::*` paths.
 pub use meridian_oauth::jira::*;
 
+/// True when all three Basic-auth fields are non-empty after trimming. Extracted
+/// so the eligibility check can be unit-tested without touching the OAuth store.
+fn has_basic_auth(jira: &JiraConfig) -> bool {
+    !jira.base_url.trim().is_empty()
+        && !jira.email.trim().is_empty()
+        && !jira.api_token.trim().is_empty()
+}
+
 /// Decide how to authenticate Jira requests: prefer the static API token when
 /// fully configured, otherwise fall back to a stored OAuth session. API token
 /// beats stored OAuth — a set JIRA_API_TOKEN always wins.
@@ -28,10 +36,7 @@ pub use meridian_oauth::jira::*;
 /// env-var-first) and lets developers use a stable PAT in .env without being
 /// blocked by a stale OAuth session stored in ~/.meridian/oauth/jira.json.
 pub async fn resolve(jira: &JiraConfig) -> Result<JiraReqCtx> {
-    if !jira.base_url.trim().is_empty()
-        && !jira.email.trim().is_empty()
-        && !jira.api_token.trim().is_empty()
-    {
+    if has_basic_auth(jira) {
         tracing::debug!(auth_method = "api_token", "resolving Jira auth");
         return Ok(JiraReqCtx::Basic {
             base_url: jira.base_url.clone(),
@@ -78,64 +83,41 @@ mod tests {
         assert!(matches!(ctx, JiraReqCtx::Basic { .. }));
     }
 
-    /// If any one of the three API-token fields is empty the basic-auth branch is
-    /// skipped — resolve() falls through to the OAuth / error path instead of
-    /// returning a half-configured Basic context.
-    #[tokio::test]
-    async fn missing_api_token_does_not_use_basic_auth() {
-        // All three required; missing api_token → must NOT return Basic.
-        // (store::exists("jira") will be false in the test environment, so we
-        // expect an error rather than OAuth — the important assertion is that
-        // Basic was not returned.)
-        let result = resolve(&cfg("https://acme.atlassian.net", "user@acme.com", "")).await;
-        assert!(
-            result.is_err() || matches!(result.as_ref().unwrap(), JiraReqCtx::OAuth { .. }),
-            "expected error or OAuth, not Basic auth with empty api_token"
-        );
+    /// Each of the three credential fields is required. Asserting the helper
+    /// directly avoids environment-dependent behavior (calling resolve() when
+    /// a jira OAuth store exists would hit ensure_fresh() and the network).
+    #[test]
+    fn basic_auth_requires_all_three_fields() {
+        assert!(super::has_basic_auth(&cfg(
+            "https://acme.atlassian.net",
+            "user@acme.com",
+            "tok"
+        )));
+        assert!(!super::has_basic_auth(&cfg(
+            "https://acme.atlassian.net",
+            "user@acme.com",
+            ""
+        )));
+        assert!(!super::has_basic_auth(&cfg(
+            "https://acme.atlassian.net",
+            "",
+            "tok"
+        )));
+        assert!(!super::has_basic_auth(&cfg("", "user@acme.com", "tok")));
     }
 
-    #[tokio::test]
-    async fn missing_email_does_not_use_basic_auth() {
-        let result = resolve(&cfg("https://acme.atlassian.net", "", "tok")).await;
-        assert!(
-            result.is_err() || matches!(result.as_ref().unwrap(), JiraReqCtx::OAuth { .. }),
-            "expected error or OAuth, not Basic auth with empty email"
-        );
-    }
-
-    #[tokio::test]
-    async fn missing_base_url_does_not_use_basic_auth() {
-        let result = resolve(&cfg("", "user@acme.com", "tok")).await;
-        assert!(
-            result.is_err() || matches!(result.as_ref().unwrap(), JiraReqCtx::OAuth { .. }),
-            "expected error or OAuth, not Basic auth with empty base_url"
-        );
-    }
-
-    #[tokio::test]
-    async fn whitespace_api_token_does_not_use_basic_auth() {
-        let result = resolve(&cfg("https://acme.atlassian.net", "user@acme.com", "   ")).await;
-        assert!(
-            result.is_err() || matches!(result.as_ref().unwrap(), JiraReqCtx::OAuth { .. }),
-            "expected error or OAuth, not Basic auth with whitespace-only api_token"
-        );
-    }
-
-    #[tokio::test]
-    async fn whitespace_email_does_not_use_basic_auth() {
-        let result = resolve(&cfg("https://acme.atlassian.net", "   ", "tok")).await;
-        assert!(
-            result.is_err() || matches!(result.as_ref().unwrap(), JiraReqCtx::OAuth { .. }),
-            "expected error or OAuth, not Basic auth with whitespace-only email"
-        );
-    }
-
-    #[tokio::test]
-    async fn whitespace_base_url_does_not_use_basic_auth() {
-        let result = resolve(&cfg("   ", "user@acme.com", "tok")).await;
-        assert!(
-            result.is_err() || matches!(result.as_ref().unwrap(), JiraReqCtx::OAuth { .. }),
-            "expected error or OAuth, not Basic auth with whitespace-only base_url"
-        );
+    #[test]
+    fn whitespace_fields_do_not_qualify_for_basic_auth() {
+        assert!(!super::has_basic_auth(&cfg(
+            "https://acme.atlassian.net",
+            "user@acme.com",
+            "   "
+        )));
+        assert!(!super::has_basic_auth(&cfg(
+            "https://acme.atlassian.net",
+            "   ",
+            "tok"
+        )));
+        assert!(!super::has_basic_auth(&cfg("   ", "user@acme.com", "tok")));
     }
 }

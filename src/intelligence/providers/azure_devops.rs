@@ -380,27 +380,34 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         .filter_map(|d| d.fields.parent_id)
         .filter(|pid| !fetched_set.contains(pid))
         .collect();
-    for _ in 0..4 {
+    'levels: for _ in 0..4 {
         if parents_needed.is_empty() {
             break;
         }
         let ids_to_fetch: Vec<u64> = parents_needed.drain().collect();
-        match fetch_batch(&client, cfg, &ids_to_fetch).await {
-            Ok(batch) => {
-                let next: std::collections::HashSet<u64> = batch
-                    .iter()
-                    .filter_map(|d| d.fields.parent_id)
-                    .filter(|pid| !fetched_set.contains(pid))
-                    .collect();
-                fetched_set.extend(ids_to_fetch);
-                ancestor_details.extend(batch);
-                parents_needed = next;
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "could not fetch ADO ancestor items — epic_title may be incomplete");
-                break;
+        let mut next: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        for chunk in ids_to_fetch.chunks(BATCH_SIZE) {
+            match fetch_batch(&client, cfg, chunk).await {
+                Ok(batch) => {
+                    next.extend(
+                        batch
+                            .iter()
+                            .filter_map(|d| d.fields.parent_id)
+                            .filter(|pid| !fetched_set.contains(pid)),
+                    );
+                    fetched_set.extend(chunk.iter().copied());
+                    ancestor_details.extend(batch);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "could not fetch ADO ancestor items — epic_title may be incomplete"
+                    );
+                    break 'levels;
+                }
             }
         }
+        parents_needed = next;
     }
     // Build id → (title, work_item_type, parent_id) from all fetched items.
     let id_meta: HashMap<u64, (&str, &str, Option<u64>)> = details
@@ -506,7 +513,9 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         );
         let project_key = f.team_project.as_deref();
         let assignee_name = f.assigned_to.as_ref().map(|a| a.display_name.as_str());
-        let parent_key: Option<String> = f.parent_id.map(|id| format!("{}#{}", cfg.project, id));
+        let parent_key: Option<String> = resolve_epic_id(&id_meta, f.parent_id)
+            .or(f.parent_id)
+            .map(|id| format!("{}#{}", cfg.project, id));
         let epic_title: Option<&str> = resolve_epic_title(&id_meta, f.parent_id);
 
         sqlx::query(
@@ -585,6 +594,24 @@ fn resolve_epic_title<'a>(
         let (title, wit, pid) = id_meta.get(&current)?;
         if *wit == "Epic" {
             return Some(title);
+        }
+        current = (*pid)?;
+    }
+    None
+}
+
+/// Walk the parent chain from `parent_id` and return the id of the nearest
+/// ancestor whose `work_item_type == "Epic"`, so all tasks under the same Epic
+/// share a single `parent_key` regardless of intermediate Story/Feature hops.
+fn resolve_epic_id(
+    id_meta: &HashMap<u64, (&str, &str, Option<u64>)>,
+    parent_id: Option<u64>,
+) -> Option<u64> {
+    let mut current = parent_id?;
+    for _ in 0..10 {
+        let (_, wit, pid) = id_meta.get(&current)?;
+        if *wit == "Epic" {
+            return Some(current);
         }
         current = (*pid)?;
     }
@@ -854,13 +881,30 @@ mod tests {
 
     #[test]
     fn parent_key_format_matches_task_key_shape() {
-        // parent_key is built inline as `{project}#{parent_id}` — the same shape as
-        // task_key — so it joins against pm_tasks.task_key. Lock the contract.
+        // parent_key uses the resolved Epic id (or direct parent as fallback) in
+        // `{project}#{id}` format — same shape as task_key for join correctness.
         let project = "hegdeakarsh2002";
-        let parent_id: Option<u64> = Some(59);
-        let parent_key = parent_id.map(|id| format!("{project}#{id}"));
+        let epic_id: Option<u64> = Some(59);
+        let parent_key = epic_id.map(|id| format!("{project}#{id}"));
         assert_eq!(parent_key.as_deref(), Some("hegdeakarsh2002#59"));
         let none_parent: Option<u64> = None;
         assert_eq!(none_parent.map(|id| format!("{project}#{id}")), None);
+    }
+
+    #[test]
+    fn resolve_epic_id_finds_nearest_epic_ancestor() {
+        // task 34 (not in map) → feature 59 → epic 201
+        let m = meta(&[
+            (59, "Feature A", "Feature", Some(201)),
+            (201, "Big Epic", "Epic", None),
+        ]);
+        // 34 not in map → None
+        assert_eq!(resolve_epic_id(&m, Some(34)), None);
+        // 59 is Feature whose parent 201 is Epic → returns 201
+        assert_eq!(resolve_epic_id(&m, Some(59)), Some(201));
+        // 201 is itself an Epic → returns 201 on first check
+        assert_eq!(resolve_epic_id(&m, Some(201)), Some(201));
+        // None parent_id → None
+        assert_eq!(resolve_epic_id(&m, None), None);
     }
 }

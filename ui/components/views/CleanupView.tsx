@@ -26,15 +26,10 @@ export default function CleanupView() {
   const [dismissed, setDismissed] = useState<Set<string>>(new Set())
 
   const load = useCallback(() => {
-    loadData<TasksResponse>('/api/tasks', 'get_tasks')
-      .then((res) => { setTasks(res.tasks ?? []); setLoading(false) })
-      .catch(() => setLoading(false))
-  }, [])
-
-  useEffect(() => {
-    loadData<IntegrationsResponse>('/api/integrations', 'get_integrations')
-      .then(setIntegrations)
-      .catch(() => {})
+    Promise.allSettled([
+      loadData<TasksResponse>('/api/tasks', 'get_tasks').then((res) => setTasks(res.tasks ?? [])),
+      loadData<IntegrationsResponse>('/api/integrations', 'get_integrations').then(setIntegrations),
+    ]).finally(() => setLoading(false))
   }, [])
 
   useEffect(() => { load() }, [load])

@@ -889,20 +889,16 @@ mod tests {
 
     /// Mirror force_refresh's inline `(parent_key, epic_title)` derivation so the
     /// test tracks the production extraction, not a reimplementation.
-    fn derive_parent_link(issue: &super::JiraIssue) -> (Option<&str>, &str) {
+    fn derive_parent_link(issue: &super::JiraIssue) -> (Option<&str>, Option<&str>) {
         issue
             .fields
             .parent
             .as_ref()
             .map(|p| {
-                let title = p
-                    .fields
-                    .as_ref()
-                    .and_then(|f| f.summary.as_deref())
-                    .unwrap_or("");
+                let title = p.fields.as_ref().and_then(|f| f.summary.as_deref());
                 (Some(p.key.as_str()), title)
             })
-            .unwrap_or((None, ""))
+            .unwrap_or((None, None))
     }
 
     #[test]
@@ -921,7 +917,7 @@ mod tests {
         let issue: super::JiraIssue = serde_json::from_str(json).unwrap();
         let (parent_key, epic_title) = derive_parent_link(&issue);
         assert_eq!(parent_key, Some("KAN-34"));
-        assert_eq!(epic_title, "Auth & Security Overhaul");
+        assert_eq!(epic_title, Some("Auth & Security Overhaul"));
     }
 
     #[test]
@@ -939,7 +935,7 @@ mod tests {
         let issue: super::JiraIssue = serde_json::from_str(json).unwrap();
         let (parent_key, epic_title) = derive_parent_link(&issue);
         assert_eq!(parent_key, None);
-        assert_eq!(epic_title, "");
+        assert_eq!(epic_title, None);
     }
 
     /// A parent with no expanded `fields` (summary unavailable) still yields the
@@ -960,6 +956,6 @@ mod tests {
         let issue: super::JiraIssue = serde_json::from_str(json).unwrap();
         let (parent_key, epic_title) = derive_parent_link(&issue);
         assert_eq!(parent_key, Some("KAN-50"));
-        assert_eq!(epic_title, "");
+        assert_eq!(epic_title, None);
     }
 }

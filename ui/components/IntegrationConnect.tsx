@@ -457,9 +457,10 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
 
       {showManualOrg && !orgs && (
         <div className="space-y-1.5">
-          <p className="text-[11px]" style={{ color: 'var(--ink-3)' }}>Enter your org name manually:</p>
+          <label htmlFor="azure-devops-org" className="text-[11px]" style={{ color: 'var(--ink-3)' }}>Enter your org name manually:</label>
           <div className="flex gap-2">
             <input
+              id="azure-devops-org"
               value={manualOrg}
               onChange={(e) => setManualOrg(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && submitManualOrg()}
