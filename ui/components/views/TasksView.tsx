@@ -78,7 +78,7 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
     // mutate throws the CLI's stderr on failure; success re-fetches the board.
     mutate('/api/tasks/sync', 'sync_tasks', {})
       .then(() => { setLastSynced(new Date()); fetchTasks() })
-      .catch((e) => setSyncError(e instanceof Error ? e.message : 'Sync failed — check daemon logs'))
+      .catch((e) => setSyncError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Sync failed — check daemon logs'))
       .finally(() => setSyncing(false))
   }
 
@@ -103,10 +103,23 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
   }
 
   if (data.tasks.length === 0) {
+    // If at least one provider is connected but the board is empty, the user
+    // has synced but nothing is assigned to them — show a targeted hint rather
+    // than the connect panel which implies nothing is wired up at all.
+    const anyConnected = integrations !== null && Object.values(integrations).some(Boolean)
     return (
       <div className="space-y-8">
         <TasksHeader syncing={syncing} syncError={syncError} lastSynced={lastSynced} onSync={handleSync} onIntegrations={() => setShowIntegrations(s => !s)} showIntegrations={showIntegrations} />
-        <ConnectTrackers integrations={integrations} onChanged={fetchIntegrations} />
+        {anyConnected ? (
+          <div style={{ paddingTop: 8 }}>
+            <p className="text-[13px]" style={{ color: 'var(--ink-2)', marginBottom: 6 }}>No tasks assigned to you.</p>
+            <p className="text-[12px]" style={{ color: 'var(--ink-3)' }}>
+              Make sure issues in your tracker are assigned to your account, then hit Refresh.
+            </p>
+          </div>
+        ) : (
+          <ConnectTrackers integrations={integrations} onChanged={fetchIntegrations} />
+        )}
       </div>
     )
   }
