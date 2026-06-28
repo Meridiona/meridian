@@ -276,7 +276,7 @@ function TokenSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
       await mutate('/api/auth/token', 'save_integration_token', { provider: tracker.id, fields: values })
       setDone(true); clearProviderNotice(tracker.id); onSuccess?.()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not save credentials')
+      setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not save credentials')
     } finally {
       setSaving(false)
     }
