@@ -547,6 +547,9 @@ pub fn run() {
             commands::delete_notice,
             commands::edit_worklog,
             commands::worklog_action,
+            commands::edit_proposed_title,
+            commands::edit_proposed_worklog,
+            commands::proposed_action,
             commands::update_settings,
             // process / service control (ported /api process routes)
             commands::reload_daemon,

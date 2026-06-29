@@ -48,6 +48,7 @@ fn make_issue(identifier: &str, state_type: &str) -> LinearIssue {
         started_at: None,
         labels: None,
         cycle: None,
+        project: None,
     }
 }
 
@@ -93,6 +94,7 @@ fn issue_with(team_id: &str, team_key: &str, state: &str) -> LinearIssue {
         started_at: None,
         labels: None,
         cycle: None,
+        project: None,
     }
 }
 
@@ -255,6 +257,29 @@ async fn upsert_maps_parent_to_epic() -> Result<()> {
             .context("fetch parent_key/epic_title")?;
     assert_eq!(parent_key.as_deref(), Some("ENG-1"));
     assert_eq!(epic_title.as_deref(), Some("Big Epic"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn upsert_uses_project_as_epic_when_no_parent() -> Result<()> {
+    // Regression: Linear tasks without a parent issue must group by project name
+    // (stored as "project:<name>" in parent_key) so the UI shows named groups
+    // instead of collapsing everything into "No epic".
+    let pool = make_pool().await?;
+    let mut issue = make_issue("ENG-9", "started");
+    issue.project = Some(Project {
+        name: Some("Meridian Core".into()),
+    });
+    upsert(&pool, &[issue], &linear_cfg(&[]))
+        .await
+        .context("upsert issue with project")?;
+    let (parent_key, epic_title): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT parent_key, epic_title FROM pm_tasks WHERE task_key = 'ENG-9'")
+            .fetch_one(&pool)
+            .await
+            .context("fetch parent_key/epic_title")?;
+    assert_eq!(parent_key.as_deref(), Some("project:Meridian Core"));
+    assert_eq!(epic_title.as_deref(), Some("Meridian Core"));
     Ok(())
 }
 

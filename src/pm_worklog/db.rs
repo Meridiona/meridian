@@ -270,3 +270,139 @@ pub async fn fail_worklog(pool: &SqlitePool, pm_worklog_id: i64, error: &str) ->
     .context("mark worklog terminally failed")?;
     Ok(())
 }
+
+// ── Approved proposals → ticket creation (the proposal sweep) ──────────────────
+
+/// An approved tier-3 proposal awaiting ticket creation (state='approved' and no
+/// real ticket minted yet). Its drafted worklog lives in `worklog_payload_json`.
+pub struct ApprovedProposal {
+    pub id: i64,
+    pub day_utc: String,
+    pub source_hour: String,
+    pub title: String,
+    pub description: String,
+    pub confidence: f64,
+    pub time_spent_seconds: i64,
+    pub window_start: Option<String>,
+    pub window_end: Option<String>,
+    pub worklog_payload_json: Option<String>,
+}
+
+/// Approved proposals that still need their real ticket created, oldest first.
+pub async fn fetch_approved_proposals(pool: &SqlitePool) -> Result<Vec<ApprovedProposal>> {
+    let rows = sqlx::query(
+        "SELECT id, day_utc, source_hour, title, description, confidence, \
+                time_spent_seconds, window_start, window_end, worklog_payload_json \
+         FROM pm_proposed_tasks \
+         WHERE state = 'approved' AND (created_task_key IS NULL OR created_task_key = '') \
+         ORDER BY source_hour",
+    )
+    .fetch_all(pool)
+    .await
+    .context("fetch approved proposals")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| ApprovedProposal {
+            id: r.get("id"),
+            day_utc: r.get("day_utc"),
+            source_hour: r.get("source_hour"),
+            title: r.get("title"),
+            description: r.get("description"),
+            confidence: r.try_get("confidence").unwrap_or(0.0),
+            time_spent_seconds: r.try_get("time_spent_seconds").unwrap_or(3600),
+            window_start: r.try_get("window_start").ok(),
+            window_end: r.try_get("window_end").ok(),
+            worklog_payload_json: r.try_get("worklog_payload_json").ok(),
+        })
+        .collect())
+}
+
+/// Any existing task_key for `provider` — used to infer GitHub's owner/repo when
+/// creating a ticket (config carries Projects-v2 ids, not a repo).
+pub async fn fetch_sample_task_key(pool: &SqlitePool, provider: &str) -> Result<Option<String>> {
+    let row = sqlx::query("SELECT task_key FROM pm_tasks WHERE provider = ? LIMIT 1")
+        .bind(provider)
+        .fetch_optional(pool)
+        .await
+        .context("fetch sample task key")?;
+    Ok(row.map(|r| r.get("task_key")))
+}
+
+/// Insert the approved worklog for a freshly-created ticket so the normal post
+/// sweep comments on it. Provider is stamped explicitly (the ticket isn't in
+/// pm_tasks yet). Returns the new `pm_worklogs.id`.
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_proposal_worklog(
+    pool: &SqlitePool,
+    task_key: &str,
+    provider: &str,
+    day_utc: &str,
+    cycle_index: i64,
+    window_start: &str,
+    window_end: &str,
+    time_spent_seconds: i64,
+    confidence: f64,
+    payload_json: &str,
+    now_iso: &str,
+) -> Result<i64> {
+    let row = sqlx::query(
+        "INSERT INTO pm_worklogs (\
+             task_key, day_utc, cycle_index, window_start, window_end, \
+             state, confidence, coverage, time_spent_seconds, payload_json, \
+             provider, approved_at) \
+         VALUES (?, ?, ?, ?, ?, 'approved', ?, 0, ?, ?, ?, ?) \
+         ON CONFLICT (task_key, day_utc, cycle_index) DO UPDATE SET \
+             state = 'approved', payload_json = excluded.payload_json, \
+             approved_at = excluded.approved_at \
+         WHERE pm_worklogs.state NOT IN ('posted') \
+         RETURNING id",
+    )
+    .bind(task_key)
+    .bind(day_utc)
+    .bind(cycle_index)
+    .bind(window_start)
+    .bind(window_end)
+    .bind(confidence)
+    .bind(time_spent_seconds)
+    .bind(payload_json)
+    .bind(provider)
+    .bind(now_iso)
+    .fetch_optional(pool)
+    .await
+    .context("insert approved proposal worklog")?;
+    match row {
+        Some(r) => Ok(r.get("id")),
+        None => {
+            let r = sqlx::query(
+                "SELECT id FROM pm_worklogs WHERE task_key = ? AND day_utc = ? AND cycle_index = ?",
+            )
+            .bind(task_key)
+            .bind(day_utc)
+            .bind(cycle_index)
+            .fetch_one(pool)
+            .await
+            .context("read existing proposal worklog id")?;
+            Ok(r.get("id"))
+        }
+    }
+}
+
+/// Stamp a proposal as created: record the real `task_key` + the worklog row id.
+pub async fn mark_proposal_created(
+    pool: &SqlitePool,
+    id: i64,
+    task_key: &str,
+    worklog_id: i64,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE pm_proposed_tasks SET created_task_key = ?, created_worklog_id = ? WHERE id = ?",
+    )
+    .bind(task_key)
+    .bind(worklog_id)
+    .bind(id)
+    .execute(pool)
+    .await
+    .context("mark proposal created")?;
+    Ok(())
+}

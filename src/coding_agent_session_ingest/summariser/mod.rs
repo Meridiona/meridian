@@ -62,7 +62,6 @@ impl std::error::Error for SummariserError {}
 /// The validated output of a primary (claude/codex) engine.
 pub struct EngineOutput {
     pub summary: String,
-    pub blockers: Vec<String>,
 }
 
 /// Captured result of a subprocess run.
@@ -442,18 +441,21 @@ async fn summarise_one_inner(
     }
 }
 
-/// stdin for the model: optional prior-burst context + (capped) transcript.
+/// stdin for the model: (capped) transcript + optional prior-burst context below.
+/// Prior context is placed AFTER the transcript so the model reads the current
+/// burst first; the earlier summary is there purely to give continuity context
+/// (same session, earlier hour) and should not be repeated in the output.
 fn build_prompt(transcript: &str, prior: Option<&str>, cap: usize) -> String {
     let mut parts: Vec<String> = Vec::new();
-    if let Some(p) = prior {
-        parts.push(format!(
-            "## EARLIER IN THIS SESSION (context — do not repeat)\n{p}"
-        ));
-    }
     parts.push(format!(
         "## TRANSCRIPT\n{}",
         cap_transcript(transcript, cap)
     ));
+    if let Some(p) = prior {
+        parts.push(format!(
+            "## EARLIER IN THIS SESSION (provided for context — this is the same session continued from a previous hour; do not repeat or summarise this section)\n{p}"
+        ));
+    }
     parts.join("\n\n")
 }
 
@@ -498,11 +500,17 @@ pub async fn run_loop(
         "coding-agent summariser starting"
     );
 
-    // Failure ledger for the dead-letter cap (see MAX_ROW_ATTEMPTS).
+    // Per-row failure ledger for dead-letter cap (see MAX_ROW_ATTEMPTS).
     let mut attempts: HashMap<i64, u32> = HashMap::new();
+    // Per-source rate-limit backoff: tracks when each agent source's primary
+    // engine is available again. Keyed on app_name ("Claude Code", "Codex", …).
+    // Only rows whose source is in backoff are skipped; other sources continue.
+    let mut source_backoff: HashMap<String, std::time::Instant> = HashMap::new();
     loop {
-        let backoff = drain(&pool, &cfg, &mut attempts).await;
-        let wait = if backoff {
+        let all_backed_off = drain(&pool, &cfg, &mut attempts, &mut source_backoff).await;
+        let wait = if all_backed_off {
+            // Nothing could be processed (all pending rows are from backed-off
+            // sources). Wait out the backoff period rather than spinning.
             cfg.rate_limit_backoff_secs
         } else {
             cfg.sweep_interval_secs
@@ -526,20 +534,28 @@ pub async fn run_loop(
 const MAX_ROW_ATTEMPTS: u32 = 3;
 
 /// One drain pass: summarise pending rows from a bounded recent window
-/// (yesterday + today), oldest-first. Returns true if we should back off
-/// (primary rate-limited AND MLX also failed).
+/// (yesterday + today), oldest-first. Returns true only when all available
+/// rows belong to rate-limited sources (no progress was possible this pass),
+/// signalling the caller to wait longer rather than spinning.
 ///
-/// Why the window: today-only strands rows sealed just before midnight that
-/// drain after it (observed: row 32019 needed a manual `--day` backfill);
-/// all-days (#177) walks the full historical backlog — observed churning 127
-/// rows back to May. Yesterday+today catches the rollover without the
-/// backlog. Older days stay an explicit operator action:
-/// `meridian coding-agent-summarise --day <YYYY-MM-DD>`.
+/// Rate-limit backoff is per-source (keyed on `app_name`): if Claude Code is
+/// rate-limited, Codex / Cursor / Copilot rows continue draining via MLX or
+/// their own primary. The old global 30-minute freeze is gone.
+///
+/// Why the yesterday+today window: today-only strands rows sealed just before
+/// midnight; all-days walks the full historical backlog. Yesterday+today
+/// catches the rollover without the churn. Older days remain an explicit
+/// operator action: `meridian coding-agent-summarise --day <YYYY-MM-DD>`.
 async fn drain(
     pool: &SqlitePool,
     cfg: &SummariserConfig,
     attempts: &mut HashMap<i64, u32>,
+    source_backoff: &mut HashMap<String, std::time::Instant>,
 ) -> bool {
+    // Expire stale backoffs before deciding what to skip.
+    let now_instant = std::time::Instant::now();
+    source_backoff.retain(|_, until| *until > now_instant);
+
     let now = Utc::now();
     let days = [
         (now - chrono::Duration::days(1))
@@ -554,29 +570,43 @@ async fn drain(
             return false;
         }
     };
+
+    if rows.is_empty() {
+        return false;
+    }
+
     let mut summarised = 0u32;
-    for row in rows {
+    let mut skipped_backoff = 0u32;
+
+    for row in &rows {
+        // Skip rows whose agent source is still in rate-limit backoff.
+        if source_backoff.contains_key(&row.agent) {
+            skipped_backoff += 1;
+            continue;
+        }
+
         let tries = attempts.get(&row.id).copied().unwrap_or(0);
         if tries >= MAX_ROW_ATTEMPTS {
-            continue; // dead-lettered this daemon lifetime (warned at cap)
+            continue; // dead-lettered this daemon lifetime
         }
-        let outcome = summarise_one(pool, &row, cfg, true).await;
+
+        let outcome = summarise_one(pool, row, cfg, true).await;
         if outcome.written {
             summarised += 1;
         } else if outcome.rate_limited {
-            // Primary rate-limited AND MLX failed → stop draining, back off.
+            // Apply per-source backoff so other sources can still drain.
+            let until =
+                std::time::Instant::now() + Duration::from_secs(cfg.rate_limit_backoff_secs);
+            source_backoff.insert(row.agent.clone(), until);
+            skipped_backoff += 1;
             tracing::warn!(
                 row_id = outcome.row_id,
-                "summariser backing off (rate-limited + MLX down)"
+                source = %row.agent,
+                backoff_s = cfg.rate_limit_backoff_secs,
+                "primary summariser rate-limited — backing off this source, other sources continue"
             );
-            if summarised > 0 {
-                tracing::info!(summarised, "summariser drain (partial)");
-            }
-            return true;
         } else {
-            // Transient failure (primary failed all attempts + MLX failed/down,
-            // or empty/unreadable transcript). Leave the row NULL for a later
-            // retry — but log WHY so it isn't a silent stall.
+            // Transient failure. Leave pending for retry; log so it isn't silent.
             let tries = tries + 1;
             attempts.insert(row.id, tries);
             if tries >= MAX_ROW_ATTEMPTS {
@@ -587,7 +617,7 @@ async fn drain(
                     row_id = outcome.row_id,
                     error = outcome.error.as_deref().unwrap_or("unknown"),
                     attempts = tries,
-                    "summarise failed repeatedly — dead-lettering for this daemon run (restart or `coding-agent-summarise --day` retries it)"
+                    "summarise failed repeatedly — dead-lettering (restart or `coding-agent-summarise --day` retries)"
                 );
             } else {
                 tracing::warn!(
@@ -599,10 +629,14 @@ async fn drain(
             }
         }
     }
+
     if summarised > 0 {
         tracing::info!(summarised, "summariser drain");
     }
-    false
+
+    // Signal global backoff only when ALL rows were skipped due to source
+    // backoffs — nothing useful can be done until at least one source recovers.
+    skipped_backoff > 0 && skipped_backoff == rows.len() as u32 && summarised == 0
 }
 
 /// One-shot CLI: `meridian coding-agent-summarise [--dry-run] [--day D] [--limit N]`.

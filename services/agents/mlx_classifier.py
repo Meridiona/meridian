@@ -18,7 +18,7 @@ from typing import Any, Iterator
 from agents import model_registry, observability
 
 log = logging.getLogger("agents.mlx_classifier")
-tracer = observability.setup("meridian-mlx-classifier")
+tracer = observability.setup("meridian-mlx-server")
 
 # Generative/classifier checkpoint — resolved from the model registry (the single
 # source of truth for all three pipeline models), env-overridable via MERIDIAN_LLM_ID.

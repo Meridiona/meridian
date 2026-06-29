@@ -3,6 +3,7 @@ SQLX_OFFLINE = "true"
 
 [build]
 rustflags = ["-D", "warnings"]
+incremental = false
 
 # The tray's optional `capture` feature pulls a PRIVATE git dependency
 # (Meridiona/screenpipe-fork). cargo's built-in fetcher can't authenticate to a

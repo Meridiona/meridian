@@ -1,17 +1,17 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Segmentation: a single coding-agent JSONL is sliced into SEGMENTS split on
-// idle gaps > `segment_gap_seconds` (default 1h) AND on a `max_segment_seconds`
-// time-box (default 1h), so a long continuous burst still seals on a
-// predictable cadence. One `app_sessions` row per segment, keyed on
-// (coding_agent_session_uuid, segment_started_at).
+// idle gaps > `segment_gap_seconds` (default 1h) AND on local clock-hour
+// boundaries (1pm, 2pm, …), so sessions are always bucketed into the same
+// hour windows as the rest of the pipeline. One `app_sessions` row per
+// segment, keyed on (coding_agent_session_uuid, segment_started_at).
 //
 // Originally ported from the Python indexer's `parse_session_segments`; the
 // tests below (mirrored from the old `test_segmentation.py`) pin the behaviour.
 
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 
 use super::jsonl::{infer_agent, iter_normalised_with_title, NormRecord};
 
@@ -26,7 +26,6 @@ pub struct SegmentParams {
     pub agent: Option<String>,
     pub active_gap_cap_seconds: i64,
     pub segment_gap_seconds: i64,
-    pub max_segment_seconds: i64,
     pub start_after_ts: Option<String>,
 }
 
@@ -36,7 +35,6 @@ impl Default for SegmentParams {
             agent: None,
             active_gap_cap_seconds: ACTIVE_TIME_GAP_CAP_SECONDS,
             segment_gap_seconds: SEGMENT_GAP_SECONDS,
-            max_segment_seconds: MAX_SEGMENT_SECONDS,
             start_after_ts: None,
         }
     }
@@ -126,6 +124,13 @@ pub fn norm_iso(ts: &str) -> String {
 /// boundary comparisons are byte-for-byte equivalent.
 fn delta_secs(a: DateTime<Utc>, b: DateTime<Utc>) -> f64 {
     (a - b).num_milliseconds() as f64 / 1000.0
+}
+
+/// Returns the local date+hour as a single comparable integer (YYYYMMDDHH)
+/// so that midnight rollovers are handled correctly.
+pub fn local_hour_key(dt: DateTime<Utc>) -> i64 {
+    let local = dt.with_timezone(&Local);
+    local.format("%Y%m%d%H").to_string().parse().unwrap_or(0)
 }
 
 // ──────────────────────── Builder ──────────────────────────────────────────
@@ -263,16 +268,14 @@ pub fn segment_records(
             }
         };
 
-        // Time-box: once a segment has run for max_segment_seconds, it should
-        // split — but only AT THE NEXT REAL USER PROMPT, so the prior row ends on
-        // a complete assistant turn and the new row opens on a user message
-        // (continuity). Splitting on raw time would cut mid-exchange. Tool-result
-        // `user` records don't count (is_user_prompt is false for them). If the
-        // agent runs autonomously past the box with no new prompt, the segment
-        // simply extends until the next prompt (or a >1h gap closes it).
-        let time_box_due = params.max_segment_seconds > 0
-            && seg_start_dt.is_some()
-            && delta_secs(cur_dt, seg_start_dt.unwrap()) >= params.max_segment_seconds as f64;
+        // Hour-boundary split: seal at the local clock-hour boundary (1pm, 2pm,
+        // …) rather than elapsed time. The split fires only AT THE NEXT REAL USER
+        // PROMPT so the prior turn ends cleanly (assistant response included) and
+        // the new segment opens on a human message. Tool-result `user` records
+        // don't count (is_user_prompt is false). A long autonomous run with no new
+        // prompt simply extends past the boundary — it belongs to the hour it
+        // started in (gap close handles sessions idle >1h).
+        let time_box_due = seg_start_dt.is_some_and(|s| local_hour_key(cur_dt) > local_hour_key(s));
         let start_new = cur.is_none()
             || prev_dt.is_none()
             || delta_secs(cur_dt, prev_dt.unwrap()) > params.segment_gap_seconds as f64
@@ -533,17 +536,17 @@ mod tests {
     #[test]
     fn no_split_at_exact_threshold() {
         let d = tmp();
-        // Exactly 3600s gap, time-box disabled → stays one segment (strict >).
+        // Exactly 3600s gap → gap-close triggers a new segment (strict >).
+        // The two records are 3600s apart which equals the gap threshold, so
+        // strict > means no gap-split; they land in the same segment. No
+        // hour-boundary split either (both in the same local hour for the
+        // test base timestamp 2026-05-20T08:00:00Z = 13:30 IST).
         let p = write_claude_jsonl(
             &d,
             "u3",
             &[rec(0, "user", "a"), rec(3600, "assistant", "b")],
         );
-        let params = SegmentParams {
-            max_segment_seconds: 0,
-            ..Default::default()
-        };
-        let (_m, segs) = parse_session_segments(&p, &params);
+        let (_m, segs) = parse_session_segments(&p, &SegmentParams::default());
         assert_eq!(segs.len(), 1);
     }
 
@@ -627,20 +630,22 @@ mod tests {
     }
 
     #[test]
-    fn time_box_disabled_keeps_one_segment() {
+    fn clock_hour_boundary_splits_long_session() {
         let d = tmp();
+        // 16 turns at 600s each = 150 min. Base = 2026-05-20T08:00:00Z = IST 13:30.
+        // Hour boundaries crossed: 14:00 IST (at +1800s) and 15:00 IST (at +5400s).
+        // Splits fire at the next user prompt after each boundary → 3 segments.
         let mut lines = Vec::new();
         for i in 0..16 {
             let role = if i % 2 == 0 { "user" } else { "assistant" };
             lines.push(rec(i * 600, role, &format!("turn {}", i)));
         }
         let p = write_claude_jsonl(&d, "u5", &lines);
-        let params = SegmentParams {
-            max_segment_seconds: 0,
-            ..Default::default()
-        };
-        let (_m, segs) = parse_session_segments(&p, &params);
-        assert_eq!(segs.len(), 1);
+        let (_m, segs) = parse_session_segments(&p, &SegmentParams::default());
+        assert!(
+            segs.len() >= 2,
+            "150min session must split at local hour boundaries"
+        );
     }
 
     #[test]

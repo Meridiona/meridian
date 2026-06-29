@@ -1,7 +1,7 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Run `claude -p` with the session-summary skill + structured output. Returns
-// the validated {summary, blockers}, or RateLimited (→ MLX fallback) /
+// the validated {summary}, or RateLimited (→ MLX fallback) /
 // Failed (→ retry). Port of the former Python summariser/claude_runner.py.
 //
 // Auth: the user's Claude subscription. We drop ANTHROPIC_API_KEY from the child
@@ -21,9 +21,19 @@ pub async fn run_claude(
     stdin_text: &str,
     cfg: &SummariserConfig,
 ) -> Result<EngineOutput, SummariserError> {
+    // SUMMARISER_SKILL is deprecated: the prompt is now embedded inline via
+    // SUMMARY_RULES (no slash-skill invocation). Warn once so operators know
+    // the env var has no effect and can remove it from their config.
+    if cfg.skill_name != "session-summary" {
+        tracing::warn!(
+            skill_name = %cfg.skill_name,
+            "SUMMARISER_SKILL is deprecated — prompt is now embedded inline; \
+             the env var has no effect and can be removed"
+        );
+    }
     let prompt = format!(
-        "/{} Summarise the coding-session transcript provided on stdin.",
-        cfg.skill_name
+        "{} Summarise the coding-session transcript provided on stdin.",
+        prompts::SUMMARY_RULES
     );
     let args: Vec<String> = vec![
         "-p".into(),
@@ -114,15 +124,5 @@ pub async fn run_claude(
             "claude returned no usable structured summary".into(),
         ));
     }
-    let blockers = structured
-        .and_then(|s| s.get("blockers"))
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(|b| b.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    Ok(EngineOutput { summary, blockers })
+    Ok(EngineOutput { summary })
 }

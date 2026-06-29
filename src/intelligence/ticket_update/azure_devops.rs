@@ -266,4 +266,65 @@ mod tests {
         assert_eq!(op["path"], "/fields/System.Title");
         assert_eq!(op["value"], "Hello");
     }
+
+    #[test]
+    fn builds_edit_url() {
+        let cfg = crate::config::AzureDevOpsConfig {
+            api_base: "https://dev.azure.com/myorg/".into(),
+            project: "MyProject".into(),
+            pat: "x".into(),
+        };
+        let item = WorkItemRef {
+            id: 42,
+            project: "MyProject".into(),
+        };
+        assert_eq!(
+            edit_url(&cfg, &item),
+            "https://dev.azure.com/myorg/MyProject/_workitems/edit/42"
+        );
+    }
+
+    #[test]
+    fn parent_relation_op() {
+        let cfg = crate::config::AzureDevOpsConfig {
+            api_base: "https://dev.azure.com/myorg".into(),
+            project: "Proj".into(),
+            pat: "x".into(),
+        };
+        let parent = WorkItemRef {
+            id: 7,
+            project: "Proj".into(),
+        };
+        let op = add_parent_relation(&cfg, &parent);
+        assert_eq!(op["op"], "add");
+        assert_eq!(op["path"], "/relations/-");
+        assert_eq!(op["value"]["rel"], "System.LinkTypes.Hierarchy-Reverse");
+        assert_eq!(
+            op["value"]["url"],
+            "https://dev.azure.com/myorg/_apis/wit/workItems/7"
+        );
+    }
+
+    #[test]
+    fn field_name_round_trips() {
+        let cases: &[(&str, WriteField)] = &[
+            ("duedate", WriteField::DueDate("2026-01-01".into())),
+            ("assignee", WriteField::AssignMe),
+            ("labels", WriteField::AddLabel("bug".into())),
+            ("priority", WriteField::Priority("High".into())),
+            ("story_points", WriteField::StoryPoints(3.0)),
+            ("parent", WriteField::Parent("Proj#1".into())),
+            ("summary", WriteField::Summary("t".into())),
+            ("description", WriteField::Description("d".into())),
+            ("close", WriteField::Close),
+            ("cancel", WriteField::Cancel),
+        ];
+        for (expected, field) in cases {
+            assert_eq!(
+                field_name(field),
+                *expected,
+                "field_name mismatch for {expected}"
+            );
+        }
+    }
 }

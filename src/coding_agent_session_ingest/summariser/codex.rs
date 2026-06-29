@@ -95,13 +95,13 @@ pub async fn run_codex(
         return Err(SummariserError::Failed("codex produced no output".into()));
     }
 
-    let (summary, blockers) = prompts::extract_summary(text);
+    let summary = prompts::extract_summary(text);
     if summary.is_empty() {
         return Err(SummariserError::Failed(
             "codex output had no usable summary".into(),
         ));
     }
-    Ok(EngineOutput { summary, blockers })
+    Ok(EngineOutput { summary })
 }
 
 /// Best-effort recursive cleanup of the scratch dir on scope exit.

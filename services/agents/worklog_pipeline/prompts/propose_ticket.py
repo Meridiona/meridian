@@ -12,8 +12,10 @@ RULES
 - Ground the task in what the summary actually shows. Do not invent work that isn't there.
 - `title` is an imperative, specific task name (<=80 chars), e.g. "Add OCR noise filter to ETL".
 - `description` is 2-4 sentences of scope and intent — what the work is and why.
+- `reasoning` is 1-2 sentences (<=300 chars) stating WHY this is a NEW ticket — i.e. why the
+  hour's work doesn't belong to any existing task. Ground it in the summary; be concrete.
 - If the hour is pure overhead with nothing worth tracking (idle, admin, personal), still
   draft the most reasonable task; a human will dismiss it.
 
-Output just the `title` and `description`.\
+Output the `title`, `description`, and `reasoning`.\
 """

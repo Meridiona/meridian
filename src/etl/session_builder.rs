@@ -218,6 +218,12 @@ const CLAUDE_SPINNERS: &[char] = &[
 /// Both separators are tried.
 ///
 /// Detection tiers:
+///   0. Bare semver label: Claude Code idle/startup sets the tab title to its
+///      own version ("Terminal - 2.1.193"). No task spinner is emitted in this
+///      state, so the label is indistinguishable from a Node REPL or Python
+///      interpreter by name alone — we suppress all bare X.Y.Z labels because
+///      the coding-agent indexer tracks these sessions and VS Code terminal
+///      REPL use is not meaningful focus time.
 ///   1. Claude Code active: spinner char at the very start of the label via OSC
 ///      escape sequences (e.g. "Terminal - ⠂ agentic-worklog-…").
 ///   2. Agent name: the first space-delimited word of the label starts with a
@@ -367,10 +373,6 @@ mod tests {
         assert!(!is_coding_agent_terminal("Terminal - gitclaude"));
         // "aider-helper" starts with "aider" → matches (it likely IS aider)
         assert!(is_coding_agent_terminal("Terminal - aider-helper"));
-        // Node REPL / Python interpreter bare versions — must NOT suppress
-        assert!(!is_coding_agent_terminal("Terminal - 20.11.0"));
-        assert!(!is_coding_agent_terminal("Terminal - 3.11.5"));
-        assert!(!is_coding_agent_terminal("Terminal - 1.0.0"));
     }
 
     #[test]
