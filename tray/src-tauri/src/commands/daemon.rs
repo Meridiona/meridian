@@ -120,13 +120,10 @@ pub async fn pause_for_duration(
 
     {
         let mut s = state.lock().map_err(|e| e.to_string())?;
-        // Abort the engine and UI consumer tasks — stops actual screen capture.
-        if let Some(h) = s.engine_abort.take() {
-            h.abort();
-        }
-        if let Some(h) = s.ui_consumer_abort.take() {
-            h.abort();
-        }
+        // Drop cancel senders → stops the engine and UI consumer tasks, fully
+        // halting ScreenCaptureKit and the CGEventTap recorder.
+        drop(s.engine_cancel.take());
+        drop(s.ui_consumer_cancel.take());
         s.capture_paused.store(true, Ordering::Relaxed);
         s.pause_until = Some(until);
         s.pause_source = Some(PauseSource::Timed);

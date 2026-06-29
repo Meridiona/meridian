@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
 use tauri::tray::TrayIconId;
-use tokio::task::AbortHandle;
+use tokio::sync::oneshot;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HealthStatus {
@@ -138,11 +138,11 @@ pub struct AppState {
     pub daemon_was_healthy: bool,
     pub consecutive_health_failures: u32,
     pub last_menu_state: HealthStatus,
-    /// Abort handle for the ScreenpipeEngine task. Aborting it stops screen capture entirely.
-    pub engine_abort: Option<AbortHandle>,
-    /// Abort handle for the UI event consumer task. Aborting it causes the OS recorder
-    /// thread to exit (it checks `tx.is_closed()` every 500ms).
-    pub ui_consumer_abort: Option<AbortHandle>,
+    /// Dropping this sender cancels the ScreenpipeEngine task, stopping screen capture.
+    pub engine_cancel: Option<oneshot::Sender<()>>,
+    /// Dropping this sender cancels the UI event consumer task, which causes the OS
+    /// recorder thread to exit (it checks `tx.is_closed()` every 500ms).
+    pub ui_consumer_cancel: Option<oneshot::Sender<()>>,
 }
 
 impl Default for AppState {
@@ -173,8 +173,8 @@ impl Default for AppState {
             daemon_was_healthy: false,
             consecutive_health_failures: 0,
             last_menu_state: HealthStatus::Unknown,
-            engine_abort: None,
-            ui_consumer_abort: None,
+            engine_cancel: None,
+            ui_consumer_cancel: None,
         }
     }
 }

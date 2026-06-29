@@ -758,23 +758,24 @@ pub(crate) fn start_capture(
         return;
     }
 
-    // Abort any previously running tasks so a resume is a clean restart.
+    // Drop any previous cancel senders — this signals the old tasks to exit.
     {
         let mut s = app_state.lock().unwrap();
-        if let Some(h) = s.engine_abort.take() {
-            h.abort();
-        }
-        if let Some(h) = s.ui_consumer_abort.take() {
-            h.abort();
-        }
+        drop(s.engine_cancel.take());
+        drop(s.ui_consumer_cancel.take());
     }
+
+    // Cancellation channels: dropping the Sender exits the receiving task.
+    // tauri::async_runtime::spawn works from any thread (incl. macOS main);
+    // tokio::task::spawn panics outside a tokio worker, so we avoid it here.
+    let (engine_cancel_tx, mut engine_cancel_rx) = tokio::sync::oneshot::channel::<()>();
+    let (ui_cancel_tx, mut ui_cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<capture::CapturedFrame>(64);
 
-    // Frame consumer: persists each captured frame to capture_frames.
-    // Spawned with tokio directly so we get a real AbortHandle.
+    // Frame consumer: exits when engine task finishes (tx drops → rx returns None).
     let consumer_pool = pool.clone();
-    let frame_task = tokio::task::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         while let Some(frame) = rx.recv().await {
             tracing::debug!(
                 ts = %frame.timestamp,
@@ -798,39 +799,47 @@ pub(crate) fn start_capture(
             }
         }
     });
-    let engine_abort = frame_task.abort_handle();
 
-    // Engine task: runs ScreenCaptureKit and sends frames to the consumer.
-    // Aborting this task drops `tx`, which causes `rx.recv()` in the frame
-    // consumer to return `None` and that task exits cleanly too.
+    // Engine task: select races the cancel signal against the engine run.
+    // When engine_cancel_tx is dropped, engine_cancel_rx resolves → task exits,
+    // dropping tx → frame consumer loop ends naturally.
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = ScreenpipeEngine.run(tx).await {
-            tracing::error!(error = %e, "capture: engine exited with error");
-        }
-    });
-
-    // UI event consumer + recorder OS thread.
-    let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel::<meridian_core::CaptureUiEventInsert>(256);
-    let ui_pool = pool;
-    // Spawned with tokio directly so we get a real AbortHandle. Aborting this
-    // task drops `ui_rx`, which closes the channel; the OS recorder thread
-    // detects `tx.is_closed()` within 500ms and exits.
-    let ui_task = tokio::task::spawn(async move {
-        while let Some(ev) = ui_rx.recv().await {
-            let Some(p) = ui_pool.as_ref() else {
-                continue;
-            };
-            if let Err(e) = meridian_core::insert_capture_ui_event(p, &ev).await {
-                tracing::warn!(error = %e, "capture: failed to persist ui event");
+        tokio::select! {
+            _ = &mut engine_cancel_rx => {
+                tracing::info!("capture: engine stopped (pause)");
+            }
+            result = ScreenpipeEngine.run(tx) => {
+                if let Err(e) = result {
+                    tracing::error!(error = %e, "capture: engine exited with error");
+                }
             }
         }
     });
-    let ui_consumer_abort = ui_task.abort_handle();
+
+    // UI event consumer: exits on cancel signal, which drops ui_rx, causing
+    // the OS recorder thread to see tx.is_closed() within 500ms and exit.
+    let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel::<meridian_core::CaptureUiEventInsert>(256);
+    let ui_pool = pool;
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::select! {
+                biased;
+                _ = &mut ui_cancel_rx => break,
+                ev = ui_rx.recv() => {
+                    let Some(ev) = ev else { break };
+                    let Some(p) = ui_pool.as_ref() else { continue };
+                    if let Err(e) = meridian_core::insert_capture_ui_event(p, &ev).await {
+                        tracing::warn!(error = %e, "capture: failed to persist ui event");
+                    }
+                }
+            }
+        }
+    });
     std::thread::spawn(move || capture::ui_events::run_ui_event_recorder(ui_tx));
 
-    // Store abort handles so pause_for_duration can stop the engine cleanly.
+    // Store senders in state; dropping them (on pause) cancels the tasks.
     let mut s = app_state.lock().unwrap();
-    s.engine_abort = Some(engine_abort);
-    s.ui_consumer_abort = Some(ui_consumer_abort);
+    s.engine_cancel = Some(engine_cancel_tx);
+    s.ui_consumer_cancel = Some(ui_cancel_tx);
     tracing::info!("capture: engine and ui recorder started");
 }

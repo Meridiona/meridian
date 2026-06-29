@@ -305,15 +305,11 @@ async fn check_work_hours(
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            // Abort engine tasks so screen recording fully stops.
+            // Drop cancel senders → stops engine + UI consumer, halting capture.
             {
                 let mut s = state.lock().unwrap();
-                if let Some(h) = s.engine_abort.take() {
-                    h.abort();
-                }
-                if let Some(h) = s.ui_consumer_abort.take() {
-                    h.abort();
-                }
+                drop(s.engine_cancel.take());
+                drop(s.ui_consumer_cancel.take());
                 capture_paused_flag.store(true, Ordering::Relaxed);
                 s.pause_source = Some(PauseSource::Schedule);
                 s.pause_started_at = Some(now);
