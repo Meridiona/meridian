@@ -174,6 +174,48 @@ pub async fn insert_capture_ui_event(pool: &SqlitePool, ev: &CaptureUiEventInser
     }
 }
 
+/// Insert a tray-originated tracking pause or schedule pause gap into `meridian.db`.
+///
+/// Unlike ETL-inserted gaps, pause gaps have no `etl_run_id` (they originate from
+/// the tray, not the daemon's ETL pipeline). `kind` must be `"tracking_paused"` or
+/// `"schedule_paused"` — migration 051's CHECK constraint enforces this at the DB
+/// layer. Degrades gracefully when the `gaps` table is absent (pre-051 DB — the
+/// gap is dropped with a debug log and `Ok` is returned so a schema lag never
+/// crashes the tray).
+///
+/// # Who calls this
+/// `tray/src-tauri/src/commands/daemon.rs` (`pause_for_duration`) on timed
+/// resume, and `tray/src-tauri/src/poll/mod.rs` on schedule-pause resume.
+pub async fn insert_pause_gap(
+    pool: &SqlitePool,
+    started_at: &str,
+    ended_at: &str,
+    duration_s: i64,
+    kind: &str,
+) -> Result<()> {
+    let res = sqlx::query(
+        "INSERT INTO gaps (started_at, ended_at, duration_s, kind) VALUES (?1, ?2, ?3, ?4)",
+    )
+    .bind(started_at)
+    .bind(ended_at)
+    .bind(duration_s)
+    .bind(kind)
+    .execute(pool)
+    .await;
+
+    match res {
+        Ok(_) => {
+            tracing::info!(kind, duration_s, "pause gap recorded");
+            Ok(())
+        }
+        Err(e) if is_missing_table(&e) => {
+            tracing::debug!("gaps absent (pre-051 DB) — pause gap dropped");
+            Ok(())
+        }
+        Err(e) => Err(e).context("insert_pause_gap failed"),
+    }
+}
+
 /// True when the error is SQLite's "no such table" — the schema-lag case
 /// [`insert_capture_frame`] / [`insert_capture_ui_event`] swallow.
 fn is_missing_table(e: &sqlx::Error) -> bool {

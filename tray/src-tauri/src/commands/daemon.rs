@@ -14,12 +14,15 @@
 //! - [`crate::sys`] — shared `uid_str` (launchctl domain) + `notify` (toast).
 //! - [`crate::poll::notifications_allowed`] — quiet-hours gate for the pause toast.
 
-use crate::state::{AppState, StatusPayload};
+use crate::state::{AppState, PauseSource, StatusPayload};
 use crate::sys;
+use chrono::{DateTime, SecondsFormat, Utc};
+use meridian_core::SqlitePool;
 use serde::Serialize;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use tauri::State;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tauri::{Emitter, State};
 
 /// The cached tray status (health + active session + today totals), read from
 /// the poll-loop-maintained [`AppState`]. Synchronous — just locks and snapshots.
@@ -84,6 +87,184 @@ pub async fn toggle_daemon(app: tauri::AppHandle, is_running: bool) -> Result<()
             "launchctl {} returned non-zero",
             if is_running { "stop" } else { "start" }
         ))
+    }
+}
+
+/// Pause in-process capture for `seconds` (0 = resume immediately).
+///
+/// On pause: sets `AppState.capture_paused = true`, stores the expiry timestamp,
+/// and spawns a Tokio task that auto-resumes when the timer expires. On resume
+/// (manual or auto), writes a `tracking_paused` gap row covering the paused
+/// interval and fires a toast if notifications are allowed.
+///
+/// # Who calls this
+/// The popover's duration-picker buttons (`pause-picker`) and the "Resume now"
+/// button (`resume-btn`) via `tray/src/app.js`.
+#[tauri::command]
+#[tracing::instrument(skip(app, state, db_pool))]
+pub async fn pause_for_duration(
+    app: tauri::AppHandle,
+    seconds: u64,
+    state: State<'_, Arc<Mutex<AppState>>>,
+    db_pool: State<'_, Option<SqlitePool>>,
+) -> Result<(), String> {
+    let pool = db_pool.inner().clone();
+
+    if seconds == 0 {
+        resume_capture(state.inner(), pool.as_ref(), &app, false).await;
+        return Ok(());
+    }
+
+    let now = now_secs();
+    let until = now + seconds;
+
+    // If a pause is already active (e.g. a schedule pause), close it out first
+    // by writing a gap row for the T0→now period before overwriting state.
+    let prev = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        s.pause_started_at.zip(s.pause_source.clone())
+    };
+    if let Some((prev_started, prev_src)) = prev {
+        let kind = match prev_src {
+            PauseSource::Timed => "tracking_paused",
+            PauseSource::Schedule => "schedule_paused",
+        };
+        let duration_s = now.saturating_sub(prev_started) as i64;
+        if duration_s > 0 {
+            if let Some(p) = pool.as_ref() {
+                if let Err(e) = meridian_core::insert_pause_gap(
+                    p,
+                    &secs_to_iso(prev_started),
+                    &secs_to_iso(now),
+                    duration_s,
+                    kind,
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, kind, "failed to write gap for interrupted pause");
+                }
+            }
+        }
+    }
+
+    {
+        let mut s = state.lock().map_err(|e| e.to_string())?;
+        // Drop cancel senders → stops the engine and UI consumer tasks, fully
+        // halting ScreenCaptureKit and the CGEventTap recorder.
+        drop(s.engine_cancel.take());
+        drop(s.ui_consumer_cancel.take());
+        s.capture_paused.store(true, Ordering::Relaxed);
+        s.pause_until = Some(until);
+        s.pause_source = Some(PauseSource::Timed);
+        s.pause_started_at = Some(now);
+        s.schedule_resume_at = None;
+    }
+
+    // Emit immediately so the popover reflects the new state without waiting for the next poll tick.
+    if let Ok(s) = state.lock() {
+        let _ = app.emit("status-update", s.to_payload());
+    }
+
+    tracing::info!(seconds, until, "capture paused for duration");
+
+    if crate::poll::notifications_allowed("system.pause").await {
+        let mins = seconds / 60;
+        let label = if mins == 0 {
+            format!("{} seconds", seconds)
+        } else if mins >= 60 {
+            let h = mins / 60;
+            format!("{} hour{}", h, if h == 1 { "" } else { "s" })
+        } else {
+            format!("{} minute{}", mins, if mins == 1 { "" } else { "s" })
+        };
+        sys::notify(&app, "Tracking paused", &format!("Paused for {}.", label));
+    }
+
+    // Spawn the auto-resume task. Checks `pause_until` on wake to detect early
+    // manual resumes (which clear the field) — no-ops if already resumed.
+    let state_arc = state.inner().clone();
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(seconds)).await;
+        let still_ours = state_arc
+            .lock()
+            .map(|s| s.pause_until == Some(until))
+            .unwrap_or(false);
+        if still_ours {
+            resume_capture(&state_arc, pool.as_ref(), &app_clone, true).await;
+        }
+    });
+
+    Ok(())
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn secs_to_iso(secs: u64) -> String {
+    DateTime::<Utc>::from_timestamp(secs as i64, 0)
+        .unwrap_or_else(Utc::now)
+        .to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+/// Clear the capture pause, write a gap row, and optionally toast the user.
+/// Shared by manual resume (`seconds = 0`) and auto-resume (timer expiry).
+pub(crate) async fn resume_capture(
+    state: &Arc<Mutex<AppState>>,
+    pool: Option<&SqlitePool>,
+    app: &tauri::AppHandle,
+    auto: bool,
+) {
+    let (started, source) = {
+        let mut s = state.lock().unwrap();
+        let started = s.pause_started_at.take();
+        let source = s.pause_source.take();
+        s.capture_paused.store(false, Ordering::Relaxed);
+        s.pause_until = None;
+        s.schedule_resume_at = None;
+        (started, source)
+    };
+
+    if let (Some(started_secs), Some(src)) = (started, source) {
+        let kind = match src {
+            PauseSource::Timed => "tracking_paused",
+            PauseSource::Schedule => "schedule_paused",
+        };
+        let now = now_secs();
+        let duration_s = now.saturating_sub(started_secs) as i64;
+        if duration_s > 0 {
+            if let Some(p) = pool {
+                if let Err(e) = meridian_core::insert_pause_gap(
+                    p,
+                    &secs_to_iso(started_secs),
+                    &secs_to_iso(now),
+                    duration_s,
+                    kind,
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, kind, "failed to write pause gap");
+                }
+            }
+        }
+    }
+
+    // Restart the capture engine so screen recording resumes.
+    #[cfg(feature = "capture")]
+    crate::start_capture(state.clone(), pool.cloned());
+
+    // Emit immediately so the popover reverts to the picker without waiting for the next tick.
+    if let Ok(s) = state.lock() {
+        let _ = app.emit("status-update", s.to_payload());
+    }
+
+    tracing::info!(auto, "capture resumed");
+    if !auto && crate::poll::notifications_allowed("system.pause").await {
+        sys::notify(app, "Resumed", "Meridian is back tracking.");
     }
 }
 

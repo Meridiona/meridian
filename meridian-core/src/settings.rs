@@ -65,6 +65,11 @@ pub struct RuntimeSettings {
     pub quiet_hours_enabled: bool,
     pub quiet_hours_start: String,
     pub quiet_hours_end: String,
+    // Work hours — capture is paused automatically outside this window.
+    pub work_hours_enabled: bool,
+    pub work_hours_start: String, // "HH:MM" local time, inclusive
+    pub work_hours_end: String,   // "HH:MM" local time, exclusive
+    pub work_days: String,        // comma-separated 1–7 (Mon=1 … Sun=7), e.g. "1,2,3,4,5"
 }
 
 impl Default for RuntimeSettings {
@@ -95,6 +100,10 @@ impl Default for RuntimeSettings {
             quiet_hours_enabled: false,
             quiet_hours_start: "22:00".to_string(),
             quiet_hours_end: "08:00".to_string(),
+            work_hours_enabled: false,
+            work_hours_start: "09:00".to_string(),
+            work_hours_end: "18:00".to_string(),
+            work_days: "1,2,3,4,5".to_string(),
         }
     }
 }

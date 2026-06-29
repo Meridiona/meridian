@@ -62,7 +62,14 @@ const liveSince = $('live-since')
 const pauseSec = $('pause')
 const pauseText = $('pause-text')
 const pauseSub = $('pause-sub')
-const pauseBtn = $('pause-btn')
+const pausePicker = $('pause-picker')
+const pauseCustom = $('pause-custom')
+const pauseActive = $('pause-active')
+const pauseCountdown = $('pause-countdown')
+const customMins = $('custom-mins')
+const customConfirm = $('custom-confirm')
+const customCancel = $('custom-cancel')
+const resumeBtn = $('resume-btn')
 const tileFocus = $('tile-focus')
 const tileCoding = $('tile-coding')
 const tileCodingSub = $('tile-coding-sub')
@@ -80,6 +87,11 @@ const updVer = $('upd-ver')
 let elapsed = 0       // live session seconds; re-synced on every status payload
 let isTracking = false // healthy + has an active session
 let tickId = null
+
+// ── Pause state (synced from StatusPayload) ───────────────────────────────────
+let pauseUntilMs = null    // ms timestamp when timed pause ends; null = not timed-paused
+let countdownId = null     // interval handle for the live countdown
+let daemonUnhealthy = false // true when healthy=false; drives resumeBtn action
 
 // ── Formatters ───────────────────────────────────────────────────────────────
 // "6h 30m" / "30m" / "0m" — zero-pads minutes only when hours are present.
@@ -126,6 +138,36 @@ function glyphColor(hex) {
   return '#' + [lift(r), lift(g), lift(b)].map((x) => x.toString(16).padStart(2, '0')).join('')
 }
 
+// ── Countdown rendering ───────────────────────────────────────────────────────
+function fmtCountdown(remainMs) {
+  const total = Math.max(0, Math.ceil(remainMs / 1000))
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
+function paintCountdown() {
+  if (!pauseUntilMs) return
+  const remain = pauseUntilMs - Date.now()
+  pauseCountdown.textContent = fmtCountdown(remain)
+}
+
+function startCountdown(untilMs) {
+  pauseUntilMs = untilMs
+  paintCountdown()
+  if (countdownId) clearInterval(countdownId)
+  countdownId = setInterval(() => {
+    paintCountdown()
+    if (Date.now() >= pauseUntilMs) stopCountdown()
+  }, 1000)
+}
+
+function stopCountdown() {
+  if (countdownId) clearInterval(countdownId)
+  countdownId = null
+  pauseUntilMs = null
+}
+
 // ── Timer rendering ──────────────────────────────────────────────────────────
 function paintTimer() {
   const { hm, sec } = timerParts(Math.max(0, elapsed))
@@ -157,7 +199,9 @@ function render(status) {
 
   // ── Live block state ──────────────────────────────────────────────────────
   live.classList.remove('paused', 'idle')
-  isTracking = healthy && hasActive
+  const pauseSource = status.pause_source || null
+  const isPaused = !!pauseSource
+  isTracking = healthy && hasActive && !isPaused
 
   if (!status.has_polled) {
     // First-tick hasn't completed yet — show a neutral connecting state so the
@@ -169,6 +213,12 @@ function render(status) {
     elapsed = 0
   } else if (!healthy) {
     // Daemon is off / unreachable — tracking is effectively paused.
+    live.classList.add('paused')
+    liveLabelText.textContent = 'PAUSED'
+    liveMatch.textContent = ''
+    elapsed = 0
+  } else if (isPaused) {
+    // In-process capture is paused (timed or schedule).
     live.classList.add('paused')
     liveLabelText.textContent = 'PAUSED'
     liveMatch.textContent = ''
@@ -212,16 +262,52 @@ function render(status) {
   paintTimer()
 
   // ── Pause / tracking toggle ───────────────────────────────────────────────
-  if (healthy) {
-    pauseSec.classList.remove('paused')
-    pauseText.textContent = 'Pause tracking'
-    pauseSub.textContent = ''
-    pauseBtn.textContent = 'Pause'
-  } else {
+  if (!healthy) {
+    // Daemon down — show a restart button so the user can recover without a terminal.
+    daemonUnhealthy = true
     pauseSec.classList.add('paused')
     pauseText.textContent = 'Tracking paused'
     pauseSub.textContent = "Meridian isn't recording"
-    pauseBtn.textContent = 'Resume'
+    pausePicker.hidden = true
+    pauseCustom.hidden = true
+    pauseActive.hidden = false
+    pauseCountdown.hidden = true
+    resumeBtn.textContent = 'Restart daemon'
+    stopCountdown()
+  } else if (pauseSource === 'timed') {
+    // Timed pause active — show countdown + "Resume now".
+    daemonUnhealthy = false
+    pauseSec.classList.add('paused')
+    pauseText.textContent = 'Tracking paused'
+    pauseSub.textContent = ''
+    pausePicker.hidden = true
+    pauseCustom.hidden = true
+    pauseActive.hidden = false
+    pauseCountdown.hidden = false
+    resumeBtn.textContent = 'Resume now'
+    const untilMs = status.pause_until_ms || 0
+    if (untilMs !== pauseUntilMs) startCountdown(untilMs)
+  } else if (pauseSource === 'schedule') {
+    // Schedule pause — outside work hours; show resume time hint, no countdown.
+    daemonUnhealthy = false
+    pauseSec.classList.add('paused')
+    pauseText.textContent = 'Outside work hours'
+    const resumeAt = status.schedule_resume_at || ''
+    pauseSub.textContent = resumeAt ? `Resumes at ${resumeAt}` : 'Work hours not active'
+    pausePicker.hidden = true
+    pauseCustom.hidden = true
+    pauseActive.hidden = true
+    stopCountdown()
+  } else {
+    // Not paused — show the duration picker.
+    daemonUnhealthy = false
+    pauseSec.classList.remove('paused')
+    pauseText.textContent = 'Pause tracking'
+    pauseSub.textContent = ''
+    pausePicker.hidden = false
+    pauseCustom.hidden = true
+    pauseActive.hidden = true
+    stopCountdown()
   }
 
   // ── Time tracker tiles ────────────────────────────────────────────────────
@@ -270,11 +356,41 @@ $('btn-perms').addEventListener('click', () =>
 $('btn-quit').addEventListener('click', () => invoke('quit_app').catch(console.error))
 wl.addEventListener('click', () => invoke('open_worklogs'))
 
-pauseBtn.addEventListener('click', () => {
-  // Healthy → tell the daemon it's running so it stops (Pause).
-  // Unhealthy → tell it it's stopped so it starts (Resume).
-  const running = !brandDot.classList.contains('down')
-  invoke('toggle_daemon', { is_running: running }).catch(console.error)
+// Duration picker buttons (5m / 15m / 30m / 1hr / ···)
+pausePicker.addEventListener('click', (e) => {
+  const btn = e.target.closest('.dur-btn')
+  if (!btn) return
+  if (btn.dataset.custom) {
+    pausePicker.hidden = true
+    pauseCustom.hidden = false
+    customMins.value = ''
+    customMins.focus()
+  } else {
+    const secs = parseInt(btn.dataset.secs, 10)
+    invoke('pause_for_duration', { seconds: secs }).catch(console.error)
+  }
+})
+
+// Custom duration confirm / cancel
+customConfirm.addEventListener('click', () => {
+  const mins = parseInt(customMins.value, 10)
+  if (!mins || mins < 1) return
+  invoke('pause_for_duration', { seconds: mins * 60 }).catch(console.error)
+  pauseCustom.hidden = true
+  pausePicker.hidden = false
+})
+customCancel.addEventListener('click', () => {
+  pauseCustom.hidden = true
+  pausePicker.hidden = false
+})
+
+// Resume now (timed pause) or restart daemon (unhealthy)
+resumeBtn.addEventListener('click', () => {
+  if (daemonUnhealthy) {
+    invoke('restart_daemon').catch(console.error)
+  } else {
+    invoke('pause_for_duration', { seconds: 0 }).catch(console.error)
+  }
 })
 
 // ── DMG auto-update ───────────────────────────────────────────────────────────
