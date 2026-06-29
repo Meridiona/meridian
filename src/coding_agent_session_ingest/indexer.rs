@@ -19,21 +19,31 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local, Timelike, Utc};
 use sqlx::SqlitePool;
 use tokio::sync::{watch, Notify};
 
 use super::db;
 use super::segment::{
-    clean_title, iso_utc, parse_iso, parse_session_segments, Segment, SegmentParams,
-    SEGMENT_GAP_SECONDS,
+    clean_title, iso_utc, local_hour_key, parse_iso, parse_session_segments, Segment,
+    SegmentParams, SEGMENT_GAP_SECONDS,
 };
 
-const DEFAULT_POLL_INTERVAL_S: u64 = 600;
+/// Poll every 2 minutes. Cheap (fast SQL + mtime checks); gives ≤2-min
+/// process-gone detection and ≤2-min lag for new session discovery.
+const DEFAULT_POLL_INTERVAL_S: u64 = 120;
 const DEFAULT_SEAL_IDLE_S: i64 = 3600;
 /// Slack (s) on the mtime-vs-stored-ended_at change check: absorbs clock skew
 /// and ISO truncation so an unchanged file isn't needlessly re-parsed.
 const CHANGE_SLACK_SECS: f64 = 5.0;
+
+/// Whether this tick was triggered by a regular poll or a hour-boundary wake.
+/// Only `HourBoundary` ticks run the force-seal sweep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TickKind {
+    Regular,
+    HourBoundary,
+}
 
 /// Resolved paths + cadence for the indexer (env-driven, mirrors the Python
 /// config + the retired launchd plist).
@@ -222,35 +232,63 @@ pub async fn register_records(
 }
 
 /// A non-last segment is always sealed (its >1h gap already happened). The last
-/// segment seals iff the caller says the session ended, or its last message is
-/// already older than the segment gap (settled by idle).
+/// segment seals iff: the session ended, the last message is older than the
+/// segment gap (idle backstop), OR the last message is in a previous local
+/// clock hour (hour-boundary seal — no need to wait for the next user prompt).
 fn should_seal(seg: &Segment, session_ended: bool, now: DateTime<Utc>) -> bool {
     if !seg.is_last || session_ended {
         return true;
     }
-    match parse_iso(&seg.ended_at) {
-        Some(ended) => {
-            let idle = (now - ended).num_milliseconds() as f64 / 1000.0;
-            idle > SEGMENT_GAP_SECONDS as f64
-        }
-        None => false, // can't determine idleness → keep live
+    let Some(ended) = parse_iso(&seg.ended_at) else {
+        return false; // can't determine → keep live
+    };
+    let idle = (now - ended).num_milliseconds() as f64 / 1000.0;
+    if idle > SEGMENT_GAP_SECONDS as f64 {
+        return true;
     }
+    // Seal when the last message landed in a previous local clock hour.
+    // The indexer wakes at each hour boundary, so this fires within seconds
+    // of the top of the hour — no new user prompt required.
+    local_hour_key(ended) < local_hour_key(now)
 }
 
 // ──────────────────────── One tick ──────────────────────────────────────────
 
 /// One poll sweep: seal settled live rows, then register changed files. Returns
-/// (rows sealed, files written).
-pub async fn run_tick(pool: &SqlitePool, cfg: &IndexerConfig, now: DateTime<Utc>) -> (u64, u64) {
+/// (rows sealed, files written). On `HourBoundary` ticks, also force-seals all
+/// live rows whose last activity is in a previous local clock hour.
+pub async fn run_tick(
+    pool: &SqlitePool,
+    cfg: &IndexerConfig,
+    now: DateTime<Utc>,
+    kind: TickKind,
+) -> (u64, u64) {
     let now_iso = iso_utc(now);
 
-    let sealed = match db::seal_stale_open_rows(pool, &now_iso, cfg.seal_idle_seconds).await {
+    let mut sealed = match db::seal_stale_open_rows(pool, &now_iso, cfg.seal_idle_seconds).await {
         Ok(n) => n,
         Err(e) => {
-            tracing::warn!(error = %e, "seal sweep failed");
+            tracing::warn!(error = %e, "idle seal sweep failed");
             0
         }
     };
+
+    // At every hour boundary, unconditionally seal all live rows whose last
+    // activity falls in a previous local hour. This captures sessions that went
+    // quiet mid-hour (dev stopped typing but did not exit the agent) so the
+    // worklog generator has complete data for that hour.
+    if kind == TickKind::HourBoundary {
+        let hour_start_iso = iso_utc(meridian_core::date::local_hour_start_utc(now));
+        match db::seal_live_rows_at_hour_boundary(pool, &now_iso, &hour_start_iso).await {
+            Ok(n) => {
+                if n > 0 {
+                    tracing::info!(sealed = n, "hour-boundary force-seal");
+                }
+                sealed += n;
+            }
+            Err(e) => tracing::warn!(error = %e, "hour-boundary force-seal failed"),
+        }
+    }
 
     let candidates = candidate_jsonls(pool, cfg, now).await;
     let mut wrote = 0_u64;
@@ -284,10 +322,16 @@ pub async fn run_tick(pool: &SqlitePool, cfg: &IndexerConfig, now: DateTime<Utc>
 }
 
 /// CLI-backed sources eligible for end-of-session acceleration. IDE-resident
-/// sources (cursor vscdb sidebar, VS Code chatSessions) and Claude
-/// (SessionEnd hook) are deliberately absent — their lifecycles are handled
-/// elsewhere.
-const CLI_SOURCES: &[&str] = &["codex_jsonl", "copilot_events_jsonl", "cursor_cli_store"];
+/// sources (cursor vscdb sidebar, VS Code chatSessions) are absent — their
+/// lifecycles are managed by the cursor/copilot vscode adapters. claude_jsonl
+/// is included: when the Claude Code process is gone the session is done
+/// (the SessionEnd hook is the fast path; the ps probe is the backstop).
+const CLI_SOURCES: &[&str] = &[
+    "claude_jsonl",
+    "codex_jsonl",
+    "copilot_events_jsonl",
+    "cursor_cli_store",
+];
 
 /// Prompt session completion for CLI agents — /clear and Ctrl+C, which write
 /// no end marker in most stores:
@@ -343,7 +387,7 @@ async fn list_process_argvs() -> Option<Vec<String>> {
     // every CLI is treated as running, which only defers to the idle backstop.
     let mut cmd = tokio::process::Command::new("ps");
     cmd.args(["-axo", "args="]).kill_on_drop(true);
-    let output = tokio::time::timeout(std::time::Duration::from_secs(15), cmd.output())
+    let output = tokio::time::timeout(std::time::Duration::from_secs(5), cmd.output())
         .await
         .ok()?
         .ok()?;
@@ -376,6 +420,12 @@ fn cli_running(argvs: &[String], source: &str) -> bool {
         };
         let bn0 = basename(first);
         match source {
+            // Interactive Claude Code session: binary is `claude` with no `-p`
+            // flag (the `-p` form is the summariser's own subprocess — exclude it
+            // so the summariser's run never accidentally seals the live session).
+            "claude_jsonl" => {
+                bn0 == "claude" && !line.contains(" -p ") && !line.contains(" --print ")
+            }
             "codex_jsonl" => bn0 == "codex" && !line.contains("app-server"),
             "copilot_events_jsonl" => {
                 bn0 == "copilot" || (bn0 == "node" && toks.next().map(basename) == Some("copilot"))
@@ -486,6 +536,25 @@ fn iter_project_dirs(cfg: &IndexerConfig) -> Vec<PathBuf> {
 
 // ──────────────────────── Loop ──────────────────────────────────────────────
 
+/// Sleep duration and tick kind until the next event. Wakes at whichever is
+/// sooner: the normal poll interval or the top of the next local clock hour.
+/// Returns `HourBoundary` when the hour-boundary wake wins so the caller can
+/// run the hour-boundary force-seal sweep.
+fn next_tick(poll_interval_secs: u64) -> (Duration, TickKind) {
+    let now = Local::now();
+    let secs_past_hour = (now.minute() * 60 + now.second()) as u64;
+    // +2s buffer so the tick lands just after the boundary, not at it.
+    let secs_to_next_hour = 3600u64.saturating_sub(secs_past_hour) + 2;
+    if secs_to_next_hour < poll_interval_secs {
+        (
+            Duration::from_secs(secs_to_next_hour),
+            TickKind::HourBoundary,
+        )
+    } else {
+        (Duration::from_secs(poll_interval_secs), TickKind::Regular)
+    }
+}
+
 /// The indexer task: gate, an immediate backfill-today tick, then poll until
 /// shutdown. Returns immediately (dormant) if no coding agent is present.
 /// Notifies `summariser_notify` whenever a tick seals or writes rows, so the
@@ -513,14 +582,15 @@ pub async fn run_loop(
         }
     };
 
-    let (sealed, wrote) = guarded_tick(&pool, &cfg).await; // backfill-today on startup
+    let (sealed, wrote) = guarded_tick(&pool, &cfg, TickKind::Regular).await; // backfill-today on startup
     notify_if_work(sealed, wrote);
 
     loop {
+        let (sleep_dur, tick_kind) = next_tick(cfg.poll_interval_secs);
         tokio::select! {
             _ = shutdown_rx.changed() => break,
-            _ = tokio::time::sleep(Duration::from_secs(cfg.poll_interval_secs)) => {
-                let (sealed, wrote) = guarded_tick(&pool, &cfg).await;
+            _ = tokio::time::sleep(sleep_dur) => {
+                let (sealed, wrote) = guarded_tick(&pool, &cfg, tick_kind).await;
                 notify_if_work(sealed, wrote);
             }
         }
@@ -532,9 +602,9 @@ pub async fn run_loop(
 /// not fatal) so a single wedged await — a hung subprocess, a locked store —
 /// costs one tick, never the loop. The ceiling is generous: a healthy tick is
 /// seconds; only a genuine hang crosses minutes.
-async fn guarded_tick(pool: &SqlitePool, cfg: &IndexerConfig) -> (u64, u64) {
+async fn guarded_tick(pool: &SqlitePool, cfg: &IndexerConfig, kind: TickKind) -> (u64, u64) {
     const TICK_CEILING: Duration = Duration::from_secs(480);
-    match tokio::time::timeout(TICK_CEILING, run_tick(pool, cfg, Utc::now())).await {
+    match tokio::time::timeout(TICK_CEILING, run_tick(pool, cfg, Utc::now(), kind)).await {
         Ok(result) => result,
         Err(_) => {
             tracing::warn!(
@@ -563,7 +633,7 @@ fn iso_to_epoch(iso: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{Duration as ChronoDuration, TimeZone};
+    use chrono::{Duration as ChronoDuration, TimeZone, Timelike};
     use sqlx::sqlite::SqliteConnectOptions;
     use std::io::Write;
     use std::str::FromStr;
@@ -689,6 +759,36 @@ mod tests {
         // Only false if neither dir exists AND no binary on PATH; binaries may be
         // installed on the dev box, so just assert the dir-absence branch is wired.
         let _ = coding_agents_present(&cfg_absent);
+    }
+
+    #[test]
+    fn local_hour_start_utc_truncates_to_hour() {
+        // 14:35 UTC with UTC == local → hour start is 14:00 UTC.
+        let now = Utc.with_ymd_and_hms(2026, 6, 29, 14, 35, 0).unwrap();
+        let start = meridian_core::date::local_hour_start_utc(now);
+        // We can't hardcode the result (local tz varies by machine), but we can
+        // assert the round-trip: local(start).minute() == 0 && local(start).second() == 0.
+        let local_start = start.with_timezone(&Local);
+        assert_eq!(local_start.minute(), 0);
+        assert_eq!(local_start.second(), 0);
+        // And start ≤ now.
+        assert!(start <= now);
+    }
+
+    #[test]
+    fn next_tick_prefers_hour_boundary_when_closer() {
+        // With a 120s poll, the hour-boundary wake wins when <118s remain in the hour.
+        // We can't control wall-clock in tests, but we can verify the returned kind
+        // matches the shorter of the two candidates.
+        let (dur, kind) = next_tick(120);
+        // Whatever fires, the Duration must be ≤ 120s (poll) OR ≤ 3602s (hour+2s).
+        assert!(dur.as_secs() <= 3602);
+        // Kind must be HourBoundary iff dur < 120.
+        if dur.as_secs() < 120 {
+            assert_eq!(kind, TickKind::HourBoundary);
+        } else {
+            assert_eq!(kind, TickKind::Regular);
+        }
     }
 
     #[test]

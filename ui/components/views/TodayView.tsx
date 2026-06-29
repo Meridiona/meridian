@@ -129,22 +129,6 @@ function ActiveSessionCard({ active, taskKey }: { active: NonNullable<TodayRespo
             ))}
           </div>
         )}
-
-        {/* Jira log action row */}
-        <div className="mt-5 pt-4 rule-t flex items-center justify-between gap-3" style={{ borderTopColor: 'var(--rule)' }}>
-          <p className="text-[12px]" style={{ color: 'var(--ink-2)' }}>
-            Log this session to Jira when it closes?
-          </p>
-          <div className="flex items-center gap-2">
-            <button className="text-[12px] px-3 py-1.5 rounded-md" style={{ color: 'var(--ink-3)' }}>
-              Skip
-            </button>
-            <button className="text-[12px] px-3 py-1.5 rounded-md font-medium"
-              style={{ color: 'var(--paper)', background: 'var(--ink)' }}>
-              {taskKey ? `Log to ${taskKey} →` : 'Assign task →'}
-            </button>
-          </div>
-        </div>
       </div>
     </Card>
   )

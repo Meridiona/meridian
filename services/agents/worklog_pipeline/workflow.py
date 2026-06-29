@@ -207,7 +207,10 @@ def run_hour_workflow(
     )
 
     try:
-        workflow.run(input=hour, run_id=run_id)
+        # session_id groups every hour-run of the same day into ONE AgentOS
+        # session (the Traces/Sessions views group by session_id) — agno stamps
+        # it onto the run's root span, so the trace surfaces under that session.
+        workflow.run(input=hour, run_id=run_id, session_id=f"wl-{hour[:10]}")
     except Exception:  # noqa: BLE001
         log.exception("worklog workflow failed for hour=%s", hour)
         raise

@@ -43,7 +43,10 @@ export default function WorklogsView() {
   const [items, setItems] = useState<WorklogItem[]>([])
   const [counts, setCounts] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState<number | null>(null)
+  // Namespaced busy key: "wl:<id>" for worklogs, "prop:<id>" for proposals.
+  // Plain numeric ids from the two tables share an autoincrement sequence and
+  // can collide (pm_worklogs.id=5 and pm_proposed_tasks.id=5 can coexist).
+  const [busy, setBusy] = useState<string | null>(null)
 
   const load = useCallback((d: string) => {
     // get_worklogs (Rust) in the Tauri window, /api/worklogs in a browser.
@@ -66,8 +69,8 @@ export default function WorklogsView() {
   // reload-on-settle. The bridge throws the server's error text on failure;
   // surface it. Each call bakes `id` into both the URL (browser) and the body
   // (command). PATCH/POST/DELETE pick the browser verb.
-  async function run(id: number, fn: () => Promise<unknown>) {
-    setBusy(id)
+  async function run(key: string, fn: () => Promise<unknown>) {
+    setBusy(key)
     try {
       await fn()
     } catch (e) {
@@ -79,19 +82,29 @@ export default function WorklogsView() {
   }
 
   const act = (id: number, action: 'approve' | 'unapprove') =>
-    run(id, () => mutate(`/api/worklogs/${id}`, 'worklog_action', { id, action }))
+    run(`wl:${id}`, () => mutate(`/api/worklogs/${id}`, 'worklog_action', { id, action }))
 
   // Reject carries an optional attribution correction: where the time should
   // have gone. Empty object = a plain dismissal with no target supplied.
   const reject = (id: number, correction: RejectCorrection) =>
-    run(id, () => mutate(`/api/worklogs/${id}`, 'worklog_action', { id, action: 'reject', ...correction }))
+    run(`wl:${id}`, () => mutate(`/api/worklogs/${id}`, 'worklog_action', { id, action: 'reject', ...correction }))
 
   const saveEdit = (id: number, summary: string) =>
-    run(id, () => mutate(`/api/worklogs/${id}`, 'edit_worklog', { id, summary }, 'PATCH'))
+    run(`wl:${id}`, () => mutate(`/api/worklogs/${id}`, 'edit_worklog', { id, summary }, 'PATCH'))
+
+  // Proposed-ticket (tier-3) actions — same busy/reload plumbing as worklogs.
+  // Approve records the decision; the daemon's proposal sweep creates the real
+  // ticket across providers and posts the worklog.
+  const proposedAct = (id: number, action: 'approve' | 'dismiss') =>
+    run(`prop:${id}`, () => mutate(`/api/proposed/${id}`, 'proposed_action', { id, action }))
+  const saveProposedTitle = (id: number, title: string) =>
+    run(`prop:${id}`, () => mutate(`/api/proposed/${id}`, 'edit_proposed_title', { id, title }, 'PATCH'))
+  const saveProposedBody = (id: number, summary: string) =>
+    run(`prop:${id}`, () => mutate(`/api/proposed/${id}`, 'edit_proposed_worklog', { id, summary }, 'PATCH'))
 
   const draftedIds = items.filter(i => i.state === 'drafted' && i.summary.trim()).map(i => i.id)
   async function approveAll() {
-    setBusy(-1)
+    setBusy('all')
     try {
       await Promise.all(draftedIds.map(id =>
         mutate(`/api/worklogs/${id}`, 'worklog_action', { id, action: 'approve' })))
@@ -129,10 +142,10 @@ export default function WorklogsView() {
 
       {draftedIds.length > 0 && (
         <div className="flex items-center gap-3">
-          <button onClick={approveAll} disabled={busy === -1}
+          <button onClick={approveAll} disabled={busy === 'all'}
             className="px-3 py-1.5 rounded-md text-[12px] transition-colors"
             style={{ background: 'var(--accent)', color: 'var(--paper)' }}>
-            {busy === -1 ? 'Approving…' : `Approve all ${draftedIds.length} drafts`}
+            {busy === 'all' ? 'Approving…' : `Approve all ${draftedIds.length} drafts`}
           </button>
           <span className="text-[11px]" style={{ color: 'var(--ink-4)' }}>posts everything you haven&apos;t edited away</span>
         </div>
@@ -150,11 +163,19 @@ export default function WorklogsView() {
       ) : (
         <div className="space-y-3">
           {items.map(w => (
-            <WorklogCard key={w.id} w={w} busy={busy === w.id}
-              onApprove={() => act(w.id, 'approve')}
-              onReject={(correction) => reject(w.id, correction)}
-              onUnapprove={() => act(w.id, 'unapprove')}
-              onSave={(s) => saveEdit(w.id, s)} />
+            w.is_proposed ? (
+              <ProposedCard key={`p-${w.id}`} w={w} busy={busy === `prop:${w.id}`}
+                onApprove={() => proposedAct(w.id, 'approve')}
+                onDismiss={() => proposedAct(w.id, 'dismiss')}
+                onSaveTitle={(t) => saveProposedTitle(w.id, t)}
+                onSaveBody={(s) => saveProposedBody(w.id, s)} />
+            ) : (
+              <WorklogCard key={w.id} w={w} busy={busy === `wl:${w.id}`}
+                onApprove={() => act(w.id, 'approve')}
+                onReject={(correction) => reject(w.id, correction)}
+                onUnapprove={() => act(w.id, 'unapprove')}
+                onSave={(s) => saveEdit(w.id, s)} />
+            )
           ))}
         </div>
       )}
@@ -243,7 +264,9 @@ function WorklogCard({ w, busy, onApprove, onReject, onUnapprove, onSave }: {
             </span>
           )}
           <span className="text-[10px] uppercase tracking-[0.12em] shrink-0" style={{ color: 'var(--ink-4)' }}>{providerLabel(w.provider)}</span>
-          <span className="font-mono tnum text-[11px]" style={{ color: 'var(--ink-3)' }}>{fmtClock(w.window_start)}</span>
+          <span className="font-mono tnum text-[11px]" style={{ color: 'var(--ink-3)' }}>
+            {fmtClock(w.window_start)}{w.window_end ? ` – ${fmtClock(w.window_end)}` : ''}
+          </span>
           <span className="text-[11px]" style={{ color: 'var(--ink-4)' }}>·</span>
           <span className="font-mono tnum text-[11px]" style={{ color: 'var(--ink-3)' }}>{fmtDur(w.time_spent_seconds)}</span>
           <ConfidenceRing value={w.confidence} />
@@ -283,6 +306,14 @@ function WorklogCard({ w, busy, onApprove, onReject, onUnapprove, onSave }: {
             </p>
           )}
         </div>
+
+        {/* reasoning — why this work maps to this task (the matcher's why) */}
+        {w.reasoning && (
+          <div className="mt-3 rounded-md p-2.5" style={{ background: 'var(--surface-2)', border: '1px solid var(--rule-2)' }}>
+            <p className="text-[10px] uppercase tracking-[0.12em] mb-1" style={{ color: 'var(--ink-4)' }}>Why this task</p>
+            <p className="text-[12px]" style={{ color: 'var(--ink-2)' }}>{w.reasoning}</p>
+          </div>
+        )}
 
         {/* post error */}
         {w.last_post_error && (
@@ -387,6 +418,113 @@ function WorklogCard({ w, busy, onApprove, onReject, onUnapprove, onSave }: {
             </div>
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+// A tier-3 PROPOSED new ticket, rendered inline in the day timeline as a
+// continuation of the real worklogs. The title and the drafted worklog body are
+// both editable; the reasoning explains why a new ticket was proposed. Approve
+// records the decision → the daemon creates the real ticket (any provider) and
+// posts this worklog; Dismiss drops it.
+function ProposedCard({ w, busy, onApprove, onDismiss, onSaveTitle, onSaveBody }: {
+  w: WorklogItem
+  busy: boolean
+  onApprove: () => void
+  onDismiss: () => void
+  onSaveTitle: (title: string) => void
+  onSaveBody: (summary: string) => void
+}) {
+  const [title, setTitle] = useState(w.task_title ?? '')
+  const [editingBody, setEditingBody] = useState(false)
+  const [body, setBody] = useState(w.summary)
+  useEffect(() => { setTitle(w.task_title ?? '') }, [w.task_title])
+  useEffect(() => { setBody(w.summary) }, [w.summary])
+
+  const titleDirty = title.trim() !== (w.task_title ?? '').trim() && title.trim().length > 0
+
+  return (
+    <div className="rounded-xl border overflow-hidden" style={{ borderColor: 'var(--accent)', background: 'var(--surface)' }}>
+      <div className="px-5 py-4">
+        {/* meta row — flagged as a proposed NEW ticket */}
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="text-[10px] uppercase tracking-[0.14em] px-2 py-0.5 rounded shrink-0"
+            style={{ color: 'var(--paper)', background: 'var(--accent)' }}>New ticket</span>
+          <span className="font-mono tnum text-[11px]" style={{ color: 'var(--ink-3)' }}>
+            {fmtClock(w.window_start)}{w.window_end ? ` – ${fmtClock(w.window_end)}` : ''}
+          </span>
+          <span className="text-[11px]" style={{ color: 'var(--ink-4)' }}>·</span>
+          <span className="font-mono tnum text-[11px]" style={{ color: 'var(--ink-3)' }}>{fmtDur(w.time_spent_seconds)}</span>
+          <ConfidenceRing value={w.confidence} />
+          {w.edited && <span className="text-[10px] uppercase tracking-[0.12em]" style={{ color: 'var(--ink-4)' }}>edited</span>}
+          <span className="ml-auto text-[10px] uppercase tracking-[0.14em] px-2 py-0.5 rounded"
+            style={{ color: 'var(--accent)', border: '1px solid var(--accent)' }}>proposed</span>
+        </div>
+
+        {/* editable title */}
+        <div className="mt-3">
+          <label className="text-[10px] uppercase tracking-[0.12em]" style={{ color: 'var(--ink-4)' }}>Ticket title</label>
+          <input value={title} onChange={e => setTitle(e.target.value)} disabled={busy}
+            className="w-full mt-1 px-2 py-1.5 rounded-md text-[13px] bg-transparent"
+            style={{ color: 'var(--ink)', border: '1px solid var(--rule-2)' }} />
+          {titleDirty && (
+            <button onClick={() => onSaveTitle(title.trim())} disabled={busy}
+              className="mt-1 px-2 py-0.5 rounded text-[11px]" style={{ color: 'var(--ink-2)', border: '1px solid var(--rule-2)' }}>
+              Save title
+            </button>
+          )}
+        </div>
+
+        {/* reasoning — why a new ticket was proposed */}
+        {w.reasoning && (
+          <div className="mt-3 rounded-md p-2.5" style={{ background: 'var(--surface-2)', border: '1px solid var(--rule-2)' }}>
+            <p className="text-[10px] uppercase tracking-[0.12em] mb-1" style={{ color: 'var(--ink-4)' }}>Why a new ticket</p>
+            <p className="text-[12px]" style={{ color: 'var(--ink-2)' }}>{w.reasoning}</p>
+          </div>
+        )}
+
+        {/* editable worklog body */}
+        <div className="mt-3">
+          <label className="text-[10px] uppercase tracking-[0.12em]" style={{ color: 'var(--ink-4)' }}>Worklog</label>
+          {editingBody ? (
+            <div className="mt-1">
+              <textarea value={body} onChange={e => setBody(e.target.value)} rows={4} disabled={busy}
+                className="w-full px-2 py-1.5 rounded-md text-[13px] bg-transparent"
+                style={{ color: 'var(--ink)', border: '1px solid var(--rule-2)' }} />
+              <div className="flex items-center gap-2 mt-1">
+                <button onClick={() => { onSaveBody(body); setEditingBody(false) }} disabled={busy}
+                  className="px-2 py-0.5 rounded text-[11px]" style={{ background: 'var(--ink)', color: 'var(--paper)' }}>Save</button>
+                <button onClick={() => { setBody(w.summary); setEditingBody(false) }} disabled={busy}
+                  className="px-2 py-0.5 rounded text-[11px]" style={{ color: 'var(--ink-3)', border: '1px solid var(--rule-2)' }}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <p onClick={() => setEditingBody(true)} className="mt-1 text-[13px] cursor-text whitespace-pre-wrap"
+              style={{ color: w.summary ? 'var(--ink)' : 'var(--ink-4)' }}>
+              {w.summary || '(empty — click to add a comment)'}
+            </p>
+          )}
+        </div>
+
+        {/* actions */}
+        <div className="flex items-center gap-2 mt-4">
+          <button onClick={onApprove} disabled={busy || !title.trim()}
+            className="px-3 py-1.5 rounded-md text-[12px] transition-colors"
+            style={{ background: title.trim() ? 'var(--accent)' : 'var(--rule-2)', color: 'var(--paper)' }}>
+            Approve → create ticket + post
+          </button>
+          {!editingBody && (
+            <button onClick={() => setEditingBody(true)} disabled={busy}
+              className="px-3 py-1.5 rounded-md text-[12px]" style={{ color: 'var(--ink-2)', border: '1px solid var(--rule-2)' }}>
+              Edit worklog
+            </button>
+          )}
+          <button onClick={onDismiss} disabled={busy}
+            className="px-3 py-1.5 rounded-md text-[12px] ml-auto" style={{ color: 'var(--ink-3)' }}>
+            Dismiss
+          </button>
+        </div>
       </div>
     </div>
   )

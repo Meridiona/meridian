@@ -47,6 +47,7 @@ pub struct WorklogItem {
     pub task_url: Option<String>,
     pub provider: String,
     pub window_start: String,
+    pub window_end: Option<String>,
     pub state: String,
     pub confidence: f64,
     pub coverage: f64,
@@ -59,6 +60,17 @@ pub struct WorklogItem {
     pub posted_worklog_id: Option<String>,
     pub last_post_error: Option<String>,
     pub edited: bool,
+    /// True when this entry is a tier-3 PROPOSED new ticket (from
+    /// `pm_proposed_tasks`), not a real worklog. The UI renders it inline in the
+    /// day timeline with an editable title + worklog body and Approve/Dismiss
+    /// actions that route to the `*_proposed` tray commands (vs the worklog
+    /// edit/approve commands). `false` for ordinary worklogs.
+    #[serde(default)]
+    pub is_proposed: bool,
+    /// `pm_proposed_tasks.id` when `is_proposed` — the key the proposed-ticket
+    /// edit/approve/dismiss commands take. `None` for ordinary worklogs.
+    #[serde(default)]
+    pub proposed_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -78,6 +90,7 @@ struct RawRow {
     task_url: Option<String>,
     provider: String,
     window_start: String,
+    window_end: Option<String>,
     state: String,
     confidence: Option<f64>,
     coverage: Option<f64>,
@@ -130,7 +143,7 @@ pub async fn get_worklogs(pool: &SqlitePool, day: &str) -> anyhow::Result<Worklo
     let rows: Vec<RawRow> = sqlx::query_as::<_, RawRow>(
         r#"
         SELECT w.id, w.task_key, t.title AS task_title, t.url AS task_url,
-               COALESCE(w.provider, 'jira') AS provider, w.window_start,
+               COALESCE(w.provider, 'jira') AS provider, w.window_start, w.window_end,
                w.state, w.confidence, w.coverage,
                w.time_spent_seconds, w.payload_json, w.posted_worklog_id,
                w.last_post_error, w.edited_at
@@ -174,6 +187,7 @@ pub async fn get_worklogs(pool: &SqlitePool, day: &str) -> anyhow::Result<Worklo
             task_url,
             provider: r.provider,
             window_start: r.window_start,
+            window_end: r.window_end,
             state: r.state,
             confidence: r.confidence.unwrap_or(0.0),
             coverage: r.coverage.unwrap_or(0.0),
@@ -194,8 +208,25 @@ pub async fn get_worklogs(pool: &SqlitePool, day: &str) -> anyhow::Result<Worklo
             posted_worklog_id: r.posted_worklog_id,
             last_post_error: r.last_post_error,
             edited: r.edited_at.is_some(),
+            is_proposed: false,
+            proposed_id: None,
         });
     }
+
+    // Tier-3 proposed new tickets for the day, rendered INLINE in the same
+    // timeline (a continuation of the real worklogs). Each carries its drafted
+    // worklog in `worklog_payload_json` (migration 050) so the approval surface
+    // shows an editable title + worklog body + the reasoning together. Only
+    // still-`proposed` rows surface; approved/dismissed ones drop out.
+    append_proposed_items(pool, day, &mut counts, &mut items).await?;
+
+    // Order the merged list by window so proposals slot in by their source hour
+    // (e.g. 19:00 worklog → 20:00 proposal), then by task_key for stability.
+    items.sort_by(|a, b| {
+        a.window_start
+            .cmp(&b.window_start)
+            .then_with(|| a.task_key.cmp(&b.task_key))
+    });
 
     tracing::info!(day, items = items.len(), "worklogs computed");
     Ok(WorklogsResponse {
@@ -203,6 +234,107 @@ pub async fn get_worklogs(pool: &SqlitePool, day: &str) -> anyhow::Result<Worklo
         items,
         counts,
     })
+}
+
+/// Raw `pm_proposed_tasks` row for the day's still-`proposed` tickets.
+#[derive(FromRow)]
+struct RawProposedRow {
+    id: i64,
+    source_hour: String,
+    title: String,
+    reasoning: String,
+    confidence: f64,
+    time_spent_seconds: i64,
+    window_start: Option<String>,
+    window_end: Option<String>,
+    worklog_payload_json: Option<String>,
+}
+
+/// Read `pm_proposed_tasks` (state='proposed') for `day` and push each as a
+/// `WorklogItem` with `is_proposed = true`. Degrades gracefully if the table or
+/// the migration-050 columns are absent (older DB) — returns without erroring.
+#[tracing::instrument(skip(pool, counts, items))]
+async fn append_proposed_items(
+    pool: &SqlitePool,
+    day: &str,
+    counts: &mut BTreeMap<String, i64>,
+    items: &mut Vec<WorklogItem>,
+) -> anyhow::Result<()> {
+    let rows = sqlx::query_as::<_, RawProposedRow>(
+        r#"
+        SELECT id, source_hour, title, reasoning, confidence,
+               time_spent_seconds, window_start, window_end, worklog_payload_json
+        FROM pm_proposed_tasks
+        WHERE day_utc = ? AND state = 'proposed'
+        ORDER BY source_hour
+        "#,
+    )
+    .bind(day)
+    .fetch_all(pool)
+    .instrument(tracing::debug_span!("worklogs.read.pm_proposed_tasks"))
+    .await;
+
+    let rows = match rows {
+        Ok(rows) => rows,
+        Err(e) => {
+            // Missing table/columns on an un-migrated DB is not fatal — the day
+            // simply has no proposals to show.
+            tracing::warn!(error = %e, "worklogs: pm_proposed_tasks read skipped");
+            return Ok(());
+        }
+    };
+    tracing::debug!(rows = rows.len(), "worklogs.read.pm_proposed_tasks");
+
+    for r in rows {
+        *counts.entry("proposed".to_string()).or_insert(0) += 1;
+
+        let payload: Value = r
+            .worklog_payload_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(Value::Null);
+
+        let mut bullets = Vec::new();
+        for (field, kind) in BULLET_GROUPS {
+            bullets_from(&payload, field, kind, &mut bullets);
+        }
+
+        // Fall back to the source hour when window_start wasn't stored (rows
+        // proposed before migration 050) so ordering still works.
+        let window_start = r
+            .window_start
+            .unwrap_or_else(|| format!("{}:00:00+00:00", r.source_hour));
+
+        items.push(WorklogItem {
+            id: r.id,
+            task_key: String::new(),
+            // The proposed (editable) ticket title shows where the task title goes.
+            task_title: Some(r.title),
+            task_url: None,
+            provider: String::new(),
+            window_start,
+            window_end: r.window_end,
+            state: "proposed".to_string(),
+            confidence: r.confidence,
+            coverage: 0.0,
+            time_spent_seconds: r.time_spent_seconds,
+            summary: payload
+                .get("summary")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            bullets,
+            next_steps: str_array(&payload, "next_steps"),
+            risk_flags: str_array(&payload, "risk_flags"),
+            reasoning: r.reasoning,
+            posted_worklog_id: None,
+            last_post_error: None,
+            edited: false,
+            is_proposed: true,
+            proposed_id: Some(r.id),
+        });
+    }
+    Ok(())
 }
 
 // ── Writes (the worklogs/[id] PATCH + POST) ───────────────────────────────────

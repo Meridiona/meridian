@@ -80,11 +80,11 @@ pub async fn run_copilot(
         return Err(SummariserError::Failed("copilot produced no output".into()));
     }
 
-    let (summary, blockers) = prompts::extract_summary(text);
+    let summary = prompts::extract_summary(text);
     if summary.is_empty() {
         return Err(SummariserError::Failed(
             "copilot output had no usable summary".into(),
         ));
     }
-    Ok(EngineOutput { summary, blockers })
+    Ok(EngineOutput { summary })
 }

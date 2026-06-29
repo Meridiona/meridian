@@ -128,6 +128,7 @@ export interface WorklogItem {
   task_url: string | null
   provider: string
   window_start: string
+  window_end?: string | null
   state: string
   confidence: number
   coverage: number
@@ -140,6 +141,13 @@ export interface WorklogItem {
   posted_worklog_id: string | null
   last_post_error: string | null
   edited: boolean
+  /** True when this entry is a tier-3 PROPOSED new ticket (not a real worklog).
+   *  Rendered inline in the timeline with an editable title + body + reasoning
+   *  and Approve/Dismiss actions. */
+  is_proposed?: boolean
+  /** `pm_proposed_tasks.id` when `is_proposed` — the key the proposed-ticket
+   *  edit/approve/dismiss commands take. */
+  proposed_id?: number | null
 }
 
 export interface WorklogsResponse {

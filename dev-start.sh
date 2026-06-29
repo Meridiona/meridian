@@ -108,3 +108,7 @@ echo "  Dashboard: open the Meridian tray icon → Open Dashboard"
 echo "  Capture runs in-process inside the tray — no separate agent needed."
 echo ""
 echo "  To stop: Ctrl-C in each window"
+
+# Push any edited dashboard JSONs to the running OpenObserve instance.
+# Runs in the background so it doesn't block dev-start; degrades silently if OO is off.
+"${REPO_ROOT}/scripts/push-dashboards.sh" &
