@@ -267,13 +267,15 @@ st, body = call("GET", f"/api/{org}/dashboards")
 if st != 200:
     print(f"  ⚠ could not list dashboards ({st}) — skipping dashboard import")
     sys.exit(0)
-existing = set()
+id_map = {}  # title -> dashboard_id
 for d in json.loads(body).get("dashboards", []):
-    for v in ("v1", "v2", "v3", "v4", "v5", "v6"):
+    did = d.get("dashboard_id", "")
+    for v in ("v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"):
         if d.get(v) and d[v].get("title"):
-            existing.add(d[v]["title"])
+            id_map[d[v]["title"]] = did
+            break
 
-created = skipped = failed = 0
+created = updated = failed = 0
 for path in sorted(glob.glob(os.path.join(dash_dir, "*.json"))):
     try:
         dash = json.load(open(path))
@@ -282,18 +284,32 @@ for path in sorted(glob.glob(os.path.join(dash_dir, "*.json"))):
         failed += 1
         continue
     title = dash.get("title", "")
-    if title in existing:
-        skipped += 1
-        continue
-    st, resp = call("POST", f"/api/{org}/dashboards?folder=default", dash)
-    if st in (200, 201):
-        created += 1
-        print(f"  ✓ imported dashboard: {title}")
+    if title in id_map:
+        # OO PUT requires an internal hash that can't be round-tripped reliably.
+        # Delete + re-create is the safe upsert path.
+        did = id_map[title]
+        st_d, _ = call("DELETE", f"/api/{org}/dashboards/{did}")
+        if st_d not in (200, 204):
+            failed += 1
+            print(f"  ⚠ delete failed {title} ({st_d}) — skipping")
+            continue
+        st, resp = call("POST", f"/api/{org}/dashboards?folder=default", dash)
+        if st in (200, 201):
+            updated += 1
+            print(f"  ✓ updated dashboard: {title}")
+        else:
+            failed += 1
+            print(f"  ⚠ failed to re-create {os.path.basename(path)} ({st}): {resp[:200].decode(errors='replace')}")
     else:
-        failed += 1
-        print(f"  ⚠ failed to import {os.path.basename(path)} ({st}): {resp[:200].decode(errors='replace')}")
+        st, resp = call("POST", f"/api/{org}/dashboards?folder=default", dash)
+        if st in (200, 201):
+            created += 1
+            print(f"  ✓ imported dashboard: {title}")
+        else:
+            failed += 1
+            print(f"  ⚠ failed to import {os.path.basename(path)} ({st}): {resp[:200].decode(errors='replace')}")
 
-print(f"→ dashboards: {created} imported, {skipped} already present, {failed} failed")
+print(f"→ dashboards: {created} imported, {updated} updated, {failed} failed")
 PYEOF
     return 0
 }
