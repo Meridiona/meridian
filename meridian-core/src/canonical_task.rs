@@ -223,8 +223,8 @@ mod tests {
             priority: Priority::High,
             assignees: vec![
                 PersonRef {
-                    email: Some("akarsh@example.com".to_string()),
-                    display_name: "Akarsh".to_string(),
+                    email: Some("developer@example.com".to_string()),
+                    display_name: "Developer".to_string(),
                     provider_user_id: "usr_abc123".to_string(),
                 },
                 PersonRef {
