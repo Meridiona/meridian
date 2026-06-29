@@ -165,6 +165,126 @@ async fn editor_frames_not_suppressed() {
 }
 
 // ---------------------------------------------------------------------------
+// Coding-agent window titles are excluded from app_sessions.window_titles
+// ---------------------------------------------------------------------------
+
+/// get_window_titles queries capture_frames by frame-id range and would
+/// include coding-agent terminal entries unless explicitly filtered.
+/// This test verifies that window_titles in a CLOSED session contains only
+/// real editor window titles, not spinner or agent-name terminal tabs.
+///
+/// Layout:
+///   Code / editor tab      → 2 frames (should appear in window_titles)
+///   Code / Terminal - ⠂…   → 3 spinner frames (must NOT appear)
+///   Code / Terminal - 2.1.193 → 1 version-label frame (must NOT appear)
+///   Firefox / any          → 1 frame to force an app-switch → closes the Code session
+#[tokio::test]
+async fn coding_agent_window_titles_excluded_from_closed_session() {
+    let md = common::make_meridian_db().await;
+
+    common::insert_frames_with_window(
+        &md,
+        1,
+        &[
+            (
+                "Code",
+                "main.rs \u{2014} myproject",
+                "2026-01-01T10:00:00+00:00",
+            ),
+            (
+                "Code",
+                "lib.rs \u{2014} myproject",
+                "2026-01-01T10:00:02+00:00",
+            ),
+            (
+                "Code",
+                "Terminal - \u{2802} agentic-worklog-pipeline",
+                "2026-01-01T10:00:04+00:00",
+            ),
+            (
+                "Code",
+                "Terminal - \u{2802} agentic-worklog-pipeline",
+                "2026-01-01T10:00:06+00:00",
+            ),
+            (
+                "Code",
+                "Terminal - \u{2802} agentic-worklog-pipeline",
+                "2026-01-01T10:00:08+00:00",
+            ),
+            ("Code", "Terminal - 2.1.193", "2026-01-01T10:00:10+00:00"),
+            // App switch → closes Code block into app_sessions
+            ("Firefox", "GitHub", "2026-01-01T10:00:12+00:00"),
+        ],
+    )
+    .await;
+
+    run_etl(&md).await.unwrap();
+
+    // The Code session must be in app_sessions (closed by the app switch).
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT window_titles FROM app_sessions WHERE app_name = 'Code'")
+            .fetch_optional(&md)
+            .await
+            .unwrap();
+    let window_titles_json = row.expect("Code session should be in app_sessions").0;
+
+    // Spinner and version-label entries must be absent.
+    assert!(
+        !window_titles_json.contains("Terminal -"),
+        "coding-agent terminal titles must not appear in window_titles: {window_titles_json}"
+    );
+    // Real editor tabs must be present.
+    assert!(
+        window_titles_json.contains("main.rs") || window_titles_json.contains("lib.rs"),
+        "editor window titles must be present: {window_titles_json}"
+    );
+}
+
+/// Same check for active_session (in-progress block, not yet closed).
+#[tokio::test]
+async fn coding_agent_window_titles_excluded_from_active_session() {
+    let md = common::make_meridian_db().await;
+
+    common::insert_frames_with_window(
+        &md,
+        1,
+        &[
+            (
+                "Code",
+                "main.rs \u{2014} myproject",
+                "2026-01-01T10:00:00+00:00",
+            ),
+            (
+                "Code",
+                "Terminal - \u{2802} agentic-worklog-pipeline",
+                "2026-01-01T10:00:02+00:00",
+            ),
+            ("Code", "Terminal - claude", "2026-01-01T10:00:04+00:00"),
+            ("Code", "Terminal - 2.1.193", "2026-01-01T10:00:06+00:00"),
+        ],
+    )
+    .await;
+
+    run_etl(&md).await.unwrap();
+
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT window_titles FROM active_session WHERE id = 1")
+            .fetch_optional(&md)
+            .await
+            .unwrap();
+    let window_titles_json = row.expect("active_session should be set").0;
+
+    assert!(
+        !window_titles_json.contains("Terminal -"),
+        "coding-agent terminal titles must not appear in active_session window_titles: {window_titles_json}"
+    );
+    assert!(
+        window_titles_json.contains("main.rs"),
+        "editor window titles must be present: {window_titles_json}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Coding-agent frames are excluded from frame_count
 // ---------------------------------------------------------------------------
 

@@ -8,6 +8,7 @@ use crate::db::screenpipe::{
     get_audio_snippets, get_frame_full_texts, get_signals, get_window_titles, AudioSnippet,
     SignalEvent, WindowTitleCount,
 };
+use crate::etl::session_builder::{is_coding_agent_terminal, is_vscode_like};
 use crate::etl::text_merge::build_session_text;
 
 // ---------------------------------------------------------------------------
@@ -69,8 +70,16 @@ pub async fn extract_block_context(
 
     let session_text = build_session_text(&frames_res?);
     let audio_snippets = audio_res?;
-    let window_titles = window_titles_res?;
     let signals = signals_res?;
+
+    // get_window_titles queries capture_frames by frame-id range and sees ALL
+    // frames in that range — including coding-agent terminal frames that were
+    // skipped by the ETL loop's `continue`.  Strip them here so window_titles
+    // in app_sessions only reflects real editor/browser focus.
+    let window_titles: Vec<WindowTitleCount> = window_titles_res?
+        .into_iter()
+        .filter(|wt| !(is_vscode_like(app_name) && is_coding_agent_terminal(&wt.window_name)))
+        .collect();
 
     tracing::Span::current().record("window_title_count", window_titles.len());
     tracing::Span::current().record("audio_snippet_count", audio_snippets.len());
