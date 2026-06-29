@@ -254,13 +254,14 @@ pub async fn download_runtime_cmd(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Eager-download the spec-aware classifier model into the HF cache so the first
-/// classification doesn't pay a silent ~7 GB download mid-inference. The model id
-/// is chosen server-side by `llm_selector`, so this prefetches exactly what the
-/// first `load()` resolves. Streams progress via the same `mlx-download-progress`
-/// event the runtime download uses (the wizard's Model step listens for both
-/// phases). Requires the MLX server to be running — the wizard calls this after
-/// `start_mlx_server_cmd` reports the server up. Idempotent server-side.
+/// Eager-download every pipeline model (llm + reranker + embedder — the server's
+/// model registry) into the HF cache so the first worklog run doesn't pay a
+/// silent download mid-pipeline. The model set is fixed server-side, so this
+/// prefetches exactly what each `load()` resolves. Streams aggregate progress via
+/// the same `mlx-download-progress` event the runtime download uses (the wizard's
+/// Model step listens for both phases). Requires the MLX server to be running —
+/// the wizard calls this after `start_mlx_server_cmd` reports the server up.
+/// Idempotent server-side.
 #[tauri::command]
 #[tracing::instrument(skip(app, mlx))]
 pub async fn prefetch_model_cmd(

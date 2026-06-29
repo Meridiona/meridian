@@ -78,6 +78,22 @@ This opens **3 Terminal windows**:
 
 **Ctrl-C** in each Terminal window. `dev-start.sh` also kills any previous run at start, so re-running it is safe.
 
+### Re-running the onboarding wizard
+
+The first-run setup wizard only auto-opens when the onboarded marker is absent. Once you've completed (or skipped) it, delete the flag to make it open again on the next tray start:
+
+```bash
+rm -f ~/.meridian/onboarded
+```
+
+Then restart the tray (re-run `dev-start.sh`, or restart the `npm run tauri dev` window). To also re-watch the model **download** flow from scratch, clear the HuggingFace cache for the models first (they otherwise show as already-installed):
+
+```bash
+rm -rf ~/.cache/huggingface/hub/models--mlx-community--Qwen3.5-2B-OptiQ-4bit \
+       ~/.cache/huggingface/hub/models--kerncore--Qwen3-Reranker-0.6B-MLX-4bit \
+       ~/.cache/huggingface/hub/models--mlx-community--Qwen3-Embedding-0.6B-8bit
+```
+
 ### Installed app vs dev mode
 
 | | Installed app (`.dmg` / `bootstrap.sh`) | Dev mode (`install-dev.sh`) |

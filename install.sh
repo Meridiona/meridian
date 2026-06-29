@@ -620,12 +620,25 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
         ok "MLX server launchd agent installed"
 
         if [[ "${DRY_RUN}" -eq 0 ]]; then
-            _model_cache="${HOME}/.cache/huggingface/hub/models--mlx-community--Qwen3.5-2B-OptiQ-4bit/snapshots"
-            if [[ -d "${_model_cache}" && -n "$(ls -A "${_model_cache}" 2>/dev/null)" ]]; then
-                info "MLX server starting (model cached, loading into Metal)..."
+            # All three pipeline models must be cached (defaults shown; env
+            # overrides MERIDIAN_LLM_ID / WORKLOG_RERANKER_ID / MERIDIAN_EMBEDDER_ID
+            # aren't resolved here, so this is best-effort/informational only).
+            _hub="${HOME}/.cache/huggingface/hub"
+            _all_cached=1
+            for _m in \
+                "models--mlx-community--Qwen3.5-2B-OptiQ-4bit" \
+                "models--kerncore--Qwen3-Reranker-0.6B-MLX-4bit" \
+                "models--mlx-community--Qwen3-Embedding-0.6B-8bit"; do
+                _snap="${_hub}/${_m}/snapshots"
+                if [[ ! -d "${_snap}" || -z "$(ls -A "${_snap}" 2>/dev/null)" ]]; then
+                    _all_cached=0
+                fi
+            done
+            if [[ "${_all_cached}" -eq 1 ]]; then
+                info "MLX server starting (models cached, loading into Metal)..."
             else
                 echo
-                info "First run: downloading MLX model (~6.6 GB). This takes a few minutes on a fast connection. Do not interrupt."
+                info "First run: downloading on-device models (llm + reranker + embedder, ~2.5 GB total). This takes a few minutes on a fast connection. Do not interrupt."
             fi
             echo "  ─────────────────────────────────────────────────────────────"
             mkdir -p "${HOME}/.meridian/logs"

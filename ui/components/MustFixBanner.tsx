@@ -11,8 +11,9 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { hasMustFix } from '@/lib/hygiene'
-import type { TasksResponse } from '@/lib/api-types'
+import type { TasksResponse, IntegrationsResponse } from '@/lib/api-types'
 import { load as loadData } from '@/lib/bridge'
+import { filterByConnectedProviders } from '@/lib/integrations'
 
 const POLL_MS = 60_000
 
@@ -23,13 +24,17 @@ export default function MustFixBanner() {
   useEffect(() => {
     let alive = true
     const load = () => {
-      loadData<TasksResponse>('/api/tasks', 'get_tasks')
-        .then((d) => {
-          if (!alive) return
-          const n = (d.tasks ?? []).filter(t => t.hygiene && hasMustFix(t.hygiene.issues)).length
-          setCount(n)
-        })
-        .catch(() => {})
+      // Fetch independently: a get_integrations failure must not suppress the
+      // must-fix count (the shared-catch pattern hides it silently).
+      Promise.all([
+        loadData<TasksResponse>('/api/tasks', 'get_tasks').catch(() => null),
+        loadData<IntegrationsResponse>('/api/integrations', 'get_integrations').catch(() => null),
+      ]).then(([taskRes, intRes]) => {
+        if (!alive || !taskRes) return // tasks unavailable — don't reset count
+        const n = filterByConnectedProviders(taskRes.tasks ?? [], intRes)
+          .filter(t => t.hygiene && hasMustFix(t.hygiene.issues)).length
+        setCount(n)
+      })
     }
     load()
     const timer = setInterval(load, POLL_MS)
@@ -37,7 +42,8 @@ export default function MustFixBanner() {
   }, [])
 
   // Don't nag on the cleanup page — that's where you fix them.
-  if (count === 0 || pathname === '/cleanup') return null
+  // trailingSlash: true means the path is /cleanup/ in the static export.
+  if (count === 0 || pathname.startsWith('/cleanup')) return null
 
   return (
     <Link

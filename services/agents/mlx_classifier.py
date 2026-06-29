@@ -15,13 +15,16 @@ import time
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from agents import observability
+from agents import model_registry, observability
 
 log = logging.getLogger("agents.mlx_classifier")
 tracer = observability.setup("meridian-mlx-server")
 
-# Default model — the agent server runs a single hardcoded model.
-MODEL_ID = "mlx-community/Qwen3.5-2B-OptiQ-4bit"
+# Generative/classifier checkpoint — resolved from the model registry (the single
+# source of truth for all three pipeline models), env-overridable via MERIDIAN_LLM_ID.
+# Exposed as a module attribute for external compatibility; the live value is read
+# from the registry per-call inside _get_model() so a runtime env change is honoured.
+MODEL_ID = model_registry.llm_id()
 
 _IDLE_EVICT_S = float(os.environ.get("MLX_IDLE_EVICT_S", "120"))
 
@@ -48,7 +51,7 @@ def _get_model() -> _ModelBundle:
     Cache-miss load is done under _model_lock (double-checked) so concurrent
     callers can't double-load and the idle evictor can't race the load.
     """
-    model_id = MODEL_ID
+    model_id = model_registry.llm_id()
     cached = _model_cache.get(model_id)
     if cached is not None:
         return cached
@@ -65,14 +68,14 @@ def _get_model() -> _ModelBundle:
                 "Install with: pip install 'mlx-lm>=0.22'"
             ) from exc
 
-        log.info("run_task_linker_mlx: loading %s (first call this process)", model_id)
+        log.info("mlx_classifier: loading %s (first call this process)", model_id)
         t0 = time.time()
         mlx_model, tokenizer = mlx_lm.load(
             model_id,
             tokenizer_config={"trust_remote_code": True},
         )
         bundle = _ModelBundle(mlx_model, tokenizer)
-        log.info("run_task_linker_mlx: model loaded in %.1fs", time.time() - t0)
+        log.info("mlx_classifier: model loaded in %.1fs", time.time() - t0)
 
         _model_cache[model_id] = bundle
         _tokenizer_cache[model_id] = tokenizer
@@ -81,7 +84,7 @@ def _get_model() -> _ModelBundle:
 
 def _get_tokenizer() -> Any:
     """Return the HF tokenizer for the current model, loading the model if needed."""
-    model_id = MODEL_ID
+    model_id = model_registry.llm_id()
     tok = _tokenizer_cache.get(model_id)
     if tok is not None:
         return tok
@@ -135,7 +138,7 @@ def maybe_evict_idle(idle_s: float | None = None) -> float | None:
             mx.clear_cache()
             freed = max(0.0, (before - mx.get_active_memory()) / 1e9)
         log.info(
-            "run_task_linker_mlx: evicted idle model (idle ≥ %.0fs), freed ~%.1f GB",
+            "mlx_classifier: evicted idle model (idle ≥ %.0fs), freed ~%.1f GB",
             ttl, freed,
         )
         return freed
@@ -169,7 +172,7 @@ def evict_resident_model() -> float | None:
         if mx is not None:
             mx.clear_cache()
             freed = max(0.0, (before - mx.get_active_memory()) / 1e9)
-        log.info("run_task_linker_mlx: force-evicted resident model, freed ~%.1f GB", freed)
+        log.info("mlx_classifier: force-evicted resident model, freed ~%.1f GB", freed)
         return freed
     finally:
         _model_lock.release()

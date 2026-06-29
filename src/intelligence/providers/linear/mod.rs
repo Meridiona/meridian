@@ -67,6 +67,8 @@ struct LinearIssue {
     labels: Option<LabelConnection>,
     #[serde(default)]
     cycle: Option<Cycle>,
+    #[serde(default)]
+    project: Option<Project>,
 }
 
 #[derive(Deserialize)]
@@ -108,6 +110,11 @@ struct LabelNode {
 
 #[derive(Deserialize)]
 struct Cycle {
+    name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Project {
     name: Option<String>,
 }
 
@@ -159,6 +166,7 @@ async fn fetch(linear: &LinearConfig) -> Result<Vec<LinearIssue>> {
            state {{ name type }} team {{ id key }} \
            parent {{ identifier title }} assignee {{ name }} \
            dueDate startedAt labels {{ nodes {{ name }} }} cycle {{ name }} \
+           project {{ name }} \
          }} }} }} }}"
     );
     let body = serde_json::json!({ "query": query });
@@ -219,16 +227,33 @@ async fn upsert(
             .as_ref()
             .map(|t| t.key.clone())
             .unwrap_or_default();
-        let (parent_key, epic_title) = issue
-            .parent
+        // parent.identifier → parent_key (stable grouping key).
+        // epic_title: prefer the parent's title; fall back to the Linear project
+        // name so tasks inside a project group correctly even without a parent
+        // issue hierarchy. When the project is used as the grouping anchor,
+        // parent_key is set to "project:<name>" so each project forms its own
+        // group in the tasks view (not collapsed into one "__none__" bucket).
+        let project_name: Option<String> = issue
+            .project
             .as_ref()
-            .map(|p| {
-                (
-                    Some(p.identifier.as_str()),
-                    p.title.clone().unwrap_or_default(),
-                )
-            })
-            .unwrap_or((None, String::new()));
+            .and_then(|pr| pr.name.clone())
+            .filter(|s| !s.is_empty());
+        let (parent_key, epic_title): (Option<&str>, String) = match issue.parent.as_ref() {
+            Some(p) => (
+                Some(p.identifier.as_str()),
+                p.title.clone().unwrap_or_default(),
+            ),
+            None => match &project_name {
+                Some(name) => (None, name.clone()),
+                None => (None, String::new()),
+            },
+        };
+        // Stable grouping key: parent identifier beats project prefix.
+        let epic_key_override: Option<String> = if parent_key.is_none() {
+            project_name.as_ref().map(|n| format!("project:{n}"))
+        } else {
+            None
+        };
         let assignee = issue.assignee.as_ref().and_then(|a| a.name.clone());
         let tags: Option<String> = issue.labels.as_ref().map(|lc| {
             lc.nodes
@@ -277,7 +302,9 @@ async fn upsert(
         .bind(status.is_terminal)
         .bind(&project_key)
         .bind(&url)
-        .bind(parent_key)
+        // Use the real parent_key when present; otherwise use the project prefix
+        // so the UI groups project-scoped issues together (not into __none__).
+        .bind(parent_key.or(epic_key_override.as_deref()))
         .bind(if epic_title.is_empty() {
             None
         } else {
@@ -417,72 +444,4 @@ pub async fn force_refresh(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn state_terminality() {
-        // completed / canceled are terminal; everything else is open.
-        assert!(native_terminal("completed"));
-        assert!(native_terminal("canceled"));
-        assert!(!native_terminal("started"));
-        assert!(!native_terminal("backlog"));
-        assert!(!native_terminal("triage"));
-    }
-
-    fn issue_with(team_id: &str, team_key: &str, state: &str) -> LinearIssue {
-        LinearIssue {
-            identifier: "ENG-1".into(),
-            title: "t".into(),
-            description: None,
-            updated_at: "2026-06-01T00:00:00.000Z".into(),
-            url: None,
-            state: Some(WorkflowState {
-                name: state.into(),
-                type_: state.into(),
-            }),
-            team: Some(Team {
-                id: team_id.into(),
-                key: team_key.into(),
-            }),
-            parent: None,
-            assignee: None,
-            due_date: None,
-            started_at: None,
-            labels: None,
-            cycle: None,
-        }
-    }
-
-    #[test]
-    fn finished_issues_detected() {
-        assert!(is_finished(&issue_with("u", "ENG", "completed")));
-        assert!(is_finished(&issue_with("u", "ENG", "canceled")));
-        assert!(!is_finished(&issue_with("u", "ENG", "started")));
-    }
-
-    #[test]
-    fn team_filter_matches_id_or_key() {
-        let i = issue_with("uuid-123", "ENG", "started");
-        assert!(team_allowed(&i, &[])); // empty = all
-        assert!(team_allowed(&i, &["uuid-123".into()])); // by id
-        assert!(team_allowed(&i, &["ENG".into()])); // by key
-        assert!(!team_allowed(&i, &["OTHER".into()]));
-    }
-
-    #[test]
-    fn parses_assigned_issues_response() {
-        let raw = r#"{"data":{"viewer":{"assignedIssues":{"nodes":[
-            {"identifier":"ENG-12","title":"Fix bug","description":"d","updatedAt":"2026-06-01T00:00:00.000Z",
-             "url":"https://linear.app/x/issue/ENG-12","state":{"type":"started"},
-             "team":{"id":"t1","key":"ENG"},"project":{"name":"P"},
-             "parent":{"identifier":"ENG-1","title":"Epic"},"assignee":{"name":"Sam"}}
-        ]}}}}"#;
-        let parsed: GqlResponse = serde_json::from_str(raw).unwrap();
-        let nodes = parsed.data.unwrap().viewer.unwrap().assigned_issues.nodes;
-        assert_eq!(nodes.len(), 1);
-        assert_eq!(nodes[0].identifier, "ENG-12");
-        assert_eq!(nodes[0].state.as_ref().unwrap().type_, "started");
-        assert_eq!(nodes[0].parent.as_ref().unwrap().identifier, "ENG-1");
-    }
-}
+mod tests;

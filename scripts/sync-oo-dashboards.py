@@ -103,19 +103,17 @@ def main() -> None:
             print(f"  [dry-run] {action}: {title!r}  ({path.name}  id={dash_id})")
             continue
 
-        # DELETE the old one first (upsert via DELETE+POST)
-        if action == "update":
-            dash_id = existing[title]
-            status, _ = _req("DELETE", f"{base}/api/default/dashboards/{dash_id}", token)
-            if status != 200:
-                print(f"  ✗ {title!r}: DELETE {dash_id} failed ({status})")
-                err += 1
-                continue
-
+        # POST the new version first; only DELETE the old one on success to
+        # avoid leaving the dashboard absent if the POST fails.
         status, result = _req("POST", f"{base}/api/default/dashboards", token, json.dumps(body).encode())
         if status == 200:
             inner = next((result[k] for k in ["v6", "v5", "v4", "v3", "v2", "v1"] if result.get(k)), {})
             new_id = inner.get("dashboardId", "?")
+            if action == "update":
+                dash_id = existing[title]
+                del_status, _ = _req("DELETE", f"{base}/api/default/dashboards/{dash_id}", token)
+                if del_status != 200:
+                    print(f"  ⚠ {title!r}: POST ok (id={new_id}) but DELETE {dash_id} failed ({del_status}); old copy left in place")
             print(f"  ✓ {action}: {title!r}  → id={new_id}  ({path.name})")
             ok += 1
         else:

@@ -75,6 +75,9 @@ jobs:
           cache: 'npm'
           cache-dependency-path: ui/package-lock.json
 
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
       - name: Cache Next.js build
         uses: actions/cache@v4
         with:
@@ -86,6 +89,10 @@ jobs:
 
       - name: UI install
         run: npm ci
+        working-directory: ui
+
+      - name: UI tests
+        run: bun test
         working-directory: ui
 
       - name: UI build

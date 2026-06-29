@@ -75,9 +75,9 @@ pub async fn run_authcode_flow(
         &pkce,
     );
 
-    eprintln!("\nOpening your browser to authorize…");
-    eprintln!(
-        "If it doesn't open automatically, check your default browser settings and try again."
+    tracing::info!("opening browser to authorize OAuth flow");
+    tracing::info!(
+        "if it doesn't open automatically, check your default browser settings and try again"
     );
     open_browser(&authorize);
 
@@ -281,8 +281,8 @@ pub async fn run_fragment_relay_flow(authorize_url: &str, port: u16) -> Result<S
         .with_context(|| {
             format!("binding loopback :{port} for the Trello token relay — is the port free?")
         })?;
-    eprintln!("\nOpening your browser to authorize…");
-    eprintln!("If it doesn't open, paste this URL:\n\n{authorize_url}\n");
+    tracing::info!("opening browser to authorize Trello OAuth flow");
+    tracing::info!(url = %authorize_url, "if it doesn't open, paste this URL into your browser");
     open_browser(authorize_url);
     tokio::time::timeout(CONSENT_TIMEOUT, accept_fragment_relay(&listener))
         .await

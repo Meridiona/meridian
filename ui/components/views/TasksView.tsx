@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import { fmtDur, fmtClock, AppGlyph, CatDot, TaskKey, StatusPill, SectionHead, Card, CATS, PROVIDER_META } from '@/components/atoms'
 import type { TaskSummary, TasksResponse } from '@/lib/api-types'
 import { load, mutate } from '@/lib/bridge'
+import { filterByConnectedProviders } from '@/lib/integrations'
 import HygieneDialog from '@/components/HygieneDialog'
 import ConnectTrackers from '@/components/IntegrationConnect'
 import type { TodayResponse } from '@/lib/api-types'
@@ -69,6 +70,11 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
     }).catch(() => {})
   }
 
+  const refreshBoard = () => {
+    fetchTasks()
+    fetchIntegrations()
+  }
+
   const handleSync = () => {
     if (syncing) return
     setSyncing(true)
@@ -76,57 +82,87 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
     // Dual-path: sync_tasks (Rust) in the app, /api/tasks/sync POST in a browser.
     // mutate throws the CLI's stderr on failure; success re-fetches the board.
     mutate('/api/tasks/sync', 'sync_tasks', {})
-      .then(() => { setLastSynced(new Date()); fetchTasks() })
-      .catch((e) => setSyncError(e instanceof Error ? e.message : 'Sync failed — check daemon logs'))
+      .then(() => { setLastSynced(new Date()); refreshBoard() })
+      .catch((e) => setSyncError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Sync failed — check daemon logs'))
       .finally(() => setSyncing(false))
   }
 
   useEffect(() => {
-    fetchTasks()
+    refreshBoard()
     load<TodayResponse>('/api/today', 'get_today').then((d) => {
       setTodaySessions(d.sessions ?? [])
     }).catch(() => {})
-    fetchIntegrations()
 
-    const timer = setInterval(fetchTasks, TASKS_POLL_INTERVAL_MS)
+    const timer = setInterval(refreshBoard, TASKS_POLL_INTERVAL_MS)
     return () => { clearInterval(timer) }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!data) {
     return (
       <div className="space-y-8">
-        <header className="rise">
-          <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Tasks</p>
-          <h1 className="type-title mt-1" style={{ color: 'var(--ink)' }}>What you&apos;re working on</h1>
-        </header>
+        <TasksHeader syncing={syncing} syncError={syncError} lastSynced={lastSynced} onSync={handleSync} onIntegrations={() => setShowIntegrations(s => !s)} showIntegrations={showIntegrations} />
         <p className="text-[13px]" style={{ color: 'var(--ink-3)' }}>Loading…</p>
       </div>
     )
   }
 
   if (data.tasks.length === 0) {
+    // If at least one provider is connected but the board is empty, the user
+    // has synced but nothing is assigned to them — show a targeted hint rather
+    // than the connect panel which implies nothing is wired up at all.
+    const anyConnectedProvider =
+      integrations !== null &&
+      Object.entries(integrations).some(([key, value]) => key !== 'sync_errors' && Boolean(value))
     return (
       <div className="space-y-8">
-        <header className="rise">
-          <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Tasks</p>
-          <h1 className="type-title mt-1" style={{ color: 'var(--ink)' }}>What you&apos;re working on</h1>
-        </header>
+        <TasksHeader syncing={syncing} syncError={syncError} lastSynced={lastSynced} onSync={handleSync} onIntegrations={() => setShowIntegrations(s => !s)} showIntegrations={showIntegrations} />
+        {anyConnectedProvider ? (
+          <div style={{ paddingTop: 8 }}>
+            <p className="text-[13px]" style={{ color: 'var(--ink-2)', marginBottom: 6 }}>No tasks assigned to you.</p>
+            <p className="text-[12px]" style={{ color: 'var(--ink-3)' }}>
+              Make sure issues in your tracker are assigned to your account, then hit Refresh.
+            </p>
+          </div>
+        ) : (
+          <ConnectTrackers integrations={integrations} onChanged={fetchIntegrations} />
+        )}
+      </div>
+    )
+  }
+
+  // Only include tasks from providers that are currently connected. While
+  // integrations is still loading (null), show everything to avoid a flash.
+  const activeTasks = filterByConnectedProviders(data.tasks, integrations)
+
+  // All providers disconnected: show the connect panel instead of a blank detail pane.
+  if (activeTasks.length === 0 && integrations !== null) {
+    return (
+      <div className="space-y-8">
+        <TasksHeader syncing={syncing} syncError={syncError} lastSynced={lastSynced} onSync={handleSync} onIntegrations={() => setShowIntegrations(s => !s)} showIntegrations={showIntegrations} />
         <ConnectTrackers integrations={integrations} onChanged={fetchIntegrations} />
       </div>
     )
   }
 
-  const touched = data.tasks.filter(t => t.today_s > 0).length
+  const touched = activeTasks.filter(t => t.today_s > 0).length
 
-  // Derive the set of providers actually present in the task list.
-  const presentProviders = Array.from(new Set(data.tasks.map(t => t.provider))).sort()
+  // Derive the set of providers actually present in the active task list.
+  const presentProviders = Array.from(new Set(activeTasks.map(t => t.provider))).sort()
   const showProviderTabs = presentProviders.length > 1
+  // If the selected provider was disconnected, fall back to 'all' so the list
+  // never goes blank while the tabs are hidden.
+  const effectiveProviderFilter =
+    providerFilter === 'all' || presentProviders.includes(providerFilter)
+      ? providerFilter
+      : 'all'
 
-  const visibleTasks = providerFilter === 'all'
-    ? data.tasks
-    : data.tasks.filter(t => t.provider === providerFilter)
+  const visibleTasks = effectiveProviderFilter === 'all'
+    ? activeTasks
+    : activeTasks.filter(t => t.provider === effectiveProviderFilter)
 
-  const sel = visibleTasks.find(t => t.key === selected) ?? visibleTasks[0] ?? data.tasks[0]
+  // activeTasks is non-empty here (empty case returned above), so visibleTasks[0]
+  // is always defined unless the active provider filter matches nothing.
+  const sel = visibleTasks.find(t => t.key === selected) ?? visibleTasks[0] ?? activeTasks[0]
 
   // Group tasks by epic_key (stable per-epic, not per-title) so cross-provider
   // epics with the same title don't collide.
@@ -149,55 +185,11 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
 
   return (
     <div className="space-y-8">
-      <header className="rise flex items-end justify-between">
-        <div>
-          <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Tasks</p>
-          <h1 className="type-title mt-1" style={{ color: 'var(--ink)' }}>
-            What you&apos;re working on
-          </h1>
-        </div>
-        <div className="flex items-center gap-4">
-          <p className="text-[12px]" style={{ color: 'var(--ink-3)' }}>
-            <span className="font-mono tnum">{touched}</span> touched today
-          </p>
-          <div className="flex flex-col items-end gap-1">
-            <button
-              onClick={handleSync}
-              disabled={syncing}
-              className="flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md transition-colors"
-              style={{
-                color: syncing ? 'var(--ink-4)' : syncError ? '#e53e3e' : 'var(--ink-3)',
-                background: 'var(--surface)',
-                border: `1px solid ${syncError ? '#e53e3e' : 'var(--rule)'}`,
-                cursor: syncing ? 'not-allowed' : 'pointer',
-              }}
-              title={lastSynced ? `Last synced ${lastSynced.toLocaleTimeString()}` : 'Sync tasks from Jira / Linear / GitHub'}
-            >
-              <span style={{ display: 'inline-block', animation: syncing ? 'spin 1s linear infinite' : 'none' }}>
-                {syncError ? '⚠' : '↻'}
-              </span>
-              {syncing ? 'Syncing…' : syncError ? 'Sync failed' : 'Sync'}
-            </button>
-            {syncError && (
-              <p className="text-[11px] max-w-[280px] text-right" style={{ color: '#e53e3e' }}>
-                {syncError}
-              </p>
-            )}
-          </div>
-          <button
-            onClick={() => setShowIntegrations(s => !s)}
-            className="flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md transition-colors"
-            style={{
-              color: showIntegrations ? 'var(--ink)' : 'var(--ink-3)',
-              background: showIntegrations ? 'var(--surface-2)' : 'var(--surface)',
-              border: '1px solid var(--rule)',
-              cursor: 'pointer',
-            }}
-          >
-            Integrations
-          </button>
-        </div>
-      </header>
+      <TasksHeader
+        syncing={syncing} syncError={syncError} lastSynced={lastSynced}
+        onSync={handleSync} onIntegrations={() => setShowIntegrations(s => !s)}
+        showIntegrations={showIntegrations} touched={touched}
+      />
 
       {showIntegrations ? (
         <div>
@@ -214,9 +206,9 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
         <>
           {showProviderTabs && (
             <div className="flex items-center gap-1">
-              <ProviderTab id="all" active={providerFilter === 'all'} onClick={() => setProviderFilter('all')} />
+              <ProviderTab id="all" active={effectiveProviderFilter === 'all'} onClick={() => setProviderFilter('all')} />
               {presentProviders.map(p => (
-                <ProviderTab key={p} id={p} active={providerFilter === p} onClick={() => setProviderFilter(p)} />
+                <ProviderTab key={p} id={p} active={effectiveProviderFilter === p} onClick={() => setProviderFilter(p)} />
               ))}
             </div>
           )}
@@ -267,6 +259,70 @@ export default function TasksView({ focusKey, openIntegrations }: { focusKey?: s
 
       {fixTask && <HygieneDialog task={fixTask} onClose={() => setFixTask(null)} onApplied={fetchTasks} />}
     </div>
+  )
+}
+
+function TasksHeader({
+  syncing, syncError, lastSynced, onSync, onIntegrations, showIntegrations, touched,
+}: {
+  syncing: boolean
+  syncError: string | null
+  lastSynced: Date | null
+  onSync: () => void
+  onIntegrations: () => void
+  showIntegrations: boolean
+  touched?: number
+}) {
+  return (
+    <header className="rise flex items-end justify-between">
+      <div>
+        <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>Tasks</p>
+        <h1 className="type-title mt-1" style={{ color: 'var(--ink)' }}>What you&apos;re working on</h1>
+      </div>
+      <div className="flex items-center gap-4">
+        {touched !== undefined && (
+          <p className="text-[12px]" style={{ color: 'var(--ink-3)' }}>
+            <span className="font-mono tnum">{touched}</span> touched today
+          </p>
+        )}
+        <div className="flex flex-col items-end gap-1">
+          <button
+            onClick={onSync}
+            disabled={syncing}
+            className="flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md transition-colors"
+            style={{
+              color: syncing ? 'var(--ink-4)' : syncError ? '#e53e3e' : 'var(--ink-3)',
+              background: 'var(--surface)',
+              border: `1px solid ${syncError ? '#e53e3e' : 'var(--rule)'}`,
+              cursor: syncing ? 'not-allowed' : 'pointer',
+            }}
+            title={lastSynced ? `Last synced ${lastSynced.toLocaleTimeString()}` : 'Pull latest tasks from Jira / Linear / GitHub'}
+          >
+            <span style={{ display: 'inline-block', animation: syncing ? 'spin 1s linear infinite' : 'none' }}>
+              {syncError ? '⚠' : '↻'}
+            </span>
+            {syncing ? 'Syncing…' : syncError ? 'Sync failed' : 'Refresh'}
+          </button>
+          {syncError && (
+            <p className="text-[11px] max-w-[280px] text-right" style={{ color: '#e53e3e' }}>
+              {syncError}
+            </p>
+          )}
+        </div>
+        <button
+          onClick={onIntegrations}
+          className="flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md transition-colors"
+          style={{
+            color: showIntegrations ? 'var(--ink)' : 'var(--ink-3)',
+            background: showIntegrations ? 'var(--surface-2)' : 'var(--surface)',
+            border: '1px solid var(--rule)',
+            cursor: 'pointer',
+          }}
+        >
+          Integrations
+        </button>
+      </div>
+    </header>
   )
 }
 

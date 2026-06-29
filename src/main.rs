@@ -670,6 +670,8 @@ async fn main() -> Result<()> {
                 }
                 // Wake the background task linker to drain newly-created sessions.
                 etl_notify.notify_one();
+                // Wake the worklog driver: ETL may have settled a new completed hour.
+                worklog_notify.notify_one();
 
                 // Morning plan nudge — idempotent per day, gated to working hours.
                 if let Err(e) = meridian::daily_plan::maybe_nudge(&meridian).await {

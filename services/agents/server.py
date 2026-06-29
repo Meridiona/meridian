@@ -43,15 +43,6 @@ from agents.routes import (
 
 log = logging.getLogger("agents.server")
 
-# Download patterns matching mlx_lm.load()'s default fileset — used by the
-# prefetch route to size and fetch exactly what the runtime will load. Lives
-# here (not in the route module) because it is the server's view of what a
-# model "is"; routes/prefetch.py imports it lazily.
-_MODEL_ALLOW_PATTERNS = [
-    "*.json", "model*.safetensors", "*.py", "tokenizer.model",
-    "*.tiktoken", "tiktoken.model", "*.txt", "*.jsonl", "*.jinja",
-]
-
 
 # ---------------------------------------------------------------------------
 # Lifespan — model loaded lazily, evicted when idle

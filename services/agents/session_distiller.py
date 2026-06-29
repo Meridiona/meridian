@@ -24,6 +24,7 @@ import logging
 import re
 import sqlite3
 import time
+from datetime import datetime
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -33,7 +34,7 @@ from typing import Optional
 import numpy as np
 from opentelemetry.trace import StatusCode
 
-from agents import observability
+from agents import model_registry, observability
 from agents.time_utils import local_hour_utc_bounds, utc_to_local_hhmm  # noqa: F401 (re-exported)
 from agents.config import (
     DISTILLER_DF_FRAC,
@@ -90,29 +91,55 @@ _CEIL              = 14
 _ENTITY_RESCUE_CAP = 4
 
 # ── Embedding singleton ────────────────────────────────────────────────────────
-_embedder = None
+# MLX-native embedder (mlx_embeddings), not sentence-transformers/torch — keeps
+# the runtime lean (no ~2.5 GB torch) and on the single MLX backend, and honours
+# the same single-slot eviction discipline as the generative model. The model id
+# is resolved from the registry (env-overridable via MERIDIAN_EMBEDDER_ID).
+_embedder = None  # cached (model, tokenizer) tuple
 
 
-def _get_embedder():
+def _get_embedder() -> tuple:
     global _embedder
     if _embedder is None:
-        from sentence_transformers import SentenceTransformer
-        log.debug("session_distiller: loading Qwen3-Embedding-0.6B onto MPS")
-        _embedder = SentenceTransformer(
-            "Qwen/Qwen3-Embedding-0.6B", device="mps", trust_remote_code=True,
-        )
+        import mlx_embeddings
+        mid = model_registry.embedder_id()
+        log.debug("session_distiller: loading MLX embedder %s", mid)
+        _embedder = mlx_embeddings.load(mid)
     return _embedder
 
 
+def _embed(texts: list[str]) -> np.ndarray:
+    """L2-normalized sentence embeddings for ``texts`` via the MLX embedder.
+
+    Batched to bound peak Metal memory — the embedder is single-slot, and one
+    forward pass over every span would spike unified memory. ``text_embeds`` come
+    back already normalized, so downstream cosine similarity is a plain dot product.
+    """
+    if not texts:
+        return np.zeros((0, 0), dtype=np.float32)
+    import mlx.core as mx
+    from mlx_embeddings import generate
+
+    model, tok = _get_embedder()
+    out: list[np.ndarray] = []
+    batch = 16
+    for i in range(0, len(texts), batch):
+        emb = generate(model, tok, texts=texts[i:i + batch]).text_embeds
+        out.append(np.array(emb).astype(np.float32))
+        mx.clear_cache()
+    return np.concatenate(out, axis=0) if out else np.zeros((0, 0), dtype=np.float32)
+
+
 def evict_embedder() -> None:
-    """Free ~500 MB of MPS memory. Model reloads lazily on next distil call."""
+    """Free the embedder's Metal memory. Model reloads lazily on next distil call."""
     global _embedder
     if _embedder is not None:
         _embedder = None
         gc.collect()
         try:
-            import torch; torch.mps.empty_cache()
-        except Exception:  # noqa: BLE001 — MPS cache flush is best-effort; non-fatal if torch absent
+            import mlx.core as mx
+            mx.clear_cache()
+        except Exception:  # noqa: BLE001 — cache flush is best-effort; non-fatal if mlx absent
             pass
         log.info("session_distiller: embedding model evicted from memory")
 
@@ -283,9 +310,7 @@ def _distil(rows: list, header_prefix: str, stat_label: str) -> tuple[str, Disti
     with tracer.start_as_current_span("distil.embed") as embed_span:
         t_embed = time.monotonic()
         texts = [sp["line"] for sp in lex]
-        V: np.ndarray = _get_embedder().encode(
-            texts, batch_size=8, show_progress_bar=False, normalize_embeddings=True,
-        ).astype(np.float32)
+        V: np.ndarray = _embed(texts)
         embed_elapsed = round(time.monotonic() - t_embed, 2)
         embed_span.set_attribute("n_spans", len(texts))
         embed_span.set_attribute("elapsed_s", embed_elapsed)
@@ -506,6 +531,10 @@ def distil_hour(
     """
     if not _HOUR_RE.match(hour):
         raise ValueError(f"invalid hour format {hour!r}; expected YYYY-MM-DDTHH")
+    try:
+        datetime.strptime(hour, "%Y-%m-%dT%H")
+    except ValueError:
+        raise ValueError(f"invalid calendar hour {hour!r}; must be a real date")
     db = str(db_path or MERIDIAN_DB)
     utc_start, utc_end = local_hour_utc_bounds(hour)
     rows = _load_rows(db, "started_at >= ? AND started_at < ?", (utc_start, utc_end), exclude_coding)
