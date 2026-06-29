@@ -20,14 +20,19 @@
 //!
 //! # Related
 //! - [`crate::canonical_task`] — the output shape these produce.
-//! - [`jira`] — the reference implementation (handles the Jira-specific traps:
-//!   numeric id as the stable key, 3-native-category status resolution,
-//!   GDPR-hidden emails).
+//! - [`jira`] — numeric id as the stable key, 3-native-category status
+//!   resolution, GDPR-hidden emails.
+//! - [`linear`] — UUID id, inverted Int priority lookup, `WorkflowState.type`
+//!   → category (custom "In Review" folds into In-Progress).
+//! - [`azure_devops`] — org-namespaced id (`{org}:{id}`), Int 1–4 priority,
+//!   state→category by name, semicolon-delimited tags.
 
 use crate::canonical_task::{CanonicalTask, Provider};
 use serde_json::Value;
 
+pub mod azure_devops;
 pub mod jira;
+pub mod linear;
 
 /// Maps a tracker's raw API payload onto the canonical task shape.
 ///
