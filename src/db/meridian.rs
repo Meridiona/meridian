@@ -518,8 +518,8 @@ pub async fn pause_gap_exists_in_window(
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM gaps
          WHERE kind IN ('tracking_paused', 'schedule_paused')
-           AND started_at < ?2
-           AND ended_at   > ?1",
+           AND started_at <= ?1
+           AND ended_at   >= ?2",
     )
     .bind(from_ts)
     .bind(to_ts)

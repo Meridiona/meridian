@@ -89,8 +89,9 @@ let isTracking = false // healthy + has an active session
 let tickId = null
 
 // ── Pause state (synced from StatusPayload) ───────────────────────────────────
-let pauseUntilMs = null  // ms timestamp when timed pause ends; null = not timed-paused
-let countdownId = null   // interval handle for the live countdown
+let pauseUntilMs = null    // ms timestamp when timed pause ends; null = not timed-paused
+let countdownId = null     // interval handle for the live countdown
+let daemonUnhealthy = false // true when healthy=false; drives resumeBtn action
 
 // ── Formatters ───────────────────────────────────────────────────────────────
 // "6h 30m" / "30m" / "0m" — zero-pads minutes only when hours are present.
@@ -262,26 +263,33 @@ function render(status) {
 
   // ── Pause / tracking toggle ───────────────────────────────────────────────
   if (!healthy) {
-    // Daemon down — show a minimal paused state; no interaction needed.
+    // Daemon down — show a restart button so the user can recover without a terminal.
+    daemonUnhealthy = true
     pauseSec.classList.add('paused')
     pauseText.textContent = 'Tracking paused'
     pauseSub.textContent = "Meridian isn't recording"
     pausePicker.hidden = true
     pauseCustom.hidden = true
-    pauseActive.hidden = true
+    pauseActive.hidden = false
+    pauseCountdown.hidden = true
+    resumeBtn.textContent = 'Restart daemon'
     stopCountdown()
   } else if (pauseSource === 'timed') {
     // Timed pause active — show countdown + "Resume now".
+    daemonUnhealthy = false
     pauseSec.classList.add('paused')
     pauseText.textContent = 'Tracking paused'
     pauseSub.textContent = ''
     pausePicker.hidden = true
     pauseCustom.hidden = true
     pauseActive.hidden = false
+    pauseCountdown.hidden = false
+    resumeBtn.textContent = 'Resume now'
     const untilMs = status.pause_until_ms || 0
     if (untilMs !== pauseUntilMs) startCountdown(untilMs)
   } else if (pauseSource === 'schedule') {
     // Schedule pause — outside work hours; show resume time hint, no countdown.
+    daemonUnhealthy = false
     pauseSec.classList.add('paused')
     pauseText.textContent = 'Outside work hours'
     const resumeAt = status.schedule_resume_at || ''
@@ -292,6 +300,7 @@ function render(status) {
     stopCountdown()
   } else {
     // Not paused — show the duration picker.
+    daemonUnhealthy = false
     pauseSec.classList.remove('paused')
     pauseText.textContent = 'Pause tracking'
     pauseSub.textContent = ''
@@ -375,9 +384,13 @@ customCancel.addEventListener('click', () => {
   pausePicker.hidden = false
 })
 
-// Resume now (during a timed pause)
+// Resume now (timed pause) or restart daemon (unhealthy)
 resumeBtn.addEventListener('click', () => {
-  invoke('pause_for_duration', { seconds: 0 }).catch(console.error)
+  if (daemonUnhealthy) {
+    invoke('restart_daemon').catch(console.error)
+  } else {
+    invoke('pause_for_duration', { seconds: 0 }).catch(console.error)
+  }
 })
 
 // ── DMG auto-update ───────────────────────────────────────────────────────────

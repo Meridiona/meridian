@@ -118,6 +118,35 @@ pub async fn pause_for_duration(
     let now = now_secs();
     let until = now + seconds;
 
+    // If a pause is already active (e.g. a schedule pause), close it out first
+    // by writing a gap row for the T0→now period before overwriting state.
+    let prev = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        s.pause_started_at.zip(s.pause_source.clone())
+    };
+    if let Some((prev_started, prev_src)) = prev {
+        let kind = match prev_src {
+            PauseSource::Timed => "tracking_paused",
+            PauseSource::Schedule => "schedule_paused",
+        };
+        let duration_s = now.saturating_sub(prev_started) as i64;
+        if duration_s > 0 {
+            if let Some(p) = pool.as_ref() {
+                if let Err(e) = meridian_core::insert_pause_gap(
+                    p,
+                    &secs_to_iso(prev_started),
+                    &secs_to_iso(now),
+                    duration_s,
+                    kind,
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, kind, "failed to write gap for interrupted pause");
+                }
+            }
+        }
+    }
+
     {
         let mut s = state.lock().map_err(|e| e.to_string())?;
         // Drop cancel senders → stops the engine and UI consumer tasks, fully
