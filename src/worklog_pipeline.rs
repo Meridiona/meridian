@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
 use anyhow::{Context, Result};
-use chrono::{Duration, NaiveDate, TimeZone, Utc};
+use chrono::{Duration, Local, NaiveDate, TimeZone, Utc};
 use serde_json::json;
 use sqlx::SqlitePool;
 use tokio::sync::{watch, Notify};
@@ -27,8 +27,9 @@ fn iso_bound(dt: chrono::DateTime<Utc>) -> String {
     dt.format("%Y-%m-%dT%H:%M:%S+00:00").to_string()
 }
 
-/// The hour label the Python pipeline expects: `YYYY-MM-DDTHH` (UTC).
-fn hour_label(dt: chrono::DateTime<Utc>) -> String {
+/// The hour label the Python pipeline expects: `YYYY-MM-DDTHH` in local time.
+/// Sessions are bucketed by the user's local clock hour, not UTC.
+fn hour_label(dt: chrono::DateTime<Local>) -> String {
     dt.format("%Y-%m-%dT%H").to_string()
 }
 
@@ -85,10 +86,9 @@ async fn post_worklog_hour(
 
 /// Run one pass over a day's hours, drafting worklogs via `/worklog_hour`.
 ///
-/// Walks the 24 UTC clock-hour buckets of `day` (UTC). The UTC clock hour is the
-/// pipeline's natural unit — `distil_hour` buckets app_sessions by the UTC hour
-/// label `YYYY-MM-DDTHH`, so hour bounds, ledger keys, and the label all align
-/// exactly (walking LOCAL hours would misbucket under a sub-hour UTC offset).
+/// Walks the 24 LOCAL clock-hour buckets of `day`. Labels are in local time
+/// (`YYYY-MM-DDTHH` local), matching the user's clock. The Python distiller
+/// converts local-hour labels to UTC bounds at query time.
 pub async fn run_driver(
     pool: &SqlitePool,
     cfg: &PmWorklogConfig,
@@ -97,30 +97,37 @@ pub async fn run_driver(
     day: Option<NaiveDate>,
 ) -> Result<DriverSummary> {
     let now = Utc::now();
-    let day = day.unwrap_or_else(|| now.date_naive());
+    // Walk local day: midnight in the machine's local timezone.
+    let local_day = day.unwrap_or_else(|| Local::now().date_naive());
     let aging = Duration::minutes(cfg.readiness_aging_minutes);
-    let day_utc = day.format("%Y-%m-%d").to_string();
+    let day_local = local_day.format("%Y-%m-%d").to_string();
 
-    let midnight = Utc.from_utc_datetime(
-        &day.and_hms_opt(0, 0, 0)
-            .context("constructing midnight from date")?,
-    );
+    let midnight_local = Local
+        .from_local_datetime(
+            &local_day
+                .and_hms_opt(0, 0, 0)
+                .context("constructing local midnight")?,
+        )
+        .single()
+        .context("ambiguous local midnight (DST transition)")?;
     let mut summary = DriverSummary::default();
 
     for i in 0..24i64 {
-        let hs_utc = midnight + Duration::hours(i);
-        let he_utc = hs_utc + Duration::hours(1);
+        let hs_local = midnight_local + Duration::hours(i);
+        let he_local = hs_local + Duration::hours(1);
+        let hs_utc = hs_local.with_timezone(&Utc);
+        let he_utc = he_local.with_timezone(&Utc);
         if hs_utc >= now {
             break; // hour hasn't started yet
         }
 
         let hs = iso_bound(hs_utc);
         let he = iso_bound(he_utc);
-        let label = hour_label(hs_utc);
+        let label = hour_label(hs_local);
         let cycle_index = i;
 
         summary.hours_seen += 1;
-        ledger::ensure_hour(pool, &day_utc, &hs, &he)
+        ledger::ensure_hour(pool, &day_local, &hs, &he)
             .await
             .with_context(|| format!("ensure_hour {hs}"))?;
 
@@ -202,18 +209,14 @@ pub async fn run_loop(
         "worklog-pipeline driver starting (hour-level /worklog_hour; drafts only)"
     );
 
-    let run_pass = |scope_today: bool| {
+    let run_pass = |_scope_today: bool| {
         let pool = pool.clone();
         let cfg = cfg.clone();
         let db_path = db_path.clone();
         async move {
             let min_duration_s = 0;
-            // Today, plus yesterday-leftover on the periodic fallback pass (UTC).
-            let days: Vec<Option<NaiveDate>> = if scope_today {
-                vec![None]
-            } else {
-                vec![Some(Utc::now().date_naive() - Duration::days(1)), None]
-            };
+            // Today only (local time) — no yesterday backfill.
+            let days: Vec<Option<NaiveDate>> = vec![None];
             for day in days {
                 if let Err(e) = run_driver(&pool, &cfg, &db_path, min_duration_s, day).await {
                     tracing::warn!(error = %e, "worklog-pipeline pass errored");
