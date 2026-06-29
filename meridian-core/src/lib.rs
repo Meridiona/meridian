@@ -22,6 +22,7 @@
 pub use sqlx::SqlitePool;
 
 // ── Internal organization ───────────────────────────────────────────────────
+pub mod adapters;
 pub mod canonical_task;
 mod db;
 mod readers;
@@ -53,3 +54,5 @@ pub use readers::{
 };
 
 pub use canonical_task::{CanonicalTask, PersonRef, Priority, Provider, StatusCategory, TaskKind};
+
+pub use adapters::ProviderAdapter;
