@@ -223,7 +223,7 @@ mod tests {
             priority: Priority::High,
             assignees: vec![
                 PersonRef {
-                    email: Some("akarsh@meridiona.com".to_string()),
+                    email: Some("akarsh@example.com".to_string()),
                     display_name: "Akarsh".to_string(),
                     provider_user_id: "usr_abc123".to_string(),
                 },
@@ -234,7 +234,7 @@ mod tests {
                 },
             ],
             reporter: Some(PersonRef {
-                email: Some("lead@meridiona.com".to_string()),
+                email: Some("lead@example.com".to_string()),
                 display_name: "Lead".to_string(),
                 provider_user_id: "usr_lead".to_string(),
             }),
