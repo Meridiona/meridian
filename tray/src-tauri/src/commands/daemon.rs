@@ -22,7 +22,7 @@ use serde::Serialize;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::State;
+use tauri::{Emitter, State};
 
 /// The cached tray status (health + active session + today totals), read from
 /// the poll-loop-maintained [`AppState`]. Synchronous — just locks and snapshots.
@@ -127,6 +127,11 @@ pub async fn pause_for_duration(
         s.schedule_resume_at = None;
     }
 
+    // Emit immediately so the popover reflects the new state without waiting for the next poll tick.
+    if let Ok(s) = state.lock() {
+        let _ = app.emit("status-update", s.to_payload());
+    }
+
     tracing::info!(seconds, until, "capture paused for duration");
 
     if crate::poll::notifications_allowed("system.pause").await {
@@ -213,6 +218,11 @@ pub(crate) async fn resume_capture(
                 }
             }
         }
+    }
+
+    // Emit immediately so the popover reverts to the picker without waiting for the next tick.
+    if let Ok(s) = state.lock() {
+        let _ = app.emit("status-update", s.to_payload());
     }
 
     tracing::info!(auto, "capture resumed");
