@@ -89,3 +89,4 @@ dist/
 # MLX runtime build scratch (scripts/build-mlx-runtime.sh)
 .mlx-runtime-build/
 .DS_Store
+ui/data/
