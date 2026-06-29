@@ -174,12 +174,12 @@ async fn tasks_autonomous_excludes_supervised_agent_time() {
     assert_eq!(x.cats.get("coding").copied(), Some(3600));
 }
 
-/// The CDM columns (migration 051) are surfaced by the reader when present,
+/// The CDM columns (migration 052) are surfaced by the reader when present,
 /// including JSON-array hierarchy fields parsed into vecs.
 #[tokio::test]
 async fn tasks_exposes_cdm_columns_when_present() {
     let pool = make_pool().await;
-    // Mirror migration 051: add the CDM columns to pm_tasks.
+    // Mirror migration 052: add the CDM columns to pm_tasks.
     for col in [
         "canonical_id",
         "status_category",
@@ -224,7 +224,7 @@ async fn tasks_exposes_cdm_columns_when_present() {
     assert_eq!(t.project_ids, vec!["jira:proj"]);
 }
 
-/// On a DB that predates migration 051 (no CDM columns), the reader degrades
+/// On a DB that predates migration 052 (no CDM columns), the reader degrades
 /// gracefully: the new fields come back None/empty rather than erroring.
 #[tokio::test]
 async fn tasks_cdm_columns_default_when_absent() {

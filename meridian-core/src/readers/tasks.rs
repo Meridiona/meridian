@@ -47,7 +47,7 @@ pub struct TaskSummary {
     pub epic_title: Option<String>,
     pub due_date: Option<String>,
     pub start_date: Option<String>,
-    // ── CDM fields (migration 051) — populated by the provider adapters once
+    // ── CDM fields (migration 052) — populated by the provider adapters once
     //    ingestion is cut over (Stage 3b); None/empty until then. Read-only here.
     /// Deterministic cross-tracker id, `"{provider}:{provider_id}"`.
     pub canonical_id: Option<String>,
@@ -89,7 +89,7 @@ struct TaskRow {
     epic_title: Option<String>,
     due_date: Option<String>,
     start_date: Option<String>,
-    // CDM columns (migration 051); selected as NULL on DBs that predate it.
+    // CDM columns (migration 052); selected as NULL on DBs that predate it.
     canonical_id: Option<String>,
     status_category: Option<String>,
     reporter_name: Option<String>,
@@ -165,7 +165,7 @@ pub async fn get_tasks(
     let (today_start, today_end) = local_day_bounds(today);
     let (ws, _) = local_day_bounds(week_start);
 
-    // All tasks. The CDM columns (migration 051) are selected as NULL on DBs
+    // All tasks. The CDM columns (migration 052) are selected as NULL on DBs
     // that predate it, so the tray reading an un-migrated DB still works.
     let cdm_cols = if column_exists(pool, "pm_tasks", "status_category").await? {
         "canonical_id, status_category, reporter_name, completed_at, ancestor_path, project_ids"
@@ -382,7 +382,7 @@ pub async fn get_tasks(
 }
 
 /// Whether `table` has `column` — used to stay graceful on DBs that predate a
-/// migration (here, the CDM columns from 051).
+/// migration (here, the CDM columns from 052).
 async fn column_exists(pool: &SqlitePool, table: &str, column: &str) -> anyhow::Result<bool> {
     let found: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM pragma_table_info(?) WHERE name = ?")
         .bind(table)
