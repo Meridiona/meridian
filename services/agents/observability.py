@@ -3,39 +3,30 @@
 A single `setup(agent_name)` call wires up:
 
   * an OTel `TracerProvider` with `service.name=agent_name`
-  * a `BatchSpanProcessor` writing OTLP/HTTP-protobuf spans to the durable
-    telemetry spool (the Rust daemon's shipper drains it to OpenObserve)
-  * a `LoggerProvider` + spool log handler so every `logging.LogRecord` is also
-    spooled (correlated to the active span), mirroring the Rust daemon's
-    `OpenTelemetryTracingBridge`
+  * direct OTLP/HTTP export to OpenObserve when `otlp_enabled=true` and
+    credentials are set in `~/.meridian/settings.json` — no Rust daemon needed
+  * spool fallback (`~/.meridian/telemetry/pending/`) when toggle is on but
+    credentials are absent; the Rust daemon drains that directory to OO
+  * a `LoggerProvider` + matching log handler so every `logging.LogRecord`
+    is correlated to the active span via trace_id/span_id
   * W3C `TraceContextTextMapPropagator` as the global propagator so each
     agent can pick up the Rust daemon's `traceparent` and continue the trace
   * `LoggingInstrumentor` so every `logging.LogRecord` carries
     `otelTraceID` / `otelSpanID` attributes for OpenObserve correlation
   * a JSON formatter (`python-json-logger`) writing daily-rotated JSONL files
-    under `~/.meridian/logs/{agent_name}.jsonl` plus stderr — both ingestable
-    by OpenObserve's log pipeline without further parsing.
+    under `~/.meridian/logs/{agent_name}.jsonl` plus stderr
 
-Export is gated by the SAME `~/.meridian/settings.json` the Rust daemon reads —
-the `otlp_enabled` toggle — so the dashboard Settings page is the single source
-of truth for both processes. Delivery (endpoint + Basic-auth credentials) is
-owned entirely by the Rust shipper; Python only ever writes to the spool. The
-legacy `MERIDIAN_OO_AUTH` env credential is deprecated and ignored.
+Export gate: `~/.meridian/settings.json` `otlp_enabled` toggle + OO credentials
+(`oo_email` / `oo_password`). When both are present the Python service ships
+directly to OO — it does NOT depend on the Rust daemon for delivery. The spool
+path is a fallback for when credentials are absent (daemon delivers later).
 
 `extract_parent_context(traceparent)` is the helper agents use to continue
 a span emitted by another process — typically the Rust ETL or another
 agent stage.
 
 Idempotent: calling `setup` twice is a no-op for the second call (returns
-the existing tracer). This matters because both the daemon and the
-single-shot CLI paths funnel through the same module.
-
-Spool durability: when `otlp_enabled` is true (regardless of whether
-credentials are present), spans and logs are written atomically to
-`~/.meridian/telemetry/pending/<signal>-<unix_micros>-<seq>.otlp` via
-`SpoolSpanExporter` and `SpoolLogExporter`.  The Rust daemon's shipper
-task drains that shared directory to OpenObserve — Python does NOT need
-its own shipper, and credential resolution lives there, not here.
+the existing tracer).
 """
 from __future__ import annotations
 
@@ -55,10 +46,10 @@ from opentelemetry.context import Context
 from opentelemetry.instrumentation.logging import LoggingInstrumentor
 from opentelemetry.propagate import set_global_textmap
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
-from opentelemetry.sdk._logs.export import BatchLogRecordProcessor, LogExportResult
+from opentelemetry.sdk._logs.export import SimpleLogRecordProcessor, LogExportResult
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExportResult
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult
 from opentelemetry.trace.propagation.tracecontext import (
     TraceContextTextMapPropagator,
 )
@@ -200,11 +191,8 @@ class SpoolLogExporter:
 
 # ──────────────────────── Config ───────────────────────────────────────────────
 DEFAULT_LOG_DIR = Path.home() / ".meridian" / "logs"
-# Single source of truth for the export TOGGLE — the SAME file the Rust daemon
-# reads (see `src/observability.rs::resolve_otlp_target`). Delivery credentials
-# live there too: the dashboard Settings page writes here and the Rust shipper
-# picks them up. This process only reads `otlp_enabled` to decide whether to
-# spool — it never delivers, so it needs no endpoint/credentials of its own.
+# Same settings.json the Rust daemon reads. When otlp_enabled=true and
+# oo_email/oo_password are set, Python ships directly to OO (no daemon needed).
 _SETTINGS_PATH = Path(
     os.environ.get("MERIDIAN_SETTINGS_PATH")
     or (Path.home() / ".meridian" / "settings.json")
@@ -230,13 +218,7 @@ def _load_settings() -> dict[str, object]:
 
 
 def _is_otlp_enabled() -> bool:
-    """Return True when the otlp_enabled toggle is on and tracing is not disabled.
-
-    Deliberately does NOT check credentials — used to gate the spool exporters
-    so telemetry is captured even when OO credentials are absent (the Rust
-    shipper delivers when they are provided later, and warns once if a user
-    leaves the toggle on with no credentials).
-    """
+    """Return True when the otlp_enabled toggle is on and tracing is not disabled."""
     if os.environ.get("MERIDIAN_TRACING_DISABLED", "").lower() in ("1", "true", "yes"):
         return False
     return bool(_load_settings().get("otlp_enabled"))
@@ -280,22 +262,17 @@ def setup(agent_name: str) -> trace.Tracer:
 
 
 def shutdown() -> None:
-    """Flush and shut down the global TracerProvider.
+    """Shut down the global TracerProvider and log provider.
 
-    Must be called before a short-lived process exits — BatchSpanProcessor
-    queues spans asynchronously and drops them on interpreter shutdown unless
-    explicitly flushed.
+    SimpleSpanProcessor/SimpleLogRecordProcessor export synchronously on each
+    span/record end, so there is no queue to flush — shutdown just releases
+    resources cleanly.
     """
     provider = trace.get_tracer_provider()
-    if hasattr(provider, "force_flush"):
-        provider.force_flush(timeout_millis=5_000)
     if hasattr(provider, "shutdown"):
         provider.shutdown()
 
-    # Flush queued log records too — BatchLogRecordProcessor drops them on
-    # interpreter exit otherwise, the same hazard as spans.
     if _LOGGER_PROVIDER is not None:
-        _LOGGER_PROVIDER.force_flush(timeout_millis=5_000)
         _LOGGER_PROVIDER.shutdown()
 
 
@@ -312,41 +289,84 @@ def extract_parent_context(traceparent: Optional[str]) -> Optional[Context]:
 
 
 # ──────────────────────── Tracing setup ────────────────────────────────────────
+def _oo_otlp_headers() -> dict[str, str]:
+    """Build the Basic-auth header for direct OO OTLP export from settings.json."""
+    import base64
+    s = _load_settings()
+    email = s.get("oo_email") or ""
+    passwd = s.get("oo_password") or ""
+    if not email or not passwd:
+        return {}
+    token = base64.b64encode(f"{email}:{passwd}".encode()).decode()
+    return {"Authorization": f"Basic {token}"}
+
+
+def _oo_otlp_base_url() -> str:
+    """Return the OO OTLP base URL (without /v1/traces or /v1/logs suffix)."""
+    s = _load_settings()
+    endpoint = s.get("otlp_endpoint") or "http://localhost:5080/api/default/v1/traces"
+    # Strip the /v1/traces suffix to get the org-level base used by both signals.
+    for suffix in ("/v1/traces", "/v1/logs"):
+        if endpoint.endswith(suffix):
+            return endpoint[: -len(suffix)]
+    return endpoint.rstrip("/")
+
+
 def _configure_tracing(agent_name: str) -> None:
+    # The W3C propagator is always installed so traceparent round-trips work.
+    set_global_textmap(TraceContextTextMapPropagator())
+
+    if not _is_otlp_enabled():
+        return
+
     resource = Resource.create({"service.name": agent_name})
     provider = TracerProvider(resource=resource)
 
-    # Wire the spool exporter when otlp_enabled is true (even without creds).
-    # The Rust shipper drains the shared spool dir when a target is available.
-    if _is_otlp_enabled():
-        provider.add_span_processor(BatchSpanProcessor(SpoolSpanExporter()))
+    headers = _oo_otlp_headers()
+    if headers:
+        # Credentials present — ship directly to OO, no Rust daemon dependency.
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        exporter = OTLPSpanExporter(
+            endpoint=f"{_oo_otlp_base_url()}/v1/traces",
+            headers=headers,
+        )
+        provider.add_span_processor(BatchSpanProcessor(exporter))
+    else:
+        # Credentials absent — spool for the Rust daemon to deliver later.
+        provider.add_span_processor(SimpleSpanProcessor(SpoolSpanExporter()))
 
-    # Set as the global provider. OTel's `set_tracer_provider` warns if
-    # someone already configured a provider in-process; we accept that and
-    # overwrite — the agent process is the authority on its own telemetry.
     trace.set_tracer_provider(provider)
-    set_global_textmap(TraceContextTextMapPropagator())
 
 
 def _configure_log_export(agent_name: str) -> Optional[logging.Handler]:
-    """Build a spool-logs handler so every `log.*` record reaches OpenObserve,
-    correlated to the active span by trace_id/span_id — the Python counterpart
-    of the Rust daemon's `OpenTelemetryTracingBridge`.
+    """Build an OTel log handler so every ``log.*`` record reaches OpenObserve,
+    correlated to the active span by trace_id/span_id.
 
-    Returns the handler (caller attaches it to root) or `None` when export is
-    disabled, in which case logs still go to the JSONL file + stdout/stderr.
-
-    When `otlp_enabled` is true the spool log exporter is always wired (even
-    without credentials) — the Rust shipper handles delivery.
+    Returns the handler (caller attaches it to root) or ``None`` when export is
+    disabled — logs still go to the JSONL file + stdout/stderr regardless.
     """
     global _LOGGER_PROVIDER
 
     if not _is_otlp_enabled():
         return None
 
+    headers = _oo_otlp_headers()
     resource = Resource.create({"service.name": agent_name})
     provider = LoggerProvider(resource=resource)
-    provider.add_log_record_processor(BatchLogRecordProcessor(SpoolLogExporter()))
+
+    if headers:
+        # Credentials present — ship directly to OO, no Rust daemon dependency.
+        from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+        log_exporter = OTLPLogExporter(
+            endpoint=f"{_oo_otlp_base_url()}/v1/logs",
+            headers=headers,
+        )
+    else:
+        # Credentials absent — spool for the Rust daemon to deliver later.
+        log_exporter = SpoolLogExporter()  # type: ignore[assignment]
+
+    provider.add_log_record_processor(SimpleLogRecordProcessor(log_exporter))
     set_logger_provider(provider)
     _LOGGER_PROVIDER = provider
     return LoggingHandler(level=logging.NOTSET, logger_provider=provider)
@@ -471,6 +491,108 @@ def instrument_agno() -> None:
         )
 
 
+# Process-level handle so the agno TracerProvider isn't garbage-collected.
+_AGNO_TRACER_PROVIDER = None
+
+
+def _build_agno_db_exporter(db, workflow_id: str, agent_id: str):
+    """agno ``DatabaseSpanExporter`` subclass that stamps the pipeline identity
+    onto each trace's ROOT span.
+
+    AgentOS hides any trace whose ``workflow_id`` AND ``agent_id`` are both
+    null. With OpenObserve off, the meridian wrapper span (``worklog.hour``) is
+    non-recording, so agno's worklog Workflow runs as its OWN root trace; its
+    root ``*.run`` span is parentless here and gets the ids, surfacing the trace
+    in the dashboard. Child spans are written unchanged.
+    """
+    from collections import defaultdict
+
+    from agno.tracing.exporter import DatabaseSpanExporter
+    from agno.tracing.schemas import Span
+    from opentelemetry.sdk.trace.export import SpanExportResult
+
+    class _AgnoDbExporter(DatabaseSpanExporter):
+        def export(self, spans):  # type: ignore[override]
+            if self._shutdown:
+                return SpanExportResult.FAILURE
+            if not spans:
+                return SpanExportResult.SUCCESS
+            converted = []
+            for s in spans:
+                try:
+                    cs = Span.from_otel_span(s)
+                except Exception:  # noqa: BLE001 — skip a span we can't convert
+                    continue
+                if not cs.parent_span_id:
+                    attrs = dict(cs.attributes or {})
+                    attrs.setdefault("workflow_id", workflow_id)
+                    attrs.setdefault("agent_id", agent_id)
+                    # Group hour-runs into one AgentOS session. agno normally
+                    # stamps session_id when run(session_id=...) is passed; this
+                    # is a fallback that derives the day-level session from the
+                    # run_id ("wl-<day>T<hh>" → "wl-<day>") so the trace always
+                    # surfaces under a session in the dashboard.
+                    if not (attrs.get("session_id") or attrs.get("agno.session.id")):
+                        rid = attrs.get("run_id") or attrs.get("agno.run.id") or ""
+                        if isinstance(rid, str) and "T" in rid:
+                            attrs["session_id"] = rid.rsplit("T", 1)[0]
+                    cs.attributes = attrs
+                converted.append(cs)
+            if not converted:
+                return SpanExportResult.SUCCESS
+            by_trace: dict = defaultdict(list)
+            for cs in converted:
+                by_trace[cs.trace_id].append(cs)
+            try:
+                self._export_sync(by_trace)  # SqliteDb is synchronous
+            except Exception as e:  # noqa: BLE001
+                logging.getLogger(__name__).warning("agno trace export failed: %s", e)
+                return SpanExportResult.FAILURE
+            return SpanExportResult.SUCCESS
+
+    return _AgnoDbExporter(db=db)
+
+
+def setup_agno_tracing(
+    db_file: Optional[str] = None,
+    workflow_id: str = "worklog-hour",
+    agent_id: str = "meridian-worklog-pipeline",
+):
+    """Route agno's native (openinference) spans — and ONLY those — to a SqliteDb
+    the AgentOS viewer reads.
+
+    The TracerProvider here is EXPLICIT, not global: meridian's own manual spans
+    live on the no-op global provider and never reach this exporter, so the
+    dashboard shows agno's ``tracing=True`` output alone. Idempotent per process.
+    Returns the provider (or ``None`` if agno/openinference aren't installed).
+    """
+    global _AGNO_TRACER_PROVIDER
+    if _AGNO_TRACER_PROVIDER is not None:
+        return _AGNO_TRACER_PROVIDER
+    try:
+        from agno.db.sqlite import SqliteDb
+        from openinference.instrumentation.agno import AgnoInstrumentor
+        from opentelemetry.sdk.trace import TracerProvider as _TP
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    except ImportError as e:
+        logging.getLogger(__name__).warning(
+            "setup_agno_tracing: dependencies missing (%s); agno tracing disabled", e
+        )
+        return None
+
+    path = db_file or os.environ.get("AGNO_TRACE_DB") or str(
+        Path("~/.meridian/agno_traces.db").expanduser()
+    )
+    path = str(Path(path).expanduser())
+    exporter = _build_agno_db_exporter(SqliteDb(db_file=path), workflow_id, agent_id)
+    provider = _TP()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    AgnoInstrumentor().instrument(tracer_provider=provider)
+    _AGNO_TRACER_PROVIDER = provider
+    logging.getLogger(__name__).info("setup_agno_tracing: agno spans -> %s", path)
+    return provider
+
+
 def preview(text: Optional[str], max_chars: int = 200) -> str:
     """Truncate text to `max_chars` for use as a span attribute value."""
     if not text:
@@ -478,4 +600,11 @@ def preview(text: Optional[str], max_chars: int = 200) -> str:
     return text[:max_chars] + ("…" if len(text) > max_chars else "")
 
 
-__all__ = ["setup", "extract_parent_context", "instrument_agno", "current_traceparent", "preview"]
+__all__ = [
+    "setup",
+    "extract_parent_context",
+    "instrument_agno",
+    "setup_agno_tracing",
+    "current_traceparent",
+    "preview",
+]
