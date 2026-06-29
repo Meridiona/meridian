@@ -26,6 +26,7 @@ import sqlite3
 import time
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -33,6 +34,7 @@ import numpy as np
 from opentelemetry.trace import StatusCode
 
 from agents import observability
+from agents.time_utils import local_hour_utc_bounds, utc_to_local_hhmm  # noqa: F401 (re-exported)
 from agents.config import (
     DISTILLER_DF_FRAC,
     DISTILLER_EXCLUDE_APPS,
@@ -42,7 +44,7 @@ from agents.config import (
 )
 
 log    = logging.getLogger(__name__)
-tracer = observability.setup("meridian-session-distiller")
+tracer = observability.setup("meridian-mlx-server")
 
 # ── Regex patterns ─────────────────────────────────────────────────────────────
 
@@ -241,11 +243,11 @@ def _distil(rows: list, header_prefix: str, stat_label: str) -> tuple[str, Disti
         except Exception:
             raw_win = ""
         window = _clean_window_title(raw_win)
-        session_meta[sid] = (app, window, started_at[11:16], task_key or "",
+        session_meta[sid] = (app, window, utc_to_local_hhmm(started_at), task_key or "",
                              task_stype or "", started_at, duration_s, len(session_text or ""))
 
         fallback: list[tuple[str, str]] = []
-        cur_time = started_at[11:16]
+        cur_time = utc_to_local_hhmm(started_at)
         for raw_line in (session_text or "").splitlines():
             m = re.match(r"^\[(\d\d:\d\d:\d\d)\]\s*(.*)", raw_line)
             if m:
@@ -383,7 +385,7 @@ def _distil(rows: list, header_prefix: str, stat_label: str) -> tuple[str, Disti
         lines = [f'  {sp["line"][:220]}' for sp in thread["spans"]]
         blocks.append("\n".join([hdr] + lines))
 
-    span_start  = rows[0][2][11:16]; span_end = rows[-1][2][11:16]
+    span_start  = utc_to_local_hhmm(rows[0][2]); span_end = utc_to_local_hhmm(rows[-1][2])
     active_mins = sum(r[3] for r in rows) // 60
     body_header = (
         f"=== {header_prefix} · {nsess} sessions · "
@@ -405,6 +407,23 @@ def _distil(rows: list, header_prefix: str, stat_label: str) -> tuple[str, Disti
     log.info(
         "session_distiller: %s nsess=%d raw=%d out=%d reduction=%.0f%% elapsed=%.1fs",
         stat_label, nsess, raw_chars, out_chars, reduction, elapsed,
+        extra={
+            "distil_label": stat_label,
+            "distil_nsess": nsess,
+            "distil_raw_chars": raw_chars,
+            "distil_out_chars": out_chars,
+            "distil_reduction_pct": reduction,
+            "distil_n_after_junk": n_after_junk,
+            "distil_n_after_df": n_after_df,
+            "distil_n_after_lex": stats.n_after_lex,
+            "distil_n_after_sem": stats.n_after_sem,
+            "distil_n_selected": stats.n_selected,
+            "distil_n_session_rescued": stats.n_session_rescued,
+            "distil_n_entity_rescued": stats.n_entity_rescued,
+            "distil_elapsed_s": elapsed,
+            "distil_input_tokens_est": raw_chars // 4,
+            "distil_output_tokens_est": out_chars // 4,
+        },
     )
     return body, stats
 
@@ -444,6 +463,8 @@ def _load_rows(
 
 def _run_root_span(span, stat_label: str, rows: list, body: str, stats: DistilStats) -> None:
     """Set all attributes on the distil.run root span."""
+    span.set_attribute("gen_ai.operation.name", "text_generation")
+    span.set_attribute("gen_ai.system",         "mlx")
     span.set_attribute("distil_label",              stat_label)
     span.set_attribute("distil_nsess",              stats.nsess)
     span.set_attribute("distil_session_ids",        json.dumps([r[0] for r in rows]))
@@ -466,6 +487,8 @@ def _run_root_span(span, stat_label: str, rows: list, body: str, stats: DistilSt
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
+
+
 def distil_hour(
     hour: str,
     db_path: Optional[Path] = None,
@@ -484,7 +507,8 @@ def distil_hour(
     if not _HOUR_RE.match(hour):
         raise ValueError(f"invalid hour format {hour!r}; expected YYYY-MM-DDTHH")
     db = str(db_path or MERIDIAN_DB)
-    rows = _load_rows(db, "started_at LIKE ?", (hour + "%",), exclude_coding)
+    utc_start, utc_end = local_hour_utc_bounds(hour)
+    rows = _load_rows(db, "started_at >= ? AND started_at < ?", (utc_start, utc_end), exclude_coding)
     if not rows:
         log.warning("session_distiller: no sessions for hour=%s", hour)
         return "", _empty_stats(hour)
