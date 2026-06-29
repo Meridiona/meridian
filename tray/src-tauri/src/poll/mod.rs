@@ -29,14 +29,15 @@ pub(crate) use live::spawn_log_tailer;
 pub(crate) use notifications::notifications_allowed;
 
 use crate::mlx_server::{self, SharedMlxManager, SuperviseOutcome};
-use crate::state::{AppState, HealthStatus};
+use crate::state::{AppState, HealthStatus, PauseSource};
+use chrono::{Datelike, Local, Timelike};
 use notifications::drain_notifications;
 use refresh::{
     refresh_active, refresh_current_task, refresh_health, refresh_today, refresh_worklogs,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
 
 const TICK: Duration = Duration::from_secs(30);
@@ -120,6 +121,13 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
                 refresh_worklogs(pool, &state).await;
             }
         }
+        // Work-hours schedule enforcement: auto-pause capture outside the
+        // configured window, auto-resume when entering it. Only fires when the
+        // feature is enabled; never overrides a user-initiated timed pause.
+        if let Some(pool) = &pool {
+            check_work_hours(&app, &state, pool).await;
+        }
+
         // Drain the daemon's notification outbox every tick — this is the single
         // delivery path for all daemon-originated notifications (plan nudge,
         // worklog ready, promoted faults). The tray is a dumb delivery agent;
@@ -262,6 +270,143 @@ fn update_tray_icon(app: &tauri::AppHandle, state: &Arc<Mutex<AppState>>) {
             let _ = tray.set_tooltip(Some(&tooltip));
         }
     }
+}
+
+/// Enforce the work-hours schedule: auto-pause outside the window, auto-resume
+/// inside it. Runs every poll tick (30 s). The state machine is:
+///   - Outside hours + not schedule-paused → start a schedule pause
+///   - Inside hours + schedule-paused → end the schedule pause, write the gap
+///   - User is in a timed pause → leave it alone (don't override)
+async fn check_work_hours(
+    app: &tauri::AppHandle,
+    state: &Arc<Mutex<AppState>>,
+    pool: &meridian_core::SqlitePool,
+) {
+    let settings = meridian_core::settings::load_runtime_settings();
+    if !settings.work_hours_enabled {
+        return;
+    }
+
+    let in_hours = is_within_work_hours(&settings);
+
+    let (pause_source, started_at, capture_paused_flag) = {
+        let s = state.lock().unwrap();
+        (
+            s.pause_source.clone(),
+            s.pause_started_at,
+            s.capture_paused.clone(),
+        )
+    };
+
+    match (in_hours, &pause_source) {
+        (false, None) => {
+            // Outside work hours, not currently paused → begin schedule pause.
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            capture_paused_flag.store(true, Ordering::Relaxed);
+            {
+                let mut s = state.lock().unwrap();
+                s.pause_source = Some(PauseSource::Schedule);
+                s.pause_started_at = Some(now);
+                s.schedule_resume_at = Some(settings.work_hours_start.clone());
+            }
+            tracing::info!(resume_at = %settings.work_hours_start, "work-hours: schedule pause started");
+        }
+        (true, Some(PauseSource::Schedule)) => {
+            // Back inside work hours → end the schedule pause and write the gap.
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let duration_s = started_at
+                .map(|s| now.saturating_sub(s) as i64)
+                .unwrap_or(0);
+
+            if let Some(started_secs) = started_at {
+                if duration_s > 0 {
+                    use chrono::{DateTime, SecondsFormat, Utc};
+                    let from = DateTime::<Utc>::from_timestamp(started_secs as i64, 0)
+                        .unwrap_or_else(Utc::now)
+                        .to_rfc3339_opts(SecondsFormat::Millis, true);
+                    let to = DateTime::<Utc>::from_timestamp(now as i64, 0)
+                        .unwrap_or_else(Utc::now)
+                        .to_rfc3339_opts(SecondsFormat::Millis, true);
+                    if let Err(e) = meridian_core::insert_pause_gap(
+                        pool,
+                        &from,
+                        &to,
+                        duration_s,
+                        "schedule_paused",
+                    )
+                    .await
+                    {
+                        tracing::warn!(error = %e, "work-hours: failed to write schedule_paused gap");
+                    }
+                }
+            }
+
+            capture_paused_flag.store(false, Ordering::Relaxed);
+            {
+                let mut s = state.lock().unwrap();
+                s.pause_source = None;
+                s.pause_started_at = None;
+                s.schedule_resume_at = None;
+                s.pause_until = None;
+            }
+            tracing::info!(
+                duration_s,
+                "work-hours: schedule pause ended — capture resumed"
+            );
+            let _ = app;
+        }
+        _ => {
+            // Timed pause, or both already correct — nothing to do.
+        }
+    }
+}
+
+/// Returns `true` when the current local time falls within the configured work
+/// hours on a configured work day. Handles same-day ranges ("09:00"–"18:00").
+/// Does NOT handle overnight ranges (end < start); those are a quiet-hours
+/// pattern — work hours are always a same-day window.
+fn is_within_work_hours(settings: &meridian_core::settings::RuntimeSettings) -> bool {
+    let now = Local::now();
+    // ISO weekday: Mon=1 … Sun=7 — matches the "1,2,3,4,5" work_days convention.
+    let weekday_num = now.weekday().number_from_monday();
+    let active_day = settings
+        .work_days
+        .split(',')
+        .filter_map(|d| d.trim().parse::<u32>().ok())
+        .any(|d| d == weekday_num);
+    if !active_day {
+        return false;
+    }
+
+    let now_mins = now.hour() * 60 + now.minute();
+    let start = hhmm_to_minutes(&settings.work_hours_start);
+    let end = hhmm_to_minutes(&settings.work_hours_end);
+    match (start, end) {
+        (Some(s), Some(e)) if e > s => now_mins >= s && now_mins < e,
+        _ => false, // malformed config → treat as "always outside"
+    }
+}
+
+/// Parse "HH:MM" → minutes from midnight. Returns `None` on malformed input.
+fn hhmm_to_minutes(hhmm: &str) -> Option<u32> {
+    let hhmm = hhmm.trim();
+    let (h, m) = hhmm.split_once(':')?;
+    let h: u32 = h.parse().ok()?;
+    let m_str = m;
+    if m_str.len() != 2 {
+        return None;
+    }
+    let m: u32 = m_str.parse().ok()?;
+    if h > 23 || m > 59 {
+        return None;
+    }
+    Some(h * 60 + m)
 }
 
 fn update_toggle_menu(app: &tauri::AppHandle, state: &Arc<Mutex<AppState>>) {

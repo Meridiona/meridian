@@ -424,14 +424,23 @@ pub fn run() {
                 if !screen_granted {
                     tracing::info!("capture: Screen Recording not granted — engine deferred until next launch after grant");
                 } else {
+                    // Clone the pause flag out of AppState so the capture consumers
+                    // can check it without holding the state lock on every frame.
+                    let pause_flag = app_state.lock().unwrap().capture_paused.clone();
+
                     let (tx, mut rx) = tokio::sync::mpsc::channel::<capture::CapturedFrame>(64);
                     // Persist each frame into meridian.db's capture_frames (slice 4a).
                     // Low-rate writer (~1 row / 2 s) sharing the commands' RW pool;
                     // the 5 s busy_timeout serializes it against the daemon's writes.
                     // No-op when the pool is absent or the table isn't migrated yet.
                     let consumer_pool = capture_pool.clone();
+                    let frame_pause_flag = pause_flag.clone();
                     tauri::async_runtime::spawn(async move {
                         while let Some(frame) = rx.recv().await {
+                            if frame_pause_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                                tracing::debug!(ts = %frame.timestamp, "capture: frame dropped — tracking paused");
+                                continue;
+                            }
                             tracing::debug!(
                                 ts = %frame.timestamp,
                                 app = ?frame.app_name,
@@ -470,8 +479,12 @@ pub fn run() {
                     let (ui_tx, mut ui_rx) =
                         tokio::sync::mpsc::channel::<meridian_core::CaptureUiEventInsert>(256);
                     let ui_pool = capture_pool;
+                    let ui_pause_flag = pause_flag;
                     tauri::async_runtime::spawn(async move {
                         while let Some(ev) = ui_rx.recv().await {
+                            if ui_pause_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                                continue;
+                            }
                             let Some(pool) = ui_pool.as_ref() else {
                                 continue;
                             };
@@ -516,6 +529,7 @@ pub fn run() {
             commands::open_setup,
             commands::restart_daemon,
             commands::toggle_daemon,
+            commands::pause_for_duration,
             commands::get_daemon_status,
             // dashboard DB reads (ported /api/* GETs)
             commands::get_active,

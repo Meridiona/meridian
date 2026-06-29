@@ -506,6 +506,29 @@ pub async fn insert_gap(
     Ok(())
 }
 
+/// Returns `true` if any `tracking_paused` or `schedule_paused` gap overlaps
+/// the window `[from_ts, to_ts)`. Used by the ETL to skip inserting a
+/// `user_idle` or `system_sleep` gap for an interval the tray already recorded
+/// as a deliberate tracking pause.
+pub async fn pause_gap_exists_in_window(
+    pool: &SqlitePool,
+    from_ts: &str,
+    to_ts: &str,
+) -> anyhow::Result<bool> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM gaps
+         WHERE kind IN ('tracking_paused', 'schedule_paused')
+           AND started_at < ?2
+           AND ended_at   > ?1",
+    )
+    .bind(from_ts)
+    .bind(to_ts)
+    .fetch_one(pool)
+    .await
+    .context("pause_gap_exists_in_window failed")?;
+    Ok(count > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
