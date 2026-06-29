@@ -1,6 +1,8 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 
 use anyhow::{Context, Result};
+use meridian_core::adapters::jira::JiraAdapter;
+use meridian_core::adapters::ProviderAdapter;
 use serde::Deserialize;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
@@ -198,7 +200,10 @@ const SYNC_INTERVAL_MINS: i64 = 5;
         status_code = tracing::field::Empty,
     )
 )]
-async fn fetch(ctx: &JiraReqCtx, start_date_field: Option<&str>) -> Result<Vec<JiraIssue>> {
+async fn fetch(
+    ctx: &JiraReqCtx,
+    start_date_field: Option<&str>,
+) -> Result<Vec<(JiraIssue, serde_json::Value)>> {
     let client = reqwest::Client::new();
     let url = ctx.api_url("/rest/api/3/search/jql");
 
@@ -214,6 +219,10 @@ async fn fetch(ctx: &JiraReqCtx, start_date_field: Option<&str>) -> Result<Vec<J
         "assignee",
         "labels",
         "customfield_10020",
+        // CDM (Stage 3b): fed to the canonical adapter for the new columns.
+        "reporter",
+        "priority",
+        "resolutiondate",
     ];
     if let Some(id) = start_date_field {
         fields.push(id);
@@ -243,26 +252,70 @@ async fn fetch(ctx: &JiraReqCtx, start_date_field: Option<&str>) -> Result<Vec<J
         anyhow::bail!("Jira /search/jql → {}: {}", status, text);
     }
 
-    let data: JiraSearchResponse = resp.json().await.context("deserialising Jira response")?;
+    // Parse once as a Value so we can keep each raw issue object verbatim for
+    // the canonical adapter (Stage 3b), then deserialise the typed view from
+    // the same body. The `issues` array order is identical, so we zip them.
+    let body_val: serde_json::Value = resp.json().await.context("deserialising Jira response")?;
+    let raw_issues: Vec<serde_json::Value> = body_val
+        .get("issues")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let data: JiraSearchResponse =
+        serde_json::from_value(body_val).context("parsing Jira response")?;
     let issue_count = data.issues.len();
     let keys: Vec<&str> = data.issues.iter().map(|i| i.key.as_str()).collect();
     tracing::debug!(count = issue_count, ?keys, "parsed Jira response");
-    Ok(data.issues)
+    Ok(data.issues.into_iter().zip(raw_issues).collect())
 }
 
 // ---------------------------------------------------------------------------
 // Upsert
 // ---------------------------------------------------------------------------
 
+/// The CDM columns (migration 052) derived from a raw Jira issue via the shared
+/// [`JiraAdapter`]. All `Option` so a structurally-unusable payload (or a field
+/// the fetch didn't request) simply leaves the column NULL — never blocks the
+/// existing upsert. The mapping itself lives in `meridian_core` and is tested there.
+#[derive(Default)]
+struct CdmColumns {
+    canonical_id: Option<String>,
+    status_category: Option<String>,
+    raw_payload: Option<String>,
+    reporter_name: Option<String>,
+    completed_at: Option<String>,
+    ancestor_path: Option<String>,
+    project_ids: Option<String>,
+}
+
+fn cdm_columns(raw: &serde_json::Value) -> CdmColumns {
+    let Ok(c) = JiraAdapter.to_canonical(raw) else {
+        return CdmColumns::default();
+    };
+    CdmColumns {
+        canonical_id: Some(c.canonical_id),
+        // Enum → its snake_case serde wire form (e.g. "in_progress").
+        status_category: c
+            .status_category
+            .and_then(|sc| serde_json::to_value(sc).ok())
+            .and_then(|v| v.as_str().map(String::from)),
+        raw_payload: Some(c.raw_payload.to_string()),
+        reporter_name: c.reporter.map(|r| r.display_name),
+        completed_at: c.completed_at,
+        ancestor_path: serde_json::to_string(&c.ancestor_path).ok(),
+        project_ids: serde_json::to_string(&c.project_ids).ok(),
+    }
+}
+
 async fn upsert(
     pool: &SqlitePool,
-    issues: &[JiraIssue],
+    issues: &[(JiraIssue, serde_json::Value)],
     jira: &JiraConfig,
     ctx: &JiraReqCtx,
     start_date_field: Option<&str>,
 ) -> Result<()> {
     let mut ok_count: usize = 0;
-    for issue in issues {
+    for (issue, raw) in issues {
         if !jira.project_keys.is_empty() && !jira.project_keys.contains(&issue.fields.project.key) {
             continue;
         }
@@ -323,13 +376,20 @@ async fn upsert(
                 .map(str::to_owned)
         });
 
+        // CDM columns (Stage 3b) from the raw issue via the shared adapter.
+        let cdm = cdm_columns(raw);
+
         let upsert_result = sqlx::query(
             "INSERT INTO pm_tasks
                (task_key, provider, title, description_text, status_raw, is_terminal,
                 issue_type, project_key, url, parent_key, epic_title, due_date,
-                assignee_name, tags, sprint_name, start_date, updated_at, fetched_at)
-             VALUES (?, 'jira', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                     strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                assignee_name, tags, sprint_name, start_date,
+                canonical_id, status_category, raw_payload, reporter_name,
+                completed_at, ancestor_path, project_ids,
+                updated_at, fetched_at)
+             VALUES (?, 'jira', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                     ?, ?, ?, ?, ?, ?, ?,
+                     ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
              ON CONFLICT(task_key) DO UPDATE SET
                title            = excluded.title,
                description_text = excluded.description_text,
@@ -345,6 +405,13 @@ async fn upsert(
                tags             = excluded.tags,
                sprint_name      = excluded.sprint_name,
                start_date       = excluded.start_date,
+               canonical_id     = excluded.canonical_id,
+               status_category  = excluded.status_category,
+               raw_payload      = excluded.raw_payload,
+               reporter_name    = excluded.reporter_name,
+               completed_at     = excluded.completed_at,
+               ancestor_path    = excluded.ancestor_path,
+               project_ids      = excluded.project_ids,
                updated_at       = excluded.updated_at,
                fetched_at       = excluded.fetched_at",
         )
@@ -367,6 +434,13 @@ async fn upsert(
         .bind(tags)
         .bind(sprint_name)
         .bind(start_date)
+        .bind(cdm.canonical_id)
+        .bind(cdm.status_category)
+        .bind(cdm.raw_payload)
+        .bind(cdm.reporter_name)
+        .bind(cdm.completed_at)
+        .bind(cdm.ancestor_path)
+        .bind(cdm.project_ids)
         .bind(&issue.fields.updated)
         .execute(pool)
         .await
@@ -484,15 +558,17 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
 
     match fetch(&ctx, start_date_field.as_deref()).await {
         Ok(issues) => {
-            let keys: Vec<String> = issues.iter().map(|i| i.key.clone()).collect();
+            let keys: Vec<String> = issues.iter().map(|(i, _)| i.key.clone()).collect();
             let n = keys.len();
             let project_key = issues
                 .first()
-                .map(|i| i.fields.project.key.as_str())
+                .map(|(i, _)| i.fields.project.key.as_str())
                 .unwrap_or("-");
             let terminal_count = issues
                 .iter()
-                .filter(|i| native_terminal(&i.fields.status.status_category.key) == Some(true))
+                .filter(|(i, _)| {
+                    native_terminal(&i.fields.status.status_category.key) == Some(true)
+                })
                 .count();
             tracing::debug!(fetched_count = n, "jira fetch completed");
             tracing::info!(
@@ -957,5 +1033,45 @@ mod tests {
         let (parent_key, epic_title) = derive_parent_link(&issue);
         assert_eq!(parent_key, Some("KAN-50"));
         assert_eq!(epic_title, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // CDM (Stage 3b): the new pm_tasks columns are derived from the raw issue
+    // through the shared adapter. This locks the daemon-side glue; the mapping
+    // itself is tested in meridian_core::adapters::jira.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cdm_columns_derives_from_raw_issue() {
+        let raw = serde_json::json!({
+            "id": "10042",
+            "key": "KAN-42",
+            "fields": {
+                "status": {"name": "In Review", "statusCategory": {"key": "indeterminate"}},
+                "reporter": {"accountId": "acc-2", "displayName": "Lead"},
+                "parent": {"id": "10001"},
+                "project": {"id": "10000"},
+                "resolutiondate": null
+            }
+        });
+        let cdm = super::cdm_columns(&raw);
+        // Stable key is the numeric id, namespaced.
+        assert_eq!(cdm.canonical_id.as_deref(), Some("jira:10042"));
+        // "In Review" (indeterminate) → snake_case canonical category.
+        assert_eq!(cdm.status_category.as_deref(), Some("in_review"));
+        assert_eq!(cdm.reporter_name.as_deref(), Some("Lead"));
+        assert_eq!(cdm.completed_at, None); // resolutiondate null
+        assert_eq!(cdm.ancestor_path.as_deref(), Some(r#"["jira:10001"]"#));
+        assert_eq!(cdm.project_ids.as_deref(), Some(r#"["jira:10000"]"#));
+        assert!(cdm.raw_payload.is_some());
+    }
+
+    #[test]
+    fn cdm_columns_empty_on_unusable_payload() {
+        // No `id` → adapter errors → all columns NULL, never blocks the upsert.
+        let cdm = super::cdm_columns(&serde_json::json!({"fields": {}}));
+        assert!(cdm.canonical_id.is_none());
+        assert!(cdm.raw_payload.is_none());
+        assert!(cdm.status_category.is_none());
     }
 }
