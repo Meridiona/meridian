@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use chrono::{DateTime, Local, NaiveTime, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Local, Timelike, Utc};
 use sqlx::SqlitePool;
 use tokio::sync::{watch, Notify};
 
@@ -254,22 +254,6 @@ fn should_seal(seg: &Segment, session_ended: bool, now: DateTime<Utc>) -> bool {
 
 // ──────────────────────── One tick ──────────────────────────────────────────
 
-/// UTC timestamp of the start of the local clock hour containing `now`.
-/// Used as the `ended_at` cutoff for the hour-boundary force-seal: any live
-/// row with `ended_at < local_hour_start_utc(now)` belongs to a previous local
-/// hour and is eligible for force-sealing.
-fn local_hour_start_utc(now: DateTime<Utc>) -> DateTime<Utc> {
-    let local = now.with_timezone(&Local);
-    let hour_start = local
-        .date_naive()
-        .and_time(NaiveTime::from_hms_opt(local.hour(), 0, 0).unwrap_or_default());
-    Local
-        .from_local_datetime(&hour_start)
-        .single()
-        .unwrap_or(local)
-        .with_timezone(&Utc)
-}
-
 /// One poll sweep: seal settled live rows, then register changed files. Returns
 /// (rows sealed, files written). On `HourBoundary` ticks, also force-seals all
 /// live rows whose last activity is in a previous local clock hour.
@@ -294,7 +278,7 @@ pub async fn run_tick(
     // quiet mid-hour (dev stopped typing but did not exit the agent) so the
     // worklog generator has complete data for that hour.
     if kind == TickKind::HourBoundary {
-        let hour_start_iso = iso_utc(local_hour_start_utc(now));
+        let hour_start_iso = iso_utc(meridian_core::date::local_hour_start_utc(now));
         match db::seal_live_rows_at_hour_boundary(pool, &now_iso, &hour_start_iso).await {
             Ok(n) => {
                 if n > 0 {
@@ -649,7 +633,7 @@ fn iso_to_epoch(iso: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{Duration as ChronoDuration, TimeZone};
+    use chrono::{Duration as ChronoDuration, TimeZone, Timelike};
     use sqlx::sqlite::SqliteConnectOptions;
     use std::io::Write;
     use std::str::FromStr;
@@ -781,7 +765,7 @@ mod tests {
     fn local_hour_start_utc_truncates_to_hour() {
         // 14:35 UTC with UTC == local → hour start is 14:00 UTC.
         let now = Utc.with_ymd_and_hms(2026, 6, 29, 14, 35, 0).unwrap();
-        let start = local_hour_start_utc(now);
+        let start = meridian_core::date::local_hour_start_utc(now);
         // We can't hardcode the result (local tz varies by machine), but we can
         // assert the round-trip: local(start).minute() == 0 && local(start).second() == 0.
         let local_start = start.with_timezone(&Local);

@@ -25,6 +25,22 @@ pub fn local_day_bounds(date_str: &str) -> (String, String) {
     (local_naive_to_utc_iso(start), local_naive_to_utc_iso(end))
 }
 
+/// UTC `DateTime` of the start of the LOCAL clock-hour containing `now`.
+///
+/// Used as a cutoff for hour-boundary force-seals: any live row whose
+/// `ended_at` is before this instant belongs to a previous local hour.
+pub fn local_hour_start_utc(now: DateTime<Utc>) -> DateTime<Utc> {
+    use chrono::{NaiveTime, Timelike};
+    let local = now.with_timezone(&Local);
+    let hour_start = local
+        .date_naive()
+        .and_time(NaiveTime::from_hms_opt(local.hour(), 0, 0).unwrap_or_default());
+    match Local.from_local_datetime(&hour_start) {
+        LocalResult::Single(dt) | LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc),
+        LocalResult::None => Utc.from_utc_datetime(&hour_start),
+    }
+}
+
 /// Today's date in the LOCAL timezone as "YYYY-MM-DD" (mirrors `todayString`).
 pub fn today_string() -> String {
     Local::now().format("%Y-%m-%d").to_string()
