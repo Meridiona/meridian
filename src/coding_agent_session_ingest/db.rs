@@ -181,6 +181,42 @@ pub async fn upsert_segment(
     Ok(id)
 }
 
+/// Force-seal all live coding-agent rows whose last activity falls in a
+/// previous local clock hour. Called once per hour-boundary indexer tick so a
+/// session that went quiet mid-hour (dev stopped typing but did not exit) is
+/// captured for that hour's worklog without waiting for the 1-hour idle backstop.
+///
+/// `local_hour_start_utc` is the UTC ISO-8601 timestamp of the start of the
+/// current local clock hour. Any row with `ended_at` before it belongs to a
+/// previous local hour. Idempotent: already-sealed rows are excluded.
+/// Returns the number of rows sealed.
+pub async fn seal_live_rows_at_hour_boundary(
+    pool: &SqlitePool,
+    now_iso: &str,
+    local_hour_start_utc: &str,
+) -> Result<u64> {
+    let res = sqlx::query(
+        r#"
+        UPDATE app_sessions
+        SET    sealed_at   = ?1,
+               task_method = ?2
+        WHERE  coding_agent_session_uuid IS NOT NULL
+          AND  sealed_at   IS NULL
+          AND  task_method = ?3
+          AND  ended_at    IS NOT NULL
+          AND  ended_at    < ?4
+        "#,
+    )
+    .bind(now_iso)
+    .bind(TASK_METHOD_PENDING)
+    .bind(TASK_METHOD_LIVE)
+    .bind(local_hour_start_utc)
+    .execute(pool)
+    .await
+    .context("force-seal live coding-agent rows at hour boundary")?;
+    Ok(res.rows_affected())
+}
+
 /// Seal every LIVE coding-agent row whose last activity is > `idle_seconds`
 /// old. The robust backstop that does NOT require re-parsing the JSONL: seals
 /// rows left open by crashes, force-quits, macOS sleep, or a deleted file.
@@ -628,6 +664,51 @@ mod tests {
         assert_eq!(
             eps.get("a").map(String::as_str),
             Some("2026-05-20T10:30:00.000000+00:00")
+        );
+    }
+
+    #[tokio::test]
+    async fn hour_boundary_seal_seals_previous_hour_only() {
+        let pool = fresh_db().await;
+
+        // Ended at 13:50 UTC = previous local hour (assume UTC == local for this test).
+        let prev_hour = seg(
+            "prev",
+            "2026-05-20T13:00:00.000000+00:00",
+            "2026-05-20T13:50:00.000000+00:00",
+            2,
+        );
+        let prev_id = upsert_segment(&pool, &prev_hour, false, None)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Ended at 14:05 UTC = same local hour as now (14:xx).
+        let cur_hour = seg(
+            "cur",
+            "2026-05-20T14:00:00.000000+00:00",
+            "2026-05-20T14:05:00.000000+00:00",
+            2,
+        );
+        let cur_id = upsert_segment(&pool, &cur_hour, false, None)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Seal at 14:01 UTC; local_hour_start_utc = 14:00 UTC.
+        let now_iso = "2026-05-20T14:01:00.000000+00:00";
+        let local_hour_start = "2026-05-20T14:00:00.000000+00:00";
+        let n = seal_live_rows_at_hour_boundary(&pool, now_iso, local_hour_start)
+            .await
+            .unwrap();
+        assert_eq!(n, 1, "exactly the previous-hour row sealed");
+        assert!(
+            row_fields(&pool, prev_id).await.0.is_some(),
+            "previous-hour row sealed"
+        );
+        assert!(
+            row_fields(&pool, cur_id).await.0.is_none(),
+            "current-hour row stays live"
         );
     }
 
