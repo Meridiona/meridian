@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 
 from agents.worklog_pipeline.models import WorklogDraft
+from agents.worklog_pipeline.prompts.worklog import SYSTEM as WORKLOG_SYSTEM
 
 log = logging.getLogger("meridian.worklog.gen")
 
