@@ -279,7 +279,7 @@ mod tests {
                 "assignee": {
                     "accountId": "acc-1",
                     "displayName": "Akarsh",
-                    "emailAddress": "akarsh@meridiona.com"
+                    "emailAddress": "akarsh@example.com"
                 },
                 "reporter": {"accountId": "acc-2", "displayName": "Lead"},
                 "parent": {"id": "10001", "key": "KAN-1"},
@@ -314,7 +314,7 @@ mod tests {
         assert_eq!(task.assignees.len(), 1);
         assert_eq!(
             task.assignees[0].email.as_deref(),
-            Some("akarsh@meridiona.com")
+            Some("akarsh@example.com")
         );
 
         // Reporter has no emailAddress (GDPR-hidden) → email None, id intact.
