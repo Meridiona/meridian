@@ -120,6 +120,13 @@ pub async fn pause_for_duration(
 
     {
         let mut s = state.lock().map_err(|e| e.to_string())?;
+        // Abort the engine and UI consumer tasks — stops actual screen capture.
+        if let Some(h) = s.engine_abort.take() {
+            h.abort();
+        }
+        if let Some(h) = s.ui_consumer_abort.take() {
+            h.abort();
+        }
         s.capture_paused.store(true, Ordering::Relaxed);
         s.pause_until = Some(until);
         s.pause_source = Some(PauseSource::Timed);
@@ -219,6 +226,10 @@ pub(crate) async fn resume_capture(
             }
         }
     }
+
+    // Restart the capture engine so screen recording resumes.
+    #[cfg(feature = "capture")]
+    crate::start_capture(state.clone(), pool.cloned());
 
     // Emit immediately so the popover reverts to the picker without waiting for the next tick.
     if let Ok(s) = state.lock() {

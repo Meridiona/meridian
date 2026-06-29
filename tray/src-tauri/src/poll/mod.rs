@@ -305,9 +305,16 @@ async fn check_work_hours(
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            capture_paused_flag.store(true, Ordering::Relaxed);
+            // Abort engine tasks so screen recording fully stops.
             {
                 let mut s = state.lock().unwrap();
+                if let Some(h) = s.engine_abort.take() {
+                    h.abort();
+                }
+                if let Some(h) = s.ui_consumer_abort.take() {
+                    h.abort();
+                }
+                capture_paused_flag.store(true, Ordering::Relaxed);
                 s.pause_source = Some(PauseSource::Schedule);
                 s.pause_started_at = Some(now);
                 s.schedule_resume_at = Some(settings.work_hours_start.clone());
@@ -347,14 +354,17 @@ async fn check_work_hours(
                 }
             }
 
-            capture_paused_flag.store(false, Ordering::Relaxed);
             {
                 let mut s = state.lock().unwrap();
+                capture_paused_flag.store(false, Ordering::Relaxed);
                 s.pause_source = None;
                 s.pause_started_at = None;
                 s.schedule_resume_at = None;
                 s.pause_until = None;
             }
+            // Restart engine so screen recording resumes.
+            #[cfg(feature = "capture")]
+            crate::start_capture(state.clone(), Some(pool.clone()));
             tracing::info!(
                 duration_s,
                 "work-hours: schedule pause ended — capture resumed"

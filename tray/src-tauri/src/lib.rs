@@ -404,98 +404,7 @@ pub fn run() {
             // isolation, so this matters). Frames → capture_frames (slice 4a),
             // input events → capture_ui_events (slice 3c).
             #[cfg(feature = "capture")]
-            {
-                use capture::{screenpipe::ScreenpipeEngine, CaptureEngine};
-
-                // Guard: only start the capture engine when Screen Recording is
-                // already granted. Spawning ScreenCaptureKit without the grant
-                // triggers the macOS system dialog on every launch — including the
-                // restart after the user enables it — causing repeated prompts
-                // during the setup wizard. `CGPreflightScreenCaptureAccess` is a
-                // pure status read (no prompt, no side effects). If the permission
-                // is absent we log and skip; after the user grants it in the wizard
-                // and restarts, this preflight passes and capture starts normally.
-                #[link(name = "CoreGraphics", kind = "framework")]
-                extern "C" {
-                    fn CGPreflightScreenCaptureAccess() -> bool;
-                }
-                let screen_granted = unsafe { CGPreflightScreenCaptureAccess() };
-
-                if !screen_granted {
-                    tracing::info!("capture: Screen Recording not granted — engine deferred until next launch after grant");
-                } else {
-                    // Clone the pause flag out of AppState so the capture consumers
-                    // can check it without holding the state lock on every frame.
-                    let pause_flag = app_state.lock().unwrap().capture_paused.clone();
-
-                    let (tx, mut rx) = tokio::sync::mpsc::channel::<capture::CapturedFrame>(64);
-                    // Persist each frame into meridian.db's capture_frames (slice 4a).
-                    // Low-rate writer (~1 row / 2 s) sharing the commands' RW pool;
-                    // the 5 s busy_timeout serializes it against the daemon's writes.
-                    // No-op when the pool is absent or the table isn't migrated yet.
-                    let consumer_pool = capture_pool.clone();
-                    let frame_pause_flag = pause_flag.clone();
-                    tauri::async_runtime::spawn(async move {
-                        while let Some(frame) = rx.recv().await {
-                            if frame_pause_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                                tracing::debug!(ts = %frame.timestamp, "capture: frame dropped — tracking paused");
-                                continue;
-                            }
-                            tracing::debug!(
-                                ts = %frame.timestamp,
-                                app = ?frame.app_name,
-                                window = ?frame.window_name,
-                                url = ?frame.browser_url,
-                                chars = frame.text.len(),
-                                source = frame.text_source.as_str(),
-                                "capture: frame received"
-                            );
-                            let Some(pool) = consumer_pool.as_ref() else {
-                                continue;
-                            };
-                            let row = meridian_core::CaptureFrameInsert {
-                                timestamp: frame.timestamp,
-                                app_name: frame.app_name,
-                                window_name: frame.window_name,
-                                browser_url: frame.browser_url,
-                                text: frame.text,
-                                text_source: frame.text_source.as_str().to_string(),
-                            };
-                            if let Err(e) = meridian_core::insert_capture_frame(pool, &row).await {
-                                tracing::warn!(error = %e, "capture: failed to persist frame");
-                            }
-                        }
-                    });
-                    tauri::async_runtime::spawn(async move {
-                        if let Err(e) = ScreenpipeEngine.run(tx).await {
-                            tracing::error!(error = %e, "capture: engine exited with error");
-                        }
-                    });
-
-                    // Input recorder (slice 3c): ui events → capture_ui_events. The
-                    // recorder is blocking (its own CGEventTap thread + a crossbeam
-                    // Receiver we poll), so it runs on a dedicated OS thread and
-                    // forwards mapped rows over a tokio channel to this async writer.
-                    let (ui_tx, mut ui_rx) =
-                        tokio::sync::mpsc::channel::<meridian_core::CaptureUiEventInsert>(256);
-                    let ui_pool = capture_pool;
-                    let ui_pause_flag = pause_flag;
-                    tauri::async_runtime::spawn(async move {
-                        while let Some(ev) = ui_rx.recv().await {
-                            if ui_pause_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                                continue;
-                            }
-                            let Some(pool) = ui_pool.as_ref() else {
-                                continue;
-                            };
-                            if let Err(e) = meridian_core::insert_capture_ui_event(pool, &ev).await {
-                                tracing::warn!(error = %e, "capture: failed to persist ui event");
-                            }
-                        }
-                    });
-                    std::thread::spawn(move || capture::ui_events::run_ui_event_recorder(ui_tx));
-                }
-            }
+            start_capture(app_state.clone(), capture_pool);
 
             // Auto-open the setup wizard on first launch (no ~/.meridian/onboarded).
             // The 800 ms delay lets the tray menu settle before the window appears.
@@ -819,4 +728,109 @@ fn set_process_display_name(name: &str) {
         let _: () = msg_send![&*info, setProcessName: ns_name];
     }
     tracing::debug!(name, "set_process_display_name: applied");
+}
+
+/// Start (or restart) the in-process capture engine and UI event recorder.
+///
+/// Safe to call multiple times — aborts any previously stored tasks before
+/// spawning fresh ones, so pausing then resuming is idempotent. Does nothing
+/// when Screen Recording is not granted (logs and returns).
+///
+/// # Who calls this
+/// Once from `lib.rs`'s `setup()` on launch, and again from
+/// `commands::pause_for_duration` on resume.
+#[cfg(feature = "capture")]
+pub(crate) fn start_capture(
+    app_state: std::sync::Arc<std::sync::Mutex<AppState>>,
+    pool: Option<meridian_core::SqlitePool>,
+) {
+    use capture::{screenpipe::ScreenpipeEngine, CaptureEngine};
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGPreflightScreenCaptureAccess() -> bool;
+    }
+    let screen_granted = unsafe { CGPreflightScreenCaptureAccess() };
+    if !screen_granted {
+        tracing::info!(
+            "capture: Screen Recording not granted — engine deferred until next launch after grant"
+        );
+        return;
+    }
+
+    // Abort any previously running tasks so a resume is a clean restart.
+    {
+        let mut s = app_state.lock().unwrap();
+        if let Some(h) = s.engine_abort.take() {
+            h.abort();
+        }
+        if let Some(h) = s.ui_consumer_abort.take() {
+            h.abort();
+        }
+    }
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<capture::CapturedFrame>(64);
+
+    // Frame consumer: persists each captured frame to capture_frames.
+    // Spawned with tokio directly so we get a real AbortHandle.
+    let consumer_pool = pool.clone();
+    let frame_task = tokio::task::spawn(async move {
+        while let Some(frame) = rx.recv().await {
+            tracing::debug!(
+                ts = %frame.timestamp,
+                app = ?frame.app_name,
+                chars = frame.text.len(),
+                "capture: frame received"
+            );
+            let Some(p) = consumer_pool.as_ref() else {
+                continue;
+            };
+            let row = meridian_core::CaptureFrameInsert {
+                timestamp: frame.timestamp,
+                app_name: frame.app_name,
+                window_name: frame.window_name,
+                browser_url: frame.browser_url,
+                text: frame.text,
+                text_source: frame.text_source.as_str().to_string(),
+            };
+            if let Err(e) = meridian_core::insert_capture_frame(p, &row).await {
+                tracing::warn!(error = %e, "capture: failed to persist frame");
+            }
+        }
+    });
+    let engine_abort = frame_task.abort_handle();
+
+    // Engine task: runs ScreenCaptureKit and sends frames to the consumer.
+    // Aborting this task drops `tx`, which causes `rx.recv()` in the frame
+    // consumer to return `None` and that task exits cleanly too.
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = ScreenpipeEngine.run(tx).await {
+            tracing::error!(error = %e, "capture: engine exited with error");
+        }
+    });
+
+    // UI event consumer + recorder OS thread.
+    let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel::<meridian_core::CaptureUiEventInsert>(256);
+    let ui_pool = pool;
+    // Spawned with tokio directly so we get a real AbortHandle. Aborting this
+    // task drops `ui_rx`, which closes the channel; the OS recorder thread
+    // detects `tx.is_closed()` within 500ms and exits.
+    let ui_task = tokio::task::spawn(async move {
+        while let Some(ev) = ui_rx.recv().await {
+            let Some(p) = ui_pool.as_ref() else {
+                continue;
+            };
+            if let Err(e) = meridian_core::insert_capture_ui_event(p, &ev).await {
+                tracing::warn!(error = %e, "capture: failed to persist ui event");
+            }
+        }
+    });
+    let ui_consumer_abort = ui_task.abort_handle();
+    std::thread::spawn(move || capture::ui_events::run_ui_event_recorder(ui_tx));
+
+    // Store abort handles so pause_for_duration can stop the engine cleanly.
+    let mut s = app_state.lock().unwrap();
+    s.engine_abort = Some(engine_abort);
+    s.ui_consumer_abort = Some(ui_consumer_abort);
+    tracing::info!("capture: engine and ui recorder started");
 }
