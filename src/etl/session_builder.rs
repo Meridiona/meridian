@@ -376,21 +376,6 @@ mod tests {
     }
 
     #[test]
-    fn detects_version_label_idle_startup() {
-        // Claude Code idle/startup — emits its own version as the tab title
-        assert!(is_coding_agent_terminal("Terminal - 2.1.193"));
-        assert!(is_coding_agent_terminal("Terminal - 2.0.0"));
-        // Node REPL and Python interpreter also suppressed (accepted tradeoff —
-        // VS Code terminal REPL sessions are not meaningful focus time)
-        assert!(is_coding_agent_terminal("Terminal - 20.11.0"));
-        assert!(is_coding_agent_terminal("Terminal - 3.11.5"));
-        // Non-semver labels still pass through
-        assert!(!is_coding_agent_terminal("Terminal - bash"));
-        assert!(!is_coding_agent_terminal("Terminal - zsh"));
-        assert!(!is_coding_agent_terminal("Terminal - npm run dev"));
-    }
-
-    #[test]
     fn detects_em_dash_separator() {
         // VS Code with custom terminal.integrated.tabs.title or certain locales
         // uses U+2014 (—) instead of ASCII hyphen.

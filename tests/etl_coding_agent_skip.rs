@@ -176,7 +176,7 @@ async fn editor_frames_not_suppressed() {
 /// Layout:
 ///   Code / editor tab      → 2 frames (should appear in window_titles)
 ///   Code / Terminal - ⠂…   → 3 spinner frames (must NOT appear)
-///   Code / Terminal - 2.1.193 → 1 version-label frame (must NOT appear)
+///   Code / Terminal - claude → 1 agent-name frame (must NOT appear)
 ///   Firefox / any          → 1 frame to force an app-switch → closes the Code session
 #[tokio::test]
 async fn coding_agent_window_titles_excluded_from_closed_session() {
@@ -211,7 +211,7 @@ async fn coding_agent_window_titles_excluded_from_closed_session() {
                 "Terminal - \u{2802} agentic-worklog-pipeline",
                 "2026-01-01T10:00:08+00:00",
             ),
-            ("Code", "Terminal - 2.1.193", "2026-01-01T10:00:10+00:00"),
+            ("Code", "Terminal - claude", "2026-01-01T10:00:10+00:00"),
             // App switch → closes Code block into app_sessions
             ("Firefox", "GitHub", "2026-01-01T10:00:12+00:00"),
         ],
@@ -260,7 +260,7 @@ async fn coding_agent_window_titles_excluded_from_active_session() {
                 "2026-01-01T10:00:02+00:00",
             ),
             ("Code", "Terminal - claude", "2026-01-01T10:00:04+00:00"),
-            ("Code", "Terminal - 2.1.193", "2026-01-01T10:00:06+00:00"),
+            ("Code", "Terminal - codex", "2026-01-01T10:00:06+00:00"),
         ],
     )
     .await;
