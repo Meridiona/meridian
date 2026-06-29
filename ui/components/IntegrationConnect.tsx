@@ -180,6 +180,10 @@ function ModeTab({ label, active, onClick }: { label: string; active: boolean; o
   )
 }
 
+// Sentinel matched against the Rust error message when TRELLO_APP_KEY is unset.
+// Extracted here so a rewording of the Rust error string is a single-site change.
+const TRELLO_MISSING_KEY_SENTINEL = 'Power-Up app key'
+
 // ── Browser OAuth (start_oauth + poll) ───────────────────────────────────────
 function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () => void }) {
   const [status, setStatus] = useState<'idle' | 'waiting' | 'done' | 'error'>('idle')
@@ -253,7 +257,7 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
       const msg = e instanceof Error ? e.message : String(e)
       // Trello without a baked-in or user-supplied app key: show the API key
       // input so the user can unblock themselves without editing .env manually.
-      if (tracker.id === 'trello' && msg.includes('Power-Up app key')) {
+      if (tracker.id === 'trello' && msg.includes(TRELLO_MISSING_KEY_SENTINEL)) {
         setApiKeyPrompt(true); setStatus('idle')
       } else {
         setError(msg); setStatus('error')
@@ -272,18 +276,13 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
                 A Trello API key is required.{' '}
                 <a href="https://trello.com/app-key" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>Get it at trello.com/app-key ↗</a>
               </p>
-              <label className="block">
-                <span className="text-[11px]" style={{ color: 'var(--ink-3)' }}>API Key</span>
-                <input
-                  type="text"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && apiKey.trim()) void startOAuth() }}
-                  placeholder="Paste your Trello API key"
-                  className="mt-1 w-full font-mono text-[11px] px-2 py-1.5 rounded-md border"
-                  style={{ color: 'var(--ink)', background: 'var(--surface)', borderColor: 'var(--rule)', outline: 'none' }}
-                />
-              </label>
+              <Field
+                field={{ name: 'api_key', label: 'API Key', placeholder: 'Paste your Trello API key', required: true }}
+                value={apiKey}
+                onChange={setApiKey}
+                onEnter={() => { if (apiKey.trim()) void startOAuth() }}
+                autoFocus
+              />
             </>
           )}
           <button
@@ -372,8 +371,8 @@ function TokenSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
   )
 }
 
-function Field({ field, value, onChange, onEnter }: {
-  field: TokenField; value: string; onChange: (v: string) => void; onEnter?: () => void
+function Field({ field, value, onChange, onEnter, autoFocus }: {
+  field: TokenField; value: string; onChange: (v: string) => void; onEnter?: () => void; autoFocus?: boolean
 }) {
   return (
     <label className="block">
@@ -384,6 +383,7 @@ function Field({ field, value, onChange, onEnter }: {
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => { if (e.key === 'Enter' && onEnter) onEnter() }}
         placeholder={field.placeholder}
+        autoFocus={autoFocus}
         className="mt-1 w-full font-mono text-[11px] px-2 py-1.5 rounded-md border"
         style={{ color: 'var(--ink)', background: 'var(--surface)', borderColor: 'var(--rule)', outline: 'none' }}
       />

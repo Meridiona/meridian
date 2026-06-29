@@ -76,6 +76,10 @@ const TOKEN_KEYS: &[(&str, &[&str])] = &[
             "AZURE_DEVOPS_ORG_URL",
         ],
     ),
+    // Trello uses OAuth for its primary auth but also stores a user-supplied app
+    // key in .env (prod has it baked in; dev users paste their own). Disconnect
+    // must strip it so a rotated key isn't silently reused on the next connect.
+    ("trello", &["TRELLO_APP_KEY"]),
 ];
 
 /// Token-based connect map: `provider → [(ui_field, env_key)]`. This is the
@@ -266,7 +270,7 @@ fn upsert_env(path: &std::path::Path, updates: &BTreeMap<String, String>) -> std
 /// Disconnect a tracker (the ported /api/integrations DELETE). Removes the
 /// OAuth token store (`~/.meridian/oauth/<p>.json`) AND strips the provider's
 /// `.env` keys — Jira can be connected either way, so both run. (trello = json
-/// only; linear/github/azure = env keys only; jira = both.) After credentials
+/// + env key; linear/github/azure = env keys only; jira = both.) After credentials
 /// are removed, clears the provider's tasks from the DB (best-effort — warns on
 /// failure but does not block the disconnect). Returns `{ ok: true }`; an unknown
 /// provider is the route's 400.
