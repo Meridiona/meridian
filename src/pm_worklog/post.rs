@@ -27,7 +27,7 @@ use crate::config::{
 };
 
 use super::config::PmWorklogConfig;
-use super::{azure_devops, db, github, jira, linear, trello};
+use super::{azure_devops, create, db, github, jira, linear, trello};
 
 /// How often the approved-sweep runs. Short by design — this is the latency a
 /// user feels between clicking "Approve" in the dashboard and the worklog
@@ -313,6 +313,98 @@ fn azure_devops_cfg(config: &Config) -> Option<&AzureDevOpsConfig> {
     })
 }
 
+/// Create real tickets for approved tier-3 proposals, then drop an approved
+/// worklog row for each so the post sweep comments on the new ticket. Routes to
+/// the user's connected provider (the first configured one). A create failure is
+/// logged and the proposal is left approved for the next pass to retry — never a
+/// hard error that stalls the loop.
+#[tracing::instrument(skip(pool, config), name = "proposal.sweep")]
+pub async fn process_approved_proposals(pool: &SqlitePool, config: &Config) -> Result<()> {
+    let proposals = db::fetch_approved_proposals(pool).await?;
+    if proposals.is_empty() {
+        return Ok(());
+    }
+    let Some(provider) = config.pm_providers.first().map(|p| p.provider_name()) else {
+        tracing::warn!("approved proposals waiting but no PM provider configured — skipping");
+        return Ok(());
+    };
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+
+    for p in proposals {
+        // GitHub needs an existing repo to infer owner/repo; harmless elsewhere.
+        let sample = db::fetch_sample_task_key(pool, provider)
+            .await
+            .ok()
+            .flatten();
+        let key = match create::create_ticket(
+            config,
+            provider,
+            &p.title,
+            &p.description,
+            sample.as_deref(),
+        )
+        .await
+        {
+            Ok(k) => k,
+            Err(e) => {
+                tracing::warn!(
+                    proposal_id = p.id, provider, error = %e,
+                    "proposal ticket creation failed — left approved for retry"
+                );
+                continue;
+            }
+        };
+
+        // Window + cycle fall back to the source hour when unset (pre-050 rows).
+        let window_start = p
+            .window_start
+            .clone()
+            .unwrap_or_else(|| format!("{}:00:00+00:00", p.source_hour));
+        let window_end = p
+            .window_end
+            .clone()
+            .unwrap_or_else(|| format!("{}:59:59+00:00", p.source_hour));
+        let cycle_index: i64 = p
+            .source_hour
+            .get(11..13)
+            .and_then(|h| h.parse().ok())
+            .unwrap_or(0);
+
+        // Stamp the real key into the drafted payload (it was minted with a
+        // placeholder task_key) so the posted comment is grounded correctly.
+        let payload_json = {
+            let mut v: serde_json::Value = p
+                .worklog_payload_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_else(|| serde_json::json!({ "summary": "" }));
+            v["task_key"] = serde_json::Value::String(key.clone());
+            v.to_string()
+        };
+
+        let wid = db::insert_proposal_worklog(
+            pool,
+            &key,
+            provider,
+            &p.day_utc,
+            cycle_index,
+            &window_start,
+            &window_end,
+            p.time_spent_seconds.max(60),
+            p.confidence,
+            &payload_json,
+            &now,
+        )
+        .await?;
+        db::mark_proposal_created(pool, p.id, &key, wid).await?;
+        tracing::info!(
+            proposal_id = p.id, task_key = %key, worklog_id = wid, provider,
+            "proposal approved → ticket created + worklog queued for post"
+        );
+    }
+    Ok(())
+}
+
 /// Daemon task: post approved worklogs on a short cadence until shutdown.
 pub async fn run_post_loop(pool: SqlitePool, mut shutdown_rx: watch::Receiver<bool>) {
     let cfg = PmWorklogConfig::from_env();
@@ -324,6 +416,11 @@ pub async fn run_post_loop(pool: SqlitePool, mut shutdown_rx: watch::Receiver<bo
 
     loop {
         let config = Config::from_env();
+        // Mint real tickets for approved proposals FIRST, so the approved worklog
+        // rows they create get posted in the same pass below.
+        if let Err(e) = process_approved_proposals(&pool, &config).await {
+            tracing::error!(error = %e, "approved-proposal sweep failed");
+        }
         match post_approved(&pool, &config, &cfg).await {
             Ok(s) if s.posted > 0 || s.failed > 0 => tracing::info!(
                 approved = s.approved_seen,
