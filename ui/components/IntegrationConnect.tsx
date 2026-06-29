@@ -184,6 +184,11 @@ function ModeTab({ label, active, onClick }: { label: string; active: boolean; o
 function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () => void }) {
   const [status, setStatus] = useState<'idle' | 'waiting' | 'done' | 'error'>('idle')
   const [error, setError] = useState<string | null>(null)
+  // Trello-specific: set when start_oauth rejects with the "Power-Up app key"
+  // error so the user can supply their own key from https://trello.com/app-key.
+  // Once set, the key is saved to .env before the next start_oauth call.
+  const [apiKeyPrompt, setApiKeyPrompt] = useState(false)
+  const [apiKey, setApiKey] = useState('')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   // mountedRef lets the async startOAuth body detect an unmount that happened
   // while awaiting mutate — before the interval is created and pollRef assigned.
@@ -208,6 +213,15 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
   const startOAuth = async () => {
     setStatus('waiting'); setError(null)
     try {
+      // For Trello: if a user-supplied API key is present, persist it to .env
+      // before start_oauth reads it. This unblocks dev builds where the baked-in
+      // DEFAULT_APP_KEY is empty. start_oauth_in_process re-parses .env on each
+      // call, so the write-then-call ordering is sufficient.
+      if (tracker.id === 'trello' && apiKey.trim()) {
+        await mutate('/api/auth/token', 'save_integration_token', {
+          provider: 'trello', fields: { api_key: apiKey.trim() },
+        })
+      }
       await mutate(`/api/auth/oauth/start?provider=${tracker.id}`, 'start_oauth', { provider: tracker.id })
       if (!mountedRef.current) return
       const deadline = Date.now() + OAUTH_DEADLINE_MS
@@ -236,7 +250,14 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
       }, 2_000)
       pollRef.current = id
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e)); setStatus('error')
+      const msg = e instanceof Error ? e.message : String(e)
+      // Trello without a baked-in or user-supplied app key: show the API key
+      // input so the user can unblock themselves without editing .env manually.
+      if (tracker.id === 'trello' && msg.includes('Power-Up app key')) {
+        setApiKeyPrompt(true); setStatus('idle')
+      } else {
+        setError(msg); setStatus('error')
+      }
     }
   }
 
@@ -245,8 +266,35 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
       {status === 'idle' && (
         <div className="space-y-3">
           <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>{tracker.oauth?.hint}</p>
-          <button onClick={startOAuth} className="text-[12px] px-4 py-2 rounded-md font-medium"
-            style={{ background: 'var(--accent)', color: '#fff', cursor: 'pointer' }}>
+          {apiKeyPrompt && (
+            <>
+              <p className="text-[12px]" style={{ color: '#d97706' }}>
+                A Trello API key is required.{' '}
+                <a href="https://trello.com/app-key" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>Get it at trello.com/app-key ↗</a>
+              </p>
+              <label className="block">
+                <span className="text-[11px]" style={{ color: 'var(--ink-3)' }}>API Key</span>
+                <input
+                  type="text"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && apiKey.trim()) void startOAuth() }}
+                  placeholder="Paste your Trello API key"
+                  className="mt-1 w-full font-mono text-[11px] px-2 py-1.5 rounded-md border"
+                  style={{ color: 'var(--ink)', background: 'var(--surface)', borderColor: 'var(--rule)', outline: 'none' }}
+                />
+              </label>
+            </>
+          )}
+          <button
+            onClick={() => void startOAuth()}
+            disabled={apiKeyPrompt && !apiKey.trim()}
+            className="text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
+            style={{
+              background: 'var(--accent)', color: '#fff',
+              opacity: apiKeyPrompt && !apiKey.trim() ? 0.5 : 1,
+              cursor: apiKeyPrompt && !apiKey.trim() ? 'not-allowed' : 'pointer',
+            }}>
             Connect {tracker.name} →
           </button>
         </div>
