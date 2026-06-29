@@ -66,7 +66,7 @@ def _list_existing(base: str, token: str) -> dict[str, str]:
         sys.exit(f"error: GET /api/default/dashboards returned {status}: {data}")
     result = {}
     for entry in data.get("dashboards", []):
-        inner = next((entry[k] for k in ["v6", "v5", "v4", "v3", "v2", "v1"] if entry.get(k)), None)
+        inner = next((entry[k] for k in ["v8", "v7", "v6", "v5", "v4", "v3", "v2", "v1"] if entry.get(k)), None)
         if inner:
             result[inner["title"]] = inner["dashboardId"]
     return result

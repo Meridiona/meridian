@@ -1,0 +1,504 @@
+{
+  "version": 8,
+  "title": "Session Distiller",
+  "description": "One log record per distil_hour call. Token counts are estimated (chars \u00f7 4).",
+  "tabs": [
+    {
+      "tabId": "default",
+      "name": "Default",
+      "panels": [
+        {
+          "id": "s1",
+          "type": "metric",
+          "title": "Total runs",
+          "description": "",
+          "config": {
+            "show_legends": false,
+            "no_value_replacement": "0",
+            "decimals": 0.0,
+            "description": ""
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(distil_nsess) as y FROM \"default\" WHERE service_name='meridian-mlx-server' AND distil_label IS NOT NULL",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "logs",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Total runs",
+                    "alias": "y",
+                    "column": "y",
+                    "color": "#5960b2",
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 0,
+            "w": 32,
+            "h": 18,
+            "i": 1
+          }
+        },
+        {
+          "id": "s2",
+          "type": "metric",
+          "title": "Avg sessions / run",
+          "description": "",
+          "config": {
+            "show_legends": false,
+            "no_value_replacement": "0",
+            "decimals": 0.0,
+            "description": ""
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT histogram(_timestamp) as x_axis_1, round(avg(distil_nsess),1) as y FROM \"default\" WHERE service_name='meridian-mlx-server' AND distil_label IS NOT NULL GROUP BY x_axis_1",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "logs",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Avg sessions / run",
+                    "alias": "y",
+                    "column": "y",
+                    "color": "#59b27a",
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 32,
+            "y": 0,
+            "w": 32,
+            "h": 18,
+            "i": 2
+          }
+        },
+        {
+          "id": "s3",
+          "type": "metric",
+          "title": "Avg reduction %",
+          "description": "",
+          "config": {
+            "show_legends": false,
+            "no_value_replacement": "0",
+            "decimals": 0.0,
+            "description": "",
+            "unit": "percent"
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT histogram(_timestamp) as x_axis_1, round(avg(distil_reduction_pct),1) as y FROM \"default\" WHERE service_name='meridian-mlx-server' AND distil_label IS NOT NULL GROUP BY x_axis_1",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "logs",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Avg reduction %",
+                    "alias": "y",
+                    "column": "y",
+                    "color": "#b29959",
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 64,
+            "y": 0,
+            "w": 32,
+            "h": 18,
+            "i": 3
+          }
+        },
+        {
+          "id": "s4",
+          "type": "metric",
+          "title": "Avg elapsed (s)",
+          "description": "",
+          "config": {
+            "show_legends": false,
+            "no_value_replacement": "0",
+            "decimals": 0.0,
+            "description": ""
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT histogram(_timestamp) as x_axis_1, round(avg(distil_elapsed_s),1) as y FROM \"default\" WHERE service_name='meridian-mlx-server' AND distil_label IS NOT NULL GROUP BY x_axis_1",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "logs",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Avg elapsed (s)",
+                    "alias": "y",
+                    "column": "y",
+                    "color": "#59a0b2",
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 96,
+            "y": 0,
+            "w": 32,
+            "h": 18,
+            "i": 4
+          }
+        },
+        {
+          "id": "s5",
+          "type": "metric",
+          "title": "Avg input tokens",
+          "description": "",
+          "config": {
+            "show_legends": false,
+            "no_value_replacement": "0",
+            "decimals": 0.0,
+            "description": ""
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT histogram(_timestamp) as x_axis_1, round(avg(distil_input_tokens_est),0) as y FROM \"default\" WHERE service_name='meridian-mlx-server' AND distil_label IS NOT NULL GROUP BY x_axis_1",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "logs",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Avg input tokens",
+                    "alias": "y",
+                    "column": "y",
+                    "color": "#9959b2",
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 128,
+            "y": 0,
+            "w": 32,
+            "h": 18,
+            "i": 5
+          }
+        },
+        {
+          "id": "s6",
+          "type": "metric",
+          "title": "Avg output tokens",
+          "description": "",
+          "config": {
+            "show_legends": false,
+            "no_value_replacement": "0",
+            "decimals": 0.0,
+            "description": ""
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT histogram(_timestamp) as x_axis_1, round(avg(distil_output_tokens_est),0) as y FROM \"default\" WHERE service_name='meridian-mlx-server' AND distil_label IS NOT NULL GROUP BY x_axis_1",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "logs",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Avg output tokens",
+                    "alias": "y",
+                    "column": "y",
+                    "color": "#b25959",
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 160,
+            "y": 0,
+            "w": 32,
+            "h": 18,
+            "i": 6
+          }
+        },
+        {
+          "id": "tbl",
+          "type": "table",
+          "title": "All distil runs \u2014 newest first",
+          "description": "",
+          "config": {
+            "show_legends": false,
+            "wrap_table_cells": false,
+            "drilldown": [
+              {
+                "name": "Open trace",
+                "type": "byUrl",
+                "targetBlank": true,
+                "findBy": "name",
+                "data": {
+                  "url": "http://localhost:5080/web/traces?org_identifier=default&stream=default&search_type=ui&period=30d&trace_id=${row.field.trace_id}",
+                  "folder": "",
+                  "dashboard": "",
+                  "tab": "",
+                  "passAllVariables": false,
+                  "variables": []
+                }
+              }
+            ]
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT\n  to_char(to_timestamp_micros(_timestamp + 19800000000),'%Y-%m-%d %H:%M') as \"Time (IST)\",\n  distil_label as \"Hour\",\n  distil_nsess as \"Sessions\",\n  distil_input_tokens_est as \"In tokens\",\n  distil_output_tokens_est as \"Out tokens\",\n  concat(CAST(distil_reduction_pct AS VARCHAR),'%') as \"Reduction\",\n  distil_n_after_junk as \"After junk\",\n  distil_n_after_df as \"After df\",\n  distil_n_after_lex as \"After lex\",\n  distil_n_after_sem as \"After sem\",\n  distil_n_selected as \"Selected\",\n  distil_n_session_rescued as \"Rescued\",\n  distil_n_entity_rescued as \"Entity rescued\",\n  round(CAST(distil_elapsed_s AS DOUBLE),1) as \"Elapsed (s)\",\n  trace_id\nFROM \"default\" WHERE service_name='meridian-mlx-server' AND distil_label IS NOT NULL ORDER BY _timestamp DESC",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "logs",
+                "x": [
+                  {
+                    "label": "Time (IST)",
+                    "alias": "Time (IST)",
+                    "column": "Time (IST)",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Hour",
+                    "alias": "Hour",
+                    "column": "Hour",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Sessions",
+                    "alias": "Sessions",
+                    "column": "Sessions",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "In tokens",
+                    "alias": "In tokens",
+                    "column": "In tokens",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Out tokens",
+                    "alias": "Out tokens",
+                    "column": "Out tokens",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Reduction",
+                    "alias": "Reduction",
+                    "column": "Reduction",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "After junk",
+                    "alias": "After junk",
+                    "column": "After junk",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "After df",
+                    "alias": "After df",
+                    "column": "After df",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "After lex",
+                    "alias": "After lex",
+                    "column": "After lex",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "After sem",
+                    "alias": "After sem",
+                    "column": "After sem",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Selected",
+                    "alias": "Selected",
+                    "column": "Selected",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Rescued",
+                    "alias": "Rescued",
+                    "column": "Rescued",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Entity rescued",
+                    "alias": "Entity rescued",
+                    "column": "Entity rescued",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Elapsed (s)",
+                    "alias": "Elapsed (s)",
+                    "column": "Elapsed (s)",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "trace_id",
+                    "alias": "trace_id",
+                    "column": "trace_id",
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "y": [],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 18,
+            "w": 192,
+            "h": 50,
+            "i": 9
+          }
+        }
+      ]
+    }
+  ],
+  "variables": {
+    "list": [],
+    "showDynamicFilters": true
+  },
+  "defaultDatetimeDuration": {
+    "type": "relative",
+    "relativeTimePeriod": "7d"
+  }
+}

@@ -1,0 +1,192 @@
+{
+  "version": 8,
+  "title": "PM Worklog Hour",
+  "description": "worklog_hour pipeline runs — one log record per processed hour. Fields: wl_hour, wl_nsess, wl_tier, wl_n_matched, wl_proposed, wl_elapsed_s.",
+  "tabs": [
+    {
+      "tabId": "default",
+      "name": "Default",
+      "panels": [
+        {
+          "id": "m1",
+          "type": "metric",
+          "title": "Total runs",
+          "description": "",
+          "config": { "show_legends": false, "no_value_replacement": "0", "decimals": 0.0 },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as y FROM \"default\" WHERE service_name='meridian-mlx-server' AND wl_hour IS NOT NULL",
+              "customQuery": true,
+              "fields": {
+                "stream": "default", "stream_type": "logs", "x": [],
+                "y": [{ "label": "Total runs", "alias": "y", "column": "y", "color": "#5960b2", "isDerived": false, "havingConditions": [] }],
+                "z": [], "breakdown": [], "filter": { "filterType": "group", "logicalOperator": "AND", "conditions": [] }
+              },
+              "config": { "promql_legend": "", "layer_type": "scatter", "weight_fixed": 1.0 }
+            }
+          ],
+          "layout": { "x": 0, "y": 0, "w": 32, "h": 18, "i": 1 }
+        },
+        {
+          "id": "m2",
+          "type": "metric",
+          "title": "Matched runs",
+          "description": "",
+          "config": { "show_legends": false, "no_value_replacement": "0", "decimals": 0.0 },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as y FROM \"default\" WHERE service_name='meridian-mlx-server' AND wl_hour IS NOT NULL AND wl_n_matched > 0",
+              "customQuery": true,
+              "fields": {
+                "stream": "default", "stream_type": "logs", "x": [],
+                "y": [{ "label": "Matched runs", "alias": "y", "column": "y", "color": "#59b27a", "isDerived": false, "havingConditions": [] }],
+                "z": [], "breakdown": [], "filter": { "filterType": "group", "logicalOperator": "AND", "conditions": [] }
+              },
+              "config": { "promql_legend": "", "layer_type": "scatter", "weight_fixed": 1.0 }
+            }
+          ],
+          "layout": { "x": 32, "y": 0, "w": 32, "h": 18, "i": 2 }
+        },
+        {
+          "id": "m3",
+          "type": "metric",
+          "title": "Proposed new task",
+          "description": "",
+          "config": { "show_legends": false, "no_value_replacement": "0", "decimals": 0.0 },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as y FROM \"default\" WHERE service_name='meridian-mlx-server' AND wl_hour IS NOT NULL AND wl_proposed = 1",
+              "customQuery": true,
+              "fields": {
+                "stream": "default", "stream_type": "logs", "x": [],
+                "y": [{ "label": "Proposed", "alias": "y", "column": "y", "color": "#b29959", "isDerived": false, "havingConditions": [] }],
+                "z": [], "breakdown": [], "filter": { "filterType": "group", "logicalOperator": "AND", "conditions": [] }
+              },
+              "config": { "promql_legend": "", "layer_type": "scatter", "weight_fixed": 1.0 }
+            }
+          ],
+          "layout": { "x": 64, "y": 0, "w": 32, "h": 18, "i": 3 }
+        },
+        {
+          "id": "m4",
+          "type": "metric",
+          "title": "Avg sessions/hour",
+          "description": "",
+          "config": { "show_legends": false, "no_value_replacement": "0", "decimals": 0.0 },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT round(avg(wl_nsess),0) as y FROM \"default\" WHERE service_name='meridian-mlx-server' AND wl_hour IS NOT NULL",
+              "customQuery": true,
+              "fields": {
+                "stream": "default", "stream_type": "logs", "x": [],
+                "y": [{ "label": "Avg sessions", "alias": "y", "column": "y", "color": "#59a0b2", "isDerived": false, "havingConditions": [] }],
+                "z": [], "breakdown": [], "filter": { "filterType": "group", "logicalOperator": "AND", "conditions": [] }
+              },
+              "config": { "promql_legend": "", "layer_type": "scatter", "weight_fixed": 1.0 }
+            }
+          ],
+          "layout": { "x": 96, "y": 0, "w": 32, "h": 18, "i": 4 }
+        },
+        {
+          "id": "m5",
+          "type": "metric",
+          "title": "Avg elapsed (s)",
+          "description": "",
+          "config": { "show_legends": false, "no_value_replacement": "0", "decimals": 1.0 },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT round(avg(wl_elapsed_s),1) as y FROM \"default\" WHERE service_name='meridian-mlx-server' AND wl_hour IS NOT NULL",
+              "customQuery": true,
+              "fields": {
+                "stream": "default", "stream_type": "logs", "x": [],
+                "y": [{ "label": "Avg elapsed (s)", "alias": "y", "column": "y", "color": "#9959b2", "isDerived": false, "havingConditions": [] }],
+                "z": [], "breakdown": [], "filter": { "filterType": "group", "logicalOperator": "AND", "conditions": [] }
+              },
+              "config": { "promql_legend": "", "layer_type": "scatter", "weight_fixed": 1.0 }
+            }
+          ],
+          "layout": { "x": 128, "y": 0, "w": 32, "h": 18, "i": 5 }
+        },
+        {
+          "id": "m6",
+          "type": "metric",
+          "title": "Errors",
+          "description": "",
+          "config": { "show_legends": false, "no_value_replacement": "0", "decimals": 0.0 },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as y FROM \"default\" WHERE service_name='meridian-mlx-server' AND wl_hour IS NOT NULL AND severity='ERROR'",
+              "customQuery": true,
+              "fields": {
+                "stream": "default", "stream_type": "logs", "x": [],
+                "y": [{ "label": "Errors", "alias": "y", "column": "y", "color": "#b25959", "isDerived": false, "havingConditions": [] }],
+                "z": [], "breakdown": [], "filter": { "filterType": "group", "logicalOperator": "AND", "conditions": [] }
+              },
+              "config": { "promql_legend": "", "layer_type": "scatter", "weight_fixed": 1.0 }
+            }
+          ],
+          "layout": { "x": 160, "y": 0, "w": 32, "h": 18, "i": 6 }
+        },
+        {
+          "id": "tbl",
+          "type": "table",
+          "title": "All worklog_hour runs — newest first",
+          "description": "Click a row → Open this trace to drill into sessions, activity summary, match input/output, and worklog drafts.",
+          "config": {
+            "show_legends": false,
+            "wrap_table_cells": false,
+            "drilldown": [
+              {
+                "name": "Open this trace",
+                "type": "byUrl",
+                "targetBlank": true,
+                "findBy": "name",
+                "data": {
+                  "url": "/web/traces?org_identifier=default&stream=default&search_type=ui&search_mode=spans&period=30d&query=${row.field.trace_filter}",
+                  "folder": "", "dashboard": "", "tab": "",
+                  "passAllVariables": false, "variables": []
+                }
+              }
+            ]
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT\n  to_char(to_timestamp_micros(_timestamp + 19800000000),'%Y-%m-%d %H:%M') as \"Ran at (IST)\",\n  concat(substr(wl_hour,1,10),' ',substr(wl_hour,12,2),':00 - ',lpad(CAST((CAST(substr(wl_hour,12,2) AS BIGINT)+1) % 24 AS VARCHAR),2,'0'),':00 UTC') as \"UTC range\",\n  concat(to_char(to_timestamp_micros(_timestamp + 19800000000),'%Y-%m-%d'),' ',lpad(CAST((CAST(substr(wl_hour,12,2) AS BIGINT)+5) % 24 AS VARCHAR),2,'0'),':30 - ',lpad(CAST((CAST(substr(wl_hour,12,2) AS BIGINT)+6) % 24 AS VARCHAR),2,'0'),':30 IST') as \"IST range\",\n  wl_nsess as \"Sessions\",\n  wl_tier as \"Tier\",\n  wl_n_matched as \"Matched\",\n  CASE WHEN wl_proposed=1 THEN 'yes' ELSE '' END as \"Proposed?\",\n  wl_worklog_ids as \"Worklog IDs\",\n  round(CAST(wl_elapsed_s AS DOUBLE),1) as \"Elapsed (s)\",\n  trace_id,\n  encode(concat('trace_id=''', trace_id, ''''),'base64') as \"trace_filter\"\nFROM \"default\"\nWHERE service_name='meridian-mlx-server' AND wl_hour IS NOT NULL AND trace_id IS NOT NULL\nORDER BY _timestamp DESC",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "logs",
+                "x": [
+                  { "label": "Ran at (IST)", "alias": "Ran at (IST)", "column": "Ran at (IST)", "isDerived": false, "havingConditions": [] },
+                  { "label": "UTC range", "alias": "UTC range", "column": "UTC range", "isDerived": false, "havingConditions": [] },
+                  { "label": "IST range", "alias": "IST range", "column": "IST range", "isDerived": false, "havingConditions": [] },
+                  { "label": "Sessions", "alias": "Sessions", "column": "Sessions", "isDerived": false, "havingConditions": [] },
+                  { "label": "Tier", "alias": "Tier", "column": "Tier", "isDerived": false, "havingConditions": [] },
+                  { "label": "Matched", "alias": "Matched", "column": "Matched", "isDerived": false, "havingConditions": [] },
+                  { "label": "Proposed?", "alias": "Proposed?", "column": "Proposed?", "isDerived": false, "havingConditions": [] },
+                  { "label": "Worklog IDs", "alias": "Worklog IDs", "column": "Worklog IDs", "isDerived": false, "havingConditions": [] },
+                  { "label": "Elapsed (s)", "alias": "Elapsed (s)", "column": "Elapsed (s)", "isDerived": false, "havingConditions": [] },
+                  { "label": "trace_id", "alias": "trace_id", "column": "trace_id", "isDerived": false, "havingConditions": [] },
+                  { "label": "trace_filter", "alias": "trace_filter", "column": "trace_filter", "isDerived": false, "havingConditions": [] }
+                ],
+                "y": [], "z": [], "breakdown": [],
+                "filter": { "filterType": "group", "logicalOperator": "AND", "conditions": [] }
+              },
+              "config": { "promql_legend": "", "layer_type": "scatter", "weight_fixed": 1.0 }
+            }
+          ],
+          "layout": { "x": 0, "y": 18, "w": 192, "h": 45, "i": 9 }
+        }
+      ]
+    }
+  ],
+  "variables": { "list": [], "showDynamicFilters": true },
+  "defaultDatetimeDuration": { "type": "relative", "relativeTimePeriod": "24h" }
+}

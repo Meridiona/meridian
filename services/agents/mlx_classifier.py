@@ -18,7 +18,7 @@ from typing import Any, Iterator
 from agents import observability
 
 log = logging.getLogger("agents.mlx_classifier")
-tracer = observability.setup("meridian-mlx-classifier")
+tracer = observability.setup("meridian-mlx-server")
 
 # Default model — the agent server runs a single hardcoded model.
 MODEL_ID = "mlx-community/Qwen3.5-2B-OptiQ-4bit"
