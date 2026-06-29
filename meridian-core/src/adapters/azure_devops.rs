@@ -70,6 +70,16 @@ impl ProviderAdapter for AzureDevopsAdapter {
     fn to_canonical(&self, raw: &Value) -> anyhow::Result<CanonicalTask> {
         let id = id_str(raw.get("id")).context("azure_devops: work item missing `id`")?;
         let org = self.resolve_org(raw);
+        // An empty org would yield a degenerate ":{id}" key (canonical
+        // "azure_devops::{id}") — exactly the cross-org collision the
+        // namespacing exists to prevent. Refuse rather than emit it.
+        if org.is_empty() {
+            anyhow::bail!(
+                "azure_devops: cannot resolve org for work item {id} \
+                 (set AzureDevopsAdapter.org or include a dev.azure.com url); \
+                 refusing to emit an unnamespaced canonical id"
+            );
+        }
         // Org-namespaced stable key (ids aren't globally unique).
         let provider_id = format!("{org}:{id}");
 
@@ -321,6 +331,14 @@ mod tests {
             .to_canonical(&sample_item())
             .unwrap();
         assert_eq!(task.provider_id, "acme:1234");
+    }
+
+    #[test]
+    fn unresolvable_org_is_an_error_not_a_degenerate_key() {
+        // No configured org AND no parseable dev.azure.com url → refuse rather
+        // than emit "azure_devops::1234".
+        let raw = json!({"id": 1234, "fields": {"System.Title": "no org"}});
+        assert!(AzureDevopsAdapter::default().to_canonical(&raw).is_err());
     }
 
     #[test]

@@ -209,32 +209,43 @@ fn map_status(status: &Value) -> Option<StatusCategory> {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_ascii_lowercase();
+    let cat_key = status
+        .get("statusCategory")
+        .and_then(|c| c.get("key"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
 
-    // Name-based refinements the 3 native categories can't express.
+    let is_cancel = name.contains("cancel")
+        || name.contains("won't")
+        || name.contains("wont")
+        || name.contains("reject")
+        || name.contains("abandon");
+
+    // The `done` category is terminal: distinguish Done vs Cancelled by name
+    // only — never let a "review"/"backlog" substring (e.g. a terminal
+    // "Reviewed" column) pull a done status back to a non-terminal category.
+    if cat_key == "done" {
+        return Some(if is_cancel {
+            StatusCategory::Cancelled
+        } else {
+            StatusCategory::Done
+        });
+    }
+
+    // Non-terminal categories: Jira's `new`/`indeterminate` can't express
+    // Backlog / InReview / Cancelled, so refine from the status name first.
     if name.contains("backlog") {
         return Some(StatusCategory::Backlog);
     }
     if name.contains("review") {
         return Some(StatusCategory::InReview);
     }
-    if name.contains("cancel")
-        || name.contains("won't")
-        || name.contains("wont")
-        || name.contains("reject")
-        || name.contains("abandon")
-    {
+    if is_cancel {
         return Some(StatusCategory::Cancelled);
     }
-
-    match status
-        .get("statusCategory")
-        .and_then(|c| c.get("key"))
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-    {
+    match cat_key {
         "new" => Some(StatusCategory::Todo),
         "indeterminate" => Some(StatusCategory::InProgress),
-        "done" => Some(StatusCategory::Done),
         _ => None,
     }
 }
@@ -349,6 +360,9 @@ mod tests {
             // Terminal-but-cancelled is name-derived over the `done` category.
             ("Cancelled", "done", Some(StatusCategory::Cancelled)),
             ("Won't Do", "done", Some(StatusCategory::Cancelled)),
+            // A terminal "Reviewed" column keeps Done — the `done` category is
+            // never pulled non-terminal by the "review" substring.
+            ("Reviewed", "done", Some(StatusCategory::Done)),
         ];
         for (name, key, expected) in cases {
             let status = json!({"name": name, "statusCategory": {"key": key}});
