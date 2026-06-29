@@ -206,25 +206,6 @@ const CLAUDE_SPINNERS: &[char] = &[
     '✳', '⠐', '⠂', '⠁', '⠄', '⠈', '⠘', '⠸', '⠴', '⠦', '⠧', '⠇', '⠏', '✢', '✻', '⏺',
 ];
 
-/// Returns `true` when `label` is a bare semver string (X.Y.Z or X.Y.Z-suffix).
-/// Claude Code emits its own version as the terminal tab title when idle or at
-/// startup, before any task spinner appears.
-fn is_version_label(label: &str) -> bool {
-    // Accept X.Y.Z and X.Y.Z-suffix (pre-release / build metadata).
-    let base = label.split('-').next().unwrap_or(label);
-    let mut parts = base.split('.');
-    parts
-        .next()
-        .is_some_and(|p| p.chars().all(char::is_numeric))
-        && parts
-            .next()
-            .is_some_and(|p| p.chars().all(char::is_numeric))
-        && parts
-            .next()
-            .is_some_and(|p| p.chars().all(char::is_numeric))
-        && parts.next().is_none()
-}
-
 /// Returns `true` when a VS Code terminal window title indicates the focused
 /// terminal tab is running a coding agent (Claude Code, Codex, Cursor agent,
 /// etc.) rather than a regular shell or build process.
@@ -260,13 +241,6 @@ pub(super) fn is_coding_agent_terminal(window_name: &str) -> bool {
         Some(s) if !s.is_empty() => s,
         _ => return false,
     };
-
-    // Tier 0 — bare semver label (Claude Code idle/startup: "2.1.193").
-    // Suppresses all X.Y.Z-only tab titles, including Node REPL and Python
-    // interpreter sessions in VS Code integrated terminals.
-    if is_version_label(session) {
-        return true;
-    }
 
     // Tier 1 — Claude Code active: spinner char at the very start.
     if session.starts_with(|c: char| CLAUDE_SPINNERS.contains(&c)) {

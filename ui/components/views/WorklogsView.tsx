@@ -43,7 +43,10 @@ export default function WorklogsView() {
   const [items, setItems] = useState<WorklogItem[]>([])
   const [counts, setCounts] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState<number | null>(null)
+  // Namespaced busy key: "wl:<id>" for worklogs, "prop:<id>" for proposals.
+  // Plain numeric ids from the two tables share an autoincrement sequence and
+  // can collide (pm_worklogs.id=5 and pm_proposed_tasks.id=5 can coexist).
+  const [busy, setBusy] = useState<string | null>(null)
 
   const load = useCallback((d: string) => {
     // get_worklogs (Rust) in the Tauri window, /api/worklogs in a browser.
@@ -66,8 +69,8 @@ export default function WorklogsView() {
   // reload-on-settle. The bridge throws the server's error text on failure;
   // surface it. Each call bakes `id` into both the URL (browser) and the body
   // (command). PATCH/POST/DELETE pick the browser verb.
-  async function run(id: number, fn: () => Promise<unknown>) {
-    setBusy(id)
+  async function run(key: string, fn: () => Promise<unknown>) {
+    setBusy(key)
     try {
       await fn()
     } catch (e) {
@@ -79,29 +82,29 @@ export default function WorklogsView() {
   }
 
   const act = (id: number, action: 'approve' | 'unapprove') =>
-    run(id, () => mutate(`/api/worklogs/${id}`, 'worklog_action', { id, action }))
+    run(`wl:${id}`, () => mutate(`/api/worklogs/${id}`, 'worklog_action', { id, action }))
 
   // Reject carries an optional attribution correction: where the time should
   // have gone. Empty object = a plain dismissal with no target supplied.
   const reject = (id: number, correction: RejectCorrection) =>
-    run(id, () => mutate(`/api/worklogs/${id}`, 'worklog_action', { id, action: 'reject', ...correction }))
+    run(`wl:${id}`, () => mutate(`/api/worklogs/${id}`, 'worklog_action', { id, action: 'reject', ...correction }))
 
   const saveEdit = (id: number, summary: string) =>
-    run(id, () => mutate(`/api/worklogs/${id}`, 'edit_worklog', { id, summary }, 'PATCH'))
+    run(`wl:${id}`, () => mutate(`/api/worklogs/${id}`, 'edit_worklog', { id, summary }, 'PATCH'))
 
   // Proposed-ticket (tier-3) actions — same busy/reload plumbing as worklogs.
   // Approve records the decision; the daemon's proposal sweep creates the real
   // ticket across providers and posts the worklog.
   const proposedAct = (id: number, action: 'approve' | 'dismiss') =>
-    run(id, () => mutate(`/api/proposed/${id}`, 'proposed_action', { id, action }))
+    run(`prop:${id}`, () => mutate(`/api/proposed/${id}`, 'proposed_action', { id, action }))
   const saveProposedTitle = (id: number, title: string) =>
-    run(id, () => mutate(`/api/proposed/${id}`, 'edit_proposed_title', { id, title }, 'PATCH'))
+    run(`prop:${id}`, () => mutate(`/api/proposed/${id}`, 'edit_proposed_title', { id, title }, 'PATCH'))
   const saveProposedBody = (id: number, summary: string) =>
-    run(id, () => mutate(`/api/proposed/${id}`, 'edit_proposed_worklog', { id, summary }, 'PATCH'))
+    run(`prop:${id}`, () => mutate(`/api/proposed/${id}`, 'edit_proposed_worklog', { id, summary }, 'PATCH'))
 
   const draftedIds = items.filter(i => i.state === 'drafted' && i.summary.trim()).map(i => i.id)
   async function approveAll() {
-    setBusy(-1)
+    setBusy('all')
     try {
       await Promise.all(draftedIds.map(id =>
         mutate(`/api/worklogs/${id}`, 'worklog_action', { id, action: 'approve' })))
@@ -139,10 +142,10 @@ export default function WorklogsView() {
 
       {draftedIds.length > 0 && (
         <div className="flex items-center gap-3">
-          <button onClick={approveAll} disabled={busy === -1}
+          <button onClick={approveAll} disabled={busy === 'all'}
             className="px-3 py-1.5 rounded-md text-[12px] transition-colors"
             style={{ background: 'var(--accent)', color: 'var(--paper)' }}>
-            {busy === -1 ? 'Approving…' : `Approve all ${draftedIds.length} drafts`}
+            {busy === 'all' ? 'Approving…' : `Approve all ${draftedIds.length} drafts`}
           </button>
           <span className="text-[11px]" style={{ color: 'var(--ink-4)' }}>posts everything you haven&apos;t edited away</span>
         </div>
@@ -161,13 +164,13 @@ export default function WorklogsView() {
         <div className="space-y-3">
           {items.map(w => (
             w.is_proposed ? (
-              <ProposedCard key={`p-${w.id}`} w={w} busy={busy === w.id}
+              <ProposedCard key={`p-${w.id}`} w={w} busy={busy === `prop:${w.id}`}
                 onApprove={() => proposedAct(w.id, 'approve')}
                 onDismiss={() => proposedAct(w.id, 'dismiss')}
                 onSaveTitle={(t) => saveProposedTitle(w.id, t)}
                 onSaveBody={(s) => saveProposedBody(w.id, s)} />
             ) : (
-              <WorklogCard key={w.id} w={w} busy={busy === w.id}
+              <WorklogCard key={w.id} w={w} busy={busy === `wl:${w.id}`}
                 onApprove={() => act(w.id, 'approve')}
                 onReject={(correction) => reject(w.id, correction)}
                 onUnapprove={() => act(w.id, 'unapprove')}

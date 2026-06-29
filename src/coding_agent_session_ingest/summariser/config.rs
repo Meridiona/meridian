@@ -15,6 +15,11 @@ pub struct SummariserConfig {
 
     pub claude_model: String,
     pub claude_timeout_s: u64,
+    /// Deprecated. Set to non-empty only for backward compat; the summariser
+    /// now embeds `SUMMARY_RULES` inline rather than invoking a slash-skill.
+    /// A warning is logged on startup if this is set to anything other than
+    /// the default ("session-summary") so operators know it has no effect.
+    pub skill_name: String,
 
     /// Empty → codex's configured default model.
     pub codex_model: String,
@@ -69,6 +74,7 @@ impl SummariserConfig {
             batch_per_tick: n("SUMMARISER_BATCH_PER_TICK", 32),
             claude_model: s("SUMMARISER_MODEL", "claude-haiku-4-5-20251001"),
             claude_timeout_s: n("SUMMARISER_CLAUDE_TIMEOUT_S", 240),
+            skill_name: s("SUMMARISER_SKILL", "session-summary"),
             codex_model: s("SUMMARISER_CODEX_MODEL", ""),
             codex_timeout_s: n("SUMMARISER_CODEX_TIMEOUT_S", 240),
             copilot_timeout_s: n("SUMMARISER_COPILOT_TIMEOUT_S", 240),

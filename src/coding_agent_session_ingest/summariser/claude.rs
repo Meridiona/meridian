@@ -21,6 +21,16 @@ pub async fn run_claude(
     stdin_text: &str,
     cfg: &SummariserConfig,
 ) -> Result<EngineOutput, SummariserError> {
+    // SUMMARISER_SKILL is deprecated: the prompt is now embedded inline via
+    // SUMMARY_RULES (no slash-skill invocation). Warn once so operators know
+    // the env var has no effect and can remove it from their config.
+    if cfg.skill_name != "session-summary" {
+        tracing::warn!(
+            skill_name = %cfg.skill_name,
+            "SUMMARISER_SKILL is deprecated — prompt is now embedded inline; \
+             the env var has no effect and can be removed"
+        );
+    }
     let prompt = format!(
         "{} Summarise the coding-session transcript provided on stdin.",
         prompts::SUMMARY_RULES

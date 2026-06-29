@@ -78,6 +78,25 @@ pub async fn post_approved(
 
 /// Format a stored UTC ISO timestamp as local wall-clock — so the worklog_post
 /// span (and the dashboard) shows lifecycle times in the dev's local zone.
+/// Convert a local-time hour label (`YYYY-MM-DDTHH`) to a UTC ISO timestamp.
+/// Used as a fallback when `window_start`/`window_end` are NULL on pre-050 rows.
+/// `mm` and `ss` are the minute/second to set within the hour (0,0 → start; 59,59 → end).
+fn local_hour_to_utc(label: &str, mm: u32, ss: u32) -> String {
+    use chrono::{Local, NaiveDateTime, TimeZone};
+    let padded = format!("{}:{:02}:{:02}", label, mm, ss);
+    let naive = NaiveDateTime::parse_from_str(&padded, "%Y-%m-%dT%H:%M:%S").unwrap_or_default();
+    match Local.from_local_datetime(&naive).single() {
+        Some(local_dt) => local_dt
+            .with_timezone(&chrono::Utc)
+            .format("%Y-%m-%dT%H:%M:%S+00:00")
+            .to_string(),
+        // DST ambiguity: use the earlier interpretation
+        None => chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S+00:00")
+            .to_string(),
+    }
+}
+
 fn local_ts(iso_utc: &str) -> String {
     use chrono::{DateTime, Local};
     DateTime::parse_from_rfc3339(iso_utc)
@@ -356,14 +375,16 @@ pub async fn process_approved_proposals(pool: &SqlitePool, config: &Config) -> R
         };
 
         // Window + cycle fall back to the source hour when unset (pre-050 rows).
+        // source_hour is a LOCAL-time label (YYYY-MM-DDTHH); convert to UTC ISO
+        // so window_start/end in pm_worklogs are always UTC-anchored.
         let window_start = p
             .window_start
             .clone()
-            .unwrap_or_else(|| format!("{}:00:00+00:00", p.source_hour));
+            .unwrap_or_else(|| local_hour_to_utc(&p.source_hour, 0, 0));
         let window_end = p
             .window_end
             .clone()
-            .unwrap_or_else(|| format!("{}:59:59+00:00", p.source_hour));
+            .unwrap_or_else(|| local_hour_to_utc(&p.source_hour, 59, 59));
         let cycle_index: i64 = p
             .source_hour
             .get(11..13)

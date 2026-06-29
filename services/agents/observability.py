@@ -46,10 +46,10 @@ from opentelemetry.context import Context
 from opentelemetry.instrumentation.logging import LoggingInstrumentor
 from opentelemetry.propagate import set_global_textmap
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
-from opentelemetry.sdk._logs.export import SimpleLogRecordProcessor, LogExportResult
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor, SimpleLogRecordProcessor, LogExportResult
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor, SpanExportResult
 from opentelemetry.trace.propagation.tracecontext import (
     TraceContextTextMapPropagator,
 )
@@ -264,9 +264,8 @@ def setup(agent_name: str) -> trace.Tracer:
 def shutdown() -> None:
     """Shut down the global TracerProvider and log provider.
 
-    SimpleSpanProcessor/SimpleLogRecordProcessor export synchronously on each
-    span/record end, so there is no queue to flush — shutdown just releases
-    resources cleanly.
+    BatchSpanProcessor/BatchLogRecordProcessor queue spans asynchronously;
+    calling shutdown() flushes the queue before releasing resources.
     """
     provider = trace.get_tracer_provider()
     if hasattr(provider, "shutdown"):
@@ -334,7 +333,8 @@ def _configure_tracing(agent_name: str) -> None:
         provider.add_span_processor(BatchSpanProcessor(exporter))
     else:
         # Credentials absent — spool for the Rust daemon to deliver later.
-        provider.add_span_processor(SimpleSpanProcessor(SpoolSpanExporter()))
+        # BatchSpanProcessor avoids blocking inference threads on each span end.
+        provider.add_span_processor(BatchSpanProcessor(SpoolSpanExporter()))
 
     trace.set_tracer_provider(provider)
 
@@ -366,7 +366,8 @@ def _configure_log_export(agent_name: str) -> Optional[logging.Handler]:
         # Credentials absent — spool for the Rust daemon to deliver later.
         log_exporter = SpoolLogExporter()  # type: ignore[assignment]
 
-    provider.add_log_record_processor(SimpleLogRecordProcessor(log_exporter))
+    # BatchLogRecordProcessor for both paths so log export never blocks callers.
+    provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
     set_logger_provider(provider)
     _LOGGER_PROVIDER = provider
     return LoggingHandler(level=logging.NOTSET, logger_provider=provider)
