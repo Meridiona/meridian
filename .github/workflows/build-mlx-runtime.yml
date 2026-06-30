@@ -104,6 +104,10 @@ jobs:
           # not publish, so default to runtime-latest for the build stamp.
           RUNTIME_TAG: ${{ needs.gate.outputs.channel || 'runtime-latest' }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          # Authenticates the api.github.com python-build-standalone lookup in
+          # build-mlx-runtime.sh so it doesn't hit the 60/hr unauthenticated
+          # rate limit (403 → build fails; bit the first auto-publish run).
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/build-mlx-runtime.sh
 
       - name: Upload runtime artifact

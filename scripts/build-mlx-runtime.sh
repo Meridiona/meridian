@@ -56,7 +56,17 @@ rm -rf "${BUILD}" && mkdir -p "${BUILD}" "${DIST}"
 PBS_ASSET_URL="${PBS_ASSET_URL:-}"
 if [[ -z "${PBS_ASSET_URL}" ]]; then
     echo "→ resolving latest python-build-standalone ${PY_SERIES} (aarch64, install_only)"
-    PBS_JSON="$(curl -fsSL https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest)"
+    # Authenticate the api.github.com lookup when a token is available. The
+    # unauthenticated GitHub API limit is 60 req/hr/IP and CI runners share
+    # IPs, so this call intermittently 403s (curl exit 56) — it failed the very
+    # first auto-publish. A token raises the limit to 1000/hr. The header is
+    # added only when a token is present, so local runs still work
+    # unauthenticated. (The asset download below is a CDN redirect and is
+    # deliberately left unauthenticated.)
+    PBS_AUTH=()
+    PBS_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+    [[ -n "${PBS_TOKEN}" ]] && PBS_AUTH=(-H "Authorization: Bearer ${PBS_TOKEN}")
+    PBS_JSON="$(curl -fsSL ${PBS_AUTH[@]+"${PBS_AUTH[@]}"} https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest)"
     PBS_ASSET_URL="$(printf '%s' "${PBS_JSON}" | python3 -c "
 import json, re, sys
 rel = json.load(sys.stdin)
