@@ -139,12 +139,8 @@ function glyphColor(hex) {
 }
 
 // ── Countdown rendering ───────────────────────────────────────────────────────
-function fmtCountdown(remainMs) {
-  const total = Math.max(0, Math.ceil(remainMs / 1000))
-  const m = Math.floor(total / 60)
-  const s = total % 60
-  return `${m}:${String(s).padStart(2, '0')}`
-}
+// fmtCountdown / parsePauseMins / pauseLabel are defined in pause-utils.js
+// (loaded first) so they can be tested in isolation.
 
 function paintCountdown() {
   if (!pauseUntilMs) return
@@ -300,12 +296,13 @@ function render(status) {
     stopCountdown()
   } else {
     // Not paused — show the duration picker.
+    // Don't clobber pauseCustom if the user has it open mid-entry; a poll-tick
+    // arriving while they're typing would otherwise close it silently.
     daemonUnhealthy = false
     pauseSec.classList.remove('paused')
     pauseText.textContent = 'Pause tracking'
     pauseSub.textContent = ''
-    pausePicker.hidden = false
-    pauseCustom.hidden = true
+    if (pauseCustom.hidden) pausePicker.hidden = false
     pauseActive.hidden = true
     stopCountdown()
   }
@@ -373,8 +370,8 @@ pausePicker.addEventListener('click', (e) => {
 
 // Custom duration confirm / cancel
 customConfirm.addEventListener('click', () => {
-  const mins = parseInt(customMins.value, 10)
-  if (!mins || mins < 1) return
+  const mins = parsePauseMins(customMins.value)
+  if (!mins) return
   invoke('pause_for_duration', { seconds: mins * 60 }).catch(console.error)
   pauseCustom.hidden = true
   pausePicker.hidden = false
@@ -382,6 +379,9 @@ customConfirm.addEventListener('click', () => {
 customCancel.addEventListener('click', () => {
   pauseCustom.hidden = true
   pausePicker.hidden = false
+})
+customMins.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') customConfirm.click()
 })
 
 // Resume now (timed pause) or restart daemon (unhealthy)

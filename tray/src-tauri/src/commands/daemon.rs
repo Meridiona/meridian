@@ -168,15 +168,7 @@ pub async fn pause_for_duration(
     tracing::info!(seconds, until, "capture paused for duration");
 
     if crate::poll::notifications_allowed("system.pause").await {
-        let mins = seconds / 60;
-        let label = if mins == 0 {
-            format!("{} seconds", seconds)
-        } else if mins >= 60 {
-            let h = mins / 60;
-            format!("{} hour{}", h, if h == 1 { "" } else { "s" })
-        } else {
-            format!("{} minute{}", mins, if mins == 1 { "" } else { "s" })
-        };
+        let label = pause_label(seconds);
         sys::notify(&app, "Tracking paused", &format!("Paused for {}.", label));
     }
 
@@ -196,6 +188,24 @@ pub async fn pause_for_duration(
     });
 
     Ok(())
+}
+
+/// Human-readable duration label for the pause toast notification.
+/// Mirrors the JS `pauseLabel` in `tray/src/pause-utils.js`.
+///
+/// - sub-minute: `"N second(s)"`
+/// - 1–59 min:   `"N minute(s)"`
+/// - ≥ 60 min:   `"N hour(s)"` (whole hours, truncated)
+pub(crate) fn pause_label(seconds: u64) -> String {
+    let mins = seconds / 60;
+    if mins == 0 {
+        format!("{} second{}", seconds, if seconds == 1 { "" } else { "s" })
+    } else if mins >= 60 {
+        let h = mins / 60;
+        format!("{} hour{}", h, if h == 1 { "" } else { "s" })
+    } else {
+        format!("{} minute{}", mins, if mins == 1 { "" } else { "s" })
+    }
 }
 
 fn now_secs() -> u64 {
@@ -364,5 +374,78 @@ async fn probe_socket(sock_path: &str) -> DaemonStatusResponse {
             running: false,
             pid: None,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pause_label, secs_to_iso};
+
+    // ── US-5: Toast notification label ───────────────────────────────────────
+    // pause_for_duration builds a toast label from the requested seconds.
+    // These tests mirror the JS pauseLabel tests in tray/src/__tests__/pause.test.js.
+
+    #[test]
+    fn label_sub_minute_singular() {
+        assert_eq!(pause_label(1), "1 second");
+    }
+
+    #[test]
+    fn label_sub_minute_plural() {
+        assert_eq!(pause_label(30), "30 seconds");
+        assert_eq!(pause_label(59), "59 seconds");
+    }
+
+    #[test]
+    fn label_exactly_one_minute() {
+        assert_eq!(pause_label(60), "1 minute");
+    }
+
+    #[test]
+    fn label_plural_minutes() {
+        assert_eq!(pause_label(120), "2 minutes");
+        assert_eq!(pause_label(900), "15 minutes");
+        assert_eq!(pause_label(1800), "30 minutes");
+        assert_eq!(pause_label(3540), "59 minutes");
+    }
+
+    #[test]
+    fn label_exactly_one_hour() {
+        assert_eq!(pause_label(3600), "1 hour");
+    }
+
+    #[test]
+    fn label_plural_hours() {
+        assert_eq!(pause_label(7200), "2 hours");
+        assert_eq!(pause_label(28800), "8 hours"); // max custom duration
+    }
+
+    #[test]
+    fn label_fractional_hours_truncate_to_whole() {
+        // 1h 30m → "1 hour" (mins / 60 truncates)
+        assert_eq!(pause_label(5400), "1 hour");
+        // 2h 59m → "2 hours"
+        assert_eq!(pause_label(10740), "2 hours");
+    }
+
+    // ── US-6: Resume-now path (seconds = 0) ──────────────────────────────────
+    // pause_for_duration(0) takes the early-return resume path before reaching
+    // pause_label, so this test documents the function's contract at 0 rather
+    // than testing reachable production code.
+    #[test]
+    fn label_zero_seconds() {
+        assert_eq!(pause_label(0), "0 seconds");
+    }
+
+    // ── secs_to_iso sanity ───────────────────────────────────────────────────
+    #[test]
+    fn secs_to_iso_epoch() {
+        assert_eq!(secs_to_iso(0), "1970-01-01T00:00:00.000Z");
+    }
+
+    #[test]
+    fn secs_to_iso_known_timestamp() {
+        // 2024-01-01T00:00:00Z = 1704067200 s
+        assert_eq!(secs_to_iso(1_704_067_200), "2024-01-01T00:00:00.000Z");
     }
 }
