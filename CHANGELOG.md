@@ -1,3 +1,59 @@
+## [1.68.0](https://github.com/Meridiona/meridian/compare/v1.67.0...v1.68.0) (2026-06-30)
+
+### 🚀 Features
+
+* **capture:** timed pause, work hours schedule, and tracking_paused gap kind ([efbdcf1](https://github.com/Meridiona/meridian/commit/efbdcf191c4747cd494d76fcfb9dff1f4ee3ea31)), closes [#F59E0B](https://github.com/Meridiona/meridian/issues/F59E0B)
+* **coding-agent:** hour-boundary sealing, 2-min poll, local-hour segmentation ([6c53481](https://github.com/Meridiona/meridian/commit/6c53481b4f51ac3eb5df35b9c31d4da604a953be))
+* **dashboards:** OpenObserve dashboards for activity summary, PM worklog hour, session distiller ([1d29f2c](https://github.com/Meridiona/meridian/commit/1d29f2cf10a28f1b26761795f489029a06f6ed86))
+* **etl:** filter coding-agent terminal titles from window_titles in extractor ([70768c8](https://github.com/Meridiona/meridian/commit/70768c85e223a51bf9e6610266646c9b80085d18))
+* **observability:** Python ships directly to OpenObserve, no Rust daemon required ([5acff2b](https://github.com/Meridiona/meridian/commit/5acff2bfcdee8ee7cefbed30a61615d821b56042))
+* **proposed-ticket-approval:** UI + API for reviewing proposed new tickets ([5bbcbd9](https://github.com/Meridiona/meridian/commit/5bbcbd9220dd15106f44bf5c75a43eba241e0eff))
+* **trello:** save API key to .env before OAuth flow, prompt in UI when missing ([c7f0d9e](https://github.com/Meridiona/meridian/commit/c7f0d9e584bc31dd75912d26125ff22d834c06b7))
+* **worklog-pipeline:** Python pipeline enhancements — local-hour alignment, proposed-ticket drafting, IST label fix ([62a7d74](https://github.com/Meridiona/meridian/commit/62a7d740ce583d32e7a2e10e4c4859daaf3d189a))
+* **worklogs-reader:** add window_end, is_proposed, proposed_id to WorklogItem ([d41e0b6](https://github.com/Meridiona/meridian/commit/d41e0b6ce45037fe7ba3bf96391fad7d00ae8d20))
+
+### 🐛 Bug Fixes
+
+* **ci:** scope runtime workflow to least-privilege permissions ([cba2b0f](https://github.com/Meridiona/meridian/commit/cba2b0f3fef493cdabb155cfbdb2f9997ccaf123))
+* **etl:** remove is_version_label and update tests ([ae9331a](https://github.com/Meridiona/meridian/commit/ae9331ac74d6bcf4d37d9473655783f70afe68d3))
+* **linear:** group by project name when no parent, show real error in hygiene dialog ([9eb7654](https://github.com/Meridiona/meridian/commit/9eb7654e8c37f05a50e3dfe09cb37a4b55bda561))
+* **pause:** address review findings on PR [#374](https://github.com/Meridiona/meridian/issues/374) ([837b656](https://github.com/Meridiona/meridian/commit/837b6561e469a20d7b0b4fdecfe4ea0f2aa988c6))
+* **pause:** address three review comments on PR [#367](https://github.com/Meridiona/meridian/issues/367) ([cf5d47f](https://github.com/Meridiona/meridian/commit/cf5d47f2da59a7bd95f5a210dea49c629ebad6c1))
+* **pause:** emit status-update immediately after pause/resume ([94dd03c](https://github.com/Meridiona/meridian/commit/94dd03c8301d3ff03f2904ecfccc7ad19cdb000e))
+* **pause:** fix custom duration input race + Enter key; add pause tests ([4fc9401](https://github.com/Meridiona/meridian/commit/4fc94010ea221ca0538bd2f2f80ed194cf9eb480)), closes [#custom-mins](https://github.com/Meridiona/meridian/issues/custom-mins)
+* **pause:** stop capture engine fully on pause, restart on resume ([01b3917](https://github.com/Meridiona/meridian/commit/01b3917ff581c81c7b261d7a8c1fd7f364fb6125))
+* **pause:** use oneshot cancel channels instead of AbortHandle ([6f7b2eb](https://github.com/Meridiona/meridian/commit/6f7b2eb9fc709bde2e9f72d7155ecd201813b4d9))
+* **review:** address PR [#362](https://github.com/Meridiona/meridian/issues/362) review comments ([999da78](https://github.com/Meridiona/meridian/commit/999da784c5ebb7c0fe3a3d51f493d7d2ad35051a))
+* **runtime:** authenticate the python-build-standalone API lookup ([3bfe1ff](https://github.com/Meridiona/meridian/commit/3bfe1ff5c682a07f193dfebb5e041f0752f7dd54))
+* **runtime:** check out repo in publish jobs so the publish script is found ([e3349d2](https://github.com/Meridiona/meridian/commit/e3349d2839775161fe08d8a40f628f5693c559fe)), closes [#372](https://github.com/Meridiona/meridian/issues/372) [#372](https://github.com/Meridiona/meridian/issues/372)
+* **ticket-update:** anchor subprocess CWD to ~/.meridian so dotenvy loads .env ([5352fdb](https://github.com/Meridiona/meridian/commit/5352fdb51661ebba17857cc6f332ccde9d7c31d2))
+* **tray:** restore live session block accidentally removed from index.html ([49e7454](https://github.com/Meridiona/meridian/commit/49e7454d5d7a4f1dac958d8641e18c90d6bbd50c)), closes [#app-glyph](https://github.com/Meridiona/meridian/issues/app-glyph)
+* **trello:** disconnect cleanup, sentinel constant, reuse Field component ([af68681](https://github.com/Meridiona/meridian/commit/af68681fb6493679b3e21108ab171a526fa4d031))
+* **worklog-pipeline:** use local-time hour labels, drop yesterday backfill ([a09b19b](https://github.com/Meridiona/meridian/commit/a09b19bd0b0570c155d44838bb166c841e49905b))
+* **worklog:** restore WORKLOG_SYSTEM re-export broken by package restore ([4c1d90f](https://github.com/Meridiona/meridian/commit/4c1d90fdb196e60514a2b30f4efc19ae60d45f07))
+
+### ♻️ Refactoring
+
+* **indexer:** move local_hour_start_utc into meridian_core::date ([06c0916](https://github.com/Meridiona/meridian/commit/06c0916d3eed9e66f01ed8a30c2a22e73265365c))
+
+### 🤖 CI
+
+* **runtime:** auto-publish runtime on merge with a version gate ([60d0357](https://github.com/Meridiona/meridian/commit/60d0357c3f532b8701dd31cc56cc08848b675c46)), closes [#2](https://github.com/Meridiona/meridian/issues/2) [#3](https://github.com/Meridiona/meridian/issues/3)
+* **runtime:** run gate decision-table self-test as a PR check ([9416e43](https://github.com/Meridiona/meridian/commit/9416e434d1074e68f7894cd14c0500941ecf8027))
+* **runtime:** smoke-test imports every agents submodule ([274cb02](https://github.com/Meridiona/meridian/commit/274cb02881b5d4ca60f6ef6401a87b3583f598ba))
+
+### 📝 Documentation
+
+* **scripts:** add README for dev scripts (distill, activity report) ([0bb6cb3](https://github.com/Meridiona/meridian/commit/0bb6cb3418194d47eaab676fe33eeb8874951833))
+
+### 🔧 Chores
+
+* add .DS_Store to .gitignore ([d5cd09f](https://github.com/Meridiona/meridian/commit/d5cd09f7f306198fc3424ca57842a7d57b13d3ed))
+* **deps:** add transformers>=5.0.0 and sentence-transformers>=3 to mlx extra ([a937ee2](https://github.com/Meridiona/meridian/commit/a937ee2ca572239c915c3df1a9dd1fd7034f50da))
+* ignore ui/data/ (local OpenObserve runtime data) ([9a25b86](https://github.com/Meridiona/meridian/commit/9a25b861a941b3eac68367e45d1dd1580ac52eb2))
+* **infra:** dev-start, install, build scripts, Cargo deps, skill prompt update ([67468e3](https://github.com/Meridiona/meridian/commit/67468e306af31769b701b1349ab4c738cac94396))
+* **merge:** resolve conflicts with origin/pre-main ([7bbc06b](https://github.com/Meridiona/meridian/commit/7bbc06bc81496691e084b6389c3e92a02416b94d))
+
 ## [1.67.0](https://github.com/Meridiona/meridian/compare/v1.66.2...v1.67.0) (2026-06-28)
 
 ### 🚀 Features
