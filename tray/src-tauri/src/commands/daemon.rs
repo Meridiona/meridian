@@ -115,6 +115,15 @@ pub async fn pause_for_duration(
         return Ok(());
     }
 
+    // Defence-in-depth: the JS layer caps at 480 min via parsePauseMins, but
+    // the Rust command is also callable directly, so reject anything beyond 8 h.
+    if seconds > 28_800 {
+        return Err(format!(
+            "pause duration {} s exceeds 8-hour maximum (28800 s)",
+            seconds
+        ));
+    }
+
     let now = now_secs();
     let until = now + seconds;
 

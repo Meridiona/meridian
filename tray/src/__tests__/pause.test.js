@@ -33,7 +33,9 @@ describe('parsePauseMins — valid custom durations', () => {
     expect(parsePauseMins('1')).toBe(1)
     expect(parsePauseMins('45')).toBe(45)
     expect(parsePauseMins('90')).toBe(90)
-    expect(parsePauseMins('480')).toBe(480) // 8 h, the input max
+  })
+  test('480 min (8 h) is the upper boundary — accepted', () => {
+    expect(parsePauseMins('480')).toBe(480)
   })
   test('truncates decimal fractions (input type=number yields integer strings)', () => {
     expect(parsePauseMins('5.7')).toBe(5)
@@ -43,6 +45,10 @@ describe('parsePauseMins — valid custom durations', () => {
   })
   test('whitespace-padded values parse correctly (browser trims for number input)', () => {
     expect(parsePauseMins('  10  ')).toBe(10)
+  })
+  test('scientific-notation string parses as integer prefix (parseInt stops at "e")', () => {
+    // '1e2' → parseInt stops at 'e' → 1, which is within [1, 480] → valid
+    expect(parsePauseMins('1e2')).toBe(1)
   })
 })
 
@@ -64,9 +70,9 @@ describe('parsePauseMins — invalid custom durations (silent rejection)', () =>
   test('whitespace-only → null', () => {
     expect(parsePauseMins('   ')).toBeNull()
   })
-  test('scientific-notation string parses as integer prefix (parseInt stops at "e")', () => {
-    // '1e2' → parseInt stops at 'e' → 1, which passes the ≥1 check
-    expect(parsePauseMins('1e2')).toBe(1)
+  test('above 8-hour cap → null (bypassed HTML max="480" attribute)', () => {
+    expect(parsePauseMins('481')).toBeNull()
+    expect(parsePauseMins('9999')).toBeNull()
   })
 })
 
@@ -85,12 +91,11 @@ describe('fmtCountdown — remaining time display', () => {
     expect(fmtCountdown(-5000)).toBe('0:00')
   })
   test('fractional milliseconds round up (Math.ceil)', () => {
-    // 1 ms remaining → 1 second (ceil)
-    expect(fmtCountdown(1)).toBe('0:01')
-    // exactly 1000 ms → 1 second
-    expect(fmtCountdown(1000)).toBe('0:01')
-    // 1001 ms → 2 seconds (ceil)
-    expect(fmtCountdown(1001)).toBe('0:02')
+    expect(fmtCountdown(1)).toBe('0:01')    // ceil(0.001s) = 1
+    expect(fmtCountdown(1001)).toBe('0:02') // ceil(1.001s) = 2
+  })
+  test('whole-second boundary (no rounding)', () => {
+    expect(fmtCountdown(1000)).toBe('0:01') // ceil(1.0s) = 1, no rounding fires
   })
   test('under a minute', () => {
     expect(fmtCountdown(30_000)).toBe('0:30')

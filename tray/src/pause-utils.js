@@ -16,33 +16,31 @@ function fmtCountdown(remainMs) {
 /**
  * Parse and validate a raw string value from the custom-duration input.
  * Returns the integer minutes on success, or null when the value is invalid
- * (empty, non-numeric, zero, or negative).
+ * (empty, non-numeric, zero, negative, or above the 8-hour cap).
+ * The HTML input carries max="480" but that attribute is bypassable via
+ * DevTools / programmatic assignment, so validation must live here too.
  */
 function parsePauseMins(raw) {
   const n = parseInt(raw, 10)
-  if (!n || n < 1) return null
+  if (!n || n < 1 || n > 480) return null
   return n
 }
 
-/**
- * Build a human-readable label for the pause-duration toast notification.
- * Mirrors the inline logic inside pause_for_duration in daemon.rs.
- *   0 s        → "N seconds"
- *   1–59 min   → "N minute(s)"
- *   ≥ 60 min   → "N hour(s)"
- */
-function pauseLabel(seconds) {
-  const mins = Math.floor(seconds / 60)
-  if (mins === 0) return `${seconds} second${seconds === 1 ? '' : 's'}`
-  if (mins >= 60) {
-    const h = Math.floor(mins / 60)
-    return `${h} hour${h === 1 ? '' : 's'}`
-  }
-  return `${mins} minute${mins === 1 ? '' : 's'}`
-}
-
-// Dual-mode export: globals when loaded via <script>, module when require()'d
-// by the vitest suite.
+// Dual-mode export: fmtCountdown and parsePauseMins become browser globals
+// (used by app.js); pauseLabel is exported for test parity with daemon.rs's
+// pause_label() but is NOT a browser global — the actual toast is generated
+// in Rust and the global name would serve no purpose in app.js.
 if (typeof module !== 'undefined') {
+  // pauseLabel mirrors Rust's pause_label() (daemon.rs) for test coverage only.
+  //   0 s      → "N second(s)"   1–59 min → "N minute(s)"   ≥60 min → "N hour(s)"
+  const pauseLabel = (seconds) => {
+    const mins = Math.floor(seconds / 60)
+    if (mins === 0) return `${seconds} second${seconds === 1 ? '' : 's'}`
+    if (mins >= 60) {
+      const h = Math.floor(mins / 60)
+      return `${h} hour${h === 1 ? '' : 's'}`
+    }
+    return `${mins} minute${mins === 1 ? '' : 's'}`
+  }
   module.exports = { fmtCountdown, parsePauseMins, pauseLabel }
 }
