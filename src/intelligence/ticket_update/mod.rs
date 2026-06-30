@@ -278,4 +278,105 @@ mod tests {
         assert_eq!(WriteField::parse("labels", "  "), None);
         assert_eq!(WriteField::parse("story_points", "abc"), None);
     }
+
+    #[test]
+    fn parses_description_and_summary() {
+        // These are the most common hygiene fixes — a regression here silently
+        // redirects every description/title write to the tracker instead of applying.
+        assert_eq!(
+            WriteField::parse("description", "Add a description"),
+            Some(WriteField::Description("Add a description".into()))
+        );
+        assert_eq!(
+            WriteField::parse("summary", "New title"),
+            Some(WriteField::Summary("New title".into()))
+        );
+        // Empty description / summary must not produce a field (avoids overwriting
+        // with blank text).
+        assert_eq!(WriteField::parse("description", "  "), None);
+        assert_eq!(WriteField::parse("summary", ""), None);
+    }
+
+    #[test]
+    fn writefield_trims_whitespace() {
+        // The UI may send values with surrounding spaces.
+        assert_eq!(
+            WriteField::parse("duedate", "  2026-06-30  "),
+            Some(WriteField::DueDate("2026-06-30".into()))
+        );
+        assert_eq!(
+            WriteField::parse("priority", "  High  "),
+            Some(WriteField::Priority("High".into()))
+        );
+    }
+
+    #[test]
+    fn browse_url_linear() {
+        let pcfg = PmProviderConfig::Linear(crate::config::LinearConfig {
+            api_key: "k".into(),
+            team_ids: vec![],
+        });
+        assert_eq!(
+            browse_url(&pcfg, "ENG-12"),
+            "https://linear.app/issue/ENG-12"
+        );
+    }
+
+    #[test]
+    fn browse_url_azure_devops() {
+        let pcfg = PmProviderConfig::AzureDevOps(crate::config::AzureDevOpsConfig {
+            api_base: "https://dev.azure.com/myorg".into(),
+            project: "MyProject".into(),
+            pat: "x".into(),
+        });
+        assert_eq!(
+            browse_url(&pcfg, "MyProject#99"),
+            "https://dev.azure.com/myorg/MyProject/_workitems/edit/MyProject#99"
+        );
+    }
+
+    #[test]
+    fn browse_url_azure_devops_empty_base() {
+        let pcfg = PmProviderConfig::AzureDevOps(crate::config::AzureDevOpsConfig {
+            api_base: "".into(),
+            project: "".into(),
+            pat: "x".into(),
+        });
+        assert_eq!(browse_url(&pcfg, "P#1"), "");
+    }
+
+    #[test]
+    fn browse_url_trello() {
+        let pcfg = PmProviderConfig::Trello(crate::config::TrelloConfig {
+            app_key: "k".into(),
+            board_ids: vec![],
+        });
+        assert_eq!(browse_url(&pcfg, "abc123"), "https://trello.com/c/abc123");
+    }
+
+    #[test]
+    fn apply_result_applied_json() {
+        let r = ApplyResult::applied("linear", "ENG-5", "duedate");
+        let j = r.to_json();
+        assert_eq!(j["provider"], "linear");
+        assert_eq!(j["key"], "ENG-5");
+        assert_eq!(j["field"], "duedate");
+        assert_eq!(j["status"], "applied");
+        assert!(j.get("browse_url").is_none());
+    }
+
+    #[test]
+    fn apply_result_redirected_json() {
+        let r = ApplyResult::redirected(
+            "github",
+            "owner/repo#42",
+            "priority",
+            "https://github.com/owner/repo/issues/42".into(),
+            "set on board",
+        );
+        let j = r.to_json();
+        assert_eq!(j["status"], "redirected");
+        assert_eq!(j["browse_url"], "https://github.com/owner/repo/issues/42");
+        assert_eq!(j["reason"], "set on board");
+    }
 }

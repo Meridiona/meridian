@@ -64,14 +64,6 @@ async def worklog_hour(req: _WorklogHourRequest, request: Request) -> dict:
         span.set_attribute("wl_hour", req.hour)
         span.set_attribute("wl_cycle_index", req.cycle_index if req.cycle_index is not None else -1)
         span.set_attribute("is_error", True)
-        # Link this trace to the agno workflow/agent registered in agno_viewer.py so
-        # the DatabaseSpanExporter populates workflow_id/agent_id and the AgentOS
-        # Traces tab shows it (the UI filters out traces where both are NULL).
-        span.set_attribute("workflow_id", "worklog-hour")
-        span.set_attribute("agent_id", "meridian-worklog-pipeline")
-        # session_id groups all hours for the same day into one session so the
-        # AgentOS Sessions view (group_by=sessions) shows them together.
-        span.set_attribute("session_id", f"wl-{req.hour[:10]}")
         # This span's own traceparent — handed to the pipeline as the parent the
         # stages continue, so the whole hour is one connected trace.
         child_tp = observability.current_traceparent()
@@ -92,12 +84,23 @@ async def worklog_hour(req: _WorklogHourRequest, request: Request) -> dict:
         span.set_attribute("wl_proposed", proposed is not None)
         span.set_attribute("wl_proposed_title", (proposed or {}).get("title", "") if proposed else "")
         span.set_attribute("wl_proposed_id", result.get("proposed_id") if result.get("proposed_id") is not None else -1)
+        _elapsed = round(time.monotonic() - _t0, 2)
         span.set_attribute("wl_note", result.get("note", ""))
-        span.set_attribute("wl_elapsed_s", round(time.monotonic() - _t0, 2))
+        span.set_attribute("wl_elapsed_s", _elapsed)
         span.set_attribute("is_error", False)
-
-    log.info("worklog_hour: hour=%s nsess=%d tier=%d matched=%d proposed=%s",
-             req.hour, result.get("nsess", 0), result.get("tier_used", 0),
-             len(result.get("matched", [])), result.get("proposed") is not None,
-             extra={"hour": req.hour})
+        # Log INSIDE the span so trace_id is populated in OO.
+        log.info(
+            "worklog_hour: hour=%s nsess=%d tier=%d matched=%d proposed=%s elapsed=%.1fs",
+            req.hour, result.get("nsess", 0), result.get("tier_used", 0),
+            len(result.get("matched", [])), result.get("proposed") is not None, _elapsed,
+            extra={
+                "wl_hour":        req.hour,
+                "wl_nsess":       result.get("nsess", 0),
+                "wl_tier":        result.get("tier_used", 0),
+                "wl_n_matched":   len(result.get("matched", [])),
+                "wl_proposed":    1 if result.get("proposed") else 0,
+                "wl_worklog_ids": ",".join(str(i) for i in result.get("worklog_ids", [])),
+                "wl_proposed_id": result.get("proposed_id") or 0,
+                "wl_elapsed_s":   _elapsed,
+            })
     return result

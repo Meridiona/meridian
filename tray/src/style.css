@@ -225,7 +225,7 @@ button:focus-visible {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   padding: 9px 16px;
 }
-.pause-info { min-width: 0; }
+.pause-info { min-width: 0; flex: 1; }
 .pause-text { font-size: 12.5px; color: var(--ink-2); }
 .pause.paused .pause-text { color: var(--ink); }
 .pause-sub {
@@ -234,20 +234,67 @@ button:focus-visible {
 }
 .pause-sub:empty { display: none; }
 
-.pause-btn {
-  flex-shrink: 0;
-  font-size: 12.5px; font-weight: 500;
-  padding: 7px 14px; border-radius: 8px;
+/* Duration picker pills */
+.pause-picker {
+  display: flex; align-items: center; gap: 4px; flex-shrink: 0;
+}
+.dur-btn {
+  font-size: 11.5px; font-weight: 500;
+  padding: 5px 9px; border-radius: 7px;
   color: var(--ink-2);
   border: 0.5px solid var(--rule-2);
   background: var(--surface);
   transition: all .12s;
+  white-space: nowrap;
 }
-.pause-btn:hover { background: var(--surface-2); }
-.pause.paused .pause-btn {
-  color: #fff; background: var(--accent); border-color: var(--accent);
+.dur-btn:hover { background: var(--surface-2); color: var(--ink); }
+
+/* Custom-duration input row */
+.pause-custom {
+  display: flex; align-items: center; gap: 5px; flex-shrink: 0;
 }
-.pause.paused .pause-btn:hover { opacity: .9; background: var(--accent); }
+.dur-input {
+  width: 52px; padding: 5px 7px; border-radius: 7px;
+  border: 0.5px solid var(--rule-2); background: var(--surface);
+  font-family: var(--font-mono); font-size: 12px; color: var(--ink);
+  -moz-appearance: textfield;
+}
+.dur-input::-webkit-inner-spin-button,
+.dur-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.dur-input:focus { outline: 2px solid var(--accent); outline-offset: 0; border-radius: 7px; }
+.dur-confirm {
+  font-size: 11.5px; font-weight: 500;
+  padding: 5px 9px; border-radius: 7px;
+  color: #fff; background: var(--accent); border: none;
+  transition: opacity .12s;
+}
+.dur-confirm:hover { opacity: .85; }
+.dur-cancel {
+  font-size: 11.5px; color: var(--ink-3);
+  padding: 5px 7px; border-radius: 7px;
+  transition: background .12s;
+}
+.dur-cancel:hover { background: var(--surface-2); color: var(--ink); }
+
+/* Active countdown row (during a timed pause) */
+.pause-active {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+}
+.pause-countdown {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  font-size: 16px; font-weight: 600; letter-spacing: -0.02em;
+  color: var(--accent);
+}
+.resume-btn {
+  font-size: 11.5px; font-weight: 500;
+  padding: 5px 9px; border-radius: 7px;
+  color: var(--ink-2);
+  border: 0.5px solid var(--rule-2);
+  background: var(--surface);
+  transition: all .12s;
+  white-space: nowrap;
+}
+.resume-btn:hover { background: var(--surface-2); color: var(--ink); }
 
 /* ── Time tracker ───────────────────────────────────────────────────────── */
 .tt { padding: 11px 16px; }

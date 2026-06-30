@@ -83,9 +83,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # of how the server was launched. Under `uvicorn --reload` (dev) __main__ never
     # runs, so this is the only place that guarantees the provider exists and agno's
     # Agent/Workflow runs export OpenInference spans to OpenObserve.
-    observability.setup("meridian-agent-server-mlx")
-    app_state.setdefault("tracer", trace.get_tracer("meridian-agent-server-mlx"))
-    observability.instrument_agno()
+    observability.setup("meridian-mlx-server")
+    app_state.setdefault("tracer", trace.get_tracer("meridian-mlx-server"))
+    # OpenObserve export is off for now (MERIDIAN_OO_EXPORT unset) → meridian's
+    # manual spans are non-recording. agno's native spans go to the agno trace
+    # DB (read by agno_viewer.py) via an explicit, non-global provider so the
+    # AgentOS dashboard shows agno's tracing output alone — no custom spans.
+    app_state["agno_tracer_provider"] = observability.setup_agno_tracing()
     evictor: "asyncio.Task | None" = None
     if _mlx._IDLE_EVICT_S > 0:
         # Lazy: the ~7 GB model loads on the first inference and is evicted after
@@ -137,7 +141,7 @@ def main() -> None:
     # Loopback URL for endpoints that orchestrate other endpoints on this same
     # server (e.g. /worklog_hour calling /distill_hour, /activity_report, ...).
     app_state["self_url"] = f"http://{args.host}:{args.port}"
-    tracer = observability.setup("meridian-agent-server-mlx")
+    tracer = observability.setup("meridian-mlx-server")
     app_state["tracer"] = tracer
 
     log.info("meridian agent server (mlx) on http://%s:%d", args.host, args.port)

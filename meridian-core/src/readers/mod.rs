@@ -38,6 +38,10 @@ pub mod task_detail;
 /// The `/api/today` dashboard payload, computed in Rust (ported from today/route.ts).
 pub mod today;
 
+/// Writes for tier-3 proposed tickets (`pm_proposed_tasks`); the read side lives
+/// in [`worklogs`], which renders proposals inline in the day timeline.
+pub mod proposed;
+
 /// The `/api/triage` cleanup working set (ported from triage/route.ts).
 pub mod triage;
 

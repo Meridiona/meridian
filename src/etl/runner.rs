@@ -6,7 +6,7 @@ use tracing::{debug, info, warn};
 
 use crate::db::meridian::{
     close_active_session, complete_etl_run, get_active_session, get_cursor, insert_etl_run,
-    insert_gap, update_cursor,
+    insert_gap, pause_gap_exists_in_window, update_cursor,
 };
 use crate::db::screenpipe::{count_frames_in_window, get_frames_since};
 
@@ -104,15 +104,32 @@ pub async fn run_etl(meridian: &SqlitePool) -> Result<Vec<i64>> {
                         gap_frame_ids = format!("{}..{}", stale.min_frame_id, first_frame.id),
                         "cross-run gap detected — inserting gap record and closing stale active_session"
                     );
-                    insert_gap(
+                    // Skip the gap insert if the tray already recorded a
+                    // tracking_paused / schedule_paused gap covering this window.
+                    let covered = pause_gap_exists_in_window(
                         meridian,
                         &stale.last_seen_at,
                         &first_frame.timestamp,
-                        gap_secs,
-                        kind,
-                        run_id,
                     )
-                    .await?;
+                    .await
+                    .unwrap_or(false);
+                    if covered {
+                        debug!(
+                            from = stale.last_seen_at,
+                            to = first_frame.timestamp,
+                            "cross-run gap skipped — covered by a tray pause gap"
+                        );
+                    } else {
+                        insert_gap(
+                            meridian,
+                            &stale.last_seen_at,
+                            &first_frame.timestamp,
+                            gap_secs,
+                            kind,
+                            run_id,
+                        )
+                        .await?;
+                    }
                     close_active_session(meridian, run_id).await?;
                     info!(
                         gap_secs,
@@ -233,17 +250,33 @@ pub async fn run_etl(meridian: &SqlitePool) -> Result<Vec<i64>> {
                                 "intra-batch gap detected — inserting gap record and closing current block"
                             );
 
-                            insert_gap(
+                            // Skip if the tray already recorded a pause gap.
+                            let covered = pause_gap_exists_in_window(
                                 meridian,
                                 &block_last_ts,
                                 &frame.timestamp,
-                                gap,
-                                kind,
-                                run_id,
                             )
-                            .await?;
-
-                            debug!(gap_secs = gap, gap_kind = kind, from = block_last_ts, to = frame.timestamp, "gap recorded");
+                            .await
+                            .unwrap_or(false);
+                            if covered {
+                                debug!(
+                                    gap_secs = gap,
+                                    from = block_last_ts,
+                                    to = frame.timestamp,
+                                    "intra-batch gap skipped — covered by a tray pause gap"
+                                );
+                            } else {
+                                insert_gap(
+                                    meridian,
+                                    &block_last_ts,
+                                    &frame.timestamp,
+                                    gap,
+                                    kind,
+                                    run_id,
+                                )
+                                .await?;
+                                debug!(gap_secs = gap, gap_kind = kind, from = block_last_ts, to = frame.timestamp, "gap recorded");
+                            }
 
                             // Close the pre-gap block so its duration_s ends at block_last_ts,
                             // preventing gap time from inflating the session's focus duration.

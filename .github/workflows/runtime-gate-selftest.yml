@@ -1,0 +1,35 @@
+name: Runtime gate self-test
+
+# Runs the runtime-publish-gate decision-table unit tests — the pure
+# version_gt / decide_publish / channel_for_ref helpers that decide whether (and
+# to which channel) a runtime is published, and that fail-close on a manifest
+# fetch error. scripts/runtime-publish-gate.sh ships a --self-test mode for
+# exactly this, but nothing ran it; a regression in that logic (a downgrade
+# slipping through, a fetch error reading as "publish") would otherwise ship
+# silently.
+#
+# Wired as a PR check — deliberately NOT a step in the `gate` job — so a
+# regression is caught BEFORE it reaches pre-main/main, and a self-test failure
+# can never block a real runtime publish (the gate job stays purely the
+# publish-decision path). See scripts/runtime-publish-gate.sh.
+
+on:
+  pull_request:
+    branches: [main, pre-main]
+    paths:
+      - "scripts/runtime-publish-gate.sh"
+      - "scripts/check-runtime-version-bump.sh"
+      - ".github/workflows/runtime-gate-selftest.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  self-test:
+    name: Gate decision-table self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run runtime-publish-gate self-test
+        run: bash scripts/runtime-publish-gate.sh --self-test

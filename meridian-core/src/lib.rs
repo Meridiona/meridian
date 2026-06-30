@@ -41,12 +41,13 @@ pub mod capture;
 pub use db::{get_active_session, open_existing, ActiveSession};
 
 pub use capture::{
-    insert_capture_frame, insert_capture_ui_event, CaptureFrameInsert, CaptureUiEventInsert,
+    insert_capture_frame, insert_capture_ui_event, insert_pause_gap, CaptureFrameInsert,
+    CaptureUiEventInsert,
 };
 
 pub use util::{date, hygiene, intervals};
 
 pub use readers::{
-    active, coding_agents, current_task, integrations, notices, plan, task_detail, tasks, today,
-    triage, week, worklogs,
+    active, coding_agents, current_task, integrations, notices, plan, proposed, task_detail, tasks,
+    today, triage, week, worklogs,
 };

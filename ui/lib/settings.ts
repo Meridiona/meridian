@@ -37,6 +37,10 @@ export interface RuntimeSettings {
   quiet_hours_enabled: boolean
   quiet_hours_start: string // 'HH:MM' local time, inclusive
   quiet_hours_end: string   // 'HH:MM' local time, exclusive
+  work_hours_enabled: boolean
+  work_hours_start: string  // 'HH:MM' local time, inclusive
+  work_hours_end: string    // 'HH:MM' local time, exclusive
+  work_days: string         // comma-separated 1–7 (Mon=1 … Sun=7), e.g. '1,2,3,4,5'
 }
 
 export const SETTINGS_DEFAULTS: RuntimeSettings = {
@@ -63,6 +67,10 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   quiet_hours_enabled: false,
   quiet_hours_start: '22:00',
   quiet_hours_end: '08:00',
+  work_hours_enabled: false,
+  work_hours_start: '09:00',
+  work_hours_end: '18:00',
+  work_days: '1,2,3,4,5',
 }
 
 // repoRoot finds the source-checkout root (nearest ancestor with Cargo.toml).

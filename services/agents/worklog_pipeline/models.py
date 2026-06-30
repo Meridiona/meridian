@@ -39,11 +39,15 @@ class MatchResult(BaseModel):
 
 
 class ProposedTicket(BaseModel):
-    # No `reasoning` field: this is a generation task, not a discrimination one,
-    # so reasoning-first adds little and its unbounded length risks truncating
-    # the JSON. Keep the output tight so it always parses.
+    # `reasoning` is BOUNDED (<=300 chars): every worklog — matched or proposed —
+    # must carry a why, but we cap the length so the extra field never truncates
+    # the JSON (the original tight-output concern).
     title:       str = Field(max_length=80, description="imperative, <=80 chars")
     description: str = Field(description="2-4 sentences of scope and intent")
+    reasoning:   str = Field(
+        default="", max_length=300,
+        description="1-2 sentences: WHY this hour is a NEW ticket and not existing work",
+    )
 
 
 class WorklogDraft(BaseModel):

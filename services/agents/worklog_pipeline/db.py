@@ -12,6 +12,8 @@ import logging
 import sqlite3
 from pathlib import Path
 
+from agents.time_utils import local_hour_utc_bounds
+
 log = logging.getLogger("meridian.worklog.db")
 
 # Worklog states a re-run may overwrite. Anything else (approved/posted/queued)
@@ -83,19 +85,41 @@ def fetch_coding_summaries(conn: sqlite3.Connection, hour: str) -> list[dict]:
     hour are summarised before the hour runs; a still-live row without a summary
     is simply skipped here.
     """
+    utc_start, utc_end = local_hour_utc_bounds(hour)
     rows = conn.execute(
         """
         SELECT started_at, app_name, COALESCE(task_key, '') AS task_key,
                session_summary
         FROM app_sessions
-        WHERE started_at LIKE ?
+        WHERE started_at >= ? AND started_at < ?
           AND coding_agent_session_uuid IS NOT NULL
           AND session_summary IS NOT NULL
           AND LENGTH(TRIM(session_summary)) > 0
         ORDER BY started_at
         """,
-        (hour + "%",),
+        (utc_start, utc_end),
     ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def fetch_sessions_for_hour(conn: sqlite3.Connection, hour: str) -> list[dict]:
+    """OCR/app sessions (non-coding) for the hour, for trace child spans."""
+    try:
+        utc_start, utc_end = local_hour_utc_bounds(hour)
+        rows = conn.execute(
+            """
+            SELECT app_name, started_at, ended_at,
+                   CAST(COALESCE(duration_s, 0) AS INTEGER) as duration_s
+            FROM app_sessions
+            WHERE started_at >= ? AND started_at < ?
+              AND coding_agent_session_uuid IS NULL
+            ORDER BY started_at
+            LIMIT 25
+            """,
+            (utc_start, utc_end),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = []
     return [dict(r) for r in rows]
 
 
@@ -108,12 +132,15 @@ def render_doc(task: dict) -> str:
 
 
 def build_payload(task_key: str, window_start: str, window_end: str,
-                  cycle_index: int, time_spent_seconds: int, draft) -> dict:
+                  cycle_index: int, time_spent_seconds: int, draft,
+                  reasoning: str = "") -> dict:
     """Compose the JiraUpdate-shaped payload_json the UI reads from a WorklogDraft.
 
     Bullet lists are wrapped as ``[{"text": ...}]`` (the UI's RawBullet shape);
     evidence_refs are omitted — the hour pipeline grounds on the report, not
-    per-session ids.
+    per-session ids. ``reasoning`` is the WHY this worklog maps to its task — the
+    matcher's ``why`` for a matched task, or the proposer's reasoning for a new
+    one — surfaced on every worklog so a post always carries its rationale.
     """
     def bullets(items: list[str]) -> list[dict]:
         return [{"text": t, "evidence_refs": []} for t in items if t and t.strip()]
@@ -132,7 +159,7 @@ def build_payload(task_key: str, window_start: str, window_end: str,
         "next_steps": [s for s in draft.next_steps if s and s.strip()],
         "risk_flags": [],
         "confidence": max(0.0, min(1.0, float(draft.confidence))),
-        "reasoning": "",
+        "reasoning": reasoning,
     }
 
 
@@ -251,23 +278,41 @@ def upsert_proposed_task(
     description: str,
     reasoning: str = "",
     workflow_run_id: str | None = None,
+    worklog_payload: dict | None = None,
+    time_spent_seconds: int = 3600,
+    confidence: float = 0.0,
+    window_start: str | None = None,
+    window_end: str | None = None,
 ) -> int | None:
-    """UPSERT a tier-3 proposed task. Idempotent on (day_utc, source_hour);
-    refreshes a still-proposed row, leaves approved/dismissed untouched.
+    """UPSERT a tier-3 proposed task together with its DRAFTED worklog.
+
+    Idempotent on (day_utc, source_hour); refreshes a still-proposed row, leaves
+    approved/dismissed untouched. ``worklog_payload`` is the JiraUpdate-shaped
+    draft (see :func:`build_payload`) the approval surface shows + posts; it is
+    stored as JSON in ``worklog_payload_json`` (migration 050).
     """
+    payload_json = json.dumps(worklog_payload) if worklog_payload is not None else None
     conn.execute(
         """
         INSERT INTO pm_proposed_tasks
-            (day_utc, source_hour, title, description, reasoning, state, workflow_run_id)
-        VALUES (?, ?, ?, ?, ?, 'proposed', ?)
+            (day_utc, source_hour, title, description, reasoning, state,
+             workflow_run_id, worklog_payload_json, time_spent_seconds,
+             confidence, window_start, window_end)
+        VALUES (?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?)
         ON CONFLICT (day_utc, source_hour) DO UPDATE SET
-            title           = excluded.title,
-            description     = excluded.description,
-            reasoning       = excluded.reasoning,
-            workflow_run_id = excluded.workflow_run_id
+            title                = excluded.title,
+            description          = excluded.description,
+            reasoning            = excluded.reasoning,
+            workflow_run_id      = excluded.workflow_run_id,
+            worklog_payload_json = excluded.worklog_payload_json,
+            time_spent_seconds   = excluded.time_spent_seconds,
+            confidence           = excluded.confidence,
+            window_start         = excluded.window_start,
+            window_end           = excluded.window_end
         WHERE pm_proposed_tasks.state = 'proposed'
         """,
-        (day_utc, source_hour, title, description, reasoning, workflow_run_id),
+        (day_utc, source_hour, title, description, reasoning, workflow_run_id,
+         payload_json, time_spent_seconds, confidence, window_start, window_end),
     )
     conn.commit()
     row = conn.execute(

@@ -42,6 +42,7 @@
       <span class="upd-ver" id="upd-ver"></span>
     </button>
 
+
     <!-- ── Live "now" block ───────────────────────────────────────────────── -->
     <section class="live" id="live">
       <div class="live-top">
@@ -71,13 +72,34 @@
 
     <div class="rule"></div>
 
-    <!-- ── Pause / tracking toggle (real on/off) ──────────────────────────── -->
+    <!-- ── Pause / tracking toggle ──────────────────────────────────────── -->
     <section class="pause" id="pause">
       <div class="pause-info">
         <p class="pause-text" id="pause-text">Pause tracking</p>
         <p class="pause-sub" id="pause-sub"></p>
       </div>
-      <button class="pause-btn" id="pause-btn">Pause</button>
+
+      <!-- PICKER: shown when not paused -->
+      <div class="pause-picker" id="pause-picker">
+        <button class="dur-btn" data-secs="300">5m</button>
+        <button class="dur-btn" data-secs="900">15m</button>
+        <button class="dur-btn" data-secs="1800">30m</button>
+        <button class="dur-btn" data-secs="3600">1hr</button>
+        <button class="dur-btn" data-custom="1">···</button>
+      </div>
+
+      <!-- CUSTOM INPUT: shown when "···" is clicked -->
+      <div class="pause-custom" id="pause-custom" hidden>
+        <input class="dur-input" type="number" id="custom-mins" min="1" max="480" placeholder="mins" />
+        <button class="dur-confirm" id="custom-confirm">Pause</button>
+        <button class="dur-cancel" id="custom-cancel">Cancel</button>
+      </div>
+
+      <!-- ACTIVE COUNTDOWN: shown during a timed pause -->
+      <div class="pause-active" id="pause-active" hidden>
+        <span class="pause-countdown" id="pause-countdown">--:--</span>
+        <button class="resume-btn" id="resume-btn">Resume now</button>
+      </div>
     </section>
 
     <div class="rule"></div>
@@ -134,6 +156,7 @@
     </footer>
   </div>
 
+  <script src="pause-utils.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

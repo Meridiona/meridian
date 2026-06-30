@@ -160,3 +160,54 @@ fn field_name(write: &WriteField) -> &'static str {
         WriteField::Cancel => "cancel",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn field_name_round_trips() {
+        let cases: &[(&str, WriteField)] = &[
+            ("duedate", WriteField::DueDate("2026-01-01".into())),
+            ("assignee", WriteField::AssignMe),
+            ("labels", WriteField::AddLabel("bug".into())),
+            ("priority", WriteField::Priority("High".into())),
+            ("story_points", WriteField::StoryPoints(3.0)),
+            ("parent", WriteField::Parent("abc".into())),
+            ("summary", WriteField::Summary("t".into())),
+            ("description", WriteField::Description("d".into())),
+            ("close", WriteField::Close),
+            ("cancel", WriteField::Cancel),
+        ];
+        for (expected, field) in cases {
+            assert_eq!(
+                field_name(field),
+                *expected,
+                "field_name mismatch for {expected}"
+            );
+        }
+    }
+
+    // Labels / priority / story_points / parent / close / cancel are redirected for
+    // Trello (no native concept). These WriteField variants must still PARSE — if
+    // parse returned None, the dispatch would use the "unwritable field" redirect
+    // path with a wrong reason string instead of the Trello-specific one.
+    #[test]
+    fn trello_redirect_fields_parse_correctly() {
+        assert!(WriteField::parse("labels", "bug").is_some());
+        assert!(WriteField::parse("priority", "High").is_some());
+        assert!(WriteField::parse("story_points", "3").is_some());
+        assert!(WriteField::parse("parent", "abc").is_some());
+        assert!(WriteField::parse("close", "").is_some());
+        assert!(WriteField::parse("cancel", "").is_some());
+    }
+
+    // These three are the fields Trello DOES write in-app — regression guard.
+    #[test]
+    fn trello_applicable_fields_parse() {
+        assert!(WriteField::parse("duedate", "2026-06-30").is_some());
+        assert!(WriteField::parse("assignee", "@me").is_some());
+        assert!(WriteField::parse("summary", "New name").is_some());
+        assert!(WriteField::parse("description", "New desc").is_some());
+    }
+}

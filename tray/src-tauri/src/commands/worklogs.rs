@@ -83,6 +83,105 @@ pub async fn edit_worklog(
     })
 }
 
+// ── Proposed-ticket review (pm_proposed_tasks) ────────────────────────────────
+//
+// Tier-3 proposals render inline in the same WorklogsView timeline. The user can
+// edit the proposed title or its drafted worklog body, then approve (the daemon's
+// proposal sweep creates the real ticket + posts the worklog) or dismiss.
+
+/// PATCH body for [`edit_proposed_title`] (`{ id, title }`).
+#[derive(Debug, Deserialize)]
+pub struct ProposedTitleBody {
+    pub id: i64,
+    pub title: String,
+}
+
+/// Edit a proposed ticket's title. No-op once approved/dismissed.
+#[tauri::command]
+#[tracing::instrument(skip(pool, body), fields(id = body.id))]
+pub async fn edit_proposed_title(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    body: ProposedTitleBody,
+) -> Result<WorklogWriteAck, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let title = body.title.trim();
+    if title.is_empty() {
+        return Err("title must not be empty".to_string());
+    }
+    let ok = meridian_core::proposed::edit_proposed_title(pool, body.id, title, &now_iso())
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, id = body.id, "edit_proposed_title failed");
+            e.to_string()
+        })?;
+    Ok(WorklogWriteAck {
+        ok,
+        id: body.id,
+        state: "proposed".to_string(),
+    })
+}
+
+/// Edit a proposed ticket's drafted worklog comment (the `summary`). No-op once
+/// approved/dismissed.
+#[tauri::command]
+#[tracing::instrument(skip(pool, body), fields(id = body.id))]
+pub async fn edit_proposed_worklog(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    body: WorklogEditBody,
+) -> Result<WorklogWriteAck, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let ok = meridian_core::proposed::edit_proposed_worklog(pool, body.id, &body.summary)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, id = body.id, "edit_proposed_worklog failed");
+            e.to_string()
+        })?;
+    Ok(WorklogWriteAck {
+        ok,
+        id: body.id,
+        state: "proposed".to_string(),
+    })
+}
+
+/// POST body for [`proposed_action`] (`{ id, action }`) — action ∈ approve|dismiss.
+#[derive(Debug, Deserialize)]
+pub struct ProposedActionBody {
+    pub id: i64,
+    pub action: String,
+}
+
+/// Approve or dismiss a proposed ticket. Approve only records the decision
+/// (`state='approved'`); the daemon's proposal sweep then creates the real
+/// ticket via the provider write-back path and posts the drafted worklog.
+#[tauri::command]
+#[tracing::instrument(skip(pool, body), fields(id = body.id, action = %body.action))]
+pub async fn proposed_action(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    body: ProposedActionBody,
+) -> Result<WorklogWriteAck, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let action = meridian_core::proposed::ProposedAction::parse(&body.action)
+        .ok_or("action must be approve|dismiss")?;
+    let state = meridian_core::proposed::proposed_action(pool, body.id, action, &now_iso())
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, id = body.id, "proposed_action failed");
+            e.to_string()
+        })?
+        .ok_or("proposal is missing or already resolved")?;
+    Ok(WorklogWriteAck {
+        ok: true,
+        id: body.id,
+        state,
+    })
+}
+
 /// POST body for [`worklog_action`] (`{ id, action, correctedTaskKey?,
 /// correctedToUntracked? }`). camelCase to match the route's JSON body.
 #[derive(Debug, Deserialize)]

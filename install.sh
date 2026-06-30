@@ -501,6 +501,13 @@ if [[ "${DEV_MODE}" -eq 1 ]]; then
     run cargo build --manifest-path "${REPO_ROOT}/Cargo.toml"
     ok "cargo build (debug)"
     MERIDIAN_BIN="${REPO_ROOT}/target/debug/meridian"
+    # Tauri's build script validates every resource path at compile time, even in
+    # dev mode. Symlink the release slot to the debug binary so the check passes
+    # without a full --release build. The bundled binary is never used in dev
+    # (cargo watch runs the daemon directly).
+    mkdir -p "${REPO_ROOT}/target/release"
+    ln -sf "${MERIDIAN_BIN}" "${REPO_ROOT}/target/release/meridian"
+    ok "target/release/meridian → target/debug/meridian (dev symlink for tauri dev)"
 else
     info "Building Rust daemon..."
     run cargo build --release --manifest-path "${REPO_ROOT}/Cargo.toml"
@@ -751,8 +758,7 @@ fi
 # Verify database schema has all migrations applied
 if [[ "${DRY_RUN}" -eq 0 ]]; then
     _db="${HOME}/.meridian/meridian.db"
-    _has_claude_uuid=$(sqlite3 "${_db}" ".schema app_sessions" 2>/dev/null | grep -c "claude_session_uuid" || echo "0")
-    if [[ "${_has_claude_uuid}" -lt 1 ]]; then
+    if ! sqlite3 "${_db}" ".schema app_sessions" 2>/dev/null | grep -q "claude_session_uuid"; then
         warn "Database schema incomplete — migrations may not have run yet"
         echo "  → The daemon is running migrations on startup. If this persists after 30s, run:"
         echo "    meridian migrate-db"

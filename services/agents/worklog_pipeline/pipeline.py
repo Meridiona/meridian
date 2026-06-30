@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from opentelemetry import trace
 
 from agents import observability
+from agents.time_utils import local_hour_utc_bounds
 from agents.worklog_pipeline import db as wdb
 from agents.worklog_pipeline.agent_io import make_match_agent_factory, make_schema_agent
 from agents.worklog_pipeline.match import (
@@ -28,6 +29,7 @@ from agents.worklog_pipeline.models import ProposedTicket, WorklogDraft
 from agents.worklog_pipeline.prompts.match_tasks import SYSTEM as MATCH_SYSTEM
 from agents.worklog_pipeline.prompts.propose_ticket import SYSTEM as PROPOSE_SYSTEM
 from agents.worklog_pipeline.worklog import WORKLOG_SYSTEM, generate_worklog
+from agents.worklog_pipeline.match import _render_candidates  # for match_input span
 
 log = logging.getLogger("meridian.worklog.pipeline")
 tracer = trace.get_tracer("meridian.worklog.pipeline")
@@ -47,7 +49,7 @@ def _post(server: str, path: str, body: dict, timeout: float = 300) -> dict:
 @dataclass
 class HourResult:
     hour:         str
-    day_utc:      str
+    day_local:    str
     nsess:        int = 0
     report_chars: int = 0
     tier_used:    int = 0
@@ -59,7 +61,7 @@ class HourResult:
 
     def as_dict(self) -> dict:
         return {
-            "hour": self.hour, "day_utc": self.day_utc, "nsess": self.nsess,
+            "hour": self.hour, "day_local": self.day_local, "nsess": self.nsess,
             "report_chars": self.report_chars, "tier_used": self.tier_used,
             "matched": self.matched, "proposed": self.proposed,
             "worklog_ids": self.worklog_ids, "proposed_id": self.proposed_id,
@@ -86,11 +88,11 @@ class HourContext:
     result:  HourResult | None = None
 
     def __post_init__(self) -> None:
-        self.day_utc = self.hour[:10]
+        self.day_local = self.hour[:10]  # local date from local-hour label
         if not self.cycle_index:
             self.cycle_index = int(self.hour[11:13])
         if self.result is None:
-            self.result = HourResult(hour=self.hour, day_utc=self.day_utc)
+            self.result = HourResult(hour=self.hour, day_local=self.day_local)
         # Internal cross-stage state. Initialised here (not attached dynamically)
         # so a stage that runs without its predecessor never raises AttributeError
         # — it just sees the empty default and produces nothing.
@@ -127,35 +129,54 @@ def stage_distill(ctx: HourContext) -> bool:
     Returns False (stop) only if the hour has NO activity at all — neither
     distillable OCR sessions nor any summarised coding session.
     """
-    d = _post(ctx.server_url, "/distill_hour",
-              {"hour": ctx.hour, "db_path": ctx.db_path, "traceparent": ctx.traceparent})
-    ctx.body = d["body"]
-    ocr_nsess = d["nsess"]
+    with tracer.start_as_current_span("worklog.sessions") as sess_span:
+        # Pass this span's traceparent so distill_hour loopback nests under it.
+        tp = observability.current_traceparent()
+        d = _post(ctx.server_url, "/distill_hour",
+                  {"hour": ctx.hour, "db_path": ctx.db_path, "traceparent": tp})
+        ctx.body = d["body"]
+        ocr_nsess = d["nsess"]
 
-    conn = wdb.open_db(ctx.db_path)
-    try:
-        coding = wdb.fetch_coding_summaries(conn, ctx.hour)
-    finally:
-        conn.close()
-    ctx.coding_block = _format_coding_block(coding)
-    ctx.result.nsess = ocr_nsess + len(coding)
+        conn = wdb.open_db(ctx.db_path)
+        try:
+            coding = wdb.fetch_coding_summaries(conn, ctx.hour)
+            ocr_sessions = wdb.fetch_sessions_for_hour(conn, ctx.hour)
+        finally:
+            conn.close()
+        ctx.coding_block = _format_coding_block(coding)
+        ctx.result.nsess = ocr_nsess + len(coding)
 
-    span = trace.get_current_span()
-    span.set_attribute("ocr_nsess", ocr_nsess)
-    span.set_attribute("coding_nsess", len(coding))
-    if coding:
-        span.set_attribute("coding_preview", observability.preview(ctx.coding_block))
+        sess_span.set_attribute("ocr_nsess", ocr_nsess)
+        sess_span.set_attribute("coding_nsess", len(coding))
+        sess_span.set_attribute("total_nsess", ctx.result.nsess)
+        sess_span.set_attribute("body_chars", len(ctx.body))
 
-    if not ctx.body.strip() and not ctx.coding_block:
-        ctx.result.note = "no sessions"
-        log.info("worklog: hour=%s has no sessions — skipping", ctx.hour,
-                 extra={"hour": ctx.hour})
-        return False
-    log.info("worklog: hour=%s distilled ocr_nsess=%d coding_nsess=%d body_chars=%d",
-             ctx.hour, ocr_nsess, len(coding), len(ctx.body),
-             extra={"hour": ctx.hour, "ocr_nsess": ocr_nsess,
-                    "coding_nsess": len(coding), "body_chars": len(ctx.body)})
-    return True
+        # Child span per OCR session (metadata only — no LLM text)
+        for s in ocr_sessions:
+            with tracer.start_as_current_span("worklog.session.ocr") as sp:
+                sp.set_attribute("app_name", s.get("app_name") or "")
+                sp.set_attribute("started_at", s.get("started_at") or "")
+                sp.set_attribute("duration_s", s.get("duration_s") or 0)
+
+        # Child span per coding session — summary visible as Output panel in OO
+        for c in coding:
+            with tracer.start_as_current_span("worklog.session.coding") as sp:
+                sp.set_attribute("app_name", c.get("app_name") or "")
+                sp.set_attribute("task_key", c.get("task_key") or "")
+                sp.set_attribute("started_at", c.get("started_at") or "")
+                sp.set_attribute("llm_output",
+                    observability.preview(c.get("session_summary") or "", max_chars=4000))
+
+        if not ctx.body.strip() and not ctx.coding_block:
+            ctx.result.note = "no sessions"
+            log.info("worklog: hour=%s has no sessions — skipping", ctx.hour,
+                     extra={"hour": ctx.hour})
+            return False
+        log.info("worklog: hour=%s distilled ocr_nsess=%d coding_nsess=%d body_chars=%d",
+                 ctx.hour, ocr_nsess, len(coding), len(ctx.body),
+                 extra={"hour": ctx.hour, "ocr_nsess": ocr_nsess,
+                        "coding_nsess": len(coding), "body_chars": len(ctx.body)})
+        return True
 
 
 def stage_report(ctx: HourContext) -> None:
@@ -166,20 +187,31 @@ def stage_report(ctx: HourContext) -> None:
     agent summaries are already clean prose and must not be genericised by the
     team-facing report prompt — file names and ticket keys would be stripped.
     """
-    if ctx.body.strip():
-        rep = _post(ctx.server_url, "/activity_report",
-                    {"body": ctx.body, "label": ctx.hour, "max_tokens": 8192,
-                     "traceparent": ctx.traceparent})
-        ctx.report = rep["report"]
-    else:
-        ctx.report = ""
-    if ctx.coding_block:
-        ctx.report = f"{ctx.report}\n\n{ctx.coding_block}".strip()
-    ctx.result.report_chars = len(ctx.report)
-    log.info("worklog: hour=%s report_chars=%d coding_folded=%s",
-             ctx.hour, ctx.result.report_chars, bool(ctx.coding_block),
-             extra={"hour": ctx.hour, "report_chars": ctx.result.report_chars,
-                    "coding_folded": bool(ctx.coding_block)})
+    with tracer.start_as_current_span("worklog.report") as rep_span:
+        # Pass this span's traceparent so activity_report child spans nest here.
+        tp = observability.current_traceparent()
+        if ctx.body.strip():
+            rep = _post(ctx.server_url, "/activity_report",
+                        {"body": ctx.body, "label": ctx.hour, "traceparent": tp})
+            ctx.report = rep["report"]
+        else:
+            ctx.report = ""
+
+        if ctx.coding_block:
+            with tracer.start_as_current_span("worklog.coding_append") as ca:
+                ca.set_attribute("n_coding_sessions", ctx.coding_block.count("\n["))
+                # llm_input → OO renders as dedicated Input panel
+                ca.set_attribute("llm_input",
+                    observability.preview(ctx.coding_block, max_chars=8000))
+            ctx.report = f"{ctx.report}\n\n{ctx.coding_block}".strip()
+
+        ctx.result.report_chars = len(ctx.report)
+        rep_span.set_attribute("report_chars", ctx.result.report_chars)
+        rep_span.set_attribute("has_coding", bool(ctx.coding_block))
+        log.info("worklog: hour=%s report_chars=%d coding_folded=%s",
+                 ctx.hour, ctx.result.report_chars, bool(ctx.coding_block),
+                 extra={"hour": ctx.hour, "report_chars": ctx.result.report_chars,
+                        "coding_folded": bool(ctx.coding_block)})
 
 
 def stage_candidates(ctx: HourContext) -> None:
@@ -187,7 +219,7 @@ def stage_candidates(ctx: HourContext) -> None:
     with tracer.start_as_current_span("worklog.candidates") as span:
         conn = wdb.open_db(ctx.db_path)
         try:
-            plan_keys = wdb.fetch_confirmed_plan(conn, ctx.day_utc)
+            plan_keys = wdb.fetch_confirmed_plan(conn, ctx.day_local)
             open_tasks = {t["task_key"]: t for t in wdb.fetch_open_tasks(conn)}
         finally:
             conn.close()
@@ -248,7 +280,20 @@ def stage_match_tier1(ctx: HourContext) -> None:
     tokens); we annotate the current (agno step) span with the decision.
     """
     span = trace.get_current_span()
+    cands_text = _render_candidates(ctx.daily)
+    with tracer.start_as_current_span("worklog.match_input") as mi:
+        mi.set_attribute("tier", 1)
+        mi.set_attribute("n_candidates", len(ctx.daily))
+        mi.set_attribute("llm_input", observability.preview(
+            f"SYSTEM:\n{MATCH_SYSTEM}\n\nACTIVITY SUMMARY:\n{ctx.report}"
+            f"\n\nCANDIDATES (today's plan):\n{cands_text}", max_chars=8000))
     bindings = run_tier1(_match_factory(ctx), ctx.report, ctx.daily)
+    with tracer.start_as_current_span("worklog.match_output") as mo:
+        mo.set_attribute("tier", 1)
+        mo.set_attribute("n_matched", len(bindings))
+        mo.set_attribute("llm_output", observability.preview(
+            "\n".join(f"{b.task_key} (conf={b.confidence:.2f}): {b.why}"
+                      for b in bindings) or "No match", max_chars=4000))
     if bindings:
         ctx._outcome = MatchOutcome(bindings=bindings, tier_used=1)
         ctx.result.tier_used = 1
@@ -263,11 +308,24 @@ def stage_match_tier2_batch(ctx: HourContext) -> None:
     span = trace.get_current_span()
     i = ctx._batch_i
     batch = ctx.backlog[i : i + BATCH]
-    # run FIRST, advance the cursor only on success — so an agno retry (which
-    # re-runs this step on a raised transient error) re-processes THIS batch
-    # rather than skipping ahead to the next one.
+    cands_text = _render_candidates(batch)
+    with tracer.start_as_current_span("worklog.match_input") as mi:
+        mi.set_attribute("tier", 2)
+        mi.set_attribute("batch_index", i // BATCH)
+        mi.set_attribute("n_candidates", len(batch))
+        mi.set_attribute("llm_input", observability.preview(
+            f"SYSTEM:\n{MATCH_SYSTEM}\n\nACTIVITY SUMMARY:\n{ctx.report}"
+            f"\n\nCANDIDATES (backlog batch {i // BATCH}):\n{cands_text}", max_chars=8000))
+    # run FIRST, advance cursor only on success so an agno retry re-processes this batch
     bindings = run_tier2_batch(_match_factory(ctx), ctx.report, batch, i // BATCH)
     ctx._batch_i = i + BATCH
+    with tracer.start_as_current_span("worklog.match_output") as mo:
+        mo.set_attribute("tier", 2)
+        mo.set_attribute("batch_index", i // BATCH)
+        mo.set_attribute("n_matched", len(bindings))
+        mo.set_attribute("llm_output", observability.preview(
+            "\n".join(f"{b.task_key} (conf={b.confidence:.2f}): {b.why}"
+                      for b in bindings) or "No match", max_chars=4000))
     if bindings:
         ctx._outcome = MatchOutcome(bindings=bindings, tier_used=2)
         ctx.result.tier_used = 2
@@ -296,9 +354,9 @@ def stage_draft_one(ctx: HourContext) -> None:
         matched_keys = [bb.task_key for bb in bindings]
         conn = wdb.open_db(ctx.db_path)
         try:
-            wdb.retract_proposed_task(conn, day_utc=ctx.day_utc, source_hour=ctx.hour)
+            wdb.retract_proposed_task(conn, day_utc=ctx.day_local, source_hour=ctx.hour)
             wdb.retract_drafted_worklogs(
-                conn, day_utc=ctx.day_utc, cycle_index=ctx.cycle_index,
+                conn, day_utc=ctx.day_local, cycle_index=ctx.cycle_index,
                 keep_task_keys=matched_keys)
         finally:
             conn.close()
@@ -318,18 +376,21 @@ def stage_draft_one(ctx: HourContext) -> None:
                             "summary": draft.summary if draft else None})
         dspan.set_attribute("parsed", draft is not None)
         if draft:
-            dspan.set_attribute("summary_preview", observability.preview(draft.summary))
+            dspan.set_attribute("llm_output", observability.preview(
+                f"{b.task_key} — {t.get('title', b.task_key)}\n\n{draft.summary}",
+                max_chars=4000))
         if draft and not ctx.dry_run:
             conn = wdb.open_db(ctx.db_path)
             try:
+                _utc_s, _utc_e = local_hour_utc_bounds(ctx.hour)
                 payload = wdb.build_payload(
-                    b.task_key, f"{ctx.hour}:00:00+00:00", f"{ctx.hour}:59:59+00:00",
-                    ctx.cycle_index, time_per_task, draft)
+                    b.task_key, f"{_utc_s}+00:00", f"{_utc_e}+00:00",
+                    ctx.cycle_index, 3600, draft, reasoning=b.why)
                 wid = wdb.upsert_worklog(
-                    conn, task_key=b.task_key, day_utc=ctx.day_utc,
+                    conn, task_key=b.task_key, day_utc=ctx.day_local,
                     cycle_index=ctx.cycle_index,
-                    window_start=f"{ctx.hour}:00:00+00:00",
-                    window_end=f"{ctx.hour}:59:59+00:00",
+                    window_start=f"{_utc_s}+00:00",
+                    window_end=f"{_utc_e}+00:00",
                     confidence=max(0.0, min(1.0, float(draft.confidence))),
                     time_spent_seconds=time_per_task,
                     payload=payload, workflow_run_id=ctx.run_id or f"wl-{ctx.hour}")
@@ -357,7 +418,7 @@ def stage_propose(ctx: HourContext) -> None:
     res = ctx.result
     with tracer.start_as_current_span("worklog.propose") as pr_span:
         pr_agent = make_schema_agent(PROPOSE_SYSTEM, ProposedTicket,
-                                     server_url=ctx.server_url, max_tokens=900)
+                                     server_url=ctx.server_url, max_tokens=1100)
         user = (f"ACTIVITY SUMMARY (last hour):\n{ctx.report}\n\n"
                 f"DISTILLED CAPTURE DETAIL:\n{ctx.body[:6000]}")
         pt = pr_agent.run(input=user).content
@@ -366,21 +427,44 @@ def stage_propose(ctx: HourContext) -> None:
         if parsed:
             res.proposed = {"title": pt.title, "description": pt.description}
             pr_span.set_attribute("proposed_title", pt.title)
-            pr_span.set_attribute("proposed_desc_preview", observability.preview(pt.description))
+            pr_span.set_attribute("llm_output", observability.preview(
+                f"NEW TASK: {pt.title}\n\n{pt.description}", max_chars=4000))
+            # Draft the worklog for this proposal NOW (same generator the matched
+            # path uses), so the approval surface shows an editable worklog beside
+            # the proposed ticket. task_key is a placeholder until approval mints
+            # the real key (the tray rewrites it into the payload on approve).
+            _utc_ps, _utc_pe = local_hour_utc_bounds(ctx.hour)
+            win_start = f"{_utc_ps}+00:00"
+            win_end = f"{_utc_pe}+00:00"
+            wl_agent = make_schema_agent(WORKLOG_SYSTEM, WorklogDraft,
+                                         server_url=ctx.server_url, max_tokens=2400)
+            # The proposer's own reasoning (why a NEW ticket) is the worklog's why.
+            why = pt.reasoning or pt.description
+            draft = generate_worklog(
+                wl_agent, ctx.report, ctx.body, "(proposed)", pt.title, pt.description, why)
+            wl_payload = (
+                wdb.build_payload("", win_start, win_end, ctx.cycle_index, 3600, draft,
+                                  reasoning=why)
+                if draft else None)
+            wl_conf = max(0.0, min(1.0, float(draft.confidence))) if draft else 0.0
+            pr_span.set_attribute("worklog_drafted", draft is not None)
             if not ctx.dry_run:
                 conn = wdb.open_db(ctx.db_path)
                 try:
                     res.proposed_id = wdb.upsert_proposed_task(
-                        conn, day_utc=ctx.day_utc, source_hour=ctx.hour,
-                        title=pt.title, description=pt.description, reasoning="",
-                        workflow_run_id=ctx.run_id or f"wl-{ctx.hour}")
+                        conn, day_utc=ctx.day_local, source_hour=ctx.hour,
+                        title=pt.title, description=pt.description,
+                        reasoning=why,
+                        workflow_run_id=ctx.run_id or f"wl-{ctx.hour}",
+                        worklog_payload=wl_payload, time_spent_seconds=3600,
+                        confidence=wl_conf, window_start=win_start, window_end=win_end)
                     if res.proposed_id is not None:
                         pr_span.set_attribute("proposed_id", res.proposed_id)
                     # Mutual exclusion: this hour now resolves to a NEW-ticket
                     # proposal, so retract any drafted worklogs left by a prior
                     # run that had matched a task (idempotent re-run).
                     wdb.retract_drafted_worklogs(
-                        conn, day_utc=ctx.day_utc, cycle_index=ctx.cycle_index,
+                        conn, day_utc=ctx.day_local, cycle_index=ctx.cycle_index,
                         keep_task_keys=[])
                 finally:
                     conn.close()
