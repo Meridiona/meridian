@@ -30,21 +30,34 @@ use crate::intelligence::oauth::trello as oauth_trello;
 /// Create a real ticket for `provider` from a proposal's (title, description) and
 /// return its `task_key`. `sample_key` is any existing task_key of that provider
 /// (used to resolve GitHub's owner/repo); ignored by providers that carry their
-/// target in config.
+/// target in config. `issue_type` is the proposed type (`Task` / `Bug`); only
+/// Jira and Azure DevOps model an issue type natively — Linear/GitHub/Trello have
+/// no type concept and ignore it.
 pub async fn create_ticket(
     config: &Config,
     provider: &str,
     title: &str,
     description: &str,
+    issue_type: &str,
     sample_key: Option<&str>,
 ) -> Result<String> {
     match provider {
-        "jira" => jira_create(jira_cfg(config)?, title, description).await,
+        "jira" => jira_create(jira_cfg(config)?, title, description, issue_type).await,
         "linear" => linear_create(linear_cfg(config)?, title, description).await,
         "github" => github_create(github_cfg(config)?, title, description, sample_key).await,
         "trello" => trello_create(trello_cfg(config)?, title, description).await,
-        "azure_devops" => azure_create(azure_cfg(config)?, title, description).await,
+        "azure_devops" => azure_create(azure_cfg(config)?, title, description, issue_type).await,
         other => bail!("create_ticket: unknown provider '{other}'"),
+    }
+}
+
+/// Normalise a proposed issue type to the canonical pair we create. The proposer
+/// emits `Task` or `Bug`; anything unexpected falls back to `Task`.
+fn norm_issue_type(issue_type: &str) -> &'static str {
+    if issue_type.eq_ignore_ascii_case("bug") {
+        "Bug"
+    } else {
+        "Task"
     }
 }
 
@@ -98,7 +111,12 @@ fn azure_cfg(c: &Config) -> Result<&AzureDevOpsConfig> {
 
 // ── Jira: POST /rest/api/3/issue ──────────────────────────────────────────────
 
-async fn jira_create(jira: &JiraConfig, title: &str, description: &str) -> Result<String> {
+async fn jira_create(
+    jira: &JiraConfig,
+    title: &str,
+    description: &str,
+    issue_type: &str,
+) -> Result<String> {
     let project = jira
         .project_keys
         .first()
@@ -107,7 +125,7 @@ async fn jira_create(jira: &JiraConfig, title: &str, description: &str) -> Resul
         "fields": {
             "project": { "key": project },
             "summary": title,
-            "issuetype": { "name": "Task" },
+            "issuetype": { "name": norm_issue_type(issue_type) },
             "description": {
                 "type": "doc", "version": 1,
                 "content": [ { "type": "paragraph",
@@ -267,11 +285,19 @@ async fn trello_create(trello: &TrelloConfig, title: &str, description: &str) ->
 
 // ── Azure DevOps: POST /_apis/wit/workitems/$Task ─────────────────────────────
 
-async fn azure_create(cfg: &AzureDevOpsConfig, title: &str, description: &str) -> Result<String> {
+async fn azure_create(
+    cfg: &AzureDevOpsConfig,
+    title: &str,
+    description: &str,
+    issue_type: &str,
+) -> Result<String> {
     use base64::Engine;
+    // Azure work-item type goes in the URL (`$Task` / `$Bug`).
     let url = format!(
-        "{}/{}/_apis/wit/workitems/$Task?api-version=7.0",
-        cfg.api_base, cfg.project
+        "{}/{}/_apis/wit/workitems/${}?api-version=7.0",
+        cfg.api_base,
+        cfg.project,
+        norm_issue_type(issue_type)
     );
     let auth = format!(
         "Basic {}",

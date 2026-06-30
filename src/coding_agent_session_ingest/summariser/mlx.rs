@@ -26,6 +26,10 @@ pub async fn run_mlx(stdin_text: &str, cfg: &SummariserConfig) -> Result<String,
         "system": prompts::SUMMARY_RULES,
         "max_tokens": cfg.mlx_max_tokens,
         "temperature": 0.2,
+        // Non-thinking fast path: the fallback runs under a tight 30s timeout, so
+        // we skip the <think> block entirely (no reasoning budget to burn). The
+        // outlines FSM still forces the {summary} shape.
+        "enable_thinking": false,
     });
 
     let client = reqwest::Client::builder()

@@ -12,6 +12,9 @@ Endpoints:
     GET  /prefetch_status
     POST /v1/chat/completions
     GET  /v1/models
+    POST /classify_tasks      # FSM (outlines) — tiered task classification
+    POST /generate_worklog    # FSM (outlines) — draft one ticket's worklog
+    POST /propose_ticket      # FSM (outlines) — propose a new ticket, or abstain
     POST /summarise
     POST /activity_report
     POST /distill_hour
@@ -33,7 +36,9 @@ from agents._state import app_state
 from agents.routes import (
     activity,
     chat,
+    classify,
     distill,
+    generate,
     health,
     prefetch,
     rerank,
@@ -85,11 +90,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Agent/Workflow runs export OpenInference spans to OpenObserve.
     observability.setup("meridian-mlx-server")
     app_state.setdefault("tracer", trace.get_tracer("meridian-mlx-server"))
-    # OpenObserve export is off for now (MERIDIAN_OO_EXPORT unset) → meridian's
-    # manual spans are non-recording. agno's native spans go to the agno trace
-    # DB (read by agno_viewer.py) via an explicit, non-global provider so the
-    # AgentOS dashboard shows agno's tracing output alone — no custom spans.
-    app_state["agno_tracer_provider"] = observability.setup_agno_tracing()
+    # OpenObserve export for meridian's own (manual) spans is gated by
+    # settings.json `otlp_enabled` + OO creds (handled inside observability.setup
+    # above). Independently, agno's native (openinference) spans are routed to the
+    # agno trace DB (read by agno_viewer.py) via an explicit, non-global provider,
+    # so the AgentOS dashboard shows agno's tracing output alone — no custom spans.
+    # The provider is pinned by observability._AGNO_TRACER_PROVIDER; no handle needed here.
+    observability.setup_agno_tracing()
     evictor: "asyncio.Task | None" = None
     if _mlx._IDLE_EVICT_S > 0:
         # Lazy: the ~7 GB model loads on the first inference and is evicted after
@@ -118,6 +125,8 @@ app = FastAPI(title="Meridian Agent", version="1.0.0", lifespan=_lifespan)
 app.include_router(health.router)
 app.include_router(prefetch.router)
 app.include_router(chat.router)
+app.include_router(classify.router)
+app.include_router(generate.router)
 app.include_router(summarise.router)
 app.include_router(activity.router)
 app.include_router(distill.router)

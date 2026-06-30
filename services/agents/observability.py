@@ -477,21 +477,6 @@ def current_traceparent() -> Optional[str]:
     return carrier.get("traceparent")
 
 
-def instrument_agno() -> None:
-    """Instrument the agno framework for OpenTelemetry tracing.
-
-    No-op when openinference-instrumentation-agno is not installed; the package
-    is optional and the server must start cleanly without it.
-    """
-    try:
-        from opentelemetry.instrumentation.agno import AgnoInstrumentor  # type: ignore[import]
-        AgnoInstrumentor().instrument()
-    except ImportError:
-        logging.getLogger(__name__).debug(
-            "opentelemetry-instrumentation-agno not installed; agno spans will not be exported"
-        )
-
-
 # Process-level handle so the agno TracerProvider isn't garbage-collected.
 _AGNO_TRACER_PROVIDER = None
 
@@ -601,11 +586,121 @@ def preview(text: Optional[str], max_chars: int = 200) -> str:
     return text[:max_chars] + ("…" if len(text) > max_chars else "")
 
 
+def record_gen_params(
+    span,
+    *,
+    temp: float,
+    max_tokens: int,
+    thinking_budget: int,
+    budget_forced: bool,
+    enable_thinking: bool = True,
+    model: str = "",
+) -> None:
+    """Stamp the generation parameters used for ONE LLM call onto its span.
+
+    Records the per-call sampling settings — the variable ``temp`` plus the
+    shared constants from :mod:`agents.thinking` (top_p / top_k / presence /
+    repetition penalty) — together with the thinking-budget config and whether
+    the hard cap actually fired (``budget_forced``). Call inside the call's main
+    span so every LLM span in the worklog trace shows exactly which parameters
+    produced its output. ``model`` is set only when non-empty (some callers set
+    it earlier on the span themselves).
+    """
+    from agents.thinking import (
+        DEFAULT_TOP_P, DEFAULT_TOP_K, DEFAULT_PRESENCE_PENALTY,
+        DEFAULT_REPETITION_PENALTY,
+    )
+    if model:
+        span.set_attribute("model", model)
+    span.set_attribute("temp", temp)
+    span.set_attribute("top_p", DEFAULT_TOP_P)
+    span.set_attribute("top_k", DEFAULT_TOP_K)
+    span.set_attribute("presence_penalty", DEFAULT_PRESENCE_PENALTY)
+    span.set_attribute("repetition_penalty", DEFAULT_REPETITION_PENALTY)
+    span.set_attribute("thinking_budget", thinking_budget)
+    span.set_attribute("enable_thinking", enable_thinking)
+    span.set_attribute("max_tokens", max_tokens)
+    span.set_attribute("budget_forced", budget_forced)
+
+
+def record_fsm_params(
+    span,
+    *,
+    temp: float,
+    max_tokens: int,
+    schema: str,
+    model: str = "",
+) -> None:
+    """Stamp the ACTUAL decoding config for one FSM (grammar-constrained) JSON call.
+
+    The FSM path (:mod:`agents.structured`) decodes against an outlines logits
+    processor compiled from ``schema`` and samples among the grammar-legal tokens with
+    ``temp`` / ``top_p`` / ``top_k`` (via ``make_sampler``). It runs with thinking OFF
+    and — unlike the thinking path — applies NO presence/repetition penalty (outlines
+    owns ``logits_processors``). This recorder reflects only what is genuinely applied,
+    so the trace never advertises phantom penalties or a thinking budget that don't
+    exist on these calls. Use it (not :func:`record_gen_params`) for the FSM endpoints.
+    """
+    from agents.thinking import DEFAULT_TOP_P, DEFAULT_TOP_K
+
+    if model:
+        span.set_attribute("model", model)
+    span.set_attribute("decoding", "fsm")            # grammar-constrained (outlines)
+    span.set_attribute("grammar_constrained", True)
+    span.set_attribute("fsm_schema", schema)         # the Pydantic output schema enforced
+    span.set_attribute("enable_thinking", False)     # thinking is off for FSM JSON calls
+    span.set_attribute("temp", temp)
+    span.set_attribute("top_p", DEFAULT_TOP_P)
+    span.set_attribute("top_k", DEFAULT_TOP_K)
+    span.set_attribute("max_tokens", max_tokens)
+
+
+def record_llm_io(
+    tracer,
+    prefix: str,
+    *,
+    system_prompt: str,
+    llm_input: str,
+    llm_output: str,
+    input_tokens: Optional[int] = None,
+    output_tokens: Optional[int] = None,
+    think_tokens: Optional[int] = None,
+    max_input_chars: int = 8000,
+    max_output_chars: int = 8000,
+) -> None:
+    """Emit the three `<prefix>.prompt` / `.input` / `.output` child spans that
+    OpenObserve renders as dedicated Prompt / Input / Output panels.
+
+    This is the same shape the ``activity_report`` endpoint uses, so every LLM
+    call in the worklog trace (classify / propose / generate) is debuggable the
+    same way: the exact system prompt, the exact user content, and the raw model
+    output — plus token counts on the output span. Call this INSIDE the call's
+    main span so the three land as its children.
+    """
+    with tracer.start_as_current_span(f"{prefix}.prompt") as sp:
+        sp.set_attribute("total_chars", len(system_prompt or ""))
+        sp.set_attribute("llm_input", preview(system_prompt, max_chars=max_input_chars))
+    with tracer.start_as_current_span(f"{prefix}.input") as sp:
+        sp.set_attribute("total_chars", len(llm_input or ""))
+        sp.set_attribute("llm_input", preview(llm_input, max_chars=max_input_chars))
+    with tracer.start_as_current_span(f"{prefix}.output") as sp:
+        sp.set_attribute("total_chars", len(llm_output or ""))
+        sp.set_attribute("llm_output", preview(llm_output, max_chars=max_output_chars))
+        if input_tokens is not None:
+            sp.set_attribute("input_tokens", input_tokens)
+        if output_tokens is not None:
+            sp.set_attribute("output_tokens", output_tokens)
+        if think_tokens is not None:
+            sp.set_attribute("think_tokens", think_tokens)
+
+
 __all__ = [
     "setup",
     "extract_parent_context",
-    "instrument_agno",
     "setup_agno_tracing",
     "current_traceparent",
     "preview",
+    "record_gen_params",
+    "record_fsm_params",
+    "record_llm_io",
 ]

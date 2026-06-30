@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from agents._state import app_state, model_sem
 from agents.mlx_classifier import MODEL_ID
+from agents.thinking import generate_thinking
 
 log = logging.getLogger("agents.server")
 
@@ -30,8 +31,9 @@ class _OAIChatRequest(BaseModel):
     model: str | None = None
     messages: list[_OAIMessage]
     temperature: float | None = None
-    max_tokens: int | None = Field(None, ge=1, le=8192)
+    max_tokens: int | None = Field(None, ge=1, le=16384)
     top_p: float | None = None
+    presence_penalty: float | None = None
     stop: list[str] | str | None = None
     stream: bool = False
     # Tolerate unknown fields agno / openai-python may add.
@@ -83,23 +85,41 @@ async def openai_chat_completions(req: _OAIChatRequest) -> dict:
         for msg in req.messages
     ]
 
-    temperature = req.temperature if req.temperature is not None else 0.3
-    max_tokens  = req.max_tokens if req.max_tokens else 2048
+    temperature       = req.temperature       if req.temperature       is not None else 0.3
+    max_tokens        = req.max_tokens        if req.max_tokens        else 2048
+    presence_penalty  = req.presence_penalty  if req.presence_penalty  is not None else 0.0
+    top_p             = req.top_p             if req.top_p             is not None else 1.0
 
-    # Honour OpenAI `response_format: {"type":"json_schema", ...}` by
-    # FSM-constraining decoding to that schema via outlines. Without this, a
-    # reasoning model is free to emit chain-of-thought prose instead of the JSON
-    # the caller (e.g. agno's structured-output path) expects, and the parse
-    # fails. `{"type":"json_object"}` carries no schema, so it stays free-form.
-    output_type = None
+    # Routing by response_format:
+    #   json_schema  → outlines FSM (token-level grammar constraint)
+    #   json_object  → thinking mode (enable_thinking=True, strip <think>, free-form JSON)
+    #   none/other   → outlines free-form
     rf = req.response_format
+    use_thinking = isinstance(rf, dict) and rf.get("type") == "json_object"
+    output_type = None
     if isinstance(rf, dict) and rf.get("type") == "json_schema":
         schema = (rf.get("json_schema") or {}).get("schema")
         if schema:
             from outlines.types import JsonSchema
             output_type = JsonSchema(schema)
 
-    def _generate() -> str:
+    def _generate_thinking() -> str:
+        """json_object path: shared thinking-mode generation with caller sampling.
+
+        Uses agents.thinking.generate_thinking (the same budget-enforced thinking
+        path as the pipeline endpoints) but passes the caller-supplied temperature /
+        top_p / presence_penalty so OpenAI-compat semantics are preserved. The
+        <think> block is stripped; json_mode recovers the last {...} if untagged.
+        """
+        res = generate_thinking(
+            m, msgs,
+            max_tokens=max_tokens, json_mode=True,
+            temp=temperature, top_p=top_p, presence_penalty=presence_penalty)
+        if not res.text and not res.closed_think:
+            log.warning("_generate_thinking: no </think> and no JSON object found in output")
+        return res.text
+
+    def _generate_outlines() -> str:
         from outlines.models import from_mlxlm
         with m.model_session() as bundle:
             om = from_mlxlm(bundle.model, bundle.mlx_tokenizer)
@@ -113,23 +133,36 @@ async def openai_chat_completions(req: _OAIChatRequest) -> dict:
     t0 = _time.time()
     try:
         async with model_sem():
-            text = await run_in_threadpool(_generate)
+            if use_thinking:
+                text = await run_in_threadpool(_generate_thinking)
+            else:
+                text = await run_in_threadpool(_generate_outlines)
     except Exception as exc:                            # noqa: BLE001
         log.warning("openai_chat_completions: inference error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     elapsed = _time.time() - t0
 
+    # Strip <think>...</think> block — the tokenizer auto-injects enable_thinking=True
+    # for thinking-capable models, so thinking tokens appear on all paths.
+    if "</think>" in text:
+        _, text = text.split("</think>", 1)
+        text = text.strip()
+        # If nothing remains after thinking, try to extract trailing JSON.
+        if not text:
+            log.warning("openai_chat_completions: empty after </think> strip")
+    elif not use_thinking and not output_type:
+        # Free-form path with no schema: model may have embedded JSON in reasoning text.
+        start = text.rfind("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            text = text[start : end + 1]
+
     completion_id = f"chatcmpl-{_uuid.uuid4().hex[:24]}"
-    # Token counts are approximations — outlines doesn't expose exact
-    # counts without re-tokenising; 4 bytes/token is the OpenAI convention.
     prompt_chars = sum(len(msg["content"]) for msg in msgs)
     prompt_tokens = max(1, prompt_chars // 4)
     completion_tokens = max(1, len(text) // 4)
 
-    # decoding mode: 'outlines_fsm' when a json_schema was supplied (token-level
-    # grammar-constrained), else 'free_form'. Makes the structured-output path
-    # observable rather than assumed.
-    decode_mode = "outlines_fsm" if output_type is not None else "free_form"
+    decode_mode = "thinking_json" if use_thinking else ("outlines_fsm" if output_type else "free_form")
     log.info(
         "openai_chat_completions: msgs=%d max_tokens=%d temp=%.2f decode=%s elapsed=%.2fs out_chars=%d",
         len(msgs), max_tokens, temperature, decode_mode, elapsed, len(text),

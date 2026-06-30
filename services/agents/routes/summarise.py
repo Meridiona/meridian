@@ -1,8 +1,9 @@
 """Summarise route — /summarise.
 
-Runs a coding-session transcript through the MLX model in thinking mode,
-strips the <think> block, and returns clean prose suitable for storage as the
-session_summary column.
+Runs a coding-session transcript through the MLX model and returns clean prose
+suitable for storage as the session_summary column. Thinking mode is on by
+default (the <think> block is stripped); callers under a tight timeout (the
+coding-agent summariser fallback) pass enable_thinking=False for the fast path.
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from agents._state import app_state, model_sem
+from agents.thinking import generate_thinking, DEFAULT_PROSE_TEMP
 
 log = logging.getLogger("agents.server")
 
@@ -27,6 +29,9 @@ class _SummariseRequest(BaseModel):
     transcript: str = Field(..., max_length=_MAX_INPUT_CHARS)
     system: str | None = None
     max_tokens: int = Field(_SUMMARISE_MAX_TOKENS, ge=1, le=32768)
+    # When False, skip the <think> block entirely — the fast non-thinking path
+    # the coding-agent summariser fallback uses to fit a tight client timeout.
+    enable_thinking: bool = True
 
 
 class _SummariseResponse(BaseModel):
@@ -41,10 +46,9 @@ class _SummariseResponse(BaseModel):
 async def summarise(req: _SummariseRequest) -> _SummariseResponse:
     """Thinking-mode coding session summary (MLX backend only).
 
-    Uses Qwen3.5-2B with enable_thinking=True, temp=1.0 (Qwen3 thinking default),
-    and a light repetition_penalty=1.05 — no presence penalty so file names and
-    commands can repeat naturally in factual prose. The <think> block is stripped;
-    the remaining prose is stored as the summary.
+    Uses the shared agents.thinking.generate_thinking (unified sampling +
+    thinking-budget enforcement, same as every other generative endpoint). The
+    <think> block is stripped; the remaining prose is stored as the summary.
     """
     from fastapi.concurrency import run_in_threadpool
     import time as _time
@@ -59,55 +63,15 @@ async def summarise(req: _SummariseRequest) -> _SummariseResponse:
     ]
     t_start = _time.time()
 
-    def _generate() -> tuple[str, int, int, int]:
-        """Returns (summary, input_tokens, output_tokens, think_tokens).
-
-        Uses enable_thinking=True (same as /activity_report). The <think> block
-        is stripped — the remaining prose is stored directly as the summary.
-        """
-        from mlx_lm import generate
-        from mlx_lm.sample_utils import make_sampler, make_logits_processors
-
-        # Qwen3 thinking-mode defaults: temp=1.0 required (lower suppresses
-        # reasoning quality). No presence_penalty — factual summaries must freely
-        # repeat file names, commands, and identifiers from the transcript.
-        sampler = make_sampler(temp=1.0, top_p=0.95, top_k=20)
-        logits_processors = make_logits_processors(
-            repetition_penalty=1.05,
-            repetition_context_size=64,
-        )
-        hf_tokenizer = m._get_tokenizer()
-        prompt_ids = hf_tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            enable_thinking=True,
-        )
-        if hasattr(prompt_ids, "keys") and "input_ids" in prompt_ids:
-            prompt_ids = prompt_ids["input_ids"]
-        input_tokens = len(prompt_ids)
-
-        with m.model_session() as model:
-            raw = generate(
-                model.model, hf_tokenizer,
-                prompt=prompt_ids,
-                max_tokens=req.max_tokens,
-                sampler=sampler,
-                logits_processors=logits_processors,
-                verbose=False,
-            )
-
-        think_tokens = 0
-        if "</think>" in raw:
-            think_part, raw = raw.split("</think>", 1)
-            think_tokens = len(hf_tokenizer.encode(think_part + "</think>"))
-            raw = raw.strip()
-
-        output_tokens = len(hf_tokenizer.encode(raw))
-        return raw, input_tokens, output_tokens, think_tokens
-
     try:
         async with model_sem():
-            summary, input_tokens, output_tokens, think_tokens = await run_in_threadpool(_generate)
+            res = await run_in_threadpool(
+                generate_thinking, m, messages,
+                max_tokens=req.max_tokens, json_mode=False, temp=DEFAULT_PROSE_TEMP,
+                enable_thinking=req.enable_thinking)
+        summary = res.text
+        input_tokens, output_tokens, think_tokens = (
+            res.input_tokens, res.output_tokens, res.think_tokens)
     except Exception as exc:  # noqa: BLE001
         log.warning("summarise: inference/parse error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc

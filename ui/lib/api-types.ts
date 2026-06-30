@@ -148,6 +148,9 @@ export interface WorklogItem {
   /** `pm_proposed_tasks.id` when `is_proposed` — the key the proposed-ticket
    *  edit/approve/dismiss commands take. */
   proposed_id?: number | null
+  /** The proposed ticket's issue type (`Task` / `Bug`) when `is_proposed` —
+   *  shown as a chip on the proposal card. Empty for ordinary worklogs. */
+  issue_type?: string
 }
 
 export interface WorklogsResponse {
