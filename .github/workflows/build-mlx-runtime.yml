@@ -61,7 +61,9 @@ on:
       - "runtime-staging-v*"  # staging channel → runtime-staging
 
 permissions:
-  contents: write   # publish jobs attach assets to the release
+  contents: read   # least-privilege default; only the publish jobs override to write.
+                   # gate/build/smoke run third-party code (pip backends, the built
+                   # runtime) and must not hold a release-write token.
 
 jobs:
   gate:
@@ -151,6 +153,9 @@ jobs:
     needs: [gate, smoke]
     if: needs.gate.outputs.should_publish == 'true' && needs.gate.outputs.channel == 'runtime-staging'
     runs-on: ubuntu-latest
+    # Only the publish jobs need write — they create/upload the channel release.
+    permissions:
+      contents: write
     # Serialize publishes per channel and never cancel a publish mid-upload.
     concurrency:
       group: mlx-runtime-publish-staging
@@ -179,6 +184,9 @@ jobs:
     needs: [gate, smoke]
     if: needs.gate.outputs.should_publish == 'true' && needs.gate.outputs.channel == 'runtime-latest'
     runs-on: ubuntu-latest
+    # Only the publish jobs need write — they create/upload the channel release.
+    permissions:
+      contents: write
     # The production-runtime Environment carries the required-reviewer rule — a
     # maintainer must approve before this job runs and customers get the runtime.
     environment: production-runtime
