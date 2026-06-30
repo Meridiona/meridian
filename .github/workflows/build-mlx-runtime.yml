@@ -154,6 +154,11 @@ jobs:
     env:
       CHANNEL: runtime-staging
     steps:
+      # The publish logic lives in scripts/publish-runtime-channel.sh, so the repo
+      # must be checked out — and BEFORE download-artifact, since actions/checkout
+      # cleans the workspace and would otherwise wipe the downloaded dist/.
+      - uses: actions/checkout@v7
+
       - name: Download runtime artifact
         uses: actions/download-artifact@v8
         with:
@@ -179,6 +184,10 @@ jobs:
     env:
       CHANNEL: runtime-latest
     steps:
+      # See publish-staging: checkout (for the publish script) must precede
+      # download-artifact so it doesn't clean away the downloaded dist/.
+      - uses: actions/checkout@v7
+
       - name: Download runtime artifact
         uses: actions/download-artifact@v8
         with:
