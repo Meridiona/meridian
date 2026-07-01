@@ -21,8 +21,14 @@ use tauri_plugin_opener::OpenerExt;
 /// `open_in_browser(ui_base())` which pointed at localhost:3939 — the Node
 /// server was retired in Stage 5. Points at the app root ("") — the old
 /// "today" route was retired when the dashboard folded into one page.
+///
+/// Always dismisses the popover first (see [`dismiss_popover`]) — a
+/// window-opening action and the popover being left on screen over the
+/// window it just opened are mutually exclusive states, regardless of which
+/// caller (popover, tray menu, notification click) triggered this.
 #[tauri::command]
 pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
+    dismiss_popover(&app);
     if let Some(win) = app.get_webview_window("dashboard") {
         let _ = win.show();
         let _ = win.set_focus();
@@ -31,7 +37,10 @@ pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     match WebviewWindowBuilder::new(&app, "dashboard", WebviewUrl::App("".into()))
-        .title("Meridian — Dashboard")
+        // Empty title bar text — the in-page Toolbar already shows the
+        // Meridian mark + wordmark centered at the top, so a second
+        // "Meridian — Dashboard" label in the OS title bar is redundant.
+        .title("")
         .inner_size(1100.0, 760.0)
         .decorations(true)
         .resizable(true)
@@ -85,8 +94,11 @@ pub async fn open_setup(app: tauri::AppHandle) -> Result<(), String> {
 /// one of the wizard's known keys; anything else is rejected so the frontend
 /// can't open an arbitrary URL. We always offer this button regardless of
 /// current grant state — the user may need to fix a revoked permission too.
+/// Dismisses the popover first (see [`dismiss_popover`]) — a no-op when
+/// called from the setup wizard, where the popover is already hidden.
 #[tauri::command]
 pub async fn open_permission_pane(app: tauri::AppHandle, pane: String) -> Result<(), String> {
+    dismiss_popover(&app);
     let url = match pane.as_str() {
         "screen_recording" => {
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
@@ -113,11 +125,26 @@ pub fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
-/// Hide the popover (main) window. Called from app.js on Escape keydown.
-/// The popover runs as a non-activating NSPanel on macOS so Focused(false)
-/// never fires — Escape is the keyboard dismiss path.
+/// Hide the popover (main) window. Called from app.js on Escape keydown, and
+/// internally by [`dismiss_popover`] — see that function for why any window-
+/// opening popover action goes through it instead of relying on the caller to
+/// remember to hide the popover itself.
 #[tauri::command]
 pub fn hide_popover(app: tauri::AppHandle) {
+    dismiss_popover(&app);
+}
+
+/// Hide the popover if it's visible — a no-op otherwise (safe to call
+/// unconditionally regardless of caller). Every command that opens a
+/// separate window on the popover's behalf (dashboard, worklogs, a System
+/// Settings pane) calls this itself, server-side, instead of trusting the
+/// frontend to invoke a second "now hide yourself" command after the fact:
+/// two independent `invoke()` calls from JS race the IPC round-trip with no
+/// ordering guarantee, so a client-side "open, then hide" pattern can and did
+/// leave the popover on screen. Doing it here makes the two atomic from the
+/// caller's perspective and works for every future caller (tray menu,
+/// notification click, …) without needing to repeat the client-side wiring.
+fn dismiss_popover(app: &tauri::AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.hide();
     }

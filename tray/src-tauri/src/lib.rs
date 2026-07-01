@@ -173,7 +173,7 @@ pub fn run() {
                                     // using the click rect — same approach as the tooltip.
                                     // tauri-plugin-positioner's TrayCenter placed the window
                                     // overlapping the menu bar on macOS 14+.
-                                    let pop_w = 384_i32;
+                                    let pop_w = 344_i32;
                                     let icon_pos = rect.position.to_physical::<i32>(1.0);
                                     let icon_size = rect.size.to_physical::<i32>(1.0);
                                     let x = (icon_pos.x + icon_size.width / 2 - pop_w / 2).max(0);
@@ -439,6 +439,7 @@ pub fn run() {
             commands::restart_daemon,
             commands::toggle_daemon,
             commands::pause_for_duration,
+            commands::pause_indefinitely,
             commands::get_daemon_status,
             // dashboard DB reads (ported /api/* GETs)
             commands::get_active,

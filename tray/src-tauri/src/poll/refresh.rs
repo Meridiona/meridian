@@ -182,20 +182,29 @@ pub(super) async fn refresh_today(pool: &SqlitePool, state: &Arc<Mutex<AppState>
     }
 }
 
-/// Track the drafted-worklog count for the tray tooltip/badge only (direct DB).
-/// The "worklog ready" notification itself is emitted by the daemon's worklog
-/// scheduler into the notification outbox and delivered via `drain_notifications`
-/// — not here.
+/// Track the drafted-worklog count and today's logged time for the popover
+/// (direct DB). "Logged" sums `time_spent_seconds` across today's
+/// approved/posted work logs — the same definition the dashboard's Overview
+/// panel uses for its "Logged" stat. The "worklog ready" notification itself
+/// is emitted by the daemon's worklog scheduler into the notification outbox
+/// and delivered via `drain_notifications` — not here.
 pub(super) async fn refresh_worklogs(pool: &SqlitePool, state: &Arc<Mutex<AppState>>) {
     let today = meridian_core::date::today_string();
     match meridian_core::worklogs::get_worklogs(pool, &today).await {
         Ok(w) => {
             let count = w.items.iter().filter(|i| i.state == "drafted").count() as u32;
+            let logged_s: u64 = w
+                .items
+                .iter()
+                .filter(|i| i.state == "approved" || i.state == "posted")
+                .map(|i| i.time_spent_seconds.max(0) as u64)
+                .sum();
             let Ok(mut s) = state.lock() else {
                 tracing::warn!("refresh_worklogs: state lock poisoned");
                 return;
             };
             s.drafts_count = count;
+            s.logged_s = logged_s;
         }
         Err(e) => tracing::warn!(error = %e, "refresh_worklogs failed"),
     }

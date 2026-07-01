@@ -115,11 +115,12 @@ pub async fn pause_for_duration(
         return Ok(());
     }
 
-    // Defence-in-depth: the JS layer caps at 480 min via parsePauseMins, but
-    // the Rust command is also callable directly, so reject anything beyond 8 h.
-    if seconds > 28_800 {
+    // Defence-in-depth: the popover's presets top out at "pause until tomorrow"
+    // (computed seconds-until-9am can run past 8h if paused late at night), but
+    // the Rust command is also callable directly, so reject anything beyond 24h.
+    if seconds > 86_400 {
         return Err(format!(
-            "pause duration {} s exceeds 8-hour maximum (28800 s)",
+            "pause duration {} s exceeds 24-hour maximum (86400 s)",
             seconds
         ));
     }
@@ -135,7 +136,7 @@ pub async fn pause_for_duration(
     };
     if let Some((prev_started, prev_src)) = prev {
         let kind = match prev_src {
-            PauseSource::Timed => "tracking_paused",
+            PauseSource::Timed | PauseSource::Indefinite => "tracking_paused",
             PauseSource::Schedule => "schedule_paused",
         };
         let duration_s = now.saturating_sub(prev_started) as i64;
@@ -199,6 +200,75 @@ pub async fn pause_for_duration(
     Ok(())
 }
 
+/// Pause in-process capture with no expiry ("Pause indefinitely") — only a
+/// manual "Resume now" (`pause_for_duration(0)`) clears it. No auto-resume
+/// timer is spawned, unlike [`pause_for_duration`].
+///
+/// # Who calls this
+/// The popover's "Pause indefinitely" duration option (`tray/src/app.js`).
+#[tauri::command]
+#[tracing::instrument(skip(app, state, db_pool))]
+pub async fn pause_indefinitely(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<Mutex<AppState>>>,
+    db_pool: State<'_, Option<SqlitePool>>,
+) -> Result<(), String> {
+    let pool = db_pool.inner().clone();
+    let now = now_secs();
+
+    // If a pause is already active (e.g. a schedule pause), close it out first
+    // by writing a gap row for the T0→now period before overwriting state.
+    let prev = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        s.pause_started_at.zip(s.pause_source.clone())
+    };
+    if let Some((prev_started, prev_src)) = prev {
+        let kind = match prev_src {
+            PauseSource::Timed | PauseSource::Indefinite => "tracking_paused",
+            PauseSource::Schedule => "schedule_paused",
+        };
+        let duration_s = now.saturating_sub(prev_started) as i64;
+        if duration_s > 0 {
+            if let Some(p) = pool.as_ref() {
+                if let Err(e) = meridian_core::insert_pause_gap(
+                    p,
+                    &secs_to_iso(prev_started),
+                    &secs_to_iso(now),
+                    duration_s,
+                    kind,
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, kind, "failed to write gap for interrupted pause");
+                }
+            }
+        }
+    }
+
+    {
+        let mut s = state.lock().map_err(|e| e.to_string())?;
+        drop(s.engine_cancel.take());
+        drop(s.ui_consumer_cancel.take());
+        s.capture_paused.store(true, Ordering::Relaxed);
+        s.pause_until = None;
+        s.pause_source = Some(PauseSource::Indefinite);
+        s.pause_started_at = Some(now);
+        s.schedule_resume_at = None;
+    }
+
+    if let Ok(s) = state.lock() {
+        let _ = app.emit("status-update", s.to_payload());
+    }
+
+    tracing::info!("capture paused indefinitely");
+
+    if crate::poll::notifications_allowed("system.pause").await {
+        sys::notify(&app, "Tracking paused", "Paused until you resume.");
+    }
+
+    Ok(())
+}
+
 /// Human-readable duration label for the pause toast notification.
 /// Mirrors the JS `pauseLabel` in `tray/src/pause-utils.js`.
 ///
@@ -250,7 +320,7 @@ pub(crate) async fn resume_capture(
 
     if let (Some(started_secs), Some(src)) = (started, source) {
         let kind = match src {
-            PauseSource::Timed => "tracking_paused",
+            PauseSource::Timed | PauseSource::Indefinite => "tracking_paused",
             PauseSource::Schedule => "schedule_paused",
         };
         let now = now_secs();

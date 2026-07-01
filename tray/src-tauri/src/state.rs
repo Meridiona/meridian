@@ -21,6 +21,9 @@ pub enum PauseSource {
     Timed,
     /// Auto-paused because current time is outside the configured work hours.
     Schedule,
+    /// User paused with no expiry ("Pause indefinitely") — no auto-resume timer;
+    /// only a manual "Resume now" clears it. See `commands::pause_indefinitely`.
+    Indefinite,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -57,7 +60,7 @@ pub struct StatusPayload {
     /// Unix timestamp (ms) when the current timed pause expires. `None` when
     /// not paused or when paused by a schedule (no fixed end time).
     pub pause_until_ms: Option<u64>,
-    /// `"timed"` | `"schedule"` when capture is actively paused; `None` otherwise.
+    /// `"timed"` | `"schedule"` | `"indefinite"` when capture is actively paused; `None` otherwise.
     pub pause_source: Option<String>,
     /// Display hint for the schedule-paused panel: the work-hours start time
     /// ("09:00"). `None` when not schedule-paused.
@@ -90,6 +93,10 @@ pub struct StatusPayload {
     pub autonomous_s: u64,
     pub switch_count: u32,
     pub drafts_count: u32,
+    /// Total `time_spent_seconds` across today's approved/posted work logs — the
+    /// popover's "Logged" tile. Computed alongside `drafts_count` in
+    /// [`crate::poll::refresh::refresh_worklogs`].
+    pub logged_s: u64,
     pub ui_reachable: bool,
 }
 
@@ -133,6 +140,7 @@ pub struct AppState {
     pub today: TodayBreakdown,
     pub switch_count: u32,
     pub drafts_count: u32,
+    pub logged_s: u64,
     pub ui_reachable: bool,
     pub last_poll: Option<Instant>,
     pub daemon_was_healthy: bool,
@@ -168,6 +176,7 @@ impl Default for AppState {
             today: TodayBreakdown::default(),
             switch_count: 0,
             drafts_count: 0,
+            logged_s: 0,
             ui_reachable: false,
             last_poll: None,
             daemon_was_healthy: false,
@@ -198,6 +207,7 @@ impl AppState {
             pause_source: self.pause_source.as_ref().map(|s| match s {
                 PauseSource::Timed => "timed".to_string(),
                 PauseSource::Schedule => "schedule".to_string(),
+                PauseSource::Indefinite => "indefinite".to_string(),
             }),
             schedule_resume_at: self.schedule_resume_at.clone(),
             active_app: active.map(|a| a.app_name.clone()),
@@ -221,6 +231,7 @@ impl AppState {
             autonomous_s: self.today.autonomous_s,
             switch_count: self.switch_count,
             drafts_count: self.drafts_count,
+            logged_s: self.logged_s,
             ui_reachable: self.ui_reachable,
         }
     }
