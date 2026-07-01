@@ -180,7 +180,9 @@ def classify_hour(
         return ClassificationOutcome(bindings=t1, tier_used=1)
 
     all_t2: list[TaskBinding] = []
+    tier2_ran = False
     if backlog:
+        tier2_ran = True
         with tracer.start_as_current_span("worklog.classify.tier2") as t2_sp:
             for i in range(0, len(backlog), _BATCH):
                 bi = i // _BATCH
@@ -198,7 +200,11 @@ def classify_hour(
             t2_sp.set_attribute("matched", len(all_t2))
 
     if t1 or all_t2:
-        tier = 2 if all_t2 else 1
+        # tier_used reflects the deepest tier that was INVOKED, not just where the
+        # surviving matches came from: a tier-1 hit of 1 (< 2) still triggers a full
+        # tier-2 backlog scan, so that LLM work must show as tier 2 in traces/logs
+        # even when it adds no matches. Per-match provenance lives on TaskBinding.tier.
+        tier = 2 if tier2_ran else 1
         return ClassificationOutcome(bindings=t1 + all_t2, tier_used=tier)
     log.info("classify: no task matched — proposing new ticket")
     return ClassificationOutcome()
