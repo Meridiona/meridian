@@ -1,7 +1,8 @@
 """System prompt for the activity reporter.
 
-Produces a structured activity report from distilled screen-capture data.
-Format: TLDR + Core Tasks + Decisions + Resources.
+Produces ONE consolidated activity report from the hour's distilled screen-capture
+data AND any coding-agent session summaries (woven into the same story, not a
+separate section). Format: TLDR + Core Tasks + Decisions + Resources.
 """
 from __future__ import annotations
 
@@ -39,6 +40,8 @@ List documentation pages, repos, articles, videos, dashboards, or other material
 ---
 
 RULES
+- CONSOLIDATE everything into ONE story. Coding-agent sessions are NOT a separate task or section — weave them into the same work threads as the screen activity. If a coding-agent session and the screen capture describe the same work (same files, same feature, same ticket), MERGE them into a single thread; do not double-count or list "coding agent work" on its own.
+- PRESERVE concrete identifiers verbatim — ticket keys (e.g. KAN-241), file paths, function names, PR numbers, branch-independent specifics. A downstream matcher needs these to bind the work to a ticket; never genericize or drop them.
 - Infer the PURPOSE, not just the activity. If the screen shows edits to a prompt file + model test runs, say what the developer was trying to improve and why — not just "edited prompt file and ran tests."
 - Extract identifiable specifics: system names, service names, model names, tool names — anything that helps a matcher connect this to a ticket.
 - Do not make up facts, numbers, or names not present in the input.

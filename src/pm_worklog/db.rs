@@ -281,6 +281,7 @@ pub struct ApprovedProposal {
     pub source_hour: String,
     pub title: String,
     pub description: String,
+    pub issue_type: String,
     pub confidence: f64,
     pub time_spent_seconds: i64,
     pub window_start: Option<String>,
@@ -291,7 +292,7 @@ pub struct ApprovedProposal {
 /// Approved proposals that still need their real ticket created, oldest first.
 pub async fn fetch_approved_proposals(pool: &SqlitePool) -> Result<Vec<ApprovedProposal>> {
     let rows = sqlx::query(
-        "SELECT id, day_utc, source_hour, title, description, confidence, \
+        "SELECT id, day_utc, source_hour, title, description, issue_type, confidence, \
                 time_spent_seconds, window_start, window_end, worklog_payload_json \
          FROM pm_proposed_tasks \
          WHERE state = 'approved' AND (created_task_key IS NULL OR created_task_key = '') \
@@ -309,6 +310,9 @@ pub async fn fetch_approved_proposals(pool: &SqlitePool) -> Result<Vec<ApprovedP
             source_hour: r.get("source_hour"),
             title: r.get("title"),
             description: r.get("description"),
+            issue_type: r
+                .try_get("issue_type")
+                .unwrap_or_else(|_| "Task".to_string()),
             confidence: r.try_get("confidence").unwrap_or(0.0),
             time_spent_seconds: r.try_get("time_spent_seconds").unwrap_or(3600),
             window_start: r.try_get("window_start").ok(),

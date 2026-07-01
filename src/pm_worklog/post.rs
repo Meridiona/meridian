@@ -360,6 +360,7 @@ pub async fn process_approved_proposals(pool: &SqlitePool, config: &Config) -> R
             provider,
             &p.title,
             &p.description,
+            &p.issue_type,
             sample.as_deref(),
         )
         .await

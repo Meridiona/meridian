@@ -451,6 +451,10 @@ function ProposedCard({ w, busy, onApprove, onDismiss, onSaveTitle, onSaveBody }
         <div className="flex items-center gap-3 min-w-0">
           <span className="text-[10px] uppercase tracking-[0.14em] px-2 py-0.5 rounded shrink-0"
             style={{ color: 'var(--paper)', background: 'var(--accent)' }}>New ticket</span>
+          {w.issue_type && (
+            <span className="text-[10px] uppercase tracking-[0.12em] px-2 py-0.5 rounded shrink-0"
+              style={{ color: 'var(--ink-2)', border: '1px solid var(--rule-2)' }}>{w.issue_type}</span>
+          )}
           <span className="font-mono tnum text-[11px]" style={{ color: 'var(--ink-3)' }}>
             {fmtClock(w.window_start)}{w.window_end ? ` – ${fmtClock(w.window_end)}` : ''}
           </span>

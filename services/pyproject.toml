@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "meridian-agents"
-version = "1.67.0"
+version = "1.67.1"
 description = "Meridian agents — MLX classifier server and Jira worklog synthesis for meridian.db"
 requires-python = ">=3.11"
 authors = [{ name = "Meridiona" }]
@@ -55,9 +55,17 @@ mlx = [
 # session bundle + tools, no vector DB.
 pm_worklog_update = [
     "agno>=2.6,<3",
+    "openinference-instrumentation-agno>=0.1,<1",
     "pydantic>=2.10,<3",
     "sqlalchemy>=2.0,<3",
     "aiosqlite>=0.20,<1",
+]
+
+# Dev-only test tooling — NOT shipped in the MLX runtime (the runtime installs
+# `.[mlx]`). Install with: pip install -e ".[dev]". Runs the agents/tests/ suite
+# (see [tool.pytest.ini_options]); integration/slow tests are skipped by default.
+dev = [
+    "pytest>=8,<9",
 ]
 
 [project.scripts]

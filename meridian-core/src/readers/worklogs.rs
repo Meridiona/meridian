@@ -71,6 +71,11 @@ pub struct WorklogItem {
     /// edit/approve/dismiss commands take. `None` for ordinary worklogs.
     #[serde(default)]
     pub proposed_id: Option<i64>,
+    /// The proposed ticket's issue type (`Task` / `Bug`, migration 051) when
+    /// `is_proposed` — surfaced as a chip on the proposal card and used as the
+    /// issue type when the ticket is created. Empty for ordinary worklogs.
+    #[serde(default)]
+    pub issue_type: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -210,6 +215,7 @@ pub async fn get_worklogs(pool: &SqlitePool, day: &str) -> anyhow::Result<Worklo
             edited: r.edited_at.is_some(),
             is_proposed: false,
             proposed_id: None,
+            issue_type: String::new(),
         });
     }
 
@@ -243,6 +249,7 @@ struct RawProposedRow {
     source_hour: String,
     title: String,
     reasoning: String,
+    issue_type: String,
     confidence: f64,
     time_spent_seconds: i64,
     window_start: Option<String>,
@@ -262,7 +269,7 @@ async fn append_proposed_items(
 ) -> anyhow::Result<()> {
     let rows = sqlx::query_as::<_, RawProposedRow>(
         r#"
-        SELECT id, source_hour, title, reasoning, confidence,
+        SELECT id, source_hour, title, reasoning, issue_type, confidence,
                time_spent_seconds, window_start, window_end, worklog_payload_json
         FROM pm_proposed_tasks
         WHERE day_utc = ? AND state = 'proposed'
@@ -332,6 +339,7 @@ async fn append_proposed_items(
             edited: false,
             is_proposed: true,
             proposed_id: Some(r.id),
+            issue_type: r.issue_type,
         });
     }
     Ok(())
