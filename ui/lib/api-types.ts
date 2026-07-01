@@ -159,6 +159,17 @@ export interface WorklogsResponse {
   counts: Record<string, number>
 }
 
+// ── Hour text (`get_hour_text`) ──────────────────────────────────────────────
+
+export interface HourTextResponse {
+  hour: string
+  // The distilled activity body — null until the hour has been processed (or
+  // for a non-today day; the reader is today-only). Not an error state.
+  body: string | null
+  out_chars: number | null
+  reduction_pct: number | null
+}
+
 // ── Week (`get_week`) ────────────────────────────────────────────────────────
 
 export interface DaySummary {

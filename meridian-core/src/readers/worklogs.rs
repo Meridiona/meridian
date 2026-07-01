@@ -242,7 +242,8 @@ pub async fn get_worklogs(pool: &SqlitePool, day: &str) -> anyhow::Result<Worklo
     })
 }
 
-/// Raw `pm_proposed_tasks` row for the day's still-`proposed` tickets.
+/// Raw `pm_proposed_tasks` row for the day's not-yet-created proposals
+/// (`proposed` or `approved` awaiting ticket creation).
 #[derive(FromRow)]
 struct RawProposedRow {
     id: i64,
@@ -250,6 +251,7 @@ struct RawProposedRow {
     title: String,
     reasoning: String,
     issue_type: String,
+    state: String,
     confidence: f64,
     time_spent_seconds: i64,
     window_start: Option<String>,
@@ -257,9 +259,16 @@ struct RawProposedRow {
     worklog_payload_json: Option<String>,
 }
 
-/// Read `pm_proposed_tasks` (state='proposed') for `day` and push each as a
-/// `WorklogItem` with `is_proposed = true`. Degrades gracefully if the table or
-/// the migration-050 columns are absent (older DB) — returns without erroring.
+/// Read `pm_proposed_tasks` for `day` and push each not-yet-created proposal
+/// (`state IN ('proposed', 'approved')`, no real ticket minted yet) as a
+/// `WorklogItem` with `is_proposed = true`. An approved proposal stays visible
+/// here — carrying its real `approved` state — until the daemon's proposal
+/// sweep creates the ticket and inserts the real `pm_worklogs` row (at which
+/// point `created_task_key` is set and this row drops out, so it isn't shown
+/// twice); without the `approved` branch an approved-but-not-yet-swept
+/// proposal would vanish from the timeline for the length of the sweep gap.
+/// Degrades gracefully if the table or the migration-050 columns are absent
+/// (older DB) — returns without erroring.
 #[tracing::instrument(skip(pool, counts, items))]
 async fn append_proposed_items(
     pool: &SqlitePool,
@@ -269,10 +278,12 @@ async fn append_proposed_items(
 ) -> anyhow::Result<()> {
     let rows = sqlx::query_as::<_, RawProposedRow>(
         r#"
-        SELECT id, source_hour, title, reasoning, issue_type, confidence,
+        SELECT id, source_hour, title, reasoning, issue_type, state, confidence,
                time_spent_seconds, window_start, window_end, worklog_payload_json
         FROM pm_proposed_tasks
-        WHERE day_utc = ? AND state = 'proposed'
+        WHERE day_utc = ?
+          AND state IN ('proposed', 'approved')
+          AND (created_task_key IS NULL OR created_task_key = '')
         ORDER BY source_hour
         "#,
     )
@@ -293,7 +304,10 @@ async fn append_proposed_items(
     tracing::debug!(rows = rows.len(), "worklogs.read.pm_proposed_tasks");
 
     for r in rows {
-        *counts.entry("proposed".to_string()).or_insert(0) += 1;
+        // Bucket by the row's real state (proposed/approved) so an approved
+        // proposal counts alongside real approved worklogs, not under a
+        // separate always-"proposed" key.
+        *counts.entry(r.state.clone()).or_insert(0) += 1;
 
         let payload: Value = r
             .worklog_payload_json
@@ -321,7 +335,7 @@ async fn append_proposed_items(
             provider: String::new(),
             window_start,
             window_end: r.window_end,
-            state: "proposed".to_string(),
+            state: r.state,
             confidence: r.confidence,
             coverage: 0.0,
             time_spent_seconds: r.time_spent_seconds,

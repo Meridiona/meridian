@@ -14,11 +14,13 @@
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_opener::OpenerExt;
 
-/// Open (or focus) the in-app dashboard window (Today/Week from Rust commands,
-/// no browser, no Node server). Opens maximized so the app appears in the dock;
-/// switches activation policy to Regular to support dock icon + window activation.
-/// Replaces the old `open_in_browser(ui_base())` which pointed at localhost:3939
-/// — the Node server was retired in Stage 5.
+/// Open (or focus) the in-app dashboard window — the single-page Meridian
+/// Timeline UI, served from Rust commands, no browser, no Node server. Opens
+/// maximized so the app appears in the dock; switches activation policy to
+/// Regular to support dock icon + window activation. Replaces the old
+/// `open_in_browser(ui_base())` which pointed at localhost:3939 — the Node
+/// server was retired in Stage 5. Points at the app root ("") — the old
+/// "today" route was retired when the dashboard folded into one page.
 #[tauri::command]
 pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("dashboard") {
@@ -28,7 +30,7 @@ pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
     }
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-    match WebviewWindowBuilder::new(&app, "dashboard", WebviewUrl::App("today".into()))
+    match WebviewWindowBuilder::new(&app, "dashboard", WebviewUrl::App("".into()))
         .title("Meridian — Dashboard")
         .inner_size(1100.0, 760.0)
         .decorations(true)

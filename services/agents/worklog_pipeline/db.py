@@ -279,6 +279,37 @@ def retract_proposed_task(
     return cur.rowcount
 
 
+def persist_hour_text(
+    conn: sqlite3.Connection,
+    *,
+    hour_start: str,
+    body: str,
+    out_chars: int,
+    reduction_pct: float,
+) -> None:
+    """Persist the distilled hour body onto the pm_worklog_hours ledger row.
+
+    Keyed on ``hour_start`` — the UTC ``+00:00`` hour bound the Rust driver's
+    ledger uses (``ensure_hour`` inserts this row before the pipeline runs). Runs
+    for EVERY distilled hour, even ones that yield no worklog, so the dashboard can
+    show the hour's activity independent of ticket matching. Degrades silently on a
+    pre-053 DB where the text columns don't yet exist.
+    """
+    try:
+        conn.execute(
+            "UPDATE pm_worklog_hours "
+            "SET hour_text = ?, hour_text_chars = ?, hour_text_reduction_pct = ? "
+            "WHERE hour_start = ?",
+            (body, out_chars, reduction_pct, hour_start),
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        log.warning(
+            "persist_hour_text: pm_worklog_hours text columns absent (pre-053 DB) — skipped",
+            extra={"hour_start": hour_start},
+        )
+
+
 def upsert_proposed_task(
     conn: sqlite3.Connection,
     *,

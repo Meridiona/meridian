@@ -45,6 +45,28 @@ pub async fn get_worklogs(
         })
 }
 
+/// The distilled activity text for one hour (new backend work — migration 053).
+/// `day` defaults to today (local) when omitted, matching [`get_worklogs`]; the
+/// reader is today-only, so a past `day` returns an empty response.
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn get_hour_text(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    day: Option<String>,
+    hour: String,
+) -> Result<meridian_core::hour_text::HourTextResponse, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let day = day.unwrap_or_else(meridian_core::date::today_string);
+    meridian_core::hour_text::get_hour_text(pool, &day, &hour)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "get_hour_text failed");
+            e.to_string()
+        })
+}
+
 /// Ack for the worklog writes — mirrors the routes' `{ ok, id, state }`.
 #[derive(Debug, Serialize)]
 pub struct WorklogWriteAck {

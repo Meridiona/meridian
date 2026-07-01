@@ -446,6 +446,7 @@ pub fn run() {
             commands::get_week,
             commands::get_coding_agents,
             commands::get_worklogs,
+            commands::get_hour_text,
             commands::get_tasks,
             commands::get_task_detail,
             commands::get_plan,

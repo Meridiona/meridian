@@ -1,17 +1,28 @@
 @import "tailwindcss";
 
-/* ─── Meridian design system — amber gold edition ───────────────────────────
+/* ─── Meridian Timeline design system ────────────────────────────────────────
    Tailwind v4: all tokens live here via @theme. No tailwind.config.js.
-   Utilities generated: text-ink, bg-surface, border-rule, etc.
+   Utilities generated: text-title, bg-panel, border-hair, etc.
+
+   Two token generations coexist in this file:
+   - The NEW `--t-*`-prefixed tokens (three palettes: lilac/blush/ink, chosen
+     via html[data-theme]) drive every current-generation surface built for
+     the one-pager Meridian Timeline UI (ui/components/timeline/**).
+   - The OLD `--paper`/`--surface`/`--ink`/`--accent`/`--type-*` tokens
+     (amber-gold edition, driven by html.dark) are kept only so the
+     unreachable-from-nav Sessions/Week routes and the setup wizard don't
+     visually break. Do not build new surfaces against the old tokens.
    ─────────────────────────────────────────────────────────────────────────── */
 
 @theme {
-  /* Fonts */
-  --font-sans:  var(--font-geist-sans);
-  --font-mono:  var(--font-geist-mono);
+  /* Fonts — Plus Jakarta Sans / JetBrains Mono is the Timeline design's type
+     system. --font-serif (Georgia) is kept only for the legacy .type-* scale
+     below and the setup wizard's Instrument Serif usage. */
+  --font-sans:  var(--font-pjs);
+  --font-mono:  var(--font-jbmono);
   --font-serif: Georgia, 'Times New Roman', serif;
 
-  /* Colors → Tailwind utilities (text-*, bg-*, border-*) */
+  /* Legacy palette → Tailwind utilities (kept for Sessions/Week/setup) */
   --color-paper:       var(--paper);
   --color-surface:     var(--surface);
   --color-surface-2:   var(--surface-2);
@@ -26,6 +37,36 @@
   --color-live:        var(--live);
   --color-success:     var(--success);
   --color-warn:        var(--warn);
+
+  /* Timeline palette → Tailwind utilities (text-*, bg-*, border-*) — flat
+     colors only; gradient-valued tokens (--win-bg, --desk, --glow, --chip)
+     are consumed directly via inline style, same convention as --pop-shadow
+     below, since Tailwind color utilities require a single color value. */
+  --color-title:        var(--t-title);
+  --color-muted:        var(--t-muted);
+  --color-faint:        var(--t-faint);
+  --color-faint-2:      var(--t-faint-2);
+  --color-panel:        var(--t-panel);
+  --color-ctrl:         var(--t-ctrl);
+  --color-ctrl-border:  var(--t-ctrl-border);
+  --color-wrap:         var(--t-wrap);
+  --color-row-hover:    var(--t-row-hover);
+  --color-card:         var(--t-card);
+  --color-card-border:  var(--t-card-border);
+  --color-hair:         var(--t-hair);
+  --color-key-bg:       var(--t-key-bg);
+  --color-key-text:     var(--t-key-text);
+  --color-track:        var(--t-track);
+  --color-box:          var(--t-box);
+  --color-input:        var(--t-input);
+  --color-input-border: var(--t-input-border);
+
+  /* Fixed semantic state colors — theme-independent, layered on top of
+     whichever surface palette is active. */
+  --color-state-approved: #10B981;
+  --color-state-rejected: #C7C2D6;
+  --color-state-proposal: #8B5CF6;
+  --color-state-pending:  #F59E0B;
 }
 
 /* ── Palette — light ─────────────────────────────────────────────────────── */
@@ -69,10 +110,108 @@ html.dark {
   --pop-shadow:   0 1px 1px rgba(0,0,0,.4), 0 18px 40px -10px rgba(0,0,0,.6), 0 48px 90px -18px rgba(0,0,0,.66);
 }
 
-/* ── Base ────────────────────────────────────────────────────────────────── */
+/* ── Timeline palettes — lilac / blush / ink ─────────────────────────────────
+   Selected via <html data-theme="lilac|blush|ink">, persisted as
+   RuntimeSettings.theme, applied by ui/lib/theme.ts's applyTheme(). `ink` is
+   a full dark mode. Values ported verbatim from the Claude Design mock's
+   SURF/THEMES token tables. Gradient-valued tokens (--win-bg/--desk/--glow/
+   --chip) are consumed via inline style, not Tailwind utilities.
+   ─────────────────────────────────────────────────────────────────────────── */
+:root, html[data-theme="lilac"] {
+  --win-bg:     linear-gradient(165deg,#FCFBFF 0%,#EEE9FC 48%,#DCD3F3 78%,#CFC2ED 100%);
+  --chrome-bg:  linear-gradient(180deg,#FCFBFF,#F0EAFC);
+  --toolbar-bg: linear-gradient(180deg,#F9F7FE,#F1ECFB);
+  --t-hair:       #E4DDF7;
+  --t-title:      #211D3D;
+  --t-muted:      #6E6A88;
+  --t-faint:      #948FB8;
+  --t-faint-2:    #ACA6CE;
+  --t-panel:      #FAF8FF;
+  --t-ctrl:       #FFFFFF;
+  --t-ctrl-border:#E4DEF6;
+  --t-wrap:       #EFEAFB;
+  --t-row-hover:  #F1ECFE;
+  --row-hover-ring: #DED0F8;
+  --t-card:       #FFFFFF;
+  --t-card-border:#E9E3F8;
+  --t-key-bg:     #EEE9FB;
+  --t-key-text:   #3D3860;
+  --t-track:      #EEE9FB;
+  --t-box:        #F4F0FD;
+  --t-input:      #FDFCFF;
+  --t-input-border:#E1D7FA;
+  --desk: radial-gradient(1100px 760px at 18% -12%, #ECEAFF 0%, #E7ECFC 45%, #E9EAF5 100%);
+  --glow: radial-gradient(circle, rgba(139,92,246,.26), transparent 70%);
+  --chip: linear-gradient(135deg,#C4B5FD,#A5B4FC);
+  --is-dark: 0;
+}
+
+html[data-theme="blush"] {
+  --win-bg:     linear-gradient(165deg,#F9F6FF 0%,#E7DEFA 46%,#CFBEF1 78%,#B8A2E8 100%);
+  --chrome-bg:  linear-gradient(180deg,#FAF8FF,#EDE4FB);
+  --toolbar-bg: linear-gradient(180deg,#F7F3FE,#EDE4FB);
+  --t-hair:       #DFD2F5;
+  --t-title:      #241E3D;
+  --t-muted:      #6F6890;
+  --t-faint:      #9791BC;
+  --t-faint-2:    #AEA7CE;
+  --t-panel:      #FAF8FF;
+  --t-ctrl:       #FFFFFF;
+  --t-ctrl-border:#E1D6F5;
+  --t-wrap:       #EDE5FC;
+  --t-row-hover:  #EFE8FD;
+  --row-hover-ring: #D9C9F7;
+  --t-card:       #FFFFFF;
+  --t-card-border:#E5DCF8;
+  --t-key-bg:     #ECE3FC;
+  --t-key-text:   #3D3560;
+  --t-track:      #ECE3FC;
+  --t-box:        #F2ECFD;
+  --t-input:      #FCFBFF;
+  --t-input-border:#DED1F9;
+  --desk: radial-gradient(1100px 760px at 82% -10%, #EDE7FC 0%, #E3DEFA 46%, #E6E3F6 100%);
+  --glow: radial-gradient(circle, rgba(124,58,237,.28), transparent 70%);
+  --chip: linear-gradient(135deg,#C4B5FD,#8B7FDB);
+  --is-dark: 0;
+}
+
+html[data-theme="ink"] {
+  --win-bg:     linear-gradient(165deg,#332B72 0%,#211C4A 45%,#171331 78%,#0E0C1F 100%);
+  --chrome-bg:  linear-gradient(180deg,#332B72,#221D4E);
+  --toolbar-bg: linear-gradient(180deg,#241F52,#1B1740);
+  --t-hair:       rgba(255,255,255,.09);
+  --t-title:      #F4F1FC;
+  --t-muted:      #BBB2DC;
+  --t-faint:      #9A8FC2;
+  --t-faint-2:    #84789F;
+  --t-panel:      #211C48;
+  --t-ctrl:       rgba(255,255,255,.08);
+  --t-ctrl-border:rgba(255,255,255,.14);
+  --t-wrap:       rgba(255,255,255,.07);
+  --t-row-hover:  rgba(255,255,255,.06);
+  --row-hover-ring: rgba(255,255,255,.14);
+  --t-card:       #2E2864;
+  --t-card-border:rgba(255,255,255,.1);
+  --t-key-bg:     rgba(255,255,255,.1);
+  --t-key-text:   #E9E4F8;
+  --t-track:      rgba(255,255,255,.1);
+  --t-box:        rgba(255,255,255,.055);
+  --t-input:      rgba(255,255,255,.07);
+  --t-input-border:rgba(255,255,255,.18);
+  --desk: radial-gradient(1000px 720px at 20% -8%, #2E2658 0%, #201A3E 46%, #14112A 100%);
+  --glow: radial-gradient(circle, rgba(139,92,246,.55), transparent 70%);
+  --chip: linear-gradient(135deg,#3A3470,#0E0B1F);
+  --is-dark: 1;
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────────
+   Uses the Timeline palette (not the legacy --paper/--ink) so there's no
+   flash of the old amber-gold surface before MeridianTimelineShell mounts
+   and repaints with --win-bg. Sessions/Week/setup set their own explicit
+   surface colors and aren't affected by this default. */
 html, body {
-  background: var(--paper);
-  color: var(--ink);
+  background: var(--win-bg);
+  color: var(--t-title);
 }
 
 * { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
@@ -84,7 +223,7 @@ body, .font-sans {
 }
 
 .font-mono {
-  font-family: GeistMono, ui-monospace, SFMono-Regular, monospace;
+  font-family: var(--font-jbmono), ui-monospace, SFMono-Regular, monospace;
   font-feature-settings: 'tnum', 'ss01';
 }
 
@@ -318,4 +457,88 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
 }
 .meridian-switch-thumb[data-state="checked"] {
   transform: translateX(20px);
+}
+
+/* ── Timeline type scale ──────────────────────────────────────────────────────
+   Plus Jakarta Sans, replacing the legacy Georgia .type-* scale for every
+   surface under ui/components/timeline/**. Mirrors the mock's literal `font:`
+   shorthand values: negative letter-spacing on large bold text, positive on
+   small uppercase labels. Colour is NOT included — pair with text-title /
+   text-muted / etc.
+   ─────────────────────────────────────────────────────────────────────────── */
+.mt-title {
+  font: 800 17px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+}
+
+.mt-title-lg {
+  font: 800 19px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+}
+
+/* Modal title (Review/Cleanup/Plan/Settings/Tasks headers) — STYLESHEET.md §1:
+   Jakarta 800, 17–22px, line 1.2, -.02em. Distinct from .mt-title-lg (used for
+   the swipe-card ticket title, which specs its own 1.3 line-height). */
+.mt-modal-title {
+  font: 800 20px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+/* Worklog card title — STYLESHEET.md §1: Jakarta 700, 13.5px, line 1.3, -.01em. */
+.mt-card-title {
+  font: 700 13.5px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+
+/* Toolbar date — STYLESHEET.md §1: Jakarta 700, 15px, line 1.1. */
+.mt-toolbar-date {
+  font: 700 15px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  line-height: 1.1;
+}
+
+.mt-greeting {
+  font: 800 20px/1.25 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  letter-spacing: -0.02em;
+}
+
+.mt-label {
+  font: 700 11px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.mt-stat {
+  font: 800 17px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  letter-spacing: -0.02em;
+}
+
+.mt-body {
+  font: 500 13px/1.5 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+}
+
+.mt-body-sm {
+  font: 500 12px/1.45 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+}
+
+/* Status pill (NEEDS REVIEW/DRAFT/APPROVED) — STYLESHEET.md §1: Mono, not
+   Jakarta — was previously set to Jakarta by mistake. */
+.mt-chip {
+  font: 700 9.5px var(--font-jbmono), ui-monospace, monospace;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+/* Ticket key / hour label / time / duration — STYLESHEET.md §1: Mono,
+   600–700 weight, .02em tracking. Callers still set their own size via an
+   arbitrary Tailwind value (sizes vary 10.5–12px per row); this class only
+   owns family/weight/tracking, which were previously missing entirely. */
+.mt-mono-sm {
+  font-family: var(--font-jbmono), ui-monospace, monospace;
+  font-feature-settings: 'tnum';
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }

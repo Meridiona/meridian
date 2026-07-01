@@ -77,8 +77,8 @@ export default function NoticeBar() {
               )}
             </div>
             {n.notice_id.startsWith('pm.') && (
-              <a
-                href="/tasks?integrations=1"
+              <button
+                onClick={() => window.dispatchEvent(new CustomEvent('meridian:open-tasks'))}
                 style={{
                   flexShrink: 0,
                   fontSize: 11,
@@ -94,7 +94,7 @@ export default function NoticeBar() {
                 }}
               >
                 Fix in Tasks →
-              </a>
+              </button>
             )}
           </div>
         )
