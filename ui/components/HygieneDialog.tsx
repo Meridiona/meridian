@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react'
 import { TaskKey, ProviderGlyph, StatusPill } from '@/components/atoms'
 import type { TaskSummary } from '@/lib/api-types'
 import type { HygieneIssue } from '@/lib/hygiene'
-import { load, mutate } from '@/lib/bridge'
+import { load, mutate, openExternal } from '@/lib/bridge'
 
 const PRIORITIES = ['Highest', 'High', 'Medium', 'Low', 'Lowest']
 
@@ -80,7 +80,7 @@ export default function HygieneDialog({ task, onClose, onApplied }: {
             Fixes save straight to your tracker. AI suggestions for text fields are coming.
           </p>
           {task.url && (
-            <a href={task.url} target="_blank" rel="noopener noreferrer"
+            <a href={task.url} onClick={(e) => { e.preventDefault(); openExternal(task.url) }}
               className="text-[12px] px-3.5 py-2 rounded-lg border transition-colors"
               style={{ borderColor: 'var(--rule)', color: 'var(--ink-2)', background: 'var(--paper)' }}>
               Open in tracker ↗
@@ -300,7 +300,7 @@ function ParentPicker({ provider, taskKey, saving, onPick }: {
       )}
 
       {createUrl && (
-        <a href={createUrl} target="_blank" rel="noopener noreferrer"
+        <a href={createUrl} onClick={(e) => { e.preventDefault(); openExternal(createUrl) }}
           className="inline-flex items-center gap-1 text-[11px]" style={{ color: 'var(--ink-3)' }}>
           + Create a new {label} in the tracker ↗
         </a>

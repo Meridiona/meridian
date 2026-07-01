@@ -4,6 +4,8 @@
 // Small presentational helpers shared by the daily-plan columns. Due date is
 // given visual weight here (urgency → colour), matching its weight in scoring.
 
+import { openExternal } from '@/lib/bridge'
+
 /** A due-date pill coloured by urgency. Renders nothing when there's no date. */
 export function DuePill({ days }: { days: number | null }) {
   if (days === null) return null
@@ -100,7 +102,8 @@ export function MetaChip({ children }: { children: React.ReactNode }) {
 export function OpenLink({ url }: { url?: string }) {
   if (!url) return null
   return (
-    <a href={url} target="_blank" rel="noopener noreferrer" onPointerDown={e => e.stopPropagation()}
+    <a href={url} onPointerDown={e => e.stopPropagation()}
+      onClick={e => { e.preventDefault(); openExternal(url) }}
       className="text-[10px] whitespace-nowrap hover:underline" style={{ color: 'var(--ink-4)' }}>
       Open ↗
     </a>

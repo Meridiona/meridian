@@ -487,6 +487,7 @@ pub fn run() {
             commands::get_oauth_status,
             // OS/window actions
             commands::open_permission_pane,
+            commands::open_external_url,
             commands::quit_app,
             commands::hide_popover,
             // Setup wizard (first-run, permissions, MLX)

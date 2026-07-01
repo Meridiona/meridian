@@ -6,7 +6,7 @@ import { TaskKey, ProviderGlyph, Card, SectionHead } from '@/components/atoms'
 import HygieneDialog from '@/components/HygieneDialog'
 import { hasMustFix, type HygieneIssue } from '@/lib/hygiene'
 import type { TaskSummary, TasksResponse, IntegrationsResponse } from '@/lib/api-types'
-import { load as loadData, mutate } from '@/lib/bridge'
+import { load as loadData, mutate, openExternal } from '@/lib/bridge'
 import { filterByConnectedProviders } from '@/lib/integrations'
 
 // Severity → dot + tone. Warm editorial palette: warn (amber) is the alert.
@@ -204,7 +204,7 @@ function TicketCard({ task, issues, tone, review, onFix, onIgnore, onLater, onKe
         <TaskKey keyId={task.key} />
         <span className="text-[13px] font-medium truncate flex-1 min-w-0" style={{ color: 'var(--ink)' }}>{task.title}</span>
         {task.url && (
-          <a href={task.url} target="_blank" rel="noopener noreferrer"
+          <a href={task.url} onClick={(e) => { e.preventDefault(); openExternal(task.url) }}
             className="text-[11px] shrink-0" style={{ color: 'var(--ink-4)' }}>Open ↗</a>
         )}
       </div>
