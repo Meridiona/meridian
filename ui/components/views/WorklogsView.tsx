@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { fmtDur, fmtClock, TaskKey, ConfidenceRing } from '@/components/atoms'
 import type { WorklogItem, WorklogsResponse } from '@/lib/api-types'
-import { load as loadData, mutate } from '@/lib/bridge'
+import { load as loadData, mutate, openExternal } from '@/lib/bridge'
 
 // Local YYYY-MM-DD for `d` days from today (negative = past).
 function dayString(offsetDays = 0): string {
@@ -245,7 +245,8 @@ function WorklogCard({ w, busy, onApprove, onReject, onUnapprove, onSave }: {
         {/* meta row */}
         <div className="flex items-center gap-3 min-w-0">
           {w.task_url ? (
-            <a href={w.task_url} target="_blank" rel="noopener noreferrer" title={`Open ${w.task_key} in ${providerLabel(w.provider)}`}
+            <a href={w.task_url} title={`Open ${w.task_key} in ${providerLabel(w.provider)}`}
+              onClick={(e) => { e.preventDefault(); openExternal(w.task_url!) }}
               className="flex items-center gap-2 min-w-0 group">
               <TaskKey keyId={w.task_key} />
               {w.task_title && (

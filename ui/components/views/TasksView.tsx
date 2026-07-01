@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { fmtDur, fmtClock, AppGlyph, CatDot, TaskKey, StatusPill, SectionHead, Card, CATS, PROVIDER_META } from '@/components/atoms'
 import type { TaskSummary, TasksResponse } from '@/lib/api-types'
-import { load, mutate } from '@/lib/bridge'
+import { load, mutate, openExternal } from '@/lib/bridge'
 import { filterByConnectedProviders } from '@/lib/integrations'
 import HygieneDialog from '@/components/HygieneDialog'
 import ConnectTrackers from '@/components/IntegrationConnect'
@@ -457,7 +457,7 @@ function TaskDetail({ task, sessions, onFix }: { task: TaskSummary; sessions: To
             <span className="text-[11px]" style={{ color: 'var(--ink-3)' }}>{task.provider}</span>
           )}
           {task.url && (
-            <a href={task.url} target="_blank" rel="noopener noreferrer"
+            <a href={task.url} onClick={(e) => { e.preventDefault(); openExternal(task.url) }}
               className="ml-auto text-[12px]" style={{ color: 'var(--ink-3)' }}>
               Open ↗
             </a>

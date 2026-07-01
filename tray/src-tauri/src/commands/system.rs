@@ -102,6 +102,35 @@ pub async fn open_permission_pane(app: tauri::AppHandle, pane: String) -> Result
         .map_err(|e| e.to_string())
 }
 
+/// Open an arbitrary `http(s)` URL in the user's default system browser.
+///
+/// Tauri's webview does NOT elevate a plain `<a target="_blank">` click to a
+/// system-browser open (no `WKUIDelegate`/`createWebViewWith` handling is
+/// wired up) — the click is silently swallowed. This is the one JS-callable
+/// path to `tauri_plugin_opener`'s `open_url`; every "Open in tracker ↗" link
+/// across the dashboard must route through it via `openExternal` in
+/// `@/lib/bridge` rather than relying on the anchor's native navigation.
+///
+/// Scheme-restricted to `http`/`https` — task URLs come from tracker API
+/// responses (Jira/Linear/GitHub/Azure DevOps/Trello), so this is a system
+/// boundary: reject anything that isn't a normal web link rather than handing
+/// an arbitrary scheme (`file://`, `javascript:`, …) to the OS opener.
+#[tauri::command]
+pub async fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    if !is_http_url(&url) {
+        return Err(format!("refusing to open non-http(s) URL: {url}"));
+    }
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// `true` for `http://`/`https://` URLs only. Extracted as a pure fn purely so
+/// the scheme allowlist is unit-testable without a `tauri::AppHandle`.
+fn is_http_url(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
 /// Quit the whole app — same exit path as the tray menu's "Quit Meridian".
 /// Invoked from the popover footer's Quit button.
 #[tracing::instrument(skip(app))]
@@ -118,5 +147,26 @@ pub fn quit_app(app: tauri::AppHandle) {
 pub fn hide_popover(app: tauri::AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.hide();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_http_url_allows_http_and_https() {
+        assert!(is_http_url("https://linear.app/x/issue/ENG-12"));
+        assert!(is_http_url("http://localhost:5080"));
+    }
+
+    #[test]
+    fn is_http_url_rejects_other_schemes() {
+        assert!(!is_http_url("file:///etc/passwd"));
+        assert!(!is_http_url("javascript:alert(1)"));
+        assert!(!is_http_url(
+            "x-apple.systempreferences:com.apple.preference.security"
+        ));
+        assert!(!is_http_url(""));
     }
 }

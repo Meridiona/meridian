@@ -6,7 +6,7 @@ import { TaskKey, ProviderGlyph, StatusPill } from '@/components/atoms'
 import { MetaChip } from '@/components/plan/parts'
 import type { CardTask } from '@/components/plan/TaskCard'
 import type { TaskDetail } from '@/lib/api-types'
-import { load } from '@/lib/bridge'
+import { load, openExternal } from '@/lib/bridge'
 
 // Full-ticket dialog opened from a plan card. Shows the complete description and
 // acceptance criteria (the list only carries an excerpt) and lets the dev add the
@@ -141,7 +141,7 @@ export default function TaskDialog({
             inToday && <span className="text-[12px]" style={{ color: 'var(--ink-3)' }}>In today’s plan</span>
           )}
           {url && (
-            <a href={url} target="_blank" rel="noopener noreferrer"
+            <a href={url} onClick={(e) => { e.preventDefault(); openExternal(url) }}
               className="ml-auto text-[12px] px-3.5 py-2 rounded-lg border transition-colors"
               style={{ borderColor: 'var(--rule)', color: 'var(--ink-2)', background: 'var(--paper)' }}>
               Open in tracker ↗

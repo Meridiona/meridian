@@ -5,6 +5,7 @@ import { ExternalLink } from 'lucide-react'
 import { clsx } from 'clsx'
 import * as Tooltip from '@radix-ui/react-tooltip'
 import { shortTaskKey } from '@/components/atoms'
+import { openExternal } from '@/lib/bridge'
 
 interface TaskBadgeProps {
   taskKey: string | null
@@ -166,14 +167,12 @@ export default function TaskBadge({
     const pill = taskUrl ? (
       <a
         href={taskUrl}
-        target="_blank"
-        rel="noopener noreferrer"
         className={clsx(
           'inline-flex items-center gap-1 rounded-full font-medium hover:brightness-95 transition',
           'bg-[#EBF0FB] text-[#3D5BB0] border border-[#D8E0F4]',
           sizeClass,
         )}
-        onClick={(e) => e.stopPropagation()}
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); openExternal(taskUrl) }}
       >
         {inner}
       </a>
