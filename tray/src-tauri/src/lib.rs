@@ -482,6 +482,7 @@ pub fn run() {
             // tracker connect/disconnect (ported /api/integrations + /api/auth/oauth)
             commands::disconnect_integration,
             commands::discover_azure_devops,
+            commands::discover_github_projects,
             commands::save_integration_token,
             commands::start_oauth,
             commands::get_oauth_status,

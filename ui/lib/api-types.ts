@@ -202,6 +202,9 @@ export interface IntegrationsResponse {
   github: boolean
   trello: boolean
   azure_devops: boolean
+  // true once GITHUB_PROJECT_IDS is set — github alone only means the OAuth
+  // token exists; sync additionally needs at least one selected project.
+  github_projects_selected: boolean
   sync_errors: Partial<Record<string, string>>
 }
 
