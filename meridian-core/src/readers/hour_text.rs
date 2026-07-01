@@ -1,14 +1,17 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-//! Per-hour distilled activity text — the read side of the `pm_worklog_hours`
-//! `hour_text` columns (migration 053).
+//! Per-hour activity text — the read side of the `pm_worklog_hours` `hour_text`
+//! (migration 053, raw distilled INPUT) and `hour_report` (migration 054, the
+//! human-readable /activity_report OUTPUT) columns.
 //!
 //! # What this is
 //! The worklog pipeline's distill stage (`services/agents/worklog_pipeline`)
-//! persists a compact activity body per hour it processes, independent of whether
-//! that hour yields a worklog draft. This reader surfaces that body for the
-//! dashboard's hour-detail panel: the "here's what happened this hour" text plus
-//! its size / reduction stats. There is no matching Next.js route — this is new
-//! backend work, not a route port.
+//! persists a compact activity body per hour it processes, and its report stage
+//! persists the LLM-authored human-readable summary of that body — both
+//! independent of whether the hour yields a worklog draft. This reader surfaces
+//! the REPORT (not the raw distilled body) for the dashboard's hour-detail panel:
+//! the "here's what happened this hour" text is the report — the body is kept
+//! only as diagnostic/fallback data, never shown as the primary summary. There is
+//! no matching Next.js route — this is new backend work, not a route port.
 //!
 //! Like the worklog pipeline itself, this is **today-only**: a non-today `day`
 //! short-circuits to an empty response rather than querying (the pipeline never
@@ -28,18 +31,17 @@ use serde::Serialize;
 use sqlx::FromRow;
 use tracing::Instrument;
 
-/// The distilled activity text for one hour. `body`/`out_chars`/`reduction_pct`
-/// are `None` when the hour hasn't been distilled yet (or `day` isn't today).
+/// The activity report for one hour — the human-readable /activity_report
+/// OUTPUT (`report`), not the raw distilled input. `None` when the hour hasn't
+/// reached the report stage yet (or `day` isn't today).
 #[derive(Debug, Clone, Serialize)]
 pub struct HourTextResponse {
     /// The requested local hour, echoed back (`"HH"` / `"0".."23"`).
     pub hour: String,
-    /// The distilled activity body, or `None` if not yet persisted.
-    pub body: Option<String>,
-    /// Character count of `body` as recorded by the distiller.
-    pub out_chars: Option<i64>,
-    /// Distillation reduction percentage (raw → distilled), as recorded.
-    pub reduction_pct: Option<f64>,
+    /// The human-readable activity report, or `None` if not yet persisted.
+    pub report: Option<String>,
+    /// Character count of `report` as recorded by the pipeline.
+    pub report_chars: Option<i64>,
 }
 
 impl HourTextResponse {
@@ -47,18 +49,16 @@ impl HourTextResponse {
     fn empty(hour: &str) -> Self {
         Self {
             hour: hour.to_string(),
-            body: None,
-            out_chars: None,
-            reduction_pct: None,
+            report: None,
+            report_chars: None,
         }
     }
 }
 
 #[derive(FromRow)]
 struct RawHourText {
-    hour_text: Option<String>,
-    hour_text_chars: Option<i64>,
-    hour_text_reduction_pct: Option<f64>,
+    hour_report: Option<String>,
+    hour_report_chars: Option<i64>,
 }
 
 /// Build the `pm_worklog_hours.hour_start` key for a LOCAL `day` + `hour`.
@@ -105,7 +105,7 @@ pub async fn get_hour_text(
     };
 
     let row = sqlx::query_as::<_, RawHourText>(
-        "SELECT hour_text, hour_text_chars, hour_text_reduction_pct \
+        "SELECT hour_report, hour_report_chars \
          FROM pm_worklog_hours WHERE hour_start = ?",
     )
     .bind(&hour_start)
@@ -130,16 +130,15 @@ pub async fn get_hour_text(
     let resp = match row {
         Some(r) => HourTextResponse {
             hour: hour.to_string(),
-            body: r.hour_text,
-            out_chars: r.hour_text_chars,
-            reduction_pct: r.hour_text_reduction_pct,
+            report: r.hour_report,
+            report_chars: r.hour_report_chars,
         },
         None => HourTextResponse::empty(hour),
     };
     tracing::info!(
         day,
         hour,
-        has_body = resp.body.is_some(),
+        has_report = resp.report.is_some(),
         "hour_text computed"
     );
     Ok(resp)
@@ -159,7 +158,7 @@ mod tests {
         sqlx::query(
             "CREATE TABLE pm_worklog_hours (hour_start TEXT PRIMARY KEY, day_utc TEXT, \
                 hour_end TEXT, status TEXT, task_count INTEGER, processed_at TEXT, \
-                hour_text TEXT, hour_text_chars INTEGER, hour_text_reduction_pct REAL)",
+                hour_report TEXT, hour_report_chars INTEGER)",
         )
         .execute(&pool)
         .await
@@ -173,19 +172,19 @@ mod tests {
         // A date that is definitely not today → empty, no error even though we
         // never seeded a row.
         let resp = get_hour_text(&pool, "2000-01-01", "9").await.unwrap();
-        assert!(resp.body.is_none());
+        assert!(resp.report.is_none());
         assert_eq!(resp.hour, "9");
     }
 
     #[tokio::test]
-    async fn reads_persisted_body_for_today() {
+    async fn reads_persisted_report_for_today() {
         let pool = pool_with_hours().await;
         let today = crate::date::today_string();
         let hour_start = hour_start_key(&today, "9").unwrap();
         sqlx::query(
             "INSERT INTO pm_worklog_hours (hour_start, day_utc, hour_end, status, task_count, \
-                hour_text, hour_text_chars, hour_text_reduction_pct) \
-             VALUES (?, ?, '', 'done', 0, 'did some work', 13, 88.5)",
+                hour_report, hour_report_chars) \
+             VALUES (?, ?, '', 'done', 0, 'Spent the hour debugging the worklog pipeline.', 47)",
         )
         .bind(&hour_start)
         .bind(&today)
@@ -194,9 +193,11 @@ mod tests {
         .unwrap();
 
         let resp = get_hour_text(&pool, &today, "9").await.unwrap();
-        assert_eq!(resp.body.as_deref(), Some("did some work"));
-        assert_eq!(resp.out_chars, Some(13));
-        assert_eq!(resp.reduction_pct, Some(88.5));
+        assert_eq!(
+            resp.report.as_deref(),
+            Some("Spent the hour debugging the worklog pipeline.")
+        );
+        assert_eq!(resp.report_chars, Some(47));
     }
 
     #[tokio::test]
@@ -204,8 +205,8 @@ mod tests {
         let pool = pool_with_hours().await;
         let today = crate::date::today_string();
         let resp = get_hour_text(&pool, &today, "23").await.unwrap();
-        assert!(resp.body.is_none());
-        assert!(resp.out_chars.is_none());
+        assert!(resp.report.is_none());
+        assert!(resp.report_chars.is_none());
     }
 
     #[tokio::test]
@@ -213,6 +214,6 @@ mod tests {
         let pool = pool_with_hours().await;
         let today = crate::date::today_string();
         let resp = get_hour_text(&pool, &today, "99").await.unwrap();
-        assert!(resp.body.is_none());
+        assert!(resp.report.is_none());
     }
 }

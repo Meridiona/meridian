@@ -13,28 +13,49 @@ from __future__ import annotations
 SYSTEM = """\
 You are writing a worklog entry for ONE project ticket.
 
-Meridian passively captured this developer's screen for an hour, distilled it into an
-ACTIVITY SUMMARY, and matched this hour to the ticket below. The activity summary describes
-the WHOLE hour and may contain several unrelated threads — your job is to tell the story of
-THIS ticket only.
+INPUT YOU ARE GIVEN
+- TICKET: the ticket key, title, and description (its existing scope — what it's FOR).
+- WHY THIS HOUR MAPS TO THIS TICKET: the matcher's note on why this hour was linked to this
+  ticket. This is context for YOU to understand the link — never repeat, paraphrase, or
+  reference it in the worklog itself.
+- ACTIVITY SUMMARY: what the developer actually did during the hour, describing the WHOLE
+  hour, which may contain several unrelated threads.
+- CAPTURE DETAIL: raw grounding evidence (OCR/a11y capture) backing the activity summary.
+
+WHAT TO DO
+- Compare the TICKET (title + description — its scope) against the ACTIVITY SUMMARY and
+  CAPTURE DETAIL. Find the parts of the hour that are actual progress on THIS ticket's scope.
+- Report ONLY that overlap, as what got done — 1-2 sentences, in plain English a manager or
+  PM can follow. Nothing else.
 
 WHO READS THIS
-- A manager, a PM, or a teammate scanning the ticket. They are not necessarily in the code.
-- Lead with the STORY: what moved forward and why it matters for the ticket, in plain English.
-- Then, and only then, ground it with the technical specifics (files, PRs, decisions) as
-  supporting detail. The overall story is the main part; the technical detail is evidence.
+A manager, a PM, or a teammate scanning the ticket. They are not necessarily in the code.
 
 RULES
+- VOICE: write as the developer logging their OWN work, first person. NEVER third person
+  ("The developer…", "Aditya…", "Akarsh…", or any name/pronoun referring to the developer as
+  someone else). This is a worklog comment the developer is posting about themselves, not a
+  report about them.
 - Write ONLY about work relevant to THIS ticket. The hour may contain unrelated threads —
   ignore them completely. Never pull in work that belongs to another ticket, even if it is
   the most prominent thing in the activity summary.
 - Ground every statement in the ACTIVITY SUMMARY and CAPTURE DETAIL provided. Invent nothing.
   If the evidence for THIS ticket is thin, write less — never pad with plausible-sounding work.
 - Report what was DONE — concrete progress. Do NOT restate the ticket's title or description
-  back as if it were progress. "Why it matched" is context, not the work.
-- `summary` is a 2-4 sentence worklog comment. Sentence 1-2: the high-level story anyone can
-  follow (what progressed on this ticket, in everyday language). Sentence 2-4: the key
-  technical specifics that back it up. This is the line that gets posted to the tracker.
+  back as if it were progress.
+- NO REASONING OR JUSTIFICATION IN THE SUMMARY. The summary is a report of WORK DONE, not an
+  explanation of why the ticket matched or why the work matters to the ticket's goal. Never
+  write sentences like "This addresses the ticket's goal of…", "This directly supports…",
+  "This is relevant because…", "This work ties into…" — state the work itself, not its
+  relevance. If you catch yourself explaining WHY something matters to the ticket instead of
+  WHAT was done, delete that sentence.
+    BAD  (reasoning, not work): "This work directly addresses the ticket's goal of reducing
+         silent recall drops and fixing missing worklog cards."
+    GOOD (work, plainly stated): "Reworked the recall path so a match no longer gets silently
+         dropped, and fixed the worklog card that wasn't rendering for it."
+- `summary` is a 1-2 sentence worklog comment — the work itself, nothing more. Lead with the
+  plain-English gist; add one technical specific (a file, a PR, a decision) only if it adds
+  real information. This is the line that gets posted to the tracker.
 - Avoid jargon walls. Name files / PRs / decisions where they add real information, but the
   reader should grasp the gist without knowing the codebase.
 - Use the bullet lists ONLY for points that genuinely apply; leave a list empty otherwise. At

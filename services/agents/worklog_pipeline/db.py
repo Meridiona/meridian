@@ -310,6 +310,34 @@ def persist_hour_text(
         )
 
 
+def persist_hour_report(
+    conn: sqlite3.Connection,
+    *,
+    hour_start: str,
+    report: str,
+) -> None:
+    """Persist the /activity_report OUTPUT onto the pm_worklog_hours ledger row.
+
+    Distinct from ``persist_hour_text`` (the raw distilled INPUT) — this is the
+    human-readable summary the dashboard's hour-detail panel must show. Runs for
+    every hour that reaches stage_report, even ones producing an empty report (no
+    activity). Degrades silently on a pre-054 DB where the column doesn't exist.
+    """
+    try:
+        conn.execute(
+            "UPDATE pm_worklog_hours "
+            "SET hour_report = ?, hour_report_chars = ? "
+            "WHERE hour_start = ?",
+            (report, len(report), hour_start),
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        log.warning(
+            "persist_hour_report: pm_worklog_hours.hour_report column absent (pre-054 DB) — skipped",
+            extra={"hour_start": hour_start},
+        )
+
+
 def upsert_proposed_task(
     conn: sqlite3.Connection,
     *,

@@ -264,6 +264,18 @@ def stage_report(ctx: HourContext) -> None:
                  extra={"hour": ctx.hour, "report_chars": ctx.result.report_chars,
                         "coding_folded": bool(ctx.coding_block)})
 
+        # Persist the REPORT (not the distilled input persisted in stage_distill)
+        # so the dashboard's hour-detail "ACTIVITY SUMMARY" box shows the actual
+        # human-readable output, for every hour that reaches this stage.
+        if not ctx.dry_run:
+            _utc_s, _ = local_hour_utc_bounds(ctx.hour)
+            hour_start = f"{_utc_s}+00:00"
+            conn = wdb.open_db(ctx.db_path)
+            try:
+                wdb.persist_hour_report(conn, hour_start=hour_start, report=ctx.report)
+            finally:
+                conn.close()
+
 
 def stage_candidates(ctx: HourContext) -> None:
     """Read daily plan + backlog candidates and attach reranker hints."""

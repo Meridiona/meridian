@@ -71,9 +71,13 @@ pub struct WorklogItem {
     /// edit/approve/dismiss commands take. `None` for ordinary worklogs.
     #[serde(default)]
     pub proposed_id: Option<i64>,
-    /// The proposed ticket's issue type (`Task` / `Bug`, migration 051) when
-    /// `is_proposed` — surfaced as a chip on the proposal card and used as the
-    /// issue type when the ticket is created. Empty for ordinary worklogs.
+    /// The ticket's issue type (`Task` / `Bug` / `Story`, etc). For a real
+    /// worklog, pulled from the joined `pm_tasks.issue_type` (empty if the task
+    /// row is missing or its type was never fetched from the tracker). For a
+    /// proposed ticket (`is_proposed`), the drafted type (migration 051) —
+    /// surfaced as a chip on the proposal card and used when the ticket is
+    /// created. The dashboard falls back to a generic label only when this is
+    /// empty, never hardcodes "Work log".
     #[serde(default)]
     pub issue_type: String,
 }
@@ -104,6 +108,7 @@ struct RawRow {
     posted_worklog_id: Option<String>,
     last_post_error: Option<String>,
     edited_at: Option<String>,
+    issue_type: String,
 }
 
 /// payload_json bullet groups → display kind (order matches the route).
@@ -151,7 +156,7 @@ pub async fn get_worklogs(pool: &SqlitePool, day: &str) -> anyhow::Result<Worklo
                COALESCE(w.provider, 'jira') AS provider, w.window_start, w.window_end,
                w.state, w.confidence, w.coverage,
                w.time_spent_seconds, w.payload_json, w.posted_worklog_id,
-               w.last_post_error, w.edited_at
+               w.last_post_error, w.edited_at, COALESCE(t.issue_type, '') AS issue_type
         FROM pm_worklogs w
         LEFT JOIN pm_tasks t ON t.task_key = w.task_key
         WHERE w.day_utc = ?
@@ -215,7 +220,7 @@ pub async fn get_worklogs(pool: &SqlitePool, day: &str) -> anyhow::Result<Worklo
             edited: r.edited_at.is_some(),
             is_proposed: false,
             proposed_id: None,
-            issue_type: String::new(),
+            issue_type: r.issue_type,
         });
     }
 
