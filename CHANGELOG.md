@@ -1,3 +1,350 @@
+## [1.67.0](https://github.com/Meridiona/meridian/compare/v1.66.2...v1.67.0) (2026-06-28)
+
+### 🚀 Features
+
+* **azure-devops:** populate parent_key from System.Parent field ([2010d76](https://github.com/Meridiona/meridian/commit/2010d7638113aeb6ecb6b4f2ca4a89d096271ff6))
+* **azure-devops:** resolve epic_title by walking parent chain ([25b9666](https://github.com/Meridiona/meridian/commit/25b9666cee8eb6b054c3df4d4ee3e163d693c128))
+* **setup:** two-step provision checklist + self-check causes on error ([23db097](https://github.com/Meridiona/meridian/commit/23db0978fec3d87bb32948599d01eb85f057425d))
+* **tasks:** add persistent refresh button + Jira OAuth resolve tests ([03bd591](https://github.com/Meridiona/meridian/commit/03bd591ac4f5a65fa2e8592272514beb04619037))
+
+### 🐛 Bug Fixes
+
+* **azure-devops:** address review findings from PR [#354](https://github.com/Meridiona/meridian/issues/354) ([a2e09d8](https://github.com/Meridiona/meridian/commit/a2e09d8acf26fdde5235ff94b48fd5f3feeabbb6))
+* **azure-devops:** surface network errors and add manual org entry fallback ([4675696](https://github.com/Meridiona/meridian/commit/46756963c04f284372af393f44c8e189d8cfa356))
+* **banner:** hide must-fix banner on cleanup page with trailing slash ([585c248](https://github.com/Meridiona/meridian/commit/585c248d3d60995fa7649c48b1095f482ef1fa26))
+* **capture:** skip self-capture and show Meridian as process name ([c893b8f](https://github.com/Meridiona/meridian/commit/c893b8f5a7ed73fd075574eb8a0e108f833a6650))
+* **cleanup:** hide disconnected-provider tasks from cleanup board and must-fix banner ([045e63c](https://github.com/Meridiona/meridian/commit/045e63ca89bb2c4b832fc06d6f2187cf37915e3b))
+* **integrations:** save API tokens on a fresh install (no .env yet) ([4bfbf06](https://github.com/Meridiona/meridian/commit/4bfbf06d5a73e7d196c827d9d07c53fcb925b93e))
+* **integrations:** surface real Azure DevOps error instead of generic fallback ([e495d14](https://github.com/Meridiona/meridian/commit/e495d1478710fa36206cb7b4f4fdf526e6cb9a07))
+* **integrations:** use double cast to satisfy TS strict type check ([a799a5a](https://github.com/Meridiona/meridian/commit/a799a5a5f9062671a6c8611f5d4dc52e095c5b49))
+* **linear/tests:** use anyhow::Result + context in DB integration tests ([1cea960](https://github.com/Meridiona/meridian/commit/1cea960c7647fda3e8041a2f711dd05fea897be4))
+* **oauth:** start connect poll under StrictMode + serialize Jira refresh across processes ([eee2e22](https://github.com/Meridiona/meridian/commit/eee2e22ccba4ba97eed77b11023515c4f4a216e1))
+* **prefetch:** reject non-positive env overrides instead of clamping to 1 ([ee81095](https://github.com/Meridiona/meridian/commit/ee81095d29d4b6ab4c69757d12350e52ceda49cd))
+* **review:** address code-review findings from PR [#352](https://github.com/Meridiona/meridian/issues/352) ([8d5752e](https://github.com/Meridiona/meridian/commit/8d5752e3fd45b3568f18861cb763174e6db3b632))
+* **review:** address CodeRabbit findings from PR [#357](https://github.com/Meridiona/meridian/issues/357) ([6f8630f](https://github.com/Meridiona/meridian/commit/6f8630f7f1cc141b2f042b31e7a5726b7c8fcc1c))
+* **review:** resolve coderabbit findings — azure chunking, epic key, auth helper, a11y, stale integrations ([367340c](https://github.com/Meridiona/meridian/commit/367340c39e52913818f167526818351b9f8e1c24))
+* **tasks:** hide provider tabs and tasks for disconnected integrations ([b7df9dc](https://github.com/Meridiona/meridian/commit/b7df9dc192ababdcf5bc1e0b224709424a2df1cf))
+* **tasks:** set cwd to ~/.meridian on tasks-sync spawn and refresh board on focus ([d233a7e](https://github.com/Meridiona/meridian/commit/d233a7e63d3b4b60cb5850f424ecc500255e63ca))
+* **tasks:** show 'no tasks assigned' hint when connected but board is empty ([3cada0d](https://github.com/Meridiona/meridian/commit/3cada0dd5bc93e0de25e78b617313283b34428a0))
+
+### 🤖 CI
+
+* **ui:** run bun test in the UI job ([9cd9951](https://github.com/Meridiona/meridian/commit/9cd995125dc73b05e18e753de7b4f128f801be75))
+
+### ✅ Tests
+
+* **linear:** add 16 tests for upsert/prune field mapping and filtering ([58f911a](https://github.com/Meridiona/meridian/commit/58f911a83c1da1d2144b019a3c261029be68198f))
+* **providers:** cover epic/parent linkage for azure-devops and jira ([f1aed97](https://github.com/Meridiona/meridian/commit/f1aed976aa45cdb1c1bffff0410a54fa9fe77514))
+* **tasks:** add regression tests for disconnected-provider filtering ([b1d8862](https://github.com/Meridiona/meridian/commit/b1d8862d2eaff2601fb6beff089a13a78bbd1722))
+
+### 📝 Documentation
+
+* document MLX runtime publish flow for services/ changes ([6cebd60](https://github.com/Meridiona/meridian/commit/6cebd60d64f6bbbf3f6eddf5b01ff04161cd6f4e))
+
+## [1.66.2](https://github.com/Meridiona/meridian/compare/v1.66.1...v1.66.2) (2026-06-27)
+
+### 🐛 Bug Fixes
+
+* **prefetch:** disable Xet + bounded retry-with-resume to stop 4h hangs ([4778e7a](https://github.com/Meridiona/meridian/commit/4778e7a36e8d878aceb727d96cf84999ca879963))
+* **prefetch:** harden retry loop per self-review ([#350](https://github.com/Meridiona/meridian/issues/350)) ([4f4b944](https://github.com/Meridiona/meridian/commit/4f4b944c59c937553279d48cbfadd76403818a6c))
+
+## [1.66.1](https://github.com/Meridiona/meridian/compare/v1.66.0...v1.66.1) (2026-06-26)
+
+### 🐛 Bug Fixes
+
+* **prefetch:** replace module-level globals with _speed_state dict ([bfc01e6](https://github.com/Meridiona/meridian/commit/bfc01e693ff0e59eabe09dce387be0f74564bbc6)), closes [#347](https://github.com/Meridiona/meridian/issues/347)
+* **setup:** address remaining CodeRabbit findings on PR [#347](https://github.com/Meridiona/meridian/issues/347) ([af2ced2](https://github.com/Meridiona/meridian/commit/af2ced2f2c7c1031928bb06a3ff097dd030f915a))
+
+## [1.66.0](https://github.com/Meridiona/meridian/compare/v1.65.0...v1.66.0) (2026-06-26)
+
+### 🚀 Features
+
+* **onboarding:** minimal model step, early background download, real progress ([adc739c](https://github.com/Meridiona/meridian/commit/adc739c6f61e6cea042d2db4cf920b7a4ecf6e9e))
+* **onboarding:** provision all three models (llm + reranker + embedder) end-to-end ([546ca09](https://github.com/Meridiona/meridian/commit/546ca09fc04dcef034569d35c4761808745b5bbc))
+
+### 🐛 Bug Fixes
+
+* **onboarding:** address code review findings on model provisioning PR ([07f3514](https://github.com/Meridiona/meridian/commit/07f3514ffa974be5ed766bbc7d10d4c63ac3de26))
+* **onboarding:** derive download speed from byte deltas (hf_xet bypasses tqdm) ([bb0656a](https://github.com/Meridiona/meridian/commit/bb0656aedf4ac54b1202248c9647371e700c5208))
+* **onboarding:** use hf-xet for Xet-backed models, wire HF_TOKEN ([a93e87c](https://github.com/Meridiona/meridian/commit/a93e87ce860b87c97b4103b47ff3ff0cb13526a4))
+
+### 📝 Documentation
+
+* **contributing:** document re-triggering the onboarding wizard in dev ([91dbcd4](https://github.com/Meridiona/meridian/commit/91dbcd4454858092537bfcc623bdd27f09a100b7))
+
+### 🔧 Chores
+
+* **mlx:** fix stale run_task_linker_mlx log prefix in mlx_classifier ([9dbe661](https://github.com/Meridiona/meridian/commit/9dbe661a2b7294141be0144f80a374823593326c))
+
+## [1.65.0](https://github.com/Meridiona/meridian/compare/v1.64.0...v1.65.0) (2026-06-26)
+
+### 🚀 Features
+
+* **integrations:** in-process OAuth + in-app token connect for all 5 trackers ([9e341e2](https://github.com/Meridiona/meridian/commit/9e341e2d72cb98fda3b170ef3774ae464173d526))
+* **intelligence:** gate task-linking + worklog on a working pipeline ([#147](https://github.com/Meridiona/meridian/issues/147)) ([22e74aa](https://github.com/Meridiona/meridian/commit/22e74aa0534b4ec5ca6bd2bb2e296dfc14733dca))
+* **oauth:** browser OAuth for Jira, tasks sync, health improvements ([e757977](https://github.com/Meridiona/meridian/commit/e7579770878c66f46542dd21b97dc39379276d29)), closes [#213](https://github.com/Meridiona/meridian/issues/213)
+* **observability:** auto-sync OO dashboards on git push ([0fabfa1](https://github.com/Meridiona/meridian/commit/0fabfa1bff93b13608f4b264f5d7dffed9f00055))
+* **setup:** remove llm model selector, fix single fixed model ([d1d09f1](https://github.com/Meridiona/meridian/commit/d1d09f1f649862d87208479e4d07b74846b48a47))
+* **ui:** dashboard full-screen with dock integration + go-to-setup button ([7e1389e](https://github.com/Meridiona/meridian/commit/7e1389e0c75d5f2d4a03315ea43a3dd4574266c3))
+* **worklog-pipeline:** restore missing service files from cleanup branch ([b6763a3](https://github.com/Meridiona/meridian/commit/b6763a38c3d7a726c464f1f1a7fab32cd79fd228))
+* **worklog-pipeline:** restore worklog_pipeline package from cleanup branch ([cf525ba](https://github.com/Meridiona/meridian/commit/cf525ba1b3b291b764f842210a673f2b6d3f41bb))
+
+### 🐛 Bug Fixes
+
+* **capture:** fall back to OCR when browser a11y tree is chrome-only ([#346](https://github.com/Meridiona/meridian/issues/346)) ([60cb64e](https://github.com/Meridiona/meridian/commit/60cb64e7790a9aad951e73ac6e7ac2d3a80f3d6d)), closes [#1](https://github.com/Meridiona/meridian/issues/1) [#2](https://github.com/Meridiona/meridian/issues/2) [#3](https://github.com/Meridiona/meridian/issues/3) [#4](https://github.com/Meridiona/meridian/issues/4) [#5](https://github.com/Meridiona/meridian/issues/5) [#6](https://github.com/Meridiona/meridian/issues/6) [#7](https://github.com/Meridiona/meridian/issues/7) [#9](https://github.com/Meridiona/meridian/issues/9) [#10](https://github.com/Meridiona/meridian/issues/10)
+* **ci:** drop install.sh from screenpipe MIT pin check + fix markdownlint ([a3884df](https://github.com/Meridiona/meridian/commit/a3884dff57e5f8d40f5a18f32a70b7da4e622357))
+* **cli:** add tray log targets to `meridian logs` ([f71d14a](https://github.com/Meridiona/meridian/commit/f71d14aec43474dd2ff8dd363bdb1a045b4c3705))
+* cut staging.2 for live auto-update test [staging-release] ([390e48f](https://github.com/Meridiona/meridian/commit/390e48f7b8a3a4f9877c36da1a3e2a7aece6134b))
+* **dev:** clean startup, worklog pipeline wiring, and a11y capture gate ([b72ed4b](https://github.com/Meridiona/meridian/commit/b72ed4b6572a1d94c0de3daf1f470dbb7c935932))
+* **dev:** fix popover 404 under tauri dev by copying tray/src into ui/public/popover ([72a7aa3](https://github.com/Meridiona/meridian/commit/72a7aa38878084fdad3576402dc0ed3960717871))
+* **dev:** harden popover copy — rm -rf before cp, tighten regression test ([6007672](https://github.com/Meridiona/meridian/commit/6007672e9cae3cdf885a41c148d04485614fff78))
+* **dev:** skip screenpipe permission prompts in install-dev.sh ([1cedc54](https://github.com/Meridiona/meridian/commit/1cedc54675b77c6052a9832afee3ee6bd23b3618))
+* **etl:** suppress VS Code frames when focused terminal is a coding agent ([#345](https://github.com/Meridiona/meridian/issues/345)) ([d183a8c](https://github.com/Meridiona/meridian/commit/d183a8ce048f8669221dfa1c2dca22f6afbf5f75)), closes [#1](https://github.com/Meridiona/meridian/issues/1) [#2](https://github.com/Meridiona/meridian/issues/2) [#3](https://github.com/Meridiona/meridian/issues/3) [#4](https://github.com/Meridiona/meridian/issues/4) [#5](https://github.com/Meridiona/meridian/issues/5) [#7](https://github.com/Meridiona/meridian/issues/7) [#9](https://github.com/Meridiona/meridian/issues/9) [#10](https://github.com/Meridiona/meridian/issues/10) [#8](https://github.com/Meridiona/meridian/issues/8)
+* **install:** skip permissions walkthrough by default in --dev mode ([6edb079](https://github.com/Meridiona/meridian/commit/6edb079c82eedcee154316dd4a8d1252e3af432e))
+* **install:** stage screenpipe binary to ~/.meridian/bin for stable TCC path ([#209](https://github.com/Meridiona/meridian/issues/209)) ([5b9aff3](https://github.com/Meridiona/meridian/commit/5b9aff3b97858cf601b5a699ff40d91932693084))
+* **integrations:** address deferred review findings from [#338](https://github.com/Meridiona/meridian/issues/338) ([899b75d](https://github.com/Meridiona/meridian/commit/899b75d5661519d8d78b5a351a4d2ecbaf986420))
+* **integrations:** address PR [#338](https://github.com/Meridiona/meridian/issues/338) review findings ([897b099](https://github.com/Meridiona/meridian/commit/897b0994a948ff7f456caafd4f1cf4c93806b7bf))
+* **integrations:** make token-connected Jira disconnectable; scope Jira self-hosted copy honestly ([721b52b](https://github.com/Meridiona/meridian/commit/721b52b0110f236a6813c3da4697eefcc71ac1c6))
+* **integrations:** write .env with trailing newline so appended keys don't concatenate ([d5ded63](https://github.com/Meridiona/meridian/commit/d5ded634c240c5ceaee6eacb8fc714b21f4fedaa))
+* **mlx-server:** add missing instrument_agno() to observability module ([4daba64](https://github.com/Meridiona/meridian/commit/4daba641be9069e2260ed5b90dce8c0330f88bd8))
+* **oauth:** remove authorize URL from stderr to clear CodeQL taint path ([1c9a541](https://github.com/Meridiona/meridian/commit/1c9a541018df4a62f6ff7c573c3465ceede7aa36))
+* **observability:** sanitise agent_name before using it as a log filename ([2320bf6](https://github.com/Meridiona/meridian/commit/2320bf62b49e488b583a921b07ab42abe586cb12))
+* **observability:** structured warning + empty safe_name fallback ([f652739](https://github.com/Meridiona/meridian/commit/f652739ad3a0dbac3626c59d34685f3cc93b8c18))
+* **observability:** use SDK propagator in current_traceparent for tracestate support ([f4740c2](https://github.com/Meridiona/meridian/commit/f4740c24316b203f248a7af8ff76e666d7f0a71e))
+* **observability:** validate agent_name to prevent path traversal in log file path ([1a66fa7](https://github.com/Meridiona/meridian/commit/1a66fa7215c9d8e5ecfe8ce9420fa5936798cac8))
+* remove model selector, fix overdue hygiene, drop stale eval artifacts ([13e6941](https://github.com/Meridiona/meridian/commit/13e6941ed3dc8120c58818ad53a513b8f9ef9a8d))
+* **review:** address PR [#341](https://github.com/Meridiona/meridian/issues/341) review comments and CodeQL security alert ([c50107a](https://github.com/Meridiona/meridian/commit/c50107a66dfd9fd969b40462fc7f5f20459243af))
+* **review:** address remaining PR [#341](https://github.com/Meridiona/meridian/issues/341) CodeRabbit findings ([49a56c6](https://github.com/Meridiona/meridian/commit/49a56c6c411d4ab95c8f295aaa2764e05c004a4f))
+* **review:** address remaining PR [#341](https://github.com/Meridiona/meridian/issues/341) review comments ([4ccd42f](https://github.com/Meridiona/meridian/commit/4ccd42f183bedfadd8642214c7d4edfa9cf42f1f))
+* **tray:** revert activation policy on dashboard close + tracing on open_setup ([94a3217](https://github.com/Meridiona/meridian/commit/94a3217027676ee40e3909823b5981a8e95b6655))
+* **ui:** handle activation policy Result + move Go to Setup to top of settings ([176353a](https://github.com/Meridiona/meridian/commit/176353a16544dd82565d451762166b469fa760a4))
+
+### ✅ Tests
+
+* auto-update target staging.2 [staging-release] ([b9600ad](https://github.com/Meridiona/meridian/commit/b9600ad71fef050f4a7f915d538eaa27f3b5fbfd))
+* **tray:** guard v1.64.0 dev-setup architecture contracts ([0f99905](https://github.com/Meridiona/meridian/commit/0f999055fce68f00330cdd7e7e85a7dbae5b2c59))
+
+### 📝 Documentation
+
+* **claude:** fix stale classify-trigger bullet — pending_classifier → summarised worklog pickup ([7f263c8](https://github.com/Meridiona/meridian/commit/7f263c86f06994518bf1bfa87e608d9e798d996a))
+* **claude:** fix stale pending_classifier lifecycle references ([a198dc4](https://github.com/Meridiona/meridian/commit/a198dc4d2a99e5b4b28fbc4481732fefc88ee407))
+* **claude:** remove stale coding-agent-classify CLI reference + update MLX server description ([9068c83](https://github.com/Meridiona/meridian/commit/9068c8353f8f8e0edecdf5a36635129be0394457))
+* update dev setup + all docs for v1.64.0 architecture ([cbfac64](https://github.com/Meridiona/meridian/commit/cbfac64377e4096ef0ede6a1b7fb4861e60a0f3b))
+
+### 🔧 Chores
+
+* **cleanup:** remove classifier pipeline + modularise MLX server + Qwen3.5-2B ([155b26c](https://github.com/Meridiona/meridian/commit/155b26c5e096c006a7711bec3df795c432afe305))
+* **dev:** skip PM tool credential prompts in install-dev.sh ([a11289b](https://github.com/Meridiona/meridian/commit/a11289b28ae52de9efb34002b2878da6e53638ff))
+* **dev:** strip Claude Code integrations from install-dev.sh ([31c07b2](https://github.com/Meridiona/meridian/commit/31c07b28a58de2a6af8fc16848e2592dc970fa22))
+* **install:** remove screenpipe and a11y-helper from install.sh ([9bc9595](https://github.com/Meridiona/meridian/commit/9bc95950aa0f1ef84615de41ab463ef8dae34feb))
+* **merge:** resolve conflicts merging pre-main into feat/in-process-oauth ([e647407](https://github.com/Meridiona/meridian/commit/e6474072812fd69a5af2c391e146cf57940d811a))
+* **merge:** resolve conflicts merging pre-main into feat/in-process-oauth ([70c88be](https://github.com/Meridiona/meridian/commit/70c88be892d0e142ac732ab42734f9f2cabc2e3a))
+* **release:** first staging cut [staging-release] ([fc691aa](https://github.com/Meridiona/meridian/commit/fc691aa760ac27cab0fe598b15589bbdcd1b740f))
+* **release:** retry staging [staging-release] ([be174ba](https://github.com/Meridiona/meridian/commit/be174ba0b5a3853c2908e57e6b135581a174b8d9))
+* remove classifier eval scratch files, rerank experiments, and stale tests ([ab8479c](https://github.com/Meridiona/meridian/commit/ab8479c20d8b465eaa56c83a1cea37de73d1d97c))
+* **summariser:** drop pending_classifier — summarised rows are terminal ([fa31b30](https://github.com/Meridiona/meridian/commit/fa31b30d975472e870f2d9d45e144f29a8ceec27))
+
+## [1.64.0](https://github.com/Meridiona/meridian/compare/v1.63.0...v1.64.0) (2026-06-24)
+
+### 🚀 Features
+
+* **capture:** a11y-tree text capture with OCR fallback (Gap-2 Bucket 2, slice 3b) ([172d1bf](https://github.com/Meridiona/meridian/commit/172d1bf80469506b4891069d052031f52ed8e883))
+* **capture:** capture_ui_events table + writer (Gap-2 Bucket 2, slice 3c part 1) ([22d2f2b](https://github.com/Meridiona/meridian/commit/22d2f2b47be005a99a9a2fcba4effd0fc6f78996))
+* **capture:** in-process input recorder → capture_ui_events (Gap-2 Bucket 2, slice 3c part 2) ([a246310](https://github.com/Meridiona/meridian/commit/a2463101986a71e117fc5fc661293df47891b4e8))
+* **capture:** persist captured frames to meridian.db (Gap-2 Bucket 2, slice 4a) ([6e4f816](https://github.com/Meridiona/meridian/commit/6e4f816773b9b2a4d6f3f7de51e1793047ace5eb))
+* **ci:** build the self-contained MLX runtime tarball on an arm64 runner (Approach C, Step 2) ([dc1bd56](https://github.com/Meridiona/meridian/commit/dc1bd56dde5069d5743dca14a9bd672e4b8eb750))
+* **cli:** implement `meridian uninstall` (Gap-2 Bucket 1, teardown) ([036c59a](https://github.com/Meridiona/meridian/commit/036c59af9d68a1e398d750f108e35803153e92ce))
+* **core:** log which settings.json path wins at resolution time ([8817b05](https://github.com/Meridiona/meridian/commit/8817b0536c1b87d8a887abad9c671c75e9ba078c))
+* **core:** move settings reader to meridian-core; port /api/settings GET ([640a352](https://github.com/Meridiona/meridian/commit/640a3521655c06cc08dc23e49091db2ce9aded73))
+* **core:** port /api/active view to Rust; Sidebar reads it in-app ([8a402d9](https://github.com/Meridiona/meridian/commit/8a402d92e0e9541a737cfab405d86fc5b7c084fe))
+* **core:** port /api/coding-agents to Rust (get_coding_agents command) ([12c34ce](https://github.com/Meridiona/meridian/commit/12c34ce29c71566777ea0e2d187f0137d283e002))
+* **core:** port /api/plan GET+POST to Rust (board scoring + writes) ([7745324](https://github.com/Meridiona/meridian/commit/77453247d2865d6c24102d2b60e73006e6077720))
+* **core:** port /api/plan/task single-ticket detail to Rust ([a7ed6c3](https://github.com/Meridiona/meridian/commit/a7ed6c385358edca71446495eb83972f03bbc5dc))
+* **core:** port /api/settings PUT to Rust (atomic settings write) ([1d85b3a](https://github.com/Meridiona/meridian/commit/1d85b3afda2825a8b345f5f224c3c69ea5dd38ca))
+* **core:** port /api/tasks (+ hygiene) to Rust; 4 consumers read it in-app ([97e5ea0](https://github.com/Meridiona/meridian/commit/97e5ea0dc96393aaa1441a8cd2387a9733477e4a))
+* **core:** port /api/today to Rust — byte-identical to the Node route ([e2c708e](https://github.com/Meridiona/meridian/commit/e2c708eada572f8f58a11c141e7b7eda741bae45))
+* **core:** port /api/week to Rust (golden-compare passes) ([c8204a8](https://github.com/Meridiona/meridian/commit/c8204a8275d217fa99271d21a63c2f03d5991286))
+* **core:** port /api/worklogs read to Rust; WorklogsView reads it in-app ([81d2f4b](https://github.com/Meridiona/meridian/commit/81d2f4b82ce94a189421482866d44c6436878ca6))
+* **core:** port localDayBounds/todayString to meridian-core (date-utils) ([6004e6f](https://github.com/Meridiona/meridian/commit/6004e6fd87351a4f81654d4f9a2ce07f40e47569))
+* **core:** port notification delivery writes; de-HTTP the poll loop ([7f70fa3](https://github.com/Meridiona/meridian/commit/7f70fa3549b3df94ee4c89db82adf773181062a4))
+* **core:** port notifications read policy + pending queue to Rust ([391af51](https://github.com/Meridiona/meridian/commit/391af515e1c94958e666b45ab7cf79aa88ba92db))
+* **core:** port the dashboard interval math to meridian-core ([564d15a](https://github.com/Meridiona/meridian/commit/564d15a9e520510609bd09117c67eace7cea8762))
+* **core:** port triage decision + ignore writes to Rust ([8b72ade](https://github.com/Meridiona/meridian/commit/8b72ade025aa7a305b668eefdca677eab599e38b))
+* **core:** port worklog review writes + notice-clear DELETE to Rust ([c8739be](https://github.com/Meridiona/meridian/commit/c8739be401363572b0ba8107b6f1ee267752a34b))
+* **etl:** cut the daemon ETL over to in-process capture tables (Gap-2 Bucket 2, slice 4b-1) ([9cee2a2](https://github.com/Meridiona/meridian/commit/9cee2a2a58ba0e4f986015351948c8f477975ca4))
+* **fold:** static-export the dashboard into Tauri, delete /api (cutover) ([5e5e174](https://github.com/Meridiona/meridian/commit/5e5e174a8510928003f15f98472d84bd60e36a12))
+* **health:** retire screenpipe from the daemon; repoint health to in-process capture (Gap-2 Bucket 2, slice 4b-2) ([4ebc7e8](https://github.com/Meridiona/meridian/commit/4ebc7e82967f74e64e6887a8419956f9b9cd40c2))
+* **integrations:** clear provider tasks from DB on disconnect ([9d6bc74](https://github.com/Meridiona/meridian/commit/9d6bc74825a8a01f0700ba8b128f8ca9143ece13))
+* **integrations:** connect GitHub via gh CLI browser OAuth ([dfb2003](https://github.com/Meridiona/meridian/commit/dfb200318c2a9a1235d1f2eda70221d042339458))
+* **mlx-runtime:** add a staging release channel (runtime-staging-v* → runtime-staging) ([ae6a31b](https://github.com/Meridiona/meridian/commit/ae6a31b8a1946f40387013cb846d5948e790218a))
+* **mlx-runtime:** wire the manifest URL + publish a rolling runtime-latest release ([349c14c](https://github.com/Meridiona/meridian/commit/349c14c095990f37fafce77c676ed7e8d1011109))
+* **obs:** close the logs/traces gaps across the ported read paths ([bd71b22](https://github.com/Meridiona/meridian/commit/bd71b22ebf28313f976560279ab54383bd83bbf0))
+* **obs:** debug-level per-op flow across every meridian-core read path ([2791540](https://github.com/Meridiona/meridian/commit/27915409f3b34f3de5f7ff971a4f6e1f0ec67d20))
+* **obs:** trace the dashboard read path into OpenObserve (dev otel feature) ([455a337](https://github.com/Meridiona/meridian/commit/455a337584aaa2b06a817a93ad64679d4005f2f3))
+* **obs:** trace the today read path into OpenObserve ([6bf209b](https://github.com/Meridiona/meridian/commit/6bf209bb1e323486088ea5bea32c316549a0acfc))
+* port /api/triage GET + /api/triage/parents to Rust ([784b48d](https://github.com/Meridiona/meridian/commit/784b48d324f80405f7750003bcde6aaa5869311c))
+* **setup:** add Input Monitoring permission card to the wizard (Gap-2 Bucket 2, Fix 2) ([33a8404](https://github.com/Meridiona/meridian/commit/33a840430f0d1eb1e92f2e6048153770d199a12e))
+* **setup:** eager spec-aware model download in the wizard (Gap-2 Bucket 2, Fix 3) ([3c9756b](https://github.com/Meridiona/meridian/commit/3c9756be302eaf6f0d2c2ea6e48c0338731cd4ff))
+* **setup:** port "A · Rail" first-run wizard with on-device model picker ([d073b37](https://github.com/Meridiona/meridian/commit/d073b3714833e09908d35e0895af48148d092384))
+* **setup:** register Input Monitoring via IOHIDRequestAccess (Gap-2 Bucket 2, Fix B) ([1a6dfee](https://github.com/Meridiona/meridian/commit/1a6dfee17f94bdfbb5b96eb15c97f315930a39a2))
+* **tauri:** in-app native dashboard window (Today/Week from Rust, no browser) ([d2d63a7](https://github.com/Meridiona/meridian/commit/d2d63a7a8662ca66a77e8671abb320fc4d10db03))
+* **tauri:** pooled meridian.db state + active-session panel (runtime proof) ([686b816](https://github.com/Meridiona/meridian/commit/686b816315651fd263407383efe39af2fee85bbf)), closes [#db-active](https://github.com/Meridiona/meridian/issues/db-active)
+* **tauri:** reuse meridian lib in the tray to read meridian.db ([02b49db](https://github.com/Meridiona/meridian/commit/02b49db63004b552295410e2211b5a1a98ce9826))
+* **tray:** background runtime auto-upgrade via stage-and-swap (Gap-2 follow-up b) ([e267939](https://github.com/Meridiona/meridian/commit/e267939115a291962f88d041ba2e7aaf72d41526))
+* **tray:** bundle the non-capture backend into the .app (Gap-2 Bucket 1, slice 1) ([cdff263](https://github.com/Meridiona/meridian/commit/cdff26310e2fa4ac65678fbe4c5f6036edc8e2d1))
+* **tray:** compile-time runtime-manifest channel override (option_env!) ([a983713](https://github.com/Meridiona/meridian/commit/a983713cc3b5ad7b7eee9f8828915dc8fc867d1a))
+* **tray:** console log subscriber for capture runtime checks (Bucket 2) ([4c185e1](https://github.com/Meridiona/meridian/commit/4c185e16ca8bd63b99f39abb25cd290718a8b6cd))
+* **tray:** DMG auto-update with in-app update banner ([8ee1340](https://github.com/Meridiona/meridian/commit/8ee1340fc45d8c5df3379d21518c4a2656ff6b7f))
+* **tray:** first-run install of the bundled backend (Gap-2 Bucket 1, slice 1b) ([56f7468](https://github.com/Meridiona/meridian/commit/56f746887e6d7cb30924459f15ab4b023cb81ec2))
+* **tray:** in-app onboarding wizard skeleton + window-capability fix ([7b61929](https://github.com/Meridiona/meridian/commit/7b61929131163a663adc64292e6a40a81cef9388))
+* **tray:** in-process capture — boundary + screenpipe-screen engine (Gap-2 Bucket 2, slices 1-2) ([b3877f8](https://github.com/Meridiona/meridian/commit/b3877f87ff477a6a0119edae1dd7a456e9d8398c))
+* **tray:** live menu-bar pill with progress ring + task key ([d577ee8](https://github.com/Meridiona/meridian/commit/d577ee87102ff4bb433cefcb07678ff0c4a96a4b))
+* **tray:** log which source wins DB path resolution in meridian_db_path ([05a5823](https://github.com/Meridiona/meridian/commit/05a5823c367e948a757b574960c665fcde1ca3ab))
+* **tray:** Next fold stage 0 — devUrl→next dev, /setup is first Next window ([497be87](https://github.com/Meridiona/meridian/commit/497be87bb57e29ae12c7e061283a9bc025b08ac5))
+* **tray:** port /api/integrations GET; TasksView reads it in-app ([244b644](https://github.com/Meridiona/meridian/commit/244b6449004400e98d4809be751a9bd621fbd08a))
+* **tray:** port /api/tasks/sync to Rust (board re-sync spawn) ([8113431](https://github.com/Meridiona/meridian/commit/8113431d8efe4994e57fea01475c6ba6f62f3997))
+* **tray:** port /api/triage/apply to Rust (hygiene fix write-back) ([824985c](https://github.com/Meridiona/meridian/commit/824985c4921c4f9678f0da588892ae480e07b91e))
+* **tray:** port /api/update to Rust (launch updater in Terminal) ([593fb02](https://github.com/Meridiona/meridian/commit/593fb0221c610712915e9bf27b29054a067bfa57))
+* **tray:** port /api/version; Sidebar reads it in-app (+ tokio process fix) ([d358e3b](https://github.com/Meridiona/meridian/commit/d358e3b8fbeeb69e103346d00bd310460576ae38))
+* **tray:** port daemon/reload + openobserve POST (finish Settings Apply) ([2cea948](https://github.com/Meridiona/meridian/commit/2cea9480f53e72230eac2ed7cc0cf0d004b8e943))
+* **tray:** port daemon/status, health, openobserve GET, logs GET to Rust ([076b156](https://github.com/Meridiona/meridian/commit/076b1563b477a7264ab5359ab43f27f2bbc2a539))
+* **tray:** port integrations connect/disconnect to Rust ([d1e61d7](https://github.com/Meridiona/meridian/commit/d1e61d7b97b4675c83e5996865613bf88a42ed17))
+* **tray:** port the 4 SSE streams to Tauri events (Next-fold) ([4c914bc](https://github.com/Meridiona/meridian/commit/4c914bc820eff2b584a31acb1158f6b9bdb7d4df))
+* **tray:** rebrand app to "Meridian" and use the brand mark as the icon ([207eb64](https://github.com/Meridiona/meridian/commit/207eb648569103b2d2ad839dfc24ac2d39df1c59))
+* **tray:** redesign popover and show it on tray left-click ([e4cb601](https://github.com/Meridiona/meridian/commit/e4cb601c0cdbf80c1ca571bca4269deb80a6990b))
+* **tray:** rich hover-tooltip card on tray icon enter/leave ([a1f5cef](https://github.com/Meridiona/meridian/commit/a1f5cef01138d818b59796d76c4da84b10ce0b7b))
+* **tray:** supervise the MLX server from the poll loop (auto-restart on death) ([67b49a0](https://github.com/Meridiona/meridian/commit/67b49a0e98241912eb86fbb375916736e439ffb6))
+* **tray:** switch MLX packaging to Approach C (download-and-provision) ([d15913c](https://github.com/Meridiona/meridian/commit/d15913ce1cfb04bd29e2269f2928dd336157adaa))
+* **tray:** verify + version-check the MLX runtime download (Approach C, Step 3) ([fa19404](https://github.com/Meridiona/meridian/commit/fa194046f076158428ed9f10d46d8c30460c1d8b))
+* **tray:** window-aware capture — per-window app/window/url metadata (Bucket 2, slice 3a) ([9780215](https://github.com/Meridiona/meridian/commit/97802159f2de5e0ac7a86c5eeeb9faeb808af442))
+* **tray:** wire onboarding wizard — MLX server manager, setup commands, first-run auto-open ([4d6b1f6](https://github.com/Meridiona/meridian/commit/4d6b1f667d088eee02b76e55bb06839beee74b30))
+* **ui:** fold — WeekView renders from Rust get_week in-app ([7d88788](https://github.com/Meridiona/meridian/commit/7d8878897d624dcb2f930b6ca6c97379c278351a))
+* **ui:** Next fold stage 1 — dual-path bridge; /today renders from Rust ([265bede](https://github.com/Meridiona/meridian/commit/265bedeacf2c6ffe43b744f912b142f604bdb66f))
+
+### 🐛 Bug Fixes
+
+* **build:** sync Cargo.lock with the block2 tray dep ([4ee8a51](https://github.com/Meridiona/meridian/commit/4ee8a51c976e0ef331fcb902d62ac83f4b4f1b18))
+* **capture:** preflight each permission before prompting (Gap-2 Bucket 2) ([b3beecb](https://github.com/Meridiona/meridian/commit/b3beecbd8cc52fd3439e44dd1a5d092820dbf906))
+* **core:** address adityaharishch code-review findings [#1](https://github.com/Meridiona/meridian/issues/1)–[#7](https://github.com/Meridiona/meridian/issues/7) ([ea19768](https://github.com/Meridiona/meridian/commit/ea19768d78c767fef1527a2549920f752aff0603)), closes [#2](https://github.com/Meridiona/meridian/issues/2) [#3](https://github.com/Meridiona/meridian/issues/3) [#4](https://github.com/Meridiona/meridian/issues/4) [#5](https://github.com/Meridiona/meridian/issues/5) [#6](https://github.com/Meridiona/meridian/issues/6)
+* **core:** address code-review findings [#4](https://github.com/Meridiona/meridian/issues/4)/[#6](https://github.com/Meridiona/meridian/issues/6)/[#8](https://github.com/Meridiona/meridian/issues/8)/[#10](https://github.com/Meridiona/meridian/issues/10) ([ac70eca](https://github.com/Meridiona/meridian/commit/ac70eca6754e50a06c260ffbaae0fcaddbd9bdd6))
+* **core:** readers query coding_agent_session_uuid, not claude_session_uuid ([fa74b47](https://github.com/Meridiona/meridian/commit/fa74b47135702f4c1e09181ac1e78b6c02663755))
+* **core:** today active-session silently dropped (column guard read wrong table) ([276537c](https://github.com/Meridiona/meridian/commit/276537cdf335c6e12c20a665fcbdd4c7598ff4e1))
+* cut staging.2 for live auto-update test [staging-release] ([9c3fde8](https://github.com/Meridiona/meridian/commit/9c3fde8e34ad916f895d14f1d5093ccf68bb9e82))
+* **daemon:** correct the MLX-server restart command in user-facing error text ([56e5099](https://github.com/Meridiona/meridian/commit/56e5099bb82b99e75f76ab833c42e8a90908a9a6))
+* **daemon:** silence classifier-offline notice during onboarding; drop dev fix text (Gap-2 Bucket 2, Fix A) ([491479f](https://github.com/Meridiona/meridian/commit/491479f1d599af10f832a0abd03e09bd199495e0))
+* **db:** set busy_timeout on the daemon's meridian.db pool (Gap-2 Bucket 2, review fix) ([75b6633](https://github.com/Meridiona/meridian/commit/75b6633f37c7fe219ee8741914f5dc7c32661036)), closes [#324](https://github.com/Meridiona/meridian/issues/324)
+* **fold:** correct four Next-fold route divergences from code review ([b54ec04](https://github.com/Meridiona/meridian/commit/b54ec044b47a27a885594b6f90c97d718ff685ae)), closes [#298](https://github.com/Meridiona/meridian/issues/298)
+* **health:** drop vestigial disk (screenpipe) check (Gap-2 Bucket 2) ([b845647](https://github.com/Meridiona/meridian/commit/b84564702db97c8116e6d95b271acbfb81dfc233))
+* **health:** resolve all pr [#330](https://github.com/Meridiona/meridian/issues/330) review findings ([41d2aa2](https://github.com/Meridiona/meridian/commit/41d2aa2520edae85c86cd2c65c1fb75b5056c5ac))
+* **install:** clean up legacy bundle agents + migrate .env on DMG upgrade ([a782319](https://github.com/Meridiona/meridian/commit/a782319c4754a39591b493a39b781043c5db2cb9))
+* **installer:** write credentials to ~/.meridian/.env not ~/.meridian/app/.env ([cecc8aa](https://github.com/Meridiona/meridian/commit/cecc8aa5808bf2035375a2f0d2e9d8fbbadc1fd3))
+* **install:** purge leftover pre-cutover screenpipe agent on in-process install (Gap-2 Bucket 2) ([0c36a55](https://github.com/Meridiona/meridian/commit/0c36a558dddec124ae514fdeae09d920af8182bf))
+* **integrations:** auto-install gh via Homebrew if not present ([f617e99](https://github.com/Meridiona/meridian/commit/f617e99f3243d9b0d8dd1fed620f8325a8682475))
+* **integrations:** fix gh CLI path resolution and GITHUB_TOKEN env conflict ([ac987e0](https://github.com/Meridiona/meridian/commit/ac987e0d8700aa6bfe8472e5271f87cd0f8d0f82))
+* **oauth:** guard Jira login on missing client secret; scope admin-block hint ([afdeede](https://github.com/Meridiona/meridian/commit/afdeede5caa24263915a05dec4cc9d85a83d3bc6))
+* **oauth:** prevent GITHUB_TOKEN from merging onto prior .env line ([f6b8781](https://github.com/Meridiona/meridian/commit/f6b8781b1cae3febefdf50d6c44933c46eb3530a))
+* **obs:** demote per-payload telemetry spool logs to TRACE ([6209b2e](https://github.com/Meridiona/meridian/commit/6209b2e88ffb41a6d450247e8b508d3201e369de))
+* **obs:** init OTLP inside the Tokio runtime (fixes no-reactor panic) ([32fec44](https://github.com/Meridiona/meridian/commit/32fec445f2fe13bfb2858a89968749562c4e012f))
+* **review:** address PR [#324](https://github.com/Meridiona/meridian/issues/324) review findings across capture, tray, setup wizard ([7732a82](https://github.com/Meridiona/meridian/commit/7732a8270a8e4be57280a8755d73f1d78f156ba7))
+* **setup:** address code-review findings on the wizard ([b24031b](https://github.com/Meridiona/meridian/commit/b24031b5229b2018c5565727c82588d079268233))
+* **setup:** call CGRequestScreenCaptureAccess so Meridian appears in the list ([7a1b155](https://github.com/Meridiona/meridian/commit/7a1b155d86e96573c87c2138d1d5608a43f7221f))
+* **setup:** degrade model prefetch gracefully on an older runtime (Gap-2 Bucket 2, Fix C-a) ([100876a](https://github.com/Meridiona/meridian/commit/100876a6b3ae6fc0c69ecf22977fac4f2e5f136f))
+* **setup:** detect Screen Recording via CGPreflight, not pgrep screenpipe (Gap-2 Bucket 2) ([3119f74](https://github.com/Meridiona/meridian/commit/3119f74855241ea3b80d63ebe02bd6d3af2f6c95))
+* **today:** clamp presence so a stale active block can't inflate focus ([0a62663](https://github.com/Meridiona/meridian/commit/0a626634fff6e3526246902af0e7b116b15ba4c7))
+* **tray:** address code-review findings for PR [#327](https://github.com/Meridiona/meridian/issues/327) ([5ad4e24](https://github.com/Meridiona/meridian/commit/5ad4e24c23ae6e72327d8e90054c3fe28b6c80f6))
+* **tray:** convert popover+tooltip to NSPanel for proper fullscreen Space support ([74af02b](https://github.com/Meridiona/meridian/commit/74af02b996d16ce055f5587511abd9f0974ee765))
+* **tray:** enable native fullscreen and resize on dashboard window ([f0f3d71](https://github.com/Meridiona/meridian/commit/f0f3d71aa9e8f47e108d88b5177cb23f0e363455))
+* **tray:** global NSEvent monitor for click-outside + restore non-activating NSPanel ([2a420db](https://github.com/Meridiona/meridian/commit/2a420db88f0ba0985c51fe4a03acc8561b7e0853))
+* **tray:** grant window set-size so the popover can resize (uncut) ([ce72a64](https://github.com/Meridiona/meridian/commit/ce72a64c540ce1e5778a82a7ce58cf9762da5ed7))
+* **tray:** manual popover positioning below menu bar + remove dead positioner call ([bfb8030](https://github.com/Meridiona/meridian/commit/bfb80303660fee3c79fe1ff6bceb178725ce05fe))
+* **tray:** popover bottom corners clipped + scrollbar ([00d4781](https://github.com/Meridiona/meridian/commit/00d4781f5d8633f90f2c9594cafc4086635b5666))
+* **tray:** popover visible on all macOS Spaces (full-screen apps) ([6f752da](https://github.com/Meridiona/meridian/commit/6f752da13d212cf99562b063147866a0f0571090))
+* **tray:** position popover via tray rect instead of TrayCenter plugin ([a1b7e65](https://github.com/Meridiona/meridian/commit/a1b7e65866eaaa84583980914b37e78fa447d3b9))
+* **tray:** raise window level to NSPopUpMenuWindowLevel + orderFrontRegardless for fullscreen ([f231f68](https://github.com/Meridiona/meridian/commit/f231f686cde24a941be7ecbc6b0c965f47afc17c))
+* **tray:** remove 8px gap between menu bar and hover tooltip ([a6e9d95](https://github.com/Meridiona/meridian/commit/a6e9d95b4a4a2c4965ad058a8e2dc8e87ef02458))
+* **tray:** remove native OS tooltip from tray icon ([e8222fc](https://github.com/Meridiona/meridian/commit/e8222fc25fb9c7d022e91b09ba4b528fbdeb38a1))
+* **tray:** restore click-outside dismiss — drop non-activating NSPanel mask ([8b01b39](https://github.com/Meridiona/meridian/commit/8b01b397885f18268ef51ad075c972b3ef32feb4))
+* **tray:** ship the spirograph brand mark, not the ring-dot placeholder [staging-release] ([dd393e2](https://github.com/Meridiona/meridian/commit/dd393e2e52ffd3bfa842261556e6a8af295f32b9))
+* **tray:** show popover + tooltip over fullscreen apps ([e30fbe9](https://github.com/Meridiona/meridian/commit/e30fbe9798192dcdb6284d426e4f68dba056d6cc))
+* **tray:** single source of truth for the tray menu (stop dropping items) ([2acec6b](https://github.com/Meridiona/meridian/commit/2acec6b64c28557e5929aff0e2ccd2200ec6f453))
+* **tray:** startup flash, screen-recording prompt loop, and popover height ([d406f32](https://github.com/Meridiona/meridian/commit/d406f32c27f3387e689a73221085cadfd007b6cd))
+* **tray:** stop dev-watcher thrash from next dev's .next churn ([3dfe86f](https://github.com/Meridiona/meridian/commit/3dfe86f93a276911614da82718adc9815ef466b9))
+* **tray:** stop forcing ad-hoc signing so TCC grants persist across builds ([6dd81d5](https://github.com/Meridiona/meridian/commit/6dd81d559257e1cd665336740b8e89e306d54665))
+* **tray:** tooltip border-clip + useful no-task state ([e8e1a4b](https://github.com/Meridiona/meridian/commit/e8e1a4bfc2f154484b73441d81be12a09d9bb8fe))
+* **tray:** use orderFrontRegardless for popover so it shows in fullscreen Space ([8fb8420](https://github.com/Meridiona/meridian/commit/8fb84204c7030e2f378690228c649443ddb110c9))
+* **tray:** wire Jira OAuth — forward client_secret, surface errors fast ([1cbec2e](https://github.com/Meridiona/meridian/commit/1cbec2e09febd0d6ae113bbab2b680ce8999c7db))
+
+### ♻️ Refactoring
+
+* **core:** extract meridian-core lean shared data layer ([f4002ea](https://github.com/Meridiona/meridian/commit/f4002ea073726d24863a4d0f806fa70b7eca0484))
+* **core:** organize meridian-core into readers/ + util/ folders ([48f5e1c](https://github.com/Meridiona/meridian/commit/48f5e1c454a2a19cc9ccfb4a0a62a57e0cc25c5d))
+* **tray:** group commands under commands/ + extract sys/install/tray ([f53448f](https://github.com/Meridiona/meridian/commit/f53448fbe3c059e7c45d95402b699689e0fc87e3))
+* **tray:** make the poll loop HTTP-free (cutover prerequisite) ([6eeba10](https://github.com/Meridiona/meridian/commit/6eeba10a866e1e2c732f99965384438f5ec8a4d7))
+* **tray:** move canonical .env to ~/.meridian/.env, drop app/ fallback ([b0d8f73](https://github.com/Meridiona/meridian/commit/b0d8f7394db76b648271e1c8110942e78547f37f))
+* **tray:** single detect_install_mode() probe for env file resolution ([e9006fc](https://github.com/Meridiona/meridian/commit/e9006fc6987b7275066c852b4bcbb0f69b35bb0b))
+* **tray:** split poll.rs into poll/ folder ([8f9fb23](https://github.com/Meridiona/meridian/commit/8f9fb2387cbdbfa6cca74ab3b53659597cdf8f6f))
+* **ui:** make the bridge Tauri-only (cutover step 1) ([22b7061](https://github.com/Meridiona/meridian/commit/22b7061111a499b1e05405f78108995c0f4d427e))
+* **ui:** relocate API response types to lib/api-types (cutover step 2) ([0940250](https://github.com/Meridiona/meridian/commit/0940250a82f98d7671467dc169304bca3195131b))
+
+### 📦 Build System
+
+* **release:** detailed changelog showing all commit types ([d12cfa6](https://github.com/Meridiona/meridian/commit/d12cfa60c4be270e528bb2f62b9ec04c8595a5d5))
+* **release:** wire DMG auto-update into the semantic-release pipeline ([5383f43](https://github.com/Meridiona/meridian/commit/5383f43a64a449a3ce708daf53f34f92e67d0199))
+* **tray:** ad-hoc sign the .app + DMG so unsigned builds aren't 'damaged' ([e1d0230](https://github.com/Meridiona/meridian/commit/e1d023069ae44de00a4dd56a5760a7c584aa7a90))
+* **tray:** enable in-process capture by default (Gap-2 Bucket 2) ([a01ad01](https://github.com/Meridiona/meridian/commit/a01ad017749580f92fc0c721fb45eefb1b377d62))
+* **tray:** pin staging runtime manifest via build:staging (Gap-2 Bucket 2, Fix 1) ([34edc5b](https://github.com/Meridiona/meridian/commit/34edc5b6d8cc96776b771a8437759e919c7ebf63))
+* **tray:** rebuild the daemon as part of build/build:staging (Gap-2 Bucket 2) ([3d3634b](https://github.com/Meridiona/meridian/commit/3d3634bdaf5c6aaf333c40fdb8235425c222a4a2))
+* **tray:** stable dev code-signing so TCC grants persist across rebuilds (Gap-2 Bucket 2) ([5573294](https://github.com/Meridiona/meridian/commit/5573294988f9254c99085db2c77aff17bf799a4a))
+
+### 🤖 CI
+
+* authenticate the private screenpipe-fork git dep in the Rust job ([e55bf31](https://github.com/Meridiona/meridian/commit/e55bf3102a036f384fcfc90040862504ab9d846d))
+* **mlx-runtime:** bump actions to current majors (checkout@v7, upload@v7, download@v8) ([8685bef](https://github.com/Meridiona/meridian/commit/8685bef36f8dee936e465d5317c0a6beb9fbff24))
+* **mlx-runtime:** smoke-test the tarball across all hosted arm64 macOS versions ([f5533aa](https://github.com/Meridiona/meridian/commit/f5533aa4c822678907cccc3494b2d15f9616260f))
+* **release:** add DMG auto-update staging channel on pre-main ([ba6d539](https://github.com/Meridiona/meridian/commit/ba6d5394174411429b9f9be7a0ce4e13ff90e8e5))
+* **release:** authenticate CI git to the private screenpipe-fork dep ([0a5a726](https://github.com/Meridiona/meridian/commit/0a5a72655a21a59a049ebde5f9e7d071dd43d501))
+* **release:** authenticate production build to the private screenpipe-fork dep ([118cb6f](https://github.com/Meridiona/meridian/commit/118cb6f5bc25b26206d0232a6f537a969490797f))
+* **release:** drop the orphaned Node 22 cache step (Stage 5) ([21c793e](https://github.com/Meridiona/meridian/commit/21c793e638700d88e96347fdd8a85ee627267ab1))
+* **release:** trigger staging on pre-main marker-commit + dispatch, not on main ([5555a2f](https://github.com/Meridiona/meridian/commit/5555a2f831180917d9f9034ea6f862c184587ba9))
+
+### ✅ Tests
+
+* auto-update target staging.2 [staging-release] ([82e90ad](https://github.com/Meridiona/meridian/commit/82e90ad138863533f21e31a1abe93208bcf3f074))
+* **core:** add get_today perf bench; flag the migration in meridian-ui skill ([65b4aae](https://github.com/Meridiona/meridian/commit/65b4aae050f6c7a284ae97c40a78ee810a39b5b8))
+* **core:** unit-test hygiene parsing + integration-test the DB readers ([8db7115](https://github.com/Meridiona/meridian/commit/8db71154eb255d06c6823e114af33e0d7736eac1))
+* **tray:** live end-to-end pull of the runtime-staging channel ([01b9e7b](https://github.com/Meridiona/meridian/commit/01b9e7b460f1adb5f93e490510b646c2629d647e))
+* **tray:** static regression guards + diagnostics for popover/tooltip ([f2ad2ae](https://github.com/Meridiona/meridian/commit/f2ad2ae2e994a63379fe7dd2ba39c6a61133fe4b))
+* **updater:** add real-GitHub dry-run helper ([57b9d5f](https://github.com/Meridiona/meridian/commit/57b9d5f2ef083ebe9c743d5de826ccb7405b0466))
+
+### 📝 Documentation
+
+* **capture:** document the screenpipe→in-process cutover + reword stale health text (Gap-2 Bucket 2) ([49ad45f](https://github.com/Meridiona/meridian/commit/49ad45f1f51de848797b586e8886769aa8972523))
+* **claude:** add the Next-fold porting playbook as the dev standard ([3776302](https://github.com/Meridiona/meridian/commit/37763029b7a909eb2985173d3d58815215c05d91))
+* **claude:** document meridian-core + the dashboard→Tauri migration ([dee4564](https://github.com/Meridiona/meridian/commit/dee45648e6c2f529f58e8f1e888a85020fe8ee9b))
+* **claude:** mark the Next-fold cutover as landed ([affe038](https://github.com/Meridiona/meridian/commit/affe038db9dd610d4502da4021e25fe0ce9e781c))
+* **claude:** update repo layout + Next-fold playbook for new module structure ([e2cda24](https://github.com/Meridiona/meridian/commit/e2cda24102d53b996c986d5268c5255de6df9348))
+* **core:** backfill module docs to the triage.rs bar (crate-consistent) ([9595158](https://github.com/Meridiona/meridian/commit/9595158fbcd9c596311825835956a2bdba665701))
+* dashboard is in the tray app, not a localhost server (Stage 5) ([9ecd81a](https://github.com/Meridiona/meridian/commit/9ecd81ab0ee33ef061ab10ebcb847c199dcb9de9))
+* **obs:** add OBSERVABILITY.md — navigating the DB→UI flow in OpenObserve ([a2eeb9f](https://github.com/Meridiona/meridian/commit/a2eeb9fef99081d1c53a7b2063b5662d677cfaa9))
+
+### 🎨 Styles
+
+* **daemon:** cargo fmt src/main.rs ([8be137f](https://github.com/Meridiona/meridian/commit/8be137f6699eae9b14b4bafe92d65e0898f345bb))
+
+### 🔧 Chores
+
+* **deps:** pin screenpipe to the last MIT release (0.4.6) + CI guard ([12f1214](https://github.com/Meridiona/meridian/commit/12f1214a13b9f1030525bf1efce0ae73f74f5790))
+* merge main + cargo fmt the new files it brought in ([cf731d6](https://github.com/Meridiona/meridian/commit/cf731d681d47ac97d8a55e9fede6951b1444435b))
+* **merge:** resolve conflicts merging pre-main into spike/meridian-core ([a4eb72b](https://github.com/Meridiona/meridian/commit/a4eb72be0a9cb4377c4cbe1d07d46140b9b6d665))
+* **release:** first staging cut [staging-release] ([7a232c5](https://github.com/Meridiona/meridian/commit/7a232c520ecf06abff4b60748203969638ffa032))
+* **release:** retire the standalone dashboard Node server (Stage 5) ([272c59c](https://github.com/Meridiona/meridian/commit/272c59cd416c980aa5b42f5bdf1392cba6cea95d))
+* **release:** retry staging [staging-release] ([31f4095](https://github.com/Meridiona/meridian/commit/31f4095c9c021cc7fa682574df12b820dab5f956))
+* **runtime:** bump services to 1.60.0 to republish staging runtime with prefetch endpoints (Gap-2 Bucket 2, Fix C-b) ([8942252](https://github.com/Meridiona/meridian/commit/894225234e8a25f66177ed431dc28721e2bd8f29))
+* sync services/uv.lock to meridian-agents 1.56.0 ([eb51d24](https://github.com/Meridiona/meridian/commit/eb51d245cac00c8b56c22669553b8210f06da19e))
+* **tray:** remove superseded vanilla wizard + dashboard pages ([de53148](https://github.com/Meridiona/meridian/commit/de53148e81ea3ecb305193b025bd2a8d5271001b))
+* **ui:** drop Node-server-only deps after the fold (Stage 5) ([0f134e6](https://github.com/Meridiona/meridian/commit/0f134e602a5083ba7dba2dd8c285a037942da1d8))
+* **ui:** gitignore out/, remove dead Node libs after the cutover ([6d57fff](https://github.com/Meridiona/meridian/commit/6d57ffff9b993d22d6726b050128d3f47422cc69))
+
 # [1.63.0](https://github.com/Meridiona/meridian/compare/v1.62.0...v1.63.0) (2026-06-23)
 
 

@@ -383,28 +383,31 @@ The dataset's value lives in **what it discriminates**, not how many cases it ha
 
 **A change under `services/` reaches NO existing user until you publish a new MLX runtime — an app release does not rebuild it.** The MLX server runs from `~/.meridian/runtime/` (a CPython + venv + the `agents` package), which is downloaded and **versioned independently of the app**. So `server.py`, anything in `agents/` (classifier, prompts, model registry, `routes/prefetch.py`, summariser), and the model set only update when the runtime tarball is republished. This is exactly how prod once ran app `1.66.2` against a stale runtime `1.60.0`.
 
-The runtime version is `services/pyproject.toml`'s `version`, bumped in lockstep with the app by `scripts/set-version.sh` on each release. Two channels, selected by tag prefix (`.github/workflows/build-mlx-runtime.yml`):
+The runtime version is `services/pyproject.toml`'s `version`, bumped in lockstep with the app by `scripts/set-version.sh` on each release. Two channels, two audiences:
 
-| Audience | Tag prefix | Rolling release the app pins |
-|---|---|---|
-| Test machines (staging builds) | `runtime-staging-v*` | `runtime-staging` |
-| Production DMG users | `runtime-v*` | `runtime-latest` |
+| Audience | Branch (auto) | Manual tag (escape hatch) | Rolling release the app pins |
+|---|---|---|---|
+| Test machines (staging builds) | `pre-main` | `runtime-staging-v*` | `runtime-staging` |
+| Production DMG users | `main` | `runtime-v*` | `runtime-latest` |
 
-To ship a `services/` change:
+**Primary path — auto-publish on merge (`.github/workflows/build-mlx-runtime.yml`).** A merge to `pre-main` publishes `runtime-staging`; a merge to `main` publishes `runtime-latest`. The **`gate`** job (`scripts/runtime-publish-gate.sh`) is the single source of truth: it compares `services/pyproject.toml` against the channel's live `runtime-manifest.json` and builds/publishes only when the local version is **strictly greater** than the channel's live version. So a merge that lands a *stale* version simply doesn't ship — it never downgrades and never republishes an equal version. A manifest-fetch error is fail-closed.
 
-1. Land it on `main` (and `pre-main` if it must hit staging). Confirm the target commit has both the change **and** a `pyproject.toml` version **different from the currently-published runtime** — check `gh release download <channel> -p runtime-manifest.json -O -` for the live `version`. If they match, step 4's auto-upgrade is silently skipped (see gotcha).
-2. Tag that commit and push — the version label must equal the pyproject version:
-   ```bash
-   VER=$(grep -m1 '^version' services/pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
-   git tag "runtime-staging-v${VER}" <commit> && git push origin "runtime-staging-v${VER}"   # → runtime-staging
-   git tag "runtime-v${VER}"         <commit> && git push origin "runtime-v${VER}"           # → runtime-latest
-   ```
-3. The workflow builds (macos-14) → smoke-tests on macos 14/15/26 → force-updates the channel's rolling release with the new tarball + `runtime-manifest.json`. `workflow_dispatch` builds without publishing.
-4. Each machine's tray (`auto_upgrade_runtime` in `tray/src-tauri/src/mlx_server.rs`) sees `manifest.version != installed` on next launch, re-downloads, and swaps the runtime in.
+1. Land your `services/` change on the target branch **with a `pyproject.toml` version greater than the channel's live runtime**. The `services-version-bump.yml` PR check (`scripts/check-runtime-version-bump.sh`) enforces this before merge — a PR to `main` must beat `runtime-latest`, a PR to `pre-main` must beat `runtime-staging`. Check live with `gh release download <channel> -p runtime-manifest.json -O -`.
+2. On merge the workflow runs gate → build (macos-14) → smoke (macos 14/15/26) → publish. **Production (`main` → `runtime-latest`) runs in the `production-runtime` GitHub Environment, so a required reviewer must approve the publish job** before customers get it. Staging is unattended.
+3. Each machine's tray (`auto_upgrade_runtime` in `tray/src-tauri/src/mlx_server.rs`) sees `manifest.version != installed` on next launch, re-downloads, and swaps the runtime in.
+
+**Manual escape hatch (rollback / re-pin).** Tag a commit to publish out-of-band — tags publish on *any* version difference (trusting the human), so this is how you ship an older runtime to undo a bad one:
+```bash
+VER=$(grep -m1 '^version' services/pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
+git tag "runtime-staging-v${VER}" <commit> && git push origin "runtime-staging-v${VER}"   # → runtime-staging
+git tag "runtime-v${VER}"         <commit> && git push origin "runtime-v${VER}"           # → runtime-latest
+```
+`workflow_dispatch` builds + smoke-tests without publishing.
 
 **Gotchas:**
-- **Version-skip is an equality check** (`installed_version() == manifest.version` → skip). Republishing under the *same* version is a no-op for every machine already on it — always ship a **new** version, never reuse one.
-- **Two channels, two audiences.** A production build pins `runtime-latest`; a staging build pins `runtime-staging` (via `MERIDIAN_RUNTIME_MANIFEST_URL`). A fix published to only one channel never reaches users on the other — cut **both** tags when a fix must reach everyone. (`runtime-latest` is created on the first `runtime-v*` push; until then production has no runtime channel.)
+- **Version-skip is an equality check** (`installed_version() == manifest.version` → skip). The gate's strict-greater rule enforces this for branch publishes; for manual tags it's on you — always ship a **new** version, never reuse one.
+- **Branch versions must stay ahead of their channel.** `pre-main` legitimately trails `main`'s release version under `set-version` lockstep, so a `pre-main → main` promotion must reconcile `services/pyproject.toml` to a version **above `runtime-latest`** (the version-bump PR check fails the promotion otherwise, and the gate would skip the publish).
+- **Two channels, two audiences.** A fix that must reach everyone has to land on **both** `pre-main` and `main` (or both tags) — one channel never feeds the other.
 - **It is not the app binary.** Updating the `.app` alone ships nothing under `services/`; only a runtime republish does.
 
 ---

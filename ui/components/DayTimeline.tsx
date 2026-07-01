@@ -13,12 +13,13 @@ import type { TodayResponse } from '@/lib/api-types'
 // autonomous work (agent running while you were away) — visible by alignment, no
 // number needed. Hover any block for its exact span.
 
-type Band = { startMs: number; endMs: number; label: string; kind: 'active' | 'idle' | 'agent' }
+type Band = { startMs: number; endMs: number; label: string; kind: 'active' | 'idle' | 'agent' | 'paused' }
 
 const COLOR = {
   active: 'var(--ink)',
   idle: 'var(--rule-2)',
   agent: '#3B6FE0', // matches the `coding` category hue used across the app
+  paused: '#F59E0B', // amber — distinct from idle so users can see deliberate pauses
 }
 
 const ms = (iso: string) => new Date(iso).getTime()
@@ -33,11 +34,17 @@ export default function DayTimeline({ data }: { data: TodayResponse }) {
     const idle: Band[] = data.gaps
       .filter(g => g.kind === 'user_idle')
       .map(g => ({ startMs: ms(g.started_at), endMs: ms(g.ended_at), kind: 'idle' as const, label: 'Idle' }))
+    const paused: Band[] = data.gaps
+      .filter(g => g.kind === 'tracking_paused' || g.kind === 'schedule_paused')
+      .map(g => ({
+        startMs: ms(g.started_at), endMs: ms(g.ended_at), kind: 'paused' as const,
+        label: g.kind === 'schedule_paused' ? 'Outside work hours' : 'Paused',
+      }))
     const agent: Band[] = data.agent_segments.map(s => ({
       startMs: ms(s.started_at), endMs: ms(s.ended_at), kind: 'agent' as const, label: 'Claude / Codex',
     }))
 
-    const all = [...active, ...idle, ...agent].filter(b => Number.isFinite(b.startMs) && b.endMs > b.startMs)
+    const all = [...active, ...idle, ...paused, ...agent].filter(b => Number.isFinite(b.startMs) && b.endMs > b.startMs)
     if (all.length === 0) return null
 
     // Window: floor to the hour before the first event, ceil to the hour after
@@ -55,7 +62,7 @@ export default function DayTimeline({ data }: { data: TodayResponse }) {
       left: ((b.startMs - lo) / span) * 100,
       width: Math.max(0.4, ((b.endMs - b.startMs) / span) * 100),
     })
-    return { active, idle, agent, ticks, pos }
+    return { active, idle, paused, agent, ticks, pos }
   }, [data])
 
   if (!model) return null
@@ -100,8 +107,9 @@ export default function DayTimeline({ data }: { data: TodayResponse }) {
         {model.ticks.map((t, i) => (
           <div key={`g${i}`} className="absolute top-0" style={{ left: `${t.left}%`, height: 40, width: 1, background: 'var(--rule)' }} />
         ))}
-        {/* presence track: idle baseline first, active on top */}
+        {/* presence track: idle baseline, paused (amber) above idle, active on top */}
         {model.idle.map(b => block(b, 6, 18, COLOR.idle))}
+        {model.paused.map(b => block(b, 6, 18, COLOR.paused))}
         {model.active.map(b => block(b, 6, 18, COLOR.active))}
         {/* agent overlay track, aligned beneath presence */}
         {model.agent.map(b => block(b, 27, 11, COLOR.agent, true))}
@@ -118,6 +126,7 @@ export default function DayTimeline({ data }: { data: TodayResponse }) {
       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]" style={{ color: 'var(--ink-3)' }}>
         <span className="inline-flex items-center gap-1.5"><i style={{ width: 10, height: 10, background: COLOR.active, borderRadius: 2, display: 'inline-block' }} /> Active</span>
         <span className="inline-flex items-center gap-1.5"><i style={{ width: 10, height: 10, background: COLOR.idle, borderRadius: 2, display: 'inline-block' }} /> Idle</span>
+        <span className="inline-flex items-center gap-1.5"><i style={{ width: 10, height: 10, background: COLOR.paused, borderRadius: 2, display: 'inline-block' }} /> Paused</span>
         <span className="inline-flex items-center gap-1.5"><i style={{ width: 10, height: 6, background: COLOR.agent, borderRadius: 2, display: 'inline-block' }} /> Claude / Codex</span>
         <span style={{ color: 'var(--ink-4)' }}>· agent under an idle stretch = autonomous</span>
       </div>

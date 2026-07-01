@@ -1,0 +1,31 @@
+name: Services runtime version bump
+
+# Fails a PR that touches services/** without bumping services/pyproject.toml
+# above the live runtime version of the PR's target channel (main -> production,
+# pre-main -> staging). This closes the silent-no-op hole in the auto-publish
+# flow: a services/ change whose version is <= a published channel would rebuild
+# the runtime but never reach those users (the auto-upgrade is an equality check),
+# and on a promotion to main a stale version could downgrade customers.
+# Logic: scripts/check-runtime-version-bump.sh (shares the version helpers with
+# scripts/runtime-publish-gate.sh).
+
+on:
+  pull_request:
+    branches: [main, pre-main]
+    paths:
+      - "services/**"
+
+permissions:
+  contents: read
+
+jobs:
+  version-bump:
+    name: Runtime version bump check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Version must be ahead of the target channel's live runtime
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/check-runtime-version-bump.sh

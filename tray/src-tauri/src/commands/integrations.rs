@@ -76,6 +76,10 @@ const TOKEN_KEYS: &[(&str, &[&str])] = &[
             "AZURE_DEVOPS_ORG_URL",
         ],
     ),
+    // Trello uses OAuth for its primary auth but also stores a user-supplied app
+    // key in .env (prod has it baked in; dev users paste their own). Disconnect
+    // must strip it so a rotated key isn't silently reused on the next connect.
+    ("trello", &["TRELLO_APP_KEY"]),
 ];
 
 /// Token-based connect map: `provider → [(ui_field, env_key)]`. This is the
@@ -112,6 +116,10 @@ const TOKEN_FIELD_MAP: &[(&str, &[(&str, &str)])] = &[
         "azure_devops",
         &[("url", "AZURE_DEVOPS_URL"), ("pat", "AZURE_DEVOPS_PAT")],
     ),
+    // Trello's app key is baked in for production builds; dev users supply their
+    // own from https://trello.com/app-key via the UI, which saves it here before
+    // the browser OAuth flow starts.
+    ("trello", &[("api_key", "TRELLO_APP_KEY")]),
 ];
 
 /// Env keys that MUST be present for a provider to count as connected. Optional
@@ -262,7 +270,7 @@ fn upsert_env(path: &std::path::Path, updates: &BTreeMap<String, String>) -> std
 /// Disconnect a tracker (the ported /api/integrations DELETE). Removes the
 /// OAuth token store (`~/.meridian/oauth/<p>.json`) AND strips the provider's
 /// `.env` keys — Jira can be connected either way, so both run. (trello = json
-/// only; linear/github/azure = env keys only; jira = both.) After credentials
+/// + env key; linear/github/azure = env keys only; jira = both.) After credentials
 /// are removed, clears the provider's tasks from the DB (best-effort — warns on
 /// failure but does not block the disconnect). Returns `{ ok: true }`; an unknown
 /// provider is the route's 400.
@@ -332,8 +340,9 @@ pub struct SaveTokenBody {
 /// Write a token-based tracker's credentials to the active `.env` and reload the
 /// daemon — the in-app replacement for "run `meridian config edit`" (ports the
 /// deleted `/api/auth/token` route). Covers jira (API-token / self-hosted),
-/// linear, github (PAT), and azure_devops. Browser-OAuth providers (Jira Cloud
-/// OAuth, Trello) connect via [`start_oauth`] instead.
+/// linear, github (PAT), azure_devops, and trello (API key prerequisite for the
+/// browser OAuth flow; saving `TRELLO_APP_KEY` here lets [`start_oauth`] find the
+/// key and proceed — the OAuth step still runs to write `~/.meridian/oauth/trello.json`).
 ///
 /// Validation mirrors the route: required keys must be non-empty; CR/LF are
 /// stripped from each value (an env file is line-oriented). For jira, any stored

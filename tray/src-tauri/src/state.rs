@@ -1,14 +1,26 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 use crate::format;
 use serde::Serialize;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::Instant;
 use tauri::tray::TrayIconId;
+use tokio::sync::oneshot;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HealthStatus {
     Unknown,
     Healthy,
     Unhealthy,
+}
+
+/// Source of an active capture pause — drives which panel the popover shows.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PauseSource {
+    /// User paused for a fixed duration via the popover duration picker.
+    Timed,
+    /// Auto-paused because current time is outside the configured work hours.
+    Schedule,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -42,6 +54,14 @@ pub struct StatusPayload {
     /// of a misleading "PAUSED / Offline" during the 1–3 s startup window.
     pub has_polled: bool,
     pub healthy: bool,
+    /// Unix timestamp (ms) when the current timed pause expires. `None` when
+    /// not paused or when paused by a schedule (no fixed end time).
+    pub pause_until_ms: Option<u64>,
+    /// `"timed"` | `"schedule"` when capture is actively paused; `None` otherwise.
+    pub pause_source: Option<String>,
+    /// Display hint for the schedule-paused panel: the work-hours start time
+    /// ("09:00"). `None` when not schedule-paused.
+    pub schedule_resume_at: Option<String>,
     pub active_app: Option<String>,
     // ── Current task (tooltip card data) ────────────────────────────────────
     pub task_key: Option<String>,
@@ -76,6 +96,23 @@ pub struct StatusPayload {
 pub struct AppState {
     pub tray_id: Option<TrayIconId>,
     pub health: HealthStatus,
+    /// Shared flag checked by the capture frame + UI-event consumers: when
+    /// `true`, each incoming frame is silently dropped rather than written to
+    /// `capture_frames`. The flag is unconditional (not feature-gated) so the
+    /// `pause_for_duration` command can always reference `AppState` cleanly.
+    pub capture_paused: Arc<AtomicBool>,
+    /// Unix timestamp (secs) when the current timed pause expires.
+    /// `None` when not timed-paused. Set by `pause_for_duration`, cleared on resume.
+    pub pause_until: Option<u64>,
+    /// Whether the current pause was triggered by the user (Timed) or the
+    /// work-hours scheduler (Schedule).
+    pub pause_source: Option<PauseSource>,
+    /// Unix timestamp (secs) when the current pause started — used to compute
+    /// `duration_s` when writing the gap row on resume.
+    pub pause_started_at: Option<u64>,
+    /// Work-hours resume time shown in the schedule-paused panel (e.g. "09:00").
+    /// Set when the poll loop starts a schedule pause, cleared on resume.
+    pub schedule_resume_at: Option<String>,
     pub active_session: Option<ActiveSession>,
     /// When `active_session` was last refreshed — lets the 1 s tray-title
     /// ticker advance the timer smoothly between the 30 s poll refreshes.
@@ -101,6 +138,11 @@ pub struct AppState {
     pub daemon_was_healthy: bool,
     pub consecutive_health_failures: u32,
     pub last_menu_state: HealthStatus,
+    /// Dropping this sender cancels the ScreenpipeEngine task, stopping screen capture.
+    pub engine_cancel: Option<oneshot::Sender<()>>,
+    /// Dropping this sender cancels the UI event consumer task, which causes the OS
+    /// recorder thread to exit (it checks `tx.is_closed()` every 500ms).
+    pub ui_consumer_cancel: Option<oneshot::Sender<()>>,
 }
 
 impl Default for AppState {
@@ -108,6 +150,11 @@ impl Default for AppState {
         Self {
             tray_id: None,
             health: HealthStatus::Unknown,
+            capture_paused: Arc::new(AtomicBool::new(false)),
+            pause_until: None,
+            pause_source: None,
+            pause_started_at: None,
+            schedule_resume_at: None,
             active_session: None,
             active_set_at: None,
             current_task_key: None,
@@ -126,6 +173,8 @@ impl Default for AppState {
             daemon_was_healthy: false,
             consecutive_health_failures: 0,
             last_menu_state: HealthStatus::Unknown,
+            engine_cancel: None,
+            ui_consumer_cancel: None,
         }
     }
 }
@@ -145,6 +194,12 @@ impl AppState {
         StatusPayload {
             has_polled: self.last_poll.is_some(),
             healthy: self.health == HealthStatus::Healthy,
+            pause_until_ms: self.pause_until.map(|t| t * 1000),
+            pause_source: self.pause_source.as_ref().map(|s| match s {
+                PauseSource::Timed => "timed".to_string(),
+                PauseSource::Schedule => "schedule".to_string(),
+            }),
+            schedule_resume_at: self.schedule_resume_at.clone(),
             active_app: active.map(|a| a.app_name.clone()),
             task_key: self.current_task_key.clone(),
             task_title: self.task_title.clone(),

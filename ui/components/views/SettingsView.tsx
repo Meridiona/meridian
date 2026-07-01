@@ -107,6 +107,7 @@ export default function SettingsView() {
   const [llmStatus, setLlmStatus] = useState<SaveStatus>('idle')
   const [jiraStatus, setJiraStatus] = useState<SaveStatus>('idle')
   const [notifStatus, setNotifStatus] = useState<SaveStatus>('idle')
+  const [workHoursStatus, setWorkHoursStatus] = useState<SaveStatus>('idle')
 
   useEffect(() => {
     // get_settings (Rust) in the Tauri window, /api/settings in a browser.
@@ -484,6 +485,39 @@ export default function SettingsView() {
             quiet_hours_start: settings.quiet_hours_start,
             quiet_hours_end: settings.quiet_hours_end,
           }, setNotifStatus)}
+        />
+      </SectionCard>
+
+      {/* Work Hours */}
+      <SectionCard>
+        <SectionHeader>Work Hours</SectionHeader>
+        <FieldRow label="Work hours" description="Meridian automatically pauses capture outside this window and resumes at the start of the next work session.">
+          <Switch checked={settings.work_hours_enabled} onCheckedChange={v => patch({ work_hours_enabled: v })} />
+        </FieldRow>
+        {settings.work_hours_enabled && (
+          <>
+            <FieldRow label="Hours" description="Capture is active between these times (local time).">
+              <TextInput type="time" width={110} value={settings.work_hours_start} onChange={v => patch({ work_hours_start: v })} />
+              <span style={{ fontSize: '11px', color: 'var(--ink-3)' }}>→</span>
+              <TextInput type="time" width={110} value={settings.work_hours_end} onChange={v => patch({ work_hours_end: v })} />
+            </FieldRow>
+            <FieldRow label="Days" description="Active capture days. Enter comma-separated numbers: 1=Mon … 7=Sun (e.g. '1,2,3,4,5').">
+              <TextInput
+                value={settings.work_days}
+                onChange={v => patch({ work_days: v })}
+                placeholder="1,2,3,4,5"
+              />
+            </FieldRow>
+          </>
+        )}
+        <SaveButton
+          status={workHoursStatus}
+          onClick={() => save({
+            work_hours_enabled: settings.work_hours_enabled,
+            work_hours_start: settings.work_hours_start,
+            work_hours_end: settings.work_hours_end,
+            work_days: settings.work_days,
+          }, setWorkHoursStatus)}
         />
       </SectionCard>
 
