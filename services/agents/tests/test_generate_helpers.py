@@ -1,4 +1,3 @@
-# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 """Unit tests for the pure helpers in agents.routes.generate.
 
 ``_clamp01`` and ``_str_list`` shape the model's (FSM-validated but still

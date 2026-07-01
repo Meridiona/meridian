@@ -12,10 +12,8 @@ are no agno generation-agents — the stages POST to the server like the classif
 """
 from __future__ import annotations
 
-import json
 import logging
 import time
-import urllib.request
 from dataclasses import dataclass, field
 
 from opentelemetry import trace
@@ -27,20 +25,18 @@ from agents.worklog_pipeline import generation
 from agents.worklog_pipeline.classifier import (
     Candidate, ClassificationOutcome, classify_hour,
 )
+from agents.worklog_pipeline.generation import _post  # canonical JSON transport
 from agents.worklog_pipeline.models import ProposedTicket
 log = logging.getLogger("meridian.worklog.pipeline")
 tracer = trace.get_tracer("meridian.worklog.pipeline")
 
 _DEFAULT_SERVER = "http://127.0.0.1:7823"
 
-
-def _post(server: str, path: str, body: dict, timeout: float = 120) -> dict:
-    req = urllib.request.Request(
-        f"{server}{path}", data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())
+# Per-endpoint transport timeouts. The fast, non-generative calls (embedding
+# distill, rerank) cap at 120s; the generative /activity_report gets the full
+# generation budget (matches generation._post's 300s default) so a slow model
+# doesn't time it out while the downstream /generate_worklog would not.
+_FAST_TIMEOUT = 120.0
 
 
 @dataclass
@@ -147,7 +143,8 @@ def stage_distill(ctx: HourContext) -> bool:
         # Pass this span's traceparent so distill_hour loopback nests under it.
         tp = observability.current_traceparent()
         d = _post(ctx.server_url, "/distill_hour",
-                  {"hour": ctx.hour, "db_path": ctx.db_path, "traceparent": tp})
+                  {"hour": ctx.hour, "db_path": ctx.db_path, "traceparent": tp},
+                  timeout=_FAST_TIMEOUT)
         ctx.body = d["body"]
         ocr_nsess = d["nsess"]
 
@@ -269,7 +266,7 @@ def stage_candidates(ctx: HourContext) -> None:
             "query": ctx.report[:1800],
             "candidates": [{"task_key": c.task_key, "doc": c.doc} for c in cands],
             "traceparent": observability.current_traceparent(),
-        })["ranked"]
+        }, timeout=_FAST_TIMEOUT)["ranked"]
         score = {r["task_key"]: r["score"] for r in ranked}
         for c in cands:
             c.rerank_score = score.get(c.task_key, 0.0)

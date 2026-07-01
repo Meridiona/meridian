@@ -39,6 +39,27 @@ _MAX_TOKENS = 4096
 _CLASSIFY_TEMP = DEFAULT_TEMP
 
 
+def _normalize_confidence(c: object) -> float:
+    """Coerce a model-emitted confidence to [0,1].
+
+    FSM enforces JSON grammar but not numeric value bounds, so the model may emit
+    either a 0–1 score (occasionally overshooting the ceiling, e.g. 1.1 / 1.5 —
+    ``models.py`` documents 1.5 as a typical overshoot) OR, rarely, a 0–100
+    percentage. Only values ``>= 2.0`` are treated as percentage scale (÷100); a
+    value in ``(1.0, 2.0)`` is an overshoot and is clamped to 1.0, NOT divided —
+    dividing it (1.1 → 0.011) would push a high-confidence match below
+    ``classifier._MIN_CONFIDENCE`` and silently drop a real ticket. Non-numeric
+    input yields 0.0.
+    """
+    try:
+        cf = float(c)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+    if cf >= 2.0:
+        cf = cf / 100.0
+    return max(0.0, min(1.0, cf))
+
+
 class _Candidate(BaseModel):
     task_key:     str
     title:        str
@@ -177,17 +198,9 @@ async def classify_tasks(req: _ClassifyRequest) -> _ClassifyResponse:
             for mtc in matches:
                 k = mtc.get("task_key") if isinstance(mtc, dict) else None
                 if k in _valid_keys:
-                    # FSM enforces JSON grammar but not numeric value bounds — the
-                    # model sometimes emits confidence as a 0–100 percentage. Normalise
-                    # to [0,1] so downstream thresholds behave.
-                    c = mtc.get("confidence")
-                    try:
-                        cf = float(c)
-                        if cf > 1.0:
-                            cf = cf / 100.0
-                        mtc["confidence"] = max(0.0, min(1.0, cf))
-                    except (TypeError, ValueError):
-                        mtc["confidence"] = 0.0
+                    # Normalise confidence to [0,1] (see _normalize_confidence — a
+                    # (1,2) overshoot is clamped, only >=2 is treated as percentage).
+                    mtc["confidence"] = _normalize_confidence(mtc.get("confidence"))
                     _kept.append(mtc)
                 else:
                     _dropped.append(mtc)

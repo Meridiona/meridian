@@ -1,4 +1,3 @@
-# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 """Unit tests for agents.schemas — the FSM (outlines) JSON output contracts.
 
 These guard the shape the grammar-constrained endpoints (/classify_tasks,

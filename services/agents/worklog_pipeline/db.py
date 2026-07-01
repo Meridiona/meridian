@@ -298,7 +298,10 @@ def upsert_proposed_task(
     """UPSERT a tier-3 proposed task together with its DRAFTED worklog.
 
     Idempotent on (day_utc, source_hour); refreshes a still-proposed row, leaves
-    approved/dismissed untouched. ``worklog_payload`` is the JiraUpdate-shaped
+    approved/dismissed untouched. Returns the row id on insert/refresh, or ``None``
+    when a DECIDED (approved/dismissed) row already owns the key and the guarded
+    update was a no-op — so the caller never mistakes a stale decided id for the
+    freshly-persisted proposal. ``worklog_payload`` is the JiraUpdate-shaped
     draft (see :func:`build_payload`) the approval surface shows + posts; it is
     stored as JSON in ``worklog_payload_json`` (migration 050). ``issue_type`` is
     'Task' or 'Bug' (migration 051) and selects the issue type at creation time.
@@ -328,7 +331,15 @@ def upsert_proposed_task(
          workflow_run_id, payload_json, time_spent_seconds, confidence,
          window_start, window_end),
     )
+    # changes()==0 means the row for (day_utc, source_hour) already exists in an
+    # APPROVED/DISMISSED state, so the `WHERE state='proposed'` guard blocked the
+    # DO UPDATE (a no-op). Return None rather than the SELECT below, which would
+    # hand back the DECIDED row's id and make the caller believe the new proposal
+    # was persisted (it was intentionally NOT — a user's decision is immutable).
+    changed = conn.execute("SELECT changes()").fetchone()[0]
     conn.commit()
+    if not changed:
+        return None
     row = conn.execute(
         "SELECT id FROM pm_proposed_tasks WHERE day_utc=? AND source_hour=?",
         (day_utc, source_hour),

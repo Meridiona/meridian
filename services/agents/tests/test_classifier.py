@@ -1,4 +1,3 @@
-# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 """Unit tests for agents.worklog_pipeline.classifier._post_classify.
 
 The critical invariant: a TRANSPORT/HTTP failure must RAISE (so the retry tier fires),

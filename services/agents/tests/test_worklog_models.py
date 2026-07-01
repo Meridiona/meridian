@@ -1,4 +1,3 @@
-# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 """Unit tests for agents.worklog_pipeline.models — the pipeline DTO helpers.
 
 Covers ``classification_keys`` (the extractor the classifier uses to pull
