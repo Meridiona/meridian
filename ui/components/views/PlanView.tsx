@@ -6,10 +6,9 @@ import {
   DragDropContext, Droppable, Draggable,
   type DropResult, type DraggableProvided, type DraggableStateSnapshot,
 } from '@hello-pangea/dnd'
-import { Card } from '@/components/atoms'
 import { GripHandle } from '@/components/plan/parts'
 import { TaskCardBody, type CardTask } from '@/components/plan/TaskCard'
-import TaskDialog from '@/components/plan/TaskDialog'
+import { TaskDetailDialog } from '@/components/timeline/TaskDetailDialog'
 import type { PlanResponse, AvailableTask, PlanItem } from '@/lib/api-types'
 import { load as loadBridge, mutate } from '@/lib/bridge'
 
@@ -38,16 +37,8 @@ function fromPlan(p: PlanItem, avail: Map<string, AvailableTask>): CardTask {
 }
 
 const FOCUS = 'outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2'
-
-// White & blue theme, scoped to the plan page — overrides the app's warm accent
-// for all `var(--accent)` / `var(--accent-soft)` / `var(--tint)` usages below
-// (and the dialog, which is a descendant). `--warn` → red so urgency isn't orange.
-const BLUE_THEME = {
-  '--accent': '#2563EB',
-  '--accent-soft': '#E8F0FE',
-  '--tint': 'rgba(37,99,235,0.06)',
-  '--warn': '#DC2626',
-} as React.CSSProperties
+const PRIMARY_BTN = 'mt-body-sm px-4 py-2 rounded-lg font-semibold transition-opacity hover:opacity-90'
+const GHOST_BTN = 'mt-body-sm px-4 py-2 rounded-lg bg-ctrl transition-opacity hover:opacity-80'
 
 // A card body that's draggable when `draggable` is set (a grip handle appears and
 // the row can be dragged) + caller-supplied trailing controls. When locked
@@ -62,9 +53,9 @@ function DraggableCard({
         <div ref={provided.innerRef} {...provided.draggableProps}
           style={{
             ...provided.draggableProps.style,
-            borderColor: 'var(--rule)',
-            background: 'var(--surface)',
-            boxShadow: snapshot.isDragging ? '0 10px 30px rgba(0,0,0,0.18)' : 'none',
+            borderColor: 'var(--t-card-border)',
+            background: 'var(--t-card)',
+            boxShadow: snapshot.isDragging ? '0 16px 32px -12px rgba(40,30,90,0.32)' : 'none',
           }}
           className="rounded-lg border">
           <TaskCardBody task={task} detail={detail} onOpen={onOpen}
@@ -72,7 +63,7 @@ function DraggableCard({
               ? (
                 <span {...provided.dragHandleProps} aria-label={`Drag ${task.key}`}
                   className={`shrink-0 cursor-grab active:cursor-grabbing -ml-1 px-0.5 rounded inline-flex items-center ${FOCUS}`}
-                  style={{ color: 'var(--ink-4)' }}>
+                  style={{ color: 'var(--t-faint-2)' }}>
                   <GripHandle />
                 </span>
               )
@@ -218,83 +209,89 @@ export default function PlanView() {
   // ── render ──────────────────────────────────────────────────────────────────
   if (!data) {
     return (
-      <div className="space-y-8">
-        <header className="rise"><h1 className="type-title" style={{ color: 'var(--ink)' }}>Today&apos;s plan</h1></header>
+      <div className="h-full flex flex-col p-6">
         {loadFailed
-          ? <button onClick={() => load(true)} className="text-[13px] px-3 py-2 rounded-md" style={{ background: 'var(--accent)', color: '#fff' }}>Couldn’t load — retry</button>
-          : <p className="text-[13px]" style={{ color: 'var(--ink-3)' }}>Loading…</p>}
+          ? <button onClick={() => load(true)} className={PRIMARY_BTN} style={{ background: 'var(--color-state-approved)', color: '#fff', alignSelf: 'flex-start' }}>Couldn’t load — retry</button>
+          : <p className="mt-body-sm" style={{ color: 'var(--t-faint)' }}>Loading…</p>}
       </div>
     )
   }
 
-  const dateLabel = new Date(`${data.date}T00:00:00`).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+  const dateLabel = new Date(`${data.date}T00:00:00`).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })
   const boardEmpty = (data.available?.length ?? 0) === 0 && today.length === 0
 
   return (
-    <div style={BLUE_THEME} className="h-full flex flex-col min-h-0">
+    <div className="h-full flex flex-col min-h-0">
     <DragDropContext onDragStart={() => { draggingRef.current = true }} onDragEnd={onDragEnd}>
-      <div className="flex-1 min-h-0 flex flex-col gap-8">
-        <header className="rise shrink-0 flex items-end justify-between gap-4">
-          <div>
-            <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--ink-3)' }}>{dateLabel}</p>
-            <h1 className="type-title mt-1" style={{ color: 'var(--ink)' }}>What are you working on today?</h1>
-          </div>
+      <div className="flex-1 min-h-0 flex flex-col">
+        <header className="shrink-0 flex items-center justify-between gap-4 px-6 pt-5 pb-4 border-b" style={{ borderColor: 'var(--t-hair)' }}>
+          <p className="mt-label" style={{ color: 'var(--t-faint)' }}>{dateLabel}</p>
           <div className="text-right shrink-0">
             {confirmedMode
               ? (editing
-                ? <p className="text-[12px]" style={{ color: 'var(--accent)' }}>Editing · unsaved changes</p>
-                : <p className="text-[12px]" style={{ color: 'var(--success)' }}>Confirmed · {today.length} task{today.length === 1 ? '' : 's'}</p>)
+                ? <p className="mt-body-sm" style={{ color: 'var(--color-state-proposal)' }}>Editing · unsaved changes</p>
+                : <p className="mt-body-sm" style={{ color: 'var(--color-state-approved)' }}>Confirmed · {today.length} task{today.length === 1 ? '' : 's'}</p>)
               : skipped
-                ? <p className="text-[12px]" style={{ color: 'var(--ink-3)' }}>Skipped for today</p>
-                : <p className="text-[12px]" style={{ color: 'var(--ink-3)' }}>Pick your focus, then confirm</p>}
-            {saveError && <p className="text-[11px] mt-0.5" style={{ color: 'var(--warn)' }}>Couldn’t save — is the daemon running?</p>}
+                ? <p className="mt-body-sm" style={{ color: 'var(--t-faint)' }}>Skipped for today</p>
+                : <p className="mt-body-sm" style={{ color: 'var(--t-faint)' }}>Pick your focus, then confirm</p>}
+            {saveError && <p className="mt-body-sm mt-0.5" style={{ color: 'var(--color-state-pending)' }}>Couldn’t save — is the daemon running?</p>}
           </div>
         </header>
 
         {boardEmpty ? (
-          <div className="py-16 text-center rounded-xl border" style={{ borderColor: 'var(--rule)', background: 'var(--surface)' }}>
-            <p className="type-empty" style={{ color: 'var(--ink-2)' }}>No tasks on your board yet.</p>
-            <p className="text-[12px] mt-2" style={{ color: 'var(--ink-3)' }}>Connect a tracker in Settings and your tickets will appear here.</p>
+          <div className="flex-1 flex items-center justify-center p-6">
+            <div className="py-16 px-8 text-center rounded-xl w-full" style={{ border: '1px dashed var(--t-hair)' }}>
+              <p className="mt-title" style={{ color: 'var(--t-title)' }}>No tasks on your board yet.</p>
+              <p className="mt-body-sm mt-2" style={{ color: 'var(--t-faint)' }}>Connect a tracker in Settings and your tickets will appear here.</p>
+            </div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch flex-1 min-h-0">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 flex-1 min-h-0 p-6">
             {/* ── LEFT: Today ──────────────────────────────────────────────── */}
-            <Card className="p-5 flex flex-col min-h-0">
-              <div className="flex items-center justify-between mb-1">
-                <p className="text-[10px] uppercase tracking-[0.18em]" style={{ color: 'var(--ink-3)' }}>Today · {today.length}</p>
-                {proposed && today.length > 0 && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded-md" style={{ color: 'var(--accent)', background: 'var(--accent-soft)' }}>Suggested</span>
+            <div className="rounded-xl flex flex-col min-h-0 bg-card" style={{ border: '1px solid var(--t-card-border)' }}>
+              <div className="shrink-0 px-4 pt-4">
+                <div className="flex items-center justify-between mb-1">
+                  <p className="mt-label" style={{ color: 'var(--t-faint)' }}>Today · {today.length}</p>
+                  {proposed && today.length > 0 && (
+                    <span className="mt-chip px-1.5 py-0.5 rounded"
+                      style={{ color: 'var(--color-state-proposal)', background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)' }}>
+                      Suggested
+                    </span>
+                  )}
+                </div>
+                <p className="mt-body-sm mb-2" style={{ color: 'var(--t-faint)' }}>
+                  {proposed
+                    ? 'We pre-filled what looks active. Drag to reorder, drag a card out to remove, or add from your board — then confirm.'
+                    : editing
+                      ? 'Reorder, add, or remove — then Save to update today’s plan, or Cancel to discard.'
+                      : confirmedMode
+                        ? 'Your plan is locked in. Hit Edit plan to make changes.'
+                        : 'Plan your day below.'}
+                </p>
+                {editable && today.length > 5 && (
+                  <p className="mt-body-sm mb-2 flex items-center gap-1.5" style={{ color: 'var(--color-state-pending)' }}>
+                    <span>⚠</span> That&apos;s a full plate — most focused days land on 1–3 tasks.
+                  </p>
                 )}
               </div>
-              <p className="text-[12px] mb-2" style={{ color: 'var(--ink-3)' }}>
-                {proposed
-                  ? 'We pre-filled what looks active. Drag to reorder, drag a card out to remove, or add from your board — then confirm.'
-                  : editing
-                    ? 'Reorder, add, or remove — then Save to update today’s plan, or Cancel to discard.'
-                    : confirmedMode
-                      ? 'Your plan is locked in. Hit Edit plan to make changes.'
-                      : 'Plan your day below.'}
-              </p>
-              {editable && today.length > 5 && (
-                <p className="text-[11px] mb-3 flex items-center gap-1.5" style={{ color: 'var(--warn)' }}>
-                  <span>⚠</span> That&apos;s a full plate — most focused days land on 1–3 tasks.
-                </p>
-              )}
 
               <Droppable droppableId="today">
                 {(provided, snapshot) => (
                   <div ref={provided.innerRef} {...provided.droppableProps}
-                    className="rounded-xl transition-colors flex-1 min-h-0 overflow-y-auto p-2 space-y-2"
-                    style={{ background: snapshot.isDraggingOver ? 'var(--accent-soft)' : 'var(--surface-2)', outline: snapshot.isDraggingOver ? '1.5px dashed var(--accent)' : '1.5px dashed transparent', outlineOffset: 2 }}>
+                    className="rounded-xl transition-colors flex-1 min-h-0 overflow-y-auto nice-scroll mx-4 mb-2 p-2 space-y-2"
+                    style={{
+                      background: snapshot.isDraggingOver ? 'color-mix(in srgb, var(--color-state-proposal) 10%, transparent)' : 'var(--t-box)',
+                      outline: snapshot.isDraggingOver ? '1.5px dashed var(--color-state-proposal)' : '1.5px dashed transparent', outlineOffset: 2,
+                    }}>
                     {today.map((t, i) => (
                       <DraggableCard key={t.key} task={t} index={i} draggable={editable} onOpen={() => setOpenTask(t)}
                         trail={
                           <div className="flex items-center gap-1 shrink-0">
-                            <span aria-hidden className="font-mono tnum text-[11px] mr-1" style={{ color: 'var(--ink-4)' }}>{i + 1}</span>
+                            <span aria-hidden className="mt-mono-sm text-[11px] mr-1" style={{ color: 'var(--t-faint-2)' }}>{i + 1}</span>
                             {editable && (
                               <button onClick={() => commit(today.filter(x => x.key !== t.key))} aria-label={`Remove ${t.key} from today`}
-                                className={`w-6 h-6 rounded-md flex items-center justify-center transition-colors hover:bg-[var(--rule)] ${FOCUS}`}
-                                style={{ color: 'var(--ink-4)' }}>
+                                className={`w-6 h-6 rounded-md flex items-center justify-center transition-colors hover:bg-wrap ${FOCUS}`}
+                                style={{ color: 'var(--t-faint-2)' }}>
                                 <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M4 4l8 8M12 4l-8 8" /></svg>
                               </button>
                             )}
@@ -305,9 +302,9 @@ export default function PlanView() {
                     {provided.placeholder}
                     {today.length === 0 && !snapshot.isDraggingOver && (
                       <div className="py-9 text-center">
-                        <p className="text-[12px]" style={{ color: 'var(--ink-4)' }}>
+                        <p className="mt-body-sm" style={{ color: 'var(--t-faint-2)' }}>
                           {editable
-                            ? <>Drag tasks here, or tap <span style={{ color: 'var(--accent)' }}>+ Add</span> from your board.</>
+                            ? <>Drag tasks here, or tap <span style={{ color: 'var(--color-state-proposal)' }}>+ Add</span> from your board.</>
                             : 'No tasks in today’s plan.'}
                         </p>
                       </div>
@@ -316,83 +313,80 @@ export default function PlanView() {
                 )}
               </Droppable>
 
-              <div className="mt-5 pt-4 rule-t shrink-0 flex items-center gap-3" style={{ borderTopColor: 'var(--rule)' }}>
+              <div className="shrink-0 px-4 py-3.5 border-t flex items-center gap-3" style={{ borderColor: 'var(--t-hair)' }}>
                 {proposed ? (
                   <>
                     <button onClick={() => metaAction('confirm', today.map(t => t.key))}
-                      className={`px-4 py-2 rounded-md text-[13px] font-medium transition-colors ${FOCUS}`}
-                      style={{ background: 'var(--accent)', color: '#fff' }}>
+                      className={`${PRIMARY_BTN} ${FOCUS}`} style={{ background: 'var(--color-state-approved)', color: '#fff' }}>
                       Confirm {today.length > 0 ? `${today.length} task${today.length === 1 ? '' : 's'}` : 'plan'} →
                     </button>
-                    <button onClick={() => metaAction('skip', [])} className={`text-[12px] px-2 py-1.5 rounded-md ml-auto ${FOCUS}`} style={{ color: 'var(--ink-4)' }}>
+                    <button onClick={() => metaAction('skip', [])} className={`mt-body-sm px-2 py-1.5 rounded-md ml-auto ${FOCUS}`} style={{ color: 'var(--t-faint-2)' }}>
                       Skip today
                     </button>
                   </>
                 ) : skipped ? (
                   <button onClick={() => metaAction('reopen', [])}
-                    className={`px-4 py-2 rounded-md text-[13px] font-medium transition-colors ${FOCUS}`}
-                    style={{ background: 'var(--accent)', color: '#fff' }}>
+                    className={`${PRIMARY_BTN} ${FOCUS}`} style={{ background: 'var(--color-state-approved)', color: '#fff' }}>
                     Plan today →
                   </button>
                 ) : editing ? (
                   <>
-                    <button onClick={saveEdits}
-                      className={`px-4 py-2 rounded-md text-[13px] font-medium transition-colors ${FOCUS}`}
-                      style={{ background: 'var(--accent)', color: '#fff' }}>
+                    <button onClick={saveEdits} className={`${PRIMARY_BTN} ${FOCUS}`} style={{ background: 'var(--color-state-approved)', color: '#fff' }}>
                       Save changes
                     </button>
-                    <button onClick={cancelEdits} className={`text-[12px] px-2 py-1.5 rounded-md ${FOCUS}`} style={{ color: 'var(--ink-4)' }}>
+                    <button onClick={cancelEdits} className={`mt-body-sm px-2 py-1.5 rounded-md ${FOCUS}`} style={{ color: 'var(--t-faint-2)' }}>
                       Cancel
                     </button>
                   </>
                 ) : (
                   <>
-                    <button onClick={() => setEditing(true)}
-                      className={`px-4 py-2 rounded-md text-[13px] font-medium border transition-colors ${FOCUS}`}
-                      style={{ borderColor: 'var(--rule)', color: 'var(--ink-2)', background: 'var(--paper)' }}>
+                    <button onClick={() => setEditing(true)} className={`${GHOST_BTN} ${FOCUS}`}
+                      style={{ border: '1px solid var(--t-ctrl-border)', color: 'var(--t-muted)' }}>
                       Edit plan
                     </button>
-                    <span className="text-[12px] ml-auto" style={{ color: 'var(--ink-4)' }}>These lead today’s task matching.</span>
+                    <span className="mt-body-sm ml-auto" style={{ color: 'var(--t-faint-2)' }}>These lead today’s task matching.</span>
                   </>
                 )}
               </div>
-            </Card>
+            </div>
 
             {/* ── RIGHT: Your tasks (board) ─────────────────────────────────── */}
-            <Card className="p-5 flex flex-col min-h-0">
-              <p className="text-[10px] uppercase tracking-[0.18em] mb-3 shrink-0" style={{ color: 'var(--ink-3)' }}>
-                Your tasks{search ? ` · ${board.length} match${board.length === 1 ? '' : 'es'}` : ` · ${board.length}`}
-              </p>
-              <div className="flex items-center gap-2 mb-4 shrink-0">
-                <input
-                  value={search} onChange={e => setSearch(e.target.value)} aria-label="Search your tasks"
-                  placeholder="Search tasks…"
-                  className={`flex-1 text-[13px] px-3 py-2 rounded-md ${FOCUS}`}
-                  style={{ background: 'var(--surface-2)', color: 'var(--ink)', border: '1px solid var(--rule)' }}
-                />
-                <div role="radiogroup" aria-label="Sort tasks" className="flex rounded-md overflow-hidden" style={{ border: '1px solid var(--rule)' }}>
-                  {(['top', 'due', 'az'] as const).map(m => (
-                    <button key={m} role="radio" aria-checked={sortMode === m} onClick={() => setSortMode(m)}
-                      className={`text-[11px] px-2.5 py-2 transition-colors ${FOCUS}`}
-                      style={{ background: sortMode === m ? 'var(--surface-2)' : 'var(--surface)', color: sortMode === m ? 'var(--ink)' : 'var(--ink-3)' }}>
-                      {m === 'top' ? 'Top' : m === 'due' ? 'Due' : 'A–Z'}
-                    </button>
-                  ))}
+            <div className="rounded-xl flex flex-col min-h-0 bg-card" style={{ border: '1px solid var(--t-card-border)' }}>
+              <div className="shrink-0 px-4 pt-4">
+                <p className="mt-label mb-3" style={{ color: 'var(--t-faint)' }}>
+                  Your tasks{search ? ` · ${board.length} match${board.length === 1 ? '' : 'es'}` : ` · ${board.length}`}
+                </p>
+                <div className="flex items-center gap-2 mb-3">
+                  <input
+                    value={search} onChange={e => setSearch(e.target.value)} aria-label="Search your tasks"
+                    placeholder="Search tasks…"
+                    className={`flex-1 mt-body-sm px-3 py-2 rounded-md ${FOCUS}`}
+                    style={{ background: 'var(--t-input)', color: 'var(--t-title)', border: '1px solid var(--t-input-border)' }}
+                  />
+                  <div role="radiogroup" aria-label="Sort tasks" className="flex rounded-md overflow-hidden" style={{ border: '1px solid var(--t-ctrl-border)' }}>
+                    {(['top', 'due', 'az'] as const).map(m => (
+                      <button key={m} role="radio" aria-checked={sortMode === m} onClick={() => setSortMode(m)}
+                        className={`mt-chip px-2.5 py-2 transition-colors ${FOCUS}`}
+                        style={{ background: sortMode === m ? 'var(--t-wrap)' : 'var(--t-ctrl)', color: sortMode === m ? 'var(--t-title)' : 'var(--t-faint)' }}>
+                        {m === 'top' ? 'Top' : m === 'due' ? 'Due' : 'A–Z'}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
 
               <Droppable droppableId="board">
                 {(provided, snapshot) => (
                   <div ref={provided.innerRef} {...provided.droppableProps}
-                    className="space-y-2 flex-1 min-h-0 overflow-y-auto rounded-xl transition-colors p-1 pr-1.5"
-                    style={{ outline: snapshot.isDraggingOver ? '1.5px dashed var(--rule-2)' : '1.5px dashed transparent', outlineOffset: 2 }}>
+                    className="space-y-2 flex-1 min-h-0 overflow-y-auto nice-scroll rounded-xl transition-colors mx-4 mb-4 p-1 pr-1.5"
+                    style={{ outline: snapshot.isDraggingOver ? '1.5px dashed var(--t-hair)' : '1.5px dashed transparent', outlineOffset: 2 }}>
                     {board.map((t, i) => (
                       <DraggableCard key={t.key} task={t} index={i} detail draggable={editable} onOpen={() => setOpenTask(t)}
                         trail={editable
                           ? (
                             <button onClick={() => commit([...today, t])} aria-label={`Add ${t.key} to today`}
-                              className={`shrink-0 px-3 py-1.5 rounded-md text-[12px] font-medium transition-colors hover:opacity-80 ${FOCUS}`}
-                              style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
+                              className={`shrink-0 mt-chip px-3 py-1.5 rounded-md transition-colors hover:opacity-80 ${FOCUS}`}
+                              style={{ background: 'color-mix(in srgb, var(--color-state-approved) 14%, transparent)', color: 'var(--color-state-approved)' }}>
                               + Add
                             </button>
                           )
@@ -401,21 +395,22 @@ export default function PlanView() {
                     ))}
                     {provided.placeholder}
                     {board.length === 0 && (
-                      <p className="py-8 text-center text-[12px]" style={{ color: 'var(--ink-4)' }}>
+                      <p className="py-8 text-center mt-body-sm" style={{ color: 'var(--t-faint-2)' }}>
                         {search ? 'No tasks match your search.' : 'Everything is in today’s plan. Drag a card here to remove it.'}
                       </p>
                     )}
                   </div>
                 )}
               </Droppable>
-            </Card>
+            </div>
           </div>
         )}
       </div>
 
       {openTask && (
-        <TaskDialog
-          task={openTask}
+        <TaskDetailDialog
+          taskKey={openTask.key}
+          fallbackTitle={openTask.title}
           inToday={today.some(t => t.key === openTask.key)}
           canEdit={editable}
           onClose={() => setOpenTask(null)}

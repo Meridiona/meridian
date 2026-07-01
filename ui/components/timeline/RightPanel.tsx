@@ -10,12 +10,21 @@ import { HourDetailPanel } from './HourDetailPanel'
 import type { TimelineData } from './useTimelineData'
 import type { ActiveModal } from './MeridianTimelineShell'
 
-export function RightPanel({ data, selectedHour, onSelectHour, onOpen }: {
+export function RightPanel({ data, selectedHour, selectedCardKey, onSelectHour, onOpen, onOpenTask }: {
   data: TimelineData
   selectedHour: number | null
+  selectedCardKey: string | null
   onSelectHour: (hour: number | null) => void
   onOpen: (modal: ActiveModal) => void
+  onOpenTask: (key: string, title?: string) => void
 }) {
-  if (selectedHour === null) return <OverviewPanel data={data} onOpen={onOpen} />
-  return <HourDetailPanel hour={selectedHour} onBack={() => onSelectHour(null)} data={data} />
+  if (selectedHour === null) return <OverviewPanel data={data} onOpen={onOpen} onOpenTask={onOpenTask} />
+  return (
+    <HourDetailPanel
+      hour={selectedHour}
+      selectedCardKey={selectedCardKey}
+      onBack={() => onSelectHour(null)}
+      data={data}
+    />
+  )
 }

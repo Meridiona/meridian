@@ -9,10 +9,11 @@
 
 'use client'
 
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import type { TodayResponse, WorklogItem } from '@/lib/api-types'
 import { CATS } from '@/components/atoms'
 import { hourLabel } from './timelineLayout'
+import { itemKey } from './types'
 import { TimelineCard } from './TimelineCard'
 
 interface HourActivity {
@@ -46,31 +47,47 @@ function soloActivityByHour(today: TodayResponse | null): Map<number, HourActivi
 }
 
 export function TimelineColumn({
-  hourBuckets, isSolo, today, selectedHour, onSelectHour, isToday,
+  hourBuckets, isSolo, today, selectedHour, selectedCardKey, onSelectHour, onSelectCard, isToday, day,
 }: {
   hourBuckets: Map<number, WorklogItem[]>
   isSolo: boolean
   today: TodayResponse | null
   selectedHour: number | null
+  selectedCardKey: string | null
   onSelectHour: (hour: number) => void
+  onSelectCard: (hour: number, cardKey: string) => void
   isToday: boolean
+  day: string
 }) {
   const solo = useMemo(() => soloActivityByHour(today), [today])
   const nowHour = isToday ? new Date().getHours() : -1
   const hours = Array.from({ length: 24 }, (_, h) => h)
 
+  // On opening today's view (or switching back to today), jump straight to the
+  // current local hour instead of leaving the scroll at midnight/top.
+  const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map())
+  useEffect(() => {
+    if (!isToday || nowHour < 0) return
+    const el = rowRefs.current.get(nowHour)
+    el?.scrollIntoView({ block: 'center' })
+  }, [day, isToday, nowHour])
+
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto nice-scroll">
-      <div className="min-h-full">
+    <div className="flex-1 min-w-0 min-h-0 overflow-y-auto overflow-x-hidden nice-scroll">
+      <div className="min-h-full px-6">
         {hours.map(hour => {
           const items = hourBuckets.get(hour) ?? []
           const activity = solo.get(hour)
-          const selected = selectedHour === hour
+          // Row-level highlight only applies when the hour itself (not one of
+          // its cards) is the current selection — a card click "pops" the card
+          // forward instead (see TimelineCard's `selected` prop below).
+          const rowSelected = selectedHour === hour && !selectedCardKey
           const isNow = hour === nowHour
           const hasContent = isSolo ? !!activity : items.length > 0
 
           return (
-            <div key={hour} className="grid" style={{ gridTemplateColumns: '62px 1fr' }}>
+            <div key={hour} ref={el => { if (el) rowRefs.current.set(hour, el); else rowRefs.current.delete(hour) }}
+              className="grid" style={{ gridTemplateColumns: '62px 1fr' }}>
               {/* hour gutter */}
               <div className="relative flex items-start justify-end pr-3 pt-3">
                 <span className="mt-mono-sm text-[11px]" style={{ color: isNow ? 'var(--color-state-pending)' : 'var(--t-faint)' }}>
@@ -88,17 +105,17 @@ export function TimelineColumn({
                 tabIndex={0}
                 onClick={() => onSelectHour(hour)}
                 onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectHour(hour) } }}
-                className="border-t px-3 py-2.5 cursor-pointer transition-colors"
+                className="min-w-0 border-t px-4 py-5 cursor-pointer transition-colors"
                 style={{
                   borderTopColor: 'var(--t-hair)',
-                  background: selected ? 'var(--t-row-hover)' : 'transparent',
-                  boxShadow: selected ? 'inset 0 0 0 1px var(--row-hover-ring)' : 'none',
+                  background: rowSelected ? 'var(--t-row-hover)' : 'transparent',
+                  boxShadow: rowSelected ? 'inset 0 0 0 1px var(--row-hover-ring)' : 'none',
                 }}
               >
                 {!hasContent ? (
                   <p className="mt-body-sm italic py-1.5" style={{ color: 'var(--t-faint-2)' }}>Quiet</p>
                 ) : isSolo && activity ? (
-                  <div className="py-1 flex items-center gap-2.5">
+                  <div className="py-1 flex items-center gap-3">
                     <span className="flex items-center gap-1 shrink-0">
                       {activity.cats.map(c => (
                         <span key={c} className={`inline-block w-2 h-2 rounded-full cat-${c}`} title={CATS[c]?.label ?? c} />
@@ -112,16 +129,27 @@ export function TimelineColumn({
                   // STYLESHEET.md §7 "Two tickets in an hour": flex row, gap 10px, equal 1fr columns.
                   // Generalized to any count — wraps to a new row when there isn't room for
                   // another column, rather than only side-by-side at exactly 2.
-                  <div className="flex flex-wrap" style={{ gap: 10 }}>
-                    {items.map(w => (
-                      <div key={`${w.is_proposed ? 'p' : 'w'}:${w.id}`} className="min-w-0" style={{ flex: '1 1 260px' }}>
-                        <TimelineCard item={w} variant="compact" />
-                      </div>
-                    ))}
+                  <div className="flex flex-wrap" style={{ gap: 16 }}>
+                    {items.map(w => {
+                      const key = itemKey(w)
+                      return (
+                        <div key={key} className="min-w-0" style={{ flex: '1 1 260px' }}
+                          onClick={(e) => { e.stopPropagation(); onSelectCard(hour, key) }}>
+                          <TimelineCard item={w} variant="compact" selected={key === selectedCardKey} />
+                        </div>
+                      )
+                    })}
                   </div>
                 ) : (
-                  <div className="space-y-2">
-                    {items.map(w => <TimelineCard key={`${w.is_proposed ? 'p' : 'w'}:${w.id}`} item={w} variant="compact" />)}
+                  <div className="space-y-4">
+                    {items.map(w => {
+                      const key = itemKey(w)
+                      return (
+                        <div key={key} onClick={(e) => { e.stopPropagation(); onSelectCard(hour, key) }}>
+                          <TimelineCard item={w} variant="compact" selected={key === selectedCardKey} />
+                        </div>
+                      )
+                    })}
                   </div>
                 )}
               </div>

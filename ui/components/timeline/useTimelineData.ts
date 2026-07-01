@@ -35,7 +35,7 @@ const PROVIDER_IDS: TrackerId[] = ['jira', 'linear', 'github', 'trello', 'azure_
 
 /** Count of tasks that would show up in the board-cleanup modal: any connected
  *  task with a fixable hygiene issue or a stale/unsure bucket. Mirrors
- *  CleanupView's `attention` total so the Overview notice count matches the
+ *  CleanupOverlay's queue-length so the Overview notice count matches the
  *  modal exactly. */
 function cleanupCount(tasks: TaskSummary[], integrations: IntegrationsResponse | null): number {
   return filterByConnectedProviders(tasks, integrations)

@@ -1,9 +1,9 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 'use client'
 
-// The ONE shared "connect your trackers" surface — used by BOTH the dashboard
-// (TasksView) and the first-run wizard (setup). Driven entirely by the metadata
-// in `@/lib/integrations`, so adding/changing a provider happens in one place.
+// The ONE shared "connect your trackers" surface — used by BOTH the timeline
+// app (TasksPanel) and the first-run wizard (setup). Driven entirely by the
+// metadata in `@/lib/integrations`, so adding/changing a provider happens in one place.
 //
 // Connect flows map to tray commands:
 //   - Browser OAuth  → `start_oauth` + poll `get_oauth_status` (jira/trello run

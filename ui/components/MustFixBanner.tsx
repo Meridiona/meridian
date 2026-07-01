@@ -49,7 +49,7 @@ export default function MustFixBanner({
   return (
     <button
       onClick={onOpenCleanup}
-      className="w-full px-4 py-3 flex items-center justify-between border-b transition-colors text-left"
+      className="w-full px-6 py-3.5 flex items-center justify-between border-b transition-colors text-left"
       style={{ borderBottomColor: 'var(--rule)', backgroundColor: 'var(--warn)' + '14' }}
     >
       <div className="flex items-center gap-3 flex-1 min-w-0">

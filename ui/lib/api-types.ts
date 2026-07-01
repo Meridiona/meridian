@@ -163,11 +163,11 @@ export interface WorklogsResponse {
 
 export interface HourTextResponse {
   hour: string
-  // The distilled activity body — null until the hour has been processed (or
-  // for a non-today day; the reader is today-only). Not an error state.
-  body: string | null
-  out_chars: number | null
-  reduction_pct: number | null
+  // The human-readable activity REPORT (the /activity_report LLM output) —
+  // null until the hour has been processed (or for a non-today day; the reader
+  // is today-only). Not the raw distilled input. Not an error state.
+  report: string | null
+  report_chars: number | null
 }
 
 // ── Week (`get_week`) ────────────────────────────────────────────────────────

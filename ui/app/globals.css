@@ -542,3 +542,16 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
   font-weight: 600;
   letter-spacing: 0.02em;
 }
+
+/* Timeline card lift — STYLESHEET.md §6 "Card hover" shadow, applied both on
+   hover and on click-selection (.mt-card-selected). Must be a real CSS rule,
+   not an inline style toggled by JS — inline styles always win over :hover,
+   which would otherwise silently disable the hover lift. */
+.mt-card-hover {
+  transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+}
+.mt-card-hover:hover,
+.mt-card-hover.mt-card-selected {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 32px -12px rgba(40, 30, 90, 0.32);
+}

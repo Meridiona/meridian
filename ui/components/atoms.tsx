@@ -2,6 +2,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { ProviderIcon } from './ProviderIcon'
 
 // ── Time formatting ──────────────────────────────────────────────────────────
 export function fmtDur(seconds: number): string {
@@ -64,16 +65,18 @@ export function ProviderGlyph({ provider, size = 16 }: { provider: string; size?
   const meta = PROVIDER_META[provider]
   return (
     <span
-      className="inline-flex items-center justify-center rounded shrink-0 font-mono"
+      className="inline-flex items-center justify-center rounded shrink-0"
       style={{
         width: size, height: size,
-        fontSize: Math.max(7, size * 0.56), fontWeight: 700,
         background: (meta?.color ?? '#888') + '1A',
-        color: meta?.color ?? '#888',
       }}
       aria-label={meta?.label ?? provider}
     >
-      {meta?.glyph ?? provider[0]?.toUpperCase() ?? '?'}
+      {meta
+        ? <ProviderIcon provider={provider} size={Math.round(size * 0.62)} />
+        : <span className="font-mono" style={{ fontSize: Math.max(7, size * 0.56), fontWeight: 700, color: '#888' }}>
+            {provider[0]?.toUpperCase() ?? '?'}
+          </span>}
     </span>
   )
 }

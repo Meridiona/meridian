@@ -2,27 +2,38 @@
 //
 // One worklog / proposed-ticket card on the one-pager timeline. Supersedes the
 // old WorklogBlock (compact, in-timeline) AND the WorklogDetailPane action row
-// (detail, in the hour panel), unified behind a `variant` prop. Card anatomy
-// follows the mock: a state-keyed left accent bar, a mono ticket-key badge +
-// kind label + minutes + status chip header, title, summary. Dismissed/rejected
-// rows stay visible at half opacity rather than being filtered out.
+// (detail, in the hour panel), unified behind a `variant` prop. Card anatomy:
+// a state-keyed left accent bar, a slim header (issue-type badge — no ticket
+// key, minutes, status chip), title, summary (compact: first few words only;
+// detail: full body + actions). Dismissed/rejected rows stay visible at half
+// opacity rather than being filtered out.
 
 'use client'
 
 import { useState } from 'react'
 import { fmtDur } from '@/components/atoms'
+import { ProviderIcon } from '@/components/ProviderIcon'
 import type { WorklogItem } from '@/lib/api-types'
 import { EditableSummary } from './EditableSummary'
 import { ReviewRejectPicker } from './ReviewRejectPicker'
-import { kindLabel, stateColor, stateLabel, visualState, type RejectCorrection } from './types'
+import { stateColor, stateLabel, visualState, type RejectCorrection } from './types'
 import type { WorklogActions } from './useTimelineData'
 
+// Compact-card summary preview — just the first few words, not the full comment.
+function firstWords(text: string, n = 10): string {
+  const words = text.trim().split(/\s+/)
+  return words.length <= n ? text.trim() : words.slice(0, n).join(' ') + '…'
+}
+
 export function TimelineCard({
-  item, variant = 'compact', actions,
+  item, variant = 'compact', actions, selected = false,
 }: {
   item: WorklogItem
   variant?: 'compact' | 'detail'
   actions?: WorklogActions
+  // On the timeline, the specific card the user clicked — "pops" it forward
+  // (lift + accent-colored border) instead of the whole hour row highlighting.
+  selected?: boolean
 }) {
   const accent = stateColor(item)
   const dimmed = visualState(item) === 'rejected'
@@ -30,30 +41,34 @@ export function TimelineCard({
   const detail = variant === 'detail'
 
   return (
-    <div className="rounded-xl overflow-hidden bg-card"
+    <div className={`rounded-xl overflow-hidden bg-card mt-card-hover ${selected ? 'mt-card-selected' : ''}`}
       style={{
-        border: '1px solid var(--t-card-border)',
+        borderTop: `1px solid ${selected ? accent : 'var(--t-card-border)'}`,
+        borderRight: `1px solid ${selected ? accent : 'var(--t-card-border)'}`,
+        borderBottom: `1px solid ${selected ? accent : 'var(--t-card-border)'}`,
         borderLeft: `3px solid ${accent}`,
         opacity: dimmed ? 0.5 : 1,
       }}>
-      <div className={detail ? 'p-4 space-y-2.5' : 'px-3.5 py-3 space-y-1.5'}>
-        <div className="flex items-center gap-2">
-          <span className="mt-mono-sm text-[11px] px-1.5 py-0.5 rounded bg-key-bg text-key-text">{item.task_key}</span>
-          <span className="mt-body-sm truncate" style={{ color: 'var(--t-muted)' }}>{kindLabel(item)}</span>
-          <span className="mt-mono-sm text-[11px] ml-auto" style={{ color: 'var(--t-faint)' }}>{minutes}</span>
-          <span className="mt-chip px-1.5 py-0.5 rounded shrink-0" style={{ color: accent, border: `1px solid ${accent}` }}>
-            {stateLabel(item)}
-          </span>
+      <div className={detail ? 'p-5 space-y-3' : 'px-4 py-3.5 space-y-1.5'}>
+        <div className="flex items-start gap-2">
+          {item.task_title && (
+            <div className="flex items-start gap-1.5 flex-1 min-w-0">
+              {item.provider && <ProviderIcon provider={item.provider} size={13} className="shrink-0 mt-0.5" />}
+              <p className={`mt-card-title text-title ${detail ? '' : 'truncate'}`}>{item.task_title}</p>
+            </div>
+          )}
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="mt-mono-sm text-[11px]" style={{ color: 'var(--t-faint)' }}>{minutes}</span>
+            <span className="mt-chip px-1.5 py-0.5 rounded" style={{ color: accent, border: `1px solid ${accent}` }}>
+              {stateLabel(item)}
+            </span>
+          </div>
         </div>
-
-        {item.task_title && (
-          <p className={`mt-card-title text-title ${detail ? '' : 'truncate'}`}>{item.task_title}</p>
-        )}
 
         {detail ? (
           <DetailBody item={item} actions={actions} />
         ) : (
-          item.summary && <p className="mt-body-sm truncate" style={{ color: 'var(--t-muted)' }}>{item.summary}</p>
+          item.summary && <p className="mt-body-sm truncate" style={{ color: 'var(--t-muted)' }}>{firstWords(item.summary)}</p>
         )}
       </div>
     </div>
@@ -77,7 +92,7 @@ function DetailBody({ item, actions }: { item: WorklogItem; actions?: WorklogAct
   }
 
   return (
-    <div className="space-y-2.5">
+    <div className="space-y-3">
       {editing ? (
         <EditableSummary label="Summary" value={item.summary}
           placeholder="(empty — add a comment)" busy={!!busy} rows={3} onSave={save} />
@@ -105,7 +120,7 @@ function DetailBody({ item, actions }: { item: WorklogItem; actions?: WorklogAct
           ✓ Approved — waiting for the daemon to create the ticket and post this worklog.
         </p>
       ) : !posted && !editing && (
-        <div className="flex items-center gap-2 pt-1">
+        <div className="flex items-center gap-2.5 pt-1.5">
           <button onClick={() => item.is_proposed ? actions?.proposedAct(item.id, 'approve') : actions?.act(item.id, 'approve')}
             disabled={busy || (item.is_proposed ? !item.task_title?.trim() : !item.summary.trim())}
             className="mt-body-sm px-3 py-1.5 rounded-md"

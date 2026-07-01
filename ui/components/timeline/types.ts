@@ -55,11 +55,13 @@ export function stateLabel(w: WorklogItem): string {
   return STATE_LABEL[w.state] ?? w.state
 }
 
-/** Kind label shown next to the ticket key ("Bug" / "Task" / "Story"), prefixed
- *  "New " for a live proposal. Falls back to a generic "Work log" when the row
- *  carries no issue type. */
+/** Kind label shown next to the ticket key — the ticket's actual issue type
+ *  ("Bug" / "Task" / "Story"), prefixed "New " for a live proposal. Never
+ *  "Work log" (that's the card's own generic content, not the ticket's type):
+ *  falls back to "Task" only when the row carries no issue type at all (its
+ *  `pm_tasks` row is missing or was never fetched from the tracker). */
 export function kindLabel(w: WorklogItem): string {
-  const kind = (w.issue_type ?? '').trim() || 'Work log'
+  const kind = (w.issue_type ?? '').trim() || 'Task'
   return w.is_proposed && w.state === 'proposed' ? `New ${kind}` : kind
 }
 
@@ -80,6 +82,14 @@ export function shiftDay(d: string, by: number): string {
   if (dt > today) return d // never go past today
   const y = dt.getFullYear(); const m = String(dt.getMonth() + 1).padStart(2, '0'); const day = String(dt.getDate()).padStart(2, '0')
   return `${y}-${m}-${day}`
+}
+
+// Toolbar date-nav label for a non-today day — "Tue, Jun 30", not the raw
+// YYYY-MM-DD. `isToday` (in the toolbar) covers the "Today" case separately.
+export function formatDayLabel(d: string): string {
+  return new Date(`${d}T12:00:00`).toLocaleDateString('en-US', {
+    weekday: 'short', month: 'short', day: 'numeric',
+  })
 }
 
 // Human label for a worklog's tracker (provider snapshot on the row).

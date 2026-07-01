@@ -1,7 +1,7 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 'use client'
 
-import { ProviderGlyph, TaskKey } from '@/components/atoms'
+import { ProviderIcon } from '@/components/ProviderIcon'
 import { DuePill, OriginChip, StatusChip, EpicChip, PriorityTag, MetaChip } from '@/components/plan/parts'
 
 export interface CardTask {
@@ -49,18 +49,18 @@ export function TaskCardBody({
         onKeyDown={onOpen ? e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen() } } : undefined}
         aria-label={onOpen ? `Open ${task.key} details` : undefined}
         className={`min-w-0 flex-1 rounded ${onOpen ? 'cursor-pointer' : ''}`}>
-        <div className="flex items-center gap-2 min-w-0">
-          <ProviderGlyph provider={task.provider} size={16} />
-          <TaskKey keyId={task.key} />
+        <div className="flex items-center gap-1.5 min-w-0">
+          {task.provider && <ProviderIcon provider={task.provider} size={13} className="shrink-0" />}
+          <span className="mt-mono-sm text-[11px] px-1.5 py-0.5 rounded bg-key-bg text-key-text shrink-0">{task.key}</span>
           {showType && <MetaChip>{task.issue_type}</MetaChip>}
-          <span className="text-[13px] truncate"
-            style={{ color: 'var(--ink)', textDecoration: task.is_terminal ? 'line-through' : 'none' }}>
+          <span className="mt-body-sm truncate"
+            style={{ color: 'var(--t-title)', textDecoration: task.is_terminal ? 'line-through' : 'none' }}>
             {task.title}
           </span>
         </div>
 
         {detail && task.description && (
-          <p className="text-[12px] mt-1.5 leading-snug truncate" style={{ color: 'var(--ink-3)' }}>
+          <p className="mt-body-sm mt-1.5 leading-snug truncate" style={{ color: 'var(--t-faint)' }}>
             {task.description}
           </p>
         )}
@@ -73,7 +73,7 @@ export function TaskCardBody({
           {detail && <PriorityTag priority={task.priority} />}
           {detail && task.story_points && <MetaChip>{task.story_points} pts</MetaChip>}
           {task.is_terminal && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded-md" style={{ color: 'var(--success)', background: 'var(--surface-2)' }}>Done</span>
+            <span className="mt-chip px-1.5 py-0.5 rounded" style={{ color: 'var(--color-state-approved)', background: 'color-mix(in srgb, var(--color-state-approved) 12%, transparent)' }}>Done</span>
           )}
         </div>
       </div>
