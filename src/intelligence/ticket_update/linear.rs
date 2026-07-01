@@ -57,6 +57,10 @@ pub async fn apply(cfg: &LinearConfig, key: &str, write: &WriteField) -> Result<
             let state_id = cancelled_state_id(&client, cfg, &uuid).await?;
             json!({ "stateId": state_id })
         }
+        WriteField::Reopen => {
+            let state_id = reopen_state_id(&client, cfg, &uuid).await?;
+            json!({ "stateId": state_id })
+        }
         WriteField::AddLabel(_) => unreachable!("handled above"),
     };
 
@@ -157,6 +161,38 @@ fn pick_cancelled_state(nodes: &[Value]) -> Option<String> {
         .and_then(|s| s.get("id").and_then(|i| i.as_str()).map(String::from))
 }
 
+/// The team's not-started workflow state for the issue (type == "unstarted",
+/// Linear's default backlog/todo bucket) — the inverse of `completed_state_id`.
+/// Falls back to "started" (in-progress) if the team has no unstarted state.
+async fn reopen_state_id(
+    client: &reqwest::Client,
+    cfg: &LinearConfig,
+    uuid: &str,
+) -> Result<String> {
+    let query = "query IssueStates($id: String!) { issue(id: $id) { team { states { nodes { id name type } } } } }";
+    let payload = json!({ "query": query, "variables": { "id": uuid } });
+    let data = graphql(client, cfg, &payload).await?;
+    let nodes = data
+        .pointer("/issue/team/states/nodes")
+        .and_then(|n| n.as_array())
+        .cloned()
+        .unwrap_or_default();
+    pick_reopen_state(&nodes).context("no not-started workflow state on this Linear team")
+}
+
+fn state_type(s: &Value) -> &str {
+    s.get("type").and_then(|t| t.as_str()).unwrap_or("")
+}
+
+fn pick_reopen_state(nodes: &[Value]) -> Option<String> {
+    let id_of = |s: &Value| s.get("id").and_then(|i| i.as_str()).map(String::from);
+    nodes
+        .iter()
+        .find(|s| state_type(s) == "unstarted")
+        .or_else(|| nodes.iter().find(|s| state_type(s) == "started"))
+        .and_then(id_of)
+}
+
 /// Human URL for the redirect fallback.
 async fn issue_url(client: &reqwest::Client, cfg: &LinearConfig, id: &str) -> String {
     let query = "query IssueUrl($id: String!) { issue(id: $id) { url } }";
@@ -205,6 +241,7 @@ fn field_name(write: &WriteField) -> &'static str {
         WriteField::Description(_) => "description",
         WriteField::Close => "close",
         WriteField::Cancel => "cancel",
+        WriteField::Reopen => "reopen",
     }
 }
 
@@ -252,6 +289,30 @@ mod tests {
     }
 
     #[test]
+    fn picks_unstarted_state_to_reopen() {
+        let nodes = vec![
+            json!({ "id": "s1", "name": "Done", "type": "completed" }),
+            json!({ "id": "s2", "name": "Todo", "type": "unstarted" }),
+        ];
+        assert_eq!(pick_reopen_state(&nodes), Some("s2".into()));
+    }
+
+    #[test]
+    fn reopen_falls_back_to_started_when_no_unstarted() {
+        let nodes = vec![
+            json!({ "id": "s1", "name": "Done", "type": "completed" }),
+            json!({ "id": "s2", "name": "In Progress", "type": "started" }),
+        ];
+        assert_eq!(pick_reopen_state(&nodes), Some("s2".into()));
+    }
+
+    #[test]
+    fn no_reopen_state_is_none() {
+        let nodes = vec![json!({ "id": "s1", "name": "Done", "type": "completed" })];
+        assert_eq!(pick_reopen_state(&nodes), None);
+    }
+
+    #[test]
     fn priority_covers_all_common_names() {
         // Ensure every name the hygiene UI might send is handled (not defaulted).
         assert_eq!(priority_to_int("Critical"), 1);
@@ -281,6 +342,7 @@ mod tests {
             ("description", WriteField::Description("d".into())),
             ("close", WriteField::Close),
             ("cancel", WriteField::Cancel),
+            ("reopen", WriteField::Reopen),
         ];
         for (expected, field) in cases {
             assert_eq!(

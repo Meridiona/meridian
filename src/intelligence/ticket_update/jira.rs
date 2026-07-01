@@ -77,6 +77,9 @@ pub async fn apply(cfg: &JiraConfig, key: &str, write: &WriteField) -> Result<Ap
         WriteField::Cancel => {
             cancel(&ctx, &client, key).await?;
         }
+        WriteField::Reopen => {
+            reopen(&ctx, &client, key).await?;
+        }
     }
 
     Ok(ApplyResult::applied("jira", key, write_field_name(write)))
@@ -262,6 +265,82 @@ fn pick_done_transition(transitions: &[Value]) -> Option<String> {
         .and_then(id_of)
 }
 
+/// Reopen a ticket by finding a transition into a NOT-done-category status and POSTing
+/// it — the inverse of `close`. Lands on whatever not-done status the workflow's
+/// transitions offer (typically the "To Do" backlog state), not necessarily the exact
+/// status the ticket held before it was closed.
+async fn reopen(ctx: &JiraReqCtx, client: &reqwest::Client, key: &str) -> Result<()> {
+    let url = ctx.api_url(&format!("/rest/api/3/issue/{key}/transitions"));
+    let resp = ctx
+        .apply(client.get(&url))
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .context("GET transitions")?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!("Jira GET transitions for {key} returned {status}: {text}");
+    }
+    let v: Value = serde_json::from_str(&text).context("parsing transitions")?;
+    let transitions = v
+        .get("transitions")
+        .and_then(|t| t.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let id = pick_reopen_transition(&transitions)
+        .with_context(|| format!("no 'reopen' transition available for {key}"))?;
+
+    let post_url = ctx.api_url(&format!("/rest/api/3/issue/{key}/transitions"));
+    let resp = ctx
+        .apply(client.post(&post_url))
+        .header("Accept", "application/json")
+        .json(&json!({ "transition": { "id": id } }))
+        .send()
+        .await
+        .context("POST transition")?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        bail!("Jira POST transition for {key} returned {status}: {text}");
+    }
+    Ok(())
+}
+
+/// Choose the transition that lands in a not-done status. Prefers the "new"
+/// (To Do / backlog) category, then "indeterminate" (in progress) over "done",
+/// falling back to a name heuristic.
+fn pick_reopen_transition(transitions: &[Value]) -> Option<String> {
+    let id_of = |t: &Value| t.get("id").and_then(|i| i.as_str()).map(String::from);
+    let category_of = |t: &Value| {
+        t.pointer("/to/statusCategory/key")
+            .and_then(|k| k.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    for want in ["new", "indeterminate"] {
+        if let Some(t) = transitions.iter().find(|t| category_of(t) == want) {
+            return id_of(t);
+        }
+    }
+    // Heuristic fallback on the transition name.
+    transitions
+        .iter()
+        .find(|t| {
+            let n = t
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            n.contains("reopen")
+                || n.contains("to do")
+                || n.contains("todo")
+                || n.contains("open")
+                || n.contains("backlog")
+        })
+        .and_then(id_of)
+}
+
 /// Cancel a ticket by finding a transition with a cancelled/won't-do name and POSTing it.
 /// Jira has no standard "cancelled" statusCategory — these transitions typically fall under
 /// the "done" category with recognisable names.
@@ -351,6 +430,7 @@ fn write_field_name(write: &WriteField) -> &'static str {
         WriteField::Description(_) => "description",
         WriteField::Close => "close",
         WriteField::Cancel => "cancel",
+        WriteField::Reopen => "reopen",
     }
 }
 
@@ -393,6 +473,31 @@ mod tests {
         let transitions =
             vec![json!({ "id": "41", "name": "Close Issue", "to": { "statusCategory": {} } })];
         assert_eq!(pick_done_transition(&transitions), Some("41".into()));
+    }
+
+    #[test]
+    fn picks_new_category_transition_to_reopen() {
+        let transitions = vec![
+            json!({ "id": "31", "name": "Done", "to": { "statusCategory": { "key": "done" } } }),
+            json!({ "id": "11", "name": "To Do", "to": { "statusCategory": { "key": "new" } } }),
+        ];
+        assert_eq!(pick_reopen_transition(&transitions), Some("11".into()));
+    }
+
+    #[test]
+    fn reopen_falls_back_to_indeterminate_when_no_new() {
+        let transitions = vec![
+            json!({ "id": "31", "name": "Done", "to": { "statusCategory": { "key": "done" } } }),
+            json!({ "id": "21", "name": "In Progress", "to": { "statusCategory": { "key": "indeterminate" } } }),
+        ];
+        assert_eq!(pick_reopen_transition(&transitions), Some("21".into()));
+    }
+
+    #[test]
+    fn reopen_transition_name_fallback() {
+        let transitions =
+            vec![json!({ "id": "41", "name": "Reopen Issue", "to": { "statusCategory": {} } })];
+        assert_eq!(pick_reopen_transition(&transitions), Some("41".into()));
     }
 
     #[test]
