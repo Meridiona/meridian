@@ -94,7 +94,8 @@ export default function ConnectTrackers({
               </button>
               {isOpen && connected && (
                 <ConnectedPanel tracker={t} syncError={syncError} disconnecting={disconnecting === t.id}
-                  onDisconnect={() => handleDisconnect(t.id)} onChanged={onChanged} />
+                  onDisconnect={() => handleDisconnect(t.id)} onChanged={onChanged}
+                  githubProjectsSelected={integrations?.github_projects_selected} />
               )}
               {isOpen && !connected && <TrackerSetup tracker={t} onSuccess={onChanged} />}
             </div>
@@ -107,16 +108,24 @@ export default function ConnectTrackers({
 
 // ── Connected (manage / disconnect / re-authorize) ───────────────────────────
 function ConnectedPanel({
-  tracker, syncError, disconnecting, onDisconnect, onChanged,
+  tracker, syncError, disconnecting, onDisconnect, onChanged, githubProjectsSelected,
 }: {
   tracker: Tracker; syncError?: string; disconnecting: boolean; onDisconnect: () => void; onChanged?: () => void
+  /** Only meaningful for tracker.id === 'github' — undefined for every other tracker. */
+  githubProjectsSelected?: boolean
 }) {
   const [reauthorizing, setReauthorizing] = useState(false)
+  const [pickingProjects, setPickingProjects] = useState(false)
   const cleanError = syncError ? syncError.replace(/^permission_error: |^sync_error: /, '') : null
+  // GitHub's token alone doesn't sync anything — a Projects v2 board must be
+  // selected too (discover_github_projects → save_integration_token). This is
+  // exactly the gap a token connected outside the OAuth-connect picker (or an
+  // account connected before this picker existed) is stuck in.
+  const needsGithubProjects = tracker.id === 'github' && githubProjectsSelected === false
 
   return (
     <div className="px-4 pb-4 pt-2" style={{ background: 'var(--surface-2)' }}>
-      {cleanError && !reauthorizing && (
+      {cleanError && !reauthorizing && !pickingProjects && (
         <div className="mb-3 rounded-md px-3 py-2" style={{ background: '#fef3c7', border: '1px solid #fcd34d' }}>
           <p className="text-[12px] leading-relaxed" style={{ color: '#92400e' }}>
             <strong>Sync failed:</strong> {cleanError}
@@ -127,7 +136,23 @@ function ConnectedPanel({
           </button>
         </div>
       )}
-      {reauthorizing ? (
+      {needsGithubProjects && !reauthorizing && !pickingProjects && (
+        <div className="mb-3 rounded-md px-3 py-2" style={{ background: '#eff6ff', border: '1px solid #bfdbfe' }}>
+          <p className="text-[12px] leading-relaxed" style={{ color: '#1e40af' }}>
+            No GitHub Projects selected — tasks won&apos;t sync yet.
+          </p>
+          <button onClick={() => setPickingProjects(true)} className="mt-2 text-[11px] px-3 py-1 rounded-md"
+            style={{ background: '#1e40af', color: '#fff', cursor: 'pointer' }}>
+            Select Projects
+          </button>
+        </div>
+      )}
+      {pickingProjects ? (
+        <div className="mb-1">
+          <GitHubProjectPicker onSuccess={() => { setPickingProjects(false); onChanged?.() }} />
+          <button onClick={() => setPickingProjects(false)} className="mt-2 text-[11px]" style={{ color: 'var(--ink-4)', cursor: 'pointer' }}>Cancel</button>
+        </div>
+      ) : reauthorizing ? (
         <div className="mb-1">
           <p className="text-[12px] mb-2" style={{ color: 'var(--ink-2)' }}>Reconnect {tracker.name}:</p>
           <TrackerSetup tracker={tracker} onSuccess={() => { setReauthorizing(false); onChanged?.() }} />
@@ -249,7 +274,12 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
         if (stopped || !data) return
         if (data[tracker.id]) {
           stopped = true; clearInterval(id); pollRef.current = null
-          setStatus('done'); clearProviderNotice(tracker.id); onSuccess?.()
+          setStatus('done'); clearProviderNotice(tracker.id)
+          // GitHub needs a Projects v2 board picked before sync does anything —
+          // the picker (rendered below for status==='done') calls onSuccess
+          // itself once a project is actually saved. Every other provider is
+          // done syncing-wise the moment the token/OAuth store exists.
+          if (tracker.id !== 'github') onSuccess?.()
         }
       }, 2_000)
       pollRef.current = id
@@ -304,7 +334,11 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
           <p className="text-[11px]" style={{ color: 'var(--ink-4)' }}>Waiting for authorization…</p>
         </div>
       )}
-      {status === 'done' && <p className="text-[12px]" style={{ color: 'var(--success)' }}>✓ Connected! Your tasks will appear shortly.</p>}
+      {status === 'done' && (
+        tracker.id === 'github'
+          ? <GitHubProjectPicker onSuccess={onSuccess} />
+          : <p className="text-[12px]" style={{ color: 'var(--success)' }}>✓ Connected! Your tasks will appear shortly.</p>
+      )}
       {status === 'error' && (
         <div className="space-y-2">
           <p className="text-[12px]" style={{ color: '#e53e3e' }}>{error ?? 'OAuth failed.'}</p>
@@ -543,6 +577,97 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
           {loading === 'saving' ? 'Connecting…' : 'Connect Azure DevOps'}
         </button>
       )}
+    </div>
+  )
+}
+
+// ── GitHub Projects v2 picker (discover_github_projects → save_integration_token) ──
+// Runs right after a GitHub OAuth connect succeeds (see OAuthSetup's status==='done'
+// branch) AND from ConnectedPanel's "no projects selected" prompt — same component,
+// two entry points, since the underlying gap (token connected, no board chosen) is
+// identical either way.
+type GithubProject = { id: string; title: string; owner: string }
+
+function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
+  const [projects, setProjects] = useState<GithubProject[] | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    load<{ projects?: GithubProject[] }>('/api/integrations/github/discover', 'discover_github_projects')
+      .then((json) => { if (!cancelled) setProjects(json.projects ?? []) })
+      .catch((e) => { if (!cancelled) setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Failed to load GitHub Projects') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  const toggle = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+
+  const save = async () => {
+    if (selected.size === 0 || saving) return
+    setSaving(true); setError(null)
+    try {
+      await mutate('/api/auth/token', 'save_integration_token', {
+        provider: 'github', fields: { project_ids: Array.from(selected).join(',') },
+      })
+      clearProviderNotice('github'); onSuccess?.()
+    } catch (e) {
+      setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not save project selection')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading) return <p className="text-[11px]" style={{ color: 'var(--ink-3)' }}>Loading your GitHub Projects…</p>
+
+  if (error) return <p className="text-[12px]" style={{ color: '#e53e3e' }}>{error}</p>
+
+  if (!projects || projects.length === 0) {
+    return (
+      <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-3)' }}>
+        No GitHub Projects v2 boards found on this account.{' '}
+        <a href="https://github.com/users/me/projects" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>Create one ↗</a>
+      </p>
+    )
+  }
+
+  const byOwner = projects.reduce<Record<string, GithubProject[]>>((acc, p) => {
+    (acc[p.owner] ??= []).push(p)
+    return acc
+  }, {})
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
+        Pick which GitHub Projects v2 boards to sync tasks from.
+      </p>
+      <div className="space-y-2 max-h-48 overflow-y-auto">
+        {Object.entries(byOwner).map(([owner, ps]) => (
+          <div key={owner}>
+            <span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--ink-4)' }}>{owner}</span>
+            {ps.map((p) => (
+              <label key={p.id} className="flex items-center gap-2 py-1 text-[12px]" style={{ color: 'var(--ink)' }}>
+                <input type="checkbox" checked={selected.has(p.id)} onChange={() => toggle(p.id)} />
+                {p.title}
+              </label>
+            ))}
+          </div>
+        ))}
+      </div>
+      {error && <p className="text-[11px]" style={{ color: '#e53e3e' }}>{error}</p>}
+      <button onClick={save} disabled={selected.size === 0 || saving} className="text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
+        style={{ background: 'var(--accent)', color: '#fff', opacity: (selected.size === 0 || saving) ? 0.5 : 1, cursor: (selected.size === 0 || saving) ? 'not-allowed' : 'pointer' }}>
+        {saving ? 'Saving…' : selected.size === 0 ? 'Select a project' : `Sync ${selected.size} project${selected.size === 1 ? '' : 's'}`}
+      </button>
     </div>
   )
 }

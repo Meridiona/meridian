@@ -8,6 +8,7 @@ const task = (provider: string, today_s = 0) => ({ provider, today_s })
 
 const ALL_DISCONNECTED: IntegrationsResponse = {
   jira: false, linear: false, github: false, trello: false, azure_devops: false,
+  github_projects_selected: false,
   sync_errors: {},
 }
 
@@ -24,6 +25,7 @@ const JIRA_AND_LINEAR: IntegrationsResponse = {
 
 const ALL_CONNECTED: IntegrationsResponse = {
   jira: true, linear: true, github: true, trello: true, azure_devops: true,
+  github_projects_selected: true,
   sync_errors: {},
 }
 

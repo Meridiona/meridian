@@ -138,6 +138,11 @@ pub struct IntegrationsResponse {
     pub github: bool,
     pub trello: bool,
     pub azure_devops: bool,
+    /// `true` once `GITHUB_PROJECT_IDS` is set — `github` alone only means the
+    /// OAuth token exists; sync additionally needs at least one selected
+    /// project (see [`discover_github_projects`]). Lets the UI tell "connected,
+    /// token only" apart from "connected and actually syncing."
+    pub github_projects_selected: bool,
     pub sync_errors: BTreeMap<String, String>,
 }
 
@@ -210,6 +215,7 @@ pub async fn get_integrations(
             && (is_set(&env, "AZURE_DEVOPS_URL")
                 || is_set(&env, "AZURE_DEVOPS_ORG")
                 || is_set(&env, "AZURE_DEVOPS_ORG_URL")),
+        github_projects_selected: is_set(&env, "GITHUB_PROJECT_IDS"),
         sync_errors,
     })
 }
@@ -591,6 +597,154 @@ pub async fn discover_azure_devops(
     })
 }
 
+/// One GitHub Projects v2 board, returned by [`discover_github_projects`].
+#[derive(Debug, Clone, Serialize)]
+pub struct GithubProjectOption {
+    /// Projects v2 node id (`PVT_xxx`) — what `GITHUB_PROJECT_IDS` stores.
+    pub id: String,
+    pub title: String,
+    /// The viewer's own login, or the owning org's login.
+    pub owner: String,
+}
+
+/// `{ projects }` — mirrors [`AzureDiscoverResponse`]'s single-populated-field
+/// shape, minus the two-step org/project split (GitHub returns everything the
+/// token can see in one GraphQL round trip).
+#[derive(Debug, Serialize)]
+pub struct GithubDiscoverResponse {
+    pub projects: Vec<GithubProjectOption>,
+}
+
+/// Flatten the GraphQL response body into a sorted, owner-tagged project list.
+/// Pure function so it's unit-testable against a hand-built fixture — mirrors
+/// the shape `viewer.projectsV2` + `viewer.organizations.nodes[].projectsV2`.
+fn flatten_github_projects(body: &serde_json::Value) -> Vec<GithubProjectOption> {
+    let viewer = body.pointer("/data/viewer");
+    let nodes_of = |v: &serde_json::Value| -> Vec<serde_json::Value> {
+        v.pointer("/projectsV2/nodes")
+            .and_then(|n| n.as_array())
+            .cloned()
+            .unwrap_or_default()
+    };
+
+    let mut projects = Vec::new();
+    if let Some(viewer) = viewer {
+        let owner = viewer
+            .get("login")
+            .and_then(|l| l.as_str())
+            .unwrap_or("you")
+            .to_string();
+        for node in nodes_of(viewer) {
+            if let (Some(id), Some(title)) = (
+                node.get("id").and_then(|v| v.as_str()),
+                node.get("title").and_then(|v| v.as_str()),
+            ) {
+                projects.push(GithubProjectOption {
+                    id: id.to_string(),
+                    title: title.to_string(),
+                    owner: owner.clone(),
+                });
+            }
+        }
+        let orgs = viewer
+            .pointer("/organizations/nodes")
+            .and_then(|n| n.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for org in orgs {
+            let owner = org
+                .get("login")
+                .and_then(|l| l.as_str())
+                .unwrap_or("org")
+                .to_string();
+            for node in nodes_of(&org) {
+                if let (Some(id), Some(title)) = (
+                    node.get("id").and_then(|v| v.as_str()),
+                    node.get("title").and_then(|v| v.as_str()),
+                ) {
+                    projects.push(GithubProjectOption {
+                        id: id.to_string(),
+                        title: title.to_string(),
+                        owner: owner.clone(),
+                    });
+                }
+            }
+        }
+    }
+    projects.sort_unstable_by(|a, b| {
+        (a.owner.as_str(), a.title.as_str()).cmp(&(b.owner.as_str(), b.title.as_str()))
+    });
+    projects
+}
+
+/// List the GitHub Projects v2 boards the connected account can see (the
+/// browser-OAuth-connect follow-up: `discover_azure_devops`'s PAT→org→project
+/// discovery, but GitHub returns everything in one GraphQL call). Reads
+/// `GITHUB_TOKEN` from the resolved `.env` — no args, since discovery only
+/// makes sense once [`start_oauth`]/[`save_integration_token`] already wrote a
+/// token there (unlike Azure DevOps, whose PAT is pasted in *before* it's saved).
+///
+/// # Who calls this
+/// `ui/components/IntegrationConnect.tsx`'s `GitHubProjectPicker`, both right
+/// after a GitHub OAuth connect succeeds and from the "connected but no
+/// projects selected" prompt in `ConnectedPanel`.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn discover_github_projects() -> Result<GithubDiscoverResponse, String> {
+    let mode = crate::install::detect_install_mode();
+    let env = mode.env_path().map(parse_env).unwrap_or_default();
+    let token = env
+        .get("GITHUB_TOKEN")
+        .filter(|t| !t.trim().is_empty())
+        .ok_or("GitHub is not connected yet")?;
+
+    const QUERY: &str = r#"{ viewer { login
+        projectsV2(first: 50) { nodes { id title } }
+        organizations(first: 25) { nodes { login projectsV2(first: 50) { nodes { id title } } } }
+    } }"#;
+
+    let resp = reqwest::Client::new()
+        .post("https://api.github.com/graphql")
+        .bearer_auth(token)
+        .header(reqwest::header::USER_AGENT, "meridian-tray")
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .json(&serde_json::json!({ "query": QUERY }))
+        .timeout(Duration::from_secs(15))
+        .send()
+        .instrument(tracing::debug_span!("integrations.github.projects"))
+        .await
+        .map_err(|e| format!("Could not reach GitHub: {e}"))?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        return Err(
+            "GitHub token invalid or missing the read:project scope — reconnect GitHub".to_string(),
+        );
+    }
+    if !status.is_success() {
+        return Err(format!("GitHub returned HTTP {status}"));
+    }
+
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Could not parse GitHub response: {e}"))?;
+
+    if let Some(errors) = body.get("errors").and_then(|e| e.as_array()) {
+        if let Some(first) = errors
+            .first()
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+        {
+            return Err(format!("GitHub API error: {first}"));
+        }
+    }
+
+    let projects = flatten_github_projects(&body);
+    tracing::info!(count = projects.len(), "github projects discovered");
+    Ok(GithubDiscoverResponse { projects })
+}
+
 /// POST body for [`start_oauth`] (`{ provider }`).
 #[derive(Debug, Deserialize)]
 pub struct StartOAuthBody {
@@ -899,6 +1053,42 @@ mod tests {
             "value": [{ "name": "Zebra" }, { "name": "Apple" }, { "other": "skip" }]
         });
         assert_eq!(sorted_names(&body, "name"), vec!["Apple", "Zebra"]);
+    }
+
+    #[test]
+    fn flatten_github_projects_merges_viewer_and_org_boards_sorted() {
+        let body = serde_json::json!({
+            "data": {
+                "viewer": {
+                    "login": "akarsh",
+                    "projectsV2": { "nodes": [{ "id": "PVT_1", "title": "Zebra board" }] },
+                    "organizations": { "nodes": [
+                        {
+                            "login": "meridiona",
+                            "projectsV2": { "nodes": [
+                                { "id": "PVT_2", "title": "Roadmap" },
+                                { "id": "PVT_3", "title": "Apple board" },
+                            ] },
+                        },
+                    ] },
+                },
+            },
+        });
+        let projects = flatten_github_projects(&body);
+        assert_eq!(projects.len(), 3);
+        // Sorted by (owner, title): akarsh's board first, then meridiona's two
+        // alphabetically.
+        assert_eq!(projects[0].id, "PVT_1");
+        assert_eq!(projects[0].owner, "akarsh");
+        assert_eq!(projects[1].id, "PVT_3");
+        assert_eq!(projects[1].title, "Apple board");
+        assert_eq!(projects[2].id, "PVT_2");
+    }
+
+    #[test]
+    fn flatten_github_projects_empty_on_missing_viewer() {
+        let body = serde_json::json!({ "errors": [{ "message": "bad credentials" }] });
+        assert!(flatten_github_projects(&body).is_empty());
     }
 
     fn tmp_env(name: &str) -> std::path::PathBuf {
