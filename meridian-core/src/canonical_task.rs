@@ -131,6 +131,7 @@ pub enum Provider {
     Github,
     AzureDevops,
     Asana,
+    Trello,
 }
 
 impl Provider {
@@ -142,6 +143,7 @@ impl Provider {
             Provider::Github => "github",
             Provider::AzureDevops => "azure_devops",
             Provider::Asana => "asana",
+            Provider::Trello => "trello",
         }
     }
 }
@@ -304,6 +306,7 @@ mod tests {
             Provider::Github,
             Provider::AzureDevops,
             Provider::Asana,
+            Provider::Trello,
         ];
         for provider in cases {
             let wire = serde_json::to_string(&provider).expect("serialize provider");

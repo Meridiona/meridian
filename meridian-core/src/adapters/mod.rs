@@ -29,6 +29,8 @@
 //!   state→category by name, semicolon-delimited tags.
 //! - [`github`] — global node id, board Status column verbatim (no category
 //!   while OPEN; CLOSED derives Done/Cancelled from `stateReason`).
+//! - [`trello`] — 24-hex card id (shortLink retrievable), archived → Done,
+//!   board → project, multi-member cards.
 
 use crate::canonical_task::{CanonicalTask, Provider};
 use serde_json::Value;
@@ -37,6 +39,7 @@ pub mod azure_devops;
 pub mod github;
 pub mod jira;
 pub mod linear;
+pub mod trello;
 
 /// Maps a tracker's raw API payload onto the canonical task shape.
 ///
