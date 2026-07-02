@@ -293,16 +293,25 @@ def persist_hour_text(
     ledger uses (``ensure_hour`` inserts this row before the pipeline runs). Runs
     for EVERY distilled hour, even ones that yield no worklog, so the dashboard can
     show the hour's activity independent of ticket matching. Degrades silently on a
-    pre-053 DB where the text columns don't yet exist.
+    pre-053 DB where the text columns don't yet exist. Logs (rather than silently
+    dropping) when the UPDATE matches zero rows — meaning no ``pm_worklog_hours``
+    row exists for this ``hour_start`` (``ensure_hour`` wasn't called first, or the
+    Rust/Python hour_start formatting has diverged) — since that means the text is
+    computed but never actually persisted.
     """
     try:
-        conn.execute(
+        cur = conn.execute(
             "UPDATE pm_worklog_hours "
             "SET hour_text = ?, hour_text_chars = ?, hour_text_reduction_pct = ? "
             "WHERE hour_start = ?",
             (body, out_chars, reduction_pct, hour_start),
         )
         conn.commit()
+        if cur.rowcount == 0:
+            log.warning(
+                "persist_hour_text: no pm_worklog_hours row for hour_start — text dropped",
+                extra={"hour_start": hour_start},
+            )
     except sqlite3.OperationalError:
         log.warning(
             "persist_hour_text: pm_worklog_hours text columns absent (pre-053 DB) — skipped",
@@ -322,15 +331,22 @@ def persist_hour_report(
     human-readable summary the dashboard's hour-detail panel must show. Runs for
     every hour that reaches stage_report, even ones producing an empty report (no
     activity). Degrades silently on a pre-054 DB where the column doesn't exist.
+    Logs when the UPDATE matches zero rows (see ``persist_hour_text``'s docstring
+    for why that's worth a log line rather than a silent no-op).
     """
     try:
-        conn.execute(
+        cur = conn.execute(
             "UPDATE pm_worklog_hours "
             "SET hour_report = ?, hour_report_chars = ? "
             "WHERE hour_start = ?",
             (report, len(report), hour_start),
         )
         conn.commit()
+        if cur.rowcount == 0:
+            log.warning(
+                "persist_hour_report: no pm_worklog_hours row for hour_start — report dropped",
+                extra={"hour_start": hour_start},
+            )
     except sqlite3.OperationalError:
         log.warning(
             "persist_hour_report: pm_worklog_hours.hour_report column absent (pre-054 DB) — skipped",
