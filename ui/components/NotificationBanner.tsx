@@ -18,6 +18,18 @@ const SEVERITY_STYLES: Record<string, { bg: string; border: string; text: string
   error:   { bg: '#fff5f5', border: '#feb2b2', text: '#c53030', dot: '#e53e3e' },
 }
 
+// `deep_link` values are old pre-fold route paths (`src/daily_plan.rs`,
+// `src/pm_worklog/scheduler.rs`) that no longer exist as static-export routes
+// — the dashboard is a single-page app now, and these targets are modals
+// (MeridianTimelineShell's ActiveModal). A plain `<a href>` 404s inside the
+// Tauri webview, so "Open →" instead dispatches the same window-event bus
+// NoticeBar's "Fix in Tasks" CTA already uses (`meridian:open-tasks`) —
+// MeridianTimelineShell listens and maps the path to the right modal.
+const DEEP_LINK_EVENT: Record<string, string> = {
+  '/plan': 'meridian:open-plan',
+  '/worklogs': 'meridian:open-worklogs',
+}
+
 export default function NotificationBanner() {
   const [items, setItems] = useState<BannerNotification[]>([])
 
@@ -54,11 +66,11 @@ export default function NotificationBanner() {
               <span style={{ fontSize: 13, fontWeight: 600, color: s.text }}>{n.title}</span>
               {n.body && <span style={{ fontSize: 12, color: s.text, marginLeft: 8, opacity: 0.85 }}>{n.body}</span>}
             </div>
-            {n.deep_link && (
-              <a href={n.deep_link}
-                style={{ flexShrink: 0, fontSize: 11, fontWeight: 600, color: s.text, background: 'rgba(0,0,0,0.07)', border: `1px solid ${s.border}`, borderRadius: 5, padding: '3px 8px', textDecoration: 'none', whiteSpace: 'nowrap', alignSelf: 'center' }}>
+            {n.deep_link && DEEP_LINK_EVENT[n.deep_link] && (
+              <button onClick={() => window.dispatchEvent(new CustomEvent(DEEP_LINK_EVENT[n.deep_link!]))}
+                style={{ flexShrink: 0, fontSize: 11, fontWeight: 600, color: s.text, background: 'rgba(0,0,0,0.07)', border: `1px solid ${s.border}`, borderRadius: 5, padding: '3px 8px', cursor: 'pointer', whiteSpace: 'nowrap', alignSelf: 'center' }}>
                 Open →
-              </a>
+              </button>
             )}
             <button onClick={() => dismiss(n.id)} aria-label="Dismiss"
               style={{ flexShrink: 0, fontSize: 15, lineHeight: 1, color: s.text, background: 'transparent', border: 'none', cursor: 'pointer', opacity: 0.6, alignSelf: 'center', padding: '0 2px' }}>

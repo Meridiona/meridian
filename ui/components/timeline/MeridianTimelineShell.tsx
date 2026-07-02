@@ -55,12 +55,24 @@ export default function MeridianTimelineShell() {
       .catch(() => {})
   }, [])
 
-  // NoticeBar lives at the root layout, outside this tree, so its "Fix in
-  // Tasks" action reaches the Tasks modal via a window event instead of props.
+  // NoticeBar/NotificationBanner live at the root layout, outside this tree,
+  // so their "Open"/"Fix in Tasks" CTAs reach the right modal via window
+  // events instead of props. meridian:open-plan/meridian:open-worklogs are
+  // NotificationBanner's deep_link targets for daily-plan and worklog-ready
+  // notices (src/daily_plan.rs, src/pm_worklog/scheduler.rs) — both used to
+  // be routes before the dashboard folded into this one-pager.
   useEffect(() => {
-    const open = () => setActiveModal('tasks')
-    window.addEventListener('meridian:open-tasks', open)
-    return () => window.removeEventListener('meridian:open-tasks', open)
+    const openTasks = () => setActiveModal('tasks')
+    const openPlan = () => setActiveModal('plan')
+    const openWorklogs = () => setActiveModal('review')
+    window.addEventListener('meridian:open-tasks', openTasks)
+    window.addEventListener('meridian:open-plan', openPlan)
+    window.addEventListener('meridian:open-worklogs', openWorklogs)
+    return () => {
+      window.removeEventListener('meridian:open-tasks', openTasks)
+      window.removeEventListener('meridian:open-plan', openPlan)
+      window.removeEventListener('meridian:open-worklogs', openWorklogs)
+    }
   }, [])
 
   // Changing day resets the selected hour (its detail no longer applies).
@@ -112,6 +124,8 @@ export default function MeridianTimelineShell() {
             onSelectCard={selectCard}
             isToday={isToday}
             day={day}
+            hourStatus={data.hourStatus}
+            capturing={data.capturing}
           />
 
           {!isSolo && (
