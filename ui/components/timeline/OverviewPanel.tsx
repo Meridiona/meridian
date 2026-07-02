@@ -28,7 +28,7 @@ export function OverviewPanel({ data, onOpen, onOpenTask }: {
   onOpen: (modal: ActiveModal) => void
   onOpenTask: (key: string, title?: string) => void
 }) {
-  const { today, isSolo, items, counts, cleanupIssueCount, tasks } = data
+  const { today, isSolo, items, cleanupIssueCount, tasks } = data
   const pendingCount = items.filter(isPending).length
   const focus_s = today?.focus_s ?? 0
   const appTops = today ? appTotals(today.sessions) : []

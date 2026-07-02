@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import time
 import urllib.error
 import urllib.request

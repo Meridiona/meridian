@@ -3,11 +3,12 @@
 // One worklog / proposed-ticket card on the one-pager timeline. Supersedes the
 // old WorklogBlock (compact, in-timeline) AND the WorklogDetailPane action row
 // (detail, in the hour panel), unified behind a `variant` prop. Card anatomy:
-// a state-keyed left accent bar, a ticket-key + issue-type row (both empty for
-// worklogs with no matched/drafted task), a slim header (title, minutes, status
-// chip), summary (compact: first few words only; detail: full body + actions).
-// Dismissed/rejected rows stay visible at half opacity rather than being
-// filtered out.
+// a state-keyed left accent bar, a slim header (title, minutes, status chip),
+// summary (compact: first few words only; detail: full body + actions).
+// The ticket-key + issue-type row is `detail`-only — the compact board card
+// stays lean; key/type only show once you've clicked into the right-side
+// panel. Dismissed/rejected rows stay visible at half opacity rather than
+// being filtered out.
 
 'use client'
 
@@ -55,32 +56,53 @@ export function TimelineCard({
         opacity: dimmed ? 0.5 : 1,
       }}>
       <div className={detail ? 'p-5 space-y-3' : 'px-4 py-3.5 space-y-1.5'}>
-        {(item.task_key || item.issue_type) && (
-          <div className="flex items-center gap-1.5">
-            {item.task_key && (
-              <span className="mt-mono-sm text-[11px] px-1.5 py-0.5 rounded bg-key-bg text-key-text">{item.task_key}</span>
-            )}
-            {item.issue_type && (
-              <span className="mt-chip px-1.5 py-0.5 rounded" style={{ color: 'var(--t-muted)', border: '1px solid var(--t-hair)' }}>
-                {item.issue_type}
+        {detail ? (
+          <>
+            {/* Metadata row — key, type, status all grouped together so
+                they read as one "about this card" line, not scattered
+                across/competing with the title. Right-side detail panel
+                only; the compact board card stays lean. Status always
+                shows here (even with no matched/drafted task, key/type are
+                just absent — never hides the status chip). */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {item.task_key && (
+                <span className="mt-mono-sm text-[11px] px-1.5 py-0.5 rounded bg-key-bg text-key-text">{item.task_key}</span>
+              )}
+              {item.issue_type && (
+                <span className="mt-chip px-1.5 py-0.5 rounded" style={{ color: 'var(--t-muted)', border: '1px solid var(--t-hair)' }}>
+                  {item.issue_type}
+                </span>
+              )}
+              <span className="mt-chip px-2 py-0.5 rounded ml-auto" style={{ color: accent, border: `1px solid ${accent}` }}>
+                {stateLabel(item)}
               </span>
+            </div>
+            {/* Title on its own line — no longer sharing a row with
+                minutes/status, so a long title doesn't crowd them. */}
+            {item.task_title && (
+              <div className="flex items-start gap-1.5">
+                {item.provider && <ProviderIcon provider={item.provider} size={13} className="shrink-0 mt-0.5" />}
+                <p className="mt-card-title text-title">{item.task_title}</p>
+              </div>
             )}
+            <p className="mt-mono-sm text-[11px]" style={{ color: 'var(--t-faint)' }}>{minutes}</p>
+          </>
+        ) : (
+          <div className="flex items-start gap-2">
+            {item.task_title && (
+              <div className="flex items-start gap-1.5 flex-1 min-w-0">
+                {item.provider && <ProviderIcon provider={item.provider} size={13} className="shrink-0 mt-0.5" />}
+                <p className="mt-card-title text-title truncate">{item.task_title}</p>
+              </div>
+            )}
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="mt-mono-sm text-[11px]" style={{ color: 'var(--t-faint)' }}>{minutes}</span>
+              <span className="mt-chip px-1.5 py-0.5 rounded" style={{ color: accent, border: `1px solid ${accent}` }}>
+                {stateLabel(item)}
+              </span>
+            </div>
           </div>
         )}
-        <div className="flex items-start gap-2">
-          {item.task_title && (
-            <div className="flex items-start gap-1.5 flex-1 min-w-0">
-              {item.provider && <ProviderIcon provider={item.provider} size={13} className="shrink-0 mt-0.5" />}
-              <p className={`mt-card-title text-title ${detail ? '' : 'truncate'}`}>{item.task_title}</p>
-            </div>
-          )}
-          <div className="flex items-center gap-2 shrink-0">
-            <span className="mt-mono-sm text-[11px]" style={{ color: 'var(--t-faint)' }}>{minutes}</span>
-            <span className="mt-chip px-1.5 py-0.5 rounded" style={{ color: accent, border: `1px solid ${accent}` }}>
-              {stateLabel(item)}
-            </span>
-          </div>
-        </div>
 
         {detail ? (
           <DetailBody item={item} actions={actions} onEdit={onEdit} />

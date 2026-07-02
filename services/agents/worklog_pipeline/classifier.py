@@ -33,7 +33,6 @@ tracer = trace.get_tracer("meridian.worklog.classifier")
 
 _BATCH = 5             # tier-2 backlog tasks per LLM call
 _MIN_CONFIDENCE = 0.5  # drop matches the model itself isn't confident in
-_DEFAULT_SERVER = "http://127.0.0.1:7823"
 
 
 @dataclass

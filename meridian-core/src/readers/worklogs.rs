@@ -434,16 +434,22 @@ struct StateRow {
     posted_worklog_id: Option<String>,
 }
 
-/// Pulls a row back to `drafted` for an in-place edit/rematch. An `approved`
-/// row just needs the state flip (content changed → must be re-approved). A
-/// `posted` row additionally needs its stale tracker entry cleaned up: this
-/// stashes `(provider, posted_worklog_id)` into `unpost_provider` /
-/// `unpost_worklog_id` and clears `posted_worklog_id`/`posted_at`, so the
-/// daemon's unpost sweep (`src/pm_worklog/post.rs`) deletes the old
-/// comment/worklog from the tracker before the corrected content is ever
-/// reposted — a human should never see two entries for the same window.
-/// Returns the resulting state plus the SQL fragment to splice into the
-/// caller's UPDATE (fields beyond the caller's own SET clause).
+/// Pulls a row back to `drafted` for an in-place edit/rematch — from
+/// `approved`, `skipped`/`dismissed` (a rejected worklog), `failed` (a post
+/// attempt that errored — e.g. an empty comment or below the time floor), or
+/// already-`drafted` (no-op). Editing content is a statement of intent to
+/// resubmit it, so ANY non-drafted state comes back to `drafted` rather than
+/// just `approved` — a dismissed/skipped worklog used to have no way back:
+/// its Edit button (still shown for a decided item — see DetailBody) saved
+/// the text but silently left `state` at `skipped` forever, so Approve never
+/// reappeared. A `posted` row additionally needs its stale tracker entry
+/// cleaned up: this stashes `(provider, posted_worklog_id)` into
+/// `unpost_provider`/`unpost_worklog_id` and clears `posted_worklog_id`/
+/// `posted_at`, so the daemon's unpost sweep (`src/pm_worklog/post.rs`)
+/// deletes the old comment/worklog from the tracker before the corrected
+/// content is ever reposted — a human should never see two entries for the
+/// same window. Returns the resulting state plus the SQL fragment to splice
+/// into the caller's UPDATE (fields beyond the caller's own SET clause).
 fn unpost_clause(state: &str, posted_worklog_id: Option<&str>) -> (String, &'static str) {
     if state == "posted" && posted_worklog_id.is_some() {
         return (
@@ -453,10 +459,7 @@ fn unpost_clause(state: &str, posted_worklog_id: Option<&str>) -> (String, &'sta
               unpost_worklog_id = COALESCE(?, unpost_worklog_id)",
         );
     }
-    if state == "approved" {
-        return ("drafted".to_string(), "");
-    }
-    (state.to_string(), "")
+    ("drafted".to_string(), "")
 }
 
 /// Edit a worklog's Jira comment (port of `worklogs/[id]` PATCH). Sets the
@@ -531,47 +534,50 @@ struct RematchRow {
     posted_worklog_id: Option<String>,
 }
 
+/// The target ticket already has a worklog for this exact day/cycle — the
+/// `pm_worklogs` UNIQUE (task_key, day_utc, cycle_index) constraint means two
+/// rows can't coexist there under the same key. Rejected outright.
+///
+/// This has flip-flopped twice already (see git history) — worth recording
+/// why neither alternative worked in practice:
+///   1. Auto-MERGE the two rows (concatenate summaries, sum time, delete the
+///      source): silently and irreversibly collapsed unrelated hours'
+///      worklogs into one garbled row with no confirmation.
+///   2. Auto-SPLIT into a reserved "extra slot" `cycle_index` so both rows
+///      coexist as separate cards: looked like a duplicate-entry bug on the
+///      timeline (two cards for the same ticket in the same hour, easy to
+///      mistake for a glitch) AND, worse, caused the SAME ticket to get
+///      posted to the tracker as multiple separate real worklog entries —
+///      several during testing, confirmed live in the DB (state='posted'
+///      rows at cycle_index >= 1_000_000).
+///
+/// A hard block — surfaced inline by the picker (see TicketMatchPicker) so
+/// the reviewer sees exactly why and can pick a genuinely free ticket/hour —
+/// is the only version of this that hasn't caused real data problems.
+#[derive(Debug)]
+pub struct RematchConflict {
+    pub task_key: String,
+}
+
+impl std::fmt::Display for RematchConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} already has a worklog logged for this window — matching two worklogs to the same ticket/hour isn't supported",
+            self.task_key
+        )
+    }
+}
+impl std::error::Error for RematchConflict {}
+
 /// Outcome of [`rematch_worklog`]. `merged_into_id` is always `None` — kept
 /// on the struct (rather than reverting to a bare `String`) so the tray
 /// command / frontend contract doesn't need to change again if a future
-/// explicitly-confirmed merge is ever added.
+/// explicitly-confirmed merge/split is ever added.
 #[derive(Debug, Clone)]
 pub struct RematchOutcome {
     pub state: String,
     pub merged_into_id: Option<i64>,
-}
-
-/// A `cycle_index` reserved for manually-created "extra slot" worklogs — see
-/// [`next_free_slot`]. Comfortably above any real local-hour value (0..24)
-/// the daemon's own hourly drafting ever writes (`worklog_pipeline.rs`'s
-/// `cycle_index = hs_local.hour()`), so a slot picked here can never collide
-/// with — or get silently overwritten by — the daemon's own upsert.
-const EXTRA_SLOT_BASE: i64 = 1_000_000;
-
-/// Find a `cycle_index` for `task_key`/`day_utc` that isn't already taken, in
-/// the reserved extra-slot band (see [`EXTRA_SLOT_BASE`]). Used when a
-/// re-match lands on a ticket that already has a worklog for this exact
-/// hour: rather than erroring or merging the two rows together, the
-/// re-matched row keeps its own content/time and just moves into its own
-/// slot, so it shows up as a separate card for the same hour with its own
-/// time_spent_seconds (a ticket legitimately having two chunks of logged
-/// time in one hour — e.g. a context switch back and forth — is normal, not
-/// an error case).
-async fn next_free_slot(pool: &SqlitePool, task_key: &str, day_utc: &str) -> anyhow::Result<i64> {
-    let taken: Vec<i64> = sqlx::query_scalar(
-        "SELECT cycle_index FROM pm_worklogs \
-         WHERE task_key = ? AND day_utc = ? AND cycle_index >= ?",
-    )
-    .bind(task_key)
-    .bind(day_utc)
-    .bind(EXTRA_SLOT_BASE)
-    .fetch_all(pool)
-    .await?;
-    let mut candidate = EXTRA_SLOT_BASE;
-    while taken.contains(&candidate) {
-        candidate += 1;
-    }
-    Ok(candidate)
 }
 
 /// Re-match a worklog to a different ticket (new work — not a route port; the
@@ -582,15 +588,15 @@ async fn next_free_slot(pool: &SqlitePool, task_key: &str, day_utc: &str) -> any
 /// against the new ticket — the reviewer picked the right ticket, they don't
 /// want to lose the drafted comment and start over.
 ///
-/// Pulls an `approved` OR already-`posted` row back to `drafted` (the match
-/// changed → must be re-approved and, if posted, re-posted once the stale
-/// entry is deleted — see [`unpost_clause`]), clears any post error, and
-/// records a `rematch` feedback row (`corrected_task_key` carries the new
-/// ticket — the same column reject attribution uses) so the correction is
-/// traceable. If the target ticket already has a worklog for this exact
-/// hour, this row is given its own reserved slot instead of blocking or
-/// merging — see [`next_free_slot`]. Errors [`WorklogWriteError`] only for a
-/// missing (404) worklog.
+/// Pulls an `approved`, `skipped`/`dismissed`, `failed`, OR already-`posted`
+/// row back to `drafted` (the match changed → must be re-approved and, if
+/// posted, re-posted once the stale entry is deleted — see
+/// [`unpost_clause`]), clears any post error, and records a `rematch`
+/// feedback row (`corrected_task_key` carries the new ticket — the same
+/// column reject attribution uses) so the correction is traceable. Errors
+/// [`WorklogWriteError`] for a missing (404) worklog, or [`RematchConflict`]
+/// when the target ticket already has a worklog for this exact day/cycle —
+/// see that type's doc comment for why this is a hard block.
 #[tracing::instrument(skip(pool))]
 pub async fn rematch_worklog(
     pool: &SqlitePool,
@@ -627,24 +633,12 @@ pub async fn rematch_worklog(
     .bind(id)
     .fetch_optional(pool)
     .await?;
-
-    // The target ticket already has a worklog for this exact hour — a very
-    // normal outcome of a manual re-match (the reviewer was already logging
-    // time against that ticket this hour). Rather than blocking or silently
-    // merging the two into one row (an earlier version did this and it
-    // corrupted real data — see git history), this row keeps its own
-    // content/time entirely and just moves to a free "extra slot" cycle_index
-    // reserved for exactly this case, so it shows up as its own separate
-    // card for the same hour with its own distinct time_spent_seconds. The
-    // real UNIQUE (task_key, day_utc, cycle_index) constraint the daemon's
-    // own hourly drafting relies on (see pm_worklog/db.rs upsert_pm_worklog)
-    // is untouched — the daemon only ever writes cycle_index 0..24 (the true
-    // local hour), so the reserved slot band below can never collide with it.
-    let cycle_index = if conflict.is_some() {
-        next_free_slot(pool, new_task_key, &row.day_utc).await?
-    } else {
-        row.cycle_index
-    };
+    if conflict.is_some() {
+        return Err(RematchConflict {
+            task_key: new_task_key.to_string(),
+        }
+        .into());
+    }
 
     let (next_state, extra_set) = unpost_clause(&row.state, row.posted_worklog_id.as_deref());
     let was_posted = row.state == "posted" && row.posted_worklog_id.is_some();
@@ -652,12 +646,11 @@ pub async fn rematch_worklog(
     let mut tx = pool.begin().await?;
     let sql = format!(
         "UPDATE pm_worklogs \
-         SET task_key = ?, cycle_index = ?, state = ?, edited_at = ?, last_post_error = NULL{extra_set} \
+         SET task_key = ?, state = ?, edited_at = ?, last_post_error = NULL{extra_set} \
          WHERE id = ?"
     );
     let mut q = sqlx::query(&sql)
         .bind(new_task_key)
-        .bind(cycle_index)
         .bind(&next_state)
         .bind(now);
     if was_posted {
@@ -683,8 +676,6 @@ pub async fn rematch_worklog(
         id,
         from_task_key = %row.task_key,
         to_task_key = new_task_key,
-        cycle_index,
-        extra_slot = cycle_index >= EXTRA_SLOT_BASE,
         state = %next_state,
         was_posted,
         "worklog rematched"
@@ -903,6 +894,27 @@ mod write_tests {
     }
 
     #[tokio::test]
+    async fn edit_revives_a_dismissed_worklog_to_drafted() {
+        // A skipped/dismissed worklog's Edit button (still shown for a
+        // decided item — see TimelineCard's DetailBody) used to save the
+        // text but leave `state` at `skipped` forever, so Approve never came
+        // back. Editing is a statement of intent to resubmit it.
+        let pool = pool_with_worklogs().await;
+        seed(&pool, 1, "skipped", "wrong call, actually relevant").await;
+
+        let next = edit_worklog(&pool, 1, "corrected summary", "2026-06-18T10:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(next, "drafted", "editing a dismissed row revives it");
+
+        let state: String = sqlx::query_scalar("SELECT state FROM pm_worklogs WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(state, "drafted");
+    }
+
+    #[tokio::test]
     async fn posted_worklog_is_immutable_to_review_actions() {
         // approve/reject/unapprove still refuse a posted row — only content
         // edits (edit_worklog/rematch_worklog) may touch one.
@@ -1069,55 +1081,31 @@ mod write_tests {
     }
 
     #[tokio::test]
-    async fn rematch_onto_ticket_with_existing_hour_gets_its_own_slot() {
-        // The target already has a drafted worklog for this exact hour — a
-        // normal outcome (the reviewer was already logging time against that
-        // ticket this hour). This row keeps its OWN content/time and just
-        // moves into a free reserved slot instead of blocking or merging —
-        // both rows now coexist as separate cards for the same hour, each
-        // with their own time_spent_seconds.
+    async fn rematch_conflicts_with_existing_worklog_on_target_ticket() {
         let pool = pool_with_worklogs().await;
         seed_matched(&pool, 1, "drafted", "PROJ-1", "2026-06-18", 0).await;
         seed_matched(&pool, 2, "drafted", "PROJ-2", "2026-06-18", 0).await;
 
-        let outcome = rematch_worklog(&pool, 1, "PROJ-2", "2026-06-18T10:00:00Z")
+        let e = rematch_worklog(&pool, 1, "PROJ-2", "2026-06-18T10:00:00Z")
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("PROJ-2"));
+
+        // Neither row was mutated or deleted on conflict.
+        let task_key: String = sqlx::query_scalar("SELECT task_key FROM pm_worklogs WHERE id = 1")
+            .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(outcome.state, "drafted");
-        assert_eq!(outcome.merged_into_id, None, "no merge, a sibling row");
-
-        // Both rows still exist, both now task_key PROJ-2, distinct cycle_index.
+        assert_eq!(task_key, "PROJ-1");
         let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pm_worklogs")
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(remaining, 2, "no row deleted");
-
-        let (task_key_1, cycle_1): (String, i64) =
-            sqlx::query_as("SELECT task_key, cycle_index FROM pm_worklogs WHERE id = 1")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        let (task_key_2, cycle_2): (String, i64) =
-            sqlx::query_as("SELECT task_key, cycle_index FROM pm_worklogs WHERE id = 2")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(task_key_1, "PROJ-2");
-        assert_eq!(task_key_2, "PROJ-2");
-        assert_ne!(cycle_1, cycle_2, "distinct slots, not colliding");
-        assert!(
-            cycle_1 >= EXTRA_SLOT_BASE,
-            "the re-matched row moved to the reserved band, id 1 = {cycle_1}"
-        );
-        assert_eq!(cycle_2, 0, "the original row's own hour untouched");
+        assert_eq!(remaining, 2, "no row deleted on conflict");
     }
 
     #[tokio::test]
-    async fn rematch_onto_already_posted_ticket_also_gets_its_own_slot() {
-        // Unlike the old merge-based design, the target's state doesn't
-        // matter at all here — this row never touches the target row, so a
-        // posted target is no different from a drafted one.
+    async fn rematch_conflicts_when_target_already_posted() {
         let pool = pool_with_worklogs().await;
         seed_matched(&pool, 1, "drafted", "PROJ-1", "2026-06-18", 0).await;
         seed_posted(
@@ -1132,46 +1120,40 @@ mod write_tests {
         )
         .await;
 
+        let e = rematch_worklog(&pool, 1, "PROJ-2", "2026-06-18T10:00:00Z")
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("PROJ-2"));
+
+        // Nothing was mutated on conflict.
+        let task_key: String = sqlx::query_scalar("SELECT task_key FROM pm_worklogs WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(task_key, "PROJ-1");
+    }
+
+    #[tokio::test]
+    async fn rematch_revives_a_dismissed_worklog_to_drafted() {
+        // A skipped/dismissed worklog used to have no way back — editing or
+        // re-matching it left `state` at `skipped` forever, so Approve never
+        // reappeared. Any content change is a statement of intent to
+        // resubmit, so it comes back to `drafted`.
+        let pool = pool_with_worklogs().await;
+        seed_matched(&pool, 1, "skipped", "PROJ-1", "2026-06-18", 0).await;
+
         let outcome = rematch_worklog(&pool, 1, "PROJ-2", "2026-06-18T10:00:00Z")
             .await
             .unwrap();
         assert_eq!(outcome.state, "drafted");
 
-        let (task_key, cycle_index, state): (String, i64, String) =
-            sqlx::query_as("SELECT task_key, cycle_index, state FROM pm_worklogs WHERE id = 1")
+        let (task_key, state): (String, String) =
+            sqlx::query_as("SELECT task_key, state FROM pm_worklogs WHERE id = 1")
                 .fetch_one(&pool)
                 .await
                 .unwrap();
         assert_eq!(task_key, "PROJ-2");
-        assert!(cycle_index >= EXTRA_SLOT_BASE);
         assert_eq!(state, "drafted");
-
-        // The already-posted target (id 2) is completely untouched.
-        let (target_state, target_posted_id): (String, Option<String>) =
-            sqlx::query_as("SELECT state, posted_worklog_id FROM pm_worklogs WHERE id = 2")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(target_state, "posted");
-        assert_eq!(target_posted_id.as_deref(), Some("9001"));
-    }
-
-    #[tokio::test]
-    async fn next_free_slot_skips_already_taken_slots() {
-        let pool = pool_with_worklogs().await;
-        seed_matched(&pool, 1, "drafted", "PROJ-1", "2026-06-18", EXTRA_SLOT_BASE).await;
-        seed_matched(
-            &pool,
-            2,
-            "drafted",
-            "PROJ-1",
-            "2026-06-18",
-            EXTRA_SLOT_BASE + 1,
-        )
-        .await;
-
-        let slot = next_free_slot(&pool, "PROJ-1", "2026-06-18").await.unwrap();
-        assert_eq!(slot, EXTRA_SLOT_BASE + 2);
     }
 
     #[tokio::test]
