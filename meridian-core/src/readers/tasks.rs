@@ -47,6 +47,20 @@ pub struct TaskSummary {
     pub epic_title: Option<String>,
     pub due_date: Option<String>,
     pub start_date: Option<String>,
+    // ── CDM fields (migration 056) — populated by the provider adapters once
+    //    ingestion is cut over (Stage 3b); None/empty until then. Read-only here.
+    /// Deterministic cross-tracker id, `"{provider}:{provider_id}"`.
+    pub canonical_id: Option<String>,
+    /// Canonical lifecycle phase (backlog/todo/in_progress/in_review/done/cancelled).
+    pub status_category: Option<String>,
+    /// Creator/reporter display name.
+    pub reporter: Option<String>,
+    /// ISO-8601 timestamp the task reached a terminal state.
+    pub completed_at: Option<String>,
+    /// Canonical ids of the task's ancestors, root-first.
+    pub ancestor_path: Vec<String>,
+    /// Canonical ids of the project(s) the task belongs to.
+    pub project_ids: Vec<String>,
     pub today_s: i64,
     pub today_autonomous_s: i64,
     pub week_s: i64,
@@ -75,6 +89,13 @@ struct TaskRow {
     epic_title: Option<String>,
     due_date: Option<String>,
     start_date: Option<String>,
+    // CDM columns (migration 056); selected as NULL on DBs that predate it.
+    canonical_id: Option<String>,
+    status_category: Option<String>,
+    reporter_name: Option<String>,
+    completed_at: Option<String>,
+    ancestor_path: Option<String>,
+    project_ids: Option<String>,
 }
 
 #[derive(FromRow, Clone)]
@@ -144,15 +165,21 @@ pub async fn get_tasks(
     let (today_start, today_end) = local_day_bounds(today);
     let (ws, _) = local_day_bounds(week_start);
 
-    // All tasks.
-    let task_rows: Vec<TaskRow> = sqlx::query_as::<_, TaskRow>(
-        r#"
-        SELECT task_key, title, description_text, COALESCE(issue_type,'') AS issue_type,
-               status_raw, is_terminal, provider, url, parent_key, epic_title, due_date, start_date
-        FROM pm_tasks
-        ORDER BY task_key DESC
-        "#,
-    )
+    // All tasks. The CDM columns (migration 056) are selected as NULL on DBs
+    // that predate it, so the tray reading an un-migrated DB still works.
+    let cdm_cols = if column_exists(pool, "pm_tasks", "status_category").await? {
+        "canonical_id, status_category, reporter_name, completed_at, ancestor_path, project_ids"
+    } else {
+        "NULL AS canonical_id, NULL AS status_category, NULL AS reporter_name, \
+         NULL AS completed_at, NULL AS ancestor_path, NULL AS project_ids"
+    };
+    let task_rows: Vec<TaskRow> = sqlx::query_as::<_, TaskRow>(&format!(
+        "SELECT task_key, title, description_text, COALESCE(issue_type,'') AS issue_type, \
+                status_raw, is_terminal, provider, url, parent_key, epic_title, due_date, start_date, \
+                {cdm_cols} \
+         FROM pm_tasks \
+         ORDER BY task_key DESC"
+    ))
     .fetch_all(pool)
     .instrument(tracing::debug_span!("tasks.read.pm_tasks"))
     .await
@@ -324,6 +351,12 @@ pub async fn get_tasks(
                 epic_title: t.epic_title,
                 due_date: t.due_date,
                 start_date: t.start_date,
+                canonical_id: t.canonical_id,
+                status_category: t.status_category,
+                reporter: t.reporter_name,
+                completed_at: t.completed_at,
+                ancestor_path: parse_id_array(t.ancestor_path.as_deref()),
+                project_ids: parse_id_array(t.project_ids.as_deref()),
                 today_s: agg.map(|a| a.dur).unwrap_or(0),
                 today_autonomous_s: agg.map(|a| a.autonomous_s).unwrap_or(0),
                 week_s: week_by_task.get(&k).copied().unwrap_or(0),
@@ -346,6 +379,26 @@ pub async fn get_tasks(
         tasks,
         unassigned_s: unassigned.0,
     })
+}
+
+/// Whether `table` has `column` — used to stay graceful on DBs that predate a
+/// migration (here, the CDM columns from 056).
+async fn column_exists(pool: &SqlitePool, table: &str, column: &str) -> anyhow::Result<bool> {
+    let found: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM pragma_table_info(?) WHERE name = ?")
+        .bind(table)
+        .bind(column)
+        .fetch_optional(pool)
+        .instrument(tracing::debug_span!("tasks.read.column_exists"))
+        .await
+        .with_context(|| format!("tasks: detect {table}.{column}"))?;
+    Ok(found.is_some())
+}
+
+/// Parse a JSON string array (`ancestor_path`/`project_ids`) into a `Vec`,
+/// yielding an empty vec on NULL/empty/malformed input.
+fn parse_id_array(raw: Option<&str>) -> Vec<String> {
+    raw.and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+        .unwrap_or_default()
 }
 
 /// Load pm_task_curation into task_key → Hygiene, tolerating a DB that predates
