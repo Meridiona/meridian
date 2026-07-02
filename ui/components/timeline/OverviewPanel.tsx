@@ -180,6 +180,8 @@ export function OverviewPanel({ data, onOpen, onOpenTask }: {
         </div>
       )}
 
+      <EntryRow label="Tasks" hint={`${activeTaskCount} active`} onClick={() => onOpen('tasks')} />
+
       <div>
         <p className="mt-label mb-2.5" style={{ color: 'var(--t-faint)' }}>Today</p>
         <div className="grid grid-cols-3 gap-3">
@@ -198,8 +200,6 @@ export function OverviewPanel({ data, onOpen, onOpenTask }: {
         </div>
         <TimeByApp sessions={today?.sessions ?? []} />
       </div>
-
-      <EntryRow label="Tasks" hint={`${activeTaskCount} active`} onClick={() => onOpen('tasks')} />
     </div>
   )
 }
