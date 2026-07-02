@@ -9,9 +9,15 @@
      via html[data-theme]) drive every current-generation surface built for
      the one-pager Meridian Timeline UI (ui/components/timeline/**).
    - The OLD `--paper`/`--surface`/`--ink`/`--accent`/`--type-*` tokens
-     (amber-gold edition, driven by html.dark) are kept only so the
-     unreachable-from-nav Sessions/Week routes and the setup wizard don't
-     visually break. Do not build new surfaces against the old tokens.
+     (amber-gold edition, driven by html.dark) are still load-bearing for a
+     handful of surfaces not yet ported to the Timeline design: the setup
+     wizard (app/setup/**), HealthBanner, MustFixBanner, HygieneDialog, and
+     shared primitives in components/atoms.tsx. (The old Sessions/Week/Logs
+     routes that originally motivated keeping this palette around were
+     removed entirely — see git history — since they were unreachable from
+     any window the app opens; this token set outlived them because other
+     surfaces also depend on it.) Do not build new surfaces against the old
+     tokens — port the surface to `--t-*` instead of adding another consumer.
    ─────────────────────────────────────────────────────────────────────────── */
 
 @theme {
