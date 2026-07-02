@@ -146,6 +146,18 @@ def generate_structured(
         generator = _generator(bundle, output_type)
         text = generator(prompt, max_tokens=max_tokens, sampler=sampler)
 
+    # Release this call's KV-cache/scratch buffers back to MLX's allocator now,
+    # not just at idle-eviction — classify_tasks/generate_worklog/propose_ticket
+    # each fire many times per hourly run, so leaving this to the (much later)
+    # idle evictor let peak memory ratchet up across an active run instead of
+    # settling back down between calls (matches the per-call discipline
+    # reranker._score_one and session_distiller._embed already use).
+    try:
+        import mlx.core as mx
+        mx.clear_cache()
+    except Exception:  # noqa: BLE001 — cache flush is best-effort
+        pass
+
     text = (text or "").strip()
     output_tokens = len(hf_tokenizer.encode(text)) if text else 0
     return StructuredResult(
