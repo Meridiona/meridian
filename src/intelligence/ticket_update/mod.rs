@@ -19,6 +19,9 @@
 pub mod azure_devops;
 pub mod github;
 pub mod jira;
+/// Jira close/reopen/cancel status-transition helpers — split out of `jira.rs`
+/// (CLAUDE.md's 500-line file cap). `jira.rs`-internal only (`pub(super)`).
+mod jira_transitions;
 pub mod linear;
 pub mod parents;
 pub mod trello;
