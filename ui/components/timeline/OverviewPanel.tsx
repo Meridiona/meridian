@@ -87,7 +87,7 @@ export function OverviewPanel({ data, onOpen, onOpenTask }: {
   }, [])
 
   const greetingEyebrow = 'Today at a glance'
-  const greetingTitle = isSolo ? 'Your day, captured' : 'You had a solid day'
+  const greetingTitle = isSolo ? 'Your day, in progress' : "You're having a solid day"
   const greetingBody = isSolo
     ? `${fmtDur(focus_s)} of focused activity across ${appCount} app${appCount === 1 ? '' : 's'}.`
     : `${fmtDur(loggedSeconds)} logged across ${loggedCount} work log${loggedCount === 1 ? '' : 's'}.`

@@ -6,7 +6,7 @@
 
 'use client'
 
-import PlanView from '@/components/views/PlanView'
+import PlanView from '@/components/plan/PlanView'
 import { ModalShell } from './ModalShell'
 
 export function PlanModal({ onClose }: { onClose: () => void }) {

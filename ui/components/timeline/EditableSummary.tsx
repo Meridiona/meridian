@@ -4,13 +4,23 @@
 // worklog's summary and a proposed ticket's body/title. Used by
 // WorklogDetailPane and ReviewCard — previously this logic was duplicated once
 // inline in WorklogCard and once (title + body, two copies) in ProposedCard.
+//
+// This is a CONTROLLED edit view, not a click-to-edit widget: callers already
+// decide whether to mount it at all (each wraps it in its own
+// `editing ? <EditableSummary/> : <staticText/>`), so it renders the
+// textarea + Save/Cancel immediately on mount rather than tracking its own
+// separate "am I editing" flag. An earlier version had a second, internal
+// editing toggle defaulting to false — mounting it left the card showing
+// static clickable text with no visible Save button until clicked a second
+// time, which read as "editing is broken." Always render editable; let the
+// parent's editing state (and its onCancel) be the single source of truth.
 
 'use client'
 
 import { useEffect, useState } from 'react'
 
 export function EditableSummary({
-  label, value, placeholder, busy, rows = 4, onSave,
+  label, value, placeholder, busy, rows = 4, onSave, onCancel, saveLabel = 'Save',
 }: {
   label?: string
   value: string
@@ -18,8 +28,12 @@ export function EditableSummary({
   busy: boolean
   rows?: number
   onSave: (next: string) => void
+  onCancel: () => void
+  // ReviewCard passes "Save & Approve" for a still-pending draft — Save
+  // commits the edit AND approves it in one action rather than a separate
+  // second step (see ReviewOverlay's onEditSave).
+  saveLabel?: string
 }) {
-  const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(value)
 
   useEffect(() => { setDraft(value) }, [value])
@@ -27,24 +41,16 @@ export function EditableSummary({
   return (
     <div>
       {label && <p className="mt-label mb-1" style={{ color: 'var(--t-faint)' }}>{label}</p>}
-      {editing ? (
-        <div>
-          <textarea value={draft} onChange={e => setDraft(e.target.value)} rows={rows} disabled={busy}
-            className="w-full px-3 py-2 rounded-md mt-body"
-            style={{ background: 'var(--t-input)', border: '1px solid var(--t-input-border)', color: 'var(--t-title)', outline: 'none', resize: 'vertical' }} />
-          <div className="flex items-center gap-2 mt-2">
-            <button onClick={() => { onSave(draft); setEditing(false) }} disabled={busy}
-              className="mt-body-sm px-3 py-1 rounded-md" style={{ background: 'var(--t-title)', color: 'var(--t-panel)' }}>Save</button>
-            <button onClick={() => { setDraft(value); setEditing(false) }} disabled={busy}
-              className="mt-body-sm px-3 py-1 rounded-md" style={{ color: 'var(--t-muted)', border: '1px solid var(--t-hair)' }}>Cancel</button>
-          </div>
-        </div>
-      ) : (
-        <p onClick={() => setEditing(true)} className="mt-body whitespace-pre-wrap cursor-text"
-          style={{ color: value ? 'var(--t-title)' : 'var(--t-faint)' }}>
-          {value || placeholder}
-        </p>
-      )}
+      <textarea value={draft} onChange={e => setDraft(e.target.value)} rows={rows} disabled={busy}
+        placeholder={placeholder}
+        className="w-full px-3 py-2 rounded-md mt-body"
+        style={{ background: 'var(--t-input)', border: '1px solid var(--t-input-border)', color: 'var(--t-title)', outline: 'none', resize: 'vertical' }} />
+      <div className="flex items-center gap-2 mt-2">
+        <button onClick={() => onSave(draft)} disabled={busy}
+          className="mt-body-sm px-3 py-1 rounded-md" style={{ background: 'var(--t-title)', color: 'var(--t-panel)' }}>{saveLabel}</button>
+        <button onClick={onCancel} disabled={busy}
+          className="mt-body-sm px-3 py-1 rounded-md" style={{ color: 'var(--t-muted)', border: '1px solid var(--t-hair)' }}>Cancel</button>
+      </div>
     </div>
   )
 }

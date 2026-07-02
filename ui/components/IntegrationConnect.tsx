@@ -19,6 +19,7 @@ import { load, invoke, mutate } from '@/lib/bridge'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import { TRACKERS } from '@/lib/integrations'
 import type { Tracker, TokenField } from '@/lib/integrations'
+import { ProviderGlyph } from '@/components/atoms'
 
 const OAUTH_DEADLINE_MS = 180_000  // 3-minute browser-consent window
 
@@ -52,43 +53,40 @@ export default function ConnectTrackers({
   return (
     <div style={{ maxWidth: compact ? '100%' : 560 }}>
       {!compact && (
-        <p className="text-[12px] mt-1" style={{ color: 'var(--ink-3)' }}>
+        <p className="text-[12px] mt-1" style={{ color: 'var(--t-faint)' }}>
           {anyConnected
             ? 'Manage your tracker connections below.'
             : 'Connect a tracker and Meridian maps your captured work to its tasks.'}
         </p>
       )}
 
-      <div className={compact ? 'rounded-xl border overflow-hidden' : 'mt-5 rounded-xl border overflow-hidden'} style={{ borderColor: 'var(--rule)' }}>
+      <div className={compact ? 'rounded-xl border overflow-hidden' : 'mt-5 rounded-xl border overflow-hidden'} style={{ borderColor: 'var(--t-hair)' }}>
         {TRACKERS.map((t, i) => {
           const connected = !!integrations?.[t.id]
           const syncError = integrations?.sync_errors?.[t.id]
           const isOpen = open === t.id
           return (
-            <div key={t.id} style={{ borderTop: i > 0 ? '1px solid var(--rule)' : undefined }}>
+            <div key={t.id} style={{ borderTop: i > 0 ? '1px solid var(--t-hair)' : undefined }}>
               <button
                 onClick={() => setOpen(isOpen ? null : t.id)}
                 className="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors"
-                style={{ background: isOpen ? 'var(--surface-2)' : 'var(--surface)', cursor: 'pointer' }}
+                style={{ background: isOpen ? 'var(--t-box)' : 'var(--t-card)', cursor: 'pointer' }}
               >
-                <span className="inline-flex items-center justify-center rounded-md font-mono shrink-0"
-                  style={{ width: 22, height: 22, background: t.color + '1A', color: t.color, fontSize: 10, fontWeight: 600 }}>
-                  {t.glyph}
-                </span>
+                <ProviderGlyph provider={t.id} size={22} />
                 <span className="flex flex-col min-w-0">
-                  <span className="text-[13px]" style={{ color: 'var(--ink)' }}>{t.name}</span>
-                  {compact && !connected && <span className="text-[11px] truncate" style={{ color: 'var(--ink-4)' }}>{t.blurb}</span>}
+                  <span className="text-[13px]" style={{ color: 'var(--t-title)' }}>{t.name}</span>
+                  {compact && !connected && <span className="text-[11px] truncate" style={{ color: 'var(--t-faint-2)' }}>{t.blurb}</span>}
                 </span>
                 {connected ? (
-                  <span className="ml-auto inline-flex items-center gap-1.5 text-[11px]" style={{ color: syncError ? '#d97706' : 'var(--ink-2)' }}>
-                    <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: syncError ? '#d97706' : 'var(--success)' }} />
+                  <span className="ml-auto inline-flex items-center gap-1.5 text-[11px]" style={{ color: syncError ? '#d97706' : 'var(--t-muted)' }}>
+                    <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: syncError ? '#d97706' : 'var(--color-state-approved)' }} />
                     {syncError ? 'Sync error' : 'Connected'}
-                    <span className="inline-block transition-transform" style={{ transform: isOpen ? 'rotate(90deg)' : 'none', color: 'var(--ink-4)' }}>›</span>
+                    <span className="inline-block transition-transform" style={{ transform: isOpen ? 'rotate(90deg)' : 'none', color: 'var(--t-faint-2)' }}>›</span>
                   </span>
                 ) : (
-                  <span className="ml-auto inline-flex items-center gap-2 text-[11px]" style={{ color: 'var(--ink-3)' }}>
+                  <span className="ml-auto inline-flex items-center gap-2 text-[11px]" style={{ color: 'var(--t-faint)' }}>
                     Connect
-                    <span className="inline-block transition-transform" style={{ transform: isOpen ? 'rotate(90deg)' : 'none', color: 'var(--ink-4)' }}>›</span>
+                    <span className="inline-block transition-transform" style={{ transform: isOpen ? 'rotate(90deg)' : 'none', color: 'var(--t-faint-2)' }}>›</span>
                   </span>
                 )}
               </button>
@@ -115,7 +113,7 @@ function ConnectedPanel({
   const cleanError = syncError ? syncError.replace(/^permission_error: |^sync_error: /, '') : null
 
   return (
-    <div className="px-4 pb-4 pt-2" style={{ background: 'var(--surface-2)' }}>
+    <div className="px-4 pb-4 pt-2" style={{ background: 'var(--t-box)' }}>
       {cleanError && !reauthorizing && (
         <div className="mb-3 rounded-md px-3 py-2" style={{ background: '#fef3c7', border: '1px solid #fcd34d' }}>
           <p className="text-[12px] leading-relaxed" style={{ color: '#92400e' }}>
@@ -129,13 +127,13 @@ function ConnectedPanel({
       )}
       {reauthorizing ? (
         <div className="mb-1">
-          <p className="text-[12px] mb-2" style={{ color: 'var(--ink-2)' }}>Reconnect {tracker.name}:</p>
+          <p className="text-[12px] mb-2" style={{ color: 'var(--t-muted)' }}>Reconnect {tracker.name}:</p>
           <TrackerSetup tracker={tracker} onSuccess={() => { setReauthorizing(false); onChanged?.() }} />
-          <button onClick={() => setReauthorizing(false)} className="mt-2 text-[11px]" style={{ color: 'var(--ink-4)', cursor: 'pointer' }}>Cancel</button>
+          <button onClick={() => setReauthorizing(false)} className="mt-2 text-[11px]" style={{ color: 'var(--t-faint-2)', cursor: 'pointer' }}>Cancel</button>
         </div>
       ) : (
         <>
-          <p className="text-[12px] leading-relaxed mb-3" style={{ color: 'var(--ink-3)' }}>
+          <p className="text-[12px] leading-relaxed mb-3" style={{ color: 'var(--t-faint)' }}>
             Disconnect removes the stored credentials. The daemon reloads automatically.
           </p>
           <button onClick={onDisconnect} disabled={disconnecting} className="text-[12px] px-3 py-1.5 rounded-md transition-opacity"
@@ -157,7 +155,7 @@ function TrackerSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: ()
   if (tracker.azure) return <AzureDevOpsSetup tracker={tracker} onSuccess={onSuccess} />
 
   return (
-    <div style={{ background: 'var(--surface-2)' }}>
+    <div style={{ background: 'var(--t-box)' }}>
       {dual && (
         <div className="px-4 pt-2 pb-1 flex gap-2">
           <ModeTab label={tracker.oauth!.label} active={mode === 'oauth'} onClick={() => setMode('oauth')} />
@@ -174,7 +172,7 @@ function TrackerSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: ()
 function ModeTab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   return (
     <button onClick={onClick} className="text-[11px] px-3 py-1 rounded-md"
-      style={{ background: active ? 'var(--accent)' : 'var(--tint)', color: active ? '#fff' : 'var(--ink-3)', cursor: 'pointer' }}>
+      style={{ background: active ? 'var(--color-state-proposal)' : 'color-mix(in srgb, var(--color-state-proposal) 10%, transparent)', color: active ? '#fff' : 'var(--t-faint)', cursor: 'pointer' }}>
       {label}
     </button>
   )
@@ -266,15 +264,15 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
   }
 
   return (
-    <div className="px-4 pb-4 pt-2" style={{ background: 'var(--surface-2)' }}>
+    <div className="px-4 pb-4 pt-2" style={{ background: 'var(--t-box)' }}>
       {status === 'idle' && (
         <div className="space-y-3">
-          <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>{tracker.oauth?.hint}</p>
+          <p className="text-[12px] leading-relaxed" style={{ color: 'var(--t-muted)' }}>{tracker.oauth?.hint}</p>
           {apiKeyPrompt && (
             <>
               <p className="text-[12px]" style={{ color: '#d97706' }}>
                 A Trello API key is required.{' '}
-                <a href="https://trello.com/app-key" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>Get it at trello.com/app-key ↗</a>
+                <a href="https://trello.com/app-key" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-state-proposal)' }}>Get it at trello.com/app-key ↗</a>
               </p>
               <Field
                 field={{ name: 'api_key', label: 'API Key', placeholder: 'Paste your Trello API key', required: true }}
@@ -290,7 +288,7 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
             disabled={apiKeyPrompt && !apiKey.trim()}
             className="text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
             style={{
-              background: 'var(--accent)', color: '#fff',
+              background: 'var(--color-state-proposal)', color: '#fff',
               opacity: apiKeyPrompt && !apiKey.trim() ? 0.5 : 1,
               cursor: apiKeyPrompt && !apiKey.trim() ? 'not-allowed' : 'pointer',
             }}>
@@ -300,15 +298,15 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
       )}
       {status === 'waiting' && (
         <div className="space-y-2">
-          <p className="text-[12px]" style={{ color: 'var(--ink-2)' }}>Your browser should have opened. Authorize the app, then come back here.</p>
-          <p className="text-[11px]" style={{ color: 'var(--ink-4)' }}>Waiting for authorization…</p>
+          <p className="text-[12px]" style={{ color: 'var(--t-muted)' }}>Your browser should have opened. Authorize the app, then come back here.</p>
+          <p className="text-[11px]" style={{ color: 'var(--t-faint-2)' }}>Waiting for authorization…</p>
         </div>
       )}
-      {status === 'done' && <p className="text-[12px]" style={{ color: 'var(--success)' }}>✓ Connected! Your tasks will appear shortly.</p>}
+      {status === 'done' && <p className="text-[12px]" style={{ color: 'var(--color-state-approved)' }}>✓ Connected! Your tasks will appear shortly.</p>}
       {status === 'error' && (
         <div className="space-y-2">
           <p className="text-[12px]" style={{ color: '#e53e3e' }}>{error ?? 'OAuth failed.'}</p>
-          <button onClick={() => setStatus('idle')} className="text-[11px]" style={{ color: 'var(--accent)', cursor: 'pointer' }}>Try again</button>
+          <button onClick={() => setStatus('idle')} className="text-[11px]" style={{ color: 'var(--color-state-proposal)', cursor: 'pointer' }}>Try again</button>
         </div>
       )}
     </div>
@@ -342,18 +340,18 @@ function TokenSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
 
   if (done) {
     return (
-      <div className="px-4 pb-4 pt-2" style={{ background: 'var(--surface-2)' }}>
-        <p className="text-[12px]" style={{ color: 'var(--success)' }}>✓ Connected! Your tasks will appear shortly.</p>
+      <div className="px-4 pb-4 pt-2" style={{ background: 'var(--t-box)' }}>
+        <p className="text-[12px]" style={{ color: 'var(--color-state-approved)' }}>✓ Connected! Your tasks will appear shortly.</p>
       </div>
     )
   }
 
   return (
-    <div className="px-4 pb-4 pt-2 space-y-3" style={{ background: 'var(--surface-2)' }}>
-      <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
+    <div className="px-4 pb-4 pt-2 space-y-3" style={{ background: 'var(--t-box)' }}>
+      <p className="text-[12px] leading-relaxed" style={{ color: 'var(--t-muted)' }}>
         {method.hint}{' '}
         {method.url && (
-          <a href={method.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>Open ↗</a>
+          <a href={method.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-state-proposal)' }}>Open ↗</a>
         )}
       </p>
       {method.fields.map((f) => (
@@ -362,9 +360,9 @@ function TokenSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
           onEnter={save} />
       ))}
       {error && <p className="text-[11px]" style={{ color: '#e53e3e' }}>{error}</p>}
-      {method.note && <p className="text-[11px] leading-relaxed" style={{ color: 'var(--ink-4)' }}>{method.note}</p>}
+      {method.note && <p className="text-[11px] leading-relaxed" style={{ color: 'var(--t-faint-2)' }}>{method.note}</p>}
       <button onClick={save} disabled={!canSave || saving} className="text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
-        style={{ background: 'var(--accent)', color: '#fff', opacity: !canSave || saving ? 0.5 : 1, cursor: !canSave || saving ? 'not-allowed' : 'pointer' }}>
+        style={{ background: 'var(--color-state-proposal)', color: '#fff', opacity: !canSave || saving ? 0.5 : 1, cursor: !canSave || saving ? 'not-allowed' : 'pointer' }}>
         {saving ? 'Connecting…' : `Connect ${tracker.name}`}
       </button>
     </div>
@@ -376,7 +374,7 @@ function Field({ field, value, onChange, onEnter, autoFocus }: {
 }) {
   return (
     <label className="block">
-      <span className="text-[11px]" style={{ color: 'var(--ink-3)' }}>{field.label}</span>
+      <span className="text-[11px]" style={{ color: 'var(--t-faint)' }}>{field.label}</span>
       <input
         type={field.password ? 'password' : 'text'}
         value={value}
@@ -385,9 +383,9 @@ function Field({ field, value, onChange, onEnter, autoFocus }: {
         placeholder={field.placeholder}
         autoFocus={autoFocus}
         className="mt-1 w-full font-mono text-[11px] px-2 py-1.5 rounded-md border"
-        style={{ color: 'var(--ink)', background: 'var(--surface)', borderColor: 'var(--rule)', outline: 'none' }}
+        style={{ color: 'var(--t-title)', background: 'var(--t-card)', borderColor: 'var(--t-hair)', outline: 'none' }}
       />
-      {field.hint && <span className="text-[10px] leading-relaxed block mt-1" style={{ color: 'var(--ink-4)' }}>{field.hint}</span>}
+      {field.hint && <span className="text-[10px] leading-relaxed block mt-1" style={{ color: 'var(--t-faint-2)' }}>{field.hint}</span>}
     </label>
   )
 }
@@ -453,40 +451,40 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
 
   if (done) {
     return (
-      <div className="px-4 pb-4 pt-2" style={{ background: 'var(--surface-2)' }}>
-        <p className="text-[12px]" style={{ color: 'var(--success)' }}>✓ Connected! Your tasks will appear shortly.</p>
+      <div className="px-4 pb-4 pt-2" style={{ background: 'var(--t-box)' }}>
+        <p className="text-[12px]" style={{ color: 'var(--color-state-approved)' }}>✓ Connected! Your tasks will appear shortly.</p>
       </div>
     )
   }
 
   return (
-    <div className="px-4 pb-4 pt-2 space-y-3" style={{ background: 'var(--surface-2)' }}>
-      <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
+    <div className="px-4 pb-4 pt-2 space-y-3" style={{ background: 'var(--t-box)' }}>
+      <p className="text-[12px] leading-relaxed" style={{ color: 'var(--t-muted)' }}>
         In Azure DevOps go to User settings → Personal access tokens → New token, set scope to{' '}
         <strong>All accessible organizations</strong> and enable <strong>Work Items → Read &amp; write</strong>.{' '}
-        <a href="https://dev.azure.com" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>Open ↗</a>
+        <a href="https://dev.azure.com" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-state-proposal)' }}>Open ↗</a>
       </p>
       <div className="flex gap-2">
         <input type="password" value={pat} onChange={(e) => setPat(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && lookupOrgs()} placeholder="Paste your PAT here"
           className="flex-1 font-mono text-[11px] px-2 py-1.5 rounded-md border"
-          style={{ color: 'var(--ink)', background: 'var(--surface)', borderColor: 'var(--rule)', outline: 'none' }} />
+          style={{ color: 'var(--t-title)', background: 'var(--t-card)', borderColor: 'var(--t-hair)', outline: 'none' }} />
         <button onClick={lookupOrgs} disabled={!pat.trim() || loading === 'orgs'}
           className="text-[11px] px-3 py-1.5 rounded-md shrink-0"
-          style={{ background: 'var(--accent)', color: '#fff', opacity: (!pat.trim() || loading === 'orgs') ? 0.5 : 1, cursor: (!pat.trim() || loading === 'orgs') ? 'not-allowed' : 'pointer' }}>
+          style={{ background: 'var(--color-state-proposal)', color: '#fff', opacity: (!pat.trim() || loading === 'orgs') ? 0.5 : 1, cursor: (!pat.trim() || loading === 'orgs') ? 'not-allowed' : 'pointer' }}>
           {loading === 'orgs' ? 'Looking up…' : 'Look up'}
         </button>
       </div>
 
       {orgs !== null && (
         orgs.length === 0
-          ? <p className="text-[12px]" style={{ color: 'var(--ink-3)' }}>No organisations found for this PAT.</p>
+          ? <p className="text-[12px]" style={{ color: 'var(--t-faint)' }}>No organisations found for this PAT.</p>
           : (
             <label className="block">
-              <span className="text-[11px]" style={{ color: 'var(--ink-3)' }}>Organisation</span>
+              <span className="text-[11px]" style={{ color: 'var(--t-faint)' }}>Organisation</span>
               <select value={selectedOrg} onChange={(e) => handleOrgChange(e.target.value)}
                 className="mt-1 w-full text-[12px] px-2 py-1.5 rounded-md border"
-                style={{ color: 'var(--ink)', background: 'var(--surface)', borderColor: 'var(--rule)' }}>
+                style={{ color: 'var(--t-title)', background: 'var(--t-card)', borderColor: 'var(--t-hair)' }}>
                 <option value="">— select org —</option>
                 {orgs.map((o) => <option key={o} value={o}>{o}</option>)}
               </select>
@@ -496,15 +494,15 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
 
       {projects !== null && selectedOrg && (
         loading === 'projects'
-          ? <p className="text-[11px]" style={{ color: 'var(--ink-3)' }}>Loading projects…</p>
+          ? <p className="text-[11px]" style={{ color: 'var(--t-faint)' }}>Loading projects…</p>
           : projects.length === 0
-            ? <p className="text-[12px]" style={{ color: 'var(--ink-3)' }}>No projects found in this organisation.</p>
+            ? <p className="text-[12px]" style={{ color: 'var(--t-faint)' }}>No projects found in this organisation.</p>
             : (
               <label className="block">
-                <span className="text-[11px]" style={{ color: 'var(--ink-3)' }}>Project</span>
+                <span className="text-[11px]" style={{ color: 'var(--t-faint)' }}>Project</span>
                 <select value={selectedProject} onChange={(e) => setSelectedProject(e.target.value)}
                   className="mt-1 w-full text-[12px] px-2 py-1.5 rounded-md border"
-                  style={{ color: 'var(--ink)', background: 'var(--surface)', borderColor: 'var(--rule)' }}>
+                  style={{ color: 'var(--t-title)', background: 'var(--t-card)', borderColor: 'var(--t-hair)' }}>
                   <option value="">— select project —</option>
                   {projects.map((p) => <option key={p} value={p}>{p}</option>)}
                 </select>
@@ -516,7 +514,7 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
 
       {showManualOrg && !orgs && (
         <div className="space-y-1.5">
-          <label htmlFor="azure-devops-org" className="text-[11px]" style={{ color: 'var(--ink-3)' }}>Enter your org name manually:</label>
+          <label htmlFor="azure-devops-org" className="text-[11px]" style={{ color: 'var(--t-faint)' }}>Enter your org name manually:</label>
           <div className="flex gap-2">
             <input
               id="azure-devops-org"
@@ -525,12 +523,12 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
               onKeyDown={(e) => e.key === 'Enter' && submitManualOrg()}
               placeholder="e.g. my-company"
               className="flex-1 text-[11px] px-2 py-1.5 rounded-md border"
-              style={{ color: 'var(--ink)', background: 'var(--surface)', borderColor: 'var(--rule)', outline: 'none' }} />
+              style={{ color: 'var(--t-title)', background: 'var(--t-card)', borderColor: 'var(--t-hair)', outline: 'none' }} />
             <button
               onClick={submitManualOrg}
               disabled={!manualOrg.trim() || loading === 'projects'}
               className="text-[11px] px-3 py-1.5 rounded-md shrink-0"
-              style={{ background: 'var(--accent)', color: '#fff', opacity: (!manualOrg.trim() || loading === 'projects') ? 0.5 : 1, cursor: (!manualOrg.trim() || loading === 'projects') ? 'not-allowed' : 'pointer' }}>
+              style={{ background: 'var(--color-state-proposal)', color: '#fff', opacity: (!manualOrg.trim() || loading === 'projects') ? 0.5 : 1, cursor: (!manualOrg.trim() || loading === 'projects') ? 'not-allowed' : 'pointer' }}>
               {loading === 'projects' ? 'Looking up…' : 'Look up projects'}
             </button>
           </div>
@@ -539,7 +537,7 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
 
       {selectedOrg && selectedProject && (
         <button onClick={connect} disabled={loading === 'saving'} className="text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
-          style={{ background: 'var(--accent)', color: '#fff', opacity: loading === 'saving' ? 0.5 : 1, cursor: loading === 'saving' ? 'not-allowed' : 'pointer' }}>
+          style={{ background: 'var(--color-state-proposal)', color: '#fff', opacity: loading === 'saving' ? 0.5 : 1, cursor: loading === 'saving' ? 'not-allowed' : 'pointer' }}>
           {loading === 'saving' ? 'Connecting…' : 'Connect Azure DevOps'}
         </button>
       )}

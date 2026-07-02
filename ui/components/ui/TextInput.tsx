@@ -20,15 +20,15 @@ export function TextInput({ value, onChange, placeholder, type = 'text', width =
         width,
         fontSize: '12px',
         padding: '5px 8px',
-        background: 'var(--bg)',
-        color: 'var(--ink)',
-        border: '1px solid var(--rule)',
+        background: 'var(--t-input)',
+        color: 'var(--t-title)',
+        border: '1px solid var(--t-input-border)',
         borderRadius: '6px',
         outline: 'none',
         fontFamily: 'inherit',
       }}
-      onFocus={e => (e.target.style.borderColor = 'var(--accent)')}
-      onBlur={e => (e.target.style.borderColor = 'var(--rule)')}
+      onFocus={e => (e.target.style.borderColor = 'var(--color-state-proposal)')}
+      onBlur={e => (e.target.style.borderColor = 'var(--t-input-border)')}
     />
   )
 }

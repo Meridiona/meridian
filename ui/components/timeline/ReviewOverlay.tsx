@@ -5,6 +5,17 @@
 // in-flight review isn't reshuffled by useTimelineData's 30s poll; every action
 // flows through the shared mutation callbacks, so the timeline updates
 // automatically. Self-contained backdrop (ReviewModal just mounts this).
+//
+// `focusKey` scopes the queue to a single ticket — clicking a draft card on
+// the timeline board opens straight into review for THAT card (rather than
+// the right-side Hour-detail panel, which is reserved for already-approved
+// work — see TimelineColumn/MeridianTimelineShell), instead of dropping the
+// user into the front of the whole pending queue. Editing an approved/posted
+// card (via the right panel's own "Edit" action) reuses the same `focusKey`
+// path — since there's nothing left to swipe-approve/dismiss on a card
+// that's already been decided, that case opens straight into edit mode and
+// Save/Cancel close the dialog outright instead of falling back to the
+// swipe FABs (see `editOnly` below).
 
 'use client'
 
@@ -16,18 +27,38 @@ import { ReviewRejectPicker } from './ReviewRejectPicker'
 import { itemKey, isPending, type RejectCorrection } from './types'
 import type { WorklogActions } from './useTimelineData'
 
-export function ReviewOverlay({ items, actions, onClose }: {
+export function ReviewOverlay({ items, actions, focusKey, onClose }: {
   items: WorklogItem[]
   actions: WorklogActions
+  focusKey?: string | null
   onClose: () => void
 }) {
-  // Snapshot at open time — see file header for why.
-  const [queue] = useState<WorklogItem[]>(() => items.filter(isPending))
+  // Snapshot at open time — see file header for why (order/length only).
+  const [queue] = useState<WorklogItem[]>(() =>
+    focusKey ? items.filter(i => itemKey(i) === focusKey) : items.filter(isPending))
   const [index, setIndex] = useState(0)
   const [decliningWorklog, setDecliningWorklog] = useState<WorklogItem | null>(null)
-  const [editingKey, setEditingKey] = useState<string | null>(null)
+  // Editing an already-decided card (focusKey on a non-pending item) starts
+  // straight in edit mode — there's no swipe queue for it to sit in front of.
+  const [editingKey, setEditingKey] = useState<string | null>(() =>
+    queue.length && !isPending(queue[0]) ? itemKey(queue[0]) : null)
+  const editOnly = queue.length > 0 && !isPending(queue[0])
+  // Save/Cancel on an editOnly card close the dialog outright — falling back
+  // to the swipe FABs (Approve/Dismiss) would be nonsensical for a card
+  // that's already been decided.
+  const finishEdit = () => editOnly ? onClose() : setEditingKey(null)
 
-  const current = index < queue.length ? queue[index] : null
+  // The queue array itself is frozen (stable order/length), but each slot's
+  // DATA must stay live — otherwise an in-place edit (rematch, title edit,
+  // summary edit) saves server-side but the card keeps showing the stale
+  // ticket/title until the overlay is closed and reopened. `items` is already
+  // patched optimistically the instant an edit is confirmed (useTimelineData's
+  // `patchItem`, the single source of truth both this dialog and the timeline
+  // board render from), so resolving against it here is enough — no local
+  // override state needed. Falls back to the snapshot for an id that's since
+  // dropped out of `items` (e.g. already reviewed elsewhere).
+  const liveById = useMemo(() => new Map(items.map(i => [itemKey(i), i])), [items])
+  const current = index < queue.length ? (liveById.get(itemKey(queue[index])) ?? queue[index]) : null
   const busy = current ? actions.busy === itemKey(current) : false
   const done = index >= queue.length
 
@@ -81,7 +112,7 @@ export function ReviewOverlay({ items, actions, onClose }: {
       <div className="w-full max-w-lg" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4 px-1">
           <p className="mt-label" style={{ color: '#fff' }}>
-            Review pending {!done && `· ${remaining} left`}
+            {editOnly ? 'Edit worklog' : `Review pending ${!done ? `· ${remaining} left` : ''}`}
           </p>
           <button onClick={onClose} aria-label="Close"
             className="inline-flex items-center justify-center rounded-full"
@@ -124,20 +155,48 @@ export function ReviewOverlay({ items, actions, onClose }: {
                 editing={editingKey === itemKey(current)}
                 onCommit={commit}
                 onEditStart={() => setEditingKey(itemKey(current))}
-                onEditCancel={() => setEditingKey(null)}
-                onEditSave={(summary) => {
-                  if (current.is_proposed) actions.saveProposedBody(current.id, summary)
-                  else actions.saveEdit(current.id, summary)
-                  setEditingKey(null)
+                onEditCancel={finishEdit}
+                onEditSave={async (summary, candidate) => {
+                  if (current.is_proposed) {
+                    await actions.saveProposedBody(current.id, summary)
+                    // Still-pending (not editOnly) with a title already set —
+                    // Save doubles as Approve, one action instead of a
+                    // separate Save-then-Approve step. editOnly (already
+                    // decided) keeps the extra checkpoint: a correction to
+                    // something already reviewed shouldn't silently re-fly
+                    // through without a human re-confirming.
+                    if (!editOnly && current.task_title?.trim()) {
+                      actions.proposedAct(current.id, 'approve')
+                      advance()
+                      return
+                    }
+                    finishEdit()
+                    return
+                  }
+                  await actions.saveEdit(current.id, summary)
+                  if (candidate && candidate.key !== current.task_key) {
+                    const result = await actions.rematch(current.id, candidate)
+                    if (!result.ok) return { ok: false, error: result.error }
+                  }
+                  if (!editOnly && summary.trim()) {
+                    actions.act(current.id, 'approve')
+                    advance()
+                    return
+                  }
+                  finishEdit()
                 }}
+                onSaveTitle={(title) => actions.saveProposedTitle(current.id, title)}
+                saveLabel={editOnly ? 'Save' : 'Save & Approve'}
               />
             )}
           </AnimatePresence>
         )}
 
-        <p className="mt-body-sm mt-4 text-center" style={{ color: '#fff', opacity: 0.7 }}>
-          Drag or use ←/→ · swipe right to approve, left to dismiss
-        </p>
+        {!editOnly && (
+          <p className="mt-body-sm mt-4 text-center" style={{ color: '#fff', opacity: 0.7 }}>
+            Drag or use ←/→ · swipe right to approve, left to dismiss
+          </p>
+        )}
       </div>
     </div>
   )

@@ -89,6 +89,38 @@ pub async fn post_worklog(
     })
 }
 
+/// Delete a previously-posted worklog entry. Used when an already-`posted`
+/// worklog is edited/re-matched (`meridian_core::worklogs::edit_worklog` /
+/// `rematch_worklog` stash the old id in `unpost_worklog_id`): the stale
+/// entry must be removed from Jira before the corrected content is reposted,
+/// so nobody sees two worklog entries for the same window. A 404 (already
+/// gone — e.g. deleted manually) is treated as success, matching the sweep's
+/// idempotent-delete expectation.
+pub async fn delete_worklog(jira: &JiraConfig, task_key: &str, worklog_id: &str) -> Result<()> {
+    let ctx = resolve(jira)
+        .await
+        .context("resolving Jira auth for worklog DELETE")?;
+    let url = ctx.api_url(&format!(
+        "/rest/api/3/issue/{task_key}/worklog/{worklog_id}"
+    ));
+
+    tracing::info!(task_key, worklog_id, "jira worklog DELETE");
+
+    let client = reqwest::Client::new();
+    let resp = ctx
+        .apply(client.delete(&url))
+        .send()
+        .await
+        .with_context(|| format!("network error reaching Jira at {url}"))?;
+
+    let status = resp.status();
+    if status.is_success() || status.as_u16() == 404 {
+        return Ok(());
+    }
+    let body = resp.text().await.unwrap_or_default();
+    bail!("Jira worklog DELETE for {task_key}/{worklog_id} returned {status}: {body}");
+}
+
 /// Convert seconds → Jira's time-spent string (`"1h 30m"`), rounding to the
 /// nearest minute. Jira rejects fractional minutes on the worklog API.
 pub fn seconds_to_jira_time(seconds: i64) -> Result<String> {

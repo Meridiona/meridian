@@ -9,9 +9,15 @@
      via html[data-theme]) drive every current-generation surface built for
      the one-pager Meridian Timeline UI (ui/components/timeline/**).
    - The OLD `--paper`/`--surface`/`--ink`/`--accent`/`--type-*` tokens
-     (amber-gold edition, driven by html.dark) are kept only so the
-     unreachable-from-nav Sessions/Week routes and the setup wizard don't
-     visually break. Do not build new surfaces against the old tokens.
+     (amber-gold edition, driven by html.dark) are still load-bearing for a
+     handful of surfaces not yet ported to the Timeline design: the setup
+     wizard (app/setup/**), HealthBanner, MustFixBanner, HygieneDialog, and
+     shared primitives in components/atoms.tsx. (The old Sessions/Week/Logs
+     routes that originally motivated keeping this palette around were
+     removed entirely — see git history — since they were unreachable from
+     any window the app opens; this token set outlived them because other
+     surfaces also depend on it.) Do not build new surfaces against the old
+     tokens — port the surface to `--t-*` instead of adding another consumer.
    ─────────────────────────────────────────────────────────────────────────── */
 
 @theme {
@@ -110,6 +116,23 @@ html.dark {
   --pop-shadow:   0 1px 1px rgba(0,0,0,.4), 0 18px 40px -10px rgba(0,0,0,.6), 0 48px 90px -18px rgba(0,0,0,.66);
 }
 
+/* ── Brand — theme-independent ────────────────────────────────────────────
+   The Meridian pill lockup is deliberately the SAME across lilac/blush/ink
+   (see Toolbar.tsx's MeridianNavPill doc comment) — one definition here,
+   consumed via inline style by every surface that renders it (the toolbar's
+   nav pill, HourBadges' generating-hour takeover icon chip) so it never
+   drifts between call sites. The mark itself is the app logo image
+   (Toolbar.tsx's MeridianMark, ui/public/meridian-logo.png), not a token. */
+:root {
+  --mer-pill-bg:       linear-gradient(135deg,#332A63,#241C49);
+  --mer-pill-border:   rgba(255,255,255,.12);
+  --mer-pill-shadow:   0 14px 32px -12px rgba(50,30,110,.5), inset 0 1px 0 rgba(255,255,255,.1);
+  /* Generating-hour takeover card accents (ring behind the icon, typing-dot
+     color) — also theme-independent per the Claude Design mock. */
+  --gen-ring: rgba(139,92,246,.35);
+  --gen-dot:  #A855F7;
+}
+
 /* ── Timeline palettes — lilac / blush / ink ─────────────────────────────────
    Selected via <html data-theme="lilac|blush|ink">, persisted as
    RuntimeSettings.theme, applied by ui/lib/theme.ts's applyTheme(). `ink` is
@@ -144,6 +167,17 @@ html.dark {
   --glow: radial-gradient(circle, rgba(139,92,246,.26), transparent 70%);
   --chip: linear-gradient(135deg,#C4B5FD,#A5B4FC);
   --is-dark: 0;
+  /* "Generating this hour's work log" takeover card — ported verbatim from
+     the Claude Design mock (Meridian Timeline.dc.html, genCardStyle et al). */
+  --gen-border:      #E6D8FB;
+  --gen-bg-1:        #F5EEFE;
+  --gen-bg-2:        #FBEEFB;
+  --gen-shadow:       0 6px 18px -12px rgba(124,58,237,.4);
+  --gen-title:       #7C3AED;
+  --gen-sub:         #9081AE;
+  --gen-badge-text:  #8B5CF6;
+  --gen-badge-bg:    #F0E7FD;
+  --gen-badge-border:#E4D4FB;
 }
 
 html[data-theme="blush"] {
@@ -173,6 +207,15 @@ html[data-theme="blush"] {
   --glow: radial-gradient(circle, rgba(124,58,237,.28), transparent 70%);
   --chip: linear-gradient(135deg,#C4B5FD,#8B7FDB);
   --is-dark: 0;
+  --gen-border:      #E6D8FB;
+  --gen-bg-1:        #F5EEFE;
+  --gen-bg-2:        #FBEEFB;
+  --gen-shadow:       0 6px 18px -12px rgba(124,58,237,.4);
+  --gen-title:       #7C3AED;
+  --gen-sub:         #9081AE;
+  --gen-badge-text:  #8B5CF6;
+  --gen-badge-bg:    #F0E7FD;
+  --gen-badge-border:#E4D4FB;
 }
 
 html[data-theme="ink"] {
@@ -202,6 +245,15 @@ html[data-theme="ink"] {
   --glow: radial-gradient(circle, rgba(139,92,246,.55), transparent 70%);
   --chip: linear-gradient(135deg,#3A3470,#0E0B1F);
   --is-dark: 1;
+  --gen-border:      rgba(168,85,247,.35);
+  --gen-bg-1:        rgba(139,92,246,.12);
+  --gen-bg-2:        rgba(192,38,211,.2);
+  --gen-shadow:       none;
+  --gen-title:       #DCCFFB;
+  --gen-sub:         #A99BD0;
+  --gen-badge-text:  #C7B8F2;
+  --gen-badge-bg:    rgba(168,85,247,.18);
+  --gen-badge-border:rgba(168,85,247,.3);
 }
 
 /* ── Base ─────────────────────────────────────────────────────────────────
@@ -288,6 +340,35 @@ body, .font-sans {
 
 @keyframes mer-pop { from { opacity: 0; transform: scale(.82); } to { opacity: 1; transform: scale(1); } }
 .mer-pop { animation: mer-pop .32s cubic-bezier(.2,.7,.2,1) both; }
+
+/* Timeline hour-row "Generating this hour's work log" takeover — ported
+   verbatim from the Claude Design mock (Meridian Timeline.dc.html):
+   genShimmer (the card's own background sweeps), genBlink (the sparkle icon
+   pulses), genDot (the 3-dot "typing" row, staggered .2s/.4s), genRing (a
+   soft ring expanding out from behind the icon). */
+@keyframes genShimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.mer-gen-shimmer { animation: genShimmer 3s linear infinite; }
+
+@keyframes genBlink {
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%      { opacity: .35; transform: scale(.82); }
+}
+.mer-gen-blink { animation: genBlink 1.6s ease-in-out infinite; }
+
+@keyframes genDot {
+  0%, 70%, 100% { opacity: .25; transform: translateY(0); }
+  35%           { opacity: 1;   transform: translateY(-3px); }
+}
+.mer-gen-dot { animation: genDot 1.2s ease-in-out infinite; }
+
+@keyframes genRing {
+  0%   { transform: scale(.7); opacity: .6; }
+  100% { transform: scale(2.1); opacity: 0; }
+}
+.mer-gen-ring { animation: genRing 1.8s ease-out infinite; }
 
 /* ── Utility ─────────────────────────────────────────────────────────────── */
 .tnum { font-variant-numeric: tabular-nums; }
@@ -567,4 +648,14 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
 .mt-card-hover.mt-card-selected {
   transform: translateY(-2px);
   box-shadow: 0 16px 32px -12px rgba(40, 30, 90, 0.32);
+}
+
+/* Plain list-row hover (candidate pickers etc) — same reasoning as
+   .mt-card-hover: a real CSS rule so it isn't fighting an inline
+   background set by JS for the "currently picking" state. */
+.mt-row-hover {
+  transition: background-color 0.12s;
+}
+.mt-row-hover:hover {
+  background: var(--t-row-hover);
 }

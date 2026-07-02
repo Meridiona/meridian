@@ -170,6 +170,31 @@ export interface HourTextResponse {
   report_chars: number | null
 }
 
+// ── Hour reports (`get_hour_reports`) ─────────────────────────────────────────
+
+export interface HourReportEntry {
+  hour: number             // local hour, 0..24
+  report: string | null    // the /activity_report markdown, or null if not yet available
+}
+
+export interface HourReportsResponse {
+  day: string
+  hours: HourReportEntry[]
+}
+
+// ── Hour status (`get_hour_status`) ───────────────────────────────────────────
+
+export interface HourStatus {
+  hour: number            // local hour, 0..24
+  generating: boolean     // this hour's worklog is being generated right now
+  paused: boolean         // tracking was paused at some point during this hour
+}
+
+export interface HourStatusResponse {
+  day: string
+  hours: HourStatus[]
+}
+
 // ── Week (`get_week`) ────────────────────────────────────────────────────────
 
 export interface DaySummary {

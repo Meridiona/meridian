@@ -14,9 +14,8 @@ import { useState } from 'react'
 import { fmtDur } from '@/components/atoms'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import type { WorklogItem } from '@/lib/api-types'
-import { EditableSummary } from './EditableSummary'
 import { ReviewRejectPicker } from './ReviewRejectPicker'
-import { stateColor, stateLabel, visualState, type RejectCorrection } from './types'
+import { isPending, stateColor, stateLabel, visualState, type RejectCorrection } from './types'
 import type { WorklogActions } from './useTimelineData'
 
 // Compact-card summary preview — just the first few words, not the full comment.
@@ -26,7 +25,7 @@ function firstWords(text: string, n = 10): string {
 }
 
 export function TimelineCard({
-  item, variant = 'compact', actions, selected = false,
+  item, variant = 'compact', actions, selected = false, onEdit,
 }: {
   item: WorklogItem
   variant?: 'compact' | 'detail'
@@ -34,6 +33,11 @@ export function TimelineCard({
   // On the timeline, the specific card the user clicked — "pops" it forward
   // (lift + accent-colored border) instead of the whole hour row highlighting.
   selected?: boolean
+  // `detail` variant only — edit this (approved/posted) card. Opens the same
+  // Review dialog drafts use, scoped to just this ticket, instead of an
+  // inline textarea here (see MeridianTimelineShell's openReview / the
+  // ReviewOverlay `focusKey`).
+  onEdit?: () => void
 }) {
   const accent = stateColor(item)
   const dimmed = visualState(item) === 'rejected'
@@ -66,7 +70,7 @@ export function TimelineCard({
         </div>
 
         {detail ? (
-          <DetailBody item={item} actions={actions} />
+          <DetailBody item={item} actions={actions} onEdit={onEdit} />
         ) : (
           item.summary && <p className="mt-body-sm truncate" style={{ color: 'var(--t-muted)' }}>{firstWords(item.summary)}</p>
         )}
@@ -75,34 +79,37 @@ export function TimelineCard({
   )
 }
 
-// The detail variant carries the summary + inline Dismiss/Edit/Approve actions
-// that the old WorklogDetailPane exposed. Proposed rows route through the
-// proposed-* mutations; real worklogs through act/reject/saveEdit.
-function DetailBody({ item, actions }: { item: WorklogItem; actions?: WorklogActions }) {
-  const [editing, setEditing] = useState(false)
+// The detail variant carries the summary + inline actions that the old
+// WorklogDetailPane exposed. Proposed rows route through the proposed-*
+// mutations; real worklogs through act/reject/saveEdit. Editing (any state —
+// drafted/approved/posted) always opens the swipeable Review dialog via
+// `onEdit` rather than an inline textarea here, so there's one edit UI
+// everywhere instead of two diverging ones. Editing an approved OR
+// already-posted worklog re-drafts it for re-approval; if it had already
+// been posted, the daemon's unpost sweep deletes the stale tracker entry
+// before the corrected content is reposted (meridian_core::worklogs::
+// edit_worklog / rematch_worklog + src/pm_worklog/post.rs's unpost_stale).
+//
+// Approve/Dismiss only make sense on a still-PENDING item — reuses the same
+// `isPending` predicate every other pending/decided check in this app goes
+// through (types.ts), rather than a locally re-derived `posted` flag: an
+// earlier version checked `state === 'posted'` only, so an APPROVED item
+// (pending is drafted-only) fell through and showed redundant "Approve"/
+// "Dismiss" buttons alongside Edit. A decided item (approved/posted/
+// skipped/dismissed) only ever shows Edit.
+function DetailBody({ item, actions, onEdit }: { item: WorklogItem; actions?: WorklogActions; onEdit?: () => void }) {
   const [rejecting, setRejecting] = useState(false)
   const busy = actions?.busy === (item.is_proposed ? `prop:${item.id}` : `wl:${item.id}`)
-  const posted = item.state === 'posted'
+  const pending = isPending(item)
   const awaitingTicket = item.is_proposed && item.state === 'approved'
-
-  const save = (s: string) => {
-    if (item.is_proposed) actions?.saveProposedBody(item.id, s)
-    else actions?.saveEdit(item.id, s)
-    setEditing(false)
-  }
 
   return (
     <div className="space-y-3">
-      {editing ? (
-        <EditableSummary label="Summary" value={item.summary}
-          placeholder="(empty — add a comment)" busy={!!busy} rows={3} onSave={save} />
-      ) : (
-        <p className="mt-body whitespace-pre-wrap" style={{ color: item.summary ? 'var(--t-title)' : 'var(--t-faint)' }}>
-          {item.summary || '(empty — nothing to post)'}
-        </p>
-      )}
+      <p className="mt-body whitespace-pre-wrap" style={{ color: item.summary ? 'var(--t-title)' : 'var(--t-faint)' }}>
+        {item.summary || '(empty — nothing to post)'}
+      </p>
 
-      {item.reasoning && !editing && (
+      {item.reasoning && (
         <div className="rounded-md p-2.5 bg-box">
           <p className="mt-label mb-1" style={{ color: 'var(--t-faint)' }}>
             {item.is_proposed ? 'Why a new ticket' : 'Why this task'}
@@ -119,28 +126,28 @@ function DetailBody({ item, actions }: { item: WorklogItem; actions?: WorklogAct
         <p className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>
           ✓ Approved — waiting for the daemon to create the ticket and post this worklog.
         </p>
-      ) : !posted && !editing && (
+      ) : (
         <div className="flex items-center gap-2.5 pt-1.5">
-          <button onClick={() => item.is_proposed ? actions?.proposedAct(item.id, 'approve') : actions?.act(item.id, 'approve')}
-            disabled={busy || (item.is_proposed ? !item.task_title?.trim() : !item.summary.trim())}
+          {pending && (
+            <button onClick={() => item.is_proposed ? actions?.proposedAct(item.id, 'approve') : actions?.act(item.id, 'approve')}
+              disabled={busy || (item.is_proposed ? !item.task_title?.trim() : !item.summary.trim())}
+              className="mt-body-sm px-3 py-1.5 rounded-md"
+              style={{ background: 'var(--color-state-approved)', color: '#fff', opacity: busy ? 0.6 : 1 }}>
+              Approve ✓
+            </button>
+          )}
+          <button onClick={onEdit} disabled={busy || !onEdit}
             className="mt-body-sm px-3 py-1.5 rounded-md"
-            style={{ background: 'var(--color-state-approved)', color: '#fff', opacity: busy ? 0.6 : 1 }}>
-            Approve ✓
-          </button>
-          <button onClick={() => setEditing(true)} disabled={busy}
-            className="mt-body-sm px-3 py-1.5 rounded-md" style={{ color: 'var(--t-muted)', border: '1px solid var(--t-hair)' }}>
+            style={{ color: 'var(--color-state-proposal)', border: '1px solid var(--color-state-proposal)' }}>
             Edit ✎
           </button>
-          <button onClick={() => item.is_proposed ? actions?.proposedAct(item.id, 'dismiss') : setRejecting(true)}
-            disabled={busy} className="mt-body-sm px-3 py-1.5 rounded-md ml-auto" style={{ color: 'var(--t-faint)' }}>
-            Dismiss ✕
-          </button>
+          {pending && (
+            <button onClick={() => item.is_proposed ? actions?.proposedAct(item.id, 'dismiss') : setRejecting(true)}
+              disabled={busy} className="mt-body-sm px-3 py-1.5 rounded-md ml-auto" style={{ color: 'var(--t-faint)' }}>
+              Dismiss ✕
+            </button>
+          )}
         </div>
-      )}
-
-      {editing && (
-        <button onClick={() => setEditing(false)} className="mt-body-sm px-3 py-1 rounded-md"
-          style={{ color: 'var(--t-muted)', border: '1px solid var(--t-hair)' }}>Cancel edit</button>
       )}
     </div>
   )

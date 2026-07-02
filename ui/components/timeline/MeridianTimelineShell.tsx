@@ -27,8 +27,10 @@ import { SettingsModal } from './SettingsModal'
 import { PlanModal } from './PlanModal'
 import { TasksModal } from './TasksModal'
 import { TaskDetailDialog } from './TaskDetailDialog'
+import { ReportModal } from './ReportModal'
+import type { SettingsSection } from './settings/types'
 
-export type ActiveModal = 'review' | 'cleanup' | 'settings' | 'plan' | 'tasks' | null
+export type ActiveModal = 'review' | 'cleanup' | 'settings' | 'plan' | 'tasks' | 'report' | null
 
 export default function MeridianTimelineShell() {
   const [day, setDay] = useState<string>(dayString(0))
@@ -39,13 +41,21 @@ export default function MeridianTimelineShell() {
   // itself gets the "popped forward" treatment instead).
   const [selectedCardKey, setSelectedCardKey] = useState<string | null>(null)
   const [activeModal, setActiveModal] = useState<ActiveModal>(null)
+  // Set when a still-drafted card was clicked directly (as opposed to the
+  // floating pill / nav, which review the whole pending queue) — scopes the
+  // Review dialog to just that one ticket instead of the full queue.
+  const [reviewFocusKey, setReviewFocusKey] = useState<string | null>(null)
+  // Which Settings tab to land on when the modal opens — set by callers that
+  // deep-link (e.g. the nav pill's "Integrations" item); undefined defaults
+  // to Settings' own DEFAULT_SETTINGS_SECTION.
+  const [settingsSection, setSettingsSection] = useState<SettingsSection | undefined>(undefined)
   // The ticket detail dialog is a separate, stackable layer (not part of
   // ActiveModal) — it can open on top of the Tasks/Plan modals or straight
   // from the timeline/Overview panel.
   const [openTask, setOpenTask] = useState<{ key: string; title?: string } | null>(null)
 
   const data = useTimelineData(day)
-  const { items, isSolo, connectedProviderName, isToday } = data
+  const { items, isSolo, connectedProviderName, connectedProviderId, isToday } = data
   const pendingCount = items.filter(isPending).length
 
   // Apply the persisted theme on mount (before any round-trip resolves elsewhere).
@@ -64,7 +74,7 @@ export default function MeridianTimelineShell() {
   useEffect(() => {
     const openTasks = () => setActiveModal('tasks')
     const openPlan = () => setActiveModal('plan')
-    const openWorklogs = () => setActiveModal('review')
+    const openWorklogs = () => { setReviewFocusKey(null); setActiveModal('review') }
     window.addEventListener('meridian:open-tasks', openTasks)
     window.addEventListener('meridian:open-plan', openPlan)
     window.addEventListener('meridian:open-worklogs', openWorklogs)
@@ -90,9 +100,23 @@ export default function MeridianTimelineShell() {
   }
 
   // Card-level selection — narrows Hour-detail to just this one card.
+  // Approved/posted/dismissed cards only; drafts route through
+  // openDraftReview instead (see TimelineColumn/HourDetailPanel).
   function selectCard(hour: number, cardKey: string) {
     setSelectedHour(hour)
     setSelectedCardKey(cardKey)
+  }
+
+  // Opens the same swipeable Review dialog the pill/nav use, scoped to just
+  // one ticket, instead of the right-side Hour-detail panel. Two callers:
+  // a still-drafted card clicked directly on the timeline (TimelineColumn —
+  // drafts never show in the right panel at all), and the right panel's own
+  // "Edit" action on an approved/posted card (RightPanel/HourDetailPanel/
+  // TimelineCard's DetailBody) — editing any state routes through this one
+  // dialog rather than a separate inline editor.
+  function openReview(cardKey: string) {
+    setReviewFocusKey(cardKey)
+    setActiveModal('review')
   }
 
   return (
@@ -109,7 +133,9 @@ export default function MeridianTimelineShell() {
         onShiftDay={shift}
         isSolo={isSolo}
         connectedProviderName={connectedProviderName}
-        onOpenSettings={() => setActiveModal('settings')}
+        connectedProviderId={connectedProviderId}
+        onOpenSettings={(section) => { setSettingsSection(section); setActiveModal('settings') }}
+        onOpenReport={() => setActiveModal('report')}
       />
 
       <div className="flex flex-1 min-h-0">
@@ -122,14 +148,17 @@ export default function MeridianTimelineShell() {
             selectedCardKey={selectedCardKey}
             onSelectHour={selectHour}
             onSelectCard={selectCard}
+            onOpenDraftReview={openReview}
             isToday={isToday}
             day={day}
             hourStatus={data.hourStatus}
             capturing={data.capturing}
+            hourReports={data.hourReports}
           />
 
           {!isSolo && (
-            <FloatingDraftsPill count={pendingCount} onClick={() => setActiveModal('review')} />
+            <FloatingDraftsPill count={pendingCount}
+              onClick={() => { setReviewFocusKey(null); setActiveModal('review') }} />
           )}
         </div>
         <div className="shrink-0 border-l min-h-0" style={{ width: 388, borderColor: 'var(--t-hair)', background: 'var(--t-panel)' }}>
@@ -140,15 +169,20 @@ export default function MeridianTimelineShell() {
             onSelectHour={selectHour}
             onOpen={setActiveModal}
             onOpenTask={(key, title) => setOpenTask({ key, title })}
+            onEditWorklog={openReview}
           />
         </div>
       </div>
 
       {activeModal === 'review' && (
-        <ReviewModal items={items} actions={data.actions} onClose={() => setActiveModal(null)} />
+        <ReviewModal items={items} actions={data.actions} focusKey={reviewFocusKey}
+          onClose={() => { setActiveModal(null); setReviewFocusKey(null) }} />
       )}
       {activeModal === 'cleanup' && <CleanupModal onClose={() => setActiveModal(null)} />}
-      {activeModal === 'settings' && <SettingsModal onClose={() => setActiveModal(null)} />}
+      {activeModal === 'settings' && (
+        <SettingsModal onClose={() => setActiveModal(null)} initialSection={settingsSection} />
+      )}
+      {activeModal === 'report' && <ReportModal onClose={() => setActiveModal(null)} />}
       {activeModal === 'plan' && <PlanModal onClose={() => setActiveModal(null)} />}
       {activeModal === 'tasks' && (
         <TasksModal onClose={() => setActiveModal(null)} onOpenTask={(key, title) => setOpenTask({ key, title })} />
