@@ -72,11 +72,18 @@ function clockOf(date) {
 
 // Seconds from now until 9:00 AM the following calendar day (the "Pause until
 // tomorrow" preset — matches the design mock's fixed morning resume time).
+// Clicked between midnight and 9am, "tomorrow 9am" is up to ~33h away —
+// beyond pause_for_duration's 24h ceiling (daemon.rs), which would otherwise
+// reject the call and silently no-op the click (only a console.error, no
+// visible feedback). Clamp to the same 86400s ceiling so the preset always
+// succeeds; the user just resumes at the 24h mark instead of exactly 9am on
+// those early-morning clicks.
 function secsUntilTomorrowMorning() {
   const target = new Date()
   target.setDate(target.getDate() + 1)
   target.setHours(9, 0, 0, 0)
-  return Math.max(60, Math.round((target.getTime() - Date.now()) / 1000))
+  const secs = Math.round((target.getTime() - Date.now()) / 1000)
+  return Math.min(86_400, Math.max(60, secs))
 }
 
 // ── Countdown rendering ───────────────────────────────────────────────────────
