@@ -98,11 +98,13 @@ pub async fn open_setup(app: tauri::AppHandle) -> Result<(), String> {
 /// one of the wizard's known keys; anything else is rejected so the frontend
 /// can't open an arbitrary URL. We always offer this button regardless of
 /// current grant state — the user may need to fix a revoked permission too.
-/// Dismisses the popover first (see [`dismiss_popover`]) — a no-op when
-/// called from the setup wizard, where the popover is already hidden.
+/// Dismisses the popover (see [`dismiss_popover`]) once `pane` is known
+/// valid — a no-op when called from the setup wizard, where the popover is
+/// already hidden. Validated before dismissing rather than after: an
+/// unknown `pane` used to dismiss the popover and then return `Err` with no
+/// System Settings pane opened, losing the popover for nothing.
 #[tauri::command]
 pub async fn open_permission_pane(app: tauri::AppHandle, pane: String) -> Result<(), String> {
-    dismiss_popover(&app);
     let url = match pane.as_str() {
         "screen_recording" => {
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
@@ -115,6 +117,7 @@ pub async fn open_permission_pane(app: tauri::AppHandle, pane: String) -> Result
         }
         other => return Err(format!("unknown permission pane: {other}")),
     };
+    dismiss_popover(&app);
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|e| e.to_string())
