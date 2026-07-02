@@ -184,10 +184,14 @@ pub(super) async fn refresh_today(pool: &SqlitePool, state: &Arc<Mutex<AppState>
 
 /// Track the drafted-worklog count and today's logged time for the popover
 /// (direct DB). "Logged" sums `time_spent_seconds` across today's
-/// approved/posted work logs — the same definition the dashboard's Overview
-/// panel uses for its "Logged" stat. The "worklog ready" notification itself
-/// is emitted by the daemon's worklog scheduler into the notification outbox
-/// and delivered via `drain_notifications` — not here.
+/// approved/posted REAL work logs — the same definition the dashboard's
+/// Overview panel uses for its "Logged" stat. `is_proposed` items (tier-3
+/// proposed tickets — `meridian_core::worklogs::get_worklogs` folds them in
+/// with a real `approved`/`posted` state before the daemon's sweep has
+/// actually created the ticket + posted a worklog) are excluded — they
+/// aren't logged work yet, just an approved intent. The "worklog ready"
+/// notification itself is emitted by the daemon's worklog scheduler into the
+/// notification outbox and delivered via `drain_notifications` — not here.
 pub(super) async fn refresh_worklogs(pool: &SqlitePool, state: &Arc<Mutex<AppState>>) {
     let today = meridian_core::date::today_string();
     match meridian_core::worklogs::get_worklogs(pool, &today).await {
@@ -196,7 +200,7 @@ pub(super) async fn refresh_worklogs(pool: &SqlitePool, state: &Arc<Mutex<AppSta
             let logged_s: u64 = w
                 .items
                 .iter()
-                .filter(|i| i.state == "approved" || i.state == "posted")
+                .filter(|i| !i.is_proposed && (i.state == "approved" || i.state == "posted"))
                 .map(|i| i.time_spent_seconds.max(0) as u64)
                 .sum();
             let Ok(mut s) = state.lock() else {

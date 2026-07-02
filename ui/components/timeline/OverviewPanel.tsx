@@ -33,7 +33,11 @@ export function OverviewPanel({ data, onOpen, onOpenTask }: {
   const focus_s = today?.focus_s ?? 0
   const appTops = today ? appTotals(today.sessions) : []
   const appCount = appTops.length
-  const loggedItems = items.filter(i => i.state === 'approved' || i.state === 'posted')
+  // Real worklogs only — is_proposed items carry an 'approved'/'posted' state
+  // once a user approves them in-app, but the daemon hasn't necessarily swept
+  // them into an actual pm_worklogs row (real ticket created + worklog posted)
+  // yet, so counting them here would inflate "Logged" for work not yet logged.
+  const loggedItems = items.filter(i => !i.is_proposed && (i.state === 'approved' || i.state === 'posted'))
   const loggedCount = loggedItems.length
   const loggedSeconds = loggedItems.reduce((a, i) => a + (i.time_spent_seconds || 0), 0)
   const activeTaskCount = tasks.filter(t => !t.is_terminal).length
