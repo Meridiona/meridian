@@ -136,7 +136,12 @@ impl ProviderAdapter for AzureDevopsAdapter {
             updated_at: field_str(raw, "System.ChangedDate"),
             completed_at: field_str(raw, "Microsoft.VSTS.Common.ClosedDate"),
             start_date: field_str(raw, "Microsoft.VSTS.Scheduling.StartDate"),
-            due_date: field_str(raw, "Microsoft.VSTS.Scheduling.DueDate"),
+            // Agile-only DueDate first; TargetDate is the cross-process
+            // equivalent the daemon's own fetch prefers (DueDate doesn't exist
+            // on Scrum/CMMI work items) — check both so neither process family
+            // silently loses its due date.
+            due_date: field_str(raw, "Microsoft.VSTS.Scheduling.DueDate")
+                .or_else(|| field_str(raw, "Microsoft.VSTS.Scheduling.TargetDate")),
             labels,
             custom_fields,
             raw_payload: raw.clone(),
@@ -322,6 +327,19 @@ mod tests {
         assert_eq!(task.due_date.as_deref(), Some("2026-07-01T00:00:00Z"));
         assert_eq!(task.completed_at, None); // no ClosedDate
         assert!(!task.is_terminal());
+    }
+
+    #[test]
+    fn due_date_falls_back_to_target_date_on_non_agile_processes() {
+        // Scrum/CMMI work items have no DueDate field at all — only TargetDate.
+        let mut raw = sample_item();
+        raw["fields"]
+            .as_object_mut()
+            .unwrap()
+            .remove("Microsoft.VSTS.Scheduling.DueDate");
+        raw["fields"]["Microsoft.VSTS.Scheduling.TargetDate"] = json!("2026-07-05T00:00:00Z");
+        let task = AzureDevopsAdapter::new("acme").to_canonical(&raw).unwrap();
+        assert_eq!(task.due_date.as_deref(), Some("2026-07-05T00:00:00Z"));
     }
 
     #[test]
