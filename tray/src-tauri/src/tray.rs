@@ -79,7 +79,13 @@ pub(crate) fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
 /// already exists, else build it against the Next `today` route. Opens
 /// maximized so the app appears in the dock; switches activation policy to
 /// Regular to support dock icon + window activation.
+///
+/// Dismisses the popover first (see [`crate::commands::system::dismiss_popover`])
+/// — this is the native tray-menu path (right-click → Open Dashboard / Review
+/// Drafts), independent of the popover's own `invoke('open_dashboard')` button,
+/// so it needs the same fix to avoid leaving the popover stuck on screen.
 fn open_native_dashboard(app: &tauri::AppHandle) {
+    crate::commands::system::dismiss_popover(app);
     if let Some(win) = app.get_webview_window("dashboard") {
         let _ = win.show();
         let _ = win.set_focus();
@@ -149,7 +155,13 @@ fn restart_from_menu() {
 /// route; the wizard drives permissions, model status, and tracker auth entirely
 /// through Tauri commands (no Node server). `pub(crate)` so `lib.rs` can call it
 /// for the first-run auto-open.
+///
+/// Dismisses the popover first (see [`crate::commands::system::dismiss_popover`])
+/// — the single implementation shared by the popover's "Setup…" button, the
+/// native tray-menu "Setup…" item, and the first-run auto-open, so every
+/// caller gets the fix without repeating the call itself.
 pub(crate) fn open_wizard_window(app: &tauri::AppHandle) {
+    crate::commands::system::dismiss_popover(app);
     if let Some(win) = app.get_webview_window("setup") {
         let _ = win.show();
         let _ = win.set_focus();

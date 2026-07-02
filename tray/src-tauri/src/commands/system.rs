@@ -82,7 +82,11 @@ pub async fn open_worklogs(app: tauri::AppHandle) -> Result<(), String> {
 /// Open (or focus) the in-app onboarding setup wizard window. Loads the Next
 /// `/setup` route; the wizard drives permissions, model status, and tracker
 /// auth entirely through Tauri commands (no Node server). Called from settings
-/// page to allow re-running setup from the dashboard.
+/// page to allow re-running setup from the dashboard, and from the popover's
+/// own "Setup…" affordance. [`crate::tray::open_wizard_window`] dismisses the
+/// popover itself — a no-op when called from the dashboard settings page,
+/// where the popover is already hidden — so every caller (this command, the
+/// native tray menu, the first-run auto-open) gets the fix for free.
 #[tracing::instrument(skip(app))]
 #[tauri::command]
 pub async fn open_setup(app: tauri::AppHandle) -> Result<(), String> {
@@ -144,8 +148,17 @@ pub fn hide_popover(app: tauri::AppHandle) {
 /// leave the popover on screen. Doing it here makes the two atomic from the
 /// caller's perspective and works for every future caller (tray menu,
 /// notification click, …) without needing to repeat the client-side wiring.
-fn dismiss_popover(app: &tauri::AppHandle) {
+///
+/// `pub(crate)` so the native tray-menu openers in [`crate::tray`] — a second,
+/// independent set of window-opening paths that never go through the `invoke`
+/// commands above — can call it too instead of leaving the popover stuck
+/// behind a window opened via a right-click menu item.
+#[tracing::instrument(skip(app))]
+pub(crate) fn dismiss_popover(app: &tauri::AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
+        if win.is_visible().unwrap_or(false) {
+            tracing::debug!("dismiss_popover: hiding popover");
+        }
         let _ = win.hide();
     }
 }
