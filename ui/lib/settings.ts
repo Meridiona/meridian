@@ -4,6 +4,8 @@ import path from 'path'
 import os from 'os'
 
 export interface RuntimeSettings {
+  // Appearance
+  theme: 'lilac' | 'blush' | 'ink'
   // Observability
   log_level: 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR'
   otlp_enabled: boolean
@@ -44,6 +46,7 @@ export interface RuntimeSettings {
 }
 
 export const SETTINGS_DEFAULTS: RuntimeSettings = {
+  theme: 'lilac',
   log_level: 'INFO',
   // OpenObserve export is opt-in: off until the user enables it in Settings.
   otlp_enabled: false,

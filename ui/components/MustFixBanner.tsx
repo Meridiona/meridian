@@ -3,13 +3,11 @@
 
 // Global must-fix banner. Some tickets are missing the fields Meridian needs to
 // track them at all (due date / description / clear title). Those can't be
-// ignored, so we surface them at the very top of every page (next to the health
-// banner) with a one-click route to the cleanup pass. Self-hides when there are
-// none, and on the cleanup page itself (you're already there).
+// ignored, so we surface them at the top of the app (next to the health
+// banner) with a one-click way to open the Cleanup modal. Self-hides when
+// there are none, or while the Cleanup modal is already open.
 
 import { useEffect, useState } from 'react'
-import Link from 'next/link'
-import { usePathname } from 'next/navigation'
 import { hasMustFix } from '@/lib/hygiene'
 import type { TasksResponse, IntegrationsResponse } from '@/lib/api-types'
 import { load as loadData } from '@/lib/bridge'
@@ -17,8 +15,12 @@ import { filterByConnectedProviders } from '@/lib/integrations'
 
 const POLL_MS = 60_000
 
-export default function MustFixBanner() {
-  const pathname = usePathname()
+export default function MustFixBanner({
+  onOpenCleanup, hidden,
+}: {
+  onOpenCleanup: () => void
+  hidden?: boolean
+}) {
   const [count, setCount] = useState(0)
 
   useEffect(() => {
@@ -41,14 +43,13 @@ export default function MustFixBanner() {
     return () => { alive = false; clearInterval(timer) }
   }, [])
 
-  // Don't nag on the cleanup page — that's where you fix them.
-  // trailingSlash: true means the path is /cleanup/ in the static export.
-  if (count === 0 || pathname.startsWith('/cleanup')) return null
+  // Don't nag while the Cleanup modal is already open — that's where you fix them.
+  if (count === 0 || hidden) return null
 
   return (
-    <Link
-      href="/cleanup"
-      className="w-full px-4 py-3 flex items-center justify-between border-b transition-colors"
+    <button
+      onClick={onOpenCleanup}
+      className="w-full px-6 py-3.5 flex items-center justify-between border-b transition-colors text-left"
       style={{ borderBottomColor: 'var(--rule)', backgroundColor: 'var(--warn)' + '14' }}
     >
       <div className="flex items-center gap-3 flex-1 min-w-0">
@@ -68,6 +69,6 @@ export default function MustFixBanner() {
       >
         Clean up →
       </span>
-    </Link>
+    </button>
   )
 }

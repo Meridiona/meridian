@@ -113,7 +113,8 @@ def main() -> None:
     paths = sorted(glob.glob(args.fixture))
     if not paths:
         sys.exit(f"error: no fixture matched {args.fixture!r}")
-    fx = json.loads(open(paths[0]).read())
+    with open(paths[0]) as f:
+        fx = json.load(f)
     base = args.base_url.rstrip("/")
     print(f"fixture: {paths[0]}")
     print(f"  tier={fx.get('tier')} candidates={len(fx.get('candidates', []))} "

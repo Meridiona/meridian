@@ -24,11 +24,15 @@ pub async fn apply(cfg: &AzureDevOpsConfig, key: &str, write: &WriteField) -> Re
         .build()
         .context("building HTTP client")?;
 
-    if let WriteField::Close | WriteField::Cancel = write {
-        let reason = if matches!(write, WriteField::Cancel) {
-            "set the work item's State to your process's cancelled state in Azure DevOps"
-        } else {
-            "set the work item's State to your process's done state in Azure DevOps"
+    if let WriteField::Close | WriteField::Cancel | WriteField::Reopen = write {
+        let reason = match write {
+            WriteField::Cancel => {
+                "set the work item's State to your process's cancelled state in Azure DevOps"
+            }
+            WriteField::Reopen => {
+                "set the work item's State back to an active state in Azure DevOps"
+            }
+            _ => "set the work item's State to your process's done state in Azure DevOps",
         };
         return Ok(ApplyResult::redirected(
             "azure_devops",
@@ -69,7 +73,9 @@ pub async fn apply(cfg: &AzureDevOpsConfig, key: &str, write: &WriteField) -> Re
             let parent = parse_task_key(parent_key)?;
             vec![add_parent_relation(cfg, &parent)]
         }
-        WriteField::Close | WriteField::Cancel => unreachable!("redirected above"),
+        WriteField::Close | WriteField::Cancel | WriteField::Reopen => {
+            unreachable!("redirected above")
+        }
     };
 
     patch_work_item(&client, cfg, &item, &ops).await?;
@@ -236,6 +242,7 @@ fn field_name(write: &WriteField) -> &'static str {
         WriteField::Description(_) => "description",
         WriteField::Close => "close",
         WriteField::Cancel => "cancel",
+        WriteField::Reopen => "reopen",
     }
 }
 
@@ -318,6 +325,7 @@ mod tests {
             ("description", WriteField::Description("d".into())),
             ("close", WriteField::Close),
             ("cancel", WriteField::Cancel),
+            ("reopen", WriteField::Reopen),
         ];
         for (expected, field) in cases {
             assert_eq!(

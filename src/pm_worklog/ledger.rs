@@ -74,6 +74,37 @@ pub async fn mark_hour_done(pool: &SqlitePool, hour_start: &str, task_count: i64
     Ok(())
 }
 
+/// Flip an hour to `generating` right before the `/worklog_hour` call fires — the
+/// live signal the timeline UI polls to show a "Generating…" badge on the hour
+/// that's about to produce its worklog. Never touches `done` rows (a stale/duplicate
+/// call must not resurrect an already-processed hour).
+pub async fn mark_hour_generating(pool: &SqlitePool, hour_start: &str) -> Result<()> {
+    sqlx::query(
+        "UPDATE pm_worklog_hours SET status = 'generating' \
+         WHERE hour_start = ? AND status != 'done'",
+    )
+    .bind(hour_start)
+    .execute(pool)
+    .await
+    .context("mark hour generating")?;
+    Ok(())
+}
+
+/// Revert a `generating` hour back to `pending` after a failed `/worklog_hour`
+/// call, so the next HH:03 catch-up retries it and the UI stops showing it as
+/// actively generating. No-op if the hour reached `done` in the meantime.
+pub async fn mark_hour_pending(pool: &SqlitePool, hour_start: &str) -> Result<()> {
+    sqlx::query(
+        "UPDATE pm_worklog_hours SET status = 'pending' \
+         WHERE hour_start = ? AND status = 'generating'",
+    )
+    .bind(hour_start)
+    .execute(pool)
+    .await
+    .context("mark hour pending")?;
+    Ok(())
+}
+
 /// True when the hour's upstream data is complete: ETL has crossed the hour
 /// boundary AND no session started in the hour is still *genuinely in-flight*.
 ///

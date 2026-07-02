@@ -30,10 +30,10 @@ export function Select({ value, onValueChange, options, placeholder }: SelectPro
           alignItems: 'center',
           gap: 0,
           borderRadius: '6px',
-          border: '1px solid var(--rule-2)',
-          background: 'var(--surface)',
+          border: '1px solid var(--t-ctrl-border)',
+          background: 'var(--t-ctrl)',
           fontSize: '13px',
-          color: 'var(--ink)',
+          color: 'var(--t-title)',
           cursor: 'pointer',
           outline: 'none',
           overflow: 'hidden',
@@ -54,7 +54,7 @@ export function Select({ value, onValueChange, options, placeholder }: SelectPro
             justifyContent: 'center',
             width: '24px',
             alignSelf: 'stretch',
-            background: 'var(--accent)',
+            background: 'var(--color-state-proposal)',
             flexShrink: 0,
           }}>
             <SelectChevrons />
@@ -67,8 +67,8 @@ export function Select({ value, onValueChange, options, placeholder }: SelectPro
           position="popper"
           sideOffset={5}
           style={{
-            background: 'var(--surface)',
-            border: '1px solid var(--rule)',
+            background: 'var(--t-ctrl)',
+            border: '1px solid var(--t-ctrl-border)',
             borderRadius: '9px',
             boxShadow: '0 8px 32px rgba(0,0,0,0.14), 0 2px 8px rgba(0,0,0,0.08)',
             overflow: 'hidden',
@@ -92,11 +92,11 @@ export function Select({ value, onValueChange, options, placeholder }: SelectPro
                   cursor: 'pointer',
                   outline: 'none',
                   userSelect: 'none',
-                  color: 'var(--ink)',
+                  color: 'var(--t-title)',
                 }}
               >
                 <RadixSelect.ItemText>{opt.label}</RadixSelect.ItemText>
-                <RadixSelect.ItemIndicator className="select-check" style={{ color: 'var(--accent)', marginLeft: '8px' }}>
+                <RadixSelect.ItemIndicator className="select-check" style={{ color: 'var(--color-state-proposal)', marginLeft: '8px' }}>
                   <Check size={12} strokeWidth={2.5} />
                 </RadixSelect.ItemIndicator>
               </RadixSelect.Item>

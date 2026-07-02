@@ -1,17 +1,34 @@
 @import "tailwindcss";
 
-/* ─── Meridian design system — amber gold edition ───────────────────────────
+/* ─── Meridian Timeline design system ────────────────────────────────────────
    Tailwind v4: all tokens live here via @theme. No tailwind.config.js.
-   Utilities generated: text-ink, bg-surface, border-rule, etc.
+   Utilities generated: text-title, bg-panel, border-hair, etc.
+
+   Two token generations coexist in this file:
+   - The NEW `--t-*`-prefixed tokens (three palettes: lilac/blush/ink, chosen
+     via html[data-theme]) drive every current-generation surface built for
+     the one-pager Meridian Timeline UI (ui/components/timeline/**).
+   - The OLD `--paper`/`--surface`/`--ink`/`--accent`/`--type-*` tokens
+     (amber-gold edition, driven by html.dark) are still load-bearing for a
+     handful of surfaces not yet ported to the Timeline design: the setup
+     wizard (app/setup/**), HealthBanner, MustFixBanner, HygieneDialog, and
+     shared primitives in components/atoms.tsx. (The old Sessions/Week/Logs
+     routes that originally motivated keeping this palette around were
+     removed entirely — see git history — since they were unreachable from
+     any window the app opens; this token set outlived them because other
+     surfaces also depend on it.) Do not build new surfaces against the old
+     tokens — port the surface to `--t-*` instead of adding another consumer.
    ─────────────────────────────────────────────────────────────────────────── */
 
 @theme {
-  /* Fonts */
-  --font-sans:  var(--font-geist-sans);
-  --font-mono:  var(--font-geist-mono);
+  /* Fonts — Plus Jakarta Sans / JetBrains Mono is the Timeline design's type
+     system. --font-serif (Georgia) is kept only for the legacy .type-* scale
+     below and the setup wizard's Instrument Serif usage. */
+  --font-sans:  var(--font-pjs);
+  --font-mono:  var(--font-jbmono);
   --font-serif: Georgia, 'Times New Roman', serif;
 
-  /* Colors → Tailwind utilities (text-*, bg-*, border-*) */
+  /* Legacy palette → Tailwind utilities (kept for Sessions/Week/setup) */
   --color-paper:       var(--paper);
   --color-surface:     var(--surface);
   --color-surface-2:   var(--surface-2);
@@ -26,6 +43,36 @@
   --color-live:        var(--live);
   --color-success:     var(--success);
   --color-warn:        var(--warn);
+
+  /* Timeline palette → Tailwind utilities (text-*, bg-*, border-*) — flat
+     colors only; gradient-valued tokens (--win-bg, --desk, --glow, --chip)
+     are consumed directly via inline style, same convention as --pop-shadow
+     below, since Tailwind color utilities require a single color value. */
+  --color-title:        var(--t-title);
+  --color-muted:        var(--t-muted);
+  --color-faint:        var(--t-faint);
+  --color-faint-2:      var(--t-faint-2);
+  --color-panel:        var(--t-panel);
+  --color-ctrl:         var(--t-ctrl);
+  --color-ctrl-border:  var(--t-ctrl-border);
+  --color-wrap:         var(--t-wrap);
+  --color-row-hover:    var(--t-row-hover);
+  --color-card:         var(--t-card);
+  --color-card-border:  var(--t-card-border);
+  --color-hair:         var(--t-hair);
+  --color-key-bg:       var(--t-key-bg);
+  --color-key-text:     var(--t-key-text);
+  --color-track:        var(--t-track);
+  --color-box:          var(--t-box);
+  --color-input:        var(--t-input);
+  --color-input-border: var(--t-input-border);
+
+  /* Fixed semantic state colors — theme-independent, layered on top of
+     whichever surface palette is active. */
+  --color-state-approved: #10B981;
+  --color-state-rejected: #C7C2D6;
+  --color-state-proposal: #8B5CF6;
+  --color-state-pending:  #F59E0B;
 }
 
 /* ── Palette — light ─────────────────────────────────────────────────────── */
@@ -69,10 +116,180 @@ html.dark {
   --pop-shadow:   0 1px 1px rgba(0,0,0,.4), 0 18px 40px -10px rgba(0,0,0,.6), 0 48px 90px -18px rgba(0,0,0,.66);
 }
 
-/* ── Base ────────────────────────────────────────────────────────────────── */
+/* ── Brand — theme-independent ────────────────────────────────────────────
+   The Meridian pill lockup is deliberately the SAME across lilac/blush/ink
+   (see Toolbar.tsx's MeridianNavPill doc comment) — one definition here,
+   consumed via inline style by every surface that renders it (the toolbar's
+   nav pill, HourBadges' generating-hour takeover icon chip) so it never
+   drifts between call sites. The mark itself is the app logo image
+   (Toolbar.tsx's MeridianMark, ui/public/meridian-logo.png), not a token. */
+:root {
+  --mer-pill-bg:       linear-gradient(135deg,#332A63,#241C49);
+  --mer-pill-border:   rgba(255,255,255,.12);
+  --mer-pill-shadow:   0 14px 32px -12px rgba(50,30,110,.5), inset 0 1px 0 rgba(255,255,255,.1);
+  /* Generating-hour takeover card accents (ring behind the icon, typing-dot
+     color) — also theme-independent per the Claude Design mock. */
+  --gen-ring: rgba(139,92,246,.35);
+  --gen-dot:  #A855F7;
+}
+
+/* ── Status banners — theme-independent semantic palette ──────────────────────
+   Single source for the info/warning/error swatches shared by NoticeBar
+   (stateful faults) and NotificationBanner (dismissible events). These identical
+   sets were previously re-declared inline in both files. Consumed via inline
+   style (JS reads them as var() strings), not Tailwind utilities. */
+:root {
+  --status-info-bg:        #eff6ff;
+  --status-info-border:    #bfdbfe;
+  --status-info-text:      #1d4ed8;
+  --status-info-dot:       #2563eb;
+  --status-warning-bg:     #fffbeb;
+  --status-warning-border: #fcd34d;
+  --status-warning-text:   #92400e;
+  --status-warning-dot:    #d97706;
+  --status-error-bg:       #fff5f5;
+  --status-error-border:   #feb2b2;
+  --status-error-text:     #c53030;
+  --status-error-dot:      #e53e3e;
+
+  /* Board-hygiene severity accents — the "must fix" / "nice to fix" dots and
+     bars shared by CleanupCard and CleanupOverlay (were duplicated in both).
+     --severity-must also doubles as the inline danger/error-text red. */
+  --severity-must: #EF4444;
+  --severity-nice: #F97316;
+}
+
+/* ── Timeline palettes — lilac / blush / ink ─────────────────────────────────
+   Selected via <html data-theme="lilac|blush|ink">, persisted as
+   RuntimeSettings.theme, applied by ui/lib/theme.ts's applyTheme(). `ink` is
+   a full dark mode. Values ported verbatim from the Claude Design mock's
+   SURF/THEMES token tables. Gradient-valued tokens (--win-bg/--desk/--glow/
+   --chip) are consumed via inline style, not Tailwind utilities.
+   ─────────────────────────────────────────────────────────────────────────── */
+:root, html[data-theme="lilac"] {
+  --win-bg:     linear-gradient(165deg,#FCFBFF 0%,#EEE9FC 48%,#DCD3F3 78%,#CFC2ED 100%);
+  --chrome-bg:  linear-gradient(180deg,#FCFBFF,#F0EAFC);
+  --toolbar-bg: linear-gradient(180deg,#F9F7FE,#F1ECFB);
+  --t-hair:       #E4DDF7;
+  --t-title:      #211D3D;
+  --t-muted:      #6E6A88;
+  --t-faint:      #948FB8;
+  --t-faint-2:    #ACA6CE;
+  --t-panel:      #FAF8FF;
+  --t-ctrl:       #FFFFFF;
+  --t-ctrl-border:#E4DEF6;
+  --t-wrap:       #EFEAFB;
+  --t-row-hover:  #F1ECFE;
+  --row-hover-ring: #DED0F8;
+  --t-card:       #FFFFFF;
+  --t-card-border:#E9E3F8;
+  --t-key-bg:     #EEE9FB;
+  --t-key-text:   #3D3860;
+  --t-track:      #EEE9FB;
+  --t-box:        #F4F0FD;
+  --t-input:      #FDFCFF;
+  --t-input-border:#E1D7FA;
+  --desk: radial-gradient(1100px 760px at 18% -12%, #ECEAFF 0%, #E7ECFC 45%, #E9EAF5 100%);
+  --glow: radial-gradient(circle, rgba(139,92,246,.26), transparent 70%);
+  --chip: linear-gradient(135deg,#C4B5FD,#A5B4FC);
+  --is-dark: 0;
+  /* "Generating this hour's work log" takeover card — ported verbatim from
+     the Claude Design mock (Meridian Timeline.dc.html, genCardStyle et al). */
+  --gen-border:      #E6D8FB;
+  --gen-bg-1:        #F5EEFE;
+  --gen-bg-2:        #FBEEFB;
+  --gen-shadow:       0 6px 18px -12px rgba(124,58,237,.4);
+  --gen-title:       #7C3AED;
+  --gen-sub:         #9081AE;
+  --gen-badge-text:  #8B5CF6;
+  --gen-badge-bg:    #F0E7FD;
+  --gen-badge-border:#E4D4FB;
+}
+
+html[data-theme="blush"] {
+  --win-bg:     linear-gradient(165deg,#F9F6FF 0%,#E7DEFA 46%,#CFBEF1 78%,#B8A2E8 100%);
+  --chrome-bg:  linear-gradient(180deg,#FAF8FF,#EDE4FB);
+  --toolbar-bg: linear-gradient(180deg,#F7F3FE,#EDE4FB);
+  --t-hair:       #DFD2F5;
+  --t-title:      #241E3D;
+  --t-muted:      #6F6890;
+  --t-faint:      #9791BC;
+  --t-faint-2:    #AEA7CE;
+  --t-panel:      #FAF8FF;
+  --t-ctrl:       #FFFFFF;
+  --t-ctrl-border:#E1D6F5;
+  --t-wrap:       #EDE5FC;
+  --t-row-hover:  #EFE8FD;
+  --row-hover-ring: #D9C9F7;
+  --t-card:       #FFFFFF;
+  --t-card-border:#E5DCF8;
+  --t-key-bg:     #ECE3FC;
+  --t-key-text:   #3D3560;
+  --t-track:      #ECE3FC;
+  --t-box:        #F2ECFD;
+  --t-input:      #FCFBFF;
+  --t-input-border:#DED1F9;
+  --desk: radial-gradient(1100px 760px at 82% -10%, #EDE7FC 0%, #E3DEFA 46%, #E6E3F6 100%);
+  --glow: radial-gradient(circle, rgba(124,58,237,.28), transparent 70%);
+  --chip: linear-gradient(135deg,#C4B5FD,#8B7FDB);
+  --is-dark: 0;
+  --gen-border:      #E6D8FB;
+  --gen-bg-1:        #F5EEFE;
+  --gen-bg-2:        #FBEEFB;
+  --gen-shadow:       0 6px 18px -12px rgba(124,58,237,.4);
+  --gen-title:       #7C3AED;
+  --gen-sub:         #9081AE;
+  --gen-badge-text:  #8B5CF6;
+  --gen-badge-bg:    #F0E7FD;
+  --gen-badge-border:#E4D4FB;
+}
+
+html[data-theme="ink"] {
+  --win-bg:     linear-gradient(165deg,#332B72 0%,#211C4A 45%,#171331 78%,#0E0C1F 100%);
+  --chrome-bg:  linear-gradient(180deg,#332B72,#221D4E);
+  --toolbar-bg: linear-gradient(180deg,#241F52,#1B1740);
+  --t-hair:       rgba(255,255,255,.09);
+  --t-title:      #F4F1FC;
+  --t-muted:      #BBB2DC;
+  --t-faint:      #9A8FC2;
+  --t-faint-2:    #84789F;
+  --t-panel:      #211C48;
+  --t-ctrl:       rgba(255,255,255,.08);
+  --t-ctrl-border:rgba(255,255,255,.14);
+  --t-wrap:       rgba(255,255,255,.07);
+  --t-row-hover:  rgba(255,255,255,.06);
+  --row-hover-ring: rgba(255,255,255,.14);
+  --t-card:       #2E2864;
+  --t-card-border:rgba(255,255,255,.1);
+  --t-key-bg:     rgba(255,255,255,.1);
+  --t-key-text:   #E9E4F8;
+  --t-track:      rgba(255,255,255,.1);
+  --t-box:        rgba(255,255,255,.055);
+  --t-input:      rgba(255,255,255,.07);
+  --t-input-border:rgba(255,255,255,.18);
+  --desk: radial-gradient(1000px 720px at 20% -8%, #2E2658 0%, #201A3E 46%, #14112A 100%);
+  --glow: radial-gradient(circle, rgba(139,92,246,.55), transparent 70%);
+  --chip: linear-gradient(135deg,#3A3470,#0E0B1F);
+  --is-dark: 1;
+  --gen-border:      rgba(168,85,247,.35);
+  --gen-bg-1:        rgba(139,92,246,.12);
+  --gen-bg-2:        rgba(192,38,211,.2);
+  --gen-shadow:       none;
+  --gen-title:       #DCCFFB;
+  --gen-sub:         #A99BD0;
+  --gen-badge-text:  #C7B8F2;
+  --gen-badge-bg:    rgba(168,85,247,.18);
+  --gen-badge-border:rgba(168,85,247,.3);
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────────
+   Uses the Timeline palette (not the legacy --paper/--ink) so there's no
+   flash of the old amber-gold surface before MeridianTimelineShell mounts
+   and repaints with --win-bg. Sessions/Week/setup set their own explicit
+   surface colors and aren't affected by this default. */
 html, body {
-  background: var(--paper);
-  color: var(--ink);
+  background: var(--win-bg);
+  color: var(--t-title);
 }
 
 * { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
@@ -84,7 +301,7 @@ body, .font-sans {
 }
 
 .font-mono {
-  font-family: GeistMono, ui-monospace, SFMono-Regular, monospace;
+  font-family: var(--font-jbmono), ui-monospace, SFMono-Regular, monospace;
   font-feature-settings: 'tnum', 'ss01';
 }
 
@@ -150,11 +367,40 @@ body, .font-sans {
 @keyframes mer-pop { from { opacity: 0; transform: scale(.82); } to { opacity: 1; transform: scale(1); } }
 .mer-pop { animation: mer-pop .32s cubic-bezier(.2,.7,.2,1) both; }
 
+/* Timeline hour-row "Generating this hour's work log" takeover — ported
+   verbatim from the Claude Design mock (Meridian Timeline.dc.html):
+   genShimmer (the card's own background sweeps), genBlink (the sparkle icon
+   pulses), genDot (the 3-dot "typing" row, staggered .2s/.4s), genRing (a
+   soft ring expanding out from behind the icon). */
+@keyframes genShimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.mer-gen-shimmer { animation: genShimmer 3s linear infinite; }
+
+@keyframes genBlink {
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%      { opacity: .35; transform: scale(.82); }
+}
+.mer-gen-blink { animation: genBlink 1.6s ease-in-out infinite; }
+
+@keyframes genDot {
+  0%, 70%, 100% { opacity: .25; transform: translateY(0); }
+  35%           { opacity: 1;   transform: translateY(-3px); }
+}
+.mer-gen-dot { animation: genDot 1.2s ease-in-out infinite; }
+
+@keyframes genRing {
+  0%   { transform: scale(.7); opacity: .6; }
+  100% { transform: scale(2.1); opacity: 0; }
+}
+.mer-gen-ring { animation: genRing 1.8s ease-out infinite; }
+
 /* ── Utility ─────────────────────────────────────────────────────────────── */
 .tnum { font-variant-numeric: tabular-nums; }
 
 .kbd {
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-family: var(--font-mono), ui-monospace, monospace;
   font-size: 10px;
   padding: 2px 5px;
   border: 1px solid var(--rule-2);
@@ -318,4 +564,124 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
 }
 .meridian-switch-thumb[data-state="checked"] {
   transform: translateX(20px);
+}
+
+/* ── Timeline type scale ──────────────────────────────────────────────────────
+   Plus Jakarta Sans, replacing the legacy Georgia .type-* scale for every
+   surface under ui/components/timeline/**. Mirrors the mock's literal `font:`
+   shorthand values: negative letter-spacing on large bold text, positive on
+   small uppercase labels. Colour is NOT included — pair with text-title /
+   text-muted / etc.
+   ─────────────────────────────────────────────────────────────────────────── */
+.mt-title {
+  font: 800 17px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+}
+
+.mt-title-lg {
+  font: 800 19px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+}
+
+/* Modal title (Review/Cleanup/Plan/Settings/Tasks headers) — STYLESHEET.md §1:
+   Jakarta 800, 17–22px, line 1.2, -.02em. Distinct from .mt-title-lg (used for
+   the swipe-card ticket title, which specs its own 1.3 line-height). */
+.mt-modal-title {
+  font: 800 20px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+/* Worklog card title — STYLESHEET.md §1: Jakarta 700, 13.5px, line 1.3, -.01em. */
+.mt-card-title {
+  font: 700 13.5px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+
+/* Toolbar date — STYLESHEET.md §1: Jakarta 700, 15px, line 1.1. */
+.mt-toolbar-date {
+  font: 700 15px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  line-height: 1.1;
+}
+
+.mt-greeting {
+  font: 800 20px/1.25 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  letter-spacing: -0.02em;
+}
+
+.mt-label {
+  font: 700 11px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.mt-stat {
+  font: 800 17px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  letter-spacing: -0.02em;
+}
+
+.mt-body {
+  font: 500 13px/1.5 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+}
+
+.mt-body-sm {
+  font: 500 12px/1.45 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+}
+
+/* Status pill (NEEDS REVIEW/DRAFT/APPROVED) — STYLESHEET.md §1: Mono, not
+   Jakarta — was previously set to Jakarta by mistake. */
+.mt-chip {
+  font: 700 9.5px var(--font-jbmono), ui-monospace, monospace;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+/* Toolbar's centered Meridian nav pill (design mock's pillBrandStyle /
+   `_pillStyle`) — solid dark lockup, so these set weight/size/tracking only;
+   color is per-item (active vs inactive) via inline style. */
+.mt-navpill-brand {
+  font: 800 13.5px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  letter-spacing: -0.01em;
+}
+.mt-navpill-item {
+  font: 700 12px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  letter-spacing: -0.005em;
+  transition: background 0.15s, color 0.15s;
+}
+
+/* Ticket key / hour label / time / duration — STYLESHEET.md §1: Mono,
+   600–700 weight, .02em tracking. Callers still set their own size via an
+   arbitrary Tailwind value (sizes vary 10.5–12px per row); this class only
+   owns family/weight/tracking, which were previously missing entirely. */
+.mt-mono-sm {
+  font-family: var(--font-jbmono), ui-monospace, monospace;
+  font-feature-settings: 'tnum';
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* Timeline card lift — STYLESHEET.md §6 "Card hover" shadow, applied both on
+   hover and on click-selection (.mt-card-selected). Must be a real CSS rule,
+   not an inline style toggled by JS — inline styles always win over :hover,
+   which would otherwise silently disable the hover lift. */
+.mt-card-hover {
+  transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+}
+.mt-card-hover:hover,
+.mt-card-hover.mt-card-selected {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 32px -12px rgba(40, 30, 90, 0.32);
+}
+
+/* Plain list-row hover (candidate pickers etc) — same reasoning as
+   .mt-card-hover: a real CSS rule so it isn't fighting an inline
+   background set by JS for the "currently picking" state. */
+.mt-row-hover {
+  transition: background-color 0.12s;
+}
+.mt-row-hover:hover {
+  background: var(--t-row-hover);
 }

@@ -1,6 +1,8 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 /* global __TAURI__ */
 'use strict'
+// Rebuilt from the Claude Design mock "Meridian Tray.dc.html"
+// (claude.ai/design/p/b8656e29-ae04-4f69-b17f-d5fab4d00f3a).
 
 const invoke = (cmd, args) => __TAURI__.core.invoke(cmd, args)
 const listen = (evt, cb) => __TAURI__.event.listen(evt, cb)
@@ -11,87 +13,44 @@ const dbg = (msg) => { try { invoke('tray_debug', { msg: String(msg) }) } catch 
 window.onerror = (m, src, line, col) => dbg(`popover onerror: ${m} @${line}:${col}`)
 window.addEventListener('unhandledrejection', (e) => dbg(`popover rejection: ${e.reason}`))
 
-// ── Reference data (mirrors the design's data.jsx, trimmed to what the tray draws) ──
-const APPS = {
-  'Antigravity':   { mono: 'Aᴳ', color: '#7C3AED' },
-  'Google Chrome': { mono: 'Ch', color: '#3B82F6' },
-  'Chrome':        { mono: 'Ch', color: '#3B82F6' },
-  'Safari':        { mono: 'Sf', color: '#1B9DF0' },
-  'Terminal':      { mono: '>_', color: '#111827' },
-  'iTerm2':        { mono: '>_', color: '#111827' },
-  'Warp':          { mono: '>_', color: '#01A4FF' },
-  'GitHub':        { mono: 'Gh', color: '#181717' },
-  'Claude':        { mono: 'Cl', color: '#D97757' },
-  'Cursor':        { mono: 'Cu', color: '#111827' },
-  'Code':          { mono: 'Co', color: '#3B82F6' },
-  'Visual Studio Code': { mono: 'Co', color: '#3B82F6' },
-  'Xcode':         { mono: 'Xc', color: '#1B7BE5' },
-  'Slack':         { mono: 'Sl', color: '#E01E5A' },
-  'Zoom':          { mono: 'Zm', color: '#2D8CFF' },
-  'Linear':        { mono: 'Li', color: '#5E6AD2' },
-  'Figma':         { mono: 'Fg', color: '#A259FF' },
-  'Notion':        { mono: 'No', color: '#111111' },
-  'Mail':          { mono: 'Ma', color: '#0EA5E9' },
-}
-
-const CAT_LABELS = {
-  coding: 'Coding',
-  code_review: 'Code review',
-  meeting: 'Meeting',
-  communication: 'Comms',
-  design: 'Design',
-  documentation: 'Docs',
-  planning: 'Planning',
-  deployment_devops: 'DevOps',
-  research: 'Research',
-  idle_personal: 'Idle',
-}
-
 // ── Elements ─────────────────────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id)
-const brandDot = $('brand-dot')
-const live = $('live')
-const liveLabelText = $('live-label-text')
-const liveMatch = $('live-match')
-const appGlyph = $('app-glyph')
-const liveCatDot = $('live-cat-dot')
-const liveCatLabel = $('live-cat-label')
-const liveTitle = $('live-title')
-const timerEl = $('timer')
-const liveSince = $('live-since')
-const pauseSec = $('pause')
-const pauseText = $('pause-text')
-const pauseSub = $('pause-sub')
-const pausePicker = $('pause-picker')
-const pauseCustom = $('pause-custom')
+const brandMark = $('brand-mark')
+const headSub = $('head-sub')
+const statusCard = $('status-card')
+const statusDot = $('status-dot')
+const statusTitle = $('status-title')
+const statusSub = $('status-sub')
+const primaryBtn = $('primary-btn')
+const pauseOptions = $('pause-options')
+const optHints = {
+  15: $('opt-15m-hint'),
+  60: $('opt-1h-hint'),
+  tomorrow: $('opt-tomorrow-hint'),
+}
 const pauseActive = $('pause-active')
 const pauseCountdown = $('pause-countdown')
-const customMins = $('custom-mins')
-const customConfirm = $('custom-confirm')
-const customCancel = $('custom-cancel')
 const resumeBtn = $('resume-btn')
-const tileFocus = $('tile-focus')
-const tileCoding = $('tile-coding')
-const tileCodingSub = $('tile-coding-sub')
-const tileReview = $('tile-review')
-const tileComms = $('tile-comms')
-const wlRule = $('wl-rule')
-const wl = $('wl')
-const wlBadge = $('wl-badge')
-const wlText = $('wl-text')
+const statLogged = $('stat-logged')
+const statFocus = $('stat-focus')
+const statDrafts = $('stat-drafts')
+const reviewCta = $('review-cta')
+const reviewCount = $('review-count')
 const upd = $('upd')
 const updText = $('upd-text')
 const updVer = $('upd-ver')
 
 // ── State for the local 1-second ticker ──────────────────────────────────────
-let elapsed = 0       // live session seconds; re-synced on every status payload
-let isTracking = false // healthy + has an active session
+let elapsed = 0        // live session seconds; re-synced on every status payload
+let isTracking = false // healthy + has an active session, not paused
+let activeAppName = ''
 let tickId = null
 
 // ── Pause state (synced from StatusPayload) ───────────────────────────────────
-let pauseUntilMs = null    // ms timestamp when timed pause ends; null = not timed-paused
-let countdownId = null     // interval handle for the live countdown
-let daemonUnhealthy = false // true when healthy=false; drives resumeBtn action
+let pauseUntilMs = null     // ms timestamp when timed pause ends; null = not timed-paused
+let countdownId = null      // interval handle for the live countdown
+let daemonUnhealthy = false // true when healthy=false; drives primaryBtn's action
+let optionsOpen = false     // pause-duration list expanded (mirrors the mock's showOptions)
 
 // ── Formatters ───────────────────────────────────────────────────────────────
 // "6h 30m" / "30m" / "0m" — zero-pads minutes only when hours are present.
@@ -103,14 +62,6 @@ function fmtTile(secs) {
   return `${h}h ${String(rm).padStart(2, '0')}m`
 }
 
-// Big timer split so seconds can render smaller: "2:05" + ":12".
-function timerParts(secs) {
-  const h = Math.floor(secs / 3600)
-  const m = Math.floor((secs % 3600) / 60)
-  const s = secs % 60
-  return { hm: `${h}:${String(m).padStart(2, '0')}`, sec: `:${String(s).padStart(2, '0')}` }
-}
-
 function clockOf(date) {
   let h = date.getHours()
   const m = date.getMinutes()
@@ -119,23 +70,20 @@ function clockOf(date) {
   return `${h}:${String(m).padStart(2, '0')} ${period}`
 }
 
-function glyphFor(app) {
-  return APPS[app] || { mono: (app || '?').slice(0, 2), color: '#6B6A67' }
-}
-
-// Several common dev apps (Terminal, Cursor, GitHub, Notion) ship near-black
-// brand colors that vanish on the dark popover. Lift very dark glyph colors so
-// the mark stays legible; light mode keeps the brand color untouched.
-function glyphColor(hex) {
-  const n = hex.replace('#', '')
-  const r = parseInt(n.slice(0, 2), 16)
-  const g = parseInt(n.slice(2, 4), 16)
-  const b = parseInt(n.slice(4, 6), 16)
-  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255
-  const dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
-  if (!dark || lum >= 0.32) return hex
-  const lift = (c) => Math.round(c + (255 - c) * 0.55)
-  return '#' + [lift(r), lift(g), lift(b)].map((x) => x.toString(16).padStart(2, '0')).join('')
+// Seconds from now until 9:00 AM the following calendar day (the "Pause until
+// tomorrow" preset — matches the design mock's fixed morning resume time).
+// Clicked between midnight and 9am, "tomorrow 9am" is up to ~33h away —
+// beyond pause_for_duration's 24h ceiling (daemon.rs), which would otherwise
+// reject the call and silently no-op the click (only a console.error, no
+// visible feedback). Clamp to the same 86400s ceiling so the preset always
+// succeeds; the user just resumes at the 24h mark instead of exactly 9am on
+// those early-morning clicks.
+function secsUntilTomorrowMorning() {
+  const target = new Date()
+  target.setDate(target.getDate() + 1)
+  target.setHours(9, 0, 0, 0)
+  const secs = Math.round((target.getTime() - Date.now()) / 1000)
+  return Math.min(86_400, Math.max(60, secs))
 }
 
 // ── Countdown rendering ───────────────────────────────────────────────────────
@@ -164,16 +112,12 @@ function stopCountdown() {
   pauseUntilMs = null
 }
 
-// ── Timer rendering ──────────────────────────────────────────────────────────
-function paintTimer() {
-  const { hm, sec } = timerParts(Math.max(0, elapsed))
-  timerEl.innerHTML = `${hm}<span class="timer-sec">${sec}</span>`
-  if (isTracking) {
-    const started = new Date(Date.now() - elapsed * 1000)
-    liveSince.textContent = `since ${clockOf(started)}`
-  } else {
-    liveSince.textContent = ''
-  }
+// ── Ticker (keeps the "X min in" subtitle fresh between polls) ───────────────
+function paintTrackingSub() {
+  if (!isTracking) return
+  statusSub.textContent = activeAppName
+    ? `This hour · ${fmtTile(elapsed)} in · ${activeAppName}`
+    : `This hour · ${fmtTile(elapsed)} in`
 }
 
 function startTicker() {
@@ -181,157 +125,111 @@ function startTicker() {
   tickId = setInterval(() => {
     if (!isTracking) return
     elapsed += 1
-    paintTimer()
+    paintTrackingSub()
   }, 1000)
+}
+
+// Refresh the "resumes at …" hints whenever the duration list is shown, since
+// they're wall-clock computed from "now".
+function paintOptionHints() {
+  optHints[15].textContent = clockOf(new Date(Date.now() + 15 * 60 * 1000))
+  optHints[60].textContent = clockOf(new Date(Date.now() + 60 * 60 * 1000))
+  const tomorrow = new Date()
+  tomorrow.setDate(tomorrow.getDate() + 1)
+  tomorrow.setHours(9, 0, 0, 0)
+  optHints.tomorrow.textContent = clockOf(tomorrow)
 }
 
 // ── Render ───────────────────────────────────────────────────────────────────
 function render(status) {
   const healthy = status.ui_reachable && status.healthy
   const hasActive = !!status.active_app
-
-  // Brand dot reflects daemon health.
-  brandDot.classList.toggle('down', !healthy)
-
-  // ── Live block state ──────────────────────────────────────────────────────
-  live.classList.remove('paused', 'idle')
-  const pauseSource = status.pause_source || null
+  const pauseSource = status.pause_source || null // null | 'timed' | 'schedule' | 'indefinite'
   const isPaused = !!pauseSource
+
+  brandMark.classList.toggle('down', !healthy)
   isTracking = healthy && hasActive && !isPaused
+  activeAppName = status.active_app || ''
+  elapsed = isTracking ? (status.active_elapsed_s || 0) : 0
+
+  headSub.textContent = !status.has_polled
+    ? 'Connecting…'
+    : !healthy
+      ? 'Offline'
+      : isPaused
+        ? 'Capture paused'
+        : 'Capturing this hour'
+
+  statusCard.classList.toggle('paused', !healthy || isPaused)
+  stopCountdown()
+  pauseActive.hidden = true
+  pauseOptions.hidden = true
+  primaryBtn.hidden = false
 
   if (!status.has_polled) {
-    // First-tick hasn't completed yet — show a neutral connecting state so the
-    // user doesn't see a misleading "PAUSED / Offline" during the 1–3 s startup
-    // window before the poll loop delivers its first real status.
-    live.classList.add('idle')
-    liveLabelText.textContent = 'CONNECTING'
-    liveMatch.textContent = ''
-    elapsed = 0
-  } else if (!healthy) {
-    // Daemon is off / unreachable — tracking is effectively paused.
-    live.classList.add('paused')
-    liveLabelText.textContent = 'PAUSED'
-    liveMatch.textContent = ''
-    elapsed = 0
-  } else if (isPaused) {
-    // In-process capture is paused (timed or schedule).
-    live.classList.add('paused')
-    liveLabelText.textContent = 'PAUSED'
-    liveMatch.textContent = ''
-    elapsed = 0
-  } else if (hasActive) {
-    liveLabelText.textContent = 'TRACKING NOW'
-    const pct = Math.round((status.active_confidence || 0) * 100)
-    liveMatch.textContent = pct > 0 ? `${pct}% match` : ''
-    elapsed = status.active_elapsed_s || 0
-  } else {
-    live.classList.add('idle')
-    liveLabelText.textContent = 'Nothing tracked right now'
-    liveMatch.textContent = ''
-    elapsed = 0
-  }
-
-  // App glyph + category + title — shown whenever we have an active app.
-  if (hasActive) {
-    const g = glyphFor(status.active_app)
-    const gc = glyphColor(g.color)
-    appGlyph.textContent = g.mono
-    appGlyph.style.background = gc + '1A'
-    appGlyph.style.color = gc
-
-    const cat = status.active_category || 'idle_personal'
-    liveCatDot.style.background = `var(--cat-${cat}, var(--ink-4))`
-    liveCatLabel.textContent = CAT_LABELS[cat] || cat
-    liveTitle.textContent = status.active_title || status.active_app
-  } else {
-    appGlyph.textContent = '··'
-    appGlyph.style.background = 'var(--surface-2)'
-    appGlyph.style.color = 'var(--ink-4)'
-    liveCatDot.style.background = 'var(--ink-4)'
-    liveCatLabel.textContent = !status.has_polled ? '' : healthy ? 'Idle' : 'Offline'
-    liveTitle.textContent = !status.has_polled
-      ? ''
-      : healthy
-        ? 'Meridian is watching — nothing to track yet.'
-        : "Meridian's gone quiet."
-  }
-  paintTimer()
-
-  // ── Pause / tracking toggle ───────────────────────────────────────────────
-  if (!healthy) {
-    // Daemon down — show a restart button so the user can recover without a terminal.
-    daemonUnhealthy = true
-    pauseSec.classList.add('paused')
-    pauseText.textContent = 'Tracking paused'
-    pauseSub.textContent = "Meridian isn't recording"
-    pausePicker.hidden = true
-    pauseCustom.hidden = true
-    pauseActive.hidden = false
-    pauseCountdown.hidden = true
-    resumeBtn.textContent = 'Restart daemon'
-    stopCountdown()
-  } else if (pauseSource === 'timed') {
-    // Timed pause active — show countdown + "Resume now".
+    statusTitle.textContent = 'Connecting…'
+    statusSub.textContent = ''
+    primaryBtn.hidden = true
     daemonUnhealthy = false
-    pauseSec.classList.add('paused')
-    pauseText.textContent = 'Tracking paused'
-    pauseSub.textContent = ''
-    pausePicker.hidden = true
-    pauseCustom.hidden = true
+  } else if (!healthy) {
+    daemonUnhealthy = true
+    statusTitle.textContent = 'Meridian is offline'
+    statusSub.textContent = "Not recording — restart the daemon"
+    primaryBtn.textContent = 'Restart daemon'
+    primaryBtn.classList.remove('open')
+  } else if (pauseSource === 'timed') {
+    daemonUnhealthy = false
+    statusTitle.textContent = 'Capture paused'
+    statusSub.textContent = ''
+    primaryBtn.hidden = true
     pauseActive.hidden = false
     pauseCountdown.hidden = false
     resumeBtn.textContent = 'Resume now'
     const untilMs = status.pause_until_ms || 0
-    if (untilMs !== pauseUntilMs) startCountdown(untilMs)
+    if (untilMs) startCountdown(untilMs)
+  } else if (pauseSource === 'indefinite') {
+    daemonUnhealthy = false
+    statusTitle.textContent = 'Capture paused'
+    statusSub.textContent = 'Paused until you resume'
+    primaryBtn.hidden = true
+    pauseActive.hidden = false
+    pauseCountdown.hidden = true
+    resumeBtn.textContent = 'Resume now'
   } else if (pauseSource === 'schedule') {
-    // Schedule pause — outside work hours; show resume time hint, no countdown.
     daemonUnhealthy = false
-    pauseSec.classList.add('paused')
-    pauseText.textContent = 'Outside work hours'
+    statusTitle.textContent = 'Outside work hours'
     const resumeAt = status.schedule_resume_at || ''
-    pauseSub.textContent = resumeAt ? `Resumes at ${resumeAt}` : 'Work hours not active'
-    pausePicker.hidden = true
-    pauseCustom.hidden = true
-    pauseActive.hidden = true
-    stopCountdown()
-  } else {
-    // Not paused — show the duration picker.
-    // Don't clobber pauseCustom if the user has it open mid-entry; a poll-tick
-    // arriving while they're typing would otherwise close it silently.
+    statusSub.textContent = resumeAt ? `Resumes at ${resumeAt}` : 'Work hours not active'
+    primaryBtn.hidden = true
+  } else if (hasActive) {
     daemonUnhealthy = false
-    pauseSec.classList.remove('paused')
-    pauseText.textContent = 'Pause tracking'
-    pauseSub.textContent = ''
-    if (pauseCustom.hidden) pausePicker.hidden = false
-    pauseActive.hidden = true
-    stopCountdown()
-  }
-
-  // ── Time tracker tiles ────────────────────────────────────────────────────
-  tileFocus.textContent = fmtTile(status.focus_s)
-  tileCoding.textContent = fmtTile(status.coding_s)
-  tileReview.textContent = fmtTile(status.review_s)
-  tileComms.textContent = fmtTile(status.comms_s)
-
-  const auto = status.autonomous_s || 0
-  if (auto >= 60) {
-    tileCodingSub.textContent = `incl. ${fmtTile(auto)} autonomous AI`
-    tileCodingSub.classList.add('accent')
+    statusTitle.textContent = 'Capturing your screen'
+    paintTrackingSub()
+    primaryBtn.textContent = optionsOpen ? 'Choose how long…' : 'Pause capture'
+    primaryBtn.classList.toggle('open', optionsOpen)
+    pauseOptions.hidden = !optionsOpen
   } else {
-    tileCodingSub.textContent = 'focused work'
-    tileCodingSub.classList.remove('accent')
+    daemonUnhealthy = false
+    statusTitle.textContent = 'Nothing tracked right now'
+    statusSub.textContent = 'Meridian is watching — nothing to track yet.'
+    primaryBtn.textContent = optionsOpen ? 'Choose how long…' : 'Pause capture'
+    primaryBtn.classList.toggle('open', optionsOpen)
+    pauseOptions.hidden = !optionsOpen
   }
+  if (optionsOpen && !pauseOptions.hidden) paintOptionHints()
 
-  // ── Worklogs awaiting (real drafts only) ──────────────────────────────────
+  // ── Today stats ────────────────────────────────────────────────────────────
+  statLogged.textContent = fmtTile(status.logged_s)
+  statFocus.textContent = fmtTile(status.focus_s)
+  statDrafts.textContent = String(status.drafts_count || 0)
+
+  // ── Review CTA (real drafts only) ─────────────────────────────────────────
   const drafts = status.drafts_count || 0
   if (drafts > 0) {
-    wl.hidden = false
-    wlRule.hidden = false
-    wlBadge.textContent = String(drafts)
-    wlText.textContent = drafts === 1 ? '1 worklog ready to approve' : 'Worklogs ready to approve'
+    reviewCta.hidden = false
+    reviewCount.textContent = String(drafts)
   } else {
-    wl.hidden = true
-    wlRule.hidden = true
+    reviewCta.hidden = true
   }
 }
 
@@ -344,47 +242,53 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') invoke('hide_popover').catch(() => {})
 })
 
-$('btn-open-head').addEventListener('click', () => invoke('open_dashboard'))
-$('btn-open').addEventListener('click', () => invoke('open_dashboard'))
-$('btn-perms-head').addEventListener('click', () =>
-  invoke('open_permission_pane', { pane: 'screen_recording' }).catch(console.error))
+// open_dashboard / open_worklogs / open_permission_pane all dismiss the
+// popover themselves server-side (see dismiss_popover in commands/system.rs)
+// — no client-side "and also hide" call needed, and no race between two
+// independent invoke()s.
+$('btn-open-head').addEventListener('click', () => invoke('open_dashboard').catch(console.error))
+$('btn-open').addEventListener('click', () => invoke('open_dashboard').catch(console.error))
 $('btn-perms').addEventListener('click', () =>
   invoke('open_permission_pane', { pane: 'screen_recording' }).catch(console.error))
 $('btn-quit').addEventListener('click', () => invoke('quit_app').catch(console.error))
-wl.addEventListener('click', () => invoke('open_worklogs'))
+reviewCta.addEventListener('click', () => invoke('open_worklogs').catch(console.error))
 
-// Duration picker buttons (5m / 15m / 30m / 1hr / ···)
-pausePicker.addEventListener('click', (e) => {
-  const btn = e.target.closest('.dur-btn')
-  if (!btn) return
-  if (btn.dataset.custom) {
-    pausePicker.hidden = true
-    pauseCustom.hidden = false
-    customMins.value = ''
-    customMins.focus()
-  } else {
-    const secs = parseInt(btn.dataset.secs, 10)
-    invoke('pause_for_duration', { seconds: secs }).catch(console.error)
+// Primary button: restart the daemon when unhealthy, otherwise toggle the
+// pause-duration list open/closed (mirrors the design's togglePauseMenu).
+primaryBtn.addEventListener('click', () => {
+  if (daemonUnhealthy) {
+    invoke('restart_daemon').catch(console.error)
+    return
   }
+  optionsOpen = !optionsOpen
+  pauseOptions.hidden = !optionsOpen
+  primaryBtn.textContent = optionsOpen ? 'Choose how long…' : 'Pause capture'
+  primaryBtn.classList.toggle('open', optionsOpen)
+  if (optionsOpen) paintOptionHints()
+  resizeToContent()
 })
 
-// Custom duration confirm / cancel
-customConfirm.addEventListener('click', () => {
-  const mins = parsePauseMins(customMins.value)
-  if (!mins) return
-  invoke('pause_for_duration', { seconds: mins * 60 }).catch(console.error)
-  pauseCustom.hidden = true
-  pausePicker.hidden = false
+$('opt-15m').addEventListener('click', () => {
+  optionsOpen = false
+  invoke('pause_for_duration', { seconds: 900 }).catch(console.error)
 })
-customCancel.addEventListener('click', () => {
-  pauseCustom.hidden = true
-  pausePicker.hidden = false
+$('opt-1h').addEventListener('click', () => {
+  optionsOpen = false
+  invoke('pause_for_duration', { seconds: 3600 }).catch(console.error)
 })
-customMins.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') customConfirm.click()
+$('opt-tomorrow').addEventListener('click', () => {
+  optionsOpen = false
+  invoke('pause_for_duration', { seconds: secsUntilTomorrowMorning() }).catch(console.error)
+})
+$('opt-indefinite').addEventListener('click', () => {
+  optionsOpen = false
+  invoke('pause_indefinitely').catch(console.error)
 })
 
-// Resume now (timed pause) or restart daemon (unhealthy)
+// Resume now (timed/indefinite pause) or restart daemon (unhealthy) — the
+// daemon-unhealthy case never shows pause-active (see render()), so this
+// button's action is always "resume" in practice; the daemonUnhealthy guard
+// is defence-in-depth only.
 resumeBtn.addEventListener('click', () => {
   if (daemonUnhealthy) {
     invoke('restart_daemon').catch(console.error)
@@ -439,16 +343,16 @@ function resizeToContent() {
   lastFitH = h
   try {
     const { LogicalSize, getCurrentWindow } = window.__TAURI__.window
-    getCurrentWindow().setSize(new LogicalSize(384, h))
+    getCurrentWindow().setSize(new LogicalSize(344, h))
       .then(() => dbg(`popover resize -> measured pop height=${h}`))
       .catch((e) => dbg(`popover setSize FAILED: ${e}`))
   } catch (e) { dbg(`popover resize threw: ${e}`) }
 }
 
-// Re-fit on ANY card height change — web-font swap (Instrument Serif / mono load
-// after first paint and change metrics), the worklog row showing/hiding, etc.
-// Without this the window keeps its first (pre-font) height and the taller card
-// overflows → clipped rounded bottom + scrollbar.
+// Re-fit on ANY card height change — web-font swap (Plus Jakarta Sans / mono
+// load after first paint and change metrics), the options list / review CTA
+// showing/hiding, etc. Without this the window keeps its first (pre-font)
+// height and the taller card overflows → clipped rounded bottom + scrollbar.
 if (window.ResizeObserver) {
   new ResizeObserver(() => resizeToContent()).observe(popEl)
 }

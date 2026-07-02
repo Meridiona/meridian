@@ -11,18 +11,19 @@ import { useEffect, useState } from 'react'
 import { subscribe } from '@/lib/bridge'
 import type { Notice } from '@/lib/api-types'
 
+// Palette lives in globals.css (--status-*), shared with NotificationBanner.
 const SEVERITY_STYLES: Record<string, { bg: string; border: string; text: string; dot: string }> = {
   error: {
-    bg: '#fff5f5',
-    border: '#feb2b2',
-    text: '#c53030',
-    dot: '#e53e3e',
+    bg: 'var(--status-error-bg)',
+    border: 'var(--status-error-border)',
+    text: 'var(--status-error-text)',
+    dot: 'var(--status-error-dot)',
   },
   warning: {
-    bg: '#fffbeb',
-    border: '#fcd34d',
-    text: '#92400e',
-    dot: '#d97706',
+    bg: 'var(--status-warning-bg)',
+    border: 'var(--status-warning-border)',
+    text: 'var(--status-warning-text)',
+    dot: 'var(--status-warning-dot)',
   },
 }
 
@@ -72,13 +73,13 @@ export default function NoticeBar() {
               </span>
               {n.remedy && (
                 <div style={{ marginTop: 2, fontSize: 11, color: s.text, opacity: 0.7 }}>
-                  Fix: <code style={{ fontFamily: 'var(--font-geist-mono)', background: 'rgba(0,0,0,0.06)', padding: '1px 4px', borderRadius: 3 }}>{n.remedy}</code>
+                  Fix: <code style={{ fontFamily: 'var(--font-mono)', background: 'rgba(0,0,0,0.06)', padding: '1px 4px', borderRadius: 3 }}>{n.remedy}</code>
                 </div>
               )}
             </div>
             {n.notice_id.startsWith('pm.') && (
-              <a
-                href="/tasks?integrations=1"
+              <button
+                onClick={() => window.dispatchEvent(new CustomEvent('meridian:open-tasks'))}
                 style={{
                   flexShrink: 0,
                   fontSize: 11,
@@ -94,7 +95,7 @@ export default function NoticeBar() {
                 }}
               >
                 Fix in Tasks →
-              </a>
+              </button>
             )}
           </div>
         )

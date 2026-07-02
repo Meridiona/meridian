@@ -47,8 +47,8 @@ export function NumberStepper({ value, onChange, min, max, step = 1 }: NumberSte
       alignItems: 'stretch',
       height: '30px',
       borderRadius: '7px',
-      border: '1px solid var(--rule-2)',
-      background: 'var(--surface)',
+      border: '1px solid var(--t-input-border)',
+      background: 'var(--t-input)',
       overflow: 'hidden',
       boxShadow: '0 1px 2px rgba(0,0,0,0.07)',
     }}>
@@ -64,7 +64,7 @@ export function NumberStepper({ value, onChange, min, max, step = 1 }: NumberSte
           justifyContent: 'center',
           width: '30px',
           border: 'none',
-          color: atMin ? 'var(--ink-4)' : 'var(--ink-2)',
+          color: atMin ? 'var(--t-faint-2)' : 'var(--t-muted)',
           flexShrink: 0,
         }}
         aria-label="Decrease"
@@ -73,7 +73,7 @@ export function NumberStepper({ value, onChange, min, max, step = 1 }: NumberSte
       </button>
 
       {/* Divider */}
-      <div style={{ width: '1px', background: 'var(--rule)', flexShrink: 0, alignSelf: 'stretch' }} />
+      <div style={{ width: '1px', background: 'var(--t-hair)', flexShrink: 0, alignSelf: 'stretch' }} />
 
       {/* Value input — local string state so partial edits aren't clamped mid-type */}
       <input
@@ -93,14 +93,14 @@ export function NumberStepper({ value, onChange, min, max, step = 1 }: NumberSte
           background: 'transparent',
           textAlign: 'center',
           fontSize: '13px',
-          color: 'var(--ink)',
+          color: 'var(--t-title)',
           outline: 'none',
           padding: '0 2px',
         }}
       />
 
       {/* Divider */}
-      <div style={{ width: '1px', background: 'var(--rule)', flexShrink: 0, alignSelf: 'stretch' }} />
+      <div style={{ width: '1px', background: 'var(--t-hair)', flexShrink: 0, alignSelf: 'stretch' }} />
 
       {/* Increment */}
       <button
@@ -114,7 +114,7 @@ export function NumberStepper({ value, onChange, min, max, step = 1 }: NumberSte
           justifyContent: 'center',
           width: '30px',
           border: 'none',
-          color: atMax ? 'var(--ink-4)' : 'var(--ink-2)',
+          color: atMax ? 'var(--t-faint-2)' : 'var(--t-muted)',
           flexShrink: 0,
         }}
         aria-label="Increase"

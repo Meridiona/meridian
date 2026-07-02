@@ -2,7 +2,7 @@
 import type { IntegrationsResponse } from './api-types'
 
 // Single source of truth for the PM tracker integrations — metadata + connect
-// method descriptors. Consumed by BOTH the dashboard (TasksView) and the
+// method descriptors. Consumed by BOTH the timeline app (TasksPanel) and the
 // first-run wizard (setup) via the shared <ConnectTrackers> component, so the
 // provider list and every connect flow live in ONE place (no more drift between
 // the wizard's old `INTEGRATIONS` and the dashboard's old `TRACKERS`).

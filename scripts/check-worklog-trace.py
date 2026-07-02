@@ -23,6 +23,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -65,12 +66,29 @@ def _search(base: str, token: str, sql: str, hours: int = 48) -> list[dict]:
             return json.loads(r.read()).get("hits", [])
     except urllib.error.HTTPError as e:
         sys.exit(f"error: OO search {e.code}: {e.read()[:400]!r}")
+    except Exception as e:
+        sys.exit(f"error: OO search failed: {e}")
 
 
 # Span field names vary slightly across OO versions; probe a few.
 _PARENT_KEYS = ["reference_parent_span_id", "parent_span_id", "reference.parent_span_id"]
 _SPAN_KEYS = ["span_id", "spanId"]
 _OP_KEYS = ["operation_name", "name"]
+
+# OTel trace ids are hex strings (128-bit, 32 chars) — this is deliberately
+# strict, not just an escape. `_search`'s query is a raw SQL string handed to
+# OO's HTTP API (no parameterized-query support there), so trace_id — which
+# can come straight from --trace-id, fully attacker/typo controlled — is
+# validated against an allowlist before ever being interpolated, rather than
+# escaped. Same reasoning applies to the auto-discovered id from OO's own
+# response: defense in depth against a compromised/misbehaving OO instance.
+_TRACE_ID_RE = re.compile(r"^[0-9a-fA-F]{1,64}$")
+
+
+def _validated_trace_id(trace_id: str) -> str:
+    if not _TRACE_ID_RE.match(trace_id):
+        sys.exit(f"error: trace_id {trace_id!r} doesn't look like a hex trace id — refusing to query")
+    return trace_id
 
 
 def _first(row: dict, keys: list[str], default: str = "") -> str:
@@ -116,6 +134,7 @@ def main() -> None:
         trace_id = _first(hits[0], ["trace_id", "traceId"])
         print(f"latest worklog.hour trace_id = {trace_id}")
 
+    trace_id = _validated_trace_id(trace_id)
     spans = _search(base, token, f"SELECT * FROM \"default\" WHERE trace_id='{trace_id}'")
     if not spans:
         sys.exit(f"error: no spans for trace_id={trace_id}")

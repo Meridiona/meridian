@@ -71,9 +71,13 @@ pub struct WorklogItem {
     /// edit/approve/dismiss commands take. `None` for ordinary worklogs.
     #[serde(default)]
     pub proposed_id: Option<i64>,
-    /// The proposed ticket's issue type (`Task` / `Bug`, migration 051) when
-    /// `is_proposed` — surfaced as a chip on the proposal card and used as the
-    /// issue type when the ticket is created. Empty for ordinary worklogs.
+    /// The ticket's issue type (`Task` / `Bug` / `Story`, etc). For a real
+    /// worklog, pulled from the joined `pm_tasks.issue_type` (empty if the task
+    /// row is missing or its type was never fetched from the tracker). For a
+    /// proposed ticket (`is_proposed`), the drafted type (migration 051) —
+    /// surfaced as a chip on the proposal card and used when the ticket is
+    /// created. The dashboard falls back to a generic label only when this is
+    /// empty, never hardcodes "Work log".
     #[serde(default)]
     pub issue_type: String,
 }
@@ -104,6 +108,7 @@ struct RawRow {
     posted_worklog_id: Option<String>,
     last_post_error: Option<String>,
     edited_at: Option<String>,
+    issue_type: String,
 }
 
 /// payload_json bullet groups → display kind (order matches the route).
@@ -151,7 +156,7 @@ pub async fn get_worklogs(pool: &SqlitePool, day: &str) -> anyhow::Result<Worklo
                COALESCE(w.provider, 'jira') AS provider, w.window_start, w.window_end,
                w.state, w.confidence, w.coverage,
                w.time_spent_seconds, w.payload_json, w.posted_worklog_id,
-               w.last_post_error, w.edited_at
+               w.last_post_error, w.edited_at, COALESCE(t.issue_type, '') AS issue_type
         FROM pm_worklogs w
         LEFT JOIN pm_tasks t ON t.task_key = w.task_key
         WHERE w.day_utc = ?
@@ -215,7 +220,7 @@ pub async fn get_worklogs(pool: &SqlitePool, day: &str) -> anyhow::Result<Worklo
             edited: r.edited_at.is_some(),
             is_proposed: false,
             proposed_id: None,
-            issue_type: String::new(),
+            issue_type: r.issue_type,
         });
     }
 
@@ -242,7 +247,8 @@ pub async fn get_worklogs(pool: &SqlitePool, day: &str) -> anyhow::Result<Worklo
     })
 }
 
-/// Raw `pm_proposed_tasks` row for the day's still-`proposed` tickets.
+/// Raw `pm_proposed_tasks` row for the day's not-yet-created proposals
+/// (`proposed` or `approved` awaiting ticket creation).
 #[derive(FromRow)]
 struct RawProposedRow {
     id: i64,
@@ -250,6 +256,7 @@ struct RawProposedRow {
     title: String,
     reasoning: String,
     issue_type: String,
+    state: String,
     confidence: f64,
     time_spent_seconds: i64,
     window_start: Option<String>,
@@ -257,9 +264,16 @@ struct RawProposedRow {
     worklog_payload_json: Option<String>,
 }
 
-/// Read `pm_proposed_tasks` (state='proposed') for `day` and push each as a
-/// `WorklogItem` with `is_proposed = true`. Degrades gracefully if the table or
-/// the migration-050 columns are absent (older DB) — returns without erroring.
+/// Read `pm_proposed_tasks` for `day` and push each not-yet-created proposal
+/// (`state IN ('proposed', 'approved')`, no real ticket minted yet) as a
+/// `WorklogItem` with `is_proposed = true`. An approved proposal stays visible
+/// here — carrying its real `approved` state — until the daemon's proposal
+/// sweep creates the ticket and inserts the real `pm_worklogs` row (at which
+/// point `created_task_key` is set and this row drops out, so it isn't shown
+/// twice); without the `approved` branch an approved-but-not-yet-swept
+/// proposal would vanish from the timeline for the length of the sweep gap.
+/// Degrades gracefully if the table or the migration-050 columns are absent
+/// (older DB) — returns without erroring.
 #[tracing::instrument(skip(pool, counts, items))]
 async fn append_proposed_items(
     pool: &SqlitePool,
@@ -269,10 +283,12 @@ async fn append_proposed_items(
 ) -> anyhow::Result<()> {
     let rows = sqlx::query_as::<_, RawProposedRow>(
         r#"
-        SELECT id, source_hour, title, reasoning, issue_type, confidence,
+        SELECT id, source_hour, title, reasoning, issue_type, state, confidence,
                time_spent_seconds, window_start, window_end, worklog_payload_json
         FROM pm_proposed_tasks
-        WHERE day_utc = ? AND state = 'proposed'
+        WHERE day_utc = ?
+          AND state IN ('proposed', 'approved')
+          AND (created_task_key IS NULL OR created_task_key = '')
         ORDER BY source_hour
         "#,
     )
@@ -293,7 +309,10 @@ async fn append_proposed_items(
     tracing::debug!(rows = rows.len(), "worklogs.read.pm_proposed_tasks");
 
     for r in rows {
-        *counts.entry("proposed".to_string()).or_insert(0) += 1;
+        // Bucket by the row's real state (proposed/approved) so an approved
+        // proposal counts alongside real approved worklogs, not under a
+        // separate always-"proposed" key.
+        *counts.entry(r.state.clone()).or_insert(0) += 1;
 
         let payload: Value = r
             .worklog_payload_json
@@ -321,7 +340,7 @@ async fn append_proposed_items(
             provider: String::new(),
             window_start,
             window_end: r.window_end,
-            state: "proposed".to_string(),
+            state: r.state,
             confidence: r.confidence,
             coverage: 0.0,
             time_spent_seconds: r.time_spent_seconds,
@@ -390,7 +409,10 @@ impl WorklogAction {
 pub enum WorklogWriteError {
     /// No `pm_worklogs` row with that id (the route's 404).
     NotFound(i64),
-    /// The worklog is already `posted` to Jira → immutable (the route's 409).
+    /// The worklog is `posted` and the action doesn't support mutating a
+    /// posted row (approve/reject/unapprove — a review decision on work
+    /// that's already logged makes no sense). Content edits (`edit_worklog`,
+    /// `rematch_worklog`) DO support posted rows — see [`unpost_clause`].
     AlreadyPosted(i64),
 }
 
@@ -398,7 +420,7 @@ impl std::fmt::Display for WorklogWriteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound(id) => write!(f, "worklog {id} not found"),
-            Self::AlreadyPosted(id) => write!(f, "worklog {id} already posted to Jira"),
+            Self::AlreadyPosted(id) => write!(f, "worklog {id} already posted to the tracker"),
         }
     }
 }
@@ -408,13 +430,45 @@ impl std::error::Error for WorklogWriteError {}
 struct StateRow {
     state: String,
     payload_json: String,
+    provider: Option<String>,
+    posted_worklog_id: Option<String>,
+}
+
+/// Pulls a row back to `drafted` for an in-place edit/rematch — from
+/// `approved`, `skipped`/`dismissed` (a rejected worklog), `failed` (a post
+/// attempt that errored — e.g. an empty comment or below the time floor), or
+/// already-`drafted` (no-op). Editing content is a statement of intent to
+/// resubmit it, so ANY non-drafted state comes back to `drafted` rather than
+/// just `approved` — a dismissed/skipped worklog used to have no way back:
+/// its Edit button (still shown for a decided item — see DetailBody) saved
+/// the text but silently left `state` at `skipped` forever, so Approve never
+/// reappeared. A `posted` row additionally needs its stale tracker entry
+/// cleaned up: this stashes `(provider, posted_worklog_id)` into
+/// `unpost_provider`/`unpost_worklog_id` and clears `posted_worklog_id`/
+/// `posted_at`, so the daemon's unpost sweep (`src/pm_worklog/post.rs`)
+/// deletes the old comment/worklog from the tracker before the corrected
+/// content is ever reposted — a human should never see two entries for the
+/// same window. Returns the resulting state plus the SQL fragment to splice
+/// into the caller's UPDATE (fields beyond the caller's own SET clause).
+fn unpost_clause(state: &str, posted_worklog_id: Option<&str>) -> (String, &'static str) {
+    if state == "posted" && posted_worklog_id.is_some() {
+        return (
+            "drafted".to_string(),
+            ", posted_worklog_id = NULL, posted_at = NULL, \
+              unpost_provider = COALESCE(?, unpost_provider), \
+              unpost_worklog_id = COALESCE(?, unpost_worklog_id)",
+        );
+    }
+    ("drafted".to_string(), "")
 }
 
 /// Edit a worklog's Jira comment (port of `worklogs/[id]` PATCH). Sets the
-/// payload `summary`, pulls an `approved` row back to `drafted` (content changed
-/// → must be re-approved), clears any post error, and records an `edit` feedback
-/// row (old → new). Returns the resulting state. Errors [`WorklogWriteError`] for
-/// a missing (404) or already-posted (409) worklog.
+/// payload `summary`, pulls an `approved` OR already-`posted` row back to
+/// `drafted` (content changed → must be re-approved and, if it was posted,
+/// re-posted after the stale entry is deleted — see [`unpost_clause`]),
+/// clears any post error, and records an `edit` feedback row (old → new).
+/// Returns the resulting state. Errors [`WorklogWriteError`] for a missing
+/// (404) worklog.
 #[tracing::instrument(skip(pool, summary))]
 pub async fn edit_worklog(
     pool: &SqlitePool,
@@ -422,44 +476,39 @@ pub async fn edit_worklog(
     summary: &str,
     now: &str,
 ) -> anyhow::Result<String> {
-    let row: Option<StateRow> =
-        sqlx::query_as::<_, StateRow>("SELECT state, payload_json FROM pm_worklogs WHERE id = ?")
-            .bind(id)
-            .fetch_optional(pool)
-            .instrument(tracing::debug_span!("worklogs.read.state"))
-            .await?;
+    let row: Option<StateRow> = sqlx::query_as::<_, StateRow>(
+        "SELECT state, payload_json, provider, posted_worklog_id FROM pm_worklogs WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .instrument(tracing::debug_span!("worklogs.read.state"))
+    .await?;
     let Some(row) = row else {
         return Err(WorklogWriteError::NotFound(id).into());
     };
-    if row.state == "posted" {
-        return Err(WorklogWriteError::AlreadyPosted(id).into());
-    }
 
     // Capture the pre-edit summary for the feedback row (parse failure → "").
     let original = serde_json::from_str::<Value>(&row.payload_json)
         .ok()
         .and_then(|p| p.get("summary").and_then(|v| v.as_str()).map(String::from))
         .unwrap_or_default();
-    // Editing an approved row pulls it back to drafted (re-approval required).
-    let next_state = if row.state == "approved" {
-        "drafted"
-    } else {
-        row.state.as_str()
-    };
+    let (next_state, extra_set) = unpost_clause(&row.state, row.posted_worklog_id.as_deref());
+    let was_posted = row.state == "posted" && row.posted_worklog_id.is_some();
 
     let mut tx = pool.begin().await?;
-    sqlx::query(
+    let sql = format!(
         "UPDATE pm_worklogs \
          SET payload_json = json_set(payload_json, '$.summary', ?), \
-             state = ?, edited_at = ?, last_post_error = NULL \
-         WHERE id = ?",
-    )
-    .bind(summary)
-    .bind(next_state)
-    .bind(now)
-    .bind(id)
-    .execute(&mut *tx)
-    .await?;
+             state = ?, edited_at = ?, last_post_error = NULL{extra_set} \
+         WHERE id = ?"
+    );
+    let mut q = sqlx::query(&sql).bind(summary).bind(&next_state).bind(now);
+    if was_posted {
+        q = q
+            .bind(row.provider.as_deref())
+            .bind(row.posted_worklog_id.as_deref());
+    }
+    q.bind(id).execute(&mut *tx).await?;
     sqlx::query(
         "INSERT INTO pm_worklog_feedback (pm_worklog_id, feedback_kind, original_text, edited_text) \
          VALUES (?, 'edit', ?, ?)",
@@ -471,8 +520,170 @@ pub async fn edit_worklog(
     .await?;
     tx.commit().await?;
 
-    tracing::info!(id, state = next_state, "worklog edited");
-    Ok(next_state.to_string())
+    tracing::info!(id, state = %next_state, was_posted, "worklog edited");
+    Ok(next_state)
+}
+
+#[derive(FromRow)]
+struct RematchRow {
+    state: String,
+    task_key: String,
+    day_utc: String,
+    cycle_index: i64,
+    provider: Option<String>,
+    posted_worklog_id: Option<String>,
+}
+
+/// The target ticket already has a worklog for this exact day/cycle — the
+/// `pm_worklogs` UNIQUE (task_key, day_utc, cycle_index) constraint means two
+/// rows can't coexist there under the same key. Rejected outright.
+///
+/// This has flip-flopped twice already (see git history) — worth recording
+/// why neither alternative worked in practice:
+///   1. Auto-MERGE the two rows (concatenate summaries, sum time, delete the
+///      source): silently and irreversibly collapsed unrelated hours'
+///      worklogs into one garbled row with no confirmation.
+///   2. Auto-SPLIT into a reserved "extra slot" `cycle_index` so both rows
+///      coexist as separate cards: looked like a duplicate-entry bug on the
+///      timeline (two cards for the same ticket in the same hour, easy to
+///      mistake for a glitch) AND, worse, caused the SAME ticket to get
+///      posted to the tracker as multiple separate real worklog entries —
+///      several during testing, confirmed live in the DB (state='posted'
+///      rows at cycle_index >= 1_000_000).
+///
+/// A hard block — surfaced inline by the picker (see TicketMatchPicker) so
+/// the reviewer sees exactly why and can pick a genuinely free ticket/hour —
+/// is the only version of this that hasn't caused real data problems.
+#[derive(Debug)]
+pub struct RematchConflict {
+    pub task_key: String,
+}
+
+impl std::fmt::Display for RematchConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} already has a worklog logged for this window — matching two worklogs to the same ticket/hour isn't supported",
+            self.task_key
+        )
+    }
+}
+impl std::error::Error for RematchConflict {}
+
+/// Outcome of [`rematch_worklog`]. `merged_into_id` is always `None` — kept
+/// on the struct (rather than reverting to a bare `String`) so the tray
+/// command / frontend contract doesn't need to change again if a future
+/// explicitly-confirmed merge/split is ever added.
+#[derive(Debug, Clone)]
+pub struct RematchOutcome {
+    pub state: String,
+    pub merged_into_id: Option<i64>,
+}
+
+/// Re-match a worklog to a different ticket (new work — not a route port; the
+/// review-drafts card's "match to a different ticket" action). Unlike
+/// `worklog_action`'s reject-time `corrected_task_key` (which logs the
+/// correction and dismisses the current draft), this ACTUALLY reassigns the
+/// worklog's `task_key` so it keeps flowing through review/approve/post
+/// against the new ticket — the reviewer picked the right ticket, they don't
+/// want to lose the drafted comment and start over.
+///
+/// Pulls an `approved`, `skipped`/`dismissed`, `failed`, OR already-`posted`
+/// row back to `drafted` (the match changed → must be re-approved and, if
+/// posted, re-posted once the stale entry is deleted — see
+/// [`unpost_clause`]), clears any post error, and records a `rematch`
+/// feedback row (`corrected_task_key` carries the new ticket — the same
+/// column reject attribution uses) so the correction is traceable. Errors
+/// [`WorklogWriteError`] for a missing (404) worklog, or [`RematchConflict`]
+/// when the target ticket already has a worklog for this exact day/cycle —
+/// see that type's doc comment for why this is a hard block.
+#[tracing::instrument(skip(pool))]
+pub async fn rematch_worklog(
+    pool: &SqlitePool,
+    id: i64,
+    new_task_key: &str,
+    now: &str,
+) -> anyhow::Result<RematchOutcome> {
+    let row: Option<RematchRow> = sqlx::query_as::<_, RematchRow>(
+        "SELECT state, task_key, day_utc, cycle_index, provider, posted_worklog_id \
+         FROM pm_worklogs WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .instrument(tracing::debug_span!("worklogs.read.state"))
+    .await?;
+    let Some(row) = row else {
+        return Err(WorklogWriteError::NotFound(id).into());
+    };
+    if new_task_key == row.task_key {
+        // No-op re-match to the same ticket — nothing to record.
+        return Ok(RematchOutcome {
+            state: row.state,
+            merged_into_id: None,
+        });
+    }
+
+    let conflict: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM pm_worklogs \
+         WHERE task_key = ? AND day_utc = ? AND cycle_index = ? AND id != ?",
+    )
+    .bind(new_task_key)
+    .bind(&row.day_utc)
+    .bind(row.cycle_index)
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    if conflict.is_some() {
+        return Err(RematchConflict {
+            task_key: new_task_key.to_string(),
+        }
+        .into());
+    }
+
+    let (next_state, extra_set) = unpost_clause(&row.state, row.posted_worklog_id.as_deref());
+    let was_posted = row.state == "posted" && row.posted_worklog_id.is_some();
+
+    let mut tx = pool.begin().await?;
+    let sql = format!(
+        "UPDATE pm_worklogs \
+         SET task_key = ?, state = ?, edited_at = ?, last_post_error = NULL{extra_set} \
+         WHERE id = ?"
+    );
+    let mut q = sqlx::query(&sql)
+        .bind(new_task_key)
+        .bind(&next_state)
+        .bind(now);
+    if was_posted {
+        q = q
+            .bind(row.provider.as_deref())
+            .bind(row.posted_worklog_id.as_deref());
+    }
+    q.bind(id).execute(&mut *tx).await?;
+    sqlx::query(
+        "INSERT INTO pm_worklog_feedback \
+            (pm_worklog_id, feedback_kind, original_text, edited_text, corrected_task_key) \
+         VALUES (?, 'rematch', ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(&row.task_key)
+    .bind(new_task_key)
+    .bind(new_task_key)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    tracing::info!(
+        id,
+        from_task_key = %row.task_key,
+        to_task_key = new_task_key,
+        state = %next_state,
+        was_posted,
+        "worklog rematched"
+    );
+    Ok(RematchOutcome {
+        state: next_state,
+        merged_into_id: None,
+    })
 }
 
 /// Transition a worklog's review state (port of `worklogs/[id]` POST). Applies
@@ -570,10 +781,19 @@ mod write_tests {
             .unwrap();
         for ddl in [
             "CREATE TABLE pm_worklogs (id INTEGER PRIMARY KEY, state TEXT, payload_json TEXT, \
-                approved_at TEXT, edited_at TEXT, last_post_error TEXT)",
+                approved_at TEXT, edited_at TEXT, last_post_error TEXT, \
+                task_key TEXT NOT NULL DEFAULT '', day_utc TEXT NOT NULL DEFAULT '', \
+                cycle_index INTEGER NOT NULL DEFAULT 0, provider TEXT, \
+                posted_worklog_id TEXT, posted_at TEXT, \
+                unpost_provider TEXT, unpost_worklog_id TEXT, \
+                time_spent_seconds INTEGER NOT NULL DEFAULT 0, \
+                session_id_min INTEGER, session_id_max INTEGER)",
             "CREATE TABLE pm_worklog_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, \
                 pm_worklog_id INTEGER, feedback_kind TEXT, original_text TEXT, edited_text TEXT, \
                 note TEXT, corrected_task_key TEXT, corrected_to_untracked INTEGER)",
+            "CREATE TABLE pm_worklog_evidence (pm_worklog_id INTEGER, bullet_kind TEXT, \
+                bullet_index INTEGER, session_id INTEGER, excerpt TEXT, \
+                PRIMARY KEY (pm_worklog_id, bullet_kind, bullet_index, session_id))",
         ] {
             sqlx::query(ddl).execute(&pool).await.unwrap();
         }
@@ -588,6 +808,59 @@ mod write_tests {
             .execute(pool)
             .await
             .unwrap();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn seed_matched(
+        pool: &SqlitePool,
+        id: i64,
+        state: &str,
+        task_key: &str,
+        day_utc: &str,
+        cycle_index: i64,
+    ) {
+        sqlx::query(
+            "INSERT INTO pm_worklogs (id, state, payload_json, task_key, day_utc, cycle_index) \
+             VALUES (?, ?, '{}', ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(state)
+        .bind(task_key)
+        .bind(day_utc)
+        .bind(cycle_index)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// A `posted` row carrying the tracker entry it was posted as — the shape
+    /// `edit_worklog`/`rematch_worklog` need to exercise the unpost path.
+    #[allow(clippy::too_many_arguments)]
+    async fn seed_posted(
+        pool: &SqlitePool,
+        id: i64,
+        task_key: &str,
+        day_utc: &str,
+        cycle_index: i64,
+        provider: &str,
+        posted_worklog_id: &str,
+        summary: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO pm_worklogs \
+                (id, state, payload_json, task_key, day_utc, cycle_index, provider, posted_worklog_id, posted_at) \
+             VALUES (?, 'posted', ?, ?, ?, ?, ?, ?, '2026-06-18T09:00:00Z')",
+        )
+        .bind(id)
+        .bind(format!(r#"{{"summary":"{summary}"}}"#))
+        .bind(task_key)
+        .bind(day_utc)
+        .bind(cycle_index)
+        .bind(provider)
+        .bind(posted_worklog_id)
+        .execute(pool)
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -621,13 +894,32 @@ mod write_tests {
     }
 
     #[tokio::test]
-    async fn posted_worklog_is_immutable() {
+    async fn edit_revives_a_dismissed_worklog_to_drafted() {
+        // A skipped/dismissed worklog's Edit button (still shown for a
+        // decided item — see TimelineCard's DetailBody) used to save the
+        // text but leave `state` at `skipped` forever, so Approve never came
+        // back. Editing is a statement of intent to resubmit it.
+        let pool = pool_with_worklogs().await;
+        seed(&pool, 1, "skipped", "wrong call, actually relevant").await;
+
+        let next = edit_worklog(&pool, 1, "corrected summary", "2026-06-18T10:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(next, "drafted", "editing a dismissed row revives it");
+
+        let state: String = sqlx::query_scalar("SELECT state FROM pm_worklogs WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(state, "drafted");
+    }
+
+    #[tokio::test]
+    async fn posted_worklog_is_immutable_to_review_actions() {
+        // approve/reject/unapprove still refuse a posted row — only content
+        // edits (edit_worklog/rematch_worklog) may touch one.
         let pool = pool_with_worklogs().await;
         seed(&pool, 1, "posted", "shipped").await;
-        let e = edit_worklog(&pool, 1, "x", "2026-06-18T10:00:00Z")
-            .await
-            .unwrap_err();
-        assert!(e.to_string().contains("already posted"));
         let e = worklog_action(
             &pool,
             1,
@@ -654,6 +946,54 @@ mod write_tests {
     }
 
     #[tokio::test]
+    async fn edit_posted_worklog_redrafts_and_stashes_unpost() {
+        let pool = pool_with_worklogs().await;
+        seed_posted(
+            &pool,
+            1,
+            "PROJ-1",
+            "2026-06-18",
+            0,
+            "jira",
+            "10042",
+            "shipped",
+        )
+        .await;
+
+        let next = edit_worklog(&pool, 1, "corrected text", "2026-06-18T10:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(next, "drafted", "editing a posted row re-drafts it");
+
+        let row: (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT state, posted_worklog_id, posted_at, unpost_provider, unpost_worklog_id \
+             FROM pm_worklogs WHERE id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let (state, posted_worklog_id, posted_at, unpost_provider, unpost_worklog_id) = row;
+        assert_eq!(state, "drafted");
+        assert_eq!(
+            posted_worklog_id, None,
+            "cleared so the sweep won't treat it as still posted"
+        );
+        assert_eq!(posted_at, None);
+        assert_eq!(
+            unpost_provider.as_deref(),
+            Some("jira"),
+            "stashed for the unpost sweep"
+        );
+        assert_eq!(unpost_worklog_id.as_deref(), Some("10042"));
+    }
+
+    #[tokio::test]
     async fn reject_records_correction_attribution() {
         let pool = pool_with_worklogs().await;
         seed(&pool, 1, "drafted", "draft").await;
@@ -677,5 +1017,187 @@ mod write_tests {
         assert_eq!(kind, "reject");
         assert_eq!(note, "drafted→skipped");
         assert_eq!(corrected.as_deref(), Some("PROJ-9"));
+    }
+
+    #[tokio::test]
+    async fn rematch_reassigns_task_key_and_logs_feedback() {
+        let pool = pool_with_worklogs().await;
+        seed_matched(&pool, 1, "drafted", "PROJ-1", "2026-06-18", 0).await;
+
+        let outcome = rematch_worklog(&pool, 1, "PROJ-2", "2026-06-18T10:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(outcome.state, "drafted");
+        assert_eq!(outcome.merged_into_id, None);
+
+        let task_key: String = sqlx::query_scalar("SELECT task_key FROM pm_worklogs WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(task_key, "PROJ-2");
+
+        let (kind, orig, edited, corrected): (String, String, String, Option<String>) =
+            sqlx::query_as(
+                "SELECT feedback_kind, original_text, edited_text, corrected_task_key \
+             FROM pm_worklog_feedback WHERE pm_worklog_id = 1",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(kind, "rematch");
+        assert_eq!(orig, "PROJ-1");
+        assert_eq!(edited, "PROJ-2");
+        assert_eq!(corrected.as_deref(), Some("PROJ-2"));
+    }
+
+    #[tokio::test]
+    async fn rematch_pulls_approved_back_to_drafted() {
+        let pool = pool_with_worklogs().await;
+        seed_matched(&pool, 1, "approved", "PROJ-1", "2026-06-18", 0).await;
+
+        let outcome = rematch_worklog(&pool, 1, "PROJ-2", "2026-06-18T10:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome.state, "drafted",
+            "the match changed → must be re-approved"
+        );
+    }
+
+    #[tokio::test]
+    async fn rematch_same_ticket_is_a_no_op() {
+        let pool = pool_with_worklogs().await;
+        seed_matched(&pool, 1, "drafted", "PROJ-1", "2026-06-18", 0).await;
+
+        rematch_worklog(&pool, 1, "PROJ-1", "2026-06-18T10:00:00Z")
+            .await
+            .unwrap();
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pm_worklog_feedback")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "no feedback row for a no-op rematch");
+    }
+
+    #[tokio::test]
+    async fn rematch_conflicts_with_existing_worklog_on_target_ticket() {
+        let pool = pool_with_worklogs().await;
+        seed_matched(&pool, 1, "drafted", "PROJ-1", "2026-06-18", 0).await;
+        seed_matched(&pool, 2, "drafted", "PROJ-2", "2026-06-18", 0).await;
+
+        let e = rematch_worklog(&pool, 1, "PROJ-2", "2026-06-18T10:00:00Z")
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("PROJ-2"));
+
+        // Neither row was mutated or deleted on conflict.
+        let task_key: String = sqlx::query_scalar("SELECT task_key FROM pm_worklogs WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(task_key, "PROJ-1");
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pm_worklogs")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, 2, "no row deleted on conflict");
+    }
+
+    #[tokio::test]
+    async fn rematch_conflicts_when_target_already_posted() {
+        let pool = pool_with_worklogs().await;
+        seed_matched(&pool, 1, "drafted", "PROJ-1", "2026-06-18", 0).await;
+        seed_posted(
+            &pool,
+            2,
+            "PROJ-2",
+            "2026-06-18",
+            0,
+            "jira",
+            "9001",
+            "already logged",
+        )
+        .await;
+
+        let e = rematch_worklog(&pool, 1, "PROJ-2", "2026-06-18T10:00:00Z")
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("PROJ-2"));
+
+        // Nothing was mutated on conflict.
+        let task_key: String = sqlx::query_scalar("SELECT task_key FROM pm_worklogs WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(task_key, "PROJ-1");
+    }
+
+    #[tokio::test]
+    async fn rematch_revives_a_dismissed_worklog_to_drafted() {
+        // A skipped/dismissed worklog used to have no way back — editing or
+        // re-matching it left `state` at `skipped` forever, so Approve never
+        // reappeared. Any content change is a statement of intent to
+        // resubmit, so it comes back to `drafted`.
+        let pool = pool_with_worklogs().await;
+        seed_matched(&pool, 1, "skipped", "PROJ-1", "2026-06-18", 0).await;
+
+        let outcome = rematch_worklog(&pool, 1, "PROJ-2", "2026-06-18T10:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(outcome.state, "drafted");
+
+        let (task_key, state): (String, String) =
+            sqlx::query_as("SELECT task_key, state FROM pm_worklogs WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(task_key, "PROJ-2");
+        assert_eq!(state, "drafted");
+    }
+
+    #[tokio::test]
+    async fn rematch_posted_worklog_redrafts_and_stashes_unpost() {
+        let pool = pool_with_worklogs().await;
+        seed_posted(
+            &pool,
+            1,
+            "PROJ-1",
+            "2026-06-18",
+            0,
+            "linear",
+            "cmt_77",
+            "shipped",
+        )
+        .await;
+
+        let outcome = rematch_worklog(&pool, 1, "PROJ-2", "2026-06-18T10:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome.state, "drafted",
+            "rematching a posted row re-drafts it"
+        );
+        assert_eq!(outcome.merged_into_id, None);
+
+        let row: (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT task_key, state, posted_worklog_id, unpost_provider, unpost_worklog_id \
+             FROM pm_worklogs WHERE id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let (task_key, state, posted_worklog_id, unpost_provider, unpost_worklog_id) = row;
+        assert_eq!(task_key, "PROJ-2");
+        assert_eq!(state, "drafted");
+        assert_eq!(posted_worklog_id, None);
+        assert_eq!(unpost_provider.as_deref(), Some("linear"));
+        assert_eq!(unpost_worklog_id.as_deref(), Some("cmt_77"));
     }
 }

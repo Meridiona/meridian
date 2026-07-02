@@ -641,6 +641,15 @@ fn start_oauth_in_process(provider: String) -> Result<StartOAuthResponse, String
     // Resolve credentials from .env WITHOUT mutating process env.
     let mode = crate::install::detect_install_mode();
     let dot_env = mode.env_path().map(parse_env).unwrap_or_default();
+    // The actual file the credential errors below should point at — this is
+    // `~/.meridian/.env` for a canonical/packaged install, but the repo-root
+    // `.env` in dev mode (`InstallMode::Dev`), and there may be no file at all
+    // yet. Hardcoding "~/.meridian/.env" in the error text was misleading for
+    // every dev-mode run, where it's silently the wrong path.
+    let env_path_desc = match mode.env_path() {
+        Some(p) => p.display().to_string(),
+        None => "~/.meridian/.env (none found yet — create it)".to_string(),
+    };
     let jira_secret = dot_env
         .get("JIRA_OAUTH_CLIENT_SECRET")
         .cloned()
@@ -665,20 +674,18 @@ fn start_oauth_in_process(provider: String) -> Result<StartOAuthResponse, String
     // Validate credentials before spawning — surface "not configured" immediately
     // rather than letting the user wait for a browser callback that never works.
     if provider == "jira" && jira_secret.trim().is_empty() {
-        return Err(
+        return Err(format!(
             "Jira OAuth requires a client secret baked in at build time \
              (MERIDIAN_JIRA_OAUTH_CLIENT_SECRET). Source builds must set \
-             JIRA_OAUTH_CLIENT_SECRET in ~/.meridian/.env, or use the API-token path instead."
-                .to_string(),
-        );
+             JIRA_OAUTH_CLIENT_SECRET in {env_path_desc}, or use the API-token path instead."
+        ));
     }
     if provider == "trello" && trello_key.trim().is_empty() {
-        return Err(
+        return Err(format!(
             "Trello OAuth requires a Power-Up app key. Set TRELLO_APP_KEY in \
-             ~/.meridian/.env. Register a Power-Up at https://trello.com/power-ups/admin \
+             {env_path_desc}. Register a Power-Up at https://trello.com/power-ups/admin \
              and add http://127.0.0.1:9123/ as an allowed origin."
-                .to_string(),
-        );
+        ));
     }
 
     // Claim the per-provider in-flight slot. A second start_oauth call while
