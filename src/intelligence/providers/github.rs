@@ -4,6 +4,8 @@
 // configured GitHub Projects v2 (GraphQL API). task_key is `owner/repo#number`.
 
 use anyhow::{Context, Result};
+use meridian_core::adapters::github::GithubAdapter;
+use meridian_core::adapters::ProviderAdapter;
 use serde::Deserialize;
 use serde_json::json;
 use sqlx::SqlitePool;
@@ -189,6 +191,11 @@ async fn fetch_viewer_login(github: &GitHubConfig) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("GraphQL viewer response missing data"))
 }
 
+// The Issue selection carries the extra fields the canonical adapter (CDM
+// Stage 3b) needs beyond the typed IssueContent view: the global node `id`
+// (stable key), createdAt/closedAt/stateReason (category + completed_at),
+// issueType, author (reporter), parent (sub-issue hierarchy), and per-assignee
+// ids/names. `project { id }` on the item feeds project_ids.
 const PROJECT_ITEMS_QUERY: &str = "query($id: ID!, $cursor: String) {
   node(id: $id) {
     ... on ProjectV2 {
@@ -196,6 +203,7 @@ const PROJECT_ITEMS_QUERY: &str = "query($id: ID!, $cursor: String) {
         pageInfo { hasNextPage endCursor }
         nodes {
           type
+          project { id }
           fieldValues(first: 8) {
             nodes {
               ... on ProjectV2ItemFieldSingleSelectValue {
@@ -206,9 +214,13 @@ const PROJECT_ITEMS_QUERY: &str = "query($id: ID!, $cursor: String) {
           }
           content {
             ... on Issue {
-              number title body state url updatedAt
+              id number title body state stateReason url
+              createdAt updatedAt closedAt
               repository { nameWithOwner }
-              assignees(first: 10) { nodes { login } }
+              issueType { name }
+              author { login ... on User { id name } }
+              parent { id }
+              assignees(first: 10) { nodes { id login name } }
               labels(first: 10) { nodes { name } }
             }
           }
@@ -224,7 +236,7 @@ async fn fetch_project_items(
     github: &GitHubConfig,
     project_id: &str,
     viewer_login: &str,
-) -> Result<Vec<GhTask>> {
+) -> Result<Vec<(GhTask, serde_json::Value)>> {
     let mut tasks = Vec::new();
     let mut cursor: Option<String> = None;
 
@@ -244,8 +256,18 @@ async fn fetch_project_items(
             anyhow::bail!("GitHub GraphQL → {}: {}", status, text);
         }
 
-        let parsed: GqlResponse<ProjectData> =
+        // Parse once as a Value so each raw item node survives verbatim for
+        // the canonical adapter (CDM Stage 3b), then deserialise the typed
+        // view from the same body. Node order is identical, so we zip them.
+        let body_val: serde_json::Value =
             serde_json::from_str(&text).context("deserialising project items")?;
+        let raw_nodes: Vec<serde_json::Value> = body_val
+            .pointer("/data/node/items/nodes")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let parsed: GqlResponse<ProjectData> =
+            serde_json::from_value(body_val).context("parsing project items")?;
 
         let project = match parsed.data.and_then(|d| d.node) {
             Some(p) => p,
@@ -255,7 +277,9 @@ async fn fetch_project_items(
             }
         };
 
-        for item in project.items.nodes.iter().flatten() {
+        for (item, raw) in project.items.nodes.iter().zip(raw_nodes.iter()) {
+            // A literal null node (redacted/inaccessible item) is skipped.
+            let Some(item) = item else { continue };
             if item.item_type.as_deref() != Some("ISSUE") {
                 continue;
             }
@@ -298,18 +322,21 @@ async fn fetch_project_items(
             } else {
                 Some(label_names.join(", "))
             };
-            tasks.push(GhTask {
-                task_key: format!("{}#{}", content.repository.name_with_owner, content.number),
-                repo_slug: content.repository.name_with_owner.clone(),
-                title: content.title.clone(),
-                body: content.body.clone().unwrap_or_default(),
-                status_raw: resolved.raw,
-                is_terminal: resolved.is_terminal,
-                url: content.url.clone(),
-                updated_at: content.updated_at.clone(),
-                assignee: viewer_login.to_string(),
-                tags,
-            });
+            tasks.push((
+                GhTask {
+                    task_key: format!("{}#{}", content.repository.name_with_owner, content.number),
+                    repo_slug: content.repository.name_with_owner.clone(),
+                    title: content.title.clone(),
+                    body: content.body.clone().unwrap_or_default(),
+                    status_raw: resolved.raw,
+                    is_terminal: resolved.is_terminal,
+                    url: content.url.clone(),
+                    updated_at: content.updated_at.clone(),
+                    assignee: viewer_login.to_string(),
+                    tags,
+                },
+                raw.clone(),
+            ));
         }
 
         if !project.items.page_info.has_next_page {
@@ -325,14 +352,55 @@ async fn fetch_project_items(
 // Upsert
 // ---------------------------------------------------------------------------
 
-async fn upsert(pool: &SqlitePool, tasks: &[GhTask]) -> Result<()> {
-    for t in tasks {
+/// The CDM columns (migration 056) derived from a raw Projects v2 item via the
+/// shared [`GithubAdapter`]. All `Option` so a structurally-unusable payload
+/// simply leaves the column NULL — never blocks the existing upsert. The
+/// mapping itself lives in `meridian_core` and is tested there.
+#[derive(Default)]
+struct CdmColumns {
+    canonical_id: Option<String>,
+    status_category: Option<String>,
+    raw_payload: Option<String>,
+    reporter_name: Option<String>,
+    completed_at: Option<String>,
+    ancestor_path: Option<String>,
+    project_ids: Option<String>,
+}
+
+fn cdm_columns(raw: &serde_json::Value) -> CdmColumns {
+    let Ok(c) = GithubAdapter.to_canonical(raw) else {
+        return CdmColumns::default();
+    };
+    CdmColumns {
+        canonical_id: Some(c.canonical_id),
+        // Enum → its snake_case serde wire form (e.g. "in_progress").
+        status_category: c
+            .status_category
+            .and_then(|sc| serde_json::to_value(sc).ok())
+            .and_then(|v| v.as_str().map(String::from)),
+        raw_payload: Some(c.raw_payload.to_string()),
+        reporter_name: c.reporter.map(|r| r.display_name),
+        completed_at: c.completed_at,
+        ancestor_path: serde_json::to_string(&c.ancestor_path).ok(),
+        project_ids: serde_json::to_string(&c.project_ids).ok(),
+    }
+}
+
+async fn upsert(pool: &SqlitePool, tasks: &[(GhTask, serde_json::Value)]) -> Result<()> {
+    for (t, raw) in tasks {
+        // CDM columns (Stage 3b) from the raw item via the shared adapter.
+        let cdm = cdm_columns(raw);
+
         sqlx::query(
             "INSERT INTO pm_tasks
                (task_key, provider, title, description_text, status_raw, is_terminal,
-                issue_type, project_key, url, assignee_name, tags, updated_at, fetched_at)
-             VALUES (?, 'github', ?, ?, ?, ?, 'Issue', ?, ?, ?, ?, ?,
-                     strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                issue_type, project_key, url, assignee_name, tags,
+                canonical_id, status_category, raw_payload, reporter_name,
+                completed_at, ancestor_path, project_ids,
+                updated_at, fetched_at)
+             VALUES (?, 'github', ?, ?, ?, ?, 'Issue', ?, ?, ?, ?,
+                     ?, ?, ?, ?, ?, ?, ?,
+                     ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
              ON CONFLICT(task_key) DO UPDATE SET
                provider         = 'github',
                title            = excluded.title,
@@ -343,6 +411,13 @@ async fn upsert(pool: &SqlitePool, tasks: &[GhTask]) -> Result<()> {
                url              = excluded.url,
                assignee_name    = excluded.assignee_name,
                tags             = excluded.tags,
+               canonical_id     = excluded.canonical_id,
+               status_category  = excluded.status_category,
+               raw_payload      = excluded.raw_payload,
+               reporter_name    = excluded.reporter_name,
+               completed_at     = excluded.completed_at,
+               ancestor_path    = excluded.ancestor_path,
+               project_ids      = excluded.project_ids,
                updated_at       = excluded.updated_at,
                fetched_at       = excluded.fetched_at",
         )
@@ -355,6 +430,13 @@ async fn upsert(pool: &SqlitePool, tasks: &[GhTask]) -> Result<()> {
         .bind(&t.url)
         .bind(&t.assignee)
         .bind(t.tags.as_deref())
+        .bind(cdm.canonical_id)
+        .bind(cdm.status_category)
+        .bind(cdm.raw_payload)
+        .bind(cdm.reporter_name)
+        .bind(cdm.completed_at)
+        .bind(cdm.ancestor_path)
+        .bind(cdm.project_ids)
         .bind(&t.updated_at)
         .execute(pool)
         .await
@@ -450,7 +532,7 @@ pub async fn refresh_if_stale(
     )
     .await;
 
-    let mut all_tasks: Vec<GhTask> = Vec::new();
+    let mut all_tasks: Vec<(GhTask, serde_json::Value)> = Vec::new();
     let mut any_ok = false;
     let mut all_ok = true;
     for (project_id, result) in github.project_ids.iter().zip(results) {
@@ -478,7 +560,7 @@ pub async fn refresh_if_stale(
         return Ok(None);
     }
 
-    let keys: Vec<String> = all_tasks.iter().map(|t| t.task_key.clone()).collect();
+    let keys: Vec<String> = all_tasks.iter().map(|(t, _)| t.task_key.clone()).collect();
     upsert(pool, &all_tasks).await?;
 
     sqlx::query(
@@ -622,5 +704,57 @@ mod tests {
         let resolved = super::super::status::resolve("github", &raw, None);
         assert_eq!(resolved.raw, "In Review");
         assert!(!resolved.is_terminal);
+    }
+
+    // -----------------------------------------------------------------------
+    // CDM (Stage 3b): the new pm_tasks columns are derived from the raw item
+    // through the shared adapter. This locks the daemon-side glue; the mapping
+    // itself is tested in meridian_core::adapters::github.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cdm_columns_derives_from_raw_item() {
+        let raw = serde_json::json!({
+            "type": "ISSUE",
+            "project": {"id": "PVT_board"},
+            "fieldValues": {"nodes": [
+                {"name": "In Review", "field": {"name": "Status"}}
+            ]},
+            "content": {
+                "id": "I_kwDOabc123",
+                "number": 42,
+                "state": "OPEN",
+                "author": {"id": "U_lead", "login": "lead", "name": "Lead"},
+                "parent": {"id": "I_kwDOparent"},
+                "closedAt": null
+            }
+        });
+        let cdm = super::cdm_columns(&raw);
+        // Stable key is the global node id, namespaced.
+        assert_eq!(cdm.canonical_id.as_deref(), Some("github:I_kwDOabc123"));
+        // OPEN → no derivable category (board columns are user-defined).
+        assert_eq!(cdm.status_category, None);
+        assert_eq!(cdm.reporter_name.as_deref(), Some("Lead"));
+        assert_eq!(cdm.completed_at, None);
+        assert_eq!(
+            cdm.ancestor_path.as_deref(),
+            Some(r#"["github:I_kwDOparent"]"#)
+        );
+        assert_eq!(cdm.project_ids.as_deref(), Some(r#"["github:PVT_board"]"#));
+        assert!(cdm.raw_payload.is_some());
+    }
+
+    #[test]
+    fn cdm_columns_empty_on_unusable_payload() {
+        // No content.id (the pre-CDM query shape) → adapter errors → all
+        // columns NULL, never blocks the upsert.
+        let cdm = super::cdm_columns(&serde_json::json!({
+            "type": "ISSUE",
+            "fieldValues": {"nodes": []},
+            "content": {"number": 5, "title": "old shape"}
+        }));
+        assert!(cdm.canonical_id.is_none());
+        assert!(cdm.raw_payload.is_none());
+        assert!(cdm.status_category.is_none());
     }
 }

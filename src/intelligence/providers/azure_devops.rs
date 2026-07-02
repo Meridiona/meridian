@@ -14,6 +14,8 @@
 
 use anyhow::{Context, Result};
 use base64::Engine;
+use meridian_core::adapters::azure_devops::AzureDevopsAdapter;
+use meridian_core::adapters::ProviderAdapter;
 use serde::Deserialize;
 use serde_json::json;
 use sqlx::SqlitePool;
@@ -191,6 +193,51 @@ fn native_terminal(category: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// CDM columns (Stage 3b)
+// ---------------------------------------------------------------------------
+
+/// The CDM columns (migration 056) derived from a raw ADO work item via the
+/// shared [`AzureDevopsAdapter`]. All `Option` so a structurally-unusable
+/// payload simply leaves the column NULL — never blocks the existing upsert.
+/// The mapping itself lives in `meridian_core` and is tested there.
+#[derive(Default)]
+struct CdmColumns {
+    canonical_id: Option<String>,
+    status_category: Option<String>,
+    raw_payload: Option<String>,
+    reporter_name: Option<String>,
+    completed_at: Option<String>,
+    ancestor_path: Option<String>,
+    project_ids: Option<String>,
+}
+
+/// `org` namespaces the canonical id — ADO work-item ids are unique only
+/// within an organization. `cfg.api_base` (the resolved root, e.g.
+/// `https://dev.azure.com/{org}` or `https://{org}.visualstudio.com`) is used
+/// directly rather than parsing a bare org name out of it: it's always
+/// available regardless of which of the three supported URL shapes is
+/// configured, and it only needs to be a stable per-workspace string, not a
+/// clean org name.
+fn cdm_columns(raw: &serde_json::Value, org: &str) -> CdmColumns {
+    let Ok(c) = AzureDevopsAdapter::new(org).to_canonical(raw) else {
+        return CdmColumns::default();
+    };
+    CdmColumns {
+        canonical_id: Some(c.canonical_id),
+        // Enum → its snake_case serde wire form (e.g. "in_progress").
+        status_category: c
+            .status_category
+            .and_then(|sc| serde_json::to_value(sc).ok())
+            .and_then(|v| v.as_str().map(String::from)),
+        raw_payload: Some(c.raw_payload.to_string()),
+        reporter_name: c.reporter.map(|r| r.display_name),
+        completed_at: c.completed_at,
+        ancestor_path: serde_json::to_string(&c.ancestor_path).ok(),
+        project_ids: serde_json::to_string(&c.project_ids).ok(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // API calls
 // ---------------------------------------------------------------------------
 
@@ -227,11 +274,14 @@ async fn run_wiql(client: &reqwest::Client, cfg: &AzureDevOpsConfig) -> Result<V
 }
 
 /// Fetch full details for a batch of work item IDs (≤200 per request).
+/// Returns each item paired with its raw JSON — the CDM columns (Stage 3b) are
+/// derived from the raw payload via the shared adapter, kept verbatim alongside
+/// the typed view the rest of this module already relies on.
 async fn fetch_batch(
     client: &reqwest::Client,
     cfg: &AzureDevOpsConfig,
     ids: &[u64],
-) -> Result<Vec<WorkItemDetail>> {
+) -> Result<Vec<(WorkItemDetail, serde_json::Value)>> {
     if ids.is_empty() {
         return Ok(vec![]);
     }
@@ -243,9 +293,11 @@ async fn fetch_batch(
     let url = format!(
         "{}/{}/_apis/wit/workitems?ids={}&\
          fields=System.Id,System.Title,System.WorkItemType,System.State,\
-         System.ChangedDate,System.Description,System.Tags,System.IterationPath,\
-         System.TeamProject,System.AssignedTo,System.Parent,\
+         System.ChangedDate,System.CreatedDate,System.Description,System.Tags,\
+         System.IterationPath,System.TeamProject,System.AssignedTo,System.CreatedBy,\
+         System.Parent,Microsoft.VSTS.Common.Priority,\
          Microsoft.VSTS.Common.AcceptanceCriteria,\
+         Microsoft.VSTS.Common.ClosedDate,\
          Microsoft.VSTS.TCM.ReproSteps,\
          Microsoft.VSTS.Scheduling.StartDate,\
          Microsoft.VSTS.Scheduling.TargetDate&api-version=7.1",
@@ -263,8 +315,20 @@ async fn fetch_batch(
         let text = resp.text().await.unwrap_or_default();
         anyhow::bail!("Azure DevOps work items batch returned {status}: {text}");
     }
-    let batch: WorkItemBatchResponse = resp.json().await.context("parsing batch response")?;
-    Ok(batch.value)
+    let text = resp.text().await.context("reading batch response body")?;
+    // Parse once as a Value so each raw work item survives verbatim for the
+    // canonical adapter, then deserialise the typed view from the same body.
+    // Array order is identical, so we zip them.
+    let body_val: serde_json::Value =
+        serde_json::from_str(&text).context("parsing batch response")?;
+    let raw_items: Vec<serde_json::Value> = body_val
+        .get("value")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let batch: WorkItemBatchResponse =
+        serde_json::from_value(body_val).context("parsing batch response")?;
+    Ok(batch.value.into_iter().zip(raw_items).collect())
 }
 
 /// Fetch the state-name → StateCategory map for one work item type.
@@ -363,11 +427,18 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         return Ok(vec![]);
     }
 
-    // 2. Batch-fetch full detail (≤BATCH_SIZE per request).
+    // 2. Batch-fetch full detail (≤BATCH_SIZE per request). `raw_by_id` is the
+    //    CDM (Stage 3b) escape hatch — used only at the final upsert step, kept
+    //    separate so the ancestor/epic-resolution logic below (which never needs
+    //    the raw payload) stays untouched.
     let mut details: Vec<WorkItemDetail> = Vec::with_capacity(all_ids.len());
+    let mut raw_by_id: HashMap<u64, serde_json::Value> = HashMap::with_capacity(all_ids.len());
     for chunk in all_ids.chunks(BATCH_SIZE) {
         let batch = fetch_batch(&client, cfg, chunk).await?;
-        details.extend(batch);
+        for (detail, raw) in batch {
+            raw_by_id.insert(detail.id, raw);
+            details.push(detail);
+        }
     }
 
     // 2b. Fetch ancestor items (parents not already in the WIQL set) so we can
@@ -392,11 +463,11 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
                     next.extend(
                         batch
                             .iter()
-                            .filter_map(|d| d.fields.parent_id)
+                            .filter_map(|(d, _)| d.fields.parent_id)
                             .filter(|pid| !fetched_set.contains(pid)),
                     );
                     fetched_set.extend(chunk.iter().copied());
-                    ancestor_details.extend(batch);
+                    ancestor_details.extend(batch.into_iter().map(|(d, _)| d));
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -518,12 +589,20 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
             .map(|id| format!("{}#{}", cfg.project, id));
         let epic_title: Option<&str> = resolve_epic_title(&id_meta, f.parent_id);
 
+        // CDM columns (Stage 3b) from the raw work item via the shared adapter.
+        let empty = json!({});
+        let raw = raw_by_id.get(&u.detail.id).unwrap_or(&empty);
+        let cdm = cdm_columns(raw, &cfg.api_base);
+
         sqlx::query(
             "INSERT INTO pm_tasks
                (task_key, provider, title, description_text, status_raw, is_terminal,
                 issue_type, project_key, url, updated_at, sprint_name, tags,
-                assignee_name, start_date, due_date, parent_key, epic_title)
-             VALUES (?, 'azure_devops', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                assignee_name, start_date, due_date, parent_key, epic_title,
+                canonical_id, status_category, raw_payload, reporter_name,
+                completed_at, ancestor_path, project_ids)
+             VALUES (?, 'azure_devops', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                     ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(task_key) DO UPDATE SET
                provider         = 'azure_devops',
                title            = excluded.title,
@@ -540,7 +619,14 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
                start_date       = excluded.start_date,
                due_date         = excluded.due_date,
                parent_key       = excluded.parent_key,
-               epic_title       = excluded.epic_title",
+               epic_title       = excluded.epic_title,
+               canonical_id     = excluded.canonical_id,
+               status_category  = excluded.status_category,
+               raw_payload      = excluded.raw_payload,
+               reporter_name    = excluded.reporter_name,
+               completed_at     = excluded.completed_at,
+               ancestor_path    = excluded.ancestor_path,
+               project_ids      = excluded.project_ids",
         )
         .bind(&task_key)
         .bind(&f.title)
@@ -558,6 +644,13 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         .bind(f.target_date.as_deref())
         .bind(parent_key.as_deref())
         .bind(epic_title)
+        .bind(cdm.canonical_id)
+        .bind(cdm.status_category)
+        .bind(cdm.raw_payload)
+        .bind(cdm.reporter_name)
+        .bind(cdm.completed_at)
+        .bind(cdm.ancestor_path)
+        .bind(cdm.project_ids)
         .execute(pool)
         .await
         .with_context(|| format!("upserting Azure DevOps work item {}", u.detail.id))?;
@@ -906,5 +999,55 @@ mod tests {
         assert_eq!(resolve_epic_id(&m, Some(201)), Some(201));
         // None parent_id → None
         assert_eq!(resolve_epic_id(&m, None), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // CDM (Stage 3b): the new pm_tasks columns are derived from the raw work
+    // item through the shared adapter. This locks the daemon-side glue; the
+    // mapping itself is tested in meridian_core::adapters::azure_devops.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cdm_columns_derives_from_raw_item() {
+        let raw = json!({
+            "id": 1234,
+            "url": "https://dev.azure.com/acme/_apis/wit/workItems/1234",
+            "fields": {
+                "System.State": "Resolved",
+                "System.CreatedBy": {"id": "ado-2", "displayName": "Lead"},
+                "System.Parent": 1000,
+                "Microsoft.VSTS.Common.ClosedDate": null
+            }
+        });
+        let cdm = super::cdm_columns(&raw, "acme");
+        // Org-namespaced stable key.
+        assert_eq!(cdm.canonical_id.as_deref(), Some("azure_devops:acme:1234"));
+        // "Resolved" → snake_case canonical category.
+        assert_eq!(cdm.status_category.as_deref(), Some("in_review"));
+        assert_eq!(cdm.reporter_name.as_deref(), Some("Lead"));
+        assert_eq!(cdm.completed_at, None); // ClosedDate null
+        assert_eq!(
+            cdm.ancestor_path.as_deref(),
+            Some(r#"["azure_devops:acme:1000"]"#)
+        );
+        assert!(cdm.raw_payload.is_some());
+    }
+
+    #[test]
+    fn cdm_columns_empty_on_unusable_payload() {
+        // No `id` → adapter errors → all columns NULL, never blocks the upsert.
+        let cdm = super::cdm_columns(&json!({"fields": {}}), "acme");
+        assert!(cdm.canonical_id.is_none());
+        assert!(cdm.raw_payload.is_none());
+        assert!(cdm.status_category.is_none());
+    }
+
+    #[test]
+    fn cdm_columns_empty_when_org_unresolvable() {
+        // Empty org and no dev.azure.com url in the payload → adapter refuses
+        // to emit a degenerate key; cdm_columns degrades to all-NULL.
+        let raw = json!({"id": 1234, "fields": {}});
+        let cdm = super::cdm_columns(&raw, "");
+        assert!(cdm.canonical_id.is_none());
     }
 }

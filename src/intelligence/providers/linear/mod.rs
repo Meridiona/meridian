@@ -12,6 +12,8 @@
 // IssueFilter shape — the task_key we store is the human identifier (`ENG-123`).
 
 use anyhow::{Context, Result};
+use meridian_core::adapters::linear::LinearAdapter;
+use meridian_core::adapters::ProviderAdapter;
 use serde::Deserialize;
 use sqlx::SqlitePool;
 
@@ -159,14 +161,16 @@ fn team_allowed(issue: &LinearIssue, team_ids: &[String]) -> bool {
     skip(linear),
     fields(provider = "linear", status_code = tracing::field::Empty)
 )]
-async fn fetch(linear: &LinearConfig) -> Result<Vec<LinearIssue>> {
+async fn fetch(linear: &LinearConfig) -> Result<Vec<(LinearIssue, serde_json::Value)>> {
     let query = format!(
         "query {{ viewer {{ assignedIssues(first: {MAX_RESULTS}) {{ nodes {{ \
-           identifier title description updatedAt url \
+           id identifier title description updatedAt createdAt completedAt canceledAt url \
+           priority estimate \
            state {{ name type }} team {{ id key }} \
-           parent {{ identifier title }} assignee {{ name }} \
-           dueDate startedAt labels {{ nodes {{ name }} }} cycle {{ name }} \
-           project {{ name }} \
+           parent {{ id identifier title }} assignee {{ id name displayName email }} \
+           creator {{ id displayName email }} \
+           dueDate startedAt labels {{ nodes {{ name }} }} cycle {{ id name }} \
+           project {{ id name }} \
          }} }} }} }}"
     );
     let body = serde_json::json!({ "query": query });
@@ -188,8 +192,21 @@ async fn fetch(linear: &LinearConfig) -> Result<Vec<LinearIssue>> {
         anyhow::bail!("Linear GraphQL → {}: {}", status, text);
     }
 
-    let parsed: GqlResponse =
+    // Parse once as a Value so the raw issue nodes survive verbatim for the
+    // canonical adapter (Stage 3b), then deserialise the typed view from the
+    // same body. Node order is identical, so we zip them.
+    let body_val: serde_json::Value =
         serde_json::from_str(&text).context("deserialising Linear response")?;
+    let raw_issues: Vec<serde_json::Value> = body_val
+        .get("data")
+        .and_then(|d| d.get("viewer"))
+        .and_then(|v| v.get("assignedIssues"))
+        .and_then(|c| c.get("nodes"))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let parsed: GqlResponse =
+        serde_json::from_value(body_val).context("parsing Linear response")?;
     if let Some(errors) = &parsed.errors {
         anyhow::bail!("Linear GraphQL errors: {errors}");
     }
@@ -199,20 +216,54 @@ async fn fetch(linear: &LinearConfig) -> Result<Vec<LinearIssue>> {
         .map(|v| v.assigned_issues.nodes)
         .unwrap_or_default();
     tracing::debug!(count = issues.len(), "parsed Linear response");
-    Ok(issues)
+    Ok(issues.into_iter().zip(raw_issues).collect())
 }
 
 // ---------------------------------------------------------------------------
 // Upsert
 // ---------------------------------------------------------------------------
 
+/// The CDM columns (migration 056) derived from a raw Linear issue via the
+/// shared [`LinearAdapter`]. All `Option` so a structurally-unusable payload
+/// simply leaves the column NULL — never blocks the existing upsert. The
+/// mapping itself lives in `meridian_core` and is tested there.
+#[derive(Default)]
+struct CdmColumns {
+    canonical_id: Option<String>,
+    status_category: Option<String>,
+    raw_payload: Option<String>,
+    reporter_name: Option<String>,
+    completed_at: Option<String>,
+    ancestor_path: Option<String>,
+    project_ids: Option<String>,
+}
+
+fn cdm_columns(raw: &serde_json::Value) -> CdmColumns {
+    let Ok(c) = LinearAdapter.to_canonical(raw) else {
+        return CdmColumns::default();
+    };
+    CdmColumns {
+        canonical_id: Some(c.canonical_id),
+        // Enum → its snake_case serde wire form (e.g. "in_progress").
+        status_category: c
+            .status_category
+            .and_then(|sc| serde_json::to_value(sc).ok())
+            .and_then(|v| v.as_str().map(String::from)),
+        raw_payload: Some(c.raw_payload.to_string()),
+        reporter_name: c.reporter.map(|r| r.display_name),
+        completed_at: c.completed_at,
+        ancestor_path: serde_json::to_string(&c.ancestor_path).ok(),
+        project_ids: serde_json::to_string(&c.project_ids).ok(),
+    }
+}
+
 async fn upsert(
     pool: &SqlitePool,
-    issues: &[LinearIssue],
+    issues: &[(LinearIssue, serde_json::Value)],
     linear: &LinearConfig,
 ) -> Result<Vec<String>> {
     let mut kept: Vec<String> = Vec::new();
-    for issue in issues {
+    for (issue, raw) in issues {
         if is_finished(issue) || !team_allowed(issue, &linear.team_ids) {
             continue;
         }
@@ -269,13 +320,20 @@ async fn upsert(
             .and_then(|c| c.name.clone())
             .filter(|s| !s.is_empty());
 
+        // CDM columns (Stage 3b) from the raw issue via the shared adapter.
+        let cdm = cdm_columns(raw);
+
         sqlx::query(
             "INSERT INTO pm_tasks
                (task_key, provider, title, description_text, status_raw, is_terminal,
                 issue_type, project_key, url, parent_key, epic_title, assignee_name,
-                due_date, start_date, tags, sprint_name, updated_at, fetched_at)
-             VALUES (?, 'linear', ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                     strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                due_date, start_date, tags, sprint_name,
+                canonical_id, status_category, raw_payload, reporter_name,
+                completed_at, ancestor_path, project_ids,
+                updated_at, fetched_at)
+             VALUES (?, 'linear', ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                     ?, ?, ?, ?, ?, ?, ?,
+                     ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
              ON CONFLICT(task_key) DO UPDATE SET
                provider         = 'linear',
                title            = excluded.title,
@@ -292,6 +350,13 @@ async fn upsert(
                start_date       = excluded.start_date,
                tags             = excluded.tags,
                sprint_name      = excluded.sprint_name,
+               canonical_id     = excluded.canonical_id,
+               status_category  = excluded.status_category,
+               raw_payload      = excluded.raw_payload,
+               reporter_name    = excluded.reporter_name,
+               completed_at     = excluded.completed_at,
+               ancestor_path    = excluded.ancestor_path,
+               project_ids      = excluded.project_ids,
                updated_at       = excluded.updated_at,
                fetched_at       = excluded.fetched_at",
         )
@@ -315,6 +380,13 @@ async fn upsert(
         .bind(&issue.started_at)
         .bind(tags.as_deref())
         .bind(sprint_name.as_deref())
+        .bind(cdm.canonical_id)
+        .bind(cdm.status_category)
+        .bind(cdm.raw_payload)
+        .bind(cdm.reporter_name)
+        .bind(cdm.completed_at)
+        .bind(cdm.ancestor_path)
+        .bind(cdm.project_ids)
         .bind(&issue.updated_at)
         .execute(pool)
         .await
