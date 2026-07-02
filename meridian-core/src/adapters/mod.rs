@@ -31,10 +31,14 @@
 //!   while OPEN; CLOSED derives Done/Cancelled from `stateReason`).
 //! - [`trello`] — 24-hex card id (shortLink retrievable), archived → Done,
 //!   board → project, multi-member cards.
+//! - [`asana`] — `gid` id, `completed` bool is the only status signal,
+//!   multi-project via `projects`+`memberships`, subtask when parented.
+//!   (Adapter only — no Asana ingestion connector exists yet.)
 
 use crate::canonical_task::{CanonicalTask, Provider};
 use serde_json::Value;
 
+pub mod asana;
 pub mod azure_devops;
 pub mod github;
 pub mod jira;
