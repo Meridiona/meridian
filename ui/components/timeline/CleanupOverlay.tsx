@@ -104,6 +104,12 @@ export function CleanupOverlay({ onClose }: { onClose: () => void }) {
   const done = queue !== null && index >= queue.length
   const currentIssues = current ? visibleIssues(current) : []
   const currentGroup = deriveGroup(currentIssues)
+  // Must-fix cards get no forward-nav escape either, matching CleanupCard's
+  // own "no Keep escape until resolved" rule — otherwise Next/ArrowRight can
+  // page straight past every must-fix ticket to a trailing review-only card,
+  // click Keep once, and reach `done` (board reads "healthy") without ever
+  // resolving the must-fix issues the composition bar is warning about.
+  const canAdvance = currentGroup !== 'must'
 
   useEffect(() => {
     if (!done) return
@@ -115,12 +121,12 @@ export function CleanupOverlay({ onClose }: { onClose: () => void }) {
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') { onClose(); return }
       if (!queue) return
-      if (e.key === 'ArrowRight') setIndex(i => Math.min(queue.length - 1, i + 1))
+      if (e.key === 'ArrowRight' && canAdvance) setIndex(i => Math.min(queue.length - 1, i + 1))
       if (e.key === 'ArrowLeft') setIndex(i => Math.max(0, i - 1))
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [queue, onClose])
+  }, [queue, onClose, canAdvance])
 
   const remaining = queue ? Math.max(0, queue.length - index) : 0
 
@@ -184,9 +190,9 @@ export function CleanupOverlay({ onClose }: { onClose: () => void }) {
                   onApplied={code => markResolved(current.key, code)}
                   onKeep={() => keep(current.key)}
                   onPrev={() => setIndex(i => Math.max(0, i - 1))}
-                  onNext={() => setIndex(i => Math.min((queue?.length ?? 1) - 1, i + 1))}
+                  onNext={() => { if (canAdvance) setIndex(i => Math.min((queue?.length ?? 1) - 1, i + 1)) }}
                   hasPrev={index > 0}
-                  hasNext={!!queue && index < queue.length - 1}
+                  hasNext={!!queue && index < queue.length - 1 && canAdvance}
                 />
               </motion.div>
             )}

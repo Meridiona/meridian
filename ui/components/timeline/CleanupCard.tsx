@@ -6,8 +6,11 @@
 // click (Fix, no separate dialog to open first). Prev/next only NAVIGATE the
 // queue (no drag-commit physics like ReviewCard — Cleanup decisions always go
 // through an explicit button, never a swipe distance). Must-fix cards get no
-// Keep escape until every must-fix issue is resolved — matching the old
-// Cleanup page's "can't be ignored" rule for missing due date/description/title.
+// Keep escape AND no forward-nav escape (Next/ArrowRight both no-op — see
+// CleanupOverlay's `canAdvance`) until every must-fix issue is resolved —
+// matching the old Cleanup page's "can't be ignored" rule for missing due
+// date/description/title, and preventing paging straight past a must-fix
+// card to a trailing reviewable one just to reach "board is healthy".
 
 'use client'
 
