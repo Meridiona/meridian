@@ -2,7 +2,9 @@
 //
 // The right panel's hour-detail state (an hour is selected): the human-readable
 // activity REPORT (get_hour_text backend data — migration 054's hour_report,
-// the /activity_report LLM OUTPUT, not the raw distilled input) and the hour's
+// the /activity_report LLM OUTPUT, not the raw distilled input) — solo users
+// only, since it's the substitute for the PM-matched work logs a connected
+// user gets instead — rendered as markdown (ActivityReport), plus the hour's
 // work logs with inline Dismiss/Edit/Approve. Solo users get a dashed
 // empty-state instead of work logs. A null report is EXPECTED (future/
 // unprocessed hours) — it renders a placeholder, never an error. Time-by-app
@@ -10,41 +12,36 @@
 
 'use client'
 
-import { useEffect, useState } from 'react'
 import { fmtClock } from '@/components/atoms'
-import { load } from '@/lib/bridge'
-import type { HourTextResponse } from '@/lib/api-types'
 import { hourLabel } from './timelineLayout'
-import { itemKey } from './types'
+import { isPending, itemKey } from './types'
 import { TimelineCard } from './TimelineCard'
+import { ActivityReport } from './ActivityReport'
 import type { TimelineData } from './useTimelineData'
 
-export function HourDetailPanel({ hour, selectedCardKey, onBack, data }: {
+export function HourDetailPanel({ hour, selectedCardKey, onBack, data, onEditWorklog }: {
   hour: number
   // When set, a specific card was clicked on the timeline — show only that
   // one ticket instead of every worklog in the hour.
   selectedCardKey: string | null
   onBack: () => void
   data: TimelineData
+  onEditWorklog: (cardKey: string) => void
 }) {
-  const { day, hourBuckets, isSolo, actions } = data
-  const [hourText, setHourText] = useState<HourTextResponse | null>(null)
-  const [loadingText, setLoadingText] = useState(true)
+  const { hourBuckets, isSolo, actions, hourReports } = data
 
-  useEffect(() => {
-    setLoadingText(true)
-    setHourText(null)
-    load<HourTextResponse>('/api/hour-text', 'get_hour_text', { day, hour: String(hour) })
-      .then(setHourText)
-      .catch(() => setHourText(null))
-      .finally(() => setLoadingText(false))
-  }, [day, hour])
-
-  const hourItems = hourBuckets.get(hour) ?? []
+  // Still-drafted work never shows here — a draft click opens the Review
+  // dialog instead (TimelineColumn/MeridianTimelineShell); this panel is for
+  // already-decided (approved/posted/dismissed) work only.
+  const hourItems = (hourBuckets.get(hour) ?? []).filter(w => !isPending(w))
   const items = selectedCardKey
     ? hourItems.filter(w => itemKey(w) === selectedCardKey)
     : hourItems
-  const report = hourText?.report ?? null
+  // hourReports is the same top-of-app batch TimelineColumn's solo rows use
+  // (useTimelineData's 30s poll) — reused here instead of a second per-hour
+  // fetch, so selecting an hour shows its report instantly with no loading
+  // flicker.
+  const report = hourReports.find(h => h.hour === hour)?.report ?? null
 
   return (
     <div className="h-full overflow-y-auto nice-scroll p-6 space-y-7">
@@ -58,19 +55,22 @@ export function HourDetailPanel({ hour, selectedCardKey, onBack, data }: {
         </p>
       </div>
 
-      {/* activity summary — the activity-report OUTPUT, not the distilled input */}
-      <Section label="Activity summary">
-        {loadingText ? (
-          <p className="mt-body-sm italic" style={{ color: 'var(--t-faint-2)' }}>Loading…</p>
-        ) : report ? (
-          <div className="rounded-xl p-5 bg-box">
-            <p className="mt-body whitespace-pre-wrap" style={{ color: 'var(--t-title)' }}>{report}</p>
-            <p className="mt-label mt-3" style={{ color: 'var(--t-faint)' }}>◈ Captured from screen · accessibility tree + OCR</p>
-          </div>
-        ) : (
-          <p className="mt-body-sm italic" style={{ color: 'var(--t-faint-2)' }}>Not yet available for this hour.</p>
-        )}
-      </Section>
+      {/* activity summary — the activity-report OUTPUT, not the distilled
+          input. Solo-mode only: connected users get PM-matched work logs
+          instead (the Section below), so this is that surface's substitute,
+          not an addition to it. */}
+      {isSolo && (
+        <Section label="Activity summary">
+          {report ? (
+            <div className="rounded-xl p-5 bg-box">
+              <ActivityReport report={report} />
+              <p className="mt-label mt-3" style={{ color: 'var(--t-faint)' }}>◈ Captured from screen · accessibility tree + OCR</p>
+            </div>
+          ) : (
+            <p className="mt-body-sm italic" style={{ color: 'var(--t-faint-2)' }}>Not yet available for this hour.</p>
+          )}
+        </Section>
+      )}
 
       {/* work logs, or the solo empty-state */}
       <Section label={isSolo ? 'Work logs' : `Work logs${items.length ? ` · ${items.length}` : ''}`}>
@@ -86,7 +86,8 @@ export function HourDetailPanel({ hour, selectedCardKey, onBack, data }: {
         ) : (
           <div className="space-y-3">
             {items.map(w => (
-              <TimelineCard key={itemKey(w)} item={w} variant="detail" actions={actions} />
+              <TimelineCard key={itemKey(w)} item={w} variant="detail" actions={actions}
+                onEdit={() => onEditWorklog(itemKey(w))} />
             ))}
           </div>
         )}

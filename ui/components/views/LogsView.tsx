@@ -132,7 +132,7 @@ export default function LogsView() {
         ref={containerRef}
         onScroll={onScroll}
         style={{
-          flex: 1, overflowY: 'auto', fontFamily: 'var(--font-geist-mono)',
+          flex: 1, overflowY: 'auto', fontFamily: 'var(--font-mono)',
           fontSize: 12, lineHeight: 1.6,
         }}
       >

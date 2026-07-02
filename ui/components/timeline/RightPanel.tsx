@@ -10,13 +10,16 @@ import { HourDetailPanel } from './HourDetailPanel'
 import type { TimelineData } from './useTimelineData'
 import type { ActiveModal } from './MeridianTimelineShell'
 
-export function RightPanel({ data, selectedHour, selectedCardKey, onSelectHour, onOpen, onOpenTask }: {
+export function RightPanel({ data, selectedHour, selectedCardKey, onSelectHour, onOpen, onOpenTask, onEditWorklog }: {
   data: TimelineData
   selectedHour: number | null
   selectedCardKey: string | null
   onSelectHour: (hour: number | null) => void
   onOpen: (modal: ActiveModal) => void
   onOpenTask: (key: string, title?: string) => void
+  // Edit an approved/posted card — opens the same Review dialog drafts use,
+  // scoped to this one ticket (see MeridianTimelineShell's openReview).
+  onEditWorklog: (cardKey: string) => void
 }) {
   if (selectedHour === null) return <OverviewPanel data={data} onOpen={onOpen} onOpenTask={onOpenTask} />
   return (
@@ -25,6 +28,7 @@ export function RightPanel({ data, selectedHour, selectedCardKey, onSelectHour, 
       selectedCardKey={selectedCardKey}
       onBack={() => onSelectHour(null)}
       data={data}
+      onEditWorklog={onEditWorklog}
     />
   )
 }

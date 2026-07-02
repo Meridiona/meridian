@@ -148,8 +148,11 @@ export interface WorklogItem {
   /** `pm_proposed_tasks.id` when `is_proposed` — the key the proposed-ticket
    *  edit/approve/dismiss commands take. */
   proposed_id?: number | null
-  /** The proposed ticket's issue type (`Task` / `Bug`) when `is_proposed` —
-   *  shown as a chip on the proposal card. Empty for ordinary worklogs. */
+  /** The ticket's issue type (`Task` / `Bug` / `Story`, etc), shown as a chip
+   *  next to `task_key` on the card. For a real worklog, pulled from the
+   *  matched `pm_tasks.issue_type` (empty if the task row is missing or its
+   *  type was never fetched from the tracker). For a proposed ticket
+   *  (`is_proposed`), the drafted type used when the ticket is created. */
   issue_type?: string
 }
 
@@ -168,6 +171,31 @@ export interface HourTextResponse {
   // is today-only). Not the raw distilled input. Not an error state.
   report: string | null
   report_chars: number | null
+}
+
+// ── Hour reports (`get_hour_reports`) ─────────────────────────────────────────
+
+export interface HourReportEntry {
+  hour: number             // local hour, 0..24
+  report: string | null    // the /activity_report markdown, or null if not yet available
+}
+
+export interface HourReportsResponse {
+  day: string
+  hours: HourReportEntry[]
+}
+
+// ── Hour status (`get_hour_status`) ───────────────────────────────────────────
+
+export interface HourStatus {
+  hour: number            // local hour, 0..24
+  generating: boolean     // this hour's worklog is being generated right now
+  paused: boolean         // tracking was paused at some point during this hour
+}
+
+export interface HourStatusResponse {
+  day: string
+  hours: HourStatus[]
 }
 
 // ── Week (`get_week`) ────────────────────────────────────────────────────────

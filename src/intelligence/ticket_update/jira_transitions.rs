@@ -56,7 +56,8 @@ fn pick_done_transition(transitions: &[Value]) -> Option<String> {
 
 /// Reopen a ticket by finding a transition into a NOT-done-category status and POSTing
 /// it — the inverse of `close`. Lands on whatever not-done status the workflow's
-/// transitions offer (typically the "To Do" backlog state), not necessarily the exact
+/// transitions offer (typically "In Progress", so unchecking the daily-plan checkbox
+/// reads as "back to work" rather than "back to backlog"), not necessarily the exact
 /// status the ticket held before it was closed.
 pub(super) async fn reopen(ctx: &JiraReqCtx, client: &reqwest::Client, key: &str) -> Result<()> {
     let transitions = fetch_transitions(ctx, client, key).await?;
@@ -65,9 +66,9 @@ pub(super) async fn reopen(ctx: &JiraReqCtx, client: &reqwest::Client, key: &str
     post_transition(ctx, client, key, &id, "reopen").await
 }
 
-/// Choose the transition that lands in a not-done status. Prefers the "new"
-/// (To Do / backlog) category, then "indeterminate" (in progress) over "done",
-/// falling back to a name heuristic.
+/// Choose the transition that lands in a not-done status. Prefers the "indeterminate"
+/// (in progress) category, then "new" (To Do / backlog) over "done", falling back to a
+/// name heuristic.
 fn pick_reopen_transition(transitions: &[Value]) -> Option<String> {
     let id_of = |t: &Value| t.get("id").and_then(|i| i.as_str()).map(String::from);
     let category_of = |t: &Value| {
@@ -76,7 +77,7 @@ fn pick_reopen_transition(transitions: &[Value]) -> Option<String> {
             .unwrap_or("")
             .to_string()
     };
-    for want in ["new", "indeterminate"] {
+    for want in ["indeterminate", "new"] {
         if let Some(t) = transitions.iter().find(|t| category_of(t) == want) {
             return id_of(t);
         }
@@ -91,6 +92,7 @@ fn pick_reopen_transition(transitions: &[Value]) -> Option<String> {
                 .unwrap_or("")
                 .to_lowercase();
             n.contains("reopen")
+                || n.contains("in progress")
                 || n.contains("to do")
                 || n.contains("todo")
                 || n.contains("open")
@@ -206,21 +208,22 @@ mod tests {
     }
 
     #[test]
-    fn picks_new_category_transition_to_reopen() {
+    fn picks_indeterminate_category_transition_to_reopen() {
+        let transitions = vec![
+            json!({ "id": "31", "name": "Done", "to": { "statusCategory": { "key": "done" } } }),
+            json!({ "id": "11", "name": "To Do", "to": { "statusCategory": { "key": "new" } } }),
+            json!({ "id": "21", "name": "In Progress", "to": { "statusCategory": { "key": "indeterminate" } } }),
+        ];
+        assert_eq!(pick_reopen_transition(&transitions), Some("21".into()));
+    }
+
+    #[test]
+    fn reopen_falls_back_to_new_when_no_indeterminate() {
         let transitions = vec![
             json!({ "id": "31", "name": "Done", "to": { "statusCategory": { "key": "done" } } }),
             json!({ "id": "11", "name": "To Do", "to": { "statusCategory": { "key": "new" } } }),
         ];
         assert_eq!(pick_reopen_transition(&transitions), Some("11".into()));
-    }
-
-    #[test]
-    fn reopen_falls_back_to_indeterminate_when_no_new() {
-        let transitions = vec![
-            json!({ "id": "31", "name": "Done", "to": { "statusCategory": { "key": "done" } } }),
-            json!({ "id": "21", "name": "In Progress", "to": { "statusCategory": { "key": "indeterminate" } } }),
-        ];
-        assert_eq!(pick_reopen_transition(&transitions), Some("21".into()));
     }
 
     #[test]

@@ -144,6 +144,110 @@ pub async fn get_hour_text(
     Ok(resp)
 }
 
+/// One local hour's activity report, for the day-wide batch read.
+#[derive(Debug, Clone, Serialize)]
+pub struct HourReportEntry {
+    /// Local hour, `0..24`.
+    pub hour: i64,
+    /// The human-readable activity report, or `None` if not yet persisted.
+    pub report: Option<String>,
+}
+
+/// A day's activity reports, one entry per local hour (0..24).
+#[derive(Debug, Clone, Serialize)]
+pub struct HourReportsResponse {
+    pub day: String,
+    pub hours: Vec<HourReportEntry>,
+}
+
+#[derive(FromRow)]
+struct RawHourReportRow {
+    hour_start: String,
+    hour_report: Option<String>,
+}
+
+/// Read every local hour's activity report for `day` in one query — the
+/// solo-mode timeline's per-row source (replacing the coarse session-derived
+/// one-liner with the actual `/activity_report` output). Same today-only gate
+/// and graceful-degradation posture as [`get_hour_text`]; see its docs.
+#[tracing::instrument(skip(pool))]
+pub async fn get_hour_reports(pool: &SqlitePool, day: &str) -> anyhow::Result<HourReportsResponse> {
+    let empty = || HourReportsResponse {
+        day: day.to_string(),
+        hours: (0..24)
+            .map(|h| HourReportEntry {
+                hour: h,
+                report: None,
+            })
+            .collect(),
+    };
+
+    if day != crate::date::today_string() {
+        tracing::debug!(day, "hour_reports: non-today day — empty response");
+        return Ok(empty());
+    }
+
+    // hour_start keys for this day's 24 local hours, built the same way
+    // get_hour_text does per-hour — kept as a Vec so we can map rows back to
+    // their hour index after the IN (...) fetch.
+    let hour_starts: Vec<String> = (0..24)
+        .filter_map(|h| hour_start_key(day, &h.to_string()))
+        .collect();
+    if hour_starts.len() != 24 {
+        // A DST spring-forward gap or similar dropped an hour — degrade to
+        // empty rather than returning a response shorter than 24 entries.
+        tracing::warn!(
+            day,
+            built = hour_starts.len(),
+            "hour_reports: could not build all 24 hour_start keys"
+        );
+        return Ok(empty());
+    }
+
+    let placeholders = vec!["?"; hour_starts.len()].join(",");
+    let query = format!(
+        "SELECT hour_start, hour_report FROM pm_worklog_hours WHERE hour_start IN ({placeholders})"
+    );
+    let mut q = sqlx::query_as::<_, RawHourReportRow>(&query);
+    for hs in &hour_starts {
+        q = q.bind(hs);
+    }
+    let rows = q
+        .fetch_all(pool)
+        .instrument(tracing::debug_span!("hour_reports.read.pm_worklog_hours"))
+        .await;
+
+    let rows = match rows {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, "hour_reports: pm_worklog_hours read skipped");
+            return Ok(empty());
+        }
+    };
+    tracing::debug!(rows = rows.len(), "hour_reports.read.pm_worklog_hours");
+
+    let mut reports_by_start: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::with_capacity(rows.len());
+    for r in rows {
+        reports_by_start.insert(r.hour_start, r.hour_report);
+    }
+
+    let hours = hour_starts
+        .into_iter()
+        .enumerate()
+        .map(|(h, hs)| HourReportEntry {
+            hour: h as i64,
+            report: reports_by_start.remove(&hs).flatten(),
+        })
+        .collect();
+
+    tracing::info!(day, "hour_reports computed");
+    Ok(HourReportsResponse {
+        day: day.to_string(),
+        hours,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,5 +319,48 @@ mod tests {
         let today = crate::date::today_string();
         let resp = get_hour_text(&pool, &today, "99").await.unwrap();
         assert!(resp.report.is_none());
+    }
+
+    #[tokio::test]
+    async fn hour_reports_non_today_short_circuits_all_empty() {
+        let pool = pool_with_hours().await;
+        let resp = get_hour_reports(&pool, "2000-01-01").await.unwrap();
+        assert_eq!(resp.hours.len(), 24);
+        assert!(resp.hours.iter().all(|h| h.report.is_none()));
+    }
+
+    #[tokio::test]
+    async fn hour_reports_returns_all_24_with_persisted_ones_filled() {
+        let pool = pool_with_hours().await;
+        let today = crate::date::today_string();
+        let hs9 = hour_start_key(&today, "9").unwrap();
+        sqlx::query(
+            "INSERT INTO pm_worklog_hours (hour_start, day_utc, hour_end, status, task_count, hour_report) \
+             VALUES (?, ?, '', 'done', 0, 'Debugged the pipeline.')",
+        )
+        .bind(&hs9)
+        .bind(&today)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let resp = get_hour_reports(&pool, &today).await.unwrap();
+        assert_eq!(resp.hours.len(), 24);
+        assert_eq!(
+            resp.hours
+                .iter()
+                .find(|h| h.hour == 9)
+                .unwrap()
+                .report
+                .as_deref(),
+            Some("Debugged the pipeline.")
+        );
+        assert!(resp
+            .hours
+            .iter()
+            .find(|h| h.hour == 10)
+            .unwrap()
+            .report
+            .is_none());
     }
 }

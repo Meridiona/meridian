@@ -23,8 +23,8 @@ import { load, mutate } from '@/lib/bridge'
 export type CleanupGroup = 'must' | 'nice' | 'review'
 
 const GROUP_META: Record<CleanupGroup, { label: string; color: string }> = {
-  must: { label: 'Must fix', color: '#EF4444' },
-  nice: { label: 'Nice to fix', color: '#F97316' },
+  must: { label: 'Must fix', color: 'var(--severity-must)' },
+  nice: { label: 'Nice to fix', color: 'var(--severity-nice)' },
   review: { label: 'Review', color: 'var(--t-faint)' },
 }
 
@@ -174,7 +174,7 @@ function FixRow({ issue, task, onApplied, onIgnore }: {
   const apply = () => applyValue(value)
 
   const applied = state === 'applied'
-  const badgeColor = applied ? 'var(--color-state-approved)' : (issue.severity === 'must_fix' ? '#EF4444' : '#F97316')
+  const badgeColor = applied ? 'var(--color-state-approved)' : (issue.severity === 'must_fix' ? 'var(--severity-must)' : 'var(--severity-nice)')
 
   return (
     <div className="rounded-xl p-3.5" style={{
@@ -200,7 +200,7 @@ function FixRow({ issue, task, onApplied, onIgnore }: {
             <>
               <ParentPicker provider={task.provider} taskKey={task.key} saving={state === 'saving'} onPick={applyValue} />
               {(state === 'error' || state === 'redirected') && (
-                <p className="mt-body-sm mt-1.5" style={{ color: state === 'error' ? '#EF4444' : 'var(--t-muted)' }}>{msg}</p>
+                <p className="mt-body-sm mt-1.5" style={{ color: state === 'error' ? 'var(--severity-must)' : 'var(--t-muted)' }}>{msg}</p>
               )}
             </>
           ) : (
@@ -231,7 +231,7 @@ function FixRow({ issue, task, onApplied, onIgnore }: {
                 </div>
               )}
               {(state === 'error' || state === 'redirected') && (
-                <p className="mt-body-sm mt-2" style={{ color: state === 'error' ? '#EF4444' : 'var(--t-muted)' }}>{msg}</p>
+                <p className="mt-body-sm mt-2" style={{ color: state === 'error' ? 'var(--severity-must)' : 'var(--t-muted)' }}>{msg}</p>
               )}
             </>
           )}

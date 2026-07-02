@@ -12,10 +12,11 @@ import { useEffect, useState } from 'react'
 import type { BannerNotification } from '@/lib/api-types'
 import { invoke, subscribe } from '@/lib/bridge'
 
+// Palette lives in globals.css (--status-*), shared with NoticeBar.
 const SEVERITY_STYLES: Record<string, { bg: string; border: string; text: string; dot: string }> = {
-  info:    { bg: '#eff6ff', border: '#bfdbfe', text: '#1d4ed8', dot: '#2563eb' },
-  warning: { bg: '#fffbeb', border: '#fcd34d', text: '#92400e', dot: '#d97706' },
-  error:   { bg: '#fff5f5', border: '#feb2b2', text: '#c53030', dot: '#e53e3e' },
+  info:    { bg: 'var(--status-info-bg)', border: 'var(--status-info-border)', text: 'var(--status-info-text)', dot: 'var(--status-info-dot)' },
+  warning: { bg: 'var(--status-warning-bg)', border: 'var(--status-warning-border)', text: 'var(--status-warning-text)', dot: 'var(--status-warning-dot)' },
+  error:   { bg: 'var(--status-error-bg)', border: 'var(--status-error-border)', text: 'var(--status-error-text)', dot: 'var(--status-error-dot)' },
 }
 
 // `deep_link` values are old pre-fold route paths (`src/daily_plan.rs`,

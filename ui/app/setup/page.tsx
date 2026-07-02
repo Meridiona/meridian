@@ -212,10 +212,10 @@ export default function SetupWizard() {
   }
 
   return (
-    <div style={{ position: 'fixed', inset: 0, display: 'grid', placeItems: 'center', background: 'var(--paper)' }}>
+    <div style={{ position: 'fixed', inset: 0, display: 'grid', placeItems: 'center', background: 'var(--t-panel)' }}>
       <div className="rise" style={{
-        width: 948, height: 628, borderRadius: 18, background: 'var(--surface)',
-        border: '0.5px solid var(--rule-2)', overflow: 'hidden', color: 'var(--ink)',
+        width: 948, height: 628, borderRadius: 18, background: 'var(--t-card)',
+        border: '0.5px solid var(--t-card-border)', overflow: 'hidden', color: 'var(--t-title)',
         boxShadow: 'var(--pop-shadow)',
       }}>
         {welcome ? (
@@ -235,8 +235,8 @@ export default function SetupWizard() {
                 <>
                   <div style={{ padding: '26px 32px 16px' }}>
                     <Kicker style={{ marginBottom: 9 }}>{meta.kicker}</Kicker>
-                    <h1 style={{ ...SERIF, fontSize: 27, lineHeight: 1.04, letterSpacing: '-.01em', color: 'var(--ink)' }}>{meta.title}</h1>
-                    <p style={{ fontSize: 12.5, lineHeight: 1.5, color: 'var(--ink-2)', marginTop: 8, maxWidth: 460, textWrap: 'pretty' }}>{meta.subtitle}</p>
+                    <h1 style={{ ...SERIF, fontSize: 27, lineHeight: 1.04, letterSpacing: '-.01em', color: 'var(--t-title)' }}>{meta.title}</h1>
+                    <p style={{ fontSize: 12.5, lineHeight: 1.5, color: 'var(--t-muted)', marginTop: 8, maxWidth: 460, textWrap: 'pretty' }}>{meta.subtitle}</p>
                   </div>
                   <div className="nice-scroll" style={{ flex: 1, overflowY: 'auto', padding: '4px 32px 22px' }}>
                     <meta.Body wiz={wiz} />
@@ -257,11 +257,11 @@ export default function SetupWizard() {
 // ── Left step rail ────────────────────────────────────────────────────────────
 function Rail({ step, done, wiz, goStep }: { step: number; done: boolean; wiz: Wiz; goStep: (i: number) => void }) {
   return (
-    <div className="flex flex-col" style={{ width: 250, flexShrink: 0, background: 'var(--surface-2)', borderRight: '1px solid var(--rule)', padding: '22px 18px' }}>
+    <div className="flex flex-col" style={{ width: 250, flexShrink: 0, background: 'var(--t-box)', borderRight: '1px solid var(--t-hair)', padding: '22px 18px' }}>
       <div style={{ padding: '0 6px', marginBottom: 26 }}>
         <div className="flex items-center" style={{ gap: 8 }}>
-          <span style={{ width: 8, height: 8, borderRadius: 99, background: 'var(--accent)' }} />
-          <span style={{ ...SERIF, fontSize: 21, lineHeight: 1, letterSpacing: '.01em', color: 'var(--ink)' }}>meridian</span>
+          <span style={{ width: 8, height: 8, borderRadius: 99, background: 'var(--color-state-proposal)' }} />
+          <span style={{ ...SERIF, fontSize: 21, lineHeight: 1, letterSpacing: '.01em', color: 'var(--t-title)' }}>meridian</span>
         </div>
       </div>
       <div className="flex flex-col" style={{ gap: 2 }}>
@@ -277,25 +277,25 @@ function Rail({ step, done, wiz, goStep }: { step: number; done: boolean; wiz: W
             <button key={s.id} disabled={!reachable} onClick={() => { if (reachable) goStep(i) }} className="flex items-start"
               style={{ gap: 12, padding: '10px 8px', borderRadius: 10, textAlign: 'left',
                 cursor: reachable ? 'pointer' : 'not-allowed', opacity: reachable ? 1 : 0.55,
-                background: isCur ? 'var(--tint)' : 'transparent', transition: 'background .14s' }}
-              onMouseEnter={(e) => { if (!isCur && reachable) e.currentTarget.style.background = 'var(--surface)' }}
+                background: isCur ? 'color-mix(in srgb, var(--color-state-proposal) 8%, transparent)' : 'transparent', transition: 'background .14s' }}
+              onMouseEnter={(e) => { if (!isCur && reachable) e.currentTarget.style.background = 'var(--t-card)' }}
               onMouseLeave={(e) => { if (!isCur) e.currentTarget.style.background = 'transparent' }}>
               <span className="flex items-center justify-center font-mono shrink-0" style={{
                 width: 24, height: 24, borderRadius: 99, fontSize: 11, fontWeight: 600, marginTop: 1,
-                background: ok ? 'var(--accent)' : isCur ? 'var(--surface)' : 'transparent',
-                color: ok ? '#fff' : isCur ? 'var(--accent)' : 'var(--ink-4)',
-                border: ok ? 'none' : `1px solid ${isCur ? 'var(--accent)' : 'var(--rule-2)'}`,
+                background: ok ? 'var(--color-state-proposal)' : isCur ? 'var(--t-card)' : 'transparent',
+                color: ok ? '#fff' : isCur ? 'var(--color-state-proposal)' : 'var(--t-faint-2)',
+                border: ok ? 'none' : `1px solid ${isCur ? 'var(--color-state-proposal)' : 'var(--t-card-border)'}`,
               }}>{ok ? <Check size={13} color="#fff" /> : s.n}</span>
               <div style={{ minWidth: 0, paddingTop: 1 }}>
-                <p style={{ fontSize: 13, fontWeight: isCur ? 500 : 400, color: reached ? 'var(--ink)' : 'var(--ink-3)' }}>{s.label}</p>
-                <p className="font-mono" style={{ fontSize: 10, color: ok ? 'var(--success)' : 'var(--ink-4)', marginTop: 2, letterSpacing: '.02em' }}>{s.status(wiz)}</p>
+                <p style={{ fontSize: 13, fontWeight: isCur ? 500 : 400, color: reached ? 'var(--t-title)' : 'var(--t-faint)' }}>{s.label}</p>
+                <p className="font-mono" style={{ fontSize: 10, color: ok ? 'var(--color-state-approved)' : 'var(--t-faint-2)', marginTop: 2, letterSpacing: '.02em' }}>{s.status(wiz)}</p>
               </div>
             </button>
           )
         })}
       </div>
       <div style={{ flex: 1 }} />
-      <p className="font-mono" style={{ fontSize: 10, letterSpacing: '.12em', color: 'var(--ink-4)', padding: '0 8px', textTransform: 'uppercase' }}>First-run setup</p>
+      <p className="font-mono" style={{ fontSize: 10, letterSpacing: '.12em', color: 'var(--t-faint-2)', padding: '0 8px', textTransform: 'uppercase' }}>First-run setup</p>
     </div>
   )
 }
@@ -305,9 +305,9 @@ function Footer({ step, last, canNext, err, onBack, onNext }: {
   step: number; last: boolean; canNext: boolean; err: string; onBack: () => void; onNext: () => void
 }) {
   return (
-    <div className="flex items-center justify-between" style={{ padding: '16px 28px', borderTop: '1px solid var(--rule)', background: 'var(--surface-2)' }}>
+    <div className="flex items-center justify-between" style={{ padding: '16px 28px', borderTop: '1px solid var(--t-hair)', background: 'var(--t-box)' }}>
       <Btn variant="ghost" disabled={step === 0} onClick={onBack}><ArrowL />Back</Btn>
-      <span style={{ fontSize: 11, color: 'var(--warn)', flex: 1, textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 12px' }}>{err}</span>
+      <span style={{ fontSize: 11, color: 'var(--color-state-pending)', flex: 1, textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 12px' }}>{err}</span>
       <Btn variant="primary" disabled={!canNext} onClick={onNext}>
         {last ? 'Finish setup' : 'Continue'}{!last && <ArrowR />}
       </Btn>

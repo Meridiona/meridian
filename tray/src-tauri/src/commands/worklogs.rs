@@ -67,12 +67,67 @@ pub async fn get_hour_text(
         })
 }
 
+/// Every local hour's activity report for a day, in one call (new backend
+/// work — the solo-mode timeline's per-row source). `day` defaults to today
+/// (local); the reader is today-only, so a past `day` returns 24 empty entries.
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn get_hour_reports(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    day: Option<String>,
+) -> Result<meridian_core::hour_text::HourReportsResponse, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let day = day.unwrap_or_else(meridian_core::date::today_string);
+    meridian_core::hour_text::get_hour_reports(pool, &day)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "get_hour_reports failed");
+            e.to_string()
+        })
+}
+
+/// Per-hour generating/paused badge state for the timeline (new work — no
+/// route). `day` defaults to today (local), matching [`get_worklogs`].
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn get_hour_status(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    day: Option<String>,
+) -> Result<meridian_core::hour_status::HourStatusResponse, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let day = day.unwrap_or_else(meridian_core::date::today_string);
+    meridian_core::hour_status::get_hour_status(pool, &day)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "get_hour_status failed");
+            e.to_string()
+        })
+}
+
 /// Ack for the worklog writes — mirrors the routes' `{ ok, id, state }`.
 #[derive(Debug, Serialize)]
 pub struct WorklogWriteAck {
     pub ok: bool,
     pub id: i64,
     pub state: String,
+}
+
+/// Ack for [`rematch_worklog`] — extends [`WorklogWriteAck`] with
+/// `mergedIntoId`, set when the target ticket already had a worklog for this
+/// window: the request `id` was merged into (and deleted in favour of)
+/// `mergedIntoId`, so the caller must stop referencing the original id (see
+/// [`meridian_core::worklogs::RematchOutcome`]).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RematchAck {
+    pub ok: bool,
+    pub id: i64,
+    pub state: String,
+    pub merged_into_id: Option<i64>,
 }
 
 /// PATCH body for [`edit_worklog`] (`{ id, summary }`).
@@ -102,6 +157,44 @@ pub async fn edit_worklog(
         ok: true,
         id: body.id,
         state,
+    })
+}
+
+/// PATCH body for [`rematch_worklog`] (`{ id, taskKey }`).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorklogRematchBody {
+    pub id: i64,
+    pub task_key: String,
+}
+
+/// Re-match a worklog to a different ticket (new work — the review-drafts
+/// card's "match to a different ticket" edit action). Logs the correction as
+/// traceable feedback (see [`meridian_core::worklogs::rematch_worklog`]).
+#[tauri::command]
+#[tracing::instrument(skip(pool, body), fields(id = body.id, task_key = %body.task_key))]
+pub async fn rematch_worklog(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    body: WorklogRematchBody,
+) -> Result<RematchAck, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let task_key = body.task_key.trim();
+    if task_key.is_empty() {
+        return Err("task key must not be empty".to_string());
+    }
+    let outcome = meridian_core::worklogs::rematch_worklog(pool, body.id, task_key, &now_iso())
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, id = body.id, "rematch_worklog failed");
+            e.to_string()
+        })?;
+    Ok(RematchAck {
+        ok: true,
+        id: body.id,
+        state: outcome.state,
+        merged_into_id: outcome.merged_into_id,
     })
 }
 

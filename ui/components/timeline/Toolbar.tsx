@@ -1,8 +1,8 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// The 60px top toolbar (STYLESHEET.md §7): date navigation + capture
-// pause/resume pill on the left, the Meridian nav pill centered, and the
-// theme swatches / auto-derived Connected-Solo pill on the right. A 3-column
+// The 60px top toolbar (STYLESHEET.md §7): date navigation on the left, the
+// Meridian nav pill centered, and the theme swatches / auto-derived
+// Connected-Solo pill / capture pause-resume pill on the right. A 3-column
 // grid (1fr / auto / 1fr) keeps the brand lockup truly centered regardless of
 // how wide the left/right content is — same technique as the tray popover's
 // header. The connected/solo pill is NOT a manual toggle — it reflects real
@@ -15,26 +15,31 @@
 // "consistent across themes" rule the mock's own `SURF`/`THEMES` split uses).
 // The mock's Timeline/Chat toggle only has one live surface today, so Chat is
 // dropped and Timeline renders as a static active label rather than an inert
-// control. Integrations/Settings both open the same Settings modal (no
-// separate Integrations screen exists), which also makes the old standalone
-// settings-gear button on the right redundant — removed in favor of this.
+// control. "Integrations" opens Settings pre-scrolled to the Integrations tab
+// (see SettingsModal); "Settings" opens the same modal, which also makes the
+// old standalone settings-gear button on the right redundant — removed in
+// favor of this.
 
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { load, invoke } from '@/lib/bridge'
+import { load } from '@/lib/bridge'
 import { formatDayLabel } from './types'
 import { ThemeSwatches } from './ThemeSwatches'
+import { ProviderIcon } from '@/components/ProviderIcon'
+import type { SettingsSection } from './settings/types'
 
 export function Toolbar({
-  day, isToday, onShiftDay, isSolo, connectedProviderName, onOpenSettings,
+  day, isToday, onShiftDay, isSolo, connectedProviderName, connectedProviderId, onOpenSettings, onOpenReport,
 }: {
   day: string
   isToday: boolean
   onShiftDay: (delta: number) => void
   isSolo: boolean
   connectedProviderName: string | null
-  onOpenSettings: () => void
+  connectedProviderId: string | null
+  onOpenSettings: (section?: SettingsSection) => void
+  onOpenReport: () => void
 }) {
   const [running, setRunning] = useState<boolean | null>(null)
 
@@ -50,19 +55,6 @@ export function Toolbar({
     return () => clearInterval(id)
   }, [refreshStatus])
 
-  // toggle_daemon pauses (stop) / resumes (start) capture. Optimistic flip.
-  async function toggleCapture() {
-    if (running === null) return
-    const next = !running
-    setRunning(next)
-    try {
-      await invoke('toggle_daemon', { isRunning: running })
-    } catch {
-      setRunning(running) // revert on failure
-    }
-    refreshStatus()
-  }
-
   const connectionLabel = isSolo ? 'Solo' : connectedProviderName ?? 'Connected'
 
   return (
@@ -77,22 +69,11 @@ export function Toolbar({
           </span>
           <NavBtn glyph="›" label="Next day" onClick={() => onShiftDay(1)} disabled={isToday} />
         </div>
-
-        {/* capture pill */}
-        <button onClick={toggleCapture} disabled={running === null}
-          className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 bg-ctrl shrink-0"
-          style={{ border: '1px solid var(--t-ctrl-border)', opacity: running === null ? 0.6 : 1 }}>
-          <span className="inline-block w-2 h-2 rounded-full"
-            style={{ background: running ? 'var(--color-state-approved)' : 'var(--color-state-pending)' }} />
-          <span className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>
-            {running === null ? 'Capture' : running ? 'Capturing' : 'Paused'}
-          </span>
-        </button>
       </div>
 
       {/* nav pill — centered regardless of left/right content width. */}
       <div className="justify-self-center">
-        <MeridianNavPill onOpenSettings={onOpenSettings} />
+        <MeridianNavPill onOpenSettings={onOpenSettings} onOpenReport={onOpenReport} />
       </div>
 
       <div className="ml-auto flex items-center gap-4">
@@ -100,25 +81,47 @@ export function Toolbar({
         <span className="w-px h-5" style={{ background: 'var(--t-hair)' }} />
         <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 bg-ctrl"
           style={{ border: '1px solid var(--t-ctrl-border)' }}>
-          <span className="inline-block w-1.5 h-1.5 rounded-full"
-            style={{ background: isSolo ? 'var(--t-faint)' : 'var(--color-state-proposal)' }} />
+          {connectedProviderId
+            ? <ProviderIcon provider={connectedProviderId} size={12} />
+            : <span className="inline-block w-1.5 h-1.5 rounded-full"
+                style={{ background: isSolo ? 'var(--t-faint)' : 'var(--color-state-proposal)' }} />}
           <span className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>{connectionLabel}</span>
+        </span>
+
+        {/* capture status pill — right side, after the connected/solo pill.
+            Display-only: reflects daemon status, not a manual toggle. */}
+        <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 bg-ctrl shrink-0"
+          style={{ border: '1px solid var(--t-ctrl-border)', opacity: running === null ? 0.6 : 1 }}>
+          <span className="inline-block w-2 h-2 rounded-full"
+            style={{ background: running ? 'var(--color-state-approved)' : 'var(--color-state-pending)' }} />
+          <span className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>
+            {running === null ? 'Capture' : running ? 'Capturing' : 'Paused'}
+          </span>
         </span>
       </div>
     </div>
   )
 }
 
-/** The gradient rotated-square Meridian mark, 15px — matches the design
- *  mock's "Facet" concept (a CSS shape, no image asset). */
-function MeridianMark() {
+/** The Meridian brand mark — renders the app icon (ui/app/icon.png, copied to
+ *  ui/public/meridian-logo.png so it's servable as a plain asset without
+ *  colliding with Next's app/icon.png favicon-route convention). Exported so
+ *  any other surface using the Meridian brand mark (e.g. HourBadges'
+ *  generating-hour takeover card) renders the identical asset, not a
+ *  re-derived one. `size` defaults to the toolbar's 15px. The icon's glyph
+ *  occupies ~60% of its source canvas (app-icon safe-area padding, same as
+ *  the tray popover's .brand-mark), so it's scaled up via backgroundSize
+ *  rather than shown at its native padded ratio. */
+export function MeridianMark({ size = 15 }: { size?: number }) {
   return (
     <span aria-hidden="true" className="shrink-0" style={{
-      width: 15,
-      height: 15,
-      borderRadius: 5,
-      background: 'linear-gradient(135deg,#6366F1,#A855F7 55%,#EC4899)',
-      transform: 'rotate(45deg)',
+      width: size,
+      height: size,
+      borderRadius: size / 3,
+      backgroundImage: 'url(/meridian-logo.png)',
+      backgroundSize: '166% 166%',
+      backgroundPosition: 'center',
+      backgroundRepeat: 'no-repeat',
     }} />
   )
 }
@@ -158,25 +161,31 @@ function SettingsGlyph() {
 }
 
 /** The centered brand navbar: gradient mark + "Meridian" wordmark + Timeline
- *  (static active label — the app's only surface) + Integrations/Settings
- *  (both open the Settings modal). Solid dark lockup, unaffected by the
- *  light/blush/ink surface theme — ported from the design mock's pill
- *  navbar (`pillBarStyle`/`pillBrandStyle`/`pillSettingsStyle`). */
-function MeridianNavPill({ onOpenSettings }: { onOpenSettings: () => void }) {
+ *  (static active label — the app's only surface) + Integrations/Report/
+ *  Settings. Integrations pre-selects the Integrations tab, Settings opens
+ *  on the default tab (both open SettingsModal); Report opens the
+ *  ReportModal get-in-touch card (see MeridianTimelineShell). Solid dark
+ *  lockup, unaffected by the light/blush/ink surface theme — ported from the
+ *  design mock's pill navbar (`pillBarStyle`/`pillBrandStyle`/`pillSettingsStyle`). */
+function MeridianNavPill({ onOpenSettings, onOpenReport }: {
+  onOpenSettings: (section?: SettingsSection) => void
+  onOpenReport: () => void
+}) {
   return (
     <div className="flex items-center" style={{
       gap: 2,
       padding: '5px 6px 5px 16px',
       borderRadius: 999,
-      background: 'linear-gradient(135deg,#332A63,#241C49)',
-      border: '1px solid rgba(255,255,255,.12)',
-      boxShadow: '0 14px 32px -12px rgba(50,30,110,.5), inset 0 1px 0 rgba(255,255,255,.1)',
+      background: 'var(--mer-pill-bg)',
+      border: '1px solid var(--mer-pill-border)',
+      boxShadow: 'var(--mer-pill-shadow)',
     }}>
       <MeridianMark />
       <span className="mt-navpill-brand" style={{ color: '#FFFFFF', margin: '0 14px 0 9px' }}>Meridian</span>
       <NavPillItem active>Timeline</NavPillItem>
-      <NavPillItem active={false} onClick={onOpenSettings}>Integrations</NavPillItem>
-      <button onClick={onOpenSettings} aria-label="Settings" className="mt-navpill-item"
+      <NavPillItem active={false} onClick={() => onOpenSettings('integrations')}>Integrations</NavPillItem>
+      <NavPillItem active={false} onClick={onOpenReport}>Report</NavPillItem>
+      <button onClick={() => onOpenSettings()} aria-label="Settings" className="mt-navpill-item"
         style={{
           display: 'flex', alignItems: 'center', gap: 6, borderRadius: 999,
           padding: '8px 15px', marginLeft: 6, background: 'rgba(255,255,255,.1)',

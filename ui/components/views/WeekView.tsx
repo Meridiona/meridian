@@ -155,7 +155,7 @@ function WeekLineChart({ days, maxTotal }: { days: WeekResponse['days']; maxTota
       {points.map((p, i) => (
         <text key={i} x={p.x} y={padding.top + chartH + 16} textAnchor="middle"
           fontSize="10" fill={p.day.isToday ? 'var(--accent)' : 'var(--ink-3)'}
-          fontFamily="'Geist Mono', monospace">
+          fontFamily="var(--font-mono)">
           {p.day.day}
         </text>
       ))}
@@ -164,7 +164,7 @@ function WeekLineChart({ days, maxTotal }: { days: WeekResponse['days']; maxTota
         const y = padding.top + chartH - (val / maxTotal) * chartH
         return (
           <text key={i} x={padding.left - 8} y={y + 3} textAnchor="end"
-            fontSize="9" fill="var(--ink-3)" fontFamily="'Geist Mono', monospace">
+            fontSize="9" fill="var(--ink-3)" fontFamily="var(--font-mono)">
             {val.toFixed(1)}h
           </text>
         )

@@ -149,8 +149,8 @@ export function CleanupOverlay({ onClose }: { onClose: () => void }) {
         {stats && stats.total > 0 && (
           <div className="mb-3 px-1">
             <div className="flex h-2 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.14)' }}>
-              {stats.must > 0 && <span style={{ width: `${(stats.must / stats.total) * 100}%`, background: '#EF4444' }} />}
-              {(stats.nice + stats.review) > 0 && <span style={{ width: `${((stats.nice + stats.review) / stats.total) * 100}%`, background: '#F97316' }} />}
+              {stats.must > 0 && <span style={{ width: `${(stats.must / stats.total) * 100}%`, background: 'var(--severity-must)' }} />}
+              {(stats.nice + stats.review) > 0 && <span style={{ width: `${((stats.nice + stats.review) / stats.total) * 100}%`, background: 'var(--severity-nice)' }} />}
               {stats.ready > 0 && <span style={{ width: `${(stats.ready / stats.total) * 100}%`, background: 'var(--color-state-approved)' }} />}
             </div>
             <p className="mt-body-sm mt-1.5" style={{ color: 'rgba(255,255,255,0.75)' }}>

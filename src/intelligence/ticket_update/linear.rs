@@ -161,9 +161,10 @@ fn pick_cancelled_state(nodes: &[Value]) -> Option<String> {
         .and_then(|s| s.get("id").and_then(|i| i.as_str()).map(String::from))
 }
 
-/// The team's not-started workflow state for the issue (type == "unstarted",
-/// Linear's default backlog/todo bucket) — the inverse of `completed_state_id`.
-/// Falls back to "started" (in-progress) if the team has no unstarted state.
+/// The team's in-progress workflow state for the issue (type == "started") — the
+/// inverse of `completed_state_id`. Unchecking the daily-plan checkbox should read
+/// as "back to work", not "back to backlog", so this prefers "started" over
+/// "unstarted" (Linear's default backlog/todo bucket).
 async fn reopen_state_id(
     client: &reqwest::Client,
     cfg: &LinearConfig,
@@ -177,7 +178,7 @@ async fn reopen_state_id(
         .and_then(|n| n.as_array())
         .cloned()
         .unwrap_or_default();
-    pick_reopen_state(&nodes).context("no not-started workflow state on this Linear team")
+    pick_reopen_state(&nodes).context("no started/unstarted workflow state on this Linear team")
 }
 
 fn state_type(s: &Value) -> &str {
@@ -188,8 +189,8 @@ fn pick_reopen_state(nodes: &[Value]) -> Option<String> {
     let id_of = |s: &Value| s.get("id").and_then(|i| i.as_str()).map(String::from);
     nodes
         .iter()
-        .find(|s| state_type(s) == "unstarted")
-        .or_else(|| nodes.iter().find(|s| state_type(s) == "started"))
+        .find(|s| state_type(s) == "started")
+        .or_else(|| nodes.iter().find(|s| state_type(s) == "unstarted"))
         .and_then(id_of)
 }
 
@@ -289,19 +290,20 @@ mod tests {
     }
 
     #[test]
-    fn picks_unstarted_state_to_reopen() {
+    fn picks_started_state_to_reopen() {
         let nodes = vec![
             json!({ "id": "s1", "name": "Done", "type": "completed" }),
             json!({ "id": "s2", "name": "Todo", "type": "unstarted" }),
+            json!({ "id": "s3", "name": "In Progress", "type": "started" }),
         ];
-        assert_eq!(pick_reopen_state(&nodes), Some("s2".into()));
+        assert_eq!(pick_reopen_state(&nodes), Some("s3".into()));
     }
 
     #[test]
-    fn reopen_falls_back_to_started_when_no_unstarted() {
+    fn reopen_falls_back_to_unstarted_when_no_started() {
         let nodes = vec![
             json!({ "id": "s1", "name": "Done", "type": "completed" }),
-            json!({ "id": "s2", "name": "In Progress", "type": "started" }),
+            json!({ "id": "s2", "name": "Todo", "type": "unstarted" }),
         ];
         assert_eq!(pick_reopen_state(&nodes), Some("s2".into()));
     }

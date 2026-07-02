@@ -26,6 +26,9 @@ pub mod integrations;
 /// Per-hour distilled activity text from `pm_worklog_hours` (migration 053; no route — new work).
 pub mod hour_text;
 
+/// Per-hour generating/paused badge state for the timeline; no route — new work.
+pub mod hour_status;
+
 /// The `/api/tasks` per-task time + hygiene payload (ported from tasks/route.ts).
 pub mod tasks;
 
