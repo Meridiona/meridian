@@ -532,6 +532,19 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
   text-transform: uppercase;
 }
 
+/* Toolbar's centered Meridian nav pill (design mock's pillBrandStyle /
+   `_pillStyle`) — solid dark lockup, so these set weight/size/tracking only;
+   color is per-item (active vs inactive) via inline style. */
+.mt-navpill-brand {
+  font: 800 13.5px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  letter-spacing: -0.01em;
+}
+.mt-navpill-item {
+  font: 700 12px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  letter-spacing: -0.005em;
+  transition: background 0.15s, color 0.15s;
+}
+
 /* Ticket key / hour label / time / duration — STYLESHEET.md §1: Mono,
    600–700 weight, .02em tracking. Callers still set their own size via an
    arbitrary Tailwind value (sizes vary 10.5–12px per row); this class only
