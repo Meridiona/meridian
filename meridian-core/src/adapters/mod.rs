@@ -14,9 +14,10 @@
 //! (DB-free, like [`crate::hygiene`]) and trivially unit-testable.
 //!
 //! # Who calls this
-//! Nothing yet (draft). The daemon's ingestion paths will own one adapter per
-//! configured tracker and call [`ProviderAdapter::to_canonical`] on each fetched
-//! item before persisting it.
+//! The daemon's ingestion connectors (`src/intelligence/providers/*`): each
+//! one's `cdm_columns()` helper calls [`ProviderAdapter::to_canonical`] on the
+//! raw fetched payload at upsert time to derive the CDM columns
+//! (migration 056) alongside the legacy typed-struct path.
 //!
 //! # Related
 //! - [`crate::canonical_task`] — the output shape these produce.
@@ -26,11 +27,14 @@
 //!   → category (custom "In Review" folds into In-Progress).
 //! - [`azure_devops`] — org-namespaced id (`{org}:{id}`), Int 1–4 priority,
 //!   state→category by name, semicolon-delimited tags.
+//! - [`github`] — global node id, board Status column verbatim (no category
+//!   while OPEN; CLOSED derives Done/Cancelled from `stateReason`).
 
 use crate::canonical_task::{CanonicalTask, Provider};
 use serde_json::Value;
 
 pub mod azure_devops;
+pub mod github;
 pub mod jira;
 pub mod linear;
 
