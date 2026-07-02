@@ -59,6 +59,16 @@ fn linear_cfg(team_ids: &[&str]) -> LinearConfig {
     }
 }
 
+/// Pairs a hand-built [`LinearIssue`] with a minimal raw payload for `upsert`'s
+/// new `(LinearIssue, Value)` shape. These non-CDM-focused tests only need the
+/// tuple shape to satisfy `upsert`'s signature — `cdm_columns` degrades to all-
+/// `None` on a payload this sparse, which doesn't affect the non-CDM columns
+/// under test. Dedicated CDM tests below use a fuller payload.
+fn with_raw(issue: LinearIssue) -> (LinearIssue, serde_json::Value) {
+    let raw = serde_json::json!({ "id": issue.identifier });
+    (issue, raw)
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests (pure logic — no DB)
 // ---------------------------------------------------------------------------
@@ -184,7 +194,7 @@ fn parses_labels_and_cycle() {
 async fn upsert_writes_basic_row() -> Result<()> {
     let pool = make_pool().await?;
     let issue = make_issue("ENG-1", "started");
-    let kept = upsert(&pool, &[issue], &linear_cfg(&[]))
+    let kept = upsert(&pool, &[with_raw(issue)], &linear_cfg(&[]))
         .await
         .context("upsert linear task")?;
     assert_eq!(kept, ["ENG-1"]);
@@ -204,9 +214,13 @@ async fn upsert_done_canceled_excluded() -> Result<()> {
     let pool = make_pool().await?;
     let done = make_issue("ENG-2", "completed");
     let canceled = make_issue("ENG-3", "canceled");
-    let kept = upsert(&pool, &[done, canceled], &linear_cfg(&[]))
-        .await
-        .context("upsert done/canceled")?;
+    let kept = upsert(
+        &pool,
+        &[with_raw(done), with_raw(canceled)],
+        &linear_cfg(&[]),
+    )
+    .await
+    .context("upsert done/canceled")?;
     assert!(kept.is_empty(), "completed/canceled should be excluded");
     let (count,): (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM pm_tasks WHERE provider = 'linear'")
@@ -225,7 +239,7 @@ async fn upsert_skips_team_filtered_issues() -> Result<()> {
         id: "other-uuid".into(),
         key: "OTHER".into(),
     });
-    let kept = upsert(&pool, &[outside], &linear_cfg(&["ALLOWED"]))
+    let kept = upsert(&pool, &[with_raw(outside)], &linear_cfg(&["ALLOWED"]))
         .await
         .context("upsert team-filtered issue")?;
     assert!(kept.is_empty());
@@ -247,7 +261,7 @@ async fn upsert_maps_parent_to_epic() -> Result<()> {
         identifier: "ENG-1".into(),
         title: Some("Big Epic".into()),
     });
-    upsert(&pool, &[issue], &linear_cfg(&[]))
+    upsert(&pool, &[with_raw(issue)], &linear_cfg(&[]))
         .await
         .context("upsert issue with parent")?;
     let (parent_key, epic_title): (Option<String>, Option<String>) =
@@ -270,7 +284,7 @@ async fn upsert_uses_project_as_epic_when_no_parent() -> Result<()> {
     issue.project = Some(Project {
         name: Some("Meridian Core".into()),
     });
-    upsert(&pool, &[issue], &linear_cfg(&[]))
+    upsert(&pool, &[with_raw(issue)], &linear_cfg(&[]))
         .await
         .context("upsert issue with project")?;
     let (parent_key, epic_title): (Option<String>, Option<String>) =
@@ -293,7 +307,7 @@ async fn upsert_joins_labels_as_tags() -> Result<()> {
             LabelNode { name: "P1".into() },
         ],
     });
-    upsert(&pool, &[issue], &linear_cfg(&[]))
+    upsert(&pool, &[with_raw(issue)], &linear_cfg(&[]))
         .await
         .context("upsert issue with labels")?;
     let (tags,): (Option<String>,) =
@@ -312,7 +326,7 @@ async fn upsert_stores_sprint_name() -> Result<()> {
     issue.cycle = Some(Cycle {
         name: Some("Sprint 7".into()),
     });
-    upsert(&pool, &[issue], &linear_cfg(&[]))
+    upsert(&pool, &[with_raw(issue)], &linear_cfg(&[]))
         .await
         .context("upsert issue with cycle")?;
     let (sprint_name,): (Option<String>,) =
@@ -328,12 +342,12 @@ async fn upsert_stores_sprint_name() -> Result<()> {
 async fn upsert_idempotent_on_conflict() -> Result<()> {
     let pool = make_pool().await?;
     let cfg = linear_cfg(&[]);
-    upsert(&pool, &[make_issue("ENG-8", "started")], &cfg)
+    upsert(&pool, &[with_raw(make_issue("ENG-8", "started"))], &cfg)
         .await
         .context("first upsert")?;
     let mut updated = make_issue("ENG-8", "started");
     updated.title = "Updated title".into();
-    upsert(&pool, &[updated], &cfg)
+    upsert(&pool, &[with_raw(updated)], &cfg)
         .await
         .context("second upsert")?;
     let (count, title): (i64, String) =
@@ -350,10 +364,10 @@ async fn upsert_idempotent_on_conflict() -> Result<()> {
 async fn prune_removes_stale_linear_tasks() -> Result<()> {
     let pool = make_pool().await?;
     let cfg = linear_cfg(&[]);
-    upsert(&pool, &[make_issue("ENG-10", "started")], &cfg)
+    upsert(&pool, &[with_raw(make_issue("ENG-10", "started"))], &cfg)
         .await
         .context("upsert ENG-10")?;
-    upsert(&pool, &[make_issue("ENG-11", "started")], &cfg)
+    upsert(&pool, &[with_raw(make_issue("ENG-11", "started"))], &cfg)
         .await
         .context("upsert ENG-11")?;
     // ENG-11 is still live; ENG-10 is stale.
@@ -383,9 +397,13 @@ async fn prune_leaves_other_providers_intact() -> Result<()> {
     .await
     .context("seed jira task")?;
     // Also add a linear task, then prune it away.
-    upsert(&pool, &[make_issue("ENG-12", "started")], &linear_cfg(&[]))
-        .await
-        .context("upsert ENG-12")?;
+    upsert(
+        &pool,
+        &[with_raw(make_issue("ENG-12", "started"))],
+        &linear_cfg(&[]),
+    )
+    .await
+    .context("upsert ENG-12")?;
     // 'ENG-GONE' is not in the DB so ENG-12 gets pruned; JRA-1 must survive.
     prune(&pool, &["ENG-GONE".to_owned()])
         .await
@@ -397,4 +415,49 @@ async fn prune_leaves_other_providers_intact() -> Result<()> {
             .context("fetch surviving providers")?;
     assert_eq!(providers, ["jira"]);
     Ok(())
+}
+
+// -----------------------------------------------------------------------
+// CDM (Stage 3b): the new pm_tasks columns are derived from the raw issue
+// through the shared adapter. This locks the daemon-side glue; the mapping
+// itself is tested in meridian_core::adapters::linear.
+// -----------------------------------------------------------------------
+
+#[test]
+fn cdm_columns_derives_from_raw_issue() {
+    let raw = serde_json::json!({
+        "id": "11111111-2222-3333-4444-555555555555",
+        "identifier": "ENG-42",
+        "state": {"name": "In Review", "type": "started"},
+        "creator": {"id": "usr-2", "displayName": "Lead"},
+        "parent": {"id": "uuid-parent"},
+        "project": {"id": "proj-uuid"},
+        "completedAt": null,
+        "canceledAt": null
+    });
+    let cdm = super::cdm_columns(&raw);
+    // Stable key is the UUID, namespaced.
+    assert_eq!(
+        cdm.canonical_id.as_deref(),
+        Some("linear:11111111-2222-3333-4444-555555555555")
+    );
+    // "In Review" (state.type=started) → snake_case canonical category.
+    assert_eq!(cdm.status_category.as_deref(), Some("in_progress"));
+    assert_eq!(cdm.reporter_name.as_deref(), Some("Lead"));
+    assert_eq!(cdm.completed_at, None); // completedAt/canceledAt both null
+    assert_eq!(
+        cdm.ancestor_path.as_deref(),
+        Some(r#"["linear:uuid-parent"]"#)
+    );
+    assert_eq!(cdm.project_ids.as_deref(), Some(r#"["linear:proj-uuid"]"#));
+    assert!(cdm.raw_payload.is_some());
+}
+
+#[test]
+fn cdm_columns_empty_on_unusable_payload() {
+    // No `id` → adapter errors → all columns NULL, never blocks the upsert.
+    let cdm = super::cdm_columns(&serde_json::json!({"identifier": "ENG-1"}));
+    assert!(cdm.canonical_id.is_none());
+    assert!(cdm.raw_payload.is_none());
+    assert!(cdm.status_category.is_none());
 }
