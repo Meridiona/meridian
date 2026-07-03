@@ -45,6 +45,31 @@ _in_flight = 0
 _last_used = time.monotonic()
 
 
+def _invalidate_dependent_caches() -> None:
+    """Drop caches in other modules keyed off the (about-to-be-freed) model object.
+
+    ``agents.structured`` caches an outlines MLXLM wrapper + compiled FSM
+    Generator(s) per ``id(bundle.model)`` — without this call those caches
+    only get cleared lazily, the next time a structured-generation call
+    happens to see a new model id. That left the "evicted" model (and its
+    outlines_core Index/Guide/Vocabulary, which carry Python-side reference
+    cycles) fully resident for the whole gap: it both defeated this module's
+    single-slot residency guarantee (two generative models briefly alive at
+    once) and, since eviction fires here often — every reranker↔classifier
+    swap — let that stale generation pile up across many reload cycles
+    before Python's own GC schedule swept it, producing multi-GB/hour
+    malloc-zone growth invisible to ``mx.get_active_memory()`` (that call
+    only accounts Metal/unified GPU memory, not this CPU-side object graph).
+    Lazy import: ``agents.structured`` is not a dependency this module needs
+    at import time, only at eviction time.
+    """
+    try:
+        from agents import structured
+        structured.invalidate()
+    except Exception:  # noqa: BLE001 — cache invalidation is best-effort
+        pass
+
+
 def _get_model() -> _ModelBundle:
     """Return the loaded model bundle, loading from disk on the first call.
 
@@ -132,6 +157,7 @@ def maybe_evict_idle(idle_s: float | None = None) -> float | None:
             mx, before = None, 0
         _model_cache.clear()
         _tokenizer_cache.clear()
+        _invalidate_dependent_caches()
         gc.collect()
         freed = 0.0
         if mx is not None:
@@ -167,6 +193,7 @@ def evict_resident_model() -> float | None:
             mx, before = None, 0
         _model_cache.clear()
         _tokenizer_cache.clear()
+        _invalidate_dependent_caches()
         gc.collect()
         freed = 0.0
         if mx is not None:
