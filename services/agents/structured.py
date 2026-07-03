@@ -30,6 +30,7 @@ propose_ticket) — each builds its messages + a Pydantic output model, then cal
 """
 from __future__ import annotations
 
+import gc
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -48,6 +49,25 @@ from agents.thinking import DEFAULT_TEMP, DEFAULT_TOP_P, DEFAULT_TOP_K  # noqa: 
 # so caching it per schema is what keeps per-call overhead negligible.
 _model_cache: dict[int, Any] = {}
 _gen_cache: dict[tuple[int, str], Any] = {}
+
+
+def invalidate() -> None:
+    """Drop every cached outlines MLXLM wrapper + compiled FSM Generator now.
+
+    Called by ``mlx_classifier.evict_resident_model()``/``maybe_evict_idle()``
+    at the moment they evict the generative model — without this, this
+    module's caches (keyed by ``id(bundle.model)``) keep the "evicted" model
+    and its compiled outlines_core Index/Guide/Vocabulary fully alive until
+    the next FSM call happens to reload a new model id, which both defeats
+    the single-slot residency guarantee (two generative models briefly
+    resident) and, given how often eviction fires here, lets that stale
+    generation accumulate across many reload cycles before Python's own GC
+    schedule gets around to sweeping the reference cycles it holds. See the
+    matching comment in ``_outlines_model`` for the full mechanism.
+    """
+    _model_cache.clear()
+    _gen_cache.clear()
+    gc.collect()
 
 
 @dataclass
@@ -70,9 +90,12 @@ def _outlines_model(bundle: Any):
     cached = _model_cache.get(key)
     if cached is not None:
         return cached
-    # A fresh model object → drop any generators bound to a previous one.
-    _model_cache.clear()
-    _gen_cache.clear()
+    # A fresh model object with our cache still populated means the evictor's
+    # invalidate() call (below) was somehow missed — belt-and-braces clear so
+    # we never serve a generator bound to a freed model. The normal path
+    # (mlx_classifier already called invalidate() at eviction time) hits this
+    # as a no-op.
+    invalidate()
     model = outlines.from_mlxlm(bundle.model, bundle.mlx_tokenizer)
     # We render the chat template ourselves (with enable_thinking=False) and pass the
     # finished prompt string. outlines' MLXLMTypeAdapter, seeing a tokenizer that HAS a
