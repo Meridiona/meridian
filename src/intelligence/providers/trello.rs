@@ -9,6 +9,7 @@
 // If TRELLO_BOARD_IDS is set, only cards from those boards are kept.
 
 use anyhow::{Context, Result};
+use meridian_core::adapters::trello::TrelloAdapter;
 use serde::Deserialize;
 use sqlx::SqlitePool;
 
@@ -77,13 +78,15 @@ fn board_allowed(card: &TrelloCard, board_ids: &[String]) -> bool {
     skip(trello),
     fields(provider = "trello", status_code = tracing::field::Empty)
 )]
-async fn fetch(trello: &TrelloConfig) -> Result<Vec<TrelloCard>> {
+async fn fetch(trello: &TrelloConfig) -> Result<Vec<(TrelloCard, serde_json::Value)>> {
     let token = oauth_trello::load_token().context("loading Trello OAuth token")?;
+    // idList/start/dueComplete + member usernames feed the canonical adapter
+    // (CDM Stage 3b); the card `id` is always returned regardless of `fields=`.
     let url = format!(
         "{TRELLO_BASE}/members/me/cards\
          ?filter=open\
-         &fields=shortLink,name,desc,idBoard,dateLastActivity,shortUrl,closed,due,labels\
-         &members=true&member_fields=fullName\
+         &fields=shortLink,name,desc,idBoard,idList,dateLastActivity,shortUrl,closed,due,start,dueComplete,labels\
+         &members=true&member_fields=fullName,username\
          &limit={MAX_RESULTS}\
          &key={}&token={}",
         trello.app_key, token,
@@ -104,10 +107,16 @@ async fn fetch(trello: &TrelloConfig) -> Result<Vec<TrelloCard>> {
         anyhow::bail!("Trello API → {}: {}", status, text);
     }
 
-    let cards: Vec<TrelloCard> =
+    // Parse once as a Value so each raw card survives verbatim for the
+    // canonical adapter (CDM Stage 3b), then deserialise the typed view from
+    // the same body. Array order is identical, so we zip them.
+    let body_val: serde_json::Value =
         serde_json::from_str(&text).context("deserialising Trello cards")?;
+    let raw_cards: Vec<serde_json::Value> = body_val.as_array().cloned().unwrap_or_default();
+    let cards: Vec<TrelloCard> =
+        serde_json::from_value(body_val).context("parsing Trello cards")?;
     tracing::debug!(count = cards.len(), "parsed Trello response");
-    Ok(cards)
+    Ok(cards.into_iter().zip(raw_cards).collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -116,11 +125,11 @@ async fn fetch(trello: &TrelloConfig) -> Result<Vec<TrelloCard>> {
 
 async fn upsert(
     pool: &SqlitePool,
-    cards: &[TrelloCard],
+    cards: &[(TrelloCard, serde_json::Value)],
     trello: &TrelloConfig,
 ) -> Result<Vec<String>> {
     let mut kept: Vec<String> = Vec::new();
-    for card in cards {
+    for (card, raw) in cards {
         if card.closed || !board_allowed(card, &trello.board_ids) {
             continue;
         }
@@ -142,13 +151,20 @@ async fn upsert(
         };
         let assignee_name: Option<&str> = card.members.first().map(|m| m.full_name.as_str());
 
+        // CDM columns (Stage 3b) from the raw card via the shared adapter.
+        let cdm = super::cdm::derive(&TrelloAdapter, raw);
+
         sqlx::query(
             "INSERT INTO pm_tasks
                (task_key, provider, title, description_text, status_raw, is_terminal,
                 issue_type, project_key, url, due_date, tags, assignee_name,
+                canonical_id, status_category, raw_payload, reporter_name,
+                completed_at, ancestor_path, project_ids,
                 updated_at, fetched_at)
              VALUES (?, 'trello', ?, ?, '', 0, 'Card', ?, ?,
-                     ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                     ?, ?, ?,
+                     ?, ?, ?, ?, ?, ?, ?,
+                     ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
              ON CONFLICT(task_key) DO UPDATE SET
                provider         = 'trello',
                title            = excluded.title,
@@ -160,6 +176,13 @@ async fn upsert(
                due_date         = excluded.due_date,
                tags             = excluded.tags,
                assignee_name    = excluded.assignee_name,
+               canonical_id     = excluded.canonical_id,
+               status_category  = excluded.status_category,
+               raw_payload      = excluded.raw_payload,
+               reporter_name    = excluded.reporter_name,
+               completed_at     = excluded.completed_at,
+               ancestor_path    = excluded.ancestor_path,
+               project_ids      = excluded.project_ids,
                updated_at       = excluded.updated_at,
                fetched_at       = excluded.fetched_at",
         )
@@ -171,6 +194,13 @@ async fn upsert(
         .bind(card.due.as_deref())
         .bind(tags.as_deref())
         .bind(assignee_name)
+        .bind(cdm.canonical_id)
+        .bind(cdm.status_category)
+        .bind(cdm.raw_payload)
+        .bind(cdm.reporter_name)
+        .bind(cdm.completed_at)
+        .bind(cdm.ancestor_path)
+        .bind(cdm.project_ids)
         .bind(&card.date_last_activity)
         .execute(pool)
         .await
@@ -344,5 +374,46 @@ mod tests {
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].short_link, "HSkL1pnj");
         assert!(!cards[0].closed);
+    }
+
+    // -----------------------------------------------------------------------
+    // CDM (Stage 3b): locks that this connector routes raw cards through
+    // TrelloAdapter. Encodings are tested once in providers::cdm; the mapping
+    // itself in meridian_core::adapters::trello.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cdm_columns_derives_from_raw_card() {
+        let raw = serde_json::json!({
+            "id": "5f4e6a1b2c3d4e5f6a7b8c9d",
+            "shortLink": "HSkL1pnj",
+            "idBoard": "board123",
+            "closed": false
+        });
+        let cdm = crate::intelligence::providers::cdm::derive(&TrelloAdapter, &raw);
+        // Stable key is the 24-hex card id, namespaced.
+        assert_eq!(
+            cdm.canonical_id.as_deref(),
+            Some("trello:5f4e6a1b2c3d4e5f6a7b8c9d")
+        );
+        // Open card → no derivable category; board = project.
+        assert_eq!(cdm.status_category, None);
+        assert_eq!(cdm.project_ids.as_deref(), Some(r#"["trello:board123"]"#));
+        // Trello never exposes the creator on the card payload.
+        assert_eq!(cdm.reporter_name, None);
+        assert!(cdm.raw_payload.is_some());
+    }
+
+    #[test]
+    fn cdm_columns_empty_on_unusable_payload() {
+        // No `id` (the pre-CDM fields filter shape) → adapter errors → all
+        // columns NULL, never blocks the upsert.
+        let cdm = crate::intelligence::providers::cdm::derive(
+            &TrelloAdapter,
+            &serde_json::json!({"shortLink": "HSkL1pnj"}),
+        );
+        assert!(cdm.canonical_id.is_none());
+        assert!(cdm.raw_payload.is_none());
+        assert!(cdm.status_category.is_none());
     }
 }

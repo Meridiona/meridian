@@ -13,7 +13,7 @@
 // built to the REST API spec but not live-tested.
 
 use anyhow::{Context, Result};
-use base64::Engine;
+use meridian_core::adapters::azure_devops::AzureDevopsAdapter;
 use serde::Deserialize;
 use serde_json::json;
 use sqlx::SqlitePool;
@@ -21,28 +21,19 @@ use std::collections::HashMap;
 
 use crate::config::AzureDevOpsConfig;
 
+mod db;
+mod fetch;
+#[cfg(test)]
+mod tests;
+
+use db::{prune, stamp_error, stamp_sync};
+use fetch::{fetch_batch, fetch_state_categories, run_wiql, BATCH_SIZE};
+
 const SYNC_INTERVAL_MINS: i64 = 5;
-const BATCH_SIZE: usize = 200;
 
 // ---------------------------------------------------------------------------
 // REST response shapes
 // ---------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-struct WiqlResponse {
-    #[serde(rename = "workItems")]
-    work_items: Vec<WorkItemRef>,
-}
-
-#[derive(Deserialize)]
-struct WorkItemRef {
-    id: u64,
-}
-
-#[derive(Deserialize)]
-struct WorkItemBatchResponse {
-    value: Vec<WorkItemDetail>,
-}
 
 #[derive(Deserialize)]
 struct WorkItemDetail {
@@ -94,17 +85,6 @@ struct WorkItemFields {
     /// which is Agile-process-only).
     #[serde(rename = "Microsoft.VSTS.Scheduling.TargetDate", default)]
     target_date: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct StatesResponse {
-    value: Vec<StateDetail>,
-}
-
-#[derive(Deserialize)]
-struct StateDetail {
-    name: String,
-    category: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -171,142 +151,11 @@ fn sprint_from_iteration_path(path: &str) -> String {
     path.rsplit('\\').next().unwrap_or(path).trim().to_owned()
 }
 
-// ---------------------------------------------------------------------------
-// Auth and helpers
-// ---------------------------------------------------------------------------
-
-/// Build the `Authorization: Basic …` header value for PAT auth.
-/// Azure DevOps expects Base64(":token") — the username portion is empty.
-fn basic_auth(pat: &str) -> String {
-    let raw = format!(":{pat}");
-    let encoded = base64::engine::general_purpose::STANDARD.encode(raw.as_bytes());
-    format!("Basic {encoded}")
-}
-
 /// Whether an Azure StateCategory is terminal. StateCategory is a fixed, reliable
 /// metaschema field: Proposed | InProgress | Resolved | Completed | Removed.
 /// Only Completed / Removed are terminal.
 fn native_terminal(category: &str) -> bool {
     matches!(category, "Completed" | "Removed")
-}
-
-// ---------------------------------------------------------------------------
-// API calls
-// ---------------------------------------------------------------------------
-
-/// Run a WIQL query and return the work item IDs assigned to @me.
-async fn run_wiql(client: &reqwest::Client, cfg: &AzureDevOpsConfig) -> Result<Vec<u64>> {
-    let url = format!(
-        "{}/{}/_apis/wit/wiql?api-version=7.1",
-        cfg.api_base, cfg.project
-    );
-    let body = json!({
-        "query": "SELECT [System.Id] FROM WorkItems WHERE [System.AssignedTo] = @me ORDER BY [System.ChangedDate] DESC"
-    });
-    let resp = client
-        .post(&url)
-        .header("Authorization", basic_auth(&cfg.pat))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .context("Azure DevOps WIQL request")?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        let msg = match status.as_u16() {
-            401 => "permission_error: PAT is invalid or expired — regenerate it in Azure DevOps User settings → Personal access tokens".to_string(),
-            403 => "permission_error: PAT lacks required scope — create a token with Work Items → Read & write scope".to_string(),
-            _ => format!("sync_error: HTTP {status}: {text}"),
-        };
-        anyhow::bail!("{msg}");
-    }
-    let wiql: WiqlResponse = resp.json().await.context("parsing WIQL response")?;
-    Ok(wiql.work_items.iter().map(|w| w.id).collect())
-}
-
-/// Fetch full details for a batch of work item IDs (≤200 per request).
-async fn fetch_batch(
-    client: &reqwest::Client,
-    cfg: &AzureDevOpsConfig,
-    ids: &[u64],
-) -> Result<Vec<WorkItemDetail>> {
-    if ids.is_empty() {
-        return Ok(vec![]);
-    }
-    let ids_str = ids
-        .iter()
-        .map(|i| i.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    let url = format!(
-        "{}/{}/_apis/wit/workitems?ids={}&\
-         fields=System.Id,System.Title,System.WorkItemType,System.State,\
-         System.ChangedDate,System.Description,System.Tags,System.IterationPath,\
-         System.TeamProject,System.AssignedTo,System.Parent,\
-         Microsoft.VSTS.Common.AcceptanceCriteria,\
-         Microsoft.VSTS.TCM.ReproSteps,\
-         Microsoft.VSTS.Scheduling.StartDate,\
-         Microsoft.VSTS.Scheduling.TargetDate&api-version=7.1",
-        cfg.api_base, cfg.project, ids_str
-    );
-    let resp = client
-        .get(&url)
-        .header("Authorization", basic_auth(&cfg.pat))
-        .send()
-        .await
-        .context("Azure DevOps work items batch request")?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Azure DevOps work items batch returned {status}: {text}");
-    }
-    let batch: WorkItemBatchResponse = resp.json().await.context("parsing batch response")?;
-    Ok(batch.value)
-}
-
-/// Fetch the state-name → StateCategory map for one work item type.
-/// On failure returns an empty map and logs a warning; the caller treats unknown
-/// states as in_progress so a degraded states API response doesn't break the sync.
-async fn fetch_state_categories(
-    client: &reqwest::Client,
-    cfg: &AzureDevOpsConfig,
-    work_item_type: &str,
-) -> HashMap<String, String> {
-    // Work item type names are alphanumeric with spaces ("User Story"); only spaces need encoding.
-    let encoded = work_item_type.replace(' ', "%20");
-    let url = format!(
-        "{}/{}/_apis/wit/workitemtypes/{}/states?api-version=7.1",
-        cfg.api_base, cfg.project, encoded
-    );
-    let result: Result<StatesResponse> = async {
-        let resp = client
-            .get(&url)
-            .header("Authorization", basic_auth(&cfg.pat))
-            .send()
-            .await
-            .context("states request")?;
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("{status}: {text}");
-        }
-        resp.json().await.context("parsing states response")
-    }
-    .await;
-
-    match result {
-        Ok(s) => s.value.into_iter().map(|d| (d.name, d.category)).collect(),
-        Err(e) => {
-            tracing::warn!(
-                work_item_type = %work_item_type, error = %e,
-                "could not fetch Azure DevOps state categories — treating as in_progress"
-            );
-            HashMap::new()
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -363,11 +212,18 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         return Ok(vec![]);
     }
 
-    // 2. Batch-fetch full detail (≤BATCH_SIZE per request).
+    // 2. Batch-fetch full detail (≤BATCH_SIZE per request). `raw_by_id` is the
+    //    CDM (Stage 3b) escape hatch — used only at the final upsert step, kept
+    //    separate so the ancestor/epic-resolution logic below (which never needs
+    //    the raw payload) stays untouched.
     let mut details: Vec<WorkItemDetail> = Vec::with_capacity(all_ids.len());
+    let mut raw_by_id: HashMap<u64, serde_json::Value> = HashMap::with_capacity(all_ids.len());
     for chunk in all_ids.chunks(BATCH_SIZE) {
         let batch = fetch_batch(&client, cfg, chunk).await?;
-        details.extend(batch);
+        for (detail, raw) in batch {
+            raw_by_id.insert(detail.id, raw);
+            details.push(detail);
+        }
     }
 
     // 2b. Fetch ancestor items (parents not already in the WIQL set) so we can
@@ -392,11 +248,11 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
                     next.extend(
                         batch
                             .iter()
-                            .filter_map(|d| d.fields.parent_id)
+                            .filter_map(|(d, _)| d.fields.parent_id)
                             .filter(|pid| !fetched_set.contains(pid)),
                     );
                     fetched_set.extend(chunk.iter().copied());
-                    ancestor_details.extend(batch);
+                    ancestor_details.extend(batch.into_iter().map(|(d, _)| d));
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -464,6 +320,9 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         })
         .collect();
 
+    // cfg.api_base namespaces canonical ids — always available for all three
+    // supported URL shapes, and only needs to be a stable per-workspace string.
+    let cdm_adapter = AzureDevopsAdapter::new(cfg.api_base.clone());
     let mut kept: Vec<String> = Vec::with_capacity(active.len());
     for u in &active {
         let task_key = format!("{}#{}", cfg.project, u.detail.id);
@@ -518,12 +377,20 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
             .map(|id| format!("{}#{}", cfg.project, id));
         let epic_title: Option<&str> = resolve_epic_title(&id_meta, f.parent_id);
 
+        // CDM columns (Stage 3b) from the raw work item via the shared adapter.
+        let empty = json!({});
+        let raw = raw_by_id.get(&u.detail.id).unwrap_or(&empty);
+        let cdm = super::cdm::derive(&cdm_adapter, raw);
+
         sqlx::query(
             "INSERT INTO pm_tasks
                (task_key, provider, title, description_text, status_raw, is_terminal,
                 issue_type, project_key, url, updated_at, sprint_name, tags,
-                assignee_name, start_date, due_date, parent_key, epic_title)
-             VALUES (?, 'azure_devops', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                assignee_name, start_date, due_date, parent_key, epic_title,
+                canonical_id, status_category, raw_payload, reporter_name,
+                completed_at, ancestor_path, project_ids)
+             VALUES (?, 'azure_devops', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                     ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(task_key) DO UPDATE SET
                provider         = 'azure_devops',
                title            = excluded.title,
@@ -540,7 +407,14 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
                start_date       = excluded.start_date,
                due_date         = excluded.due_date,
                parent_key       = excluded.parent_key,
-               epic_title       = excluded.epic_title",
+               epic_title       = excluded.epic_title,
+               canonical_id     = excluded.canonical_id,
+               status_category  = excluded.status_category,
+               raw_payload      = excluded.raw_payload,
+               reporter_name    = excluded.reporter_name,
+               completed_at     = excluded.completed_at,
+               ancestor_path    = excluded.ancestor_path,
+               project_ids      = excluded.project_ids",
         )
         .bind(&task_key)
         .bind(&f.title)
@@ -558,6 +432,13 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         .bind(f.target_date.as_deref())
         .bind(parent_key.as_deref())
         .bind(epic_title)
+        .bind(cdm.canonical_id)
+        .bind(cdm.status_category)
+        .bind(cdm.raw_payload)
+        .bind(cdm.reporter_name)
+        .bind(cdm.completed_at)
+        .bind(cdm.ancestor_path)
+        .bind(cdm.project_ids)
         .execute(pool)
         .await
         .with_context(|| format!("upserting Azure DevOps work item {}", u.detail.id))?;
@@ -616,295 +497,4 @@ fn resolve_epic_id(
         current = (*pid)?;
     }
     None
-}
-
-// ---------------------------------------------------------------------------
-// DB helpers
-// ---------------------------------------------------------------------------
-
-async fn prune(pool: &SqlitePool, kept_keys: &[String]) -> Result<()> {
-    if kept_keys.is_empty() {
-        sqlx::query(
-            "DELETE FROM pm_task_embeddings WHERE task_key IN \
-             (SELECT task_key FROM pm_tasks WHERE provider = 'azure_devops')",
-        )
-        .execute(pool)
-        .await
-        .context("pruning all azure_devops pm_task_embeddings")?;
-        sqlx::query("DELETE FROM pm_tasks WHERE provider = 'azure_devops'")
-            .execute(pool)
-            .await
-            .context("pruning all azure_devops pm_tasks")?;
-        return Ok(());
-    }
-
-    let placeholders = kept_keys.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-
-    let sql_embed = format!(
-        "DELETE FROM pm_task_embeddings WHERE task_key IN \
-         (SELECT task_key FROM pm_tasks \
-          WHERE provider = 'azure_devops' AND task_key NOT IN ({placeholders}))"
-    );
-    let mut q = sqlx::query(&sql_embed);
-    for k in kept_keys {
-        q = q.bind(k);
-    }
-    q.execute(pool)
-        .await
-        .context("pruning stale azure_devops pm_task_embeddings")?;
-
-    let sql_tasks = format!(
-        "DELETE FROM pm_tasks \
-         WHERE provider = 'azure_devops' AND task_key NOT IN ({placeholders})"
-    );
-    let mut q2 = sqlx::query(&sql_tasks);
-    for k in kept_keys {
-        q2 = q2.bind(k);
-    }
-    let result = q2
-        .execute(pool)
-        .await
-        .context("pruning stale azure_devops pm_tasks")?;
-
-    if result.rows_affected() > 0 {
-        tracing::info!(
-            removed = result.rows_affected(),
-            "pruned stale azure_devops tasks"
-        );
-    }
-    Ok(())
-}
-
-async fn stamp_sync(pool: &SqlitePool) -> Result<()> {
-    let now = chrono::Utc::now().to_rfc3339();
-    sqlx::query(
-        "INSERT INTO pm_sync_state (provider, last_synced_at, last_error)
-         VALUES ('azure_devops', ?, NULL)
-         ON CONFLICT(provider) DO UPDATE SET
-           last_synced_at = excluded.last_synced_at,
-           last_error     = NULL",
-    )
-    .bind(&now)
-    .execute(pool)
-    .await
-    .context("updating azure_devops sync state")?;
-    let _ = crate::notices::clear(pool, "pm.azure_devops").await;
-    Ok(())
-}
-
-async fn stamp_error(pool: &SqlitePool, error: &str) -> Result<()> {
-    let now = chrono::Utc::now().to_rfc3339();
-    sqlx::query(
-        "INSERT INTO pm_sync_state (provider, last_synced_at, last_error)
-         VALUES ('azure_devops', ?, ?)
-         ON CONFLICT(provider) DO UPDATE SET last_error = excluded.last_error",
-    )
-    .bind(&now)
-    .bind(error)
-    .execute(pool)
-    .await
-    .context("recording azure_devops sync error")?;
-    let _ = crate::notices::raise(
-        pool,
-        "pm.azure_devops",
-        "error",
-        "Azure DevOps sync failing",
-        error,
-        Some("Set AZURE_DEVOPS_PAT in .env"),
-    )
-    .await;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Unit tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_basic_auth_format() {
-        let header = basic_auth("mytoken");
-        assert!(header.starts_with("Basic "));
-        let encoded = header.strip_prefix("Basic ").unwrap();
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(encoded)
-            .unwrap();
-        assert_eq!(decoded, b":mytoken");
-    }
-
-    #[test]
-    fn test_html_to_plaintext_basic() {
-        assert_eq!(html_to_plaintext("<div>Bug test<br> </div>"), "Bug test");
-        assert_eq!(
-            html_to_plaintext("<p>Hello &amp; world</p>"),
-            "Hello & world"
-        );
-        assert_eq!(
-            html_to_plaintext("<div>Step 1</div><div>Step 2</div>"),
-            "Step 1 Step 2",
-        );
-        assert_eq!(html_to_plaintext(""), "");
-        assert_eq!(html_to_plaintext("plain text"), "plain text");
-        assert_eq!(
-            html_to_plaintext("<ul><li>item 1</li><li>item 2</li></ul>"),
-            "item 1 item 2",
-        );
-    }
-
-    #[test]
-    fn test_native_terminal() {
-        // Only Completed / Removed are terminal StateCategories.
-        assert!(native_terminal("Completed"));
-        assert!(native_terminal("Removed"));
-        assert!(!native_terminal("Proposed"));
-        assert!(!native_terminal("InProgress"));
-        assert!(!native_terminal("Resolved"));
-        assert!(!native_terminal("SomeCustomState"));
-    }
-
-    #[test]
-    fn test_html_to_plaintext() {
-        assert_eq!(html_to_plaintext("<div>Bug test<br> </div>"), "Bug test");
-        assert_eq!(
-            html_to_plaintext("<p>Hello &amp; world</p>"),
-            "Hello & world"
-        );
-        assert_eq!(
-            html_to_plaintext("<div>Step 1</div><div>Step 2</div>"),
-            "Step 1 Step 2",
-        );
-        assert_eq!(html_to_plaintext(""), "");
-        assert_eq!(html_to_plaintext("plain text"), "plain text");
-        assert_eq!(
-            html_to_plaintext("<ul><li>item 1</li><li>item 2</li></ul>"),
-            "item 1 item 2",
-        );
-    }
-
-    #[test]
-    fn test_sprint_from_iteration_path() {
-        assert_eq!(
-            sprint_from_iteration_path(r"MyProject\Sprint 14"),
-            "Sprint 14"
-        );
-        assert_eq!(sprint_from_iteration_path("MyProject"), "MyProject");
-        assert_eq!(sprint_from_iteration_path(r"A\B\C"), "C");
-        assert_eq!(sprint_from_iteration_path(""), "");
-    }
-
-    // ---- epic_title resolution (resolve_epic_title) ------------------------
-    //
-    // Cases mirror the live hegdeakarsh2002 board so the tests track production:
-    //   #34 Epic  "Auth & Security Overhaul"
-    //     └ #35 Issue → #37 Task
-    //   #58 Epic  "Performance & Infrastructure"
-    //     └ #59 Issue → #61 Task
-    // The map value is (title, work_item_type, parent_id), exactly as built in
-    // force_refresh from the fetched + ancestor work items.
-
-    /// Builds an id→(title, type, parent) map from `(id, title, type, parent)` tuples.
-    fn meta(
-        rows: &[(u64, &'static str, &'static str, Option<u64>)],
-    ) -> HashMap<u64, (&'static str, &'static str, Option<u64>)> {
-        rows.iter().map(|&(id, t, w, p)| (id, (t, w, p))).collect()
-    }
-
-    #[test]
-    fn epic_resolves_from_direct_epic_parent() {
-        // #35 (Issue) → parent #34 (Epic). One hop to the Epic.
-        let m = meta(&[(34, "Auth & Security Overhaul", "Epic", None)]);
-        assert_eq!(
-            resolve_epic_title(&m, Some(34)),
-            Some("Auth & Security Overhaul")
-        );
-    }
-
-    #[test]
-    fn epic_resolves_through_multi_hop_chain() {
-        // #61 (Task) → #59 (Issue) → #58 (Epic). The nearest Epic ancestor wins.
-        let m = meta(&[
-            (
-                59,
-                "Migrate services to Kubernetes (EKS)",
-                "Issue",
-                Some(58),
-            ),
-            (58, "Performance & Infrastructure", "Epic", None),
-        ]);
-        assert_eq!(
-            resolve_epic_title(&m, Some(59)),
-            Some("Performance & Infrastructure")
-        );
-    }
-
-    #[test]
-    fn epic_is_none_when_no_parent() {
-        // Epics themselves (#34/#58) and any top-level item have no parent_id.
-        let m = meta(&[(34, "Auth & Security Overhaul", "Epic", None)]);
-        assert_eq!(resolve_epic_title(&m, None), None);
-    }
-
-    #[test]
-    fn epic_is_none_when_chain_has_no_epic() {
-        // Issue → Issue with no Epic anywhere in the chain.
-        let m = meta(&[
-            (10, "Sub-issue", "Issue", Some(11)),
-            (11, "Parent issue", "Issue", None),
-        ]);
-        assert_eq!(resolve_epic_title(&m, Some(10)), None);
-    }
-
-    #[test]
-    fn epic_is_none_when_parent_missing_from_map() {
-        // Ancestor fetch failed / item not returned: graceful None, no panic.
-        let m = meta(&[]);
-        assert_eq!(resolve_epic_title(&m, Some(999)), None);
-    }
-
-    #[test]
-    fn epic_resolution_terminates_on_cycle() {
-        // A→B→A would loop forever without the 10-hop guard; neither is an Epic.
-        let m = meta(&[(1, "A", "Issue", Some(2)), (2, "B", "Issue", Some(1))]);
-        assert_eq!(resolve_epic_title(&m, Some(1)), None);
-    }
-
-    #[test]
-    fn epic_picks_nearest_epic_when_nested() {
-        // Task → Feature(Epic-category? no) — here a closer Epic shadows a farther one.
-        // #200 → #201 (Epic "Near") → #202 (Epic "Far"): nearest wins.
-        let m = meta(&[(201, "Near", "Epic", Some(202)), (202, "Far", "Epic", None)]);
-        assert_eq!(resolve_epic_title(&m, Some(201)), Some("Near"));
-    }
-
-    #[test]
-    fn parent_key_format_matches_task_key_shape() {
-        // parent_key uses the resolved Epic id (or direct parent as fallback) in
-        // `{project}#{id}` format — same shape as task_key for join correctness.
-        let project = "hegdeakarsh2002";
-        let epic_id: Option<u64> = Some(59);
-        let parent_key = epic_id.map(|id| format!("{project}#{id}"));
-        assert_eq!(parent_key.as_deref(), Some("hegdeakarsh2002#59"));
-        let none_parent: Option<u64> = None;
-        assert_eq!(none_parent.map(|id| format!("{project}#{id}")), None);
-    }
-
-    #[test]
-    fn resolve_epic_id_finds_nearest_epic_ancestor() {
-        // task 34 (not in map) → feature 59 → epic 201
-        let m = meta(&[
-            (59, "Feature A", "Feature", Some(201)),
-            (201, "Big Epic", "Epic", None),
-        ]);
-        // 34 not in map → None
-        assert_eq!(resolve_epic_id(&m, Some(34)), None);
-        // 59 is Feature whose parent 201 is Epic → returns 201
-        assert_eq!(resolve_epic_id(&m, Some(59)), Some(201));
-        // 201 is itself an Epic → returns 201 on first check
-        assert_eq!(resolve_epic_id(&m, Some(201)), Some(201));
-        // None parent_id → None
-        assert_eq!(resolve_epic_id(&m, None), None);
-    }
 }

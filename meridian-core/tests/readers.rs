@@ -174,6 +174,85 @@ async fn tasks_autonomous_excludes_supervised_agent_time() {
     assert_eq!(x.cats.get("coding").copied(), Some(3600));
 }
 
+/// The CDM columns (migration 056) are surfaced by the reader when present,
+/// including JSON-array hierarchy fields parsed into vecs.
+#[tokio::test]
+async fn tasks_exposes_cdm_columns_when_present() {
+    let pool = make_pool().await;
+    // Mirror migration 056: add the CDM columns to pm_tasks.
+    for col in [
+        "canonical_id",
+        "status_category",
+        "raw_payload",
+        "reporter_name",
+        "completed_at",
+        "ancestor_path",
+        "project_ids",
+    ] {
+        sqlx::query(&format!("ALTER TABLE pm_tasks ADD COLUMN {col} TEXT"))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO pm_tasks (task_key, title, issue_type, status_raw, is_terminal, \
+            canonical_id, status_category, reporter_name, completed_at, ancestor_path, project_ids) \
+         VALUES ('JIRA-1','Task','Task','Done',1, \
+            'jira:10001','done','Lead','2026-06-30T10:00:00Z', \
+            '[\"jira:10000\"]','[\"jira:proj\"]')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let today = meridian_core::date::today_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let r = meridian_core::tasks::get_tasks(&pool, &today, &today, &now)
+        .await
+        .unwrap();
+    let t = r
+        .tasks
+        .iter()
+        .find(|t| t.key == "JIRA-1")
+        .expect("task present");
+
+    assert_eq!(t.canonical_id.as_deref(), Some("jira:10001"));
+    assert_eq!(t.status_category.as_deref(), Some("done"));
+    assert_eq!(t.reporter.as_deref(), Some("Lead"));
+    assert_eq!(t.completed_at.as_deref(), Some("2026-06-30T10:00:00Z"));
+    assert_eq!(t.ancestor_path, vec!["jira:10000"]);
+    assert_eq!(t.project_ids, vec!["jira:proj"]);
+}
+
+/// On a DB that predates migration 056 (no CDM columns), the reader degrades
+/// gracefully: the new fields come back None/empty rather than erroring.
+#[tokio::test]
+async fn tasks_cdm_columns_default_when_absent() {
+    let pool = make_pool().await; // pm_tasks has no CDM columns
+    sqlx::query("INSERT INTO pm_tasks (task_key, title, issue_type) VALUES ('OLD-1','Old','Task')")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let today = meridian_core::date::today_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let r = meridian_core::tasks::get_tasks(&pool, &today, &today, &now)
+        .await
+        .unwrap();
+    let t = r
+        .tasks
+        .iter()
+        .find(|t| t.key == "OLD-1")
+        .expect("task present");
+
+    assert_eq!(t.canonical_id, None);
+    assert_eq!(t.status_category, None);
+    assert_eq!(t.reporter, None);
+    assert_eq!(t.completed_at, None);
+    assert!(t.ancestor_path.is_empty());
+    assert!(t.project_ids.is_empty());
+}
+
 /// Regression for the active-session column-guard bug: `app_sessions` HAS
 /// `category_explanation` (post-migration) but `active_session` does NOT. The
 /// old code guarded the active query on `app_sessions`' columns, injecting the
