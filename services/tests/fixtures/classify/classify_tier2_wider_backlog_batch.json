@@ -1,0 +1,38 @@
+{
+  "report": "",
+  "candidates": [
+    {
+      "task_key": "KAN-212",
+      "title": "Decide pricing model before July 1 launch",
+      "doc": "[Task] Decide pricing model before July 1 launch. Epic: Marketing Foundation. Decision needed by Jun 25: flat $5/mo vs free L1 (timeline only) + paid L3 (PM sync). Inputs to the decision: compliance matrix from KAN-175 (does corporate-device risk limit addressable market enough to require a free tier?), pilot user willingness-to-pay signals from interviews, funnel math (need 200 paying users for $1k MRR \u2014 flat $5 model is simpler). Lock the model, update the pricing page, and make sure KAN-179 (Monetization Infrastructure) builds the right checkout flow.",
+      "rerank_score": 0.0015978461597114801
+    },
+    {
+      "task_key": "KAN-223",
+      "title": "Build pricing page on the website",
+      "doc": "[Task] Build pricing page on the website. Epic: Monetization Infrastructure. Create a /pricing page on meridiona.dev showing the chosen plan(s), price, and what is included. Must link to the Stripe Checkout flow. Keep it simple: one plan card (or two if free/paid tier is chosen), a feature comparison table, and a prominent CTA. The pricing decision (KAN-212) must be locked before this page is finalised \u2014 do not build it until KAN-212 is done.",
+      "rerank_score": 0.0014103589346632361
+    },
+    {
+      "task_key": "KAN-210",
+      "title": "Refine landing page copy and add a clear above-the-fold value prop",
+      "doc": "[Task] Refine landing page copy and add a clear above-the-fold value prop. Epic: Marketing Foundation. The landing page must answer in 6 words what Meridian does and for whom. Current target: \"Automatic Jira updates from your screen \u2014 no manual logging.\" Test headline variants. Above the fold: headline, 2-line subhead, one CTA (waitlist / beta signup). Below fold: how it works (3 steps), privacy statement (local-first, nothing leaves your machine), and social proof placeholder (pilot quote once available). No feature lists as the primary content.",
+      "rerank_score": 0.0014103589346632361
+    },
+    {
+      "task_key": "KAN-225",
+      "title": "Post to r/devtools and r/programming on launch day",
+      "doc": "[Task] Post to r/devtools and r/programming on launch day. Epic: July 1 Launch Execution. Post to r/devtools (link post) and r/programming (text post with technical angle) on Jul 1. The r/devtools post can be product-forward; the r/programming post should lead with the technical implementation story (Rust daemon, local-first, ETL pipeline). Must have \u226550 Reddit karma before posting to avoid auto-removal. Do not cross-post simultaneously \u2014 stagger by a few hours. Monitor and reply to all comments for the first 24h.",
+      "rerank_score": 0.0012448437046259642
+    },
+    {
+      "task_key": "KAN-219",
+      "title": "Publish ToS, Privacy Policy, and Refund Policy pages",
+      "doc": "[Task] Publish ToS, Privacy Policy, and Refund Policy pages. Epic: Launch Readiness. Three legal pages are required before taking payment: Terms of Service, Privacy Policy, Refund Policy. Minimum viable versions: ToS covers acceptable use (personal Mac only, no resale); Privacy Policy covers local-first data handling + the operational telemetry allowlist; Refund Policy covers 7-day cancellation. Use a template from Termly or equivalent \u2014 do not write from scratch. Must be live at meridiona.dev/legal before Stripe checkout goes live.",
+      "rerank_score": 0.0009110511164180934
+    }
+  ],
+  "tier": 2,
+  "tier_note": "wider backlog batch",
+  "max_tokens": 10240
+}

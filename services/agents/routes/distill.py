@@ -91,10 +91,13 @@ async def distill_hour_endpoint(req: _DistillHourRequest) -> _DistillHourRespons
             log.error("distill_hour: error hour=%s: %s", req.hour, exc,
                       extra={"hour": req.hour})
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-        span.set_attribute("nsess",         resp.nsess)
-        span.set_attribute("out_chars",     resp.out_chars)
-        span.set_attribute("reduction_pct", resp.reduction_pct)
-        span.set_attribute("elapsed_s",     resp.elapsed_s)
+        span.set_attribute("nsess",             resp.nsess)
+        span.set_attribute("raw_chars",         resp.raw_chars)
+        span.set_attribute("out_chars",         resp.out_chars)
+        span.set_attribute("input_tokens_est",  resp.raw_chars // 4)
+        span.set_attribute("output_tokens_est", resp.out_chars // 4)
+        span.set_attribute("reduction_pct",     resp.reduction_pct)
+        span.set_attribute("elapsed_s",         resp.elapsed_s)
         span.set_attribute("distil_output", observability.preview(resp.body, max_chars=4000))
         span.set_attribute("is_error",      False)
 

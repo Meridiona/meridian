@@ -12,7 +12,7 @@ import type { CSSProperties, ReactNode } from 'react'
 export function Mark({ mono, color, size = 34, radius }: {
   mono: string; color: string; size?: number; radius?: number
 }) {
-  // `color` may be a hex literal (#rrggbb) or a CSS variable (var(--accent)).
+  // `color` may be a hex literal (#rrggbb) or a CSS variable (var(--color-state-proposal)).
   // Appending an alpha suffix only works for hex; for anything else use
   // color-mix so the tint renders instead of becoming an invalid value.
   const background = color.startsWith('#')
@@ -48,7 +48,7 @@ export function Check({ size = 14, color = 'currentColor', w = 2 }: { size?: num
     <path d="M3.5 8.5 6.5 11.5 12.5 5" /></svg>)
 }
 
-export function Spinner({ size = 14, width = 1.6, color = 'var(--accent)' }: { size?: number; width?: number; color?: string }) {
+export function Spinner({ size = 14, width = 1.6, color = 'var(--color-state-proposal)' }: { size?: number; width?: number; color?: string }) {
   return (
     <span className="mer-spin inline-block" style={{ width: size, height: size }} aria-hidden>
       <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
@@ -77,10 +77,10 @@ export function Btn({ children, variant = 'primary', size = 'md', disabled, onCl
     border: '0.5px solid transparent',
   }
   const skins: Record<string, CSSProperties> = {
-    primary: { background: 'var(--accent)', color: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,.12)' },
-    secondary: { background: 'var(--surface)', color: 'var(--ink)', borderColor: 'var(--rule-2)' },
-    ghost: { background: 'transparent', color: 'var(--ink-3)' },
-    soft: { background: 'var(--accent-soft)', color: 'var(--accent)' },
+    primary: { background: 'var(--color-state-proposal)', color: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,.12)' },
+    secondary: { background: 'var(--t-card)', color: 'var(--t-title)', borderColor: 'var(--t-card-border)' },
+    ghost: { background: 'transparent', color: 'var(--t-faint)' },
+    soft: { background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)', color: 'var(--color-state-proposal)' },
   }
   const dim: CSSProperties | null = disabled ? { opacity: 0.4, filter: 'saturate(.6)' } : null
   return (
@@ -88,7 +88,7 @@ export function Btn({ children, variant = 'primary', size = 'md', disabled, onCl
       style={{ ...base, ...skins[variant], ...dim, ...style }}
       onMouseEnter={(e) => { if (disabled) return
         if (variant === 'primary') e.currentTarget.style.filter = 'brightness(1.06)'
-        else e.currentTarget.style.background = 'var(--surface-2)' }}
+        else e.currentTarget.style.background = 'var(--t-box)' }}
       onMouseLeave={(e) => { if (disabled) return
         e.currentTarget.style.filter = 'none'
         if (variant !== 'primary') e.currentTarget.style.background = String(skins[variant].background) }}>
@@ -98,7 +98,7 @@ export function Btn({ children, variant = 'primary', size = 'md', disabled, onCl
 }
 
 // ── Progress bar ─────────────────────────────────────────────────────────────
-export function Bar({ pct, height = 6, track = 'var(--rule)', fill = 'var(--accent)' }: {
+export function Bar({ pct, height = 6, track = 'var(--t-hair)', fill = 'var(--color-state-proposal)' }: {
   pct: number; height?: number; track?: string; fill?: string
 }) {
   return (
@@ -110,7 +110,7 @@ export function Bar({ pct, height = 6, track = 'var(--rule)', fill = 'var(--acce
 }
 
 // ── Kicker / eyebrow label ───────────────────────────────────────────────────
-export function Kicker({ children, color = 'var(--ink-3)', style }: { children: ReactNode; color?: string; style?: CSSProperties }) {
+export function Kicker({ children, color = 'var(--t-faint)', style }: { children: ReactNode; color?: string; style?: CSSProperties }) {
   return (<p className="font-mono" style={{ fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', color, ...style }}>{children}</p>)
 }
 
@@ -118,11 +118,11 @@ export function Kicker({ children, color = 'var(--ink-3)', style }: { children: 
 export function Row({ children, tone = 'surface', style }: {
   children: ReactNode; tone?: 'surface' | 'tint' | 'soft'; style?: CSSProperties
 }) {
-  const bg = tone === 'tint' ? 'var(--tint)' : tone === 'soft' ? 'var(--surface-2)' : 'var(--surface)'
+  const bg = tone === 'tint' ? 'color-mix(in srgb, var(--color-state-proposal) 8%, transparent)' : tone === 'soft' ? 'var(--t-box)' : 'var(--t-card)'
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 13, padding: '13px 15px',
-      border: '0.5px solid var(--rule-2)', borderRadius: 13, background: bg, ...style,
+      border: '0.5px solid var(--t-card-border)', borderRadius: 13, background: bg, ...style,
     }}>{children}</div>
   )
 }

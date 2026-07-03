@@ -106,7 +106,7 @@ else
 
     if [[ "${APPLE_SILICON}" -eq 1 ]]; then
         echo "Apple Silicon detected — installing mlx-lm for local inference..."
-        "${UV_BIN}" pip install --python "${SERVICES_DIR}/.venv/bin/python" "mlx-lm>=0.22,<1"
+        "${UV_BIN}" pip install --python "${SERVICES_DIR}/.venv/bin/python" "mlx-lm>=0.31.1,<1"
         echo "  ✓ mlx-lm installed"
 
         _macos_major="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"

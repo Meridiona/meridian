@@ -56,7 +56,12 @@ impl ProposedAction {
 }
 
 /// Edit a proposed ticket's title. No-op (returns `false`) once the proposal is
-/// approved/dismissed. Returns `true` when a `proposed` row was updated.
+/// approved/dismissed. Returns `true` when a `proposed` row was updated. Logs
+/// the old→new title as structured fields (exported to OpenObserve alongside
+/// every other daemon/tray trace) so a title correction is traceable — the
+/// same "was X, corrected to Y" convention `worklogs::rematch_worklog` and
+/// `worklog_action`'s reject attribution use, just via tracing rather than a
+/// DB feedback row (`pm_proposed_tasks` has no companion feedback table).
 #[tracing::instrument(skip(pool))]
 pub async fn edit_proposed_title(
     pool: &SqlitePool,
@@ -64,6 +69,15 @@ pub async fn edit_proposed_title(
     title: &str,
     now_iso: &str,
 ) -> anyhow::Result<bool> {
+    let old_title: Option<String> = sqlx::query_scalar(
+        "SELECT title FROM pm_proposed_tasks WHERE id = ? AND state = 'proposed'",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .instrument(tracing::debug_span!("proposed.read.title"))
+    .await
+    .context("proposed: read title before edit")?;
+
     let res =
         sqlx::query("UPDATE pm_proposed_tasks SET title = ? WHERE id = ? AND state = 'proposed'")
             .bind(title)
@@ -74,7 +88,13 @@ pub async fn edit_proposed_title(
             .context("proposed: edit title")?;
     let _ = now_iso;
     let updated = res.rows_affected() > 0;
-    tracing::info!(id, updated, "proposed title edited");
+    tracing::info!(
+        id,
+        updated,
+        old_title = old_title.as_deref().unwrap_or(""),
+        new_title = title,
+        "proposed title edited"
+    );
     Ok(updated)
 }
 

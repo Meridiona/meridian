@@ -82,6 +82,29 @@ pub async fn post_worklog(
     })
 }
 
+/// Delete a previously-posted worklog comment (see `jira::delete_worklog` for
+/// why — an edited/re-matched `posted` row must have its stale tracker entry
+/// removed before the corrected content reposts).
+pub async fn delete_worklog(linear: &LinearConfig, comment_id: &str) -> Result<()> {
+    let client = reqwest::Client::new();
+    let mutation =
+        "mutation DeleteWorklogComment($id: String!) { commentDelete(id: $id) { success } }";
+    let payload = json!({ "query": mutation, "variables": { "id": comment_id } });
+
+    tracing::info!(comment_id, "linear worklog comment delete");
+
+    let data = graphql(&client, linear, &payload)
+        .await
+        .with_context(|| format!("deleting Linear worklog comment {comment_id}"))?;
+    if data["commentDelete"]["success"].as_bool() != Some(true) {
+        bail!(
+            "Linear commentDelete for {comment_id} did not report success: {}",
+            data["commentDelete"]
+        );
+    }
+    Ok(())
+}
+
 /// Resolve a Linear issue's UUID from its human identifier (`ENG-123`).
 async fn resolve_issue_uuid(
     client: &reqwest::Client,

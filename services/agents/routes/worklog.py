@@ -23,6 +23,27 @@ log = logging.getLogger("agents.server")
 router = APIRouter()
 
 
+def _human_hour(hour_label: str) -> str:
+    """`2026-06-29T18` (local hour label) → `2026-06-29 18:00–19:00 (local)`.
+
+    The hour label is ALWAYS local time (the Rust driver buckets by the user's
+    clock), so the root span / dashboard must present it as local — not UTC.
+    """
+    try:
+        day, hh = hour_label.split("T")
+        h = int(hh)
+        return f"{day} {h:02d}:00–{(h + 1) % 24:02d}:00 (local)"
+    except (ValueError, IndexError):
+        return hour_label
+
+
+def _human_elapsed(secs: float) -> str:
+    """`163.03` → `2m 43s` (minutes+seconds; drops the minute when under 60s)."""
+    total = int(round(secs))
+    m, s = divmod(total, 60)
+    return f"{m}m {s}s" if m else f"{s}s"
+
+
 class _WorklogHourRequest(BaseModel):
     hour:        str                    # 'YYYY-MM-DDTHH'
     db_path:     str
@@ -62,6 +83,7 @@ async def worklog_hour(req: _WorklogHourRequest, request: Request) -> dict:
         context=_daemon_ctx if _daemon_ctx is not None else _otel_context.Context(),
     ) as span:
         span.set_attribute("wl_hour", req.hour)
+        span.set_attribute("wl_hour_local", _human_hour(req.hour))
         span.set_attribute("wl_cycle_index", req.cycle_index if req.cycle_index is not None else -1)
         span.set_attribute("is_error", True)
         # This span's own traceparent — handed to the pipeline as the parent the
@@ -70,37 +92,64 @@ async def worklog_hour(req: _WorklogHourRequest, request: Request) -> dict:
         try:
             result = await run_in_threadpool(_run, child_tp)
         except Exception as exc:  # noqa: BLE001
+            _elapsed = round(time.monotonic() - _t0, 2)
             span.set_status(trace.StatusCode.ERROR, str(exc))
-            log.error("worklog_hour: error hour=%s: %s", req.hour, exc,
-                      extra={"hour": req.hour})
+            span.set_attribute("wl_elapsed_s", _elapsed)
+            span.set_attribute("wl_elapsed_human", _human_elapsed(_elapsed))
+            # Emit the dashboard row on the error path too — every run is a row
+            # (the "Errors" metric + the table both key on wl_hour). Logged INSIDE
+            # the span so trace_id correlates the failed run to its (partial) trace.
+            log.error(
+                "worklog_hour: error hour=%s: %s", req.hour, exc,
+                extra={
+                    "wl_hour":      req.hour,
+                    "wl_hour_local": _human_hour(req.hour),
+                    "wl_nsess":     0, "wl_tier": 0, "wl_n_matched": 0,
+                    "wl_matched_keys": "", "wl_proposed": 0, "wl_proposed_title": "",
+                    "wl_proposed_type": "", "wl_worklog_ids": "", "wl_proposed_id": 0,
+                    "wl_note": f"error: {exc}", "wl_error": 1, "wl_elapsed_s": _elapsed,
+                    "wl_elapsed_human": _human_elapsed(_elapsed),
+                })
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         matched = result.get("matched", [])
         proposed = result.get("proposed")
+        proposed_type = (proposed or {}).get("issue_type", "") if proposed else ""
+        matched_keys = ",".join(m.get("task_key", "") for m in matched)
+        worklog_ids = ",".join(str(i) for i in result.get("worklog_ids", []))
         span.set_attribute("wl_nsess", result.get("nsess", 0))
         span.set_attribute("wl_tier_used", result.get("tier_used", 0))
         span.set_attribute("wl_n_matched", len(matched))
-        span.set_attribute("wl_matched_keys", ",".join(m.get("task_key", "") for m in matched))
-        span.set_attribute("wl_worklog_ids", ",".join(str(i) for i in result.get("worklog_ids", [])))
+        span.set_attribute("wl_matched_keys", matched_keys)
+        span.set_attribute("wl_worklog_ids", worklog_ids)
         span.set_attribute("wl_proposed", proposed is not None)
         span.set_attribute("wl_proposed_title", (proposed or {}).get("title", "") if proposed else "")
+        span.set_attribute("wl_proposed_type", proposed_type)
         span.set_attribute("wl_proposed_id", result.get("proposed_id") if result.get("proposed_id") is not None else -1)
         _elapsed = round(time.monotonic() - _t0, 2)
         span.set_attribute("wl_note", result.get("note", ""))
         span.set_attribute("wl_elapsed_s", _elapsed)
+        span.set_attribute("wl_elapsed_human", _human_elapsed(_elapsed))
         span.set_attribute("is_error", False)
         # Log INSIDE the span so trace_id is populated in OO.
         log.info(
             "worklog_hour: hour=%s nsess=%d tier=%d matched=%d proposed=%s elapsed=%.1fs",
             req.hour, result.get("nsess", 0), result.get("tier_used", 0),
-            len(result.get("matched", [])), result.get("proposed") is not None, _elapsed,
+            len(matched), proposed is not None, _elapsed,
             extra={
-                "wl_hour":        req.hour,
-                "wl_nsess":       result.get("nsess", 0),
-                "wl_tier":        result.get("tier_used", 0),
-                "wl_n_matched":   len(result.get("matched", [])),
-                "wl_proposed":    1 if result.get("proposed") else 0,
-                "wl_worklog_ids": ",".join(str(i) for i in result.get("worklog_ids", [])),
-                "wl_proposed_id": result.get("proposed_id") or 0,
-                "wl_elapsed_s":   _elapsed,
+                "wl_hour":          req.hour,
+                "wl_hour_local":    _human_hour(req.hour),
+                "wl_nsess":         result.get("nsess", 0),
+                "wl_tier":          result.get("tier_used", 0),
+                "wl_n_matched":     len(matched),
+                "wl_matched_keys":  matched_keys,
+                "wl_proposed":      1 if proposed else 0,
+                "wl_proposed_title": (proposed or {}).get("title", "") if proposed else "",
+                "wl_proposed_type": proposed_type,
+                "wl_worklog_ids":   worklog_ids,
+                "wl_proposed_id":   result.get("proposed_id") or 0,
+                "wl_note":          result.get("note", ""),
+                "wl_error":         0,
+                "wl_elapsed_s":     _elapsed,
+                "wl_elapsed_human": _human_elapsed(_elapsed),
             })
     return result

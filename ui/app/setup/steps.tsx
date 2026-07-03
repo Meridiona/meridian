@@ -53,29 +53,29 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
           <Row key={p.id} tone={granted ? 'tint' : 'surface'}>
             <span className="flex items-center justify-center shrink-0" style={{
               width: 34, height: 34, borderRadius: 10,
-              background: granted ? 'var(--accent-soft)' : 'var(--surface-2)',
-              color: granted ? 'var(--accent)' : 'var(--ink-3)',
-              border: '0.5px solid var(--rule-2)',
+              background: granted ? 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)' : 'var(--t-box)',
+              color: granted ? 'var(--color-state-proposal)' : 'var(--t-faint)',
+              border: '0.5px solid var(--t-card-border)',
             }}><PermIcon icon={p.icon} /></span>
 
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="flex items-center" style={{ gap: 8 }}>
-                <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--ink)' }}>{p.name}</span>
-                <span className="font-mono" style={{ fontSize: 9, letterSpacing: '.1em', color: 'var(--ink-3)', border: '0.5px solid var(--rule-2)', borderRadius: 4, padding: '1px 5px' }}>REQUIRED</span>
+                <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>{p.name}</span>
+                <span className="font-mono" style={{ fontSize: 9, letterSpacing: '.1em', color: 'var(--t-faint)', border: '0.5px solid var(--t-card-border)', borderRadius: 4, padding: '1px 5px' }}>REQUIRED</span>
               </div>
-              <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--ink-3)', marginTop: 3 }}>{p.desc}</p>
+              <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-faint)', marginTop: 3 }}>{p.desc}</p>
             </div>
 
             <div className="shrink-0">
               {granted
-                ? <span className="flex items-center" style={{ gap: 6, fontSize: 12, color: 'var(--success)', fontWeight: 500 }}><Check size={15} color="var(--success)" />Granted</span>
+                ? <span className="flex items-center" style={{ gap: 6, fontSize: 12, color: 'var(--color-state-approved)', fontWeight: 500 }}><Check size={15} color="var(--color-state-approved)" />Granted</span>
                 : <Btn size="sm" variant="secondary" onClick={() => p.id === 'input' ? wiz.grantInput() : p.id === 'screen' ? wiz.grantScreen() : wiz.openPane(p.pane)}>Open Settings</Btn>}
             </div>
           </Row>
         )
       })}
-      <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--ink-3)', marginTop: 3 }}>
-        <span style={{ width: 5, height: 5, borderRadius: 99, background: 'var(--success)' }} />
+      <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--t-faint)', marginTop: 3 }}>
+        <span style={{ width: 5, height: 5, borderRadius: 99, background: 'var(--color-state-approved)' }} />
         Everything is processed on your Mac. Meridian has no servers to send to.
       </p>
     </div>
@@ -93,16 +93,16 @@ function ProvisionStep({ state, label }: { state: StepState; label: string }) {
     <div className="flex items-center" style={{ gap: 10 }}>
       <span className="flex items-center justify-center shrink-0" style={{ width: 20, height: 20 }}>
         {state === 'done'
-          ? <Check size={16} color="var(--success)" w={2.2} />
+          ? <Check size={16} color="var(--color-state-approved)" w={2.2} />
           : state === 'error'
-            ? <span style={{ width: 12, height: 12, borderRadius: 99, background: 'var(--warn)' }} />
+            ? <span style={{ width: 12, height: 12, borderRadius: 99, background: 'var(--color-state-pending)' }} />
             : state === 'active'
               ? <Spinner size={15} width={2} />
-              : <span style={{ width: 12, height: 12, borderRadius: 99, border: '1.5px solid var(--rule-2)' }} />}
+              : <span style={{ width: 12, height: 12, borderRadius: 99, border: '1.5px solid var(--t-card-border)' }} />}
       </span>
       <span style={{
         fontSize: 12.5,
-        color: state === 'pending' ? 'var(--ink-3)' : state === 'error' ? 'var(--warn)' : 'var(--ink)',
+        color: state === 'pending' ? 'var(--t-faint)' : state === 'error' ? 'var(--color-state-pending)' : 'var(--t-title)',
         fontWeight: state === 'done' ? 500 : 400,
       }}>{label}</span>
     </div>
@@ -138,12 +138,12 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
       {/* State glyph — one calm circle, mirroring the Completion mark */}
       <span className="flex items-center justify-center mer-pop" style={{
         width: 60, height: 60, borderRadius: 99, marginBottom: 24,
-        background: showErr ? 'var(--surface-2)' : 'var(--accent-soft)',
-        color: showErr ? 'var(--warn)' : 'var(--accent)',
-        border: showErr ? '0.5px solid var(--rule-2)' : 'none',
+        background: showErr ? 'var(--t-box)' : 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)',
+        color: showErr ? 'var(--color-state-pending)' : 'var(--color-state-proposal)',
+        border: showErr ? '0.5px solid var(--t-card-border)' : 'none',
       }}>
         {wiz.modelReady
-          ? <Check size={28} color="var(--accent)" w={2.2} />
+          ? <Check size={28} color="var(--color-state-proposal)" w={2.2} />
           : showErr
             ? <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 7.5v6" /><circle cx="12" cy="17" r="0.7" fill="currentColor" stroke="none" /></svg>
             : <Spinner size={24} width={2} />}
@@ -156,13 +156,13 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
           {pct !== null ? (
             <>
               <Bar pct={pct} />
-              <p className="font-mono tnum" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 9, letterSpacing: '.02em' }}>
+              <p className="font-mono tnum" style={{ fontSize: 11, color: 'var(--t-faint)', marginTop: 9, letterSpacing: '.02em' }}>
                 {Math.round((wiz.progress?.received ?? 0) / 1_048_576)} / {Math.round((wiz.progress?.total ?? 0) / 1_048_576)} MB · {pct}%
                 {wiz.speed && wiz.speed > 0 ? ` · ${(wiz.speed / 1_048_576).toFixed(1)} MB/s` : ''}
               </p>
             </>
           ) : (
-            <p className="font-mono" style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>{wiz.progress?.message ?? 'Preparing…'}</p>
+            <p className="font-mono" style={{ fontSize: 11.5, color: 'var(--t-faint)' }}>{wiz.progress?.message ?? 'Preparing…'}</p>
           )}
         </div>
       )}
@@ -180,7 +180,7 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
       {/* Status line — reflects the live phase / outcome */}
       <p style={{
         fontSize: 13, lineHeight: 1.5, maxWidth: 300, marginTop: working ? 18 : 4,
-        color: wiz.modelReady ? 'var(--ink)' : 'var(--ink-2)', textWrap: 'pretty',
+        color: wiz.modelReady ? 'var(--t-title)' : 'var(--t-muted)', textWrap: 'pretty',
       }}>
         {wiz.modelReady
           ? 'Your on-device engine is ready.'
@@ -197,18 +197,18 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
       {showErr && !unavailable && (
         <div className="flex flex-col items-center" style={{ marginTop: 16 }}>
           <div style={{
-            width: 330, textAlign: 'left', background: 'var(--surface-2)',
-            border: '0.5px solid var(--rule-2)', borderRadius: 10, padding: '12px 14px',
+            width: 330, textAlign: 'left', background: 'var(--t-box)',
+            border: '0.5px solid var(--t-card-border)', borderRadius: 10, padding: '12px 14px',
           }}>
-            <p className="font-mono" style={{ fontSize: 9.5, letterSpacing: '.1em', color: 'var(--ink-3)', marginBottom: 9 }}>
+            <p className="font-mono" style={{ fontSize: 9.5, letterSpacing: '.1em', color: 'var(--t-faint)', marginBottom: 9 }}>
               IF IT KEEPS FAILING, CHECK
             </p>
             <div className="flex flex-col" style={{ gap: 9 }}>
               {SETUP_NET_HINTS.map((h, i) => (
                 <div key={h.t} className="flex items-start" style={{ gap: 8 }}>
-                  <span className="font-mono shrink-0" style={{ fontSize: 10.5, color: 'var(--ink-4)', fontWeight: 600, lineHeight: 1.55, width: 11 }}>{i + 1}</span>
-                  <p style={{ fontSize: 11.5, lineHeight: 1.45, color: 'var(--ink-2)' }}>
-                    <span style={{ fontWeight: 500, color: 'var(--ink)' }}>{h.t}</span> — {h.d}
+                  <span className="font-mono shrink-0" style={{ fontSize: 10.5, color: 'var(--t-faint-2)', fontWeight: 600, lineHeight: 1.55, width: 11 }}>{i + 1}</span>
+                  <p style={{ fontSize: 11.5, lineHeight: 1.45, color: 'var(--t-muted)' }}>
+                    <span style={{ fontWeight: 500, color: 'var(--t-title)' }}>{h.t}</span> — {h.d}
                   </p>
                 </div>
               ))}
@@ -229,8 +229,8 @@ function IntegrationsBody({ wiz }: { wiz: Wiz }) {
   return (
     <div className="flex flex-col" style={{ gap: 9 }}>
       <ConnectTrackers integrations={wiz.integrations} onChanged={wiz.refetchIntegrations} compact />
-      <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--ink-3)', marginTop: 3 }}>
-        <span style={{ width: 5, height: 5, borderRadius: 99, background: connected ? 'var(--success)' : 'var(--ink-4)' }} />
+      <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--t-faint)', marginTop: 3 }}>
+        <span style={{ width: 5, height: 5, borderRadius: 99, background: connected ? 'var(--color-state-approved)' : 'var(--t-faint-2)' }} />
         {connected > 0
           ? `${connected} connected · Meridian will match sessions and draft worklogs.`
           : 'Connect your trackers to auto-draft worklogs — or skip and add later from Settings.'}
@@ -249,30 +249,30 @@ export function Welcome({ onBegin }: { onBegin: () => void }) {
   return (
     <div className="flex flex-col items-center justify-center" style={{ height: '100%', textAlign: 'center', padding: '36px 44px' }}>
       <div className="flex items-center mer-pop" style={{ gap: 9, marginBottom: 24 }}>
-        <span style={{ width: 9, height: 9, borderRadius: 99, background: 'var(--accent)' }} />
-        <span style={{ ...SERIF, fontSize: 25, lineHeight: 1, letterSpacing: '.01em', color: 'var(--ink)' }}>meridian</span>
+        <span style={{ width: 9, height: 9, borderRadius: 99, background: 'var(--color-state-proposal)' }} />
+        <span style={{ ...SERIF, fontSize: 25, lineHeight: 1, letterSpacing: '.01em', color: 'var(--t-title)' }}>meridian</span>
       </div>
       <Kicker style={{ marginBottom: 14 }}>First-run setup</Kicker>
-      <h1 style={{ ...SERIF, fontSize: 39, lineHeight: 1.02, letterSpacing: '-.015em', color: 'var(--ink)', maxWidth: 440, textWrap: 'balance' }}>
-        Meridian watches the work, <span style={{ fontStyle: 'italic', color: 'var(--accent)' }}>so you don&apos;t have to.</span>
+      <h1 style={{ ...SERIF, fontSize: 39, lineHeight: 1.02, letterSpacing: '-.015em', color: 'var(--t-title)', maxWidth: 440, textWrap: 'balance' }}>
+        Meridian watches the work, <span style={{ fontStyle: 'italic', color: 'var(--color-state-proposal)' }}>so you don&apos;t have to.</span>
       </h1>
-      <p style={{ fontSize: 13.5, lineHeight: 1.55, color: 'var(--ink-2)', marginTop: 14, maxWidth: 380, textWrap: 'pretty' }}>
+      <p style={{ fontSize: 13.5, lineHeight: 1.55, color: 'var(--t-muted)', marginTop: 14, maxWidth: 380, textWrap: 'pretty' }}>
         A quiet menu-bar companion that recognises what you&apos;re focused on, drafts your worklogs, and keeps every byte on your Mac.
       </p>
       <div className="flex flex-col" style={{ gap: 11, margin: '26px 0 28px', textAlign: 'left', width: '100%', maxWidth: 360 }}>
         {points.map((p) => (
           <div key={p.t} className="flex items-start" style={{ gap: 11 }}>
-            <span className="flex items-center justify-center shrink-0" style={{ width: 19, height: 19, borderRadius: 99, background: 'var(--accent-soft)', marginTop: 1 }}>
-              <Check size={12} color="var(--accent)" w={2.2} />
+            <span className="flex items-center justify-center shrink-0" style={{ width: 19, height: 19, borderRadius: 99, background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)', marginTop: 1 }}>
+              <Check size={12} color="var(--color-state-proposal)" w={2.2} />
             </span>
-            <p style={{ fontSize: 12.5, lineHeight: 1.4, color: 'var(--ink-2)' }}>
-              <span style={{ fontWeight: 500, color: 'var(--ink)' }}>{p.t}.</span> {p.d}
+            <p style={{ fontSize: 12.5, lineHeight: 1.4, color: 'var(--t-muted)' }}>
+              <span style={{ fontWeight: 500, color: 'var(--t-title)' }}>{p.t}.</span> {p.d}
             </p>
           </div>
         ))}
       </div>
       <Btn onClick={onBegin} style={{ padding: '11px 26px', fontSize: 13.5 }}>Get started</Btn>
-      <p className="font-mono" style={{ fontSize: 10.5, letterSpacing: '.04em', color: 'var(--ink-4)', marginTop: 14 }}>Three quick steps · about a minute</p>
+      <p className="font-mono" style={{ fontSize: 10.5, letterSpacing: '.04em', color: 'var(--t-faint-2)', marginTop: 14 }}>Three quick steps · about a minute</p>
     </div>
   )
 }
@@ -289,19 +289,19 @@ export function Completion({ wiz }: { wiz: Wiz }) {
   ]
   return (
     <div className="flex flex-col items-center" style={{ textAlign: 'center', padding: '8px 8px 0' }}>
-      <span className="flex items-center justify-center mer-pop" style={{ width: 56, height: 56, borderRadius: 99, background: 'var(--accent-soft)', color: 'var(--accent)', marginBottom: 18 }}>
-        <Check size={28} color="var(--accent)" w={2.2} />
+      <span className="flex items-center justify-center mer-pop" style={{ width: 56, height: 56, borderRadius: 99, background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)', color: 'var(--color-state-proposal)', marginBottom: 18 }}>
+        <Check size={28} color="var(--color-state-proposal)" w={2.2} />
       </span>
       <Kicker style={{ marginBottom: 10 }}>Setup complete</Kicker>
-      <h1 style={{ ...SERIF, fontSize: 38, lineHeight: 1, letterSpacing: '-.01em', color: 'var(--ink)', marginBottom: 10 }}>You&apos;re all set.</h1>
-      <p style={{ fontSize: 13.5, lineHeight: 1.5, color: 'var(--ink-2)', maxWidth: 340, textWrap: 'pretty', marginBottom: 22 }}>
+      <h1 style={{ ...SERIF, fontSize: 38, lineHeight: 1, letterSpacing: '-.01em', color: 'var(--t-title)', marginBottom: 10 }}>You&apos;re all set.</h1>
+      <p style={{ fontSize: 13.5, lineHeight: 1.5, color: 'var(--t-muted)', maxWidth: 340, textWrap: 'pretty', marginBottom: 22 }}>
         Meridian is now tracking quietly in your menu bar — on-device, private, and matched to your work.
       </p>
-      <div style={{ width: '100%', maxWidth: 360, border: '0.5px solid var(--rule-2)', borderRadius: 13, overflow: 'hidden' }}>
+      <div style={{ width: '100%', maxWidth: 360, border: '0.5px solid var(--t-card-border)', borderRadius: 13, overflow: 'hidden' }}>
         {lines.map((l, i) => (
-          <div key={l.k} className="flex items-center justify-between" style={{ padding: '10px 14px', borderTop: i ? '1px solid var(--rule)' : 'none' }}>
-            <span className="font-mono" style={{ fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>{l.k}</span>
-            <span style={{ fontSize: 12.5, color: 'var(--ink)', fontWeight: 450 }}>{l.v}</span>
+          <div key={l.k} className="flex items-center justify-between" style={{ padding: '10px 14px', borderTop: i ? '1px solid var(--t-hair)' : 'none' }}>
+            <span className="font-mono" style={{ fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--t-faint)' }}>{l.k}</span>
+            <span style={{ fontSize: 12.5, color: 'var(--t-title)', fontWeight: 450 }}>{l.v}</span>
           </div>
         ))}
       </div>

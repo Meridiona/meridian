@@ -1,7 +1,7 @@
 {
   "version": 8,
   "title": "PM Worklog Hour",
-  "description": "worklog_hour pipeline runs — one log record per processed hour. Fields: wl_hour, wl_nsess, wl_tier, wl_n_matched, wl_proposed, wl_elapsed_s.",
+  "description": "worklog_hour pipeline runs — one log record per processed hour (success AND error). Click a row → Open this trace to walk the whole hour: sessions → activity report → classify tiers → propose → worklog drafts, each with input/prompt/output. Fields: wl_hour, wl_nsess, wl_tier, wl_n_matched, wl_matched_keys, wl_proposed, wl_proposed_title, wl_proposed_type, wl_note, wl_error, wl_elapsed_s.",
   "tabs": [
     {
       "tabId": "default",
@@ -121,7 +121,7 @@
           "queryType": "sql",
           "queries": [
             {
-              "query": "SELECT count(*) as y FROM \"default\" WHERE service_name='meridian-mlx-server' AND wl_hour IS NOT NULL AND severity='ERROR'",
+              "query": "SELECT count(*) as y FROM \"default\" WHERE service_name='meridian-mlx-server' AND wl_hour IS NOT NULL AND wl_error = 1",
               "customQuery": true,
               "fields": {
                 "stream": "default", "stream_type": "logs", "x": [],
@@ -137,7 +137,7 @@
           "id": "tbl",
           "type": "table",
           "title": "All worklog_hour runs — newest first",
-          "description": "Click a row → Open this trace to drill into sessions, activity summary, match input/output, and worklog drafts.",
+          "description": "Click a row → Open this trace to drill into sessions, activity summary, classify tiers (tier-1/tier-2 batches), propose decision, and the per-ticket worklog drafts — each with input/prompt/output.",
           "config": {
             "show_legends": false,
             "wrap_table_cells": false,
@@ -148,7 +148,7 @@
                 "targetBlank": true,
                 "findBy": "name",
                 "data": {
-                  "url": "/web/traces?org_identifier=default&stream=default&search_type=ui&search_mode=spans&period=30d&query=${row.field.trace_filter}",
+                  "url": "/web/traces?org_identifier=default&stream=default&search_type=ui&search_mode=spans&period=24h&query=${row.field.trace_filter}",
                   "folder": "", "dashboard": "", "tab": "",
                   "passAllVariables": false, "variables": []
                 }
@@ -158,19 +158,21 @@
           "queryType": "sql",
           "queries": [
             {
-              "query": "SELECT\n  to_char(to_timestamp_micros(_timestamp + 19800000000),'%Y-%m-%d %H:%M') as \"Ran at (IST)\",\n  concat(substr(wl_hour,1,10),' ',substr(wl_hour,12,2),':00 - ',lpad(CAST((CAST(substr(wl_hour,12,2) AS BIGINT)+1) % 24 AS VARCHAR),2,'0'),':00 UTC') as \"UTC range\",\n  concat(to_char(to_timestamp_micros(_timestamp + 19800000000),'%Y-%m-%d'),' ',lpad(CAST((CAST(substr(wl_hour,12,2) AS BIGINT)+5) % 24 AS VARCHAR),2,'0'),':30 - ',lpad(CAST((CAST(substr(wl_hour,12,2) AS BIGINT)+6) % 24 AS VARCHAR),2,'0'),':30 IST') as \"IST range\",\n  wl_nsess as \"Sessions\",\n  wl_tier as \"Tier\",\n  wl_n_matched as \"Matched\",\n  CASE WHEN wl_proposed=1 THEN 'yes' ELSE '' END as \"Proposed?\",\n  wl_worklog_ids as \"Worklog IDs\",\n  round(CAST(wl_elapsed_s AS DOUBLE),1) as \"Elapsed (s)\",\n  trace_id,\n  encode(concat('trace_id=''', trace_id, ''''),'base64') as \"trace_filter\"\nFROM \"default\"\nWHERE service_name='meridian-mlx-server' AND wl_hour IS NOT NULL AND trace_id IS NOT NULL\nORDER BY _timestamp DESC",
+              "query": "SELECT\n  to_char(to_timestamp_micros(_timestamp + 19800000000),'%Y-%m-%d %H:%M') as \"Ran at (IST)\",\n  concat(substr(wl_hour,1,10),' ',substr(wl_hour,12,2),':00 - ',lpad(CAST((CAST(substr(wl_hour,12,2) AS BIGINT)+1) % 24 AS VARCHAR),2,'0'),':00 (local)') as \"Worklog hour (local)\",\n  wl_nsess as \"Sessions\",\n  wl_tier as \"Tier\",\n  wl_n_matched as \"Matched\",\n  wl_matched_keys as \"Matched keys\",\n  CASE WHEN wl_proposed=1 THEN concat(COALESCE(wl_proposed_type,'Task'),': ',COALESCE(wl_proposed_title,'')) ELSE '' END as \"Proposed\",\n  COALESCE(wl_note,'') as \"Note\",\n  CASE WHEN wl_error=1 THEN 'ERROR' ELSE '' END as \"Error\",\n  wl_worklog_ids as \"Worklog IDs\",\n  round(CAST(wl_elapsed_s AS DOUBLE),1) as \"Elapsed (s)\",\n  trace_id,\n  encode(concat('trace_id=''', trace_id, ''''),'base64') as \"trace_filter\"\nFROM \"default\"\nWHERE service_name='meridian-mlx-server' AND wl_hour IS NOT NULL AND trace_id IS NOT NULL\nORDER BY _timestamp DESC",
               "customQuery": true,
               "fields": {
                 "stream": "default",
                 "stream_type": "logs",
                 "x": [
                   { "label": "Ran at (IST)", "alias": "Ran at (IST)", "column": "Ran at (IST)", "isDerived": false, "havingConditions": [] },
-                  { "label": "UTC range", "alias": "UTC range", "column": "UTC range", "isDerived": false, "havingConditions": [] },
-                  { "label": "IST range", "alias": "IST range", "column": "IST range", "isDerived": false, "havingConditions": [] },
+                  { "label": "Worklog hour (local)", "alias": "Worklog hour (local)", "column": "Worklog hour (local)", "isDerived": false, "havingConditions": [] },
                   { "label": "Sessions", "alias": "Sessions", "column": "Sessions", "isDerived": false, "havingConditions": [] },
                   { "label": "Tier", "alias": "Tier", "column": "Tier", "isDerived": false, "havingConditions": [] },
                   { "label": "Matched", "alias": "Matched", "column": "Matched", "isDerived": false, "havingConditions": [] },
-                  { "label": "Proposed?", "alias": "Proposed?", "column": "Proposed?", "isDerived": false, "havingConditions": [] },
+                  { "label": "Matched keys", "alias": "Matched keys", "column": "Matched keys", "isDerived": false, "havingConditions": [] },
+                  { "label": "Proposed", "alias": "Proposed", "column": "Proposed", "isDerived": false, "havingConditions": [] },
+                  { "label": "Note", "alias": "Note", "column": "Note", "isDerived": false, "havingConditions": [] },
+                  { "label": "Error", "alias": "Error", "column": "Error", "isDerived": false, "havingConditions": [] },
                   { "label": "Worklog IDs", "alias": "Worklog IDs", "column": "Worklog IDs", "isDerived": false, "havingConditions": [] },
                   { "label": "Elapsed (s)", "alias": "Elapsed (s)", "column": "Elapsed (s)", "isDerived": false, "havingConditions": [] },
                   { "label": "trace_id", "alias": "trace_id", "column": "trace_id", "isDerived": false, "havingConditions": [] },

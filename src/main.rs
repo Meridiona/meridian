@@ -235,6 +235,32 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `meridian worklog-hour <YYYY-MM-DDTHH>` — force-run the hour-level worklog
+    // pipeline for one explicit local hour (bypasses the activity gate + done-check,
+    // still waits for coding summarisation). Manual runs / testing the clock driver.
+    if std::env::args().nth(1).as_deref() == Some("worklog-hour") {
+        let label = std::env::args().nth(2);
+        let Some(label) = label else {
+            eprintln!("worklog-hour: usage: meridian worklog-hour <YYYY-MM-DDTHH>");
+            return Ok(());
+        };
+        let cfg = Config::from_env();
+        // Initialise observability so this one-shot emits the same worklog.hour trace
+        // the daemon does; flush before exit so the batch processor's spans ship.
+        let obs_guard = observability::init("meridian-rust").ok();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                meridian::worklog_pipeline::cli_run_hour(&pool, &cfg.meridian_db, &label).await;
+                pool.close().await;
+            }
+            Err(e) => eprintln!("worklog-hour: open db: {e}"),
+        }
+        if let Some(g) = obs_guard {
+            g.shutdown().await;
+        }
+        return Ok(());
+    }
+
     // `meridian worklog-post-approved` — post every worklog the user approved in
     // the dashboard to Jira now (the same sweep the daemon runs every ~60s). This
     // is the only path that writes to real Jira.
@@ -521,7 +547,6 @@ async fn main() -> Result<()> {
     let etl_notify: Arc<Notify> = Arc::new(Notify::new());
     let etl_tick_span: Arc<std::sync::Mutex<Option<tracing::Span>>> =
         Arc::new(std::sync::Mutex::new(None));
-    let worklog_notify: Arc<Notify> = Arc::new(Notify::new());
 
     // 7c. Run ETL once immediately before entering the loop.
     //     Re-read config so that any settings.json present at startup takes effect.
@@ -578,15 +603,15 @@ async fn main() -> Result<()> {
         });
     }
 
-    // 7d. PM-worklog driver: hour-level pipeline — POSTs /worklog_hour to the
-    //     MLX server once per settled hour; Python does full classify→draft→post.
+    // 7d. PM-worklog driver: hour-level pipeline — clock-aligned (HH:03 local), POSTs
+    //     /worklog_hour to the MLX server once per completed hour; Python does the
+    //     full distil→classify→draft. Drafts only; posting is run_post_loop's job.
     {
         let pool_pm = meridian.clone();
         let db_path_pm = initial_cfg.meridian_db.clone();
         let rx_pm = shutdown_rx.clone();
-        let notify_pm = worklog_notify.clone();
         tokio::spawn(async move {
-            meridian::worklog_pipeline::run_loop(pool_pm, db_path_pm, rx_pm, notify_pm).await;
+            meridian::worklog_pipeline::run_loop(pool_pm, db_path_pm, rx_pm).await;
         });
     }
 
@@ -670,8 +695,6 @@ async fn main() -> Result<()> {
                 }
                 // Wake the background task linker to drain newly-created sessions.
                 etl_notify.notify_one();
-                // Wake the worklog driver: ETL may have settled a new completed hour.
-                worklog_notify.notify_one();
 
                 // Morning plan nudge — idempotent per day, gated to working hours.
                 if let Err(e) = meridian::daily_plan::maybe_nudge(&meridian).await {

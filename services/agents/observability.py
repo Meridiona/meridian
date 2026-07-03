@@ -3,10 +3,9 @@
 A single `setup(agent_name)` call wires up:
 
   * an OTel `TracerProvider` with `service.name=agent_name`
-  * direct OTLP/HTTP export to OpenObserve when `otlp_enabled=true` and
-    credentials are set in `~/.meridian/settings.json` — no Rust daemon needed
-  * spool fallback (`~/.meridian/telemetry/pending/`) when toggle is on but
-    credentials are absent; the Rust daemon drains that directory to OO
+  * export ALWAYS goes through the durable disk spool
+    (`~/.meridian/telemetry/pending/`), never a live HTTP call from this
+    process — see "Spool-only export" below
   * a `LoggerProvider` + matching log handler so every `logging.LogRecord`
     is correlated to the active span via trace_id/span_id
   * W3C `TraceContextTextMapPropagator` as the global propagator so each
@@ -16,10 +15,35 @@ A single `setup(agent_name)` call wires up:
   * a JSON formatter (`python-json-logger`) writing daily-rotated JSONL files
     under `~/.meridian/logs/{agent_name}.jsonl` plus stderr
 
-Export gate: `~/.meridian/settings.json` `otlp_enabled` toggle + OO credentials
-(`oo_email` / `oo_password`). When both are present the Python service ships
-directly to OO — it does NOT depend on the Rust daemon for delivery. The spool
-path is a fallback for when credentials are absent (daemon delivers later).
+Export gate: `~/.meridian/settings.json` `otlp_enabled` toggle. When on, every
+span/log batch is written to the spool (`_write_spool`, an atomic
+tmp-then-rename into `~/.meridian/telemetry/pending/`) — the exact same
+`<signal>-<unix_micros>-<seq>.otlp` layout `src/telemetry_spool/writer.rs`
+produces. Generation (this process) and delivery are fully decoupled:
+
+  * The Rust daemon's `telemetry_spool::shipper` background task drains
+    `pending/` into OpenObserve whenever it's reachable, independent of
+    whether this process is even still running — `ship_one` in
+    `telemetry_spool/mod.rs` classifies failures as Terminal (payload is bad,
+    quarantined) or Retryable (network/5xx/429, retried next tick), so a
+    down or flaky OpenObserve never loses or corrupts anything, it just
+    backs up on disk until OO comes back.
+  * `meridian telemetry export`/`import` (`telemetry_spool/cli.rs`) lets a
+    user hand someone else the pending spool directly (or import one) —
+    the "give a customer's log bundle to support, load it into our own
+    OpenObserve" path this architecture exists for.
+
+This process NEVER opens a live connection to OpenObserve itself. Earlier
+revisions shipped directly via `OTLPSpanExporter`/`OTLPLogExporter` when OO
+credentials were configured in settings.json (skipping the Rust daemon) —
+that meant a long-running process (the MLX server) held live HTTP
+export/retry state against OpenObserve, and when OO went down for hours,
+continuous failed-export retries correlated with the process's memory
+growing from ~100MB to 20+GB. Spool-only export removes that whole failure
+class: writing to disk can't hang, retry-loop, or accumulate connection
+state, and the already-hardened Rust shipper (atomic writes, terminal/
+retryable classification, quarantine) is the only thing that ever talks to
+OpenObserve.
 
 `extract_parent_context(traceparent)` is the helper agents use to continue
 a span emitted by another process — typically the Rust ETL or another
@@ -191,8 +215,9 @@ class SpoolLogExporter:
 
 # ──────────────────────── Config ───────────────────────────────────────────────
 DEFAULT_LOG_DIR = Path.home() / ".meridian" / "logs"
-# Same settings.json the Rust daemon reads. When otlp_enabled=true and
-# oo_email/oo_password are set, Python ships directly to OO (no daemon needed).
+# Same settings.json the Rust daemon reads — only the otlp_enabled toggle
+# matters here now; oo_email/oo_password are read by the Rust shipper, not
+# this process (see the module docstring's "Spool-only export" section).
 _SETTINGS_PATH = Path(
     os.environ.get("MERIDIAN_SETTINGS_PATH")
     or (Path.home() / ".meridian" / "settings.json")
@@ -288,27 +313,11 @@ def extract_parent_context(traceparent: Optional[str]) -> Optional[Context]:
 
 
 # ──────────────────────── Tracing setup ────────────────────────────────────────
-def _oo_otlp_headers() -> dict[str, str]:
-    """Build the Basic-auth header for direct OO OTLP export from settings.json."""
-    import base64
-    s = _load_settings()
-    email = s.get("oo_email") or ""
-    passwd = s.get("oo_password") or ""
-    if not email or not passwd:
-        return {}
-    token = base64.b64encode(f"{email}:{passwd}".encode()).decode()
-    return {"Authorization": f"Basic {token}"}
-
-
-def _oo_otlp_base_url() -> str:
-    """Return the OO OTLP base URL (without /v1/traces or /v1/logs suffix)."""
-    s = _load_settings()
-    endpoint = s.get("otlp_endpoint") or "http://localhost:5080/api/default/v1/traces"
-    # Strip the /v1/traces suffix to get the org-level base used by both signals.
-    for suffix in ("/v1/traces", "/v1/logs"):
-        if endpoint.endswith(suffix):
-            return endpoint[: -len(suffix)]
-    return endpoint.rstrip("/")
+# Spool-only by design — see the module docstring's "Spool-only export"
+# section for why this process never opens a live connection to OpenObserve.
+# `src/telemetry_spool/shipper.rs` (Rust daemon, runs independently) is the
+# only thing that ever ships these bytes to OO; `meridian telemetry export/
+# import` is the manual escape hatch when the daemon isn't running at all.
 
 
 def _configure_tracing(agent_name: str) -> None:
@@ -320,22 +329,11 @@ def _configure_tracing(agent_name: str) -> None:
 
     resource = Resource.create({"service.name": agent_name})
     provider = TracerProvider(resource=resource)
-
-    headers = _oo_otlp_headers()
-    if headers:
-        # Credentials present — ship directly to OO, no Rust daemon dependency.
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor
-        exporter = OTLPSpanExporter(
-            endpoint=f"{_oo_otlp_base_url()}/v1/traces",
-            headers=headers,
-        )
-        provider.add_span_processor(BatchSpanProcessor(exporter))
-    else:
-        # Credentials absent — spool for the Rust daemon to deliver later.
-        # BatchSpanProcessor avoids blocking inference threads on each span end.
-        provider.add_span_processor(BatchSpanProcessor(SpoolSpanExporter()))
-
+    # BatchSpanProcessor avoids blocking inference threads on each span end;
+    # SpoolSpanExporter itself is a synchronous local file write, so this can
+    # never hang, retry-loop, or accumulate connection state regardless of
+    # whether OpenObserve is reachable.
+    provider.add_span_processor(BatchSpanProcessor(SpoolSpanExporter()))
     trace.set_tracer_provider(provider)
 
 
@@ -351,23 +349,11 @@ def _configure_log_export(agent_name: str) -> Optional[logging.Handler]:
     if not _is_otlp_enabled():
         return None
 
-    headers = _oo_otlp_headers()
     resource = Resource.create({"service.name": agent_name})
     provider = LoggerProvider(resource=resource)
-
-    if headers:
-        # Credentials present — ship directly to OO, no Rust daemon dependency.
-        from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
-        log_exporter = OTLPLogExporter(
-            endpoint=f"{_oo_otlp_base_url()}/v1/logs",
-            headers=headers,
-        )
-    else:
-        # Credentials absent — spool for the Rust daemon to deliver later.
-        log_exporter = SpoolLogExporter()  # type: ignore[assignment]
-
-    # BatchLogRecordProcessor for both paths so log export never blocks callers.
-    provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
+    # BatchLogRecordProcessor so log export never blocks callers — see
+    # _configure_tracing above for why SpoolLogExporter is always used.
+    provider.add_log_record_processor(BatchLogRecordProcessor(SpoolLogExporter()))
     set_logger_provider(provider)
     _LOGGER_PROVIDER = provider
     return LoggingHandler(level=logging.NOTSET, logger_provider=provider)
@@ -475,21 +461,6 @@ def current_traceparent() -> Optional[str]:
     carrier: dict[str, str] = {}
     TraceContextTextMapPropagator().inject(carrier)
     return carrier.get("traceparent")
-
-
-def instrument_agno() -> None:
-    """Instrument the agno framework for OpenTelemetry tracing.
-
-    No-op when openinference-instrumentation-agno is not installed; the package
-    is optional and the server must start cleanly without it.
-    """
-    try:
-        from opentelemetry.instrumentation.agno import AgnoInstrumentor  # type: ignore[import]
-        AgnoInstrumentor().instrument()
-    except ImportError:
-        logging.getLogger(__name__).debug(
-            "opentelemetry-instrumentation-agno not installed; agno spans will not be exported"
-        )
 
 
 # Process-level handle so the agno TracerProvider isn't garbage-collected.
@@ -601,11 +572,121 @@ def preview(text: Optional[str], max_chars: int = 200) -> str:
     return text[:max_chars] + ("…" if len(text) > max_chars else "")
 
 
+def record_gen_params(
+    span,
+    *,
+    temp: float,
+    max_tokens: int,
+    thinking_budget: int,
+    budget_forced: bool,
+    enable_thinking: bool = True,
+    model: str = "",
+) -> None:
+    """Stamp the generation parameters used for ONE LLM call onto its span.
+
+    Records the per-call sampling settings — the variable ``temp`` plus the
+    shared constants from :mod:`agents.thinking` (top_p / top_k / presence /
+    repetition penalty) — together with the thinking-budget config and whether
+    the hard cap actually fired (``budget_forced``). Call inside the call's main
+    span so every LLM span in the worklog trace shows exactly which parameters
+    produced its output. ``model`` is set only when non-empty (some callers set
+    it earlier on the span themselves).
+    """
+    from agents.thinking import (
+        DEFAULT_TOP_P, DEFAULT_TOP_K, DEFAULT_PRESENCE_PENALTY,
+        DEFAULT_REPETITION_PENALTY,
+    )
+    if model:
+        span.set_attribute("model", model)
+    span.set_attribute("temp", temp)
+    span.set_attribute("top_p", DEFAULT_TOP_P)
+    span.set_attribute("top_k", DEFAULT_TOP_K)
+    span.set_attribute("presence_penalty", DEFAULT_PRESENCE_PENALTY)
+    span.set_attribute("repetition_penalty", DEFAULT_REPETITION_PENALTY)
+    span.set_attribute("thinking_budget", thinking_budget)
+    span.set_attribute("enable_thinking", enable_thinking)
+    span.set_attribute("max_tokens", max_tokens)
+    span.set_attribute("budget_forced", budget_forced)
+
+
+def record_fsm_params(
+    span,
+    *,
+    temp: float,
+    max_tokens: int,
+    schema: str,
+    model: str = "",
+) -> None:
+    """Stamp the ACTUAL decoding config for one FSM (grammar-constrained) JSON call.
+
+    The FSM path (:mod:`agents.structured`) decodes against an outlines logits
+    processor compiled from ``schema`` and samples among the grammar-legal tokens with
+    ``temp`` / ``top_p`` / ``top_k`` (via ``make_sampler``). It runs with thinking OFF
+    and — unlike the thinking path — applies NO presence/repetition penalty (outlines
+    owns ``logits_processors``). This recorder reflects only what is genuinely applied,
+    so the trace never advertises phantom penalties or a thinking budget that don't
+    exist on these calls. Use it (not :func:`record_gen_params`) for the FSM endpoints.
+    """
+    from agents.thinking import DEFAULT_TOP_P, DEFAULT_TOP_K
+
+    if model:
+        span.set_attribute("model", model)
+    span.set_attribute("decoding", "fsm")            # grammar-constrained (outlines)
+    span.set_attribute("grammar_constrained", True)
+    span.set_attribute("fsm_schema", schema)         # the Pydantic output schema enforced
+    span.set_attribute("enable_thinking", False)     # thinking is off for FSM JSON calls
+    span.set_attribute("temp", temp)
+    span.set_attribute("top_p", DEFAULT_TOP_P)
+    span.set_attribute("top_k", DEFAULT_TOP_K)
+    span.set_attribute("max_tokens", max_tokens)
+
+
+def record_llm_io(
+    tracer,
+    prefix: str,
+    *,
+    system_prompt: str,
+    llm_input: str,
+    llm_output: str,
+    input_tokens: Optional[int] = None,
+    output_tokens: Optional[int] = None,
+    think_tokens: Optional[int] = None,
+    max_input_chars: int = 8000,
+    max_output_chars: int = 8000,
+) -> None:
+    """Emit the three `<prefix>.prompt` / `.input` / `.output` child spans that
+    OpenObserve renders as dedicated Prompt / Input / Output panels.
+
+    This is the same shape the ``activity_report`` endpoint uses, so every LLM
+    call in the worklog trace (classify / propose / generate) is debuggable the
+    same way: the exact system prompt, the exact user content, and the raw model
+    output — plus token counts on the output span. Call this INSIDE the call's
+    main span so the three land as its children.
+    """
+    with tracer.start_as_current_span(f"{prefix}.prompt") as sp:
+        sp.set_attribute("total_chars", len(system_prompt or ""))
+        sp.set_attribute("llm_input", preview(system_prompt, max_chars=max_input_chars))
+    with tracer.start_as_current_span(f"{prefix}.input") as sp:
+        sp.set_attribute("total_chars", len(llm_input or ""))
+        sp.set_attribute("llm_input", preview(llm_input, max_chars=max_input_chars))
+    with tracer.start_as_current_span(f"{prefix}.output") as sp:
+        sp.set_attribute("total_chars", len(llm_output or ""))
+        sp.set_attribute("llm_output", preview(llm_output, max_chars=max_output_chars))
+        if input_tokens is not None:
+            sp.set_attribute("input_tokens", input_tokens)
+        if output_tokens is not None:
+            sp.set_attribute("output_tokens", output_tokens)
+        if think_tokens is not None:
+            sp.set_attribute("think_tokens", think_tokens)
+
+
 __all__ = [
     "setup",
     "extract_parent_context",
-    "instrument_agno",
     "setup_agno_tracing",
     "current_traceparent",
     "preview",
+    "record_gen_params",
+    "record_fsm_params",
+    "record_llm_io",
 ]

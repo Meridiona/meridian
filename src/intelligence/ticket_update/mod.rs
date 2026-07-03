@@ -19,6 +19,9 @@
 pub mod azure_devops;
 pub mod github;
 pub mod jira;
+/// Jira close/reopen/cancel status-transition helpers — split out of `jira.rs`
+/// (CLAUDE.md's 500-line file cap). `jira.rs`-internal only (`pub(super)`).
+mod jira_transitions;
 pub mod linear;
 pub mod parents;
 pub mod trello;
@@ -53,6 +56,10 @@ pub enum WriteField {
     Close,
     /// ticket-level "cancel" action — transition to the provider's cancelled/won't-do state.
     Cancel,
+    /// ticket-level "reopen" action — undo a close, transitioning back to a
+    /// not-done state (the provider's default "new"/backlog-ish status, not
+    /// necessarily the exact status the ticket was in before).
+    Reopen,
 }
 
 impl WriteField {
@@ -72,6 +79,7 @@ impl WriteField {
             "description" => (!v.is_empty()).then(|| Self::Description(v.to_string())),
             "close" => Some(Self::Close),
             "cancel" => Some(Self::Cancel),
+            "reopen" => Some(Self::Reopen),
             _ => None,
         }
     }
@@ -89,6 +97,7 @@ impl WriteField {
             Self::Description(_) => "description",
             Self::Close => "status",
             Self::Cancel => "cancel",
+            Self::Reopen => "status",
         }
     }
 }
@@ -270,6 +279,7 @@ mod tests {
         );
         assert_eq!(WriteField::parse("close", ""), Some(WriteField::Close));
         assert_eq!(WriteField::parse("cancel", ""), Some(WriteField::Cancel));
+        assert_eq!(WriteField::parse("reopen", ""), Some(WriteField::Reopen));
     }
 
     #[test]

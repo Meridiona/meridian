@@ -125,7 +125,7 @@ def fetch_sessions_for_hour(conn: sqlite3.Connection, hour: str) -> list[dict]:
 
 def render_doc(task: dict) -> str:
     """Render a ticket into the text the reranker + matcher see."""
-    desc = (task.get("description_text") or "").strip().replace("\n", " ")[:400]
+    desc = (task.get("description_text") or "").strip().replace("\n", " ")
     itype = task.get("issue_type") or "Task"
     epic = task.get("epic_title") or ""
     return f"[{itype}] {task.get('title', task['task_key'])}. Epic: {epic}. {desc}".strip()
@@ -153,10 +153,7 @@ def build_payload(task_key: str, window_start: str, window_end: str,
         "time_spent_seconds": time_spent_seconds,
         "summary": draft.summary,
         "what_shipped": bullets(draft.what_shipped),
-        "in_progress": bullets(draft.in_progress),
-        "blockers": bullets(draft.blockers),
         "decisions": bullets(draft.decisions),
-        "next_steps": [s for s in draft.next_steps if s and s.strip()],
         "risk_flags": [],
         "confidence": max(0.0, min(1.0, float(draft.confidence))),
         "reasoning": reasoning,
@@ -181,14 +178,22 @@ def upsert_worklog(
     """UPSERT a drafted worklog. Idempotent on (task_key, day_utc, cycle_index);
     refreshes an existing draft but never overwrites an approved/posted row.
     Returns the row id, or None if an immutable row was preserved.
+
+    ``provider`` is resolved from the matched task's own ``pm_tasks.provider``
+    (COALESCE to 'jira' for the legacy single-provider case) so the worklog is
+    posted to the RIGHT tracker — Jira / GitHub / Linear / Azure DevOps / Trello.
+    Mirrors the Rust ``db::upsert_pm_worklog`` resolution exactly; without it every
+    worklog would default to 'jira' (migration 031 default) and a GitHub/Linear/
+    Azure/Trello task's worklog would post to Jira.
     """
     cur = conn.execute(
         """
         INSERT INTO pm_worklogs
             (task_key, day_utc, cycle_index, window_start, window_end, state,
              confidence, coverage, time_spent_seconds, payload_json,
-             workflow_run_id, session_id_min, session_id_max)
-        VALUES (?, ?, ?, ?, ?, 'drafted', ?, 1.0, ?, ?, ?, ?, ?)
+             workflow_run_id, session_id_min, session_id_max, provider)
+        VALUES (?, ?, ?, ?, ?, 'drafted', ?, 1.0, ?, ?, ?, ?, ?,
+                COALESCE((SELECT provider FROM pm_tasks WHERE task_key = ?), 'jira'))
         ON CONFLICT (task_key, day_utc, cycle_index) DO UPDATE SET
             window_start       = excluded.window_start,
             window_end         = excluded.window_end,
@@ -196,12 +201,13 @@ def upsert_worklog(
             confidence         = excluded.confidence,
             time_spent_seconds = excluded.time_spent_seconds,
             payload_json       = excluded.payload_json,
-            workflow_run_id    = excluded.workflow_run_id
+            workflow_run_id    = excluded.workflow_run_id,
+            provider           = excluded.provider
         WHERE pm_worklogs.state IN ('drafted', 'skipped', 'failed')
         """,
         (task_key, day_utc, cycle_index, window_start, window_end,
          float(confidence), int(time_spent_seconds), json.dumps(payload),
-         workflow_run_id, session_id_min, session_id_max),
+         workflow_run_id, session_id_min, session_id_max, task_key),
     )
     conn.commit()
     row = conn.execute(
@@ -211,7 +217,11 @@ def upsert_worklog(
     if row is None:
         return None
     if cur.rowcount == 0 and row["state"] not in _OVERWRITABLE:
+        # A human-owned row (approved/posted/queued) was preserved — the UPSERT was a
+        # no-op. Return None so the caller does not count this run as having drafted it
+        # (res.worklog_ids tracks THIS run's output, not pre-existing human-owned rows).
         log.info("worklog: preserved immutable %s row for %s", row["state"], task_key)
+        return None
     return int(row["id"])
 
 
@@ -253,10 +263,10 @@ def retract_proposed_task(
 ) -> int:
     """Remove this hour's stale machine-proposed ticket.
 
-    Called when the hour now resolves to a task match (mutual exclusion: an hour
-    is either matched OR proposed, never both). Only deletes a still-'proposed'
-    row — an approved/dismissed proposal a human has acted on is never touched.
-    Returns the count removed.
+    Called when a re-run of the hour produces NO proposal (the matches now cover
+    the hour, or the proposer abstained). Only deletes a still-'proposed' row — an
+    approved/dismissed proposal a human has acted on is never touched. Returns the
+    count removed.
     """
     cur = conn.execute(
         "DELETE FROM pm_proposed_tasks WHERE day_utc = ? AND source_hour = ? "
@@ -269,6 +279,81 @@ def retract_proposed_task(
     return cur.rowcount
 
 
+def persist_hour_text(
+    conn: sqlite3.Connection,
+    *,
+    hour_start: str,
+    body: str,
+    out_chars: int,
+    reduction_pct: float,
+) -> None:
+    """Persist the distilled hour body onto the pm_worklog_hours ledger row.
+
+    Keyed on ``hour_start`` — the UTC ``+00:00`` hour bound the Rust driver's
+    ledger uses (``ensure_hour`` inserts this row before the pipeline runs). Runs
+    for EVERY distilled hour, even ones that yield no worklog, so the dashboard can
+    show the hour's activity independent of ticket matching. Degrades silently on a
+    pre-053 DB where the text columns don't yet exist. Logs (rather than silently
+    dropping) when the UPDATE matches zero rows — meaning no ``pm_worklog_hours``
+    row exists for this ``hour_start`` (``ensure_hour`` wasn't called first, or the
+    Rust/Python hour_start formatting has diverged) — since that means the text is
+    computed but never actually persisted.
+    """
+    try:
+        cur = conn.execute(
+            "UPDATE pm_worklog_hours "
+            "SET hour_text = ?, hour_text_chars = ?, hour_text_reduction_pct = ? "
+            "WHERE hour_start = ?",
+            (body, out_chars, reduction_pct, hour_start),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            log.warning(
+                "persist_hour_text: no pm_worklog_hours row for hour_start — text dropped",
+                extra={"hour_start": hour_start},
+            )
+    except sqlite3.OperationalError:
+        log.warning(
+            "persist_hour_text: pm_worklog_hours text columns absent (pre-053 DB) — skipped",
+            extra={"hour_start": hour_start},
+        )
+
+
+def persist_hour_report(
+    conn: sqlite3.Connection,
+    *,
+    hour_start: str,
+    report: str,
+) -> None:
+    """Persist the /activity_report OUTPUT onto the pm_worklog_hours ledger row.
+
+    Distinct from ``persist_hour_text`` (the raw distilled INPUT) — this is the
+    human-readable summary the dashboard's hour-detail panel must show. Runs for
+    every hour that reaches stage_report, even ones producing an empty report (no
+    activity). Degrades silently on a pre-054 DB where the column doesn't exist.
+    Logs when the UPDATE matches zero rows (see ``persist_hour_text``'s docstring
+    for why that's worth a log line rather than a silent no-op).
+    """
+    try:
+        cur = conn.execute(
+            "UPDATE pm_worklog_hours "
+            "SET hour_report = ?, hour_report_chars = ? "
+            "WHERE hour_start = ?",
+            (report, len(report), hour_start),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            log.warning(
+                "persist_hour_report: no pm_worklog_hours row for hour_start — report dropped",
+                extra={"hour_start": hour_start},
+            )
+    except sqlite3.OperationalError:
+        log.warning(
+            "persist_hour_report: pm_worklog_hours.hour_report column absent (pre-054 DB) — skipped",
+            extra={"hour_start": hour_start},
+        )
+
+
 def upsert_proposed_task(
     conn: sqlite3.Connection,
     *,
@@ -277,6 +362,7 @@ def upsert_proposed_task(
     title: str,
     description: str,
     reasoning: str = "",
+    issue_type: str = "Task",
     workflow_run_id: str | None = None,
     worklog_payload: dict | None = None,
     time_spent_seconds: int = 3600,
@@ -287,22 +373,27 @@ def upsert_proposed_task(
     """UPSERT a tier-3 proposed task together with its DRAFTED worklog.
 
     Idempotent on (day_utc, source_hour); refreshes a still-proposed row, leaves
-    approved/dismissed untouched. ``worklog_payload`` is the JiraUpdate-shaped
+    approved/dismissed untouched. Returns the row id on insert/refresh, or ``None``
+    when a DECIDED (approved/dismissed) row already owns the key and the guarded
+    update was a no-op — so the caller never mistakes a stale decided id for the
+    freshly-persisted proposal. ``worklog_payload`` is the JiraUpdate-shaped
     draft (see :func:`build_payload`) the approval surface shows + posts; it is
-    stored as JSON in ``worklog_payload_json`` (migration 050).
+    stored as JSON in ``worklog_payload_json`` (migration 050). ``issue_type`` is
+    'Task' or 'Bug' (migration 051) and selects the issue type at creation time.
     """
     payload_json = json.dumps(worklog_payload) if worklog_payload is not None else None
     conn.execute(
         """
         INSERT INTO pm_proposed_tasks
-            (day_utc, source_hour, title, description, reasoning, state,
+            (day_utc, source_hour, title, description, reasoning, issue_type, state,
              workflow_run_id, worklog_payload_json, time_spent_seconds,
              confidence, window_start, window_end)
-        VALUES (?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?)
         ON CONFLICT (day_utc, source_hour) DO UPDATE SET
             title                = excluded.title,
             description          = excluded.description,
             reasoning            = excluded.reasoning,
+            issue_type           = excluded.issue_type,
             workflow_run_id      = excluded.workflow_run_id,
             worklog_payload_json = excluded.worklog_payload_json,
             time_spent_seconds   = excluded.time_spent_seconds,
@@ -311,10 +402,19 @@ def upsert_proposed_task(
             window_end           = excluded.window_end
         WHERE pm_proposed_tasks.state = 'proposed'
         """,
-        (day_utc, source_hour, title, description, reasoning, workflow_run_id,
-         payload_json, time_spent_seconds, confidence, window_start, window_end),
+        (day_utc, source_hour, title, description, reasoning, issue_type,
+         workflow_run_id, payload_json, time_spent_seconds, confidence,
+         window_start, window_end),
     )
+    # changes()==0 means the row for (day_utc, source_hour) already exists in an
+    # APPROVED/DISMISSED state, so the `WHERE state='proposed'` guard blocked the
+    # DO UPDATE (a no-op). Return None rather than the SELECT below, which would
+    # hand back the DECIDED row's id and make the caller believe the new proposal
+    # was persisted (it was intentionally NOT — a user's decision is immutable).
+    changed = conn.execute("SELECT changes()").fetchone()[0]
     conn.commit()
+    if not changed:
+        return None
     row = conn.execute(
         "SELECT id FROM pm_proposed_tasks WHERE day_utc=? AND source_hour=?",
         (day_utc, source_hour),

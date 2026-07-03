@@ -80,6 +80,15 @@ pub async fn apply(cfg: &GitHubConfig, key: &str, write: &WriteField) -> Result<
             )
             .await?;
         }
+        WriteField::Reopen => {
+            patch(
+                cfg,
+                &client,
+                &issue_url(&issue),
+                json!({ "state": "open", "state_reason": "reopened" }),
+            )
+            .await?;
+        }
     }
 
     Ok(ApplyResult::applied("github", key, field_name(write)))
@@ -189,6 +198,7 @@ fn field_name(write: &WriteField) -> &'static str {
         WriteField::Description(_) => "description",
         WriteField::Close => "close",
         WriteField::Cancel => "cancel",
+        WriteField::Reopen => "reopen",
     }
 }
 
@@ -237,6 +247,7 @@ mod tests {
             ("description", WriteField::Description("d".into())),
             ("close", WriteField::Close),
             ("cancel", WriteField::Cancel),
+            ("reopen", WriteField::Reopen),
         ];
         for (expected, field) in cases {
             assert_eq!(
