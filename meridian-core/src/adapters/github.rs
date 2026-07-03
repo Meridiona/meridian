@@ -24,8 +24,8 @@
 //!   fields) → both `None`.
 //!
 //! # Who calls this
-//! `cdm_columns()` in the daemon's GitHub connector
-//! (`src/intelligence/providers/github.rs`) at upsert time.
+//! The daemon's GitHub connector (`src/intelligence/providers/github/`) at
+//! upsert time, via the shared `providers::cdm::derive` helper.
 //!
 //! # Related
 //! - [`crate::adapters::ProviderAdapter`] — the trait this implements.

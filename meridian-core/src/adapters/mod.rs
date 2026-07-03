@@ -15,9 +15,10 @@
 //!
 //! # Who calls this
 //! The daemon's ingestion connectors (`src/intelligence/providers/*`): each
-//! one's `cdm_columns()` helper calls [`ProviderAdapter::to_canonical`] on the
-//! raw fetched payload at upsert time to derive the CDM columns
-//! (migration 056) alongside the legacy typed-struct path.
+//! one calls the shared `providers::cdm::derive` helper (which wraps
+//! [`ProviderAdapter::to_canonical`]) on the raw fetched payload at upsert
+//! time to derive the CDM columns (migration 056) alongside the legacy
+//! typed-struct path.
 //!
 //! # Related
 //! - [`crate::canonical_task`] — the output shape these produce.

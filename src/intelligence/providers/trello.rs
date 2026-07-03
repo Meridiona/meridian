@@ -10,7 +10,6 @@
 
 use anyhow::{Context, Result};
 use meridian_core::adapters::trello::TrelloAdapter;
-use meridian_core::adapters::ProviderAdapter;
 use serde::Deserialize;
 use sqlx::SqlitePool;
 
@@ -124,40 +123,6 @@ async fn fetch(trello: &TrelloConfig) -> Result<Vec<(TrelloCard, serde_json::Val
 // Upsert
 // ---------------------------------------------------------------------------
 
-/// The CDM columns (migration 056) derived from a raw Trello card via the
-/// shared [`TrelloAdapter`]. All `Option` so a structurally-unusable payload
-/// simply leaves the column NULL — never blocks the existing upsert. The
-/// mapping itself lives in `meridian_core` and is tested there.
-#[derive(Default)]
-struct CdmColumns {
-    canonical_id: Option<String>,
-    status_category: Option<String>,
-    raw_payload: Option<String>,
-    reporter_name: Option<String>,
-    completed_at: Option<String>,
-    ancestor_path: Option<String>,
-    project_ids: Option<String>,
-}
-
-fn cdm_columns(raw: &serde_json::Value) -> CdmColumns {
-    let Ok(c) = TrelloAdapter.to_canonical(raw) else {
-        return CdmColumns::default();
-    };
-    CdmColumns {
-        canonical_id: Some(c.canonical_id),
-        // Enum → its snake_case serde wire form (e.g. "done").
-        status_category: c
-            .status_category
-            .and_then(|sc| serde_json::to_value(sc).ok())
-            .and_then(|v| v.as_str().map(String::from)),
-        raw_payload: Some(c.raw_payload.to_string()),
-        reporter_name: c.reporter.map(|r| r.display_name),
-        completed_at: c.completed_at,
-        ancestor_path: serde_json::to_string(&c.ancestor_path).ok(),
-        project_ids: serde_json::to_string(&c.project_ids).ok(),
-    }
-}
-
 async fn upsert(
     pool: &SqlitePool,
     cards: &[(TrelloCard, serde_json::Value)],
@@ -187,7 +152,7 @@ async fn upsert(
         let assignee_name: Option<&str> = card.members.first().map(|m| m.full_name.as_str());
 
         // CDM columns (Stage 3b) from the raw card via the shared adapter.
-        let cdm = cdm_columns(raw);
+        let cdm = super::cdm::derive(&TrelloAdapter, raw);
 
         sqlx::query(
             "INSERT INTO pm_tasks
@@ -412,9 +377,9 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // CDM (Stage 3b): the new pm_tasks columns are derived from the raw card
-    // through the shared adapter. This locks the daemon-side glue; the mapping
-    // itself is tested in meridian_core::adapters::trello.
+    // CDM (Stage 3b): locks that this connector routes raw cards through
+    // TrelloAdapter. Encodings are tested once in providers::cdm; the mapping
+    // itself in meridian_core::adapters::trello.
     // -----------------------------------------------------------------------
 
     #[test]
@@ -425,7 +390,7 @@ mod tests {
             "idBoard": "board123",
             "closed": false
         });
-        let cdm = super::cdm_columns(&raw);
+        let cdm = crate::intelligence::providers::cdm::derive(&TrelloAdapter, &raw);
         // Stable key is the 24-hex card id, namespaced.
         assert_eq!(
             cdm.canonical_id.as_deref(),
@@ -443,7 +408,10 @@ mod tests {
     fn cdm_columns_empty_on_unusable_payload() {
         // No `id` (the pre-CDM fields filter shape) → adapter errors → all
         // columns NULL, never blocks the upsert.
-        let cdm = super::cdm_columns(&serde_json::json!({"shortLink": "HSkL1pnj"}));
+        let cdm = crate::intelligence::providers::cdm::derive(
+            &TrelloAdapter,
+            &serde_json::json!({"shortLink": "HSkL1pnj"}),
+        );
         assert!(cdm.canonical_id.is_none());
         assert!(cdm.raw_payload.is_none());
         assert!(cdm.status_category.is_none());

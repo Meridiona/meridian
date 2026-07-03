@@ -25,8 +25,8 @@
 //!   derivation, not API data, so it's deliberately left `None`.)
 //!
 //! # Who calls this
-//! `cdm_columns()` in the daemon's Trello connector
-//! (`src/intelligence/providers/trello.rs`) at upsert time.
+//! The daemon's Trello connector (`src/intelligence/providers/trello.rs`) at
+//! upsert time, via the shared `providers::cdm::derive` helper.
 //!
 //! # Related
 //! - [`crate::adapters::ProviderAdapter`] — the trait this implements.

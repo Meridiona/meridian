@@ -418,9 +418,9 @@ async fn prune_leaves_other_providers_intact() -> Result<()> {
 }
 
 // -----------------------------------------------------------------------
-// CDM (Stage 3b): the new pm_tasks columns are derived from the raw issue
-// through the shared adapter. This locks the daemon-side glue; the mapping
-// itself is tested in meridian_core::adapters::linear.
+// CDM (Stage 3b): locks that this connector routes raw issues through
+// LinearAdapter. Encodings are tested once in providers::cdm; the mapping
+// itself in meridian_core::adapters::linear.
 // -----------------------------------------------------------------------
 
 #[test]
@@ -435,7 +435,7 @@ fn cdm_columns_derives_from_raw_issue() {
         "completedAt": null,
         "canceledAt": null
     });
-    let cdm = super::cdm_columns(&raw);
+    let cdm = crate::intelligence::providers::cdm::derive(&LinearAdapter, &raw);
     // Stable key is the UUID, namespaced.
     assert_eq!(
         cdm.canonical_id.as_deref(),
@@ -456,7 +456,10 @@ fn cdm_columns_derives_from_raw_issue() {
 #[test]
 fn cdm_columns_empty_on_unusable_payload() {
     // No `id` → adapter errors → all columns NULL, never blocks the upsert.
-    let cdm = super::cdm_columns(&serde_json::json!({"identifier": "ENG-1"}));
+    let cdm = crate::intelligence::providers::cdm::derive(
+        &LinearAdapter,
+        &serde_json::json!({"identifier": "ENG-1"}),
+    );
     assert!(cdm.canonical_id.is_none());
     assert!(cdm.raw_payload.is_none());
     assert!(cdm.status_category.is_none());

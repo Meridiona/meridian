@@ -13,7 +13,6 @@
 
 use anyhow::{Context, Result};
 use meridian_core::adapters::linear::LinearAdapter;
-use meridian_core::adapters::ProviderAdapter;
 use serde::Deserialize;
 use sqlx::SqlitePool;
 
@@ -223,40 +222,6 @@ async fn fetch(linear: &LinearConfig) -> Result<Vec<(LinearIssue, serde_json::Va
 // Upsert
 // ---------------------------------------------------------------------------
 
-/// The CDM columns (migration 056) derived from a raw Linear issue via the
-/// shared [`LinearAdapter`]. All `Option` so a structurally-unusable payload
-/// simply leaves the column NULL — never blocks the existing upsert. The
-/// mapping itself lives in `meridian_core` and is tested there.
-#[derive(Default)]
-struct CdmColumns {
-    canonical_id: Option<String>,
-    status_category: Option<String>,
-    raw_payload: Option<String>,
-    reporter_name: Option<String>,
-    completed_at: Option<String>,
-    ancestor_path: Option<String>,
-    project_ids: Option<String>,
-}
-
-fn cdm_columns(raw: &serde_json::Value) -> CdmColumns {
-    let Ok(c) = LinearAdapter.to_canonical(raw) else {
-        return CdmColumns::default();
-    };
-    CdmColumns {
-        canonical_id: Some(c.canonical_id),
-        // Enum → its snake_case serde wire form (e.g. "in_progress").
-        status_category: c
-            .status_category
-            .and_then(|sc| serde_json::to_value(sc).ok())
-            .and_then(|v| v.as_str().map(String::from)),
-        raw_payload: Some(c.raw_payload.to_string()),
-        reporter_name: c.reporter.map(|r| r.display_name),
-        completed_at: c.completed_at,
-        ancestor_path: serde_json::to_string(&c.ancestor_path).ok(),
-        project_ids: serde_json::to_string(&c.project_ids).ok(),
-    }
-}
-
 async fn upsert(
     pool: &SqlitePool,
     issues: &[(LinearIssue, serde_json::Value)],
@@ -321,7 +286,7 @@ async fn upsert(
             .filter(|s| !s.is_empty());
 
         // CDM columns (Stage 3b) from the raw issue via the shared adapter.
-        let cdm = cdm_columns(raw);
+        let cdm = super::cdm::derive(&LinearAdapter, raw);
 
         sqlx::query(
             "INSERT INTO pm_tasks
