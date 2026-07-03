@@ -15,7 +15,7 @@
 //                      `save_integration_token`.
 
 import { useEffect, useRef, useState } from 'react'
-import { load, invoke, mutate } from '@/lib/bridge'
+import { load, invoke, mutate, openExternal } from '@/lib/bridge'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import { TRACKERS } from '@/lib/integrations'
 import type { Tracker, TokenField } from '@/lib/integrations'
@@ -302,7 +302,7 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
             <>
               <p className="text-[12px]" style={{ color: 'var(--status-warning-dot)' }}>
                 A Trello API key is required.{' '}
-                <a href="https://trello.com/app-key" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-state-proposal)' }}>Get it at trello.com/app-key ↗</a>
+                <a href="https://trello.com/app-key" onClick={(e) => { e.preventDefault(); openExternal('https://trello.com/app-key') }} style={{ color: 'var(--color-state-proposal)' }}>Get it at trello.com/app-key ↗</a>
               </p>
               <Field
                 field={{ name: 'api_key', label: 'API Key', placeholder: 'Paste your Trello API key', required: true }}
@@ -385,7 +385,7 @@ function TokenSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
       <p className="text-[12px] leading-relaxed" style={{ color: 'var(--t-muted)' }}>
         {method.hint}{' '}
         {method.url && (
-          <a href={method.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-state-proposal)' }}>Open ↗</a>
+          <a href={method.url} onClick={(e) => { e.preventDefault(); openExternal(method.url!) }} style={{ color: 'var(--color-state-proposal)' }}>Open ↗</a>
         )}
       </p>
       {method.fields.map((f) => (
@@ -496,7 +496,7 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
       <p className="text-[12px] leading-relaxed" style={{ color: 'var(--t-muted)' }}>
         In Azure DevOps go to User settings → Personal access tokens → New token, set scope to{' '}
         <strong>All accessible organizations</strong> and enable <strong>Work Items → Read &amp; write</strong>.{' '}
-        <a href="https://dev.azure.com" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-state-proposal)' }}>Open ↗</a>
+        <a href="https://dev.azure.com" onClick={(e) => { e.preventDefault(); openExternal('https://dev.azure.com') }} style={{ color: 'var(--color-state-proposal)' }}>Open ↗</a>
       </p>
       <div className="flex gap-2">
         <input type="password" value={pat} onChange={(e) => setPat(e.target.value)}

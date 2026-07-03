@@ -43,6 +43,16 @@ export async function invoke<T = unknown>(cmd: string, args?: Record<string, unk
   return t.core.invoke(cmd, args) as Promise<T>
 }
 
+/** Open an http(s) URL in the system browser via `open_external_url`.
+ *  A plain `<a target="_blank">` click is silently swallowed by the Tauri
+ *  webview (no system-browser handoff is wired up) — every "Open in tracker"
+ *  style link must call this from its `onClick` instead of relying on the
+ *  anchor's native navigation. Fire-and-forget; logs instead of throwing so a
+ *  denied/invalid URL doesn't need try/catch at every call site. */
+export function openExternal(url: string): void {
+  invoke('open_external_url', { url }).catch((e) => console.warn(`openExternal('${url}') failed:`, e))
+}
+
 /** Data load via the Rust command (`apiPath` is the former route it replaced). */
 export async function load<T = unknown>(
   apiPath: string,

@@ -18,7 +18,7 @@ import { useEffect, useState } from 'react'
 import { ProviderGlyph } from '@/components/atoms'
 import type { TaskSummary } from '@/lib/api-types'
 import type { HygieneIssue } from '@/lib/hygiene'
-import { load, mutate } from '@/lib/bridge'
+import { load, mutate, openExternal } from '@/lib/bridge'
 
 export type CleanupGroup = 'must' | 'nice' | 'review'
 
@@ -77,7 +77,7 @@ export function CleanupCard({
           )}
 
           {task.url && (
-            <a href={task.url} target="_blank" rel="noopener noreferrer"
+            <a href={task.url} onClick={(e) => { e.preventDefault(); openExternal(task.url!) }}
               className="mt-body-sm inline-block" style={{ color: 'var(--t-faint)' }}>Open in tracker ↗</a>
           )}
         </div>
@@ -312,7 +312,7 @@ function ParentPicker({ provider, taskKey, saving, onPick }: {
       )}
 
       {createUrl && (
-        <a href={createUrl} target="_blank" rel="noopener noreferrer"
+        <a href={createUrl} onClick={(e) => { e.preventDefault(); openExternal(createUrl) }}
           className="inline-flex items-center gap-1 mt-body-sm" style={{ color: 'var(--t-faint)' }}>
           + Create a new {label} in the tracker ↗
         </a>
