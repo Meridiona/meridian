@@ -13,6 +13,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef } from 'react'
+import type { KeyboardEvent, MouseEvent } from 'react'
 import type { HourReportEntry, HourStatus, TodayResponse, WorklogItem } from '@/lib/api-types'
 import { CATS } from '@/components/atoms'
 import { hourLabel } from './timelineLayout'
@@ -122,6 +123,20 @@ export function TimelineColumn({
           const takeoverMode = generating ? 'generating' as const : queued ? 'queued' as const : null
           const nextHourLabel = hourLabel((hour + 1) % 24)
 
+          // Shared click/keyboard handling for an individual card within this
+          // hour — identical in the multi-card and single-card branches below.
+          const cardHandlers = (w: WorklogItem, key: string) => ({
+            onClick: (e: MouseEvent) => {
+              e.stopPropagation()
+              isPending(w) ? onOpenDraftReview(key) : onSelectCard(hour, key)
+            },
+            onKeyDown: (e: KeyboardEvent) => {
+              if (e.key !== 'Enter' && e.key !== ' ') return
+              e.preventDefault(); e.stopPropagation()
+              isPending(w) ? onOpenDraftReview(key) : onSelectCard(hour, key)
+            },
+          })
+
           return (
             <div key={hour} ref={el => { if (el) rowRefs.current.set(hour, el); else rowRefs.current.delete(hour) }}
               className="grid" style={{ gridTemplateColumns: '62px 1fr' }}>
@@ -189,15 +204,7 @@ export function TimelineColumn({
                             return (
                               <div key={key} className="min-w-0" style={{ flex: '1 1 260px' }}
                                 role="button" tabIndex={0}
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  isPending(w) ? onOpenDraftReview(key) : onSelectCard(hour, key)
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key !== 'Enter' && e.key !== ' ') return
-                                  e.preventDefault(); e.stopPropagation()
-                                  isPending(w) ? onOpenDraftReview(key) : onSelectCard(hour, key)
-                                }}>
+                                {...cardHandlers(w, key)}>
                                 <TimelineCard item={w} variant="compact" selected={key === selectedCardKey} />
                               </div>
                             )
@@ -210,15 +217,7 @@ export function TimelineColumn({
                             return (
                               <div key={key}
                                 role="button" tabIndex={0}
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  isPending(w) ? onOpenDraftReview(key) : onSelectCard(hour, key)
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key !== 'Enter' && e.key !== ' ') return
-                                  e.preventDefault(); e.stopPropagation()
-                                  isPending(w) ? onOpenDraftReview(key) : onSelectCard(hour, key)
-                                }}>
+                                {...cardHandlers(w, key)}>
                                 <TimelineCard item={w} variant="compact" selected={key === selectedCardKey} />
                               </div>
                             )

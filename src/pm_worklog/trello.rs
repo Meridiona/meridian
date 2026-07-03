@@ -105,7 +105,10 @@ pub async fn delete_worklog(trello: &TrelloConfig, task_key: &str, action_id: &s
 
     tracing::info!(task_key, short_link = %short_link, action_id, "trello worklog comment delete");
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .context("building HTTP client")?;
     let resp = client
         .delete(&url)
         .send()

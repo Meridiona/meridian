@@ -113,7 +113,7 @@ if len(bindings) < 2:
         print(f"→ calling LLM (tier-2 batch {i // BATCH}) …")
         tier2_bindings = classify_tier2_batch(ctx.server_url, ctx.report, batch, i // BATCH)
         if tier2_bindings:
-            bindings = tier2_bindings
+            bindings = tier1_bindings + tier2_bindings
             matched_tier = 2
             break
 

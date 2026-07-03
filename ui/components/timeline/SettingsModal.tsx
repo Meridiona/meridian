@@ -30,12 +30,13 @@ export function SettingsModal({ onClose, initialSection }: {
 }) {
   const [section, setSection] = useState<SettingsSection>(initialSection ?? DEFAULT_SETTINGS_SECTION)
   const [integrations, setIntegrations] = useState<IntegrationsResponse | null>(null)
+  const [integrationsError, setIntegrationsError] = useState(false)
   const { settings, setSettings, patch, save } = useRuntimeSettings()
 
   const fetchIntegrations = () => {
     load<IntegrationsResponse>('/api/integrations', 'get_integrations')
-      .then(setIntegrations)
-      .catch(err => console.error('Failed to load integrations', err))
+      .then(res => { setIntegrations(res); setIntegrationsError(false) })
+      .catch(err => { console.error('Failed to load integrations', err); setIntegrationsError(true) })
   }
   useEffect(fetchIntegrations, [])
 
@@ -53,7 +54,20 @@ export function SettingsModal({ onClose, initialSection }: {
           ) : (
             <>
               {section === 'integrations' && (
-                <IntegrationsSection integrations={integrations} onChanged={fetchIntegrations} />
+                integrationsError && !integrations ? (
+                  <div className="flex flex-col items-start gap-2.5">
+                    <p className="mt-body-sm" style={{ color: 'var(--status-error-dot)' }}>
+                      Couldn't load integrations.
+                    </p>
+                    <button type="button" onClick={fetchIntegrations}
+                      className="mt-body-sm px-3 py-1.5 rounded-md"
+                      style={{ border: '1px solid var(--t-hair)', background: 'transparent', cursor: 'pointer' }}>
+                      Retry
+                    </button>
+                  </div>
+                ) : (
+                  <IntegrationsSection integrations={integrations} onChanged={fetchIntegrations} />
+                )
               )}
               {section === 'capture' && <CaptureSection settings={settings} patch={patch} save={save} />}
               {section === 'notifications' && <NotificationsSection settings={settings} patch={patch} save={save} />}
