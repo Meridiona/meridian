@@ -125,7 +125,10 @@ pub async fn delete_worklog(github: &GitHubConfig, task_key: &str, comment_id: &
 
     tracing::info!(task_key, comment_id, "github worklog comment DELETE");
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .context("building HTTP client")?;
     let resp = client
         .delete(&url)
         .header("Authorization", format!("Bearer {}", github.token))

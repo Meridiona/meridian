@@ -188,8 +188,14 @@ export function TimelineColumn({
                             const key = itemKey(w)
                             return (
                               <div key={key} className="min-w-0" style={{ flex: '1 1 260px' }}
+                                role="button" tabIndex={0}
                                 onClick={(e) => {
                                   e.stopPropagation()
+                                  isPending(w) ? onOpenDraftReview(key) : onSelectCard(hour, key)
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key !== 'Enter' && e.key !== ' ') return
+                                  e.preventDefault(); e.stopPropagation()
                                   isPending(w) ? onOpenDraftReview(key) : onSelectCard(hour, key)
                                 }}>
                                 <TimelineCard item={w} variant="compact" selected={key === selectedCardKey} />
@@ -202,10 +208,17 @@ export function TimelineColumn({
                           {items.map(w => {
                             const key = itemKey(w)
                             return (
-                              <div key={key} onClick={(e) => {
-                                e.stopPropagation()
-                                isPending(w) ? onOpenDraftReview(key) : onSelectCard(hour, key)
-                              }}>
+                              <div key={key}
+                                role="button" tabIndex={0}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  isPending(w) ? onOpenDraftReview(key) : onSelectCard(hour, key)
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key !== 'Enter' && e.key !== ' ') return
+                                  e.preventDefault(); e.stopPropagation()
+                                  isPending(w) ? onOpenDraftReview(key) : onSelectCard(hour, key)
+                                }}>
                                 <TimelineCard item={w} variant="compact" selected={key === selectedCardKey} />
                               </div>
                             )

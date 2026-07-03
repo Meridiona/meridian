@@ -290,8 +290,9 @@ def stage_candidates(ctx: HourContext) -> None:
         t = open_tasks.get(key, {"task_key": key, "title": key})
         return Candidate(task_key=key, title=t.get("title", key), doc=wdb.render_doc(t))
 
+    plan_set = set(plan_keys)
     ctx.daily = [cand(k) for k in plan_keys if k in open_tasks]
-    backlog_keys = [k for k in open_tasks if k not in set(plan_keys)]
+    backlog_keys = [k for k in open_tasks if k not in plan_set]
 
     def rerank(cands: list[Candidate]) -> None:
         if not cands:

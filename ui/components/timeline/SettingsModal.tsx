@@ -33,7 +33,9 @@ export function SettingsModal({ onClose, initialSection }: {
   const { settings, setSettings, patch, save } = useRuntimeSettings()
 
   const fetchIntegrations = () => {
-    load<IntegrationsResponse>('/api/integrations', 'get_integrations').then(setIntegrations).catch(() => {})
+    load<IntegrationsResponse>('/api/integrations', 'get_integrations')
+      .then(setIntegrations)
+      .catch(err => console.error('Failed to load integrations', err))
   }
   useEffect(fetchIntegrations, [])
 

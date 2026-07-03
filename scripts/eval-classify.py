@@ -91,14 +91,16 @@ def run_setting(base, data, fixture_report, setting, repeats, timeout):
                 resp = _post(base, body, timeout)
             except (urllib.error.URLError, TimeoutError) as e:
                 print(f"    {case['id']}: request error {e}")
-                fail += 1; trials += 1
+                fail += 1
+                trials += 1
                 continue
             trials += 1
             got = {m.get("task_key") for m in resp.get("matches", []) if isinstance(m, dict)}
             if resp.get("output_tokens", 0) == 0:
                 fail += 1
             if got == expected:
-                exact += 1; ok += 1
+                exact += 1
+                ok += 1
             fp += len(got - expected)
             fn += len(expected - got)
             mark = "✓" if got == expected else "✗"

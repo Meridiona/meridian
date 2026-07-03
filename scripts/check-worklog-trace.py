@@ -68,6 +68,7 @@ def _search(base: str, token: str, sql: str, hours: int = 48) -> list[dict]:
         sys.exit(f"error: OO search {e.code}: {e.read()[:400]!r}")
     except Exception as e:
         sys.exit(f"error: OO search failed: {e}")
+    return []
 
 
 # Span field names vary slightly across OO versions; probe a few.

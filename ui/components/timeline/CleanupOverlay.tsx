@@ -119,6 +119,8 @@ export function CleanupOverlay({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      const tag = (e.target as HTMLElement | null)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
       if (e.key === 'Escape') { onClose(); return }
       if (!queue) return
       if (e.key === 'ArrowRight' && canAdvance) setIndex(i => Math.min(queue.length - 1, i + 1))

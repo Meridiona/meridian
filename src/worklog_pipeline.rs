@@ -283,7 +283,9 @@ async fn process_hour(
                 hour = %label, sessions = count,
                 "worklog: insufficient activity — skipping hour"
             );
-            let _ = ledger::mark_hour_done(pool, hs, 0).await;
+            if let Err(e) = ledger::mark_hour_done(pool, hs, 0).await {
+                tracing::warn!(hour = %label, error = %e, "worklog: mark_hour_done failed");
+            }
             return false;
         }
     }
@@ -300,7 +302,9 @@ async fn process_hour(
     // Live "generating" signal for the timeline UI — flipped just before the call
     // fires, reverted on failure so a stuck/errored hour never looks perpetually
     // in-progress.
-    let _ = ledger::mark_hour_generating(pool, hs).await;
+    if let Err(e) = ledger::mark_hour_generating(pool, hs).await {
+        tracing::warn!(hour = %label, error = %e, "worklog: mark_hour_generating failed");
+    }
 
     // Wrap the POST in a span so `current_traceparent()` nests the hour's trace under
     // `worklog.hour` (one connected OpenObserve trace).
@@ -310,12 +314,16 @@ async fn process_hour(
         .await;
     match result {
         Ok(()) => {
-            let _ = ledger::mark_hour_done(pool, hs, 0).await;
+            if let Err(e) = ledger::mark_hour_done(pool, hs, 0).await {
+                tracing::warn!(hour = %label, error = %e, "worklog: mark_hour_done failed");
+            }
             tracing::info!(hour = %label, "worklog: hour processed");
         }
         Err(e) => {
             // Leave the hour pending so the next HH:03 tick (today catch-up) retries it.
-            let _ = ledger::mark_hour_pending(pool, hs).await;
+            if let Err(e2) = ledger::mark_hour_pending(pool, hs).await {
+                tracing::warn!(hour = %label, error = %e2, "worklog: mark_hour_pending failed");
+            }
             tracing::warn!(hour = %label, error = %e, "worklog pipeline errored — hour left pending");
         }
     }

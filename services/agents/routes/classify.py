@@ -172,7 +172,7 @@ async def classify_tasks(req: _ClassifyRequest) -> _ClassifyResponse:
                     output_type=ClassifyOut, max_tokens=req.max_tokens, temp=_temp)
         except Exception as exc:  # noqa: BLE001
             span.set_status(trace.StatusCode.ERROR, str(exc))
-            log.error("classify_tasks: inference error tier=%d: %s", req.tier, exc)
+            log.exception("classify_tasks: inference error tier=%d", req.tier)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
         raw_json = res.text

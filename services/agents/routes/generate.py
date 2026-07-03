@@ -175,7 +175,7 @@ async def generate_worklog(req: _WorklogRequest) -> _WorklogResponse:
                     output_type=WorklogOut, max_tokens=req.max_tokens)
         except Exception as exc:  # noqa: BLE001
             span.set_status(trace.StatusCode.ERROR, str(exc))
-            log.error("generate_worklog: inference error for %s: %s", req.task_key, exc)
+            log.exception("generate_worklog: inference error for %s", req.task_key)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
         raw_json = res.text
@@ -265,7 +265,7 @@ async def propose_ticket(req: _ProposeRequest) -> _ProposeResponse:
                     output_type=ProposeOut, max_tokens=req.max_tokens)
         except Exception as exc:  # noqa: BLE001
             span.set_status(trace.StatusCode.ERROR, str(exc))
-            log.error("propose_ticket: inference error: %s", exc)
+            log.exception("propose_ticket: inference error")
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
         raw_json = res.text

@@ -78,8 +78,8 @@ export default function ConnectTrackers({
                   {compact && !connected && <span className="text-[11px] truncate" style={{ color: 'var(--t-faint-2)' }}>{t.blurb}</span>}
                 </span>
                 {connected ? (
-                  <span className="ml-auto inline-flex items-center gap-1.5 text-[11px]" style={{ color: syncError ? '#d97706' : 'var(--t-muted)' }}>
-                    <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: syncError ? '#d97706' : 'var(--color-state-approved)' }} />
+                  <span className="ml-auto inline-flex items-center gap-1.5 text-[11px]" style={{ color: syncError ? 'var(--status-warning-dot)' : 'var(--t-muted)' }}>
+                    <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: syncError ? 'var(--status-warning-dot)' : 'var(--color-state-approved)' }} />
                     {syncError ? 'Sync error' : 'Connected'}
                     <span className="inline-block transition-transform" style={{ transform: isOpen ? 'rotate(90deg)' : 'none', color: 'var(--t-faint-2)' }}>›</span>
                   </span>
@@ -137,7 +137,7 @@ function ConnectedPanel({
             Disconnect removes the stored credentials. The daemon reloads automatically.
           </p>
           <button onClick={onDisconnect} disabled={disconnecting} className="text-[12px] px-3 py-1.5 rounded-md transition-opacity"
-            style={{ color: '#e53e3e', border: '1px solid #e53e3e', opacity: disconnecting ? 0.5 : 1, cursor: disconnecting ? 'not-allowed' : 'pointer', background: 'transparent' }}>
+            style={{ color: 'var(--status-error-dot)', border: '1px solid var(--status-error-dot)', opacity: disconnecting ? 0.5 : 1, cursor: disconnecting ? 'not-allowed' : 'pointer', background: 'transparent' }}>
             {disconnecting ? 'Disconnecting…' : `Disconnect ${tracker.name}`}
           </button>
         </>
@@ -270,7 +270,7 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
           <p className="text-[12px] leading-relaxed" style={{ color: 'var(--t-muted)' }}>{tracker.oauth?.hint}</p>
           {apiKeyPrompt && (
             <>
-              <p className="text-[12px]" style={{ color: '#d97706' }}>
+              <p className="text-[12px]" style={{ color: 'var(--status-warning-dot)' }}>
                 A Trello API key is required.{' '}
                 <a href="https://trello.com/app-key" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-state-proposal)' }}>Get it at trello.com/app-key ↗</a>
               </p>
@@ -305,7 +305,7 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
       {status === 'done' && <p className="text-[12px]" style={{ color: 'var(--color-state-approved)' }}>✓ Connected! Your tasks will appear shortly.</p>}
       {status === 'error' && (
         <div className="space-y-2">
-          <p className="text-[12px]" style={{ color: '#e53e3e' }}>{error ?? 'OAuth failed.'}</p>
+          <p className="text-[12px]" style={{ color: 'var(--status-error-dot)' }}>{error ?? 'OAuth failed.'}</p>
           <button onClick={() => setStatus('idle')} className="text-[11px]" style={{ color: 'var(--color-state-proposal)', cursor: 'pointer' }}>Try again</button>
         </div>
       )}
@@ -359,7 +359,7 @@ function TokenSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
           onChange={(v) => setValues((s) => ({ ...s, [f.name]: v }))}
           onEnter={save} />
       ))}
-      {error && <p className="text-[11px]" style={{ color: '#e53e3e' }}>{error}</p>}
+      {error && <p className="text-[11px]" style={{ color: 'var(--status-error-dot)' }}>{error}</p>}
       {method.note && <p className="text-[11px] leading-relaxed" style={{ color: 'var(--t-faint-2)' }}>{method.note}</p>}
       <button onClick={save} disabled={!canSave || saving} className="text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
         style={{ background: 'var(--color-state-proposal)', color: '#fff', opacity: !canSave || saving ? 0.5 : 1, cursor: !canSave || saving ? 'not-allowed' : 'pointer' }}>
@@ -510,7 +510,7 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
             )
       )}
 
-      {error && <p className="text-[11px]" style={{ color: '#e53e3e' }}>{error}</p>}
+      {error && <p className="text-[11px]" style={{ color: 'var(--status-error-dot)' }}>{error}</p>}
 
       {showManualOrg && !orgs && (
         <div className="space-y-1.5">

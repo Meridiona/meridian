@@ -13,6 +13,7 @@
 'use client'
 
 import type { IntegrationsResponse } from '@/lib/api-types'
+import { TRACKERS } from '@/lib/integrations'
 import type { SettingsSection } from './types'
 
 const NAV: { id: SettingsSection; label: string; glyph: string }[] = [
@@ -29,10 +30,7 @@ export function SettingsSidebar({ section, onSelect, integrations }: {
   onSelect: (s: SettingsSection) => void
   integrations: IntegrationsResponse | null
 }) {
-  const hasAnyConnected = !!integrations && (
-    integrations.jira || integrations.linear || integrations.github ||
-    integrations.trello || integrations.azure_devops
-  )
+  const hasAnyConnected = !!integrations && TRACKERS.some(t => integrations[t.id])
 
   return (
     <div className="w-[220px] shrink-0 flex flex-col py-3.5 px-3 bg-panel"

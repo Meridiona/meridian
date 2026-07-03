@@ -31,7 +31,9 @@ dependencies = [
 # (fastapi + uvicorn) that the Rust daemon calls via POST /classify_sessions.
 # Requires arm64 macOS; outlines 1.x is incompatible with Python 3.14+.
 mlx = [
-    "mlx-lm>=0.31,<1",
+    # >=0.31.1: make_logits_processors gained presence_penalty in 0.31.1 (thinking.py
+    # passes it unconditionally) — 0.31.0 raises TypeError on the first generation call.
+    "mlx-lm>=0.31.1,<1",
     # MLX-native sentence embeddings for the session distiller's SemDeDup stage.
     # Deliberately NOT sentence-transformers/torch — keeps the runtime lean
     # (no ~2.5 GB torch) and on the single MLX backend. See agents.model_registry

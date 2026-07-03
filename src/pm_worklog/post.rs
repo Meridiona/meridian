@@ -484,11 +484,18 @@ async fn unpost_stale(pool: &SqlitePool, config: &Config) -> Result<()> {
         };
         match result {
             Ok(()) => {
-                db::clear_pending_unpost(pool, p.id).await?;
-                tracing::info!(
-                    pm_worklog_id = p.id, task = %p.task_key, provider = %p.provider,
-                    worklog_id = %p.worklog_id, "stale tracker entry deleted"
-                );
+                if let Err(e) = db::clear_pending_unpost(pool, p.id).await {
+                    tracing::warn!(
+                        pm_worklog_id = p.id, task = %p.task_key, provider = %p.provider,
+                        worklog_id = %p.worklog_id, error = %e,
+                        "tracker entry deleted but failed to clear pending marker — retry next pass"
+                    );
+                } else {
+                    tracing::info!(
+                        pm_worklog_id = p.id, task = %p.task_key, provider = %p.provider,
+                        worklog_id = %p.worklog_id, "stale tracker entry deleted"
+                    );
+                }
             }
             Err(e) => tracing::warn!(
                 pm_worklog_id = p.id, task = %p.task_key, provider = %p.provider,

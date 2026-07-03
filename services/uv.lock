@@ -1308,7 +1308,7 @@ wheels = [
 
 [[package]]
 name = "meridian-agents"
-version = "1.67.1"
+version = "1.68.0"
 source = { editable = "." }
 dependencies = [
     { name = "mcp" },
@@ -1354,7 +1354,7 @@ requires-dist = [
     { name = "hf-xet", marker = "extra == 'mlx'", specifier = ">=1.5.1,<2" },
     { name = "mcp", specifier = ">=1.3.0,<2" },
     { name = "mlx-embeddings", marker = "extra == 'mlx'", specifier = ">=0.0.5,<1" },
-    { name = "mlx-lm", marker = "extra == 'mlx'", specifier = ">=0.31,<1" },
+    { name = "mlx-lm", marker = "extra == 'mlx'", specifier = ">=0.31.1,<1" },
     { name = "openai", specifier = ">=2.0.0,<3" },
     { name = "openinference-instrumentation-agno", marker = "extra == 'pm-worklog-update'", specifier = ">=0.1,<1" },
     { name = "opentelemetry-api", specifier = ">=1.27,<2" },
