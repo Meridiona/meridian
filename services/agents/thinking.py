@@ -234,6 +234,15 @@ def generate_thinking(
             verbose=False,
         )
 
+    # Release this call's KV-cache/scratch buffers now — see the matching
+    # comment in structured.generate_structured for why per-call clearing
+    # (not just idle-eviction) matters on this hot path.
+    try:
+        import mlx.core as mx
+        mx.clear_cache()
+    except Exception:  # noqa: BLE001 — cache flush is best-effort
+        pass
+
     think_tokens = 0
     closed_think = False
     text = raw

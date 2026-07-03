@@ -123,12 +123,21 @@ async def openai_chat_completions(req: _OAIChatRequest) -> dict:
         from outlines.models import from_mlxlm
         with m.model_session() as bundle:
             om = from_mlxlm(bundle.model, bundle.mlx_tokenizer)
-            return om(
+            text = om(
                 Chat(msgs),
                 output_type=output_type,
                 max_tokens=max_tokens,
                 sampler=make_sampler(temp=temperature),
             )
+        # Release this call's KV-cache/scratch buffers now — see
+        # structured.generate_structured for why per-call clearing matters
+        # (generate_thinking, the other branch here, already does this).
+        try:
+            import mlx.core as mx
+            mx.clear_cache()
+        except Exception:  # noqa: BLE001 — cache flush is best-effort
+            pass
+        return text
 
     t0 = _time.time()
     try:

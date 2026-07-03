@@ -30,6 +30,7 @@ propose_ticket) — each builds its messages + a Pydantic output model, then cal
 """
 from __future__ import annotations
 
+import gc
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -48,6 +49,25 @@ from agents.thinking import DEFAULT_TEMP, DEFAULT_TOP_P, DEFAULT_TOP_K  # noqa: 
 # so caching it per schema is what keeps per-call overhead negligible.
 _model_cache: dict[int, Any] = {}
 _gen_cache: dict[tuple[int, str], Any] = {}
+
+
+def invalidate() -> None:
+    """Drop every cached outlines MLXLM wrapper + compiled FSM Generator now.
+
+    Called by ``mlx_classifier.evict_resident_model()``/``maybe_evict_idle()``
+    at the moment they evict the generative model — without this, this
+    module's caches (keyed by ``id(bundle.model)``) keep the "evicted" model
+    and its compiled outlines_core Index/Guide/Vocabulary fully alive until
+    the next FSM call happens to reload a new model id, which both defeats
+    the single-slot residency guarantee (two generative models briefly
+    resident) and, given how often eviction fires here, lets that stale
+    generation accumulate across many reload cycles before Python's own GC
+    schedule gets around to sweeping the reference cycles it holds. See the
+    matching comment in ``_outlines_model`` for the full mechanism.
+    """
+    _model_cache.clear()
+    _gen_cache.clear()
+    gc.collect()
 
 
 @dataclass
@@ -70,9 +90,12 @@ def _outlines_model(bundle: Any):
     cached = _model_cache.get(key)
     if cached is not None:
         return cached
-    # A fresh model object → drop any generators bound to a previous one.
-    _model_cache.clear()
-    _gen_cache.clear()
+    # A fresh model object with our cache still populated means the evictor's
+    # invalidate() call (below) was somehow missed — belt-and-braces clear so
+    # we never serve a generator bound to a freed model. The normal path
+    # (mlx_classifier already called invalidate() at eviction time) hits this
+    # as a no-op.
+    invalidate()
     model = outlines.from_mlxlm(bundle.model, bundle.mlx_tokenizer)
     # We render the chat template ourselves (with enable_thinking=False) and pass the
     # finished prompt string. outlines' MLXLMTypeAdapter, seeing a tokenizer that HAS a
@@ -145,6 +168,18 @@ def generate_structured(
     with m.model_session() as bundle:
         generator = _generator(bundle, output_type)
         text = generator(prompt, max_tokens=max_tokens, sampler=sampler)
+
+    # Release this call's KV-cache/scratch buffers back to MLX's allocator now,
+    # not just at idle-eviction — classify_tasks/generate_worklog/propose_ticket
+    # each fire many times per hourly run, so leaving this to the (much later)
+    # idle evictor let peak memory ratchet up across an active run instead of
+    # settling back down between calls (matches the per-call discipline
+    # reranker._score_one and session_distiller._embed already use).
+    try:
+        import mlx.core as mx
+        mx.clear_cache()
+    except Exception:  # noqa: BLE001 — cache flush is best-effort
+        pass
 
     text = (text or "").strip()
     output_tokens = len(hf_tokenizer.encode(text)) if text else 0
