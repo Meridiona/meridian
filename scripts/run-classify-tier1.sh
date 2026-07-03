@@ -89,16 +89,19 @@ def make_cand(key):
     return Candidate(task_key=key, title=t.get("title", key), doc=wdb.render_doc(t))
 
 # ── Tier 1 ──────────────────────────────────────────────────────────────
-bindings = []
+tier1_bindings = []
 if plan_keys:
     ctx.daily = [make_cand(k) for k in plan_keys if k in open_tasks]
     print(f"\n→ tier-1: {len(ctx.daily)} daily-plan candidates")
     for c in ctx.daily:
         print(f"   {c.task_key}: {c.title}")
     print("→ calling LLM (tier-1) …")
-    bindings = classify_tier1(ctx.server_url, ctx.report, ctx.daily)
+    tier1_bindings = classify_tier1(ctx.server_url, ctx.report, ctx.daily)
 else:
     print(f"\n→ tier-1: no confirmed daily plan for {hour[:10]} — skipping")
+
+bindings = list(tier1_bindings)
+matched_tier = 1 if tier1_bindings else None
 
 # ── Tier 2 ──────────────────────────────────────────────────────────────
 if len(bindings) < 2:
@@ -108,12 +111,14 @@ if len(bindings) < 2:
     for i in range(0, len(ctx.backlog), BATCH):
         batch = ctx.backlog[i:i + BATCH]
         print(f"→ calling LLM (tier-2 batch {i // BATCH}) …")
-        bindings = classify_tier2_batch(ctx.server_url, ctx.report, batch, i // BATCH)
-        if bindings:
+        tier2_bindings = classify_tier2_batch(ctx.server_url, ctx.report, batch, i // BATCH)
+        if tier2_bindings:
+            bindings = tier2_bindings
+            matched_tier = 2
             break
 
 # ── Result ──────────────────────────────────────────────────────────────
-tier = 1 if plan_keys and bindings else 2
+tier = matched_tier or 2
 print("\n════════════════════════════════════════")
 print(f"  Classification Result — {hour}")
 print("════════════════════════════════════════")

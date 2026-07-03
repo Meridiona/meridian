@@ -134,10 +134,7 @@ function startTicker() {
 function paintOptionHints() {
   optHints[15].textContent = clockOf(new Date(Date.now() + 15 * 60 * 1000))
   optHints[60].textContent = clockOf(new Date(Date.now() + 60 * 60 * 1000))
-  const tomorrow = new Date()
-  tomorrow.setDate(tomorrow.getDate() + 1)
-  tomorrow.setHours(9, 0, 0, 0)
-  optHints.tomorrow.textContent = clockOf(tomorrow)
+  optHints.tomorrow.textContent = clockOf(new Date(Date.now() + secsUntilTomorrowMorning() * 1000))
 }
 
 // ── Render ───────────────────────────────────────────────────────────────────
@@ -268,20 +265,31 @@ primaryBtn.addEventListener('click', () => {
   resizeToContent()
 })
 
-$('opt-15m').addEventListener('click', () => {
+// Closes the duration list immediately on selection — mirrors primaryBtn's
+// toggle handler (label/hidden/class), which otherwise only self-corrects on
+// the next render() from a status update, leaving the list visibly open
+// for a moment after a choice is made.
+function closeOptions() {
   optionsOpen = false
+  pauseOptions.hidden = true
+  primaryBtn.textContent = 'Pause capture'
+  primaryBtn.classList.remove('open')
+}
+
+$('opt-15m').addEventListener('click', () => {
+  closeOptions()
   invoke('pause_for_duration', { seconds: 900 }).catch(console.error)
 })
 $('opt-1h').addEventListener('click', () => {
-  optionsOpen = false
+  closeOptions()
   invoke('pause_for_duration', { seconds: 3600 }).catch(console.error)
 })
 $('opt-tomorrow').addEventListener('click', () => {
-  optionsOpen = false
+  closeOptions()
   invoke('pause_for_duration', { seconds: secsUntilTomorrowMorning() }).catch(console.error)
 })
 $('opt-indefinite').addEventListener('click', () => {
-  optionsOpen = false
+  closeOptions()
   invoke('pause_indefinitely').catch(console.error)
 })
 

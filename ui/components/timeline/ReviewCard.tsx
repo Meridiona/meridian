@@ -79,6 +79,8 @@ export function ReviewCard({
         return
       }
       setPendingCandidate(null)
+    } catch {
+      setSaveError('Could not save — try again.')
     } finally {
       setSaving(false)
     }
@@ -107,7 +109,7 @@ export function ReviewCard({
   return (
     <div className="flex flex-col items-center gap-5">
       <motion.div
-        drag={editing ? false : 'x'}
+        drag={editing || busy ? false : 'x'}
         dragElastic={0.65}
         dragMomentum={false}
         onDragEnd={handleDragEnd}

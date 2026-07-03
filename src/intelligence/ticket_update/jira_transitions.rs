@@ -232,4 +232,21 @@ mod tests {
             vec![json!({ "id": "41", "name": "Reopen Issue", "to": { "statusCategory": {} } })];
         assert_eq!(pick_reopen_transition(&transitions), Some("41".into()));
     }
+
+    #[test]
+    fn picks_cancel_by_name_heuristic() {
+        let transitions = vec![
+            json!({ "id": "11", "name": "In Progress", "to": { "statusCategory": { "key": "indeterminate" } } }),
+            json!({ "id": "51", "name": "Won't Fix", "to": { "statusCategory": { "key": "done" } } }),
+        ];
+        assert_eq!(pick_cancel_transition(&transitions), Some("51".into()));
+    }
+
+    #[test]
+    fn no_cancel_transition_is_none() {
+        let transitions = vec![
+            json!({ "id": "11", "name": "In Progress", "to": { "statusCategory": { "key": "indeterminate" } } }),
+        ];
+        assert_eq!(pick_cancel_transition(&transitions), None);
+    }
 }

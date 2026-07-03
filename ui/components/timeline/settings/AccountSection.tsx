@@ -22,7 +22,9 @@ export function AccountSection() {
       <SectionCard>
         <SectionHeader>Setup &amp; Onboarding</SectionHeader>
         <FieldRow label="Re-run Setup" description="Return to the onboarding wizard to reconfigure permissions, update integrations, or re-check the local model.">
-          <SettingsButton onClick={() => { mutate('/api/setup', 'open_setup', {}).catch(() => {}) }}>
+          <SettingsButton onClick={() => {
+            mutate('/api/setup', 'open_setup', {}).catch(err => console.error('Failed to open setup wizard', err))
+          }}>
             Go to Setup
           </SettingsButton>
         </FieldRow>

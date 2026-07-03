@@ -43,8 +43,8 @@
 
   --radius: 18px;
 
-  --font-sans: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, "Segoe UI", Helvetica, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Cascadia Mono", monospace;
+  --font-sans: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, "Segoe UI", helvetica, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, "SF Mono", sfmono-regular, menlo, "Cascadia Mono", monospace;
 }
 
 *, *::before, *::after {
@@ -165,14 +165,14 @@ button:focus-visible {
   width: 12px; height: 12px; border-radius: 99px;
   background: var(--success);
   box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.16);
-  animation: softPulse 2.4s ease-in-out infinite;
+  animation: soft-pulse 2.4s ease-in-out infinite;
 }
 .status-card.paused .status-dot {
   background: var(--warn);
   box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.16);
   animation: none;
 }
-@keyframes softPulse {
+@keyframes soft-pulse {
   0%, 100% { opacity: 1; }
   50%      { opacity: .35; }
 }

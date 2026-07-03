@@ -29,6 +29,59 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, State};
 
+/// Close out any active pause (writing its gap row) and commit a new pause
+/// state. The prior-state read and the new-state write happen under a single
+/// lock acquisition (no `await` in between), so a concurrent pause/resume call
+/// — a double-click before the UI disables the button, or a race with the
+/// schedule-pause poll tick — can't read the same stale `prev` snapshot and
+/// interleave writes, which previously could corrupt `pause_started_at`/gap
+/// accounting that feeds the "Logged" time metrics. The gap-row DB write
+/// itself happens after the lock is released, using the values captured
+/// atomically with the state swap rather than a fresh read.
+async fn transition_pause(
+    state: &Arc<Mutex<AppState>>,
+    pool: Option<&SqlitePool>,
+    now: u64,
+    new_source: PauseSource,
+    new_until: Option<u64>,
+) -> Result<(), String> {
+    let prev = {
+        let mut s = state.lock().map_err(|e| e.to_string())?;
+        let prev = s.pause_started_at.take().zip(s.pause_source.take());
+        drop(s.engine_cancel.take());
+        drop(s.ui_consumer_cancel.take());
+        s.capture_paused.store(true, Ordering::Relaxed);
+        s.pause_until = new_until;
+        s.pause_source = Some(new_source);
+        s.pause_started_at = Some(now);
+        s.schedule_resume_at = None;
+        prev
+    };
+    if let Some((prev_started, prev_src)) = prev {
+        let kind = match prev_src {
+            PauseSource::Timed | PauseSource::Indefinite => "tracking_paused",
+            PauseSource::Schedule => "schedule_paused",
+        };
+        let duration_s = now.saturating_sub(prev_started) as i64;
+        if duration_s > 0 {
+            if let Some(p) = pool {
+                if let Err(e) = meridian_core::insert_pause_gap(
+                    p,
+                    &secs_to_iso(prev_started),
+                    &secs_to_iso(now),
+                    duration_s,
+                    kind,
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, kind, "failed to write gap for interrupted pause");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Pause in-process capture for `seconds` (0 = resume now). Rejects the popover's
 /// own presets from ever exceeding a day: the UI computes "pause until tomorrow"
 /// morning, which can run past 24h if paused very late at night.
@@ -69,47 +122,17 @@ pub async fn pause_for_duration(
     let now = now_secs();
     let until = now + seconds;
 
-    // If a pause is already active (e.g. a schedule pause), close it out first
-    // by writing a gap row for the T0→now period before overwriting state.
-    let prev = {
-        let s = state.lock().map_err(|e| e.to_string())?;
-        s.pause_started_at.zip(s.pause_source.clone())
-    };
-    if let Some((prev_started, prev_src)) = prev {
-        let kind = match prev_src {
-            PauseSource::Timed | PauseSource::Indefinite => "tracking_paused",
-            PauseSource::Schedule => "schedule_paused",
-        };
-        let duration_s = now.saturating_sub(prev_started) as i64;
-        if duration_s > 0 {
-            if let Some(p) = pool.as_ref() {
-                if let Err(e) = meridian_core::insert_pause_gap(
-                    p,
-                    &secs_to_iso(prev_started),
-                    &secs_to_iso(now),
-                    duration_s,
-                    kind,
-                )
-                .await
-                {
-                    tracing::warn!(error = %e, kind, "failed to write gap for interrupted pause");
-                }
-            }
-        }
-    }
-
-    {
-        let mut s = state.lock().map_err(|e| e.to_string())?;
-        // Drop cancel senders → stops the engine and UI consumer tasks, fully
-        // halting ScreenCaptureKit and the CGEventTap recorder.
-        drop(s.engine_cancel.take());
-        drop(s.ui_consumer_cancel.take());
-        s.capture_paused.store(true, Ordering::Relaxed);
-        s.pause_until = Some(until);
-        s.pause_source = Some(PauseSource::Timed);
-        s.pause_started_at = Some(now);
-        s.schedule_resume_at = None;
-    }
+    // Drops engine_cancel/ui_consumer_cancel (halting ScreenCaptureKit + the
+    // CGEventTap recorder) and closes out any already-active pause, all in
+    // one atomic state transition — see transition_pause's doc comment.
+    transition_pause(
+        state.inner(),
+        pool.as_ref(),
+        now,
+        PauseSource::Timed,
+        Some(until),
+    )
+    .await?;
 
     // Emit immediately so the popover reflects the new state without waiting for the next poll tick.
     if let Ok(s) = state.lock() {
@@ -157,45 +180,16 @@ pub async fn pause_indefinitely(
     let pool = db_pool.inner().clone();
     let now = now_secs();
 
-    // If a pause is already active (e.g. a schedule pause), close it out first
-    // by writing a gap row for the T0→now period before overwriting state.
-    let prev = {
-        let s = state.lock().map_err(|e| e.to_string())?;
-        s.pause_started_at.zip(s.pause_source.clone())
-    };
-    if let Some((prev_started, prev_src)) = prev {
-        let kind = match prev_src {
-            PauseSource::Timed | PauseSource::Indefinite => "tracking_paused",
-            PauseSource::Schedule => "schedule_paused",
-        };
-        let duration_s = now.saturating_sub(prev_started) as i64;
-        if duration_s > 0 {
-            if let Some(p) = pool.as_ref() {
-                if let Err(e) = meridian_core::insert_pause_gap(
-                    p,
-                    &secs_to_iso(prev_started),
-                    &secs_to_iso(now),
-                    duration_s,
-                    kind,
-                )
-                .await
-                {
-                    tracing::warn!(error = %e, kind, "failed to write gap for interrupted pause");
-                }
-            }
-        }
-    }
-
-    {
-        let mut s = state.lock().map_err(|e| e.to_string())?;
-        drop(s.engine_cancel.take());
-        drop(s.ui_consumer_cancel.take());
-        s.capture_paused.store(true, Ordering::Relaxed);
-        s.pause_until = None;
-        s.pause_source = Some(PauseSource::Indefinite);
-        s.pause_started_at = Some(now);
-        s.schedule_resume_at = None;
-    }
+    // Same atomic close-out-then-commit as pause_for_duration — see
+    // transition_pause's doc comment.
+    transition_pause(
+        state.inner(),
+        pool.as_ref(),
+        now,
+        PauseSource::Indefinite,
+        None,
+    )
+    .await?;
 
     if let Ok(s) = state.lock() {
         let _ = app.emit("status-update", s.to_payload());
@@ -250,7 +244,13 @@ pub(crate) async fn resume_capture(
     auto: bool,
 ) {
     let (started, source) = {
-        let mut s = state.lock().unwrap();
+        let mut s = match state.lock() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "pause mutex poisoned; capture may remain paused");
+                return;
+            }
+        };
         let started = s.pause_started_at.take();
         let source = s.pause_source.take();
         s.capture_paused.store(false, Ordering::Relaxed);

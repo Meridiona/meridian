@@ -211,27 +211,27 @@ function TaskRow({ task, selected, onSelect, onFix, accent, showProvider }: {
   task: TaskSummary; selected: boolean; onSelect: () => void; onFix: () => void; accent: string; showProvider: boolean
 }) {
   return (
-    <button onClick={onSelect}
-      className="w-full text-left px-4 py-3 border-t"
+    <div role="button" tabIndex={0} onClick={onSelect}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect() } }}
+      className="w-full text-left px-4 py-3 border-t cursor-pointer"
       style={{ background: selected ? 'var(--t-row-hover)' : 'transparent', borderColor: 'var(--t-hair)', borderLeft: `2px solid ${selected ? accent : 'transparent'}` }}>
       <div className="flex items-center gap-2.5">
         {showProvider && <ProviderGlyph provider={task.provider} size={16} />}
         <span className="mt-mono-sm text-[11px] px-1.5 py-0.5 rounded bg-key-bg text-key-text shrink-0">{task.key}</span>
         {task.hygiene && task.hygiene.issues.length > 0 && (
-          <span role="button" tabIndex={0}
+          <button type="button"
             onClick={(e) => { e.stopPropagation(); onFix() }}
-            onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onFix() } }}
-            className="mt-mono-sm text-[10px] px-1.5 py-0.5 rounded-full shrink-0 cursor-pointer"
+            className="mt-mono-sm text-[10px] px-1.5 py-0.5 rounded-full shrink-0 cursor-pointer border-0"
             style={{ background: 'color-mix(in srgb, var(--color-state-pending) 16%, transparent)', color: 'var(--color-state-pending)' }}
             title={`${task.hygiene.issues.length} hygiene fixes — click to fix`}>
             ⚠ {task.hygiene.issues.length}
-          </span>
+          </button>
         )}
         <span className="mt-mono-sm text-[11px] ml-auto shrink-0" style={{ color: task.today_s > 0 ? 'var(--t-muted)' : 'var(--t-faint-2)' }}>
           {task.today_s > 0 ? fmtDur(task.today_s) : '—'}
         </span>
       </div>
       <p className="mt-body-sm mt-1.5 truncate" style={{ color: 'var(--t-title)' }}>{task.title}</p>
-    </button>
+    </div>
   )
 }

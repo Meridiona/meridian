@@ -18,11 +18,11 @@
         <div class="wordmark">Meridian</div>
         <div class="head-sub" id="head-sub">Connecting…</div>
       </div>
-      <button class="open-btn" id="btn-open-head">Open</button>
+      <button type="button" class="open-btn" id="btn-open-head">Open</button>
     </header>
 
     <!-- ── Update available (DMG auto-update; hidden until check_update finds one) ─ -->
-    <button class="upd" id="upd" hidden>
+    <button type="button" class="upd" id="upd" hidden>
       <span class="upd-left">
         <span class="upd-icon" aria-hidden="true">↑</span>
         <span class="upd-text" id="upd-text">Update available</span>
@@ -41,23 +41,23 @@
         <span class="status-kbd">⌥⌘P</span>
       </div>
 
-      <button class="primary-btn" id="primary-btn">Pause capture</button>
+      <button type="button" class="primary-btn" id="primary-btn">Pause capture</button>
 
       <!-- pause duration options — shown when "Pause capture" is clicked -->
       <div class="pause-options" id="pause-options" hidden>
-        <button class="opt-btn" id="opt-15m">
+        <button type="button" class="opt-btn" id="opt-15m">
           <span class="opt-label">Pause for 15 minutes</span>
           <span class="opt-hint" id="opt-15m-hint"></span>
         </button>
-        <button class="opt-btn" id="opt-1h">
+        <button type="button" class="opt-btn" id="opt-1h">
           <span class="opt-label">Pause for 1 hour</span>
           <span class="opt-hint" id="opt-1h-hint"></span>
         </button>
-        <button class="opt-btn" id="opt-tomorrow">
+        <button type="button" class="opt-btn" id="opt-tomorrow">
           <span class="opt-label">Pause until tomorrow</span>
           <span class="opt-hint" id="opt-tomorrow-hint"></span>
         </button>
-        <button class="opt-btn" id="opt-indefinite">
+        <button type="button" class="opt-btn" id="opt-indefinite">
           <span class="opt-label">Pause indefinitely</span>
           <span class="opt-hint">until I resume</span>
         </button>
@@ -66,7 +66,7 @@
       <!-- active countdown (timed pause only) -->
       <div class="pause-active" id="pause-active" hidden>
         <span class="pause-countdown" id="pause-countdown">--:--</span>
-        <button class="resume-btn" id="resume-btn">Resume now</button>
+        <button type="button" class="resume-btn" id="resume-btn">Resume now</button>
       </div>
     </section>
 
@@ -93,7 +93,7 @@
       </div>
 
       <!-- review CTA (conditional on real drafts) -->
-      <button class="review-cta" id="review-cta" hidden>
+      <button type="button" class="review-cta" id="review-cta" hidden>
         <span class="review-count" id="review-count">0</span>
         <span class="review-text">drafts ready to review</span>
         <span class="review-arrow">→</span>
@@ -111,11 +111,11 @@
 
     <!-- ── Footer ─────────────────────────────────────────────────────────── -->
     <footer class="pop-foot">
-      <button class="foot-btn" id="btn-open">Dashboard</button>
+      <button type="button" class="foot-btn" id="btn-open">Dashboard</button>
       <span class="foot-sep"></span>
-      <button class="foot-btn" id="btn-perms">Preferences</button>
+      <button type="button" class="foot-btn" id="btn-perms">Preferences</button>
       <span class="foot-sep"></span>
-      <button class="foot-btn foot-quit" id="btn-quit">Quit</button>
+      <button type="button" class="foot-btn foot-quit" id="btn-quit">Quit</button>
     </footer>
   </div>
 
