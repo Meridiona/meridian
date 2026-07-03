@@ -1,5 +1,7 @@
 <!doctype html>
 <!-- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity -->
+<!-- Rebuilt from the Claude Design mock "Meridian Tray.dc.html"
+     (claude.ai/design/p/b8656e29-ae04-4f69-b17f-d5fab4d00f3a). -->
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -11,26 +13,12 @@
   <div class="pop" id="pop">
     <!-- ── Header ─────────────────────────────────────────────────────────── -->
     <header class="pop-head">
-      <div class="brand">
-        <span class="brand-dot" id="brand-dot" title="Daemon status"></span>
-        <span class="wordmark">meridian</span>
+      <span class="brand-mark" id="brand-mark" aria-hidden="true"></span>
+      <div class="head-text">
+        <div class="wordmark">Meridian</div>
+        <div class="head-sub" id="head-sub">Connecting…</div>
       </div>
-      <div class="head-actions">
-        <button class="icon-btn" id="btn-open-head" title="Open Meridian">
-          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor"
-               stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M6 3H3.5A1.5 1.5 0 0 0 2 4.5v8A1.5 1.5 0 0 0 3.5 14h8a1.5 1.5 0 0 0 1.5-1.5V10" />
-            <path d="M9.5 2.5H13.5V6.5" /><path d="M13.5 2.5 7.5 8.5" />
-          </svg>
-        </button>
-        <button class="icon-btn" id="btn-perms-head" title="Permissions">
-          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor"
-               stroke-width="1.3" aria-hidden="true">
-            <circle cx="8" cy="8" r="2.1" />
-            <path d="M8 1.4v1.8M8 12.8v1.8M14.6 8h-1.8M3.2 8H1.4M12.7 3.3l-1.3 1.3M4.6 11.4l-1.3 1.3M12.7 12.7l-1.3-1.3M4.6 4.6 3.3 3.3" stroke-linecap="round" />
-          </svg>
-        </button>
-      </div>
+      <button class="open-btn" id="btn-open-head">Open</button>
     </header>
 
     <!-- ── Update available (DMG auto-update; hidden until check_update finds one) ─ -->
@@ -42,117 +30,92 @@
       <span class="upd-ver" id="upd-ver"></span>
     </button>
 
-
-    <!-- ── Live "now" block ───────────────────────────────────────────────── -->
-    <section class="live" id="live">
-      <div class="live-top">
-        <span class="live-label" id="live-label">
-          <span class="live-dot" id="live-dot"></span><span id="live-label-text">Reading…</span>
-        </span>
-        <span class="live-match" id="live-match"></span>
-      </div>
-
-      <div class="live-body" id="live-body">
-        <div class="app-glyph" id="app-glyph" aria-hidden="true"></div>
-        <div class="live-meta">
-          <div class="cat-row">
-            <span class="cat-chip" id="live-cat">
-              <span class="cat-dot" id="live-cat-dot"></span><span id="live-cat-label"></span>
-            </span>
-          </div>
-          <p class="live-title" id="live-title"></p>
+    <!-- ── Capture status + pause ─────────────────────────────────────────── -->
+    <section class="status-card" id="status-card">
+      <div class="status-top">
+        <span class="status-dot" id="status-dot"></span>
+        <div class="status-text">
+          <p class="status-title" id="status-title">Connecting…</p>
+          <p class="status-sub" id="status-sub"></p>
         </div>
+        <span class="status-kbd">⌥⌘P</span>
       </div>
 
-      <div class="timer" id="timer">0:00<span class="timer-sec" id="timer-sec">:00</span></div>
-      <div class="live-foot">
-        <span class="live-since" id="live-since"></span>
-      </div>
-    </section>
+      <button class="primary-btn" id="primary-btn">Pause capture</button>
 
-    <div class="rule"></div>
-
-    <!-- ── Pause / tracking toggle ──────────────────────────────────────── -->
-    <section class="pause" id="pause">
-      <div class="pause-info">
-        <p class="pause-text" id="pause-text">Pause tracking</p>
-        <p class="pause-sub" id="pause-sub"></p>
-      </div>
-
-      <!-- PICKER: shown when not paused -->
-      <div class="pause-picker" id="pause-picker">
-        <button class="dur-btn" data-secs="300">5m</button>
-        <button class="dur-btn" data-secs="900">15m</button>
-        <button class="dur-btn" data-secs="1800">30m</button>
-        <button class="dur-btn" data-secs="3600">1hr</button>
-        <button class="dur-btn" data-custom="1">···</button>
+      <!-- pause duration options — shown when "Pause capture" is clicked -->
+      <div class="pause-options" id="pause-options" hidden>
+        <button class="opt-btn" id="opt-15m">
+          <span class="opt-label">Pause for 15 minutes</span>
+          <span class="opt-hint" id="opt-15m-hint"></span>
+        </button>
+        <button class="opt-btn" id="opt-1h">
+          <span class="opt-label">Pause for 1 hour</span>
+          <span class="opt-hint" id="opt-1h-hint"></span>
+        </button>
+        <button class="opt-btn" id="opt-tomorrow">
+          <span class="opt-label">Pause until tomorrow</span>
+          <span class="opt-hint" id="opt-tomorrow-hint"></span>
+        </button>
+        <button class="opt-btn" id="opt-indefinite">
+          <span class="opt-label">Pause indefinitely</span>
+          <span class="opt-hint">until I resume</span>
+        </button>
       </div>
 
-      <!-- CUSTOM INPUT: shown when "···" is clicked -->
-      <div class="pause-custom" id="pause-custom" hidden>
-        <input class="dur-input" type="number" id="custom-mins" min="1" max="480" placeholder="mins" />
-        <button class="dur-confirm" id="custom-confirm">Pause</button>
-        <button class="dur-cancel" id="custom-cancel">Cancel</button>
-      </div>
-
-      <!-- ACTIVE COUNTDOWN: shown during a timed pause -->
+      <!-- active countdown (timed pause only) -->
       <div class="pause-active" id="pause-active" hidden>
         <span class="pause-countdown" id="pause-countdown">--:--</span>
         <button class="resume-btn" id="resume-btn">Resume now</button>
       </div>
     </section>
 
-    <div class="rule"></div>
+    <!-- ── TODAY ──────────────────────────────────────────────────────────── -->
+    <section class="today">
+      <div class="today-head">
+        <span class="kicker">TODAY</span>
+        <span class="today-rule"></span>
+      </div>
 
-    <!-- ── Time tracker tiles ─────────────────────────────────────────────── -->
-    <section class="tt">
-      <div class="tt-head">
-        <span class="kicker">TIME TRACKER</span>
-        <span class="tt-scope">Today</span>
-      </div>
-      <div class="tt-grid">
-        <div class="tile tile-br tile-bb">
-          <div class="tile-label">FOCUS</div>
-          <div class="tile-value" id="tile-focus">0m</div>
-          <div class="tile-sub">active today</div>
+      <div class="today-grid">
+        <div class="stat">
+          <div class="stat-value stat-logged" id="stat-logged">0m</div>
+          <div class="stat-label">Logged</div>
         </div>
-        <div class="tile tile-bb">
-          <div class="tile-label">CODING</div>
-          <div class="tile-value" id="tile-coding">0m</div>
-          <div class="tile-sub" id="tile-coding-sub">focused work</div>
+        <div class="stat">
+          <div class="stat-value stat-focus" id="stat-focus">0m</div>
+          <div class="stat-label">Focus</div>
         </div>
-        <div class="tile tile-br">
-          <div class="tile-label">REVIEW</div>
-          <div class="tile-value" id="tile-review">0m</div>
-          <div class="tile-sub">code review</div>
-        </div>
-        <div class="tile">
-          <div class="tile-label">COMMS</div>
-          <div class="tile-value" id="tile-comms">0m</div>
-          <div class="tile-sub">Slack · meetings</div>
+        <div class="stat">
+          <div class="stat-value stat-drafts" id="stat-drafts">0</div>
+          <div class="stat-label">Drafts</div>
         </div>
       </div>
+
+      <!-- review CTA (conditional on real drafts) -->
+      <button class="review-cta" id="review-cta" hidden>
+        <span class="review-count" id="review-count">0</span>
+        <span class="review-text">drafts ready to review</span>
+        <span class="review-arrow">→</span>
+      </button>
     </section>
 
-    <!-- ── Worklogs awaiting (conditional on real drafts) ─────────────────── -->
-    <div class="rule" id="wl-rule" hidden></div>
-    <button class="wl" id="wl" hidden>
-      <span class="wl-left">
-        <span class="wl-badge" id="wl-badge">0</span>
-        <span class="wl-text" id="wl-text">Worklogs ready to approve</span>
-      </span>
-      <span class="wl-arrow">→</span>
-    </button>
+    <!-- ── Privacy reassurance ────────────────────────────────────────────── -->
+    <div class="privacy-line">
+      <svg width="13" height="15" viewBox="0 0 13 15" fill="none" aria-hidden="true">
+        <path d="M6.5 1 L12 3.2 V7 C12 10.5 9.5 12.8 6.5 14 C3.5 12.8 1 10.5 1 7 V3.2 Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+        <path d="M4.4 7.3 L5.9 8.8 L8.7 5.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span>100% on-device — nothing leaves your Mac until you approve it</span>
+    </div>
 
     <!-- ── Footer ─────────────────────────────────────────────────────────── -->
     <footer class="pop-foot">
-      <button class="foot-open" id="btn-open">
-        Open Meridian <span class="kbd">⌘⏎</span>
-      </button>
-      <div class="foot-right">
-        <button class="foot-btn" id="btn-perms">Permissions</button>
-        <button class="foot-btn" id="btn-quit">Quit</button>
-      </div>
+      <button class="foot-btn" id="btn-open">Dashboard</button>
+      <span class="foot-sep"></span>
+      <button class="foot-btn" id="btn-perms">Preferences</button>
+      <span class="foot-sep"></span>
+      <button class="foot-btn foot-quit" id="btn-quit">Quit</button>
     </footer>
   </div>
 

@@ -24,8 +24,6 @@ from agents.worklog_pipeline.models import ProposedTicket, WorklogDraft
 
 log = logging.getLogger("meridian.worklog.generation")
 
-_DEFAULT_SERVER = "http://127.0.0.1:7823"
-
 
 def _post(server_url: str, path: str, body: dict, timeout: float = 300) -> dict:
     """POST JSON and return the parsed response. Raises on any transport/HTTP/

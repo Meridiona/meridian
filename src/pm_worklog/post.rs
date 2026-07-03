@@ -13,9 +13,14 @@
 // The sweep runs on a fast cadence independent of the hourly driver so "approve
 // in the UI" feels close to immediate.
 //
-// Idempotent: a window already POSTED short-circuits (the `find_existing_worklog`
-// backstop), so a restart mid-sweep can never double-post. A post failure leaves
-// the row `approved` with `last_post_error` recorded, and the next sweep retries.
+// Idempotent: a row already POSTED short-circuits (the `find_existing_worklog`
+// backstop), so a restart mid-sweep can never double-post THAT row. A ticket
+// can carry more than one worklog for the same hour (a manual re-match onto a
+// ticket already logged that hour creates a sibling row instead of merging —
+// see meridian_core::worklogs::rematch_worklog), so idempotency is scoped
+// per-row (`id`), not per (task, window) — two distinct rows may legitimately
+// share a window and both need their own post. A post failure leaves the row
+// `approved` with `last_post_error` recorded, and the next sweep retries.
 
 use anyhow::Result;
 use sqlx::SqlitePool;
@@ -172,14 +177,16 @@ async fn post_one(
         return Ok(false);
     }
 
-    // Idempotency backstop: if this exact (task, window) was already posted,
-    // adopt that worklog/comment id instead of posting again.
-    if let Some((_, worklog_id)) =
-        db::find_existing_worklog(pool, &w.task_key, &w.window_start, &w.window_end).await?
-    {
+    // Idempotency backstop: if THIS row was already posted (a crash between
+    // Jira accepting the POST and our DB write landing), adopt its own
+    // worklog/comment id instead of posting again. Scoped to this row's id —
+    // see find_existing_worklog's doc comment for why a (task, window)
+    // lookup would be wrong now that a ticket can carry multiple worklogs
+    // for the same hour.
+    if let Some(worklog_id) = db::find_existing_worklog(pool, w.id).await? {
         tracing::info!(
             pm_worklog_id = w.id, task = %w.task_key, %worklog_id,
-            "window already posted — adopting existing worklog id"
+            "row already posted — adopting existing worklog id"
         );
         db::mark_worklog_posted(pool, w.id, &worklog_id).await?;
         span.record("state", "posted");
@@ -427,6 +434,72 @@ pub async fn process_approved_proposals(pool: &SqlitePool, config: &Config) -> R
     Ok(())
 }
 
+/// Delete every stale tracker entry left by an edit/rematch of an already-
+/// `posted` worklog (`meridian_core::worklogs::edit_worklog` /
+/// `rematch_worklog` stash these in `unpost_provider`/`unpost_worklog_id` —
+/// see migration 055). Runs BEFORE the approved-post pass so a row that was
+/// edited straight back to `approved` (unlikely today — edits redraft — but
+/// keeps the ordering correct if that ever changes) never reposts before its
+/// old entry is gone. Best-effort per row: a delete failure is logged and
+/// retried next pass, never a hard error that stalls the loop. A provider
+/// with no `delete_worklog` support (Trello/Azure DevOps not yet wired, or a
+/// tracker not configured on this daemon) is left in place with a warning —
+/// same forgiving posture as `missing_provider` below.
+#[tracing::instrument(skip(pool, config))]
+async fn unpost_stale(pool: &SqlitePool, config: &Config) -> Result<()> {
+    let pending = db::fetch_pending_unposts(pool).await?;
+    if pending.is_empty() {
+        return Ok(());
+    }
+    for p in pending {
+        let result = match p.provider.as_str() {
+            "jira" => match jira_cfg(config) {
+                Some(c) => jira::delete_worklog(c, &p.task_key, &p.worklog_id).await,
+                None => continue, // not configured here — retry once it is
+            },
+            "linear" => match linear_cfg(config) {
+                Some(c) => linear::delete_worklog(c, &p.worklog_id).await,
+                None => continue,
+            },
+            "github" => match github_cfg(config) {
+                Some(c) => github::delete_worklog(c, &p.task_key, &p.worklog_id).await,
+                None => continue,
+            },
+            "trello" => match trello_cfg(config) {
+                Some(c) => trello::delete_worklog(c, &p.task_key, &p.worklog_id).await,
+                None => continue,
+            },
+            "azure_devops" => match azure_devops_cfg(config) {
+                Some(c) => azure_devops::delete_worklog(c, &p.task_key, &p.worklog_id).await,
+                None => continue,
+            },
+            other => {
+                tracing::warn!(
+                    pm_worklog_id = p.id,
+                    provider = other,
+                    "unpost skipped — unknown provider, leaving stale entry in place"
+                );
+                continue;
+            }
+        };
+        match result {
+            Ok(()) => {
+                db::clear_pending_unpost(pool, p.id).await?;
+                tracing::info!(
+                    pm_worklog_id = p.id, task = %p.task_key, provider = %p.provider,
+                    worklog_id = %p.worklog_id, "stale tracker entry deleted"
+                );
+            }
+            Err(e) => tracing::warn!(
+                pm_worklog_id = p.id, task = %p.task_key, provider = %p.provider,
+                worklog_id = %p.worklog_id, error = %e,
+                "unpost failed — left for retry"
+            ),
+        }
+    }
+    Ok(())
+}
+
 /// Daemon task: post approved worklogs on a short cadence until shutdown.
 pub async fn run_post_loop(pool: SqlitePool, mut shutdown_rx: watch::Receiver<bool>) {
     let cfg = PmWorklogConfig::from_env();
@@ -438,6 +511,9 @@ pub async fn run_post_loop(pool: SqlitePool, mut shutdown_rx: watch::Receiver<bo
 
     loop {
         let config = Config::from_env();
+        if let Err(e) = unpost_stale(&pool, &config).await {
+            tracing::error!(error = %e, "unpost sweep failed");
+        }
         // Mint real tickets for approved proposals FIRST, so the approved worklog
         // rows they create get posted in the same pass below.
         if let Err(e) = process_approved_proposals(&pool, &config).await {

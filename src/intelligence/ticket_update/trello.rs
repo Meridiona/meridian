@@ -29,7 +29,8 @@ pub async fn apply(cfg: &TrelloConfig, key: &str, write: &WriteField) -> Result<
         | WriteField::StoryPoints(_)
         | WriteField::Parent(_)
         | WriteField::Close
-        | WriteField::Cancel => {
+        | WriteField::Cancel
+        | WriteField::Reopen => {
             return Ok(ApplyResult::redirected(
                 "trello",
                 key,
@@ -158,6 +159,7 @@ fn field_name(write: &WriteField) -> &'static str {
         WriteField::Description(_) => "description",
         WriteField::Close => "close",
         WriteField::Cancel => "cancel",
+        WriteField::Reopen => "reopen",
     }
 }
 
@@ -178,6 +180,7 @@ mod tests {
             ("description", WriteField::Description("d".into())),
             ("close", WriteField::Close),
             ("cancel", WriteField::Cancel),
+            ("reopen", WriteField::Reopen),
         ];
         for (expected, field) in cases {
             assert_eq!(
@@ -200,6 +203,7 @@ mod tests {
         assert!(WriteField::parse("parent", "abc").is_some());
         assert!(WriteField::parse("close", "").is_some());
         assert!(WriteField::parse("cancel", "").is_some());
+        assert!(WriteField::parse("reopen", "").is_some());
     }
 
     // These three are the fields Trello DOES write in-app — regression guard.

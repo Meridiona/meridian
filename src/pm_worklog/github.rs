@@ -114,6 +114,36 @@ pub async fn post_worklog(
     })
 }
 
+/// Delete a previously-posted worklog comment (see `jira::delete_worklog` for
+/// why). A 404 (already gone) is treated as success.
+pub async fn delete_worklog(github: &GitHubConfig, task_key: &str, comment_id: &str) -> Result<()> {
+    let issue = parse_task_key(task_key)?;
+    let url = format!(
+        "https://api.github.com/repos/{}/{}/issues/comments/{}",
+        issue.owner, issue.repo, comment_id
+    );
+
+    tracing::info!(task_key, comment_id, "github worklog comment DELETE");
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .delete(&url)
+        .header("Authorization", format!("Bearer {}", github.token))
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header("User-Agent", "meridian")
+        .send()
+        .await
+        .with_context(|| format!("network error reaching GitHub at {url}"))?;
+
+    let status = resp.status();
+    if status.is_success() || status.as_u16() == 404 {
+        return Ok(());
+    }
+    let text = resp.text().await.unwrap_or_default();
+    bail!("GitHub comment DELETE for {task_key}/{comment_id} returned {status}: {text}");
+}
+
 /// GitHub returns the comment `id` as a JSON number; normalise it to a string.
 fn comment_id_from_response(value: &Value) -> Option<String> {
     match value.get("id")? {

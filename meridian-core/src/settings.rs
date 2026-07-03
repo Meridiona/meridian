@@ -37,6 +37,11 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RuntimeSettings {
+    // Appearance — the dashboard's selected surface palette (lilac/blush/ink).
+    // `#[serde(default = "default_theme")]` so an existing settings.json without
+    // the key upgrades cleanly (no migration). Mirrors `theme` in ui/lib/settings.ts.
+    #[serde(default = "default_theme")]
+    pub theme: String,
     pub log_level: String,
     pub classification_enabled: bool,
     pub min_classification_duration_s: i64,
@@ -72,9 +77,16 @@ pub struct RuntimeSettings {
     pub work_days: String,        // comma-separated 1–7 (Mon=1 … Sun=7), e.g. "1,2,3,4,5"
 }
 
+/// Default surface palette when `settings.json` predates the `theme` key. Must
+/// match `SETTINGS_DEFAULTS.theme` in ui/lib/settings.ts.
+fn default_theme() -> String {
+    "lilac".to_string()
+}
+
 impl Default for RuntimeSettings {
     fn default() -> Self {
         Self {
+            theme: default_theme(),
             log_level: "INFO".to_string(),
             classification_enabled: true,
             min_classification_duration_s: 10,

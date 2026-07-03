@@ -297,6 +297,11 @@ async fn process_hour(
         WaitOutcome::Ready => {}
     }
 
+    // Live "generating" signal for the timeline UI — flipped just before the call
+    // fires, reverted on failure so a stuck/errored hour never looks perpetually
+    // in-progress.
+    let _ = ledger::mark_hour_generating(pool, hs).await;
+
     // Wrap the POST in a span so `current_traceparent()` nests the hour's trace under
     // `worklog.hour` (one connected OpenObserve trace).
     let span = tracing::info_span!("worklog.hour", hour = %label, cycle_index);
@@ -310,6 +315,7 @@ async fn process_hour(
         }
         Err(e) => {
             // Leave the hour pending so the next HH:03 tick (today catch-up) retries it.
+            let _ = ledger::mark_hour_pending(pool, hs).await;
             tracing::warn!(hour = %label, error = %e, "worklog pipeline errored — hour left pending");
         }
     }

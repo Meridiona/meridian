@@ -38,7 +38,7 @@ export default function HealthBanner() {
       : <>The database needs migration: <code className="text-xs font-mono">meridian migrate-db</code></>
     return (
       <div
-        className="w-full px-4 py-3 flex items-center justify-between border-b"
+        className="w-full px-6 py-3.5 flex items-center justify-between border-b"
         style={{
           borderBottomColor: 'var(--rule)',
           backgroundColor: 'rgba(239, 68, 68, 0.08)',
@@ -68,7 +68,7 @@ export default function HealthBanner() {
 
   return (
     <div
-      className="w-full px-4 py-3 flex items-center justify-between bg-yellow-50 border-b"
+      className="w-full px-6 py-3.5 flex items-center justify-between bg-yellow-50 border-b"
       style={{
         borderBottomColor: 'var(--rule)',
         backgroundColor: 'rgba(253, 224, 71, 0.08)',

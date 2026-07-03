@@ -127,11 +127,11 @@ describe('filterByConnectedProviders', () => {
 })
 
 // ---------------------------------------------------------------------------
-// CleanupView: Board Score total and must-fix count exclude disconnected tasks
+// Board Cleanup: composition stats and must-fix count exclude disconnected tasks
 // ---------------------------------------------------------------------------
-// These mirror the computations in CleanupView.tsx — total = filtered length,
-// groups are built from the filtered list. If these break, the board score and
-// must-fix badge would count tickets from disconnected integrations.
+// These mirror the computations in CleanupOverlay.tsx — total = filtered length,
+// groups are built from the filtered list. If these break, the composition bar
+// and must-fix badge would count tickets from disconnected integrations.
 
 const mustFixHygiene = { bucket: 'must_fix', issues: [{ code: 'no_due_date', severity: 'must_fix', hint: 'Add a due date' }] }
 const cleanHygiene   = { bucket: 'ready', issues: [] }

@@ -146,33 +146,78 @@ pub async fn mark_worklog_posted(
     Ok(())
 }
 
-/// If a worklog has already been POSTED for this exact (task, window), return
-/// its (row id, jira worklog id) so the caller short-circuits instead of posting
-/// again. This is the idempotency backstop against double-posting.
+/// If THIS row (`pm_worklog_id`) has already been POSTED, return its jira
+/// worklog id so the caller short-circuits instead of posting again — the
+/// idempotency backstop for a crash between Jira accepting the POST and the
+/// `mark_worklog_posted` write landing. Scoped to the row's own id, NOT a
+/// (task_key, window) lookup across all rows: a ticket can legitimately carry
+/// more than one worklog for the same hour (a manual re-match onto a ticket
+/// that already has time logged that hour creates a sibling row, deliberately
+/// NOT merged — see meridian_core::worklogs::rematch_worklog), so two
+/// distinct rows can share (task_key, window_start, window_end). Matching on
+/// (task_key, window) alone would make the SECOND row's post silently
+/// "adopt" the FIRST row's Jira id instead of posting its own time/comment —
+/// a real entry silently never reaching the tracker.
 pub async fn find_existing_worklog(
     pool: &SqlitePool,
-    task_key: &str,
-    window_start: &str,
-    window_end: &str,
-) -> Result<Option<(i64, String)>> {
-    let row = sqlx::query(
-        "SELECT id, posted_worklog_id FROM pm_worklogs \
-         WHERE task_key = ? AND window_start = ? AND window_end = ? \
-           AND posted_worklog_id IS NOT NULL \
-         LIMIT 1",
+    pm_worklog_id: i64,
+) -> Result<Option<String>> {
+    let wid: Option<String> = sqlx::query_scalar(
+        "SELECT posted_worklog_id FROM pm_worklogs WHERE id = ? AND posted_worklog_id IS NOT NULL",
     )
-    .bind(task_key)
-    .bind(window_start)
-    .bind(window_end)
+    .bind(pm_worklog_id)
     .fetch_optional(pool)
     .await
     .context("find existing posted worklog")?;
+    Ok(wid)
+}
 
-    Ok(row.map(|r| {
-        let id: i64 = r.get("id");
-        let wid: String = r.get("posted_worklog_id");
-        (id, wid)
-    }))
+/// One stale tracker entry awaiting deletion — left by `edit_worklog` /
+/// `rematch_worklog` (`meridian-core`) when a human edits/re-matches a row
+/// that was already `posted`. `task_key` is the row's CURRENT key (already
+/// re-matched, if that's what triggered this), which is fine — the stale
+/// entry was posted under the OLD key/provider pairing captured at the time,
+/// and `unpost_worklog_id`/`unpost_provider` are exactly that snapshot.
+#[derive(Debug, Clone)]
+pub struct PendingUnpost {
+    pub id: i64,
+    pub task_key: String,
+    pub provider: String,
+    pub worklog_id: String,
+}
+
+/// Rows with a stale tracker entry still awaiting deletion.
+pub async fn fetch_pending_unposts(pool: &SqlitePool) -> Result<Vec<PendingUnpost>> {
+    let rows = sqlx::query(
+        "SELECT id, task_key, unpost_provider, unpost_worklog_id FROM pm_worklogs \
+         WHERE unpost_worklog_id IS NOT NULL",
+    )
+    .fetch_all(pool)
+    .await
+    .context("fetch pending unposts")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| PendingUnpost {
+            id: r.get("id"),
+            task_key: r.get("task_key"),
+            provider: r.get("unpost_provider"),
+            worklog_id: r.get("unpost_worklog_id"),
+        })
+        .collect())
+}
+
+/// Clear a row's pending-unpost markers once the stale tracker entry has been
+/// deleted (or confirmed already gone).
+pub async fn clear_pending_unpost(pool: &SqlitePool, pm_worklog_id: i64) -> Result<()> {
+    sqlx::query(
+        "UPDATE pm_worklogs SET unpost_provider = NULL, unpost_worklog_id = NULL WHERE id = ?",
+    )
+    .bind(pm_worklog_id)
+    .execute(pool)
+    .await
+    .context("clear pending unpost")?;
+    Ok(())
 }
 
 /// Convenience: serialise the payload for logging/dry-run.

@@ -111,6 +111,46 @@ pub async fn post_worklog(
     })
 }
 
+/// Delete a previously-posted worklog comment (see `jira::delete_worklog` for
+/// why). A 404 (already gone) is treated as success.
+pub async fn delete_worklog(
+    cfg: &AzureDevOpsConfig,
+    task_key: &str,
+    comment_id: &str,
+) -> Result<()> {
+    let item = parse_task_key(task_key)?;
+    let url = format!(
+        "{}/{}/_apis/wit/workItems/{}/comments/{}?api-version=7.1-preview.4",
+        cfg.api_base, item.project, item.id, comment_id
+    );
+
+    let raw = format!(":{}", cfg.pat);
+    let auth = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(raw.as_bytes())
+    );
+
+    tracing::info!(task_key, comment_id, "azure devops worklog comment DELETE");
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .context("building HTTP client")?;
+    let resp = client
+        .delete(&url)
+        .header("Authorization", auth)
+        .send()
+        .await
+        .context("Azure DevOps delete comment request")?;
+
+    let status = resp.status();
+    if status.is_success() || status.as_u16() == 404 {
+        return Ok(());
+    }
+    let text = resp.text().await.unwrap_or_default();
+    bail!("Azure DevOps delete comment returned {status}: {text}");
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------

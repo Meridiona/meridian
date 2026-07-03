@@ -188,6 +188,28 @@ def stage_distill(ctx: HourContext) -> bool:
                 sp.set_attribute("llm_output",
                     observability.preview(c.get("session_summary") or "", max_chars=4000))
 
+        # Persist the distilled body onto the hour ledger for EVERY hour that
+        # reaches distillation — not only ones that ultimately produce a worklog —
+        # so the dashboard's hour-detail panel can show the hour's activity even
+        # when no ticket matched. Keyed on the UTC hour_start the driver's ledger
+        # row already uses (local_hour_utc_bounds + '+00:00').
+        if not ctx.dry_run:
+            _utc_s, _ = local_hour_utc_bounds(ctx.hour)
+            hour_start = f"{_utc_s}+00:00"
+            out_chars = int(d.get("out_chars", 0))
+            conn = wdb.open_db(ctx.db_path)
+            try:
+                wdb.persist_hour_text(
+                    conn, hour_start=hour_start, body=ctx.body,
+                    out_chars=out_chars,
+                    reduction_pct=float(d.get("reduction_pct", 0.0)))
+            finally:
+                conn.close()
+            log.debug("worklog: hour=%s persisted hour_text chars=%d",
+                      ctx.hour, out_chars,
+                      extra={"hour": ctx.hour, "hour_start": hour_start,
+                             "hour_text_chars": out_chars})
+
         if not ctx.body.strip() and not ctx.coding_block:
             ctx.result.note = "no sessions"
             log.info("worklog: hour=%s has no sessions — skipping", ctx.hour,
@@ -241,6 +263,18 @@ def stage_report(ctx: HourContext) -> None:
                  ctx.hour, ctx.result.report_chars, bool(ctx.coding_block),
                  extra={"hour": ctx.hour, "report_chars": ctx.result.report_chars,
                         "coding_folded": bool(ctx.coding_block)})
+
+        # Persist the REPORT (not the distilled input persisted in stage_distill)
+        # so the dashboard's hour-detail "ACTIVITY SUMMARY" box shows the actual
+        # human-readable output, for every hour that reaches this stage.
+        if not ctx.dry_run:
+            _utc_s, _ = local_hour_utc_bounds(ctx.hour)
+            hour_start = f"{_utc_s}+00:00"
+            conn = wdb.open_db(ctx.db_path)
+            try:
+                wdb.persist_hour_report(conn, hour_start=hour_start, report=ctx.report)
+            finally:
+                conn.close()
 
 
 def stage_candidates(ctx: HourContext) -> None:
