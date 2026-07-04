@@ -24,8 +24,7 @@ pub async fn apply(cfg: &TrelloConfig, key: &str, write: &WriteField) -> Result<
 
     // Fields with no clean Trello mapping → redirect to the card.
     match write {
-        WriteField::AddLabel(_)
-        | WriteField::Priority(_)
+        WriteField::Priority(_)
         | WriteField::StoryPoints(_)
         | WriteField::Parent(_)
         | WriteField::Close
@@ -151,7 +150,6 @@ fn field_name(write: &WriteField) -> &'static str {
     match write {
         WriteField::DueDate(_) => "duedate",
         WriteField::AssignMe => "assignee",
-        WriteField::AddLabel(_) => "labels",
         WriteField::Priority(_) => "priority",
         WriteField::StoryPoints(_) => "story_points",
         WriteField::Parent(_) => "parent",
@@ -172,7 +170,6 @@ mod tests {
         let cases: &[(&str, WriteField)] = &[
             ("duedate", WriteField::DueDate("2026-01-01".into())),
             ("assignee", WriteField::AssignMe),
-            ("labels", WriteField::AddLabel("bug".into())),
             ("priority", WriteField::Priority("High".into())),
             ("story_points", WriteField::StoryPoints(3.0)),
             ("parent", WriteField::Parent("abc".into())),
@@ -197,7 +194,6 @@ mod tests {
     // path with a wrong reason string instead of the Trello-specific one.
     #[test]
     fn trello_redirect_fields_parse_correctly() {
-        assert!(WriteField::parse("labels", "bug").is_some());
         assert!(WriteField::parse("priority", "High").is_some());
         assert!(WriteField::parse("story_points", "3").is_some());
         assert!(WriteField::parse("parent", "abc").is_some());

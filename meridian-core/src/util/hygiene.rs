@@ -90,7 +90,6 @@ fn reason_hint(code: &str, detail: Option<&Map<String, Value>>) -> String {
             format!("Overdue by {by} day(s) — reschedule or close it.")
         }
         "missing_assignee" => "No assignee — who owns this?".to_string(),
-        "missing_labels" => "No labels — add one to categorise it.".to_string(),
         "missing_priority" => "No priority set.".to_string(),
         "missing_estimate" => "No estimate — add story points.".to_string(),
         "missing_acceptance_criteria" => {
@@ -143,7 +142,6 @@ fn reason_fix(code: &str) -> Option<HygieneFix> {
         "missing_due_date" => Some(fix("date_picker", "duedate", "Add a due date", false)),
         "overdue" => Some(fix("date_picker", "duedate", "Reschedule due date", false)),
         "missing_assignee" => Some(fix("assign_self", "assignee", "Assign to me", false)),
-        "missing_labels" => Some(fix("edit_labels", "labels", "Add a label", false)),
         "missing_priority" => Some(fix("pick_priority", "priority", "Set priority", false)),
         "missing_estimate" => Some(fix(
             "number_input",
@@ -213,19 +211,19 @@ mod tests {
 
     #[test]
     fn ignored_codes_are_filtered_out() {
-        let reasons = r#"[{"code":"missing_labels"},{"code":"missing_priority"}]"#;
-        let issues = parse_issues(Some(reasons), Some(r#"["missing_labels"]"#));
+        let reasons = r#"[{"code":"missing_estimate"},{"code":"missing_priority"}]"#;
+        let issues = parse_issues(Some(reasons), Some(r#"["missing_estimate"]"#));
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].code, "missing_priority");
     }
 
     #[test]
     fn severity_splits_must_fix_from_optional() {
-        let reasons = r#"[{"code":"missing_due_date"},{"code":"missing_labels"}]"#;
+        let reasons = r#"[{"code":"missing_due_date"},{"code":"missing_priority"}]"#;
         let issues = parse_issues(Some(reasons), None);
         let by = |c: &str| issues.iter().find(|i| i.code == c).unwrap();
         assert_eq!(by("missing_due_date").severity, "must_fix");
-        assert_eq!(by("missing_labels").severity, "optional");
+        assert_eq!(by("missing_priority").severity, "optional");
     }
 
     #[test]

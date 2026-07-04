@@ -47,15 +47,6 @@ pub async fn apply(cfg: &GitHubConfig, key: &str, write: &WriteField) -> Result<
             )
             .await?;
         }
-        WriteField::AddLabel(label) => {
-            post(
-                cfg,
-                &client,
-                &labels_url(&issue),
-                json!({ "labels": [label] }),
-            )
-            .await?;
-        }
         WriteField::Summary(text) => {
             patch(cfg, &client, &issue_url(&issue), json!({ "title": text })).await?;
         }
@@ -102,9 +93,6 @@ fn issue_url(i: &IssueRef) -> String {
 }
 fn assignees_url(i: &IssueRef) -> String {
     format!("{}/assignees", issue_url(i))
-}
-fn labels_url(i: &IssueRef) -> String {
-    format!("{}/labels", issue_url(i))
 }
 fn issue_html_url(i: &IssueRef) -> String {
     format!(
@@ -190,7 +178,6 @@ fn field_name(write: &WriteField) -> &'static str {
     match write {
         WriteField::DueDate(_) => "duedate",
         WriteField::AssignMe => "assignee",
-        WriteField::AddLabel(_) => "labels",
         WriteField::Priority(_) => "priority",
         WriteField::StoryPoints(_) => "story_points",
         WriteField::Parent(_) => "parent",
@@ -225,10 +212,6 @@ mod tests {
             "https://api.github.com/repos/acme/api/issues/42/assignees"
         );
         assert_eq!(
-            labels_url(&r()),
-            "https://api.github.com/repos/acme/api/issues/42/labels"
-        );
-        assert_eq!(
             issue_html_url(&r()),
             "https://github.com/acme/api/issues/42"
         );
@@ -239,7 +222,6 @@ mod tests {
         let cases: &[(&str, WriteField)] = &[
             ("duedate", WriteField::DueDate("2026-01-01".into())),
             ("assignee", WriteField::AssignMe),
-            ("labels", WriteField::AddLabel("bug".into())),
             ("priority", WriteField::Priority("High".into())),
             ("story_points", WriteField::StoryPoints(3.0)),
             ("parent", WriteField::Parent("owner/repo#1".into())),

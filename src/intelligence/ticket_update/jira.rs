@@ -36,10 +36,6 @@ pub async fn apply(cfg: &JiraConfig, key: &str, write: &WriteField) -> Result<Ap
             )
             .await?;
         }
-        WriteField::AddLabel(label) => {
-            // `update` add-op is additive — never clobbers existing labels.
-            edit_update(&ctx, &client, key, json!({ "labels": [{ "add": label }] })).await?;
-        }
         WriteField::Priority(name) => {
             edit_fields(&ctx, &client, key, json!({ "priority": { "name": name } })).await?;
         }
@@ -94,16 +90,6 @@ async fn edit_fields(
     fields: Value,
 ) -> Result<()> {
     put_issue(ctx, client, key, json!({ "fields": fields })).await
-}
-
-/// `PUT /issue/{key}` with an `update` object — ADD/REMOVE op semantics.
-async fn edit_update(
-    ctx: &JiraReqCtx,
-    client: &reqwest::Client,
-    key: &str,
-    update: Value,
-) -> Result<()> {
-    put_issue(ctx, client, key, json!({ "update": update })).await
 }
 
 async fn put_issue(
@@ -210,7 +196,6 @@ fn write_field_name(write: &WriteField) -> &'static str {
     match write {
         WriteField::DueDate(_) => "duedate",
         WriteField::AssignMe => "assignee",
-        WriteField::AddLabel(_) => "labels",
         WriteField::Priority(_) => "priority",
         WriteField::StoryPoints(_) => "story_points",
         WriteField::Parent(_) => "parent",

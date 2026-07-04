@@ -65,10 +65,6 @@ pub async fn apply(cfg: &AzureDevOpsConfig, key: &str, write: &WriteField) -> Re
             let me = my_unique_name(&client, cfg).await?;
             vec![set_field("System.AssignedTo", json!(me))]
         }
-        WriteField::AddLabel(label) => {
-            let tags = merged_tags(&client, cfg, &item, label).await?;
-            vec![set_field("System.Tags", json!(tags))]
-        }
         WriteField::Parent(parent_key) => {
             let parent = parse_task_key(parent_key)?;
             vec![add_parent_relation(cfg, &parent)]
@@ -140,52 +136,6 @@ async fn patch_work_item(
     Ok(())
 }
 
-/// Current System.Tags merged with `label` (Azure tags are `; `-joined; there is
-/// no add-op, so we read-modify-write).
-async fn merged_tags(
-    client: &reqwest::Client,
-    cfg: &AzureDevOpsConfig,
-    item: &WorkItemRef,
-    label: &str,
-) -> Result<String> {
-    let url = format!(
-        "{}/{}/_apis/wit/workitems/{}?fields=System.Tags&api-version=7.1",
-        cfg.api_base.trim_end_matches('/'),
-        item.project,
-        item.id
-    );
-    let resp = client
-        .get(&url)
-        .header("Authorization", basic_auth(cfg))
-        .send()
-        .await
-        .context("GET work item tags")?;
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        bail!("Azure DevOps GET tags returned {status}: {text}");
-    }
-    let v: Value = serde_json::from_str(&text).context("parsing work item")?;
-    let existing = v
-        .pointer("/fields/System.Tags")
-        .and_then(|t| t.as_str())
-        .unwrap_or("");
-    Ok(merge_tags(existing, label))
-}
-
-/// Append `label` to a `; `-joined Azure tags string if not already present.
-fn merge_tags(existing: &str, label: &str) -> String {
-    let mut tags: Vec<String> = existing
-        .split(';')
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .collect();
-    if !tags.iter().any(|t| t.eq_ignore_ascii_case(label)) {
-        tags.push(label.to_string());
-    }
-    tags.join("; ")
-}
-
 async fn my_unique_name(client: &reqwest::Client, cfg: &AzureDevOpsConfig) -> Result<String> {
     let url = format!(
         "{}/_apis/connectionData?api-version=7.1",
@@ -234,7 +184,6 @@ fn field_name(write: &WriteField) -> &'static str {
     match write {
         WriteField::DueDate(_) => "duedate",
         WriteField::AssignMe => "assignee",
-        WriteField::AddLabel(_) => "labels",
         WriteField::Priority(_) => "priority",
         WriteField::StoryPoints(_) => "story_points",
         WriteField::Parent(_) => "parent",
@@ -256,14 +205,6 @@ mod tests {
         assert_eq!(priority_to_int("High"), 2);
         assert_eq!(priority_to_int("Medium"), 3);
         assert_eq!(priority_to_int("Low"), 4);
-    }
-
-    #[test]
-    fn merges_tags_additively() {
-        assert_eq!(merge_tags("backend; api", "urgent"), "backend; api; urgent");
-        assert_eq!(merge_tags("", "first"), "first");
-        // Idempotent on a present tag (case-insensitive).
-        assert_eq!(merge_tags("Backend", "backend"), "Backend");
     }
 
     #[test]
@@ -317,7 +258,6 @@ mod tests {
         let cases: &[(&str, WriteField)] = &[
             ("duedate", WriteField::DueDate("2026-01-01".into())),
             ("assignee", WriteField::AssignMe),
-            ("labels", WriteField::AddLabel("bug".into())),
             ("priority", WriteField::Priority("High".into())),
             ("story_points", WriteField::StoryPoints(3.0)),
             ("parent", WriteField::Parent("Proj#1".into())),

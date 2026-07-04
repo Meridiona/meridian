@@ -326,8 +326,6 @@ function Control({ control, value, onChange }: { control?: string; value: string
       )
     case 'number_input':
       return <input type="number" min={0} placeholder="Story points" value={value} onChange={e => onChange(e.target.value)} className={base} style={style} />
-    case 'edit_labels':
-      return <input type="text" placeholder="label (e.g. backend)" value={value} onChange={e => onChange(e.target.value)} className={base} style={style} />
     case 'pick_parent':
       return <input type="text" placeholder="Epic / parent key (e.g. KAN-50)" value={value} onChange={e => onChange(e.target.value)} className={base} style={style} />
     case 'edit_text':
