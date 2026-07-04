@@ -18,7 +18,7 @@ import { useEffect, useState } from 'react'
 import { ProviderGlyph } from '@/components/atoms'
 import type { TaskSummary } from '@/lib/api-types'
 import type { HygieneIssue } from '@/lib/hygiene'
-import { load, mutate } from '@/lib/bridge'
+import { load, mutate, openExternal } from '@/lib/bridge'
 
 export type CleanupGroup = 'must' | 'nice' | 'review'
 
@@ -151,7 +151,7 @@ function FixRow({ issue, task, onApplied, onIgnore }: {
         setState('redirected'); setTerminalPending(null)
         setMsg(result.reason ?? 'Finish this in your tracker')
         const url = result.browse_url || task.url
-        if (url) window.open(url, '_blank', 'noopener')
+        if (url) openExternal(url)
       }
     } catch (e) {
       // Tauri rejects with a plain string, not an Error object — handle both.

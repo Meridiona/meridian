@@ -16,7 +16,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { fmtDur } from '@/components/atoms'
-import { load as loadData, mutate as mutateData } from '@/lib/bridge'
+import { load as loadData, mutate as mutateData, openExternal } from '@/lib/bridge'
 import type { PlanItem, PlanResponse } from '@/lib/api-types'
 import { isPending } from './types'
 import { TimeByApp, appTotals } from './TimeByApp'
@@ -77,7 +77,7 @@ export function OverviewPanel({ data, onOpen, onOpenTask }: {
         loadData<PlanResponse>('/api/plan', 'get_plan').then(setPlan).catch(() => {})
       } else {
         const url = data.result.browse_url || t.url
-        if (url) window.open(url, '_blank', 'noopener')
+        if (url) openExternal(url)
       }
     }).catch(e => {
       setToggleError(s => ({ ...s, [t.task_key]: e instanceof Error ? e.message : typeof e === 'string' ? e : 'Couldn’t update the tracker' }))
