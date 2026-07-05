@@ -1,3 +1,10 @@
+## [1.69.1](https://github.com/Meridiona/meridian/compare/v1.69.0...v1.69.1) (2026-07-05)
+
+### 🐛 Bug Fixes
+
+* **ui:** fall back to window.open on opener rejection; route mailto:/tel: externally ([e2a1c87](https://github.com/Meridiona/meridian/commit/e2a1c87fee734142b2693e277b68a15023a9d6eb)), closes [#386](https://github.com/Meridiona/meridian/issues/386)
+* **ui:** open external links via opener plugin in Tauri webview ([beb2024](https://github.com/Meridiona/meridian/commit/beb20249f96278c5a1f0d63744fa7d2c4ed20131))
+
 ## [1.69.0](https://github.com/Meridiona/meridian/compare/v1.68.0...v1.69.0) (2026-07-03)
 
 ### 🚀 Features
