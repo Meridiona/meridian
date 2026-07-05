@@ -1,3 +1,49 @@
+## [1.69.1](https://github.com/Meridiona/meridian/compare/v1.69.0...v1.69.1) (2026-07-05)
+
+### 🐛 Bug Fixes
+
+* **ui:** fall back to window.open on opener rejection; route mailto:/tel: externally ([e2a1c87](https://github.com/Meridiona/meridian/commit/e2a1c87fee734142b2693e277b68a15023a9d6eb)), closes [#386](https://github.com/Meridiona/meridian/issues/386)
+* **ui:** open external links via opener plugin in Tauri webview ([beb2024](https://github.com/Meridiona/meridian/commit/beb20249f96278c5a1f0d63744fa7d2c4ed20131))
+
+## [1.69.0](https://github.com/Meridiona/meridian/compare/v1.68.0...v1.69.0) (2026-07-03)
+
+### 🚀 Features
+
+* **ticket-writeback:** extend Jira/Linear/Azure DevOps ticket-update coverage ([8387b8c](https://github.com/Meridiona/meridian/commit/8387b8c1ca51f9cb2067b3908f474e9ca4cbd8af))
+* **tray:** rebuild popover from Claude Design mock, fix dismiss-on-open ([9e7d375](https://github.com/Meridiona/meridian/commit/9e7d375b164b64b104862f80be7c932a6f63b57e))
+* **ui:** add Meridian nav pill to the toolbar, ported from the design mock ([30326c2](https://github.com/Meridiona/meridian/commit/30326c2753c8ade58641219f7de0add2af23002e))
+* **ui:** finish one-pager Meridian Timeline dashboard, drop dead code ([ee0d200](https://github.com/Meridiona/meridian/commit/ee0d200504370c1ef5f00c15bbddb21887760783))
+* **ui:** migrate dashboard to one-pager Meridian Timeline design ([4051861](https://github.com/Meridiona/meridian/commit/40518618f5925948a37c9076a56c9a23361e139e))
+* **worklog:** FSM JSON classification + proposed-ticket approval ([#377](https://github.com/Meridiona/meridian/issues/377)) ([33d55df](https://github.com/Meridiona/meridian/commit/33d55df28dac177a98fb931f32b8f77c0e14baff))
+* **worklog:** hour-report reducer improvements + migration 054 ([464c845](https://github.com/Meridiona/meridian/commit/464c8459af3d833fac5043bf7510bbc13687e7a5))
+
+### 🐛 Bug Fixes
+
+* address CodeRabbit re-review follow-ups on PR [#384](https://github.com/Meridiona/meridian/issues/384) ([45cc628](https://github.com/Meridiona/meridian/commit/45cc6288074618af085b9c04e29f045e28056cde))
+* address PR [#384](https://github.com/Meridiona/meridian/issues/384) code review findings (CodeRabbit + github-code-quality) ([3672e16](https://github.com/Meridiona/meridian/commit/3672e160bec269804dc8d95e4f9d06b87d74cee8))
+* exclude unposted proposals from "Logged" time totals ([64a288b](https://github.com/Meridiona/meridian/commit/64a288b9a3a2c98b12ba3e3d43e79e76b05ae565))
+* **migrations:** renumber proposed_task_issue_type 051 -> 052 (version collision) ([#378](https://github.com/Meridiona/meridian/issues/378)) ([d26ae44](https://github.com/Meridiona/meridian/commit/d26ae4458cd3b9d216c69d187a6b72d13f4eba6f)), closes [#377](https://github.com/Meridiona/meridian/issues/377) [#377](https://github.com/Meridiona/meridian/issues/377)
+* **mlx:** stop the MLX server's multi-GB/hour memory growth ([#383](https://github.com/Meridiona/meridian/issues/383)) ([127a2cf](https://github.com/Meridiona/meridian/commit/127a2cfca8b4b6633d72bcc11e35037158a3d929))
+* **mlx:** stop the MLX server's multi-GB/hour memory growth (spool-only telemetry + per-call cache clearing) ([825508a](https://github.com/Meridiona/meridian/commit/825508a0eaeae490d3e8f4e45e0edb1363d835cd))
+* **tray:** clamp "pause until tomorrow" to the 24h backend ceiling ([455dcaa](https://github.com/Meridiona/meridian/commit/455dcaaebadaa18270b30d2ed9407b2529b1d6d8))
+* **tray:** dismiss popover on every window-opening path, not just invoke commands ([51cf042](https://github.com/Meridiona/meridian/commit/51cf04208023766e5291b110f5d7cbb543febcd3))
+* **trello:** comment-delete endpoint was card-scoped, not action-scoped ([3617c8d](https://github.com/Meridiona/meridian/commit/3617c8da8130a901de6275e1c606f761ac07d494))
+* **ui:** close Board Cleanup's must-fix skip-via-navigation loophole ([a7300bd](https://github.com/Meridiona/meridian/commit/a7300bdf3fb6905d8ba6a54580f84a8396d2f6a4))
+* **ui:** move Tasks entry row to right after Today's focus ([#382](https://github.com/Meridiona/meridian/issues/382)) ([d6c825a](https://github.com/Meridiona/meridian/commit/d6c825a4486f8b390084fef3feca6991fa623bf3))
+* **ui:** notification "Open →" 404s instead of opening the target modal ([89d8318](https://github.com/Meridiona/meridian/commit/89d83186ddf83abdf7403f7c3b0667452d2b6856))
+* **worklog:** log when hour_text/hour_report UPDATE matches zero rows ([450e5e3](https://github.com/Meridiona/meridian/commit/450e5e3fed5cb8abf4b1cd6f67f7c1ba2903733b))
+* **worklog:** revert dual-slot rematch (real duplicate Jira posts), let dismissed worklogs be resubmitted ([cbe66ab](https://github.com/Meridiona/meridian/commit/cbe66abc00419996771ee9e07f88b74a43f63c22))
+
+### ♻️ Refactoring
+
+* split jira.rs and daemon.rs under the 500-line file cap ([97ae170](https://github.com/Meridiona/meridian/commit/97ae1704d799a4d35f6b52f7c2c4f5fc793ec7d0))
+
+### 🔧 Chores
+
+* **services:** bump runtime version to 1.67.2 to clear staging gate ([0d59eea](https://github.com/Meridiona/meridian/commit/0d59eea852b307ea76bfc2b5e5361190fa5de9d6))
+* **ui:** checkpoint in-progress worklog-review and redesign edits ([2cc096c](https://github.com/Meridiona/meridian/commit/2cc096cd715bfee0f5fe0f2dcebae7be87d6c9e8))
+* **ui:** remove dead legacy routes, fix missing/unused deps, bring worklog rematch fixes to a clean baseline ([37a8ae0](https://github.com/Meridiona/meridian/commit/37a8ae03e75aaadf65d9088bdfd0f45cd8966bc9))
+
 ## [1.68.0](https://github.com/Meridiona/meridian/compare/v1.67.0...v1.68.0) (2026-06-30)
 
 ### 🚀 Features
