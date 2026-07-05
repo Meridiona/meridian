@@ -51,15 +51,32 @@ export function isExternalHttp(href: string, origin: string): boolean {
   try { return new URL(href).origin !== origin } catch { return false }
 }
 
-/** Open a URL in the user's default browser. The dashboard renders inside a
- *  WKWebView with no new-window handler, so `target="_blank"` anchors and
- *  `window.open` are silently dropped — external URLs must go through the
- *  opener plugin (`opener:default` in capabilities allows http/https). Falls
- *  back to `window.open` in a plain browser (next dev outside the app). */
+/** True when `href` should be handed to the OS instead of navigated in-app:
+ *  an external http(s) URL, or a mailto:/tel: link (the WKWebView drops those
+ *  just like target="_blank"; both schemes are in the opener plugin's default
+ *  scope). The ExternalLinks interceptor's decision function. */
+export function opensExternally(href: string, origin: string): boolean {
+  return /^(mailto:|tel:)/i.test(href) || isExternalHttp(href, origin)
+}
+
+/** Open a URL in the user's default browser / mail client. The dashboard
+ *  renders inside a WKWebView with no new-window handler, so `target="_blank"`
+ *  anchors, mailto:, and `window.open` are silently dropped — external URLs
+ *  must go through the opener plugin (`opener:default` in capabilities allows
+ *  http/https/mailto/tel). A plugin rejection falls back to `window.open`
+ *  rather than only logging — a silent miss here would reproduce the exact
+ *  dead-link bug this helper exists to fix. Outside Tauri (next dev in a
+ *  plain browser) it uses `window.open` directly. */
 export function openExternal(url: string): void {
   const t = tauri()
-  if (t) void t.core.invoke('plugin:opener|open_url', { url }).catch((e) => console.warn(`openExternal('${url}') failed:`, e))
-  else window.open(url, '_blank', 'noopener,noreferrer')
+  if (t) {
+    void t.core.invoke('plugin:opener|open_url', { url }).catch((e) => {
+      console.warn(`openExternal('${url}') failed:`, e)
+      window.open(url, '_blank', 'noopener,noreferrer')
+    })
+  } else {
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
 }
 
 /** Data load via the Rust command (`apiPath` is the former route it replaced). */

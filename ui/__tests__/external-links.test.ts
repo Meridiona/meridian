@@ -1,7 +1,7 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 import { describe, it, expect } from 'bun:test'
 import { readFileSync, readdirSync, statSync } from 'fs'
-import { isExternalHttp } from '../lib/bridge'
+import { isExternalHttp, opensExternally, openExternal } from '../lib/bridge'
 
 // Regression guard for "external links do nothing inside the app".
 //
@@ -50,6 +50,25 @@ describe('isExternalHttp', () => {
   })
 })
 
+// ── opensExternally — adds mailto:/tel: on top of external http(s) ───────────
+
+describe('opensExternally', () => {
+  const origin = 'http://localhost:3939'
+
+  it('accepts mailto: and tel: (WKWebView drops them like target=_blank)', () => {
+    expect(opensExternally('mailto:hey@meridiona.com?subject=Bug', origin)).toBe(true)
+    expect(opensExternally('tel:+1555000', origin)).toBe(true)
+    expect(opensExternally('MAILTO:hey@meridiona.com', origin)).toBe(true)
+  })
+
+  it('delegates http(s) decisions to isExternalHttp', () => {
+    expect(opensExternally('https://trello.com/app-key', origin)).toBe(true)
+    expect(opensExternally('http://localhost:3939/today', origin)).toBe(false)
+    expect(opensExternally('/today', origin)).toBe(false)
+    expect(opensExternally('x-apple.systempreferences:com.apple.x', origin)).toBe(false)
+  })
+})
+
 // ── openExternal routes through the opener plugin ─────────────────────────────
 
 describe('lib/bridge.ts openExternal', () => {
@@ -62,6 +81,28 @@ describe('lib/bridge.ts openExternal', () => {
   it('falls back to window.open in a plain browser', () => {
     expect(src).toMatch(/openExternal[\s\S]*?window\.open\(url/)
   })
+
+  it('falls back to window.open when the plugin invoke rejects', async () => {
+    // A rejection that only logs would reproduce the silent dead-link bug this
+    // helper fixes, so the .catch() must open the URL anyway. bridge reads
+    // `window` at call time, so a stub installed here is picked up.
+    const opened: string[] = []
+    const g = globalThis as { window?: unknown }
+    g.window = {
+      __TAURI__: { core: { invoke: () => Promise.reject(new Error('forbidden url')) } },
+      open: (url: string) => { opened.push(url); return null },
+    }
+    const warn = console.warn
+    console.warn = () => {}
+    try {
+      openExternal('https://example.com/x')
+      await new Promise((r) => setTimeout(r, 0))
+      expect(opened).toEqual(['https://example.com/x'])
+    } finally {
+      console.warn = warn
+      delete g.window
+    }
+  })
 })
 
 // ── The interceptor exists and is mounted globally ────────────────────────────
@@ -71,7 +112,7 @@ describe('ExternalLinks interceptor', () => {
 
   it('listens for document clicks and routes external anchors via openExternal', () => {
     expect(src).toContain("document.addEventListener('click'")
-    expect(src).toContain('isExternalHttp(href, window.location.origin)')
+    expect(src).toContain('opensExternally(href, window.location.origin)')
     expect(src).toContain('e.preventDefault()')
     expect(src).toContain('openExternal(href)')
   })
@@ -99,7 +140,8 @@ describe('no raw window.open in components', () => {
   }
 
   it('every external open goes through openExternal (WKWebView drops window.open)', () => {
-    const offenders = walk(uiRoot + '/components')
+    const offenders = ['/components', '/app']
+      .flatMap((d) => walk(uiRoot + d))
       .filter((p) => readFileSync(p, 'utf8').includes('window.open('))
       .map((p) => p.slice(uiRoot.length + 1))
     expect(offenders).toEqual([])

@@ -3,17 +3,18 @@
 
 // Global external-link interceptor. The dashboard runs inside a Tauri
 // WKWebView, which has no new-window handler: a plain `<a target="_blank">`
-// click is silently dropped — nothing opens, no error. Rather than rewriting
-// every external anchor onto a bespoke onClick, this listens once at the
-// document level and routes any external http(s) anchor click through the
-// opener plugin (`openExternal`). In a plain browser (`isTauri()` false) it
-// does nothing and anchors behave natively.
+// click — or a mailto:/tel: anchor — is silently dropped: nothing opens, no
+// error. Rather than rewriting every external anchor onto a bespoke onClick,
+// this listens once at the document level and routes any external http(s) /
+// mailto: / tel: anchor click through the opener plugin (`openExternal`). In
+// a plain browser (`isTauri()` false) it does nothing and anchors behave
+// natively.
 //
 // Rendered by app/layout.tsx (root layout), so it covers every window that
 // serves the Next app — the dashboard and the setup wizard.
 
 import { useEffect } from 'react'
-import { isTauri, isExternalHttp, openExternal } from '@/lib/bridge'
+import { isTauri, opensExternally, openExternal } from '@/lib/bridge'
 
 export default function ExternalLinks() {
   useEffect(() => {
@@ -22,7 +23,7 @@ export default function ExternalLinks() {
       if (e.defaultPrevented) return
       const el = e.target instanceof Element ? e.target : null
       const href = el?.closest('a[href]')?.getAttribute('href')
-      if (!href || !isExternalHttp(href, window.location.origin)) return
+      if (!href || !opensExternally(href, window.location.origin)) return
       e.preventDefault()
       openExternal(href)
     }
