@@ -10,17 +10,21 @@ FAIL=0
 # before any background subshells start (they can't read stdin after forking).
 PUSH_INFO=$(cat)
 
+# Runs as a background job, so it CANNOT mutate the parent's FAIL — a subshell's
+# variables die with it. Failure is reported through the job's exit status
+# instead; every caller must collect it with `wait $PID || FAIL=1`.
 run_check() {
   local label="$1"; shift
   local log; log=$(mktemp)
   if "$@" >"$log" 2>&1; then
     echo "  ✓ $label"
+    rm -f "$log"
   else
     echo "  ✗ $label"
     cat "$log"
-    FAIL=1
+    rm -f "$log"
+    return 1
   fi
-  rm -f "$log"
 }
 
 echo ""
@@ -36,8 +40,8 @@ W1_FMT=$!
 run_check "ui build" bash -c "cd '$REPO_ROOT/ui' && npm run build" &
 W1_UI=$!
 
-wait $W1_FMT
-wait $W1_UI
+wait $W1_FMT || FAIL=1
+wait $W1_UI || FAIL=1
 
 if [[ $FAIL -ne 0 ]]; then
   echo ""
@@ -55,8 +59,8 @@ W2_CLIPPY=$!
 run_check "ui tests" bash -c "cd '$REPO_ROOT/ui' && bun test" &
 W2_UI=$!
 
-wait $W2_CLIPPY
-wait $W2_UI
+wait $W2_CLIPPY || FAIL=1
+wait $W2_UI || FAIL=1
 
 if [[ $FAIL -ne 0 ]]; then
   echo ""
@@ -100,7 +104,7 @@ fi
 run_check "cargo test" cargo test &
 W3_TEST=$!
 
-wait $W3_TEST
+wait $W3_TEST || FAIL=1
 
 if [ -n "$AUDIT_PID" ]; then
   wait "$AUDIT_PID" || true
