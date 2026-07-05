@@ -3,9 +3,9 @@
 // Azure DevOps write-back via the work-item JSON-Patch API
 // (`PATCH .../wit/workitems/{id}`, Content-Type application/json-patch+json).
 // task_key is `{project}#{id}`. Most hygiene fields map to a single field op;
-// tags (our "labels") and parent need a read-modify-write / relation op. "Close"
-// is redirected because the done-state name varies by process (Agile "Closed",
-// Scrum/Basic "Done") and guessing wrong errors out.
+// parent needs a relation op. "Close" is redirected because the done-state name
+// varies by process (Agile "Closed", Scrum/Basic "Done") and guessing wrong
+// errors out.
 //
 // Ref: https://learn.microsoft.com/en-us/rest/api/azure/devops/wit/work-items/update
 

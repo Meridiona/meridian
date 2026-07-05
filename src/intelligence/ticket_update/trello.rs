@@ -2,8 +2,7 @@
 //
 // Trello write-back. task_key is the card shortLink. Auth is key+token query
 // params (Trello's standard). Due date, member (assign self), name, and desc are
-// straightforward card edits we apply in-app. Labels are board-scoped (resolving
-// a label name needs the board's label catalogue), priority/estimate/parent have
+// straightforward card edits we apply in-app. Priority/estimate/parent have
 // no native Trello concept, and "close" is list-semantics that vary per board —
 // those redirect to the card.
 //
@@ -188,7 +187,7 @@ mod tests {
         }
     }
 
-    // Labels / priority / story_points / parent / close / cancel are redirected for
+    // Priority / story_points / parent / close / cancel are redirected for
     // Trello (no native concept). These WriteField variants must still PARSE — if
     // parse returned None, the dispatch would use the "unwritable field" redirect
     // path with a wrong reason string instead of the Trello-specific one.

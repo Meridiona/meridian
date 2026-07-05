@@ -2,7 +2,7 @@
 //
 // GitHub write-back via the Issues REST API. task_key is `owner/repo#123`
 // (reusing the worklog poster's parser). Issues natively support assignee,
-// labels, title, body, and state — those we apply in-app. Due date, priority,
+// title, body, and state — those we apply in-app. Due date, priority,
 // story points, and parent/epic are Projects v2 concepts (no native issue field),
 // so those redirect to the board.
 //
