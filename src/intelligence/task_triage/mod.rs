@@ -90,7 +90,6 @@ pub enum TriageReason {
     NoContextAnchor,
     MissingDueDate,
     MissingAssignee,
-    MissingLabels,
     MissingPriority,
     MissingEstimate,
     MissingAcceptanceCriteria,
@@ -141,7 +140,6 @@ impl TriageReason {
                 "No due date — add one so Meridian knows when it's live.".into()
             }
             TriageReason::MissingAssignee => "No assignee — who owns this?".into(),
-            TriageReason::MissingLabels => "No labels — add one to categorise it.".into(),
             TriageReason::MissingPriority => "No priority set.".into(),
             TriageReason::MissingEstimate => "No estimate — add story points.".into(),
             TriageReason::MissingAcceptanceCriteria => {
@@ -195,7 +193,6 @@ impl TriageReason {
             TriageReason::MissingDueDate => f(DatePicker, "duedate", "Add a due date", false),
             TriageReason::Overdue { .. } => f(DatePicker, "duedate", "Reschedule due date", false),
             TriageReason::MissingAssignee => f(AssignSelf, "assignee", "Assign to me", false),
-            TriageReason::MissingLabels => f(EditLabels, "labels", "Add a label", false),
             TriageReason::MissingPriority => f(PickPriority, "priority", "Set priority", false),
             TriageReason::MissingEstimate => {
                 f(NumberInput, "story_points", "Add an estimate", false)
@@ -223,7 +220,6 @@ pub enum FixControl {
     EditText,
     EditChecklist,
     PickParent,
-    EditLabels,
     PickPriority,
     NumberInput,
 }
@@ -277,8 +273,6 @@ pub struct TicketSignals {
     #[serde(default)]
     pub assignee_name: Option<String>,
     #[serde(default)]
-    pub tags: Option<String>,
-    #[serde(default)]
     pub priority: Option<String>,
     #[serde(default)]
     pub story_points: Option<String>,
@@ -296,7 +290,6 @@ pub struct BoardUsage {
     pub due_dates: bool,
     pub assignees: bool,
     pub parents: bool,
-    pub labels: bool,
     pub priority: bool,
     pub estimates: bool,
     pub acceptance_criteria: bool,
@@ -313,7 +306,6 @@ impl BoardUsage {
             parents: any(&|t| {
                 opt_nonempty(&t.parent_key).is_some() || opt_nonempty(&t.epic_title).is_some()
             }),
-            labels: any(&|t| opt_nonempty(&t.tags).is_some()),
             priority: any(&|t| opt_nonempty(&t.priority).is_some()),
             estimates: any(&|t| opt_nonempty(&t.story_points).is_some()),
             acceptance_criteria: any(&|t| opt_nonempty(&t.acceptance_criteria).is_some()),
@@ -496,9 +488,6 @@ pub fn hygiene_issues(t: &TicketSignals, cfg: &TriageConfig) -> Vec<TriageReason
     {
         reasons.push(TriageReason::NoContextAnchor);
     }
-    if cfg.usage.labels && opt_nonempty(&t.tags).is_none() {
-        reasons.push(TriageReason::MissingLabels);
-    }
     if cfg.usage.priority && opt_nonempty(&t.priority).is_none() {
         reasons.push(TriageReason::MissingPriority);
     }
@@ -587,8 +576,6 @@ mod tests {
         #[serde(default)]
         board_uses_parents: bool,
         #[serde(default)]
-        board_uses_labels: bool,
-        #[serde(default)]
         board_uses_priority: bool,
         #[serde(default)]
         board_uses_estimates: bool,
@@ -610,7 +597,6 @@ mod tests {
                 due_dates: fx.board_uses_due_dates,
                 assignees: fx.board_uses_assignees,
                 parents: fx.board_uses_parents,
-                labels: fx.board_uses_labels,
                 priority: fx.board_uses_priority,
                 estimates: fx.board_uses_estimates,
                 acceptance_criteria: fx.board_uses_acceptance_criteria,
@@ -645,7 +631,6 @@ mod tests {
             epic_title: None,
             parent_key: None,
             assignee_name: None,
-            tags: None,
             priority: None,
             story_points: None,
             acceptance_criteria: None,

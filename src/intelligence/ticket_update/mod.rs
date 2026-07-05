@@ -40,8 +40,6 @@ pub enum WriteField {
     /// `assignee` control — always "assign to me"; the provider resolves the
     /// current user's id from its own `/myself`/`viewer` endpoint.
     AssignMe,
-    /// `labels` control — ADD one label (never clobbers existing labels).
-    AddLabel(String),
     /// `priority` control — the human priority name (`High`, `Medium`, …).
     Priority(String),
     /// `story_points` control — numeric estimate.
@@ -71,7 +69,6 @@ impl WriteField {
         match field {
             "duedate" => Some(Self::DueDate(v.to_string())),
             "assignee" => Some(Self::AssignMe),
-            "labels" => (!v.is_empty()).then(|| Self::AddLabel(v.to_string())),
             "priority" => (!v.is_empty()).then(|| Self::Priority(v.to_string())),
             "story_points" => v.parse::<f64>().ok().map(Self::StoryPoints),
             "parent" => (!v.is_empty()).then(|| Self::Parent(v.to_string())),
@@ -89,7 +86,6 @@ impl WriteField {
         match self {
             Self::DueDate(_) => "due date",
             Self::AssignMe => "assignee",
-            Self::AddLabel(_) => "label",
             Self::Priority(_) => "priority",
             Self::StoryPoints(_) => "estimate",
             Self::Parent(_) => "parent",
@@ -262,10 +258,6 @@ mod tests {
             Some(WriteField::AssignMe)
         );
         assert_eq!(
-            WriteField::parse("labels", "backend"),
-            Some(WriteField::AddLabel("backend".into()))
-        );
-        assert_eq!(
             WriteField::parse("priority", "High"),
             Some(WriteField::Priority("High".into()))
         );
@@ -285,7 +277,7 @@ mod tests {
     #[test]
     fn rejects_unwritable_fields() {
         assert_eq!(WriteField::parse("acceptance_criteria", "x"), None);
-        assert_eq!(WriteField::parse("labels", "  "), None);
+        assert_eq!(WriteField::parse("labels", "backend"), None); // labels hygiene was removed
         assert_eq!(WriteField::parse("story_points", "abc"), None);
     }
 
