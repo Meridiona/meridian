@@ -275,7 +275,12 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
                 <a href="https://trello.com/app-key" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-state-proposal)' }}>Get it at trello.com/app-key ↗</a>
               </p>
               <Field
-                field={{ name: 'api_key', label: 'API Key', placeholder: 'Paste your Trello API key', required: true }}
+                field={{
+                  name: 'api_key', label: 'API Key', placeholder: 'Paste your Trello API key', required: true,
+                  // Trello only redirects back to origins on the key's allow-list,
+                  // so without this the browser flow dead-ends after consent.
+                  hint: 'On the same page, add http://127.0.0.1:9123 under Allowed Origins — Trello only redirects back to listed origins.',
+                }}
                 value={apiKey}
                 onChange={setApiKey}
                 onEnter={() => { if (apiKey.trim()) void startOAuth() }}

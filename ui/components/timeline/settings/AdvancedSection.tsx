@@ -16,6 +16,7 @@ import { Switch } from '@/components/ui/Switch'
 import { NumberStepper } from '@/components/ui/NumberStepper'
 import { TextInput } from '@/components/ui/TextInput'
 import type { RuntimeSettings } from '@/lib/settings'
+import { openExternal } from '@/lib/bridge'
 import { SectionCard, SectionHeader, FieldRow, SaveButton, SettingsButton, type SaveStatus } from './fields'
 import { useApplyObservability } from './useApplyObservability'
 
@@ -95,7 +96,7 @@ export function AdvancedSection({ settings, setSettings, patch, save }: {
               try {
                 if (settings.otlp_endpoint) base = new URL(settings.otlp_endpoint).origin
               } catch { /* keep default */ }
-              window.open(base, '_blank', 'noopener,noreferrer')
+              openExternal(base)
             }}>
               Open OpenObserve
             </SettingsButton>
