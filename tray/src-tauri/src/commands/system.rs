@@ -123,33 +123,42 @@ pub async fn open_permission_pane(app: tauri::AppHandle, pane: String) -> Result
         .map_err(|e| e.to_string())
 }
 
-/// Open an arbitrary `http(s)` URL in the user's default system browser.
+/// Open an external URL with its default OS handler — browser for `http(s)`,
+/// mail client for `mailto:`, dialer for `tel:`.
 ///
-/// Tauri's webview does NOT elevate a plain `<a target="_blank">` click to a
-/// system-browser open (no `WKUIDelegate`/`createWebViewWith` handling is
-/// wired up) — the click is silently swallowed. This is the one JS-callable
-/// path to `tauri_plugin_opener`'s `open_url`; every "Open in tracker ↗" link
-/// across the dashboard must route through it via `openExternal` in
-/// `@/lib/bridge` rather than relying on the anchor's native navigation.
+/// Tauri's webview does NOT elevate a plain `<a target="_blank">` click (or a
+/// mailto:/tel: anchor) to a system open (no `WKUIDelegate`/`createWebViewWith`
+/// handling is wired up) — the click is silently swallowed. This is the one
+/// JS-callable path to `tauri_plugin_opener`'s `open_url`; anchors route here
+/// via the global `ExternalLinks` interceptor and "Open in tracker ↗" buttons
+/// via `openExternal` in `@/lib/bridge`.
 ///
-/// Scheme-restricted to `http`/`https` — task URLs come from tracker API
-/// responses (Jira/Linear/GitHub/Azure DevOps/Trello), so this is a system
-/// boundary: reject anything that isn't a normal web link rather than handing
-/// an arbitrary scheme (`file://`, `javascript:`, …) to the OS opener.
+/// Scheme-allowlisted to `http`/`https`/`mailto`/`tel` (all within
+/// `opener:default`'s `allow-default-urls` scope) — task URLs come from
+/// tracker API responses (Jira/Linear/GitHub/Azure DevOps/Trello), so this is
+/// a system boundary: reject anything else rather than handing an arbitrary
+/// scheme (`file://`, `javascript:`, …) to the OS opener.
 #[tauri::command]
 pub async fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    if !is_http_url(&url) {
-        return Err(format!("refusing to open non-http(s) URL: {url}"));
+    if !is_openable_url(&url) {
+        return Err(format!(
+            "refusing to open URL with disallowed scheme: {url}"
+        ));
     }
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|e| e.to_string())
 }
 
-/// `true` for `http://`/`https://` URLs only. Extracted as a pure fn purely so
-/// the scheme allowlist is unit-testable without a `tauri::AppHandle`.
-fn is_http_url(url: &str) -> bool {
-    url.starts_with("http://") || url.starts_with("https://")
+/// `true` for `http://`/`https://`/`mailto:`/`tel:` URLs only (schemes are
+/// case-insensitive per RFC 3986). Extracted as a pure fn purely so the
+/// scheme allowlist is unit-testable without a `tauri::AppHandle`.
+fn is_openable_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("mailto:")
+        || lower.starts_with("tel:")
 }
 
 /// Quit the whole app — same exit path as the tray menu's "Quit Meridian".
@@ -200,18 +209,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn is_http_url_allows_http_and_https() {
-        assert!(is_http_url("https://linear.app/x/issue/ENG-12"));
-        assert!(is_http_url("http://localhost:5080"));
+    fn is_openable_url_allows_http_https_mailto_tel() {
+        assert!(is_openable_url("https://linear.app/x/issue/ENG-12"));
+        assert!(is_openable_url("http://localhost:5080"));
+        assert!(is_openable_url("mailto:hey@meridiona.com?subject=Bug"));
+        assert!(is_openable_url("tel:+15550100"));
+        // Schemes are case-insensitive (RFC 3986).
+        assert!(is_openable_url("MAILTO:hey@meridiona.com"));
+        assert!(is_openable_url("HTTPS://trello.com/app-key"));
     }
 
     #[test]
-    fn is_http_url_rejects_other_schemes() {
-        assert!(!is_http_url("file:///etc/passwd"));
-        assert!(!is_http_url("javascript:alert(1)"));
-        assert!(!is_http_url(
+    fn is_openable_url_rejects_other_schemes() {
+        assert!(!is_openable_url("file:///etc/passwd"));
+        assert!(!is_openable_url("javascript:alert(1)"));
+        assert!(!is_openable_url(
             "x-apple.systempreferences:com.apple.preference.security"
         ));
-        assert!(!is_http_url(""));
+        assert!(!is_openable_url(""));
+        // Multibyte content must not panic the scheme check.
+        assert!(!is_openable_url("héllo→"));
     }
 }
