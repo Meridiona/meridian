@@ -124,7 +124,7 @@ function FixRow({ issue, index, task, onApplied }: { issue: HygieneIssue; index:
         setState('redirected'); setTerminalPending(null)
         setMsg(result.reason ?? 'Finish this in your tracker')
         const url = result.browse_url || task.url
-        if (url) window.open(url, '_blank', 'noopener')
+        if (url) openExternal(url)
       }
     } catch (e) {
       // Tauri rejects with a plain string, not an Error object — handle both.

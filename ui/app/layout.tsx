@@ -4,6 +4,7 @@ import type { Metadata } from 'next'
 import { Instrument_Serif, Plus_Jakarta_Sans, JetBrains_Mono } from 'next/font/google'
 import './globals.css'
 import { ThemeProvider } from '@/lib/theme-context'
+import ExternalLinks from '@/components/ExternalLinks'
 import NoticeBar from '@/components/NoticeBar'
 import NotificationBanner from '@/components/NotificationBanner'
 
@@ -46,6 +47,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     >
       <body className="min-h-screen font-sans">
         <ThemeProvider>
+          <ExternalLinks />
           <NoticeBar />
           <NotificationBanner />
           {children}

@@ -43,14 +43,40 @@ export async function invoke<T = unknown>(cmd: string, args?: Record<string, unk
   return t.core.invoke(cmd, args) as Promise<T>
 }
 
-/** Open an http(s) URL in the system browser via `open_external_url`.
- *  A plain `<a target="_blank">` click is silently swallowed by the Tauri
- *  webview (no system-browser handoff is wired up) — every "Open in tracker"
- *  style link must call this from its `onClick` instead of relying on the
- *  anchor's native navigation. Fire-and-forget; logs instead of throwing so a
- *  denied/invalid URL doesn't need try/catch at every call site. */
+/** True when `href` is an absolute http(s) URL pointing outside `origin` —
+ *  i.e. a navigation the Tauri webview cannot perform itself. Exported for
+ *  the ExternalLinks interceptor and its tests. */
+export function isExternalHttp(href: string, origin: string): boolean {
+  if (!/^https?:\/\//i.test(href)) return false
+  try { return new URL(href).origin !== origin } catch { return false }
+}
+
+/** True when `href` should be handed to the OS instead of navigated in-app:
+ *  an external http(s) URL, or a mailto:/tel: link (the WKWebView drops those
+ *  just like target="_blank"; both schemes are in the opener plugin's default
+ *  scope). The ExternalLinks interceptor's decision function. */
+export function opensExternally(href: string, origin: string): boolean {
+  return /^(mailto:|tel:)/i.test(href) || isExternalHttp(href, origin)
+}
+
+/** Open a URL in the user's default browser / mail client via the
+ *  `open_external_url` command (scheme-allowlisted server-side). A plain
+ *  `<a target="_blank">` click — or a mailto:/tel: anchor, or `window.open` —
+ *  is silently swallowed by the Tauri webview (no new-window handler), so the
+ *  ExternalLinks interceptor routes anchors here and "Open ↗" buttons call it
+ *  from `onClick`. A command rejection falls back to `window.open` rather than
+ *  only logging — a silent miss would reproduce the exact dead-link bug this
+ *  helper exists to fix. Outside Tauri (next dev in a plain browser) it uses
+ *  `window.open` directly, keeping links alive there too. */
 export function openExternal(url: string): void {
-  invoke('open_external_url', { url }).catch((e) => console.warn(`openExternal('${url}') failed:`, e))
+  if (!isTauri()) {
+    window.open(url, '_blank', 'noopener,noreferrer')
+    return
+  }
+  invoke('open_external_url', { url }).catch((e) => {
+    console.warn(`openExternal('${url}') failed:`, e)
+    window.open(url, '_blank', 'noopener,noreferrer')
+  })
 }
 
 /** Data load via the Rust command (`apiPath` is the former route it replaced). */
