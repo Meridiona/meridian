@@ -16,6 +16,7 @@ import { useState } from 'react'
 import { fmtDur } from '@/components/atoms'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import type { WorklogItem } from '@/lib/api-types'
+import { openExternal } from '@/lib/bridge'
 import { ReviewRejectPicker } from './ReviewRejectPicker'
 import { isPending, stateColor, stateLabel, visualState, type RejectCorrection } from './types'
 import type { WorklogActions } from './useTimelineData'
@@ -66,7 +67,17 @@ export function TimelineCard({
                 just absent — never hides the status chip). */}
             <div className="flex items-center gap-1.5 flex-wrap">
               {item.task_key && (
-                <span className="mt-mono-sm text-[11px] px-1.5 py-0.5 rounded bg-key-bg text-key-text">{item.task_key}</span>
+                item.task_url ? (
+                  <button
+                    onClick={() => openExternal(item.task_url!)}
+                    className="mt-mono-sm text-[11px] px-1.5 py-0.5 rounded bg-key-bg text-key-text hover:underline cursor-pointer"
+                    title="Open in tracker"
+                  >
+                    {item.task_key} ↗
+                  </button>
+                ) : (
+                  <span className="mt-mono-sm text-[11px] px-1.5 py-0.5 rounded bg-key-bg text-key-text">{item.task_key}</span>
+                )
               )}
               {item.issue_type && (
                 <span className="mt-chip px-1.5 py-0.5 rounded" style={{ color: 'var(--t-muted)', border: '1px solid var(--t-hair)' }}>
@@ -162,7 +173,7 @@ function DetailBody({ item, actions, onEdit }: { item: WorklogItem; actions?: Wo
           ✓ Approved — waiting for the daemon to create the ticket and post this worklog.
         </p>
       ) : (
-        <div className="flex items-center gap-2.5 pt-1.5">
+        <div className="flex items-center gap-2.5 pt-1.5 flex-wrap">
           {pending && (
             <button onClick={() => item.is_proposed ? actions?.proposedAct(item.id, 'approve') : actions?.act(item.id, 'approve')}
               disabled={busy || (item.is_proposed ? !item.task_title?.trim() : !item.summary.trim())}
@@ -176,6 +187,16 @@ function DetailBody({ item, actions, onEdit }: { item: WorklogItem; actions?: Wo
             style={{ color: 'var(--color-state-proposal)', border: '1px solid var(--color-state-proposal)' }}>
             Edit ✎
           </button>
+          {item.task_url && (
+            <button
+              onClick={() => openExternal(item.task_url!)}
+              className="mt-body-sm px-3 py-1.5 rounded-md"
+              style={{ color: 'var(--t-muted)', border: '1px solid var(--t-hair)' }}
+              title={item.task_url}
+            >
+              Open in tracker ↗
+            </button>
+          )}
           {pending && (
             <button onClick={() => item.is_proposed ? actions?.proposedAct(item.id, 'dismiss') : setRejecting(true)}
               disabled={busy} className="mt-body-sm px-3 py-1.5 rounded-md ml-auto" style={{ color: 'var(--t-faint)' }}>
