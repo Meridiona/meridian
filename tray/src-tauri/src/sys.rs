@@ -91,8 +91,18 @@ pub fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
 /// `deep_link` ride in `extra` so the `actionPerformed` listener (popover JS →
 /// `record_notification_response`) can stamp the answer back onto the row.
 ///
+/// Every `extra` value MUST be a string: the plugin's Swift layer decodes
+/// `extra` as `[String: String]` and a single non-string value fails the whole
+/// notification decode — `show()` errors and NO toast appears (found the hard
+/// way with a numeric `outbox_id`).
+///
 /// The notification identifier is the outbox id, so the OS collapses a
 /// re-delivered row onto the same toast instead of duplicating it.
+///
+/// Known limitation: the plugin's `actionPerformed` only fires for toasts shown
+/// by the CURRENT tray process (its notification map is in-memory), so an
+/// answer given after a tray restart is dropped. Expiries keep stale
+/// interactive toasts rare; a v2 could reconcile via `notificationClicked`.
 pub fn notify_interactive(
     app: &tauri::AppHandle,
     n: &meridian_core::notifications::PendingNotification,
@@ -112,7 +122,7 @@ pub fn notify_interactive(
         .id(toast_id)
         .title(&n.title)
         .body(&n.body)
-        .extra("outbox_id", n.id);
+        .extra("outbox_id", n.id.to_string());
     if let Some(category) = &n.category {
         builder = builder.action_type_id(category);
     }
