@@ -437,18 +437,12 @@ pub async fn save_integration_token(body: SaveTokenBody) -> Result<serde_json::V
     );
 
     // Best-effort daemon reload so credentials take effect now (not next restart).
-    // A down/unreachable daemon is non-fatal — it reads .env on its next start —
-    // but we surface `reloaded` so the UI can warn that the change won't reach the
-    // running daemon until then (e.g. a dev daemon that isn't launchd-supervised).
-    let reloaded = match crate::commands::daemon::reload_daemon().await {
-        Ok(_) => true,
-        Err(e) => {
-            tracing::warn!(error = %e, "daemon reload after token save failed — daemon not reachable; credentials apply on next daemon start");
-            false
-        }
-    };
+    // A down daemon is fine — it reads .env on its next start.
+    if let Err(e) = crate::commands::daemon::reload_daemon().await {
+        tracing::debug!(error = %e, "daemon reload after token save (non-fatal)");
+    }
 
-    Ok(serde_json::json!({ "ok": true, "reloaded": reloaded }))
+    Ok(serde_json::json!({ "ok": true }))
 }
 
 /// POST body for [`discover_azure_devops`] (`{ pat, org? }`).
@@ -1065,19 +1059,11 @@ pub async fn save_github_projects(
         })?;
     tracing::info!(count, "github project selection saved");
 
-    // Signal the live daemon to re-read .env. `reloaded=false` means it wasn't
-    // reachable (e.g. not launchd-supervised in a dev setup): the change is on
-    // disk and a one-off `sync_tasks` (which the UI runs next, from a fresh CLI
-    // that re-reads .env) still applies it — it just won't affect the running
-    // daemon's future auto-syncs until it restarts. Surfaced so the UI can warn.
-    let reloaded = match crate::commands::daemon::reload_daemon().await {
-        Ok(_) => true,
-        Err(e) => {
-            tracing::warn!(error = %e, "daemon reload after project save failed — daemon not reachable; change applies via one-off sync and on next daemon restart");
-            false
-        }
-    };
-    Ok(serde_json::json!({ "ok": true, "count": count, "reloaded": reloaded }))
+    // Reload so the daemon re-reads .env and syncs the chosen projects now.
+    if let Err(e) = crate::commands::daemon::reload_daemon().await {
+        tracing::debug!(error = %e, "daemon reload after project save (non-fatal)");
+    }
+    Ok(serde_json::json!({ "ok": true, "count": count }))
 }
 
 /// Status returned by [`get_oauth_status`].
