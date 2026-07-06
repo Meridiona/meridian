@@ -106,7 +106,15 @@ export function parseIssues(reasonsJson: string | null, ignoredJson?: string | n
     .filter(i => i.fix !== null && !ignoredSet.has(i.code))
 }
 
-/** True if any issue is must-fix — drives the Tasks-page banner. */
+/** True if any issue is must-fix — drives the must-fix action card. */
 export function hasMustFix(issues: HygieneIssue[]): boolean {
   return issues.some(i => i.severity === 'must_fix')
+}
+
+/** True if a ticket is worth surfacing in board cleanup: it has a fixable
+ *  hygiene issue, or sits in a stale/unsure bucket. Shared by the cleanup
+ *  action card and the Cleanup modal's queue so their counts can't drift. */
+export function isCleanupWorthy(h: Hygiene): boolean {
+  if ((h.issues ?? []).length > 0) return true
+  return h.bucket === 'looks_stale' || h.bucket === 'not_sure'
 }

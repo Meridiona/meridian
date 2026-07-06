@@ -14,13 +14,11 @@ import { load } from '@/lib/bridge'
 import type { RuntimeSettings } from '@/lib/settings'
 import { applyTheme } from '@/lib/theme'
 import HealthBanner from '@/components/HealthBanner'
-import MustFixBanner from '@/components/MustFixBanner'
 import { useTimelineData } from './useTimelineData'
-import { dayString, shiftDay, isPending } from './types'
+import { dayString, shiftDay } from './types'
 import { Toolbar } from './Toolbar'
 import { TimelineColumn } from './TimelineColumn'
 import { RightPanel } from './RightPanel'
-import { FloatingDraftsPill } from './FloatingDraftsPill'
 import { ReviewModal } from './ReviewModal'
 import { CleanupModal } from './CleanupModal'
 import { SettingsModal } from './SettingsModal'
@@ -42,7 +40,7 @@ export default function MeridianTimelineShell() {
   const [selectedCardKey, setSelectedCardKey] = useState<string | null>(null)
   const [activeModal, setActiveModal] = useState<ActiveModal>(null)
   // Set when a still-drafted card was clicked directly (as opposed to the
-  // floating pill / nav, which review the whole pending queue) — scopes the
+  // sidebar card / nav, which review the whole pending queue) — scopes the
   // Review dialog to just that one ticket instead of the full queue.
   const [reviewFocusKey, setReviewFocusKey] = useState<string | null>(null)
   // Which Settings tab to land on when the modal opens — set by callers that
@@ -56,7 +54,6 @@ export default function MeridianTimelineShell() {
 
   const data = useTimelineData(day)
   const { items, isSolo, connectedProviderName, connectedProviderId, isToday } = data
-  const pendingCount = items.filter(isPending).length
 
   // Apply the persisted theme on mount (before any round-trip resolves elsewhere).
   useEffect(() => {
@@ -122,10 +119,6 @@ export default function MeridianTimelineShell() {
   return (
     <div className="relative h-[100svh] overflow-hidden flex flex-col" style={{ background: 'var(--win-bg)' }}>
       <HealthBanner />
-      <MustFixBanner
-        onOpenCleanup={() => setActiveModal('cleanup')}
-        hidden={activeModal === 'cleanup'}
-      />
 
       <Toolbar
         day={day}
@@ -155,11 +148,6 @@ export default function MeridianTimelineShell() {
             capturing={data.capturing}
             hourReports={data.hourReports}
           />
-
-          {!isSolo && (
-            <FloatingDraftsPill count={pendingCount}
-              onClick={() => { setReviewFocusKey(null); setActiveModal('review') }} />
-          )}
         </div>
         <div className="shrink-0 border-l min-h-0" style={{ width: 388, borderColor: 'var(--t-hair)', background: 'var(--t-panel)' }}>
           <RightPanel

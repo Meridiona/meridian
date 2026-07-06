@@ -15,7 +15,7 @@ import type {
   HourReportEntry, HourReportsResponse,
 } from '@/lib/api-types'
 import { load as loadData, mutate } from '@/lib/bridge'
-import { filterByConnectedProviders, TRACKER_BY_ID, type TrackerId } from '@/lib/integrations'
+import { TRACKER_BY_ID, type TrackerId } from '@/lib/integrations'
 import { bucketByHour } from './timelineLayout'
 import { dayString, itemKey, type RejectCorrection } from './types'
 
@@ -41,20 +41,6 @@ export interface WorklogActions {
 }
 
 const PROVIDER_IDS: TrackerId[] = ['jira', 'linear', 'github', 'trello', 'azure_devops']
-
-/** Count of tasks that would show up in the board-cleanup modal: any connected
- *  task with a fixable hygiene issue or a stale/unsure bucket. Mirrors
- *  CleanupOverlay's queue-length so the Overview notice count matches the
- *  modal exactly. */
-function cleanupCount(tasks: TaskSummary[], integrations: IntegrationsResponse | null): number {
-  return filterByConnectedProviders(tasks, integrations)
-    .filter(t => t.hygiene)
-    .filter(t => {
-      const issues = t.hygiene!.issues ?? []
-      if (issues.length > 0) return true
-      return t.hygiene!.bucket === 'looks_stale' || t.hygiene!.bucket === 'not_sure'
-    }).length
-}
 
 export function useTimelineData(day: string) {
   const [items, setItems] = useState<WorklogItem[]>([])
@@ -227,8 +213,6 @@ export function useTimelineData(day: string) {
     }
   }, [integrations])
 
-  const cleanupIssueCount = useMemo(() => cleanupCount(tasks, integrations), [tasks, integrations])
-
   const isToday = day === dayString(0)
 
   // Bundled write surface for the review overlay / detail cards.
@@ -239,7 +223,7 @@ export function useTimelineData(day: string) {
   return {
     items, hourBuckets, counts, loading, busy, isToday, day, draftedIds,
     act, reject, saveEdit, rematch, proposedAct, saveProposedTitle, saveProposedBody, approveAll,
-    actions, integrations, isSolo, connectedProviderName, connectedProviderId, tasks, cleanupIssueCount, today,
+    actions, integrations, isSolo, connectedProviderName, connectedProviderId, tasks, today,
     hourStatus, capturing, hourReports,
   }
 }

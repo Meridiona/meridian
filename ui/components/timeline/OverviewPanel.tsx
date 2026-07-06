@@ -20,6 +20,8 @@ import { load as loadData, mutate as mutateData, openExternal } from '@/lib/brid
 import type { PlanItem, PlanResponse } from '@/lib/api-types'
 import { isPending } from './types'
 import { TimeByApp, appTotals } from './TimeByApp'
+import { ActionCard } from './ActionCard'
+import { useActionItems } from './useActionItems'
 import type { TimelineData } from './useTimelineData'
 import type { ActiveModal } from './MeridianTimelineShell'
 
@@ -28,8 +30,9 @@ export function OverviewPanel({ data, onOpen, onOpenTask }: {
   onOpen: (modal: ActiveModal) => void
   onOpenTask: (key: string, title?: string) => void
 }) {
-  const { today, isSolo, items, cleanupIssueCount, tasks } = data
+  const { today, isSolo, items, tasks } = data
   const pendingCount = items.filter(isPending).length
+  const actionItems = useActionItems(data)
   const focus_s = today?.focus_s ?? 0
   const appTops = today ? appTotals(today.sessions) : []
   const appCount = appTops.length
@@ -101,31 +104,12 @@ export function OverviewPanel({ data, onOpen, onOpenTask }: {
         <p className="mt-body mt-1.5" style={{ color: 'var(--t-muted)' }}>{greetingBody}</p>
       </div>
 
-      {!isSolo && pendingCount > 0 && (
-        <button onClick={() => onOpen('review')}
-          className="w-full text-left rounded-xl px-4 py-3.5 flex items-center gap-3 transition-transform active:scale-[.99]"
-          style={{ background: 'linear-gradient(120deg, #8B5CF6, #F472B6)', color: '#fff', boxShadow: '0 10px 24px -8px rgba(219,39,119,0.5)' }}>
-          <span className="mt-title-lg shrink-0">{pendingCount}</span>
-          <span className="flex-1 min-w-0">
-            <p className="mt-title">draft{pendingCount === 1 ? '' : 's'} to review</p>
-            <p className="mt-body-sm mt-0.5" style={{ opacity: 0.92 }}>Swipe to approve, dismiss or edit</p>
-          </span>
-          <span className="mt-body-sm px-2.5 py-1 rounded-full shrink-0" style={{ background: 'rgba(255,255,255,0.25)' }}>Review →</span>
-        </button>
-      )}
-
-      {!isSolo && cleanupIssueCount > 0 && (
-        <button onClick={() => onOpen('cleanup')}
-          className="w-full text-left rounded-xl px-4 py-3 flex items-center gap-2.5"
-          style={{ background: 'color-mix(in srgb, var(--color-state-pending) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--color-state-pending) 30%, transparent)' }}>
-          <span className="inline-flex items-center justify-center rounded-full shrink-0 text-[13px]"
-            style={{ width: 26, height: 26, background: 'color-mix(in srgb, var(--color-state-pending) 20%, transparent)' }}>🧹</span>
-          <span className="flex-1 min-w-0">
-            <p className="mt-card-title" style={{ color: 'var(--color-state-pending)' }}>Board cleanup available</p>
-            <p className="mt-body-sm mt-0.5" style={{ color: 'var(--t-muted)' }}>{cleanupIssueCount} issue{cleanupIssueCount === 1 ? '' : 's'} make matching harder</p>
-          </span>
-          <span style={{ color: 'var(--color-state-pending)' }}>→</span>
-        </button>
+      {actionItems.length > 0 && (
+        <div className="space-y-3">
+          {actionItems.map(a => (
+            <ActionCard key={a.kind} item={a} onOpen={() => onOpen(a.modal)} />
+          ))}
+        </div>
       )}
 
       {!isSolo && (
