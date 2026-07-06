@@ -105,8 +105,8 @@ export const TRACKERS: Tracker[] = [
     color: '#24292F',
     blurb: 'GitHub Issues & Projects — browser or a token.',
     oauth: {
-      label: 'GitHub CLI',
-      hint: 'Connects via the gh CLI — opens your browser, no PAT to create. Requires gh (cli.github.com).',
+      label: 'Browser',
+      hint: 'Opens your browser and shows a one-time code to enter — no PAT to create, no CLI required.',
     },
     token: {
       label: 'Personal Access Token',
