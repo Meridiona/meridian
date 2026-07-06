@@ -42,8 +42,8 @@ const TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 pub const REQUIRED_SCOPES: &str = "repo read:org read:project";
 
 /// Meridian's GitHub OAuth App client id — a PUBLIC identifier (device flow has
-/// no client secret), baked in at build time so `oauth-login github` needs zero
-/// config. Empty in a plain source build; override with `GITHUB_OAUTH_CLIENT_ID`.
+/// no client secret), baked in at build time so the in-app browser connect needs
+/// zero config. Empty in a plain source build; override with `GITHUB_OAUTH_CLIENT_ID`.
 ///
 /// Re-registering the app (github.com → Settings → Developer settings → OAuth
 /// Apps) — the console-only facts not recoverable from this code:
