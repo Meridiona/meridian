@@ -446,9 +446,15 @@ function GitHubProjectPicker({ onSaved }: { onSaved?: () => void }) {
   const [projects, setProjects] = useState<Project[] | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
+  // save → sync → done is a real state machine: after writing the selection we
+  // run a fresh sync and WAIT for it, so the UI reflects actual completion (or
+  // the real error) instead of a static "syncing…" that never resolves.
+  const [phase, setPhase] = useState<'idle' | 'saving' | 'syncing' | 'done' | 'error'>('idle')
   const [error, setError] = useState<string | null>(null)
-  const [saved, setSaved] = useState(false)
+  // false when save_github_projects couldn't signal the daemon (dev daemon not
+  // launchd-supervised) — the one-off sync still applied it; we just note it.
+  const [reloaded, setReloaded] = useState(true)
+  const busy = phase === 'saving' || phase === 'syncing'
 
   useEffect(() => {
     let alive = true
@@ -467,13 +473,20 @@ function GitHubProjectPicker({ onSaved }: { onSaved?: () => void }) {
   })
 
   const save = async () => {
-    setSaving(true); setError(null); setSaved(false)
+    setPhase('saving'); setError(null)
     try {
-      await mutate('/api/integrations/github/projects', 'save_github_projects', { project_ids: Array.from(selected) })
-      setSaved(true); onSaved?.()
+      const res = await mutate<{ reloaded?: boolean }>(
+        '/api/integrations/github/projects', 'save_github_projects', { project_ids: Array.from(selected) },
+      )
+      setReloaded(res?.reloaded !== false)
+      // Force a fresh sync (a one-off CLI that re-reads .env) and await it — the
+      // real "done" signal. Surfaces auth/API errors here instead of hanging.
+      setPhase('syncing')
+      await mutate('/api/tasks/sync', 'sync_tasks', {})
+      setPhase('done'); onSaved?.()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally { setSaving(false) }
+      setError(e instanceof Error ? e.message : String(e)); setPhase('error')
+    }
   }
 
   return (
@@ -504,12 +517,17 @@ function GitHubProjectPicker({ onSaved }: { onSaved?: () => void }) {
             ))}
           </div>
           <div className="flex items-center gap-2 mt-2">
-            <button onClick={save} disabled={saving} className="text-[12px] px-3 py-1.5 rounded-md font-medium transition-opacity"
-              style={{ background: 'var(--color-state-proposal)', color: '#fff', opacity: saving ? 0.5 : 1, cursor: saving ? 'not-allowed' : 'pointer' }}>
-              {saving ? 'Saving…' : 'Save & sync'}
+            <button onClick={save} disabled={busy} className="text-[12px] px-3 py-1.5 rounded-md font-medium transition-opacity"
+              style={{ background: 'var(--color-state-proposal)', color: '#fff', opacity: busy ? 0.5 : 1, cursor: busy ? 'not-allowed' : 'pointer' }}>
+              {phase === 'saving' ? 'Saving…' : phase === 'syncing' ? 'Syncing…' : 'Save & sync'}
             </button>
-            {saved && !saving && <span className="text-[11px]" style={{ color: 'var(--color-state-approved)' }}>✓ Saved — syncing…</span>}
+            {phase === 'done' && <span className="text-[11px]" style={{ color: 'var(--color-state-approved)' }}>✓ Synced — tasks updated</span>}
           </div>
+          {phase === 'done' && !reloaded && (
+            <p className="text-[10px] leading-relaxed mt-1.5" style={{ color: 'var(--status-warning-dot)' }}>
+              Saved and synced once, but the background service wasn’t reachable — continuous syncing resumes after the app restarts it.
+            </p>
+          )}
         </>
       )}
     </div>
