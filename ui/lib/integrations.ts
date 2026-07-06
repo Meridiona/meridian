@@ -114,8 +114,7 @@ export const TRACKERS: Tracker[] = [
       url: 'https://github.com/settings/tokens/new',
       fields: [
         { name: 'token', label: 'Token', placeholder: 'ghp_…', password: true, required: true },
-        // Project selection is no longer a hand-typed field — after connecting,
-        // <GitHubProjectPicker> lists the token's Projects v2 to pick from.
+        { name: 'project_ids', label: 'Project IDs (optional)', placeholder: 'PVT_…,PVT_…', hint: 'GitHub Projects v2 node IDs (comma-separated). Find them with: gh api graphql -f query=\'{ viewer { projectsV2(first:10){nodes{id title}} } }\'' },
       ],
     },
   },
