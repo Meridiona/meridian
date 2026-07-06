@@ -379,21 +379,29 @@ function armNotificationActions() {
   try {
     const ch = new __TAURI__.core.Channel()
     ch.onmessage = (msg) => {
+      // Raw-payload trace: the event shape crosses Swift → Rust → JS, so when
+      // a response goes missing this line says which hop dropped/renamed what.
+      try { dbg(`notification action event: ${JSON.stringify(msg).slice(0, 400)}`) } catch {}
       const n = (msg && msg.notification) || {}
-      const extra = n.extra || {}
-      // The outbox row id rides in extra; a toast without one isn't ours to record.
-      const outboxId = Number(extra.outbox_id)
-      if (!Number.isFinite(outboxId)) return
+      // The notification id IS the outbox row id — the only correlation the
+      // plugin round-trips (its Swift ActiveNotification carries no extras).
+      // actionTypeId gates out any non-interactive toast (plain notify() ones
+      // have no category and id 0).
+      const outboxId = Number(n.id)
+      if (!n.actionTypeId || !Number.isFinite(outboxId) || outboxId <= 0) {
+        dbg('notification action event: not an interactive outbox toast — ignored')
+        return
+      }
       invoke('record_notification_response', {
         id: outboxId,
         action: String(msg.actionId || 'tap'),
         text: msg.inputValue == null ? null : String(msg.inputValue),
-        deepLink: extra.deep_link == null ? null : String(extra.deep_link),
       }).catch((e) => dbg(`notification response failed: ${e}`))
     }
     // Plugin absent in an unbundled run (tauri dev) — interactive toasts are
     // packaged-only, so a registration failure is expected there, not an error.
     invoke('plugin:notifications|register_listener', { event: 'actionPerformed', handler: ch })
+      .then(() => dbg('notification action listener registered'))
       .catch(() => dbg('notification action listener not registered (unbundled run?)'))
   } catch (e) { dbg(`notification listener threw: ${e}`) }
 }

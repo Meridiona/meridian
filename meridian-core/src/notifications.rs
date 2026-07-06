@@ -448,6 +448,22 @@ pub async fn unconsumed_responses(pool: &SqlitePool) -> Vec<NotificationResponse
     rows
 }
 
+/// The row's `deep_link`, if any. The tray's response command resolves
+/// click-through navigation from the DB row rather than from the toast payload
+/// (the notification plugin's macOS layer doesn't round-trip attached extras —
+/// the notification id is the only correlation that survives).
+#[tracing::instrument(skip(pool))]
+pub async fn notification_deep_link(pool: &SqlitePool, id: i64) -> Option<String> {
+    sqlx::query_scalar::<_, Option<String>>("SELECT deep_link FROM notifications WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .instrument(tracing::debug_span!("notifications.read.deep_link"))
+        .await
+        .ok()
+        .flatten()
+        .flatten()
+}
+
 /// Ack that a consumer acted on a response: stamp `response_consumed_at` so the
 /// row leaves the [`unconsumed_responses`] queue. Idempotent via the `IS NULL`
 /// guard. `now` is the caller-resolved stamp.

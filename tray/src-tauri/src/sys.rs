@@ -87,16 +87,14 @@ pub fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
 }
 
 /// Show an interactive toast for an outbox row: the row's `category` selects
-/// the button set registered at startup (`lib.rs`), and the row `id` +
-/// `deep_link` ride in `extra` so the `actionPerformed` listener (popover JS →
-/// `record_notification_response`) can stamp the answer back onto the row.
+/// the button set registered at startup (`lib.rs`), and the notification id IS
+/// the outbox row id — that id is the ONLY correlation that survives the
+/// round-trip (the plugin's Swift `ActiveNotification` has no `extra` field,
+/// so attached extras never come back on `actionPerformed`). The listener
+/// (popover JS → `record_notification_response`) hands the id back and the
+/// command resolves everything else (deep_link) from the DB row.
 ///
-/// Every `extra` value MUST be a string: the plugin's Swift layer decodes
-/// `extra` as `[String: String]` and a single non-string value fails the whole
-/// notification decode — `show()` errors and NO toast appears (found the hard
-/// way with a numeric `outbox_id`).
-///
-/// The notification identifier is the outbox id, so the OS collapses a
+/// Using the outbox id as the identifier also means the OS collapses a
 /// re-delivered row onto the same toast instead of duplicating it.
 ///
 /// Known limitation: the plugin's `actionPerformed` only fires for toasts shown
@@ -114,20 +112,18 @@ pub fn notify_interactive(
         );
         return;
     };
-    // Outbox ids are AUTOINCREMENT and realistically < 2^31; wrap rather than
-    // fail if one ever isn't (the true id still rides in `extra.outbox_id`).
-    let toast_id = i32::try_from(n.id).unwrap_or_else(|_| (n.id % i64::from(i32::MAX)) as i32);
-    let mut builder = nf
-        .builder()
-        .id(toast_id)
-        .title(&n.title)
-        .body(&n.body)
-        .extra("outbox_id", n.id.to_string());
+    // The id is the response correlation (see above) — a row whose id can't be
+    // represented losslessly must NOT deliver interactively (the answer would
+    // stamp the wrong row). Degrade to a plain toast; ids are AUTOINCREMENT so
+    // this is theoretical.
+    let Ok(toast_id) = i32::try_from(n.id) else {
+        tracing::warn!(id = n.id, "outbox id exceeds i32 — delivering plain");
+        notify(app, &n.title, &n.body);
+        return;
+    };
+    let mut builder = nf.builder().id(toast_id).title(&n.title).body(&n.body);
     if let Some(category) = &n.category {
         builder = builder.action_type_id(category);
-    }
-    if let Some(link) = &n.deep_link {
-        builder = builder.extra("deep_link", link.clone());
     }
     let id = n.id;
     let category = n.category.clone();

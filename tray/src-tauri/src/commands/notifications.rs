@@ -76,16 +76,17 @@ pub async fn dismiss_notification(
 
 /// Record the user's answer to an interactive toast (button press, inline
 /// reply, tap, or dismiss) onto its outbox row — the response leg of the
-/// notification mailbox. `id` is the outbox row id the toast carried in
-/// `extra.outbox_id`; `action` is the pressed action id or `'tap'`/`'dismiss'`;
-/// `text` is the inline-reply input, if any. First answer wins (the core
-/// write's `IS NULL` guard) — a duplicate event is a no-op.
+/// notification mailbox. `id` is the outbox row id (== the toast's
+/// notification identifier — the only value the plugin round-trips; see
+/// [`crate::sys::notify_interactive`]); `action` is the pressed action id or
+/// `'tap'`/`'dismiss'`; `text` is the inline-reply input, if any. First answer
+/// wins (the core write's `IS NULL` guard) — a duplicate event is a no-op.
 ///
-/// Foreground answers (`tap`, or an `open`/`view` button) on a row that carried
-/// a `deep_link` also open the dashboard window, reusing the same opener as
-/// every other click-through path. Navigation is best-effort: the recorded
-/// response is the source of truth, so an opener failure is logged, not
-/// surfaced.
+/// Foreground answers (`tap`, or an `open`/`view` button) on a row that
+/// carries a `deep_link` also open the dashboard window, reusing the same
+/// opener as every other click-through path; the link is resolved from the DB
+/// row, not the toast. Navigation is best-effort: the recorded response is the
+/// source of truth, so an opener failure is logged, not surfaced.
 #[tauri::command]
 #[tracing::instrument(skip(app, pool, text))]
 pub async fn record_notification_response(
@@ -94,7 +95,6 @@ pub async fn record_notification_response(
     id: i64,
     action: String,
     text: Option<String>,
-    deep_link: Option<String>,
 ) -> Result<(), String> {
     let Some(pool) = pool.inner() else {
         return Err("meridian.db is not open yet".to_string());
@@ -115,7 +115,11 @@ pub async fn record_notification_response(
 
     // The dashboard is a single window (deep_link routes were folded into one
     // page), so every foreground answer lands on the same opener.
-    if deep_link.is_some() && matches!(action.as_str(), "tap" | "open" | "view") {
+    if matches!(action.as_str(), "tap" | "open" | "view")
+        && meridian_core::notifications::notification_deep_link(pool, id)
+            .await
+            .is_some()
+    {
         if let Err(e) = crate::commands::open_dashboard(app).await {
             tracing::warn!(error = %e, id, "notification click-through open failed");
         }
