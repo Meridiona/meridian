@@ -7,7 +7,7 @@
 //
 // Connect flows map to tray commands:
 //   - Browser OAuth  → `start_oauth` + poll `get_oauth_status` (jira/trello run
-//     in-process in the tray; github shells the gh CLI).
+//     the loopback-redirect flow in-process; github uses the device flow in-process).
 //   - Token / PAT    → `save_integration_token` (writes .env + reloads daemon).
 //                      NO terminal step — the old "run `meridian config edit`"
 //                      instructions are gone.
@@ -401,6 +401,7 @@ function TokenSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
+  const [reloadWarning, setReloadWarning] = useState(false)
 
   const canSave = method.fields.filter((f) => f.required).every((f) => (values[f.name] ?? '').trim().length > 0)
 
@@ -409,8 +410,9 @@ function TokenSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
     setSaving(true); setError(null)
     try {
       // save_integration_token (Rust) writes .env + reloads the daemon.
-      await mutate('/api/auth/token', 'save_integration_token', { provider: tracker.id, fields: values })
-      setDone(true); clearProviderNotice(tracker.id); onSuccess?.()
+      const res = await mutate<{ ok: boolean; reloaded: boolean }>('/api/auth/token', 'save_integration_token', { provider: tracker.id, fields: values })
+      setDone(true); setReloadWarning(res?.reloaded === false)
+      clearProviderNotice(tracker.id); onSuccess?.()
     } catch (e) {
       setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not save credentials')
     } finally {
@@ -422,6 +424,11 @@ function TokenSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
     return (
       <div className="px-4 pb-4 pt-2" style={{ background: 'var(--t-box)' }}>
         <p className="text-[12px]" style={{ color: 'var(--color-state-approved)' }}>✓ Connected! Your tasks will appear shortly.</p>
+        {reloadWarning && (
+          <p className="text-[11px] mt-1" style={{ color: 'var(--t-faint)' }}>
+            The daemon wasn&apos;t running — credentials saved, will take effect on next start.
+          </p>
+        )}
       </div>
     )
   }
@@ -480,6 +487,7 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
   const [loading, setLoading] = useState<'orgs' | 'projects' | 'saving' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
+  const [reloadWarning, setReloadWarning] = useState(false)
   const [showManualOrg, setShowManualOrg] = useState(false)
   const [manualOrg, setManualOrg] = useState('')
 
@@ -520,11 +528,12 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
     if (!selectedOrg || !selectedProject) return
     setLoading('saving'); setError(null)
     try {
-      await mutate('/api/auth/token', 'save_integration_token', {
+      const res = await mutate<{ ok: boolean; reloaded: boolean }>('/api/auth/token', 'save_integration_token', {
         provider: 'azure_devops',
         fields: { url: `https://dev.azure.com/${selectedOrg}/${selectedProject}`, pat: pat.trim() },
       })
-      setDone(true); clearProviderNotice('azure_devops'); onSuccess?.()
+      setDone(true); setReloadWarning(res?.reloaded === false)
+      clearProviderNotice('azure_devops'); onSuccess?.()
     } catch (e) { setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not save credentials') }
     finally { setLoading(null) }
   }
@@ -533,6 +542,11 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
     return (
       <div className="px-4 pb-4 pt-2" style={{ background: 'var(--t-box)' }}>
         <p className="text-[12px]" style={{ color: 'var(--color-state-approved)' }}>✓ Connected! Your tasks will appear shortly.</p>
+        {reloadWarning && (
+          <p className="text-[11px] mt-1" style={{ color: 'var(--t-faint)' }}>
+            The daemon wasn&apos;t running — credentials saved, will take effect on next start.
+          </p>
+        )}
       </div>
     )
   }
@@ -638,6 +652,7 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [reloadWarning, setReloadWarning] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -660,9 +675,10 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
     if (selected.size === 0 || saving) return
     setSaving(true); setError(null)
     try {
-      await mutate('/api/auth/token', 'save_integration_token', {
+      const res = await mutate<{ ok: boolean; reloaded: boolean }>('/api/auth/token', 'save_integration_token', {
         provider: 'github', fields: { project_ids: Array.from(selected).join(',') },
       })
+      setReloadWarning(res?.reloaded === false)
       clearProviderNotice('github'); onSuccess?.()
     } catch (e) {
       setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not save project selection')
@@ -712,6 +728,11 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
         style={{ background: 'var(--accent)', color: '#fff', opacity: (selected.size === 0 || saving) ? 0.5 : 1, cursor: (selected.size === 0 || saving) ? 'not-allowed' : 'pointer' }}>
         {saving ? 'Saving…' : selected.size === 0 ? 'Select a project' : `Sync ${selected.size} project${selected.size === 1 ? '' : 's'}`}
       </button>
+      {reloadWarning && (
+        <p className="text-[11px]" style={{ color: 'var(--t-faint)' }}>
+          The daemon wasn&apos;t running — saved, will take effect on next start.
+        </p>
+      )}
     </div>
   )
 }

@@ -183,7 +183,11 @@ pub async fn poll_for_token(
         }
         tokio::time::sleep(Duration::from_secs(interval)).await;
 
-        let raw: TokenPollRaw = client
+        // Transient failures (wifi blip, laptop sleep/wake, a GitHub 5xx that
+        // doesn't parse as TokenPollRaw) are retried silently — the `expires_in`
+        // deadline is the authoritative backstop for giving up, not a single I/O
+        // error during the polling window.
+        let resp = match client
             .post(TOKEN_URL)
             .header("Accept", "application/json")
             .form(&[
@@ -193,10 +197,20 @@ pub async fn poll_for_token(
             ])
             .send()
             .await
-            .with_context(|| format!("POST {TOKEN_URL}"))?
-            .json()
-            .await
-            .context("parsing GitHub token-poll response")?;
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!(error = %e, "GitHub token-poll request failed (transient — retrying)");
+                continue;
+            }
+        };
+        let raw: TokenPollRaw = match resp.json().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!(error = %e, "GitHub token-poll response parse error (transient — retrying)");
+                continue;
+            }
+        };
 
         if let Some(token) = raw.access_token.filter(|t| !t.is_empty()) {
             return Ok(token);

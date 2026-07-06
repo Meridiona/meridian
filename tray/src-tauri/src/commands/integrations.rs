@@ -55,10 +55,11 @@ static GITHUB_OAUTH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// `~/.meridian/oauth/<p>.json` is the connect/disconnect surface.
 const OAUTH_PROVIDERS: [&str; 2] = ["jira", "trello"];
 
-/// Providers whose OAuth writes `GITHUB_TOKEN` to `~/.meridian/.env` rather than
-/// a `~/.meridian/oauth/<p>.json` store — github's device flow (formerly the `gh`
-/// CLI). [`get_oauth_status`] checks the env key, not a json file, for these.
-const GH_CLI_PROVIDERS: [&str; 1] = ["github"];
+/// Providers whose OAuth writes a token to `~/.meridian/.env` rather than a
+/// `~/.meridian/oauth/<p>.json` store — github uses the device flow and writes
+/// `GITHUB_TOKEN`. [`get_oauth_status`] checks the env key, not a json file, for
+/// these.
+const ENV_OAUTH_PROVIDERS: [&str; 1] = ["github"];
 
 /// Providers connected via `.env` keys. Disconnecting strips every listed key
 /// from the active `.env`. Mirrors the route's `TOKEN_KEYS`.
@@ -292,7 +293,7 @@ pub async fn disconnect_integration(
     let provider = body.provider.as_str();
     let token_keys = TOKEN_KEYS.iter().find(|(p, _)| *p == provider);
     if !OAUTH_PROVIDERS.contains(&provider)
-        && !GH_CLI_PROVIDERS.contains(&provider)
+        && !ENV_OAUTH_PROVIDERS.contains(&provider)
         && token_keys.is_none()
     {
         return Err("Invalid provider".to_string());
@@ -443,12 +444,15 @@ pub async fn save_integration_token(body: SaveTokenBody) -> Result<serde_json::V
     );
 
     // Best-effort daemon reload so credentials take effect now (not next restart).
-    // A down daemon is fine — it reads .env on its next start.
-    if let Err(e) = crate::commands::daemon::reload_daemon().await {
-        tracing::debug!(error = %e, "daemon reload after token save (non-fatal)");
+    // A down daemon is fine — it reads .env on its next start. `reloaded` is
+    // returned to the UI so it can warn the user when the daemon isn't running
+    // (common in dev where the daemon isn't launchd-supervised).
+    let reloaded = crate::commands::daemon::reload_daemon().await.is_ok();
+    if !reloaded {
+        tracing::debug!("daemon reload after token save (non-fatal — will pick up on next start)");
     }
 
-    Ok(serde_json::json!({ "ok": true }))
+    Ok(serde_json::json!({ "ok": true, "reloaded": reloaded }))
 }
 
 /// POST body for [`discover_azure_devops`] (`{ pat, org? }`).
@@ -733,13 +737,27 @@ pub async fn discover_github_projects() -> Result<GithubDiscoverResponse, String
         .await
         .map_err(|e| format!("Could not parse GitHub response: {e}"))?;
 
+    // GraphQL returns HTTP 200 with BOTH `data` and `errors` on a partial
+    // failure — e.g. a user in an org with SAML SSO enforcement (their token
+    // isn't SSO-authorised for that org) or an org that restricts Projects v2
+    // visibility gets that org as an `errors` entry while their own/other-org
+    // projects still come back in `data`. Only hard-fail if `data.viewer` is
+    // absent entirely (e.g. bad credentials); otherwise parse what's there.
     if let Some(errors) = body.get("errors").and_then(|e| e.as_array()) {
-        if let Some(first) = errors
-            .first()
-            .and_then(|e| e.get("message"))
-            .and_then(|m| m.as_str())
-        {
-            return Err(format!("GitHub API error: {first}"));
+        if !errors.is_empty() {
+            let first_msg = errors
+                .first()
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown");
+            if body.pointer("/data/viewer").is_none() {
+                return Err(format!("GitHub API error: {first_msg}"));
+            }
+            tracing::warn!(
+                errors = errors.len(),
+                first = first_msg,
+                "GitHub GraphQL partial errors — some orgs/projects may be missing from the list"
+            );
         }
     }
 
@@ -1051,28 +1069,30 @@ pub struct OAuthStatus {
 
 /// Poll the completion status of an OAuth login for `provider`.
 ///
-/// Returns `connected=true` once `~/.meridian/oauth/<provider>.json` exists,
-/// or `error` with the last non-empty line from the OAuth log if the child
-/// process exited with a non-zero status. The UI polls this every 2 s after
-/// [`start_oauth`] returns so failures surface immediately instead of waiting
-/// for the 3-minute timeout.
+/// For loopback providers (jira/trello): returns `connected=true` once
+/// `~/.meridian/oauth/<provider>.json` exists. For the GitHub device-flow
+/// provider: checks `GITHUB_TOKEN` in the active `.env`. On failure,
+/// [`start_oauth`]'s background task writes the real `anyhow` error string to
+/// `~/.meridian/oauth/<provider>.error` — this function reads that sentinel and
+/// returns it as `error`. The UI polls every 2 s so failures surface immediately
+/// instead of waiting for the full timeout.
 ///
 /// # Who calls this
-/// `ui/components/views/TasksView.tsx` `OAuthSetup`.
+/// `ui/components/IntegrationConnect.tsx` `OAuthSetup`.
 ///
 /// # Related
-/// - [`start_oauth`] — launches the background `meridian oauth-login` process.
+/// - [`start_oauth`] — launches the in-process OAuth flow (loopback or device).
 /// - [`get_integrations`] — broader connected-status check (used for success).
 #[tauri::command]
 #[tracing::instrument]
 pub async fn get_oauth_status(provider: String) -> Result<OAuthStatus, String> {
     if !OAUTH_PROVIDERS.contains(&provider.as_str())
-        && !GH_CLI_PROVIDERS.contains(&provider.as_str())
+        && !ENV_OAUTH_PROVIDERS.contains(&provider.as_str())
     {
         return Err(format!("Unknown provider: {provider}"));
     }
     // gh-CLI providers write a token to .env rather than a .json store.
-    let connected = if GH_CLI_PROVIDERS.contains(&provider.as_str()) {
+    let connected = if ENV_OAUTH_PROVIDERS.contains(&provider.as_str()) {
         let mode = crate::install::detect_install_mode();
         let env = mode.env_path().map(parse_env).unwrap_or_default();
         is_set(&env, "GITHUB_TOKEN")
