@@ -17,7 +17,15 @@ tauri-build = { version = "2.5", features = [] }
 [dependencies]
 tauri = { version = "2.11", features = ["tray-icon", "image-png", "macos-private-api"] }
 tauri-plugin-positioner = { version = "2.3", features = ["tray-icon"] }
-tauri-plugin-notification = "2"
+# Community fork of the official notification plugin (the official one's
+# Actions API is mobile-only on desktop). Its macOS layer is a real Swift
+# UNUserNotificationCenter implementation: category/action registration, action
+# buttons, inline text reply, and an `actionPerformed` event back to us. Pinned
+# exact for supply-chain control (consider forking under the Meridiona org).
+# CAVEAT: its init hard-fails outside a `.app` bundle, so `lib.rs` registers it
+# only when bundled — dev runs have no toasts (interactive toasts are
+# packaged-only, same class of limitation as the popover-404 dev caveat).
+tauri-plugin-notifications = "=0.4.6"
 tauri-plugin-opener = "2"
 # DMG auto-update (Step 1 of the public-distribution plan). Checks the GitHub
 # `latest.json` against the running version, downloads the signed `.app.tar.gz`,

@@ -53,6 +53,7 @@ pub async fn maybe_nudge(pool: &SqlitePool) -> Result<()> {
     }
 
     let dedup = format!("plan.nudge:{today}");
+    use meridian_core::notifications::categories;
     notifications::enqueue(
         pool,
         NewNotification::event(
@@ -61,7 +62,9 @@ pub async fn maybe_nudge(pool: &SqlitePool) -> Result<()> {
             "Plan your day",
             "Pick what you're working on today so Meridian can match your work to the right tickets.",
         )
-        .link("/plan"),
+        .link("/plan")
+        .category(categories::PLAN_NUDGE)
+        .actions(categories::actions_json(categories::PLAN_NUDGE).unwrap_or("[]")),
     )
     .await
 }

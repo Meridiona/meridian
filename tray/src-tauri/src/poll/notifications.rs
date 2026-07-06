@@ -14,7 +14,7 @@
 //! - [`crate::commands::daemon::toggle_daemon`] — same gate for the pause/resume toast.
 //! - [`meridian_core::notifications::mark_native_delivered`] — the delivery ack.
 
-use crate::sys::notify;
+use crate::sys::{notify, notify_interactive};
 use tauri::Manager;
 
 /// UTC ISO without sub-seconds — matches the route's `now` for the
@@ -39,7 +39,14 @@ pub(super) async fn drain_notifications(app: &tauri::AppHandle) {
     let items = meridian_core::notifications::pending_native(pool, &now, &settings).await;
 
     for n in items {
-        notify(app, &n.title, &n.body);
+        // A row carrying a category is interactive (buttons / inline reply,
+        // registered at startup); everything else stays a plain toast —
+        // including every row from a pre-057 daemon, where category is NULL.
+        if n.category.is_some() {
+            notify_interactive(app, &n);
+        } else {
+            notify(app, &n.title, &n.body);
+        }
         if let Err(e) = meridian_core::notifications::mark_native_delivered(pool, n.id, &now).await
         {
             // Leave the row unacked → re-delivered next tick (at-least-once).

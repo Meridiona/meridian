@@ -10,6 +10,11 @@
 //! ([`mark_native_delivered`], [`dismiss_banner`]) ack a row so it isn't
 //! re-delivered / re-shown — idempotent, mirroring the same-named TS helpers.
 //!
+//! Interactive notifications (migration 057) extend the outbox into a
+//! round-trip mailbox: a row may carry a [`categories`] id + action buttons,
+//! the tray records the user's answer via [`record_response`], and the daemon
+//! consumes answers via [`unconsumed_responses`] + [`mark_response_consumed`].
+//!
 //! # Who calls this
 //! - [`pending_native`] + [`mark_native_delivered`] — the tray poll loop's
 //!   `drain_notifications` (replaces its `/api/notifications/pending` fetch AND
@@ -18,6 +23,12 @@
 //!   `notifications_allowed` (replaces its `/api/notifications/allowed` fetch).
 //! - [`dismiss_banner`] — the tray `dismiss_notification` command (ported
 //!   `/api/notifications/:id/dismiss`), from the dashboard banner.
+//! - [`record_response`] — the tray `record_notification_response` command
+//!   (the plugin's `actionPerformed` listener lands there).
+//! - [`unconsumed_responses`] + [`mark_response_consumed`] — the daemon's
+//!   response consumer (`src/notification_responses.rs`).
+//! - [`categories`] — the tray's startup category registration AND the daemon
+//!   producers, so the button sets can't drift between the two.
 //!
 //! # Related
 //! - [`crate::settings::RuntimeSettings`] — the preference fields these read.
@@ -27,8 +38,58 @@ use crate::SqlitePool;
 use sqlx::FromRow;
 use tracing::Instrument;
 
+/// The fixed interactive-category set. One source of truth for BOTH sides of
+/// the wire: the tray registers these as `UNNotificationCategory`s at startup,
+/// and the daemon producers stamp the ids onto outbox rows. Action descriptors
+/// are JSON `[{id,title,input?,destructive?,foreground?,inputButtonTitle?,
+/// inputPlaceholder?}]` — the exact shape the notification plugin's
+/// `ActionType.actions` deserializes, so registration parses these verbatim.
+pub mod categories {
+    /// Single \[Open\] button; the generic click-through category.
+    pub const GENERIC_LINK: &str = "generic_link";
+    /// Morning plan nudge: \[Open Plan\] \[Snooze 1h\].
+    pub const PLAN_NUDGE: &str = "plan_nudge";
+    /// Worklog drafts ready: \[Open Worklogs\] \[Snooze 1h\].
+    pub const WORKLOG_READY: &str = "worklog_ready";
+    /// A fault promoted to a toast: \[View\].
+    pub const SYSTEM_FAULT: &str = "system_fault";
+    /// Task-switch verification (flagship nudge, producer lands in PR 2):
+    /// \[Yes, new task\] \[No, same task\] \[Reply…\] with inline text input.
+    pub const VERIFY_SWITCH: &str = "verify_switch";
+
+    /// Every category the tray must register at startup.
+    pub const ALL: [&str; 5] = [
+        GENERIC_LINK,
+        PLAN_NUDGE,
+        WORKLOG_READY,
+        SYSTEM_FAULT,
+        VERIFY_SWITCH,
+    ];
+
+    /// The category's action descriptors (JSON). `foreground: true` actions
+    /// bring the app forward — used for every open/navigate button.
+    pub fn actions_json(category: &str) -> Option<&'static str> {
+        match category {
+            GENERIC_LINK => Some(r#"[{"id":"open","title":"Open","foreground":true}]"#),
+            PLAN_NUDGE => Some(
+                r#"[{"id":"open","title":"Open Plan","foreground":true},{"id":"snooze","title":"Snooze 1h"}]"#,
+            ),
+            WORKLOG_READY => Some(
+                r#"[{"id":"open","title":"Open Worklogs","foreground":true},{"id":"snooze","title":"Snooze 1h"}]"#,
+            ),
+            SYSTEM_FAULT => Some(r#"[{"id":"view","title":"View","foreground":true}]"#),
+            VERIFY_SWITCH => Some(
+                r#"[{"id":"yes","title":"Yes, new task"},{"id":"no","title":"No, same task"},{"id":"reply","title":"Reply…","input":true,"inputButtonTitle":"Send","inputPlaceholder":"What are you working on?"}]"#,
+            ),
+            _ => None,
+        }
+    }
+}
+
 /// A native notification ready to fire (the shape the tray delivers + the route
-/// returns).
+/// returns). `category`/`actions` are `None` on plain rows AND on a pre-057 DB
+/// (the columns are selected only when present), so the tray falls back to a
+/// plain toast in both cases.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PendingNotification {
     pub id: i64,
@@ -36,6 +97,8 @@ pub struct PendingNotification {
     pub body: String,
     pub deep_link: Option<String>,
     pub severity: String,
+    pub category: Option<String>,
+    pub actions: Option<String>,
 }
 
 /// Per-type preference for an `event_key`. Unknown keys default to enabled (a new
@@ -117,10 +180,27 @@ struct NotifRow {
     body: String,
     deep_link: Option<String>,
     channels: String,
+    category: Option<String>,
+    actions: Option<String>,
 }
 
 fn has_channel(channels: &str, channel: &str) -> bool {
     channels.split(',').any(|c| c.trim() == channel)
+}
+
+/// Whether the interactive-notification columns (migration 057) exist. The tray
+/// can run against a DB whose daemon predates 057 (overlapping installs), so
+/// every read/write touching the new columns degrades gracefully instead of
+/// erroring the whole queue. Errors count as "missing" — same fail-soft posture
+/// as the pending read.
+async fn has_action_columns(pool: &SqlitePool) -> bool {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pragma_table_info('notifications') WHERE name = 'category'",
+    )
+    .fetch_one(pool)
+    .await
+    .map(|n| n > 0)
+    .unwrap_or(false)
 }
 
 /// Native-channel rows ready to fire: undelivered, due, unexpired, channel
@@ -137,14 +217,20 @@ pub async fn pending_native(
     if in_quiet_hours(s) {
         return Vec::new();
     }
-    let rows: Vec<NotifRow> = sqlx::query_as::<_, NotifRow>(
-        r#"SELECT id, event_key, severity, title, body, deep_link, channels
+    // Pre-057 DB → NULL literals so one query shape serves both schemas.
+    let action_cols = if has_action_columns(pool).await {
+        "category, actions"
+    } else {
+        "NULL AS category, NULL AS actions"
+    };
+    let rows: Vec<NotifRow> = sqlx::query_as::<_, NotifRow>(&format!(
+        r#"SELECT id, event_key, severity, title, body, deep_link, channels, {action_cols}
            FROM notifications
            WHERE delivered_native_at IS NULL
              AND (scheduled_for IS NULL OR scheduled_for <= ?)
              AND (expires_at IS NULL OR expires_at > ?)
-           ORDER BY id ASC"#,
-    )
+           ORDER BY id ASC"#
+    ))
     .bind(now_iso)
     .bind(now_iso)
     .fetch_all(pool)
@@ -166,6 +252,8 @@ pub async fn pending_native(
             body: r.body,
             deep_link: r.deep_link,
             severity: r.severity,
+            category: r.category,
+            actions: r.actions,
         })
         .collect();
     tracing::debug!(rows = out.len(), "notifications.read.pending");
@@ -274,6 +362,105 @@ pub async fn dismiss_banner(pool: &SqlitePool, id: i64, now: &str) -> anyhow::Re
     .bind(id)
     .execute(pool)
     .instrument(tracing::debug_span!("notifications.write.dismiss"))
+    .await?;
+    Ok(())
+}
+
+// ── Response leg (interactive notifications, migration 057) ─────────────────
+
+/// Record the user's answer to an interactive notification: stamp
+/// `responded_at` + the pressed `action` (an action id, `'tap'`, or
+/// `'dismiss'`) + any inline-reply `text`. First answer wins — the
+/// `AND responded_at IS NULL` guard makes a duplicate (or late) answer a no-op,
+/// mirroring [`mark_native_delivered`]. `now` is the caller-resolved stamp.
+/// No-op on a pre-057 DB (the columns don't exist — nothing to record).
+#[tracing::instrument(skip(pool, text))]
+pub async fn record_response(
+    pool: &SqlitePool,
+    id: i64,
+    action: &str,
+    text: Option<&str>,
+    now: &str,
+) -> anyhow::Result<()> {
+    if !has_action_columns(pool).await {
+        tracing::warn!(id, "notifications: response ignored — pre-057 schema");
+        return Ok(());
+    }
+    sqlx::query(
+        "UPDATE notifications
+         SET responded_at = ?, response_action = ?, response_text = ?
+         WHERE id = ? AND responded_at IS NULL",
+    )
+    .bind(now)
+    .bind(action)
+    .bind(text)
+    .bind(id)
+    .execute(pool)
+    .instrument(tracing::debug_span!("notifications.write.response"))
+    .await?;
+    Ok(())
+}
+
+/// An answered-but-unconsumed notification, everything the daemon's response
+/// consumer needs to dispatch on the answer and (for snooze) re-enqueue the
+/// original event.
+#[derive(Debug, Clone, FromRow, serde::Serialize)]
+pub struct NotificationResponse {
+    pub id: i64,
+    pub dedup_key: String,
+    pub event_key: String,
+    pub severity: String,
+    pub title: String,
+    pub body: String,
+    pub deep_link: Option<String>,
+    pub channels: String,
+    pub category: Option<String>,
+    pub actions: Option<String>,
+    pub response_action: String,
+    pub response_text: Option<String>,
+    pub responded_at: String,
+}
+
+/// Rows the user has answered that no consumer has acted on yet (FIFO by id).
+/// The daemon's response consumer drains these each tick and stamps
+/// [`mark_response_consumed`]. Empty on a pre-057 DB or read error — the
+/// consumer just idles, same fail-soft posture as [`pending_native`].
+#[tracing::instrument(skip(pool))]
+pub async fn unconsumed_responses(pool: &SqlitePool) -> Vec<NotificationResponse> {
+    if !has_action_columns(pool).await {
+        return Vec::new();
+    }
+    let rows: Vec<NotificationResponse> = sqlx::query_as::<_, NotificationResponse>(
+        r#"SELECT id, dedup_key, event_key, severity, title, body, deep_link, channels,
+                  category, actions, response_action, response_text, responded_at
+           FROM notifications
+           WHERE responded_at IS NOT NULL AND response_consumed_at IS NULL
+           ORDER BY id ASC"#,
+    )
+    .fetch_all(pool)
+    .instrument(tracing::debug_span!("notifications.read.responses"))
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "notifications: responses read failed, treating as empty");
+        Vec::new()
+    });
+    tracing::debug!(rows = rows.len(), "notifications.read.responses");
+    rows
+}
+
+/// Ack that a consumer acted on a response: stamp `response_consumed_at` so the
+/// row leaves the [`unconsumed_responses`] queue. Idempotent via the `IS NULL`
+/// guard. `now` is the caller-resolved stamp.
+#[tracing::instrument(skip(pool))]
+pub async fn mark_response_consumed(pool: &SqlitePool, id: i64, now: &str) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE notifications SET response_consumed_at = ? \
+         WHERE id = ? AND response_consumed_at IS NULL",
+    )
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .instrument(tracing::debug_span!("notifications.write.consumed"))
     .await?;
     Ok(())
 }
@@ -444,6 +631,162 @@ mod tests {
         // malformed bounds → fail open (not quiet)
         s.quiet_hours_start = "nope".into();
         assert!(!in_quiet_hours_at(&s, 12 * 60));
+    }
+
+    /// In-memory pool with the FULL post-057 column set the interactive reads
+    /// touch (042 outbox columns + 057 response columns).
+    async fn interactive_pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE notifications (\
+                id INTEGER PRIMARY KEY, dedup_key TEXT NOT NULL UNIQUE, event_key TEXT, \
+                severity TEXT DEFAULT 'info', title TEXT, body TEXT, deep_link TEXT, \
+                channels TEXT DEFAULT 'native', scheduled_for TEXT, expires_at TEXT, \
+                delivered_native_at TEXT, banner_dismissed_at TEXT, \
+                attempts INTEGER NOT NULL DEFAULT 0, created_at TEXT, \
+                category TEXT, actions TEXT, responded_at TEXT, response_action TEXT, \
+                response_text TEXT, response_consumed_at TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn record_response_first_answer_wins() {
+        let pool = interactive_pool().await;
+        sqlx::query(
+            "INSERT INTO notifications (id, dedup_key, event_key, title, body, category) \
+             VALUES (1, 'k1', 'plan.nudge', 't', 'b', 'plan_nudge')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        record_response(&pool, 1, "snooze", None, "2026-07-06T10:00:00Z")
+            .await
+            .unwrap();
+        // A second (late) answer must be a no-op — first answer wins.
+        record_response(&pool, 1, "open", Some("late"), "2026-07-06T11:00:00Z")
+            .await
+            .unwrap();
+        let (at, action, text): (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT responded_at, response_action, response_text FROM notifications WHERE id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(at.as_deref(), Some("2026-07-06T10:00:00Z"));
+        assert_eq!(action.as_deref(), Some("snooze"));
+        assert_eq!(text, None);
+    }
+
+    #[tokio::test]
+    async fn unconsumed_responses_drain_and_consume() {
+        let pool = interactive_pool().await;
+        for (id, key) in [(1, "k1"), (2, "k2")] {
+            sqlx::query(
+                "INSERT INTO notifications (id, dedup_key, event_key, title, body) \
+                 VALUES (?, ?, 'worklog.ready', 't', 'b')",
+            )
+            .bind(id)
+            .bind(key)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        // Nothing answered yet → empty queue.
+        assert!(unconsumed_responses(&pool).await.is_empty());
+        record_response(&pool, 2, "reply", Some("hi"), "2026-07-06T10:00:00Z")
+            .await
+            .unwrap();
+        let q = unconsumed_responses(&pool).await;
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].id, 2);
+        assert_eq!(q[0].response_action, "reply");
+        assert_eq!(q[0].response_text.as_deref(), Some("hi"));
+        // Consume → leaves the queue; a duplicate consume is a no-op.
+        mark_response_consumed(&pool, 2, "2026-07-06T10:01:00Z")
+            .await
+            .unwrap();
+        mark_response_consumed(&pool, 2, "2026-07-06T11:00:00Z")
+            .await
+            .unwrap();
+        assert!(unconsumed_responses(&pool).await.is_empty());
+        let stamp: Option<String> =
+            sqlx::query_scalar("SELECT response_consumed_at FROM notifications WHERE id = 2")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stamp.as_deref(), Some("2026-07-06T10:01:00Z"));
+    }
+
+    #[tokio::test]
+    async fn pending_native_carries_category_and_survives_pre_057() {
+        // Post-057 schema: category/actions ride along.
+        let pool = interactive_pool().await;
+        sqlx::query(
+            "INSERT INTO notifications (id, dedup_key, event_key, title, body, category, actions) \
+             VALUES (1, 'k1', 'plan.nudge', 't', 'b', 'plan_nudge', '[]')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let now = "2026-07-06T10:00:00Z";
+        let pending = pending_native(&pool, now, &settings()).await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].category.as_deref(), Some("plan_nudge"));
+
+        // Pre-057 schema (042 columns only): the read degrades to category=None
+        // instead of erroring the queue empty, and the response leg no-ops.
+        let old = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE notifications (\
+                id INTEGER PRIMARY KEY, dedup_key TEXT NOT NULL UNIQUE, event_key TEXT, \
+                severity TEXT DEFAULT 'info', title TEXT, body TEXT, deep_link TEXT, \
+                channels TEXT DEFAULT 'native', scheduled_for TEXT, expires_at TEXT, \
+                delivered_native_at TEXT, banner_dismissed_at TEXT, \
+                attempts INTEGER NOT NULL DEFAULT 0, created_at TEXT)",
+        )
+        .execute(&old)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notifications (id, dedup_key, event_key, title, body) \
+             VALUES (1, 'k1', 'plan.nudge', 't', 'b')",
+        )
+        .execute(&old)
+        .await
+        .unwrap();
+        let pending = pending_native(&old, now, &settings()).await;
+        assert_eq!(pending.len(), 1, "pre-057 read must still deliver");
+        assert_eq!(pending[0].category, None);
+        record_response(&old, 1, "tap", None, now).await.unwrap(); // must not error
+        assert!(unconsumed_responses(&old).await.is_empty());
+    }
+
+    #[test]
+    fn every_category_has_valid_actions_json() {
+        for cat in categories::ALL {
+            let json = categories::actions_json(cat)
+                .unwrap_or_else(|| panic!("category {cat} missing actions"));
+            let parsed: serde_json::Value = serde_json::from_str(json)
+                .unwrap_or_else(|e| panic!("category {cat} actions not valid JSON: {e}"));
+            let arr = parsed.as_array().expect("actions must be a JSON array");
+            assert!(!arr.is_empty(), "category {cat} has no actions");
+            for a in arr {
+                assert!(a.get("id").is_some() && a.get("title").is_some());
+            }
+        }
+        assert_eq!(categories::actions_json("nope"), None);
     }
 
     #[test]

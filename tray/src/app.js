@@ -368,7 +368,38 @@ if (document.fonts && document.fonts.ready) {
   document.fonts.ready.then(() => resizeToContent()).catch(() => {})
 }
 
+// ── Interactive notification responses ───────────────────────────────────────
+// The notifications plugin delivers UNUserNotificationCenter action events
+// ('actionPerformed': button press, inline reply, tap, dismiss) over an IPC
+// channel registered from JS. The popover is the always-alive webview, so the
+// listener lives here: each event is forwarded to record_notification_response,
+// which stamps the answer on the outbox row (the daemon's response consumer
+// acts on it) and opens the dashboard for foreground answers.
+function armNotificationActions() {
+  try {
+    const ch = new __TAURI__.core.Channel()
+    ch.onmessage = (msg) => {
+      const n = (msg && msg.notification) || {}
+      const extra = n.extra || {}
+      // The outbox row id rides in extra; a toast without one isn't ours to record.
+      const outboxId = Number(extra.outbox_id)
+      if (!Number.isFinite(outboxId)) return
+      invoke('record_notification_response', {
+        id: outboxId,
+        action: String(msg.actionId || 'tap'),
+        text: msg.inputValue == null ? null : String(msg.inputValue),
+        deepLink: extra.deep_link == null ? null : String(extra.deep_link),
+      }).catch((e) => dbg(`notification response failed: ${e}`))
+    }
+    // Plugin absent in an unbundled run (tauri dev) — interactive toasts are
+    // packaged-only, so a registration failure is expected there, not an error.
+    invoke('plugin:notifications|register_listener', { event: 'actionPerformed', handler: ch })
+      .catch(() => dbg('notification action listener not registered (unbundled run?)'))
+  } catch (e) { dbg(`notification listener threw: ${e}`) }
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 startTicker()
 invoke('get_status').then((s) => { render(s); resizeToContent() }).catch(() => {})
 checkUpdate()
+armNotificationActions()

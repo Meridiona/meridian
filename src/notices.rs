@@ -65,6 +65,10 @@ pub async fn raise(
             channels: crate::notifications::CHANNEL_NATIVE,
             scheduled_for: None,
             expires_at: None,
+            category: Some(meridian_core::notifications::categories::SYSTEM_FAULT),
+            actions: meridian_core::notifications::categories::actions_json(
+                meridian_core::notifications::categories::SYSTEM_FAULT,
+            ),
         },
     )
     .await;
