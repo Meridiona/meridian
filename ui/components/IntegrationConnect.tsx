@@ -7,7 +7,7 @@
 //
 // Connect flows map to tray commands:
 //   - Browser OAuth  → `start_oauth` + poll `get_oauth_status` (jira/trello run
-//     in-process in the tray; github shells the gh CLI).
+//     the loopback-redirect flow in-process; github uses the device flow in-process).
 //   - Token / PAT    → `save_integration_token` (writes .env + reloads daemon).
 //                      NO terminal step — the old "run `meridian config edit`"
 //                      instructions are gone.
@@ -21,7 +21,8 @@ import { TRACKERS } from '@/lib/integrations'
 import type { Tracker, TokenField } from '@/lib/integrations'
 import { ProviderGlyph } from '@/components/atoms'
 
-const OAUTH_DEADLINE_MS = 180_000  // 3-minute browser-consent window
+const OAUTH_DEADLINE_MS = 180_000  // 3-minute browser-consent window (loopback: jira/trello)
+const DEVICE_FLOW_DEADLINE_MS = 900_000  // 15 min — matches GitHub device-code expiry
 
 // Clear a provider's error notice immediately (don't wait for the next ETL poll).
 // Fire-and-forget — a failure just means the banner clears on the next poll.
@@ -211,6 +212,10 @@ const TRELLO_MISSING_KEY_SENTINEL = 'Power-Up app key'
 function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () => void }) {
   const [status, setStatus] = useState<'idle' | 'waiting' | 'done' | 'error'>('idle')
   const [error, setError] = useState<string | null>(null)
+  // GitHub device flow: the one-time code the user enters at verifyUri
+  // (github.com/login/device). Empty for the loopback providers (jira/trello).
+  const [deviceCode, setDeviceCode] = useState<string | null>(null)
+  const [verifyUri, setVerifyUri] = useState<string | null>(null)
   // Trello-specific: set when start_oauth rejects with the "Power-Up app key"
   // error so the user can supply their own key from https://trello.com/app-key.
   // Once set, the key is saved to .env before the next start_oauth call.
@@ -238,7 +243,7 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
   }, [])
 
   const startOAuth = async () => {
-    setStatus('waiting'); setError(null)
+    setStatus('waiting'); setError(null); setDeviceCode(null); setVerifyUri(null)
     try {
       // For Trello: if a user-supplied API key is present, persist it to .env
       // before start_oauth reads it. This unblocks dev builds where the baked-in
@@ -249,9 +254,18 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
           provider: 'trello', fields: { api_key: apiKey.trim() },
         })
       }
-      await mutate(`/api/auth/oauth/start?provider=${tracker.id}`, 'start_oauth', { provider: tracker.id })
+      const res = await mutate<{ user_code?: string; verification_uri?: string }>(
+        `/api/auth/oauth/start?provider=${tracker.id}`, 'start_oauth', { provider: tracker.id },
+      )
       if (!mountedRef.current) return
-      const deadline = Date.now() + OAUTH_DEADLINE_MS
+      // GitHub device flow returns a one-time code + URL for the user to enter.
+      if (res?.user_code) setDeviceCode(res.user_code)
+      if (res?.verification_uri) setVerifyUri(res.verification_uri)
+      // The device flow gives the user ~15 min to enter the code, and the tray
+      // polls that whole time (holding its in-flight guard). Match it so the UI
+      // doesn't give up early and then collide with the still-running poll on
+      // "Try again". Loopback providers (jira/trello) keep the 3-min window.
+      const deadline = Date.now() + (res?.user_code ? DEVICE_FLOW_DEADLINE_MS : OAUTH_DEADLINE_MS)
       let stopped = false
       const id = setInterval(async () => {
         if (stopped) return
@@ -333,8 +347,35 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
       )}
       {status === 'waiting' && (
         <div className="space-y-2">
-          <p className="text-[12px]" style={{ color: 'var(--t-muted)' }}>Your browser should have opened. Authorize the app, then come back here.</p>
-          <p className="text-[11px]" style={{ color: 'var(--t-faint-2)' }}>Waiting for authorization…</p>
+          {deviceCode ? (
+            <>
+              <p className="text-[12px]" style={{ color: 'var(--t-muted)' }}>
+                Enter this code at{' '}
+                <a href={verifyUri ?? 'https://github.com/login/device'} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-state-proposal)' }}>
+                  {(verifyUri ?? 'https://github.com/login/device').replace(/^https?:\/\//, '')} ↗
+                </a>{' '}
+                (your browser should have opened it):
+              </p>
+              <div className="flex items-center gap-2">
+                <code className="font-mono text-[16px] tracking-[0.2em] px-3 py-1.5 rounded-md border"
+                  style={{ color: 'var(--t-title)', background: 'var(--t-card)', borderColor: 'var(--t-hair)' }}>
+                  {deviceCode}
+                </code>
+                <button
+                  onClick={() => { void navigator.clipboard?.writeText(deviceCode).catch(() => {}) }}
+                  className="text-[11px] px-2 py-1 rounded-md"
+                  style={{ color: 'var(--color-state-proposal)', border: '1px solid var(--t-hair)', cursor: 'pointer', background: 'transparent' }}>
+                  Copy
+                </button>
+              </div>
+              <p className="text-[11px]" style={{ color: 'var(--t-faint-2)' }}>Waiting for authorization…</p>
+            </>
+          ) : (
+            <>
+              <p className="text-[12px]" style={{ color: 'var(--t-muted)' }}>Your browser should have opened. Authorize the app, then come back here.</p>
+              <p className="text-[11px]" style={{ color: 'var(--t-faint-2)' }}>Waiting for authorization…</p>
+            </>
+          )}
         </div>
       )}
       {status === 'done' && (
@@ -360,6 +401,7 @@ function TokenSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
+  const [reloadWarning, setReloadWarning] = useState(false)
 
   const canSave = method.fields.filter((f) => f.required).every((f) => (values[f.name] ?? '').trim().length > 0)
 
@@ -368,8 +410,9 @@ function TokenSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
     setSaving(true); setError(null)
     try {
       // save_integration_token (Rust) writes .env + reloads the daemon.
-      await mutate('/api/auth/token', 'save_integration_token', { provider: tracker.id, fields: values })
-      setDone(true); clearProviderNotice(tracker.id); onSuccess?.()
+      const res = await mutate<{ ok: boolean; reloaded: boolean }>('/api/auth/token', 'save_integration_token', { provider: tracker.id, fields: values })
+      setDone(true); setReloadWarning(res?.reloaded === false)
+      clearProviderNotice(tracker.id); onSuccess?.()
     } catch (e) {
       setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not save credentials')
     } finally {
@@ -381,6 +424,11 @@ function TokenSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
     return (
       <div className="px-4 pb-4 pt-2" style={{ background: 'var(--t-box)' }}>
         <p className="text-[12px]" style={{ color: 'var(--color-state-approved)' }}>✓ Connected! Your tasks will appear shortly.</p>
+        {reloadWarning && (
+          <p className="text-[11px] mt-1" style={{ color: 'var(--t-faint)' }}>
+            The daemon wasn&apos;t running — credentials saved, will take effect on next start.
+          </p>
+        )}
       </div>
     )
   }
@@ -439,6 +487,7 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
   const [loading, setLoading] = useState<'orgs' | 'projects' | 'saving' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
+  const [reloadWarning, setReloadWarning] = useState(false)
   const [showManualOrg, setShowManualOrg] = useState(false)
   const [manualOrg, setManualOrg] = useState('')
 
@@ -479,11 +528,12 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
     if (!selectedOrg || !selectedProject) return
     setLoading('saving'); setError(null)
     try {
-      await mutate('/api/auth/token', 'save_integration_token', {
+      const res = await mutate<{ ok: boolean; reloaded: boolean }>('/api/auth/token', 'save_integration_token', {
         provider: 'azure_devops',
         fields: { url: `https://dev.azure.com/${selectedOrg}/${selectedProject}`, pat: pat.trim() },
       })
-      setDone(true); clearProviderNotice('azure_devops'); onSuccess?.()
+      setDone(true); setReloadWarning(res?.reloaded === false)
+      clearProviderNotice('azure_devops'); onSuccess?.()
     } catch (e) { setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not save credentials') }
     finally { setLoading(null) }
   }
@@ -492,6 +542,11 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
     return (
       <div className="px-4 pb-4 pt-2" style={{ background: 'var(--t-box)' }}>
         <p className="text-[12px]" style={{ color: 'var(--color-state-approved)' }}>✓ Connected! Your tasks will appear shortly.</p>
+        {reloadWarning && (
+          <p className="text-[11px] mt-1" style={{ color: 'var(--t-faint)' }}>
+            The daemon wasn&apos;t running — credentials saved, will take effect on next start.
+          </p>
+        )}
       </div>
     )
   }
@@ -597,6 +652,7 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [reloadWarning, setReloadWarning] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -619,9 +675,10 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
     if (selected.size === 0 || saving) return
     setSaving(true); setError(null)
     try {
-      await mutate('/api/auth/token', 'save_integration_token', {
+      const res = await mutate<{ ok: boolean; reloaded: boolean }>('/api/auth/token', 'save_integration_token', {
         provider: 'github', fields: { project_ids: Array.from(selected).join(',') },
       })
+      setReloadWarning(res?.reloaded === false)
       clearProviderNotice('github'); onSuccess?.()
     } catch (e) {
       setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not save project selection')
@@ -671,6 +728,11 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
         style={{ background: 'var(--accent)', color: '#fff', opacity: (selected.size === 0 || saving) ? 0.5 : 1, cursor: (selected.size === 0 || saving) ? 'not-allowed' : 'pointer' }}>
         {saving ? 'Saving…' : selected.size === 0 ? 'Select a project' : `Sync ${selected.size} project${selected.size === 1 ? '' : 's'}`}
       </button>
+      {reloadWarning && (
+        <p className="text-[11px]" style={{ color: 'var(--t-faint)' }}>
+          The daemon wasn&apos;t running — saved, will take effect on next start.
+        </p>
+      )}
     </div>
   )
 }

@@ -21,8 +21,11 @@
 //!   refresh) + the Trello fragment-relay variant.
 //! - [`jira`] — Atlassian 3LO wiring: `login`, `ensure_fresh`, `JiraReqCtx`.
 //! - [`trello`] — Trello token grant (fragment relay): `login`, `load_token`.
+//! - [`github`] — GitHub OAuth device flow (public client, no secret):
+//!   `request_device_code`, `poll_for_token`.
 
 pub mod flow;
+pub mod github;
 pub mod jira;
 pub mod pkce;
 pub mod store;

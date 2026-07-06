@@ -56,6 +56,9 @@ jobs:
       # Baked into the staging binary at compile time (see release.yml); same
       # secret. Absent → Jira OAuth simply unavailable in the staging build.
       MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
+      # Public GitHub OAuth device-flow client id (see release.yml); GH_OAUTH_CLIENT_ID
+      # repo secret. Absent → GitHub browser connect unavailable in the staging build.
+      MERIDIAN_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
       # Minisign key for the DMG auto-updater: `tauri build` (createUpdaterArtifacts)
       # signs Meridian.app.tar.gz so the installed staging app can verify the
       # update against the pubkey baked in tauri.conf.json. REQUIRED here (unlike
