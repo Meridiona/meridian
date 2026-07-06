@@ -30,7 +30,8 @@ pub struct JiraConfig {
 
 #[derive(Clone, Debug)]
 pub struct GitHubConfig {
-    /// Personal access token or gh CLI OAuth token with `repo`, `read:org`, `project` scopes.
+    /// Personal access token, or an OAuth token from the in-app browser device
+    /// flow, with `repo`, `read:org`, `read:project` scopes.
     pub token: String,
     /// GitHub Projects v2 node IDs (PVT_xxx). Empty → no tasks synced.
     pub project_ids: Vec<String>,

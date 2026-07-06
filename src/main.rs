@@ -184,20 +184,10 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-            "github" => {
-                println!("Starting GitHub authorization via gh CLI…");
-                match meridian::intelligence::oauth::github::login().await {
-                    Ok(()) => {}
-                    Err(e) => {
-                        eprintln!("oauth-login github failed: {e:#}");
-                        std::process::exit(1);
-                    }
-                }
-            }
             other => {
-                eprintln!(
-                    "oauth-login: unknown provider {other:?} (supported: jira, trello, github)"
-                );
+                // GitHub connects via the in-app browser device flow (the tray's
+                // start_oauth), not a CLI subcommand — see meridian-oauth::github.
+                eprintln!("oauth-login: unknown provider {other:?} (supported: jira, trello)");
                 std::process::exit(1);
             }
         }
