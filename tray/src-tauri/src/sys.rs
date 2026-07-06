@@ -8,7 +8,7 @@
 //! The notification facade fronts the community `tauri-plugin-notifications`
 //! (real `UNUserNotificationCenter` on macOS: action buttons + inline reply).
 //! Everything above this module talks only to [`notify`] /
-//! [`notify_interactive`], so if the plugin disappoints it can be swapped for
+//! [`notify_outbox`], so if the plugin disappoints it can be swapped for
 //! in-house `objc2-user-notifications` bindings without touching callers.
 //! The plugin requires a packaged `.app` bundle ([`is_bundled`]); in an
 //! unbundled run (`tauri dev`, `cargo run`) it is not registered at all and
@@ -16,9 +16,9 @@
 //! packaged builds only.
 //!
 //! # Related
-//! - [`crate::poll`] — the loop that toasts via [`notify`] / [`notify_interactive`].
+//! - [`crate::poll`] — the loop that toasts via [`notify`] / [`notify_outbox`].
 //! - [`crate::commands::notifications`] — records the user's answer
-//!   (`record_notification_response`) that [`notify_interactive`]'s buttons produce.
+//!   (`record_notification_response`) that [`notify_outbox`]'s buttons produce.
 //! - [`crate::install`] — install-mode + path resolution (a separate concern from these).
 
 use tauri::Manager;
@@ -86,38 +86,39 @@ pub fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
     });
 }
 
-/// Show an interactive toast for an outbox row: the row's `category` selects
-/// the button set registered at startup (`lib.rs`), and the notification id IS
-/// the outbox row id — that id is the ONLY correlation that survives the
-/// round-trip (the plugin's Swift `ActiveNotification` has no `extra` field,
-/// so attached extras never come back on `actionPerformed`). The listener
-/// (popover JS → `record_notification_response`) hands the id back and the
-/// command resolves everything else (deep_link) from the DB row.
+/// Show the toast for an outbox row — plain (title+body) or interactive (the
+/// row's `category` selects the button set registered at startup, `lib.rs`).
 ///
-/// Using the outbox id as the identifier also means the OS collapses a
-/// re-delivered row onto the same toast instead of duplicating it.
+/// The notification identifier IS the outbox row id, for EVERY outbox toast:
+/// that id is the ONLY correlation that survives the plugin round-trip (its
+/// Swift `ActiveNotification` has no `extra` field, so attached extras never
+/// come back on `actionPerformed`). It's what lets the listener (popover JS →
+/// `record_notification_response`) stamp taps/buttons/replies onto the row,
+/// and what [`retract_toast`] targets when the row expires. The command
+/// resolves everything else (deep_link) from the DB row. It also means the OS
+/// collapses a re-delivered row onto the same toast instead of duplicating it.
 ///
 /// Known limitation: the plugin's `actionPerformed` only fires for toasts shown
 /// by the CURRENT tray process (its notification map is in-memory), so an
 /// answer given after a tray restart is dropped. Expiries keep stale
 /// interactive toasts rare; a v2 could reconcile via `notificationClicked`.
-pub fn notify_interactive(
+pub fn notify_outbox(
     app: &tauri::AppHandle,
     n: &meridian_core::notifications::PendingNotification,
 ) {
     let Some(nf) = notifier(app) else {
         tracing::debug!(
             id = n.id,
-            "notify_interactive: plugin absent (unbundled run) — toast dropped"
+            "notify_outbox: plugin absent (unbundled run) — toast dropped"
         );
         return;
     };
-    // The id is the response correlation (see above) — a row whose id can't be
-    // represented losslessly must NOT deliver interactively (the answer would
-    // stamp the wrong row). Degrade to a plain toast; ids are AUTOINCREMENT so
-    // this is theoretical.
+    // The id is the response/retraction correlation (see above) — a row whose
+    // id can't be represented losslessly must NOT deliver correlated (the
+    // answer would stamp the wrong row). Degrade to an uncorrelated plain
+    // toast; ids are AUTOINCREMENT so this is theoretical.
     let Ok(toast_id) = i32::try_from(n.id) else {
-        tracing::warn!(id = n.id, "outbox id exceeds i32 — delivering plain");
+        tracing::warn!(id = n.id, "outbox id exceeds i32 — delivering uncorrelated");
         notify(app, &n.title, &n.body);
         return;
     };
@@ -130,13 +131,34 @@ pub fn notify_interactive(
     tauri::async_runtime::spawn(async move {
         match builder.show().await {
             Ok(()) => {
-                tracing::info!(id, category = ?category, "interactive toast delivered")
+                tracing::info!(id, category = ?category, "outbox toast delivered")
             }
             Err(e) => {
-                tracing::warn!(error = %e, id, "notify_interactive: toast delivery failed")
+                tracing::warn!(error = %e, id, "notify_outbox: toast delivery failed")
             }
         }
     });
+}
+
+/// Withdraw a delivered outbox toast from the screen and Notification Center —
+/// the delivery-side half of expiry (`expires_at`): under the persistent
+/// Alerts style an ignored question would otherwise sit forever, so the poll
+/// loop retracts expired rows and stamps them `response_action = 'expired'`.
+/// Same effect as the user pressing ✕, minus the user. Best-effort: a failure
+/// leaves a stale toast on screen but the row is stamped regardless, so it is
+/// never re-delivered.
+pub fn retract_toast(app: &tauri::AppHandle, id: i64) {
+    let Some(nf) = notifier(app) else {
+        return; // unbundled run — nothing was ever shown
+    };
+    let Ok(toast_id) = i32::try_from(id) else {
+        return; // uncorrelated delivery (see notify_outbox) — nothing to target
+    };
+    if let Err(e) = nf.remove_active(vec![toast_id]) {
+        tracing::warn!(error = %e, id, "toast retraction failed");
+    } else {
+        tracing::info!(id, "expired toast retracted");
+    }
 }
 
 /// Register the fixed interactive-category set (`meridian_core`'s

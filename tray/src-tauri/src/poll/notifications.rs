@@ -14,7 +14,7 @@
 //! - [`crate::commands::daemon::toggle_daemon`] — same gate for the pause/resume toast.
 //! - [`meridian_core::notifications::mark_native_delivered`] — the delivery ack.
 
-use crate::sys::{notify, notify_interactive};
+use crate::sys::{notify_outbox, retract_toast};
 use tauri::Manager;
 
 /// UTC ISO without sub-seconds — matches the route's `now` for the
@@ -25,10 +25,17 @@ fn now_iso() -> String {
 }
 
 /// Drain the daemon's native notification queue: read pending directly from
-/// `meridian.db` (ported `/api/notifications/pending`), toast each, then ack
+/// `meridian.db` (ported `/api/notifications/pending`), toast each (plain or
+/// interactive — [`notify_outbox`] decides by the row's `category`), then ack
 /// delivery with a direct DB write ([`meridian_core::notifications::mark_native_delivered`],
 /// ported `/api/notifications/:id/delivered`). A failed ack just retries next
 /// tick — at-least-once delivery.
+///
+/// The same pass sweeps the other end of the lifecycle: delivered-but-ignored
+/// rows past their `expires_at` are retracted from the screen/Notification
+/// Center and stamped `response_action = 'expired'` — under the persistent
+/// Alerts style this is what makes a "fleeting" notification possible, and it
+/// makes ignored-until-expiry measurable (vs. never answered at all).
 pub(super) async fn drain_notifications(app: &tauri::AppHandle) {
     let pool_state = app.state::<Option<meridian_core::SqlitePool>>();
     let Some(pool) = pool_state.inner() else {
@@ -39,19 +46,25 @@ pub(super) async fn drain_notifications(app: &tauri::AppHandle) {
     let items = meridian_core::notifications::pending_native(pool, &now, &settings).await;
 
     for n in items {
-        // A row carrying a category is interactive (buttons / inline reply,
-        // registered at startup); everything else stays a plain toast —
-        // including every row from a pre-057 daemon, where category is NULL.
-        if n.category.is_some() {
-            notify_interactive(app, &n);
-        } else {
-            notify(app, &n.title, &n.body);
-        }
+        notify_outbox(app, &n);
         if let Err(e) = meridian_core::notifications::mark_native_delivered(pool, n.id, &now).await
         {
             // Leave the row unacked → re-delivered next tick (at-least-once).
             tracing::warn!(error = %e, id = n.id, "notification delivered-ack failed");
         }
+    }
+
+    // Expiry sweep. Stamp BEFORE retracting: the stamp is what stops the row
+    // re-qualifying next tick, and it wins races with a user answering at the
+    // same moment (first answer wins via record_response's IS NULL guard).
+    for id in meridian_core::notifications::expired_unanswered(pool, &now).await {
+        if let Err(e) =
+            meridian_core::notifications::record_response(pool, id, "expired", None, &now).await
+        {
+            tracing::warn!(error = %e, id, "expiry stamp failed — will retry next tick");
+            continue;
+        }
+        retract_toast(app, id);
     }
 }
 

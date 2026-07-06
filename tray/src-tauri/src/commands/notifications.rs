@@ -28,7 +28,7 @@
 //!   ([`meridian_core::notifications::active_banners`] /
 //!   [`meridian_core::notifications::dismiss_banner`]) and the response leg
 //!   ([`meridian_core::notifications::record_response`]).
-//! - [`crate::sys::notify_interactive`] — the delivery half that embeds the
+//! - [`crate::sys::notify_outbox`] — the delivery half that embeds the
 //!   outbox id + deep link the response listener hands back here.
 //! - [`crate::poll`] — emits the `notifications-update` event off the same read.
 
@@ -78,7 +78,7 @@ pub async fn dismiss_notification(
 /// reply, tap, or dismiss) onto its outbox row — the response leg of the
 /// notification mailbox. `id` is the outbox row id (== the toast's
 /// notification identifier — the only value the plugin round-trips; see
-/// [`crate::sys::notify_interactive`]); `action` is the pressed action id or
+/// [`crate::sys::notify_outbox`]); `action` is the pressed action id or
 /// `'tap'`/`'dismiss'`; `text` is the inline-reply input, if any. First answer
 /// wins (the core write's `IS NULL` guard) — a duplicate event is a no-op.
 ///

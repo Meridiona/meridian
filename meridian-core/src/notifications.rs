@@ -448,6 +448,36 @@ pub async fn unconsumed_responses(pool: &SqlitePool) -> Vec<NotificationResponse
     rows
 }
 
+/// Outbox rows whose toast should be withdrawn: delivered, unanswered, past
+/// `expires_at`. The tray retracts each from the screen/Notification Center
+/// (macOS Alerts style persists until acted on — expiry is how a "fleeting"
+/// notification self-clears) and stamps it via [`record_response`] with
+/// action `'expired'`, which removes it from this queue (idempotent).
+/// Empty on a pre-057 DB or read error.
+#[tracing::instrument(skip(pool))]
+pub async fn expired_unanswered(pool: &SqlitePool, now_iso: &str) -> Vec<i64> {
+    if !has_action_columns(pool).await {
+        return Vec::new();
+    }
+    let ids: Vec<i64> = sqlx::query_scalar(
+        r#"SELECT id FROM notifications
+           WHERE delivered_native_at IS NOT NULL
+             AND responded_at IS NULL
+             AND expires_at IS NOT NULL AND expires_at <= ?
+           ORDER BY id ASC"#,
+    )
+    .bind(now_iso)
+    .fetch_all(pool)
+    .instrument(tracing::debug_span!("notifications.read.expired"))
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "notifications: expired read failed, treating as empty");
+        Vec::new()
+    });
+    tracing::debug!(rows = ids.len(), "notifications.read.expired");
+    ids
+}
+
 /// The row's `deep_link`, if any. The tray's response command resolves
 /// click-through navigation from the DB row rather than from the toast payload
 /// (the notification plugin's macOS layer doesn't round-trip attached extras —
@@ -787,6 +817,40 @@ mod tests {
         assert_eq!(pending[0].category, None);
         record_response(&old, 1, "tap", None, now).await.unwrap(); // must not error
         assert!(unconsumed_responses(&old).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn expired_unanswered_selects_only_delivered_unanswered_past_expiry() {
+        let pool = interactive_pool().await;
+        let now = "2026-07-06T12:00:00Z";
+        // (id, delivered, responded, expires) — only id 1 qualifies.
+        let rows: [(i64, Option<&str>, Option<&str>, Option<&str>); 5] = [
+            (1, Some("t"), None, Some("2026-07-06T11:00:00Z")), // expired, unanswered → in
+            (2, Some("t"), None, Some("2026-07-06T13:00:00Z")), // not yet expired → out
+            (3, Some("t"), Some("t"), Some("2026-07-06T11:00:00Z")), // answered → out
+            (4, None, None, Some("2026-07-06T11:00:00Z")),      // never delivered → out
+            (5, Some("t"), None, None),                         // no expiry → out
+        ];
+        for (id, delivered, responded, expires) in rows {
+            sqlx::query(
+                "INSERT INTO notifications (id, dedup_key, event_key, title, body, \
+                 delivered_native_at, responded_at, expires_at) VALUES (?, ?, 'e', 't', 'b', ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(format!("k{id}"))
+            .bind(delivered)
+            .bind(responded)
+            .bind(expires)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        assert_eq!(expired_unanswered(&pool, now).await, vec![1]);
+        // The 'expired' stamp (record_response) removes it from the queue.
+        record_response(&pool, 1, "expired", None, now)
+            .await
+            .unwrap();
+        assert!(expired_unanswered(&pool, now).await.is_empty());
     }
 
     #[test]

@@ -385,11 +385,11 @@ function armNotificationActions() {
       const n = (msg && msg.notification) || {}
       // The notification id IS the outbox row id — the only correlation the
       // plugin round-trips (its Swift ActiveNotification carries no extras).
-      // actionTypeId gates out any non-interactive toast (plain notify() ones
-      // have no category and id 0).
+      // Every outbox toast (plain or interactive) carries it; non-outbox
+      // toasts (sys::notify — pause/update/health) have id 0 and are ignored.
       const outboxId = Number(n.id)
-      if (!n.actionTypeId || !Number.isFinite(outboxId) || outboxId <= 0) {
-        dbg('notification action event: not an interactive outbox toast — ignored')
+      if (!Number.isFinite(outboxId) || outboxId <= 0) {
+        dbg('notification action event: not an outbox toast — ignored')
         return
       }
       invoke('record_notification_response', {
