@@ -153,12 +153,20 @@ pub fn register_notification_categories(app: &tauri::AppHandle) {
     // ActionType's fields are private but it derives Deserialize, so the
     // categories are built from the shared JSON descriptors — the same bytes
     // the daemon stamps into the outbox `actions` column, one source of truth.
+    // customDismissAction makes macOS report the user closing the toast (the
+    // X) as an action event, so a dismissal is captured on the outbox row
+    // (response_action = 'dismiss') instead of vanishing silently.
     let types: Vec<tauri_plugin_notifications::ActionType> = categories::ALL
         .iter()
         .filter_map(|id| {
             let actions: serde_json::Value =
                 serde_json::from_str(categories::actions_json(id)?).ok()?;
-            serde_json::from_value(serde_json::json!({ "id": id, "actions": actions })).ok()
+            serde_json::from_value(serde_json::json!({
+                "id": id,
+                "actions": actions,
+                "customDismissAction": true,
+            }))
+            .ok()
         })
         .collect();
     if types.len() != categories::ALL.len() {
