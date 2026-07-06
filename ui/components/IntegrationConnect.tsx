@@ -134,6 +134,7 @@ function ConnectedPanel({
         </div>
       ) : (
         <>
+          {tracker.id === 'github' && <GitHubProjectPicker onSaved={onChanged} />}
           <p className="text-[12px] leading-relaxed mb-3" style={{ color: 'var(--t-faint)' }}>
             Disconnect removes the stored credentials. The daemon reloads automatically.
           </p>
@@ -433,6 +434,85 @@ function Field({ field, value, onChange, onEnter, autoFocus }: {
       />
       {field.hint && <span className="text-[10px] leading-relaxed block mt-1" style={{ color: 'var(--t-faint-2)' }}>{field.hint}</span>}
     </label>
+  )
+}
+
+// ── GitHub Projects picker (list Projects v2, pick which to sync) ─────────────
+// Shown in the connected panel (and thus right after a fresh connect, once the
+// panel flips to "connected"). Works for both the Browser and PAT auth paths —
+// it reads the stored GITHUB_TOKEN via discover_github_projects.
+function GitHubProjectPicker({ onSaved }: { onSaved?: () => void }) {
+  type Project = { id: string; title: string; owner: string }
+  const [projects, setProjects] = useState<Project[] | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    load<{ projects: Project[]; selected: string[] }>(
+      '/api/integrations/github/projects', 'discover_github_projects',
+    )
+      .then((r) => { if (!alive) return; setProjects(r.projects); setSelected(new Set(r.selected)); setLoading(false) })
+      .catch((e) => { if (!alive) return; setError(e instanceof Error ? e.message : String(e)); setLoading(false) })
+    return () => { alive = false }
+  }, [])
+
+  const toggle = (id: string) => setSelected((s) => {
+    const n = new Set(s)
+    if (n.has(id)) n.delete(id); else n.add(id)
+    return n
+  })
+
+  const save = async () => {
+    setSaving(true); setError(null); setSaved(false)
+    try {
+      await mutate('/api/integrations/github/projects', 'save_github_projects', { project_ids: Array.from(selected) })
+      setSaved(true); onSaved?.()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <div className="mb-4">
+      <p className="text-[12px] font-medium mb-1" style={{ color: 'var(--t-title)' }}>Projects to sync</p>
+      <p className="text-[11px] leading-relaxed mb-2" style={{ color: 'var(--t-faint)' }}>
+        Meridian syncs the open issues assigned to you from the selected GitHub Projects.
+      </p>
+      {loading && <p className="text-[11px]" style={{ color: 'var(--t-faint-2)' }}>Loading your projects…</p>}
+      {error && <p className="text-[11px] mb-2" style={{ color: 'var(--status-error-dot)' }}>{error}</p>}
+      {projects && !loading && projects.length === 0 && (
+        <p className="text-[11px]" style={{ color: 'var(--t-faint)' }}>
+          No GitHub Projects found for this account.{' '}
+          <a href="https://github.com/projects" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-state-proposal)' }}>Create one ↗</a>
+        </p>
+      )}
+      {projects && projects.length > 0 && (
+        <>
+          <div className="rounded-md border divide-y max-h-48 overflow-auto" style={{ borderColor: 'var(--t-hair)' }}>
+            {projects.map((p) => (
+              <label key={p.id} className="flex items-center gap-2 px-2 py-1.5 cursor-pointer">
+                <input type="checkbox" checked={selected.has(p.id)} onChange={() => toggle(p.id)} />
+                <span className="text-[12px] min-w-0 truncate" style={{ color: 'var(--t-title)' }}>
+                  {p.title}
+                  <span className="text-[10px] ml-1.5" style={{ color: 'var(--t-faint-2)' }}>{p.owner}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          <div className="flex items-center gap-2 mt-2">
+            <button onClick={save} disabled={saving} className="text-[12px] px-3 py-1.5 rounded-md font-medium transition-opacity"
+              style={{ background: 'var(--color-state-proposal)', color: '#fff', opacity: saving ? 0.5 : 1, cursor: saving ? 'not-allowed' : 'pointer' }}>
+              {saving ? 'Saving…' : 'Save & sync'}
+            </button>
+            {saved && !saving && <span className="text-[11px]" style={{ color: 'var(--color-state-approved)' }}>✓ Saved — syncing…</span>}
+          </div>
+        </>
+      )}
+    </div>
   )
 }
 

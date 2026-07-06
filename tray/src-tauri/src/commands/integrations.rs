@@ -888,6 +888,184 @@ async fn persist_github_token(token: String) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("could not write .env: {e}"))
 }
 
+/// One GitHub Projects v2 project the connected token can see. `owner` is the
+/// user/org login that owns it (so the UI can disambiguate same-named projects).
+#[derive(Debug, Serialize)]
+pub struct GitHubProject {
+    pub id: String,
+    pub title: String,
+    pub owner: String,
+}
+
+/// `{ projects, selected }` — the pick-list plus the currently-configured
+/// `GITHUB_PROJECT_IDS` so the picker can pre-check the active selection.
+#[derive(Debug, Serialize)]
+pub struct GitHubProjectsResponse {
+    pub projects: Vec<GitHubProject>,
+    pub selected: Vec<String>,
+}
+
+/// List every GitHub Projects v2 the connected `GITHUB_TOKEN` can see — the
+/// viewer's own projects plus their orgs' — so the UI can present a pick-list
+/// instead of making the user hand-copy `PVT_…` node IDs. Read-only external
+/// HTTP (GitHub GraphQL), so it lives tray-side.
+///
+/// # Who calls this
+/// `ui/components/IntegrationConnect.tsx` `<GitHubProjectPicker>` (shown after a
+/// GitHub connect, and from the connected panel to change the selection).
+///
+/// # Related
+/// - [`save_github_projects`] — persists the chosen ids to `GITHUB_PROJECT_IDS`.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn discover_github_projects() -> Result<GitHubProjectsResponse, String> {
+    // Read the stored token WITHOUT mutating process env (same resolver the rest
+    // of this module uses). GitHub must be connected first.
+    let mode = crate::install::detect_install_mode();
+    let env = mode.env_path().map(parse_env).unwrap_or_default();
+    let token = env
+        .get("GITHUB_TOKEN")
+        .cloned()
+        .filter(|t| !t.trim().is_empty())
+        .ok_or("Connect GitHub first — no GITHUB_TOKEN found.")?;
+    // Currently-configured selection, so the picker can pre-check active projects.
+    let selected: Vec<String> = env
+        .get("GITHUB_PROJECT_IDS")
+        .map(|v| {
+            v.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // viewer projects + org projects in one round trip. read:project + read:org
+    // (granted by both the device flow and a correctly-scoped PAT) authorise these.
+    let query = serde_json::json!({
+        "query": "{ viewer { login \
+            projectsV2(first: 100) { nodes { id title } } \
+            organizations(first: 50) { nodes { login projectsV2(first: 100) { nodes { id title } } } } } }"
+    });
+
+    let resp = reqwest::Client::new()
+        .post("https://api.github.com/graphql")
+        .bearer_auth(&token)
+        .header(reqwest::header::USER_AGENT, "Meridian") // GitHub rejects requests without a UA.
+        .header(reqwest::header::ACCEPT, "application/json")
+        .timeout(Duration::from_secs(15))
+        .json(&query)
+        .send()
+        .await
+        .map_err(|e| format!("GitHub request failed: {e}"))?;
+
+    let status = resp.status();
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("parsing GitHub response: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("GitHub API error ({status})"));
+    }
+    if let Some(errs) = body.get("errors").and_then(|e| e.as_array()) {
+        // A token missing read:project surfaces here rather than as a non-2xx.
+        let msg = errs
+            .first()
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("unknown GraphQL error");
+        return Err(format!("GitHub: {msg}"));
+    }
+
+    let viewer = &body["data"]["viewer"];
+    let viewer_login = viewer["login"].as_str().unwrap_or("me").to_string();
+    let mut projects: Vec<GitHubProject> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    let mut push_nodes = |nodes: &serde_json::Value, owner: &str| {
+        if let Some(arr) = nodes.as_array() {
+            for n in arr {
+                if let (Some(id), Some(title)) = (n["id"].as_str(), n["title"].as_str()) {
+                    if seen.insert(id.to_string()) {
+                        projects.push(GitHubProject {
+                            id: id.to_string(),
+                            title: title.to_string(),
+                            owner: owner.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    };
+
+    push_nodes(&viewer["projectsV2"]["nodes"], &viewer_login);
+    if let Some(orgs) = viewer["organizations"]["nodes"].as_array() {
+        for org in orgs {
+            let login = org["login"].as_str().unwrap_or("").to_string();
+            push_nodes(&org["projectsV2"]["nodes"], &login);
+        }
+    }
+    // Stable order: owner, then title.
+    projects.sort_by(|a, b| a.owner.cmp(&b.owner).then_with(|| a.title.cmp(&b.title)));
+
+    tracing::info!(count = projects.len(), "github projects discovered");
+    Ok(GitHubProjectsResponse { projects, selected })
+}
+
+/// POST body for [`save_github_projects`] (`{ project_ids: ["PVT_…", …] }`).
+#[derive(Debug, Deserialize)]
+pub struct SaveGitHubProjectsBody {
+    #[serde(default)]
+    pub project_ids: Vec<String>,
+}
+
+/// Persist the selected GitHub Projects v2 ids to `GITHUB_PROJECT_IDS` in the
+/// active `.env` and reload the daemon so the next sync pulls their issues. An
+/// empty selection writes an empty value (GitHub sync then no-ops — the way to
+/// stop syncing GitHub without disconnecting). Separate from
+/// [`save_integration_token`], which requires `GITHUB_TOKEN` in the payload and
+/// so can't save project ids alone.
+///
+/// # Who calls this
+/// `ui/components/IntegrationConnect.tsx` `<GitHubProjectPicker>`.
+#[tauri::command]
+#[tracing::instrument(skip(body))]
+pub async fn save_github_projects(
+    body: SaveGitHubProjectsBody,
+) -> Result<serde_json::Value, String> {
+    // Trim/dedupe while preserving order; ignore blanks.
+    let mut seen = std::collections::HashSet::new();
+    let ids: Vec<String> = body
+        .project_ids
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && seen.insert(s.clone()))
+        .collect();
+
+    let mode = crate::install::detect_install_mode();
+    let env_path = match mode.env_path() {
+        Some(p) => p.to_owned(),
+        None => crate::install::canonical_env_path()
+            .ok_or("could not resolve home directory for .env")?,
+    };
+    let mut updates: BTreeMap<String, String> = BTreeMap::new();
+    updates.insert("GITHUB_PROJECT_IDS".to_string(), ids.join(","));
+    let count = ids.len();
+    tokio::task::spawn_blocking(move || upsert_env(&env_path, &updates))
+        .await
+        .map_err(|e| format!("spawn_blocking panicked: {e}"))?
+        .map_err(|e| {
+            tracing::warn!(error = %e, "could not write GITHUB_PROJECT_IDS");
+            format!("could not write .env: {e}")
+        })?;
+    tracing::info!(count, "github project selection saved");
+
+    // Reload so the daemon re-reads .env and syncs the chosen projects now.
+    if let Err(e) = crate::commands::daemon::reload_daemon().await {
+        tracing::debug!(error = %e, "daemon reload after project save (non-fatal)");
+    }
+    Ok(serde_json::json!({ "ok": true, "count": count }))
+}
+
 /// Status returned by [`get_oauth_status`].
 #[derive(Debug, Serialize)]
 pub struct OAuthStatus {
