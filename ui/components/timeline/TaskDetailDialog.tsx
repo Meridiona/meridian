@@ -13,7 +13,7 @@
 
 import { useEffect, useState } from 'react'
 import type { TaskDetail } from '@/lib/api-types'
-import { load } from '@/lib/bridge'
+import { load, openExternal } from '@/lib/bridge'
 
 export function TaskDetailDialog({
   taskKey, fallbackTitle, onClose, inToday, canEdit = true, onAdd, onRemove,
@@ -131,7 +131,7 @@ export function TaskDetailDialog({
               </button>
             )))}
             {detail?.url && (
-              <a href={detail.url} target="_blank" rel="noopener noreferrer"
+              <a href={detail.url} onClick={(e) => { e.preventDefault(); openExternal(detail!.url!) }}
                 className="mt-body-sm px-3.5 py-2 rounded-lg inline-block bg-ctrl ml-auto"
                 style={{ border: '1px solid var(--t-ctrl-border)', color: 'var(--t-muted)' }}>
                 Open in tracker ↗

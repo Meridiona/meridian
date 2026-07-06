@@ -77,7 +77,7 @@ export function CleanupCard({
           )}
 
           {task.url && (
-            <a href={task.url} target="_blank" rel="noopener noreferrer"
+            <a href={task.url} onClick={(e) => { e.preventDefault(); openExternal(task.url!) }}
               className="mt-body-sm inline-block" style={{ color: 'var(--t-faint)' }}>Open in tracker ↗</a>
           )}
         </div>
@@ -312,7 +312,7 @@ function ParentPicker({ provider, taskKey, saving, onPick }: {
       )}
 
       {createUrl && (
-        <a href={createUrl} target="_blank" rel="noopener noreferrer"
+        <a href={createUrl} onClick={(e) => { e.preventDefault(); openExternal(createUrl) }}
           className="inline-flex items-center gap-1 mt-body-sm" style={{ color: 'var(--t-faint)' }}>
           + Create a new {label} in the tracker ↗
         </a>
@@ -338,8 +338,6 @@ function Control({ control, value, onChange }: { control?: string; value: string
       )
     case 'number_input':
       return <input type="number" min={0} placeholder="Story points" value={value} onChange={e => onChange(e.target.value)} className={base} style={style} />
-    case 'edit_labels':
-      return <input type="text" placeholder="label (e.g. backend)" value={value} onChange={e => onChange(e.target.value)} className={base} style={style} />
     case 'pick_parent':
       return <input type="text" placeholder="Epic / parent key (e.g. KAN-50)" value={value} onChange={e => onChange(e.target.value)} className={base} style={style} />
     case 'edit_text':
