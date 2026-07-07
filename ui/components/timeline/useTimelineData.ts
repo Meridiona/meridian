@@ -12,7 +12,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type {
   WorklogItem, WorklogsResponse, IntegrationsResponse,
   TasksResponse, TaskSummary, TodayResponse, HourStatus, HourStatusResponse,
-  HourReportEntry, HourReportsResponse,
+  HourReportEntry, HourReportsResponse, ActionCardSnooze,
 } from '@/lib/api-types'
 import { load as loadData, mutate } from '@/lib/bridge'
 import { TRACKER_BY_ID, type TrackerId } from '@/lib/integrations'
@@ -58,6 +58,10 @@ export function useTimelineData(day: string) {
   // content. Fetched unconditionally (cheap; today-only reader returns 24
   // empty entries for a past day) so it's ready the instant isSolo resolves.
   const [hourReports, setHourReports] = useState<HourReportEntry[]>([])
+  // Active action-card dismissals, keyed by kind ('mustfix'/'cleanup'/'drafts').
+  // Only currently-active snoozes are ever in this map (the reader already
+  // filters out expired ones), so useActionItems just checks key presence.
+  const [actionCardSnoozes, setActionCardSnoozes] = useState<Record<string, string>>({})
 
   const loadWorklogs = useCallback((d: string) => {
     loadData<WorklogsResponse>(`/api/worklogs?day=${d}`, 'get_worklogs', { day: d })
@@ -77,13 +81,32 @@ export function useTimelineData(day: string) {
       .catch(() => {})
   }, [])
 
+  const loadActionCardSnoozes = useCallback(() => {
+    loadData<ActionCardSnooze[]>('/api/action-card-snoozes', 'get_action_card_snoozes')
+      .then(rows => setActionCardSnoozes(Object.fromEntries((rows ?? []).map(r => [r.card_kind, r.snoozed_until]))))
+      .catch(() => {})
+  }, [])
+
   const loadAux = useCallback(() => {
     loadData<IntegrationsResponse>('/api/integrations', 'get_integrations').then(setIntegrations).catch(() => {})
     loadData<TasksResponse>('/api/tasks', 'get_tasks').then((r) => setTasks(r.tasks ?? [])).catch(() => {})
     loadData<TodayResponse>('/api/today', 'get_today').then(setToday).catch(() => {})
     loadData<{ running: boolean }>('/api/daemon/status', 'get_daemon_status')
       .then(s => setCapturing(s.running)).catch(() => {})
-  }, [])
+    loadActionCardSnoozes()
+  }, [loadActionCardSnoozes])
+
+  // Dismissing a card (the × on ActionCard) — hide it immediately (optimistic;
+  // a far-future placeholder so the presence check in useActionItems fires
+  // right away) and persist the server-resolved window in the background. The
+  // reconciling refetch corrects the placeholder to the real expiry, or rolls
+  // it back on failure — same optimistic-then-reconcile shape as `patchItem`.
+  const dismissActionCard = useCallback((kind: string) => {
+    setActionCardSnoozes(prev => ({ ...prev, [kind]: '9999-12-31T00:00:00Z' }))
+    mutate('/api/action-card-snoozes', 'snooze_action_card', { card_kind: kind })
+      .then(loadActionCardSnoozes)
+      .catch(loadActionCardSnoozes)
+  }, [loadActionCardSnoozes])
 
   useEffect(() => {
     setLoading(true)
@@ -224,7 +247,7 @@ export function useTimelineData(day: string) {
     items, hourBuckets, counts, loading, busy, isToday, day, draftedIds,
     act, reject, saveEdit, rematch, proposedAct, saveProposedTitle, saveProposedBody, approveAll,
     actions, integrations, isSolo, connectedProviderName, connectedProviderId, tasks, today,
-    hourStatus, capturing, hourReports,
+    hourStatus, capturing, hourReports, actionCardSnoozes, dismissActionCard,
   }
 }
 

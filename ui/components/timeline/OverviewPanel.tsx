@@ -107,7 +107,8 @@ export function OverviewPanel({ data, onOpen, onOpenTask }: {
       {actionItems.length > 0 && (
         <div className="space-y-3">
           {actionItems.map(a => (
-            <ActionCard key={a.kind} item={a} onOpen={() => onOpen(a.modal)} />
+            <ActionCard key={a.kind} item={a} onOpen={() => onOpen(a.modal)}
+              onDismiss={() => data.dismissActionCard(a.kind)} />
           ))}
         </div>
       )}

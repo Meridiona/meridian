@@ -11,6 +11,10 @@
 //! - [`crate::util`] — the DB-free math/mapping helpers these readers reuse.
 //! - [`crate::db`] — the no-migration opener + the raw `active_session` row.
 
+/// Per-kind dismiss/snooze for the standardized action-card stack (must-fix /
+/// cleanup / drafts); no route — new work (migration 057).
+pub mod action_card_snooze;
+
 /// The `/api/active` dashboard view of the active session (ported from active/route.ts).
 pub mod active;
 

@@ -198,6 +198,13 @@ export interface HourStatusResponse {
   hours: HourStatus[]
 }
 
+// ── Action card snoozes (`get_action_card_snoozes` / `snooze_action_card`) ───
+
+export interface ActionCardSnooze {
+  card_kind: string       // 'mustfix' | 'cleanup' | 'drafts'
+  snoozed_until: string   // RFC3339 UTC; only still-active snoozes are ever returned
+}
+
 // ── Week (`get_week`) ────────────────────────────────────────────────────────
 
 export interface DaySummary {
