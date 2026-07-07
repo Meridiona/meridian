@@ -556,15 +556,18 @@ where
     })
 }
 
-/// Backoff schedule between retries (attempts 1→2, 2→3, 3→4, 4→5): 2s, 8s,
-/// 20s, 45s, 90s. Cumulative wait ~2m45s before giving up — long enough to
-/// survive a hotel wifi glitch, short enough that the wizard doesn't feel dead.
+/// Backoff between the 5 attempts. There are only **4 waits** — the 5th attempt
+/// gives up without sleeping (`attempt == DOWNLOAD_MAX_ATTEMPTS` short-circuits),
+/// so this holds exactly `DOWNLOAD_MAX_ATTEMPTS - 1` entries: 3s → 12s → 30s →
+/// 75s. Cumulative wait ~2m before giving up — long enough to ride out a hotel
+/// wifi glitch, short enough the wizard doesn't feel dead. The
+/// `retry_backoff_covers_all_gaps` test enforces the exact 1:1 mapping so this
+/// can't drift out of sync with the attempt count again.
 const DOWNLOAD_RETRY_BACKOFF: &[std::time::Duration] = &[
-    std::time::Duration::from_secs(2),
-    std::time::Duration::from_secs(8),
-    std::time::Duration::from_secs(20),
-    std::time::Duration::from_secs(45),
-    std::time::Duration::from_secs(90),
+    std::time::Duration::from_secs(3),
+    std::time::Duration::from_secs(12),
+    std::time::Duration::from_secs(30),
+    std::time::Duration::from_secs(75),
 ];
 const DOWNLOAD_MAX_ATTEMPTS: usize = 5;
 
@@ -605,10 +608,13 @@ where
                         last_msg
                     });
                 }
+                // Indices 0..=DOWNLOAD_MAX_ATTEMPTS-2 are always in range here
+                // (the last attempt returns above without sleeping); the
+                // `unwrap_or` is a defensive floor, never hit in practice.
                 let wait = DOWNLOAD_RETRY_BACKOFF
                     .get(attempt - 1)
                     .copied()
-                    .unwrap_or(std::time::Duration::from_secs(90));
+                    .unwrap_or(std::time::Duration::from_secs(60));
                 tracing::warn!(
                     attempt,
                     next_wait_s = wait.as_secs(),
@@ -1258,8 +1264,11 @@ mod tests {
 
     #[test]
     fn retry_backoff_covers_all_gaps() {
-        // Every attempt except the last must have a backoff to sleep on.
-        assert!(DOWNLOAD_RETRY_BACKOFF.len() >= DOWNLOAD_MAX_ATTEMPTS - 1);
+        // EXACTLY one backoff per inter-attempt gap — no more, no less. `>=`
+        // would let a trailing, unreachable entry slip through (the bug this
+        // asserts against: the last attempt gives up without sleeping, so an
+        // extra entry is dead code and inflates the advertised worst-case wait).
+        assert_eq!(DOWNLOAD_RETRY_BACKOFF.len(), DOWNLOAD_MAX_ATTEMPTS - 1);
         // Backoffs must be monotonically increasing so the retries fan out.
         for pair in DOWNLOAD_RETRY_BACKOFF.windows(2) {
             assert!(pair[0] < pair[1], "backoff must grow: {pair:?}");
