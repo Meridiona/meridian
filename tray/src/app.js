@@ -257,21 +257,26 @@ function paintDaemon(status) {
 
 function paintMlx(res) {
   if (!res) { setDot(hpMlxDot, 'bad'); hpMlxVal.textContent = 'Unreachable'; return }
-  // MlxStatus is a serde enum — either a string ("Idle") or { Running: {...} }
+  // MlxStatus is a serde enum with rename_all = "snake_case": the unit variants
+  // serialize to the lowercase strings "offline" / "starting" / "running", and
+  // Error(String) to { "error": "<msg>" }. Compare against those exact shapes.
   const s = res.status
-  const kind = typeof s === 'string' ? s : (s && Object.keys(s)[0]) || 'Unknown'
-  if (kind === 'Running') {
+  const kind = typeof s === 'string' ? s : (s && Object.keys(s)[0]) || 'unknown'
+  if (kind === 'running') {
     setDot(hpMlxDot, 'ok')
     hpMlxVal.textContent = res.port ? `Running (port ${res.port})` : 'Running'
+  } else if (kind === 'error') {
+    setDot(hpMlxDot, 'bad')
+    hpMlxVal.textContent = 'Error'
   } else if (!res.runtime_installed) {
     setDot(hpMlxDot, 'warn')
     hpMlxVal.textContent = 'Runtime not installed'
-  } else if (kind === 'Starting') {
+  } else if (kind === 'starting') {
     setDot(hpMlxDot, 'warn')
     hpMlxVal.textContent = 'Starting…'
   } else {
     setDot(hpMlxDot, 'warn')
-    hpMlxVal.textContent = String(kind)
+    hpMlxVal.textContent = 'Offline'
   }
 }
 
@@ -461,6 +466,27 @@ if (document.fonts && document.fonts.ready) {
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
-startTicker()
-invoke('get_status').then((s) => { render(s); resizeToContent() }).catch(() => {})
-checkUpdate()
+function boot() {
+  startTicker()
+  invoke('get_status').then((s) => { render(s); resizeToContent() }).catch(() => {})
+  checkUpdate()
+}
+
+// Under the DOM test harness (ui/__tests__/popover-health-panel.test.ts) the
+// script is loaded to drive render/toggleHealth/refreshHealth directly against
+// a mocked __TAURI__ bridge — so expose them and SKIP auto-boot (which would
+// otherwise fire the 1 s ticker + an unmocked get_status/checkUpdate at import
+// time). In the packaged webview the flag is unset, so boot() runs as before
+// and nothing reads __popover.
+if (typeof globalThis !== 'undefined' && globalThis.__MERIDIAN_POPOVER_TEST__) {
+  globalThis.__popover = {
+    render,
+    toggleHealth,
+    refreshHealth,
+    paintDaemon,
+    paintMlx,
+    paintDb,
+  }
+} else {
+  boot()
+}
