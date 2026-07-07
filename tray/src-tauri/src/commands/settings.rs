@@ -16,8 +16,23 @@
 //!
 //! # Related
 //! - [`meridian_core::settings`] — the schema, path, and the value read/write.
-//! - [`crate::commands::openobserve`] / [`crate::commands::daemon`] — the
-//!   service-start + daemon-reload steps the Settings "Apply" flow chains after a save.
+//! - [`crate::commands::daemon`] — the daemon-reload step the Settings "Apply"
+//!   flow chains after a save. `otlp_enabled`/`otlp_endpoint`/`oo_email`/
+//!   `oo_password` remain valid fields (consumed by a Dev/Bare install's
+//!   shipper — see `src/observability.rs`) but the shipped app no longer
+//!   installs/manages a local OpenObserve service for them.
+//!
+//! **No UI writes these OTLP-shipping fields anymore** (the config panel was
+//! replaced by the "Export Diagnostics" button in `AdvancedSection.tsx` — see
+//! that component's history). This is intentional: OTLP shipping is a
+//! Dev/Bare-only, engineer-facing debugging feature (a packaged/Canonical
+//! install can never ship, regardless of these fields — see
+//! `is_canonical_install()`), so an engineer who wants their dev daemon to
+//! ship live to their own OpenObserve sets `otlp_enabled`/`otlp_endpoint`/
+//! `oo_email`/`oo_password` by hand-editing `~/.meridian/settings.json` (this
+//! command still validates and persists them if written that way, or via a
+//! future re-added UI). Every end-user-facing workflow goes through Export
+//! Diagnostics instead, which needs none of these fields.
 
 use serde_json::Value;
 use tauri::State;

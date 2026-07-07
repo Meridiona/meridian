@@ -54,13 +54,18 @@ chrono = { version = "0.4.31", features = ["serde"] }
 # Logging + observability
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "chrono", "json", "registry"] }
-tracing-appender = "0.2"
 tracing-opentelemetry = "0.28"
 opentelemetry = "0.27"
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio", "logs"] }
 opentelemetry-otlp = { version = "0.27", default-features = false, features = ["http-proto", "reqwest-client", "trace", "logs"] }
 opentelemetry-appender-tracing = { version = "0.27", features = ["experimental_metadata_attributes"] }
 opentelemetry-semantic-conventions = "0.27"
+# Direct dep (was transitive-only via opentelemetry-otlp): decodes spooled
+# .otlp files back to structured log/span records for `meridian logs`
+# (src/telemetry_spool/render.rs) — no live OpenObserve needed to read them.
+opentelemetry-proto = { version = "0.27", default-features = false, features = ["gen-tonic-messages", "trace", "logs"] }
+prost = "0.13"
+hex = "0.4"
 
 # Error handling
 anyhow = "1.0.86"

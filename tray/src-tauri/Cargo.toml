@@ -49,10 +49,14 @@ meridian-core = { path = "../../meridian-core" }
 meridian-oauth = { path = "../../meridian-oauth" }
 # Instrumentation facade for tray commands (no-op without a subscriber).
 tracing = "0.1"
-# Dev-only: the `otel` feature pulls the full daemon lib JUST to reuse its
-# OpenObserve OTLP export (observability::init) — zero duplication. OFF by
-# default so release builds stay lean (no OTel in the shipped tray).
-meridian = { path = "../..", optional = true }
+# Always available (not feature-gated): the shipped tray's "Export
+# Diagnostics" Settings action (`commands::diagnostics`) calls
+# `meridian::telemetry_spool::build_export_bundle` directly, so every build —
+# including a lean release build — needs it. The `otel` feature (below)
+# separately controls whether the tray ALSO installs `observability::init`'s
+# live tracing subscriber for itself (dev convenience only); that's the only
+# part that stays off by default.
+meridian = { path = "../.." }
 # Forked screenpipe @ last-MIT 892199f74 (Meridiona/screenpipe-fork). In-process
 # screen capture + Apple Vision OCR. Optional → only pulled by the `capture`
 # feature (heavy: ScreenCaptureKit/cidre/sck-rs). Private repo: local builds use
@@ -94,7 +98,12 @@ block2 = "0.6"
 # clippy`/`test` at the workspace root select the `meridian` package only — so
 # the macOS-only cidre/screenpipe-screen stack is not pulled into CI.)
 default = ["capture"]
-otel = ["dep:meridian"]
+# Dev-only: installs `meridian::observability::init`'s live tracing subscriber
+# INSIDE the tray process itself (so tray-side spans/logs get the same
+# always-capture-to-spool treatment as the daemon). `meridian` itself is a
+# required dependency regardless (see above) — this feature is purely about
+# whether the tray ALSO calls `init()` for its own process.
+otel = []
 # Pulls the heavy forked screenpipe-screen stack (ScreenCaptureKit/cidre).
 capture = [
     "dep:screenpipe-screen",

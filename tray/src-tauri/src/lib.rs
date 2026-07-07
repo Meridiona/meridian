@@ -50,8 +50,11 @@ use tauri::{
 pub fn run() {
     // Dev-only (`--features otel`): export tray spans to OpenObserve via the
     // daemon's OTLP setup, tagged service.name = meridian-tray. Held for the
-    // process lifetime. Compiled out entirely (and `meridian` isn't even a dep)
-    // when the feature is off — release builds stay lean.
+    // process lifetime. Compiled out entirely when the feature is off — release
+    // builds stay lean. `meridian` itself is always a dependency now (the
+    // "Export Diagnostics" command needs `telemetry_spool::build_export_bundle`
+    // unconditionally); this feature only gates installing a SECOND tracing
+    // subscriber for the tray's own spans.
     //
     // Must run INSIDE Tauri's Tokio runtime: the OTLP batch exporter spawns a
     // background task and panics ("no reactor running") if called before one
@@ -370,11 +373,6 @@ pub fn run() {
                 poll::run_poll_loop(app_handle, state_clone).await;
             });
 
-            // Tail the daemon log → `log-tail` events for the dashboard Logs view
-            // (the ported `/api/logs/stream`). Independent of the 30 s poll tick
-            // so log lines stream at ~1 s.
-            poll::spawn_log_tailer(app.handle().clone());
-
             // Adopt any MLX server that survived from a previous tray run so we
             // don't spawn a duplicate.
             {
@@ -459,8 +457,7 @@ pub fn run() {
             commands::get_notices,
             commands::get_banner_notifications,
             commands::get_health,
-            commands::get_openobserve_status,
-            commands::get_logs,
+            commands::export_diagnostics_bundle,
             commands::get_ticket_parents,
             commands::get_version,
             commands::check_update,
@@ -481,7 +478,6 @@ pub fn run() {
             commands::update_settings,
             // process / service control (ported /api process routes)
             commands::reload_daemon,
-            commands::set_openobserve,
             commands::sync_tasks,
             commands::run_update,
             // tracker connect/disconnect (ported /api/integrations + /api/auth/oauth)
