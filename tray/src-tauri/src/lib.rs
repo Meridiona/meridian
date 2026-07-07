@@ -529,6 +529,13 @@ pub fn run() {
             // avoid unused warnings. The routing decision lives in the
             // platform-independent [`reopen_target`] / [`is_onboarded`] so it is
             // unit-testable without a live Tauri app (see the tests below).
+            //
+            // `has_visible_windows` is intentionally ignored (`{ .. }`): both
+            // openers already reuse an existing dashboard/wizard window via
+            // `get_webview_window(..)` + show/focus before building a new one,
+            // so a Reopen while a window is already up just re-focuses it — the
+            // flag would only matter if we wanted different behaviour for
+            // "windows visible" vs "all minimised", which we don't.
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = _event {
                 let home = std::env::var("HOME").unwrap_or_default();
