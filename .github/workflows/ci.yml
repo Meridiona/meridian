@@ -91,6 +91,9 @@ jobs:
         run: npm ci
         working-directory: ui
 
+      # `bun test` here also covers the tray popover's JS tests — they live in
+      # ui/__tests__ (popover-pause-utils, popover-health-panel) even though the
+      # popover source is tray/src, precisely so this one run discovers them.
       - name: UI tests
         run: bun test
         working-directory: ui

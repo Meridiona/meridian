@@ -1,7 +1,12 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 'use strict'
 
-const { fmtCountdown, parsePauseMins, pauseLabel } = require('../pause-utils.js')
+// Tests the tray popover's pause helpers (tray/src/pause-utils.js). The popover
+// is plain HTML+JS outside the Next app, but this test lives here in
+// ui/__tests__ — alongside popover-health-panel.test.ts — so the single
+// `bun test` run (CI + pre-push, both `working-directory: ui`) auto-discovers
+// it; no separate runner or CI step needed.
+const { fmtCountdown, parsePauseMins, pauseLabel } = require('../../tray/src/pause-utils.js')
 
 // ── US-1: Quick preset pause ─────────────────────────────────────────────────
 // The preset buttons pass a fixed `data-secs` value straight to

@@ -50,6 +50,8 @@ if [[ $FAIL -ne 0 ]]; then
 fi
 
 # ── Wave 2: clippy + UI tests (independent of each other, start together) ───
+# The `ui` bun test run also covers the tray popover's JS tests — they live in
+# ui/__tests__ so this single run discovers them (no separate tray runner).
 echo ""
 echo "[wave 2/3] cargo clippy  +  ui tests"
 
