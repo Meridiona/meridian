@@ -261,8 +261,7 @@ async fn run_pass(pool: &SqlitePool, cfg: &PmWorklogConfig, scope: Scope) {
                 "Drafts are ready to review and approve.",
             )
             .link("/worklogs")
-            .category(categories::WORKLOG_READY)
-            .actions(categories::actions_json(categories::WORKLOG_READY).unwrap_or("[]")),
+            .interactive(categories::WORKLOG_READY),
         )
         .await
         {

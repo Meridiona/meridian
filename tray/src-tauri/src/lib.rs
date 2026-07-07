@@ -119,6 +119,15 @@ pub fn run() {
             // registered otherwise (see the builder above).
             if sys::is_bundled() {
                 use tauri_plugin_notifications::{NotificationsExt, PermissionState};
+                // Register the interactive category set SYNCHRONOUSLY, before
+                // setup() returns and the poll loop is spawned. Otherwise the
+                // loop's first tick could deliver an interactive toast (a nudge
+                // already due at launch) before its `action_type_id` is
+                // registered, rendering that one toast button-less. Registration
+                // needs no authorization, so it's safe up front; only the
+                // permission prompt — which gates whether delivery happens at
+                // all, never the buttons — stays async.
+                sys::register_notification_categories(app.handle());
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let notifier = handle.notifications();
@@ -128,7 +137,6 @@ pub fn run() {
                     ) {
                         let _ = notifier.request_permission().await;
                     }
-                    sys::register_notification_categories(&handle);
                 });
             }
 

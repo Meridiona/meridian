@@ -103,6 +103,20 @@ impl<'a> NewNotification<'a> {
         self.actions = Some(actions);
         self
     }
+
+    /// Make the toast interactive with `category`'s registered button set in one
+    /// call: sets both the category id AND its action descriptors, looked up
+    /// from the single source of truth
+    /// ([`meridian_core::notifications::categories`]), so the two can never
+    /// drift apart. Every interactive producer uses this instead of pairing
+    /// `.category()` + `.actions()` by hand. An unknown category falls back to
+    /// an empty action list (`"[]"`), matching the old hand-written call sites.
+    pub fn interactive(mut self, category: &'a str) -> Self {
+        self.category = Some(category);
+        self.actions =
+            Some(meridian_core::notifications::categories::actions_json(category).unwrap_or("[]"));
+        self
+    }
 }
 
 /// Enqueue a notification. Idempotent on `dedup_key` — repeated calls are
