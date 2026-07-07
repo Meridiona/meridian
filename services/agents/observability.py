@@ -26,8 +26,9 @@ Capture is unconditional: every span/log batch is ALWAYS written to the spool
 `<signal>-<unix_micros>-<seq>.otlp` layout `src/telemetry_spool/writer.rs`
 produces — regardless of `~/.meridian/settings.json`'s `otlp_enabled` toggle.
 Capture is a local disk write, not a network call, so there is no reason to
-gate it; only `MERIDIAN_TRACING_DISABLED` (an explicit dev/test escape hatch,
-see `_capture_disabled()`) skips it. Generation (this process) and delivery
+gate it; only `MERIDIAN_TELEMETRY_DISABLED` (an explicit dev/test escape hatch,
+same variable name the Rust side reads — see `_capture_disabled()`) skips it.
+Generation (this process) and delivery
 are fully decoupled:
 
   * The Rust daemon's `telemetry_spool::shipper` background task drains
@@ -240,8 +241,11 @@ def _capture_disabled() -> bool:
     Capture is a local disk write, not a network call, so it always runs
     regardless of `otlp_enabled` / shipping config — this is the only escape
     hatch, for local dev/testing where even the spool write is unwanted.
+    Same variable name as the Rust daemon's `capture_disabled()`
+    (`src/observability.rs`) — the two sides must stay in sync so one env var
+    turns off capture everywhere, not just half the pipeline.
     """
-    return os.environ.get("MERIDIAN_TRACING_DISABLED", "").lower() in ("1", "true", "yes")
+    return os.environ.get("MERIDIAN_TELEMETRY_DISABLED", "").lower() in ("1", "true", "yes")
 
 
 # ──────────────────────── Public API ───────────────────────────────────────────

@@ -181,12 +181,19 @@ cmd_logs() {
         target="$1"; shift
     fi
 
+    # `*-error` targets used to map to a distinct launchd StandardErrorPath
+    # file capturing WARN+ output only. The OTel spool has no such separate
+    # file, so these now pass `--min-severity WARN` to the decoder instead —
+    # same filtering intent (errors/warnings only), applied at read time.
     local service_args=()
     case "$target" in
         ""|all)                     ;;
-        daemon|daemon-error)        service_args=(--service meridian-rust) ;;
-        mlx-server|mlx-server-error) service_args=(--service meridian-mlx-server) ;;
-        tray|tray-error)            service_args=(--service meridian-tray) ;;
+        daemon)                     service_args=(--service meridian-rust) ;;
+        daemon-error)               service_args=(--service meridian-rust --min-severity WARN) ;;
+        mlx-server)                 service_args=(--service meridian-mlx-server) ;;
+        mlx-server-error)           service_args=(--service meridian-mlx-server --min-severity WARN) ;;
+        tray)                       service_args=(--service meridian-tray) ;;
+        tray-error)                 service_args=(--service meridian-tray --min-severity WARN) ;;
         screenpipe|screenpipe-error|ui|ui-error)
             # Retired pre-in-process-capture / pre-Tauri-fold services — they
             # never participated in the OTel pipeline. Fall back to raw-tailing
@@ -201,14 +208,20 @@ cmd_logs() {
                     *) err "unknown option: $1"; exit 1 ;;
                 esac
             done
-            exec tail -n "$lines" "${follow[@]}" "$log_file"
+            # macOS ships bash 3.2 as /bin/bash — under `set -u`, expanding an
+            # empty array with "${arr[@]}" throws "unbound variable" (fixed
+            # only in bash 4.4+). The `${arr[@]+"${arr[@]}"}` guard skips
+            # expansion entirely when the array is empty/unset.
+            exec tail -n "$lines" ${follow[@]+"${follow[@]}"} "$log_file"
             ;;
         *) err "unknown log target: ${target} (daemon|mlx-server|tray, or omit for all)"; exit 1 ;;
     esac
 
     local bin
     bin="$(_meridian_native_bin)" || { err "meridian binary not found — run ./install.sh"; exit 1; }
-    exec "$bin" logs "${service_args[@]}" "$@"
+    # Same bash-3.2-unbound-variable guard as above — service_args is empty
+    # for the ""/all case, which is the most common invocation.
+    exec "$bin" logs ${service_args[@]+"${service_args[@]}"} "$@"
 }
 
 # --- doctor ---

@@ -150,6 +150,22 @@ fn severity_number_name(n: i32) -> &'static str {
     }
 }
 
+/// Ordinal rank for `--min-severity` comparisons, matching the OTel range
+/// ordering above. `SPAN` (a trace record, not a log) and anything
+/// unrecognised sort below every real severity, so they're naturally excluded
+/// by any `--min-severity` filter — see [`collect_all_records`].
+fn severity_ordinal(s: &str) -> i32 {
+    match s.to_ascii_uppercase().as_str() {
+        "TRACE" => 1,
+        "DEBUG" => 2,
+        "INFO" => 3,
+        "WARN" | "WARNING" => 4,
+        "ERROR" => 5,
+        "FATAL" => 6,
+        _ => 0,
+    }
+}
+
 /// Format one record as a single human-readable line, roughly matching the
 /// old `tracing_subscriber::fmt` compact style.
 pub fn format_line(r: &RenderedRecord) -> String {
@@ -176,14 +192,21 @@ pub fn format_line(r: &RenderedRecord) -> String {
 // cmd_logs). This reads the same OTel spool every other piece of this
 // architecture already uses, so there is exactly one place logs live, not two.
 //
-//   meridian logs [--service <name>] [-n N] [-f]
-//     --service   filter to one service.name (e.g. meridian-rust, meridian-mlx-server)
-//     -n N        show the last N records (default 200)
-//     -f          follow: keep polling for new records every second
+//   meridian logs [--service <name>] [--min-severity LEVEL] [-n N] [-f]
+//     --service       filter to one service.name (e.g. meridian-rust, meridian-mlx-server)
+//     --min-severity  only show log records at/above this level (TRACE|DEBUG|
+//                     INFO|WARN|ERROR|FATAL) — spans are excluded when this is
+//                     set, matching the old `*-error.log` targets, which were
+//                     WARN+ log text only, never span data. Omit for no filter.
+//     -n N            show the last N records (default 200)
+//     -f              follow: keep polling for new records every second
 
 /// Collect every `.otlp` file in `pending/` (+ `sent/`, for a Dev/Bare install
 /// that still has recently-shipped copies around) and decode them all.
-fn collect_all_records(service_filter: Option<&str>) -> Result<Vec<RenderedRecord>> {
+fn collect_all_records(
+    service_filter: Option<&str>,
+    min_severity: Option<i32>,
+) -> Result<Vec<RenderedRecord>> {
     let base = resolve_telemetry_dir()?;
     let mut records = Vec::new();
     for dir in [pending_dir(&base), sent_dir(&base)] {
@@ -201,8 +224,28 @@ fn collect_all_records(service_filter: Option<&str>) -> Result<Vec<RenderedRecor
     if let Some(svc) = service_filter {
         records.retain(|r| r.service_name.eq_ignore_ascii_case(svc));
     }
+    if let Some(min) = min_severity {
+        // Spans have no real severity (see `severity_ordinal`'s SPAN case,
+        // ordinal 0) so any active min-severity filter excludes them too.
+        records.retain(|r| severity_ordinal(&r.severity) >= min);
+    }
     records.sort_by_key(|r| r.time_unix_nano);
     Ok(records)
+}
+
+/// Parse a `--min-severity` value into its ordinal, or exit with an error on
+/// an unrecognised level — silently accepting garbage and filtering
+/// everything out would look like "no logs" rather than a typo.
+fn parse_min_severity(raw: &str) -> i32 {
+    let ord = severity_ordinal(raw);
+    if ord == 0 {
+        eprintln!(
+            "meridian logs: unrecognised --min-severity {raw:?} \
+             (expected TRACE|DEBUG|INFO|WARN|ERROR|FATAL)"
+        );
+        std::process::exit(1);
+    }
+    ord
 }
 
 fn flag_value(args: &[String], name: &str) -> Option<String> {
@@ -211,15 +254,32 @@ fn flag_value(args: &[String], name: &str) -> Option<String> {
         .and_then(|i| args.get(i + 1).cloned())
 }
 
-/// Dispatch `meridian logs [--service <name>] [-n N] [-f]`.
+/// Identity key for a record, used to tell "already printed" apart from "new"
+/// when two records share the exact same `time_unix_nano` (coarse clock
+/// resolution, or several records stamped from one batch flush's single
+/// `SystemTime::now()` read) — see the tie-break note in [`run`]'s follow loop.
+fn record_key(r: &RenderedRecord) -> (u64, bool, &str, &str, &str, &str, &str) {
+    (
+        r.time_unix_nano,
+        r.is_span,
+        &r.service_name,
+        &r.severity,
+        &r.body,
+        &r.trace_id,
+        &r.span_id,
+    )
+}
+
+/// Dispatch `meridian logs [--service <name>] [--min-severity LEVEL] [-n N] [-f]`.
 pub async fn run(args: &[String]) {
     let service = flag_value(args, "--service");
+    let min_severity = flag_value(args, "--min-severity").map(|v| parse_min_severity(&v));
     let n: usize = flag_value(args, "-n")
         .and_then(|v| v.parse().ok())
         .unwrap_or(200);
     let follow = args.iter().any(|a| a == "-f");
 
-    let records = match collect_all_records(service.as_deref()) {
+    let records = match collect_all_records(service.as_deref(), min_severity) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("meridian logs: {e}");
@@ -228,6 +288,19 @@ pub async fn run(args: &[String]) {
     };
 
     let mut last_time = 0u64;
+    // Records already printed whose time_unix_nano == last_time — lets the
+    // follow loop below tell "already shown" apart from "new at the same
+    // timestamp" instead of relying on a bare `>` high-water mark, which
+    // would permanently drop a same-nanosecond record split across a poll tick.
+    let mut seen_at_last_time: std::collections::HashSet<(
+        u64,
+        bool,
+        String,
+        String,
+        String,
+        String,
+        String,
+    )> = std::collections::HashSet::new();
     for r in records
         .iter()
         .rev()
@@ -239,6 +312,20 @@ pub async fn run(args: &[String]) {
         println!("{}", format_line(r));
         last_time = last_time.max(r.time_unix_nano);
     }
+    for r in &records {
+        if r.time_unix_nano == last_time {
+            let (t, s, sv, se, b, ti, sp) = record_key(r);
+            seen_at_last_time.insert((
+                t,
+                s,
+                sv.to_string(),
+                se.to_string(),
+                b.to_string(),
+                ti.to_string(),
+                sp.to_string(),
+            ));
+        }
+    }
 
     if !follow {
         return;
@@ -246,17 +333,54 @@ pub async fn run(args: &[String]) {
 
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        let records = match collect_all_records(service.as_deref()) {
+        let records = match collect_all_records(service.as_deref(), min_severity) {
             Ok(r) => r,
             Err(_) => continue,
         };
         let new_records: Vec<&RenderedRecord> = records
             .iter()
-            .filter(|r| r.time_unix_nano > last_time)
+            .filter(|r| {
+                if r.time_unix_nano > last_time {
+                    return true;
+                }
+                if r.time_unix_nano < last_time {
+                    return false;
+                }
+                let (t, s, sv, se, b, ti, sp) = record_key(r);
+                !seen_at_last_time.contains(&(
+                    t,
+                    s,
+                    sv.to_string(),
+                    se.to_string(),
+                    b.to_string(),
+                    ti.to_string(),
+                    sp.to_string(),
+                ))
+            })
             .collect();
-        for r in new_records {
+        for r in &new_records {
             println!("{}", format_line(r));
-            last_time = last_time.max(r.time_unix_nano);
+        }
+        if let Some(max_new) = new_records.iter().map(|r| r.time_unix_nano).max() {
+            last_time = last_time.max(max_new);
+        }
+        // Rebuild against the FULL current record set (not just newly
+        // printed) so a record already seen in a prior tick but still at
+        // last_time stays excluded.
+        seen_at_last_time.clear();
+        for r in &records {
+            if r.time_unix_nano == last_time {
+                let (t, s, sv, se, b, ti, sp) = record_key(r);
+                seen_at_last_time.insert((
+                    t,
+                    s,
+                    sv.to_string(),
+                    se.to_string(),
+                    b.to_string(),
+                    ti.to_string(),
+                    sp.to_string(),
+                ));
+            }
         }
     }
 }

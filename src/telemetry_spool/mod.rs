@@ -25,7 +25,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 
 pub mod cli;
+pub(crate) mod launchd_log_cap;
 pub mod render;
+pub(crate) mod retention;
 pub mod shipper;
 pub mod spool_client;
 pub mod writer;
@@ -69,7 +71,7 @@ pub fn build_export_bundle(
 
     if include_launchd_logs {
         if let Ok(log_dir) = crate::observability::resolve_log_dir() {
-            for name in shipper::LAUNCHD_LOG_NAMES {
+            for name in launchd_log_cap::LAUNCHD_LOG_NAMES {
                 let p = log_dir.join(name);
                 if p.is_file() {
                     all_files.push(p);
