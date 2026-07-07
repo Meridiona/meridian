@@ -511,8 +511,29 @@ pub fn run() {
             commands::detect_system_specs,
             tray_debug,
         ])
-        .run(tauri::generate_context!())
-        .expect("error running meridian tray");
+        .build(tauri::generate_context!())
+        .expect("error running meridian tray")
+        .run(|app, event| {
+            // macOS: fires when the user re-activates the app externally
+            // (Spotlight, dock click, `open -a Meridian`). The tray runs as an
+            // Accessory app so there is no dock icon most of the time; without
+            // this handler, hitting "Meridian" in Spotlight is silently a no-op
+            // when the app is already running. Route to the dashboard when the
+            // user has finished setup, otherwise re-open the wizard so a partial
+            // onboard can be resumed. The setup hook already opens the wizard on
+            // cold start, so this only matters for warm activation.
+            if let tauri::RunEvent::Reopen { .. } = event {
+                let home = std::env::var("HOME").unwrap_or_default();
+                let onboarded =
+                    std::path::Path::new(&format!("{home}/.meridian/onboarded")).exists();
+                tracing::info!(onboarded, "app.reopen: routing external activation");
+                if onboarded {
+                    tray::open_native_dashboard(app);
+                } else {
+                    tray::open_wizard_window(app);
+                }
+            }
+        });
 }
 
 /// Debug bridge: lets the popover/tooltip JS forward `window.onerror` reports and
