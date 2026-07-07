@@ -17,6 +17,14 @@ window.addEventListener('unhandledrejection', (e) => dbg(`popover rejection: ${e
 const $ = (id) => document.getElementById(id)
 const brandMark = $('brand-mark')
 const headSub = $('head-sub')
+const headSubText = $('head-sub-text')
+const healthPanel = $('health-panel')
+const hpDaemonDot = $('hp-daemon-dot')
+const hpDaemonVal = $('hp-daemon-val')
+const hpMlxDot = $('hp-mlx-dot')
+const hpMlxVal = $('hp-mlx-val')
+const hpDbDot = $('hp-db-dot')
+const hpDbVal = $('hp-db-val')
 const statusCard = $('status-card')
 const statusDot = $('status-dot')
 const statusTitle = $('status-title')
@@ -149,7 +157,7 @@ function render(status) {
   activeAppName = status.active_app || ''
   elapsed = isTracking ? (status.active_elapsed_s || 0) : 0
 
-  headSub.textContent = !status.has_polled
+  headSubText.textContent = !status.has_polled
     ? 'Connecting…'
     : !healthy
       ? 'Offline'
@@ -230,8 +238,92 @@ function render(status) {
   }
 }
 
+// ── Health panel (expands under the head-sub click) ──────────────────────────
+let healthOpen = false
+let healthRefreshInFlight = false
+
+function setDot(el, state) { el.setAttribute('data-state', state) }
+
+function paintDaemon(status) {
+  if (!status) { setDot(hpDaemonDot, 'bad'); hpDaemonVal.textContent = 'Unreachable'; return }
+  if (status.running) {
+    setDot(hpDaemonDot, 'ok')
+    hpDaemonVal.textContent = status.pid ? `Running (pid ${status.pid})` : 'Running'
+  } else {
+    setDot(hpDaemonDot, 'bad')
+    hpDaemonVal.textContent = 'Not running'
+  }
+}
+
+function paintMlx(res) {
+  if (!res) { setDot(hpMlxDot, 'bad'); hpMlxVal.textContent = 'Unreachable'; return }
+  // MlxStatus is a serde enum — either a string ("Idle") or { Running: {...} }
+  const s = res.status
+  const kind = typeof s === 'string' ? s : (s && Object.keys(s)[0]) || 'Unknown'
+  if (kind === 'Running') {
+    setDot(hpMlxDot, 'ok')
+    hpMlxVal.textContent = res.port ? `Running (port ${res.port})` : 'Running'
+  } else if (!res.runtime_installed) {
+    setDot(hpMlxDot, 'warn')
+    hpMlxVal.textContent = 'Runtime not installed'
+  } else if (kind === 'Starting') {
+    setDot(hpMlxDot, 'warn')
+    hpMlxVal.textContent = 'Starting…'
+  } else {
+    setDot(hpMlxDot, 'warn')
+    hpMlxVal.textContent = String(kind)
+  }
+}
+
+function paintDb(res) {
+  if (!res) { setDot(hpDbDot, 'bad'); hpDbVal.textContent = 'Unreachable'; return }
+  if (res.database_ready === true) {
+    setDot(hpDbDot, 'ok')
+    hpDbVal.textContent = 'Ready'
+  } else if (res.database_ready === false) {
+    setDot(hpDbDot, 'bad')
+    hpDbVal.textContent = res.error ? String(res.error).slice(0, 60) : 'Not ready'
+  } else {
+    setDot(hpDbDot, 'warn')
+    hpDbVal.textContent = 'Unknown'
+  }
+}
+
+async function refreshHealth() {
+  if (healthRefreshInFlight) return
+  healthRefreshInFlight = true
+  try {
+    const [d, m, h] = await Promise.all([
+      invoke('get_daemon_status').catch(() => null),
+      invoke('get_mlx_status').catch(() => null),
+      invoke('get_health').catch(() => null),
+    ])
+    paintDaemon(d)
+    paintMlx(m)
+    paintDb(h)
+  } finally {
+    healthRefreshInFlight = false
+  }
+}
+
+function toggleHealth() {
+  healthOpen = !healthOpen
+  healthPanel.hidden = !healthOpen
+  headSub.setAttribute('aria-expanded', healthOpen ? 'true' : 'false')
+  if (healthOpen) refreshHealth()
+  resizeToContent()
+}
+
+headSub.addEventListener('click', toggleHealth)
+headSub.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleHealth() }
+})
+
 // ── Events + actions ─────────────────────────────────────────────────────────
-listen('status-update', (event) => { render(event.payload); resizeToContent() })
+listen('status-update', (event) => {
+  render(event.payload); resizeToContent()
+  if (healthOpen) refreshHealth()
+})
 
 // Escape closes the popover. The popover runs as a non-activating NSPanel so
 // Focused(false) never fires on macOS — Escape is the keyboard dismiss path.
