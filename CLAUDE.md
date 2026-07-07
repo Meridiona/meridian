@@ -204,7 +204,6 @@ There are no JS/TS test suites yet. When adding them, place them under `ui/__tes
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `SCREENPIPE_DB` | `~/.screenpipe/db.sqlite` | **Vestigial after the Bucket-2 cutover** — the daemon no longer reads screenpipe (capture is in-process → `meridian.db` capture tables). Still parsed into `Config` with a default; slated for removal. |
 | `MERIDIAN_DB` | `~/.meridian/meridian.db` | Path to meridian's output SQLite file |
 | `POLL_INTERVAL_SECS` | `60` | ETL poll cadence in seconds |
 | `RUST_LOG` | `meridian=info` | Tracing filter |
@@ -263,7 +262,7 @@ JSON columns (`window_titles`, `ocr_samples`, `elements_samples`, `audio_snippet
 
 ### Capture source — in-process (Gap-2 Bucket 2 cutover, branch `feat/in-process-capture`)
 
-> **The daemon no longer reads screenpipe.** Since the slice-4b cutover, capture runs **in-process in the tray** (behind the `capture` feature): the forked `screenpipe-screen` + `screenpipe-a11y` crates produce a11y-tree/OCR frames + input events, which `meridian_core::capture` writes into **`capture_frames` / `capture_ui_events`** in `meridian.db`. The daemon ETL reads *those* tables (via `src/db/screenpipe.rs`, name unchanged for now) from the meridian pool — there is no screenpipe DB/process/pool anymore. **Implication:** a build with the `capture` feature OFF has **no data source** (the daemon produces no sessions); the shipping DMG must enable it. **Audio is dropped** (`get_audio_snippets` stubbed empty) and **gaps all classify `system_sleep`** (no in-process idle detection yet — `capture_trigger` is NULL); both are accepted v1 degradations with idle-detection/audio as future slices. `SCREENPIPE_DB` is now vestigial for the daemon.
+> **The daemon no longer reads screenpipe.** Since the slice-4b cutover, capture runs **in-process in the tray** (behind the `capture` feature): the forked `screenpipe-screen` + `screenpipe-a11y` crates produce a11y-tree/OCR frames + input events, which `meridian_core::capture` writes into **`capture_frames` / `capture_ui_events`** in `meridian.db`. The daemon ETL reads *those* tables (via `src/db/screenpipe.rs`, name unchanged for now) from the meridian pool — there is no screenpipe DB/process/pool anymore. **Implication:** a build with the `capture` feature OFF has **no data source** (the daemon produces no sessions); the shipping DMG must enable it. **Audio is dropped** (`get_audio_snippets` stubbed empty) and **gaps all classify `system_sleep`** (no in-process idle detection yet — `capture_trigger` is NULL); both are accepted v1 degradations with idle-detection/audio as future slices. The `SCREENPIPE_DB` env var + `Config::screenpipe_db` field have been removed (the daemon never reads a screenpipe DB anymore).
 >
 > Column contract: `capture_frames` mirrors screenpipe's `frames` read-subset (`app_name`/`window_name`/`browser_url`/`timestamp`/`capture_trigger` + `full_text`(OCR)/`accessibility_text`(a11y)/`text_source`, resolved by `COALESCE(full_text, accessibility_text)`); `capture_ui_events` mirrors the `ui_events` read-subset (`event_type`/`app_name`/`text_content`/`timestamp`). **Inverted ownership:** these tables are written by the *tray*, read by the *daemon*.
 

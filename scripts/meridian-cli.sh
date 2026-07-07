@@ -11,7 +11,6 @@ REPO_ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
 # --- constants ---
 LABEL_SCREENPIPE="com.meridiona.screenpipe"
 LABEL_DAEMON="com.meridiona.daemon"
-LABEL_UI="com.meridiona.ui"
 LABEL_MLX="com.meridiona.mlx-server"
 # Capture runs in-process in the tray (no screenpipe launchd agent since Bucket-2).
 # Jira worklogs and coding-agent ingest run inside the Rust daemon — no
@@ -303,7 +302,6 @@ _doctor_fallback() {
     _plist_row "$LABEL_DAEMON" "daemon plist"
     _plist_row "$LABEL_SCREENPIPE" "screenpipe plist"
     _plist_row "$LABEL_MLX" "mlx plist"
-    _plist_row "$LABEL_UI" "ui plist"
     _group "builds"
     _row "$([[ -f "${REPO_ROOT}/packages/meridian-mcp/dist/index.js" ]] && echo ok || echo fail)" "mcp built" ""
     _row "$([[ -d "${REPO_ROOT}/ui/.next" ]] && echo ok || echo fail)" "ui built" ""
@@ -715,24 +713,10 @@ _dev_wait_mlx() {
 _dev_build_daemon() { info "building daemon (cargo --release)…"; ( cd "${REPO_ROOT}" && cargo build --release ); }
 _dev_build_ui()     { info "building UI (npm run build)…";       ( cd "${REPO_ROOT}/ui" && npm run build ); }
 
-# Stop the launchd (production) dashboard so `next dev` can bind its port.
-# Disable too, so KeepAlive doesn't race to relaunch the prod server.
-_dev_stop_prod_ui() {
-    if launchctl print "${GUI_TARGET}/${LABEL_UI}" >/dev/null 2>&1; then
-        set +e
-        launchctl disable "${GUI_TARGET}/${LABEL_UI}" 2>/dev/null
-        launchctl bootout  "${GUI_TARGET}/${LABEL_UI}" 2>/dev/null
-        set -e
-        info "stopped launchd dashboard (freeing the port for the dev server)"
-    fi
-}
-
 # Run the Next.js dev server in the FOREGROUND (hot reload). Replaces this shell
 # (exec), so Ctrl-C stops just the UI server — backing services keep running.
-# Re-enable the prod dashboard later with `meridian start`.
 _dev_ui_server() {
     local port="${MERIDIAN_UI_PORT:-3939}"
-    _dev_stop_prod_ui
     echo
     info "UI dev server (hot reload) → http://localhost:${port}   ·   Ctrl-C to stop"
     info "edit-and-save reflects instantly; backing services keep running in the background"
