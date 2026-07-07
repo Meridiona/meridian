@@ -95,6 +95,15 @@ jobs:
         run: bun test
         working-directory: ui
 
+      # The tray popover is plain HTML+JS (not part of the ui/ Next app), so its
+      # bun tests live under tray/src and are NOT discovered by the `ui` run
+      # above. Run them explicitly — they're pure-logic (pause-utils) + a
+      # happy-dom-free require, so no install is needed beyond the bun already
+      # set up for this job.
+      - name: Tray popover tests
+        run: bun test
+        working-directory: tray/src
+
       - name: UI build
         run: npm run build
         working-directory: ui
