@@ -11,7 +11,6 @@ REPO_ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
 # --- constants ---
 LABEL_SCREENPIPE="com.meridiona.screenpipe"
 LABEL_DAEMON="com.meridiona.daemon"
-LABEL_UI="com.meridiona.ui"
 LABEL_MLX="com.meridiona.mlx-server"
 # Capture runs in-process in the tray (no screenpipe launchd agent since Bucket-2).
 # Jira worklogs and coding-agent ingest run inside the Rust daemon — no
@@ -152,52 +151,76 @@ cmd_status() {
 }
 
 # --- logs ---
-cmd_logs() {
-    local target="daemon"
-    local follow=0
-    local lines=100
+# Resolve the compiled `meridian` binary (distinct from THIS bash wrapper,
+# which is what gets invoked as `meridian` on PATH). Mirrors
+# tray/src-tauri/src/install.rs's `meridian_bin()`: packaged native locations
+# first, a dev build only for a source checkout.
+_meridian_native_bin() {
+    local p
+    for p in "${HOME}/.meridian/bin/meridian" "${HOME}/.meridian/app/bin/meridian"; do
+        [[ -x "$p" ]] && { echo "$p"; return 0; }
+    done
+    if _is_source_checkout; then
+        for p in "${REPO_ROOT}/target/release/meridian" "${REPO_ROOT}/target/debug/meridian"; do
+            [[ -x "$p" ]] && { echo "$p"; return 0; }
+        done
+    fi
+    return 1
+}
 
-    # consume target if it's not a flag
+# `meridian logs [target] [-n N] [-f]` decodes the local OTel telemetry spool
+# (`~/.meridian/telemetry/{pending,sent}/*.otlp`) via the compiled binary's
+# `logs` subcommand (`src/telemetry_spool/render.rs`) — the OTel spool is now
+# the ONLY log/trace sink (see `observability.rs`'s module doc), so this is
+# the one supported way to read logs locally without OpenObserve. `target`
+# maps to `--service <name>`; omit it to see every service interleaved.
+cmd_logs() {
+    local target=""
     if [[ $# -gt 0 && "${1:-}" != -* ]]; then
         target="$1"; shift
     fi
 
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            -f) follow=1; shift ;;
-            -n) lines="${2:?-n requires a value}"; shift 2 ;;
-            *) err "unknown option: $1"; exit 1 ;;
-        esac
-    done
-
-    local log_file
+    # `*-error` targets used to map to a distinct launchd StandardErrorPath
+    # file capturing WARN+ output only. The OTel spool has no such separate
+    # file, so these now pass `--min-severity WARN` to the decoder instead —
+    # same filtering intent (errors/warnings only), applied at read time.
+    local service_args=()
     case "$target" in
-        daemon)            log_file="${LOG_DIR}/daemon.log" ;;
-        daemon-error)      log_file="${LOG_DIR}/daemon-error.log" ;;
-        screenpipe)        log_file="${LOG_DIR}/screenpipe.log" ;;
-        screenpipe-error)  log_file="${LOG_DIR}/screenpipe-error.log" ;;
-        ui)                log_file="${LOG_DIR}/ui.log" ;;
-        ui-error)          log_file="${LOG_DIR}/ui-error.log" ;;
-        mlx-server)        log_file="${LOG_DIR}/mlx-server.log" ;;
-        mlx-server-error)  log_file="${LOG_DIR}/mlx-server-error.log" ;;
-        tray)              log_file="${LOG_DIR}/tray.log" ;;
-        tray-error)        log_file="${LOG_DIR}/tray-error.log" ;;
-        # screenpipe/ui are retired post-v1.64.0 (capture is in-process in the
-        # tray; the dashboard is embedded) — kept here so old log files remain
-        # tailable, but `tray`/`tray-error` are the live targets now.
-        *) err "unknown log target: ${target} (daemon|daemon-error|mlx-server|mlx-server-error|tray|tray-error)"; exit 1 ;;
+        ""|all)                     ;;
+        daemon)                     service_args=(--service meridian-rust) ;;
+        daemon-error)               service_args=(--service meridian-rust --min-severity WARN) ;;
+        mlx-server)                 service_args=(--service meridian-mlx-server) ;;
+        mlx-server-error)           service_args=(--service meridian-mlx-server --min-severity WARN) ;;
+        tray)                       service_args=(--service meridian-tray) ;;
+        tray-error)                 service_args=(--service meridian-tray --min-severity WARN) ;;
+        screenpipe|screenpipe-error|ui|ui-error)
+            # Retired pre-in-process-capture / pre-Tauri-fold services — they
+            # never participated in the OTel pipeline. Fall back to raw-tailing
+            # whatever plain-text launchd file might still exist from before.
+            local log_file="${LOG_DIR}/${target}.log"
+            [[ -f "$log_file" ]] || { err "no log file at ${log_file}"; exit 1; }
+            local lines=100 follow=()
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    -f) follow=(-f); shift ;;
+                    -n) lines="${2:?-n requires a value}"; shift 2 ;;
+                    *) err "unknown option: $1"; exit 1 ;;
+                esac
+            done
+            # macOS ships bash 3.2 as /bin/bash — under `set -u`, expanding an
+            # empty array with "${arr[@]}" throws "unbound variable" (fixed
+            # only in bash 4.4+). The `${arr[@]+"${arr[@]}"}` guard skips
+            # expansion entirely when the array is empty/unset.
+            exec tail -n "$lines" ${follow[@]+"${follow[@]}"} "$log_file"
+            ;;
+        *) err "unknown log target: ${target} (daemon|mlx-server|tray, or omit for all)"; exit 1 ;;
     esac
 
-    if [[ ! -f "$log_file" ]]; then
-        err "no log file at ${log_file}"
-        exit 1
-    fi
-
-    if [[ $follow -eq 1 ]]; then
-        tail -n "$lines" -f "$log_file"
-    else
-        tail -n "$lines" "$log_file"
-    fi
+    local bin
+    bin="$(_meridian_native_bin)" || { err "meridian binary not found — run ./install.sh"; exit 1; }
+    # Same bash-3.2-unbound-variable guard as above — service_args is empty
+    # for the ""/all case, which is the most common invocation.
+    exec "$bin" logs ${service_args[@]+"${service_args[@]}"} "$@"
 }
 
 # --- doctor ---
@@ -279,7 +302,6 @@ _doctor_fallback() {
     _plist_row "$LABEL_DAEMON" "daemon plist"
     _plist_row "$LABEL_SCREENPIPE" "screenpipe plist"
     _plist_row "$LABEL_MLX" "mlx plist"
-    _plist_row "$LABEL_UI" "ui plist"
     _group "builds"
     _row "$([[ -f "${REPO_ROOT}/packages/meridian-mcp/dist/index.js" ]] && echo ok || echo fail)" "mcp built" ""
     _row "$([[ -d "${REPO_ROOT}/ui/.next" ]] && echo ok || echo fail)" "ui built" ""
@@ -691,24 +713,10 @@ _dev_wait_mlx() {
 _dev_build_daemon() { info "building daemon (cargo --release)…"; ( cd "${REPO_ROOT}" && cargo build --release ); }
 _dev_build_ui()     { info "building UI (npm run build)…";       ( cd "${REPO_ROOT}/ui" && npm run build ); }
 
-# Stop the launchd (production) dashboard so `next dev` can bind its port.
-# Disable too, so KeepAlive doesn't race to relaunch the prod server.
-_dev_stop_prod_ui() {
-    if launchctl print "${GUI_TARGET}/${LABEL_UI}" >/dev/null 2>&1; then
-        set +e
-        launchctl disable "${GUI_TARGET}/${LABEL_UI}" 2>/dev/null
-        launchctl bootout  "${GUI_TARGET}/${LABEL_UI}" 2>/dev/null
-        set -e
-        info "stopped launchd dashboard (freeing the port for the dev server)"
-    fi
-}
-
 # Run the Next.js dev server in the FOREGROUND (hot reload). Replaces this shell
 # (exec), so Ctrl-C stops just the UI server — backing services keep running.
-# Re-enable the prod dashboard later with `meridian start`.
 _dev_ui_server() {
     local port="${MERIDIAN_UI_PORT:-3939}"
-    _dev_stop_prod_ui
     echo
     info "UI dev server (hot reload) → http://localhost:${port}   ·   Ctrl-C to stop"
     info "edit-and-save reflects instantly; backing services keep running in the background"

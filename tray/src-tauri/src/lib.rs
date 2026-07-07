@@ -50,8 +50,11 @@ use tauri::{
 pub fn run() {
     // Dev-only (`--features otel`): export tray spans to OpenObserve via the
     // daemon's OTLP setup, tagged service.name = meridian-tray. Held for the
-    // process lifetime. Compiled out entirely (and `meridian` isn't even a dep)
-    // when the feature is off — release builds stay lean.
+    // process lifetime. Compiled out entirely when the feature is off — release
+    // builds stay lean. `meridian` itself is always a dependency now (the
+    // "Export Diagnostics" command needs `telemetry_spool::build_export_bundle`
+    // unconditionally); this feature only gates installing a SECOND tracing
+    // subscriber for the tray's own spans.
     //
     // Must run INSIDE Tauri's Tokio runtime: the OTLP batch exporter spawns a
     // background task and panics ("no reactor running") if called before one
@@ -80,14 +83,24 @@ pub fn run() {
     let mlx_manager: mlx_server::SharedMlxManager =
         Arc::new(tokio::sync::Mutex::new(mlx_server::MlxManager::new(7823)));
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_positioner::init())
-        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         // DMG auto-update: reads endpoint + minisign pubkey from tauri.conf.json.
         // Registered unconditionally; the check is a no-op in a source/dev run
         // (the running binary isn't a packaged `.app` for the updater to swap).
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build());
+    // Interactive notifications (UNUserNotificationCenter via the community
+    // notifications plugin). Its init HARD-FAILS outside a `.app` bundle, which
+    // would crash `tauri dev` / `cargo run` — so it's registered only when
+    // bundled. Unbundled runs drop toasts (sys::notify* degrade to logged
+    // no-ops) — the same packaged-only caveat as the popover asset layout.
+    if sys::is_bundled() {
+        builder = builder.plugin(tauri_plugin_notifications::init());
+    } else {
+        tracing::info!("unbundled run — notifications plugin not registered, toasts disabled");
+    }
+    builder
         .manage(app_state.clone())
         .manage(mlx_manager.clone())
         .setup(move |app| {
@@ -100,15 +113,34 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             set_process_display_name("Meridian");
 
-            // Request OS notification authorization up front. Without this,
-            // `.show()` is a silent no-op on macOS until the app has prompted at
-            // least once — the reason the health/pause toasts never appeared.
-            {
-                use tauri_plugin_notification::{NotificationExt, PermissionState};
-                let notifier = app.notification();
-                if !matches!(notifier.permission_state(), Ok(PermissionState::Granted)) {
-                    let _ = notifier.request_permission();
-                }
+            // Request OS notification authorization up front (without it,
+            // delivery is a silent no-op until the app has prompted at least
+            // once), then register the interactive category set — the fixed
+            // UNNotificationCategory ids that give toasts their buttons
+            // (meridian-core's `notifications::categories`, one source shared
+            // with the daemon producers). Bundled runs only: the plugin isn't
+            // registered otherwise (see the builder above).
+            if sys::is_bundled() {
+                use tauri_plugin_notifications::{NotificationsExt, PermissionState};
+                // Register the interactive category set SYNCHRONOUSLY, before
+                // setup() returns and the poll loop is spawned. Otherwise the
+                // loop's first tick could deliver an interactive toast (a nudge
+                // already due at launch) before its `action_type_id` is
+                // registered, rendering that one toast button-less. Registration
+                // needs no authorization, so it's safe up front; only the
+                // permission prompt — which gates whether delivery happens at
+                // all, never the buttons — stays async.
+                sys::register_notification_categories(app.handle());
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let notifier = handle.notifications();
+                    if !matches!(
+                        notifier.permission_state().await,
+                        Ok(PermissionState::Granted)
+                    ) {
+                        let _ = notifier.request_permission().await;
+                    }
+                });
             }
 
             // Open meridian.db ONCE at startup and share it with commands via
@@ -370,11 +402,6 @@ pub fn run() {
                 poll::run_poll_loop(app_handle, state_clone).await;
             });
 
-            // Tail the daemon log → `log-tail` events for the dashboard Logs view
-            // (the ported `/api/logs/stream`). Independent of the 30 s poll tick
-            // so log lines stream at ~1 s.
-            poll::spawn_log_tailer(app.handle().clone());
-
             // Adopt any MLX server that survived from a previous tray run so we
             // don't spawn a duplicate.
             {
@@ -459,8 +486,7 @@ pub fn run() {
             commands::get_notices,
             commands::get_banner_notifications,
             commands::get_health,
-            commands::get_openobserve_status,
-            commands::get_logs,
+            commands::export_diagnostics_bundle,
             commands::get_ticket_parents,
             commands::get_version,
             commands::check_update,
@@ -471,6 +497,7 @@ pub fn run() {
             commands::triage_ignore,
             commands::apply_ticket_fix,
             commands::dismiss_notification,
+            commands::record_notification_response,
             commands::delete_notice,
             commands::edit_worklog,
             commands::rematch_worklog,
@@ -481,7 +508,6 @@ pub fn run() {
             commands::update_settings,
             // process / service control (ported /api process routes)
             commands::reload_daemon,
-            commands::set_openobserve,
             commands::sync_tasks,
             commands::run_update,
             // tracker connect/disconnect (ported /api/integrations + /api/auth/oauth)
@@ -511,8 +537,75 @@ pub fn run() {
             commands::detect_system_specs,
             tray_debug,
         ])
-        .run(tauri::generate_context!())
-        .expect("error running meridian tray");
+        .build(tauri::generate_context!())
+        .expect("error running meridian tray")
+        .run(|_app, _event| {
+            // macOS: fires when the user re-activates the app externally
+            // (Spotlight, dock click, `open -a Meridian`). The tray runs as an
+            // Accessory app so there is no dock icon most of the time; without
+            // this handler, hitting "Meridian" in Spotlight is silently a no-op
+            // when the app is already running. Route to the dashboard when the
+            // user has finished setup, otherwise re-open the wizard so a partial
+            // onboard can be resumed. The setup hook already opens the wizard on
+            // cold start, so this only matters for warm activation.
+            //
+            // `RunEvent::Reopen` is a macOS-only enum variant (it doesn't exist
+            // on other targets), so the whole arm is cfg-gated — on Linux/Windows
+            // the closure is a no-op and the params stay underscore-prefixed to
+            // avoid unused warnings. The routing decision lives in the
+            // platform-independent [`reopen_target`] / [`is_onboarded`] so it is
+            // unit-testable without a live Tauri app (see the tests below).
+            //
+            // `has_visible_windows` is intentionally ignored (`{ .. }`): both
+            // openers already reuse an existing dashboard/wizard window via
+            // `get_webview_window(..)` + show/focus before building a new one,
+            // so a Reopen while a window is already up just re-focuses it — the
+            // flag would only matter if we wanted different behaviour for
+            // "windows visible" vs "all minimised", which we don't.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                let home = std::env::var("HOME").unwrap_or_default();
+                let onboarded = is_onboarded(std::path::Path::new(&home));
+                tracing::info!(onboarded, "app.reopen: routing external activation");
+                match reopen_target(onboarded) {
+                    ReopenTarget::Dashboard => tray::open_native_dashboard(_app),
+                    ReopenTarget::Wizard => tray::open_wizard_window(_app),
+                }
+            }
+        });
+}
+
+/// Which window an external re-activation (Spotlight, dock, `open -a Meridian`)
+/// opens. Split out of the `RunEvent::Reopen` handler so the routing decision is
+/// unit-testable without a live Tauri app.
+///
+/// Defined for every target (not just macOS) so its tests run in CI, which
+/// builds the workspace on Linux; `allow(dead_code)` off-macOS keeps that from
+/// tripping `-D warnings` where the reopen handler is compiled out.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+enum ReopenTarget {
+    Dashboard,
+    Wizard,
+}
+
+/// True when onboarding has completed — the `~/.meridian/onboarded` marker
+/// exists under `home`. The inverse of [`commands::setup::is_first_run`]'s
+/// check, kept a pure filesystem read so it can be tested against a temp dir.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn is_onboarded(home: &std::path::Path) -> bool {
+    home.join(".meridian/onboarded").exists()
+}
+
+/// Route an external re-activation: finished onboarding → the dashboard;
+/// otherwise the wizard, so a partial onboard can be resumed.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn reopen_target(onboarded: bool) -> ReopenTarget {
+    if onboarded {
+        ReopenTarget::Dashboard
+    } else {
+        ReopenTarget::Wizard
+    }
 }
 
 /// Debug bridge: lets the popover/tooltip JS forward `window.onerror` reports and
@@ -849,4 +942,36 @@ pub(crate) fn start_capture(
     s.engine_cancel = Some(engine_cancel_tx);
     s.ui_consumer_cancel = Some(ui_cancel_tx);
     tracing::info!("capture: engine and ui recorder started");
+}
+
+#[cfg(test)]
+mod reopen_tests {
+    use super::{is_onboarded, reopen_target, ReopenTarget};
+
+    #[test]
+    fn reopen_target_routes_by_onboarded() {
+        // Onboarded users land on the dashboard; everyone else resumes the wizard.
+        assert_eq!(reopen_target(true), ReopenTarget::Dashboard);
+        assert_eq!(reopen_target(false), ReopenTarget::Wizard);
+    }
+
+    #[test]
+    fn is_onboarded_reflects_the_marker_file() {
+        // Use a unique temp dir so parallel test runs don't collide.
+        let dir = std::env::temp_dir().join(format!("meridian-reopen-{}", std::process::id()));
+        let meridian = dir.join(".meridian");
+        std::fs::create_dir_all(&meridian).unwrap();
+
+        // No marker yet → not onboarded → the reopen handler would open the wizard.
+        assert!(!is_onboarded(&dir));
+        assert_eq!(reopen_target(is_onboarded(&dir)), ReopenTarget::Wizard);
+
+        // Marker present (mark_setup_complete writes an RFC-3339 stamp here) →
+        // onboarded → the handler would open the dashboard.
+        std::fs::write(meridian.join("onboarded"), "2026-07-07T00:00:00Z").unwrap();
+        assert!(is_onboarded(&dir));
+        assert_eq!(reopen_target(is_onboarded(&dir)), ReopenTarget::Dashboard);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

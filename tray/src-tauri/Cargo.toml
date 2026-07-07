@@ -17,7 +17,20 @@ tauri-build = { version = "2.5", features = [] }
 [dependencies]
 tauri = { version = "2.11", features = ["tray-icon", "image-png", "macos-private-api"] }
 tauri-plugin-positioner = { version = "2.3", features = ["tray-icon"] }
-tauri-plugin-notification = "2"
+# Community fork of the official notification plugin (the official one's
+# Actions API is mobile-only on desktop). Its macOS layer is a real Swift
+# UNUserNotificationCenter implementation: category/action registration, action
+# buttons, inline text reply, and an `actionPerformed` event back to us. Pinned
+# exact for supply-chain control (consider forking under the Meridiona org).
+# `default-features = false` is LOAD-BEARING: the default `notify-rust` feature
+# replaces the Swift UNUserNotificationCenter layer with plain notify-rust
+# toasts — no categories, no buttons, no action events ("Action types are not
+# supported with notify-rust" at category registration).
+# CAVEAT: the Swift layer's init hard-fails outside a `.app` bundle, so
+# `lib.rs` registers the plugin only when bundled — dev runs have no toasts
+# (interactive toasts are packaged-only, same class of limitation as the
+# popover-404 dev caveat).
+tauri-plugin-notifications = { version = "=0.4.6", default-features = false }
 tauri-plugin-opener = "2"
 # DMG auto-update (Step 1 of the public-distribution plan). Checks the GitHub
 # `latest.json` against the running version, downloads the signed `.app.tar.gz`,
@@ -49,10 +62,14 @@ meridian-core = { path = "../../meridian-core" }
 meridian-oauth = { path = "../../meridian-oauth" }
 # Instrumentation facade for tray commands (no-op without a subscriber).
 tracing = "0.1"
-# Dev-only: the `otel` feature pulls the full daemon lib JUST to reuse its
-# OpenObserve OTLP export (observability::init) — zero duplication. OFF by
-# default so release builds stay lean (no OTel in the shipped tray).
-meridian = { path = "../..", optional = true }
+# Always available (not feature-gated): the shipped tray's "Export
+# Diagnostics" Settings action (`commands::diagnostics`) calls
+# `meridian::telemetry_spool::build_export_bundle` directly, so every build —
+# including a lean release build — needs it. The `otel` feature (below)
+# separately controls whether the tray ALSO installs `observability::init`'s
+# live tracing subscriber for itself (dev convenience only); that's the only
+# part that stays off by default.
+meridian = { path = "../.." }
 # Forked screenpipe @ last-MIT 892199f74 (Meridiona/screenpipe-fork). In-process
 # screen capture + Apple Vision OCR. Optional → only pulled by the `capture`
 # feature (heavy: ScreenCaptureKit/cidre/sck-rs). Private repo: local builds use
@@ -94,7 +111,12 @@ block2 = "0.6"
 # clippy`/`test` at the workspace root select the `meridian` package only — so
 # the macOS-only cidre/screenpipe-screen stack is not pulled into CI.)
 default = ["capture"]
-otel = ["dep:meridian"]
+# Dev-only: installs `meridian::observability::init`'s live tracing subscriber
+# INSIDE the tray process itself (so tray-side spans/logs get the same
+# always-capture-to-spool treatment as the daemon). `meridian` itself is a
+# required dependency regardless (see above) — this feature is purely about
+# whether the tray ALSO calls `init()` for its own process.
+otel = []
 # Pulls the heavy forked screenpipe-screen stack (ScreenCaptureKit/cidre).
 capture = [
     "dep:screenpipe-screen",

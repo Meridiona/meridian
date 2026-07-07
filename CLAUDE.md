@@ -46,6 +46,8 @@ meridian/
     main.rs              # daemon entry point — tokio::main, signal handling, poll loop
     lib.rs               # public crate root
     config.rs            # Config::from_env() — reads env vars, expands ~
+    notifications.rs     # notification outbox producer API — enqueue/retract (see NOTIFICATIONS.md)
+    notification_responses.rs # consumer for interactive-toast answers (snooze, …)
     db/
       mod.rs
       meridian.rs        # writes app_sessions, active_session, etl_runs, etl_cursor, gaps
@@ -202,13 +204,14 @@ There are no JS/TS test suites yet. When adding them, place them under `ui/__tes
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `SCREENPIPE_DB` | `~/.screenpipe/db.sqlite` | **Vestigial after the Bucket-2 cutover** — the daemon no longer reads screenpipe (capture is in-process → `meridian.db` capture tables). Still parsed into `Config` with a default; slated for removal. |
 | `MERIDIAN_DB` | `~/.meridian/meridian.db` | Path to meridian's output SQLite file |
 | `POLL_INTERVAL_SECS` | `60` | ETL poll cadence in seconds |
 | `RUST_LOG` | `meridian=info` | Tracing filter |
 | `SQLX_OFFLINE` | `true` (via `.cargo/config.toml`) | Prevents sqlx from hitting the DB at compile time |
-| `MERIDIAN_OTLP_ENDPOINT` | (unset → no export) | OpenObserve OTLP/HTTP traces endpoint (loaded from `.env`) |
-| `MERIDIAN_OO_AUTH` | DEPRECATED — ignored by the daemon | OO credentials live in `settings.json` (`oo_email`/`oo_password`, set via dashboard Settings); env var still read by Python services + installer fallback |
+| `MERIDIAN_OTLP_ENDPOINT` | (unset → default `http://localhost:5080/api/default/v1/traces`) | OpenObserve OTLP/HTTP traces endpoint override — only consulted for shipping (dev/bare installs; a Canonical/packaged install never ships, see "Telemetry: local-only capture, dev-only shipping" below) |
+| `MERIDIAN_OO_AUTH` | DEPRECATED — ignored everywhere | OO credentials live in `settings.json` (`oo_email`/`oo_password`); Python no longer reads this either |
+| `MERIDIAN_TELEMETRY_DISABLED` | (unset → capture always on) | Hard kill switch for OTel span/log capture to the local spool (Rust + Python) — the sole log/trace sink; disabling it leaves only launchd's raw stdout/stderr crash-safety-net files. |
+| `MERIDIAN_LAUNCHD_LOG_MAX_MB` | `10` | Size cap for each launchd-redirected raw log file (`daemon.log`, `mlx-server.log`, etc.); capped via copytruncate on the telemetry shipper's tick (`src/telemetry_spool/shipper.rs`). |
 | `MLX_SERVER_URL` | (unset → in-process load) | URL of a running MLX classifier server (eval pipeline) |
 | `MLX_IDLE_EVICT_S` | `120` (secs) | Idle-eviction window for the MLX model. The current generative model (`Qwen3.5-2B-OptiQ-4bit`, ~1.4 GB on disk) holds ~1.5 GB of Metal unified memory while resident (measured live via `mx.get_active_memory()` / the `/info` endpoint — it's invisible to `ps`/Activity Monitor), so the server lazy-loads it on first request and unloads it after this many seconds idle (~3s cold reload). (The ~7 GB figure quoted previously was the older `Qwen3.5-9B-OptiQ-4bit`, no longer the default.) `0` disables eviction (pins the model). Avoid values below ~30s — a TTL shorter than the gap between sessions in a classification burst causes repeated mid-burst evict+reload thrash. See `services/agents/server.py` `_idle_evictor` + `run_task_linker_mlx.py` `maybe_evict_idle`. |
 | `EVAL_DATASET_PATH` | `services/tests/evals/data/generated/goldens_real.json` | Override Goldens file for the eval pipeline |
@@ -259,7 +262,7 @@ JSON columns (`window_titles`, `ocr_samples`, `elements_samples`, `audio_snippet
 
 ### Capture source — in-process (Gap-2 Bucket 2 cutover, branch `feat/in-process-capture`)
 
-> **The daemon no longer reads screenpipe.** Since the slice-4b cutover, capture runs **in-process in the tray** (behind the `capture` feature): the forked `screenpipe-screen` + `screenpipe-a11y` crates produce a11y-tree/OCR frames + input events, which `meridian_core::capture` writes into **`capture_frames` / `capture_ui_events`** in `meridian.db`. The daemon ETL reads *those* tables (via `src/db/screenpipe.rs`, name unchanged for now) from the meridian pool — there is no screenpipe DB/process/pool anymore. **Implication:** a build with the `capture` feature OFF has **no data source** (the daemon produces no sessions); the shipping DMG must enable it. **Audio is dropped** (`get_audio_snippets` stubbed empty) and **gaps all classify `system_sleep`** (no in-process idle detection yet — `capture_trigger` is NULL); both are accepted v1 degradations with idle-detection/audio as future slices. `SCREENPIPE_DB` is now vestigial for the daemon.
+> **The daemon no longer reads screenpipe.** Since the slice-4b cutover, capture runs **in-process in the tray** (behind the `capture` feature): the forked `screenpipe-screen` + `screenpipe-a11y` crates produce a11y-tree/OCR frames + input events, which `meridian_core::capture` writes into **`capture_frames` / `capture_ui_events`** in `meridian.db`. The daemon ETL reads *those* tables (via `src/db/screenpipe.rs`, name unchanged for now) from the meridian pool — there is no screenpipe DB/process/pool anymore. **Implication:** a build with the `capture` feature OFF has **no data source** (the daemon produces no sessions); the shipping DMG must enable it. **Audio is dropped** (`get_audio_snippets` stubbed empty) and **gaps all classify `system_sleep`** (no in-process idle detection yet — `capture_trigger` is NULL); both are accepted v1 degradations with idle-detection/audio as future slices. The `SCREENPIPE_DB` env var + `Config::screenpipe_db` field have been removed (the daemon never reads a screenpipe DB anymore).
 >
 > Column contract: `capture_frames` mirrors screenpipe's `frames` read-subset (`app_name`/`window_name`/`browser_url`/`timestamp`/`capture_trigger` + `full_text`(OCR)/`accessibility_text`(a11y)/`text_source`, resolved by `COALESCE(full_text, accessibility_text)`); `capture_ui_events` mirrors the `ui_events` read-subset (`event_type`/`app_name`/`text_content`/`timestamp`). **Inverted ownership:** these tables are written by the *tray*, read by the *daemon*.
 
@@ -323,16 +326,59 @@ The fold replaces every `ui/app/api/*` route with a Rust command the frontend ca
 - Include the file header comment on line 1
 - The integration test helper `make_meridian_db()` runs all migrations; new migrations are covered automatically by `cargo test`
 
-### Observability (logs & traces → OpenObserve)
+### Observability (logs & traces — local-only capture, dev-only shipping to OpenObserve)
 
-Any new or changed code path that does real work (daemon stages, the MLX server, the classifier, agents, ingest) **must be observable in OpenObserve** — not just `println!`/`print()` to a terminal. Add proper logs and traces as you write the code, not as an afterthought.
+Any new or changed code path that does real work (daemon stages, the MLX server, the classifier, agents, ingest) **must emit structured logs and traces** — not just `println!`/`print()` to a terminal. Add proper logs and traces as you write the code, not as an afterthought.
 
-- **Python (`services/`)**: use the module logger created via `observability.setup("<service>")` (`log = logging.getLogger(...)`). `log.info/warning/error` already export to OpenObserve's logs stream, correlated to the active span by `trace_id`/`span_id` — never `print()`. Pass structured fields with `extra={...}` so they're queryable columns, not interpolated into the message string.
+**One pipeline, no duplicates.** The local OTel telemetry spool
+(`~/.meridian/telemetry/{pending,sent,quarantine}/`, raw OTLP protobuf) is the
+**sole** log/trace sink — there is no separate JSONL file and no
+`tracing`/`logging`-driven stdout/stderr mirror. Every `tracing::*!` call
+(Rust) / `logging.*` call (Python) goes through this one pipeline, unconditionally
+(a local disk write, not a network call, so it never depends on `otlp_enabled`
+or OpenObserve being reachable — the only escape hatch is
+`MERIDIAN_TELEMETRY_DISABLED`, a dev/test kill switch). `meridian logs
+[--service <name>] [-n N] [-f]` (`src/telemetry_spool/render.rs`) decodes this
+same spool back into human-readable lines on demand — this is the one
+supported way to read logs locally, replacing the old JSONL-tailing UI and the
+old bash `meridian logs` (which used to tail launchd-redirected stdout/stderr
+text).
+
+The only thing this pipeline structurally can't capture is a hard crash
+(panic before `init` runs, segfault, OOM kill) — for that, launchd's own
+stdout/stderr redirect (`~/.meridian/logs/<service>.log` /
+`<service>-error.log`, unrelated to `tracing`/`logging`) is the OS-level
+safety net. It has no log volume during normal operation (nothing mirrors
+into it deliberately) and is size-capped (`MERIDIAN_LAUNCHD_LOG_MAX_MB`,
+copytruncate, `telemetry_spool::shipper`) and folded into diagnostics export
+bundles alongside the spool.
+
+**Shipping to OpenObserve is dev-only.** The Rust daemon's
+`telemetry_spool::shipper` background task is the ONLY thing that ever ships
+spooled files to OpenObserve, and it refuses to do so entirely for a
+**Canonical** (packaged/shipped DMG) install, regardless of settings — see
+`src/observability.rs`'s `is_canonical_install()`/`resolve_otlp_target()`.
+Only a Dev/Bare checkout with `otlp_enabled` + `oo_email`/`oo_password`
+configured ships live, for an engineer debugging against their own
+OpenObserve instance. A shipped install's only path to a developer's
+OpenObserve is the tray Settings → Advanced → **Export Diagnostics** button
+(or `meridian telemetry export`), which bundles the spool + the launchd
+crash-safety-net logs into a `.tar.gz` the user hands to support, imported by
+hand with `meridian telemetry import <bundle> --endpoint <url> --auth
+<base64>`. Retention (default 7 days, `MERIDIAN_TELEMETRY_RETENTION_DAYS`)
+applies to both `pending/` and `sent/`, regardless of shipping status.
+
+Agno's Workflow/Agent spans ride this SAME global pipeline
+(`observability.setup_agno_tracing()` calls `AgnoInstrumentor().instrument()`
+with no explicit provider) — there is no separate agno SQLite trace store or
+standalone viewer script; that was removed as a second, redundant pipeline.
+
+- **Python (`services/`)**: use the module logger created via `observability.setup("<service>")` (`log = logging.getLogger(...)`). `log.info/warning/error` are always captured to the spool, correlated to the active span by `trace_id`/`span_id` — never `print()`. Pass structured fields with `extra={...}` so they're queryable attributes, not interpolated into the message string.
 - **Rust**: `tracing::info!/warn!/error!/debug!` with **structured fields** — never format data values into the message string (already enforced).
-- **Wrap discrete operations in spans** (`tracer.start_as_current_span(...)`) and put the meaningful inputs, outputs, and metrics as **span attributes**, not buried in log lines. For an LLM/model call, capture the EXACT input as sent and output as received (post-cap/post-template — reflect any truncation that actually happened), plus real token counts/latency from the model's own metadata (e.g. MLX `GenerationResponse`) rather than re-deriving them. See `run_task_linker_mlx.py`'s `classify_session → classifier_input / llm_inference / classifier_output` span tree for the reference shape.
+- **Wrap discrete operations in spans** (`tracer.start_as_current_span(...)`) and put the meaningful inputs, outputs, and metrics as **span attributes**, not buried in log lines. For an LLM/model call, capture the EXACT input as sent and output as received (post-cap/post-template — reflect any truncation that actually happened), plus real token counts/latency from the model's own metadata (e.g. MLX `GenerationResponse`) rather than re-deriving them. See `services/agents/routes/classify.py`'s `classify_tasks` span tree for the reference shape.
 - **No duplication, no truncation of debug data**: emit each fact once, on the span that owns it; don't truncate the values you'd actually need to debug a misclassification. Keep static/identical-every-call blobs (e.g. the full system prompt) out of every trace where a size + a single archived copy suffices.
 - **Set span status `ERROR`** (with a message) on failures, and log a `warning`/`error` with `.context`/`extra` at the failure boundary.
-- **Export is gated** by the OpenObserve Export toggle (`otlp_enabled` in `settings.json`); code must degrade silently (logs still go to file/stderr) when it's off — never crash because export is disabled.
+- **Shipping degrades silently**: code must never crash because OpenObserve is unreachable or export is disabled — capture (the only thing every install can rely on) is unaffected either way.
 
 ---
 
@@ -360,6 +406,23 @@ Any new or changed code path that does real work (daemon stages, the MLX server,
 2. Query `meridian.db` using `better-sqlite3` (see existing routes for the pattern)
 3. Return a typed JSON response; define the response type inline
 4. If the route shells out to the `meridian` binary, resolve it with `selectMeridianBinary(meridianCandidates())` from `@/lib/meridian-bin` — never a bare `'meridian'` or an ad-hoc candidate list (see the launchd/node-wrapper note under Coding Conventions → TypeScript / Next.js)
+
+### Add a notification (plain toast or interactive nudge)
+
+Read `NOTIFICATIONS.md` first — it is the integration guide for the
+notification service (outbox → deliver → respond → consume lifecycle, category
+registry, response handlers, expiry/persistence semantics, plugin gotchas, and
+the packaged-build test recipe). In short:
+
+1. Plain: one `notifications::enqueue(...)` call with a scoped `dedup_key`
+   (`src/notifications.rs`). Never gate on settings in the producer — policy
+   lives in `meridian-core` at drain time.
+2. Interactive: add the category (id + buttons JSON) to
+   `meridian-core/src/notifications.rs::categories`, stamp it on the row via
+   `.category()/.actions()`, and handle the answer with a match arm in
+   `src/notification_responses.rs` (handlers must be idempotent).
+3. Interactive toasts only work in packaged builds (`UNUserNotificationCenter`
+   needs a `.app` bundle) — test per the recipe in `NOTIFICATIONS.md`.
 
 ### Add a new MCP tool
 

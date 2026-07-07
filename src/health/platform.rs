@@ -204,8 +204,8 @@ fn venv_check() -> Check {
 }
 
 /// Returns a single Info check confirming the dashboard is embedded in the
-/// Tauri binary. The `com.meridiona.ui` launchd agent was retired with the
-/// Next-fold (PR #298); probing for its plist always produces a false CRITICAL
+/// Tauri binary. The legacy standalone-UI launchd agent was retired with the
+/// Next-fold (PR #298); probing for its plist always produced a false CRITICAL
 /// on healthy post-fold installs.
 pub fn ui_service() -> Vec<Check> {
     vec![Check::info(

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+
+     Merged into the bundle's generated Info.plist by the Tauri bundler.
+
+     NSUserNotificationAlertStyle=alert defaults Meridian's notifications to
+     the persistent "Alerts" style (stay on screen until the user acts) instead
+     of auto-dismissing banners — interactive nudges are questions, and a
+     question that evaporates after 5 seconds mostly goes unanswered. This only
+     sets the DEFAULT at first notification registration; the user's choice in
+     System Settings → Notifications → Meridian always wins afterwards, and
+     installs that were granted permission before this key shipped keep their
+     existing (banner) style until changed there. -->
+<plist version="1.0">
+<dict>
+    <key>NSUserNotificationAlertStyle</key>
+    <string>alert</string>
+</dict>
+</plist>

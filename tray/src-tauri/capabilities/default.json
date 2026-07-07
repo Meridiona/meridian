@@ -7,7 +7,7 @@
     "core:window:allow-close",
     "core:window:allow-set-size",
     "positioner:default",
-    "notification:default",
+    "notifications:default",
     "opener:default",
     "updater:default"
   ]

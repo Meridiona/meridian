@@ -469,19 +469,58 @@ if (document.fonts && document.fonts.ready) {
   document.fonts.ready.then(() => resizeToContent()).catch(() => {})
 }
 
+// ── Interactive notification responses ───────────────────────────────────────
+// The notifications plugin delivers UNUserNotificationCenter action events
+// ('actionPerformed': button press, inline reply, tap, dismiss) over an IPC
+// channel registered from JS. The popover is the always-alive webview, so the
+// listener lives here: each event is forwarded to record_notification_response,
+// which stamps the answer on the outbox row (the daemon's response consumer
+// acts on it) and opens the dashboard for foreground answers.
+function armNotificationActions() {
+  try {
+    const ch = new __TAURI__.core.Channel()
+    ch.onmessage = (msg) => {
+      // Raw-payload trace: the event shape crosses Swift → Rust → JS, so when
+      // a response goes missing this line says which hop dropped/renamed what.
+      try { dbg(`notification action event: ${JSON.stringify(msg).slice(0, 400)}`) } catch {}
+      const n = (msg && msg.notification) || {}
+      // The notification id IS the outbox row id — the only correlation the
+      // plugin round-trips (its Swift ActiveNotification carries no extras).
+      // Every outbox toast (plain or interactive) carries it; non-outbox
+      // toasts (sys::notify — pause/update/health) have id 0 and are ignored.
+      const outboxId = Number(n.id)
+      if (!Number.isFinite(outboxId) || outboxId <= 0) {
+        dbg('notification action event: not an outbox toast — ignored')
+        return
+      }
+      invoke('record_notification_response', {
+        id: outboxId,
+        action: String(msg.actionId || 'tap'),
+        text: msg.inputValue == null ? null : String(msg.inputValue),
+      }).catch((e) => dbg(`notification response failed: ${e}`))
+    }
+    // Plugin absent in an unbundled run (tauri dev) — interactive toasts are
+    // packaged-only, so a registration failure is expected there, not an error.
+    invoke('plugin:notifications|register_listener', { event: 'actionPerformed', handler: ch })
+      .then(() => dbg('notification action listener registered'))
+      .catch(() => dbg('notification action listener not registered (unbundled run?)'))
+  } catch (e) { dbg(`notification listener threw: ${e}`) }
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 function boot() {
   startTicker()
   invoke('get_status').then((s) => { render(s); resizeToContent() }).catch(() => {})
   checkUpdate()
+  armNotificationActions()
 }
 
 // Under the DOM test harness (ui/__tests__/popover-health-panel.test.ts) the
 // script is loaded to drive render/toggleHealth/refreshHealth directly against
 // a mocked __TAURI__ bridge — so expose them and SKIP auto-boot (which would
-// otherwise fire the 1 s ticker + an unmocked get_status/checkUpdate at import
-// time). In the packaged webview the flag is unset, so boot() runs as before
-// and nothing reads __popover.
+// otherwise fire the 1 s ticker + an unmocked get_status/checkUpdate + the
+// notification-action listener at import time). In the packaged webview the
+// flag is unset, so boot() runs as before and nothing reads __popover.
 if (typeof globalThis !== 'undefined' && globalThis.__MERIDIAN_POPOVER_TEST__) {
   globalThis.__popover = {
     render,

@@ -91,9 +91,8 @@ fn ax_is_trusted() -> bool {
 /// Post-cutover (Gap-2 Bucket 2) capture runs in-process, so the **tray** is
 /// the process that needs Screen Recording. `CGPreflightScreenCaptureAccess()`
 /// reads that grant directly — no prompt, no side effects — replacing the old
-/// `pgrep screenpipe` / `~/.screenpipe/db.sqlite` proxy, which misreported on
-/// an in-process install (no screenpipe process or DB ever exists). The
-/// wizard's *grant* action (which surfaces the system prompt via
+/// external-capture proxy checks that misreported on an in-process install.
+/// The wizard's *grant* action (which surfaces the system prompt via
 /// `CGRequestScreenCaptureAccess`) is separate slice-5 work.
 #[tauri::command]
 #[tracing::instrument]

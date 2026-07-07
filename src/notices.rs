@@ -53,21 +53,16 @@ pub async fn raise(
     } else {
         Some("/logs")
     };
-    let _ = crate::notifications::enqueue(
-        pool,
-        crate::notifications::NewNotification {
-            dedup_key: &dedup,
-            event_key: "system.fault",
-            severity,
-            title,
-            body: detail,
-            deep_link: link,
-            channels: crate::notifications::CHANNEL_NATIVE,
-            scheduled_for: None,
-            expires_at: None,
-        },
-    )
-    .await;
+    // Native-only (the dashboard banner already comes from this table).
+    // `.interactive()` pairs category + actions from the one source of truth, so
+    // the [View] button set can't drift from the other producers.
+    use meridian_core::notifications::categories;
+    let mut n = crate::notifications::NewNotification::event(&dedup, "system.fault", title, detail)
+        .via(crate::notifications::CHANNEL_NATIVE)
+        .interactive(categories::SYSTEM_FAULT);
+    n.severity = severity;
+    n.deep_link = link;
+    let _ = crate::notifications::enqueue(pool, n).await;
     Ok(())
 }
 
