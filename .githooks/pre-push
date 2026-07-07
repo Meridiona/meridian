@@ -49,9 +49,11 @@ if [[ $FAIL -ne 0 ]]; then
   exit 1
 fi
 
-# ── Wave 2: clippy + UI tests + tray popover tests (independent; start together) ─
+# ── Wave 2: clippy + UI tests (independent of each other, start together) ───
+# The `ui` bun test run also covers the tray popover's JS tests — they live in
+# ui/__tests__ so this single run discovers them (no separate tray runner).
 echo ""
-echo "[wave 2/3] cargo clippy  +  ui tests  +  tray popover tests"
+echo "[wave 2/3] cargo clippy  +  ui tests"
 
 run_check "cargo clippy" cargo clippy -- -D warnings &
 W2_CLIPPY=$!
@@ -59,18 +61,12 @@ W2_CLIPPY=$!
 run_check "ui tests" bash -c "cd '$REPO_ROOT/ui' && bun test" &
 W2_UI=$!
 
-# The tray popover (tray/src) is plain HTML+JS outside the ui/ Next app, so its
-# bun tests are not discovered by the ui run above — run them explicitly.
-run_check "tray popover tests" bash -c "cd '$REPO_ROOT/tray/src' && bun test" &
-W2_TRAY=$!
-
 wait $W2_CLIPPY || FAIL=1
 wait $W2_UI || FAIL=1
-wait $W2_TRAY || FAIL=1
 
 if [[ $FAIL -ne 0 ]]; then
   echo ""
-  echo "Wave 2 failed — fix clippy/UI test/tray test errors before pushing."
+  echo "Wave 2 failed — fix clippy/UI test errors before pushing."
   exit 1
 fi
 
