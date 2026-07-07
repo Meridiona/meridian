@@ -16,7 +16,6 @@
   ],
   "files": [
     "bin/",
-    "ui.tar.gz",
     "services/",
     "scripts/",
     ".env.example",
