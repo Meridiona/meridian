@@ -230,23 +230,62 @@ pub fn manifest_url() -> Option<String> {
     None
 }
 
+/// Classified download error: `retryable = true` means the caller may re-attempt
+/// after a backoff (transient network / disk hiccup); `false` means the failure
+/// is deterministic (wrong arch, checksum mismatch, missing tar) and retrying is
+/// wasted work. The retry loop in [`download_and_stage_with_retry`] pivots on it.
+struct DownloadError {
+    retryable: bool,
+    msg: String,
+}
+
+fn transient(msg: impl Into<String>) -> DownloadError {
+    DownloadError {
+        retryable: true,
+        msg: msg.into(),
+    }
+}
+
+fn permanent(msg: impl Into<String>) -> DownloadError {
+    DownloadError {
+        retryable: false,
+        msg: msg.into(),
+    }
+}
+
+/// 4xx statuses are our fault or the manifest's fault (bad URL, gone, unauth) —
+/// retrying won't help. 429 is the exception (rate-limited, back off + retry).
+/// 5xx and everything else transient — retry.
+fn http_retryable(status: reqwest::StatusCode) -> bool {
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return true;
+    }
+    !status.is_client_error()
+}
+
 /// Fetch + parse the runtime manifest from [`manifest_url`].
-async fn fetch_manifest() -> Result<RuntimeManifest, String> {
+async fn fetch_manifest() -> Result<RuntimeManifest, DownloadError> {
     let url = manifest_url().ok_or_else(|| {
-        "Runtime manifest URL not configured yet. Check back for updates.".to_string()
+        permanent("Runtime manifest URL not configured yet. Check back for updates.")
     })?;
     let resp = reqwest::Client::new()
         .get(&url)
         .timeout(std::time::Duration::from_secs(15))
         .send()
         .await
-        .map_err(|e| format!("manifest request failed: {e}"))?;
+        .map_err(|e| transient(format!("manifest request failed: {e}")))?;
     if !resp.status().is_success() {
-        return Err(format!("manifest fetch failed: HTTP {}", resp.status()));
+        let status = resp.status();
+        let msg = format!("manifest fetch failed: HTTP {status}");
+        return Err(if http_retryable(status) {
+            transient(msg)
+        } else {
+            permanent(msg)
+        });
     }
     resp.json::<RuntimeManifest>()
         .await
-        .map_err(|e| format!("manifest parse failed: {e}"))
+        .map_err(|e| transient(format!("manifest parse failed: {e}")))
 }
 
 /// Whether the running macOS version is at least `required` (compares
@@ -344,7 +383,7 @@ fn backup_dir() -> PathBuf {
 ///
 /// `on_progress` is called with each chunk; `total` is `0` when the server omits
 /// Content-Length. Extraction uses the system `tar`.
-async fn download_and_stage<F>(on_progress: F) -> Result<StageOutcome, String>
+async fn download_and_stage<F>(on_progress: F) -> Result<StageOutcome, DownloadError>
 where
     F: Fn(DownloadProgress) + Send + 'static,
 {
@@ -355,18 +394,18 @@ where
 
     // ── Preflight: don't download a runtime this machine can't run. ───────────
     if manifest.arch != std::env::consts::ARCH {
-        return Err(format!(
+        return Err(permanent(format!(
             "runtime is for {} but this machine is {}",
             manifest.arch,
             std::env::consts::ARCH
-        ));
+        )));
     }
     if let Some(running) = running_macos().await {
         if !macos_at_least(&running, &manifest.min_macos) {
-            return Err(format!(
+            return Err(permanent(format!(
                 "this runtime needs macOS {} or newer (you have {running})",
                 manifest.min_macos
-            ));
+            )));
         }
     }
 
@@ -393,9 +432,15 @@ where
         .get(&manifest.url)
         .send()
         .await
-        .map_err(|e| format!("download request failed: {e}"))?;
+        .map_err(|e| transient(format!("download request failed: {e}")))?;
     if !response.status().is_success() {
-        return Err(format!("download failed: HTTP {}", response.status()));
+        let status = response.status();
+        let msg = format!("download failed: HTTP {status}");
+        return Err(if http_retryable(status) {
+            transient(msg)
+        } else {
+            permanent(msg)
+        });
     }
 
     let total = response.content_length().unwrap_or(manifest.size);
@@ -405,17 +450,17 @@ where
 
     let mut file = tokio::fs::File::create(&tmp_path)
         .await
-        .map_err(|e| format!("create temp file: {e}"))?;
+        .map_err(|e| transient(format!("create temp file: {e}")))?;
 
     let mut stream = response.bytes_stream();
     let mut received: u64 = 0;
     let started = std::time::Instant::now();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("stream error: {e}"))?;
+        let chunk = chunk.map_err(|e| transient(format!("stream error: {e}")))?;
         use tokio::io::AsyncWriteExt;
         file.write_all(&chunk)
             .await
-            .map_err(|e| format!("write error: {e}"))?;
+            .map_err(|e| transient(format!("write error: {e}")))?;
         received += chunk.len() as u64;
         let secs = started.elapsed().as_secs_f64();
         on_progress(DownloadProgress {
@@ -437,7 +482,9 @@ where
         });
     }
     use tokio::io::AsyncWriteExt;
-    file.flush().await.map_err(|e| format!("flush: {e}"))?;
+    file.flush()
+        .await
+        .map_err(|e| transient(format!("flush: {e}")))?;
     drop(file);
 
     // ── Integrity gate: verify SHA-256 BEFORE extracting anything. ────────────
@@ -452,17 +499,18 @@ where
         let p = tmp.clone();
         tokio::task::spawn_blocking(move || sha256_hex_of(&p))
             .await
-            .map_err(|e| format!("hash task: {e}"))?
-            .map_err(|e| format!("hash read: {e}"))?
+            .map_err(|e| transient(format!("hash task: {e}")))?
+            .map_err(|e| transient(format!("hash read: {e}")))?
     };
     if !actual.eq_ignore_ascii_case(&manifest.sha256) {
         let _ = tokio::fs::remove_file(&tmp).await;
         tracing::error!(expected = %manifest.sha256, actual = %actual, "mlx: checksum mismatch");
-        return Err(format!(
-            "checksum mismatch — download corrupted or tampered \
-             (expected {}, got {actual}). The runtime was not installed.",
+        // A checksum mismatch usually means a truncated / interrupted download —
+        // the next attempt gets a fresh stream and typically succeeds. Retry.
+        return Err(transient(format!(
+            "checksum mismatch — download corrupted (expected {}, got {actual})",
             manifest.sha256
-        ));
+        )));
     }
     tracing::info!(sha256 = %actual, "mlx: tarball verified");
 
@@ -479,7 +527,7 @@ where
     let _ = tokio::fs::remove_dir_all(&staging).await;
     tokio::fs::create_dir_all(&staging)
         .await
-        .map_err(|e| format!("create staging dir: {e}"))?;
+        .map_err(|e| transient(format!("create staging dir: {e}")))?;
     let out = tokio::process::Command::new("tar")
         .arg("-xzf")
         .arg(&tmp)
@@ -488,11 +536,11 @@ where
         .arg("--strip-components=1")
         .output()
         .await
-        .map_err(|e| format!("tar spawn: {e}"))?;
+        .map_err(|e| permanent(format!("tar spawn: {e}")))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let _ = tokio::fs::remove_dir_all(&staging).await;
-        return Err(format!("tar extraction failed: {stderr}"));
+        return Err(permanent(format!("tar extraction failed: {stderr}")));
     }
     let _ = tokio::fs::remove_file(&tmp).await;
 
@@ -506,6 +554,85 @@ where
     Ok(StageOutcome::Staged {
         version: manifest.version,
     })
+}
+
+/// Backoff schedule between retries (attempts 1→2, 2→3, 3→4, 4→5): 2s, 8s,
+/// 20s, 45s, 90s. Cumulative wait ~2m45s before giving up — long enough to
+/// survive a hotel wifi glitch, short enough that the wizard doesn't feel dead.
+const DOWNLOAD_RETRY_BACKOFF: &[std::time::Duration] = &[
+    std::time::Duration::from_secs(2),
+    std::time::Duration::from_secs(8),
+    std::time::Duration::from_secs(20),
+    std::time::Duration::from_secs(45),
+    std::time::Duration::from_secs(90),
+];
+const DOWNLOAD_MAX_ATTEMPTS: usize = 5;
+
+/// Run [`download_and_stage`] with automatic retry on transient failures
+/// (network flake, HTTP 5xx/429, disk hiccup, checksum mismatch from a
+/// truncated stream). Non-retryable failures — wrong arch/macOS version, tar
+/// missing, non-5xx HTTP — short-circuit immediately. Between attempts the
+/// caller is told we're waiting via the same [`DownloadProgress`] channel the
+/// wizard already listens on, so the retry is visible instead of a mystery.
+///
+/// The final error carries the attempt count so the surfaced message tells the
+/// user we did try more than once. Success returns as soon as any attempt does.
+async fn download_and_stage_with_retry<F>(on_progress: F) -> Result<StageOutcome, String>
+where
+    F: Fn(DownloadProgress) + Clone + Send + 'static,
+{
+    let mut last_msg = String::new();
+    for attempt in 1..=DOWNLOAD_MAX_ATTEMPTS {
+        match download_and_stage(on_progress.clone()).await {
+            Ok(outcome) => {
+                if attempt > 1 {
+                    tracing::info!(attempt, "mlx: runtime download succeeded after retry");
+                }
+                return Ok(outcome);
+            }
+            Err(err) => {
+                last_msg = err.msg;
+                if !err.retryable || attempt == DOWNLOAD_MAX_ATTEMPTS {
+                    tracing::warn!(
+                        attempt,
+                        retryable = err.retryable,
+                        error = %last_msg,
+                        "mlx: runtime download giving up",
+                    );
+                    return Err(if attempt > 1 {
+                        format!("{last_msg} (after {attempt} attempts)")
+                    } else {
+                        last_msg
+                    });
+                }
+                let wait = DOWNLOAD_RETRY_BACKOFF
+                    .get(attempt - 1)
+                    .copied()
+                    .unwrap_or(std::time::Duration::from_secs(90));
+                tracing::warn!(
+                    attempt,
+                    next_wait_s = wait.as_secs(),
+                    error = %last_msg,
+                    "mlx: runtime download failed — retrying",
+                );
+                on_progress(DownloadProgress {
+                    received: 0,
+                    total: 0,
+                    speed: 0.0,
+                    message: format!(
+                        "Download failed (attempt {attempt}/{DOWNLOAD_MAX_ATTEMPTS}) — retrying in {}s…",
+                        wait.as_secs()
+                    ),
+                });
+                tokio::time::sleep(wait).await;
+                // Wipe any partial staging so the next attempt starts clean.
+                let _ = tokio::fs::remove_dir_all(staging_dir()).await;
+            }
+        }
+    }
+    // Loop returns on both success and final failure; this is unreachable, but
+    // give the caller a coherent message if the invariant ever breaks.
+    Err(last_msg)
 }
 
 /// Swap a staged runtime (from [`download_and_stage`]) into place as the live
@@ -566,22 +693,27 @@ async fn commit_staged_runtime(version: &str) -> Result<(), String> {
 /// server omits Content-Length.
 pub async fn download_runtime<F>(on_progress: F) -> Result<DownloadOutcome, String>
 where
-    F: Fn(DownloadProgress) + Send + 'static,
+    F: Fn(DownloadProgress) + Clone + Send + 'static,
 {
     // Bound the network phase so a stalled tarball stream can't wedge first-run
     // setup indefinitely (the background upgrade path is bounded the same way).
-    let staged =
-        match tokio::time::timeout(RUNTIME_DOWNLOAD_TIMEOUT, download_and_stage(on_progress)).await
-        {
-            Ok(res) => res?,
-            Err(_) => {
-                let _ = tokio::fs::remove_dir_all(staging_dir()).await;
-                return Err(format!(
-                    "runtime download timed out after {}s",
-                    RUNTIME_DOWNLOAD_TIMEOUT.as_secs()
-                ));
-            }
-        };
+    // The timeout wraps the whole retry loop so the total budget is fixed even
+    // across attempts — a truly wedged network still surfaces to the wizard.
+    let staged = match tokio::time::timeout(
+        RUNTIME_DOWNLOAD_TIMEOUT,
+        download_and_stage_with_retry(on_progress),
+    )
+    .await
+    {
+        Ok(res) => res?,
+        Err(_) => {
+            let _ = tokio::fs::remove_dir_all(staging_dir()).await;
+            return Err(format!(
+                "runtime download timed out after {}s",
+                RUNTIME_DOWNLOAD_TIMEOUT.as_secs()
+            ));
+        }
+    };
     match staged {
         StageOutcome::AlreadyCurrent => Ok(DownloadOutcome::AlreadyCurrent),
         StageOutcome::Staged { version } => {
@@ -635,7 +767,7 @@ pub async fn auto_upgrade_runtime(manager: &SharedMlxManager) {
     // the machine with no live runtime.
     let staged = match tokio::time::timeout(
         RUNTIME_DOWNLOAD_TIMEOUT,
-        download_and_stage(|p| {
+        download_and_stage_with_retry(|p| {
             tracing::debug!(received = p.received, total = p.total, message = %p.message, "mlx: runtime upgrade progress");
         }),
     )
@@ -1105,6 +1237,34 @@ pub async fn supervise(manager: &SharedMlxManager) -> SuperviseOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn http_retryable_classification() {
+        use reqwest::StatusCode;
+        // 5xx / server error → transient, retry.
+        assert!(http_retryable(StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(http_retryable(StatusCode::BAD_GATEWAY));
+        assert!(http_retryable(StatusCode::SERVICE_UNAVAILABLE));
+        assert!(http_retryable(StatusCode::GATEWAY_TIMEOUT));
+        // 429 rate-limit → transient (respect backoff, then retry).
+        assert!(http_retryable(StatusCode::TOO_MANY_REQUESTS));
+        // 4xx client errors → permanent, retry never helps.
+        assert!(!http_retryable(StatusCode::BAD_REQUEST));
+        assert!(!http_retryable(StatusCode::UNAUTHORIZED));
+        assert!(!http_retryable(StatusCode::FORBIDDEN));
+        assert!(!http_retryable(StatusCode::NOT_FOUND));
+        assert!(!http_retryable(StatusCode::GONE));
+    }
+
+    #[test]
+    fn retry_backoff_covers_all_gaps() {
+        // Every attempt except the last must have a backoff to sleep on.
+        assert!(DOWNLOAD_RETRY_BACKOFF.len() >= DOWNLOAD_MAX_ATTEMPTS - 1);
+        // Backoffs must be monotonically increasing so the retries fan out.
+        for pair in DOWNLOAD_RETRY_BACKOFF.windows(2) {
+            assert!(pair[0] < pair[1], "backoff must grow: {pair:?}");
+        }
+    }
 
     #[test]
     fn macos_version_floor() {
