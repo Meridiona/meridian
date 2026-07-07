@@ -5,12 +5,23 @@
 // Runs in a tokio background task spawned from main.rs. Every
 // `MERIDIAN_TELEMETRY_SHIP_INTERVAL_S` seconds (default 30):
 //
-//   1. If `resolve_otlp_target()` is None (creds absent), skip — leave files.
-//   2. List pending/ oldest-first by filename timestamp.
-//   3. POST each .otlp to the appropriate OO endpoint (traces / logs).
-//   4. On 2xx → move to sent/.  On any failure → stop this tick, leave rest.
-//   5. Retention: delete sent/ files older than MERIDIAN_TELEMETRY_RETENTION_DAYS (7).
-//   6. Pending cap: drop OLDEST beyond MERIDIAN_TELEMETRY_MAX_PENDING_MB (512) with warn.
+//   1. Sweep crash-orphaned .otlp.tmp files.
+//   2. Retention: age-prune BOTH pending/ and sent/ (files older than
+//      MERIDIAN_TELEMETRY_RETENTION_DAYS, default 7) — this runs UNCONDITIONALLY,
+//      before the ship-target check below, so a Canonical/packaged install
+//      (which never ships — see `observability::resolve_otlp_target`) still
+//      enforces retention on the local spool instead of growing it forever.
+//      Also caps the launchd-redirected raw log files (daemon.log etc. — the
+//      crash safety net, unrelated to the OTel spool) at
+//      MERIDIAN_LAUNCHD_LOG_MAX_MB (default 10) via copytruncate, since they
+//      have no rotation of their own.
+//   3. Pending cap: drop OLDEST beyond MERIDIAN_TELEMETRY_MAX_PENDING_MB (512) with warn.
+//   4. If `resolve_otlp_target()` is None (creds absent, or a Canonical
+//      install), skip delivery — leave files in pending/ for retention/cap to
+//      manage.
+//   5. List pending/ oldest-first by filename timestamp.
+//   6. POST each .otlp to the appropriate OO endpoint (traces / logs).
+//   7. On 2xx → move to sent/.  On any failure → stop this tick, leave rest.
 //
 // The shipper is the ONLY writer to sent/ and the only one that deletes files.
 // The spool writer (writer.rs) only adds to pending/.
@@ -109,6 +120,15 @@ async fn run_tick() -> Result<()> {
     // Clear crash-orphaned `.otlp.tmp` files first so they can't accumulate
     // unbounded (they're invisible to both the cap and the lister otherwise).
     sweep_tmp_orphans(&pending);
+
+    // Retention: age-prune BOTH dirs UNCONDITIONALLY — before any ship-target
+    // check. A Canonical/packaged install never ships (resolve_otlp_target()
+    // always returns None for it), so pending/ is the only place spooled
+    // telemetry ever lives; retention must not depend on delivery happening.
+    let retention_secs = retention_days() * 24 * 3600;
+    prune_by_age(&pending, retention_secs)?;
+    prune_by_age(&sent, retention_secs)?;
+    cap_launchd_logs();
 
     // Enforce pending cap BEFORE trying to ship so we don't OOM on a long OO outage.
     enforce_pending_cap(&pending)?;
@@ -230,9 +250,6 @@ async fn run_tick() -> Result<()> {
         }
     }
 
-    // Retention: prune old sent files.
-    prune_sent(&sent)?;
-
     Ok(())
 }
 
@@ -298,15 +315,17 @@ fn list_pending_oldest_first(dir: &Path) -> Vec<PathBuf> {
     files.into_iter().map(|(_, _, p)| p).collect()
 }
 
-/// Delete sent/ files whose mtime is older than `retention_days`.
-fn prune_sent(sent_dir: &Path) -> Result<()> {
-    let cutoff_secs = retention_days() * 24 * 3600;
+/// Delete `.otlp` files in `dir` whose mtime is older than `cutoff_secs`.
+/// Used for both `pending/` and `sent/` — retention applies to spooled
+/// telemetry regardless of whether it was ever shipped (a Canonical/packaged
+/// install never ships at all, so `pending/` is its only spool location).
+fn prune_by_age(dir: &Path, cutoff_secs: u64) -> Result<()> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
 
-    let Ok(entries) = std::fs::read_dir(sent_dir) else {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return Ok(());
     };
 
@@ -328,11 +347,96 @@ fn prune_sent(sent_dir: &Path) -> Result<()> {
                 // a fresh file's age (~0s) is never >= 604800s.
                 if age_secs >= cutoff_secs {
                     let _ = std::fs::remove_file(&path);
-                    tracing::debug!(file = %path.display(), age_days = age_secs / 86400, "pruned old sent telemetry file");
+                    tracing::debug!(file = %path.display(), age_days = age_secs / 86400, "pruned old telemetry file");
                 }
             }
         }
     }
+    Ok(())
+}
+
+/// launchd-redirected raw stdout/stderr files (see each service's
+/// `com.meridiona.*.plist` `StandardOutPath`/`StandardErrorPath`) — the crash
+/// safety net `tracing`/`logging` no longer mirrors into (the OTel spool is
+/// the sole application-log sink; see `observability.rs`'s module doc). These
+/// have no built-in rotation, so they're capped here instead.
+pub(crate) const LAUNCHD_LOG_NAMES: &[&str] = &[
+    "daemon.log",
+    "daemon-error.log",
+    "tray.log",
+    "tray-error.log",
+    "mlx-server.log",
+    "mlx-server-error.log",
+    "a11y-helper.log",
+    "a11y-helper-error.log",
+];
+
+const DEFAULT_LAUNCHD_LOG_MAX_MB: u64 = 10;
+
+fn launchd_log_max_bytes() -> u64 {
+    let mb = std::env::var("MERIDIAN_LAUNCHD_LOG_MAX_MB")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_LAUNCHD_LOG_MAX_MB);
+    mb * 1024 * 1024
+}
+
+/// Cap each known launchd-redirected log file to `MERIDIAN_LAUNCHD_LOG_MAX_MB`
+/// (default 10MB) via a "copytruncate" strategy: keep only the last
+/// `max_bytes` of content, truncate the rest. Safe for a file an unrelated
+/// process (launchd, holding the service's stdout/stderr fd open for its
+/// lifetime) is actively appending to — POSIX re-seeks to true EOF on every
+/// `write()` when the fd was opened `O_APPEND` (which launchd's
+/// `StandardOutPath`/`StandardErrorPath` redirection uses), so truncating out
+/// from under it just shortens where "EOF" is; the writer keeps appending
+/// correctly from there. This is the same strategy `logrotate`'s
+/// `copytruncate` option uses for exactly this "can't ask the writer to
+/// reopen its fd" case.
+fn cap_launchd_logs() {
+    let Ok(log_dir) = crate::observability::resolve_log_dir() else {
+        return;
+    };
+    let max_bytes = launchd_log_max_bytes();
+
+    for name in LAUNCHD_LOG_NAMES {
+        let path = log_dir.join(name);
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if meta.len() <= max_bytes {
+            continue;
+        }
+        match copytruncate(&path, max_bytes) {
+            Ok(()) => {
+                tracing::debug!(file = %path.display(), kept_bytes = max_bytes, "capped oversized launchd log file");
+            }
+            Err(e) => {
+                tracing::warn!(file = %path.display(), error = %e, "failed to cap oversized launchd log file");
+            }
+        }
+    }
+}
+
+/// Keep only the last `keep_bytes` of `path`, in place. Reads the tail,
+/// truncates to zero, writes the tail back — a single fd, no rename, so it
+/// works even while another process holds the same path open for appending.
+fn copytruncate(path: &Path, keep_bytes: u64) -> std::io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?;
+    let len = file.metadata()?.len();
+    let skip = len.saturating_sub(keep_bytes);
+
+    file.seek(SeekFrom::Start(skip))?;
+    let mut tail = Vec::with_capacity(keep_bytes.min(len) as usize);
+    file.read_to_end(&mut tail)?;
+
+    file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(&tail)?;
     Ok(())
 }
 
@@ -406,6 +510,28 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn copytruncate_keeps_only_the_tail() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("daemon.log");
+        std::fs::write(&path, b"0123456789abcdefghij").unwrap(); // 20 bytes
+
+        copytruncate(&path, 5).unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"fghij");
+    }
+
+    #[test]
+    fn copytruncate_noop_when_keep_exceeds_len() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("daemon.log");
+        std::fs::write(&path, b"short").unwrap();
+
+        copytruncate(&path, 100).unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"short");
+    }
+
+    #[test]
     fn list_pending_sorted_oldest_first() {
         let dir = TempDir::new().unwrap();
         let base = dir.path().to_path_buf();
@@ -454,24 +580,44 @@ mod tests {
     }
 
     #[test]
-    fn prune_sent_removes_old_files() {
+    fn prune_by_age_removes_old_files_in_sent() {
         let dir = TempDir::new().unwrap();
         let sent = dir.path().join("sent");
         std::fs::create_dir_all(&sent).unwrap();
 
-        // Create an old file by setting mtime to epoch+1s
         let old_file = sent.join("traces-1-0.otlp");
         std::fs::write(&old_file, b"x").unwrap();
-        // Set mtime to a very old time via filetime
-        // We can't easily set mtime in pure std; instead we mock via a very low
-        // retention (0 days) — everything gets pruned.
-        // Override env for this test.
-        std::env::set_var("MERIDIAN_TELEMETRY_RETENTION_DAYS", "0");
-        prune_sent(&sent).unwrap();
-        std::env::remove_var("MERIDIAN_TELEMETRY_RETENTION_DAYS");
+        // A 0-second cutoff means "keep nothing" — everything is at least 0s old.
+        prune_by_age(&sent, 0).unwrap();
 
-        // File should be removed (0-day retention = everything > 0s old)
         assert!(!old_file.exists());
+    }
+
+    #[test]
+    fn prune_by_age_removes_old_files_in_pending() {
+        // Retention must apply to pending/ too — it's the ONLY spool location
+        // for a Canonical/packaged install, which never ships to sent/.
+        let dir = TempDir::new().unwrap();
+        let base = dir.path().to_path_buf();
+        let p = write_pending(&base, "traces", b"x").unwrap();
+        let pending = pending_dir(&base);
+
+        prune_by_age(&pending, 0).unwrap();
+
+        assert!(!p.exists());
+    }
+
+    #[test]
+    fn prune_by_age_keeps_fresh_files() {
+        let dir = TempDir::new().unwrap();
+        let base = dir.path().to_path_buf();
+        let p = write_pending(&base, "traces", b"x").unwrap();
+        let pending = pending_dir(&base);
+
+        // A generous cutoff (1 day) must not touch a file written moments ago.
+        prune_by_age(&pending, 24 * 3600).unwrap();
+
+        assert!(p.exists());
     }
 
     #[test]

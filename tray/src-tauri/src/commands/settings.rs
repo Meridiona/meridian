@@ -16,8 +16,11 @@
 //!
 //! # Related
 //! - [`meridian_core::settings`] — the schema, path, and the value read/write.
-//! - [`crate::commands::openobserve`] / [`crate::commands::daemon`] — the
-//!   service-start + daemon-reload steps the Settings "Apply" flow chains after a save.
+//! - [`crate::commands::daemon`] — the daemon-reload step the Settings "Apply"
+//!   flow chains after a save. `otlp_enabled`/`otlp_endpoint`/`oo_email`/
+//!   `oo_password` remain valid fields (consumed by a Dev/Bare install's
+//!   shipper — see `src/observability.rs`) but the shipped app no longer
+//!   installs/manages a local OpenObserve service for them.
 
 use serde_json::Value;
 use tauri::State;

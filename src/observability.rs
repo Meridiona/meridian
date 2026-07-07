@@ -2,26 +2,61 @@
 //
 // Observability bootstrap.
 //
-// One call to `init(service_name)` builds a layered `tracing` subscriber that:
-//   1. Pretty-prints to stdout (so `meridian logs` / daemon.log captures it)
-//   2. Writes JSON Lines to `~/.meridian/logs/<service>.jsonl` with daily rotation
-//   3. Exports OpenTelemetry traces to OpenObserve via OTLP/HTTP
-//   4. Exports OpenTelemetry logs  to OpenObserve via OTLP/HTTP
-//      (log events carry trace_id/span_id so they correlate with traces in OO)
+// One call to `init(service_name)` builds a `tracing` subscriber whose
+// canonical, persisted sink is the local OpenTelemetry telemetry spool
+// (`~/.meridian/telemetry/pending/`, both traces and logs — log events carry
+// trace_id/span_id so they correlate with traces). There is no separate
+// JSON-Lines log file — every `tracing::*!` call is captured there, so there
+// is exactly one STORED log/trace representation to export/import, not
+// several. `meridian logs` (see `telemetry_spool::render`) decodes this same
+// spool back to human-readable text on demand rather than reading a parallel
+// plain-text file.
+//
+// In a debug build (`cargo run`/`cargo watch` — i.e. every normal dev
+// workflow, `dev-start.sh` included) a compact stdout/stderr mirror is ALSO
+// installed, purely for live terminal visibility — it writes nothing to
+// disk, so it isn't a second persisted log store, just an ephemeral view of
+// the same events (the same pattern as `kubectl logs -f` alongside a
+// structured backend). Gated on `cfg!(debug_assertions)`, NOT on install type
+// (`is_canonical_install()`/`Dev`/`Bare`/`Canonical`): those answer a
+// different question (may this process ship to OpenObserve?) and using it
+// here would misfire on a dev machine that also has the packaged app
+// installed (`~/.meridian/.env` would exist, silently killing terminal
+// output during normal dev work). A `--release` build — what actually ships
+// in the DMG — never gets this mirror, matching production exactly.
+//
+// The one thing NOT covered by this pipeline is a hard crash (panic before
+// `init` runs, segfault, OOM kill) — for that, launchd's own stdout/stderr
+// redirect (`~/.meridian/logs/<service>.log` / `<service>-error.log`, set in
+// each service's `com.meridiona.*.plist`) is the OS-level safety net; it's
+// unrelated to `tracing` and stays in place, size-capped by
+// `telemetry_spool::shipper` and folded into diagnostics export bundles.
+//
+// Capture (writing spans/logs to `~/.meridian/telemetry/pending/`) is
+// unconditional — it's a local disk write, not a network call — so every
+// install always has full structured traces available for export, regardless
+// of shipping configuration. Only *delivery* (the background shipper POSTing
+// spooled files to OpenObserve) is gated, and only for a Dev/Bare install with
+// `otlp_enabled` + credentials; a Canonical (packaged/shipped) install never
+// attempts network delivery. See `is_canonical_install()` below and
+// `telemetry_spool::shipper`.
 //
 // Environment variables read at init time:
-//   MERIDIAN_OTLP_ENDPOINT  — OTLP/HTTP traces endpoint override
-//                              (default: http://localhost:5080/api/default/v1/traces)
-//   MERIDIAN_LOG_DIR        — log directory (default: ~/.meridian/logs)
-//   RUST_LOG                — standard env-filter; default
-//                              "meridian=info,meridian::etl=debug,sqlx=warn"
+//   MERIDIAN_OTLP_ENDPOINT     — OTLP/HTTP traces endpoint override
+//                                 (default: http://localhost:5080/api/default/v1/traces)
+//   MERIDIAN_LOG_DIR           — launchd raw-log directory (default: ~/.meridian/logs)
+//   MERIDIAN_TELEMETRY_DISABLED — hard kill switch: skip OTel capture entirely
+//                                 (no tracing sink at all beyond the default panic hook)
+//   RUST_LOG                   — standard env-filter; default
+//                                 "meridian=info,meridian::etl=debug,sqlx=warn"
 //
-// OpenObserve credentials come from settings.json (oo_email/oo_password, set in
-// the dashboard Settings). The MERIDIAN_OO_AUTH env var is DEPRECATED and
-// ignored; export is skipped when settings carry no credentials.
+// OpenObserve credentials (for shipping, dev/bare installs only) come from
+// settings.json (oo_email/oo_password, set in the dashboard Settings). The
+// MERIDIAN_OO_AUTH env var is DEPRECATED and ignored; shipping is skipped when
+// settings carry no credentials or the install is Canonical.
 //
-// `init` returns an `ObservabilityGuard` whose `Drop` flushes the file writer.
-// Call `ObservabilityGuard::shutdown().await` before tearing down the tokio
+// `init` returns an `ObservabilityGuard`. Call
+// `ObservabilityGuard::shutdown().await` before tearing down the tokio
 // runtime so the batch exporters flush their final payloads.
 
 use anyhow::{Context, Result};
@@ -38,10 +73,33 @@ use opentelemetry_sdk::{
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{layer::SubscriberExt, reload, util::SubscriberInitExt, EnvFilter};
 
 const DEFAULT_OTLP_ENDPOINT: &str = "http://localhost:5080/api/default/v1/traces";
+
+/// True when running from a canonical packaged install (`~/.meridian/.env`
+/// exists — written by the DMG/npm installer; see CLAUDE.md's "Daemon config
+/// gotcha"). A packaged install must never attempt live delivery to
+/// OpenObserve — telemetry capture stays fully local, and the only path to a
+/// developer's OpenObserve is a user-initiated export bundle imported by hand.
+/// A Dev/Bare checkout (no canonical `.env`) may still ship live if
+/// `otlp_enabled` + credentials are configured, for engineers debugging
+/// against their own instance. Mirrors (independently — the daemon has no
+/// dependency on the tray crate) `tray/src-tauri/src/install.rs`'s
+/// `InstallMode::Canonical` check.
+fn is_canonical_install() -> bool {
+    std::env::var("HOME")
+        .map(|home| std::path::Path::new(&home).join(".meridian/.env").exists())
+        .unwrap_or(false)
+}
+
+/// Hard kill switch for OTel capture (spans/logs to the local spool). Plain
+/// stdout/stderr/JSONL-file logs are unaffected. Mirrors Python's
+/// `MERIDIAN_TRACING_DISABLED`.
+fn capture_disabled() -> bool {
+    std::env::var("MERIDIAN_TELEMETRY_DISABLED")
+        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+}
 
 /// Type alias for the hot-reload handle. The `S = Registry` parameter reflects
 /// that the reload layer is installed directly on `tracing_subscriber::Registry`
@@ -52,15 +110,14 @@ type FilterHandle = reload::Handle<EnvFilter, tracing_subscriber::Registry>;
 /// Set once during `init()`; accessed from the poll loop via `reload_log_level()`.
 static FILTER_HANDLE: OnceLock<FilterHandle> = OnceLock::new();
 
-/// RAII guard returned from [`init`]. Holds the file-writer worker thread and
-/// (when OTel is enabled) the logger provider for graceful shutdown.
+/// RAII guard returned from [`init`]. Holds (when OTel is enabled) the logger
+/// provider for graceful shutdown.
 ///
 /// Call [`ObservabilityGuard::shutdown`] explicitly before the tokio runtime
 /// is torn down — the BatchSpanProcessor's shutdown is blocking, and a Drop
 /// inside an async context panics with "Cannot drop a runtime in a context
-/// where blocking is not allowed". Drop here just releases the file writer.
+/// where blocking is not allowed".
 pub struct ObservabilityGuard {
-    _file_guard: WorkerGuard,
     logger_provider: Option<LoggerProvider>,
     otel_enabled: bool,
 }
@@ -83,16 +140,12 @@ impl ObservabilityGuard {
 
 /// Initialise the layered tracing subscriber.
 ///
-/// `service_name` becomes the OTel `service.name` resource attribute and the
-/// log file prefix (e.g. "meridian-rust" → `meridian-rust.jsonl`).
+/// `service_name` becomes the OTel `service.name` resource attribute. The
+/// OTel spool (traces + logs) is the sole PERSISTED sink; a debug build also
+/// gets a compact stdout/stderr mirror for live terminal visibility (see the
+/// module doc comment above for why this is gated on `cfg!(debug_assertions)`
+/// rather than install type).
 pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
-    let log_dir = resolve_log_dir()?;
-    std::fs::create_dir_all(&log_dir)
-        .with_context(|| format!("create log dir {}", log_dir.display()))?;
-
-    let file_appender = tracing_appender::rolling::daily(&log_dir, format!("{service_name}.jsonl"));
-    let (file_writer, file_guard) = tracing_appender::non_blocking(file_appender);
-
     // Build the env filter from RUST_LOG if set; otherwise derive from settings.log_level.
     let settings_log_level = crate::config::load_runtime_settings().log_level;
     let default_filter = build_default_filter(&settings_log_level);
@@ -107,26 +160,24 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
     // Using Option::take() satisfies the borrow checker since only one branch runs.
     let mut rl = Some(reload_layer);
 
-    // stdout: everything (INFO+). This is what `meridian logs` / daemon.log shows.
-    let fmt_stdout = tracing_subscriber::fmt::layer()
-        .with_target(true)
-        .with_writer(std::io::stdout)
-        .compact();
-    // stderr: WARN+ERROR only — a filtered view so `meridian logs daemon-error`
-    // surfaces just the problems. Errors still appear in stdout/daemon.log too.
+    // Debug-build-only terminal mirror. `Option<Layer>` itself implements
+    // `Layer` (tracing-subscriber's blanket impl), so `.with(fmt_stdout)`
+    // below is a no-op layer in a release build — no runtime cost, no output.
+    let fmt_stdout = cfg!(debug_assertions).then(|| {
+        tracing_subscriber::fmt::layer()
+            .with_target(true)
+            .with_writer(std::io::stdout)
+            .compact()
+    });
     use tracing_subscriber::filter::LevelFilter;
     use tracing_subscriber::Layer as _;
-    let fmt_stderr = tracing_subscriber::fmt::layer()
-        .with_target(true)
-        .with_writer(std::io::stderr)
-        .compact()
-        .with_filter(LevelFilter::WARN);
-    let fmt_file = tracing_subscriber::fmt::layer()
-        .with_target(true)
-        .with_writer(file_writer)
-        .json()
-        .with_current_span(true)
-        .with_span_list(false);
+    let fmt_stderr = cfg!(debug_assertions).then(|| {
+        tracing_subscriber::fmt::layer()
+            .with_target(true)
+            .with_writer(std::io::stderr)
+            .compact()
+            .with_filter(LevelFilter::WARN)
+    });
 
     // Build OTel providers first (no generic subscriber type involved yet),
     // then construct the layers inline so the subscriber type is concrete at
@@ -143,7 +194,6 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
                 .with(rl.take().unwrap())
                 .with(fmt_stdout)
                 .with(fmt_stderr)
-                .with(fmt_file)
                 .with(trace_layer)
                 .with(log_layer)
                 .init();
@@ -151,11 +201,15 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
             (true, Some(lp))
         }
         Ok(None) => {
+            // Capture disabled (MERIDIAN_TELEMETRY_DISABLED) — no persisted
+            // sink beyond the filter layer (still gets the debug-build
+            // terminal mirror, if any). Rust's default panic hook still
+            // prints to stderr regardless of any tracing subscriber, so a
+            // hard failure is never silent even here.
             tracing_subscriber::registry()
                 .with(rl.take().unwrap())
                 .with(fmt_stdout)
                 .with(fmt_stderr)
-                .with(fmt_file)
                 .init();
             (false, None)
         }
@@ -165,7 +219,6 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
                 .with(rl.take().unwrap())
                 .with(fmt_stdout)
                 .with(fmt_stderr)
-                .with(fmt_file)
                 .init();
             (false, None)
         }
@@ -178,21 +231,18 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
     if otel_enabled {
         tracing::info!(
             service.name = service_name,
-            log_dir = %log_dir.display(),
             otel = "enabled",
             "observability initialised"
         );
     } else {
         tracing::info!(
             service.name = service_name,
-            log_dir = %log_dir.display(),
             otel = "disabled",
             "observability initialised (no OTLP exporter)"
         );
     }
 
     Ok(ObservabilityGuard {
-        _file_guard: file_guard,
         logger_provider,
         otel_enabled,
     })
@@ -207,8 +257,12 @@ pub struct OtlpTarget {
 
 /// Cheap liveness check used by the health probe — does NOT assemble
 /// credentials. Returns `true` when OTLP export would be attempted if
-/// `resolve_otlp_target()` were called (toggle on + credentials present).
+/// `resolve_otlp_target()` were called (toggle on + credentials present +
+/// not a Canonical/packaged install).
 pub fn is_otlp_configured() -> bool {
+    if is_canonical_install() {
+        return false;
+    }
     let settings = crate::config::load_runtime_settings();
     if !settings.otlp_enabled {
         return false;
@@ -225,6 +279,9 @@ pub fn is_otlp_configured() -> bool {
 /// Resolve the configured OTLP endpoint URL (without assembling credentials).
 /// Used by the health check to derive the `/healthz` URL to ping.
 pub fn resolve_otlp_endpoint() -> Option<String> {
+    if is_canonical_install() {
+        return None;
+    }
     let settings = crate::config::load_runtime_settings();
     if !settings.otlp_enabled {
         return None;
@@ -247,6 +304,13 @@ pub fn resolve_otlp_endpoint() -> Option<String> {
 /// `is_otlp_configured()` + `resolve_otlp_endpoint()` for lighter call sites.
 pub fn resolve_otlp_target() -> Option<OtlpTarget> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    // Packaged installs never ship live to OpenObserve — capture stays fully
+    // local; the only path out is a user-initiated export bundle. This check
+    // comes first and unconditionally, regardless of settings.json.
+    if is_canonical_install() {
+        return None;
+    }
 
     let settings = crate::config::load_runtime_settings();
 
@@ -304,23 +368,23 @@ pub fn resolve_otlp_target() -> Option<OtlpTarget> {
 
 /// Builds the OTel tracer and logger providers.
 ///
-/// When `otlp_enabled` is true in settings.json the exporters are wired to the
-/// [`SpoolClient`], which writes every OTLP batch atomically to
-/// `~/.meridian/telemetry/pending/` and returns a synthetic HTTP 200.  The
-/// background shipper task then forwards the files to OpenObserve whenever a
-/// target is reachable.  This keeps capture and delivery fully decoupled: no
-/// telemetry is lost during OO downtime.
+/// The exporters are always wired to the [`SpoolClient`], which writes every
+/// OTLP batch atomically to `~/.meridian/telemetry/pending/` and returns a
+/// synthetic HTTP 200 — this is a local disk write, not a network call, so
+/// capture happens unconditionally (every install, dev or packaged). The
+/// background shipper task separately decides whether it's allowed to forward
+/// spooled files to OpenObserve (Dev/Bare install + `otlp_enabled` +
+/// credentials); a Canonical install never ships. This keeps capture and
+/// delivery fully decoupled: no telemetry is lost during OO downtime, and a
+/// packaged install still has full local traces to export by hand.
 ///
-/// We build the spool providers whenever `otlp_enabled` is true — even when
-/// credentials are absent — so durability works before OO is fully configured.
-/// The shipper checks `resolve_otlp_target()` separately and skips delivery
-/// until credentials are present.
+/// Only `MERIDIAN_TELEMETRY_DISABLED` skips capture entirely (an explicit
+/// escape hatch, not tied to shipping config).
 fn try_build_otel_providers(service_name: &str) -> Result<Option<(Tracer, LoggerProvider)>> {
-    // Gate on otlp_enabled only — credentials are NOT required for capture.
-    let settings = crate::config::load_runtime_settings();
-    if !settings.otlp_enabled {
+    if capture_disabled() {
         return Ok(None);
     }
+    let settings = crate::config::load_runtime_settings();
 
     // Derive placeholder endpoints — SpoolClient ignores them (it writes to
     // disk), but the SDK requires non-empty strings.
@@ -412,7 +476,14 @@ pub fn reload_log_level(level: &str) -> bool {
     }
 }
 
-fn resolve_log_dir() -> Result<PathBuf> {
+/// `~/.meridian/logs/` — where launchd redirects each service's raw
+/// stdout/stderr (`daemon.log`, `mlx-server.log`, etc. — see each service's
+/// `com.meridiona.*.plist`). No longer written to by `tracing`/`logging`
+/// directly (the OTel spool is the sole application-log sink now); this
+/// directory holds only the crash-safety-net text launchd captures. Public so
+/// the telemetry shipper's raw-log size cap (`telemetry_spool::shipper`) and
+/// the diagnostics export bundle can find it.
+pub fn resolve_log_dir() -> Result<PathBuf> {
     if let Ok(dir) = std::env::var("MERIDIAN_LOG_DIR") {
         return Ok(PathBuf::from(shellexpand::tilde(&dir).into_owned()));
     }

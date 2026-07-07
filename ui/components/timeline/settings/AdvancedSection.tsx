@@ -1,12 +1,13 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Settings → Advanced. Runtime-tuning knobs migrated 1:1 from the old
-// SettingsView: Observability (OpenObserve export + log level, with the
-// install/reload flow via useApplyObservability), ETL Pipeline poll interval,
-// Session Classification thresholds, LLM local-model preference, and the
-// Jira Updater toggle. These don't fit Integrations/Capture/Notifications/
-// Appearance — they're internal daemon behavior, not user-facing product
-// surfaces, so they're grouped here rather than invented a home for each.
+// SettingsView: Observability (local capture + log level; export via
+// useExportDiagnostics — the shipped app never installs/runs a local
+// OpenObserve service), ETL Pipeline poll interval, Session Classification
+// thresholds, LLM local-model preference, and the Jira Updater toggle. These
+// don't fit Integrations/Capture/Notifications/Appearance — they're internal
+// daemon behavior, not user-facing product surfaces, so they're grouped here
+// rather than invented a home for each.
 
 'use client'
 
@@ -14,11 +15,9 @@ import { useState } from 'react'
 import { Select } from '@/components/ui/Select'
 import { Switch } from '@/components/ui/Switch'
 import { NumberStepper } from '@/components/ui/NumberStepper'
-import { TextInput } from '@/components/ui/TextInput'
 import type { RuntimeSettings } from '@/lib/settings'
-import { openExternal } from '@/lib/bridge'
 import { SectionCard, SectionHeader, FieldRow, SaveButton, SettingsButton, type SaveStatus } from './fields'
-import { useApplyObservability } from './useApplyObservability'
+import { useExportDiagnostics } from './useExportDiagnostics'
 
 const LOG_LEVEL_OPTIONS = [
   { value: 'DEBUG',   label: 'DEBUG' },
@@ -37,8 +36,8 @@ export function AdvancedSection({ settings, setSettings, patch, save }: {
   const [classificationStatus, setClassificationStatus] = useState<SaveStatus>('idle')
   const [llmStatus, setLlmStatus] = useState<SaveStatus>('idle')
   const [jiraStatus, setJiraStatus] = useState<SaveStatus>('idle')
-  const { reloadStatus, reloadMsg, apply: applyObservability } = useApplyObservability(settings, setSettings)
-  const applying = reloadStatus === 'saving' || reloadStatus === 'installing' || reloadStatus === 'reloading'
+  const [logLevelStatus, setLogLevelStatus] = useState<SaveStatus>('idle')
+  const { status: exportStatus, path: exportPath, errorMsg: exportError, exportBundle } = useExportDiagnostics()
 
   return (
     <div className="max-w-[640px] flex flex-col gap-5">
@@ -53,55 +52,25 @@ export function AdvancedSection({ settings, setSettings, patch, save }: {
 
       <SectionCard>
         <SectionHeader>Observability</SectionHeader>
-        <FieldRow label="OpenObserve Export" description="Send traces and logs to the local OpenObserve instance. Off by default; enabling reveals the connection fields. Apply starts/stops OpenObserve and restarts the daemon for you.">
-          <Switch checked={settings.otlp_enabled} onCheckedChange={v => patch({ otlp_enabled: v })} />
-        </FieldRow>
-        <FieldRow label="Log Level" description="Verbosity of daemon logs — always applies to the local log files, and to OpenObserve export when enabled. DEBUG logs everything; WARNING/ERROR suppress info. Hot-reloads on the next daemon tick.">
+        <FieldRow label="Log Level" description="Verbosity of local logs and traces. DEBUG logs everything; WARNING/ERROR suppress info. Hot-reloads on the next daemon tick.">
           <Select
             value={settings.log_level}
             onValueChange={v => patch({ log_level: v as RuntimeSettings['log_level'] })}
             options={LOG_LEVEL_OPTIONS}
           />
         </FieldRow>
-        {settings.otlp_enabled && (
-          <>
-            <FieldRow label="Email" description="Your OpenObserve login. First time? Just pick an email and password here — they become the OpenObserve root account when the service first starts. Already using OpenObserve? Enter the credentials you log in with.">
-              <TextInput type="email" value={settings.oo_email} onChange={v => patch({ oo_email: v })} placeholder="you@example.com" />
-            </FieldRow>
-            <FieldRow label="Password" description="Stored locally; used to log in at localhost:5080 and as auth for trace/log export.">
-              <TextInput type="password" value={settings.oo_password} onChange={v => patch({ oo_password: v })} placeholder="••••••••" />
-            </FieldRow>
-            <FieldRow label="OTLP Endpoint (optional)" description="Advanced — leave blank for the local OpenObserve instance. Only set this to export to a remote collector.">
-              <TextInput value={settings.otlp_endpoint} onChange={v => patch({ otlp_endpoint: v })} placeholder="http://localhost:5080/api/default/v1/traces" />
-            </FieldRow>
-          </>
-        )}
-        <div className="flex items-center gap-2.5 pt-2 flex-wrap" style={{ borderTop: '1px solid var(--t-hair)' }}>
-          <SettingsButton onClick={applyObservability} disabled={applying}>
-            {reloadStatus === 'saving' ? 'Saving…'
-              : reloadStatus === 'installing' ? 'Installing…'
-              : reloadStatus === 'reloading' ? 'Reloading…'
-              : 'Apply'}
+        <SaveButton status={logLevelStatus} onClick={() => save({ log_level: settings.log_level }, setLogLevelStatus)} />
+        <FieldRow label="Export Diagnostics" description="Captures your local logs and traces for troubleshooting — nothing leaves your machine until you share this file. Saved to your Downloads folder and revealed in Finder.">
+          <SettingsButton onClick={exportBundle} disabled={exportStatus === 'exporting'}>
+            {exportStatus === 'exporting' ? 'Exporting…' : 'Export Diagnostics'}
           </SettingsButton>
-          {reloadStatus === 'done' && <span className="text-[12px]" style={{ color: 'var(--color-state-approved)' }}>Active</span>}
-          {reloadStatus === 'error' && <span className="text-[12px]" style={{ color: 'var(--color-state-pending)' }}>{reloadMsg ?? 'Failed'}</span>}
-          <span className="text-[11px]" style={{ color: 'var(--t-faint)' }}>
-            {reloadStatus === 'installing' ? 'Downloading & installing OpenObserve (first time only)…'
-              : reloadStatus === 'reloading' ? 'Restarting daemon…'
-              : 'Apply handles everything — installs/starts/stops OpenObserve and restarts the daemon'}
-          </span>
-          {settings.otlp_enabled && (
-            <SettingsButton variant="outline" onClick={() => {
-              let base = 'http://localhost:5080'
-              try {
-                if (settings.otlp_endpoint) base = new URL(settings.otlp_endpoint).origin
-              } catch { /* keep default */ }
-              openExternal(base)
-            }}>
-              Open OpenObserve
-            </SettingsButton>
-          )}
-        </div>
+        </FieldRow>
+        {exportStatus === 'done' && exportPath && (
+          <span className="text-[12px]" style={{ color: 'var(--color-state-approved)' }}>Saved to {exportPath}</span>
+        )}
+        {exportStatus === 'error' && (
+          <span className="text-[12px]" style={{ color: 'var(--color-state-pending)' }}>{exportError ?? 'Export failed'}</span>
+        )}
       </SectionCard>
 
       <SectionCard>

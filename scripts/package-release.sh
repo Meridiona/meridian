@@ -58,16 +58,16 @@ cp scripts/meridian-cli.sh scripts/install-from-bundle.sh scripts/meridian-npm-s
 cp scripts/install-daemon.sh scripts/uninstall-daemon.sh \
    scripts/install-screenpipe-daemon.sh scripts/uninstall-screenpipe-daemon.sh \
    scripts/install-a11y-helper-daemon.sh "${DEST}/scripts/"
-# OpenObserve installer + plist: required at runtime by the dashboard's
-# "OpenObserve Export" toggle, which bootstraps OO on demand via the tray's
-# set_openobserve command → scripts/install-openobserve-daemon.sh. Without these
-# in the bundle the toggle errors "OpenObserve installer not found".
-cp scripts/install-openobserve-daemon.sh scripts/uninstall-openobserve-daemon.sh \
-   "${DEST}/scripts/"
+# OpenObserve is NOT bundled: the shipped app never installs/runs a local
+# OpenObserve service (telemetry is always captured to the local spool +
+# JSONL logs and only ever ships out via a user-initiated export bundle —
+# see src/telemetry_spool/ and the tray's "Export Diagnostics" action).
+# scripts/install-openobserve-daemon.sh remains a dev-only convenience
+# (see install-dev.sh) for engineers who want to ship live to their own
+# OpenObserve from a source checkout — it is intentionally excluded here.
 cp scripts/com.meridiona.daemon.plist \
    scripts/com.meridiona.screenpipe.plist \
    scripts/com.meridiona.a11y-helper.plist \
-   scripts/com.meridiona.openobserve.plist \
    scripts/com.meridiona.tray.plist "${DEST}/scripts/"
 cp scripts/install-tray-daemon.sh scripts/uninstall-tray-daemon.sh "${DEST}/scripts/"
 

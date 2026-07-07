@@ -152,52 +152,63 @@ cmd_status() {
 }
 
 # --- logs ---
-cmd_logs() {
-    local target="daemon"
-    local follow=0
-    local lines=100
+# Resolve the compiled `meridian` binary (distinct from THIS bash wrapper,
+# which is what gets invoked as `meridian` on PATH). Mirrors
+# tray/src-tauri/src/install.rs's `meridian_bin()`: packaged native locations
+# first, a dev build only for a source checkout.
+_meridian_native_bin() {
+    local p
+    for p in "${HOME}/.meridian/bin/meridian" "${HOME}/.meridian/app/bin/meridian"; do
+        [[ -x "$p" ]] && { echo "$p"; return 0; }
+    done
+    if _is_source_checkout; then
+        for p in "${REPO_ROOT}/target/release/meridian" "${REPO_ROOT}/target/debug/meridian"; do
+            [[ -x "$p" ]] && { echo "$p"; return 0; }
+        done
+    fi
+    return 1
+}
 
-    # consume target if it's not a flag
+# `meridian logs [target] [-n N] [-f]` decodes the local OTel telemetry spool
+# (`~/.meridian/telemetry/{pending,sent}/*.otlp`) via the compiled binary's
+# `logs` subcommand (`src/telemetry_spool/render.rs`) — the OTel spool is now
+# the ONLY log/trace sink (see `observability.rs`'s module doc), so this is
+# the one supported way to read logs locally without OpenObserve. `target`
+# maps to `--service <name>`; omit it to see every service interleaved.
+cmd_logs() {
+    local target=""
     if [[ $# -gt 0 && "${1:-}" != -* ]]; then
         target="$1"; shift
     fi
 
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            -f) follow=1; shift ;;
-            -n) lines="${2:?-n requires a value}"; shift 2 ;;
-            *) err "unknown option: $1"; exit 1 ;;
-        esac
-    done
-
-    local log_file
+    local service_args=()
     case "$target" in
-        daemon)            log_file="${LOG_DIR}/daemon.log" ;;
-        daemon-error)      log_file="${LOG_DIR}/daemon-error.log" ;;
-        screenpipe)        log_file="${LOG_DIR}/screenpipe.log" ;;
-        screenpipe-error)  log_file="${LOG_DIR}/screenpipe-error.log" ;;
-        ui)                log_file="${LOG_DIR}/ui.log" ;;
-        ui-error)          log_file="${LOG_DIR}/ui-error.log" ;;
-        mlx-server)        log_file="${LOG_DIR}/mlx-server.log" ;;
-        mlx-server-error)  log_file="${LOG_DIR}/mlx-server-error.log" ;;
-        tray)              log_file="${LOG_DIR}/tray.log" ;;
-        tray-error)        log_file="${LOG_DIR}/tray-error.log" ;;
-        # screenpipe/ui are retired post-v1.64.0 (capture is in-process in the
-        # tray; the dashboard is embedded) — kept here so old log files remain
-        # tailable, but `tray`/`tray-error` are the live targets now.
-        *) err "unknown log target: ${target} (daemon|daemon-error|mlx-server|mlx-server-error|tray|tray-error)"; exit 1 ;;
+        ""|all)                     ;;
+        daemon|daemon-error)        service_args=(--service meridian-rust) ;;
+        mlx-server|mlx-server-error) service_args=(--service meridian-mlx-server) ;;
+        tray|tray-error)            service_args=(--service meridian-tray) ;;
+        screenpipe|screenpipe-error|ui|ui-error)
+            # Retired pre-in-process-capture / pre-Tauri-fold services — they
+            # never participated in the OTel pipeline. Fall back to raw-tailing
+            # whatever plain-text launchd file might still exist from before.
+            local log_file="${LOG_DIR}/${target}.log"
+            [[ -f "$log_file" ]] || { err "no log file at ${log_file}"; exit 1; }
+            local lines=100 follow=()
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    -f) follow=(-f); shift ;;
+                    -n) lines="${2:?-n requires a value}"; shift 2 ;;
+                    *) err "unknown option: $1"; exit 1 ;;
+                esac
+            done
+            exec tail -n "$lines" "${follow[@]}" "$log_file"
+            ;;
+        *) err "unknown log target: ${target} (daemon|mlx-server|tray, or omit for all)"; exit 1 ;;
     esac
 
-    if [[ ! -f "$log_file" ]]; then
-        err "no log file at ${log_file}"
-        exit 1
-    fi
-
-    if [[ $follow -eq 1 ]]; then
-        tail -n "$lines" -f "$log_file"
-    else
-        tail -n "$lines" "$log_file"
-    fi
+    local bin
+    bin="$(_meridian_native_bin)" || { err "meridian binary not found — run ./install.sh"; exit 1; }
+    exec "$bin" logs "${service_args[@]}" "$@"
 }
 
 # --- doctor ---
