@@ -83,14 +83,24 @@ pub fn run() {
     let mlx_manager: mlx_server::SharedMlxManager =
         Arc::new(tokio::sync::Mutex::new(mlx_server::MlxManager::new(7823)));
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_positioner::init())
-        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         // DMG auto-update: reads endpoint + minisign pubkey from tauri.conf.json.
         // Registered unconditionally; the check is a no-op in a source/dev run
         // (the running binary isn't a packaged `.app` for the updater to swap).
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build());
+    // Interactive notifications (UNUserNotificationCenter via the community
+    // notifications plugin). Its init HARD-FAILS outside a `.app` bundle, which
+    // would crash `tauri dev` / `cargo run` — so it's registered only when
+    // bundled. Unbundled runs drop toasts (sys::notify* degrade to logged
+    // no-ops) — the same packaged-only caveat as the popover asset layout.
+    if sys::is_bundled() {
+        builder = builder.plugin(tauri_plugin_notifications::init());
+    } else {
+        tracing::info!("unbundled run — notifications plugin not registered, toasts disabled");
+    }
+    builder
         .manage(app_state.clone())
         .manage(mlx_manager.clone())
         .setup(move |app| {
@@ -103,15 +113,34 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             set_process_display_name("Meridian");
 
-            // Request OS notification authorization up front. Without this,
-            // `.show()` is a silent no-op on macOS until the app has prompted at
-            // least once — the reason the health/pause toasts never appeared.
-            {
-                use tauri_plugin_notification::{NotificationExt, PermissionState};
-                let notifier = app.notification();
-                if !matches!(notifier.permission_state(), Ok(PermissionState::Granted)) {
-                    let _ = notifier.request_permission();
-                }
+            // Request OS notification authorization up front (without it,
+            // delivery is a silent no-op until the app has prompted at least
+            // once), then register the interactive category set — the fixed
+            // UNNotificationCategory ids that give toasts their buttons
+            // (meridian-core's `notifications::categories`, one source shared
+            // with the daemon producers). Bundled runs only: the plugin isn't
+            // registered otherwise (see the builder above).
+            if sys::is_bundled() {
+                use tauri_plugin_notifications::{NotificationsExt, PermissionState};
+                // Register the interactive category set SYNCHRONOUSLY, before
+                // setup() returns and the poll loop is spawned. Otherwise the
+                // loop's first tick could deliver an interactive toast (a nudge
+                // already due at launch) before its `action_type_id` is
+                // registered, rendering that one toast button-less. Registration
+                // needs no authorization, so it's safe up front; only the
+                // permission prompt — which gates whether delivery happens at
+                // all, never the buttons — stays async.
+                sys::register_notification_categories(app.handle());
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let notifier = handle.notifications();
+                    if !matches!(
+                        notifier.permission_state().await,
+                        Ok(PermissionState::Granted)
+                    ) {
+                        let _ = notifier.request_permission().await;
+                    }
+                });
             }
 
             // Open meridian.db ONCE at startup and share it with commands via
@@ -468,6 +497,7 @@ pub fn run() {
             commands::triage_ignore,
             commands::apply_ticket_fix,
             commands::dismiss_notification,
+            commands::record_notification_response,
             commands::delete_notice,
             commands::edit_worklog,
             commands::rematch_worklog,

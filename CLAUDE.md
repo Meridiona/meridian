@@ -46,6 +46,8 @@ meridian/
     main.rs              # daemon entry point — tokio::main, signal handling, poll loop
     lib.rs               # public crate root
     config.rs            # Config::from_env() — reads env vars, expands ~
+    notifications.rs     # notification outbox producer API — enqueue/retract (see NOTIFICATIONS.md)
+    notification_responses.rs # consumer for interactive-toast answers (snooze, …)
     db/
       mod.rs
       meridian.rs        # writes app_sessions, active_session, etl_runs, etl_cursor, gaps
@@ -405,6 +407,23 @@ standalone viewer script; that was removed as a second, redundant pipeline.
 2. Query `meridian.db` using `better-sqlite3` (see existing routes for the pattern)
 3. Return a typed JSON response; define the response type inline
 4. If the route shells out to the `meridian` binary, resolve it with `selectMeridianBinary(meridianCandidates())` from `@/lib/meridian-bin` — never a bare `'meridian'` or an ad-hoc candidate list (see the launchd/node-wrapper note under Coding Conventions → TypeScript / Next.js)
+
+### Add a notification (plain toast or interactive nudge)
+
+Read `NOTIFICATIONS.md` first — it is the integration guide for the
+notification service (outbox → deliver → respond → consume lifecycle, category
+registry, response handlers, expiry/persistence semantics, plugin gotchas, and
+the packaged-build test recipe). In short:
+
+1. Plain: one `notifications::enqueue(...)` call with a scoped `dedup_key`
+   (`src/notifications.rs`). Never gate on settings in the producer — policy
+   lives in `meridian-core` at drain time.
+2. Interactive: add the category (id + buttons JSON) to
+   `meridian-core/src/notifications.rs::categories`, stamp it on the row via
+   `.category()/.actions()`, and handle the answer with a match arm in
+   `src/notification_responses.rs` (handlers must be idempotent).
+3. Interactive toasts only work in packaged builds (`UNUserNotificationCenter`
+   needs a `.app` bundle) — test per the recipe in `NOTIFICATIONS.md`.
 
 ### Add a new MCP tool
 

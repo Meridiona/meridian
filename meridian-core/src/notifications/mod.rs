@@ -10,6 +10,11 @@
 //! ([`mark_native_delivered`], [`dismiss_banner`]) ack a row so it isn't
 //! re-delivered / re-shown — idempotent, mirroring the same-named TS helpers.
 //!
+//! Interactive notifications (migration 057) extend the outbox into a
+//! round-trip mailbox: a row may carry a [`categories`] id + action buttons,
+//! the tray records the user's answer via [`record_response`], and the daemon
+//! consumes answers via [`unconsumed_responses`] + [`mark_response_consumed`].
+//!
 //! # Who calls this
 //! - [`pending_native`] + [`mark_native_delivered`] — the tray poll loop's
 //!   `drain_notifications` (replaces its `/api/notifications/pending` fetch AND
@@ -18,6 +23,12 @@
 //!   `notifications_allowed` (replaces its `/api/notifications/allowed` fetch).
 //! - [`dismiss_banner`] — the tray `dismiss_notification` command (ported
 //!   `/api/notifications/:id/dismiss`), from the dashboard banner.
+//! - [`record_response`] — the tray `record_notification_response` command
+//!   (the plugin's `actionPerformed` listener lands there).
+//! - [`unconsumed_responses`] + [`mark_response_consumed`] — the daemon's
+//!   response consumer (`src/notification_responses.rs`).
+//! - [`categories`] — the tray's startup category registration AND the daemon
+//!   producers, so the button sets can't drift between the two.
 //!
 //! # Related
 //! - [`crate::settings::RuntimeSettings`] — the preference fields these read.
@@ -25,10 +36,71 @@
 use crate::settings::RuntimeSettings;
 use crate::SqlitePool;
 use sqlx::FromRow;
+use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
 use tracing::Instrument;
 
+// Interactive-notification response leg (migration 057) lives in `responses.rs`
+// to keep each file under the repo's 500-line cap; re-exported so the public
+// path stays `meridian_core::notifications::*` (callers are unchanged).
+mod responses;
+pub use responses::{
+    expired_unanswered, mark_response_consumed, notification_deep_link, record_response,
+    unconsumed_responses, NotificationResponse,
+};
+
+/// The fixed interactive-category set. One source of truth for BOTH sides of
+/// the wire: the tray registers these as `UNNotificationCategory`s at startup,
+/// and the daemon producers stamp the ids onto outbox rows. Action descriptors
+/// are JSON `[{id,title,input?,destructive?,foreground?,inputButtonTitle?,
+/// inputPlaceholder?}]` — the exact shape the notification plugin's
+/// `ActionType.actions` deserializes, so registration parses these verbatim.
+pub mod categories {
+    /// Single \[Open\] button; the generic click-through category.
+    pub const GENERIC_LINK: &str = "generic_link";
+    /// Morning plan nudge: \[Open Plan\] \[Snooze 1h\].
+    pub const PLAN_NUDGE: &str = "plan_nudge";
+    /// Worklog drafts ready: \[Open Worklogs\] \[Snooze 1h\].
+    pub const WORKLOG_READY: &str = "worklog_ready";
+    /// A fault promoted to a toast: \[View\].
+    pub const SYSTEM_FAULT: &str = "system_fault";
+    /// Task-switch verification (flagship nudge, producer lands in PR 2):
+    /// \[Yes, new task\] \[No, same task\] \[Reply…\] with inline text input.
+    pub const VERIFY_SWITCH: &str = "verify_switch";
+
+    /// Every category the tray must register at startup.
+    pub const ALL: [&str; 5] = [
+        GENERIC_LINK,
+        PLAN_NUDGE,
+        WORKLOG_READY,
+        SYSTEM_FAULT,
+        VERIFY_SWITCH,
+    ];
+
+    /// The category's action descriptors (JSON). `foreground: true` actions
+    /// bring the app forward — used for every open/navigate button.
+    pub fn actions_json(category: &str) -> Option<&'static str> {
+        match category {
+            GENERIC_LINK => Some(r#"[{"id":"open","title":"Open","foreground":true}]"#),
+            PLAN_NUDGE => Some(
+                r#"[{"id":"open","title":"Open Plan","foreground":true},{"id":"snooze","title":"Snooze 1h"}]"#,
+            ),
+            WORKLOG_READY => Some(
+                r#"[{"id":"open","title":"Open Worklogs","foreground":true},{"id":"snooze","title":"Snooze 1h"}]"#,
+            ),
+            SYSTEM_FAULT => Some(r#"[{"id":"view","title":"View","foreground":true}]"#),
+            VERIFY_SWITCH => Some(
+                r#"[{"id":"yes","title":"Yes, new task"},{"id":"no","title":"No, same task"},{"id":"reply","title":"Reply…","input":true,"inputButtonTitle":"Send","inputPlaceholder":"What are you working on?"}]"#,
+            ),
+            _ => None,
+        }
+    }
+}
+
 /// A native notification ready to fire (the shape the tray delivers + the route
-/// returns).
+/// returns). `category`/`actions` are `None` on plain rows AND on a pre-057 DB
+/// (the columns are selected only when present), so the tray falls back to a
+/// plain toast in both cases.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PendingNotification {
     pub id: i64,
@@ -36,6 +108,8 @@ pub struct PendingNotification {
     pub body: String,
     pub deep_link: Option<String>,
     pub severity: String,
+    pub category: Option<String>,
+    pub actions: Option<String>,
 }
 
 /// Per-type preference for an `event_key`. Unknown keys default to enabled (a new
@@ -117,10 +191,51 @@ struct NotifRow {
     body: String,
     deep_link: Option<String>,
     channels: String,
+    category: Option<String>,
+    actions: Option<String>,
 }
 
 fn has_channel(channels: &str, channel: &str) -> bool {
     channels.split(',').any(|c| c.trim() == channel)
+}
+
+/// Pools already observed to carry the 057 interactive columns, keyed by pool
+/// handle address. The columns are monotonic — a migration only ever ADDS them
+/// and this process never drops them — so a `true` observation is permanent.
+fn action_columns_cache() -> &'static Mutex<HashSet<usize>> {
+    static CACHE: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Whether the interactive-notification columns (migration 057) exist. The tray
+/// can run against a DB whose daemon predates 057 (overlapping installs), so
+/// every read/write touching the new columns degrades gracefully instead of
+/// erroring the whole queue. Errors count as "missing" — same fail-soft posture
+/// as the pending read.
+///
+/// The result is cached per pool so the steady state skips the pragma round trip
+/// every read/write otherwise pays on each tick, forever. Only a `true` is
+/// latched: columns are monotonic (see [`action_columns_cache`]), and a `false`
+/// covers both a genuine pre-057 schema AND a transient probe error, so caching
+/// it would permanently disable the response leg on one bad read. Keyed
+/// per-pool, not a process-global flag, because one process can legitimately
+/// hold both a post-057 and a pre-057 pool.
+async fn has_action_columns(pool: &SqlitePool) -> bool {
+    let key = pool as *const SqlitePool as usize;
+    if action_columns_cache().lock().unwrap().contains(&key) {
+        return true;
+    }
+    let present = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pragma_table_info('notifications') WHERE name = 'category'",
+    )
+    .fetch_one(pool)
+    .await
+    .map(|n| n > 0)
+    .unwrap_or(false);
+    if present {
+        action_columns_cache().lock().unwrap().insert(key);
+    }
+    present
 }
 
 /// Native-channel rows ready to fire: undelivered, due, unexpired, channel
@@ -137,14 +252,20 @@ pub async fn pending_native(
     if in_quiet_hours(s) {
         return Vec::new();
     }
-    let rows: Vec<NotifRow> = sqlx::query_as::<_, NotifRow>(
-        r#"SELECT id, event_key, severity, title, body, deep_link, channels
+    // Pre-057 DB → NULL literals so one query shape serves both schemas.
+    let action_cols = if has_action_columns(pool).await {
+        "category, actions"
+    } else {
+        "NULL AS category, NULL AS actions"
+    };
+    let rows: Vec<NotifRow> = sqlx::query_as::<_, NotifRow>(&format!(
+        r#"SELECT id, event_key, severity, title, body, deep_link, channels, {action_cols}
            FROM notifications
            WHERE delivered_native_at IS NULL
              AND (scheduled_for IS NULL OR scheduled_for <= ?)
              AND (expires_at IS NULL OR expires_at > ?)
-           ORDER BY id ASC"#,
-    )
+           ORDER BY id ASC"#
+    ))
     .bind(now_iso)
     .bind(now_iso)
     .fetch_all(pool)
@@ -166,6 +287,8 @@ pub async fn pending_native(
             body: r.body,
             deep_link: r.deep_link,
             severity: r.severity,
+            category: r.category,
+            actions: r.actions,
         })
         .collect();
     tracing::debug!(rows = out.len(), "notifications.read.pending");
@@ -279,187 +402,4 @@ pub async fn dismiss_banner(pool: &SqlitePool, id: i64, now: &str) -> anyhow::Re
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use sqlx::sqlite::SqlitePoolOptions;
-
-    fn settings() -> RuntimeSettings {
-        RuntimeSettings::default()
-    }
-
-    /// In-memory pool with the columns the delivery writes touch.
-    async fn notif_pool() -> SqlitePool {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .unwrap();
-        sqlx::query(
-            "CREATE TABLE notifications (\
-                id INTEGER PRIMARY KEY, delivered_native_at TEXT, banner_dismissed_at TEXT, \
-                attempts INTEGER NOT NULL DEFAULT 0)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        pool
-    }
-
-    #[tokio::test]
-    async fn mark_native_delivered_is_idempotent() {
-        let pool = notif_pool().await;
-        sqlx::query("INSERT INTO notifications (id) VALUES (1)")
-            .execute(&pool)
-            .await
-            .unwrap();
-        mark_native_delivered(&pool, 1, "2026-06-18T10:00:00Z")
-            .await
-            .unwrap();
-        // Second ack is a no-op (the IS NULL guard) — attempts must NOT bump again.
-        mark_native_delivered(&pool, 1, "2026-06-18T11:00:00Z")
-            .await
-            .unwrap();
-        let (delivered, attempts): (Option<String>, i64) =
-            sqlx::query_as("SELECT delivered_native_at, attempts FROM notifications WHERE id = 1")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(delivered.as_deref(), Some("2026-06-18T10:00:00Z"));
-        assert_eq!(attempts, 1, "duplicate ack must not re-bump attempts");
-    }
-
-    #[tokio::test]
-    async fn dismiss_banner_stamps_once() {
-        let pool = notif_pool().await;
-        sqlx::query("INSERT INTO notifications (id) VALUES (1)")
-            .execute(&pool)
-            .await
-            .unwrap();
-        dismiss_banner(&pool, 1, "2026-06-18T10:00:00Z")
-            .await
-            .unwrap();
-        dismiss_banner(&pool, 1, "2026-06-18T11:00:00Z")
-            .await
-            .unwrap();
-        let stamp: Option<String> =
-            sqlx::query_scalar("SELECT banner_dismissed_at FROM notifications WHERE id = 1")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(stamp.as_deref(), Some("2026-06-18T10:00:00Z"));
-    }
-
-    #[tokio::test]
-    async fn active_banners_filters_channel_dismissed_expired_and_prefs() {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .unwrap();
-        sqlx::query(
-            "CREATE TABLE notifications (\
-                id INTEGER PRIMARY KEY, event_key TEXT, severity TEXT, title TEXT, body TEXT, \
-                deep_link TEXT, created_at TEXT, channels TEXT, \
-                banner_dismissed_at TEXT, expires_at TEXT)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        let now = "2026-06-18T10:00:00Z";
-        // id1: banner, live → shown.  id2: native-only → excluded.
-        // id3: dismissed → excluded.  id4: expired → excluded.
-        // id5: banner but newer id → must sort BEFORE id1 (id DESC).
-        let rows = [
-            (1, "plan.nudge", "banner", None::<&str>, None::<&str>),
-            (2, "plan.nudge", "native", None, None),
-            (3, "plan.nudge", "banner", Some(now), None),
-            (
-                4,
-                "plan.nudge",
-                "banner",
-                None,
-                Some("2026-06-18T09:00:00Z"),
-            ),
-            (5, "plan.nudge", "banner,native", None, None),
-        ];
-        for (id, ek, ch, dismissed, expires) in rows {
-            sqlx::query(
-                "INSERT INTO notifications (id, event_key, severity, title, body, created_at, channels, banner_dismissed_at, expires_at) \
-                 VALUES (?, ?, 'info', 't', 'b', '2026-06-18T08:00:00Z', ?, ?, ?)",
-            )
-            .bind(id)
-            .bind(ek)
-            .bind(ch)
-            .bind(dismissed)
-            .bind(expires)
-            .execute(&pool)
-            .await
-            .unwrap();
-        }
-
-        let banners = active_banners(&pool, now, &settings()).await;
-        let ids: Vec<i64> = banners.iter().map(|b| b.id).collect();
-        assert_eq!(
-            ids,
-            vec![5, 1],
-            "id DESC; native/dismissed/expired excluded"
-        );
-
-        // Master switch off → nothing surfaces.
-        let mut off = settings();
-        off.notifications_enabled = false;
-        assert!(active_banners(&pool, now, &off).await.is_empty());
-    }
-
-    #[test]
-    fn event_allowed_respects_master_and_type() {
-        let mut s = settings();
-        assert!(event_allowed("plan.nudge", &s));
-        assert!(event_allowed("unknown.event", &s)); // unknown → enabled
-        s.notify_plan_nudge = false;
-        assert!(!event_allowed("plan.nudge", &s));
-        s.notify_plan_nudge = true;
-        s.notifications_enabled = false; // master off → nothing
-        assert!(!event_allowed("plan.nudge", &s));
-        assert!(!event_allowed("unknown.event", &s));
-    }
-
-    #[test]
-    fn quiet_hours_same_day_and_wraparound() {
-        let mut s = settings();
-        // disabled → never quiet
-        assert!(!in_quiet_hours_at(&s, 23 * 60));
-        s.quiet_hours_enabled = true;
-        // default 22:00–08:00 wraps midnight
-        assert!(in_quiet_hours_at(&s, 23 * 60)); // 23:00 inside
-        assert!(in_quiet_hours_at(&s, 2 * 60)); // 02:00 inside
-        assert!(!in_quiet_hours_at(&s, 12 * 60)); // noon outside
-        assert!(!in_quiet_hours_at(&s, 8 * 60)); // 08:00 end-exclusive → outside
-        assert!(in_quiet_hours_at(&s, 22 * 60)); // 22:00 start-inclusive → inside
-                                                 // same-day window 09:00–17:00
-        s.quiet_hours_start = "09:00".into();
-        s.quiet_hours_end = "17:00".into();
-        assert!(in_quiet_hours_at(&s, 12 * 60));
-        assert!(!in_quiet_hours_at(&s, 8 * 60));
-        // malformed bounds → fail open (not quiet)
-        s.quiet_hours_start = "nope".into();
-        assert!(!in_quiet_hours_at(&s, 12 * 60));
-    }
-
-    #[test]
-    fn hhmm_parser_is_strict_like_the_route_regex() {
-        // Accepts 1–2 digit hours, exactly 2 digit minutes.
-        assert_eq!(hhmm_to_minutes("8:00"), Some(8 * 60));
-        assert_eq!(hhmm_to_minutes("08:00"), Some(8 * 60));
-        assert_eq!(hhmm_to_minutes("23:59"), Some(23 * 60 + 59));
-        assert_eq!(hhmm_to_minutes(" 09:30 "), Some(9 * 60 + 30)); // outer trim only
-                                                                   // Rejects everything the original /^(\d{1,2}):(\d{2})$/ rejected.
-        assert_eq!(hhmm_to_minutes("8:5"), None); // 1-digit minutes
-        assert_eq!(hhmm_to_minutes("8:0"), None);
-        assert_eq!(hhmm_to_minutes("+8:00"), None); // sign
-        assert_eq!(hhmm_to_minutes("8:00:00"), None); // trailing seconds
-        assert_eq!(hhmm_to_minutes("24:00"), None); // hour out of range
-        assert_eq!(hhmm_to_minutes("8:60"), None); // minute out of range
-        assert_eq!(hhmm_to_minutes("nope"), None);
-    }
-}
+mod tests;

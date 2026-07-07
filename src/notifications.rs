@@ -45,6 +45,13 @@ pub struct NewNotification<'a> {
     pub scheduled_for: Option<&'a str>,
     /// ISO8601 UTC; the notification is suppressed after this time (NULL = never).
     pub expires_at: Option<&'a str>,
+    /// Interactive category id (a `UNNotificationCategory` the tray registered,
+    /// e.g. `plan_nudge`). NULL = plain title+body toast, today's behaviour.
+    pub category: Option<&'a str>,
+    /// JSON `[{id,title,input?,destructive?,foreground?}]` describing the
+    /// category's buttons. Informational in v1 (macOS renders the registered
+    /// category); carried for banner rendering + future dynamic-copy producers.
+    pub actions: Option<&'a str>,
 }
 
 impl<'a> NewNotification<'a> {
@@ -60,6 +67,8 @@ impl<'a> NewNotification<'a> {
             channels: CHANNELS_BOTH,
             scheduled_for: None,
             expires_at: None,
+            category: None,
+            actions: None,
         }
     }
 
@@ -80,6 +89,34 @@ impl<'a> NewNotification<'a> {
         self.expires_at = Some(expires_at);
         self
     }
+
+    /// Make the toast interactive: `category` names a `UNNotificationCategory`
+    /// the tray registered at startup (builder style).
+    pub fn category(mut self, category: &'a str) -> Self {
+        self.category = Some(category);
+        self
+    }
+
+    /// Attach the category's action descriptors as JSON (builder style). See
+    /// the field doc — informational in v1.
+    pub fn actions(mut self, actions: &'a str) -> Self {
+        self.actions = Some(actions);
+        self
+    }
+
+    /// Make the toast interactive with `category`'s registered button set in one
+    /// call: sets both the category id AND its action descriptors, looked up
+    /// from the single source of truth
+    /// ([`meridian_core::notifications::categories`]), so the two can never
+    /// drift apart. Every interactive producer uses this instead of pairing
+    /// `.category()` + `.actions()` by hand. An unknown category falls back to
+    /// an empty action list (`"[]"`), matching the old hand-written call sites.
+    pub fn interactive(mut self, category: &'a str) -> Self {
+        self.category = Some(category);
+        self.actions =
+            Some(meridian_core::notifications::categories::actions_json(category).unwrap_or("[]"));
+        self
+    }
 }
 
 /// Enqueue a notification. Idempotent on `dedup_key` — repeated calls are
@@ -87,8 +124,8 @@ impl<'a> NewNotification<'a> {
 pub async fn enqueue(pool: &SqlitePool, n: NewNotification<'_>) -> Result<()> {
     sqlx::query(
         "INSERT INTO notifications
-            (dedup_key, event_key, severity, title, body, deep_link, channels, scheduled_for, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (dedup_key, event_key, severity, title, body, deep_link, channels, scheduled_for, expires_at, category, actions)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(dedup_key) DO NOTHING",
     )
     .bind(n.dedup_key)
@@ -100,6 +137,8 @@ pub async fn enqueue(pool: &SqlitePool, n: NewNotification<'_>) -> Result<()> {
     .bind(n.channels)
     .bind(n.scheduled_for)
     .bind(n.expires_at)
+    .bind(n.category)
+    .bind(n.actions)
     .execute(pool)
     .await
     .context("enqueueing notification")?;

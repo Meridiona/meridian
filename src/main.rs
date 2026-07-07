@@ -703,6 +703,15 @@ async fn main() -> Result<()> {
                     tracing::debug!(error = %e, "plan nudge check skipped");
                 }
 
+                // Interactive-notification responses — act on the user's answers
+                // (snooze re-enqueues an hour out). Idempotent end-to-end, so the
+                // same cadence as the nudge above is safe.
+                if let Err(e) =
+                    meridian::notification_responses::consume_responses(&meridian).await
+                {
+                    tracing::debug!(error = %e, "notification response consume skipped");
+                }
+
                 // Proactive classifier health probe. Detect a down/wedged MLX
                 // server every tick via a fast /health check (NOT reactively, only
                 // when a classify happens to fail) so the fault surfaces promptly
