@@ -267,7 +267,11 @@ function paintMlx(res) {
     hpMlxVal.textContent = res.port ? `Running (port ${res.port})` : 'Running'
   } else if (kind === 'error') {
     setDot(hpMlxDot, 'bad')
-    hpMlxVal.textContent = 'Error'
+    // Error(String) serializes to { "error": "<msg>" }. Surface the actual
+    // message (bounded, like paintDb) instead of a bare "Error" — the panel
+    // exists precisely to say WHICH subsystem is down and why.
+    const msg = s && typeof s.error === 'string' ? s.error : ''
+    hpMlxVal.textContent = msg ? `Error: ${msg.slice(0, 60)}` : 'Error'
   } else if (!res.runtime_installed) {
     setDot(hpMlxDot, 'warn')
     hpMlxVal.textContent = 'Runtime not installed'

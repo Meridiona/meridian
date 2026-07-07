@@ -161,4 +161,16 @@ describe('popover health panel', () => {
     expect(dot('hp-db-dot')).toBe('bad')
     expect(text('hp-db-val')).toBe('disk I/O error')
   })
+
+  it('surfaces the MLX Error(String) message, not a bare "Error"', async () => {
+    // MlxStatus::Error(String) serializes externally-tagged snake_case →
+    // { status: { error: "<msg>" } }. The row should show the message.
+    invokeImpl = async (cmd) =>
+      cmd === 'get_mlx_status'
+        ? { status: { error: 'model failed to load' }, port: 7823, runtime_installed: true }
+        : null
+    await popover().refreshHealth()
+    expect(dot('hp-mlx-dot')).toBe('bad')
+    expect(text('hp-mlx-val')).toBe('Error: model failed to load')
+  })
 })
