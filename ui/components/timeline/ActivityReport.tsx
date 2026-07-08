@@ -13,6 +13,18 @@
 import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 
+/**
+ * Pull just the "### TLDR" paragraph out of an activity-report markdown
+ * string — used by the timeline row, which shows only the TLDR inline and
+ * defers the full report (Core Tasks/Decisions/Resources) to the right-side
+ * hour-detail panel on click. Falls back to the whole report if no TLDR
+ * heading is found (defensive — the prompt always emits one).
+ */
+export function extractTldr(report: string): string {
+  const match = report.match(/###\s*TLDR\s*\n+([\s\S]*?)(?=\n###|\s*$)/i)
+  return match ? match[1].trim() : report.trim()
+}
+
 export function ActivityReport({ report, compact = false }: { report: string; compact?: boolean }) {
   const bodyClass = compact ? 'mt-body-sm' : 'mt-body'
   const components: Components = {
