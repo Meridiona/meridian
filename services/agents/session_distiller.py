@@ -277,7 +277,13 @@ def _distil(rows: list, header_prefix: str, stat_label: str) -> tuple[str, Disti
         for raw_line in (session_text or "").splitlines():
             m = re.match(r"^\[(\d\d:\d\d:\d\d)\]\s*(.*)", raw_line)
             if m:
-                cur_time = m.group(1)[:5]; raw_line = m.group(2)
+                # The marker carries a UTC time-of-day only (no date) — reattach
+                # started_at's UTC date so utc_to_local_hhmm can convert it like
+                # every other timestamp in this function, instead of leaving it
+                # raw UTC (see [[project_worklog_clock_trigger]] UTC-vs-local bug).
+                marker_date = started_at.split("T")[0]
+                cur_time = utc_to_local_hhmm(f"{marker_date}T{m.group(1)}")
+                raw_line = m.group(2)
             raw_line = _URL_PREFIX_RE.sub("", raw_line).strip()
             if not raw_line: continue
             for seg in _segment(raw_line):

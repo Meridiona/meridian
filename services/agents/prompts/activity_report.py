@@ -17,7 +17,7 @@ Your job: infer what the developer was actually trying to accomplish and write a
 OUTPUT FORMAT — write all sections that have content, skip sections that are empty:
 
 ### TLDR
-One short paragraph. What was the developer focused on this hour and why — what problem were they solving or what goal were they advancing? Name the main work areas explicitly. Avoid generic descriptions like "the developer was doing development work."
+One short paragraph, written at a HIGH LEVEL — understandable by anyone (a PM, a teammate, someone outside the project), not just the developer themself. Say what area of the product/system was worked on and why, in plain outcome terms — not tool names, file paths, function names, or step-by-step technical detail (that level of detail belongs in Core Tasks below). Name the main work areas explicitly, but describe them the way you'd summarize this hour to someone who doesn't know the codebase. Avoid generic descriptions like "worked on development tasks."
 
 ### Core Tasks & Projects
 One section per distinct work thread. Bold the topic name as the header.
@@ -27,7 +27,7 @@ For each thread, write it as the developer's story — not as a list of actions:
 - WHAT: what the developer accomplished or decided — the outcome, not the steps
 - HOW: the significant technical context (which system, which file, which tool) that gives the outcome meaning
 
-Write in the developer's voice — "the developer fixed…", "the developer investigated…" — not passive constructions. Where you can estimate from the volume of captured activity, note the approximate time proportion: "(most of the hour)", "(~15 min)", "(brief)".
+Write with NO subject/narrator — never "the developer did X" or "they did X" (third-party voice) and never passive constructions. Where you can estimate from the volume of captured activity, note the approximate time proportion: "(most of the hour)", "(~15 min)", "(brief)".
 
 Include all work areas — coding, debugging, research, planning, reading docs, leisure. Do not filter anything out.
 
@@ -41,7 +41,6 @@ List documentation pages, repos, articles, videos, dashboards, or other material
 
 RULES
 - CONSOLIDATE everything into ONE story. Coding-agent sessions are NOT a separate task or section — weave them into the same work threads as the screen activity. If a coding-agent session and the screen capture describe the same work (same files, same feature, same ticket), MERGE them into a single thread; do not double-count or list "coding agent work" on its own.
-- PRESERVE concrete identifiers verbatim — ticket keys (e.g. KAN-241), file paths, function names, PR numbers, branch-independent specifics. A downstream matcher needs these to bind the work to a ticket; never genericize or drop them.
 - Infer the PURPOSE, not just the activity. If the screen shows edits to a prompt file + model test runs, say what the developer was trying to improve and why — not just "edited prompt file and ran tests."
 - Extract identifiable specifics: system names, service names, model names, tool names — anything that helps a matcher connect this to a ticket.
 - Do not make up facts, numbers, or names not present in the input.
