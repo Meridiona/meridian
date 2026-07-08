@@ -13,7 +13,11 @@
     "macOSPrivateApi": true,
     "withGlobalTauri": true,
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$HOME/.meridian/icon-cache/*"]
+      }
     },
     "windows": [
       {
@@ -32,7 +36,8 @@
         "minimizable": false,
         "closable": false,
         "shadow": true,
-        "focus": false
+        "focus": false,
+        "zoomHotkeysEnabled": true
       },
       {
         "label": "tray-tooltip",
@@ -50,7 +55,8 @@
         "minimizable": false,
         "closable": false,
         "shadow": false,
-        "focus": false
+        "focus": false,
+        "zoomHotkeysEnabled": true
       }
     ]
   },
