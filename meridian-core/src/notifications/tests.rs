@@ -134,12 +134,17 @@ async fn active_banners_filters_channel_dismissed_expired_and_prefs() {
 fn event_allowed_respects_master_and_type() {
     let mut s = settings();
     assert!(event_allowed("plan.nudge", &s));
+    assert!(event_allowed("board.mustfix", &s));
     assert!(event_allowed("unknown.event", &s)); // unknown → enabled
     s.notify_plan_nudge = false;
     assert!(!event_allowed("plan.nudge", &s));
     s.notify_plan_nudge = true;
+    s.notify_board_mustfix = false;
+    assert!(!event_allowed("board.mustfix", &s));
+    s.notify_board_mustfix = true;
     s.notifications_enabled = false; // master off → nothing
     assert!(!event_allowed("plan.nudge", &s));
+    assert!(!event_allowed("board.mustfix", &s));
     assert!(!event_allowed("unknown.event", &s));
 }
 

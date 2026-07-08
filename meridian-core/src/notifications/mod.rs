@@ -119,6 +119,7 @@ fn type_enabled(event_key: &str, s: &RuntimeSettings) -> bool {
         "plan.nudge" => s.notify_plan_nudge,
         "worklog.ready" => s.notify_worklog_ready,
         "system.fault" => s.notify_system_fault,
+        "board.mustfix" => s.notify_board_mustfix,
         _ => true,
     }
 }

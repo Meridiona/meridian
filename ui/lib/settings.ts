@@ -36,6 +36,7 @@ export interface RuntimeSettings {
   notify_plan_nudge: boolean
   notify_worklog_ready: boolean
   notify_system_fault: boolean
+  notify_board_mustfix: boolean
   quiet_hours_enabled: boolean
   quiet_hours_start: string // 'HH:MM' local time, inclusive
   quiet_hours_end: string   // 'HH:MM' local time, exclusive
@@ -67,6 +68,7 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   notify_plan_nudge: true,
   notify_worklog_ready: true,
   notify_system_fault: true,
+  notify_board_mustfix: true,
   quiet_hours_enabled: false,
   quiet_hours_start: '22:00',
   quiet_hours_end: '08:00',

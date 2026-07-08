@@ -45,6 +45,9 @@ export function NotificationsSection({ settings, patch, save }: {
             <FieldRow label="System faults" description="When a tracker sync or the classifier stack fails (also shown as a banner).">
               <Switch checked={settings.notify_system_fault} onCheckedChange={v => patch({ notify_system_fault: v })} />
             </FieldRow>
+            <FieldRow label="Must-fix tickets" description="Once a day, when a connected tracker has tickets missing must-have info (due date, description, or title).">
+              <Switch checked={settings.notify_board_mustfix} onCheckedChange={v => patch({ notify_board_mustfix: v })} />
+            </FieldRow>
             <FieldRow label="Quiet hours" description="Hold back desktop toasts during this window (banners still appear). Wraps past midnight.">
               <Switch checked={settings.quiet_hours_enabled} onCheckedChange={v => patch({ quiet_hours_enabled: v })} />
             </FieldRow>
@@ -64,6 +67,7 @@ export function NotificationsSection({ settings, patch, save }: {
             notify_plan_nudge: settings.notify_plan_nudge,
             notify_worklog_ready: settings.notify_worklog_ready,
             notify_system_fault: settings.notify_system_fault,
+            notify_board_mustfix: settings.notify_board_mustfix,
             quiet_hours_enabled: settings.quiet_hours_enabled,
             quiet_hours_start: settings.quiet_hours_start,
             quiet_hours_end: settings.quiet_hours_end,

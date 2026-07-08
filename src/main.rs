@@ -703,6 +703,12 @@ async fn main() -> Result<()> {
                     tracing::debug!(error = %e, "plan nudge check skipped");
                 }
 
+                // Must-fix board-hygiene nudge — idempotent per day, respects the
+                // "mustfix" action-card snooze.
+                if let Err(e) = meridian::board_mustfix::maybe_notify(&meridian).await {
+                    tracing::debug!(error = %e, "must-fix nudge check skipped");
+                }
+
                 // Interactive-notification responses — act on the user's answers
                 // (snooze re-enqueues an hour out). Idempotent end-to-end, so the
                 // same cadence as the nudge above is safe.
