@@ -666,3 +666,112 @@ async fn current_task_percent_none_without_story_points() {
         "no pm_tasks row → percent should be None"
     );
 }
+
+// ── action_cards (the tray attention-dot counts) ───────────────────────────
+
+/// Full-migration pool — `action_card_counts` composes `get_tasks` +
+/// `get_worklogs`, whose real schemas (CDM columns, curation, worklogs) are
+/// easier to run than to hand-roll. Mirrors `board_mustfix`'s test pool.
+async fn make_migrated_pool() -> SqlitePool {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open in-memory db");
+    sqlx::migrate!("../src/migrations")
+        .run(&pool)
+        .await
+        .expect("run migrations");
+    pool
+}
+
+async fn seed_curated_task(
+    pool: &SqlitePool,
+    key: &str,
+    provider: &str,
+    bucket: &str,
+    reasons: &str,
+) {
+    sqlx::query(
+        "INSERT INTO pm_tasks (task_key, title, provider, updated_at) \
+         VALUES (?, ?, ?, '2026-01-01T00:00:00Z')",
+    )
+    .bind(key)
+    .bind(format!("Task {key}"))
+    .bind(provider)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO pm_task_curation (task_key, provider, bucket, reasons_json, triaged_at) \
+         VALUES (?, ?, ?, ?, '2026-01-01T00:00:00Z')",
+    )
+    .bind(key)
+    .bind(provider)
+    .bind(bucket)
+    .bind(reasons)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn action_card_counts_splits_tiers_and_honours_connected_and_solo() {
+    let pool = make_migrated_pool().await;
+    let today = meridian_core::date::today_string();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    // JIRA-1: a must-fix issue. JIRA-2: no issues but a stale bucket → cleanup.
+    // GH-1: a must-fix issue on GitHub — must NOT count when only Jira is connected.
+    seed_curated_task(
+        &pool,
+        "JIRA-1",
+        "jira",
+        "needs_detail",
+        r#"[{"code":"missing_due_date"}]"#,
+    )
+    .await;
+    seed_curated_task(&pool, "JIRA-2", "jira", "looks_stale", "[]").await;
+    seed_curated_task(
+        &pool,
+        "GH-1",
+        "github",
+        "needs_detail",
+        r#"[{"code":"missing_due_date"}]"#,
+    )
+    .await;
+
+    // A real drafted worklog for today → one pending draft.
+    sqlx::query(
+        "INSERT INTO pm_worklogs (task_key, day_utc, window_start, window_end, state, payload_json) \
+         VALUES ('JIRA-1', ?, ?, ?, 'drafted', '{}')",
+    )
+    .bind(&today)
+    .bind(&now)
+    .bind(&now)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Jira connected → JIRA-1 must-fix, JIRA-2 cleanup, GH-1 dropped; 1 draft.
+    let c = meridian_core::action_cards::action_card_counts(&pool, &["jira"], &today, &today, &now)
+        .await
+        .unwrap();
+    assert_eq!(c.mustfix, 1, "only the connected-provider must-fix ticket");
+    assert_eq!(
+        c.cleanup, 1,
+        "stale-bucket ticket is cleanup, disjoint from must-fix"
+    );
+    assert_eq!(c.drafts, 1);
+    assert!(c.any());
+
+    // Solo (no connected tracker) → empty stack, drafts suppressed too.
+    let solo = meridian_core::action_cards::action_card_counts(&pool, &[], &today, &today, &now)
+        .await
+        .unwrap();
+    assert_eq!(
+        solo,
+        meridian_core::action_cards::ActionCardCounts::default()
+    );
+    assert!(!solo.any());
+}

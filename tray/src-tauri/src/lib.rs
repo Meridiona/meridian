@@ -165,7 +165,7 @@ pub fn run() {
             // Start as an un-filled progress ring (the design's menu-bar glyph);
             // the 1 s ticker swaps in the filled version once a task percentage
             // is known. Rendered as a template so macOS tints it to the menu bar.
-            let tray_icon = tray_icon::ring_image(None);
+            let tray_icon = tray_icon::ring_image(None, false);
 
             // Left-click toggles the popover (positioned under the tray icon);
             // right-click still opens the native menu. `show_menu_on_left_click`
@@ -323,10 +323,11 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     let mut last_title: Option<String> = None;
                     let mut last_bucket: i32 = i32::MIN; // -1 = un-filled; MIN = uninitialised
+                    let mut last_attention = false; // matches the startup icon (no dot)
                     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
                     loop {
                         ticker.tick().await;
-                        let (tray_id, title, bucket) = {
+                        let (tray_id, title, bucket, attention) = {
                             let s = title_state.lock().unwrap();
                             let timer = match (&s.active_session, s.health == HealthStatus::Healthy)
                             {
@@ -347,7 +348,7 @@ pub fn run() {
                                 Some(p) => (p.clamp(0.0, 1.0) * 100.0).round() as i32,
                                 None => -1,
                             };
-                            (s.tray_id.clone(), title, bucket)
+                            (s.tray_id.clone(), title, bucket, s.attention)
                         };
                         let Some(id) = tray_id else { continue };
                         let Some(tray) = title_app.tray_by_id(&id) else {
@@ -357,9 +358,16 @@ pub fn run() {
                             let _ = tray.set_title(title.as_deref());
                             last_title = title;
                         }
-                        if bucket != last_bucket {
+                        // Re-render on EITHER a percentage-bucket change or an
+                        // attention flip — the dot commonly changes while the
+                        // task percent is stable (e.g. a draft arrives), so
+                        // gating on bucket alone would never show/clear it.
+                        if bucket != last_bucket || attention != last_attention {
                             let pct = (bucket >= 0).then(|| bucket as f64 / 100.0);
-                            if tray.set_icon(Some(tray_icon::ring_image(pct))).is_ok() {
+                            if tray
+                                .set_icon(Some(tray_icon::ring_image(pct, attention)))
+                                .is_ok()
+                            {
                                 // Runtime set_icon drops the template flag; re-arm it.
                                 if let Err(e) = tray.set_icon_as_template(true) {
                                     tracing::warn!(
@@ -369,6 +377,7 @@ pub fn run() {
                                 }
                             }
                             last_bucket = bucket;
+                            last_attention = attention;
                         }
                     }
                 });

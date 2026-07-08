@@ -30,7 +30,8 @@ use crate::state::{AppState, HealthStatus, PauseSource};
 use chrono::{Datelike, Local, Timelike};
 use notifications::drain_notifications;
 use refresh::{
-    refresh_active, refresh_current_task, refresh_health, refresh_today, refresh_worklogs,
+    refresh_active, refresh_attention, refresh_current_task, refresh_health, refresh_today,
+    refresh_worklogs,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -116,6 +117,9 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
             }
             if do_worklogs {
                 refresh_worklogs(pool, &state).await;
+                // Recompute the action-card attention flag on the same cadence as
+                // drafts_count so the menu-bar dot and the popover count agree.
+                refresh_attention(pool, &state).await;
             }
         }
         // Work-hours schedule enforcement: auto-pause capture outside the

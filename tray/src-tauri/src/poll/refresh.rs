@@ -196,7 +196,21 @@ pub(super) async fn refresh_worklogs(pool: &SqlitePool, state: &Arc<Mutex<AppSta
     let today = meridian_core::date::today_string();
     match meridian_core::worklogs::get_worklogs(pool, &today).await {
         Ok(w) => {
-            let count = w.items.iter().filter(|i| i.state == "drafted").count() as u32;
+            // Match the dashboard's `isPending`: a proposed item is pending in
+            // the `proposed` state, a real one in `drafted`. (Previously counted
+            // only `drafted`, so the popover under-counted vs the dashboard and,
+            // now, vs the attention dot — the dot must agree with this count.)
+            let count = w
+                .items
+                .iter()
+                .filter(|i| {
+                    if i.is_proposed {
+                        i.state == "proposed"
+                    } else {
+                        i.state == "drafted"
+                    }
+                })
+                .count() as u32;
             let logged_s: u64 = w
                 .items
                 .iter()
@@ -212,4 +226,54 @@ pub(super) async fn refresh_worklogs(pool: &SqlitePool, state: &Arc<Mutex<AppSta
         }
         Err(e) => tracing::warn!(error = %e, "refresh_worklogs failed"),
     }
+}
+
+/// Recompute whether the dashboard's action-card stack would be non-empty and
+/// stash it in [`AppState::attention`] for the menu-bar dot. Mirrors the
+/// dashboard's `useActionItems` via [`meridian_core::action_cards`] plus the
+/// per-card snoozes, so the dot lights exactly when the stack would show a card —
+/// even while the dashboard webview is closed. Runs on the worklog cadence so it
+/// and `drafts_count` derive from the same tick (no transient disagreement).
+pub(super) async fn refresh_attention(pool: &SqlitePool, state: &Arc<Mutex<AppState>>) {
+    let today = meridian_core::date::today_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    // Week start mirrors the `get_tasks` command wrapper (commands/dashboard.rs):
+    // the last 7 days. It only feeds week-rollup fields, not the hygiene/provider
+    // values the counts read — but kept faithful to the command.
+    let week_start = (chrono::Local::now() - chrono::Duration::days(6))
+        .format("%Y-%m-%d")
+        .to_string();
+
+    let connected = crate::commands::integrations::connected_provider_keys();
+    let counts = match meridian_core::action_cards::action_card_counts(
+        pool,
+        &connected,
+        &today,
+        &week_start,
+        &now,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "refresh_attention: action_card_counts failed");
+            return;
+        }
+    };
+
+    // A tier counts toward attention only if its card isn't currently snoozed —
+    // the same gate as `useActionItems`' `!isSnoozed(kind, snoozes)`.
+    let snoozes = meridian_core::action_card_snooze::get_active_snoozes(pool, &now)
+        .await
+        .unwrap_or_default();
+    let snoozed = |kind: &str| snoozes.iter().any(|s| s.card_kind == kind);
+    let attention = (counts.mustfix > 0 && !snoozed("mustfix"))
+        || (counts.cleanup > 0 && !snoozed("cleanup"))
+        || (counts.drafts > 0 && !snoozed("drafts"));
+
+    let Ok(mut s) = state.lock() else {
+        tracing::warn!("refresh_attention: state lock poisoned");
+        return;
+    };
+    s.attention = attention;
 }

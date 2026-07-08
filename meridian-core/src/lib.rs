@@ -50,8 +50,8 @@ pub use capture::{
 pub use util::{date, hygiene, intervals};
 
 pub use readers::{
-    action_card_snooze, active, coding_agents, current_task, hour_status, hour_text, integrations,
-    notices, plan, proposed, task_detail, tasks, today, triage, week, worklogs,
+    action_card_snooze, action_cards, active, coding_agents, current_task, hour_status, hour_text,
+    integrations, notices, plan, proposed, task_detail, tasks, today, triage, week, worklogs,
 };
 
 pub use canonical_task::{CanonicalTask, PersonRef, Priority, Provider, StatusCategory, TaskKind};

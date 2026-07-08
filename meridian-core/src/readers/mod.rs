@@ -15,6 +15,8 @@
 /// cleanup / drafts); no route — new work (migration 057).
 pub mod action_card_snooze;
 
+pub mod action_cards;
+
 /// The `/api/active` dashboard view of the active session (ported from active/route.ts).
 pub mod active;
 

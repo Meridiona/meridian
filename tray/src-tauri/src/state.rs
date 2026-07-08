@@ -141,6 +141,12 @@ pub struct AppState {
     pub switch_count: u32,
     pub drafts_count: u32,
     pub logged_s: u64,
+    /// Whether the dashboard's action-card stack would be non-empty right now —
+    /// an unsnoozed must-fix, cleanup, or drafts card for a connected user.
+    /// Drives the menu-bar attention dot (icon-only; deliberately NOT in
+    /// [`StatusPayload`] — the webview computes its own `useActionItems`).
+    /// Refreshed by [`crate::poll::refresh::refresh_attention`].
+    pub attention: bool,
     pub ui_reachable: bool,
     pub last_poll: Option<Instant>,
     pub daemon_was_healthy: bool,
@@ -177,6 +183,7 @@ impl Default for AppState {
             switch_count: 0,
             drafts_count: 0,
             logged_s: 0,
+            attention: false,
             ui_reachable: false,
             last_poll: None,
             daemon_was_healthy: false,

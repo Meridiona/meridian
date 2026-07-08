@@ -188,6 +188,48 @@ fn oauth_error_path(provider: &str) -> Option<PathBuf> {
     home().map(|h| h.join(".meridian/oauth").join(format!("{provider}.error")))
 }
 
+/// Connected-tracker detection from a parsed `.env` map + OAuth-file presence.
+/// The SINGLE source of truth for "which trackers are connected", shared by
+/// [`get_integrations`] (the command the dashboard reads) and
+/// [`connected_provider_keys`] (the tray poll loop's attention-dot input) so the
+/// two can never disagree. Returns the provider keys as stored on
+/// `pm_tasks.provider` (`jira`/`linear`/`github`/`trello`/`azure_devops`).
+pub(crate) fn connected_providers(env: &HashMap<String, String>) -> Vec<&'static str> {
+    let jira_basic =
+        is_set(env, "JIRA_BASE_URL") && is_set(env, "JIRA_EMAIL") && is_set(env, "JIRA_API_TOKEN");
+    let mut out = Vec::new();
+    if oauth_file_exists("jira") || jira_basic {
+        out.push("jira");
+    }
+    if is_set(env, "LINEAR_API_KEY") {
+        out.push("linear");
+    }
+    if is_set(env, "GITHUB_TOKEN") {
+        out.push("github");
+    }
+    if oauth_file_exists("trello") {
+        out.push("trello");
+    }
+    if is_set(env, "AZURE_DEVOPS_PAT")
+        && (is_set(env, "AZURE_DEVOPS_URL")
+            || is_set(env, "AZURE_DEVOPS_ORG")
+            || is_set(env, "AZURE_DEVOPS_ORG_URL"))
+    {
+        out.push("azure_devops");
+    }
+    out
+}
+
+/// Connected-tracker keys resolved fresh from the active `.env` + OAuth files.
+/// The tray poll loop calls this every tick to feed
+/// [`meridian_core::action_cards::action_card_counts`]; it resolves the `.env`
+/// through the SAME [`crate::install::detect_install_mode`] the command does.
+pub(crate) fn connected_provider_keys() -> Vec<&'static str> {
+    let mode = crate::install::detect_install_mode();
+    let env = mode.env_path().map(parse_env).unwrap_or_default();
+    connected_providers(&env)
+}
+
 /// Which trackers are connected (the ported /api/integrations GET).
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
@@ -196,10 +238,8 @@ pub async fn get_integrations(
 ) -> Result<IntegrationsResponse, String> {
     let mode = crate::install::detect_install_mode();
     let env = mode.env_path().map(parse_env).unwrap_or_default();
-
-    let jira_basic = is_set(&env, "JIRA_BASE_URL")
-        && is_set(&env, "JIRA_EMAIL")
-        && is_set(&env, "JIRA_API_TOKEN");
+    let connected = connected_providers(&env);
+    let on = |p: &str| connected.contains(&p);
 
     // Sync errors are best-effort: a missing/uninitialised DB just omits them
     // (matches the route's silent catch).
@@ -211,14 +251,11 @@ pub async fn get_integrations(
     };
 
     Ok(IntegrationsResponse {
-        jira: oauth_file_exists("jira") || jira_basic,
-        linear: is_set(&env, "LINEAR_API_KEY"),
-        github: is_set(&env, "GITHUB_TOKEN"),
-        trello: oauth_file_exists("trello"),
-        azure_devops: is_set(&env, "AZURE_DEVOPS_PAT")
-            && (is_set(&env, "AZURE_DEVOPS_URL")
-                || is_set(&env, "AZURE_DEVOPS_ORG")
-                || is_set(&env, "AZURE_DEVOPS_ORG_URL")),
+        jira: on("jira"),
+        linear: on("linear"),
+        github: on("github"),
+        trello: on("trello"),
+        azure_devops: on("azure_devops"),
         github_projects_selected: is_set(&env, "GITHUB_PROJECT_IDS"),
         sync_errors,
     })
