@@ -6,7 +6,10 @@
 //     Print pending/sent file counts + bytes, and whether a ship target is configured.
 //
 //   meridian telemetry export [--out <path.tar.gz>] [--since <RFC3339>]
-//     Bundle pending/ + sent/ .otlp files into a tar.gz for remote debugging.
+//     Bundle pending/ + sent/ .otlp files (plus recent JSONL logs) into a
+//     tar.gz for remote debugging — see `build_export_bundle` in mod.rs, the
+//     shared implementation this also backs the tray's "Export Diagnostics"
+//     Tauri command with.
 //     --since filters by filename timestamp >= that instant.
 //     Prints the output path + file count.
 //
@@ -17,7 +20,7 @@
 
 use std::{
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -25,11 +28,8 @@ use anyhow::{Context, Result};
 use crate::{
     observability::{resolve_otlp_endpoint, resolve_otlp_target},
     telemetry_spool::{
-        derive_base_url, ship_one,
-        writer::{
-            micros_from_filename, pending_dir, resolve_telemetry_dir, sent_dir,
-            signal_from_filename,
-        },
+        build_export_bundle, derive_base_url, ship_one,
+        writer::{pending_dir, resolve_telemetry_dir, sent_dir, signal_from_filename},
     },
 };
 
@@ -122,8 +122,6 @@ fn dir_stats(dir: &Path) -> (usize, u64) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn cmd_export(out: Option<&str>, since: Option<&str>) -> Result<()> {
-    let base = resolve_telemetry_dir()?;
-
     // Parse --since as RFC3339 → unix micros threshold.
     let since_micros: Option<u64> = if let Some(s) = since {
         let dt = chrono::DateTime::parse_from_rfc3339(s)
@@ -133,59 +131,15 @@ fn cmd_export(out: Option<&str>, since: Option<&str>) -> Result<()> {
         None
     };
 
-    // Collect .otlp files from both pending/ and sent/.
-    let mut all_files: Vec<PathBuf> = Vec::new();
-    for dir in [pending_dir(&base), sent_dir(&base)] {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.extension().is_none_or(|e| e != "otlp") {
-                    continue;
-                }
-                if let Some(thresh) = since_micros {
-                    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    let file_micros = micros_from_filename(name).unwrap_or(0);
-                    if file_micros < thresh {
-                        continue;
-                    }
-                }
-                all_files.push(p);
-            }
-        }
-    }
+    let out_path = out.map(PathBuf::from);
+    let (path, file_count) = build_export_bundle(out_path.as_deref(), since_micros, true)?;
 
-    if all_files.is_empty() {
+    if file_count == 0 {
         println!("telemetry export: no files found");
         return Ok(());
     }
 
-    // Build output path.
-    let out_path = if let Some(p) = out {
-        PathBuf::from(p)
-    } else {
-        let micros = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_micros() as u64;
-        base.join(format!("export-{micros}.tar.gz"))
-    };
-
-    // Write tar.gz.
-    let file = std::fs::File::create(&out_path)
-        .with_context(|| format!("create {}", out_path.display()))?;
-    let enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
-    let mut tar = tar::Builder::new(enc);
-
-    let file_count = all_files.len();
-    for file_path in &all_files {
-        let name = file_path.file_name().unwrap_or_default();
-        tar.append_path_with_name(file_path, name)
-            .with_context(|| format!("add {} to archive", file_path.display()))?;
-    }
-
-    tar.finish().context("finish tar archive")?;
-
-    println!("{}", out_path.display());
+    println!("{}", path.display());
     println!("Exported {file_count} files");
     Ok(())
 }

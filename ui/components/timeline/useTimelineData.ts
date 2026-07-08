@@ -87,10 +87,10 @@ export function useTimelineData(day: string) {
       .catch(() => {})
   }, [])
 
-  const loadAux = useCallback(() => {
+  const loadAux = useCallback((d: string) => {
     loadData<IntegrationsResponse>('/api/integrations', 'get_integrations').then(setIntegrations).catch(() => {})
     loadData<TasksResponse>('/api/tasks', 'get_tasks').then((r) => setTasks(r.tasks ?? [])).catch(() => {})
-    loadData<TodayResponse>('/api/today', 'get_today').then(setToday).catch(() => {})
+    loadData<TodayResponse>(`/api/today?day=${d}`, 'get_today', { day: d }).then(setToday).catch(() => {})
     loadData<{ running: boolean }>('/api/daemon/status', 'get_daemon_status')
       .then(s => setCapturing(s.running)).catch(() => {})
     loadActionCardSnoozes()
@@ -113,11 +113,11 @@ export function useTimelineData(day: string) {
     loadWorklogs(day)
     loadHourStatus(day)
     loadHourReports(day)
-    loadAux()
+    loadAux(day)
     // Poll so approved → posted (daemon sweep), fresh hours, the
     // generating/paused badges, and today's activity reports all stay live.
     const id = setInterval(() => {
-      loadWorklogs(day); loadHourStatus(day); loadHourReports(day); loadAux()
+      loadWorklogs(day); loadHourStatus(day); loadHourReports(day); loadAux(day)
     }, 30_000)
     return () => clearInterval(id)
   }, [day, loadWorklogs, loadHourStatus, loadHourReports, loadAux])

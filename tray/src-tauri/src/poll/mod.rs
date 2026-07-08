@@ -15,9 +15,7 @@
 //! - [`notifications`] — outbox drain + the quiet-hours policy check
 //!   ([`notifications_allowed`], re-exported here for [`crate::commands::daemon`]).
 //! - [`live`] — the live data → Tauri events that replace the dashboard's SSE
-//!   streams: `notices-update`, `notifications-update`, and the `log-tail`
-//!   tailer ([`spawn_log_tailer`], started from `lib.rs`, runs at ~1 s
-//!   independent of this 30 s loop).
+//!   streams: `notices-update`, `notifications-update`.
 //!
 //! The tray-sync helpers (emit / tooltip / menu) stay here, coupled to the loop.
 
@@ -25,7 +23,6 @@ mod live;
 mod notifications;
 mod refresh;
 
-pub(crate) use live::spawn_log_tailer;
 pub(crate) use notifications::notifications_allowed;
 
 use crate::mlx_server::{self, SharedMlxManager, SuperviseOutcome};

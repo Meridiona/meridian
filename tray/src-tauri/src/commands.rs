@@ -11,8 +11,10 @@
 //! - [`daemon`]    — daemon lifecycle (restart/pause/resume) + status probes.
 //! - [`system`]    — OS/window actions (open URLs, System Settings panes).
 //! - [`health`]    — the `/api/health` check (also reused by [`crate::poll`]).
-//! - [`logs`]      — the `/api/logs` tail.
-//! - [`openobserve`] — the `/api/openobserve` service status probe.
+//! - [`diagnostics`] — the "Export Diagnostics" bundle-and-reveal action
+//!   (also the local read path for `meridian logs`'s OTel-spool decode — see
+//!   `src/telemetry_spool/render.rs` — since the old JSONL-tailing `logs`
+//!   module and its dashboard consumer are both gone).
 //! - [`integrations`] — which trackers are connected (`/api/integrations`).
 //! - [`notices`]   — clear a fault banner (`/api/notices/[id]` DELETE).
 //! - [`notifications`] — the in-app banner dismiss write.
@@ -32,12 +34,11 @@
 pub mod action_cards;
 pub mod daemon;
 pub mod dashboard;
+pub mod diagnostics;
 pub mod health;
 pub mod integrations;
-pub mod logs;
 pub mod notices;
 pub mod notifications;
-pub mod openobserve;
 pub mod parents;
 pub mod pause;
 pub mod settings;
@@ -55,12 +56,11 @@ pub mod worklogs;
 pub use action_cards::*;
 pub use daemon::*;
 pub use dashboard::*;
+pub use diagnostics::*;
 pub use health::*;
 pub use integrations::*;
-pub use logs::*;
 pub use notices::*;
 pub use notifications::*;
-pub use openobserve::*;
 pub use parents::*;
 pub use pause::*;
 pub use settings::*;

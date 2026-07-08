@@ -5,20 +5,30 @@
 // Runs in a tokio background task spawned from main.rs. Every
 // `MERIDIAN_TELEMETRY_SHIP_INTERVAL_S` seconds (default 30):
 //
-//   1. If `resolve_otlp_target()` is None (creds absent), skip — leave files.
-//   2. List pending/ oldest-first by filename timestamp.
-//   3. POST each .otlp to the appropriate OO endpoint (traces / logs).
-//   4. On 2xx → move to sent/.  On any failure → stop this tick, leave rest.
-//   5. Retention: delete sent/ files older than MERIDIAN_TELEMETRY_RETENTION_DAYS (7).
-//   6. Pending cap: drop OLDEST beyond MERIDIAN_TELEMETRY_MAX_PENDING_MB (512) with warn.
+//   1. Sweep crash-orphaned .otlp.tmp files.
+//   2. Retention: age-prune BOTH pending/ and sent/ (files older than
+//      MERIDIAN_TELEMETRY_RETENTION_DAYS, default 7) — this runs UNCONDITIONALLY,
+//      before the ship-target check below, so a Canonical/packaged install
+//      (which never ships — see `observability::resolve_otlp_target`) still
+//      enforces retention on the local spool instead of growing it forever.
+//      Also caps the launchd-redirected raw log files (daemon.log etc. — the
+//      crash safety net, unrelated to the OTel spool) at
+//      MERIDIAN_LAUNCHD_LOG_MAX_MB (default 10) via copytruncate, since they
+//      have no rotation of their own.
+//   3. Pending cap: drop OLDEST beyond MERIDIAN_TELEMETRY_MAX_PENDING_MB (512) with warn.
+//   4. If `resolve_otlp_target()` is None (creds absent, or a Canonical
+//      install), skip delivery — leave files in pending/ for retention/cap to
+//      manage.
+//   5. List pending/ oldest-first by filename timestamp.
+//   6. POST each .otlp to the appropriate OO endpoint (traces / logs).
+//   7. On 2xx → move to sent/.  On any failure → stop this tick, leave rest.
 //
 // The shipper is the ONLY writer to sent/ and the only one that deletes files.
 // The spool writer (writer.rs) only adds to pending/.
 
 use std::{
-    path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -27,10 +37,14 @@ use tokio::sync::watch;
 use crate::{
     observability::{resolve_otlp_endpoint, resolve_otlp_target},
     telemetry_spool::{
-        derive_base_url, ship_one,
+        derive_base_url,
+        launchd_log_cap::cap_launchd_logs,
+        retention::{
+            enforce_pending_cap, list_pending_oldest_first, prune_by_age, sweep_tmp_orphans,
+        },
+        ship_one,
         writer::{
-            micros_from_filename, pending_dir, quarantine_dir, resolve_telemetry_dir, sent_dir,
-            seq_from_filename, signal_from_filename,
+            pending_dir, quarantine_dir, resolve_telemetry_dir, sent_dir, signal_from_filename,
         },
         ShipError,
     },
@@ -38,10 +52,6 @@ use crate::{
 
 const DEFAULT_SHIP_INTERVAL_S: u64 = 30;
 const DEFAULT_RETENTION_DAYS: u64 = 7;
-const DEFAULT_MAX_PENDING_MB: u64 = 512;
-/// `.otlp.tmp` files older than this are crash orphans — a healthy write turns
-/// tmp → final in milliseconds, so anything this old will never be completed.
-const TMP_ORPHAN_MAX_AGE_SECS: u64 = 300;
 
 /// One-time guard so "export enabled but no credentials" warns once, not every tick.
 static WARNED_NO_CREDS: AtomicBool = AtomicBool::new(false);
@@ -59,14 +69,6 @@ fn retention_days() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_RETENTION_DAYS)
-}
-
-fn max_pending_bytes() -> u64 {
-    let mb = std::env::var("MERIDIAN_TELEMETRY_MAX_PENDING_MB")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_MAX_PENDING_MB);
-    mb * 1024 * 1024
 }
 
 /// Spawn the shipper.  Call from main.rs after daemon init.
@@ -109,6 +111,15 @@ async fn run_tick() -> Result<()> {
     // Clear crash-orphaned `.otlp.tmp` files first so they can't accumulate
     // unbounded (they're invisible to both the cap and the lister otherwise).
     sweep_tmp_orphans(&pending);
+
+    // Retention: age-prune BOTH dirs UNCONDITIONALLY — before any ship-target
+    // check. A Canonical/packaged install never ships (resolve_otlp_target()
+    // always returns None for it), so pending/ is the only place spooled
+    // telemetry ever lives; retention must not depend on delivery happening.
+    let retention_secs = retention_days() * 24 * 3600;
+    prune_by_age(&pending, retention_secs)?;
+    prune_by_age(&sent, retention_secs)?;
+    cap_launchd_logs();
 
     // Enforce pending cap BEFORE trying to ship so we don't OOM on a long OO outage.
     enforce_pending_cap(&pending)?;
@@ -230,168 +241,6 @@ async fn run_tick() -> Result<()> {
         }
     }
 
-    // Retention: prune old sent files.
-    prune_sent(&sent)?;
-
-    Ok(())
-}
-
-/// Remove `.otlp.tmp` files left behind by a crash between write and rename.
-/// A healthy write completes the rename in milliseconds, so any tmp older than
-/// `TMP_ORPHAN_MAX_AGE_SECS` is dead weight the cap/lister would never see.
-fn sweep_tmp_orphans(pending: &Path) {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let Ok(entries) = std::fs::read_dir(pending) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        if !name.ends_with(".otlp.tmp") {
-            continue;
-        }
-        let age = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .map(|mt| {
-                now.saturating_sub(mt.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs())
-            })
-            .unwrap_or(u64::MAX);
-        if age >= TMP_ORPHAN_MAX_AGE_SECS {
-            let _ = std::fs::remove_file(&path);
-            tracing::debug!(file = %path.display(), age_secs = age, "swept crash-orphaned spool tmp file");
-        }
-    }
-}
-
-/// List `.otlp` files in `dir` sorted oldest-first by `(micros, seq)`.
-///
-/// Including `seq` makes ordering deterministic when two files share a
-/// microsecond (traces+logs back-to-back, or a burst). Files with an
-/// unparseable name are SKIPPED rather than collapsed to key `0` — a renamed /
-/// foreign file must not sort permanently to the front and ship every tick.
-fn list_pending_oldest_first(dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return vec![];
-    };
-
-    let mut files: Vec<(u64, u64, PathBuf)> = entries
-        .flatten()
-        .filter_map(|e| {
-            let p = e.path();
-            let name = p.file_name()?.to_str()?.to_string();
-            if !name.ends_with(".otlp") {
-                return None;
-            }
-            let micros = micros_from_filename(&name)?;
-            let seq = seq_from_filename(&name)?;
-            Some((micros, seq, p))
-        })
-        .collect();
-
-    files.sort_by_key(|(m, s, _)| (*m, *s));
-    files.into_iter().map(|(_, _, p)| p).collect()
-}
-
-/// Delete sent/ files whose mtime is older than `retention_days`.
-fn prune_sent(sent_dir: &Path) -> Result<()> {
-    let cutoff_secs = retention_days() * 24 * 3600;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let Ok(entries) = std::fs::read_dir(sent_dir) else {
-        return Ok(());
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().is_none_or(|e| e != "otlp") {
-            continue;
-        }
-        if let Ok(meta) = std::fs::metadata(&path) {
-            if let Ok(mtime) = meta.modified() {
-                let age_secs = now.saturating_sub(
-                    mtime
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
-                );
-                // `>=` so a retention of 0 days means "keep nothing" (prune even
-                // just-shipped files); the default 7-day cutoff is unaffected since
-                // a fresh file's age (~0s) is never >= 604800s.
-                if age_secs >= cutoff_secs {
-                    let _ = std::fs::remove_file(&path);
-                    tracing::debug!(file = %path.display(), age_days = age_secs / 86400, "pruned old sent telemetry file");
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Drop OLDEST pending files beyond the size cap with a structured warning.
-/// Never silently drops — always emits `tracing::warn!` with count + bytes.
-fn enforce_pending_cap(pending: &Path) -> Result<()> {
-    let max = max_pending_bytes();
-
-    let Ok(entries) = std::fs::read_dir(pending) else {
-        return Ok(());
-    };
-
-    let mut files: Vec<(u64, u64, u64, PathBuf)> = entries // (micros, seq, size, path)
-        .flatten()
-        .filter_map(|e| {
-            let p = e.path();
-            let name = p.file_name()?.to_str()?.to_string();
-            if !name.ends_with(".otlp") {
-                return None;
-            }
-            let micros = micros_from_filename(&name)?;
-            let seq = seq_from_filename(&name)?;
-            let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
-            Some((micros, seq, size, p))
-        })
-        .collect();
-
-    // Sort oldest-first by (micros, seq) — same total order the shipper uses, so
-    // the cap evicts the genuinely-oldest records, not whatever read_dir yields.
-    files.sort_by_key(|(m, s, _, _)| (*m, *s));
-
-    let total: u64 = files.iter().map(|(_, _, s, _)| s).sum();
-    if total <= max {
-        return Ok(());
-    }
-
-    let mut to_drop = total - max;
-    let mut dropped_count = 0u64;
-    let mut dropped_bytes = 0u64;
-
-    for (_, _, size, path) in &files {
-        if to_drop == 0 {
-            break;
-        }
-        let _ = std::fs::remove_file(path);
-        dropped_bytes += size;
-        dropped_count += 1;
-        to_drop = to_drop.saturating_sub(*size);
-    }
-
-    if dropped_count > 0 {
-        tracing::warn!(
-            dropped_files = dropped_count,
-            dropped_bytes,
-            cap_bytes = max,
-            "pending telemetry cap exceeded — oldest spool files dropped"
-        );
-    }
-
     Ok(())
 }
 
@@ -404,100 +253,6 @@ mod tests {
     use super::*;
     use crate::telemetry_spool::writer::write_pending;
     use tempfile::TempDir;
-
-    #[test]
-    fn list_pending_sorted_oldest_first() {
-        let dir = TempDir::new().unwrap();
-        let base = dir.path().to_path_buf();
-
-        // Write files with different seq numbers; filename micros will be equal
-        // or ascending since they run in sequence. Seq counter disambiguates.
-        let p1 = write_pending(&base, "traces", b"old").unwrap();
-        let p2 = write_pending(&base, "traces", b"new").unwrap();
-
-        let pending = pending_dir(&base);
-        let sorted = list_pending_oldest_first(&pending);
-        assert_eq!(sorted.len(), 2);
-        // First file written should appear first (lower seq or lower micros)
-        assert_eq!(sorted[0], p1);
-        assert_eq!(sorted[1], p2);
-    }
-
-    #[test]
-    fn list_pending_orders_same_micros_by_seq_and_skips_unparseable() {
-        let dir = TempDir::new().unwrap();
-        let pending = pending_dir(dir.path());
-        std::fs::create_dir_all(&pending).unwrap();
-
-        // Same microsecond, out-of-order seq — must come back seq 0 then seq 1.
-        std::fs::write(pending.join("traces-1000-1.otlp"), b"b").unwrap();
-        std::fs::write(pending.join("traces-1000-0.otlp"), b"a").unwrap();
-        // A crash-orphan tmp and a foreign name must be ignored entirely (the
-        // old `unwrap_or(0)` would have sorted the foreign file permanently first).
-        std::fs::write(pending.join("traces-1000-2.otlp.tmp"), b"x").unwrap();
-        std::fs::write(pending.join("garbage.otlp"), b"y").unwrap();
-
-        let sorted = list_pending_oldest_first(&pending);
-        assert_eq!(sorted.len(), 2, "tmp + foreign names excluded");
-        assert!(sorted[0]
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .ends_with("-0.otlp"));
-        assert!(sorted[1]
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .ends_with("-1.otlp"));
-    }
-
-    #[test]
-    fn prune_sent_removes_old_files() {
-        let dir = TempDir::new().unwrap();
-        let sent = dir.path().join("sent");
-        std::fs::create_dir_all(&sent).unwrap();
-
-        // Create an old file by setting mtime to epoch+1s
-        let old_file = sent.join("traces-1-0.otlp");
-        std::fs::write(&old_file, b"x").unwrap();
-        // Set mtime to a very old time via filetime
-        // We can't easily set mtime in pure std; instead we mock via a very low
-        // retention (0 days) — everything gets pruned.
-        // Override env for this test.
-        std::env::set_var("MERIDIAN_TELEMETRY_RETENTION_DAYS", "0");
-        prune_sent(&sent).unwrap();
-        std::env::remove_var("MERIDIAN_TELEMETRY_RETENTION_DAYS");
-
-        // File should be removed (0-day retention = everything > 0s old)
-        assert!(!old_file.exists());
-    }
-
-    #[test]
-    fn pending_cap_drops_oldest_first_with_warn() {
-        // Set cap to 1 byte so everything over 1 byte gets dropped
-        std::env::set_var("MERIDIAN_TELEMETRY_MAX_PENDING_MB", "0");
-
-        let dir = TempDir::new().unwrap();
-        let base = dir.path().to_path_buf();
-        write_pending(&base, "traces", b"aaa").unwrap();
-        write_pending(&base, "traces", b"bbb").unwrap();
-
-        let pending = pending_dir(&base);
-        // Cap of 0 MB → all files should be dropped
-        enforce_pending_cap(&pending).unwrap();
-
-        let remaining: Vec<_> = std::fs::read_dir(&pending)
-            .unwrap()
-            .flatten()
-            .filter(|e| e.path().extension().is_some_and(|x| x == "otlp"))
-            .collect();
-        // With 0MB cap all are dropped
-        assert!(remaining.is_empty());
-
-        std::env::remove_var("MERIDIAN_TELEMETRY_MAX_PENDING_MB");
-    }
 
     /// Verifies that a pending file is moved to sent/ when the HTTP call would
     /// succeed.  We simulate a successful "ship" by calling the move logic

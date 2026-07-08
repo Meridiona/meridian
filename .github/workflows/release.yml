@@ -44,6 +44,13 @@ jobs:
       # JIRA_OAUTH_CLIENT_SECRET repo secret; rotate it together with the value in
       # the Atlassian developer console.
       MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
+      # Baked into the release binary at compile time (consumed by option_env! in
+      # meridian-oauth/src/github.rs). PUBLIC client id for the GitHub OAuth device
+      # flow — device flow has no client secret, so this value isn't sensitive, but
+      # it's stored as the GH_OAUTH_CLIENT_ID repo secret (masked in logs; can't be
+      # named GITHUB_*, which GitHub reserves). The OAuth App must have "Enable
+      # Device Flow" checked.
+      MERIDIAN_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
       # Minisign key for the DMG auto-updater: `tauri build` (createUpdaterArtifacts)
       # signs Meridian.app.tar.gz with these so the installed app can verify the
       # update against the pubkey baked in tauri.conf.json. The build FAILS LOUDLY

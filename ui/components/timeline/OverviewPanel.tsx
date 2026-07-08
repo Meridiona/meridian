@@ -18,7 +18,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { fmtDur } from '@/components/atoms'
 import { load as loadData, mutate as mutateData, openExternal } from '@/lib/bridge'
 import type { PlanItem, PlanResponse } from '@/lib/api-types'
-import { isPending } from './types'
+import { formatDayLabel, isPending } from './types'
 import { TimeByApp, appTotals } from './TimeByApp'
 import { ActionCard } from './ActionCard'
 import { useActionItems } from './useActionItems'
@@ -30,7 +30,8 @@ export function OverviewPanel({ data, onOpen, onOpenTask }: {
   onOpen: (modal: ActiveModal) => void
   onOpenTask: (key: string, title?: string) => void
 }) {
-  const { today, isSolo, items, tasks } = data
+  const { today, isSolo, items, tasks, isToday, day } = data
+  const dayLabel = isToday ? 'Today' : formatDayLabel(day)
   const pendingCount = items.filter(isPending).length
   const actionItems = useActionItems(data)
   const focus_s = today?.focus_s ?? 0
@@ -89,7 +90,7 @@ export function OverviewPanel({ data, onOpen, onOpenTask }: {
     })
   }, [])
 
-  const greetingEyebrow = 'Today at a glance'
+  const greetingEyebrow = isToday ? 'Today at a glance' : `${dayLabel} at a glance`
   const greetingTitle = isSolo ? 'Your day, in progress' : "You're having a solid day"
   const greetingBody = isSolo
     ? `${fmtDur(focus_s)} of focused activity across ${appCount} app${appCount === 1 ? '' : 's'}.`
@@ -168,7 +169,7 @@ export function OverviewPanel({ data, onOpen, onOpenTask }: {
       <EntryRow label="Tasks" hint={`${activeTaskCount} active`} onClick={() => onOpen('tasks')} />
 
       <div>
-        <p className="mt-label mb-2.5" style={{ color: 'var(--t-faint)' }}>Today</p>
+        <p className="mt-label mb-2.5" style={{ color: 'var(--t-faint)' }}>{dayLabel}</p>
         <div className="grid grid-cols-3 gap-3">
           <Mini label="Logged" value={fmtDur(loggedSeconds)} tint="var(--color-state-approved)" />
           <Mini label="Focus" value={fmtDur(focus_s)} tint="var(--color-state-proposal)" />

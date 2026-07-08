@@ -30,7 +30,8 @@ pub struct JiraConfig {
 
 #[derive(Clone, Debug)]
 pub struct GitHubConfig {
-    /// Personal access token or gh CLI OAuth token with `repo`, `read:org`, `project` scopes.
+    /// Personal access token, or an OAuth token from the in-app browser device
+    /// flow, with `repo`, `read:org`, `read:project` scopes.
     pub token: String,
     /// GitHub Projects v2 node IDs (PVT_xxx). Empty → no tasks synced.
     pub project_ids: Vec<String>,
@@ -93,7 +94,6 @@ impl PmProviderConfig {
 // ---------------------------------------------------------------------------
 
 pub struct Config {
-    pub screenpipe_db: String,
     pub meridian_db: String,
     pub poll_interval_secs: u64,
     /// All configured PM providers. Empty = intelligence silently disabled.
@@ -330,7 +330,6 @@ impl Config {
     /// Build config from environment variables, falling back to defaults.
     ///
     /// Core vars:
-    ///   SCREENPIPE_DB       — path to screenpipe's SQLite file
     ///   MERIDIAN_DB         — path to meridian's SQLite file
     ///   POLL_INTERVAL_SECS  — poll cadence in seconds (default 60)
     ///
@@ -346,13 +345,6 @@ impl Config {
     ///   LINEAR_API_KEY
     ///   LINEAR_TEAM_IDS     — optional comma-separated filter
     pub fn from_env() -> Self {
-        let screenpipe_db = std::env::var("SCREENPIPE_DB")
-            .map(|v| expand_tilde(&v))
-            .unwrap_or_else(|_| {
-                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
-                format!("{}/.screenpipe/db.sqlite", home)
-            });
-
         let meridian_db = std::env::var("MERIDIAN_DB")
             .map(|v| expand_tilde(&v))
             .unwrap_or_else(|_| {
@@ -427,7 +419,6 @@ impl Config {
         let provider_names: Vec<&str> = pm_providers.iter().map(|p| p.provider_name()).collect();
 
         tracing::info!(
-            screenpipe_db = %screenpipe_db,
             meridian_db = %meridian_db,
             poll_interval_secs,
             classification_enabled,
@@ -436,7 +427,6 @@ impl Config {
         );
 
         Self {
-            screenpipe_db,
             meridian_db,
             poll_interval_secs,
             pm_providers,
@@ -453,10 +443,6 @@ impl Config {
             jira_office_end_hour,
             runtime,
         }
-    }
-
-    pub fn screenpipe_db_uri(&self) -> String {
-        format!("sqlite://{}", self.screenpipe_db)
     }
 
     pub fn meridian_db_uri(&self) -> String {
@@ -487,11 +473,9 @@ mod tests {
     #[test]
     fn test_default_paths_contain_expected_dirs() {
         let _guard = env_lock().lock().unwrap();
-        std::env::remove_var("SCREENPIPE_DB");
         std::env::remove_var("MERIDIAN_DB");
         std::env::set_var("HOME", "/tmp/test_home");
         let cfg = Config::from_env();
-        assert!(cfg.screenpipe_db.contains(".screenpipe"));
         assert!(cfg.meridian_db.contains(".meridian"));
         std::env::remove_var("HOME");
     }
@@ -499,15 +483,12 @@ mod tests {
     #[test]
     fn test_env_overrides() {
         let _guard = env_lock().lock().unwrap();
-        std::env::set_var("SCREENPIPE_DB", "/custom/screenpipe.db");
         std::env::set_var("MERIDIAN_DB", "/custom/meridian.db");
         let cfg = Config::from_env();
-        assert_eq!(cfg.screenpipe_db, "/custom/screenpipe.db");
         assert_eq!(cfg.meridian_db, "/custom/meridian.db");
         // poll_interval_secs is driven by settings.json (runtime), not POLL_INTERVAL_SECS env var.
         // Default runtime value is 60 when settings.json is absent.
         assert_eq!(cfg.runtime.poll_interval_secs, cfg.poll_interval_secs);
-        std::env::remove_var("SCREENPIPE_DB");
         std::env::remove_var("MERIDIAN_DB");
     }
 
@@ -525,11 +506,11 @@ mod tests {
     fn test_tilde_expansion() {
         let _guard = env_lock().lock().unwrap();
         std::env::set_var("HOME", "/Users/testuser");
-        std::env::set_var("SCREENPIPE_DB", "~/custom/db.sqlite");
+        std::env::set_var("MERIDIAN_DB", "~/custom/db.sqlite");
         let cfg = Config::from_env();
-        assert_eq!(cfg.screenpipe_db, "/Users/testuser/custom/db.sqlite");
+        assert_eq!(cfg.meridian_db, "/Users/testuser/custom/db.sqlite");
         std::env::remove_var("HOME");
-        std::env::remove_var("SCREENPIPE_DB");
+        std::env::remove_var("MERIDIAN_DB");
     }
 
     #[test]
@@ -664,12 +645,9 @@ mod tests {
     #[test]
     fn test_uri_prefix() {
         let _guard = env_lock().lock().unwrap();
-        std::env::set_var("SCREENPIPE_DB", "/some/path/db.sqlite");
         std::env::set_var("MERIDIAN_DB", "/other/meridian.db");
         let cfg = Config::from_env();
-        assert!(cfg.screenpipe_db_uri().starts_with("sqlite://"));
         assert!(cfg.meridian_db_uri().starts_with("sqlite://"));
-        std::env::remove_var("SCREENPIPE_DB");
         std::env::remove_var("MERIDIAN_DB");
     }
 

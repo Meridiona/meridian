@@ -16,10 +16,39 @@
       <span class="brand-mark" id="brand-mark" aria-hidden="true"></span>
       <div class="head-text">
         <div class="wordmark">Meridian</div>
-        <div class="head-sub" id="head-sub">Connecting…</div>
+        <div
+          class="head-sub"
+          id="head-sub"
+          role="button"
+          tabindex="0"
+          aria-controls="health-panel"
+          aria-expanded="false"
+        >
+          <span class="head-sub-text" id="head-sub-text">Connecting…</span>
+          <span class="head-sub-chevron" aria-hidden="true">▾</span>
+        </div>
       </div>
       <button type="button" class="open-btn" id="btn-open-head">Open</button>
     </header>
+
+    <!-- ── Health panel (expands on head-sub click) ───────────────────────── -->
+    <section class="health-panel" id="health-panel" hidden>
+      <div class="health-row">
+        <span class="health-dot" id="hp-daemon-dot" data-state="unknown"></span>
+        <span class="health-label">Daemon</span>
+        <span class="health-val" id="hp-daemon-val">Checking…</span>
+      </div>
+      <div class="health-row">
+        <span class="health-dot" id="hp-mlx-dot" data-state="unknown"></span>
+        <span class="health-label">MLX server</span>
+        <span class="health-val" id="hp-mlx-val">Checking…</span>
+      </div>
+      <div class="health-row">
+        <span class="health-dot" id="hp-db-dot" data-state="unknown"></span>
+        <span class="health-label">Database</span>
+        <span class="health-val" id="hp-db-val">Checking…</span>
+      </div>
+    </section>
 
     <!-- ── Update available (DMG auto-update; hidden until check_update finds one) ─ -->
     <button type="button" class="upd" id="upd" hidden>

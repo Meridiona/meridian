@@ -90,12 +90,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Agent/Workflow runs export OpenInference spans to OpenObserve.
     observability.setup("meridian-mlx-server")
     app_state.setdefault("tracer", trace.get_tracer("meridian-mlx-server"))
-    # OpenObserve export for meridian's own (manual) spans is gated by
-    # settings.json `otlp_enabled` + OO creds (handled inside observability.setup
-    # above). Independently, agno's native (openinference) spans are routed to the
-    # agno trace DB (read by agno_viewer.py) via an explicit, non-global provider,
-    # so the AgentOS dashboard shows agno's tracing output alone — no custom spans.
-    # The provider is pinned by observability._AGNO_TRACER_PROVIDER; no handle needed here.
+    # agno's native (openinference) spans ride the SAME global TracerProvider
+    # `observability.setup` just installed — one pipeline, no separate SQLite
+    # trace store, no separate viewer (see observability.py's setup_agno_tracing).
     observability.setup_agno_tracing()
     evictor: "asyncio.Task | None" = None
     if _mlx._IDLE_EVICT_S > 0:

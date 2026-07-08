@@ -91,10 +91,12 @@ impl UpdateStatus {
 /// updater (the running binary lives under `target/…`, not inside a bundle), and
 /// the GitHub manifest may not be published yet — so we report `unsupported` and
 /// keep the banner hidden rather than surfacing a 404 as a scary error.
+/// True when running from a packaged `.app` bundle. Delegates to the single
+/// shared detector [`crate::sys::is_bundled`] so the updater's "is this a real
+/// bundle?" gate and the notification-plugin registration gate can never
+/// disagree — they previously used two separately-implemented path checks.
 fn is_packaged() -> bool {
-    std::env::current_exe()
-        .map(|p| p.to_string_lossy().contains(".app/Contents/MacOS"))
-        .unwrap_or(false)
+    crate::sys::is_bundled()
 }
 
 /// Check the configured endpoint for a newer version. A pure status read — does

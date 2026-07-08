@@ -1,9 +1,9 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Dashboard health — the dashboard is now a static export embedded in the
-// Tauri binary (no separate Node server or launchd `com.meridiona.ui` agent).
-// The Node-era HTTP probes (`serve_health`, `serve_mode_check`, asset checks)
-// are gone; `doctor` reports an informational line instead of a false CRITICAL.
+// Tauri binary (no separate Node server). The Node-era HTTP probes
+// (`serve_health`, `serve_mode_check`, asset checks) are gone; `doctor` reports
+// an informational line instead of a false CRITICAL.
 
 use crate::config::Config;
 use crate::health::Check;
