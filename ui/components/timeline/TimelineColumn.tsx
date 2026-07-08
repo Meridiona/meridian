@@ -20,7 +20,7 @@ import { hourLabel } from './timelineLayout'
 import { isPending, itemKey } from './types'
 import { TimelineCard } from './TimelineCard'
 import { HourBadges, HourTakeover } from './HourBadges'
-import { ActivityReport, extractTldr } from './ActivityReport'
+import { TldrPreview } from './ActivityReport'
 
 interface HourActivity {
   cats: string[]        // distinct category keys seen this hour (for the dots)
@@ -176,13 +176,12 @@ export function TimelineColumn({
                       {!hasContent ? (
                         <p className="mt-body-sm italic py-1.5" style={{ color: 'var(--t-faint-2)' }}>Quiet</p>
                       ) : isSolo && report ? (
-                        // Row shows just the TLDR once the hour's report has
-                        // been generated — the full report (Core Tasks/
-                        // Decisions/Resources) opens in the right panel on
-                        // click (row is already onSelectHour-clickable).
-                        <div className="py-1">
-                          <ActivityReport report={extractTldr(report)} compact />
-                        </div>
+                        // Row shows just the TLDR, in a small tinted card,
+                        // once the hour's report has been generated — the
+                        // full report (Core Tasks/Decisions/Resources) opens
+                        // in the right panel on click (row is already
+                        // onSelectHour-clickable).
+                        <TldrPreview report={report} />
                       ) : isSolo && activity ? (
                         // Report not generated yet — fall back to the coarse
                         // session-derived one-liner so the row isn't empty.

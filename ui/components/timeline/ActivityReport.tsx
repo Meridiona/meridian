@@ -25,6 +25,40 @@ export function extractTldr(report: string): string {
   return match ? match[1].trim() : report.trim()
 }
 
+/**
+ * The timeline row's inline preview of an hour's report — a small tinted
+ * card (not raw ReactMarkdown output dropped straight into the row) with a
+ * "SUMMARY" label, a 2-line-clamped TLDR, and a hover affordance hinting
+ * that the row opens the full report (Core Tasks/Decisions/Resources) in
+ * the right panel.
+ */
+export function TldrPreview({ report }: { report: string }) {
+  const tldr = extractTldr(report)
+  return (
+    <div className="group rounded-md px-3 py-2.5 bg-box transition-colors">
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <span className="mt-label" style={{ color: 'var(--color-state-proposal)' }}>✦ Summary</span>
+        <span className="mt-chip shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+          style={{ color: 'var(--color-state-proposal)' }}>
+          Full report ›
+        </span>
+      </div>
+      <p
+        className="mt-body-sm"
+        style={{
+          color: 'var(--t-muted)',
+          display: '-webkit-box',
+          WebkitLineClamp: 2,
+          WebkitBoxOrient: 'vertical',
+          overflow: 'hidden',
+        }}
+      >
+        {tldr}
+      </p>
+    </div>
+  )
+}
+
 export function ActivityReport({ report, compact = false }: { report: string; compact?: boolean }) {
   const bodyClass = compact ? 'mt-body-sm' : 'mt-body'
   const components: Components = {
