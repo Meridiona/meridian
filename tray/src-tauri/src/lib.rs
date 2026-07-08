@@ -517,6 +517,7 @@ pub fn run() {
             commands::discover_github_projects,
             commands::save_integration_token,
             commands::start_oauth,
+            commands::cancel_oauth,
             commands::get_oauth_status,
             // OS/window actions
             commands::open_permission_pane,
