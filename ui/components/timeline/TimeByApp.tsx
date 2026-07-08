@@ -10,12 +10,18 @@
 
 import { useMemo } from 'react'
 import { fmtDur, AppGlyph } from '@/components/atoms'
+import { BRAND_ICONS } from '@/lib/brand-icons'
 import type { TodaySession } from '@/lib/api-types'
 
 function appHue(app: string): number {
   let h = 0
   for (let i = 0; i < app.length; i++) h = (h * 31 + app.charCodeAt(i)) & 0xffff
   return h % 360
+}
+
+/** Real brand hex when we have one (matches AppGlyph's logo), else a deterministic hue. */
+function appColor(app: string): string {
+  return BRAND_ICONS[app]?.hex ?? `hsl(${appHue(app)}, 55%, 55%)`
 }
 
 /** Aggregate sessions into app totals, descending, capped to `limit`. */
@@ -47,7 +53,7 @@ export function TimeByApp({ sessions, limit = 6 }: { sessions: TodaySession[]; l
           <span className="flex-1 h-2 rounded-full overflow-hidden bg-track">
             <span className="block h-full rounded-full" style={{
               width: `${Math.max(4, (seconds / max) * 100)}%`,
-              background: `hsl(${appHue(app)}, 55%, 55%)`,
+              background: appColor(app),
             }} />
           </span>
           <span className="mt-mono-sm text-[11px] shrink-0" style={{ color: 'var(--t-faint)' }}>{fmtDur(seconds)}</span>

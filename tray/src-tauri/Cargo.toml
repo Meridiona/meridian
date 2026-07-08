@@ -15,7 +15,7 @@ path = "src/main.rs"
 tauri-build = { version = "2.5", features = [] }
 
 [dependencies]
-tauri = { version = "2.11", features = ["tray-icon", "image-png", "macos-private-api"] }
+tauri = { version = "2.11", features = ["protocol-asset", "tray-icon", "image-png", "macos-private-api"] }
 tauri-plugin-positioner = { version = "2.3", features = ["tray-icon"] }
 # Community fork of the official notification plugin (the official one's
 # Actions API is mobile-only on desktop). Its macOS layer is a real Swift
@@ -99,6 +99,10 @@ objc2 = "0.6"
 # Global mouse-event monitor for click-outside dismiss on the non-activating NSPanel.
 # Already in the dep tree (transitive via objc2/tao); listed explicitly to use directly.
 block2 = "0.6"
+# Typed NSWorkspace/NSImage/NSBitmapImageRep bindings for real per-app icon
+# extraction (commands/app_icons.rs) — same generation family as objc2 0.6.
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSRunningApplication"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSData", "NSDictionary", "NSGeometry"] }
 
 [features]
 # In-process screen capture is ON by default (Gap-2 Bucket 2 cutover): the
