@@ -188,6 +188,7 @@ registered`, `outbox toast delivered`, `notification action event: {...}`,
 | `plan.nudge` | `plan_nudge` | Open Plan · Snooze 1h | snooze → re-enqueue +1h |
 | `worklog.ready` | `worklog_ready` | Open Worklogs · Snooze 1h | snooze → re-enqueue +1h |
 | `system.fault` | `system_fault` | View | — (stamp only) |
+| `board.mustfix` | *(none — plain toast)* | Open → `/tasks` | — (stamp only), once/day |
 | *(reserved)* | `verify_switch` | Yes · No · Reply… | — (PR 2: task-switch verification) |
 | *(generic)* | `generic_link` | Open | — (stamp only) |
 

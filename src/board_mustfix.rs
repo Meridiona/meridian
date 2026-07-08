@@ -138,6 +138,22 @@ pub async fn maybe_notify(pool: &SqlitePool) -> Result<()> {
     }
 
     let dedup = format!("board.mustfix:{today}");
+    // Log only on the real fire, not every deduped tick: `enqueue` is
+    // idempotent (ON CONFLICT DO NOTHING), so an unconditional log here would
+    // repeat every poll interval all day. The cheap presence check keeps this
+    // to one line the day the nudge actually goes out.
+    let already: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM notifications WHERE dedup_key = ?")
+        .bind(&dedup)
+        .fetch_optional(pool)
+        .await?;
+    if already.is_none() {
+        tracing::info!(
+            day = %today,
+            connected = ?connected,
+            "must-fix board-hygiene nudge fired"
+        );
+    }
+
     notifications::enqueue(
         pool,
         NewNotification::event(
