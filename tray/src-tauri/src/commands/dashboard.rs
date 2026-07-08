@@ -38,17 +38,20 @@ pub async fn get_active(
 }
 
 /// The Today dashboard payload, computed entirely in Rust (the ported
-/// /api/today). Resolves "today" (local) + "now" here so the core fn stays
-/// deterministic/testable.
+/// /api/today). `day` defaults to today (local) when omitted, matching
+/// [`crate::commands::get_worklogs`] — the timeline's Overview panel passes
+/// the currently-viewed day so Focus/Time-by-app track the selected date
+/// instead of always the real "today".
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_today(
     pool: State<'_, Option<meridian_core::SqlitePool>>,
+    day: Option<String>,
 ) -> Result<meridian_core::today::TodayResponse, String> {
     let Some(pool) = pool.inner() else {
         return Err("meridian.db is not open yet".to_string());
     };
-    let date = meridian_core::date::today_string();
+    let date = day.unwrap_or_else(meridian_core::date::today_string);
     let now = chrono::Utc::now().to_rfc3339();
     meridian_core::today::get_today(pool, &date, &now)
         .await
