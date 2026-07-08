@@ -122,7 +122,7 @@ def _format_coding_block(coding: list[dict]) -> str:
         return ""
     parts = ["## CODING-AGENT SESSIONS THIS HOUR "
              "(the developer drove these AI coding agents — treat as their own work "
-             "and weave into the activity summary; keep ticket keys and file names)"]
+             "and weave into the activity summary;)"]
     for c in coding:
         hhmm = (c.get("started_at") or "")[11:16]
         app = c.get("app_name") or "Coding agent"
