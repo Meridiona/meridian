@@ -101,6 +101,21 @@ if [[ -f "${REPO_ROOT}/.env" ]]; then
     MERIDIAN_OTLP_ENDPOINT=$(grep -E '^MERIDIAN_OTLP_ENDPOINT=' "${REPO_ROOT}/.env" | tail -1 | cut -d= -f2- || true)
 fi
 
+# Optional HF caching-proxy override (parity with the tray's in-process MLX
+# supervisor, mlx_server::hf_endpoint). Prefer the process env; fall back to the
+# repo-root .env. Inject a WHOLE key/value block when set, or NOTHING when unset —
+# an empty HF_ENDPOINT would be taken literally by huggingface_hub and break
+# every download, so the key must be absent rather than empty.
+MERIDIAN_HF_ENDPOINT="${MERIDIAN_HF_ENDPOINT:-}"
+if [[ -z "${MERIDIAN_HF_ENDPOINT}" && -f "${REPO_ROOT}/.env" ]]; then
+    MERIDIAN_HF_ENDPOINT=$(grep -E '^MERIDIAN_HF_ENDPOINT=' "${REPO_ROOT}/.env" | tail -1 | cut -d= -f2- || true)
+fi
+if [[ -n "${MERIDIAN_HF_ENDPOINT}" ]]; then
+    HF_ENDPOINT_ENTRY="<key>HF_ENDPOINT</key><string>${MERIDIAN_HF_ENDPOINT}</string>"
+else
+    HF_ENDPOINT_ENTRY=""
+fi
+
 mkdir -p "${HOME}/.meridian/logs"
 mkdir -p "${LAUNCH_AGENTS}"
 
@@ -113,6 +128,7 @@ sed \
     -e "s|{{SERVICES_VENV}}|${SERVICES_VENV}|g" \
     -e "s|{{MERIDIAN_OO_AUTH}}|${MERIDIAN_OO_AUTH}|g" \
     -e "s|{{MERIDIAN_OTLP_ENDPOINT}}|${MERIDIAN_OTLP_ENDPOINT}|g" \
+    -e "s|{{HF_ENDPOINT_ENTRY}}|${HF_ENDPOINT_ENTRY}|g" \
     "${TEMPLATE}" > "${PLIST_DEST}"
 
 if ! plutil -lint "${PLIST_DEST}" >/dev/null; then

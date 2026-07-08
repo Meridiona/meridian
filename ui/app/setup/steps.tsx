@@ -109,6 +109,44 @@ function ProvisionStep({ state, label }: { state: StepState; label: string }) {
   )
 }
 
+/** Compact hardware + expected-memory panel for the Local-intelligence step.
+ *  Surfaces the detected chip/macOS/RAM and the engine's expected resident
+ *  footprint — sized as the single largest model (the three load one-at-a-time,
+ *  so peak memory is `MODEL_RAM_GB`) plus Meridian's own service (`APP.ramGB`) —
+ *  as a fraction of unified memory, so the user sees what it costs before they
+ *  finish setup. All numbers are live (`detect_system_specs`); when specs are
+ *  unavailable (non-macOS / probe failure) it degrades to a bare estimate line
+ *  with no gauge. The footprint label mirrors `Completion`'s "Footprint" row. */
+function SpecMemoryPanel({ specs }: { specs: SystemSpecs | null }) {
+  const footprintGb = MODEL_RAM_GB + APP.ramGB
+  const ram = specs?.ram_gb ?? 0
+  const pct = ram > 0 ? Math.min(100, Math.round((footprintGb / ram) * 100)) : null
+  const specBits = specs
+    ? [specs.chip, specs.macos, ram > 0 ? `${ram} GB unified` : ''].filter(Boolean)
+    : []
+  return (
+    <div style={{
+      width: 330, textAlign: 'left', background: 'var(--t-box)',
+      border: '0.5px solid var(--t-card-border)', borderRadius: 10, padding: '12px 14px',
+    }}>
+      <div className="flex items-center justify-between" style={{ marginBottom: pct !== null ? 9 : 0 }}>
+        <span className="font-mono" style={{ fontSize: 9.5, letterSpacing: '.1em', color: 'var(--t-faint)' }}>
+          EXPECTED MEMORY
+        </span>
+        <span style={{ fontSize: 12, color: 'var(--t-title)', fontWeight: 450 }}>
+          ≈&nbsp;{fmtSize(footprintGb)}{ram > 0 ? ` of ${ram} GB` : ''}
+        </span>
+      </div>
+      {pct !== null && <Bar pct={pct} height={5} />}
+      {specBits.length > 0 && (
+        <p className="font-mono" style={{ fontSize: 10.5, color: 'var(--t-faint-2)', marginTop: 9, letterSpacing: '.02em' }}>
+          {specBits.join('  ·  ')}
+        </p>
+      )}
+    </div>
+  )
+}
+
 /** Self-checkable causes shown when provisioning hits a network/download error —
  *  ordered most-likely first, phrased so a non-technical user can fix it during
  *  setup (the download reaches GitHub over the network; corporate proxy/VPN/
@@ -190,6 +228,15 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
               ? (wiz.err || 'The download didn’t finish.')
               : 'Downloading the models that run privately on your Mac — just once.'}
       </p>
+
+      {/* Detected specs + expected memory footprint — shown while provisioning
+          and after ready (hidden on error, where the fix-it hints take over, and
+          on `unavailable`, where there's no engine to size). */}
+      {!showErr && (
+        <div style={{ marginTop: working ? 18 : 14 }}>
+          <SpecMemoryPanel specs={wiz.specs} />
+        </div>
+      )}
 
       {/* Recoverable error → show the likely causes the user can self-check
           (most-likely first) plus a retry. Hidden for `unavailable` (a hardware
