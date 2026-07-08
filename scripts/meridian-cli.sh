@@ -111,6 +111,24 @@ cmd_stop() {
         pkill -f "mlx_lm.server" 2>/dev/null || true
         info "killed orphaned mlx_lm.server process(es)"
     fi
+    # Kill any orphaned dev-build daemons (`cargo watch`/`cargo run --bin
+    # meridian` from dev-start.sh, or a bare `cargo run`) — not tracked by
+    # launchd, so `bootout` above never touches them. Closing the Terminal
+    # window a dev session runs in (instead of Ctrl-C, or re-running
+    # dev-start.sh, which has its own cleanup) reparents this chain to PID 1
+    # and it silently keeps running — including its clock-aligned worklog
+    # trigger, which then races the canonical daemon and double-runs every
+    # hour's worklog pipeline. Anchored to the debug/release binary path so
+    # this never matches the canonical `~/.meridian/bin/meridian` or the
+    # `meridian`/`meridian-daemon` CLI wrappers.
+    if pgrep -f "target/(debug|release)/meridian$" >/dev/null 2>&1; then
+        pkill -f "target/(debug|release)/meridian$" 2>/dev/null || true
+        info "killed orphaned dev-build daemon process(es)"
+    fi
+    if pgrep -f "cargo-watch.*--bin meridian" >/dev/null 2>&1; then
+        pkill -f "cargo-watch.*--bin meridian" 2>/dev/null || true
+        info "killed orphaned cargo-watch process(es)"
+    fi
 }
 
 # --- restart ---
