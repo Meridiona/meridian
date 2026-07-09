@@ -139,4 +139,10 @@ jobs:
           # (mlx_server::manifest_url reads this via option_env!). A packaged .app
           # has no shell env, so the staging .app must compile in runtime-staging.
           MERIDIAN_RUNTIME_MANIFEST_URL: "https://github.com/Meridiona/meridian/releases/download/runtime-staging/runtime-manifest.json"
+          # Bake the HF caching-proxy endpoint into the staging build (same
+          # option_env! pattern, mlx_server::hf_endpoint). Production (main)
+          # deliberately leaves this unset until Cache Reserve is enabled on the
+          # zone — staging is where we validate the proxy against real installer
+          # traffic first.
+          MERIDIAN_HF_ENDPOINT: "https://hf.meridiona.com"
         run: npx semantic-release
