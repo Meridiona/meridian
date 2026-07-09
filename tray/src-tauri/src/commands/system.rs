@@ -109,19 +109,29 @@ pub async fn open_permission_pane(app: tauri::AppHandle, pane: String) -> Result
     let url = match pane.as_str() {
         "screen_recording" => {
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+                .to_string()
         }
         "accessibility" => {
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+                .to_string()
         }
         "input_monitoring" => {
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
+                .to_string()
         }
         // Notification authorization lives under Notifications, not Privacy &
-        // Security. Bare pane, no ?id=<bundle-id> anchor — per-app anchoring is
-        // undocumented and inconsistent across macOS versions. This is the deny
+        // Security. Anchored to our own bundle id so this opens Meridian's
+        // specific notification detail pane (Allow toggle, Alert Style, …)
+        // instead of just the app list — verified working via the
+        // `?id=<bundle-id>` param, which the pane's own extension metadata
+        // (`NotificationsSettings.appex`'s `allowsXAppleSystemPreferencesURLScheme`)
+        // supports even though it's otherwise undocumented. This is the deny
         // recovery path: macOS shows the authorization dialog exactly once, so
         // after a deny the wizard can only send the user here.
-        "notifications" => "x-apple.systempreferences:com.apple.preference.notifications",
+        "notifications" => format!(
+            "x-apple.systempreferences:com.apple.preference.notifications?id={}",
+            app.config().identifier
+        ),
         other => return Err(format!("unknown permission pane: {other}")),
     };
     dismiss_popover(&app);

@@ -29,7 +29,7 @@ export interface Wiz {
   perms: { accessibility: boolean | null; screen: boolean | null; notifications: NotifState | null }
   openPane: (pane: string) => void
   grantScreen: () => void
-  grantNotifications: () => void
+  grantNotifications: (alreadyDenied: boolean) => void
   // Step 2 — local intelligence (live MLX status + detected specs)
   specs: SystemSpecs | null
   mlx: MlxStatusResponse | null
@@ -78,8 +78,9 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
                 : notif
                   // 'prompt' → the button surfaces the one-shot OS dialog;
                   // 'denied' → macOS won't re-prompt, so it opens the
-                  // Notifications pane (grantNotifications picks the path).
-                  ? <Btn size="sm" variant="secondary" onClick={() => wiz.grantNotifications()}>{wiz.perms.notifications === 'denied' ? 'Open Settings' : 'Allow'}</Btn>
+                  // Notifications pane directly (grantNotifications skips the
+                  // pointless re-request when told it's already denied).
+                  ? <Btn size="sm" variant="secondary" onClick={() => wiz.grantNotifications(wiz.perms.notifications === 'denied')}>{wiz.perms.notifications === 'denied' ? 'Open Settings' : 'Allow'}</Btn>
                   : <Btn size="sm" variant="secondary" onClick={() => p.id === 'screen' ? wiz.grantScreen() : wiz.openPane(p.pane)}>Open Settings</Btn>}
             </div>
           </Row>

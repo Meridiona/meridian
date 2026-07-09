@@ -169,10 +169,17 @@ export default function SetupWizard() {
 
   // Notifications: 'prompt' → request surfaces the one-shot macOS dialog and
   // returns the answer; after a deny macOS never re-prompts, so the only
-  // recovery is the System Settings → Notifications pane. The request result
+  // recovery is the System Settings → Notifications pane — go straight there
+  // instead of re-requesting (the request would just silently re-resolve to
+  // 'denied' with no dialog, adding a pointless round-trip through the
+  // notification plugin before ever reaching the pane). The request result
   // updates state immediately; the 2 s poll keeps it honest after pane edits.
-  const grantNotifications = useCallback(async () => {
+  const grantNotifications = useCallback(async (alreadyDenied: boolean) => {
     setErr('')
+    if (alreadyDenied) {
+      invoke('open_permission_pane', { pane: 'notifications' }).catch((e) => setErr(String(e)))
+      return
+    }
     try {
       const state = await invoke<NotifState>('request_notifications')
       setPerms((prev) => ({ ...prev, notifications: state }))
