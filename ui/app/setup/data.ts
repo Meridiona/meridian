@@ -49,31 +49,43 @@ export const MODEL_RAM_GB = 1.5
 /** Meridian's own resident footprint (background service), separate from the model. */
 export const APP = { diskGB: 0.18, ramGB: 0.15 }
 
-// ── macOS permissions — the three the backend actually requires + polls ───────
-// (The design's Notifications + Launch-at-login toggles are intentionally
-// omitted: no backend exists for them, and the in-process capture pipeline
-// genuinely needs Input Monitoring, which the design omitted.)
+// ── macOS permissions — the three required TCC grants + optional notifications ─
+// (The design's Launch-at-login toggle is intentionally omitted: no backend
+// exists for it. The in-process capture pipeline genuinely needs Input
+// Monitoring, which the design omitted.)
+
+/** Notification authorization (`check_notifications`). Tri-state, not boolean:
+ *  macOS shows the authorization dialog exactly once, so `denied` and `prompt`
+ *  need different grant actions (Settings pane vs system dialog).
+ *  `unavailable` = unbundled run (`tauri dev`) — the card hides itself. */
+export type NotifState = 'granted' | 'denied' | 'prompt' | 'unavailable'
 
 export interface PermissionMeta {
-  id: 'screen' | 'accessibility' | 'input'
-  icon: 'screen' | 'access' | 'power'
+  id: 'screen' | 'accessibility' | 'input' | 'notifications'
+  icon: 'screen' | 'access' | 'power' | 'bell'
   name: string
   pane: string      // open_permission_pane argument
   desc: string
+  /** Required grants gate the step's Continue; optional ones never do. */
+  required: boolean
 }
 
 export const PERMISSIONS: PermissionMeta[] = [
   {
-    id: 'accessibility', icon: 'access', name: 'Accessibility', pane: 'accessibility',
+    id: 'accessibility', icon: 'access', name: 'Accessibility', pane: 'accessibility', required: true,
     desc: 'Reads the active app, window titles, and UI labels for accurate context.',
   },
   {
-    id: 'screen', icon: 'screen', name: 'Screen Recording', pane: 'screen_recording',
+    id: 'screen', icon: 'screen', name: 'Screen Recording', pane: 'screen_recording', required: true,
     desc: 'Reads on-screen text to understand your work. Pixels/video are never stored; extracted text stays on-device.',
   },
   {
-    id: 'input', icon: 'power', name: 'Input Monitoring', pane: 'input_monitoring',
+    id: 'input', icon: 'power', name: 'Input Monitoring', pane: 'input_monitoring', required: true,
     desc: 'Detects clicks and typing so Meridian knows when you switch tasks.',
+  },
+  {
+    id: 'notifications', icon: 'bell', name: 'Notifications', pane: 'notifications', required: false,
+    desc: 'Nudges you when a worklog draft is ready or your plan needs attention. Quiet by default — you control every type in Settings.',
   },
 ]
 
