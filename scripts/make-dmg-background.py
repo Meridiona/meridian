@@ -32,6 +32,7 @@ W, H = W_PT * SCALE, H_PT * SCALE
 # ── lilac theme tokens (ui/app/globals.css) ──────────────────────────────────
 T_MUTED = (110, 106, 136)        # --t-muted
 ACCENT = (139, 92, 246)          # --color-state-proposal
+ARROW = (196, 181, 253)          # --chip gradient stop (lighter violet tint)
 DESK_1 = (236, 234, 255)         # --desk stop 1
 DESK_2 = (231, 236, 252)         # --desk stop 2
 DESK_3 = (233, 234, 245)         # --desk stop 3
@@ -102,16 +103,16 @@ def main():
     # Soft glow stroke under the arrow (depth), then the crisp stroke on top.
     arrow_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     arrow_draw = ImageDraw.Draw(arrow_layer)
-    arrow_draw.line(pts, fill=ACCENT + (90,), width=10 * SCALE, joint="curve")
+    arrow_draw.line(pts, fill=ARROW + (90,), width=10 * SCALE, joint="curve")
     arrow_layer = arrow_layer.filter(ImageFilter.GaussianBlur(6 * SCALE / 2))
     bg = Image.alpha_composite(bg, arrow_layer)
     draw = ImageDraw.Draw(bg, "RGBA")
 
-    draw.line(pts, fill=ACCENT + (235,), width=int(3.4 * SCALE), joint="curve")
+    draw.line(pts, fill=ARROW + (235,), width=int(3.4 * SCALE), joint="curve")
     # Round the line caps (ImageDraw.line leaves flat caps at the ends).
     r = int(3.4 * SCALE / 2)
     for cap in (pts[0], pts[-1]):
-        draw.ellipse([cap[0] - r, cap[1] - r, cap[0] + r, cap[1] + r], fill=ACCENT + (235,))
+        draw.ellipse([cap[0] - r, cap[1] - r, cap[0] + r, cap[1] + r], fill=ARROW + (235,))
 
     # Arrowhead at the end, oriented along the local tangent.
     tx, ty = pts[-1][0] - pts[-6][0], pts[-1][1] - pts[-6][1]
@@ -122,7 +123,7 @@ def main():
     back = (tip[0] - head_len * math.cos(ang), tip[1] - head_len * math.sin(ang))
     left = (back[0] - head_w * math.sin(ang), back[1] + head_w * math.cos(ang))
     right = (back[0] + head_w * math.sin(ang), back[1] - head_w * math.cos(ang))
-    draw.polygon([tip, left, right], fill=ACCENT + (235,))
+    draw.polygon([tip, left, right], fill=ARROW + (235,))
 
     # ── Instructional caption under the icon row ─────────────────────────────
     cap_font = font(SFNS, 13)
