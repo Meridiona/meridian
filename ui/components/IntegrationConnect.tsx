@@ -695,14 +695,18 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // Separate from saveError: this one gates the early return below, so
+  // reusing it for save failures would replace the whole picker (losing the
+  // user's selection) instead of showing an inline error next to Save.
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [reloadWarning, setReloadWarning] = useState(false)
 
   useEffect(() => {
     let cancelled = false
     load<{ projects?: GithubProject[] }>('/api/integrations/github/discover', 'discover_github_projects')
       .then((json) => { if (!cancelled) setProjects(json.projects ?? []) })
-      .catch((e) => { if (!cancelled) setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Failed to load GitHub Projects') })
+      .catch((e) => { if (!cancelled) setLoadError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Failed to load GitHub Projects') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [])
@@ -717,7 +721,7 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
 
   const save = async () => {
     if (selected.size === 0 || saving) return
-    setSaving(true); setError(null)
+    setSaving(true); setSaveError(null)
     try {
       const res = await mutate<{ ok: boolean; reloaded: boolean }>('/api/auth/token', 'save_integration_token', {
         provider: 'github', fields: { project_ids: Array.from(selected).join(',') },
@@ -725,7 +729,7 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
       setReloadWarning(res?.reloaded === false)
       clearProviderNotice('github'); onSuccess?.()
     } catch (e) {
-      setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not save project selection')
+      setSaveError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not save project selection')
     } finally {
       setSaving(false)
     }
@@ -733,7 +737,7 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
 
   if (loading) return <p className="text-[11px]" style={{ color: 'var(--ink-3)' }}>Loading your GitHub Projects…</p>
 
-  if (error) return <p className="text-[12px]" style={{ color: '#e53e3e' }}>{error}</p>
+  if (loadError) return <p className="text-[12px]" style={{ color: '#e53e3e' }}>{loadError}</p>
 
   if (!projects || projects.length === 0) {
     return (
@@ -767,7 +771,7 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
           </div>
         ))}
       </div>
-      {error && <p className="text-[11px]" style={{ color: '#e53e3e' }}>{error}</p>}
+      {saveError && <p className="text-[11px]" style={{ color: '#e53e3e' }}>{saveError}</p>}
       <button onClick={save} disabled={selected.size === 0 || saving} className="text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
         style={{ background: 'var(--accent)', color: '#fff', opacity: (selected.size === 0 || saving) ? 0.5 : 1, cursor: (selected.size === 0 || saving) ? 'not-allowed' : 'pointer' }}>
         {saving ? 'Saving…' : selected.size === 0 ? 'Select a project' : `Sync ${selected.size} project${selected.size === 1 ? '' : 's'}`}
