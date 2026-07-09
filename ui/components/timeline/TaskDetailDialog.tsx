@@ -12,6 +12,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { Badge } from '@/components/atoms'
 import type { TaskDetail } from '@/lib/api-types'
 import { load, openExternal } from '@/lib/bridge'
 
@@ -61,11 +62,7 @@ export function TaskDetailDialog({
         <div className="px-6 pt-5 pb-4 border-b shrink-0" style={{ borderColor: 'var(--t-hair)' }}>
           <div className="flex items-center gap-2 mb-2.5">
             <span className="mt-mono-sm text-[11px] px-1.5 py-0.5 rounded bg-key-bg text-key-text">{taskKey}</span>
-            {detail?.issue_type && (
-              <span className="mt-chip px-1.5 py-0.5 rounded" style={{ color: 'var(--t-muted)', border: '1px solid var(--t-hair)' }}>
-                {detail.issue_type}
-              </span>
-            )}
+            {detail?.issue_type && <Badge color="var(--t-muted)" borderColor="var(--t-hair)">{detail.issue_type}</Badge>}
             {detail?.status && (
               <span className="mt-body-sm inline-flex items-center gap-1.5" style={{ color: 'var(--t-muted)' }}>
                 <span className="inline-block w-1.5 h-1.5 rounded-full"

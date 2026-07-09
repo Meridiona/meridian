@@ -23,6 +23,7 @@
 
 'use client'
 
+import { Badge } from '@/components/atoms'
 import { MeridianMark } from './Toolbar'
 
 type TakeoverMode = 'queued' | 'generating'
@@ -125,14 +126,9 @@ export function HourTakeover({
       </span>
 
       {paused && (
-        <span className="mt-chip inline-flex items-center gap-1.5 px-2 py-1 rounded-full whitespace-nowrap shrink-0"
-          style={{
-            color: 'var(--color-state-pending)',
-            background: 'color-mix(in srgb, var(--color-state-pending) 12%, transparent)',
-            border: '1px solid color-mix(in srgb, var(--color-state-pending) 24%, transparent)',
-          }}>
+        <Badge variant="pill" tone="filled" color="var(--color-state-pending)" className="whitespace-nowrap shrink-0">
           Paused
-        </span>
+        </Badge>
       )}
     </div>
   )
@@ -149,16 +145,10 @@ export function HourBadges({ pausedNow, pausedHistoric }: { pausedNow: boolean; 
 
 function PausedBadge({ live }: { live: boolean }) {
   return (
-    <span className="mt-chip inline-flex items-center gap-1.5 px-2 py-1 rounded-full whitespace-nowrap"
-      style={{
-        color: 'var(--color-state-pending)',
-        background: 'color-mix(in srgb, var(--color-state-pending) 12%, transparent)',
-        border: '1px solid color-mix(in srgb, var(--color-state-pending) 24%, transparent)',
-        opacity: live ? 1 : 0.7,
-      }}>
-      <span className={`inline-block w-1.5 h-1.5 rounded-full ${live ? 'live-dot' : ''}`}
-        style={{ background: 'var(--color-state-pending)' }} aria-hidden="true" />
+    <Badge variant="pill" tone="filled" color="var(--color-state-pending)"
+      dot dotClassName={live ? 'live-dot' : ''}
+      className="whitespace-nowrap" style={{ opacity: live ? 1 : 0.7 }}>
       Paused
-    </span>
+    </Badge>
   )
 }

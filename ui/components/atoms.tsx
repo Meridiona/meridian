@@ -206,6 +206,63 @@ export function StatusPill({ status, isTerminal }: { status: string; isTerminal?
   )
 }
 
+/**
+ * Shared badge/pill shape — consolidates the two patterns hand-rolled across
+ * timeline components: `chip` (small rounded corners, mono `.mt-chip` text —
+ * the outlined data-label badges on cards) and `pill` (rounded-full, used for
+ * filled status indicators like "Paused"). `tone` controls the fill:
+ * `outline` (default, border only), `filled` (color-mix background + border,
+ * for a colored status pill), `ghost` (neutral `bg-wrap` fill with a
+ * hairline border in `color`).
+ */
+export function Badge({
+  children,
+  color = 'var(--t-muted)',
+  borderColor,
+  variant = 'chip',
+  tone = 'outline',
+  dot = false,
+  dotClassName = '',
+  as: Tag = 'span',
+  className = '',
+  style,
+  ...props
+}: {
+  children: React.ReactNode
+  color?: string
+  // Defaults to `color` — override for the neutral chips whose border reads
+  // as a plain hairline (`--t-hair`) rather than tinted to match the text.
+  borderColor?: string
+  variant?: 'chip' | 'pill'
+  tone?: 'outline' | 'filled' | 'ghost'
+  dot?: boolean
+  // Extra class on the leading dot — e.g. `live-dot` for a blinking pulse.
+  dotClassName?: string
+  as?: React.ElementType
+  className?: string
+  style?: React.CSSProperties
+  [key: string]: unknown
+}) {
+  const shape = variant === 'pill' ? 'rounded-full' : 'rounded'
+  const pad = variant === 'pill' ? 'px-2 py-1' : 'px-1.5 py-0.5'
+  const outlineColor = borderColor ?? color
+  const border = tone === 'ghost' ? 'none'
+    : tone === 'filled' ? `1px solid color-mix(in srgb, ${color} 24%, transparent)`
+    : `1px solid ${outlineColor}`
+  const background = tone === 'filled' ? `color-mix(in srgb, ${color} 12%, transparent)`
+    : tone === 'ghost' ? 'var(--t-wrap)' : undefined
+  return (
+    <Tag
+      {...props}
+      className={`mt-chip inline-flex items-center gap-1.5 shrink-0 ${shape} ${pad} ${className}`}
+      style={{ color, border, background, ...style }}
+    >
+      {dot && <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${dotClassName}`} style={{ background: color }} aria-hidden="true" />}
+      {children}
+    </Tag>
+  )
+}
+
 export function SectionHead({ kicker, title, right }: { kicker?: string; title: React.ReactNode; right?: React.ReactNode }) {
   return (
     <div className="flex items-end justify-between mb-3">

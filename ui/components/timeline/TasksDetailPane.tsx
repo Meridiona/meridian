@@ -11,7 +11,7 @@
 
 'use client'
 
-import { fmtDur, fmtClock, AppGlyph, CatDot, CATS, PROVIDER_META } from '@/components/atoms'
+import { Badge, fmtDur, fmtClock, AppGlyph, CatDot, CATS, PROVIDER_META } from '@/components/atoms'
 import type { TaskSummary, TodayResponse } from '@/lib/api-types'
 
 function isDueSoon(due: string): boolean {
@@ -50,16 +50,8 @@ export function TasksDetailPane({ task, sessions, epicColor, onFix, onOpenDetail
               style={{ background: task.is_terminal ? 'var(--color-state-approved)' : 'var(--color-state-proposal)' }} />
             {task.status || '—'}
           </span>
-          {task.issue_type && (
-            <span className="mt-chip px-1.5 py-0.5 rounded" style={{ color: 'var(--t-muted)', border: '1px solid var(--t-hair)' }}>
-              {task.issue_type}
-            </span>
-          )}
-          {providerMeta && (
-            <span className="mt-chip px-1.5 py-0.5 rounded" style={{ color: providerMeta.color, border: `1px solid ${providerMeta.color}` }}>
-              {providerMeta.label}
-            </span>
-          )}
+          {task.issue_type && <Badge color="var(--t-muted)" borderColor="var(--t-hair)">{task.issue_type}</Badge>}
+          {providerMeta && <Badge color={providerMeta.color}>{providerMeta.label}</Badge>}
           <button onClick={onOpenDetail} className="mt-body-sm ml-auto shrink-0" style={{ color: 'var(--color-state-proposal)', fontWeight: 700 }}>
             Full details →
           </button>

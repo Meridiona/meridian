@@ -15,7 +15,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { ProviderGlyph } from '@/components/atoms'
+import { Badge, ProviderGlyph } from '@/components/atoms'
 import type { TaskSummary } from '@/lib/api-types'
 import type { HygieneIssue } from '@/lib/hygiene'
 import { load, mutate, openExternal } from '@/lib/bridge'
@@ -58,9 +58,7 @@ export function CleanupCard({
           <div className="flex items-center gap-2.5 flex-wrap">
             <ProviderGlyph provider={task.provider} size={18} />
             <span className="mt-mono-sm text-[11px] px-1.5 py-0.5 rounded bg-key-bg text-key-text">{task.key}</span>
-            <span className="mt-chip ml-auto px-2 py-0.5 rounded" style={{ color: meta.color, border: `1px solid ${meta.color}` }}>
-              {meta.label}
-            </span>
+            <Badge color={meta.color} className="ml-auto">{meta.label}</Badge>
           </div>
 
           <p className="mt-title-lg text-title">{task.title}</p>

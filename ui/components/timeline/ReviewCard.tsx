@@ -12,7 +12,7 @@
 
 import { useState } from 'react'
 import { motion, useMotionValue, useTransform, type PanInfo } from 'framer-motion'
-import { fmtDur, fmtClock } from '@/components/atoms'
+import { Badge, fmtDur, fmtClock } from '@/components/atoms'
 import type { WorklogItem } from '@/lib/api-types'
 import { EditableSummary, EditableTitle } from './EditableSummary'
 import { TicketMatchPicker } from './TicketMatchPicker'
@@ -138,9 +138,7 @@ export function ReviewCard({
           <div className="flex items-center gap-2.5 flex-wrap">
             <span className="mt-mono-sm text-[11px] px-1.5 py-0.5 rounded bg-key-bg text-key-text">{displayKey}</span>
             <span className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>{kindLabel(item)}</span>
-            <span className="mt-chip ml-auto px-2 py-0.5 rounded" style={{ color: accent, border: `1px solid ${accent}` }}>
-              {stateLabel(item)}
-            </span>
+            <Badge color={accent} className="ml-auto">{stateLabel(item)}</Badge>
           </div>
 
           {editing && item.is_proposed ? (
@@ -168,11 +166,7 @@ export function ReviewCard({
                 className="mt-body-sm inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md self-start"
                 style={{ color: 'var(--color-state-proposal)', border: '1px solid var(--color-state-proposal)' }}>
                 <span style={{ color: 'var(--t-faint)' }}>Matched to {displayKey}</span> · Change ticket
-                {pendingCandidate && (
-                  <span className="mt-chip px-1.5 py-0.5 rounded" style={{ color: 'var(--color-state-pending)', border: '1px solid var(--color-state-pending)' }}>
-                    unsaved
-                  </span>
-                )}
+                {pendingCandidate && <Badge color="var(--color-state-pending)">unsaved</Badge>}
               </button>
             )
           )}
@@ -220,7 +214,7 @@ export function ReviewCard({
               </span>
               <span style={{ color: 'var(--t-faint)' }}>·</span>
               <span className="mt-mono-sm text-[11px]" style={{ color: 'var(--t-muted)' }}>{fmtDur(item.time_spent_seconds)}</span>
-              <span className="mt-chip ml-auto px-2 py-0.5 rounded bg-wrap" style={{ color: 'var(--t-muted)' }}>{providerLabel(item.provider)}</span>
+              <Badge color="var(--t-muted)" tone="ghost" className="ml-auto">{providerLabel(item.provider)}</Badge>
             </div>
           </div>
         </div>

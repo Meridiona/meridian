@@ -13,7 +13,7 @@
 'use client'
 
 import { useState } from 'react'
-import { fmtDur } from '@/components/atoms'
+import { Badge, fmtDur } from '@/components/atoms'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import type { WorklogItem } from '@/lib/api-types'
 import { openExternal } from '@/lib/bridge'
@@ -79,14 +79,8 @@ export function TimelineCard({
                   <span className="mt-mono-sm text-[11px] px-1.5 py-0.5 rounded bg-key-bg text-key-text">{item.task_key}</span>
                 )
               )}
-              {item.issue_type && (
-                <span className="mt-chip px-1.5 py-0.5 rounded" style={{ color: 'var(--t-muted)', border: '1px solid var(--t-hair)' }}>
-                  {item.issue_type}
-                </span>
-              )}
-              <span className="mt-chip px-2 py-0.5 rounded ml-auto" style={{ color: accent, border: `1px solid ${accent}` }}>
-                {stateLabel(item)}
-              </span>
+              {item.issue_type && <Badge color="var(--t-muted)" borderColor="var(--t-hair)">{item.issue_type}</Badge>}
+              <Badge color={accent} className="ml-auto">{stateLabel(item)}</Badge>
             </div>
             {/* Title on its own line — no longer sharing a row with
                 minutes/status, so a long title doesn't crowd them. */}
@@ -108,9 +102,7 @@ export function TimelineCard({
             )}
             <div className="flex items-center gap-2 shrink-0">
               <span className="mt-mono-sm text-[11px]" style={{ color: 'var(--t-faint)' }}>{minutes}</span>
-              <span className="mt-chip px-1.5 py-0.5 rounded" style={{ color: accent, border: `1px solid ${accent}` }}>
-                {stateLabel(item)}
-              </span>
+              <Badge color={accent}>{stateLabel(item)}</Badge>
             </div>
           </div>
         )}
