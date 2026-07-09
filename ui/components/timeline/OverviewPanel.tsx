@@ -68,7 +68,11 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
   // the underlying today.autonomous_s data is still computed server-side,
   // this just stops surfacing it in the UI while the framing gets rethought).
   // const autonomous_s = today?.autonomous_s ?? 0
-  const appTops = today ? appTotals(today.sessions, codingAgents?.agents ?? []) : []
+  // get_coding_agents has no date param (it always reads today's totals —
+  // tray/src-tauri/src/commands/dashboard.rs hardcodes today_string()), so
+  // only fold it in while viewing today; on a past day it would inject
+  // TODAY's coding time into that day's app breakdown.
+  const appTops = today ? appTotals(today.sessions, isToday ? (codingAgents?.agents ?? []) : []) : []
   const appCount = appTops.length
   const catTops = today ? categoryRows(today.sessions, agent_s) : []
   // Pull the "Coding" number straight out of the SAME merged rows the
@@ -271,7 +275,7 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
             <p className="mt-body-sm" style={{ color: 'var(--t-faint)' }}>most in {appTops[0].app}</p>
           )}
         </div>
-        <TimeByApp sessions={today?.sessions ?? []} agentTotals={codingAgents?.agents ?? []} />
+        <TimeByApp sessions={today?.sessions ?? []} agentTotals={isToday ? (codingAgents?.agents ?? []) : []} />
       </div>
 
       <div className="rounded-xl p-5 bg-card" style={{ border: '1px solid var(--t-card-border)' }}>
