@@ -30,6 +30,15 @@ function clearProviderNotice(provider: string): void {
   void invoke('delete_notice', { noticeId: `pm.${provider}` }).catch(() => {})
 }
 
+// Abort a still-running jira/trello browser-OAuth attempt so a fresh
+// start_oauth call doesn't hit "already in progress". Only jira/trello are
+// wired server-side (cancel_oauth) — github's device flow has no loopback
+// port to free, so this is a silent no-op for it. Fire-and-forget: worst case
+// (the daemon is unreachable) is the pre-existing 5-minute timeout behavior.
+function cancelOAuth(provider: string): void {
+  void mutate('/api/auth/oauth/cancel', 'cancel_oauth', { provider }).catch(() => {})
+}
+
 // ── Main list ─────────────────────────────────────────────────────────────────
 export default function ConnectTrackers({
   integrations, onChanged, compact,
@@ -225,6 +234,11 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
   // mountedRef lets the async startOAuth body detect an unmount that happened
   // while awaiting mutate — before the interval is created and pollRef assigned.
   const mountedRef = useRef(true)
+  // Mirrors `status` for the unmount cleanup below, which closes over the
+  // value from whichever render installed it (an empty-deps effect only runs
+  // once) — a ref always reads the latest value regardless of when it fires.
+  const statusRef = useRef(status)
+  statusRef.current = status
 
   // Set the flag TRUE on (re)mount, not just FALSE on unmount. Under React
   // StrictMode (on in `next dev`, which `tauri dev` serves) effects run
@@ -239,8 +253,27 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
     return () => {
       mountedRef.current = false
       if (pollRef.current != null) clearInterval(pollRef.current)
+      // Closing Settings (or switching providers) mid-flow is the same
+      // "abandoned the browser tab" situation "Try again" fixes below —
+      // cancel server-side too so reopening doesn't hit "already in progress".
+      if (statusRef.current === 'waiting' && (tracker.id === 'jira' || tracker.id === 'trello')) {
+        cancelOAuth(tracker.id)
+      }
     }
-  }, [])
+  }, [tracker.id])
+
+  // Bail out of a 'waiting' OR 'error' attempt back to 'idle': stops the poll
+  // (if still running), tells the backend to abort/free the loopback port
+  // (jira/trello only — see cancelOAuth), and resets local state. Used by
+  // both the "waiting" state's manual Cancel (for failures Atlassian/Trello
+  // block at THEIR consent screen and never redirect back for — the loopback
+  // listener would otherwise sit waiting the full timeout with no feedback)
+  // and the "error" state's "Try again".
+  const cancelAndReset = () => {
+    if (pollRef.current != null) { clearInterval(pollRef.current); pollRef.current = null }
+    if (tracker.id === 'jira' || tracker.id === 'trello') cancelOAuth(tracker.id)
+    setStatus('idle'); setError(null); setDeviceCode(null); setVerifyUri(null)
+  }
 
   const startOAuth = async () => {
     setStatus('waiting'); setError(null); setDeviceCode(null); setVerifyUri(null)
@@ -374,6 +407,15 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
             <>
               <p className="text-[12px]" style={{ color: 'var(--t-muted)' }}>Your browser should have opened. Authorize the app, then come back here.</p>
               <p className="text-[11px]" style={{ color: 'var(--t-faint-2)' }}>Waiting for authorization…</p>
+              {/* jira/trello only — a rejection Atlassian/Trello shows on THEIR
+                  consent screen (e.g. "no Jira site access") never redirects
+                  back here, so there's no automatic error to catch; without
+                  this the user is stuck watching "Waiting…" for up to 5 min. */}
+              {(tracker.id === 'jira' || tracker.id === 'trello') && (
+                <button onClick={cancelAndReset} className="text-[11px]" style={{ color: 'var(--t-faint)', cursor: 'pointer' }}>
+                  Not going through? Cancel
+                </button>
+              )}
             </>
           )}
         </div>
@@ -386,7 +428,9 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
       {status === 'error' && (
         <div className="space-y-2">
           <p className="text-[12px]" style={{ color: 'var(--status-error-dot)' }}>{error ?? 'OAuth failed.'}</p>
-          <button onClick={() => setStatus('idle')} className="text-[11px]" style={{ color: 'var(--color-state-proposal)', cursor: 'pointer' }}>Try again</button>
+          <button onClick={cancelAndReset} className="text-[11px]" style={{ color: 'var(--color-state-proposal)', cursor: 'pointer' }}>
+            Try again
+          </button>
         </div>
       )}
     </div>

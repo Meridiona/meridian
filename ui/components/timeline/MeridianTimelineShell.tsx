@@ -170,6 +170,7 @@ export default function MeridianTimelineShell() {
             onOpen={setActiveModal}
             onOpenTask={(key, title) => setOpenTask({ key, title })}
             onEditWorklog={openReview}
+            onOpenSettings={(section) => { setSettingsSection(section); setActiveModal('settings') }}
           />
         </div>
       </div>

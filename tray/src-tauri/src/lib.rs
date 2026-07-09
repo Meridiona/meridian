@@ -491,6 +491,7 @@ pub fn run() {
             commands::get_version,
             commands::check_update,
             commands::install_update,
+            commands::get_app_icon,
             // DB writes (ported /api/* POSTs/PATCH/DELETE)
             commands::plan_action,
             commands::triage_decision,
@@ -516,6 +517,7 @@ pub fn run() {
             commands::discover_github_projects,
             commands::save_integration_token,
             commands::start_oauth,
+            commands::cancel_oauth,
             commands::get_oauth_status,
             // OS/window actions
             commands::open_permission_pane,

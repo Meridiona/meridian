@@ -11,7 +11,7 @@ type InvokeFn = (cmd: string, args?: Record<string, unknown>) => Promise<unknown
 type UnlistenFn = () => void
 
 type TauriBridge = {
-  core: { invoke: InvokeFn }
+  core: { invoke: InvokeFn; convertFileSrc: (path: string, protocol?: string) => string }
   window: { getCurrentWindow: () => { close: () => Promise<void> } }
   // From withGlobalTauri — the event module (listen returns a promise of the
   // unlisten fn). Used by `subscribe` for the ported SSE streams.
@@ -103,6 +103,16 @@ export async function mutate<T = unknown>(
   const t = tauri()
   if (!t) throw new Error(`mutate('${apiPath}') requires the Meridian app — Tauri bridge unavailable.`)
   return t.core.invoke(command, { body }) as Promise<T>
+}
+
+/** Turn a local filesystem path into a URL the webview's asset protocol can
+ *  load (e.g. `<img src>`), given the path is inside `tauri.conf.json`'s
+ *  `security.assetProtocol.scope`. Returns `null` outside Tauri — callers
+ *  fall back to whatever they render without a resolved icon/asset. */
+export function assetUrl(path: string): string | null {
+  const t = tauri()
+  if (!t) return null
+  return t.core.convertFileSrc(path)
 }
 
 /** Live subscription via the Tauri event bus — replaces the four SSE streams.

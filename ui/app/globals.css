@@ -367,6 +367,19 @@ body, .font-sans {
 @keyframes mer-pop { from { opacity: 0; transform: scale(.82); } to { opacity: 1; transform: scale(1); } }
 .mer-pop { animation: mer-pop .32s cubic-bezier(.2,.7,.2,1) both; }
 
+/* "Connect a tracker" CTA curved connector (CurvedArrow.tsx) — a flowing
+   marching-ants dash along the curve plus a gentle float on the whole glyph,
+   so it reads as pointing FROM the content above INTO the CTA below rather
+   than a flat static "→". */
+@keyframes mer-arrow-flow { to { stroke-dashoffset: -18; } }
+.mer-arrow-flow { animation: mer-arrow-flow 1s linear infinite; }
+
+@keyframes mer-arrow-float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(3px); }
+}
+.mer-curved-arrow { display: block; animation: mer-arrow-float 2s ease-in-out infinite; }
+
 /* Timeline hour-row "Generating this hour's work log" takeover — ported
    verbatim from the Claude Design mock (Meridian Timeline.dc.html):
    genShimmer (the card's own background sweeps), genBlink (the sparkle icon

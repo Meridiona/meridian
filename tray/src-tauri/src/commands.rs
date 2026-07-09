@@ -7,6 +7,7 @@
 //! name them flatly regardless of which submodule they sit in.
 //!
 //! - [`dashboard`] — the ported `/api/*` DB reads (active/today/week/tasks/…).
+//! - [`app_icons`] — real macOS app icon extraction for "Time by app" (`get_app_icon`).
 //! - [`daemon`]    — daemon lifecycle (restart/pause/resume) + status probes.
 //! - [`system`]    — OS/window actions (open URLs, System Settings panes).
 //! - [`health`]    — the `/api/health` check (also reused by [`crate::poll`]).
@@ -30,6 +31,7 @@
 //! - [`crate::sys`] — shared uid / notify / ui_base helpers.
 //! - [`crate::mlx_server`] — the MLX process manager the setup commands drive.
 
+pub mod app_icons;
 pub mod daemon;
 pub mod dashboard;
 pub mod diagnostics;
@@ -51,6 +53,7 @@ pub mod worklogs;
 // Globs (not explicit names) are required: the `#[tauri::command]` macro emits
 // hidden sibling items (`__cmd__*`) that `generate_handler!` resolves through
 // this path, and only a glob carries them along with the command fn.
+pub use app_icons::*;
 pub use daemon::*;
 pub use dashboard::*;
 pub use diagnostics::*;
