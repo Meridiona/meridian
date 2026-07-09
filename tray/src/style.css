@@ -75,7 +75,6 @@ html, body {
 .pop {
   background: var(--paper);
   border-radius: var(--radius);
-  border: 1px solid rgba(120, 90, 200, 0.14);
   box-shadow:
     0 24px 60px -18px rgba(30, 15, 70, 0.5),
     0 6px 16px -8px rgba(30, 15, 70, 0.3);

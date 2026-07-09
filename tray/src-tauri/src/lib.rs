@@ -183,15 +183,21 @@ pub fn run() {
                     let app = tray_handle.app_handle();
                     match &event {
                         TrayIconEvent::Click {
-                            button: MouseButton::Left,
+                            button,
                             button_state: MouseButtonState::Up,
                             rect,
                             ..
                         } => {
-                            tracing::info!("tray.event: Click");
-                            // Hide the hover tooltip on click (popover takes over).
+                            tracing::info!(?button, "tray.event: Click");
+                            // Hide the hover tooltip on ANY click — left (popover takes
+                            // over) or right (native menu takes over). Right-click was
+                            // previously unhandled here, leaving the tooltip stuck
+                            // visible behind the context menu.
                             if let Some(tt) = app.get_webview_window("tray-tooltip") {
                                 let _ = tt.hide();
+                            }
+                            if *button != MouseButton::Left {
+                                return;
                             }
                             if let Some(win) = app.get_webview_window("main") {
                                 let visible = win.is_visible().unwrap_or(false);
