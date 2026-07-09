@@ -491,6 +491,7 @@ pub fn run() {
             commands::get_version,
             commands::check_update,
             commands::install_update,
+            commands::get_app_icon,
             // DB writes (ported /api/* POSTs/PATCH/DELETE)
             commands::plan_action,
             commands::triage_decision,
