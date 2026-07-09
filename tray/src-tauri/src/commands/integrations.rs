@@ -826,6 +826,12 @@ pub async fn start_oauth(body: StartOAuthBody) -> Result<StartOAuthResponse, Str
     }
 }
 
+/// POST body for [`cancel_oauth`] (`{ provider }`).
+#[derive(Debug, Deserialize)]
+pub struct CancelOAuthBody {
+    pub provider: String,
+}
+
 /// Cancel an in-flight jira/trello browser-OAuth attempt (the "Try again"
 /// button's real action — see `IntegrationConnect.tsx`'s `OAuthSetup`).
 ///
@@ -839,8 +845,9 @@ pub async fn start_oauth(body: StartOAuthBody) -> Result<StartOAuthResponse, Str
 /// waiting for the (now never-running) task to reach its own cleanup code —
 /// aborting a task skips the rest of its body entirely.
 #[tauri::command]
-#[tracing::instrument]
-pub async fn cancel_oauth(provider: String) -> Result<(), String> {
+#[tracing::instrument(fields(provider = %body.provider))]
+pub async fn cancel_oauth(body: CancelOAuthBody) -> Result<(), String> {
+    let provider = body.provider;
     let (in_flight, handle_slot): (
         &'static AtomicBool,
         &'static Mutex<Option<tokio::task::JoinHandle<()>>>,

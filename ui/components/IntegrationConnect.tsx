@@ -410,7 +410,7 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
               {/* jira/trello only — a rejection Atlassian/Trello shows on THEIR
                   consent screen (e.g. "no Jira site access") never redirects
                   back here, so there's no automatic error to catch; without
-                  this the user is stuck watching "Waiting…" for up to 3 min. */}
+                  this the user is stuck watching "Waiting…" for up to 5 min. */}
               {(tracker.id === 'jira' || tracker.id === 'trello') && (
                 <button onClick={cancelAndReset} className="text-[11px]" style={{ color: 'var(--t-faint)', cursor: 'pointer' }}>
                   Not going through? Cancel
