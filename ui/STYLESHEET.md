@@ -206,12 +206,20 @@ The **animated/shimmering** gradient treatment (background-position animation �
 | Static (chrome) | Logo/avatar, window bg, primary buttons, theme swatches, ReportModal hero | Always allowed — brand identity, unrelated to feature |
 | Animated (shimmer) | `--gen-*` worklog-generating takeover card | Reserved for "LLM call in flight" — never reused for decoration |
 
-### 9.3 · Open item — categorical data-viz colors (not yet migrated)
+### 9.3 · Categorical data-viz colors — resolved 2026-07-09
 
-The 3-color budget (§9.1) governs semantic/status/UI-accent colors. Two existing surfaces use wider categorical palettes that are **not yet** brought into line, and doing so is a separate, larger piece of work — not a rename, since it changes how a multi-series chart stays legible:
+The 3-color budget (§9.1) governs semantic/status/UI-accent colors. Three existing surfaces use wider categorical palettes — the activity category chart legend (`.cat-*` in `globals.css`, 10 hues), the app-brand colors for time bars (§8 above, 13 colors, each anchored to a tracked app's real logo color), and the epic hash palette (`EPIC_PALETTE` in `TasksPanel.tsx`, 8 hues). **Decision: no exception for any of the three — all categorical color, including app-brand, is remapped onto the same 3 hue families as §9.1.** This was chosen over carving out a brand-color exception, with the recognizability cost below accepted knowingly rather than deferred.
 
-- **Activity category colors** (`.cat-*` in `globals.css`, 10 hues) — the category chart's legend.
-- **App-brand colors** (§8 above, 13 colors) — anchored to each tracked app's *real* logo color (Slack red, Jira blue, Figma orange, ...); recoloring these breaks recognizability, not just consistency.
-- **Epic hash palette** (`EPIC_PALETTE` in `TasksPanel.tsx`, 8 hues) — same category as activity colors.
+**The 3 families, as a tint/shade scale** (not single flat colors — each family spans a lightness range so a legend can carry multiple items per family):
 
-Do not silently invent a workaround inline when touching these. Resolve the categorical-palette approach (e.g. 3 hue families × tint/shade levels, vs. an explicit named exception for real external brand colors) as its own tracked piece of work first — see the Obsidian tracker.
+| Family | Hue / saturation anchor | Range |
+|---|---|---|
+| Violet | H258° S88% (anchored to `--color-state-proposal` `#8B5CF6`) | L28%→L82% |
+| Green | H160° S84% (anchored to `--color-state-approved` `#10B981`) | L28%→L82% |
+| Amber | H38° S92% (anchored to `--color-state-pending` `#F59E0B`) | L28%→L82% |
+
+**Assignment rule:** for each categorical surface independently (the category legend, the brand time-bars, the epic palette are three separate contexts — they don't need to be mutually distinct from each other, only within their own legend), map every existing color to its nearest hue family by hue distance, then spread the items landing in the same family across that family's lightness range (darkest original → darkest new, preserving relative rank) so they stay separable within one legend.
+
+**Known cost, measured, not hand-waved:** hue-distance mapping is not evenly distributed across the 3 families, because the source palettes lean warm (reds/oranges/pinks/browns cluster to amber; blues cluster to violet). Concretely: the category legend maps 5/10 items into the amber family and only 2/10 into green; the brand time-bars map 8/13 into violet and only 2/13 into green (chrome, slack, figma, gmail, postman all land in amber alongside meeting/deployment_devops/design/planning/idle_personal — five same-family shades in one 10-item legend is a real legibility cost, and Slack/Jira/Chrome/VS Code all losing their real brand hue is a real recognizability cost). This is the tradeoff §9 originally flagged as "a different kind of harm" — recorded here as accepted, not silently smoothed over. If this reads worse than expected once it's on screen, the fallback is reopening this section for a brand-color exception, not inventing a workaround inline at the call site.
+
+**Deferred to implementation** (not this doc): the exact per-color hex assignment. A blind desk mapping computed without seeing it rendered risks locking in a bad legend (e.g. two amber shades that read as near-identical at chart scale) — the concrete hex-to-token mapping for all 31 colors (10 category + 13 brand + 8 epic) is the first task of the implementation pass, done with the running chart/legend in front of you, not authored into this standards doc sight-unseen.
