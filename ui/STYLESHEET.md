@@ -163,3 +163,63 @@ Every surface swaps by theme. Lilac (default, cool violet-white), Lavender (deep
 ### App-brand colors for time bars
 
 VS Code `#4F8FEF` · Chrome `#F4B400` · Safari `#2AA9FF` · Slack `#E01E5A` · Jira `#2684FF` · Figma `#F24E1E` · Zoom `#2D8CFF` · Notion `#3B3752` · GitHub `#57606A` · Postman `#FF6C37` · Gmail `#EA4335` · iTerm `#25A06A` · DevTools `#4285F4`.
+
+## 9 · Design standard — rules for new work (prescriptive)
+
+Sections 1–8 document what the mock defines — a catalog of what exists. This section is normative going forward: it governs what a *new* banner, badge, card, or accent may use. Added 2026-07-06, driven by the standardized-action-cards effort, which surfaced near-duplicate status colors (two greens, three ambers, two reds) and inconsistent banner styling across `MustFixBanner`, the cleanup card, and the drafts card.
+
+### 9.1 · Color budget — 3 accent colors, no more
+
+Every semantic/status/UI-accent use must map onto exactly these three. No new hue may be introduced without retiring one of the three first.
+
+| Color | Token | Value | Meaning |
+|---|---|---|---|
+| Violet | `--color-state-proposal` | `#8B5CF6` | Brand identity · informational · AI-authored/proposed content · drafts |
+| Green | `--color-state-approved` | `#10B981` | Positive · success · approved · done |
+| Amber | `--color-state-pending` | `#F59E0B` | Needs attention — pending, warning, **and** urgent/must-fix. Severity is conveyed by icon + copy + priority order, never by a 4th color. |
+
+These are already the three most-used accent tokens in `ui/` (81 / 43 / 35 references respectively) — this budget consolidates onto the existing winners rather than inventing a new palette.
+
+**Not counted against the budget** (structural, not accent): the neutral grayscale — `--t-title` / `--t-muted` / `--t-faint` / `--t-faint-2` / `--t-hair` / `--t-card-border` — and the "dismissed/rejected" gray `--color-state-rejected` (`#C7C2D6`). Every UI needs a text/border hierarchy independent of how many accent colors it has.
+
+**Retired — fold into the 3 above, do not use in new work:**
+
+| Retired token(s) | Value | Folds into |
+|---|---|---|
+| `--accent` / `--success` / `--warn` (legacy palette — "kept for Sessions/Week/setup") | `#C4822A` / `#2D7A4F` / `#A36A1A` | Violet / Green / Amber |
+| `--severity-must` | `#EF4444` | Amber — urgency comes from icon + copy + priority order |
+| `--severity-nice` | `#F97316` | Amber |
+| `--status-info-*` | `#eff6ff`/`#bfdbfe`/`#1d4ed8`/`#2563eb` | Violet |
+| `--status-warning-*` | `#fffbeb`/`#fcd34d`/`#92400e`/`#d97706` | Amber |
+| `--status-error-*` | `#fff5f5`/`#feb2b2`/`#c53030`/`#e53e3e` | Amber |
+
+Precedent already shipped: the action-card stack (`ActionCard.tsx` / `useActionItems.ts`) uses one uniform neutral card style with zero color-tiering — must-fix, cleanup, and drafts differ only by icon, copy, and stack order, never by color.
+
+### 9.2 · Gradients — static is brand, animated is "AI is working"
+
+Static gradients are the app's brand chrome and are **not** feature-specific — the logo, window background, primary buttons, and theme swatches keep their signature violet→pink diagonal (§2, §4) regardless of what they're attached to. Don't remove them and don't gate new static gradients behind "is this an AI feature."
+
+The **animated/shimmering** gradient treatment (background-position animation — `mer-gen-shimmer`) is reserved exclusively for "a model is actively generating output right now." Today that's the `--gen-*` hour-takeover card during the live `/worklog_hour` call (§7, `HourBadges.tsx`). Do not add a shimmering gradient to a static element, and do not add a new animated gradient for anything that isn't a live model call in flight.
+
+| Gradient type | Where | Rule |
+|---|---|---|
+| Static (chrome) | Logo/avatar, window bg, primary buttons, theme swatches, ReportModal hero | Always allowed — brand identity, unrelated to feature |
+| Animated (shimmer) | `--gen-*` worklog-generating takeover card | Reserved for "LLM call in flight" — never reused for decoration |
+
+### 9.3 · Categorical data-viz colors — resolved 2026-07-09
+
+The 3-color budget (§9.1) governs semantic/status/UI-accent colors. Three existing surfaces use wider categorical palettes — the activity category chart legend (`.cat-*` in `globals.css`, 10 hues), the app-brand colors for time bars (§8 above, 13 colors, each anchored to a tracked app's real logo color), and the epic hash palette (`EPIC_PALETTE` in `TasksPanel.tsx`, 8 hues). **Decision: no exception for any of the three — all categorical color, including app-brand, is remapped onto the same 3 hue families as §9.1.** This was chosen over carving out a brand-color exception, with the recognizability cost below accepted knowingly rather than deferred.
+
+**The 3 families, as a tint/shade scale** (not single flat colors — each family spans a lightness range so a legend can carry multiple items per family):
+
+| Family | Hue / saturation anchor | Range |
+|---|---|---|
+| Violet | H258° S88% (anchored to `--color-state-proposal` `#8B5CF6`) | L28%→L82% |
+| Green | H160° S84% (anchored to `--color-state-approved` `#10B981`) | L28%→L82% |
+| Amber | H38° S92% (anchored to `--color-state-pending` `#F59E0B`) | L28%→L82% |
+
+**Assignment rule:** for each categorical surface independently (the category legend, the brand time-bars, the epic palette are three separate contexts — they don't need to be mutually distinct from each other, only within their own legend), map every existing color to its nearest hue family by hue distance, then spread the items landing in the same family across that family's lightness range (darkest original → darkest new, preserving relative rank) so they stay separable within one legend.
+
+**Known cost, measured, not hand-waved:** hue-distance mapping is not evenly distributed across the 3 families, because the source palettes lean warm (reds/oranges/pinks/browns cluster to amber; blues cluster to violet). Concretely: the category legend maps 5/10 items into the amber family and only 2/10 into green; the brand time-bars map 8/13 into violet and only 2/13 into green (chrome, slack, figma, gmail, postman all land in amber alongside meeting/deployment_devops/design/planning/idle_personal — five same-family shades in one 10-item legend is a real legibility cost, and Slack/Jira/Chrome/VS Code all losing their real brand hue is a real recognizability cost). This is the tradeoff §9 originally flagged as "a different kind of harm" — recorded here as accepted, not silently smoothed over. If this reads worse than expected once it's on screen, the fallback is reopening this section for a brand-color exception, not inventing a workaround inline at the call site.
+
+**Deferred to implementation** (not this doc): the exact per-color hex assignment. A blind desk mapping computed without seeing it rendered risks locking in a bad legend (e.g. two amber shades that read as near-identical at chart scale) — the concrete hex-to-token mapping for all 31 colors (10 category + 13 brand + 8 epic) is the first task of the implementation pass, done with the running chart/legend in front of you, not authored into this standards doc sight-unseen.
