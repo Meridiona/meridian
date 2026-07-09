@@ -13,7 +13,7 @@ import type { CSSProperties, ReactNode } from 'react'
 import { invoke, load, tauri } from '@/lib/bridge'
 import { STEPS, Welcome, Completion } from './steps'
 import type { Wiz } from './steps'
-import type { DownloadProgress, MlxStatusResponse, SystemSpecs } from './data'
+import type { DownloadProgress, MlxStatusResponse, NotifState, SystemSpecs } from './data'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import { Btn, Check, Kicker } from './atoms'
 
@@ -30,7 +30,7 @@ export default function SetupWizard() {
   const [mlxErr, setMlxErr] = useState('')
 
   // Step 1 — permissions (live)
-  const [perms, setPerms] = useState<Wiz['perms']>({ accessibility: null, screen: null, input: null })
+  const [perms, setPerms] = useState<Wiz['perms']>({ accessibility: null, screen: null, input: null, notifications: null })
 
   // Step 3 — local intelligence (MLX runtime + model)
   const [specs, setSpecs] = useState<SystemSpecs | null>(null)
@@ -57,16 +57,19 @@ export default function SetupWizard() {
     invoke<SystemSpecs>('detect_system_specs').then(setSpecs).catch(() => {})
   }, [])
 
-  // Poll the three required permissions on the Permissions step.
+  // Poll the three required permissions + optional notifications on the
+  // Permissions step. Notification state also refreshes here after the user
+  // answers the OS dialog or flips the toggle in System Settings.
   useEffect(() => {
     if (!active || step !== 0) return
     const poll = async () => {
-      const [accessibility, screen, input] = await Promise.all([
+      const [accessibility, screen, input, notifications] = await Promise.all([
         invoke<boolean>('check_accessibility').catch(() => false),
         invoke<boolean>('check_screen_recording').catch(() => false),
         invoke<boolean>('check_input_monitoring').catch(() => false),
+        invoke<NotifState>('check_notifications').catch((): NotifState => 'unavailable'),
       ])
-      setPerms({ accessibility, screen, input })
+      setPerms({ accessibility, screen, input, notifications })
     }
     poll()
     const id = setInterval(poll, 2000)
@@ -171,6 +174,21 @@ export default function SetupWizard() {
     invoke('open_permission_pane', { pane: 'input_monitoring' }).catch((e) => setErr(String(e)))
   }, [])
 
+  // Notifications: 'prompt' → request surfaces the one-shot macOS dialog and
+  // returns the answer; after a deny macOS never re-prompts, so the only
+  // recovery is the System Settings → Notifications pane. The request result
+  // updates state immediately; the 2 s poll keeps it honest after pane edits.
+  const grantNotifications = useCallback(async () => {
+    setErr('')
+    try {
+      const state = await invoke<NotifState>('request_notifications')
+      setPerms((prev) => ({ ...prev, notifications: state }))
+      if (state === 'denied') {
+        invoke('open_permission_pane', { pane: 'notifications' }).catch((e) => setErr(String(e)))
+      }
+    } catch (e) { setErr(String(e)) }
+  }, [])
+
   // Retry after a runtime/model provisioning error: clear the one-shot guards so
   // the poll re-drives install → start → prefetch from wherever it stalled.
   const retryModel = useCallback(() => {
@@ -181,7 +199,7 @@ export default function SetupWizard() {
   }, [])
 
   const wiz: Wiz = {
-    perms, openPane, grantScreen, grantInput,
+    perms, openPane, grantScreen, grantInput, grantNotifications,
     specs, mlx, downloading, prefetching, modelReady, progress,
     speed: progress?.speed ?? null,
     err: mlxErr, retryModel,

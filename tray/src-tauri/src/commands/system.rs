@@ -116,6 +116,12 @@ pub async fn open_permission_pane(app: tauri::AppHandle, pane: String) -> Result
         "input_monitoring" => {
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
         }
+        // Notification authorization lives under Notifications, not Privacy &
+        // Security. Bare pane, no ?id=<bundle-id> anchor — per-app anchoring is
+        // undocumented and inconsistent across macOS versions. This is the deny
+        // recovery path: macOS shows the authorization dialog exactly once, so
+        // after a deny the wizard can only send the user here.
+        "notifications" => "x-apple.systempreferences:com.apple.preference.notifications",
         other => return Err(format!("unknown permission pane: {other}")),
     };
     dismiss_popover(&app);

@@ -13,7 +13,7 @@ import {
   APP, MODEL_RAM_GB, PERMISSIONS, fmtSize,
 } from './data'
 import type {
-  DownloadProgress, MlxStatusResponse, SystemSpecs,
+  DownloadProgress, MlxStatusResponse, NotifState, SystemSpecs,
 } from './data'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import { TRACKERS } from '@/lib/integrations'
@@ -23,11 +23,14 @@ const SERIF: CSSProperties = { fontFamily: 'var(--font-instrument-serif), Georgi
 
 /** The live wizard handle page.tsx builds and threads to every step body. */
 export interface Wiz {
-  // Step 1 — permissions (live, polled every 2 s)
-  perms: { accessibility: boolean | null; screen: boolean | null; input: boolean | null }
+  // Step 1 — permissions (live, polled every 2 s). The three TCC grants are
+  // booleans; notifications is tri-state (see `NotifState`) because deny and
+  // not-yet-asked need different grant actions.
+  perms: { accessibility: boolean | null; screen: boolean | null; input: boolean | null; notifications: NotifState | null }
   openPane: (pane: string) => void
   grantScreen: () => void
   grantInput: () => void
+  grantNotifications: () => void
   // Step 2 — local intelligence (live MLX status + detected specs)
   specs: SystemSpecs | null
   mlx: MlxStatusResponse | null
@@ -48,7 +51,11 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
   return (
     <div className="flex flex-col" style={{ gap: 9 }}>
       {PERMISSIONS.map((p) => {
-        const granted = !!wiz.perms[p.id]
+        const notif = p.id === 'notifications'
+        // Unbundled runs (`tauri dev`) have no notification plugin at all —
+        // nothing to grant, so the card hides rather than dead-ends.
+        if (notif && wiz.perms.notifications === 'unavailable') return null
+        const granted = notif ? wiz.perms.notifications === 'granted' : !!wiz.perms[p.id]
         return (
           <Row key={p.id} tone={granted ? 'tint' : 'surface'}>
             <span className="flex items-center justify-center shrink-0" style={{
@@ -61,7 +68,7 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="flex items-center" style={{ gap: 8 }}>
                 <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>{p.name}</span>
-                <span className="font-mono" style={{ fontSize: 9, letterSpacing: '.1em', color: 'var(--t-faint)', border: '0.5px solid var(--t-card-border)', borderRadius: 4, padding: '1px 5px' }}>REQUIRED</span>
+                <span className="font-mono" style={{ fontSize: 9, letterSpacing: '.1em', color: 'var(--t-faint)', border: '0.5px solid var(--t-card-border)', borderRadius: 4, padding: '1px 5px' }}>{p.required ? 'REQUIRED' : 'OPTIONAL'}</span>
               </div>
               <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-faint)', marginTop: 3 }}>{p.desc}</p>
             </div>
@@ -69,7 +76,12 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
             <div className="shrink-0">
               {granted
                 ? <span className="flex items-center" style={{ gap: 6, fontSize: 12, color: 'var(--color-state-approved)', fontWeight: 500 }}><Check size={15} color="var(--color-state-approved)" />Granted</span>
-                : <Btn size="sm" variant="secondary" onClick={() => p.id === 'input' ? wiz.grantInput() : p.id === 'screen' ? wiz.grantScreen() : wiz.openPane(p.pane)}>Open Settings</Btn>}
+                : notif
+                  // 'prompt' → the button surfaces the one-shot OS dialog;
+                  // 'denied' → macOS won't re-prompt, so it opens the
+                  // Notifications pane (grantNotifications picks the path).
+                  ? <Btn size="sm" variant="secondary" onClick={() => wiz.grantNotifications()}>{wiz.perms.notifications === 'denied' ? 'Open Settings' : 'Allow'}</Btn>
+                  : <Btn size="sm" variant="secondary" onClick={() => p.id === 'input' ? wiz.grantInput() : p.id === 'screen' ? wiz.grantScreen() : wiz.openPane(p.pane)}>Open Settings</Btn>}
             </div>
           </Row>
         )

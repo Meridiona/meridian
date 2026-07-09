@@ -203,6 +203,73 @@ pub async fn request_input_monitoring() -> bool {
     false
 }
 
+/// Map the notification plugin's [`tauri_plugin_notifications::PermissionState`]
+/// to the wizard's wire string. Pure so the mapping is unit-testable without a
+/// live plugin: `granted` / `denied` / `prompt` (not yet asked — a request will
+/// show the one-shot macOS dialog).
+fn notification_state_label(state: tauri_plugin_notifications::PermissionState) -> &'static str {
+    use tauri_plugin_notifications::PermissionState;
+    match state {
+        PermissionState::Granted => "granted",
+        PermissionState::Denied => "denied",
+        PermissionState::Prompt | PermissionState::PromptWithRationale => "prompt",
+    }
+}
+
+/// Current macOS notification authorization for the wizard's Notifications card.
+///
+/// Returns `granted` / `denied` / `prompt` (never asked — requesting will show
+/// the system dialog) / `unavailable` (unbundled run: the plugin registers only
+/// inside a `.app` bundle, so `tauri dev` has no notification backend at all).
+///
+/// Unlike the TCC probes above this is not a boolean: `denied` and `prompt`
+/// need different grant actions (macOS shows the authorization dialog exactly
+/// once — after a deny the only path back is System Settings → Notifications),
+/// so the wizard must know which side of that line the user is on.
+#[tauri::command]
+#[tracing::instrument(skip(app))]
+pub async fn check_notifications(app: tauri::AppHandle) -> String {
+    let Some(nf) = crate::sys::notifier(&app) else {
+        return "unavailable".into();
+    };
+    match nf.permission_state().await {
+        Ok(state) => notification_state_label(state).into(),
+        Err(e) => {
+            tracing::warn!(error = %e, "setup: notification permission probe failed");
+            "unavailable".into()
+        }
+    }
+}
+
+/// Surface the one-shot macOS notification authorization dialog and return the
+/// resulting state (same strings as [`check_notifications`]).
+///
+/// The tray already fires this request on every bundled launch (`lib.rs`), so
+/// on a normal first run the dialog appears alongside the wizard; this command
+/// exists for the card's explicit button — covering the user who dismissed
+/// that dialog unanswered. If permission is already `denied`, macOS will NOT
+/// re-prompt: the call returns `denied` unchanged and the frontend falls back
+/// to opening the System Settings pane
+/// ([`crate::commands::system::open_permission_pane`] `"notifications"`).
+#[tauri::command]
+#[tracing::instrument(skip(app))]
+pub async fn request_notifications(app: tauri::AppHandle) -> String {
+    let Some(nf) = crate::sys::notifier(&app) else {
+        return "unavailable".into();
+    };
+    match nf.request_permission().await {
+        Ok(state) => {
+            let label = notification_state_label(state);
+            tracing::info!(state = label, "setup: requested notification permission");
+            label.into()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "setup: notification permission request failed");
+            "unavailable".into()
+        }
+    }
+}
+
 /// Query the current MLX server status. Polled every 3 seconds by the wizard's
 /// Model step. Returns `runtime_found` alongside status so the UI can distinguish
 /// "not installed" from "installed but offline".
@@ -399,5 +466,28 @@ fn detect_specs_blocking() -> SystemSpecs {
         gpu_cores,
         ram_gb,
         free_disk_gb,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::notification_state_label;
+    use tauri_plugin_notifications::PermissionState;
+
+    // The wizard's card branches on these exact strings (grant button action:
+    // prompt → request dialog, denied → System Settings pane), so the mapping
+    // is contract, not cosmetics.
+    #[test]
+    fn notification_states_map_to_wire_strings() {
+        assert_eq!(
+            notification_state_label(PermissionState::Granted),
+            "granted"
+        );
+        assert_eq!(notification_state_label(PermissionState::Denied), "denied");
+        assert_eq!(notification_state_label(PermissionState::Prompt), "prompt");
+        assert_eq!(
+            notification_state_label(PermissionState::PromptWithRationale),
+            "prompt"
+        );
     }
 }

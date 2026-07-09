@@ -532,6 +532,8 @@ pub fn run() {
             commands::request_screen_recording,
             commands::check_input_monitoring,
             commands::request_input_monitoring,
+            commands::check_notifications,
+            commands::request_notifications,
             commands::get_mlx_status,
             commands::start_mlx_server_cmd,
             commands::download_runtime_cmd,
