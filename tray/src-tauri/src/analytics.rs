@@ -23,6 +23,13 @@
 //! regardless of how many times the tray restarts or how often the poll loop
 //! ticks — nowhere near PostHog's free-tier event limits.
 //!
+//! **Not backfilled**: only the single most-recently-closed day is ever
+//! reported (see [`day_rollover_action`]). If the tray isn't running across a
+//! local-day boundary for several days, the intervening day(s) are skipped
+//! entirely — never sent late. A DB read failure on the day that WOULD be
+//! reported is retried on the next tick instead of being sent as fabricated
+//! zeros.
+//!
 //! # Who calls this
 //! [`crate::poll::run_poll_loop`]'s health tick (`maybe_send_daily_tick`) — a
 //! plain file read cheap enough to run every 60 s; the (at most) two HTTP
@@ -181,24 +188,80 @@ pub(crate) async fn maybe_send_daily_tick(app: &tauri::AppHandle, pool: &SqliteP
     }
 
     let today = meridian_core::date::today_string();
-    match &state.last_sent_day {
-        None => {
+    match day_rollover_action(state.last_sent_day.as_deref(), &today) {
+        Some(None) => {
             // First observation this install has made — nothing has closed
             // yet, so there's nothing to report.
             state.last_sent_day = Some(today);
             dirty = true;
         }
-        Some(prev) if *prev != today => {
-            let day = prev.clone();
-            send_daily_usage(app, pool, &state.distinct_id, &day).await;
-            state.last_sent_day = Some(today);
-            dirty = true;
+        Some(Some(day)) => {
+            // Only advance past `day` when it actually sent — a transient DB
+            // read hiccup must retry next tick, not silently report (and
+            // permanently skip) a fabricated zero-usage day.
+            if send_daily_usage(app, pool, &state.distinct_id, &day).await {
+                state.last_sent_day = Some(today);
+                dirty = true;
+            }
         }
-        _ => {}
+        None => {}
     }
 
     if dirty {
         save_state(&path, &state);
+    }
+}
+
+/// Pure day-rollover decision, split out from [`maybe_send_daily_tick`] so it
+/// can be unit-tested without a live DB/HTTP client (see tests below).
+/// `None` → nothing to do this tick. `Some(None)` → arm the first-observed
+/// day with no send (nothing has closed yet). `Some(Some(day))` → `day` just
+/// closed; send its usage, then the caller advances past it on success.
+///
+/// NOTE: only the single most-recently-closed day is ever reported. If the
+/// tray isn't running across more than one local-day boundary (closed, then
+/// reopened days later), the intervening day(s) are skipped, not backfilled —
+/// an accepted "today/yesterday-only, no backfill" simplification consistent
+/// with the rest of the daemon's daily-cadence jobs.
+fn day_rollover_action(last_sent_day: Option<&str>, today: &str) -> Option<Option<String>> {
+    match last_sent_day {
+        None => Some(None),
+        Some(prev) if prev != today => Some(Some(prev.to_string())),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod day_rollover_tests {
+    use super::day_rollover_action;
+
+    #[test]
+    fn first_observation_arms_without_sending() {
+        assert_eq!(day_rollover_action(None, "2026-07-09"), Some(None));
+    }
+
+    #[test]
+    fn same_day_is_a_no_op() {
+        assert_eq!(day_rollover_action(Some("2026-07-09"), "2026-07-09"), None);
+    }
+
+    #[test]
+    fn day_boundary_reports_the_closed_day() {
+        assert_eq!(
+            day_rollover_action(Some("2026-07-08"), "2026-07-09"),
+            Some(Some("2026-07-08".to_string()))
+        );
+    }
+
+    #[test]
+    fn multi_day_gap_reports_only_the_last_closed_day() {
+        // A gap of several days (tray closed then reopened) still reports
+        // only the most recent `last_sent_day` — intervening days are never
+        // backfilled (see the doc comment on `day_rollover_action`).
+        assert_eq!(
+            day_rollover_action(Some("2026-07-01"), "2026-07-09"),
+            Some(Some("2026-07-01".to_string()))
+        );
     }
 }
 
@@ -208,30 +271,41 @@ pub(crate) async fn maybe_send_daily_tick(app: &tauri::AppHandle, pool: &SqliteP
 /// [`meridian_core::worklogs::get_worklogs`]). Queried at the day's own
 /// closing instant (its local-day upper bound) so a past day's active-session
 /// edge case can't leak into the total.
-async fn send_daily_usage(app: &tauri::AppHandle, pool: &SqlitePool, distinct_id: &str, day: &str) {
+///
+/// Returns `false` on a DB read failure WITHOUT sending anything — the caller
+/// must not advance `last_sent_day` in that case, or the day is lost forever
+/// instead of retried on the next tick. Never fabricates zeros for a real
+/// error (a genuinely idle day's zeros come only from a successful read).
+async fn send_daily_usage(
+    app: &tauri::AppHandle,
+    pool: &SqlitePool,
+    distinct_id: &str,
+    day: &str,
+) -> bool {
     let (_, day_end) = meridian_core::date::local_day_bounds(day);
-    let focus_s = meridian_core::today::get_today(pool, day, &day_end)
-        .await
-        .map(|t| t.focus_s)
-        .unwrap_or_else(|e| {
-            tracing::warn!(error = %e, day, "analytics: today read failed for daily_usage");
-            0
-        });
+    let focus_s = match meridian_core::today::get_today(pool, day, &day_end).await {
+        Ok(t) => t.focus_s,
+        Err(e) => {
+            tracing::warn!(error = %e, day, "analytics: today read failed for daily_usage — will retry");
+            return false;
+        }
+    };
 
-    let (generated, approved, rejected) =
-        match meridian_core::worklogs::get_worklogs(pool, day).await {
-            Ok(w) => {
-                let approved =
-                    *w.counts.get("approved").unwrap_or(&0) + *w.counts.get("posted").unwrap_or(&0);
-                let rejected = *w.counts.get("skipped").unwrap_or(&0);
-                let generated: i64 = w.counts.values().sum();
-                (generated, approved, rejected)
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, day, "analytics: worklogs read failed for daily_usage");
-                (0, 0, 0)
-            }
-        };
+    let (generated, approved, rejected) = match meridian_core::worklogs::get_worklogs(pool, day)
+        .await
+    {
+        Ok(w) => {
+            let approved =
+                *w.counts.get("approved").unwrap_or(&0) + *w.counts.get("posted").unwrap_or(&0);
+            let rejected = *w.counts.get("skipped").unwrap_or(&0);
+            let generated: i64 = w.counts.values().sum();
+            (generated, approved, rejected)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, day, "analytics: worklogs read failed for daily_usage — will retry");
+            return false;
+        }
+    };
 
     let mut props = base_properties(app);
     props.insert(
@@ -258,4 +332,5 @@ async fn send_daily_usage(app: &tauri::AppHandle, pool: &SqlitePool, distinct_id
         "analytics: daily_usage sent"
     );
     capture("daily_usage", distinct_id, props).await;
+    true
 }
