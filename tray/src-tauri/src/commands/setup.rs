@@ -118,9 +118,8 @@ pub async fn check_screen_recording() -> bool {
 /// status read that never registers the app. On a fresh install this means the
 /// list under Privacy → Screen Recording shows "No Items", because macOS only
 /// adds an entry the *first* time the app calls `CGRequestScreenCaptureAccess`.
-/// This command calls that request variant (analogous to `request_input_monitoring`)
-/// so clicking the wizard's grant button both registers the app and shows the
-/// system dialog in one shot.
+/// This command calls that request variant so clicking the wizard's grant
+/// button both registers the app and shows the system dialog in one shot.
 #[tauri::command]
 #[tracing::instrument]
 pub async fn request_screen_recording() -> bool {
@@ -140,68 +139,13 @@ pub async fn request_screen_recording() -> bool {
     false
 }
 
-/// Returns `true` when the tray holds macOS **Input Monitoring** permission.
-///
-/// The in-process input recorder (`capture::ui_events::run_ui_event_recorder`)
-/// runs a `CGEventTap` listener, which macOS gates behind Input Monitoring.
-/// Without it the recorder degrades silently and `capture_ui_events` stays empty,
-/// so the daemon's Option C `ended_at` refinement never fires — hence the wizard
-/// must surface it as its own card. `IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)`
-/// reads the grant directly (no prompt, no side effects), mirroring the
-/// `CGPreflightScreenCaptureAccess` / `AXIsProcessTrusted` probes above. The
-/// *grant* action is the wizard's "Open in System Settings" button
-/// ([`crate::commands::system::open_permission_pane`] `"input_monitoring"`).
-#[tauri::command]
-#[tracing::instrument]
-pub async fn check_input_monitoring() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        #[link(name = "IOKit", kind = "framework")]
-        extern "C" {
-            fn IOHIDCheckAccess(request_type: u32) -> u32;
-        }
-        // kIOHIDRequestTypeListenEvent = 1 (Input Monitoring);
-        // kIOHIDAccessTypeGranted = 0.
-        const LISTEN_EVENT: u32 = 1;
-        const GRANTED: u32 = 0;
-        // Safety: IOHIDCheckAccess is a pure status read — no prompt, no side effects.
-        unsafe { IOHIDCheckAccess(LISTEN_EVENT) == GRANTED }
-    }
-    #[cfg(not(target_os = "macos"))]
-    false
-}
-
-/// Surface the macOS Input Monitoring prompt **and register the app** so it
-/// appears in the Input Monitoring list, then return the resulting grant state.
-///
-/// [`check_input_monitoring`] only *reads* status (`IOHIDCheckAccess`) — it never
-/// registers the app, so on a fresh install the System Settings pane shows
-/// "No Items" and the user has nothing to toggle. `IOHIDRequestAccess` is the
-/// grant analogue of `CGRequestScreenCaptureAccess`: on first call it shows the
-/// system prompt and registers the app; thereafter it's a no-op returning the
-/// current state. The wizard calls this from the Input Monitoring card's button
-/// (alongside opening the pane). Note `IOHIDRequestAccess` returns a `Boolean`
-/// (granted/not) — unlike `IOHIDCheckAccess`, which returns the access-type enum.
-#[tauri::command]
-#[tracing::instrument]
-pub async fn request_input_monitoring() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        #[link(name = "IOKit", kind = "framework")]
-        extern "C" {
-            fn IOHIDRequestAccess(request_type: u32) -> bool;
-        }
-        // kIOHIDRequestTypeListenEvent = 1 (Input Monitoring).
-        const LISTEN_EVENT: u32 = 1;
-        // Safety: IOHIDRequestAccess surfaces the TCC prompt + registers the app,
-        // then returns a Boolean grant state — no UB.
-        let granted = unsafe { IOHIDRequestAccess(LISTEN_EVENT) };
-        tracing::info!(granted, "setup: requested Input Monitoring access");
-        granted
-    }
-    #[cfg(not(target_os = "macos"))]
-    false
-}
+// Input Monitoring is intentionally NOT a wizard permission — the `check_` /
+// `request_input_monitoring` commands were removed. The signals the daemon
+// consumes (clipboard + app_switch) ride the Accessibility-only capture path;
+// Input Monitoring only added the click/key/text tap (minor Option-C ended_at
+// refinement) and is redundant with Accessibility for everything the wizard
+// gates. See the note on PERMISSIONS in `ui/app/setup/data.ts` and
+// `capture::ui_events::run_ui_event_recorder`.
 
 /// Map the notification plugin's [`tauri_plugin_notifications::PermissionState`]
 /// to the wizard's wire string. Pure so the mapping is unit-testable without a

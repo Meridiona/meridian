@@ -17,6 +17,7 @@ Meridian is a single-process Rust daemon that normalises raw screen-capture fram
 - NEVER merge a PR automatically — open/update PRs as needed, but leave the actual merge to a human reviewer
 - NEVER push directly to `main` — always create a separate feature branch, commit there, and raise a PR to `main`
 - ALWAYS use a separate branch per feature/fix — branch name format: `type/short-description` (e.g. `feat/trello-oauth`, `fix/ui-disconnect`)
+- In all **user-facing app text** — window titles, wizard/UI copy, button and menu labels, notification bodies, tray tooltips, any string the user reads — use a plain hyphen `-` only. NEVER an em-dash (`—`), en-dash (`–`), or double hyphen (`--`). Use it spaced (` - `) where a dash separates clauses. (This rule is about displayed strings; code comments and docs are exempt.)
 
 ---
 

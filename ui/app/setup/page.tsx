@@ -30,7 +30,7 @@ export default function SetupWizard() {
   const [mlxErr, setMlxErr] = useState('')
 
   // Step 1 — permissions (live)
-  const [perms, setPerms] = useState<Wiz['perms']>({ accessibility: null, screen: null, input: null, notifications: null })
+  const [perms, setPerms] = useState<Wiz['perms']>({ accessibility: null, screen: null, notifications: null })
 
   // Step 3 — local intelligence (MLX runtime + model)
   const [specs, setSpecs] = useState<SystemSpecs | null>(null)
@@ -57,19 +57,20 @@ export default function SetupWizard() {
     invoke<SystemSpecs>('detect_system_specs').then(setSpecs).catch(() => {})
   }, [])
 
-  // Poll the three required permissions + optional notifications on the
-  // Permissions step. Notification state also refreshes here after the user
-  // answers the OS dialog or flips the toggle in System Settings.
+  // Poll the two required permissions + optional notifications on the
+  // Permissions step. Input Monitoring is intentionally not polled — it's
+  // redundant with Accessibility (see the note on PERMISSIONS in ./data.ts).
+  // Notification state also refreshes here after the user answers the OS
+  // dialog or flips the toggle in System Settings.
   useEffect(() => {
     if (!active || step !== 0) return
     const poll = async () => {
-      const [accessibility, screen, input, notifications] = await Promise.all([
+      const [accessibility, screen, notifications] = await Promise.all([
         invoke<boolean>('check_accessibility').catch(() => false),
         invoke<boolean>('check_screen_recording').catch(() => false),
-        invoke<boolean>('check_input_monitoring').catch(() => false),
         invoke<NotifState>('check_notifications').catch((): NotifState => 'unavailable'),
       ])
-      setPerms({ accessibility, screen, input, notifications })
+      setPerms({ accessibility, screen, notifications })
     }
     poll()
     const id = setInterval(poll, 2000)
@@ -159,19 +160,11 @@ export default function SetupWizard() {
   }, [])
 
   // Screen Recording needs an explicit request to register the app before the
-  // Settings pane shows anything to toggle (same pattern as grantInput).
+  // Settings pane shows anything to toggle (else it lists "No Items").
   const grantScreen = useCallback(async () => {
     setErr('')
     try { await invoke('request_screen_recording') } catch { /* prompt is best-effort */ }
     invoke('open_permission_pane', { pane: 'screen_recording' }).catch((e) => setErr(String(e)))
-  }, [])
-
-  // Input Monitoring needs an explicit request to register the app before the
-  // Settings pane shows anything to toggle (mirrors the original wizard).
-  const grantInput = useCallback(async () => {
-    setErr('')
-    try { await invoke('request_input_monitoring') } catch { /* prompt is best-effort */ }
-    invoke('open_permission_pane', { pane: 'input_monitoring' }).catch((e) => setErr(String(e)))
   }, [])
 
   // Notifications: 'prompt' → request surfaces the one-shot macOS dialog and
@@ -199,7 +192,7 @@ export default function SetupWizard() {
   }, [])
 
   const wiz: Wiz = {
-    perms, openPane, grantScreen, grantInput, grantNotifications,
+    perms, openPane, grantScreen, grantNotifications,
     specs, mlx, downloading, prefetching, modelReady, progress,
     speed: progress?.speed ?? null,
     err: mlxErr, retryModel,
@@ -230,11 +223,25 @@ export default function SetupWizard() {
   }
 
   return (
-    <div style={{ position: 'fixed', inset: 0, display: 'grid', placeItems: 'center', background: 'var(--t-panel)' }}>
+    <div style={{
+      position: 'fixed', inset: 0, display: 'grid', placeItems: 'center',
+      // Subtle top-lit depth so the centred card reads as a distinct surface —
+      // otherwise, when the window is enlarged / full-screened, the card floats
+      // on a big flat panel.
+      background: 'radial-gradient(130% 130% at 50% 0%, color-mix(in srgb, var(--t-card) 34%, var(--t-panel)) 0%, var(--t-panel) 62%)',
+    }}>
       <div className="rise" style={{
         width: 948, height: 628, borderRadius: 18, background: 'var(--t-card)',
         border: '0.5px solid var(--t-card-border)', overflow: 'hidden', color: 'var(--t-title)',
         boxShadow: 'var(--pop-shadow)',
+        // Grow the whole card proportionally as the window grows (macOS
+        // full-screen / manual resize) so it stays a prominent, readable surface
+        // instead of a small rectangle. clamp floor = 1 (never shrinks below the
+        // design size at the default window), cap = 1.7 (won't balloon on a 27").
+        // min() of the width- and height-fits guarantees it never exceeds the
+        // viewport; vector text scales crisply.
+        transform: 'scale(clamp(1, min(calc(100vw / 1010), calc(100vh / 700)), 1.7))',
+        transformOrigin: 'center',
       }}>
         {welcome ? (
           <Welcome onBegin={() => { setWelcome(false); setStep(0) }} />

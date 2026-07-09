@@ -530,8 +530,6 @@ pub fn run() {
             commands::check_accessibility,
             commands::check_screen_recording,
             commands::request_screen_recording,
-            commands::check_input_monitoring,
-            commands::request_input_monitoring,
             commands::check_notifications,
             commands::request_notifications,
             commands::get_mlx_status,
