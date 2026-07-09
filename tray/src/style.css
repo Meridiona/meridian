@@ -286,7 +286,7 @@ button:focus-visible {
 }
 .status-card.paused .primary-btn {
   border: none;
-  background: linear-gradient(135deg, #059669, #10B981);
+  background: linear-gradient(135deg, #059669, var(--success));
   color: #fff;
   box-shadow: 0 8px 18px -8px rgba(16, 185, 129, 0.6);
 }
@@ -327,7 +327,7 @@ button:focus-visible {
   font: 700 11.5px var(--font-sans);
   padding: 6px 11px; border-radius: 8px;
   color: #fff;
-  background: linear-gradient(135deg, #059669, #10B981);
+  background: linear-gradient(135deg, #059669, var(--success));
   transition: filter .12s;
 }
 .resume-btn:hover { filter: brightness(1.04); }
@@ -364,7 +364,7 @@ button:focus-visible {
   width: 100%;
   margin-top: 9px;
   border: none;
-  background: linear-gradient(135deg, #6D28D9, #9333EA 55%, #DB2777);
+  background: linear-gradient(135deg, var(--accent), var(--accent-2) 55%, var(--accent-3));
   border-radius: 12px;
   padding: 12px 14px;
   display: flex; align-items: center; gap: 10px;
@@ -426,7 +426,7 @@ button:focus-visible {
   flex: 1;
   border: none; background: none;
   font: 700 11.5px var(--font-sans);
-  color: #5B5570;
+  color: var(--ink-2);
   padding: 7px;
   border-radius: 7px;
   transition: background .12s;

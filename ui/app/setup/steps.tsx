@@ -19,7 +19,7 @@ import type { IntegrationsResponse } from '@/lib/api-types'
 import { TRACKERS } from '@/lib/integrations'
 import ConnectTrackers from '@/components/IntegrationConnect'
 
-const SERIF: CSSProperties = { fontFamily: 'var(--font-instrument-serif), Georgia, serif' }
+const SERIF: CSSProperties = { fontFamily: 'var(--font-serif)' }
 
 /** The live wizard handle page.tsx builds and threads to every step body. */
 export interface Wiz {
