@@ -40,6 +40,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 use tauri::State;
 use tracing::Instrument;
@@ -50,6 +51,15 @@ use tracing::Instrument;
 static JIRA_OAUTH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 static TRELLO_OAUTH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 static GITHUB_OAUTH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+// Handle to the currently in-flight jira/trello task, so [`cancel_oauth`] can
+// abort it — this is what actually lets a user retry after closing the
+// browser tab without waiting out the 5-minute `CONSENT_TIMEOUT`: aborting
+// drops the task's `TcpListener` on the spot, freeing the loopback port, and
+// `cancel_oauth` clears the in-flight flag immediately rather than waiting
+// for the (now-aborted) task to reach its own cleanup code.
+static JIRA_OAUTH_HANDLE: Mutex<Option<tokio::task::JoinHandle<()>>> = Mutex::new(None);
+static TRELLO_OAUTH_HANDLE: Mutex<Option<tokio::task::JoinHandle<()>>> = Mutex::new(None);
 
 /// Providers connected via browser OAuth — their token store under
 /// `~/.meridian/oauth/<p>.json` is the connect/disconnect surface.
@@ -816,6 +826,44 @@ pub async fn start_oauth(body: StartOAuthBody) -> Result<StartOAuthResponse, Str
     }
 }
 
+/// POST body for [`cancel_oauth`] (`{ provider }`).
+#[derive(Debug, Deserialize)]
+pub struct CancelOAuthBody {
+    pub provider: String,
+}
+
+/// Cancel an in-flight jira/trello browser-OAuth attempt (the "Try again"
+/// button's real action — see `IntegrationConnect.tsx`'s `OAuthSetup`).
+///
+/// Closing the browser tab mid-flow tells the tray nothing: the spawned task
+/// stays parked on `TcpListener::accept()` for up to `CONSENT_TIMEOUT` (5 min,
+/// `meridian-oauth/src/flow.rs`), holding both the loopback port and the
+/// per-provider in-flight flag the whole time. Without this command, retrying
+/// before that timeout elapses just re-hits the same "already in progress"
+/// error start_oauth returns. `.abort()` drops the task (and its
+/// `TcpListener`) immediately; we then clear the flag ourselves rather than
+/// waiting for the (now never-running) task to reach its own cleanup code —
+/// aborting a task skips the rest of its body entirely.
+#[tauri::command]
+#[tracing::instrument(fields(provider = %body.provider))]
+pub async fn cancel_oauth(body: CancelOAuthBody) -> Result<(), String> {
+    let provider = body.provider;
+    let (in_flight, handle_slot): (
+        &'static AtomicBool,
+        &'static Mutex<Option<tokio::task::JoinHandle<()>>>,
+    ) = match provider.as_str() {
+        "trello" => (&TRELLO_OAUTH_IN_FLIGHT, &TRELLO_OAUTH_HANDLE),
+        "jira" => (&JIRA_OAUTH_IN_FLIGHT, &JIRA_OAUTH_HANDLE),
+        other => return Err(format!("cancel_oauth: unsupported provider {other}")),
+    };
+    if let Some(handle) = handle_slot.lock().unwrap().take() {
+        handle.abort();
+    }
+    in_flight.store(false, Ordering::SeqCst);
+    tracing::info!(provider = %provider, "OAuth attempt cancelled");
+    Ok(())
+}
+
 /// Run the jira/trello browser login in-process on the tray's runtime. Returns
 /// immediately (`started=true`); a spawned task drives the flow and writes the
 /// token store on success or the `.error` sentinel (with the REAL error string —
@@ -879,9 +927,12 @@ fn start_oauth_in_process(provider: String) -> Result<StartOAuthResponse, String
     // Claim the per-provider in-flight slot. A second start_oauth call while
     // a flow is running returns an error — port 9123 can't be shared and the
     // token file would be written by two racing tasks.
-    let in_flight: &'static AtomicBool = match provider.as_str() {
-        "trello" => &TRELLO_OAUTH_IN_FLIGHT,
-        _ => &JIRA_OAUTH_IN_FLIGHT,
+    let (in_flight, handle_slot): (
+        &'static AtomicBool,
+        &'static Mutex<Option<tokio::task::JoinHandle<()>>>,
+    ) = match provider.as_str() {
+        "trello" => (&TRELLO_OAUTH_IN_FLIGHT, &TRELLO_OAUTH_HANDLE),
+        _ => (&JIRA_OAUTH_IN_FLIGHT, &JIRA_OAUTH_HANDLE),
     };
     if in_flight
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -898,7 +949,10 @@ fn start_oauth_in_process(provider: String) -> Result<StartOAuthResponse, String
     }
 
     let task_provider = provider.clone();
-    tauri::async_runtime::spawn(async move {
+    // `tokio::spawn` (not `tauri::async_runtime::spawn`) so we get a real
+    // `tokio::task::JoinHandle` — its `.abort()` is what `cancel_oauth` uses
+    // to drop the task's `TcpListener` and free the loopback port on retry.
+    let handle = tokio::spawn(async move {
         let result: anyhow::Result<()> = match task_provider.as_str() {
             "jira" => meridian_oauth::jira::login(&jira_client_id, &jira_secret, jira_port)
                 .await
@@ -921,6 +975,7 @@ fn start_oauth_in_process(provider: String) -> Result<StartOAuthResponse, String
             }
         }
     });
+    *handle_slot.lock().unwrap() = Some(handle);
 
     tracing::info!(provider = %provider, "in-process OAuth login launched");
     Ok(StartOAuthResponse {
