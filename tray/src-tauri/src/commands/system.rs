@@ -48,6 +48,7 @@ pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
         .minimizable(true)
         .closable(true)
         .maximized(true)
+        .zoom_hotkeys_enabled(true)
         .build()
     {
         Ok(win) => {
