@@ -10,7 +10,7 @@
 import type { CSSProperties, ReactNode } from 'react'
 import { Btn, Bar, Check, Kicker, PermIcon, Row, Spinner } from './atoms'
 import {
-  APP, MODEL_RAM_GB, PERMISSIONS, fmtSize,
+  APP, MODEL_ID, MODEL_RAM_GB, PERMISSIONS, fmtModelLabel, fmtSize,
 } from './data'
 import type {
   DownloadProgress, MlxStatusResponse, NotifState, SystemSpecs,
@@ -341,7 +341,7 @@ export function Completion({ wiz }: { wiz: Wiz }) {
   const grantedCount = [wiz.perms.accessibility, wiz.perms.screen].filter(Boolean).length
   const lines = [
     { k: 'Permissions', v: `${grantedCount} of 2 granted` },
-    { k: 'Local model', v: 'Qwen3.5 2B · 2B · 4-bit' },
+    { k: 'Local model', v: fmtModelLabel(MODEL_ID) },
     { k: 'Footprint', v: `${fmtSize(MODEL_RAM_GB + APP.ramGB)} memory` },
     { k: 'Connected', v: connected.length ? connected.map((c) => c.name).join(', ') : 'None yet' },
   ]

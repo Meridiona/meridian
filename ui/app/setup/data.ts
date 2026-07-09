@@ -46,6 +46,21 @@ export interface SystemSpecs {
 export const MODEL_ID = 'mlx-community/Qwen3.5-2B-OptiQ-4bit'
 export const MODEL_RAM_GB = 1.5
 
+/**
+ * Human label for a model id, e.g. 'mlx-community/Qwen3.5-2B-OptiQ-4bit' →
+ * 'Qwen3.5 2B · 4-bit'. Derived (not hand-typed) so the Completion summary
+ * line can't drift from MODEL_ID or duplicate a segment by hand-editing error.
+ */
+export function fmtModelLabel(id: string): string {
+  const name = id.split('/').pop() ?? id
+  const bits = name.match(/(\d+)-?bit$/i)?.[1]
+  const base = name
+    .replace(/-?\d+-?bit$/i, '')
+    .replace(/-OptiQ$/i, '')
+    .replace(/-/g, ' ')
+  return bits ? `${base} · ${bits}-bit` : base
+}
+
 /** Meridian's own resident footprint (background service), separate from the model. */
 export const APP = { diskGB: 0.18, ramGB: 0.15 }
 
