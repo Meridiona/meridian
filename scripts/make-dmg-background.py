@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+# ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+"""Generate the DMG installer background (tray/src-tauri/dmg/background.png).
+
+Matches the setup wizard's lilac theme (ui/app/globals.css :root /
+html[data-theme="lilac"]: --t-panel, --desk, --color-state-proposal) and
+Tauri's default DMG icon layout (tray/src-tauri/tauri.conf.json's
+bundle.macOS.dmg: windowSize 660x400, appPosition (180,170),
+applicationFolderPosition (480,170), icon size 128pt) — Finder draws the
+real .app and Applications-alias icons on top of this at build time, so the
+background only needs the decoration between them.
+
+Renders at 2x (1320x800 px) with 144 dpi metadata so Finder displays it
+crisply at the 660x400-point window size.
+
+Requires Pillow (`pip install Pillow`); not part of the app's runtime deps.
+
+Usage: python3 scripts/make-dmg-background.py
+"""
+import math
+import os
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MARK_PATH = os.path.join(REPO_ROOT, "tray/src-tauri/icons/meridiona-mark.png")
+OUT_PATH = os.path.join(REPO_ROOT, "tray/src-tauri/dmg/background.png")
+
+SCALE = 2
+W_PT, H_PT = 660, 400
+W, H = W_PT * SCALE, H_PT * SCALE
+
+# ── lilac theme tokens (ui/app/globals.css) ──────────────────────────────────
+T_MUTED = (110, 106, 136)        # --t-muted
+ACCENT = (139, 92, 246)          # --color-state-proposal
+DESK_1 = (236, 234, 255)         # --desk stop 1
+DESK_2 = (231, 236, 252)         # --desk stop 2
+DESK_3 = (233, 234, 245)         # --desk stop 3
+
+SFNS = "/System/Library/Fonts/SFNS.ttf"
+SFNS_MONO = "/System/Library/Fonts/SFNSMono.ttf"
+
+
+def pt(x, y):
+    return (x * SCALE, y * SCALE)
+
+
+def font(path, size_pt):
+    return ImageFont.truetype(path, size_pt * SCALE)
+
+
+def radial_l(size):
+    """255 (white) at the center fading to 0 (black) at the edge — the
+    opposite of Pillow's built-in `Image.radial_gradient`, which is 0 at the
+    center and 255 at the corners."""
+    return ImageOps.invert(Image.radial_gradient("L")).resize(size, Image.LANCZOS)
+
+
+def make_gradient():
+    """Soft radial "desk" gradient, off-center toward top — mirrors the
+    app's own --desk token (`radial-gradient(1100px 760px at 18% -12%, ...)`)."""
+    g = radial_l((W * 2, H * 2))
+    cx, cy = int(W * 2 * 0.30), int(H * 2 * 0.18)
+    left, top = cx - W // 2, cy - H // 2
+    g = g.crop((left, top, left + W, top + H))
+    return ImageOps.colorize(g, black=DESK_3, mid=DESK_2, white=DESK_1).convert("RGBA")
+
+
+def bezier(t, p0, c1, c2, p3):
+    x = (1 - t) ** 3 * p0[0] + 3 * (1 - t) ** 2 * t * c1[0] + 3 * (1 - t) * t ** 2 * c2[0] + t ** 3 * p3[0]
+    y = (1 - t) ** 3 * p0[1] + 3 * (1 - t) ** 2 * t * c1[1] + 3 * (1 - t) * t ** 2 * c2[1] + t ** 3 * p3[1]
+    return (x, y)
+
+
+def main():
+    bg = make_gradient()
+    draw = ImageDraw.Draw(bg, "RGBA")
+
+    # ── Brand mark + wordmark, top center ────────────────────────────────────
+    mark = Image.open(MARK_PATH).convert("RGBA")
+    mark_size = 46 * SCALE
+    mark = mark.resize((mark_size, mark_size), Image.LANCZOS)
+    mark_x = W // 2 - mark_size // 2
+    mark_y = 26 * SCALE
+    bg.paste(mark, (mark_x, mark_y), mark)
+
+    kicker_font = font(SFNS_MONO, 11)
+    kicker_text = "M E R I D I A N"  # manual tracking — matches the wizard's Kicker style
+    bbox = draw.textbbox((0, 0), kicker_text, font=kicker_font)
+    tw = bbox[2] - bbox[0]
+    draw.text((W // 2 - tw // 2, mark_y + mark_size + 10 * SCALE), kicker_text, font=kicker_font, fill=T_MUTED)
+
+    # ── Curved arrow: app icon (180,170) → Applications alias (480,170) ─────
+    # Icon size 128pt → radius 64pt; start/end just outside each icon's edge
+    # so the arrow floats in the gap rather than overlapping Finder's icons.
+    p0 = pt(180 + 70, 170 - 6)
+    p3 = pt(480 - 70, 170 - 6)
+    c1 = pt(280, 96)
+    c2 = pt(380, 96)
+    N = 120
+    pts = [bezier(i / N, p0, c1, c2, p3) for i in range(N + 1)]
+
+    # Soft glow stroke under the arrow (depth), then the crisp stroke on top.
+    arrow_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    arrow_draw = ImageDraw.Draw(arrow_layer)
+    arrow_draw.line(pts, fill=ACCENT + (90,), width=10 * SCALE, joint="curve")
+    arrow_layer = arrow_layer.filter(ImageFilter.GaussianBlur(6 * SCALE / 2))
+    bg = Image.alpha_composite(bg, arrow_layer)
+    draw = ImageDraw.Draw(bg, "RGBA")
+
+    draw.line(pts, fill=ACCENT + (235,), width=int(3.4 * SCALE), joint="curve")
+    # Round the line caps (ImageDraw.line leaves flat caps at the ends).
+    r = int(3.4 * SCALE / 2)
+    for cap in (pts[0], pts[-1]):
+        draw.ellipse([cap[0] - r, cap[1] - r, cap[0] + r, cap[1] + r], fill=ACCENT + (235,))
+
+    # Arrowhead at the end, oriented along the local tangent.
+    tx, ty = pts[-1][0] - pts[-6][0], pts[-1][1] - pts[-6][1]
+    ang = math.atan2(ty, tx)
+    head_len = 15 * SCALE
+    head_w = 10 * SCALE
+    tip = pts[-1]
+    back = (tip[0] - head_len * math.cos(ang), tip[1] - head_len * math.sin(ang))
+    left = (back[0] - head_w * math.sin(ang), back[1] + head_w * math.cos(ang))
+    right = (back[0] + head_w * math.sin(ang), back[1] - head_w * math.cos(ang))
+    draw.polygon([tip, left, right], fill=ACCENT + (235,))
+
+    # ── Instructional caption under the icon row ─────────────────────────────
+    cap_font = font(SFNS, 13)
+    caption = "Drag to Applications to install"
+    bbox = draw.textbbox((0, 0), caption, font=cap_font)
+    tw = bbox[2] - bbox[0]
+    draw.text((W // 2 - tw // 2, pt(0, 258)[1]), caption, font=cap_font, fill=T_MUTED)
+
+    os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
+    bg.convert("RGB").save(OUT_PATH, dpi=(144, 144))
+    print(f"saved {OUT_PATH} {bg.size}")
+
+
+if __name__ == "__main__":
+    main()
