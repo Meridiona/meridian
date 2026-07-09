@@ -36,7 +36,7 @@ function stripScriptTags(html: string): string {
   let prev: string
   do {
     prev = out
-    out = out.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, '')
+    out = out.replace(/<script\b[^>]*>[\s\S]*?<\/script(?:\s+[^>]*)?\s*>/gi, '')
   } while (out !== prev)
   return out
 }
