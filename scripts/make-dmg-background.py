@@ -37,8 +37,16 @@ DESK_1 = (236, 234, 255)         # --desk stop 1
 DESK_2 = (231, 236, 252)         # --desk stop 2
 DESK_3 = (233, 234, 245)         # --desk stop 3
 
+# macOS-only system fonts — this script only runs on macOS (it's a local dev
+# tool, not part of CI or release tooling; see the module docstring).
 SFNS = "/System/Library/Fonts/SFNS.ttf"
 SFNS_MONO = "/System/Library/Fonts/SFNSMono.ttf"
+for _font_path in (SFNS, SFNS_MONO):
+    if not os.path.exists(_font_path):
+        raise SystemExit(
+            f"make-dmg-background.py requires the macOS system font {_font_path!r} "
+            "— this script only runs on macOS."
+        )
 
 
 def pt(x, y):
@@ -143,7 +151,7 @@ def main():
     caption = "Drag to Applications to install"
     bbox = draw.textbbox((0, 0), caption, font=cap_font)
     tw = bbox[2] - bbox[0]
-    draw.text((W // 2 - tw // 2, pt(0, 258)[1]), caption, font=cap_font, fill=T_MUTED)
+    draw.text((W // 2 - tw // 2, 258 * SCALE), caption, font=cap_font, fill=T_MUTED)
 
     os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
     bg.convert("RGB").save(OUT_PATH, dpi=(144, 144))
