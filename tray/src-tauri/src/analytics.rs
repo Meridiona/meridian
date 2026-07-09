@@ -1,0 +1,261 @@
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+//! Product analytics — PostHog Cloud event capture for the packaged DMG build.
+//!
+//! # What this is
+//! A deliberately tiny, best-effort telemetry client: two anonymous signals —
+//! `app_installed` once per machine, and one `daily_usage` event per completed
+//! local calendar day (focus hours + worklog generated/approved/rejected
+//! counts). Nothing else: a single raw HTTP POST to PostHog's `/i/v0/e/`
+//! capture endpoint, no `posthog-js`, so session replay / autocapture /
+//! surveys / feature flags never activate — that's client-SDK behaviour this
+//! code never touches. `$geoip_disable` is set on every event since the
+//! request originates from the user's own machine, not a backend relay (the
+//! default GeoIP enrichment would otherwise resolve each user's real
+//! location).
+//!
+//! Gated to [`crate::install::InstallMode::Canonical`] (the DMG install) only
+//! — npm-bundle, source/dev, and bare runs never send anything. The anonymous
+//! `distinct_id` plus day bookkeeping live in `~/.meridian/analytics_state.json`,
+//! separate from `settings.json` (never dashboard-editable, never displayed).
+//!
+//! Call volume is intentionally minimal: at most 1 event ever
+//! (`app_installed`) + at most 1 event per calendar day (`daily_usage`),
+//! regardless of how many times the tray restarts or how often the poll loop
+//! ticks — nowhere near PostHog's free-tier event limits.
+//!
+//! # Who calls this
+//! [`crate::poll::run_poll_loop`]'s health tick (`maybe_send_daily_tick`) — a
+//! plain file read cheap enough to run every 60 s; the (at most) two HTTP
+//! calls it can trigger are individually capped as described above.
+//!
+//! # Related
+//! - [`crate::install::detect_install_mode`] — the Canonical/Dev/Bare gate.
+//! - `meridian_core::today::get_today` / `meridian_core::worklogs::get_worklogs`
+//!   — the same readers the dashboard uses, queried here for an already-closed
+//!   past day (never "today", which is still accumulating).
+
+use meridian_core::SqlitePool;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::time::Duration;
+use tracing::Instrument;
+
+/// PostHog Cloud (US region) project token — a **public** write-only capture
+/// key, safe to embed in a shipped client (unlike a personal/secret API key).
+/// Overridable via `MERIDIAN_POSTHOG_KEY` for testing against a different
+/// project.
+const DEFAULT_POSTHOG_API_KEY: &str = "phc_zDagQwSLyR9dwT6LPQ6QfygQkpnXrGAKhrJLv5kBFbvH";
+/// US Cloud ingestion host — matches the project's region.
+const POSTHOG_HOST: &str = "https://us.i.posthog.com";
+
+fn posthog_api_key() -> String {
+    std::env::var("MERIDIAN_POSTHOG_KEY").unwrap_or_else(|_| DEFAULT_POSTHOG_API_KEY.to_string())
+}
+
+/// Persisted analytics bookkeeping. Deliberately its own file — never merged
+/// into `settings.json` (which the dashboard reads/writes/displays).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AnalyticsState {
+    distinct_id: String,
+    install_event_sent: bool,
+    /// The last LOCAL calendar day ("YYYY-MM-DD") a `daily_usage` event was
+    /// sent for. `None` before the first day boundary has been observed.
+    last_sent_day: Option<String>,
+}
+
+fn analytics_state_path() -> Option<PathBuf> {
+    std::env::var("HOME")
+        .ok()
+        .map(|h| PathBuf::from(h).join(".meridian/analytics_state.json"))
+}
+
+/// Load the state file, creating a fresh one (new random `distinct_id`) if
+/// absent or unparseable. Never errors — a corrupt/missing file just starts a
+/// new anonymous id, same as a genuine first run.
+fn load_or_init_state(path: &std::path::Path) -> AnalyticsState {
+    if let Ok(s) = std::fs::read_to_string(path) {
+        if let Ok(state) = serde_json::from_str::<AnalyticsState>(&s) {
+            return state;
+        }
+    }
+    AnalyticsState {
+        distinct_id: uuid::Uuid::new_v4().to_string(),
+        install_event_sent: false,
+        last_sent_day: None,
+    }
+}
+
+/// Crash-safely persist the state file (temp + rename), matching the pattern
+/// `meridian_core::settings::write_settings_value` uses.
+fn save_state(path: &std::path::Path, state: &AnalyticsState) {
+    let Some(dir) = path.parent() else { return };
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        tracing::warn!(error = %e, "analytics: could not create state dir");
+        return;
+    }
+    let json = match serde_json::to_string_pretty(state) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::warn!(error = %e, "analytics: could not serialise state");
+            return;
+        }
+    };
+    let tmp = path.with_extension("json.tmp");
+    if let Err(e) = std::fs::write(&tmp, json.as_bytes()) {
+        tracing::warn!(error = %e, "analytics: could not write temp state file");
+        return;
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        tracing::warn!(error = %e, "analytics: could not replace state file");
+    }
+}
+
+/// POST one event to PostHog's raw capture endpoint (no SDK — see module
+/// docs). Best-effort: logs and returns on any failure, never propagates —
+/// analytics must never affect the app's behaviour or startup.
+async fn capture(
+    event: &str,
+    distinct_id: &str,
+    mut properties: serde_json::Map<String, serde_json::Value>,
+) {
+    properties.insert("$geoip_disable".to_string(), serde_json::Value::Bool(true));
+    let body = serde_json::json!({
+        "api_key": posthog_api_key(),
+        "event": event,
+        "distinct_id": distinct_id,
+        "properties": properties,
+    });
+    let result = reqwest::Client::new()
+        .post(format!("{POSTHOG_HOST}/i/v0/e/"))
+        .json(&body)
+        .timeout(Duration::from_secs(5))
+        .send()
+        .instrument(tracing::debug_span!("analytics.capture", event))
+        .await;
+    match result {
+        Ok(resp) if resp.status().is_success() => {
+            tracing::debug!(event, "analytics: event captured")
+        }
+        Ok(resp) => tracing::warn!(event, status = %resp.status(), "analytics: capture rejected"),
+        Err(e) => tracing::warn!(event, error = %e, "analytics: capture request failed"),
+    }
+}
+
+/// Properties common to every event: app version + OS.
+fn base_properties(app: &tauri::AppHandle) -> serde_json::Map<String, serde_json::Value> {
+    let mut m = serde_json::Map::new();
+    m.insert(
+        "app_version".to_string(),
+        serde_json::Value::String(app.package_info().version.to_string()),
+    );
+    m.insert(
+        "os".to_string(),
+        serde_json::Value::String(std::env::consts::OS.to_string()),
+    );
+    m
+}
+
+/// Called once per poll-loop health tick (~60 s — see [`crate::poll`]). A
+/// cheap file read on every call; the two possible HTTP calls are
+/// individually capped to once-ever (`app_installed`) and once-per-completed
+/// local day (`daily_usage`). No-ops entirely outside a Canonical (DMG)
+/// install.
+#[tracing::instrument(skip(app, pool))]
+pub(crate) async fn maybe_send_daily_tick(app: &tauri::AppHandle, pool: &SqlitePool) {
+    if !matches!(
+        crate::install::detect_install_mode(),
+        crate::install::InstallMode::Canonical(_)
+    ) {
+        return;
+    }
+    let Some(path) = analytics_state_path() else {
+        return;
+    };
+    let mut state = load_or_init_state(&path);
+    let mut dirty = false;
+
+    if !state.install_event_sent {
+        capture("app_installed", &state.distinct_id, base_properties(app)).await;
+        state.install_event_sent = true;
+        dirty = true;
+    }
+
+    let today = meridian_core::date::today_string();
+    match &state.last_sent_day {
+        None => {
+            // First observation this install has made — nothing has closed
+            // yet, so there's nothing to report.
+            state.last_sent_day = Some(today);
+            dirty = true;
+        }
+        Some(prev) if *prev != today => {
+            let day = prev.clone();
+            send_daily_usage(app, pool, &state.distinct_id, &day).await;
+            state.last_sent_day = Some(today);
+            dirty = true;
+        }
+        _ => {}
+    }
+
+    if dirty {
+        save_state(&path, &state);
+    }
+}
+
+/// Build + send the `daily_usage` event for an already-completed local day —
+/// focus hours plus worklog generated/approved/rejected counts, via the same
+/// readers the dashboard uses ([`meridian_core::today::get_today`],
+/// [`meridian_core::worklogs::get_worklogs`]). Queried at the day's own
+/// closing instant (its local-day upper bound) so a past day's active-session
+/// edge case can't leak into the total.
+async fn send_daily_usage(app: &tauri::AppHandle, pool: &SqlitePool, distinct_id: &str, day: &str) {
+    let (_, day_end) = meridian_core::date::local_day_bounds(day);
+    let focus_s = meridian_core::today::get_today(pool, day, &day_end)
+        .await
+        .map(|t| t.focus_s)
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, day, "analytics: today read failed for daily_usage");
+            0
+        });
+
+    let (generated, approved, rejected) =
+        match meridian_core::worklogs::get_worklogs(pool, day).await {
+            Ok(w) => {
+                let approved =
+                    *w.counts.get("approved").unwrap_or(&0) + *w.counts.get("posted").unwrap_or(&0);
+                let rejected = *w.counts.get("skipped").unwrap_or(&0);
+                let generated: i64 = w.counts.values().sum();
+                (generated, approved, rejected)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, day, "analytics: worklogs read failed for daily_usage");
+                (0, 0, 0)
+            }
+        };
+
+    let mut props = base_properties(app);
+    props.insert(
+        "date".to_string(),
+        serde_json::Value::String(day.to_string()),
+    );
+    props.insert(
+        "focus_hours".to_string(),
+        serde_json::json!((focus_s.max(0) as f64 / 3600.0 * 100.0).round() / 100.0),
+    );
+    props.insert(
+        "worklogs_generated".to_string(),
+        serde_json::json!(generated),
+    );
+    props.insert("worklogs_approved".to_string(), serde_json::json!(approved));
+    props.insert("worklogs_rejected".to_string(), serde_json::json!(rejected));
+
+    tracing::info!(
+        day,
+        focus_s,
+        generated,
+        approved,
+        rejected,
+        "analytics: daily_usage sent"
+    );
+    capture("daily_usage", distinct_id, props).await;
+}

@@ -113,6 +113,7 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
             refresh_current_task(pool, &state).await;
             if do_health {
                 refresh_today(pool, &state).await;
+                crate::analytics::maybe_send_daily_tick(&app, pool).await;
             }
             if do_worklogs {
                 refresh_worklogs(pool, &state).await;
