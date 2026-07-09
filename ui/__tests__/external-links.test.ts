@@ -6,18 +6,19 @@ import { isExternalHttp, opensExternally, openExternal } from '../lib/bridge'
 // Regression guard for "external links do nothing inside the app".
 //
 // The dashboard renders inside a Tauri WKWebView, which has NO new-window
-// handler: a plain `<a target="_blank">` click or a `window.open(url)` call is
-// silently dropped — nothing opens, no error. This bit users on the Trello
-// connect flow (the "Get it at trello.com/app-key" link was dead, blocking the
-// API-key prompt entirely).
+// handler: a plain `<a target="_blank">` click, a mailto:/tel: anchor, or a
+// `window.open(url)` call is silently dropped — nothing opens, no error. This
+// bit users on the Trello connect flow (the "Get it at trello.com/app-key"
+// link was dead, blocking the API-key prompt entirely).
 //
-// The fix has three parts, each guarded here:
-//   1. `openExternal` in lib/bridge.ts routes URLs through the opener plugin
-//      (`plugin:opener|open_url` — allowed by `opener:default` in the tray's
-//      capabilities/default.json) with a window.open fallback for a plain browser.
+// `open_external_url` + per-anchor onClick wiring fixed the known "Open ↗"
+// links; the pieces guarded here close the remaining gaps:
+//   1. `openExternal` in lib/bridge.ts — routes through `open_external_url`
+//      (scheme-allowlisted server-side), falls back to window.open on a
+//      command rejection AND outside Tauri (plain-browser next dev).
 //   2. `components/ExternalLinks.tsx` — a document-level click interceptor
-//      mounted in the root layout, so EVERY external http(s) anchor works
-//      without per-component wiring.
+//      mounted in the root layout, so EVERY external http(s)/mailto:/tel:
+//      anchor works without per-component wiring.
 //   3. The former direct `window.open(...)` call sites now use `openExternal`.
 
 const uiRoot = import.meta.dir + '/..'
@@ -26,7 +27,7 @@ function readSrc(relPath: string): string {
   return readFileSync(uiRoot + '/' + relPath, 'utf8')
 }
 
-// ── isExternalHttp — the interceptor's decision function ─────────────────────
+// ── isExternalHttp — external http(s) detection ──────────────────────────────
 
 describe('isExternalHttp', () => {
   const origin = 'http://localhost:3939'
@@ -69,27 +70,27 @@ describe('opensExternally', () => {
   })
 })
 
-// ── openExternal routes through the opener plugin ─────────────────────────────
+// ── openExternal routes through the open_external_url command ─────────────────
 
 describe('lib/bridge.ts openExternal', () => {
   const src = readSrc('lib/bridge.ts')
 
-  it('invokes the opener plugin command inside Tauri', () => {
-    expect(src).toContain("invoke('plugin:opener|open_url'")
+  it('invokes the open_external_url command inside Tauri', () => {
+    expect(src).toContain("invoke('open_external_url'")
   })
 
   it('falls back to window.open in a plain browser', () => {
     expect(src).toMatch(/openExternal[\s\S]*?window\.open\(url/)
   })
 
-  it('falls back to window.open when the plugin invoke rejects', async () => {
+  it('falls back to window.open when the command rejects', async () => {
     // A rejection that only logs would reproduce the silent dead-link bug this
     // helper fixes, so the .catch() must open the URL anyway. bridge reads
     // `window` at call time, so a stub installed here is picked up.
     const opened: string[] = []
     const g = globalThis as { window?: unknown }
     g.window = {
-      __TAURI__: { core: { invoke: () => Promise.reject(new Error('forbidden url')) } },
+      __TAURI__: { core: { invoke: () => Promise.reject(new Error('disallowed scheme')) } },
       open: (url: string) => { opened.push(url); return null },
     }
     const warn = console.warn
@@ -115,6 +116,10 @@ describe('ExternalLinks interceptor', () => {
     expect(src).toContain('opensExternally(href, window.location.origin)')
     expect(src).toContain('e.preventDefault()')
     expect(src).toContain('openExternal(href)')
+  })
+
+  it('skips anchors whose onClick already handled the open (no double-open)', () => {
+    expect(src).toContain('if (e.defaultPrevented) return')
   })
 
   it('removes the listener on unmount', () => {

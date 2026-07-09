@@ -125,17 +125,15 @@ async fn install(backend: &Path, home: &Path) -> Result<(), String> {
         .await
         .map_err(|e| format!("mkdir {}: {e}", launch_agents.display()))?;
 
-    // Purge leftovers from a pre-fold / pre-cutover **bundle** install before
-    // staging the in-process backend. A user migrating from the old npm/curl
-    // bundle to this DMG carries launchd agents the new topology either replaced
-    // (the in-process capturer supersedes screenpipe; the tray supervises MLX
-    // itself) or retired (the embedded dashboard replaced the standalone UI
-    // server). Left running they race the tray, contend for :7823, or burn RAM.
-    // `install-from-bundle.sh` boots these out for the bundle path; the DMG path
-    // needs the same. All best-effort + non-fatal.
+    // Purge leftovers from a pre-cutover **bundle** install before staging the
+    // in-process backend. A user migrating from the old npm/curl bundle to this
+    // DMG carries launchd agents the new topology replaced (the in-process
+    // capturer supersedes screenpipe; the tray supervises MLX itself); left
+    // running they race the tray or contend for :7823. `install-from-bundle.sh`
+    // boots these out for the bundle path; the DMG path needs the same. All
+    // best-effort + non-fatal.
     cleanup_legacy_screenpipe(home).await;
     cleanup_legacy_mlx_server(home).await;
-    cleanup_legacy_ui(home).await;
     // Recover tracker credentials the bundle wrote to ~/.meridian/app/.env so the
     // DMG daemon (which reads the canonical ~/.meridian/.env) doesn't lose them.
     migrate_legacy_bundle_env(home).await;
@@ -222,22 +220,6 @@ async fn cleanup_legacy_mlx_server(home: &Path) {
     let _ =
         tokio::fs::remove_file(home.join("Library/LaunchAgents/com.meridiona.mlx-server.plist"))
             .await;
-}
-
-/// Purge a leftover **standalone UI server agent**. Pre-fold, the Next.js
-/// dashboard ran as `com.meridiona.ui` (a `KeepAlive` Node server on
-/// localhost:3939). The fold embeds the dashboard in the tray webview, so a
-/// leftover agent is a zombie Node process burning ~150 MB indefinitely (no port
-/// clash — 3939 is dev-only). Boot it out and remove its plist. Mirrors the
-/// `install-from-bundle.sh` cleanup for the bundle path. Best-effort.
-async fn cleanup_legacy_ui(home: &Path) {
-    let label = "com.meridiona.ui";
-    let target = format!("gui/{}/{label}", crate::sys::uid_str());
-    if launchctl(&["print", &target]).await.is_ok_and(|s| s) {
-        let _ = launchctl(&["bootout", &target]).await;
-        tracing::info!(label, "backend_install: removed leftover UI server agent");
-    }
-    let _ = tokio::fs::remove_file(home.join("Library/LaunchAgents/com.meridiona.ui.plist")).await;
 }
 
 /// Recover tracker credentials when migrating from a **bundle** install. The

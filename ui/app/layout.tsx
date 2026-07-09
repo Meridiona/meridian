@@ -5,8 +5,7 @@ import { Instrument_Serif, Plus_Jakarta_Sans, JetBrains_Mono } from 'next/font/g
 import './globals.css'
 import { ThemeProvider } from '@/lib/theme-context'
 import ExternalLinks from '@/components/ExternalLinks'
-import NoticeBar from '@/components/NoticeBar'
-import NotificationBanner from '@/components/NotificationBanner'
+import LayoutBanners from '@/components/LayoutBanners'
 
 const instrumentSerif = Instrument_Serif({
   weight: '400',
@@ -47,9 +46,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     >
       <body className="min-h-screen font-sans">
         <ThemeProvider>
+          {/* ExternalLinks is an invisible interceptor — mounted for every
+              route (wizard included) so external links work in the webview.
+              Only the visible banners are gated off the wizard. */}
           <ExternalLinks />
-          <NoticeBar />
-          <NotificationBanner />
+          <LayoutBanners />
           {children}
         </ThemeProvider>
       </body>

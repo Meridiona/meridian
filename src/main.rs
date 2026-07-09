@@ -184,20 +184,10 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-            "github" => {
-                println!("Starting GitHub authorization via gh CLI…");
-                match meridian::intelligence::oauth::github::login().await {
-                    Ok(()) => {}
-                    Err(e) => {
-                        eprintln!("oauth-login github failed: {e:#}");
-                        std::process::exit(1);
-                    }
-                }
-            }
             other => {
-                eprintln!(
-                    "oauth-login: unknown provider {other:?} (supported: jira, trello, github)"
-                );
+                // GitHub connects via the in-app browser device flow (the tray's
+                // start_oauth), not a CLI subcommand — see meridian-oauth::github.
+                eprintln!("oauth-login: unknown provider {other:?} (supported: jira, trello)");
                 std::process::exit(1);
             }
         }
@@ -446,7 +436,19 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // 2. Tracing — layered subscriber (stdout + JSONL file + OTLP to OpenObserve).
+    // `meridian logs [--service <name>] [-n N] [-f]` — decode the local OTel
+    // spool into human-readable lines. The direct replacement for the old
+    // bash `meridian logs` (which tailed launchd-redirected stdout/stderr
+    // text) now that the OTel spool is the sole log/trace sink — see
+    // observability.rs's module doc. No daemon init needed.
+    if std::env::args().nth(1).as_deref() == Some("logs") {
+        let args: Vec<String> = std::env::args().collect();
+        meridian::telemetry_spool::render::run(&args).await;
+        return Ok(());
+    }
+
+    // 2. Tracing — layered subscriber (OTLP-only: spool traces + logs; see
+    //    observability.rs's module doc for why there's no stdout/file mirror).
     //    Guard must outlive the program; we shut it down explicitly at the end
     //    so OTel's blocking flush doesn't run inside tokio's drop path.
     let obs_guard = observability::init("meridian-rust")?;
@@ -699,6 +701,15 @@ async fn main() -> Result<()> {
                 // Morning plan nudge — idempotent per day, gated to working hours.
                 if let Err(e) = meridian::daily_plan::maybe_nudge(&meridian).await {
                     tracing::debug!(error = %e, "plan nudge check skipped");
+                }
+
+                // Interactive-notification responses — act on the user's answers
+                // (snooze re-enqueues an hour out). Idempotent end-to-end, so the
+                // same cadence as the nudge above is safe.
+                if let Err(e) =
+                    meridian::notification_responses::consume_responses(&meridian).await
+                {
+                    tracing::debug!(error = %e, "notification response consume skipped");
                 }
 
                 // Proactive classifier health probe. Detect a down/wedged MLX

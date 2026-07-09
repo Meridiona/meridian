@@ -4,7 +4,7 @@
 // `jira.rs` (CLAUDE.md's 500-line file cap) since these three share one
 // shape: GET the issue's available transitions, pick the one that lands in
 // the target status category (or fall back to a name heuristic), POST it.
-// The edit API (`jira.rs::edit_fields`/`edit_update`) can't change status —
+// The edit API (`jira.rs::edit_fields`) can't change status —
 // Jira requires the separate transitions endpoint for that.
 //
 // Reference: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-transitions/

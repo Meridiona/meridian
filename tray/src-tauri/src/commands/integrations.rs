@@ -7,10 +7,11 @@
 //! - [`disconnect_integration`] — the DELETE: forget a tracker's credentials.
 //! - [`discover_azure_devops`] — the `azure-devops/discover` POST: probe the
 //!   Azure DevOps REST API for a PAT's orgs/projects (external HTTP).
-//! - [`start_oauth`] — the `auth/oauth/start` POST: browser OAuth. jira/trello
-//!   run IN-PROCESS via the shared `meridian-oauth` crate (no subprocess);
-//!   github shells `meridian oauth-login github` (gh-CLI). The flow writes the
-//!   token store the GET reads.
+//! - [`start_oauth`] — the `auth/oauth/start` POST: browser OAuth, all providers
+//!   IN-PROCESS via the shared `meridian-oauth` crate (no subprocess).
+//!   jira/trello use the loopback-redirect flow (writes the `<p>.json` store);
+//!   github uses the OAuth device flow (writes `GITHUB_TOKEN` to `.env`). The
+//!   flow writes the credential the GET reads.
 //! - [`save_integration_token`] — the `auth/token` POST: write a token-based
 //!   tracker's creds to `.env` + reload the daemon (the in-app replacement for
 //!   "run `meridian config edit`"). Covers jira(token)/linear/github(PAT)/azure.
@@ -39,6 +40,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 use tauri::State;
 use tracing::Instrument;
@@ -48,14 +50,26 @@ use tracing::Instrument;
 // spawning; cleared (success or failure) inside the spawned task.
 static JIRA_OAUTH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 static TRELLO_OAUTH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static GITHUB_OAUTH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+// Handle to the currently in-flight jira/trello task, so [`cancel_oauth`] can
+// abort it — this is what actually lets a user retry after closing the
+// browser tab without waiting out the 5-minute `CONSENT_TIMEOUT`: aborting
+// drops the task's `TcpListener` on the spot, freeing the loopback port, and
+// `cancel_oauth` clears the in-flight flag immediately rather than waiting
+// for the (now-aborted) task to reach its own cleanup code.
+static JIRA_OAUTH_HANDLE: Mutex<Option<tokio::task::JoinHandle<()>>> = Mutex::new(None);
+static TRELLO_OAUTH_HANDLE: Mutex<Option<tokio::task::JoinHandle<()>>> = Mutex::new(None);
 
 /// Providers connected via browser OAuth — their token store under
 /// `~/.meridian/oauth/<p>.json` is the connect/disconnect surface.
 const OAUTH_PROVIDERS: [&str; 2] = ["jira", "trello"];
 
-/// Providers connected via the `gh` CLI — `meridian oauth-login github`
-/// writes `GITHUB_TOKEN` to `~/.meridian/.env` instead of a `.json` store.
-const GH_CLI_PROVIDERS: [&str; 1] = ["github"];
+/// Providers whose OAuth writes a token to `~/.meridian/.env` rather than a
+/// `~/.meridian/oauth/<p>.json` store — github uses the device flow and writes
+/// `GITHUB_TOKEN`. [`get_oauth_status`] checks the env key, not a json file, for
+/// these.
+const ENV_OAUTH_PROVIDERS: [&str; 1] = ["github"];
 
 /// Providers connected via `.env` keys. Disconnecting strips every listed key
 /// from the active `.env`. Mirrors the route's `TOKEN_KEYS`.
@@ -138,6 +152,11 @@ pub struct IntegrationsResponse {
     pub github: bool,
     pub trello: bool,
     pub azure_devops: bool,
+    /// `true` once `GITHUB_PROJECT_IDS` is set — `github` alone only means the
+    /// OAuth token exists; sync additionally needs at least one selected
+    /// project (see [`discover_github_projects`]). Lets the UI tell "connected,
+    /// token only" apart from "connected and actually syncing."
+    pub github_projects_selected: bool,
     pub sync_errors: BTreeMap<String, String>,
 }
 
@@ -210,6 +229,7 @@ pub async fn get_integrations(
             && (is_set(&env, "AZURE_DEVOPS_URL")
                 || is_set(&env, "AZURE_DEVOPS_ORG")
                 || is_set(&env, "AZURE_DEVOPS_ORG_URL")),
+        github_projects_selected: is_set(&env, "GITHUB_PROJECT_IDS"),
         sync_errors,
     })
 }
@@ -283,7 +303,7 @@ pub async fn disconnect_integration(
     let provider = body.provider.as_str();
     let token_keys = TOKEN_KEYS.iter().find(|(p, _)| *p == provider);
     if !OAUTH_PROVIDERS.contains(&provider)
-        && !GH_CLI_PROVIDERS.contains(&provider)
+        && !ENV_OAUTH_PROVIDERS.contains(&provider)
         && token_keys.is_none()
     {
         return Err("Invalid provider".to_string());
@@ -434,12 +454,15 @@ pub async fn save_integration_token(body: SaveTokenBody) -> Result<serde_json::V
     );
 
     // Best-effort daemon reload so credentials take effect now (not next restart).
-    // A down daemon is fine — it reads .env on its next start.
-    if let Err(e) = crate::commands::daemon::reload_daemon().await {
-        tracing::debug!(error = %e, "daemon reload after token save (non-fatal)");
+    // A down daemon is fine — it reads .env on its next start. `reloaded` is
+    // returned to the UI so it can warn the user when the daemon isn't running
+    // (common in dev where the daemon isn't launchd-supervised).
+    let reloaded = crate::commands::daemon::reload_daemon().await.is_ok();
+    if !reloaded {
+        tracing::debug!("daemon reload after token save (non-fatal — will pick up on next start)");
     }
 
-    Ok(serde_json::json!({ "ok": true }))
+    Ok(serde_json::json!({ "ok": true, "reloaded": reloaded }))
 }
 
 /// POST body for [`discover_azure_devops`] (`{ pat, org? }`).
@@ -591,6 +614,168 @@ pub async fn discover_azure_devops(
     })
 }
 
+/// One GitHub Projects v2 board, returned by [`discover_github_projects`].
+#[derive(Debug, Clone, Serialize)]
+pub struct GithubProjectOption {
+    /// Projects v2 node id (`PVT_xxx`) — what `GITHUB_PROJECT_IDS` stores.
+    pub id: String,
+    pub title: String,
+    /// The viewer's own login, or the owning org's login.
+    pub owner: String,
+}
+
+/// `{ projects }` — mirrors [`AzureDiscoverResponse`]'s single-populated-field
+/// shape, minus the two-step org/project split (GitHub returns everything the
+/// token can see in one GraphQL round trip).
+#[derive(Debug, Serialize)]
+pub struct GithubDiscoverResponse {
+    pub projects: Vec<GithubProjectOption>,
+}
+
+/// Flatten the GraphQL response body into a sorted, owner-tagged project list.
+/// Pure function so it's unit-testable against a hand-built fixture — mirrors
+/// the shape `viewer.projectsV2` + `viewer.organizations.nodes[].projectsV2`.
+fn flatten_github_projects(body: &serde_json::Value) -> Vec<GithubProjectOption> {
+    let viewer = body.pointer("/data/viewer");
+    let nodes_of = |v: &serde_json::Value| -> Vec<serde_json::Value> {
+        v.pointer("/projectsV2/nodes")
+            .and_then(|n| n.as_array())
+            .cloned()
+            .unwrap_or_default()
+    };
+
+    let mut projects = Vec::new();
+    if let Some(viewer) = viewer {
+        let owner = viewer
+            .get("login")
+            .and_then(|l| l.as_str())
+            .unwrap_or("you")
+            .to_string();
+        for node in nodes_of(viewer) {
+            if let (Some(id), Some(title)) = (
+                node.get("id").and_then(|v| v.as_str()),
+                node.get("title").and_then(|v| v.as_str()),
+            ) {
+                projects.push(GithubProjectOption {
+                    id: id.to_string(),
+                    title: title.to_string(),
+                    owner: owner.clone(),
+                });
+            }
+        }
+        let orgs = viewer
+            .pointer("/organizations/nodes")
+            .and_then(|n| n.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for org in orgs {
+            let owner = org
+                .get("login")
+                .and_then(|l| l.as_str())
+                .unwrap_or("org")
+                .to_string();
+            for node in nodes_of(&org) {
+                if let (Some(id), Some(title)) = (
+                    node.get("id").and_then(|v| v.as_str()),
+                    node.get("title").and_then(|v| v.as_str()),
+                ) {
+                    projects.push(GithubProjectOption {
+                        id: id.to_string(),
+                        title: title.to_string(),
+                        owner: owner.clone(),
+                    });
+                }
+            }
+        }
+    }
+    projects.sort_unstable_by(|a, b| {
+        (a.owner.as_str(), a.title.as_str()).cmp(&(b.owner.as_str(), b.title.as_str()))
+    });
+    projects
+}
+
+/// List the GitHub Projects v2 boards the connected account can see (the
+/// browser-OAuth-connect follow-up: `discover_azure_devops`'s PAT→org→project
+/// discovery, but GitHub returns everything in one GraphQL call). Reads
+/// `GITHUB_TOKEN` from the resolved `.env` — no args, since discovery only
+/// makes sense once [`start_oauth`]/[`save_integration_token`] already wrote a
+/// token there (unlike Azure DevOps, whose PAT is pasted in *before* it's saved).
+///
+/// # Who calls this
+/// `ui/components/IntegrationConnect.tsx`'s `GitHubProjectPicker`, both right
+/// after a GitHub OAuth connect succeeds and from the "connected but no
+/// projects selected" prompt in `ConnectedPanel`.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn discover_github_projects() -> Result<GithubDiscoverResponse, String> {
+    let mode = crate::install::detect_install_mode();
+    let env = mode.env_path().map(parse_env).unwrap_or_default();
+    let token = env
+        .get("GITHUB_TOKEN")
+        .filter(|t| !t.trim().is_empty())
+        .ok_or("GitHub is not connected yet")?;
+
+    const QUERY: &str = r#"{ viewer { login
+        projectsV2(first: 50) { nodes { id title } }
+        organizations(first: 25) { nodes { login projectsV2(first: 50) { nodes { id title } } } }
+    } }"#;
+
+    let resp = reqwest::Client::new()
+        .post("https://api.github.com/graphql")
+        .bearer_auth(token)
+        .header(reqwest::header::USER_AGENT, "meridian-tray")
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .json(&serde_json::json!({ "query": QUERY }))
+        .timeout(Duration::from_secs(15))
+        .send()
+        .instrument(tracing::debug_span!("integrations.github.projects"))
+        .await
+        .map_err(|e| format!("Could not reach GitHub: {e}"))?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        return Err(
+            "GitHub token invalid or missing the read:project scope — reconnect GitHub".to_string(),
+        );
+    }
+    if !status.is_success() {
+        return Err(format!("GitHub returned HTTP {status}"));
+    }
+
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Could not parse GitHub response: {e}"))?;
+
+    // GraphQL returns HTTP 200 with BOTH `data` and `errors` on a partial
+    // failure — e.g. a user in an org with SAML SSO enforcement (their token
+    // isn't SSO-authorised for that org) or an org that restricts Projects v2
+    // visibility gets that org as an `errors` entry while their own/other-org
+    // projects still come back in `data`. Only hard-fail if `data.viewer` is
+    // absent entirely (e.g. bad credentials); otherwise parse what's there.
+    if let Some(errors) = body.get("errors").and_then(|e| e.as_array()) {
+        if !errors.is_empty() {
+            let first_msg = errors
+                .first()
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown");
+            if body.pointer("/data/viewer").is_none() {
+                return Err(format!("GitHub API error: {first_msg}"));
+            }
+            tracing::warn!(
+                errors = errors.len(),
+                first = first_msg,
+                "GitHub GraphQL partial errors — some orgs/projects may be missing from the list"
+            );
+        }
+    }
+
+    let projects = flatten_github_projects(&body);
+    tracing::info!(count = projects.len(), "github projects discovered");
+    Ok(GithubDiscoverResponse { projects })
+}
+
 /// POST body for [`start_oauth`] (`{ provider }`).
 #[derive(Debug, Deserialize)]
 pub struct StartOAuthBody {
@@ -604,6 +789,15 @@ pub struct StartOAuthBody {
 pub struct StartOAuthResponse {
     pub started: bool,
     pub provider: String,
+    /// GitHub device flow only: the one-time code the user must enter at
+    /// [`Self::verification_uri`]. `None` for the loopback-redirect providers
+    /// (jira/trello), which need no user-visible code.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_code: Option<String>,
+    /// GitHub device flow only: where the user enters [`Self::user_code`]
+    /// (`https://github.com/login/device`). `None` for jira/trello.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_uri: Option<String>,
 }
 
 /// Start a browser-OAuth connect (the ported /api/auth/oauth/start POST).
@@ -611,21 +805,63 @@ pub struct StartOAuthResponse {
 /// [`get_oauth_status`] until the token store appears (success) or a `.error`
 /// sentinel is written (failure).
 ///
-/// **jira/trello run IN-PROCESS** via the shared `meridian-oauth` crate — the
-/// tray opens the browser, serves the loopback callback in its OWN runtime, and
-/// writes `~/.meridian/oauth/<provider>.json` directly. No `meridian oauth-login`
-/// subprocess (which depended on resolving the daemon binary on launchd's PATH
-/// and on log-tailing to surface errors). **github stays a subprocess**: its
-/// `gh`-CLI flow lives in the daemon, so the tray shells out to
-/// `meridian oauth-login github` exactly as before.
+/// **All providers run IN-PROCESS** via the shared `meridian-oauth` crate — no
+/// `meridian oauth-login` subprocess (which depended on resolving the daemon
+/// binary on launchd's PATH and on log-tailing to surface errors).
+/// - **jira/trello**: loopback-redirect flow — the tray opens the browser, serves
+///   the callback in its OWN runtime, and writes `~/.meridian/oauth/<provider>.json`.
+/// - **github**: OAuth **device flow** — the tray requests a one-time code,
+///   returns it (`user_code` + `verification_uri`) for the UI to display, opens
+///   the browser, and polls for the token in the background, writing
+///   `GITHUB_TOKEN` to `~/.meridian/.env` (the daemon reads it there). This
+///   replaced the old `gh`-CLI subprocess, which ran the device flow headless so
+///   the user never saw the code — and always timed out.
 #[tauri::command]
 #[tracing::instrument(fields(provider = %body.provider))]
 pub async fn start_oauth(body: StartOAuthBody) -> Result<StartOAuthResponse, String> {
     match body.provider.as_str() {
         "jira" | "trello" => start_oauth_in_process(body.provider),
-        "github" => start_oauth_github_subprocess(body.provider),
+        "github" => start_oauth_github_device(body.provider).await,
         other => Err(format!("Unknown provider: {other}")),
     }
+}
+
+/// POST body for [`cancel_oauth`] (`{ provider }`).
+#[derive(Debug, Deserialize)]
+pub struct CancelOAuthBody {
+    pub provider: String,
+}
+
+/// Cancel an in-flight jira/trello browser-OAuth attempt (the "Try again"
+/// button's real action — see `IntegrationConnect.tsx`'s `OAuthSetup`).
+///
+/// Closing the browser tab mid-flow tells the tray nothing: the spawned task
+/// stays parked on `TcpListener::accept()` for up to `CONSENT_TIMEOUT` (5 min,
+/// `meridian-oauth/src/flow.rs`), holding both the loopback port and the
+/// per-provider in-flight flag the whole time. Without this command, retrying
+/// before that timeout elapses just re-hits the same "already in progress"
+/// error start_oauth returns. `.abort()` drops the task (and its
+/// `TcpListener`) immediately; we then clear the flag ourselves rather than
+/// waiting for the (now never-running) task to reach its own cleanup code —
+/// aborting a task skips the rest of its body entirely.
+#[tauri::command]
+#[tracing::instrument(fields(provider = %body.provider))]
+pub async fn cancel_oauth(body: CancelOAuthBody) -> Result<(), String> {
+    let provider = body.provider;
+    let (in_flight, handle_slot): (
+        &'static AtomicBool,
+        &'static Mutex<Option<tokio::task::JoinHandle<()>>>,
+    ) = match provider.as_str() {
+        "trello" => (&TRELLO_OAUTH_IN_FLIGHT, &TRELLO_OAUTH_HANDLE),
+        "jira" => (&JIRA_OAUTH_IN_FLIGHT, &JIRA_OAUTH_HANDLE),
+        other => return Err(format!("cancel_oauth: unsupported provider {other}")),
+    };
+    if let Some(handle) = handle_slot.lock().unwrap().take() {
+        handle.abort();
+    }
+    in_flight.store(false, Ordering::SeqCst);
+    tracing::info!(provider = %provider, "OAuth attempt cancelled");
+    Ok(())
 }
 
 /// Run the jira/trello browser login in-process on the tray's runtime. Returns
@@ -691,9 +927,12 @@ fn start_oauth_in_process(provider: String) -> Result<StartOAuthResponse, String
     // Claim the per-provider in-flight slot. A second start_oauth call while
     // a flow is running returns an error — port 9123 can't be shared and the
     // token file would be written by two racing tasks.
-    let in_flight: &'static AtomicBool = match provider.as_str() {
-        "trello" => &TRELLO_OAUTH_IN_FLIGHT,
-        _ => &JIRA_OAUTH_IN_FLIGHT,
+    let (in_flight, handle_slot): (
+        &'static AtomicBool,
+        &'static Mutex<Option<tokio::task::JoinHandle<()>>>,
+    ) = match provider.as_str() {
+        "trello" => (&TRELLO_OAUTH_IN_FLIGHT, &TRELLO_OAUTH_HANDLE),
+        _ => (&JIRA_OAUTH_IN_FLIGHT, &JIRA_OAUTH_HANDLE),
     };
     if in_flight
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -710,7 +949,10 @@ fn start_oauth_in_process(provider: String) -> Result<StartOAuthResponse, String
     }
 
     let task_provider = provider.clone();
-    tauri::async_runtime::spawn(async move {
+    // `tokio::spawn` (not `tauri::async_runtime::spawn`) so we get a real
+    // `tokio::task::JoinHandle` — its `.abort()` is what `cancel_oauth` uses
+    // to drop the task's `TcpListener` and free the loopback port on retry.
+    let handle = tokio::spawn(async move {
         let result: anyhow::Result<()> = match task_provider.as_str() {
             "jira" => meridian_oauth::jira::login(&jira_client_id, &jira_secret, jira_port)
                 .await
@@ -733,91 +975,144 @@ fn start_oauth_in_process(provider: String) -> Result<StartOAuthResponse, String
             }
         }
     });
+    *handle_slot.lock().unwrap() = Some(handle);
 
     tracing::info!(provider = %provider, "in-process OAuth login launched");
     Ok(StartOAuthResponse {
         started: true,
         provider,
+        user_code: None,
+        verification_uri: None,
     })
 }
 
-/// Launch `meridian oauth-login github` as a detached subprocess (the `gh`-CLI
-/// flow lives in the daemon, not the shared crate). Output goes to
-/// `~/.meridian/logs/oauth-github.log`; a non-zero exit writes the `.error`
-/// sentinel from the log's last line so the UI can surface it.
-fn start_oauth_github_subprocess(provider: String) -> Result<StartOAuthResponse, String> {
-    let log_dir = std::env::var("MERIDIAN_LOG_DIR")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(|| home().map(|h| h.join(".meridian/logs")))
-        .ok_or("could not resolve log dir")?;
-    let _ = std::fs::create_dir_all(&log_dir);
-    let log_path = log_dir.join(format!("oauth-{provider}.log"));
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|e| format!("Could not start OAuth flow: {e}"))?;
-    let err_log = log.try_clone().map_err(|e| e.to_string())?;
+/// Run the GitHub OAuth **device flow** in-process (replacing the old
+/// `meridian oauth-login github` `gh`-CLI subprocess — that ran the device flow
+/// headless, so the user never saw the one-time code and it always timed out).
+///
+/// Requests the device/user code synchronously so the UI can display it
+/// immediately, opens the browser to the verification URI, then spawns a
+/// background task that polls for the token and — on success — writes
+/// `GITHUB_TOKEN` to the active `.env` (the daemon reads it there) and reloads
+/// the daemon. On failure it writes the `.error` sentinel that
+/// [`get_oauth_status`] surfaces. Returns `user_code`/`verification_uri` for the UI.
+async fn start_oauth_github_device(provider: String) -> Result<StartOAuthResponse, String> {
+    // Resolve the client id: `.env` override wins, else the baked-in default.
+    // Reading .env (not process env) matches start_oauth_in_process — the daemon
+    // may not have exported it into the tray's environment.
+    let mode = crate::install::detect_install_mode();
+    let dot_env = mode.env_path().map(parse_env).unwrap_or_default();
+    let client_id = dot_env
+        .get("GITHUB_OAUTH_CLIENT_ID")
+        .cloned()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(meridian_oauth::github::client_id);
+
+    // Claim the in-flight slot so two concurrent connects don't both poll / both
+    // write GITHUB_TOKEN. Cleared inside the spawned task (success or failure).
+    if GITHUB_OAUTH_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("GitHub OAuth is already in progress — check your browser".to_string());
+    }
+    // From here on, every early return MUST release the slot.
+    let release = || GITHUB_OAUTH_IN_FLIGHT.store(false, Ordering::SeqCst);
 
     // Clear any previous error sentinel before launching a fresh flow.
     if let Some(sentinel) = oauth_error_path(&provider) {
         let _ = std::fs::remove_file(&sentinel);
     }
 
-    let bin = crate::install::meridian_bin();
-    let mut cmd = tokio::process::Command::new(&bin);
-    cmd.args(["oauth-login", &provider])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::from(log))
-        .stderr(std::process::Stdio::from(err_log))
-        .kill_on_drop(false);
+    // Request the device/user code up front so failures (no client id, device
+    // flow disabled, network down) surface immediately instead of via a poll
+    // timeout, and so the UI can show the code without a second round trip.
+    let device = match meridian_oauth::github::request_device_code(
+        &client_id,
+        meridian_oauth::github::REQUIRED_SCOPES,
+    )
+    .await
+    {
+        Ok(d) => d,
+        Err(e) => {
+            release();
+            let msg = format!("{e:#}");
+            tracing::warn!(error = %msg, "GitHub device-code request failed");
+            return Err(msg);
+        }
+    };
 
-    let mut child = cmd.spawn().map_err(|e| {
-        tracing::warn!(bin = %bin, error = %e, "oauth-login spawn failed");
-        format!("Could not start OAuth flow: {e}")
-    })?;
+    // Open the browser to the verification page. Non-fatal if it fails — the UI
+    // also shows the code + link for manual entry.
+    let _ = std::process::Command::new("open")
+        .arg(&device.verification_uri)
+        .spawn();
 
-    // Watch the child; write a .error sentinel if it exits non-zero so the UI
-    // can surface the reason without waiting for the poll timeout.
-    let log_path_bg = log_path.clone();
-    let provider_bg = provider.clone();
+    let user_code = device.user_code.clone();
+    let verification_uri = device.verification_uri.clone();
+
     tauri::async_runtime::spawn(async move {
-        match child.wait().await {
-            Ok(status) if status.success() => {
-                tracing::info!(provider = %provider_bg, "oauth-login succeeded");
-            }
-            Ok(status) => {
-                tracing::warn!(
-                    provider = %provider_bg,
-                    code = ?status.code(),
-                    "oauth-login failed"
-                );
-                let msg = std::fs::read_to_string(&log_path_bg)
-                    .ok()
-                    .and_then(|s| {
-                        s.lines()
-                            .rfind(|l| !l.trim().is_empty())
-                            .map(str::to_string)
-                    })
-                    .unwrap_or_else(|| {
-                        format!("OAuth login failed (exit {})", status.code().unwrap_or(-1))
-                    });
-                if let Some(sentinel) = oauth_error_path(&provider_bg) {
-                    let _ = std::fs::write(&sentinel, &msg);
+        let result = meridian_oauth::github::poll_for_token(
+            &client_id,
+            &device.device_code,
+            device.interval,
+            device.expires_in,
+        )
+        .await;
+        GITHUB_OAUTH_IN_FLIGHT.store(false, Ordering::SeqCst);
+
+        match result {
+            Ok(token) => {
+                if let Err(e) = persist_github_token(token).await {
+                    let msg = format!("{e:#}");
+                    tracing::warn!(error = %msg, "persisting GITHUB_TOKEN failed");
+                    if let Some(sentinel) = oauth_error_path("github") {
+                        let _ = std::fs::write(&sentinel, &msg);
+                    }
+                    return;
+                }
+                tracing::info!("GitHub device-flow login succeeded");
+                // Best-effort reload so the token takes effect now, not next restart.
+                if let Err(e) = crate::commands::daemon::reload_daemon().await {
+                    tracing::debug!(error = %e, "daemon reload after GitHub connect (non-fatal)");
                 }
             }
             Err(e) => {
-                tracing::warn!(provider = %provider_bg, error = %e, "oauth-login wait error");
+                let msg = format!("{e:#}");
+                tracing::warn!(error = %msg, "GitHub device-flow login failed");
+                if let Some(sentinel) = oauth_error_path("github") {
+                    let _ = std::fs::write(&sentinel, &msg);
+                }
             }
         }
     });
 
-    tracing::info!(log = %log_path.display(), "oauth-login launched");
+    tracing::info!(user_code = %user_code, "GitHub device flow launched");
     Ok(StartOAuthResponse {
         started: true,
         provider,
+        user_code: Some(user_code),
+        verification_uri: Some(verification_uri),
     })
+}
+
+/// Write `GITHUB_TOKEN` to the active `.env` through the SAME resolver
+/// [`save_integration_token`] / [`get_integrations`] use, creating the canonical
+/// `~/.meridian/.env` if none exists yet. Runs the synchronous `.env` write on
+/// the blocking pool.
+async fn persist_github_token(token: String) -> anyhow::Result<()> {
+    let mode = crate::install::detect_install_mode();
+    let env_path = match mode.env_path() {
+        Some(p) => p.to_owned(),
+        None => crate::install::canonical_env_path()
+            .ok_or_else(|| anyhow::anyhow!("could not resolve home directory for .env"))?,
+    };
+    let mut updates: BTreeMap<String, String> = BTreeMap::new();
+    updates.insert("GITHUB_TOKEN".to_string(), token);
+    tokio::task::spawn_blocking(move || upsert_env(&env_path, &updates))
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn_blocking panicked: {e}"))?
+        .map_err(|e| anyhow::anyhow!("could not write .env: {e}"))
 }
 
 /// Status returned by [`get_oauth_status`].
@@ -829,28 +1124,30 @@ pub struct OAuthStatus {
 
 /// Poll the completion status of an OAuth login for `provider`.
 ///
-/// Returns `connected=true` once `~/.meridian/oauth/<provider>.json` exists,
-/// or `error` with the last non-empty line from the OAuth log if the child
-/// process exited with a non-zero status. The UI polls this every 2 s after
-/// [`start_oauth`] returns so failures surface immediately instead of waiting
-/// for the 3-minute timeout.
+/// For loopback providers (jira/trello): returns `connected=true` once
+/// `~/.meridian/oauth/<provider>.json` exists. For the GitHub device-flow
+/// provider: checks `GITHUB_TOKEN` in the active `.env`. On failure,
+/// [`start_oauth`]'s background task writes the real `anyhow` error string to
+/// `~/.meridian/oauth/<provider>.error` — this function reads that sentinel and
+/// returns it as `error`. The UI polls every 2 s so failures surface immediately
+/// instead of waiting for the full timeout.
 ///
 /// # Who calls this
-/// `ui/components/views/TasksView.tsx` `OAuthSetup`.
+/// `ui/components/IntegrationConnect.tsx` `OAuthSetup`.
 ///
 /// # Related
-/// - [`start_oauth`] — launches the background `meridian oauth-login` process.
+/// - [`start_oauth`] — launches the in-process OAuth flow (loopback or device).
 /// - [`get_integrations`] — broader connected-status check (used for success).
 #[tauri::command]
 #[tracing::instrument]
 pub async fn get_oauth_status(provider: String) -> Result<OAuthStatus, String> {
     if !OAUTH_PROVIDERS.contains(&provider.as_str())
-        && !GH_CLI_PROVIDERS.contains(&provider.as_str())
+        && !ENV_OAUTH_PROVIDERS.contains(&provider.as_str())
     {
         return Err(format!("Unknown provider: {provider}"));
     }
     // gh-CLI providers write a token to .env rather than a .json store.
-    let connected = if GH_CLI_PROVIDERS.contains(&provider.as_str()) {
+    let connected = if ENV_OAUTH_PROVIDERS.contains(&provider.as_str()) {
         let mode = crate::install::detect_install_mode();
         let env = mode.env_path().map(parse_env).unwrap_or_default();
         is_set(&env, "GITHUB_TOKEN")
@@ -906,6 +1203,42 @@ mod tests {
             "value": [{ "name": "Zebra" }, { "name": "Apple" }, { "other": "skip" }]
         });
         assert_eq!(sorted_names(&body, "name"), vec!["Apple", "Zebra"]);
+    }
+
+    #[test]
+    fn flatten_github_projects_merges_viewer_and_org_boards_sorted() {
+        let body = serde_json::json!({
+            "data": {
+                "viewer": {
+                    "login": "akarsh",
+                    "projectsV2": { "nodes": [{ "id": "PVT_1", "title": "Zebra board" }] },
+                    "organizations": { "nodes": [
+                        {
+                            "login": "meridiona",
+                            "projectsV2": { "nodes": [
+                                { "id": "PVT_2", "title": "Roadmap" },
+                                { "id": "PVT_3", "title": "Apple board" },
+                            ] },
+                        },
+                    ] },
+                },
+            },
+        });
+        let projects = flatten_github_projects(&body);
+        assert_eq!(projects.len(), 3);
+        // Sorted by (owner, title): akarsh's board first, then meridiona's two
+        // alphabetically.
+        assert_eq!(projects[0].id, "PVT_1");
+        assert_eq!(projects[0].owner, "akarsh");
+        assert_eq!(projects[1].id, "PVT_3");
+        assert_eq!(projects[1].title, "Apple board");
+        assert_eq!(projects[2].id, "PVT_2");
+    }
+
+    #[test]
+    fn flatten_github_projects_empty_on_missing_viewer() {
+        let body = serde_json::json!({ "errors": [{ "message": "bad credentials" }] });
+        assert!(flatten_github_projects(&body).is_empty());
     }
 
     fn tmp_env(name: &str) -> std::path::PathBuf {

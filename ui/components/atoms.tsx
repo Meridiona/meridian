@@ -3,6 +3,8 @@
 
 import { useEffect, useState } from 'react'
 import { ProviderIcon } from './ProviderIcon'
+import { BRAND_ICONS } from '@/lib/brand-icons'
+import { useAppIconUrl } from '@/lib/app-icons'
 
 // ── Time formatting ──────────────────────────────────────────────────────────
 export function fmtDur(seconds: number): string {
@@ -82,22 +84,14 @@ export function ProviderGlyph({ provider, size = 16 }: { provider: string; size?
 }
 
 // ── App glyph metadata ───────────────────────────────────────────────────────
+// Apps with a real vector wordmark live in BRAND_ICONS (lib/brand-icons.ts)
+// and take priority in AppGlyph below. This table is only the monogram
+// fallback for apps with no redistributable brand mark — Apple's own system
+// apps (Terminal, Mail) and unreleased/unlisted tools (Antigravity).
 const APP_META: Record<string, { mono: string; color: string }> = {
   'Antigravity':    { mono: 'Aᴳ', color: '#7C3AED' },
-  'Google Chrome':  { mono: 'Ch', color: '#3B82F6' },
   'Terminal':       { mono: '>_', color: '#111827' },
-  'DBeaver':        { mono: 'DB', color: '#1D4ED8' },
-  'Claude':         { mono: 'Cl', color: '#D97757' },
-  'Slack':          { mono: 'Sl', color: '#E01E5A' },
-  'Zoom':           { mono: 'Zm', color: '#2D8CFF' },
-  'Linear':         { mono: 'Li', color: '#5E6AD2' },
-  'Figma':          { mono: 'Fg', color: '#A259FF' },
-  'Notion':         { mono: 'No', color: '#111111' },
-  'Spotify':        { mono: 'Sp', color: '#1DB954' },
   'Mail':           { mono: 'Ma', color: '#0EA5E9' },
-  'Safari':         { mono: 'Sf', color: '#006FE5' },
-  'Xcode':          { mono: 'Xc', color: '#1171A3' },
-  'iTerm2':         { mono: '>_', color: '#2A2A2A' },
 }
 
 function appMeta(app: string | null | undefined) {
@@ -137,22 +131,35 @@ export function CatLabel({ cat, className = '' }: { cat: string; className?: str
 }
 
 export function AppGlyph({ app, size = 24, withName = false }: { app: string | null | undefined; size?: number; withName?: boolean }) {
+  // Real icon (extracted from the installed .app bundle) wins once resolved;
+  // the brand wordmark / letter monogram render immediately in the meantime
+  // (and stay as the permanent fallback for an app we can't resolve).
+  const iconUrl = useAppIconUrl(app)
+  const brand = app ? BRAND_ICONS[app] : undefined
   const meta = appMeta(app)
+  const color = brand?.hex ?? meta.color
   return (
     <span className="inline-flex items-center gap-2">
       <span
-        className="inline-flex items-center justify-center rounded-md font-mono shrink-0"
-        style={{
-          width: size, height: size,
-          background: meta.color + '1A',
-          color: meta.color,
-          fontSize: Math.max(9, size * 0.42),
-          fontWeight: 600,
-          letterSpacing: '-0.02em',
-        }}
+        className="inline-flex items-center justify-center rounded-md shrink-0 overflow-hidden"
+        style={{ width: size, height: size, background: iconUrl ? 'transparent' : color + '1A' }}
         aria-label={app ?? undefined}
       >
-        {meta.mono}
+        {iconUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element -- local asset:// URL, not a Next-optimizable remote image
+          <img src={iconUrl} alt="" width={size} height={size} style={{ objectFit: 'contain' }} />
+        ) : brand ? (
+          <svg viewBox={brand.viewBox} width={size * 0.58} height={size * 0.58} fill={brand.hex} aria-hidden="true">
+            <path d={brand.path} />
+          </svg>
+        ) : (
+          <span
+            className="font-mono"
+            style={{ color, fontSize: Math.max(9, size * 0.42), fontWeight: 600, letterSpacing: '-0.02em' }}
+          >
+            {meta.mono}
+          </span>
+        )}
       </span>
       {withName && <span className="text-sm" style={{ color: 'var(--ink)' }}>{app}</span>}
     </span>

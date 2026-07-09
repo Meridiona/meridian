@@ -11,7 +11,7 @@ type InvokeFn = (cmd: string, args?: Record<string, unknown>) => Promise<unknown
 type UnlistenFn = () => void
 
 type TauriBridge = {
-  core: { invoke: InvokeFn }
+  core: { invoke: InvokeFn; convertFileSrc: (path: string, protocol?: string) => string }
   window: { getCurrentWindow: () => { close: () => Promise<void> } }
   // From withGlobalTauri — the event module (listen returns a promise of the
   // unlisten fn). Used by `subscribe` for the ported SSE streams.
@@ -59,24 +59,24 @@ export function opensExternally(href: string, origin: string): boolean {
   return /^(mailto:|tel:)/i.test(href) || isExternalHttp(href, origin)
 }
 
-/** Open a URL in the user's default browser / mail client. The dashboard
- *  renders inside a WKWebView with no new-window handler, so `target="_blank"`
- *  anchors, mailto:, and `window.open` are silently dropped — external URLs
- *  must go through the opener plugin (`opener:default` in capabilities allows
- *  http/https/mailto/tel). A plugin rejection falls back to `window.open`
- *  rather than only logging — a silent miss here would reproduce the exact
- *  dead-link bug this helper exists to fix. Outside Tauri (next dev in a
- *  plain browser) it uses `window.open` directly. */
+/** Open a URL in the user's default browser / mail client via the
+ *  `open_external_url` command (scheme-allowlisted server-side). A plain
+ *  `<a target="_blank">` click — or a mailto:/tel: anchor, or `window.open` —
+ *  is silently swallowed by the Tauri webview (no new-window handler), so the
+ *  ExternalLinks interceptor routes anchors here and "Open ↗" buttons call it
+ *  from `onClick`. A command rejection falls back to `window.open` rather than
+ *  only logging — a silent miss would reproduce the exact dead-link bug this
+ *  helper exists to fix. Outside Tauri (next dev in a plain browser) it uses
+ *  `window.open` directly, keeping links alive there too. */
 export function openExternal(url: string): void {
-  const t = tauri()
-  if (t) {
-    void t.core.invoke('plugin:opener|open_url', { url }).catch((e) => {
-      console.warn(`openExternal('${url}') failed:`, e)
-      window.open(url, '_blank', 'noopener,noreferrer')
-    })
-  } else {
+  if (!isTauri()) {
     window.open(url, '_blank', 'noopener,noreferrer')
+    return
   }
+  invoke('open_external_url', { url }).catch((e) => {
+    console.warn(`openExternal('${url}') failed:`, e)
+    window.open(url, '_blank', 'noopener,noreferrer')
+  })
 }
 
 /** Data load via the Rust command (`apiPath` is the former route it replaced). */
@@ -103,6 +103,16 @@ export async function mutate<T = unknown>(
   const t = tauri()
   if (!t) throw new Error(`mutate('${apiPath}') requires the Meridian app — Tauri bridge unavailable.`)
   return t.core.invoke(command, { body }) as Promise<T>
+}
+
+/** Turn a local filesystem path into a URL the webview's asset protocol can
+ *  load (e.g. `<img src>`), given the path is inside `tauri.conf.json`'s
+ *  `security.assetProtocol.scope`. Returns `null` outside Tauri — callers
+ *  fall back to whatever they render without a resolved icon/asset. */
+export function assetUrl(path: string): string | null {
+  const t = tauri()
+  if (!t) return null
+  return t.core.convertFileSrc(path)
 }
 
 /** Live subscription via the Tauri event bus — replaces the four SSE streams.

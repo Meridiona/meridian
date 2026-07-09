@@ -4,11 +4,12 @@
 // Global external-link interceptor. The dashboard runs inside a Tauri
 // WKWebView, which has no new-window handler: a plain `<a target="_blank">`
 // click — or a mailto:/tel: anchor — is silently dropped: nothing opens, no
-// error. Rather than rewriting every external anchor onto a bespoke onClick,
-// this listens once at the document level and routes any external http(s) /
-// mailto: / tel: anchor click through the opener plugin (`openExternal`). In
-// a plain browser (`isTauri()` false) it does nothing and anchors behave
-// natively.
+// error. `open_external_url` + per-anchor onClick wiring fixed the known
+// "Open ↗" links; this listener catches every OTHER external anchor (and any
+// future one) at the document level, so new links work without bespoke
+// wiring. Anchors already wired call preventDefault() first, so they're
+// skipped here — no double-open. In a plain browser (`isTauri()` false) it
+// does nothing and anchors behave natively.
 //
 // Rendered by app/layout.tsx (root layout), so it covers every window that
 // serves the Next app — the dashboard and the setup wizard.

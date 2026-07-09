@@ -8,4 +8,7 @@ fn main() {
     // that changes only the build env. Declare the dependency so a changed secret
     // forces a recompile and the new value is picked up.
     println!("cargo::rerun-if-env-changed=MERIDIAN_JIRA_OAUTH_CLIENT_SECRET");
+    // Same reasoning for the public GitHub OAuth device-flow client id, baked in
+    // via option_env! in meridian-oauth/src/github.rs (compiled into this binary).
+    println!("cargo::rerun-if-env-changed=MERIDIAN_GITHUB_OAUTH_CLIENT_ID");
 }

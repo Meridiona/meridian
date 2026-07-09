@@ -17,6 +17,14 @@ window.addEventListener('unhandledrejection', (e) => dbg(`popover rejection: ${e
 const $ = (id) => document.getElementById(id)
 const brandMark = $('brand-mark')
 const headSub = $('head-sub')
+const headSubText = $('head-sub-text')
+const healthPanel = $('health-panel')
+const hpDaemonDot = $('hp-daemon-dot')
+const hpDaemonVal = $('hp-daemon-val')
+const hpMlxDot = $('hp-mlx-dot')
+const hpMlxVal = $('hp-mlx-val')
+const hpDbDot = $('hp-db-dot')
+const hpDbVal = $('hp-db-val')
 const statusCard = $('status-card')
 const statusDot = $('status-dot')
 const statusTitle = $('status-title')
@@ -149,7 +157,7 @@ function render(status) {
   activeAppName = status.active_app || ''
   elapsed = isTracking ? (status.active_elapsed_s || 0) : 0
 
-  headSub.textContent = !status.has_polled
+  headSubText.textContent = !status.has_polled
     ? 'Connecting…'
     : !healthy
       ? 'Offline'
@@ -230,8 +238,101 @@ function render(status) {
   }
 }
 
+// ── Health panel (expands under the head-sub click) ──────────────────────────
+let healthOpen = false
+let healthRefreshInFlight = false
+
+function setDot(el, state) { el.setAttribute('data-state', state) }
+
+function paintDaemon(status) {
+  if (!status) { setDot(hpDaemonDot, 'bad'); hpDaemonVal.textContent = 'Unreachable'; return }
+  if (status.running) {
+    setDot(hpDaemonDot, 'ok')
+    hpDaemonVal.textContent = status.pid ? `Running (pid ${status.pid})` : 'Running'
+  } else {
+    setDot(hpDaemonDot, 'bad')
+    hpDaemonVal.textContent = 'Not running'
+  }
+}
+
+function paintMlx(res) {
+  if (!res) { setDot(hpMlxDot, 'bad'); hpMlxVal.textContent = 'Unreachable'; return }
+  // MlxStatus is a serde enum with rename_all = "snake_case": the unit variants
+  // serialize to the lowercase strings "offline" / "starting" / "running", and
+  // Error(String) to { "error": "<msg>" }. Compare against those exact shapes.
+  const s = res.status
+  const kind = typeof s === 'string' ? s : (s && Object.keys(s)[0]) || 'unknown'
+  if (kind === 'running') {
+    setDot(hpMlxDot, 'ok')
+    hpMlxVal.textContent = res.port ? `Running (port ${res.port})` : 'Running'
+  } else if (kind === 'error') {
+    setDot(hpMlxDot, 'bad')
+    // Error(String) serializes to { "error": "<msg>" }. Surface the actual
+    // message (bounded, like paintDb) instead of a bare "Error" — the panel
+    // exists precisely to say WHICH subsystem is down and why.
+    const msg = s && typeof s.error === 'string' ? s.error : ''
+    hpMlxVal.textContent = msg ? `Error: ${msg.slice(0, 60)}` : 'Error'
+  } else if (!res.runtime_installed) {
+    setDot(hpMlxDot, 'warn')
+    hpMlxVal.textContent = 'Runtime not installed'
+  } else if (kind === 'starting') {
+    setDot(hpMlxDot, 'warn')
+    hpMlxVal.textContent = 'Starting…'
+  } else {
+    setDot(hpMlxDot, 'warn')
+    hpMlxVal.textContent = 'Offline'
+  }
+}
+
+function paintDb(res) {
+  if (!res) { setDot(hpDbDot, 'bad'); hpDbVal.textContent = 'Unreachable'; return }
+  if (res.database_ready === true) {
+    setDot(hpDbDot, 'ok')
+    hpDbVal.textContent = 'Ready'
+  } else if (res.database_ready === false) {
+    setDot(hpDbDot, 'bad')
+    hpDbVal.textContent = res.error ? String(res.error).slice(0, 60) : 'Not ready'
+  } else {
+    setDot(hpDbDot, 'warn')
+    hpDbVal.textContent = 'Unknown'
+  }
+}
+
+async function refreshHealth() {
+  if (healthRefreshInFlight) return
+  healthRefreshInFlight = true
+  try {
+    const [d, m, h] = await Promise.all([
+      invoke('get_daemon_status').catch(() => null),
+      invoke('get_mlx_status').catch(() => null),
+      invoke('get_health').catch(() => null),
+    ])
+    paintDaemon(d)
+    paintMlx(m)
+    paintDb(h)
+  } finally {
+    healthRefreshInFlight = false
+  }
+}
+
+function toggleHealth() {
+  healthOpen = !healthOpen
+  healthPanel.hidden = !healthOpen
+  headSub.setAttribute('aria-expanded', healthOpen ? 'true' : 'false')
+  if (healthOpen) refreshHealth()
+  resizeToContent()
+}
+
+headSub.addEventListener('click', toggleHealth)
+headSub.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleHealth() }
+})
+
 // ── Events + actions ─────────────────────────────────────────────────────────
-listen('status-update', (event) => { render(event.payload); resizeToContent() })
+listen('status-update', (event) => {
+  render(event.payload); resizeToContent()
+  if (healthOpen) refreshHealth()
+})
 
 // Escape closes the popover. The popover runs as a non-activating NSPanel so
 // Focused(false) never fires on macOS — Escape is the keyboard dismiss path.
@@ -368,7 +469,67 @@ if (document.fonts && document.fonts.ready) {
   document.fonts.ready.then(() => resizeToContent()).catch(() => {})
 }
 
+// ── Interactive notification responses ───────────────────────────────────────
+// The notifications plugin delivers UNUserNotificationCenter action events
+// ('actionPerformed': button press, inline reply, tap, dismiss) over an IPC
+// channel registered from JS. The popover is the always-alive webview, so the
+// listener lives here: each event is forwarded to record_notification_response,
+// which stamps the answer on the outbox row (the daemon's response consumer
+// acts on it) and opens the dashboard for foreground answers.
+function armNotificationActions() {
+  try {
+    const ch = new __TAURI__.core.Channel()
+    ch.onmessage = (msg) => {
+      // Raw-payload trace: the event shape crosses Swift → Rust → JS, so when
+      // a response goes missing this line says which hop dropped/renamed what.
+      try { dbg(`notification action event: ${JSON.stringify(msg).slice(0, 400)}`) } catch {}
+      const n = (msg && msg.notification) || {}
+      // The notification id IS the outbox row id — the only correlation the
+      // plugin round-trips (its Swift ActiveNotification carries no extras).
+      // Every outbox toast (plain or interactive) carries it; non-outbox
+      // toasts (sys::notify — pause/update/health) have id 0 and are ignored.
+      const outboxId = Number(n.id)
+      if (!Number.isFinite(outboxId) || outboxId <= 0) {
+        dbg('notification action event: not an outbox toast — ignored')
+        return
+      }
+      invoke('record_notification_response', {
+        id: outboxId,
+        action: String(msg.actionId || 'tap'),
+        text: msg.inputValue == null ? null : String(msg.inputValue),
+      }).catch((e) => dbg(`notification response failed: ${e}`))
+    }
+    // Plugin absent in an unbundled run (tauri dev) — interactive toasts are
+    // packaged-only, so a registration failure is expected there, not an error.
+    invoke('plugin:notifications|register_listener', { event: 'actionPerformed', handler: ch })
+      .then(() => dbg('notification action listener registered'))
+      .catch(() => dbg('notification action listener not registered (unbundled run?)'))
+  } catch (e) { dbg(`notification listener threw: ${e}`) }
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
-startTicker()
-invoke('get_status').then((s) => { render(s); resizeToContent() }).catch(() => {})
-checkUpdate()
+function boot() {
+  startTicker()
+  invoke('get_status').then((s) => { render(s); resizeToContent() }).catch(() => {})
+  checkUpdate()
+  armNotificationActions()
+}
+
+// Under the DOM test harness (ui/__tests__/popover-health-panel.test.ts) the
+// script is loaded to drive render/toggleHealth/refreshHealth directly against
+// a mocked __TAURI__ bridge — so expose them and SKIP auto-boot (which would
+// otherwise fire the 1 s ticker + an unmocked get_status/checkUpdate + the
+// notification-action listener at import time). In the packaged webview the
+// flag is unset, so boot() runs as before and nothing reads __popover.
+if (typeof globalThis !== 'undefined' && globalThis.__MERIDIAN_POPOVER_TEST__) {
+  globalThis.__popover = {
+    render,
+    toggleHealth,
+    refreshHealth,
+    paintDaemon,
+    paintMlx,
+    paintDb,
+  }
+} else {
+  boot()
+}

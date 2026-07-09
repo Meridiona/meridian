@@ -7,11 +7,14 @@
 //! name them flatly regardless of which submodule they sit in.
 //!
 //! - [`dashboard`] — the ported `/api/*` DB reads (active/today/week/tasks/…).
+//! - [`app_icons`] — real macOS app icon extraction for "Time by app" (`get_app_icon`).
 //! - [`daemon`]    — daemon lifecycle (restart/pause/resume) + status probes.
 //! - [`system`]    — OS/window actions (open URLs, System Settings panes).
 //! - [`health`]    — the `/api/health` check (also reused by [`crate::poll`]).
-//! - [`logs`]      — the `/api/logs` tail.
-//! - [`openobserve`] — the `/api/openobserve` service status probe.
+//! - [`diagnostics`] — the "Export Diagnostics" bundle-and-reveal action
+//!   (also the local read path for `meridian logs`'s OTel-spool decode — see
+//!   `src/telemetry_spool/render.rs` — since the old JSONL-tailing `logs`
+//!   module and its dashboard consumer are both gone).
 //! - [`integrations`] — which trackers are connected (`/api/integrations`).
 //! - [`notices`]   — clear a fault banner (`/api/notices/[id]` DELETE).
 //! - [`notifications`] — the in-app banner dismiss write.
@@ -28,14 +31,14 @@
 //! - [`crate::sys`] — shared uid / notify / ui_base helpers.
 //! - [`crate::mlx_server`] — the MLX process manager the setup commands drive.
 
+pub mod app_icons;
 pub mod daemon;
 pub mod dashboard;
+pub mod diagnostics;
 pub mod health;
 pub mod integrations;
-pub mod logs;
 pub mod notices;
 pub mod notifications;
-pub mod openobserve;
 pub mod parents;
 pub mod pause;
 pub mod settings;
@@ -50,14 +53,14 @@ pub mod worklogs;
 // Globs (not explicit names) are required: the `#[tauri::command]` macro emits
 // hidden sibling items (`__cmd__*`) that `generate_handler!` resolves through
 // this path, and only a glob carries them along with the command fn.
+pub use app_icons::*;
 pub use daemon::*;
 pub use dashboard::*;
+pub use diagnostics::*;
 pub use health::*;
 pub use integrations::*;
-pub use logs::*;
 pub use notices::*;
 pub use notifications::*;
-pub use openobserve::*;
 pub use parents::*;
 pub use pause::*;
 pub use settings::*;

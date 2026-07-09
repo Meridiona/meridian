@@ -43,6 +43,20 @@ use tokio::sync::Mutex;
 const RUNTIME_MANIFEST_URL: &str =
     "https://github.com/Meridiona/meridian/releases/download/runtime-latest/runtime-manifest.json";
 
+/// Base URL of the optional Hugging Face caching proxy — a Cloudflare Worker that
+/// reverse-proxies `huggingface.co` and caches the weight blobs at the edge (see
+/// `infra/hf-proxy/`). When set, it is exported as the MLX server's `HF_ENDPOINT`,
+/// so the wizard's model prefetch and any lazy in-process load pull through our
+/// edge instead of HF directly — the fix for the slow/stalled first-run model
+/// downloads users retry on.
+///
+/// **Empty by default — the proxy is DISABLED until it is actually deployed.**
+/// Baking a live host here before `hf.meridiona.com` resolves would route every
+/// user's download at a dead endpoint. Enable per channel by baking
+/// `MERIDIAN_HF_ENDPOINT` at build time (`option_env!`, see [`hf_endpoint`]), or
+/// flip this default once the Worker + Cache Reserve are live.
+const HF_PROXY_ENDPOINT: &str = "";
+
 /// Hard cap on the runtime download+verify+extract phase (the only unbounded,
 /// network-bound step of a provision/upgrade). A stalled tarball stream is
 /// abandoned after this so first-run setup can't hang and a background upgrade
@@ -230,23 +244,92 @@ pub fn manifest_url() -> Option<String> {
     None
 }
 
+/// Resolve the Hugging Face endpoint override (the caching proxy), in priority
+/// order, mirroring [`manifest_url`]:
+/// 1. **Runtime** `MERIDIAN_HF_ENDPOINT` — debug builds only (a release binary
+///    can't be redirected via a compromised env).
+/// 2. **Compile-time** `MERIDIAN_HF_ENDPOINT` (`option_env!`) — baked per channel
+///    at build time (how a shipped build turns the proxy on).
+/// 3. The compiled-in [`HF_PROXY_ENDPOINT`] default (empty = disabled).
+///
+/// `None` → no override; `huggingface_hub` talks to `huggingface.co` directly
+/// (today's behavior). `Some(url)` is exported as `HF_ENDPOINT` to the MLX server.
+pub fn hf_endpoint() -> Option<String> {
+    // Debug-only env override — same guard as `manifest_url`, so a production
+    // binary's HF traffic can't be silently redirected by the environment.
+    #[cfg(debug_assertions)]
+    if let Ok(url) = std::env::var("MERIDIAN_HF_ENDPOINT") {
+        if !url.is_empty() {
+            return Some(url);
+        }
+    }
+    if let Some(url) = option_env!("MERIDIAN_HF_ENDPOINT") {
+        if !url.is_empty() {
+            return Some(url.to_string());
+        }
+    }
+    if !HF_PROXY_ENDPOINT.is_empty() {
+        return Some(HF_PROXY_ENDPOINT.to_string());
+    }
+    None
+}
+
+/// Classified download error: `retryable = true` means the caller may re-attempt
+/// after a backoff (transient network / disk hiccup); `false` means the failure
+/// is deterministic (wrong arch, checksum mismatch, missing tar) and retrying is
+/// wasted work. The retry loop in [`download_and_stage_with_retry`] pivots on it.
+struct DownloadError {
+    retryable: bool,
+    msg: String,
+}
+
+fn transient(msg: impl Into<String>) -> DownloadError {
+    DownloadError {
+        retryable: true,
+        msg: msg.into(),
+    }
+}
+
+fn permanent(msg: impl Into<String>) -> DownloadError {
+    DownloadError {
+        retryable: false,
+        msg: msg.into(),
+    }
+}
+
+/// 4xx statuses are our fault or the manifest's fault (bad URL, gone, unauth) —
+/// retrying won't help. 429 is the exception (rate-limited, back off + retry).
+/// 5xx and everything else transient — retry.
+fn http_retryable(status: reqwest::StatusCode) -> bool {
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return true;
+    }
+    !status.is_client_error()
+}
+
 /// Fetch + parse the runtime manifest from [`manifest_url`].
-async fn fetch_manifest() -> Result<RuntimeManifest, String> {
+async fn fetch_manifest() -> Result<RuntimeManifest, DownloadError> {
     let url = manifest_url().ok_or_else(|| {
-        "Runtime manifest URL not configured yet. Check back for updates.".to_string()
+        permanent("Runtime manifest URL not configured yet. Check back for updates.")
     })?;
     let resp = reqwest::Client::new()
         .get(&url)
         .timeout(std::time::Duration::from_secs(15))
         .send()
         .await
-        .map_err(|e| format!("manifest request failed: {e}"))?;
+        .map_err(|e| transient(format!("manifest request failed: {e}")))?;
     if !resp.status().is_success() {
-        return Err(format!("manifest fetch failed: HTTP {}", resp.status()));
+        let status = resp.status();
+        let msg = format!("manifest fetch failed: HTTP {status}");
+        return Err(if http_retryable(status) {
+            transient(msg)
+        } else {
+            permanent(msg)
+        });
     }
     resp.json::<RuntimeManifest>()
         .await
-        .map_err(|e| format!("manifest parse failed: {e}"))
+        .map_err(|e| transient(format!("manifest parse failed: {e}")))
 }
 
 /// Whether the running macOS version is at least `required` (compares
@@ -344,7 +427,7 @@ fn backup_dir() -> PathBuf {
 ///
 /// `on_progress` is called with each chunk; `total` is `0` when the server omits
 /// Content-Length. Extraction uses the system `tar`.
-async fn download_and_stage<F>(on_progress: F) -> Result<StageOutcome, String>
+async fn download_and_stage<F>(on_progress: F) -> Result<StageOutcome, DownloadError>
 where
     F: Fn(DownloadProgress) + Send + 'static,
 {
@@ -355,18 +438,18 @@ where
 
     // ── Preflight: don't download a runtime this machine can't run. ───────────
     if manifest.arch != std::env::consts::ARCH {
-        return Err(format!(
+        return Err(permanent(format!(
             "runtime is for {} but this machine is {}",
             manifest.arch,
             std::env::consts::ARCH
-        ));
+        )));
     }
     if let Some(running) = running_macos().await {
         if !macos_at_least(&running, &manifest.min_macos) {
-            return Err(format!(
+            return Err(permanent(format!(
                 "this runtime needs macOS {} or newer (you have {running})",
                 manifest.min_macos
-            ));
+            )));
         }
     }
 
@@ -393,9 +476,15 @@ where
         .get(&manifest.url)
         .send()
         .await
-        .map_err(|e| format!("download request failed: {e}"))?;
+        .map_err(|e| transient(format!("download request failed: {e}")))?;
     if !response.status().is_success() {
-        return Err(format!("download failed: HTTP {}", response.status()));
+        let status = response.status();
+        let msg = format!("download failed: HTTP {status}");
+        return Err(if http_retryable(status) {
+            transient(msg)
+        } else {
+            permanent(msg)
+        });
     }
 
     let total = response.content_length().unwrap_or(manifest.size);
@@ -405,17 +494,17 @@ where
 
     let mut file = tokio::fs::File::create(&tmp_path)
         .await
-        .map_err(|e| format!("create temp file: {e}"))?;
+        .map_err(|e| transient(format!("create temp file: {e}")))?;
 
     let mut stream = response.bytes_stream();
     let mut received: u64 = 0;
     let started = std::time::Instant::now();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("stream error: {e}"))?;
+        let chunk = chunk.map_err(|e| transient(format!("stream error: {e}")))?;
         use tokio::io::AsyncWriteExt;
         file.write_all(&chunk)
             .await
-            .map_err(|e| format!("write error: {e}"))?;
+            .map_err(|e| transient(format!("write error: {e}")))?;
         received += chunk.len() as u64;
         let secs = started.elapsed().as_secs_f64();
         on_progress(DownloadProgress {
@@ -437,7 +526,9 @@ where
         });
     }
     use tokio::io::AsyncWriteExt;
-    file.flush().await.map_err(|e| format!("flush: {e}"))?;
+    file.flush()
+        .await
+        .map_err(|e| transient(format!("flush: {e}")))?;
     drop(file);
 
     // ── Integrity gate: verify SHA-256 BEFORE extracting anything. ────────────
@@ -452,17 +543,18 @@ where
         let p = tmp.clone();
         tokio::task::spawn_blocking(move || sha256_hex_of(&p))
             .await
-            .map_err(|e| format!("hash task: {e}"))?
-            .map_err(|e| format!("hash read: {e}"))?
+            .map_err(|e| transient(format!("hash task: {e}")))?
+            .map_err(|e| transient(format!("hash read: {e}")))?
     };
     if !actual.eq_ignore_ascii_case(&manifest.sha256) {
         let _ = tokio::fs::remove_file(&tmp).await;
         tracing::error!(expected = %manifest.sha256, actual = %actual, "mlx: checksum mismatch");
-        return Err(format!(
-            "checksum mismatch — download corrupted or tampered \
-             (expected {}, got {actual}). The runtime was not installed.",
+        // A checksum mismatch usually means a truncated / interrupted download —
+        // the next attempt gets a fresh stream and typically succeeds. Retry.
+        return Err(transient(format!(
+            "checksum mismatch — download corrupted (expected {}, got {actual})",
             manifest.sha256
-        ));
+        )));
     }
     tracing::info!(sha256 = %actual, "mlx: tarball verified");
 
@@ -479,7 +571,7 @@ where
     let _ = tokio::fs::remove_dir_all(&staging).await;
     tokio::fs::create_dir_all(&staging)
         .await
-        .map_err(|e| format!("create staging dir: {e}"))?;
+        .map_err(|e| transient(format!("create staging dir: {e}")))?;
     let out = tokio::process::Command::new("tar")
         .arg("-xzf")
         .arg(&tmp)
@@ -488,11 +580,11 @@ where
         .arg("--strip-components=1")
         .output()
         .await
-        .map_err(|e| format!("tar spawn: {e}"))?;
+        .map_err(|e| permanent(format!("tar spawn: {e}")))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let _ = tokio::fs::remove_dir_all(&staging).await;
-        return Err(format!("tar extraction failed: {stderr}"));
+        return Err(permanent(format!("tar extraction failed: {stderr}")));
     }
     let _ = tokio::fs::remove_file(&tmp).await;
 
@@ -506,6 +598,91 @@ where
     Ok(StageOutcome::Staged {
         version: manifest.version,
     })
+}
+
+/// Backoff between the 5 attempts. There are only **4 waits** — the 5th attempt
+/// gives up without sleeping (`attempt == DOWNLOAD_MAX_ATTEMPTS` short-circuits),
+/// so this holds exactly `DOWNLOAD_MAX_ATTEMPTS - 1` entries: 3s → 12s → 30s →
+/// 75s. Cumulative wait ~2m before giving up — long enough to ride out a hotel
+/// wifi glitch, short enough the wizard doesn't feel dead. The
+/// `retry_backoff_covers_all_gaps` test enforces the exact 1:1 mapping so this
+/// can't drift out of sync with the attempt count again.
+const DOWNLOAD_RETRY_BACKOFF: &[std::time::Duration] = &[
+    std::time::Duration::from_secs(3),
+    std::time::Duration::from_secs(12),
+    std::time::Duration::from_secs(30),
+    std::time::Duration::from_secs(75),
+];
+const DOWNLOAD_MAX_ATTEMPTS: usize = 5;
+
+/// Run [`download_and_stage`] with automatic retry on transient failures
+/// (network flake, HTTP 5xx/429, disk hiccup, checksum mismatch from a
+/// truncated stream). Non-retryable failures — wrong arch/macOS version, tar
+/// missing, non-5xx HTTP — short-circuit immediately. Between attempts the
+/// caller is told we're waiting via the same [`DownloadProgress`] channel the
+/// wizard already listens on, so the retry is visible instead of a mystery.
+///
+/// The final error carries the attempt count so the surfaced message tells the
+/// user we did try more than once. Success returns as soon as any attempt does.
+async fn download_and_stage_with_retry<F>(on_progress: F) -> Result<StageOutcome, String>
+where
+    F: Fn(DownloadProgress) + Clone + Send + 'static,
+{
+    let mut last_msg = String::new();
+    for attempt in 1..=DOWNLOAD_MAX_ATTEMPTS {
+        match download_and_stage(on_progress.clone()).await {
+            Ok(outcome) => {
+                if attempt > 1 {
+                    tracing::info!(attempt, "mlx: runtime download succeeded after retry");
+                }
+                return Ok(outcome);
+            }
+            Err(err) => {
+                last_msg = err.msg;
+                if !err.retryable || attempt == DOWNLOAD_MAX_ATTEMPTS {
+                    tracing::warn!(
+                        attempt,
+                        retryable = err.retryable,
+                        error = %last_msg,
+                        "mlx: runtime download giving up",
+                    );
+                    return Err(if attempt > 1 {
+                        format!("{last_msg} (after {attempt} attempts)")
+                    } else {
+                        last_msg
+                    });
+                }
+                // Indices 0..=DOWNLOAD_MAX_ATTEMPTS-2 are always in range here
+                // (the last attempt returns above without sleeping); the
+                // `unwrap_or` is a defensive floor, never hit in practice.
+                let wait = DOWNLOAD_RETRY_BACKOFF
+                    .get(attempt - 1)
+                    .copied()
+                    .unwrap_or(std::time::Duration::from_secs(60));
+                tracing::warn!(
+                    attempt,
+                    next_wait_s = wait.as_secs(),
+                    error = %last_msg,
+                    "mlx: runtime download failed — retrying",
+                );
+                on_progress(DownloadProgress {
+                    received: 0,
+                    total: 0,
+                    speed: 0.0,
+                    message: format!(
+                        "Download failed (attempt {attempt}/{DOWNLOAD_MAX_ATTEMPTS}) — retrying in {}s…",
+                        wait.as_secs()
+                    ),
+                });
+                tokio::time::sleep(wait).await;
+                // Wipe any partial staging so the next attempt starts clean.
+                let _ = tokio::fs::remove_dir_all(staging_dir()).await;
+            }
+        }
+    }
+    // Loop returns on both success and final failure; this is unreachable, but
+    // give the caller a coherent message if the invariant ever breaks.
+    Err(last_msg)
 }
 
 /// Swap a staged runtime (from [`download_and_stage`]) into place as the live
@@ -566,22 +743,27 @@ async fn commit_staged_runtime(version: &str) -> Result<(), String> {
 /// server omits Content-Length.
 pub async fn download_runtime<F>(on_progress: F) -> Result<DownloadOutcome, String>
 where
-    F: Fn(DownloadProgress) + Send + 'static,
+    F: Fn(DownloadProgress) + Clone + Send + 'static,
 {
     // Bound the network phase so a stalled tarball stream can't wedge first-run
     // setup indefinitely (the background upgrade path is bounded the same way).
-    let staged =
-        match tokio::time::timeout(RUNTIME_DOWNLOAD_TIMEOUT, download_and_stage(on_progress)).await
-        {
-            Ok(res) => res?,
-            Err(_) => {
-                let _ = tokio::fs::remove_dir_all(staging_dir()).await;
-                return Err(format!(
-                    "runtime download timed out after {}s",
-                    RUNTIME_DOWNLOAD_TIMEOUT.as_secs()
-                ));
-            }
-        };
+    // The timeout wraps the whole retry loop so the total budget is fixed even
+    // across attempts — a truly wedged network still surfaces to the wizard.
+    let staged = match tokio::time::timeout(
+        RUNTIME_DOWNLOAD_TIMEOUT,
+        download_and_stage_with_retry(on_progress),
+    )
+    .await
+    {
+        Ok(res) => res?,
+        Err(_) => {
+            let _ = tokio::fs::remove_dir_all(staging_dir()).await;
+            return Err(format!(
+                "runtime download timed out after {}s",
+                RUNTIME_DOWNLOAD_TIMEOUT.as_secs()
+            ));
+        }
+    };
     match staged {
         StageOutcome::AlreadyCurrent => Ok(DownloadOutcome::AlreadyCurrent),
         StageOutcome::Staged { version } => {
@@ -635,7 +817,7 @@ pub async fn auto_upgrade_runtime(manager: &SharedMlxManager) {
     // the machine with no live runtime.
     let staged = match tokio::time::timeout(
         RUNTIME_DOWNLOAD_TIMEOUT,
-        download_and_stage(|p| {
+        download_and_stage_with_retry(|p| {
             tracing::debug!(received = p.received, total = p.total, message = %p.message, "mlx: runtime upgrade progress");
         }),
     )
@@ -951,6 +1133,16 @@ pub async fn start(port: u16, manager: &SharedMlxManager) -> Result<(), String> 
         // doesn't interrupt inflight classification.
         .kill_on_drop(false);
 
+    // Route HF traffic through the caching proxy when one is configured
+    // (`hf_endpoint`). huggingface_hub reads HF_ENDPOINT from the env at import,
+    // so setting it on the child makes the wizard's model prefetch + any lazy load
+    // pull through our edge. Unset → direct huggingface.co (today's behavior). The
+    // installed launchd server gets the same value from the mlx-server plist.
+    if let Some(ep) = hf_endpoint() {
+        cmd.env("HF_ENDPOINT", &ep);
+        tracing::info!(hf_endpoint = %ep, "mlx: routing HF downloads through caching proxy");
+    }
+
     let child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -1107,6 +1299,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn http_retryable_classification() {
+        use reqwest::StatusCode;
+        // 5xx / server error → transient, retry.
+        assert!(http_retryable(StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(http_retryable(StatusCode::BAD_GATEWAY));
+        assert!(http_retryable(StatusCode::SERVICE_UNAVAILABLE));
+        assert!(http_retryable(StatusCode::GATEWAY_TIMEOUT));
+        // 429 rate-limit → transient (respect backoff, then retry).
+        assert!(http_retryable(StatusCode::TOO_MANY_REQUESTS));
+        // 4xx client errors → permanent, retry never helps.
+        assert!(!http_retryable(StatusCode::BAD_REQUEST));
+        assert!(!http_retryable(StatusCode::UNAUTHORIZED));
+        assert!(!http_retryable(StatusCode::FORBIDDEN));
+        assert!(!http_retryable(StatusCode::NOT_FOUND));
+        assert!(!http_retryable(StatusCode::GONE));
+    }
+
+    #[test]
+    fn retry_backoff_covers_all_gaps() {
+        // EXACTLY one backoff per inter-attempt gap — no more, no less. `>=`
+        // would let a trailing, unreachable entry slip through (the bug this
+        // asserts against: the last attempt gives up without sleeping, so an
+        // extra entry is dead code and inflates the advertised worst-case wait).
+        assert_eq!(DOWNLOAD_RETRY_BACKOFF.len(), DOWNLOAD_MAX_ATTEMPTS - 1);
+        // Backoffs must be monotonically increasing so the retries fan out.
+        for pair in DOWNLOAD_RETRY_BACKOFF.windows(2) {
+            assert!(pair[0] < pair[1], "backoff must grow: {pair:?}");
+        }
+    }
+
+    #[test]
     fn macos_version_floor() {
         // Meets or exceeds → ok.
         assert!(macos_at_least("13.5", "13.5"));
@@ -1157,6 +1380,22 @@ mod tests {
         assert_eq!(m.min_macos, "13.5");
         assert_eq!(m.size, 173466456);
         assert!(m.sha256.len() == 64);
+    }
+
+    #[test]
+    fn hf_endpoint_disabled_by_default() {
+        // No other test in this suite touches MERIDIAN_HF_ENDPOINT, so clearing it
+        // here (idempotent if already unset) cannot race a concurrently-running
+        // test — the same reason a full three-tier test of manifest_url()'s
+        // pattern isn't attempted here either; that needs isolation this crate
+        // doesn't have (no serial_test dep), so it's only exercised end-to-end by
+        // the #[ignore]d live_pull_from_runtime_staging test below.
+        std::env::remove_var("MERIDIAN_HF_ENDPOINT");
+        // The safety invariant that makes it safe to merge before the Worker +
+        // Cache Reserve are live: with no override at any tier, the compiled-in
+        // HF_PROXY_ENDPOINT default (empty) must resolve to `None` — the proxy
+        // stays off rather than pointing at a host that doesn't exist yet.
+        assert_eq!(hf_endpoint(), None);
     }
 
     /// Live end-to-end pull of the published `runtime-staging` runtime — the

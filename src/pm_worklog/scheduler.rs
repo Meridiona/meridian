@@ -251,6 +251,7 @@ async fn run_pass(pool: &SqlitePool, cfg: &PmWorklogConfig, scope: Scope) {
     // tooltip/badge tracks the live count separately.
     if drafted_total > 0 {
         let dedup = format!("worklog.ready:{}", Local::now().format("%Y-%m-%d"));
+        use meridian_core::notifications::categories;
         if let Err(e) = crate::notifications::enqueue(
             pool,
             crate::notifications::NewNotification::event(
@@ -259,7 +260,8 @@ async fn run_pass(pool: &SqlitePool, cfg: &PmWorklogConfig, scope: Scope) {
                 "Worklog drafts ready",
                 "Drafts are ready to review and approve.",
             )
-            .link("/worklogs"),
+            .link("/worklogs")
+            .interactive(categories::WORKLOG_READY),
         )
         .await
         {

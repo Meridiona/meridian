@@ -27,13 +27,10 @@ these break whenever `runner.rs` or `extractor.rs` changes. test ALL of these af
 - [ ] **meridian DB path override** — `MERIDIAN_DB=/tmp/test.db ./meridian`; DB created at the custom path, not the default.
 - [ ] **tilde expansion in env vars** — `MERIDIAN_DB=~/custom/meridian.db`; tilde expanded correctly to home directory.
 
-### 3. screenpipe DB compatibility
+### 3. capture DB compatibility
 
-- [ ] **missing screenpipe DB** — `SCREENPIPE_DB=/nonexistent.db ./meridian`; daemon exits with a clear, readable error message (not a panic).
-- [ ] **empty screenpipe DB** — screenpipe DB exists but contains zero frames; ETL runs without crash, no sessions written, cursor remains at 0.
-- [ ] **screenpipe DB opened read-only** — verify no write lock is held on screenpipe's DB while meridian is running (screenpipe must continue writing frames unimpeded).
-- [ ] **WAL mode** — both DBs operating in WAL mode; no `SQLITE_BUSY` or `SQLITE_LOCKED` errors under concurrent read/write.
-- [ ] **screenpipe DB path override** — `SCREENPIPE_DB=/custom/path.db`; daemon reads from the custom path.
+- [ ] **empty capture DB** — no capture_frames rows yet; ETL runs without crash, no sessions written, cursor remains at 0.
+- [ ] **WAL mode** — meridian.db operating in WAL mode; no `SQLITE_BUSY` or `SQLITE_LOCKED` errors under concurrent read/write from the tray-side capture writer.
 
 ### 4. session data extraction
 

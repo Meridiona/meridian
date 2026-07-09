@@ -129,30 +129,6 @@ source "${APP_ROOT}/scripts/lib-trello-setup.sh"
 GUI_TARGET="gui/$(id -u)"
 LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
 
-# Retire the legacy standalone dashboard Node server. The dashboard now ships
-# embedded INSIDE the tray binary (static export, no Node server), so any
-# `com.meridiona.ui` launchd agent from a pre-fold install is a zombie — a
-# KeepAlive=true Node server holding the old dashboard port. Boot it out + remove
-# its plist, and drop the now-orphaned ABI-matched Node runtime cache. Idempotent
-# (no-op when absent) and non-fatal (a launchctl hiccup must not abort the
-# update) — but logged, never silent.
-retire_legacy_ui_server() {
-    local label="com.meridiona.ui"
-    local plist="${LAUNCH_AGENTS}/${label}.plist"
-    if launchctl print "${GUI_TARGET}/${label}" >/dev/null 2>&1; then
-        info "Retiring the legacy dashboard server (now bundled in the tray app)…"
-        launchctl bootout "${GUI_TARGET}/${label}" 2>/dev/null \
-            || warn "could not bootout ${label} (continuing)"
-    fi
-    if [[ -f "${plist}" ]]; then
-        rm -f "${plist}" && ok "removed legacy ${label} launchd agent" \
-            || warn "could not remove ${plist} (continuing)"
-    fi
-    # The pinned Node runtime existed only to ABI-match better-sqlite3 in the old
-    # server; nothing uses it now.
-    rm -rf "${HOME}/.meridian/node-runtime" 2>/dev/null || true
-}
-
 # Enable accessibility mode in VS Code / Cursor / Antigravity so screenpipe
 # captures their a11y tree instead of falling back to OCR. Chromium/Electron
 # editors only expose their AX tree when editor.accessibilitySupport = "on"
@@ -477,11 +453,6 @@ fi
 # Enable a11y mode in installed VS Code-family editors (idempotent). Without
 # this, screenpipe falls back to OCR for those editors instead of their a11y tree.
 configure_editor_accessibility
-
-# ── 5b. Retire the legacy dashboard Node server (one-time, for pre-fold installs) ─
-# The dashboard is now embedded in the tray binary, so an old standalone UI agent
-# is a zombie. This runs on every (re)install/update — idempotent + non-fatal.
-retire_legacy_ui_server
 
 # ── 6. Daemons — restart only what changed ───────────────────────────────────
 # screenpipe: external npm binary, plist may have changed → always refresh.

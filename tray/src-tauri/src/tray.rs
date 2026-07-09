@@ -84,7 +84,7 @@ pub(crate) fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
 /// — this is the native tray-menu path (right-click → Open Dashboard / Review
 /// Drafts), independent of the popover's own `invoke('open_dashboard')` button,
 /// so it needs the same fix to avoid leaving the popover stuck on screen.
-fn open_native_dashboard(app: &tauri::AppHandle) {
+pub(crate) fn open_native_dashboard(app: &tauri::AppHandle) {
     crate::commands::system::dismiss_popover(app);
     if let Some(win) = app.get_webview_window("dashboard") {
         let _ = win.show();
@@ -103,6 +103,7 @@ fn open_native_dashboard(app: &tauri::AppHandle) {
             .minimizable(true)
             .closable(true)
             .maximized(true)
+            .zoom_hotkeys_enabled(true)
             .build()
         {
             Ok(win) => {
@@ -173,6 +174,7 @@ pub(crate) fn open_wizard_window(app: &tauri::AppHandle) {
         .title("Meridian — Setup")
         .inner_size(980.0, 660.0)
         .resizable(false)
+        .zoom_hotkeys_enabled(true)
         .build()
     {
         eprintln!("tray: failed to open setup wizard: {e}");

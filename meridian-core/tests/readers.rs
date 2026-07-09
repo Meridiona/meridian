@@ -83,7 +83,10 @@ async fn make_today_pool() -> SqlitePool {
 async fn coding_agents_unions_overlap_per_agent_and_total() {
     let pool = make_pool().await;
     // Claude Code: 10:00–10:10 ∪ 10:05–10:15 → 10:00–10:15 = 900 s.
-    // Codex: 11:00–11:05 = 300 s. No CC/Codex overlap → total = 1200 s.
+    // Codex: 11:00–11:05 = 300 s.
+    // GitHub Copilot: 12:00–12:04 = 240 s.
+    // Cursor Agent: 13:00–13:02 = 120 s.
+    // No overlap across agents → total = 1560 s.
     let rows = [
         (
             "Claude Code",
@@ -100,6 +103,16 @@ async fn coding_agents_unions_overlap_per_agent_and_total() {
             "2026-06-16T11:00:00+00:00",
             "2026-06-16T11:05:00+00:00",
         ),
+        (
+            "GitHub Copilot",
+            "2026-06-16T12:00:00+00:00",
+            "2026-06-16T12:04:00+00:00",
+        ),
+        (
+            "Cursor Agent",
+            "2026-06-16T13:00:00+00:00",
+            "2026-06-16T13:02:00+00:00",
+        ),
     ];
     for (app, s, e) in rows {
         sqlx::query(
@@ -113,13 +126,17 @@ async fn coding_agents_unions_overlap_per_agent_and_total() {
         .await
         .unwrap();
 
-    assert_eq!(r.total_s, 1200);
-    assert_eq!(r.agents.len(), 2);
-    // Sorted descending: Claude Code (900) before Codex (300).
+    assert_eq!(r.total_s, 1560);
+    assert_eq!(r.agents.len(), 4);
+    // Sorted descending: Claude Code (900), Codex (300), GitHub Copilot (240), Cursor Agent (120).
     assert_eq!(r.agents[0].app, "Claude Code");
     assert_eq!(r.agents[0].total_s, 900);
     assert_eq!(r.agents[1].app, "Codex");
     assert_eq!(r.agents[1].total_s, 300);
+    assert_eq!(r.agents[2].app, "GitHub Copilot");
+    assert_eq!(r.agents[2].total_s, 240);
+    assert_eq!(r.agents[3].app, "Cursor Agent");
+    assert_eq!(r.agents[3].total_s, 120);
 }
 
 #[tokio::test]
@@ -172,6 +189,85 @@ async fn tasks_autonomous_excludes_supervised_agent_time() {
     assert_eq!(x.today_s, 5400, "your 3600 + autonomous 1800");
     assert_eq!(x.session_count, 1, "foreground sessions only");
     assert_eq!(x.cats.get("coding").copied(), Some(3600));
+}
+
+/// The CDM columns (migration 056) are surfaced by the reader when present,
+/// including JSON-array hierarchy fields parsed into vecs.
+#[tokio::test]
+async fn tasks_exposes_cdm_columns_when_present() {
+    let pool = make_pool().await;
+    // Mirror migration 056: add the CDM columns to pm_tasks.
+    for col in [
+        "canonical_id",
+        "status_category",
+        "raw_payload",
+        "reporter_name",
+        "completed_at",
+        "ancestor_path",
+        "project_ids",
+    ] {
+        sqlx::query(&format!("ALTER TABLE pm_tasks ADD COLUMN {col} TEXT"))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO pm_tasks (task_key, title, issue_type, status_raw, is_terminal, \
+            canonical_id, status_category, reporter_name, completed_at, ancestor_path, project_ids) \
+         VALUES ('JIRA-1','Task','Task','Done',1, \
+            'jira:10001','done','Lead','2026-06-30T10:00:00Z', \
+            '[\"jira:10000\"]','[\"jira:proj\"]')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let today = meridian_core::date::today_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let r = meridian_core::tasks::get_tasks(&pool, &today, &today, &now)
+        .await
+        .unwrap();
+    let t = r
+        .tasks
+        .iter()
+        .find(|t| t.key == "JIRA-1")
+        .expect("task present");
+
+    assert_eq!(t.canonical_id.as_deref(), Some("jira:10001"));
+    assert_eq!(t.status_category.as_deref(), Some("done"));
+    assert_eq!(t.reporter.as_deref(), Some("Lead"));
+    assert_eq!(t.completed_at.as_deref(), Some("2026-06-30T10:00:00Z"));
+    assert_eq!(t.ancestor_path, vec!["jira:10000"]);
+    assert_eq!(t.project_ids, vec!["jira:proj"]);
+}
+
+/// On a DB that predates migration 056 (no CDM columns), the reader degrades
+/// gracefully: the new fields come back None/empty rather than erroring.
+#[tokio::test]
+async fn tasks_cdm_columns_default_when_absent() {
+    let pool = make_pool().await; // pm_tasks has no CDM columns
+    sqlx::query("INSERT INTO pm_tasks (task_key, title, issue_type) VALUES ('OLD-1','Old','Task')")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let today = meridian_core::date::today_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let r = meridian_core::tasks::get_tasks(&pool, &today, &today, &now)
+        .await
+        .unwrap();
+    let t = r
+        .tasks
+        .iter()
+        .find(|t| t.key == "OLD-1")
+        .expect("task present");
+
+    assert_eq!(t.canonical_id, None);
+    assert_eq!(t.status_category, None);
+    assert_eq!(t.reporter, None);
+    assert_eq!(t.completed_at, None);
+    assert!(t.ancestor_path.is_empty());
+    assert!(t.project_ids.is_empty());
 }
 
 /// Regression for the active-session column-guard bug: `app_sessions` HAS

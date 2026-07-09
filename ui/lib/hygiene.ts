@@ -5,7 +5,7 @@
 // TriageReason::hint() and TriageReason::fix() — kept in sync by hand.
 
 export interface HygieneFix {
-  control: string // date_picker | assign_self | edit_text | edit_checklist | pick_parent | edit_labels | pick_priority | number_input
+  control: string // date_picker | assign_self | edit_text | edit_checklist | pick_parent | pick_priority | number_input
   field: string // tracker field the write-back targets
   label: string // button text
   ai: boolean // suggested value comes from AI (wired later)
@@ -52,7 +52,6 @@ function reasonHint(code: string, d: Record<string, number> | undefined): string
     case 'no_context_anchor': return 'Not linked to an epic or parent.'
     case 'missing_due_date': return "No due date — add one so Meridian knows when it's live."
     case 'missing_assignee': return 'No assignee — who owns this?'
-    case 'missing_labels': return 'No labels — add one to categorise it.'
     case 'missing_priority': return 'No priority set.'
     case 'missing_estimate': return 'No estimate — add story points.'
     case 'missing_acceptance_criteria': return "No acceptance criteria — define what 'done' means."
@@ -79,7 +78,6 @@ function reasonFix(code: string): HygieneFix | null {
     case 'missing_due_date': return { control: 'date_picker', field: 'duedate', label: 'Add a due date', ai: false }
     case 'overdue': return { control: 'date_picker', field: 'duedate', label: 'Reschedule due date', ai: false }
     case 'missing_assignee': return { control: 'assign_self', field: 'assignee', label: 'Assign to me', ai: false }
-    case 'missing_labels': return { control: 'edit_labels', field: 'labels', label: 'Add a label', ai: false }
     case 'missing_priority': return { control: 'pick_priority', field: 'priority', label: 'Set priority', ai: false }
     case 'missing_estimate': return { control: 'number_input', field: 'story_points', label: 'Add an estimate', ai: false }
     case 'missing_acceptance_criteria': return { control: 'edit_checklist', field: 'acceptance_criteria', label: 'Add acceptance criteria', ai: true }

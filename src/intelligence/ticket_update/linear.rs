@@ -2,11 +2,9 @@
 //
 // Linear write-back via the `issueUpdate` GraphQL mutation. Linear addresses
 // issues by UUID, not the human identifier (`ENG-123`), so we resolve the UUID
-// first (the same `issue(id:)` lookup the worklog poster uses). Most hygiene
-// fields map cleanly: dueDate, assignee (viewer id), priority (int), estimate,
+// first (the same `issue(id:)` lookup the worklog poster uses). Every hygiene
+// field maps cleanly: dueDate, assignee (viewer id), priority (int), estimate,
 // parent, title, description, and close (the team's completed workflow state).
-// Adding a single label by name needs team-label resolution that is awkward to do
-// reliably blind, so it is redirected.
 //
 // Reference: https://linear.app/developers/graphql (Mutation.issueUpdate)
 
@@ -20,18 +18,6 @@ const LINEAR_GRAPHQL_URL: &str = "https://api.linear.app/graphql";
 
 pub async fn apply(cfg: &LinearConfig, key: &str, write: &WriteField) -> Result<ApplyResult> {
     let client = reqwest::Client::new();
-
-    // Label-add is redirected — resolving a label name → team label id blind is
-    // error-prone, and labels are an optional defect.
-    if let WriteField::AddLabel(_) = write {
-        return Ok(ApplyResult::redirected(
-            "linear",
-            key,
-            "labels",
-            issue_url(&client, cfg, key).await,
-            "add the label in Linear (team-scoped label picker)",
-        ));
-    }
 
     let uuid = resolve_issue_uuid(&client, cfg, key).await?;
 
@@ -61,7 +47,6 @@ pub async fn apply(cfg: &LinearConfig, key: &str, write: &WriteField) -> Result<
             let state_id = reopen_state_id(&client, cfg, &uuid).await?;
             json!({ "stateId": state_id })
         }
-        WriteField::AddLabel(_) => unreachable!("handled above"),
     };
 
     let mutation = "mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {\n  \
@@ -194,16 +179,6 @@ fn pick_reopen_state(nodes: &[Value]) -> Option<String> {
         .and_then(id_of)
 }
 
-/// Human URL for the redirect fallback.
-async fn issue_url(client: &reqwest::Client, cfg: &LinearConfig, id: &str) -> String {
-    let query = "query IssueUrl($id: String!) { issue(id: $id) { url } }";
-    let payload = json!({ "query": query, "variables": { "id": id } });
-    match graphql(client, cfg, &payload).await {
-        Ok(d) => d["issue"]["url"].as_str().unwrap_or("").to_string(),
-        Err(_) => format!("https://linear.app/issue/{id}"),
-    }
-}
-
 async fn graphql(client: &reqwest::Client, cfg: &LinearConfig, payload: &Value) -> Result<Value> {
     let resp = client
         .post(LINEAR_GRAPHQL_URL)
@@ -234,7 +209,6 @@ fn field_name(write: &WriteField) -> &'static str {
     match write {
         WriteField::DueDate(_) => "duedate",
         WriteField::AssignMe => "assignee",
-        WriteField::AddLabel(_) => "labels",
         WriteField::Priority(_) => "priority",
         WriteField::StoryPoints(_) => "story_points",
         WriteField::Parent(_) => "parent",
@@ -336,7 +310,6 @@ mod tests {
         let cases: &[(&str, WriteField)] = &[
             ("duedate", WriteField::DueDate("2026-01-01".into())),
             ("assignee", WriteField::AssignMe),
-            ("labels", WriteField::AddLabel("bug".into())),
             ("priority", WriteField::Priority("High".into())),
             ("story_points", WriteField::StoryPoints(3.0)),
             ("parent", WriteField::Parent("ENG-1".into())),

@@ -37,8 +37,6 @@
              ahead of the system defaults. -->
         <key>PATH</key>
         <string>{{HOME}}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-        <key>SCREENPIPE_DB</key>
-        <string>{{HOME}}/.screenpipe/db.sqlite</string>
         <key>MERIDIAN_DB</key>
         <string>{{HOME}}/.meridian/meridian.db</string>
         <key>POLL_INTERVAL_SECS</key>

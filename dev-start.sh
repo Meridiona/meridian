@@ -56,6 +56,13 @@ fi
 # The Rust daemon binds a unix socket (~/.meridian/daemon.sock) and the MLX
 # server binds port 7823. `npm run tauri dev` manages the Next.js dev server
 # lifecycle internally (beforeDevCommand) — killing it here is enough.
+#
+# Also stops the CANONICAL launchd-managed daemon (com.meridiona.daemon), if
+# a packaged/npm install of Meridian is also present on this machine. Without
+# this, both the launchd daemon and the dev-build daemon started below run
+# concurrently against the same meridian.db, each independently firing the
+# clock-aligned worklog-hour trigger — producing two worklog runs (two
+# distinct trace_ids, near-duplicate results) for the same hour window.
 # ---------------------------------------------------------------------------
 echo "→ stopping any previous dev run…"
 pkill -f 'cargo-watch.*--bin meridian'  2>/dev/null || true   # daemon file-watcher
@@ -64,6 +71,23 @@ pkill -f 'uvicorn agents.server:app'    2>/dev/null || true   # MLX dev server
 pkill -f 'tauri dev'                    2>/dev/null || true   # tray file-watcher
 pkill -f 'target/debug/meridian-tray$'  2>/dev/null || true   # tray binary
 pkill -f 'Meridian Dev.app'             2>/dev/null || true   # stale dev .app bundle
+# next dev is spawned by the tray's beforeDevCommand as a child of `tauri dev` —
+# if tauri dev is killed abruptly (rapid restarts) it can be orphaned and keep
+# holding port 3939, causing the next run's beforeDevCommand to fail outright.
+pkill -f 'next dev --turbopack -p 3939' 2>/dev/null || true   # orphaned Next.js dev server
+if launchctl print "gui/$(id -u)/com.meridiona.daemon" >/dev/null 2>&1; then
+    launchctl disable "gui/$(id -u)/com.meridiona.daemon" 2>/dev/null || true
+    launchctl bootout "gui/$(id -u)/com.meridiona.daemon" 2>/dev/null || true
+    echo "  ✓ stopped canonical launchd daemon (com.meridiona.daemon) — re-enable with: meridian start"
+fi
+# Also stops the legacy launchd-managed a11y-helper, if present. Capture now runs
+# in-process inside the dev tray binary, so a lingering a11y-helper would be a
+# second, independent capture writer into the same meridian.db capture tables.
+if launchctl print "gui/$(id -u)/com.meridiona.a11y-helper" >/dev/null 2>&1; then
+    launchctl disable "gui/$(id -u)/com.meridiona.a11y-helper" 2>/dev/null || true
+    launchctl bootout "gui/$(id -u)/com.meridiona.a11y-helper" 2>/dev/null || true
+    echo "  ✓ stopped legacy launchd a11y-helper (com.meridiona.a11y-helper)"
+fi
 sleep 1   # let sockets / ports free before the new windows bind them
 # Clear the Next.js build cache so stale module references (e.g. a deleted
 # instrumentation.ts) don't cause beforeDevCommand to fail on the next run.

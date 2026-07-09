@@ -2,13 +2,13 @@
 //
 // The scrollable vertical hour timeline — one CSS Grid row per hour of the day
 // (`62px 1fr`). Connected users see the hour's worklog/proposal cards stacked
-// vertically; solo users (no tracker) get the hour's real activity-report
-// markdown rendered filling the whole block (get_hour_reports — the same
-// /activity_report LLM output the hour-detail panel shows), falling back to
-// an app-category-dots + one-line summary (drawn from get_today's sessions)
-// only while that hour's report hasn't been generated yet. Clicking an hour
-// selects it (drives the right panel's Overview ↔ Hour-detail switch); the
-// current hour carries a pulsing "now" dot.
+// vertically; solo users (no tracker) get just the hour's TLDR (get_hour_reports
+// — the same /activity_report LLM output the hour-detail panel shows in full),
+// falling back to an app-category-dots + one-line summary (drawn from
+// get_today's sessions) only while that hour's report hasn't been generated
+// yet. Clicking an hour selects it (drives the right panel's Overview ↔
+// Hour-detail switch, which is where the full report — Core Tasks/Decisions/
+// Resources — renders); the current hour carries a pulsing "now" dot.
 
 'use client'
 
@@ -20,7 +20,7 @@ import { hourLabel } from './timelineLayout'
 import { isPending, itemKey } from './types'
 import { TimelineCard } from './TimelineCard'
 import { HourBadges, HourTakeover } from './HourBadges'
-import { ActivityReport } from './ActivityReport'
+import { TldrPreview } from './ActivityReport'
 
 interface HourActivity {
   cats: string[]        // distinct category keys seen this hour (for the dots)
@@ -176,11 +176,12 @@ export function TimelineColumn({
                       {!hasContent ? (
                         <p className="mt-body-sm italic py-1.5" style={{ color: 'var(--t-faint-2)' }}>Quiet</p>
                       ) : isSolo && report ? (
-                        // The whole block renders the hour's actual activity
-                        // report — no truncation — once it's been generated.
-                        <div className="py-1">
-                          <ActivityReport report={report} compact />
-                        </div>
+                        // Row shows just the TLDR, in a small tinted card,
+                        // once the hour's report has been generated — the
+                        // full report (Core Tasks/Decisions/Resources) opens
+                        // in the right panel on click (row is already
+                        // onSelectHour-clickable).
+                        <TldrPreview report={report} />
                       ) : isSolo && activity ? (
                         // Report not generated yet — fall back to the coarse
                         // session-derived one-liner so the row isn't empty.

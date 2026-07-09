@@ -12,9 +12,11 @@
 //   jira   — re-exports the shared Jira wiring AND adds `resolve()`, the one
 //            piece that needs the daemon's `JiraConfig` (so it can't live in the
 //            config-free shared crate).
-//   github — gh-CLI login (daemon-only; not a loopback flow).
+//
+// GitHub has no daemon-side OAuth module: it connects via the in-app browser
+// device flow (`meridian_oauth::github`, driven by the tray's start_oauth),
+// which writes `GITHUB_TOKEN` to `.env` for the daemon to read.
 
 pub use meridian_oauth::{flow, pkce, store, trello};
 
-pub mod github;
 pub mod jira;

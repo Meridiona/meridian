@@ -56,6 +56,9 @@ jobs:
       # Baked into the staging binary at compile time (see release.yml); same
       # secret. Absent → Jira OAuth simply unavailable in the staging build.
       MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
+      # Public GitHub OAuth device-flow client id (see release.yml); GH_OAUTH_CLIENT_ID
+      # repo secret. Absent → GitHub browser connect unavailable in the staging build.
+      MERIDIAN_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
       # Minisign key for the DMG auto-updater: `tauri build` (createUpdaterArtifacts)
       # signs Meridian.app.tar.gz so the installed staging app can verify the
       # update against the pubkey baked in tauri.conf.json. REQUIRED here (unlike
@@ -136,4 +139,10 @@ jobs:
           # (mlx_server::manifest_url reads this via option_env!). A packaged .app
           # has no shell env, so the staging .app must compile in runtime-staging.
           MERIDIAN_RUNTIME_MANIFEST_URL: "https://github.com/Meridiona/meridian/releases/download/runtime-staging/runtime-manifest.json"
+          # Bake the HF caching-proxy endpoint into the staging build (same
+          # option_env! pattern, mlx_server::hf_endpoint). Production (main)
+          # deliberately leaves this unset until Cache Reserve is enabled on the
+          # zone — staging is where we validate the proxy against real installer
+          # traffic first.
+          MERIDIAN_HF_ENDPOINT: "https://hf.meridiona.com"
         run: npx semantic-release
