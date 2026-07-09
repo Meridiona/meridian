@@ -9,6 +9,14 @@
 //
 // Enabled app-side by pointing the MLX server's HF_ENDPOINT at this Worker's route
 // (mlx_server::hf_endpoint + the mlx-server plist). Ships DISABLED until deployed.
+//
+// SECURITY: the edge cache is keyed on (origin, pathname) only — deliberately, so
+// HF's per-request-signed CDN redirect doesn't fragment the cache (see isFullWeightGet
+// below). That key has no notion of the caller's identity, so an `Authorization`
+// header MUST NEVER reach the shared cache: caching an authenticated response would
+// let any later unauthenticated request on the same path replay it from the edge.
+// This proxy is for the model registry's PUBLIC repos only (mlx-community, etc.) —
+// never point it at a gated/private HF repo.
 
 const HF_ORIGIN = 'https://huggingface.co'
 const ONE_YEAR_SECS = 31_536_000
@@ -54,7 +62,10 @@ export default {
       const isFullWeightGet =
         request.method === 'GET' &&
         isResolvePath(url.pathname) &&
-        !request.headers.get('range') // resume (Range) requests bypass the cache
+        !request.headers.get('range') && // resume (Range) requests bypass the cache
+        !request.headers.get('authorization') // never cache an authenticated response —
+        // the cache key carries no identity (see SECURITY note above), so a cached
+        // auth'd response would replay to any later unauthenticated caller
 
       if (isFullWeightGet) {
         // Cache the full weight blob at the edge. `cacheEverything` + a STABLE

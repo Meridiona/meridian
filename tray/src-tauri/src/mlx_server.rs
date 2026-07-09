@@ -1382,6 +1382,22 @@ mod tests {
         assert!(m.sha256.len() == 64);
     }
 
+    #[test]
+    fn hf_endpoint_disabled_by_default() {
+        // No other test in this suite touches MERIDIAN_HF_ENDPOINT, so clearing it
+        // here (idempotent if already unset) cannot race a concurrently-running
+        // test — the same reason a full three-tier test of manifest_url()'s
+        // pattern isn't attempted here either; that needs isolation this crate
+        // doesn't have (no serial_test dep), so it's only exercised end-to-end by
+        // the #[ignore]d live_pull_from_runtime_staging test below.
+        std::env::remove_var("MERIDIAN_HF_ENDPOINT");
+        // The safety invariant that makes it safe to merge before the Worker +
+        // Cache Reserve are live: with no override at any tier, the compiled-in
+        // HF_PROXY_ENDPOINT default (empty) must resolve to `None` — the proxy
+        // stays off rather than pointing at a host that doesn't exist yet.
+        assert_eq!(hf_endpoint(), None);
+    }
+
     /// Live end-to-end pull of the published `runtime-staging` runtime — the
     /// exact path a staging app build takes (`MERIDIAN_RUNTIME_MANIFEST_URL`
     /// overrides the compiled `runtime-latest` default). Exercises the real

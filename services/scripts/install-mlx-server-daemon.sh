@@ -111,10 +111,21 @@ if [[ -z "${MERIDIAN_HF_ENDPOINT}" && -f "${REPO_ROOT}/.env" ]]; then
     MERIDIAN_HF_ENDPOINT=$(grep -E '^MERIDIAN_HF_ENDPOINT=' "${REPO_ROOT}/.env" | tail -1 | cut -d= -f2- || true)
 fi
 if [[ -n "${MERIDIAN_HF_ENDPOINT}" ]]; then
-    HF_ENDPOINT_ENTRY="<key>HF_ENDPOINT</key><string>${MERIDIAN_HF_ENDPOINT}</string>"
+    # XML-escape the URL BEFORE embedding it in the <string> element — a literal
+    # `&` (e.g. from a query string) is invalid inside XML content and plutil
+    # rejects it outright ("unknown ampersand-escape sequence").
+    MERIDIAN_HF_ENDPOINT_XML="${MERIDIAN_HF_ENDPOINT//&/&amp;}"
+    MERIDIAN_HF_ENDPOINT_XML="${MERIDIAN_HF_ENDPOINT_XML//</&lt;}"
+    MERIDIAN_HF_ENDPOINT_XML="${MERIDIAN_HF_ENDPOINT_XML//>/&gt;}"
+    HF_ENDPOINT_ENTRY="<key>HF_ENDPOINT</key><string>${MERIDIAN_HF_ENDPOINT_XML}</string>"
 else
     HF_ENDPOINT_ENTRY=""
 fi
+# Separately, escape sed REPLACEMENT metacharacters (\, &, and our `|` delimiter)
+# before this reaches the `sed -e "s|...|${HF_ENDPOINT_ENTRY}|g"` below — a literal
+# `&` in a sed replacement means "the matched text", which would corrupt the plist
+# rather than insert the entry verbatim (independent of the XML-escaping above).
+HF_ENDPOINT_ENTRY="$(printf '%s' "${HF_ENDPOINT_ENTRY}" | sed -e 's/[\&|]/\\&/g')"
 
 mkdir -p "${HOME}/.meridian/logs"
 mkdir -p "${LAUNCH_AGENTS}"
