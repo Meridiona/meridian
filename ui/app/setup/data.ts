@@ -49,10 +49,15 @@ export const MODEL_RAM_GB = 1.5
 /** Meridian's own resident footprint (background service), separate from the model. */
 export const APP = { diskGB: 0.18, ramGB: 0.15 }
 
-// ── macOS permissions — the three required TCC grants + optional notifications ─
+// ── macOS permissions — two required TCC grants + optional notifications ─────
 // (The design's Launch-at-login toggle is intentionally omitted: no backend
-// exists for it. The in-process capture pipeline genuinely needs Input
-// Monitoring, which the design omitted.)
+// exists for it. Input Monitoring is omitted too: the signals the daemon
+// actually consumes — clipboard + app_switch (get_signals) — come from the
+// Accessibility-only workspace observer + clipboard poller, so they need no
+// separate Input Monitoring grant. Input Monitoring would only add the
+// click/key/text CGEventTap, which feeds solely the minor Option-C `ended_at`
+// refinement — not worth its own wizard step + TCC prompt. See
+// screenpipe-a11y/src/platform/macos.rs — Thread 2 is "accessibility only".)
 
 /** Notification authorization (`check_notifications`). Tri-state, not boolean:
  *  macOS shows the authorization dialog exactly once, so `denied` and `prompt`
@@ -61,8 +66,8 @@ export const APP = { diskGB: 0.18, ramGB: 0.15 }
 export type NotifState = 'granted' | 'denied' | 'prompt' | 'unavailable'
 
 export interface PermissionMeta {
-  id: 'screen' | 'accessibility' | 'input' | 'notifications'
-  icon: 'screen' | 'access' | 'power' | 'bell'
+  id: 'screen' | 'accessibility' | 'notifications'
+  icon: 'screen' | 'access' | 'bell'
   name: string
   pane: string      // open_permission_pane argument
   desc: string
@@ -78,10 +83,6 @@ export const PERMISSIONS: PermissionMeta[] = [
   {
     id: 'screen', icon: 'screen', name: 'Screen Recording', pane: 'screen_recording', required: true,
     desc: 'Reads on-screen text to understand your work. Pixels/video are never stored; extracted text stays on-device.',
-  },
-  {
-    id: 'input', icon: 'power', name: 'Input Monitoring', pane: 'input_monitoring', required: true,
-    desc: 'Detects clicks and typing so Meridian knows when you switch tasks.',
   },
   {
     id: 'notifications', icon: 'bell', name: 'Notifications', pane: 'notifications', required: false,
