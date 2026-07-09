@@ -86,6 +86,19 @@ export interface TodayResponse {
   task_agent_summaries: Record<string, AgentSummary[]>
 }
 
+// ── Coding agents (`get_coding_agents`) ──────────────────────────────────────
+
+export interface AgentTotal {
+  app: string     // "Claude Code" / "Codex" / "GitHub Copilot" / "Cursor Agent"
+  total_s: number // union seconds across that agent's sessions today (overlap counted once)
+}
+
+export interface CodingAgentsResponse {
+  date: string
+  total_s: number // union across ALL coding-agent sessions (overlap deduped)
+  agents: AgentTotal[]
+}
+
 // ── Tasks (`get_tasks`) ──────────────────────────────────────────────────────
 
 export interface TaskSummary {

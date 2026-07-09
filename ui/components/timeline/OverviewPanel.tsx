@@ -17,23 +17,72 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { fmtDur } from '@/components/atoms'
 import { load as loadData, mutate as mutateData, openExternal } from '@/lib/bridge'
-import type { PlanItem, PlanResponse } from '@/lib/api-types'
+import type { PlanItem, PlanResponse, CodingAgentsResponse } from '@/lib/api-types'
 import { formatDayLabel, isPending } from './types'
 import { TimeByApp, appTotals } from './TimeByApp'
+import { TimeByCategory, categoryRows } from './TimeByCategory'
 import type { TimelineData } from './useTimelineData'
 import type { ActiveModal } from './MeridianTimelineShell'
+import type { SettingsSection } from './settings/types'
 
-export function OverviewPanel({ data, onOpen, onOpenTask }: {
+
+export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
   data: TimelineData
   onOpen: (modal: ActiveModal) => void
   onOpenTask: (key: string, title?: string) => void
+  onOpenSettings: (section?: SettingsSection) => void
 }) {
   const { today, isSolo, items, cleanupIssueCount, tasks, isToday, day } = data
   const dayLabel = isToday ? 'Today' : formatDayLabel(day)
   const pendingCount = items.filter(isPending).length
-  const focus_s = today?.focus_s ?? 0
-  const appTops = today ? appTotals(today.sessions) : []
+  // Per-tool coding-agent breakdown (Claude Code/Codex/GitHub Copilot/Cursor
+  // Agent) — get_coding_agents, polled independently of get_today since it's
+  // its own Tauri command. Used to give Time by App real per-tool rows
+  // instead of one generic bucket.
+  const [codingAgents, setCodingAgents] = useState<CodingAgentsResponse | null>(null)
+  useEffect(() => {
+    const fetchAgents = () => loadData<CodingAgentsResponse>('/api/coding-agents', 'get_coding_agents').then(setCodingAgents).catch(() => {})
+    fetchAgents()
+    const id = setInterval(fetchAgents, 30_000)
+    return () => clearInterval(id)
+  }, [])
+  // "Focus" is inclusive of ALL engaged time, not just foreground presence —
+  // today.engaged_s (= focus_s + autonomous_s, computed server-side in
+  // meridian-core/src/readers/today/mod.rs) folds in autonomous agent time
+  // (agent runs that happened while you were away) so Focus can never read
+  // lower than the autonomous chunk baked into Coding — the two totals stay
+  // in a coherent "Focus ≥ what happened today" relationship instead of
+  // Focus looking artificially small next to Coding.
+  const focus_s = today?.engaged_s ?? 0
+  // Total time in coding-agent TOOLS today (Claude Code/Codex/Copilot/Cursor
+  // Agent) — a separate overlay stream from `today.sessions`, already unioned
+  // server-side to avoid double-counting overlapping agent/foreground time.
+  // NOT shown as its own top-level stat — it's folded into Time by
+  // category's "Coding" slice (categoryRows) as the one number that tells
+  // the coding story. A standalone "Agent time" card alongside a
+  // Coding-inclusive-of-agent-time slice put the same number in two places
+  // (once as a subset, once inside a bigger total) with no visual link
+  // between them, which read as a mismatch even though both were correct.
+  const agent_s = today?.agent_s ?? 0
+  // Autonomous-time breakdown disabled for now (commented out, not deleted —
+  // the underlying today.autonomous_s data is still computed server-side,
+  // this just stops surfacing it in the UI while the framing gets rethought).
+  // const autonomous_s = today?.autonomous_s ?? 0
+  // get_coding_agents has no date param (it always reads today's totals —
+  // tray/src-tauri/src/commands/dashboard.rs hardcodes today_string()), so
+  // only fold it in while viewing today; on a past day it would inject
+  // TODAY's coding time into that day's app breakdown.
+  const appTops = today ? appTotals(today.sessions, isToday ? (codingAgents?.agents ?? []) : []) : []
   const appCount = appTops.length
+  const catTops = today ? categoryRows(today.sessions, agent_s) : []
+  // Pull the "Coding" number straight out of the SAME merged rows the
+  // category chart renders, rather than recomputing it — guarantees the top
+  // stat and the pie slice can never disagree, since they're reading the
+  // identical value, not two independently-derived numbers that happen to
+  // match today and drift apart the next time either side changes.
+  const codingRow = catTops.find(r => r.cat === 'coding')
+  const coding_s = codingRow?.seconds ?? 0
+  // const codingSub = agent_s > 0 && autonomous_s > 0 ? `incl. ${fmtDur(autonomous_s)} autonomous` : undefined
   // Real worklogs only — is_proposed items carry an 'approved'/'posted' state
   // once a user approves them in-app, but the daemon hasn't necessarily swept
   // them into an actual pm_worklogs row (real ticket created + worklog posted)
@@ -102,18 +151,32 @@ export function OverviewPanel({ data, onOpen, onOpenTask }: {
         <p className="mt-body mt-1.5" style={{ color: 'var(--t-muted)' }}>{greetingBody}</p>
       </div>
 
-      {!isSolo && pendingCount > 0 && (
-        <button onClick={() => onOpen('review')}
-          className="w-full text-left rounded-xl px-4 py-3.5 flex items-center gap-3 transition-transform active:scale-[.99]"
-          style={{ background: 'linear-gradient(120deg, #8B5CF6, #F472B6)', color: '#fff', boxShadow: '0 10px 24px -8px rgba(219,39,119,0.5)' }}>
-          <span className="mt-title-lg shrink-0">{pendingCount}</span>
-          <span className="flex-1 min-w-0">
-            <p className="mt-title">draft{pendingCount === 1 ? '' : 's'} to review</p>
-            <p className="mt-body-sm mt-0.5" style={{ opacity: 0.92 }}>Swipe to approve, dismiss or edit</p>
-          </span>
-          <span className="mt-body-sm px-2.5 py-1 rounded-full shrink-0" style={{ background: 'rgba(255,255,255,0.25)' }}>Review →</span>
-        </button>
-      )}
+      <div className="rounded-xl overflow-hidden bg-card p-4" style={{ border: '1px solid var(--t-card-border)' }}>
+        <div className="mb-3"><SectionHeading>{dayLabel}</SectionHeading></div>
+        {/* Solo mode: Logged/Drafts both require PM-matched worklogs, which
+            don't exist without a tracker — showing them here would always
+            read "0s"/some stale count. Focus is the one stat that's real.
+            One uniform card style for every tile (no per-stat hue) — these
+            are plain counters, not distinct categories that need color
+            coding to tell apart. */}
+        {isSolo ? (
+          <div className={`grid gap-3 ${coding_s > 0 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+            <Mini label="Focus" value={fmtDur(focus_s)} />
+            {coding_s > 0 && <Mini label="Coding" value={fmtDur(coding_s)} />}
+          </div>
+        ) : (
+          // 2×2 (not 4-across) — a 4-column grid in a ~340px panel left no
+          // room for "3h 24m"-length values without wrapping. Order: Focus
+          // leads, Coding next when there's agent/coding time, then the
+          // remaining two.
+          <div className="grid grid-cols-2 gap-3">
+            <Mini label="Focus" value={fmtDur(focus_s)} />
+            {coding_s > 0 && <Mini label="Coding" value={fmtDur(coding_s)} />}
+            <Mini label="Logged" value={fmtDur(loggedSeconds)} />
+            <Mini label="Drafts" value={String(pendingCount)} />
+          </div>
+        )}
+      </div>
 
       {!isSolo && cleanupIssueCount > 0 && (
         <button onClick={() => onOpen('cleanup')}
@@ -131,12 +194,30 @@ export function OverviewPanel({ data, onOpen, onOpenTask }: {
 
       {!isSolo && (
         <div>
-          <div className="flex items-center justify-between mb-2.5">
-            <p className="mt-label" style={{ color: 'var(--t-faint)' }}>Today&apos;s focus</p>
-            <button onClick={() => onOpen('plan')} className="mt-body-sm" style={{ color: 'var(--color-state-proposal)', fontWeight: 700 }}>Edit plan</button>
-          </div>
+          {focusItems.length === 0 && (
+            <div className="flex items-center justify-between mb-2.5">
+              <SectionHeading>Today&apos;s focus</SectionHeading>
+              <button onClick={() => onOpen('plan')} className="mt-body-sm" style={{ color: 'var(--color-state-proposal)', fontWeight: 700 }}>Edit plan</button>
+            </div>
+          )}
           {focusItems.length > 0 ? (
-            <div className="space-y-2">
+            <div className="rounded-xl overflow-hidden bg-card" style={{ border: '1px solid var(--t-card-border)' }}>
+              <div className="flex items-center justify-between px-4 py-3">
+                <SectionHeading>Today&apos;s focus</SectionHeading>
+                <button onClick={() => onOpen('plan')} className="mt-body-sm" style={{ color: 'var(--color-state-proposal)', fontWeight: 700 }}>Edit plan</button>
+              </div>
+              {(() => {
+                const doneCount = focusItems.filter(t => overrideTerminal[t.task_key] ?? t.is_terminal).length
+                return (
+                  <div className="flex items-center gap-2 px-4 py-3">
+                    <span className="flex-1 h-1 rounded-full overflow-hidden bg-track">
+                      <span className="block h-full rounded-full transition-all"
+                        style={{ width: `${(doneCount / focusItems.length) * 100}%`, background: 'var(--color-state-proposal)' }} />
+                    </span>
+                    <span className="mt-mono-sm text-[10.5px] shrink-0" style={{ color: 'var(--t-faint)' }}>{Math.round((doneCount / focusItems.length) * 100)}%</span>
+                  </div>
+                )
+              })()}
               {focusItems.map(t => {
                 const terminal = overrideTerminal[t.task_key] ?? t.is_terminal
                 const busy = !!toggling[t.task_key]
@@ -146,8 +227,7 @@ export function OverviewPanel({ data, onOpen, onOpenTask }: {
                     role="button" tabIndex={0}
                     onClick={() => onOpenTask(t.task_key, t.title)}
                     onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenTask(t.task_key, t.title) } }}
-                    className="w-full text-left flex items-center gap-3 rounded-xl px-4 py-3 bg-card cursor-pointer"
-                    style={{ border: '1px solid var(--t-card-border)' }}>
+                    className="w-full text-left flex items-center gap-3 px-4 py-3 cursor-pointer">
                     <button
                       onClick={e => { e.stopPropagation(); toggleDone(t, terminal) }}
                       disabled={busy}
@@ -181,27 +261,58 @@ export function OverviewPanel({ data, onOpen, onOpenTask }: {
         </div>
       )}
 
-      <EntryRow label="Tasks" hint={`${activeTaskCount} active`} onClick={() => onOpen('tasks')} />
-
-      <div>
-        <p className="mt-label mb-2.5" style={{ color: 'var(--t-faint)' }}>{dayLabel}</p>
-        <div className="grid grid-cols-3 gap-3">
-          <Mini label="Logged" value={fmtDur(loggedSeconds)} tint="var(--color-state-approved)" />
-          <Mini label="Focus" value={fmtDur(focus_s)} tint="var(--color-state-proposal)" />
-          <Mini label="Drafts" value={String(pendingCount)} tint="var(--color-state-pending)" />
-        </div>
-      </div>
+      {/* Tasks entry pulls from the connected tracker — with no PM
+          integration there's nothing to pull, so it would always read
+          "0 active". Connected users only. */}
+      {!isSolo && (
+        <EntryRow label="Tasks" hint={`${activeTaskCount} active`} onClick={() => onOpen('tasks')} />
+      )}
 
       <div className="rounded-xl p-5 bg-card" style={{ border: '1px solid var(--t-card-border)' }}>
         <div className="flex items-center justify-between mb-2.5">
-          <p className="mt-label" style={{ color: 'var(--t-faint)' }}>Time by app</p>
+          <SectionHeading>Time by app</SectionHeading>
           {appTops[0] && (
             <p className="mt-body-sm" style={{ color: 'var(--t-faint)' }}>most in {appTops[0].app}</p>
           )}
         </div>
-        <TimeByApp sessions={today?.sessions ?? []} />
+        <TimeByApp sessions={today?.sessions ?? []} agentTotals={isToday ? (codingAgents?.agents ?? []) : []} />
       </div>
+
+      <div className="rounded-xl p-5 bg-card" style={{ border: '1px solid var(--t-card-border)' }}>
+        <div className="flex items-center justify-between mb-2.5">
+          <SectionHeading>Time by category</SectionHeading>
+          {catTops[0] && (
+            <p className="mt-body-sm" style={{ color: 'var(--t-faint)' }}>most in {catTops[0].label}</p>
+          )}
+        </div>
+        <TimeByCategory sessions={today?.sessions ?? []} agentSeconds={agent_s} />
+      </div>
+
+      {isSolo && (
+        <button onClick={() => onOpenSettings('integrations')}
+          className="w-full text-left rounded-xl px-4 py-3 flex items-center gap-2.5 mt-card-hover"
+          style={{ background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--color-state-proposal) 30%, transparent)' }}>
+          <span className="inline-flex items-center justify-center rounded-full shrink-0 text-[13px]"
+            style={{ width: 26, height: 26, background: 'color-mix(in srgb, var(--color-state-proposal) 20%, transparent)' }}>🔗</span>
+          <span className="flex-1 min-w-0">
+            <p className="mt-card-title" style={{ color: 'var(--color-state-proposal)' }}>Auto-post your work logs</p>
+            <p className="mt-body-sm mt-0.5" style={{ color: 'var(--t-muted)' }}>Connect a tracker to match today&apos;s activity automatically</p>
+          </span>
+          <span style={{ color: 'var(--color-state-proposal)' }}>→</span>
+        </button>
+      )}
     </div>
+  )
+}
+
+// Bolder than the default faint-uppercase `.mt-label` eyebrow — used for this
+// panel's actual section headings (Today / Today's focus / Time by app /
+// Time by category) so they read as real section breaks, not micro-labels.
+function SectionHeading({ children }: { children: React.ReactNode }) {
+  return (
+    <p style={{ font: "800 13px 'Plus Jakarta Sans', var(--font-pjs), sans-serif", color: 'var(--t-title)' }}>
+      {children}
+    </p>
   )
 }
 
@@ -217,11 +328,12 @@ function EntryRow({ label, hint, onClick }: { label: string; hint: string; onCli
   )
 }
 
-function Mini({ label, value, tint }: { label: string; value: string; tint: string }) {
+function Mini({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
-    <div className="rounded-xl p-3" style={{ background: `color-mix(in srgb, ${tint} 14%, transparent)` }}>
-      <p className="mt-stat" style={{ color: tint }}>{value}</p>
+    <div className="rounded-xl p-3 bg-box">
+      <p className="mt-stat text-title whitespace-nowrap">{value}</p>
       <p className="mt-label mt-1" style={{ color: 'var(--t-faint)' }}>{label}</p>
+      {sub && <p className="mt-body-sm mt-0.5" style={{ color: 'var(--t-faint)', fontSize: 10.5 }}>{sub}</p>}
     </div>
   )
 }

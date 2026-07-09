@@ -9,8 +9,12 @@
 //! way `today`/the session-interval math does), so neither do we — byte-identical.
 //!
 //! # Who calls this
-//! The tray `get_coding_agents` command → (currently no dashboard consumer; Today
-//! already surfaces agent time via `agent_s`/`agent_segments`). Ported for parity.
+//! The tray `get_coding_agents` command → `ui/components/timeline/OverviewPanel.tsx`
+//! (polled every 30s), which folds the per-agent breakdown into the Time-by-app
+//! chart (`TimeByApp.tsx`'s `appTotals`) — those sessions are excluded from
+//! `get_today`'s `sessions` (a separate overlay stream), so this is the only
+//! source of a real per-tool split. `today`'s `agent_s`/`agent_segments` remain
+//! the combined-across-all-agents total used elsewhere (Focus/Coding stats).
 //!
 //! # Related
 //! - [`crate::intervals::union_seconds`] does the overlap-dedup math.
@@ -23,8 +27,14 @@ use anyhow::Context;
 use serde::Serialize;
 use tracing::Instrument;
 
-/// The agents we attribute (matches the route's `CODING_AGENTS`).
-const CODING_AGENTS: [&str; 2] = ["Claude Code", "Codex"];
+/// The agents we attribute — every `app_name` the coding-agent ingest
+/// pipeline actually writes (CLAUDE.md "Ingested agents" table: Claude Code,
+/// Codex, GitHub Copilot (CLI + VS Code chat share this app_name), Cursor
+/// Agent (Cursor IDE + cursor-agent CLI share this app_name)). Antigravity is
+/// intentionally excluded — its adapter is detection-only and never ingests
+/// sessions (`sources::antigravity`), so it would only ever contribute a
+/// filtered-out zero row.
+const CODING_AGENTS: [&str; 4] = ["Claude Code", "Codex", "GitHub Copilot", "Cursor Agent"];
 
 /// One agent's deduped total for the day.
 #[derive(Debug, Clone, Serialize)]
@@ -68,7 +78,7 @@ pub async fn get_coding_agents(
             FROM app_sessions
             WHERE coding_agent_session_uuid IS NOT NULL
               AND substr(started_at, 1, 10) = ?
-              AND app_name IN ('Claude Code', 'Codex')
+              AND app_name IN ('Claude Code', 'Codex', 'GitHub Copilot', 'Cursor Agent')
             "#,
         )
         .bind(date)

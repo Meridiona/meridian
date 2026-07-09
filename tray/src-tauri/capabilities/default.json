@@ -6,6 +6,7 @@
     "core:default",
     "core:window:allow-close",
     "core:window:allow-set-size",
+    "core:webview:allow-set-webview-zoom",
     "positioner:default",
     "notifications:default",
     "opener:default",

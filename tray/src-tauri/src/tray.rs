@@ -103,6 +103,7 @@ pub(crate) fn open_native_dashboard(app: &tauri::AppHandle) {
             .minimizable(true)
             .closable(true)
             .maximized(true)
+            .zoom_hotkeys_enabled(true)
             .build()
         {
             Ok(win) => {
@@ -173,6 +174,7 @@ pub(crate) fn open_wizard_window(app: &tauri::AppHandle) {
         .title("Meridian — Setup")
         .inner_size(980.0, 660.0)
         .resizable(false)
+        .zoom_hotkeys_enabled(true)
         .build()
     {
         eprintln!("tray: failed to open setup wizard: {e}");
