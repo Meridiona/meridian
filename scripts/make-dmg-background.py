@@ -77,7 +77,20 @@ def main():
     draw = ImageDraw.Draw(bg, "RGBA")
 
     # ── Brand mark + wordmark, top center ────────────────────────────────────
-    mark = Image.open(MARK_PATH).convert("RGBA")
+    # The source PNG has a lot of asymmetric transparent padding around the
+    # glyph (~17% top / ~23% bottom margin), so pasting it as-is both shrinks
+    # the visible mark and shifts it off-center within its own box. Crop to
+    # the actual alpha bounding box first, with a little even breathing room,
+    # so the mark is properly sized and truly centered above the wordmark.
+    mark_src = Image.open(MARK_PATH).convert("RGBA")
+    content_bbox = mark_src.getchannel("A").getbbox()
+    cw, ch = content_bbox[2] - content_bbox[0], content_bbox[3] - content_bbox[1]
+    side = max(cw, ch)
+    ccx, ccy = (content_bbox[0] + content_bbox[2]) // 2, (content_bbox[1] + content_bbox[3]) // 2
+    pad = int(side * 0.06)
+    half = side // 2 + pad
+    mark = mark_src.crop((ccx - half, ccy - half, ccx + half, ccy + half))
+
     mark_size = 46 * SCALE
     mark = mark.resize((mark_size, mark_size), Image.LANCZOS)
     mark_x = W // 2 - mark_size // 2
