@@ -67,7 +67,7 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="flex items-center" style={{ gap: 8 }}>
                 <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>{p.name}</span>
-                <span className="font-mono" style={{ fontSize: 9, letterSpacing: '.1em', color: 'var(--t-faint)', border: '0.5px solid var(--t-card-border)', borderRadius: 4, padding: '1px 5px' }}>{p.required ? 'REQUIRED' : 'OPTIONAL'}</span>
+                {!notif && <span className="font-mono" style={{ fontSize: 9, letterSpacing: '.1em', color: 'var(--t-faint)', border: '0.5px solid var(--t-card-border)', borderRadius: 4, padding: '1px 5px' }}>{p.required ? 'REQUIRED' : 'OPTIONAL'}</span>}
               </div>
               <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-faint)', marginTop: 3 }}>{p.desc}</p>
             </div>

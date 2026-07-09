@@ -101,7 +101,7 @@ export const PERMISSIONS: PermissionMeta[] = [
   },
   {
     id: 'notifications', icon: 'bell', name: 'Notifications', pane: 'notifications', required: false,
-    desc: 'Nudges you when a worklog draft is ready or your plan needs attention. Quiet by default — you control every type in Settings.',
+    desc: 'Nudges you when a worklog draft is ready or your plan needs attention. Quiet by default - you control every type in Settings.',
   },
 ]
 

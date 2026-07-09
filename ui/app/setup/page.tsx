@@ -70,7 +70,18 @@ export default function SetupWizard() {
         invoke<boolean>('check_screen_recording').catch(() => false),
         invoke<NotifState>('check_notifications').catch((): NotifState => 'unavailable'),
       ])
-      setPerms({ accessibility, screen, notifications })
+      setPerms((prev) => ({
+        accessibility, screen,
+        // Bundled-ness is fixed for the process lifetime, so once we've seen a
+        // real state (prompt/granted/denied) a later 'unavailable' can only be
+        // a transient Swift-bridge hiccup on this one poll tick, never a
+        // genuine regression — keep the last known-good state instead of
+        // flashing the card away and back every ~2s.
+        notifications:
+          notifications === 'unavailable' && prev.notifications && prev.notifications !== 'unavailable'
+            ? prev.notifications
+            : notifications,
+      }))
     }
     poll()
     const id = setInterval(poll, 2000)
