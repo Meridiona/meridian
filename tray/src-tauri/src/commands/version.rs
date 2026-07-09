@@ -16,7 +16,9 @@
 //! # Who calls this
 //! The `get_version` + `run_update` Tauri commands → the dashboard `Sidebar`
 //! (the version / update line). `get_version` never throws — an update check
-//! must not break the UI.
+//! must not break the UI. `get_app_info` → the dashboard's Account settings
+//! section and the popover footer (the version/channel badge, dev vs staging
+//! vs prod) — synchronous, no npm-registry round trip.
 //!
 //! # Related
 //! - The npm result is cached process-wide for [`CHECK_TTL_MS`] so a dashboard
@@ -228,6 +230,40 @@ fn write_and_open(script_path: &std::path::Path, script: &str) -> std::io::Resul
         .arg(script_path)
         .spawn()
         .map(|_| ())
+}
+
+/// Build channel this binary was compiled for — lets a user tell a local dev
+/// run apart from a staging or production build at a glance. `dev` is a
+/// runtime check (`tauri dev` / unbundled `cargo run`); `staging` is baked in
+/// at compile time via `MERIDIAN_CHANNEL` (same `option_env!` pattern as
+/// [`crate::mlx_server::manifest_url`]) by the staging release workflow;
+/// anything else (a plain release build with no channel baked in) is `prod`.
+fn build_channel() -> &'static str {
+    if cfg!(debug_assertions) {
+        return "dev";
+    }
+    option_env!("MERIDIAN_CHANNEL").unwrap_or("prod")
+}
+
+/// `{ version, channel }` for the small badge in the dashboard and popover.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppInfo {
+    pub version: String,
+    pub channel: String,
+}
+
+/// The binary's baked `tauri.conf.json` version (what the DMG updater compares
+/// against — set in lockstep across the repo by `scripts/set-version.sh`) plus
+/// [`build_channel`]. Synchronous and never touches the network, unlike
+/// [`get_version`] above.
+#[tauri::command]
+#[tracing::instrument(skip(app))]
+pub fn get_app_info(app: tauri::AppHandle) -> AppInfo {
+    let version = app.package_info().version.to_string();
+    let channel = build_channel().to_string();
+    tracing::info!(%version, %channel, "app info served");
+    AppInfo { version, channel }
 }
 
 /// DMG auto-update check for the in-app banners (sidebar + popover). Wraps

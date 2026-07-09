@@ -334,3 +334,10 @@ export interface BannerNotification {
   deep_link: string | null
   created_at: string
 }
+
+// ── App info (`get_app_info`) ──────────────────────────────────────────────────
+
+export interface AppInfo {
+  version: string
+  channel: 'dev' | 'staging' | 'prod'
+}

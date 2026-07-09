@@ -145,4 +145,8 @@ jobs:
           # zone — staging is where we validate the proxy against real installer
           # traffic first.
           MERIDIAN_HF_ENDPOINT: "https://hf.meridiona.com"
+          # Bake the build channel into the binary (commands::version::build_channel,
+          # same option_env! pattern) so the dashboard/popover version badge reads
+          # "staging" instead of the "prod" default. Production leaves this unset.
+          MERIDIAN_CHANNEL: "staging"
         run: npx semantic-release
