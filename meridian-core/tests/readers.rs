@@ -83,7 +83,10 @@ async fn make_today_pool() -> SqlitePool {
 async fn coding_agents_unions_overlap_per_agent_and_total() {
     let pool = make_pool().await;
     // Claude Code: 10:00–10:10 ∪ 10:05–10:15 → 10:00–10:15 = 900 s.
-    // Codex: 11:00–11:05 = 300 s. No CC/Codex overlap → total = 1200 s.
+    // Codex: 11:00–11:05 = 300 s.
+    // GitHub Copilot: 12:00–12:04 = 240 s.
+    // Cursor Agent: 13:00–13:02 = 120 s.
+    // No overlap across agents → total = 1560 s.
     let rows = [
         (
             "Claude Code",
@@ -100,6 +103,16 @@ async fn coding_agents_unions_overlap_per_agent_and_total() {
             "2026-06-16T11:00:00+00:00",
             "2026-06-16T11:05:00+00:00",
         ),
+        (
+            "GitHub Copilot",
+            "2026-06-16T12:00:00+00:00",
+            "2026-06-16T12:04:00+00:00",
+        ),
+        (
+            "Cursor Agent",
+            "2026-06-16T13:00:00+00:00",
+            "2026-06-16T13:02:00+00:00",
+        ),
     ];
     for (app, s, e) in rows {
         sqlx::query(
@@ -113,13 +126,17 @@ async fn coding_agents_unions_overlap_per_agent_and_total() {
         .await
         .unwrap();
 
-    assert_eq!(r.total_s, 1200);
-    assert_eq!(r.agents.len(), 2);
-    // Sorted descending: Claude Code (900) before Codex (300).
+    assert_eq!(r.total_s, 1560);
+    assert_eq!(r.agents.len(), 4);
+    // Sorted descending: Claude Code (900), Codex (300), GitHub Copilot (240), Cursor Agent (120).
     assert_eq!(r.agents[0].app, "Claude Code");
     assert_eq!(r.agents[0].total_s, 900);
     assert_eq!(r.agents[1].app, "Codex");
     assert_eq!(r.agents[1].total_s, 300);
+    assert_eq!(r.agents[2].app, "GitHub Copilot");
+    assert_eq!(r.agents[2].total_s, 240);
+    assert_eq!(r.agents[3].app, "Cursor Agent");
+    assert_eq!(r.agents[3].total_s, 120);
 }
 
 #[tokio::test]
