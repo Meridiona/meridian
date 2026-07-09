@@ -26,6 +26,26 @@ export function extractTldr(report: string): string {
 }
 
 /**
+ * Pull just the bolded topic names out of the "### Core Tasks & Projects"
+ * section (each thread's header is `**Topic name**` per the prompt) — used
+ * by the hour-detail panel's condensed summary, which lists task names only
+ * and defers the full WHY/WHAT/HOW body to the full-report dialog.
+ */
+export function extractCoreTaskNames(report: string): string[] {
+  const section = report.match(/###\s*Core Tasks(?:\s*&\s*Projects)?\s*\n+([\s\S]*?)(?=\n###|\s*$)/i)
+  if (!section) return []
+  const names: string[] = []
+  // Only bold spans at the START of a line are thread headers — the
+  // WHY/WHAT/HOW bullets underneath also bold their labels
+  // ("- **WHY:** ..."), but those lines start with "-", not "**", so the
+  // line-start anchor excludes them.
+  const re = /^[ \t]*\*\*(.+?)\*\*/gm
+  let m: RegExpExecArray | null
+  while ((m = re.exec(section[1])) !== null) names.push(m[1].trim())
+  return names
+}
+
+/**
  * The timeline row's inline preview of an hour's report — a small tinted
  * card (not raw ReactMarkdown output dropped straight into the row) with a
  * "SUMMARY" label, a 2-line-clamped TLDR, and a hover affordance hinting

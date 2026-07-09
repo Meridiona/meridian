@@ -9,8 +9,9 @@ import { OverviewPanel } from './OverviewPanel'
 import { HourDetailPanel } from './HourDetailPanel'
 import type { TimelineData } from './useTimelineData'
 import type { ActiveModal } from './MeridianTimelineShell'
+import type { SettingsSection } from './settings/types'
 
-export function RightPanel({ data, selectedHour, selectedCardKey, onSelectHour, onOpen, onOpenTask, onEditWorklog }: {
+export function RightPanel({ data, selectedHour, selectedCardKey, onSelectHour, onOpen, onOpenTask, onEditWorklog, onOpenSettings }: {
   data: TimelineData
   selectedHour: number | null
   selectedCardKey: string | null
@@ -20,8 +21,13 @@ export function RightPanel({ data, selectedHour, selectedCardKey, onSelectHour, 
   // Edit an approved/posted card — opens the same Review dialog drafts use,
   // scoped to this one ticket (see MeridianTimelineShell's openReview).
   onEditWorklog: (cardKey: string) => void
+  // Deep-link into Settings (e.g. 'integrations') — the solo-mode "Connect a
+  // tracker" CTAs in OverviewPanel/HourDetailPanel use this.
+  onOpenSettings: (section?: SettingsSection) => void
 }) {
-  if (selectedHour === null) return <OverviewPanel data={data} onOpen={onOpen} onOpenTask={onOpenTask} />
+  if (selectedHour === null) {
+    return <OverviewPanel data={data} onOpen={onOpen} onOpenTask={onOpenTask} onOpenSettings={onOpenSettings} />
+  }
   return (
     <HourDetailPanel
       hour={selectedHour}
@@ -29,6 +35,7 @@ export function RightPanel({ data, selectedHour, selectedCardKey, onSelectHour, 
       onBack={() => onSelectHour(null)}
       data={data}
       onEditWorklog={onEditWorklog}
+      onOpenSettings={onOpenSettings}
     />
   )
 }

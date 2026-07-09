@@ -11,7 +11,7 @@
 import { useMemo } from 'react'
 import { fmtDur, AppGlyph } from '@/components/atoms'
 import { BRAND_ICONS } from '@/lib/brand-icons'
-import type { TodaySession } from '@/lib/api-types'
+import type { TodaySession, AgentTotal } from '@/lib/api-types'
 
 function appHue(app: string): number {
   let h = 0
@@ -24,20 +24,35 @@ function appColor(app: string): string {
   return BRAND_ICONS[app]?.hex ?? `hsl(${appHue(app)}, 55%, 55%)`
 }
 
-/** Aggregate sessions into app totals, descending, capped to `limit`. */
-export function appTotals(sessions: TodaySession[]): Array<{ app: string; seconds: number }> {
+/**
+ * Aggregate sessions into app totals, descending, capped to `limit`.
+ * `agentTotals` (get_coding_agents) is folded in by real tool name (Claude
+ * Code / Codex / GitHub Copilot / Cursor Agent) — those sessions are a
+ * separate overlay stream, filtered OUT of `sessions` server-side
+ * (meridian-core/src/readers/today/mod.rs), so they'd otherwise be entirely
+ * invisible here even though real time went into them.
+ */
+export function appTotals(sessions: TodaySession[], agentTotals: AgentTotal[] = []): Array<{ app: string; seconds: number }> {
   const by = new Map<string, number>()
   for (const s of sessions) {
     if (!s.app) continue
     by.set(s.app, (by.get(s.app) ?? 0) + s.dur)
+  }
+  for (const a of agentTotals) {
+    if (!a.app || a.total_s <= 0) continue
+    by.set(a.app, (by.get(a.app) ?? 0) + a.total_s)
   }
   return Array.from(by.entries())
     .map(([app, seconds]) => ({ app, seconds }))
     .sort((a, b) => b.seconds - a.seconds)
 }
 
-export function TimeByApp({ sessions, limit = 6 }: { sessions: TodaySession[]; limit?: number }) {
-  const rows = useMemo(() => appTotals(sessions).slice(0, limit), [sessions, limit])
+export function TimeByApp({ sessions, agentTotals = [], limit = 6 }: {
+  sessions: TodaySession[]
+  agentTotals?: AgentTotal[]
+  limit?: number
+}) {
+  const rows = useMemo(() => appTotals(sessions, agentTotals).slice(0, limit), [sessions, agentTotals, limit])
   const max = rows[0]?.seconds ?? 1
 
   if (rows.length === 0) {
