@@ -164,10 +164,14 @@ packaged build:
 ```bash
 cd tray && npm run build         # signs with scripts/dev-signing.sh identity
 # install target/release/bundle/macos/Meridian.app, then seed:
+# expires_at MUST be RFC-3339 ("YYYY-MM-DDTHH:MM:SSZ") — the drain compares it
+# as a STRING against a "T"-separated UTC now, so SQLite's datetime() format
+# ("YYYY-MM-DD HH:MM:SS", space-separated) sorts BEFORE any "T" timestamp and
+# the row is treated as expired at birth (never delivered, no error anywhere).
 sqlite3 ~/.meridian/meridian.db "INSERT INTO notifications
   (dedup_key,event_key,title,body,channels,category,deep_link,expires_at)
   VALUES ('test:1','my.event','T','B','native','verify_switch','/plan',
-          datetime('now','+2 minutes'))"
+          strftime('%Y-%m-%dT%H:%M:%SZ','now','+2 minutes'))"
 # within one tray tick (~30s): toast with buttons; answer it, then:
 sqlite3 ~/.meridian/meridian.db "SELECT response_action,response_text,
   responded_at,response_consumed_at FROM notifications WHERE dedup_key='test:1'"
