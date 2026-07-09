@@ -8,7 +8,7 @@
 // detected hardware, and the model tiles map to real checkpoints.
 
 import type { CSSProperties, ReactNode } from 'react'
-import { Btn, Bar, Check, Kicker, PermIcon, Row, Spinner } from './atoms'
+import { Btn, Bar, Check, Kicker, MemoryGauge, PermIcon, Row, Spinner } from './atoms'
 import {
   APP, MODEL_ID, MODEL_RAM_GB, PERMISSIONS, fmtModelLabel, fmtSize,
 } from './data'
@@ -149,7 +149,11 @@ function SpecMemoryPanel({ specs }: { specs: SystemSpecs | null }) {
           ≈&nbsp;{fmtSize(footprintGb)}{ram > 0 ? ` of ${ram} GB` : ''}
         </span>
       </div>
-      {pct !== null && <Bar pct={pct} height={5} />}
+      {pct !== null && (
+        <div className="flex items-center justify-center" style={{ marginBottom: 2 }}>
+          <MemoryGauge pct={pct} />
+        </div>
+      )}
       {specBits.length > 0 && (
         <p className="font-mono" style={{ fontSize: 10.5, color: 'var(--t-faint-2)', marginTop: 9, letterSpacing: '.02em' }}>
           {specBits.join('  ·  ')}
