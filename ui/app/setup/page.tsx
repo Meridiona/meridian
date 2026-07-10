@@ -70,7 +70,18 @@ export default function SetupWizard() {
         invoke<boolean>('check_screen_recording').catch(() => false),
         invoke<NotifState>('check_notifications').catch((): NotifState => 'unavailable'),
       ])
-      setPerms({ accessibility, screen, notifications })
+      setPerms((prev) => ({
+        accessibility, screen,
+        // Bundled-ness is fixed for the process lifetime, so once we've seen a
+        // real state (prompt/granted/denied) a later 'unavailable' can only be
+        // a transient Swift-bridge hiccup on this one poll tick, never a
+        // genuine regression — keep the last known-good state instead of
+        // flashing the card away and back every ~2s.
+        notifications:
+          notifications === 'unavailable' && prev.notifications && prev.notifications !== 'unavailable'
+            ? prev.notifications
+            : notifications,
+      }))
     }
     poll()
     const id = setInterval(poll, 2000)
@@ -169,10 +180,17 @@ export default function SetupWizard() {
 
   // Notifications: 'prompt' → request surfaces the one-shot macOS dialog and
   // returns the answer; after a deny macOS never re-prompts, so the only
-  // recovery is the System Settings → Notifications pane. The request result
+  // recovery is the System Settings → Notifications pane — go straight there
+  // instead of re-requesting (the request would just silently re-resolve to
+  // 'denied' with no dialog, adding a pointless round-trip through the
+  // notification plugin before ever reaching the pane). The request result
   // updates state immediately; the 2 s poll keeps it honest after pane edits.
-  const grantNotifications = useCallback(async () => {
+  const grantNotifications = useCallback(async (alreadyDenied: boolean) => {
     setErr('')
+    if (alreadyDenied) {
+      invoke('open_permission_pane', { pane: 'notifications' }).catch((e) => setErr(String(e)))
+      return
+    }
     try {
       const state = await invoke<NotifState>('request_notifications')
       setPerms((prev) => ({ ...prev, notifications: state }))

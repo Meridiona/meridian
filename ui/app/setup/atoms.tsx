@@ -111,6 +111,40 @@ export function Bar({ pct, height = 6, track = 'var(--t-hair)', fill = 'var(--co
   )
 }
 
+// ── Semi-circular memory gauge ───────────────────────────────────────────────
+// Distinct on purpose from `Bar` above (straight, used for download progress):
+// this reads as a capacity dial rather than a loading indicator, so the two
+// never get confused for one another. Drawn as two arcs meeting at `pct` —
+// amber for the footprint Meridian expects to use, green for the unified
+// memory left over — rather than a single fill against a neutral track.
+export function MemoryGauge({ pct, size = 96, strokeWidth = 9 }: {
+  pct: number; size?: number; strokeWidth?: number
+}) {
+  const r = size / 2 - strokeWidth
+  const cx = size / 2
+  const cy = size / 2
+  const clamped = Math.max(0, Math.min(100, pct))
+  const splitAngle = 180 + (clamped / 100) * 180
+  const polar = (angleDeg: number) => {
+    const rad = (angleDeg * Math.PI) / 180
+    return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) }
+  }
+  const arc = (startAngle: number, endAngle: number) => {
+    const start = polar(startAngle)
+    const end = polar(endAngle)
+    const largeArc = endAngle - startAngle > 180 ? 1 : 0
+    return `M ${start.x} ${start.y} A ${r} ${r} 0 ${largeArc} 1 ${end.x} ${end.y}`
+  }
+  return (
+    <svg width={size} height={size / 2 + strokeWidth} viewBox={`0 0 ${size} ${size / 2 + strokeWidth}`}>
+      <path d={arc(splitAngle, 360)} fill="none" stroke="var(--color-state-approved)"
+        strokeWidth={strokeWidth} strokeLinecap="round" />
+      <path d={arc(180, splitAngle)} fill="none" stroke="var(--color-state-pending)"
+        strokeWidth={strokeWidth} strokeLinecap="round" />
+    </svg>
+  )
+}
+
 // ── Kicker / eyebrow label ───────────────────────────────────────────────────
 export function Kicker({ children, color = 'var(--t-faint)', style }: { children: ReactNode; color?: string; style?: CSSProperties }) {
   return (<p className="font-mono" style={{ fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', color, ...style }}>{children}</p>)
