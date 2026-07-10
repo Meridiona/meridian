@@ -15,7 +15,7 @@ Meridian is a single-process Rust daemon that normalises raw screen-capture fram
 - Validate all input at system boundaries (config load, DB open, frame parsing)
 - NEVER run `git reset`, `git push --force`, or delete local code — other agents may be working on the codebase in parallel
 - NEVER merge a PR automatically — open/update PRs as needed, but leave the actual merge to a human reviewer
-- NEVER push directly to `main` — always create a separate feature branch, commit there, and raise a PR to `main`
+- NEVER push directly to `main` or `pre-main` — always create a separate feature branch, commit there, and raise a PR to `pre-main`. **All features, fixes, and other changes target `pre-main`** (the staging branch), not `main` — only a maintainer opens the `pre-main → main` release PR, and only after everything on `pre-main` has been tested end-to-end on staging
 - ALWAYS use a separate branch per feature/fix — branch name format: `type/short-description` (e.g. `feat/trello-oauth`, `fix/ui-disconnect`)
 - In all **user-facing app text** — window titles, wizard/UI copy, button and menu labels, notification bodies, tray tooltips, any string the user reads — use a plain hyphen `-` only. NEVER an em-dash (`—`), en-dash (`–`), or double hyphen (`--`). Use it spaced (` - `) where a dash separates clauses. (This rule is about displayed strings; code comments and docs are exempt.)
 
@@ -546,4 +546,11 @@ services/.venv/bin/python services/tests/evals/eval_classifier.py         # run,
 - `pre-push` hook runs the full suite: `cargo fmt` + `cargo clippy` + UI build + UI tests + security audit (claude CLI) + `cargo test`
 - Never skip hooks with `--no-verify`
 - Install hooks after cloning: `bash scripts/setup-hooks.sh`
-- Never amend a commit that has already been pushed to `main`
+- Never amend a commit that has already been pushed to `main` or `pre-main`
+
+### PR target branch — `pre-main`, not `main`
+
+- **Every feature/fix PR targets `pre-main`** (`gh pr create --base pre-main`), regardless of what any older doc or habit says — `pre-main` is the staging branch and is where all day-to-day work lands.
+- `pre-main` is deployed to staging and gets exercised end-to-end there (including the staging DMG auto-update channel and `runtime-staging`) before anything reaches production.
+- **Only a maintainer** opens the `pre-main → main` release PR, and only once everything currently on `pre-main` has been verified working end-to-end on staging. Contributors should not open `main`-targeted PRs.
+- This mirrors the runtime-publish model (`runtime-staging` vs `runtime-latest` — see "Ship a `services/` Python change to users" above): `pre-main` is the staging/test channel, `main` is production.
