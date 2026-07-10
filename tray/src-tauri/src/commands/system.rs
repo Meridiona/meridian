@@ -61,6 +61,10 @@ pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
                     let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 }
             });
+            // Clicking back into an already-open dashboard while the popover
+            // happens to be open on top of it wouldn't otherwise dismiss the
+            // popover — see dismiss_popover_on_focus's doc comment.
+            dismiss_popover_on_focus(&app, &win);
             Ok(())
         }
         Err(e) => {
@@ -219,6 +223,28 @@ pub(crate) fn dismiss_popover(app: &tauri::AppHandle) {
         }
         let _ = win.hide();
     }
+}
+
+/// Wires `win` to dismiss the popover whenever it gains focus. Call once,
+/// right after building any window OTHER than the popover itself (`dashboard`,
+/// `setup`, …).
+///
+/// `dismiss_popover` at open-time (above) only covers the moment a window is
+/// FIRST opened. It does not cover the case where that window was already
+/// open in the background, the popover is reopened on top of it, and the user
+/// then clicks back into the already-open window: `install_click_outside_monitor`'s
+/// global `NSEvent` monitor never fires for that click because
+/// `addGlobalMonitorForEventsMatchingMask:` only fires for events delivered to
+/// OTHER processes, not clicks landing on one of our own windows (see that
+/// function's doc comment in `lib.rs`). `Focused(true)` on the other window is
+/// the one signal that does fire for an in-app click, so it's the dismiss hook.
+pub(crate) fn dismiss_popover_on_focus(app: &tauri::AppHandle, win: &tauri::WebviewWindow) {
+    let app_handle = app.clone();
+    win.on_window_event(move |event| {
+        if let WindowEvent::Focused(true) = event {
+            dismiss_popover(&app_handle);
+        }
+    });
 }
 
 #[cfg(test)]

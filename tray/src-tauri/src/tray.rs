@@ -188,11 +188,15 @@ pub(crate) fn open_wizard_window(app: &tauri::AppHandle) {
         .zoom_hotkeys_enabled(true)
         .build()
     {
-        Ok(_win) => {
+        Ok(win) => {
             // Opt the window into native full-screen so the green traffic-light
             // shows the enter-full-screen arrows, not the plain zoom (+) glyph.
             #[cfg(target_os = "macos")]
-            make_fullscreenable(&_win);
+            make_fullscreenable(&win);
+            // Same gap as the dashboard window — see dismiss_popover_on_focus's
+            // doc comment (clicking back into an already-open setup window
+            // wouldn't otherwise dismiss a popover reopened on top of it).
+            crate::commands::system::dismiss_popover_on_focus(app, &win);
         }
         Err(e) => eprintln!("tray: failed to open setup wizard: {e}"),
     }
