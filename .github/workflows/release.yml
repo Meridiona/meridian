@@ -51,6 +51,12 @@ jobs:
       # named GITHUB_*, which GitHub reserves). The OAuth App must have "Enable
       # Device Flow" checked.
       MERIDIAN_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
+      # Baked into the release binary at compile time (consumed by option_env! in
+      # tray/src-tauri/src/analytics.rs). PostHog Cloud project API key — a
+      # PUBLIC write-only capture token (no account/read access), safe to embed
+      # in a shipped client. Set the POSTHOG_API_KEY repo secret; absent →
+      # analytics compiles in disabled (see analytics::posthog_api_key).
+      MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
       # Minisign key for the DMG auto-updater: `tauri build` (createUpdaterArtifacts)
       # signs Meridian.app.tar.gz with these so the installed app can verify the
       # update against the pubkey baked in tauri.conf.json. The build FAILS LOUDLY
