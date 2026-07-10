@@ -356,3 +356,10 @@ export interface UninstallResult {
   errors: string[]
   error?: string
 }
+
+// ── App info (`get_app_info`) ──────────────────────────────────────────────────
+
+export interface AppInfo {
+  version: string
+  channel: 'dev' | 'staging' | 'prod'
+}

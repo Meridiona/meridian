@@ -59,6 +59,9 @@ jobs:
       # Public GitHub OAuth device-flow client id (see release.yml); GH_OAUTH_CLIENT_ID
       # repo secret. Absent → GitHub browser connect unavailable in the staging build.
       MERIDIAN_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
+      # Baked into the staging binary at compile time (see release.yml); same
+      # secret. Absent → PostHog analytics simply disabled in the staging build.
+      MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
       # Minisign key for the DMG auto-updater: `tauri build` (createUpdaterArtifacts)
       # signs Meridian.app.tar.gz so the installed staging app can verify the
       # update against the pubkey baked in tauri.conf.json. REQUIRED here (unlike
@@ -145,4 +148,8 @@ jobs:
           # zone — staging is where we validate the proxy against real installer
           # traffic first.
           MERIDIAN_HF_ENDPOINT: "https://hf.meridiona.com"
+          # Bake the build channel into the binary (commands::version::build_channel,
+          # same option_env! pattern) so the dashboard/popover version badge reads
+          # "staging" instead of the "prod" default. Production leaves this unset.
+          MERIDIAN_CHANNEL: "staging"
         run: npx semantic-release

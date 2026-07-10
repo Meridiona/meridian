@@ -8,12 +8,12 @@
 // detected hardware, and the model tiles map to real checkpoints.
 
 import type { CSSProperties, ReactNode } from 'react'
-import { Btn, Bar, Check, Kicker, PermIcon, Row, Spinner } from './atoms'
+import { Btn, Bar, Check, Kicker, MemoryGauge, PermIcon, Row, Spinner } from './atoms'
 import {
-  APP, MODEL_RAM_GB, PERMISSIONS, fmtSize,
+  APP, MODEL_ID, MODEL_RAM_GB, PERMISSIONS, fmtModelLabel, fmtSize,
 } from './data'
 import type {
-  DownloadProgress, MlxStatusResponse, SystemSpecs,
+  DownloadProgress, MlxStatusResponse, NotifState, SystemSpecs,
 } from './data'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import { TRACKERS } from '@/lib/integrations'
@@ -23,11 +23,13 @@ const SERIF: CSSProperties = { fontFamily: 'var(--font-instrument-serif), Georgi
 
 /** The live wizard handle page.tsx builds and threads to every step body. */
 export interface Wiz {
-  // Step 1 — permissions (live, polled every 2 s)
-  perms: { accessibility: boolean | null; screen: boolean | null; input: boolean | null }
+  // Step 1 — permissions (live, polled every 2 s). The two TCC grants are
+  // booleans; notifications is tri-state (see `NotifState`) because deny and
+  // not-yet-asked need different grant actions.
+  perms: { accessibility: boolean | null; screen: boolean | null; notifications: NotifState | null }
   openPane: (pane: string) => void
   grantScreen: () => void
-  grantInput: () => void
+  grantNotifications: (alreadyDenied: boolean) => void
   // Step 2 — local intelligence (live MLX status + detected specs)
   specs: SystemSpecs | null
   mlx: MlxStatusResponse | null
@@ -48,7 +50,11 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
   return (
     <div className="flex flex-col" style={{ gap: 9 }}>
       {PERMISSIONS.map((p) => {
-        const granted = !!wiz.perms[p.id]
+        const notif = p.id === 'notifications'
+        // Unbundled runs (`tauri dev`) have no notification plugin at all —
+        // nothing to grant, so the card hides rather than dead-ends.
+        if (notif && wiz.perms.notifications === 'unavailable') return null
+        const granted = notif ? wiz.perms.notifications === 'granted' : !!wiz.perms[p.id]
         return (
           <Row key={p.id} tone={granted ? 'tint' : 'surface'}>
             <span className="flex items-center justify-center shrink-0" style={{
@@ -61,7 +67,7 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="flex items-center" style={{ gap: 8 }}>
                 <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>{p.name}</span>
-                <span className="font-mono" style={{ fontSize: 9, letterSpacing: '.1em', color: 'var(--t-faint)', border: '0.5px solid var(--t-card-border)', borderRadius: 4, padding: '1px 5px' }}>REQUIRED</span>
+                {!notif && <span className="font-mono" style={{ fontSize: 9, letterSpacing: '.1em', color: 'var(--t-faint)', border: '0.5px solid var(--t-card-border)', borderRadius: 4, padding: '1px 5px' }}>{p.required ? 'REQUIRED' : 'OPTIONAL'}</span>}
               </div>
               <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-faint)', marginTop: 3 }}>{p.desc}</p>
             </div>
@@ -69,14 +75,20 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
             <div className="shrink-0">
               {granted
                 ? <span className="flex items-center" style={{ gap: 6, fontSize: 12, color: 'var(--color-state-approved)', fontWeight: 500 }}><Check size={15} color="var(--color-state-approved)" />Granted</span>
-                : <Btn size="sm" variant="secondary" onClick={() => p.id === 'input' ? wiz.grantInput() : p.id === 'screen' ? wiz.grantScreen() : wiz.openPane(p.pane)}>Open Settings</Btn>}
+                : notif
+                  // 'prompt' → the button surfaces the one-shot OS dialog;
+                  // 'denied' → macOS won't re-prompt, so it opens the
+                  // Notifications pane directly (grantNotifications skips the
+                  // pointless re-request when told it's already denied).
+                  ? <Btn size="sm" variant="secondary" onClick={() => wiz.grantNotifications(wiz.perms.notifications === 'denied')}>{wiz.perms.notifications === 'denied' ? 'Open Settings' : 'Allow'}</Btn>
+                  : <Btn size="sm" variant="secondary" onClick={() => p.id === 'screen' ? wiz.grantScreen() : wiz.openPane(p.pane)}>Open Settings</Btn>}
             </div>
           </Row>
         )
       })}
       <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--t-faint)', marginTop: 3 }}>
         <span style={{ width: 5, height: 5, borderRadius: 99, background: 'var(--color-state-approved)' }} />
-        Everything is processed on your Mac. Meridian has no servers to send to.
+        Your screen, tasks, and worklogs stay on this Mac and are never uploaded. We send anonymous usage stats (like daily focus time) to improve Meridian - never your content.
       </p>
     </div>
   )
@@ -137,7 +149,11 @@ function SpecMemoryPanel({ specs }: { specs: SystemSpecs | null }) {
           ≈&nbsp;{fmtSize(footprintGb)}{ram > 0 ? ` of ${ram} GB` : ''}
         </span>
       </div>
-      {pct !== null && <Bar pct={pct} height={5} />}
+      {pct !== null && (
+        <div className="flex items-center justify-center" style={{ marginBottom: 2 }}>
+          <MemoryGauge pct={pct} />
+        </div>
+      )}
       {specBits.length > 0 && (
         <p className="font-mono" style={{ fontSize: 10.5, color: 'var(--t-faint-2)', marginTop: 9, letterSpacing: '.02em' }}>
           {specBits.join('  ·  ')}
@@ -155,7 +171,7 @@ const SETUP_NET_HINTS: { t: string; d: string }[] = [
   { t: 'Internet connection', d: 'Confirm you’re online. On café or hotel Wi-Fi, open a browser and finish any “sign in to connect” page, then Try again.' },
   { t: 'VPN or firewall', d: 'A work VPN or firewall can block the download. Pause the VPN or switch to another network.' },
   { t: 'Network proxy', d: 'If your Mac uses a proxy (System Settings → Network → Proxies), Meridian may not pick it up. Try a network without a proxy.' },
-  { t: 'Security software', d: 'Tools that inspect secure connections can interrupt the download — allow Meridian or pause them briefly.' },
+  { t: 'Security software', d: 'Tools that inspect secure connections can interrupt the download - allow Meridian or pause them briefly.' },
 ]
 
 function MLXBody({ wiz }: { wiz: Wiz }) {
@@ -226,7 +242,7 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
             ? 'The on-device runtime isn’t available for this Mac.'
             : showErr
               ? (wiz.err || 'The download didn’t finish.')
-              : 'Downloading the models that run privately on your Mac — just once.'}
+              : 'Downloading the models that run privately on your Mac - just once.'}
       </p>
 
       {/* Detected specs + expected memory footprint — shown while provisioning
@@ -255,7 +271,7 @@ function MLXBody({ wiz }: { wiz: Wiz }) {
                 <div key={h.t} className="flex items-start" style={{ gap: 8 }}>
                   <span className="font-mono shrink-0" style={{ fontSize: 10.5, color: 'var(--t-faint-2)', fontWeight: 600, lineHeight: 1.55, width: 11 }}>{i + 1}</span>
                   <p style={{ fontSize: 11.5, lineHeight: 1.45, color: 'var(--t-muted)' }}>
-                    <span style={{ fontWeight: 500, color: 'var(--t-title)' }}>{h.t}</span> — {h.d}
+                    <span style={{ fontWeight: 500, color: 'var(--t-title)' }}>{h.t}</span> - {h.d}
                   </p>
                 </div>
               ))}
@@ -280,7 +296,7 @@ function IntegrationsBody({ wiz }: { wiz: Wiz }) {
         <span style={{ width: 5, height: 5, borderRadius: 99, background: connected ? 'var(--color-state-approved)' : 'var(--t-faint-2)' }} />
         {connected > 0
           ? `${connected} connected · Meridian will match sessions and draft worklogs.`
-          : 'Connect your trackers to auto-draft worklogs — or skip and add later from Settings.'}
+          : 'Optional - skip it and Meridian still tracks your day. Connect a tracker anytime from Settings to auto-draft worklogs.'}
       </p>
     </div>
   )
@@ -289,9 +305,9 @@ function IntegrationsBody({ wiz }: { wiz: Wiz }) {
 // ── Welcome (pre-step intro) ──────────────────────────────────────────────────
 export function Welcome({ onBegin }: { onBegin: () => void }) {
   const points = [
-    { t: 'On-device', d: 'Runs on Apple MLX. Classifier input stays local unless you explicitly connect your tools.' },
-    { t: 'Automatic', d: 'Recognises your work and drafts worklogs you approve.' },
-    { t: 'Connected', d: 'Jira and Trello today, more trackers soon.' },
+    { t: 'On-device', d: 'Runs on Apple MLX - your screen is read and understood locally, never uploaded.' },
+    { t: 'Automatic', d: 'Builds an accurate timeline of the tickets you worked on - then drafts the updates for you.' },
+    { t: 'Connected', d: 'Works with Jira, Linear, GitHub, Trello, and Azure DevOps.' },
   ]
   return (
     <div className="flex flex-col items-center justify-center" style={{ height: '100%', textAlign: 'center', padding: '36px 44px' }}>
@@ -301,10 +317,10 @@ export function Welcome({ onBegin }: { onBegin: () => void }) {
       </div>
       <Kicker style={{ marginBottom: 14 }}>First-run setup</Kicker>
       <h1 style={{ ...SERIF, fontSize: 39, lineHeight: 1.02, letterSpacing: '-.015em', color: 'var(--t-title)', maxWidth: 440, textWrap: 'balance' }}>
-        Meridian watches the work, <span style={{ fontStyle: 'italic', color: 'var(--color-state-proposal)' }}>so you don&apos;t have to.</span>
+        Your work, <span style={{ fontStyle: 'italic', color: 'var(--color-state-proposal)' }}>remembered - accurately.</span>
       </h1>
       <p style={{ fontSize: 13.5, lineHeight: 1.55, color: 'var(--t-muted)', marginTop: 14, maxWidth: 380, textWrap: 'pretty' }}>
-        A quiet menu-bar companion that recognises what you&apos;re focused on, drafts your worklogs, and keeps every byte on your Mac.
+        Meridian watches your work on-device and keeps an accurate record of what you actually did - then turns it into worklogs and ticket updates you just approve.
       </p>
       <div className="flex flex-col" style={{ gap: 11, margin: '26px 0 28px', textAlign: 'left', width: '100%', maxWidth: 360 }}>
         {points.map((p) => (
@@ -327,10 +343,10 @@ export function Welcome({ onBegin }: { onBegin: () => void }) {
 // ── Completion ────────────────────────────────────────────────────────────────
 export function Completion({ wiz }: { wiz: Wiz }) {
   const connected = TRACKERS.filter((t) => wiz.integrations?.[t.id])
-  const grantedCount = [wiz.perms.accessibility, wiz.perms.screen, wiz.perms.input].filter(Boolean).length
+  const grantedCount = [wiz.perms.accessibility, wiz.perms.screen].filter(Boolean).length
   const lines = [
-    { k: 'Permissions', v: `${grantedCount} of 3 granted` },
-    { k: 'Local model', v: 'Qwen3.5 2B · 2B · 4-bit' },
+    { k: 'Permissions', v: `${grantedCount} of 2 granted` },
+    { k: 'Local model', v: fmtModelLabel(MODEL_ID) },
     { k: 'Footprint', v: `${fmtSize(MODEL_RAM_GB + APP.ramGB)} memory` },
     { k: 'Connected', v: connected.length ? connected.map((c) => c.name).join(', ') : 'None yet' },
   ]
@@ -342,7 +358,7 @@ export function Completion({ wiz }: { wiz: Wiz }) {
       <Kicker style={{ marginBottom: 10 }}>Setup complete</Kicker>
       <h1 style={{ ...SERIF, fontSize: 38, lineHeight: 1, letterSpacing: '-.01em', color: 'var(--t-title)', marginBottom: 10 }}>You&apos;re all set.</h1>
       <p style={{ fontSize: 13.5, lineHeight: 1.5, color: 'var(--t-muted)', maxWidth: 340, textWrap: 'pretty', marginBottom: 22 }}>
-        Meridian is now tracking quietly in your menu bar — on-device, private, and matched to your work.
+        Meridian is now tracking quietly in your menu bar - on-device, private, and matched to your work.
       </p>
       <div style={{ width: '100%', maxWidth: 360, border: '0.5px solid var(--t-card-border)', borderRadius: 13, overflow: 'hidden' }}>
         {lines.map((l, i) => (
@@ -378,15 +394,15 @@ export const STEPS: StepMeta[] = [
   {
     id: 'permissions', n: '01', label: 'Permissions', kicker: 'Access',
     title: 'Let Meridian see your work',
-    subtitle: "Three macOS permissions let Meridian recognise what you're focused on. Read locally, never uploaded.",
+    subtitle: "Two macOS permissions let Meridian recognise what you're focused on. Read locally, never uploaded.",
     Body: PermissionsBody,
-    status: (s) => { const g = [s.perms.accessibility, s.perms.screen, s.perms.input].filter(Boolean).length; return g ? `${g} granted` : 'Not granted' },
-    canNext: (s) => !!(s.perms.accessibility && s.perms.screen && s.perms.input),
+    status: (s) => { const g = [s.perms.accessibility, s.perms.screen].filter(Boolean).length; return g ? `${g} granted` : 'Not granted' },
+    canNext: (s) => !!(s.perms.accessibility && s.perms.screen),
   },
   {
     id: 'integrations', n: '02', label: 'Integrations', kicker: 'Project tools',
     title: 'Connect your trackers',
-    subtitle: 'Link the tools you already use. Meridian matches each session to an issue and drafts a worklog you approve.',
+    subtitle: 'Link the tools you use so Meridian can match sessions to tickets and draft worklogs - skip it and Meridian still tracks your day; connect anytime from Settings.',
     Body: IntegrationsBody,
     status: (s) => { const c = TRACKERS.filter((t) => s.integrations?.[t.id]).length; return c ? `${c} connected` : 'Optional' },
     canNext: () => true,
@@ -394,7 +410,7 @@ export const STEPS: StepMeta[] = [
   {
     id: 'mlx', n: '03', label: 'Local intelligence', kicker: 'On-device AI',
     title: 'Set up on-device intelligence',
-    subtitle: 'Everything runs privately on your Mac with Apple MLX. The models started downloading when setup opened — this is just the finish line.',
+    subtitle: 'Everything runs privately on your Mac with Apple MLX. The models started downloading when setup opened - this is just the finish line.',
     Body: MLXBody,
     status: (s) => s.modelReady ? 'Ready' : (s.mlx?.runtime_found || s.mlx?.runtime_installed) ? 'Downloading…' : 'Installing…',
     // Block Finish until every model is on disk — the worklog pipeline (distill →

@@ -5,10 +5,26 @@
 
 'use client'
 
-import { mutate } from '@/lib/bridge'
+import { useEffect, useState } from 'react'
+import { load, mutate } from '@/lib/bridge'
+import type { AppInfo } from '@/lib/api-types'
 import { SectionCard, SectionHeader, FieldRow, SettingsButton } from './fields'
 
+// Colored only for a non-prod build — a prod dashboard shouldn't draw the eye
+// to its own version line; dev/staging should be unmistakable.
+const CHANNEL_COLOR: Record<AppInfo['channel'], string> = {
+  dev: 'var(--color-state-proposal)',
+  staging: 'var(--color-state-pending)',
+  prod: 'var(--t-faint)',
+}
+
 export function AccountSection() {
+  const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
+
+  useEffect(() => {
+    load<AppInfo>('/api/app-info', 'get_app_info').then(setAppInfo).catch(() => {})
+  }, [])
+
   return (
     <div className="max-w-[640px] flex flex-col gap-5">
       <div>
@@ -27,6 +43,17 @@ export function AccountSection() {
           }}>
             Go to Setup
           </SettingsButton>
+        </FieldRow>
+      </SectionCard>
+
+      <SectionCard>
+        <SectionHeader>About</SectionHeader>
+        <FieldRow label="Version" description="Which build of Meridian this is — dev, staging, or production.">
+          {appInfo && (
+            <span className="mt-body-sm font-mono font-semibold" style={{ color: CHANNEL_COLOR[appInfo.channel] }}>
+              v{appInfo.version}{appInfo.channel !== 'prod' && ` · ${appInfo.channel}`}
+            </span>
+          )}
         </FieldRow>
       </SectionCard>
     </div>

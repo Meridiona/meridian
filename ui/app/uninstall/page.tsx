@@ -80,7 +80,7 @@ export default function UninstallWizard() {
           {phase === 'select' && (
             <p style={{ fontSize: 12.5, lineHeight: 1.5, color: 'var(--t-muted)', marginTop: 8, maxWidth: 520 }}>
               This stops Meridian&apos;s background services first, so it&apos;s safe even if you never
-              drag the app to the Trash. Choose what else to remove — this cannot be undone.
+              drag the app to the Trash. Choose what else to remove - this cannot be undone.
             </p>
           )}
         </div>
@@ -172,7 +172,7 @@ function OptionRow({ checked, onToggle, title, subtitle, items }: {
         <p className="font-mono" style={{ fontSize: 10, color: 'var(--t-faint-2)', marginTop: 6 }}>
           {items.length === 0
             ? 'nothing found'
-            : `${items.length} item${items.length === 1 ? '' : 's'} — ${items.slice(0, 3).map((i) => i.label).join(', ')}${items.length > 3 ? ', …' : ''}`}
+            : `${items.length} item${items.length === 1 ? '' : 's'} - ${items.slice(0, 3).map((i) => i.label).join(', ')}${items.length > 3 ? ', …' : ''}`}
         </p>
       </div>
     </Row>
@@ -206,7 +206,7 @@ function SelectStep({
       <OptionRow
         checked={removeModels} onToggle={() => setRemoveModels(!removeModels)}
         title="Downloaded AI models"
-        subtitle="Meridian's own models in the shared HuggingFace cache — never touches models you downloaded for other tools"
+        subtitle="Meridian's own models in the shared HuggingFace cache - never touches models you downloaded for other tools"
         items={plan.models}
       />
 
@@ -215,9 +215,15 @@ function SelectStep({
           Always stopped and removed: the background daemon and Accessibility helper
           {alwaysRemoved.length > 0 ? ` (${alwaysRemoved.length} item${alwaysRemoved.length === 1 ? '' : 's'})` : ''}.
         </p>
+        {removeData && removeRuntime && (
+          <p style={{ fontSize: 11.5, color: 'var(--t-muted)', marginTop: 6 }}>
+            Meridian data and Python + MLX server are both checked, so this removes everything under
+            Meridian&apos;s data folder, not just what&apos;s listed above.
+          </p>
+        )}
         <p style={{ fontSize: 11.5, color: 'var(--t-muted)', marginTop: 6 }}>
           Note: this does <b>not</b> revoke Meridian&apos;s Accessibility / Screen Recording / Input
-          Monitoring grants — macOS keeps those in System Settings until you remove them yourself.
+          Monitoring grants - macOS keeps those in System Settings until you remove them yourself.
           The next screen has shortcuts for that.
         </p>
       </div>

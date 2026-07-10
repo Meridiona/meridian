@@ -49,6 +49,11 @@ use std::path::{Path, PathBuf};
 /// `scripts/meridian-cli.sh`'s `cmd_uninstall` — so `--remove-models` never
 /// touches a model the user downloaded separately for another tool (Ollama,
 /// LM Studio, etc).
+///
+/// The last two entries are the reranker + embedder roles from
+/// `services/agents/model_registry.py`'s `RERANKER`/`EMBEDDER` `ModelSpec`s —
+/// that module is the authoritative source for the pipeline's active model
+/// ids; keep these two in sync with its defaults if they ever change.
 const MODEL_CATALOG: &[&str] = &[
     "models--mlx-community--Llama-3.3-70B-Instruct-4bit",
     "models--mlx-community--DeepSeek-R1-Distill-Llama-70B-4bit",
@@ -60,6 +65,8 @@ const MODEL_CATALOG: &[&str] = &[
     "models--mlx-community--Qwen3.5-2B-OptiQ-4bit",
     "models--mlx-community--Qwen3.5-4B-MLX-4bit",
     "models--mlx-community--Llama-3.2-3B-Instruct-4bit",
+    "models--kerncore--Qwen3-Reranker-0.6B-MLX-4bit",
+    "models--mlx-community--Qwen3-Embedding-0.6B-8bit",
 ];
 
 /// One item in a plan/result list — a human label plus the path it names.

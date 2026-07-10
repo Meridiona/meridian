@@ -47,6 +47,7 @@ const reviewCount = $('review-count')
 const upd = $('upd')
 const updText = $('upd-text')
 const updVer = $('upd-ver')
+const popMeta = $('pop-meta')
 
 // ── State for the local 1-second ticker ──────────────────────────────────────
 let elapsed = 0        // live session seconds; re-synced on every status payload
@@ -439,6 +440,20 @@ upd.addEventListener('click', () => {
   })
 })
 
+// ── Version / channel badge ─────────────────────────────────────────────────
+// dev (unbundled `tauri dev`) vs staging vs prod, so it's obvious at a glance
+// which build is running — see commands::version::get_app_info.
+function loadAppInfo() {
+  invoke('get_app_info').then((info) => {
+    if (!info) return
+    popMeta.textContent = info.channel === 'prod'
+      ? `v${info.version}`
+      : `v${info.version} · ${info.channel}`
+    popMeta.dataset.channel = info.channel
+    resizeToContent()
+  }).catch((e) => dbg(`get_app_info failed: ${e}`))
+}
+
 // ── Window sizing ─────────────────────────────────────────────────────────────
 // Resize the Tauri window to exactly match the card's rendered height so no
 // transparent gap appears below the popup (a gap reads as a white band over the
@@ -512,6 +527,7 @@ function boot() {
   startTicker()
   invoke('get_status').then((s) => { render(s); resizeToContent() }).catch(() => {})
   checkUpdate()
+  loadAppInfo()
   armNotificationActions()
 }
 

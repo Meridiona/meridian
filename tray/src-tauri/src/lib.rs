@@ -13,7 +13,9 @@
 //! - [`mlx_server`]  — MLX child-process manager (Approach A bundled venv).
 //! - [`sys`]         — shared uid / notify / dashboard-URL helpers.
 //! - [`format`]      — duration formatting for the popover.
+//! - [`analytics`]   — PostHog product-analytics capture (DMG installs only).
 
+mod analytics;
 mod backend_install;
 #[cfg(feature = "capture")]
 mod capture;
@@ -183,15 +185,21 @@ pub fn run() {
                     let app = tray_handle.app_handle();
                     match &event {
                         TrayIconEvent::Click {
-                            button: MouseButton::Left,
+                            button,
                             button_state: MouseButtonState::Up,
                             rect,
                             ..
                         } => {
-                            tracing::info!("tray.event: Click");
-                            // Hide the hover tooltip on click (popover takes over).
+                            tracing::info!(?button, "tray.event: Click");
+                            // Hide the hover tooltip on ANY click — left (popover takes
+                            // over) or right (native menu takes over). Right-click was
+                            // previously unhandled here, leaving the tooltip stuck
+                            // visible behind the context menu.
                             if let Some(tt) = app.get_webview_window("tray-tooltip") {
                                 let _ = tt.hide();
+                            }
+                            if *button != MouseButton::Left {
+                                return;
                             }
                             if let Some(win) = app.get_webview_window("main") {
                                 let visible = win.is_visible().unwrap_or(false);
@@ -489,6 +497,7 @@ pub fn run() {
             commands::export_diagnostics_bundle,
             commands::get_ticket_parents,
             commands::get_version,
+            commands::get_app_info,
             commands::check_update,
             commands::install_update,
             commands::get_app_icon,
@@ -530,8 +539,8 @@ pub fn run() {
             commands::check_accessibility,
             commands::check_screen_recording,
             commands::request_screen_recording,
-            commands::check_input_monitoring,
-            commands::request_input_monitoring,
+            commands::check_notifications,
+            commands::request_notifications,
             commands::get_mlx_status,
             commands::start_mlx_server_cmd,
             commands::download_runtime_cmd,

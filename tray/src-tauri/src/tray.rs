@@ -179,16 +179,68 @@ pub(crate) fn open_wizard_window(app: &tauri::AppHandle) {
         let _ = win.set_focus();
         return;
     }
-    // The wizard renders the "A · Rail" shell (a 948×628 onboarding window with a
-    // left step rail); size the host window to fit it with a little breathing room.
-    if let Err(e) = WebviewWindowBuilder::new(app, "setup", WebviewUrl::App("setup".into()))
-        .title("Meridian — Setup")
-        .inner_size(980.0, 660.0)
-        .resizable(false)
+    // The wizard renders the "A · Rail" shell — a fixed 948×628 card centred on a
+    // full-bleed backdrop; size the host window to fit it with a little breathing
+    // room. Resizable (with a floor at the design size) so the user can grow it or
+    // enter macOS full-screen — the card stays centred and the backdrop just widens,
+    // so the layout never breaks.
+    match WebviewWindowBuilder::new(app, "setup", WebviewUrl::App("setup".into()))
+        .title("Meridian - Setup")
+        // Transparent title bar so the webview fills the *whole* window and the
+        // centred card gets equal backdrop margins on all four sides. With a
+        // normal (opaque) title bar the bar sits above the webview, so the top
+        // gap reads larger than the sides/bottom. Sized so the 948×628 card keeps
+        // ~26px margins all round — enough clearance for the overlaid traffic
+        // lights + title to sit in the top backdrop, not on the card.
+        .inner_size(1000.0, 680.0)
+        .min_inner_size(1000.0, 680.0)
+        .resizable(true)
+        .title_bar_style(tauri::TitleBarStyle::Transparent)
         .zoom_hotkeys_enabled(true)
         .build()
     {
-        eprintln!("tray: failed to open setup wizard: {e}");
+        Ok(win) => {
+            // Opt the window into native full-screen so the green traffic-light
+            // shows the enter-full-screen arrows, not the plain zoom (+) glyph.
+            #[cfg(target_os = "macos")]
+            make_fullscreenable(&win);
+            // Same gap as the dashboard window — see dismiss_popover_on_focus's
+            // doc comment (clicking back into an already-open setup window
+            // wouldn't otherwise dismiss a popover reopened on top of it).
+            crate::commands::system::dismiss_popover_on_focus(app, &win);
+        }
+        Err(e) => eprintln!("tray: failed to open setup wizard: {e}"),
+    }
+}
+
+/// macOS: opt a window into native full-screen. Tauri leaves
+/// `NSWindowCollectionBehaviorFullScreenPrimary` off even for a resizable window,
+/// so the green traffic-light button falls back to zoom (`+`) instead of the
+/// enter-full-screen arrows. OR the flag onto the raw `NSWindow` to fix it.
+#[cfg(target_os = "macos")]
+fn make_fullscreenable(win: &tauri::WebviewWindow) {
+    use objc2::{msg_send, runtime::AnyObject};
+
+    let ptr = match win.ns_window() {
+        Ok(p) if !p.is_null() => p as *mut AnyObject,
+        _ => {
+            tracing::warn!(label = %win.label(), "make_fullscreenable: ns_window unavailable");
+            return;
+        }
+    };
+    // NSWindowCollectionBehaviorFullScreenPrimary = 1 << 7.
+    const FULLSCREEN_PRIMARY: usize = 1 << 7;
+    // Safety: called on the main thread (menu dispatch / setup hook) with standard
+    // NSWindow selectors and no ownership transfer.
+    unsafe {
+        let ns = &*ptr;
+        let current: usize = msg_send![ns, collectionBehavior];
+        let _: () = msg_send![ns, setCollectionBehavior: current | FULLSCREEN_PRIMARY];
+        tracing::info!(
+            label = %win.label(),
+            behavior = current | FULLSCREEN_PRIMARY,
+            "make_fullscreenable: enabled native full-screen"
+        );
     }
 }
 
@@ -209,7 +261,7 @@ pub(crate) fn open_uninstall_window(app: &tauri::AppHandle) {
         return;
     }
     if let Err(e) = WebviewWindowBuilder::new(app, "uninstall", WebviewUrl::App("uninstall".into()))
-        .title("Meridian — Uninstall")
+        .title("Meridian - Uninstall")
         .inner_size(720.0, 620.0)
         .resizable(false)
         .zoom_hotkeys_enabled(true)

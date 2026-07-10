@@ -61,6 +61,10 @@ pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
                     let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 }
             });
+            // Clicking back into an already-open dashboard while the popover
+            // happens to be open on top of it wouldn't otherwise dismiss the
+            // popover — see dismiss_popover_on_focus's doc comment.
+            dismiss_popover_on_focus(&app, &win);
             Ok(())
         }
         Err(e) => {
@@ -109,13 +113,29 @@ pub async fn open_permission_pane(app: tauri::AppHandle, pane: String) -> Result
     let url = match pane.as_str() {
         "screen_recording" => {
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+                .to_string()
         }
         "accessibility" => {
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+                .to_string()
         }
         "input_monitoring" => {
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
+                .to_string()
         }
+        // Notification authorization lives under Notifications, not Privacy &
+        // Security. Anchored to our own bundle id so this opens Meridian's
+        // specific notification detail pane (Allow toggle, Alert Style, …)
+        // instead of just the app list — verified working via the
+        // `?id=<bundle-id>` param, which the pane's own extension metadata
+        // (`NotificationsSettings.appex`'s `allowsXAppleSystemPreferencesURLScheme`)
+        // supports even though it's otherwise undocumented. This is the deny
+        // recovery path: macOS shows the authorization dialog exactly once, so
+        // after a deny the wizard can only send the user here.
+        "notifications" => format!(
+            "x-apple.systempreferences:com.apple.preference.notifications?id={}",
+            app.config().identifier
+        ),
         other => return Err(format!("unknown permission pane: {other}")),
     };
     dismiss_popover(&app);
@@ -203,6 +223,28 @@ pub(crate) fn dismiss_popover(app: &tauri::AppHandle) {
         }
         let _ = win.hide();
     }
+}
+
+/// Wires `win` to dismiss the popover whenever it gains focus. Call once,
+/// right after building any window OTHER than the popover itself (`dashboard`,
+/// `setup`, …).
+///
+/// `dismiss_popover` at open-time (above) only covers the moment a window is
+/// FIRST opened. It does not cover the case where that window was already
+/// open in the background, the popover is reopened on top of it, and the user
+/// then clicks back into the already-open window: `install_click_outside_monitor`'s
+/// global `NSEvent` monitor never fires for that click because
+/// `addGlobalMonitorForEventsMatchingMask:` only fires for events delivered to
+/// OTHER processes, not clicks landing on one of our own windows (see that
+/// function's doc comment in `lib.rs`). `Focused(true)` on the other window is
+/// the one signal that does fire for an in-app click, so it's the dismiss hook.
+pub(crate) fn dismiss_popover_on_focus(app: &tauri::AppHandle, win: &tauri::WebviewWindow) {
+    let app_handle = app.clone();
+    win.on_window_event(move |event| {
+        if let WindowEvent::Focused(true) = event {
+            dismiss_popover(&app_handle);
+        }
+    });
 }
 
 #[cfg(test)]

@@ -75,7 +75,6 @@ html, body {
 .pop {
   background: var(--paper);
   border-radius: var(--radius);
-  border: 1px solid rgba(120, 90, 200, 0.14);
   box-shadow:
     0 24px 60px -18px rgba(30, 15, 70, 0.5),
     0 6px 16px -8px rgba(30, 15, 70, 0.3);
@@ -434,3 +433,18 @@ button:focus-visible {
 .foot-btn:hover { background: var(--surface-2); }
 .foot-quit { color: var(--danger); }
 .foot-sep { width: 1px; height: 14px; background: var(--rule-2); }
+
+/* ── Version / channel badge ───────────────────────────────────────────────
+   Muted + neutral for a production build; colored for dev/staging so a
+   non-prod popover is unmistakable at a glance. Empty until boot() paints it
+   (invoke('get_app_info')), so it takes no layout space before then. */
+.pop-meta {
+  text-align: center;
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: .03em;
+  color: var(--ink-4);
+  padding: 0 16px 8px;
+}
+.pop-meta:empty { display: none; }
+.pop-meta[data-channel="dev"] { color: var(--accent); }
+.pop-meta[data-channel="staging"] { color: var(--warn); }
