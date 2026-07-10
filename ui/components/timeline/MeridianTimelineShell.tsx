@@ -14,7 +14,6 @@ import { load } from '@/lib/bridge'
 import type { RuntimeSettings } from '@/lib/settings'
 import { applyTheme } from '@/lib/theme'
 import HealthBanner from '@/components/HealthBanner'
-import MustFixBanner from '@/components/MustFixBanner'
 import { useTimelineData } from './useTimelineData'
 import { dayString, shiftDay, isPending } from './types'
 import { Toolbar } from './Toolbar'
@@ -65,24 +64,13 @@ export default function MeridianTimelineShell() {
       .catch(() => {})
   }, [])
 
-  // NoticeBar/NotificationBanner live at the root layout, outside this tree,
-  // so their "Open"/"Fix in Tasks" CTAs reach the right modal via window
-  // events instead of props. meridian:open-plan/meridian:open-worklogs are
-  // NotificationBanner's deep_link targets for daily-plan and worklog-ready
-  // notices (src/daily_plan.rs, src/pm_worklog/scheduler.rs) — both used to
-  // be routes before the dashboard folded into this one-pager.
+  // NoticeBar lives at the root layout, outside this tree, so its
+  // "Fix in Tasks" CTA reaches the Tasks modal via a window event instead of
+  // props.
   useEffect(() => {
     const openTasks = () => setActiveModal('tasks')
-    const openPlan = () => setActiveModal('plan')
-    const openWorklogs = () => { setReviewFocusKey(null); setActiveModal('review') }
     window.addEventListener('meridian:open-tasks', openTasks)
-    window.addEventListener('meridian:open-plan', openPlan)
-    window.addEventListener('meridian:open-worklogs', openWorklogs)
-    return () => {
-      window.removeEventListener('meridian:open-tasks', openTasks)
-      window.removeEventListener('meridian:open-plan', openPlan)
-      window.removeEventListener('meridian:open-worklogs', openWorklogs)
-    }
+    return () => window.removeEventListener('meridian:open-tasks', openTasks)
   }, [])
 
   // Changing day resets the selected hour (its detail no longer applies).
@@ -122,10 +110,6 @@ export default function MeridianTimelineShell() {
   return (
     <div className="relative h-[100svh] overflow-hidden flex flex-col" style={{ background: 'var(--win-bg)' }}>
       <HealthBanner />
-      <MustFixBanner
-        onOpenCleanup={() => setActiveModal('cleanup')}
-        hidden={activeModal === 'cleanup'}
-      />
 
       <Toolbar
         day={day}
