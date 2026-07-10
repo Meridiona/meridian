@@ -775,9 +775,11 @@ where
 }
 
 /// Stop our managed MLX server (SIGTERM + clear the pid marker). Used by the
-/// background upgrade to take the old runtime offline for the swap; a no-op when
+/// background upgrade to take the old runtime offline for the swap, and by the
+/// uninstall wizard ([`crate::commands::uninstall::execute_uninstall`]) before
+/// it deletes the runtime out from under a still-running process; a no-op when
 /// no server is recorded.
-async fn stop_server(manager: &SharedMlxManager) {
+pub(crate) async fn stop_server(manager: &SharedMlxManager) {
     let pid = manager.lock().await.pid.take();
     if let Some(pid) = pid {
         kill_pid(pid);

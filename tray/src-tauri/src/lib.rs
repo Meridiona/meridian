@@ -537,6 +537,9 @@ pub fn run() {
             commands::download_runtime_cmd,
             commands::prefetch_model_cmd,
             commands::detect_system_specs,
+            // Uninstall wizard (plan + execute; see src/uninstall.rs for the CLI it drives)
+            commands::get_uninstall_plan,
+            commands::execute_uninstall,
             tray_debug,
         ])
         .build(tauri::generate_context!())
