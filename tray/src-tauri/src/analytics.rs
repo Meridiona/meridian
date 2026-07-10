@@ -48,15 +48,30 @@ use std::time::Duration;
 use tracing::Instrument;
 
 /// PostHog Cloud (US region) project token — a **public** write-only capture
-/// key, safe to embed in a shipped client (unlike a personal/secret API key).
-/// Overridable via `MERIDIAN_POSTHOG_KEY` for testing against a different
-/// project.
-const DEFAULT_POSTHOG_API_KEY: &str = "phc_zDagQwSLyR9dwT6LPQ6QfygQkpnXrGAKhrJLv5kBFbvH";
+/// key (safe to embed in a shipped client, unlike a personal/secret API key;
+/// see the PR #427 discussion). **Baked in at compile time**, never committed
+/// to source: the official release build injects it via the
+/// `MERIDIAN_POSTHOG_API_KEY` build env (a GitHub Actions secret — see
+/// `.github/workflows/release.yml` / `release-staging.yml`), mirroring
+/// `meridian-oauth`'s `DEFAULT_CLIENT_SECRET` pattern. A plain source build
+/// without that env compiles in an empty string, which disables analytics
+/// entirely (see [`posthog_api_key`]) rather than shipping a placeholder.
+const DEFAULT_POSTHOG_API_KEY: &str = match option_env!("MERIDIAN_POSTHOG_API_KEY") {
+    Some(k) => k,
+    None => "",
+};
 /// US Cloud ingestion host — matches the project's region.
 const POSTHOG_HOST: &str = "https://us.i.posthog.com";
 
+/// Resolve the capture key: the `POSTHOG_API_KEY` runtime env override (e.g.
+/// set in `~/.meridian/.env` for a source/dev build — the daemon/tray already
+/// load that file via `dotenvy`) if set and non-blank, else the compiled-in
+/// [`DEFAULT_POSTHOG_API_KEY`].
 fn posthog_api_key() -> String {
-    std::env::var("MERIDIAN_POSTHOG_KEY").unwrap_or_else(|_| DEFAULT_POSTHOG_API_KEY.to_string())
+    std::env::var("POSTHOG_API_KEY")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_POSTHOG_API_KEY.to_string())
 }
 
 /// Persisted analytics bookkeeping. Deliberately its own file — never merged
@@ -125,9 +140,20 @@ async fn capture(
     distinct_id: &str,
     mut properties: serde_json::Map<String, serde_json::Value>,
 ) {
+    let api_key = posthog_api_key();
+    if api_key.is_empty() {
+        // No compiled-in secret and no runtime override — a source build
+        // without MERIDIAN_POSTHOG_API_KEY set. Skip silently rather than
+        // POST an unauthenticated request PostHog will just reject.
+        tracing::debug!(
+            event,
+            "analytics: no PostHog key configured — skipping capture"
+        );
+        return;
+    }
     properties.insert("$geoip_disable".to_string(), serde_json::Value::Bool(true));
     let body = serde_json::json!({
-        "api_key": posthog_api_key(),
+        "api_key": api_key,
         "event": event,
         "distinct_id": distinct_id,
         "properties": properties,
