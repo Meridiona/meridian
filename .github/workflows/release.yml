@@ -66,6 +66,15 @@ jobs:
       #   gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # Tauri's DMG bundler skips the AppleScript step that sets the Finder
+      # window background/icon layout whenever `CI` is set (every GitHub
+      # Actions job sets `CI=true`), assuming CI runners can't drive Finder —
+      # https://github.com/tauri-apps/tauri/issues/1731. GitHub-hosted macOS
+      # runners DO have a full desktop session, so force the decoration step
+      # to run; without this the DMG ships the drag-to-Applications
+      # background.png as an inert file with no .DS_Store, so Finder never
+      # displays it.
+      TAURI_BUNDLER_DMG_IGNORE_CI: "true"
     steps:
       - uses: actions/checkout@v4
         with:
