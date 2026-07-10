@@ -450,6 +450,47 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&base).await;
     }
 
+    /// `cleanup_legacy_a11y_helper` must remove the stale plist + staged binary
+    /// it leaves behind from a pre-cutover install — the concrete, automatable
+    /// half of the PR #431 review's "confirm the update path boots out the old
+    /// agent" ask (the `launchctl`/`tccutil` system calls are real syscalls with
+    /// no fake-able state to assert on in a unit test, but the file-removal side
+    /// — the part that actually stops the stale entry from lingering once no
+    /// process owns it — is fully verifiable here).
+    #[tokio::test]
+    async fn cleanup_legacy_a11y_helper_removes_stale_files() {
+        let home = std::env::temp_dir().join(format!(
+            "meridian-a11y-helper-cleanup-{}-{}",
+            std::process::id(),
+            "test"
+        ));
+        let _ = tokio::fs::remove_dir_all(&home).await;
+        tokio::fs::create_dir_all(home.join("Library/LaunchAgents"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(home.join(".meridian/bin"))
+            .await
+            .unwrap();
+
+        let plist = home.join("Library/LaunchAgents/com.meridiona.a11y-helper.plist");
+        let bin = home.join(".meridian/bin/meridian-a11y-helper");
+        tokio::fs::write(&plist, "<plist/>").await.unwrap();
+        tokio::fs::write(&bin, "fake binary").await.unwrap();
+
+        cleanup_legacy_a11y_helper(&home).await;
+
+        assert!(
+            tokio::fs::metadata(&plist).await.is_err(),
+            "leftover a11y-helper plist should have been removed"
+        );
+        assert!(
+            tokio::fs::metadata(&bin).await.is_err(),
+            "leftover a11y-helper binary should have been removed"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&home).await;
+    }
+
     #[test]
     fn apply_subs_replaces_every_occurrence() {
         let out = apply_subs(
