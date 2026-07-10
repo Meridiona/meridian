@@ -14,7 +14,7 @@ use crate::state::{AppState, HealthStatus};
 use crate::sys;
 use std::sync::{Arc, Mutex};
 use tauri::{
-    menu::{Menu, MenuBuilder, MenuItemBuilder},
+    menu::{Menu, MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     Manager, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 
@@ -45,6 +45,14 @@ pub(crate) fn build_tray_menu<R: Runtime>(
     // DMG auto-update (handled by tauri-plugin-updater). A no-op toast in a
     // source/dev run; the real swap+relaunch only happens for a packaged `.app`.
     let update_item = MenuItemBuilder::with_id("check_updates", "Check for Updates…").build(app)?;
+    // Opens the in-app uninstall wizard — the safe way to tear Meridian down
+    // (stops every launchd agent + the MLX server, offers to remove data/
+    // runtime/models, and points at System Settings for the permission grants
+    // deleting the app never revokes). Separated from the rest of the menu
+    // since it's a destructive action, same grouping convention as Quit.
+    let uninstall_item =
+        MenuItemBuilder::with_id("open_uninstall", "Uninstall Meridian…").build(app)?;
+    let separator = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", "Quit Meridian").build(app)?;
     MenuBuilder::new(app)
         .items(&[
@@ -54,6 +62,8 @@ pub(crate) fn build_tray_menu<R: Runtime>(
             &worklogs_item,
             &restart_item,
             &update_item,
+            &separator,
+            &uninstall_item,
             &quit_item,
         ])
         .build()
@@ -70,6 +80,7 @@ pub(crate) fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
         "toggle_daemon" => toggle_from_menu(app),
         "restart_daemon" => restart_from_menu(),
         "check_updates" => crate::update::check_for_updates(app),
+        "open_uninstall" => open_uninstall_window(app),
         "quit" => app.exit(0),
         _ => {}
     }
@@ -230,5 +241,32 @@ fn make_fullscreenable(win: &tauri::WebviewWindow) {
             behavior = current | FULLSCREEN_PRIMARY,
             "make_fullscreenable: enabled native full-screen"
         );
+    }
+}
+
+/// Open (or focus) the in-app uninstall wizard window. Loads the Next
+/// `/uninstall` route; the wizard drives the plan/execute flow entirely
+/// through Tauri commands (`commands::uninstall`), same as the setup wizard.
+///
+/// Dismisses the popover first (see
+/// [`crate::commands::system::dismiss_popover`]) — the native tray-menu
+/// "Uninstall Meridian…" item is currently this window's only opener, but it
+/// follows the same convention as every other opener in this file so a future
+/// caller (a Settings-page "Uninstall…" button) gets the fix for free.
+pub(crate) fn open_uninstall_window(app: &tauri::AppHandle) {
+    crate::commands::system::dismiss_popover(app);
+    if let Some(win) = app.get_webview_window("uninstall") {
+        let _ = win.show();
+        let _ = win.set_focus();
+        return;
+    }
+    if let Err(e) = WebviewWindowBuilder::new(app, "uninstall", WebviewUrl::App("uninstall".into()))
+        .title("Meridian - Uninstall")
+        .inner_size(720.0, 620.0)
+        .resizable(false)
+        .zoom_hotkeys_enabled(true)
+        .build()
+    {
+        eprintln!("tray: failed to open uninstall wizard: {e}");
     }
 }

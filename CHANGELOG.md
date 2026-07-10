@@ -1,3 +1,93 @@
+## [1.70.0](https://github.com/Meridiona/meridian/compare/v1.69.1...v1.70.0) (2026-07-09)
+
+### 🚀 Features
+
+* **asana:** add Asana reference adapter (Step 4, adapter-only) ([e548fbc](https://github.com/Meridiona/meridian/commit/e548fbcacb9910abd36e96c6493216f6ed29b16d))
+* **azure-devops:** populate CDM columns via the canonical adapter (Stage 3b) ([abffecd](https://github.com/Meridiona/meridian/commit/abffecd9bb78e30c66b7911bcb6c79e42f520c5c))
+* **github:** add GitHub adapter + populate CDM columns (Stage 3b + Step 4) ([74ac310](https://github.com/Meridiona/meridian/commit/74ac3104361e0edd6f21917e19885185948eea60)), closes [owner/repo#number](https://github.com/owner/repo/issues/number)
+* **hf-proxy:** bake MERIDIAN_HF_ENDPOINT into the staging channel ([e0208f4](https://github.com/Meridiona/meridian/commit/e0208f4972fdd834478ddcf89b498db06cc0ea28))
+* **integrations:** let the GitHub connect flow pick Projects v2 boards ([aba509c](https://github.com/Meridiona/meridian/commit/aba509c773ccf85c396f30d45ad83cd651f5fc72))
+* **jira:** populate CDM columns via the canonical adapter (Stage 3b) ([be88d69](https://github.com/Meridiona/meridian/commit/be88d69c7eff81eee6e6177fb8e47a3c6bf5f48c))
+* land coding-agents widening, zoom hotkeys, app icons, OAuth cancel fix, Overview/Hour-detail redesign ([#415](https://github.com/Meridiona/meridian/issues/415)) ([e26ce30](https://github.com/Meridiona/meridian/commit/e26ce309815bcbb22fdb90e8bd675ac5f1d23ae3))
+* **linear:** populate CDM columns via the canonical adapter (Stage 3b) ([50ba96f](https://github.com/Meridiona/meridian/commit/50ba96f4e4dee76bc52662683fe3787d71e4ab86))
+* **meridian-core:** add CanonicalTask canonical model + enums ([a9b87ca](https://github.com/Meridiona/meridian/commit/a9b87ca5d04d5861ac66e66f53886478cc777561))
+* **meridian-core:** add Linear + Azure DevOps reference adapters ([c94dbf1](https://github.com/Meridiona/meridian/commit/c94dbf1890b885112d54976af5b6fbddba04ff2a))
+* **meridian-core:** revise CanonicalTask for six-provider fidelity ([b6d2f5b](https://github.com/Meridiona/meridian/commit/b6d2f5bda17aece2e235aec3af476ccb56946242))
+* **meridian-core:** sketch ProviderAdapter trait + Jira reference adapter ([b9a1c1a](https://github.com/Meridiona/meridian/commit/b9a1c1a2795e34e542c88ac396db3ba7272928f6))
+* **mlx:** retry MLX runtime download with exponential backoff ([e8bffe0](https://github.com/Meridiona/meridian/commit/e8bffe0ee7f65579c8992f34d25fdc60db032fb1))
+* **notifications:** default to persistent Alerts style + capture dismissals ([4621729](https://github.com/Meridiona/meridian/commit/4621729207781754f6f7bf876396b7a3cf51b65a))
+* **notifications:** expiry-retraction + outbox-wide correlation + NOTIFICATIONS.md integration guide ([170baaf](https://github.com/Meridiona/meridian/commit/170baaf2a7371cb660c854876b60c427e4444568))
+* **notifications:** interactive toast rails — plugin swap, response leg, snooze consumer ([9677df5](https://github.com/Meridiona/meridian/commit/9677df58601c16e34acf622ed4e4bd12975501d8))
+* **oauth:** native GitHub OAuth device flow (replace headless gh CLI) ([6bb4094](https://github.com/Meridiona/meridian/commit/6bb4094e9987b98cdf3c25f97a08e86520f3c5f6))
+* **pm_tasks:** add CDM columns + read path (Stage 3a) ([6c4b77e](https://github.com/Meridiona/meridian/commit/6c4b77e80f962e4c4dc23aad9837c513bfdaeee8))
+* **popover:** click Capturing subtitle to expand a health panel ([300d26a](https://github.com/Meridiona/meridian/commit/300d26a46667cc0c16864a16ed0e5ba57c45a3f9))
+* **setup:** expected-memory panel + HF caching-proxy for model downloads ([d0635b7](https://github.com/Meridiona/meridian/commit/d0635b7dcb8d7e217d6f4a92134920af7d3f64a6))
+* **timeline:** add Open in tracker link to worklog cards ([2f82271](https://github.com/Meridiona/meridian/commit/2f822712209e16db88cc0dcf43713f94234ebd1f))
+* **timeline:** show only TLDR inline for solo-mode hours ([#406](https://github.com/Meridiona/meridian/issues/406)) ([0052b5b](https://github.com/Meridiona/meridian/commit/0052b5b024a7c622aa36a4d8e71659c50734349e))
+* **tray:** open dashboard when app is re-activated externally ([400d5da](https://github.com/Meridiona/meridian/commit/400d5da49951f73666faf9ec639d747a7d15549b))
+* **trello:** add Provider::Trello + adapter, populate CDM columns (Stage 3b) ([1c36a94](https://github.com/Meridiona/meridian/commit/1c36a94b831aa0f1fbb196f3df8a453e427f5a10))
+
+### 🐛 Bug Fixes
+
+* **daily-plan:** expire plan nudges at local midnight so banners don't stack ([99b2df8](https://github.com/Meridiona/meridian/commit/99b2df892e6af12675d0042ea84c837f279e5e07))
+* **dev:** kill orphaned next dev + legacy a11y-helper on dev-start ([#408](https://github.com/Meridiona/meridian/issues/408)) ([ca75df4](https://github.com/Meridiona/meridian/commit/ca75df4bff84b05685589e8190686a7baefa2922))
+* **hf-proxy:** address review — auth-cache leak, missing test, XML/sed escaping ([1de7952](https://github.com/Meridiona/meridian/commit/1de795285b514bb4f3d8ddc4115ddade8fe736e2))
+* **hooks:** propagate pre-push check failures out of background jobs ([6c376ce](https://github.com/Meridiona/meridian/commit/6c376ceb074c5c58e4ff380e4952bee2c7ea01f1))
+* **integrations:** address review comments on GitHub OAuth device flow ([63157bf](https://github.com/Meridiona/meridian/commit/63157bfe2e7bf730c7dff72fd6be12213b2efc81))
+* **meridian-core:** adapter review catches (Jira status precedence, ADO org) ([00e566a](https://github.com/Meridiona/meridian/commit/00e566a220edb9b3b87448cc161b1ef2f1e48aaf)), closes [#364](https://github.com/Meridiona/meridian/issues/364)
+* **mlx:** correct backoff/attempts off-by-one flagged in review ([18d9363](https://github.com/Meridiona/meridian/commit/18d9363dc0fceda7ccc95190160f1a3854dcb72c))
+* **notifications:** add /usr/lib/swift rpath — Swift plugin layer needs the OS Swift runtime ([7f10179](https://github.com/Meridiona/meridian/commit/7f10179381bb5f891a1e5a34ecfe4469f2a290c2))
+* **notifications:** correlate responses by notification id — plugin never round-trips extras ([ba03a8b](https://github.com/Meridiona/meridian/commit/ba03a8b72903adcda5fd762e1c9671ce999193a6))
+* **notifications:** disable plugin default features — notify-rust was shadowing the Swift layer ([ce38d21](https://github.com/Meridiona/meridian/commit/ce38d218c6c8ab50fb6a8e816d223807c5083d16))
+* **notifications:** resolve PR [#392](https://github.com/Meridiona/meridian/issues/392) review findings ([c3fcef6](https://github.com/Meridiona/meridian/commit/c3fcef6e5f38b5b217f0ea812cf9c4e099b73ec9))
+* **notifications:** stringify extra values — Swift decodes extra as [String: String] ([a0b86de](https://github.com/Meridiona/meridian/commit/a0b86de8670f905db2c0334212384ec310fbe6d6))
+* **popover:** surface the MLX Error(String) message in the health row ([589f005](https://github.com/Meridiona/meridian/commit/589f0052b3c4d0cd39504e723e7fa9c80c2a2aec))
+* **services:** bump pyproject version past live runtime-staging (1.69.2) ([1e3bdfe](https://github.com/Meridiona/meridian/commit/1e3bdfef9782afc72bd300e54641e0e0a5c76abb))
+* **services:** cap transformers <5.13 — restore MLX runtime smoke/publish ([5792e4a](https://github.com/Meridiona/meridian/commit/5792e4a4a2d62d00c409c7554d9b8723cd8fe480))
+* **timeline:** scope Overview panel's day label and Focus stats to the viewed day ([#403](https://github.com/Meridiona/meridian/issues/403)) ([4dcbd6a](https://github.com/Meridiona/meridian/commit/4dcbd6ae6f130b2b5738acfb690af71b3142e98f))
+* **ui:** address GitHub Advanced Security findings from PR [#416](https://github.com/Meridiona/meridian/issues/416) ([ebdfc88](https://github.com/Meridiona/meridian/commit/ebdfc8871141ad4f380f79a56b5d464e1ec86a5c))
+* **ui:** global external-link interceptor + mailto/tel + rejection fallback ([f9f55e3](https://github.com/Meridiona/meridian/commit/f9f55e3ec99206dafaea8542d2eaa7732ff1de37)), closes [#386](https://github.com/Meridiona/meridian/issues/386)
+* **ui:** make every "Open in tracker" link actually open the browser ([f51e8e8](https://github.com/Meridiona/meridian/commit/f51e8e8ee0a581e09ed128c973e5f3dda2b08a58))
+* **wizard:** hide global chrome banners on the setup route ([769a410](https://github.com/Meridiona/meridian/commit/769a410d986c72db87ee9b84a2318cfeafcdf5ab))
+* **wizard:** keep ExternalLinks mounted; gate only the visible banners ([d08ba8c](https://github.com/Meridiona/meridian/commit/d08ba8c7fbe5193455a032cc91e2e522e0734fe1))
+* **worklog:** local-time inline markers in session distill, plain-language activity TLDR ([#405](https://github.com/Meridiona/meridian/issues/405)) ([38bdd34](https://github.com/Meridiona/meridian/commit/38bdd34fc99555b4b17dc48dc11a358e4b117f00))
+
+### ♻️ Refactoring
+
+* **oauth:** remove dead gh-CLI GitHub login path ([bf5ce98](https://github.com/Meridiona/meridian/commit/bf5ce98b354cee78b8d846ef66583edd720fd8c5))
+* **observability:** consolidate all logging into one OpenTelemetry pipeline ([#395](https://github.com/Meridiona/meridian/issues/395)) ([5af8510](https://github.com/Meridiona/meridian/commit/5af8510c6c1a1f223617047e90343d69f12c90bd))
+* **providers:** dedupe CDM glue into providers::cdm, split oversized connectors ([6fc9757](https://github.com/Meridiona/meridian/commit/6fc97577a2b9cb12d21e3f6dbfec3b7a87a0ddbb))
+* **triage:** remove the labels hygiene check and its write-back ([7742388](https://github.com/Meridiona/meridian/commit/77423882a960b9f45e394845a1dc2ae394250d76))
+
+### 🤖 CI
+
+* run CI on pushes and PRs targeting pre-main ([70003d1](https://github.com/Meridiona/meridian/commit/70003d15c7f315c9af36ff7c6f7f26fb96937c7b))
+* run the tray popover unit tests (tray/src) ([7fff6fa](https://github.com/Meridiona/meridian/commit/7fff6fa23ec415e6c9501191c7eeb57b5656e974))
+
+### ✅ Tests
+
+* **meridian-core:** use example.com in CanonicalTask fixtures ([a5d21bf](https://github.com/Meridiona/meridian/commit/a5d21bf43c5406edeaeb22b5a7cba76023598b2a))
+* **meridian-core:** use example.com in Jira adapter fixtures ([cf4a277](https://github.com/Meridiona/meridian/commit/cf4a27783daa53280603987c1acf7d88b5ed3c79))
+* **meridian-core:** use generic developer name in CanonicalTask fixture ([2cf5640](https://github.com/Meridiona/meridian/commit/2cf56404561a32be088b450f788b0fc897e8d52b))
+* **meridian-core:** use generic developer name in Jira adapter fixture ([4391439](https://github.com/Meridiona/meridian/commit/43914393c1e1cf29fdeea7d331e98a80e2dce92f))
+* move tray popover tests into ui/__tests__ (bun auto-discovers) ([a238e23](https://github.com/Meridiona/meridian/commit/a238e23ff3a80e1695dd3cb31075176264a79ed6))
+* **popover:** DOM harness for the Capturing health panel + fix MLX status ([a14e5be](https://github.com/Meridiona/meridian/commit/a14e5be67ed06e8f59cc4bfa42cbc038e560fdfa))
+* **tray:** unit-test reopen routing + cfg-gate the macOS-only handler ([4560f56](https://github.com/Meridiona/meridian/commit/4560f56dda33216f2da1fdca570b5b9cf90301b5))
+
+### 📝 Documentation
+
+* **claude:** drop stale SCREENPIPE_DB env-var row (removed in this PR) ([52f01ba](https://github.com/Meridiona/meridian/commit/52f01ba72863d521c56d9de153481e9ba76e23d2))
+* **ticket_update:** drop stale label mentions from provider module docs ([c990e31](https://github.com/Meridiona/meridian/commit/c990e314d813dcb3d00042b4c55309c122ea7aa7))
+* **tray:** note has_visible_windows is intentionally ignored in reopen ([31064f7](https://github.com/Meridiona/meridian/commit/31064f714e25794be2f6f63d632ed1864dca93cf))
+
+### 🔧 Chores
+
+* **hf-proxy:** turnkey deploy tooling for the HF caching Worker ([88aa9c8](https://github.com/Meridiona/meridian/commit/88aa9c82e16aad66103ad5778f6f321cbe467eff))
+* **hf-proxy:** wire hf.meridiona.com custom domain ([e774f71](https://github.com/Meridiona/meridian/commit/e774f7193de02ae65bd661720ff9cbe12e3b1f64))
+* re-trigger CI on pre-main (no-op) ([1820d69](https://github.com/Meridiona/meridian/commit/1820d69f1d3b78b6ded7b75464bbea4df4a05700))
+* remove retired daemon/service artifacts ([818311b](https://github.com/Meridiona/meridian/commit/818311b0b8474307d833be852e090c04fab1c7bd))
+* stop duplicate worklog_hour runs from concurrent daemons ([#404](https://github.com/Meridiona/meridian/issues/404)) ([90e078e](https://github.com/Meridiona/meridian/commit/90e078efafdfb08bf1cd5641416abc7b8a0cb7af))
+
 ## [1.69.1](https://github.com/Meridiona/meridian/compare/v1.69.0...v1.69.1) (2026-07-05)
 
 ### 🐛 Bug Fixes

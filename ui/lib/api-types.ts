@@ -335,6 +335,28 @@ export interface BannerNotification {
   created_at: string
 }
 
+// ── Uninstall wizard (`get_uninstall_plan` / `execute_uninstall`) ────────────
+
+export interface UninstallItem {
+  label: string
+  path: string
+}
+
+export interface UninstallPlan {
+  agents: UninstallItem[]
+  staged_binaries: UninstallItem[]
+  data: UninstallItem[]
+  runtime: UninstallItem[]
+  models: UninstallItem[]
+  error?: string
+}
+
+export interface UninstallResult {
+  removed: string[]
+  errors: string[]
+  error?: string
+}
+
 // ── App info (`get_app_info`) ──────────────────────────────────────────────────
 
 export interface AppInfo {

@@ -23,6 +23,7 @@
 //! - [`tasks`]     — board re-sync action (`/api/tasks/sync`, spawns `meridian`).
 //! - [`triage`]    — cleanup working set + the decision/ignore DB writes.
 //! - [`setup`]     — first-run detection, permission probes, MLX status/start.
+//! - [`uninstall`] — the in-app uninstall wizard's plan + execute commands.
 //! - [`version`]   — installed vs. published version (`/api/version`).
 //! - [`worklogs`]  — worklog review read + edit/approve/reject/unapprove writes.
 //!
@@ -46,6 +47,7 @@ pub mod setup;
 pub mod system;
 pub mod tasks;
 pub mod triage;
+pub mod uninstall;
 pub mod version;
 pub mod worklogs;
 
@@ -68,5 +70,6 @@ pub use setup::*;
 pub use system::*;
 pub use tasks::*;
 pub use triage::*;
+pub use uninstall::*;
 pub use version::*;
 pub use worklogs::*;
