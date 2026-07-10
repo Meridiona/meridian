@@ -13,7 +13,9 @@
 //! - [`mlx_server`]  — MLX child-process manager (Approach A bundled venv).
 //! - [`sys`]         — shared uid / notify / dashboard-URL helpers.
 //! - [`format`]      — duration formatting for the popover.
+//! - [`analytics`]   — PostHog product-analytics capture (DMG installs only).
 
+mod analytics;
 mod backend_install;
 #[cfg(feature = "capture")]
 mod capture;

@@ -113,6 +113,16 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
             refresh_current_task(pool, &state).await;
             if do_health {
                 refresh_today(pool, &state).await;
+                // Spawned off, not awaited inline: on the rare tick where this
+                // actually fires (≤1 install event ever + ≤1/day), a slow or
+                // hanging PostHog response (5s timeout) must not delay the
+                // more user-visible steps below (notification drain, live
+                // notices/banners, tray icon/menu refresh).
+                let analytics_app = app.clone();
+                let analytics_pool = pool.clone();
+                tauri::async_runtime::spawn(async move {
+                    crate::analytics::maybe_send_daily_tick(&analytics_app, &analytics_pool).await;
+                });
             }
             if do_worklogs {
                 refresh_worklogs(pool, &state).await;

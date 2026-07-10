@@ -50,6 +50,9 @@ futures-util = "0.3"
 # SHA-256 verification of the downloaded runtime tarball against the manifest.
 sha2 = "0.10"
 chrono = { version = "0.4", features = ["clock"] }
+# Anonymous per-install id for product analytics (analytics.rs) — already in
+# the workspace lockfile transitively, so this adds no new crate to the tree.
+uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
 dotenvy = "0.15"
 # Lean shared data layer (DB row types + read queries) — NOT the full daemon.
