@@ -208,13 +208,12 @@ pub(crate) fn open_uninstall_window(app: &tauri::AppHandle) {
         let _ = win.set_focus();
         return;
     }
-    if let Err(e) =
-        WebviewWindowBuilder::new(app, "uninstall", WebviewUrl::App("uninstall".into()))
-            .title("Meridian — Uninstall")
-            .inner_size(720.0, 620.0)
-            .resizable(false)
-            .zoom_hotkeys_enabled(true)
-            .build()
+    if let Err(e) = WebviewWindowBuilder::new(app, "uninstall", WebviewUrl::App("uninstall".into()))
+        .title("Meridian — Uninstall")
+        .inner_size(720.0, 620.0)
+        .resizable(false)
+        .zoom_hotkeys_enabled(true)
+        .build()
     {
         eprintln!("tray: failed to open uninstall wizard: {e}");
     }
