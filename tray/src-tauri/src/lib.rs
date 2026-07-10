@@ -497,6 +497,7 @@ pub fn run() {
             commands::export_diagnostics_bundle,
             commands::get_ticket_parents,
             commands::get_version,
+            commands::get_app_info,
             commands::check_update,
             commands::install_update,
             commands::get_app_icon,
