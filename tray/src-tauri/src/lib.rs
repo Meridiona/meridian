@@ -420,11 +420,13 @@ pub fn run() {
                 });
             }
 
-            // Stage + register the bundled backend (daemon + a11y-helper) on the
-            // self-contained .app DMG path. No-op under dev/source (no bundled
-            // Resources/backend) and on launches where the binary is unchanged.
-            // Spawned off the setup hook because the launchd bootout-wait can
-            // take several seconds and must not block tray startup.
+            // Stage + register the bundled daemon on the self-contained .app DMG
+            // path (also retires any leftover a11y-helper agent from an older
+            // install — see backend_install's module docs). No-op under
+            // dev/source (no bundled Resources/backend) and on launches where
+            // the binary is unchanged. Spawned off the setup hook because the
+            // launchd bootout-wait can take several seconds and must not block
+            // tray startup.
             {
                 let backend_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {

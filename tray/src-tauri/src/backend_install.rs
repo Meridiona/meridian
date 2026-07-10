@@ -1,19 +1,17 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //! Bundled-backend first-run install orchestration (Gap-2 Bucket 1, slice 1b).
 //!
-//! On the self-contained `.app` DMG path the non-capture backend (the Rust
-//! daemon + the a11y-helper) ships inside `Meridian.app/Contents/Resources/backend/`
-//! (wired by `tauri.conf.json`'s `bundle.resources`). This module is the tray
-//! side of that: on startup it stages those binaries to the **stable**
-//! `~/.meridian/bin/` path and registers their launchd agents — the same
-//! daemon + a11y-helper steps `scripts/install-from-bundle.sh` does for the npm
-//! bundle, ported into the tray so the DMG needs no shell installer.
+//! On the self-contained `.app` DMG path the daemon ships inside
+//! `Meridian.app/Contents/Resources/backend/` (wired by `tauri.conf.json`'s
+//! `bundle.resources`). This module is the tray side of that: on startup it
+//! stages the binary to the **stable** `~/.meridian/bin/` path and registers
+//! its launchd agent — the same step `scripts/install-from-bundle.sh` does
+//! for the npm bundle, ported into the tray so the DMG needs no shell
+//! installer.
 //!
-//! It is a **faithful port of the launchctl flow, not SMAppService**: the
-//! a11y-helper's Accessibility grant is keyed to its binary's code hash and
-//! survives updates only because it runs from a stable path *outside* the
-//! re-signed `.app`; SMAppService's managed-Login-Items payoff only matters once
-//! the app is Developer-ID-signed (Gap-2 Bucket 3), so it's deferred to then.
+//! It is a **faithful port of the launchctl flow, not SMAppService**:
+//! SMAppService's managed-Login-Items payoff only matters once the app is
+//! Developer-ID-signed (Gap-2 Bucket 3), so it's deferred to then.
 //!
 //! Unlike the npm bundle (WorkingDirectory `~/.meridian/app`, daemon reads
 //! `~/.meridian/app/.env`), the DMG daemon's WorkingDirectory is `~/.meridian`,
@@ -21,7 +19,17 @@
 //! writes to — unifying tray and daemon on one credential file. A bundle→DMG
 //! migrant's pre-existing `~/.meridian/app/.env` is copied across once
 //! ([`migrate_legacy_bundle_env`]) and stale bundle launchd agents
-//! (screenpipe / MLX / UI server) are booted out during [`install`].
+//! (screenpipe / a11y-helper / MLX / UI server) are booted out during [`install`].
+//!
+//! **The `meridian-a11y-helper` launchd agent is retired** (was
+//! `com.meridiona.a11y-helper`): it existed to poke `AXManualAccessibility`
+//! on Electron/Chromium apps for the old *external* screenpipe process. The
+//! in-process capture engine's `screenpipe-a11y` tree walker
+//! ([`crate::capture::screenpipe`]) now does that poke itself, under the
+//! tray's own Accessibility grant — so the helper's separate launchd agent
+//! and its own "meridian-a11y-helper" entry in System Settings → Privacy &
+//! Security → Accessibility were pure redundancy. [`cleanup_legacy_a11y_helper`]
+//! retires any leftover install from an update.
 //!
 //! # Who calls this
 //! [`crate::run`]'s Tauri `setup` hook spawns [`ensure_backend_installed`] once,
@@ -33,8 +41,8 @@
 //! - [`crate::mlx_server`] — the *other* backend service (provisioned via Approach C,
 //!   not bundled); [`crate::mlx_server::sha256_hex_of`] is reused here for the
 //!   update-detection marker.
-//! - `scripts/install-from-bundle.sh`, `scripts/install-daemon.sh`,
-//!   `scripts/install-a11y-helper-daemon.sh` — the shell flow this ports.
+//! - `scripts/install-from-bundle.sh`, `scripts/install-daemon.sh` — the shell
+//!   flow this ports.
 
 use std::path::{Path, PathBuf};
 
@@ -43,15 +51,9 @@ use tauri::Manager;
 use crate::mlx_server;
 
 /// launchd agents this stages, paired with their bundled plist template.
-const AGENTS: &[(&str, &str)] = &[
-    ("com.meridiona.daemon", "com.meridiona.daemon.plist"),
-    (
-        "com.meridiona.a11y-helper",
-        "com.meridiona.a11y-helper.plist",
-    ),
-];
+const AGENTS: &[(&str, &str)] = &[("com.meridiona.daemon", "com.meridiona.daemon.plist")];
 
-/// Stage the bundled backend and register its launchd agents — idempotent and
+/// Stage the bundled backend and register its launchd agent — idempotent and
 /// non-fatal.
 ///
 /// No-op unless **all** hold: running from a packaged `.app` whose
@@ -60,7 +62,7 @@ const AGENTS: &[(&str, &str)] = &[
 /// differs from the last successful install (first run, or a post-update where
 /// the shipped binary changed). Any staging/launchctl failure is logged and
 /// swallowed so a backend hiccup never crashes the tray; the marker is persisted
-/// **only after** both agents bootstrap, so a partial failure retries next launch.
+/// **only after** the agent bootstraps, so a partial failure retries next launch.
 #[tracing::instrument(skip(app))]
 pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
     let backend = match bundled_backend_dir(app) {
@@ -111,7 +113,7 @@ fn bundled_backend_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
-/// Stage both binaries, render + lint both plists, register both agents.
+/// Stage the daemon binary, render + lint its plist, register its agent.
 /// Returns `Err` if any step fails so the caller skips the success marker.
 async fn install(backend: &Path, home: &Path) -> Result<(), String> {
     for dir in [".meridian/bin", ".meridian/logs"] {
@@ -128,22 +130,22 @@ async fn install(backend: &Path, home: &Path) -> Result<(), String> {
     // Purge leftovers from a pre-cutover **bundle** install before staging the
     // in-process backend. A user migrating from the old npm/curl bundle to this
     // DMG carries launchd agents the new topology replaced (the in-process
-    // capturer supersedes screenpipe; the tray supervises MLX itself); left
-    // running they race the tray or contend for :7823. `install-from-bundle.sh`
-    // boots these out for the bundle path; the DMG path needs the same. All
-    // best-effort + non-fatal.
+    // capturer supersedes screenpipe and does its own AX poke; the tray
+    // supervises MLX itself); left running they race the tray, contend for
+    // :7823, or surface a redundant "meridian-a11y-helper" Accessibility
+    // entry. `install-from-bundle.sh` boots these out for the bundle path;
+    // the DMG path needs the same. All best-effort + non-fatal.
     cleanup_legacy_screenpipe(home).await;
     cleanup_legacy_mlx_server(home).await;
+    cleanup_legacy_a11y_helper(home).await;
     // Recover tracker credentials the bundle wrote to ~/.meridian/app/.env so the
     // DMG daemon (which reads the canonical ~/.meridian/.env) doesn't lose them.
     migrate_legacy_bundle_env(home).await;
 
     let daemon_bin = home.join(".meridian/bin/meridian");
-    let helper_bin = home.join(".meridian/bin/meridian-a11y-helper");
     stage_binary(&backend.join("meridian"), &daemon_bin).await?;
-    stage_binary(&backend.join("meridian-a11y-helper"), &helper_bin).await?;
 
-    // Render the two plists. The bundled templates carry {{…}} placeholders the
+    // Render the plist. The bundled template carries {{…}} placeholders the
     // npm installer substitutes too; here REPO_ROOT (the daemon's WorkingDirectory)
     // is ~/.meridian so dotenvy self-loads ~/.meridian/.env, and OTLP is left
     // empty for the daemon to self-load (a baked value would go stale).
@@ -156,15 +158,6 @@ async fn install(backend: &Path, home: &Path) -> Result<(), String> {
             ("{{REPO_ROOT}}", &home.join(".meridian").to_string_lossy()),
             ("{{DAEMON_BIN}}", &daemon_bin.to_string_lossy()),
             ("{{MERIDIAN_OTLP_ENDPOINT}}", ""),
-        ],
-    )
-    .await?;
-    render_plist(
-        &backend.join("com.meridiona.a11y-helper.plist"),
-        &launch_agents.join("com.meridiona.a11y-helper.plist"),
-        &[
-            ("{{HOME}}", home_str.as_ref()),
-            ("{{HELPER_BIN}}", &helper_bin.to_string_lossy()),
         ],
     )
     .await?;
@@ -220,6 +213,38 @@ async fn cleanup_legacy_mlx_server(home: &Path) {
     let _ =
         tokio::fs::remove_file(home.join("Library/LaunchAgents/com.meridiona.mlx-server.plist"))
             .await;
+}
+
+/// Purge a leftover **a11y-helper** launchd agent + its stale Accessibility
+/// grant. The helper existed to poke `AXManualAccessibility` on Electron apps
+/// for the old *external* screenpipe process; the in-process capture engine's
+/// `screenpipe-a11y` tree walker does that poke itself now, under the tray's
+/// own Accessibility grant, so the helper is pure redundancy — and its
+/// separate ad-hoc-signed binary shows up as a second, confusingly-named
+/// "meridian-a11y-helper" entry in System Settings → Privacy & Security →
+/// Accessibility. Boot out the agent, remove its plist + staged binary, kill
+/// any live process, and best-effort clear its TCC grant (`tccutil reset`) so
+/// the entry doesn't linger grayed-out after the binary is gone. Entirely
+/// best-effort + non-fatal — a launchctl/tccutil hiccup must not abort install.
+async fn cleanup_legacy_a11y_helper(home: &Path) {
+    let label = "com.meridiona.a11y-helper";
+    let target = format!("gui/{}/{label}", crate::sys::uid_str());
+    if launchctl(&["print", &target]).await.is_ok_and(|s| s) {
+        let _ = launchctl(&["bootout", &target]).await;
+        tracing::info!(label, "backend_install: removed leftover a11y-helper agent");
+    }
+    let _ =
+        tokio::fs::remove_file(home.join("Library/LaunchAgents/com.meridiona.a11y-helper.plist"))
+            .await;
+    let _ = tokio::fs::remove_file(home.join(".meridian/bin/meridian-a11y-helper")).await;
+    let _ = tokio::process::Command::new("pkill")
+        .args(["-f", "meridian-a11y-helper"])
+        .output()
+        .await;
+    let _ = tokio::process::Command::new("tccutil")
+        .args(["reset", "Accessibility", "com.meridiona.a11y-helper"])
+        .output()
+        .await;
 }
 
 /// Recover tracker credentials when migrating from a **bundle** install. The
@@ -452,10 +477,11 @@ mod tests {
         out
     }
 
-    /// The bundled templates must have NO `{{…}}` left **in the live body** after
-    /// the exact sub sets `install()` applies — a new body placeholder added
-    /// upstream without a matching sub would otherwise ship a broken plist. Reads
-    /// the real committed templates so the two can't drift apart silently.
+    /// The bundled daemon plist template must have NO `{{…}}` left **in the
+    /// live body** after the exact sub set `install()` applies — a new body
+    /// placeholder added upstream without a matching sub would otherwise ship
+    /// a broken plist. Reads the real committed template so the two can't
+    /// drift apart silently.
     #[test]
     fn bundled_templates_fully_substituted() {
         let scripts = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts");
@@ -474,23 +500,6 @@ mod tests {
         assert!(
             !rendered.contains("{{"),
             "daemon plist body still has an unsubstituted placeholder: {rendered}"
-        );
-
-        let helper = std::fs::read_to_string(format!("{scripts}/com.meridiona.a11y-helper.plist"))
-            .expect("read a11y-helper plist template");
-        let rendered = strip_xml_comments(&apply_subs(
-            &helper,
-            &[
-                ("{{HOME}}", "/Users/me"),
-                (
-                    "{{HELPER_BIN}}",
-                    "/Users/me/.meridian/bin/meridian-a11y-helper",
-                ),
-            ],
-        ));
-        assert!(
-            !rendered.contains("{{"),
-            "a11y-helper plist body still has an unsubstituted placeholder: {rendered}"
         );
     }
 }
