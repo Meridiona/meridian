@@ -89,9 +89,7 @@
     },
     "resources": {
       "../../target/release/meridian": "backend/meridian",
-      "../../scripts/a11y-helper/meridian-a11y-helper": "backend/meridian-a11y-helper",
-      "../../scripts/com.meridiona.daemon.plist": "backend/com.meridiona.daemon.plist",
-      "../../scripts/com.meridiona.a11y-helper.plist": "backend/com.meridiona.a11y-helper.plist"
+      "../../scripts/com.meridiona.daemon.plist": "backend/com.meridiona.daemon.plist"
     }
   }
 }
