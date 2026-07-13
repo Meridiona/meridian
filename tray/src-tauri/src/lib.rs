@@ -491,7 +491,11 @@ pub fn run() {
             // No silent auto-install on launch: the DMG update surfaces as an
             // in-app banner (sidebar + popover) that checks on open via the
             // `check_update` command, so the user sees + consents to the update
-            // rather than the app restarting itself underneath them.
+            // rather than the app restarting itself underneath them. The ONE
+            // exception is a release whose manifest declares a minimum
+            // supported version below the running one — that installs
+            // automatically (see update::enforce_minimum_version).
+            update::enforce_minimum_version(app.handle());
 
             Ok(())
         })

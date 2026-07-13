@@ -4608,6 +4608,7 @@ dependencies = [
  "reqwest 0.12.28",
  "screenpipe-a11y",
  "screenpipe-screen",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
