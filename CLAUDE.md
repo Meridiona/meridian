@@ -474,6 +474,17 @@ git tag "runtime-v${VER}"         <commit> && git push origin "runtime-v${VER}" 
 - **Two channels, two audiences.** A fix that must reach everyone has to land on **both** `pre-main` and `main` (or both tags) — one channel never feeds the other.
 - **It is not the app binary.** Updating the `.app` alone ships nothing under `services/`; only a runtime republish does.
 
+### Make a DMG release mandatory (force-install on old versions)
+
+DMG auto-updates are consent-based (in-app banner + click) with one exception: when the update manifest declares a **minimum supported version** and the running app is below it, the app installs the update and relaunches automatically. Use this as a kill-switch for releases old versions must not keep running against (broken update path, data-corrupting bug) — not for routine releases.
+
+1. Commit `tray/minimum-version` containing the floor as plain `X.Y.Z` (usually the new release's own version, forcing everyone older) **before cutting the release**. File absent or empty = consent-based, the default; a malformed value fails the release loudly (`scripts/package-updater.sh`).
+2. The release ships it as a `Minimum-Version: X.Y.Z` line inside `latest.json`'s `notes` — the notes body is the transport because `tauri-plugin-updater` drops unknown manifest fields. The staging channel inherits it via `mirror-staging-release.sh`'s verbatim `latest.json` copy.
+3. Installed apps below the floor force-update via `update::enforce_minimum_version` (`tray/src-tauri/src/update.rs`) — checked 30 s after launch and every 6 h thereafter, so long-running trays catch it without a relaunch. A failed forced install falls back to the consent banner and retries next cycle.
+4. Empty or remove `tray/minimum-version` afterwards if later releases should go back to consent-based — the floor ships with **every** release while the file has content.
+
+Only affects the DMG channel; npm/CLI installs still update via `meridian update`, and the MLX runtime has its own always-automatic upgrade (see the runtime task above).
+
 ---
 
 ## Coding-agent pipeline (`src/coding_agent_session_ingest/`)
