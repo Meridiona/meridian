@@ -42,7 +42,7 @@ export function NotificationsSection({ settings, patch, save }: {
         </FieldRow>
         {settings.notifications_enabled && (
           <>
-            <FieldRow label="Plan your day reminder" description="Reminder to confirm today's plan - waits an hour after the planner auto-opens, so it only fires if you dismissed it without planning.">
+            <FieldRow label="Plan your day reminder" description="If you close the planner without confirming a plan, this reminds you an hour later.">
               <Switch checked={settings.notify_plan_nudge} onCheckedChange={v => patch({ notify_plan_nudge: v })} />
             </FieldRow>
             <FieldRow label="Worklog drafts ready" description="When the daily worklog drafts are ready to review and approve.">

@@ -9,8 +9,9 @@
 //!
 //! Gates, cheapest first:
 //! 1. marker file `~/.meridian/plan_auto_opened` already records today (it
-//!    holds the open's timestamp — `meridian_core::plan_marker` — which the
-//!    daemon also reads to hold its plan nudge back an hour after the open)
+//!    holds a timestamp — `meridian_core::plan_marker` — refreshed when the
+//!    user dismisses the planner, which the daemon reads to hold its plan
+//!    nudge back until an hour after the open/dismissal)
 //! 2. `auto_open_plan` disabled in settings
 //! 3. not onboarded (no `~/.meridian/onboarded` — don't open over the wizard)
 //! 4. today's plan already confirmed/skipped (`daily_plan_meta`) — the marker

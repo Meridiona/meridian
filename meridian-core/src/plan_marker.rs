@@ -16,6 +16,8 @@
 //!
 //! # Who calls this
 //! - `tray/src-tauri/src/poll/plan_auto_open.rs` — path + stamp + opened_today.
+//! - The tray's `plan_dismissed` command — [`restamp_if_today`], restarting
+//!   the hold-back clock when the user closes the planner without confirming.
 //! - The daemon's `src/daily_plan.rs::maybe_nudge` — path + opened_today +
 //!   opened_at (the nudge hold-back).
 //!
@@ -53,6 +55,22 @@ pub fn opened_at(marker_contents: &str) -> Option<DateTime<FixedOffset>> {
     DateTime::parse_from_rfc3339(marker_contents.trim()).ok()
 }
 
+/// Restart the nudge hold-back clock at planner dismissal: re-stamp the
+/// marker with `now`, but ONLY when it already records `now`'s local day —
+/// i.e. the auto-open actually fired today. A manual planner open/close on a
+/// day without the auto-open (feature off, pre-8am machine, tray restart
+/// races) must not suppress the daemon's nudge. Returns whether a re-stamp
+/// was written; fs errors read as `false` (the clock simply keeps running
+/// from the original open — a reminder that's early beats one that's lost).
+pub fn restamp_if_today(marker: &Path, now: &DateTime<Local>) -> bool {
+    let today = now.format("%Y-%m-%d").to_string();
+    let contents = std::fs::read_to_string(marker).unwrap_or_default();
+    if !opened_today(&contents, &today) {
+        return false;
+    }
+    std::fs::write(marker, stamp(now)).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,6 +94,34 @@ mod tests {
         assert!(!opened_today("2026-07-12T23:59:59+05:30", "2026-07-13"));
         assert!(!opened_today("", "2026-07-13"));
         assert!(!opened_today("garbage", "2026-07-13"));
+    }
+
+    #[test]
+    fn restamp_only_refreshes_a_today_marker() {
+        let dir = std::env::temp_dir().join(format!("meridian-restamp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = marker_path(&dir);
+        let now = Local::now();
+
+        // No marker (auto-open never fired today) → no re-stamp, no file.
+        assert!(!restamp_if_today(&marker, &now));
+        assert!(!marker.exists());
+
+        // Stale (prior-day) marker → left untouched.
+        std::fs::write(&marker, "1999-01-01T09:00:00+00:00").unwrap();
+        assert!(!restamp_if_today(&marker, &now));
+        assert!(std::fs::read_to_string(&marker)
+            .unwrap()
+            .starts_with("1999-01-01"));
+
+        // Today's marker → refreshed to `now` (the dismissal instant).
+        let earlier = now - chrono::Duration::seconds(1800);
+        std::fs::write(&marker, stamp(&earlier)).unwrap();
+        assert!(restamp_if_today(&marker, &now));
+        let refreshed = opened_at(&std::fs::read_to_string(&marker).unwrap()).unwrap();
+        assert_eq!(refreshed.timestamp(), now.timestamp());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
