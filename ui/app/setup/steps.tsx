@@ -18,6 +18,7 @@ import type {
 import type { IntegrationsResponse } from '@/lib/api-types'
 import { TRACKERS } from '@/lib/integrations'
 import ConnectTrackers from '@/components/IntegrationConnect'
+import { SignInWidget } from './signin'
 
 const SERIF: CSSProperties = { fontFamily: 'var(--font-instrument-serif), Georgia, serif' }
 
@@ -40,9 +41,14 @@ export interface Wiz {
   speed: number | null    // live download speed in bytes/sec (null until known)
   err: string             // last provisioning error ('' when none) — drives Retry
   retryModel: () => void  // re-arm runtime/model provisioning after an error
-  // Step 3 — integrations (live connected-state from get_integrations)
+  // Step 2 — integrations (live connected-state from get_integrations)
   integrations: IntegrationsResponse | null
   refetchIntegrations: () => void
+  // Step 3 — sign in (Clerk email one-time-code — see ui/app/setup/signin.tsx).
+  // The step body owns its own form/busy/error state; `onSignedIn` is just
+  // how it reports a completed sign-in back up to the wizard.
+  signedInEmail: string | null
+  onSignedIn: (email: string) => void
 }
 
 // ── STEP 1 — Permissions ──────────────────────────────────────────────────────
@@ -302,6 +308,32 @@ function IntegrationsBody({ wiz }: { wiz: Wiz }) {
   )
 }
 
+// ── STEP 3 — Sign in ──────────────────────────────────────────────────────────
+// Clerk email one-time-code, entirely inside the webview via tauri-plugin-clerk
+// (see lib.rs's plugin registration + signin.tsx). <SignInWidget> is a thin
+// next/dynamic boundary around the actual Clerk-aware form (the signin/ module —
+// see SignInWidget.tsx/EmailCodeForm.tsx) — importing it here stays safe for the
+// static-export build because signin.tsx itself has no @clerk/react imports at
+// the top level.
+function SignInBody({ wiz }: { wiz: Wiz }) {
+  if (wiz.signedInEmail) {
+    return (
+      <Row tone="tint">
+        <span className="flex items-center justify-center shrink-0" style={{
+          width: 34, height: 34, borderRadius: 10,
+          background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)',
+          color: 'var(--color-state-proposal)', border: '0.5px solid var(--t-card-border)',
+        }}><Check size={16} color="var(--color-state-proposal)" w={2.2} /></span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>Signed in</span>
+          <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-faint)', marginTop: 3 }}>{wiz.signedInEmail}</p>
+        </div>
+      </Row>
+    )
+  }
+  return <SignInWidget onSignedIn={wiz.onSignedIn} />
+}
+
 // ── Welcome (pre-step intro) ──────────────────────────────────────────────────
 export function Welcome({ onBegin }: { onBegin: () => void }) {
   const points = [
@@ -408,7 +440,15 @@ export const STEPS: StepMeta[] = [
     canNext: () => true,
   },
   {
-    id: 'mlx', n: '03', label: 'Local intelligence', kicker: 'On-device AI',
+    id: 'signin', n: '03', label: 'Sign in', kicker: 'Account',
+    title: 'Sign in to Meridian',
+    subtitle: "One quick sign-in so we know who's using Meridian - we'll email you a one-time code, no password needed.",
+    Body: SignInBody,
+    status: (s) => s.signedInEmail ?? 'Not signed in',
+    canNext: (s) => !!s.signedInEmail,
+  },
+  {
+    id: 'mlx', n: '04', label: 'Local intelligence', kicker: 'On-device AI',
     title: 'Set up on-device intelligence',
     subtitle: 'Everything runs privately on your Mac with Apple MLX. The models started downloading when setup opened - this is just the finish line.',
     Body: MLXBody,

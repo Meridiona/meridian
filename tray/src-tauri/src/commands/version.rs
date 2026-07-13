@@ -238,7 +238,9 @@ fn write_and_open(script_path: &std::path::Path, script: &str) -> std::io::Resul
 /// at compile time via `MERIDIAN_CHANNEL` (same `option_env!` pattern as
 /// [`crate::mlx_server::manifest_url`]) by the staging release workflow;
 /// anything else (a plain release build with no channel baked in) is `prod`.
-fn build_channel() -> &'static str {
+/// `pub(crate)` — also read by [`crate::analytics::base_properties`] to tag
+/// every PostHog event with the same dev/staging/prod distinction.
+pub(crate) fn build_channel() -> &'static str {
     if cfg!(debug_assertions) {
         return "dev";
     }

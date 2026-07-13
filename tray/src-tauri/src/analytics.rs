@@ -1,5 +1,5 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-//! Product analytics — PostHog Cloud event capture for the packaged DMG build.
+//! Product analytics — PostHog Cloud event capture.
 //!
 //! # What this is
 //! A deliberately tiny, best-effort telemetry client: two anonymous signals —
@@ -13,8 +13,11 @@
 //! default GeoIP enrichment would otherwise resolve each user's real
 //! location).
 //!
-//! Gated to [`crate::install::InstallMode::Canonical`] (the DMG install) only
-//! — npm-bundle, source/dev, and bare runs never send anything. The anonymous
+//! Runs in every install shape — a source/dev checkout, a bare launch, and a
+//! packaged DMG alike — so a local `cargo run`/`tauri dev` session shows up
+//! too. Every event carries `channel` ([`crate::commands::version::build_channel`]:
+//! `dev`/`staging`/`prod`) so dev-run noise stays filterable in PostHog from
+//! real installs, rather than being excluded outright. The anonymous
 //! `distinct_id` plus day bookkeeping live in `~/.meridian/analytics_state.json`,
 //! separate from `settings.json` (never dashboard-editable, never displayed).
 //!
@@ -36,7 +39,8 @@
 //! calls it can trigger are individually capped as described above.
 //!
 //! # Related
-//! - [`crate::install::detect_install_mode`] — the Canonical/Dev/Bare gate.
+//! - [`crate::commands::version::build_channel`] — the `channel` property
+//!   every event carries (dev/staging/prod).
 //! - `meridian_core::today::get_today` / `meridian_core::worklogs::get_worklogs`
 //!   — the same readers the dashboard uses, queried here for an already-closed
 //!   past day (never "today", which is still accumulating).
@@ -174,7 +178,14 @@ async fn capture(
     }
 }
 
-/// Properties common to every event: app version + OS.
+/// Properties common to every event: app version + OS + build channel
+/// ([`crate::commands::version::build_channel`] — `dev`/`staging`/`prod`, so
+/// a local `cargo run`/`tauri dev` session stays distinguishable in PostHog
+/// from a real install rather than being excluded outright). When the setup
+/// wizard's Clerk sign-in step has captured an email
+/// (`crate::commands::account::read_account_email`), it rides along as a
+/// PostHog `$set` so the person profile is upgraded from anonymous to
+/// identified — same anonymous `distinct_id`, just no longer nameless.
 fn base_properties(app: &tauri::AppHandle) -> serde_json::Map<String, serde_json::Value> {
     let mut m = serde_json::Map::new();
     m.insert(
@@ -185,22 +196,53 @@ fn base_properties(app: &tauri::AppHandle) -> serde_json::Map<String, serde_json
         "os".to_string(),
         serde_json::Value::String(std::env::consts::OS.to_string()),
     );
+    m.insert(
+        "channel".to_string(),
+        serde_json::Value::String(crate::commands::version::build_channel().to_string()),
+    );
+    if let Some(email) = crate::commands::account::read_account_email() {
+        let mut set = serde_json::Map::new();
+        set.insert("email".to_string(), serde_json::Value::String(email));
+        m.insert("$set".to_string(), serde_json::Value::Object(set));
+    }
     m
+}
+
+/// Sends an immediate `person_identified` event carrying the just-signed-in
+/// email's `$set`, instead of waiting for the next `app_installed`/
+/// `daily_usage` capture — which may be hours or a full day away, or (for
+/// `app_installed`, capped to once-ever per [`AnalyticsState::install_event_sent`])
+/// may never fire again if it already sent before sign-in happened, meaning
+/// the email would otherwise never reach PostHog for that person at all.
+/// Called right when the setup wizard's Clerk sign-in step completes
+/// (`commands::account::save_account_email`). No-ops if the email somehow
+/// isn't readable back yet (write still in flight) — the next scheduled
+/// capture picks it up as a fallback.
+#[tracing::instrument(skip(app))]
+pub(crate) async fn identify_signed_in_email(app: &tauri::AppHandle) {
+    if crate::commands::account::read_account_email().is_none() {
+        return;
+    }
+    let Some(path) = analytics_state_path() else {
+        return;
+    };
+    let state = load_or_init_state(&path);
+    capture(
+        "person_identified",
+        &state.distinct_id,
+        base_properties(app),
+    )
+    .await;
 }
 
 /// Called once per poll-loop health tick (~60 s — see [`crate::poll`]). A
 /// cheap file read on every call; the two possible HTTP calls are
 /// individually capped to once-ever (`app_installed`) and once-per-completed
-/// local day (`daily_usage`). No-ops entirely outside a Canonical (DMG)
-/// install.
+/// local day (`daily_usage`). Runs in every install shape (see the module
+/// doc) — filter by the `channel` property in PostHog to separate dev runs
+/// from real installs.
 #[tracing::instrument(skip(app, pool))]
 pub(crate) async fn maybe_send_daily_tick(app: &tauri::AppHandle, pool: &SqlitePool) {
-    if !matches!(
-        crate::install::detect_install_mode(),
-        crate::install::InstallMode::Canonical(_)
-    ) {
-        return;
-    }
     let Some(path) = analytics_state_path() else {
         return;
     };
@@ -254,40 +296,6 @@ fn day_rollover_action(last_sent_day: Option<&str>, today: &str) -> Option<Optio
         None => Some(None),
         Some(prev) if prev != today => Some(Some(prev.to_string())),
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod day_rollover_tests {
-    use super::day_rollover_action;
-
-    #[test]
-    fn first_observation_arms_without_sending() {
-        assert_eq!(day_rollover_action(None, "2026-07-09"), Some(None));
-    }
-
-    #[test]
-    fn same_day_is_a_no_op() {
-        assert_eq!(day_rollover_action(Some("2026-07-09"), "2026-07-09"), None);
-    }
-
-    #[test]
-    fn day_boundary_reports_the_closed_day() {
-        assert_eq!(
-            day_rollover_action(Some("2026-07-08"), "2026-07-09"),
-            Some(Some("2026-07-08".to_string()))
-        );
-    }
-
-    #[test]
-    fn multi_day_gap_reports_only_the_last_closed_day() {
-        // A gap of several days (tray closed then reopened) still reports
-        // only the most recent `last_sent_day` — intervening days are never
-        // backfilled (see the doc comment on `day_rollover_action`).
-        assert_eq!(
-            day_rollover_action(Some("2026-07-01"), "2026-07-09"),
-            Some(Some("2026-07-01".to_string()))
-        );
     }
 }
 
@@ -359,4 +367,38 @@ async fn send_daily_usage(
     );
     capture("daily_usage", distinct_id, props).await;
     true
+}
+
+#[cfg(test)]
+mod day_rollover_tests {
+    use super::day_rollover_action;
+
+    #[test]
+    fn first_observation_arms_without_sending() {
+        assert_eq!(day_rollover_action(None, "2026-07-09"), Some(None));
+    }
+
+    #[test]
+    fn same_day_is_a_no_op() {
+        assert_eq!(day_rollover_action(Some("2026-07-09"), "2026-07-09"), None);
+    }
+
+    #[test]
+    fn day_boundary_reports_the_closed_day() {
+        assert_eq!(
+            day_rollover_action(Some("2026-07-08"), "2026-07-09"),
+            Some(Some("2026-07-08".to_string()))
+        );
+    }
+
+    #[test]
+    fn multi_day_gap_reports_only_the_last_closed_day() {
+        // A gap of several days (tray closed then reopened) still reports
+        // only the most recent `last_sent_day` — intervening days are never
+        // backfilled (see the doc comment on `day_rollover_action`).
+        assert_eq!(
+            day_rollover_action(Some("2026-07-01"), "2026-07-09"),
+            Some(Some("2026-07-01".to_string()))
+        );
+    }
 }

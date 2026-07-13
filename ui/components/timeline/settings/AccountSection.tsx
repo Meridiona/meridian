@@ -6,8 +6,9 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { load, mutate } from '@/lib/bridge'
+import { invoke, load, mutate } from '@/lib/bridge'
 import type { AppInfo } from '@/lib/api-types'
+import { AccountAuthControl } from '@/app/setup/signin'
 import { SectionCard, SectionHeader, FieldRow, SettingsButton } from './fields'
 
 // Colored only for a non-prod build — a prod dashboard shouldn't draw the eye
@@ -20,9 +21,11 @@ const CHANNEL_COLOR: Record<AppInfo['channel'], string> = {
 
 export function AccountSection() {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
+  const [signedInEmail, setSignedInEmail] = useState<string | null>(null)
 
   useEffect(() => {
     load<AppInfo>('/api/app-info', 'get_app_info').then(setAppInfo).catch(() => {})
+    invoke<string | null>('get_account_email').then(setSignedInEmail).catch(() => {})
   }, [])
 
   return (
@@ -34,6 +37,21 @@ export function AccountSection() {
           Re-run onboarding to reconfigure permissions, integrations, or the local model.
         </p>
       </div>
+
+      <SectionCard>
+        <SectionHeader>Account</SectionHeader>
+        <AccountAuthControl
+          knownEmail={signedInEmail}
+          onSignedIn={(email) => {
+            setSignedInEmail(email)
+            invoke('save_account_email', { email }).catch(() => {})
+          }}
+          onSignedOut={() => {
+            setSignedInEmail(null)
+            invoke('clear_account_email').catch(() => {})
+          }}
+        />
+      </SectionCard>
 
       <SectionCard>
         <SectionHeader>Setup &amp; Onboarding</SectionHeader>
@@ -48,7 +66,7 @@ export function AccountSection() {
 
       <SectionCard>
         <SectionHeader>About</SectionHeader>
-        <FieldRow label="Version" description="Which build of Meridian this is — dev, staging, or production.">
+        <FieldRow label="Version" description="Which build of Meridian this is?">
           {appInfo && (
             <span className="mt-body-sm font-mono font-semibold" style={{ color: CHANNEL_COLOR[appInfo.channel] }}>
               v{appInfo.version}{appInfo.channel !== 'prod' && ` · ${appInfo.channel}`}

@@ -62,6 +62,11 @@ jobs:
       # Baked into the staging binary at compile time (see release.yml); same
       # secret. Absent → PostHog analytics simply disabled in the staging build.
       MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+      # Baked into the staging binary at compile time (see release.yml); same
+      # secret — staging is downloadable/installable too, so it gets Clerk
+      # PRODUCTION, not the dev instance (only a source checkout uses dev).
+      # Absent → sign-in unavailable in the staging build.
+      MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
       # Minisign key for the DMG auto-updater: `tauri build` (createUpdaterArtifacts)
       # signs Meridian.app.tar.gz so the installed staging app can verify the
       # update against the pubkey baked in tauri.conf.json. REQUIRED here (unlike
