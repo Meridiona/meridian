@@ -36,7 +36,6 @@
 
 use meridian_core::plan_marker;
 use std::path::Path;
-use tauri::Emitter;
 
 /// Once per local day, open the dashboard on the Plan modal. See the module
 /// docs for the gate order and rationale.
@@ -79,14 +78,13 @@ pub(crate) async fn maybe_auto_open_plan(app: &tauri::AppHandle, pool: &meridian
     }
 
     // Fire. Marker first (crash-safe vs KeepAlive relaunch loops), then hand
-    // the target to the (possibly not-yet-existing) window via the pending
-    // deep link, open/focus the window, and also emit for an already-open
-    // window (which won't remount and thus never pulls). Double delivery is
-    // idempotent — the shell opens the same modal.
+    // the target to the window — parked for a fresh window's mount-time pull,
+    // or emitted to an already-open one (`deep_link::navigate_dashboard`
+    // picks; parking both ways would leave a stale target for a later manual
+    // open) — then open/focus the window.
     write_marker(&marker, &now);
-    crate::deep_link::set_pending(app, "/plan");
+    crate::deep_link::navigate_dashboard(app, "/plan");
     crate::tray::open_native_dashboard(app);
-    let _ = app.emit_to("dashboard", "dashboard-navigate", "/plan");
     tracing::info!(%today, "plan auto-open: opened dashboard on the Plan view");
 }
 

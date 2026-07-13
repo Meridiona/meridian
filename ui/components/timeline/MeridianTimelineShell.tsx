@@ -114,6 +114,15 @@ export default function MeridianTimelineShell() {
     setSelectedCardKey(cardKey)
   }
 
+  // Closing the planner restarts the daemon's plan-nudge hold-back clock
+  // (fire-and-forget; only meaningful on a day the auto-open fired — the
+  // command's marker guard handles that), so the "Plan your day" reminder
+  // lands an hour after the DISMISSAL, not the auto-open.
+  function closePlan() {
+    invoke('plan_dismissed').catch(() => {})
+    setActiveModal(null)
+  }
+
   // Opens the same swipeable Review dialog the pill/nav use, scoped to just
   // one ticket, instead of the right-side Hour-detail panel. Two callers:
   // a still-drafted card clicked directly on the timeline (TimelineColumn —
@@ -187,11 +196,7 @@ export default function MeridianTimelineShell() {
         <SettingsModal onClose={() => setActiveModal(null)} initialSection={settingsSection} />
       )}
       {activeModal === 'report' && <ReportModal onClose={() => setActiveModal(null)} />}
-      {/* Closing the planner restarts the daemon's plan-nudge hold-back clock
-          (fire-and-forget; only meaningful on a day the auto-open fired — the
-          command's marker guard handles that), so the "Plan your day" reminder
-          lands an hour after the DISMISSAL, not the auto-open. */}
-      {activeModal === 'plan' && <PlanModal onClose={() => { invoke('plan_dismissed').catch(() => {}); setActiveModal(null) }} />}
+      {activeModal === 'plan' && <PlanModal onClose={closePlan} />}
       {activeModal === 'tasks' && (
         <TasksModal onClose={() => setActiveModal(null)} onOpenTask={(key, title) => setOpenTask({ key, title })} />
       )}
