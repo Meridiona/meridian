@@ -43,6 +43,24 @@ else
   echo "⚠ ${VERSIONED_DMG} not found — no stable-named DMG (tarball update still works)"
 fi
 
+# Optional mandatory-update floor. When tray/minimum-version contains a semver,
+# it ships as a `Minimum-Version: <v>` line inside the manifest notes — installed
+# apps running BELOW that version install this release automatically instead of
+# waiting for the banner click (tray/src-tauri/src/update.rs
+# enforce_minimum_version; the notes line is the transport because
+# tauri-plugin-updater drops unknown manifest fields). File absent or empty =
+# every update stays consent-based. A malformed value fails the release loudly:
+# a typo silently dropping the floor would defeat the point of setting it.
+MIN_FILE="tray/minimum-version"
+MINIMUM=""
+if [[ -f "${MIN_FILE}" ]]; then
+  MINIMUM="$(tr -d '[:space:]' < "${MIN_FILE}")"
+  if [[ -n "${MINIMUM}" && ! "${MINIMUM}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "✗ ${MIN_FILE} contains '${MINIMUM}' — not a plain semver (X.Y.Z)" >&2
+    exit 1
+  fi
+fi
+
 # latest.json from the real signature. The tarball URL points at the v<version>
 # release tag the @semantic-release/git commit + @semantic-release/github release
 # will create; the app reaches it via the /latest/ redirect baked in tauri.conf.json.
@@ -50,13 +68,16 @@ SIG_CONTENT="$(cat "${SIG}")"
 URL="https://github.com/${REPO}/releases/download/v${VERSION}/Meridian.app.tar.gz"
 PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-python3 - "${MAC}/latest.json" "${VERSION}" "${URL}" "${SIG_CONTENT}" "${PUB_DATE}" <<'PY'
+python3 - "${MAC}/latest.json" "${VERSION}" "${URL}" "${SIG_CONTENT}" "${PUB_DATE}" "${MINIMUM}" <<'PY'
 import json, sys
-out, ver, url, sig, pub = sys.argv[1:6]
+out, ver, url, sig, pub, minimum = sys.argv[1:7]
+notes = f"Meridian v{ver}"
+if minimum:
+    notes += f"\nMinimum-Version: {minimum}"
 json.dump(
     {
         "version": ver,
-        "notes": f"Meridian v{ver}",
+        "notes": notes,
         "pub_date": pub,
         "platforms": {"darwin-aarch64": {"signature": sig, "url": url}},
     },
@@ -64,4 +85,8 @@ json.dump(
     indent=2,
 )
 PY
-echo "✓ ${MAC}/latest.json (v${VERSION} → ${URL})"
+if [[ -n "${MINIMUM}" ]]; then
+  echo "✓ ${MAC}/latest.json (v${VERSION} → ${URL}, minimum supported v${MINIMUM})"
+else
+  echo "✓ ${MAC}/latest.json (v${VERSION} → ${URL})"
+fi
