@@ -106,7 +106,7 @@ pub(crate) fn open_native_dashboard(app: &tauri::AppHandle) {
         // The dashboard is now a single page (Meridian Timeline one-pager) —
         // the old "today" route was retired in the timeline migration.
         match WebviewWindowBuilder::new(app, "dashboard", WebviewUrl::App("".into()))
-            .title("Meridian — Dashboard")
+            .title("Meridian - Dashboard")
             .inner_size(1100.0, 760.0)
             .decorations(true)
             .resizable(true)
