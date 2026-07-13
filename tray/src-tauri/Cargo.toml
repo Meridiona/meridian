@@ -32,6 +32,17 @@ tauri-plugin-positioner = { version = "2.3", features = ["tray-icon"] }
 # popover-404 dev caveat).
 tauri-plugin-notifications = { version = "=0.4.6", default-features = false }
 tauri-plugin-opener = "2"
+# Email sign-in on the setup wizard's Sign-in step (see ui/app/setup/signin.tsx).
+# Community-maintained (Nipsuli/tauri-plugin-clerk) — pinned exact for supply-chain
+# control, same as tauri-plugin-notifications above. It patches `fetch` to route
+# Clerk's session calls through tauri-plugin-http, working around Clerk's own
+# documented limitation that cookies don't work on Tauri's custom-domain webview.
+# OAuth/social sign-in is NOT supported by this plugin — email-code only, which
+# matches the passwordless flow this app uses (see clerk.json capability + the
+# manual Clerk dashboard config note in commands/account.rs).
+tauri-plugin-clerk = "=0.1.1"
+tauri-plugin-http = "=2.5.9"
+tauri-plugin-store = "=2.4.3"
 # DMG auto-update (Step 1 of the public-distribution plan). Checks the GitHub
 # `latest.json` against the running version, downloads the signed `.app.tar.gz`,
 # verifies it against the minisign pubkey in tauri.conf.json, swaps it in, and

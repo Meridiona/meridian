@@ -50,6 +50,10 @@ export default function SetupWizard() {
   // (get_integrations) so the rail status + completion summary stay accurate.
   const [integrations, setIntegrations] = useState<IntegrationsResponse | null>(null)
 
+  // Step 3 — sign in (Clerk email one-time-code — see ./signin.tsx). The
+  // widget owns its own form/busy/error state; this just holds the result.
+  const [signedInEmail, setSignedInEmail] = useState<string | null>(null)
+
   const active = !welcome && !done
 
   // Detect hardware once on mount.
@@ -209,12 +213,22 @@ export default function SetupWizard() {
     setProgress({ received: 0, total: 0, speed: 0, message: 'Retrying…' })
   }, [])
 
+  // Persists the Clerk-verified email so the Rust side knows who's signed in
+  // even after this webview session ends (see commands::save_account_email).
+  // Best-effort: a failed write here never blocks the wizard — the widget
+  // already has a live Clerk session and lets the user through regardless.
+  const onSignedIn = useCallback((email: string) => {
+    setSignedInEmail(email)
+    invoke('save_account_email', { email }).catch(() => {})
+  }, [])
+
   const wiz: Wiz = {
     perms, openPane, grantScreen, grantNotifications,
     specs, mlx, downloading, prefetching, modelReady, progress,
     speed: progress?.speed ?? null,
     err: mlxErr, retryModel,
     integrations, refetchIntegrations,
+    signedInEmail, onSignedIn,
   }
 
   // ── Navigation ───────────────────────────────────────────────────────────────

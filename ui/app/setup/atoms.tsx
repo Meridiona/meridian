@@ -40,6 +40,10 @@ export function PermIcon({ icon, size = 18 }: { icon: string; size?: number }) {
     return (<svg viewBox="0 0 18 18" style={c}><path d="M9 3v6" {...s} /><path d="M5.5 5.5a5 5 0 1 0 7 0" {...s} /></svg>)
   if (icon === 'bell')
     return (<svg viewBox="0 0 18 18" style={c}><path d="M9 3a4 4 0 0 1 4 4v2.5l1.2 2.3H3.8L5 9.5V7a4 4 0 0 1 4-4z" {...s} /><path d="M7.6 14.5a1.5 1.5 0 0 0 2.8 0" {...s} /></svg>)
+  if (icon === 'mail')
+    return (<svg viewBox="0 0 18 18" style={c}><rect x="2" y="4" width="14" height="10" rx="1.6" {...s} /><path d="M2.6 5 9 10 15.4 5" {...s} /></svg>)
+  if (icon === 'shield')
+    return (<svg viewBox="0 0 18 18" style={c}><path d="M9 2.5 15 4.5v3.8c0 4-2.6 6.3-6 7-3.4-.7-6-3-6-7V4.5Z" {...s} /><path d="M6.4 9 8.2 10.8 11.7 6.8" {...s} /></svg>)
   return null
 }
 

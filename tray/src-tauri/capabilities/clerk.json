@@ -1,0 +1,12 @@
+{
+  "identifier": "clerk",
+  "description": "Clerk email sign-in — the setup wizard's Sign-in step and Settings → Account's sign-in/sign-out control (see ui/app/setup/signin.tsx).",
+  "windows": ["setup", "dashboard"],
+  "permissions": [
+    "clerk:default",
+    {
+      "identifier": "http:default",
+      "allow": [{ "url": "https://*.clerk.accounts.dev/*" }]
+    }
+  ]
+}
