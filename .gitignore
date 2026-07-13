@@ -90,3 +90,7 @@ dist/
 .mlx-runtime-build/
 .DS_Store
 ui/data/
+
+# /design-sync export build artifact (node_modules, dist, caches) — the design
+# system spec itself lives in the tracked docs/DESIGN_SYSTEM.md, not here.
+packages/meridian-design-system/

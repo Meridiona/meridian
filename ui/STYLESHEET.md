@@ -2,53 +2,79 @@
 
 # Meridian Timeline — Style Sheet
 
-The complete visual system for the Meridian daily-timeline desktop app: type, color tokens across all three themes, spacing, radii, shadows, and every component's exact values. All styling is applied inline in the source mock (no CSS classes); in our implementation the equivalent values live in `ui/app/globals.css` (`.mt-*` type classes + `--t-*`/`--color-*` tokens). This document is the source of truth for what those must match. Fixed canvas in the mock: 1280 × 840px (our shell is fluid — see `MeridianTimelineShell.tsx`).
+The complete visual system for the Meridian daily-timeline desktop app: type, color tokens across all three themes, spacing, radii, shadows, and every component's exact values. All styling is applied inline in the source mock (no CSS classes); in our implementation the equivalent values live in `ui/app/globals.css` (`.mt-*` type classes + `--t-*`/`--color-*` tokens) and, for the tray popover, `tray/src/style.css` (an independent, single-theme token block — see that file's header comment). This document is the source of truth for what those must match. Fixed canvas in the mock: 1280 × 840px (our shell is fluid — see `MeridianTimelineShell.tsx`).
 
 ## 1 · Typography
 
-Two families. Plus Jakarta Sans for all UI text; JetBrains Mono for ticket keys, times, durations and numeric labels. Loaded from Google Fonts.
+One voice: SF Pro for everything — UI text and numerics alike. `--font-sans`
+resolves via `-apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui` — on
+macOS (Meridian's actual runtime) this renders the real SF Pro Text/Display
+already installed on the system, no font files bundled. There is no separate
+monospace face for ticket keys/times/durations; numeric alignment comes from
+`font-variant-numeric: tabular-nums` on the same family (the `.font-mono` /
+`.mt-mono-sm` classes in `globals.css` and `tray/src/style.css`), matching how
+Apple's own type system handles numeric columns — no dedicated mono face there
+either. (`Instrument_Serif` remains, unrelated — it's a legacy face used only by
+the setup wizard, not part of this type scale.)
 
-Plus Jakarta Sans — 400 / 500 / 600 / 700 / 800
-JetBrains Mono — 400 / 500 / 600 / 700
-
-| Role | Family | Size | Weight | Line / Tracking |
-|---|---|---|---|---|
-| Panel heading ("You had a solid day") | Jakarta | 20px | 800 | 1.25 / −.02em |
-| Modal title (Review, Cleanup, Plan) | Jakarta | 17–22px | 800 | 1.2 / −.02em |
-| Swipe-card ticket title | Jakarta | 19px | 800 | 1.3 / −.02em |
-| Toolbar date | Jakarta | 15px | 700 | 1.1 |
-| Worklog card title | Jakarta | 13.5px | 700 | 1.3 / −.01em |
-| Body / summary text | Jakarta | 12–14px | 500 | 1.45–1.55 |
-| Section label (TODAY'S FOCUS) | Jakarta | 11px | 700 | / .08em, UPPER |
-| Ticket key (MER-482) | Mono | 11–12px | 600–700 | / .02em |
-| Hour label / time / duration | Mono | 10.5–11px | 600 | / .02em |
-| Status pill (NEEDS REVIEW) | Mono | 9.5px | 700 | / .03em, UPPER |
+| Role | Size | Weight | Line / Tracking |
+|---|---|---|---|
+| Panel heading ("You had a solid day") | 20px | 800 | 1.25 / −.02em |
+| Modal title (Review, Cleanup, Plan) | 17–22px | 800 | 1.2 / −.02em |
+| Swipe-card ticket title | 19px | 800 | 1.3 / −.02em |
+| Toolbar date | 15px | 700 | 1.1 |
+| Worklog card title | 13.5px | 700 | 1.3 / −.01em |
+| Body / summary text | 12–14px | 500 | 1.45–1.55 |
+| Section label (TODAY'S FOCUS) | 11px | 700 | / .08em, UPPER |
+| Ticket key (MER-482) | 11–12px | 600–700 | / .02em, tabular-nums |
+| Hour label / time / duration | 10.5–11px | 600 | / .02em, tabular-nums |
+| Status pill (NEEDS REVIEW) | 9.5px | 700 | / .03em, UPPER |
 
 Global smoothing: `-webkit-font-smoothing: antialiased`. Base reset: `*{box-sizing:border-box}`, `html,body{margin:0;padding:0}`.
 
+Non-Mac caveat (relevant once a website/marketing surface exists): `-apple-system`/
+`system-ui` falls back to each OS's native UI font off Apple hardware (Segoe UI,
+Roboto, …), not true SF Pro — Apple doesn't distribute the font for that use.
+Accepted for now; Inter is the closest open substitute if that ever needs solving.
+
 ## 2 · Brand & accent colors
 
-Theme-independent. Gradients are the signature — the violet→pink diagonal appears on the logo, avatar, primary buttons and draft card.
+One accent, Apple-style: `#7C3AED` (Violet 600) is THE Meridian accent — every
+brand-interactive element (links, primary buttons, focus rings) uses it, the
+same way Apple uses a single Action Blue. Formalized as `--t-accent` per theme in
+`ui/app/globals.css` (light themes: `#7C3AED`; the `ink` dark theme uses the
+lighter `#DCCFFB` tint for contrast, matching the existing `--gen-title` pattern).
+The legacy amber/gold accent (`#C4822A` light / `#D4942E` dark) that drove the
+setup wizard and a few older dialogs has been retired in favor of this same
+violet — one accent, app-wide, no second brand identity left over from the
+pre-Timeline design.
 
-| Token | Value | Usage |
+Functional palettes stay separate from this brand accent, since they carry
+meaning a single accent color can't: the semantic status colors (§3) and the
+10 task-category colors (`.cat-*` in `globals.css`) are untouched by this
+simplification.
+
+### Gradient — one flourish only
+
+Apple's whole system has zero decorative gradients, reserving its one visual
+flourish (a product-photo drop-shadow) for a single spot. Meridian's equivalent:
+exactly one gradient survives, `--mer-pill-bg` (`ui/app/globals.css`) — the dark
+violet lockup behind the "Meridian" wordmark in the toolbar nav pill, the one
+fixed, always-visible brand mark. Every other surface that used to carry a
+gradient (the primary button, the draft/review card header, tray's review-cta)
+is now a flat `var(--t-accent)` fill:
+
+| Element | Treatment | Token |
 |---|---|---|
-| Violet 700 | `#6D28D9` | Primary text-accent, focus numbers |
-| Violet 600 | `#7C3AED` | Links, "Edit plan", proposal accent |
-| Violet 500 | `#8B5CF6` | Accents, toggles, now-dot rings |
-| Purple 500 | `#A855F7` | Gradient mid-stop |
-| Pink 500 | `#EC4899` | Now-line, gradient end, meetings stat |
-| Pink 600 | `#DB2777` | Meetings figure, gradient end (buttons) |
-| Indigo 500 | `#6366F1` | Logo/avatar gradient start |
-| Cyan 400 | `#22D3EE` | Tertiary (context-switch stat, chips) |
+| Toolbar nav pill (the one flourish) | `linear-gradient(135deg,#332A63,#241C49)` | `--mer-pill-bg` |
+| Primary button | Flat `var(--t-accent)` | `--btn-primary-bg` (`ui/app/globals.css`) |
+| Draft / review card header | Flat `var(--t-accent)` | `--draft-card-bg` (`ui/app/globals.css`) |
+| Approve button | `linear-gradient(135deg, #059669, #10B981)` (unchanged — semantic "success," not brand) | — |
 
-### Signature gradients
-
-| Element | Gradient |
-|---|---|
-| Logo / avatar | `linear-gradient(135deg, #6366F1, #A855F7 55%, #EC4899)` |
-| Primary button | `linear-gradient(135deg, #6D28D9, #9333EA)` |
-| Draft / review card | `linear-gradient(135deg, #5B21B6, #7C3AED 45%, #DB2777)` |
-| Approve button | `linear-gradient(135deg, #059669, #10B981)` |
+Structural surface gradients — the per-theme window background (`--win-bg`),
+desk backdrop (`--desk`), ambient `--glow`, and the theme-swatch `--chip` preview
+— are unaffected; those are the window/background treatment, not brand
+decoration, and remain as documented in §4.
 
 ## 3 · Semantic status colors
 
@@ -119,15 +145,27 @@ Every surface swaps by theme. Lilac (default, cool violet-white), Lavender (deep
 
 ## 6 · Shadows & elevation
 
+Apple's rule — elevation only for the one floating/hero element, never for
+ordinary resting cards — is the model here too. Meridian's shadow language keeps
+elevation for what's actually floating (the app window, modals, the one
+single-focus swipe/review card visible at a time, the floating drafts pill) and
+relies on surface-color/border contrast for everything else at rest. An
+always-on decorative shadow was removed from nothing that turned out to be a
+true resting list card in this pass — investigation found Meridian's existing
+shadow usage was already close to this discipline (see `docs/` history / Phase 2
+audit); the two candidates flagged for removal (`CleanupCard`, `ReviewCard`)
+turned out to be the single-focus swipe card below, not resting list items, so
+their shadow stays.
+
 | Element | Shadow |
 |---|---|
 | Window (light) | `inset 0 0 0 1px rgba(30,20,70,.05), 0 2px 6px …, 0 34px 70px −24px rgba(40,25,90,.42), 0 70px 120px −50px rgba(70,40,130,.32)` |
 | Window (Ink) | `inset 0 0 0 1px rgba(255,255,255,.08), 0 34px 70px −24px rgba(0,0,0,.65), 0 70px 120px −50px rgba(110,60,200,.4)` |
 | Worklog card | `inset 3px 0 0 [accent], 0 1px 2px …, 0 8px 20px −12px rgba(40,30,90,.22)` |
 | Card hover | `…0 16px 32px −12px rgba(40,30,90,.32) + translateY(−2px)` |
-| Draft card (gradient) | `0 16px 34px −12px rgba(124,58,237,.65), 0 4px 10px −6px …` |
-| Swipe card | `0 30px 60px −20px rgba(0,0,0,.5)` |
-| Modal overlay | `bg rgba(10,8,24,.5) + backdrop-filter blur(6px)` |
+| Draft card | `0 24px 60px −18px rgba(20,16,40,.5)` (flat `--draft-card-bg` fill now, not a gradient — see §2) |
+| Swipe card (single-focus, one at a time) | `0 30px 60px −20px rgba(0,0,0,.5)` |
+| Modal overlay | `bg rgba(20,16,40,.5) + backdrop-filter blur(3px)` |
 | Floating drafts pill | `0 18px 40px −12px rgba(0,0,0,.6) on #15132A` |
 
 ## 7 · Layout & key components
@@ -162,7 +200,9 @@ Every surface swaps by theme. Lilac (default, cool violet-white), Lavender (deep
 
 ### App-brand colors for time bars
 
-VS Code `#4F8FEF` · Chrome `#F4B400` · Safari `#2AA9FF` · Slack `#E01E5A` · Jira `#2684FF` · Figma `#F24E1E` · Zoom `#2D8CFF` · Notion `#3B3752` · GitHub `#57606A` · Postman `#FF6C37` · Gmail `#EA4335` · iTerm `#25A06A` · DevTools `#4285F4`.
+Single source of truth: `ui/lib/brand-icons.ts`'s `BRAND_ICONS` map (real hex + vector wordmark per app, sourced from simple-icons/Font Awesome Free — see that file's header for provenance and how to add/refresh an entry). `TimeByApp.tsx`'s `appColor()` reads `BRAND_ICONS[app]?.hex`; any app not in the map falls back to a deterministic hashed hue (`appHue()`), not a real brand color. Do not hand-maintain a second copy of this list here — it drifts (this table used to list VS Code/Jira/GitHub/Postman/Gmail/DevTools, none of which are actually in the map).
+
+Currently mapped: Google Chrome `#4285F4` · Claude `#D97757` · Claude Code `#D97757` · Arc `#FCBFBD` · WhatsApp `#25D366` · DBeaver `#382923` · Zoom `#0B5CFF` · Linear `#5E6AD2` · Figma `#F24E1E` · Notion `#000000` · Spotify `#1ED760` · Safari `#006CFF` · Xcode `#147EFB` · iTerm2 `#000000` · Slack `#4A154B`. ChatGPT has no entry — no redistributable OpenAI wordmark exists in either icon source — so it keeps the letter-monogram fallback like Apple's own system apps.
 
 ## 9 · Design standard — rules for new work (prescriptive)
 
