@@ -59,6 +59,20 @@ if [[ -f "${MIN_FILE}" ]]; then
     echo "✗ ${MIN_FILE} contains '${MINIMUM}' — not a plain semver (X.Y.Z)" >&2
     exit 1
   fi
+  # The floor must not exceed the release that carries it — a floor above every
+  # published version would make old apps force-install a build that is itself
+  # still below the minimum (self-terminating, but confusing). Always an
+  # operator error, so fail loudly. Cores only (X.Y.Z), so a prerelease
+  # release version (1.70.0-staging.1) may carry a 1.70.0 floor.
+  if [[ -n "${MINIMUM}" ]]; then
+    python3 - "${MINIMUM}" "${VERSION}" <<'PY' || exit 1
+import sys
+minimum, ver = sys.argv[1], sys.argv[2]
+core = lambda v: tuple(int(x) for x in v.split("-")[0].split("."))
+if core(minimum) > core(ver):
+    sys.exit(f"✗ tray/minimum-version {minimum} exceeds the release version {ver}")
+PY
+  fi
 fi
 
 # latest.json from the real signature. The tarball URL points at the v<version>
