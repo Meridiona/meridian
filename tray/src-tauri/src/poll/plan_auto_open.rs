@@ -8,7 +8,9 @@
 //! "logged in this morning" and "new day started while the tray kept running".
 //!
 //! Gates, cheapest first:
-//! 1. marker file `~/.meridian/plan_auto_opened` already holds today's date
+//! 1. marker file `~/.meridian/plan_auto_opened` already records today (it
+//!    holds the open's timestamp — `meridian_core::plan_marker` — which the
+//!    daemon also reads to hold its plan nudge back an hour after the open)
 //! 2. `auto_open_plan` disabled in settings
 //! 3. not onboarded (no `~/.meridian/onboarded` — don't open over the wizard)
 //! 4. today's plan already confirmed/skipped (`daily_plan_meta`) — the marker
@@ -31,12 +33,9 @@
 //! - `src/daily_plan.rs` (daemon) — the sibling notification nudge; both read
 //!   the same `daily_plan_meta` "already handled" state.
 
-use std::path::{Path, PathBuf};
+use meridian_core::plan_marker;
+use std::path::Path;
 use tauri::Emitter;
-
-/// Marker file under `~/.meridian` holding the local date (`YYYY-MM-DD`) of
-/// the last auto-open. Same convention as the `onboarded` marker.
-const MARKER_FILE: &str = "plan_auto_opened";
 
 /// Once per local day, open the dashboard on the Plan modal. See the module
 /// docs for the gate order and rationale.
@@ -47,12 +46,16 @@ pub(crate) async fn maybe_auto_open_plan(app: &tauri::AppHandle, pool: &meridian
         return;
     }
     let meridian_dir = Path::new(&home).join(".meridian");
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let now = chrono::Local::now();
+    let today = now.format("%Y-%m-%d").to_string();
 
-    // 1. Already fired today — one file stat on the common path.
-    let marker = marker_path(&meridian_dir);
+    // 1. Already fired today — one file stat on the common path. The marker
+    //    holds the open's RFC3339 timestamp (see `meridian_core::plan_marker`);
+    //    the daemon reads the same file to hold its plan nudge back for an
+    //    hour after the auto-open.
+    let marker = plan_marker::marker_path(&meridian_dir);
     let marker_contents = std::fs::read_to_string(&marker).unwrap_or_default();
-    if already_opened(&marker_contents, &today) {
+    if plan_marker::opened_today(&marker_contents, &today) {
         return;
     }
 
@@ -69,7 +72,7 @@ pub(crate) async fn maybe_auto_open_plan(app: &tauri::AppHandle, pool: &meridian
     // 4. Day already planned (confirmed or skipped, e.g. via the notification
     //    nudge) — settle the day without opening.
     if meridian_core::plan::plan_handled(pool, &today).await {
-        write_marker(&marker, &today);
+        write_marker(&marker, &now);
         tracing::info!(%today, "plan auto-open: plan already handled — marking day settled");
         return;
     }
@@ -79,30 +82,18 @@ pub(crate) async fn maybe_auto_open_plan(app: &tauri::AppHandle, pool: &meridian
     // deep link, open/focus the window, and also emit for an already-open
     // window (which won't remount and thus never pulls). Double delivery is
     // idempotent — the shell opens the same modal.
-    write_marker(&marker, &today);
+    write_marker(&marker, &now);
     crate::deep_link::set_pending(app, "/plan");
     crate::tray::open_native_dashboard(app);
     let _ = app.emit_to("dashboard", "dashboard-navigate", "/plan");
     tracing::info!(%today, "plan auto-open: opened dashboard on the Plan view");
 }
 
-/// `~/.meridian/plan_auto_opened`. Split out (and pure over the dir) so tests
-/// can point it at a temp dir.
-fn marker_path(meridian_dir: &Path) -> PathBuf {
-    meridian_dir.join(MARKER_FILE)
-}
-
-/// True when the marker already records `today`. Pure so the date comparison
-/// (whitespace tolerance, stale dates, empty/missing file) is unit-testable.
-fn already_opened(marker_contents: &str, today: &str) -> bool {
-    marker_contents.trim() == today
-}
-
-/// Persist today's date into the marker. A failure is logged but not fatal:
-/// the worst case is the open firing again after a tray restart — annoying,
-/// not incorrect.
-fn write_marker(marker: &Path, today: &str) {
-    if let Err(e) = std::fs::write(marker, today) {
+/// Persist the open's timestamp into the marker. A failure is logged but not
+/// fatal: the worst case is the open firing again after a tray restart —
+/// annoying, not incorrect.
+fn write_marker(marker: &Path, now: &chrono::DateTime<chrono::Local>) {
+    if let Err(e) = std::fs::write(marker, plan_marker::stamp(now)) {
         tracing::warn!(error = %e, path = %marker.display(), "plan auto-open: marker write failed");
     }
 }
@@ -111,54 +102,31 @@ fn write_marker(marker: &Path, today: &str) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn already_opened_matches_today_only() {
-        assert!(already_opened("2026-07-13", "2026-07-13"));
-        assert!(
-            already_opened("2026-07-13\n", "2026-07-13"),
-            "trailing newline tolerated"
-        );
-        assert!(
-            already_opened("  2026-07-13  ", "2026-07-13"),
-            "surrounding whitespace tolerated"
-        );
-        assert!(
-            !already_opened("", "2026-07-13"),
-            "missing/empty marker → not opened"
-        );
-        assert!(
-            !already_opened("2026-07-12", "2026-07-13"),
-            "stale marker → fire again"
-        );
-        assert!(!already_opened("garbage", "2026-07-13"));
-    }
-
+    // Format/date semantics are covered in `meridian_core::plan_marker`; this
+    // exercises the tray's write half against the real fs.
     #[test]
     fn marker_round_trips_through_the_fs() {
         let dir = std::env::temp_dir().join(format!("meridian-plan-marker-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let marker = marker_path(&dir);
-        assert_eq!(marker.file_name().unwrap(), MARKER_FILE);
+        let marker = plan_marker::marker_path(&dir);
+        assert_eq!(marker.file_name().unwrap(), plan_marker::MARKER_FILE);
 
-        assert!(!already_opened(
+        let now = chrono::Local::now();
+        let today = now.format("%Y-%m-%d").to_string();
+        assert!(!plan_marker::opened_today(
             &std::fs::read_to_string(&marker).unwrap_or_default(),
-            "2026-07-13"
+            &today
         ));
-        write_marker(&marker, "2026-07-13");
-        assert!(already_opened(
-            &std::fs::read_to_string(&marker).unwrap(),
-            "2026-07-13"
-        ));
-        // Next day: stale marker no longer counts, and a rewrite wins.
-        assert!(!already_opened(
-            &std::fs::read_to_string(&marker).unwrap(),
-            "2026-07-14"
-        ));
-        write_marker(&marker, "2026-07-14");
-        assert!(already_opened(
-            &std::fs::read_to_string(&marker).unwrap(),
-            "2026-07-14"
-        ));
+        write_marker(&marker, &now);
+        let contents = std::fs::read_to_string(&marker).unwrap();
+        assert!(plan_marker::opened_today(&contents, &today));
+        // The daemon's hold-back can recover the instant from what we wrote.
+        assert_eq!(
+            plan_marker::opened_at(&contents).map(|t| t.timestamp()),
+            Some(now.timestamp())
+        );
+        // A different day no longer matches (stale marker → fire again).
+        assert!(!plan_marker::opened_today(&contents, "1999-01-01"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
