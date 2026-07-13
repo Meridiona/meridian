@@ -114,14 +114,19 @@ pub async fn record_notification_response(
     );
 
     // The dashboard is a single window (deep_link routes were folded into one
-    // page), so every foreground answer lands on the same opener.
-    if matches!(action.as_str(), "tap" | "open" | "view")
-        && meridian_core::notifications::notification_deep_link(pool, id)
-            .await
-            .is_some()
-    {
-        if let Err(e) = crate::commands::open_dashboard(app).await {
-            tracing::warn!(error = %e, id, "notification click-through open failed");
+    // page), so every foreground answer lands on the same opener. The link is
+    // handed to the window via the pending-deep-link pull (fresh window) AND a
+    // `dashboard-navigate` emit (already-open window) — see [`crate::deep_link`]
+    // — so the click actually lands on the linked view (e.g. the Plan modal),
+    // not just the default timeline.
+    if matches!(action.as_str(), "tap" | "open" | "view") {
+        if let Some(link) = meridian_core::notifications::notification_deep_link(pool, id).await {
+            crate::deep_link::set_pending(&app, &link);
+            if let Err(e) = crate::commands::open_dashboard(app.clone()).await {
+                tracing::warn!(error = %e, id, "notification click-through open failed");
+            }
+            use tauri::Emitter;
+            let _ = app.emit_to("dashboard", "dashboard-navigate", link);
         }
     }
     Ok(())

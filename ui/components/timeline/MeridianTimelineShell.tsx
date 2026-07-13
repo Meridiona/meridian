@@ -10,7 +10,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { load } from '@/lib/bridge'
+import { load, subscribe } from '@/lib/bridge'
 import type { RuntimeSettings } from '@/lib/settings'
 import { applyTheme } from '@/lib/theme'
 import HealthBanner from '@/components/HealthBanner'
@@ -71,6 +71,25 @@ export default function MeridianTimelineShell() {
     const openTasks = () => setActiveModal('tasks')
     window.addEventListener('meridian:open-tasks', openTasks)
     return () => window.removeEventListener('meridian:open-tasks', openTasks)
+  }, [])
+
+  // Tray-side openers (the daily plan auto-open, notification click-throughs)
+  // steer this window to a specific view. subscribe()'s prime is the pull half
+  // (`take_pending_deep_link` — a fresh window misses any event emitted before
+  // its listener exists, so the tray parks the target in managed state), and
+  // its listener is the push half (`dashboard-navigate`, for a window that is
+  // already open and won't remount). Targets are the former route paths the
+  // notification producers still use as `deep_link`s.
+  useEffect(() => {
+    const navigate = (target: string | null) => {
+      if (target === '/plan') {
+        setActiveModal('plan')
+      } else if (target === '/worklogs') {
+        setReviewFocusKey(null)
+        setActiveModal('review')
+      }
+    }
+    return subscribe<string | null>('/deep-link', 'take_pending_deep_link', 'dashboard-navigate', navigate)
   }, [])
 
   // Changing day resets the selected hour (its detail no longer applies).
