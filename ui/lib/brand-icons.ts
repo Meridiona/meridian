@@ -3,21 +3,47 @@
 // Real brand mark path data for the "Time by app" glyphs (AppGlyph in
 // components/atoms.tsx). Sourced from simple-icons (CC0) for third-party
 // apps that have a public vector wordmark, plus Font Awesome Free (CC BY 4.0)
-// for Slack, which simple-icons dropped over a trademark dispute. Apple's own
-// system apps (Terminal, Mail) and unreleased/unlisted tools (Antigravity)
-// have no redistributable brand mark, so those keep the letter-monogram
-// fallback in atoms.tsx instead of an invented "logo".
+// for Slack, which simple-icons dropped over a trademark dispute. Apps whose
+// wordmark isn't redistributable anywhere (ChatGPT/OpenAI, VS Code — both
+// dropped by simple-icons over trademark, no Font Awesome equivalent either)
+// get a `hex`-only entry: the real brand color without an invented glyph,
+// falling back to the letter-monogram icon in AppGlyph. Apple's own system
+// apps (Terminal, Mail) and unreleased/unlisted tools (Antigravity) are the
+// same case, but keep their overrides in atoms.tsx's APP_META instead of
+// here since that table predates this file.
 //
-// Each entry is a single-path monochrome glyph + the brand's official hex —
+// A full entry is a single-path monochrome glyph + the brand's official hex —
 // rendered as `fill: hex` on a tinted rounded background, matching the
 // existing AppGlyph treatment. Re-derive by reading
 // `node_modules/simple-icons/icons/<slug>.svg` (path + viewBox) and
 // `node_modules/simple-icons/data/simple-icons.json` (hex) if an entry needs
 // to be added or refreshed.
+//
+// Lookups MUST go through `getBrandIcon()`, not a raw `BRAND_ICONS[app]`
+// index — real `app_name` values from macOS sometimes carry invisible
+// Unicode formatting characters (e.g. WhatsApp's window title is actually
+// `"‎WhatsApp"`, a leading left-to-right mark, not `"WhatsApp"`), which
+// silently fail an exact-match lookup and fall through to the hashed-hue
+// fallback with no visible error.
 export interface BrandIcon {
-  viewBox: string
-  path: string
+  viewBox?: string
+  path?: string
   hex: string
+}
+
+/** Strips invisible Unicode formatting marks (LRM, RLM, zero-width chars, BOM)
+ * that some apps' native window titles carry, then trims — so `BRAND_ICONS`
+ * lookups match on the visible name rather than the raw title string. */
+const INVISIBLE_FORMAT_CHARS = /[\u200B-\u200F\uFEFF]/g
+
+export function normalizeAppName(app: string): string {
+  return app.replace(INVISIBLE_FORMAT_CHARS, '').trim()
+}
+
+/** The one supported way to resolve an app's brand entry — normalizes first. */
+export function getBrandIcon(app: string | null | undefined): BrandIcon | undefined {
+  if (!app) return undefined
+  return BRAND_ICONS[normalizeAppName(app)]
 }
 
 export const BRAND_ICONS: Record<string, BrandIcon> = {
@@ -96,8 +122,14 @@ export const BRAND_ICONS: Record<string, BrandIcon> = {
     hex: '#25D366',
     path: 'M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z',
   },
-  // ChatGPT/OpenAI has no entry: neither simple-icons nor Font Awesome Free
-  // ship a redistributable OpenAI wordmark (same reasoning as the Apple
-  // system apps above) — it keeps the letter-monogram fallback in atoms.tsx
-  // until a CC0/permissive mark becomes available.
+  // hex-only: no redistributable wordmark in simple-icons or Font Awesome
+  // Free for either (both dropped/never shipped over trademark), so these
+  // keep the letter-monogram glyph in AppGlyph but get the real brand color
+  // instead of a hashed one.
+  ChatGPT: {
+    hex: '#000000',
+  },
+  Code: {
+    hex: '#007ACC',
+  },
 }
