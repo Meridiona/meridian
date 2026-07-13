@@ -147,7 +147,7 @@ function ConnectedPanel({
       {needsGithubProjects && !reauthorizing && !pickingProjects && (
         <div className="mb-3 rounded-md px-3 py-2" style={{ background: 'var(--status-info-bg)', border: '1px solid var(--status-info-border)' }}>
           <p className="text-[12px] leading-relaxed" style={{ color: 'var(--status-info-text)' }}>
-            No GitHub Projects selected — tasks won&apos;t sync yet.
+            No GitHub Projects selected - tasks won&apos;t sync yet.
           </p>
           <button onClick={() => setPickingProjects(true)} className="mt-2 text-[11px] px-3 py-1 rounded-md"
             style={{ background: 'var(--status-info-text)', color: '#fff', cursor: 'pointer' }}>
