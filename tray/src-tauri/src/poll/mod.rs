@@ -21,6 +21,7 @@
 
 mod live;
 mod notifications;
+mod plan_auto_open;
 mod refresh;
 
 pub(crate) use notifications::notifications_allowed;
@@ -133,6 +134,10 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
         // feature is enabled; never overrides a user-initiated timed pause.
         if let Some(pool) = &pool {
             check_work_hours(&app, &state, pool).await;
+            // Daily "Plan your day" auto-open — at most once per local day
+            // (marker-file gated; a single file stat on the common path). If
+            // the pool isn't open yet this tick, it simply retries next tick.
+            plan_auto_open::maybe_auto_open_plan(&app, pool).await;
         }
 
         // Drain the daemon's notification outbox every tick — this is the single

@@ -20,6 +20,7 @@ mod backend_install;
 #[cfg(feature = "capture")]
 mod capture;
 mod commands;
+mod deep_link;
 
 /// Lowercase product name as macOS reports it after [`set_process_display_name`].
 /// The capture engine uses this to skip self-capture — keep it in sync with the
@@ -105,6 +106,9 @@ pub fn run() {
     builder
         .manage(app_state.clone())
         .manage(mlx_manager.clone())
+        // Pending dashboard navigation target (e.g. "/plan") — set by tray-side
+        // openers, pulled by the dashboard shell on mount. See `deep_link`.
+        .manage(deep_link::PendingDeepLink(std::sync::Mutex::new(None)))
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -505,6 +509,7 @@ pub fn run() {
             commands::get_app_icon,
             // DB writes (ported /api/* POSTs/PATCH/DELETE)
             commands::plan_action,
+            commands::plan_dismissed,
             commands::triage_decision,
             commands::triage_ignore,
             commands::apply_ticket_fix,
@@ -531,6 +536,7 @@ pub fn run() {
             commands::cancel_oauth,
             commands::get_oauth_status,
             // OS/window actions
+            commands::take_pending_deep_link,
             commands::open_permission_pane,
             commands::open_external_url,
             commands::quit_app,

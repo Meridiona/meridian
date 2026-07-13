@@ -99,6 +99,17 @@ pub async fn open_setup(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Fetch-and-clear the pending dashboard navigation target (e.g. "/plan") —
+/// the pull half of [`crate::deep_link`]. Called once by
+/// `MeridianTimelineShell` on mount; `None` on a plain open. Infallible today,
+/// but returns `Result` like its sibling commands so the bridge's error path
+/// stays uniform if a failure mode appears.
+#[tracing::instrument(skip(app))]
+#[tauri::command]
+pub async fn take_pending_deep_link(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    Ok(crate::deep_link::take_pending(&app))
+}
+
 /// Deep-link straight to a macOS privacy pane in System Settings. `pane` is
 /// one of the wizard's known keys; anything else is rejected so the frontend
 /// can't open an arbitrary URL. We always offer this button regardless of

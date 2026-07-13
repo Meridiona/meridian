@@ -182,6 +182,28 @@ pub async fn plan_action(
         })
 }
 
+/// The user closed the Plan modal. Restarts the plan-nudge hold-back clock:
+/// re-stamps `~/.meridian/plan_auto_opened` with now, so the daemon's
+/// "Plan your day" reminder fires one hour after the DISMISSAL (not the
+/// auto-open) when the plan is still unconfirmed. A no-op unless the marker
+/// already records today — a manual planner open/close on a day the
+/// auto-open didn't fire must not suppress the nudge
+/// ([`meridian_core::plan_marker::restamp_if_today`] owns that guard).
+/// Fire-and-forget from the shell; never errors.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn plan_dismissed() {
+    let home = std::env::var("HOME").unwrap_or_default();
+    if home.is_empty() {
+        return;
+    }
+    let marker =
+        meridian_core::plan_marker::marker_path(&std::path::Path::new(&home).join(".meridian"));
+    if meridian_core::plan_marker::restamp_if_today(&marker, &chrono::Local::now()) {
+        tracing::info!("plan_dismissed: nudge hold-back clock restarted");
+    }
+}
+
 /// `YYYY-MM-DD` validation shared by the plan read/write date coercions.
 fn is_iso_date(d: &str) -> bool {
     let b = d.as_bytes();

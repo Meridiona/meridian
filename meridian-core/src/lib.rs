@@ -35,6 +35,10 @@ pub mod settings;
 /// Notification delivery policy + native pending queue (ported from lib/notifications.ts).
 pub mod notifications;
 
+/// The `~/.meridian/plan_auto_opened` marker format — written by the tray's
+/// daily planner auto-open, read by the daemon's plan-nudge hold-back.
+pub mod plan_marker;
+
 /// In-process capture-frame writer (Gap-2 Bucket 2). Inverted ownership: the
 /// tray writes `capture_frames`, the daemon's ETL reads it.
 pub mod capture;
