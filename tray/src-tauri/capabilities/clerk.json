@@ -6,7 +6,11 @@
     "clerk:default",
     {
       "identifier": "http:default",
-      "allow": [{ "url": "https://*.clerk.accounts.dev/*" }]
+      "allow": [
+        { "url": "https://*.clerk.accounts.dev/*" },
+        { "url": "https://clerk.meridiona.com/*" },
+        { "url": "https://accounts.meridiona.com/*" }
+      ]
     }
   ]
 }

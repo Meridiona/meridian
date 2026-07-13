@@ -204,7 +204,7 @@ export function EmailCodeForm() {
         </span>
         <p style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--t-muted)' }}>
           We never see your screen, OCR text, or activity - none of it leaves your Mac. Signing in only tells
-          us which teammate is using Meridian, and your email is never shared with anyone.
+          us which teammate is using Meridian; your email is never sold or shared with outside companies.
         </p>
       </div>
     </div>

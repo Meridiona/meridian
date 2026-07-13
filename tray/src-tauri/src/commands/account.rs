@@ -2,9 +2,11 @@
 //! Clerk email sign-in — publishable-key resolution + the captured account email.
 //!
 //! # What this is
-//! The setup wizard's Sign-in step (`ui/app/setup/signin.tsx` /
-//! `signin-impl.tsx`) drives Clerk entirely client-side via `tauri-plugin-clerk`
-//! (see `lib.rs`'s plugin registration) — email one-time-code only, no OAuth
+//! The setup wizard's Sign-in step and Settings → Account's control
+//! (`ui/app/setup/signin.tsx` / the `ui/app/setup/signin/` module — see
+//! `SignInWidget.tsx`/`AccountAuthControl.tsx`) drive Clerk entirely
+//! client-side via `tauri-plugin-clerk` (see `lib.rs`'s plugin registration)
+//! — email one-time-code only, no OAuth
 //! (the plugin doesn't support it) and no password (disabled on the Clerk
 //! instance itself; see the manual dashboard step below). Once a session
 //! exists, the frontend calls [`save_account_email`] so the Rust side also
@@ -20,7 +22,8 @@
 //! # Who calls this
 //! - [`clerk_publishable_key`]: `lib.rs`'s builder, to construct the
 //!   `tauri_plugin_clerk::ClerkPluginBuilder`.
-//! - [`save_account_email`]: `ui/app/setup/signin-impl.tsx` on successful sign-in.
+//! - [`save_account_email`]: `ui/app/setup/signin/SignInWidget.tsx` and
+//!   `AccountAuthControl.tsx` on successful sign-in.
 //! - [`read_account_email`]: `crate::analytics`, to upgrade the anonymous
 //!   PostHog `distinct_id` to an identified person once an email is known.
 //!
@@ -153,7 +156,7 @@ pub async fn get_account_email() -> Option<String> {
 
 /// Clear the persisted account email on sign-out. Called by the Settings →
 /// Account panel right after the webview's Clerk session itself is torn down
-/// (`useClerk().signOut()` in `signin-impl.tsx`'s `AccountStatus`) — this file
+/// (`useClerk().signOut()` in `AccountAuthControl.tsx`'s `AccountStatus`) — this file
 /// is the Rust-side mirror of that session, so it must be cleared in lockstep
 /// or a stale email would keep surfacing in Settings/analytics after logout.
 /// Not an error if never signed in (no file to remove).

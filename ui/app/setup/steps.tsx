@@ -311,9 +311,10 @@ function IntegrationsBody({ wiz }: { wiz: Wiz }) {
 // ── STEP 3 — Sign in ──────────────────────────────────────────────────────────
 // Clerk email one-time-code, entirely inside the webview via tauri-plugin-clerk
 // (see lib.rs's plugin registration + signin.tsx). <SignInWidget> is a thin
-// next/dynamic boundary around the actual Clerk-aware form (signin-impl.tsx) —
-// importing it here stays safe for the static-export build because signin.tsx
-// itself has no @clerk/react imports at the top level.
+// next/dynamic boundary around the actual Clerk-aware form (the signin/ module —
+// see SignInWidget.tsx/EmailCodeForm.tsx) — importing it here stays safe for the
+// static-export build because signin.tsx itself has no @clerk/react imports at
+// the top level.
 function SignInBody({ wiz }: { wiz: Wiz }) {
   if (wiz.signedInEmail) {
     return (
