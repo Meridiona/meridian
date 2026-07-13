@@ -57,6 +57,16 @@ jobs:
       # in a shipped client. Set the POSTHOG_API_KEY repo secret; absent →
       # analytics compiles in disabled (see analytics::posthog_api_key).
       MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+      # Baked into the release binary at compile time (consumed by option_env! in
+      # tray/src-tauri/src/commands/account.rs's DEFAULT_CLERK_PUBLISHABLE_KEY).
+      # Clerk PRODUCTION instance's publishable key (meridiona.com) — a public
+      # identifier, safe to embed in a shipped client. Every packaged install
+      # (this channel and staging alike) uses production Clerk; only a source
+      # checkout (`cargo run`/`tauri dev`) uses the dev instance, via the repo
+      # root .env's CLERK_PUBLISHABLE_KEY — see account.rs's module doc. Set the
+      # CLERK_PUBLISHABLE_KEY_PROD repo secret; absent → sign-in unavailable in
+      # this build (lib.rs skips registering the Clerk plugin with no key).
+      MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
       # Minisign key for the DMG auto-updater: `tauri build` (createUpdaterArtifacts)
       # signs Meridian.app.tar.gz with these so the installed app can verify the
       # update against the pubkey baked in tauri.conf.json. The build FAILS LOUDLY
