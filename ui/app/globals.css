@@ -142,11 +142,11 @@ html.dark {
    in sync in tray/src/style.css (no import mechanism there).
 
    NOT simply var(--t-accent) in every theme: --t-accent's job in `ink` is to
-   stay light (#DCCFFB) so it reads as *text*/link color against ink's dark
+   stay light (#DCCFFB) so it reads as text/link color against ink's dark
    surfaces (ReportModal.tsx, SettingsSidebar.tsx active-tab text, etc. pair it
-   with dark backgrounds). These two tokens are the opposite case — a *fill*
+   with dark backgrounds). These two tokens are the opposite case, a fill
    that white text (ReportModal's hero + "Suggest a feature" button) sits on
-   top of — so `ink` overrides them back to the same dark violet the other
+   top of, so `ink` overrides them back to the same dark violet the other
    themes use, below. Getting this wrong makes white-on-#DCCFFB, which is
    barely legible. */
 :root, html[data-theme="lilac"], html[data-theme="blush"] {
