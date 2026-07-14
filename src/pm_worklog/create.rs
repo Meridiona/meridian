@@ -26,6 +26,8 @@ use crate::config::{
 };
 use crate::intelligence::oauth::jira::resolve as jira_resolve;
 use crate::intelligence::oauth::trello as oauth_trello;
+use crate::intelligence::ticket_update::azure_devops as azure_ticket_update;
+use crate::intelligence::ticket_update::jira as jira_ticket_update;
 
 /// Create a real ticket for `provider` from a proposal's (title, description) and
 /// return its `task_key`. `sample_key` is any existing task_key of that provider
@@ -141,7 +143,7 @@ async fn jira_create(
     let has_bug = wanted != "Bug" || jira_has_issue_type(&ctx, &client, project, "Bug").await?;
     let (type_name, title) = bug_fallback(wanted, has_bug, title);
 
-    let payload = json!({
+    let mut payload = json!({
         "fields": {
             "project": { "key": project },
             "summary": title,
@@ -153,6 +155,17 @@ async fn jira_create(
             }
         }
     });
+    // Self-assign so the ticket is discoverable by the `assignee = currentUser()`
+    // sync query (see intelligence/providers/jira/fetch.rs) — an unassigned
+    // ticket never enters pm_tasks, so its title never appears on the timeline.
+    // Best-effort: a lookup failure shouldn't block ticket creation.
+    match jira_ticket_update::my_account_id(&ctx, &client).await {
+        Ok(account_id) => payload["fields"]["assignee"] = json!({ "accountId": account_id }),
+        Err(e) => tracing::warn!(
+            error = %e,
+            "Jira create: couldn't resolve self accountId — creating unassigned"
+        ),
+    }
     let url = ctx.api_url("/rest/api/3/issue");
     let resp = ctx
         .apply(client.post(&url))
@@ -356,10 +369,23 @@ async fn azure_create(
         "{}/{}/_apis/wit/workitems/${work_item_type}?api-version=7.0",
         cfg.api_base, cfg.project,
     );
-    let patch = json!([
-        { "op": "add", "path": "/fields/System.Title", "value": title },
-        { "op": "add", "path": "/fields/System.Description", "value": description }
-    ]);
+    let mut patch = vec![
+        json!({ "op": "add", "path": "/fields/System.Title", "value": title }),
+        json!({ "op": "add", "path": "/fields/System.Description", "value": description }),
+    ];
+    // Self-assign so the work item is discoverable by the `AssignedTo = @me`
+    // sync query (see intelligence/providers/azure_devops/fetch.rs) — an
+    // unassigned item never enters pm_tasks, so its title never appears on
+    // the timeline. Best-effort: a lookup failure shouldn't block creation.
+    match azure_ticket_update::my_unique_name(&client, cfg).await {
+        Ok(me) => {
+            patch.push(json!({ "op": "add", "path": "/fields/System.AssignedTo", "value": me }))
+        }
+        Err(e) => tracing::warn!(
+            error = %e,
+            "Azure DevOps create: couldn't resolve self identity — creating unassigned"
+        ),
+    }
     let resp = client
         .post(&url)
         .header("Authorization", auth)
