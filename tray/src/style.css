@@ -275,7 +275,7 @@ button:focus-visible {
 }
 .status-card.paused .primary-btn {
   border: none;
-  background: linear-gradient(135deg, #059669, #10B981);
+  background: linear-gradient(135deg, #059669, var(--success));
   color: #fff;
   box-shadow: 0 8px 18px -8px rgba(16, 185, 129, 0.6);
 }
@@ -316,7 +316,7 @@ button:focus-visible {
   font: 700 11.5px var(--font-sans);
   padding: 6px 11px; border-radius: 8px;
   color: #fff;
-  background: linear-gradient(135deg, #059669, #10B981);
+  background: linear-gradient(135deg, #059669, var(--success));
   transition: filter .12s;
 }
 .resume-btn:hover { filter: brightness(1.04); }

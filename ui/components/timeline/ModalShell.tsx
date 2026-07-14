@@ -33,7 +33,7 @@ export function ModalShell({ title, onClose, children, maxWidth = 720, scrollIns
       style={{ background: 'rgba(20,16,40,0.5)', backdropFilter: 'blur(3px)' }} onClick={onClose}>
       <div className="w-full rounded-2xl overflow-hidden flex flex-col bg-panel"
         style={{
-          maxWidth, maxHeight: '92%', border: '1px solid var(--t-card-border)', boxShadow: '0 24px 60px -18px rgba(20,16,40,0.5)',
+          maxWidth, maxHeight: '92%', border: '1px solid var(--t-card-border)', boxShadow: 'var(--mt-modal-shadow)',
           ...(scrollInside ? { height: 720 } : {}),
         }}
         onClick={e => e.stopPropagation()}>

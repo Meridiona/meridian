@@ -20,7 +20,7 @@ import { TRACKERS } from '@/lib/integrations'
 import ConnectTrackers from '@/components/IntegrationConnect'
 import { SignInWidget } from './signin'
 
-const SERIF: CSSProperties = { fontFamily: 'var(--font-instrument-serif), Georgia, serif' }
+const SERIF: CSSProperties = { fontFamily: 'var(--font-serif)' }
 
 /** The live wizard handle page.tsx builds and threads to every step body. */
 export interface Wiz {

@@ -56,7 +56,7 @@ export function TaskDetailDialog({
     <div className="absolute inset-0 z-50 flex items-start justify-center p-6 sm:p-10 rise"
       style={{ background: 'rgba(20,16,40,0.5)', backdropFilter: 'blur(3px)' }} onClick={onClose}>
       <div className="w-full rounded-2xl overflow-hidden flex flex-col bg-panel"
-        style={{ maxWidth: 640, maxHeight: '88%', border: '1px solid var(--t-card-border)', boxShadow: '0 24px 60px -18px rgba(20,16,40,0.5)' }}
+        style={{ maxWidth: 640, maxHeight: '88%', border: '1px solid var(--t-card-border)', boxShadow: 'var(--mt-modal-shadow)' }}
         onClick={e => e.stopPropagation()}>
         <div className="px-7 pt-6 pb-5 border-b shrink-0" style={{ borderColor: 'var(--t-hair)' }}>
           <div className="flex items-center gap-2 mb-2.5">

@@ -17,7 +17,7 @@ import type { DownloadProgress, MlxStatusResponse, NotifState, SystemSpecs } fro
 import type { IntegrationsResponse } from '@/lib/api-types'
 import { Btn, Check, Kicker } from './atoms'
 
-const SERIF: CSSProperties = { fontFamily: 'var(--font-instrument-serif), Georgia, serif' }
+const SERIF: CSSProperties = { fontFamily: 'var(--font-serif)' }
 
 export default function SetupWizard() {
   const [welcome, setWelcome] = useState(true)

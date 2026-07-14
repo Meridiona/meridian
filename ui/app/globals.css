@@ -25,11 +25,11 @@
      face; numeric alignment comes from font-variant-numeric: tabular-nums —
      see the .font-mono/.mt-mono-sm rules below). -apple-system/system-ui
      resolve to the real SF Pro Text/Display already installed on macOS, so no
-     font file is bundled. --font-serif (Georgia) is kept only for the legacy
-     .type-* scale below and the setup wizard's Instrument Serif usage. */
+     font file is bundled. --font-serif is the setup wizard's Instrument Serif
+     hero font, with the Georgia stack as a load-failure fallback. */
   --font-sans:  -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
   --font-mono:  var(--font-sans);
-  --font-serif: Georgia, 'Times New Roman', serif;
+  --font-serif: var(--font-instrument-serif), Georgia, 'Times New Roman', serif;
 
   /* Legacy palette → Tailwind utilities (kept for Sessions/Week/setup) */
   --color-paper:       var(--paper);
@@ -134,6 +134,11 @@ html.dark {
      color) — also theme-independent per the Claude Design mock. */
   --gen-ring: rgba(139,92,246,.35);
   --gen-dot:  #A855F7;
+  /* Overlay-card and modal elevation shadows — previously hand-rolled as
+     identical literal strings in 4 separate files (CleanupCard/ReviewCard,
+     ModalShell/TaskDetailDialog). One token per role, theme-independent. */
+  --mt-card-shadow:  0 20px 46px -14px rgba(20,16,40,0.34);
+  --mt-modal-shadow: 0 24px 60px -18px rgba(20,16,40,0.5);
 }
 
 /* Flat, single-accent brand fills — the gradient flourish is reserved for
@@ -322,8 +327,6 @@ html, body {
 }
 
 * { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-/* Serif glyphs rely on fine strokes — subpixel rendering preserves them better */
-.font-serif { -webkit-font-smoothing: auto; -moz-osx-font-smoothing: auto; }
 
 body, .font-sans {
   font-feature-settings: 'ss01', 'cv11';
@@ -333,11 +336,6 @@ body, .font-sans {
   font-family: var(--font-sans);
   font-variant-numeric: tabular-nums;
   font-feature-settings: 'tnum', 'ss01';
-}
-
-.font-serif {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-feature-settings: 'liga', 'dlig';
 }
 
 ::selection { background: var(--accent); color: #ffffff; }
@@ -486,107 +484,6 @@ button:disabled       { cursor: not-allowed; }
 /* ── Density ─────────────────────────────────────────────────────────────── */
 html.density-compact .density-pad { padding-top: .5rem;   padding-bottom: .5rem; }
 html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25rem; }
-
-/* ── Meridian Type Scale ─────────────────────────────────────────────────────
-   Semantic typography classes. Apply ONE of these instead of raw Tailwind
-   chains. Every class bundles font-family, size, leading, tracking, and
-   antialiasing. Colour is NOT included — pair with text-ink / text-ink-2 etc.
-
-   Usage:
-     <h1 className="type-hero mt-1" style={{ color: 'var(--ink)' }}>Today</h1>
-     <p  className="type-empty" style={{ color: 'var(--ink-2)' }}>No data.</p>
-   ─────────────────────────────────────────────────────────────────────────── */
-
-/* 72px — hero: Today page main heading */
-.type-hero {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 72px;
-  line-height: 0.95;
-  letter-spacing: -0.025em;
-  font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
-}
-
-/* 56px — page title: main heading on every page */
-.type-title {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 56px;
-  line-height: 1;
-  letter-spacing: -0.025em;
-  font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
-}
-
-/* 36px — section heading: task detail title, sub-section heads */
-.type-heading {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 36px;
-  line-height: 1.1;
-  letter-spacing: -0.025em;
-  font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
-}
-
-/* 26px — stat: insight callout / narrative text */
-.type-stat {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 26px;
-  line-height: 1.2;
-  letter-spacing: -0.01em;
-  font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
-}
-
-/* 28px italic — active: "You're on · task name" live heading */
-.type-active {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 28px;
-  line-height: 1;
-  font-style: italic;
-  letter-spacing: 0;
-  font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
-}
-
-/* 24px italic — empty: empty state messages */
-.type-empty {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 24px;
-  line-height: 1.2;
-  font-style: italic;
-  letter-spacing: 0;
-  font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
-}
-
-/* 22px — callout: insight card headline */
-.type-callout {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 22px;
-  line-height: 1.2;
-  letter-spacing: 0;
-  font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
-}
-
-/* 22px italic — wordmark: "meridian" in sidebar — slight tracking is intentional */
-.type-wordmark {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 22px;
-  line-height: 1;
-  font-style: italic;
-  letter-spacing: -0.02em;
-  font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
-}
 
 /* ── Radix Switch — iOS-style pill ────────────────────────────────────────────
    Restored: these styles were added in 706364e (Apple-style Radix controls)
