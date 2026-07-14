@@ -3,7 +3,7 @@
 
 import { useEffect, useState } from 'react'
 import { ProviderIcon } from './ProviderIcon'
-import { BRAND_ICONS } from '@/lib/brand-icons'
+import { getBrandIcon } from '@/lib/brand-icons'
 import { useAppIconUrl } from '@/lib/app-icons'
 
 // ── Time formatting ──────────────────────────────────────────────────────────
@@ -135,7 +135,7 @@ export function AppGlyph({ app, size = 24, withName = false }: { app: string | n
   // the brand wordmark / letter monogram render immediately in the meantime
   // (and stay as the permanent fallback for an app we can't resolve).
   const iconUrl = useAppIconUrl(app)
-  const brand = app ? BRAND_ICONS[app] : undefined
+  const brand = getBrandIcon(app)
   const meta = appMeta(app)
   const color = brand?.hex ?? meta.color
   return (
@@ -148,7 +148,7 @@ export function AppGlyph({ app, size = 24, withName = false }: { app: string | n
         {iconUrl ? (
           // eslint-disable-next-line @next/next/no-img-element -- local asset:// URL, not a Next-optimizable remote image
           <img src={iconUrl} alt="" width={size} height={size} style={{ objectFit: 'contain' }} />
-        ) : brand ? (
+        ) : brand?.path ? (
           <svg viewBox={brand.viewBox} width={size * 0.58} height={size * 0.58} fill={brand.hex} aria-hidden="true">
             <path d={brand.path} />
           </svg>

@@ -39,7 +39,7 @@ pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
     match WebviewWindowBuilder::new(&app, "dashboard", WebviewUrl::App("".into()))
         // Empty title bar text — the in-page Toolbar already shows the
         // Meridian mark + wordmark centered at the top, so a second
-        // "Meridian — Dashboard" label in the OS title bar is redundant.
+        // "Meridian - Dashboard" label in the OS title bar is redundant.
         .title("")
         .inner_size(1100.0, 760.0)
         .decorations(true)

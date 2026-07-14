@@ -79,7 +79,7 @@ export function ReportModal({ onClose }: { onClose: () => void }) {
         onClick={e => e.stopPropagation()}>
         {/* hero header — fixed brand gradient, theme-independent */}
         <div className="relative text-center overflow-hidden"
-          style={{ padding: '28px 26px 24px', background: 'linear-gradient(135deg,#6D28D9,#9333EA 52%,#DB2777)' }}>
+          style={{ padding: '28px 26px 24px', background: 'var(--draft-card-bg)' }}>
           <div className="absolute rounded-full pointer-events-none"
             style={{ left: -30, top: -30, width: 130, height: 130, background: 'rgba(255,255,255,.14)' }} />
           <div className="absolute rounded-full pointer-events-none"
@@ -128,15 +128,15 @@ export function ReportModal({ onClose }: { onClose: () => void }) {
         <div style={{ padding: '8px 22px 22px' }}>
           <div className="flex gap-2">
             <a href="mailto:hey@meridiona.com?subject=Bug%20report" className="flex-1 text-center no-underline"
-              style={{ border: '1px solid var(--t-ctrl-border)', background: 'var(--t-ctrl)', color: 'var(--t-muted)', borderRadius: 12, padding: 11, font: "700 12.5px 'Plus Jakarta Sans'" }}>
+              style={{ border: '1px solid var(--t-ctrl-border)', background: 'var(--t-ctrl)', color: 'var(--t-muted)', borderRadius: 12, padding: 11, font: "700 12.5px var(--font-sans)" }}>
               Report a bug
             </a>
             <a href="mailto:hey@meridiona.com?subject=Feature%20suggestion" className="flex-1 text-center no-underline"
-              style={{ border: 'none', background: 'linear-gradient(135deg,#6D28D9,#9333EA)', color: '#fff', borderRadius: 12, padding: 11, font: "700 12.5px 'Plus Jakarta Sans'" }}>
+              style={{ border: 'none', background: 'var(--btn-primary-bg)', color: '#fff', borderRadius: 12, padding: 11, font: "700 12.5px var(--font-sans)" }}>
               Suggest a feature
             </a>
           </div>
-          <p className="text-center" style={{ font: "500 10.5px 'Plus Jakarta Sans'", color: 'var(--t-faint-2)', marginTop: 12 }}>
+          <p className="text-center" style={{ font: "500 10.5px var(--font-sans)", color: 'var(--t-faint-2)', marginTop: 12 }}>
             Thank you for helping Meridian get better · we usually reply within a day 💜
           </p>
         </div>
