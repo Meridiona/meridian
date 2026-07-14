@@ -18,7 +18,7 @@ import { ProviderIcon } from '@/components/ProviderIcon'
 import type { WorklogItem } from '@/lib/api-types'
 import { openExternal } from '@/lib/bridge'
 import { ReviewRejectPicker } from './ReviewRejectPicker'
-import { isPending, stateColor, stateLabel, visualState, type RejectCorrection } from './types'
+import { failureReason, isPending, stateColor, stateLabel, visualState, type RejectCorrection } from './types'
 import type { WorklogActions } from './useTimelineData'
 
 // Compact-card summary preview — just the first few words, not the full comment.
@@ -161,6 +161,16 @@ function DetailBody({ item, actions, onEdit }: { item: WorklogItem; actions?: Wo
             {item.is_proposed ? 'Why a new ticket' : 'Why this task'}
           </p>
           <p className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>{item.reasoning}</p>
+        </div>
+      )}
+
+      {item.state === 'failed' && item.last_post_error && (
+        <div className="rounded-md p-2.5" style={{
+          background: 'color-mix(in srgb, var(--color-state-pending) 8%, transparent)',
+          border: '1px solid color-mix(in srgb, var(--color-state-pending) 24%, transparent)',
+        }}>
+          <p className="mt-label mb-1" style={{ color: 'var(--color-state-pending)' }}>Why this failed</p>
+          <p className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>{failureReason(item.last_post_error)}</p>
         </div>
       )}
 

@@ -55,6 +55,20 @@ export function stateLabel(w: WorklogItem): string {
   return STATE_LABEL[w.state] ?? w.state
 }
 
+/** Human-readable reason a `failed` worklog didn't post, for known
+ *  unrecoverable provider errors — the raw message (`last_post_error`) is
+ *  API-response text (e.g. Jira's `{"errorMessages":["WORKLOGS_PER_ISSUE_LIMIT_EXCEEDED: 10000"]}`),
+ *  not something to show a user as-is. Falls back to the raw message for
+ *  anything not specifically recognized, so nothing is ever hidden — just
+ *  clarified where possible. Always points at the fix (re-match via Edit)
+ *  since that's the one recovery path every `failed` row has. */
+export function failureReason(error: string): string {
+  if (error.includes('WORKLOGS_PER_ISSUE_LIMIT_EXCEEDED')) {
+    return "This ticket has hit Jira's 10,000-worklog limit and can never accept another entry. Click Edit to re-match this worklog to a different ticket, then approve it again."
+  }
+  return error
+}
+
 /** Kind label shown next to the ticket key — the ticket's actual issue type
  *  ("Bug" / "Task" / "Story"), prefixed "New " for a live proposal. Never
  *  "Work log" (that's the card's own generic content, not the ticket's type):
