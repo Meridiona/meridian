@@ -124,6 +124,51 @@ async fn embedding_count(pool: &SqlitePool, task_key: &str) -> i64 {
 }
 
 // -----------------------------------------------------------------------
+// Test: the missing-keys query backfill_worklogged() runs finds exactly the
+// worklogged task_keys that have no pm_tasks row (Done/reassigned tickets
+// that fell out of the active-task JQL scope).
+// -----------------------------------------------------------------------
+
+/// Runs the same "find missing worklogged tasks" SQL that
+/// `backfill_worklogged()` executes.
+async fn find_missing_worklogged(pool: &SqlitePool) -> Vec<String> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT DISTINCT task_key FROM pm_worklogs
+         WHERE provider = 'jira' AND task_key NOT IN
+           (SELECT task_key FROM pm_tasks WHERE provider = 'jira')",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    let mut keys: Vec<String> = rows.into_iter().map(|(k,)| k).collect();
+    keys.sort();
+    keys
+}
+
+#[tokio::test]
+async fn backfill_query_finds_worklogged_tasks_missing_from_pm_tasks() {
+    let pool = make_db().await;
+
+    // KAN-1 has a pm_tasks row already — not missing.
+    insert_jira_task(&pool, "KAN-1").await;
+    insert_worklog(&pool, "KAN-1").await;
+    // KAN-2 has worklog history but no pm_tasks row (e.g. Done, pruned/never synced).
+    insert_worklog(&pool, "KAN-2").await;
+    // KAN-3 is a linear worklog — must not be treated as a missing jira task.
+    sqlx::query(
+        "INSERT INTO pm_worklogs
+           (task_key, provider, day_utc, window_start, window_end, state, payload_json)
+         VALUES ('KAN-3', 'linear', '2026-07-14', '2026-07-14T10:00:00+00:00',
+                 '2026-07-14T11:00:00+00:00', 'posted', '{}')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(find_missing_worklogged(&pool).await, vec!["KAN-2"]);
+}
+
+// -----------------------------------------------------------------------
 // Test: stale task (not in fetched set) is deleted from pm_tasks
 // -----------------------------------------------------------------------
 
