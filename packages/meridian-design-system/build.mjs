@@ -84,17 +84,19 @@ function rewriteDtsAliases() {
 function buildStyles() {
   const chunksDir = join(uiOut, '_next', 'static', 'chunks')
   if (!existsSync(chunksDir)) {
-    console.warn('[build] ! ui/out not found — skipping styles.css/fonts. Run `cd ui && npm run build` first.')
-    return
+    throw new Error(
+      '[build] ui/out not found — run `cd ui && npm run build` first so styles.css/fonts reflect current source.',
+    )
   }
   const cssFiles = readdirSync(chunksDir).filter((f) => f.endsWith('.css'))
   const globalCss = cssFiles
     .map((f) => ({ f, text: readFileSync(join(chunksDir, f), 'utf8') }))
-    .find(({ text }) => text.includes('jbmono') && text.includes('@font-face'))
+    .find(({ text }) => text.includes('@font-face'))
 
   if (!globalCss) {
-    console.warn('[build] ! could not find the compiled global stylesheet under ui/out/_next/static/chunks — skipping styles.css/fonts.')
-    return
+    throw new Error(
+      '[build] could not find the compiled global stylesheet under ui/out/_next/static/chunks — the font-name heuristic may be stale, or ui/out is stale/incomplete. Re-run `cd ui && npm run build`.',
+    )
   }
 
   const fontsDir = join(distDir, 'fonts')

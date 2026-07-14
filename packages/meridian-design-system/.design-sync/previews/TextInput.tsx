@@ -8,7 +8,7 @@ export function Default() {
 }
 
 export function Filled() {
-  const [v, setV] = useState('sk-ant-api03-…')
+  const [v, setV] = useState('sk-example-xxxxxxxxxxxxxxxx')
   return <TextInput value={v} onChange={setV} placeholder="API key" />
 }
 

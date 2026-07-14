@@ -22,14 +22,14 @@ Read `styles.css` (the full token/type-scale source) before styling anything new
 ### Build snippet
 
 ```tsx
-import { TimelineCard, StatusPill, Card } from 'meridian-design-system'
+import { StatusPill } from 'meridian-design-system'
 
 function ExampleRow({ item }) {
   return (
-    <Card className="p-4 flex items-center justify-between">
+    <div className="p-4 flex items-center justify-between" style={{ background: 'var(--t-card)' }}>
       <span className="mt-body" style={{ color: 'var(--ink)' }}>{item.title}</span>
       <StatusPill status={item.state} isTerminal={item.isDone} />
-    </Card>
+    </div>
   )
 }
 ```

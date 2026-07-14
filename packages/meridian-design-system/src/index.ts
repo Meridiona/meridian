@@ -19,23 +19,16 @@ export { TextInput } from '@/components/ui/TextInput'
 // Atoms — formatters, glyphs, badges, cards
 export {
   fmtDur,
-  fmtDurDecimal,
   fmtClock,
   CATS,
   PROVIDER_META,
   ProviderGlyph,
   CatDot,
-  CatLabel,
   AppGlyph,
   shortTaskKey,
   TaskKey,
   StatusPill,
-  LiveDot,
   SectionHead,
-  Card,
-  ConfidenceRing,
-  SegBar,
-  useTick,
 } from '@/components/atoms'
 
 export { ProviderIcon } from '@/components/ProviderIcon'
