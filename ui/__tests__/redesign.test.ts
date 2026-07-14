@@ -16,15 +16,6 @@ function fmtDur(seconds: number): string {
   return rm > 0 ? `${h}h ${rm}m` : `${h}h`
 }
 
-function fmtDurDecimal(seconds: number): string {
-  if (seconds < 60) return '0:' + String(seconds).padStart(2, '0')
-  const m = Math.floor(seconds / 60)
-  if (m < 60) return '0:' + String(m).padStart(2, '0')
-  const h = Math.floor(m / 60)
-  const rm = m % 60
-  return `${h}:${String(rm).padStart(2, '0')}`
-}
-
 function fmtClock(isoOrHours: string | number): string {
   if (typeof isoOrHours === 'number') {
     const h = Math.floor(isoOrHours)
@@ -109,27 +100,6 @@ describe('fmtDur (redesign atoms)', () => {
 
   it('omits minutes when zero', () => {
     expect(fmtDur(7200)).toBe('2h')
-  })
-})
-
-// ── fmtDurDecimal ────────────────────────────────────────────────────────────
-describe('fmtDurDecimal (redesign atoms)', () => {
-  it('formats seconds under 60 as 0:ss', () => {
-    expect(fmtDurDecimal(0)).toBe('0:00')
-    expect(fmtDurDecimal(5)).toBe('0:05')
-    expect(fmtDurDecimal(59)).toBe('0:59')
-  })
-
-  it('formats minutes under an hour as 0:mm', () => {
-    expect(fmtDurDecimal(60)).toBe('0:01')
-    expect(fmtDurDecimal(600)).toBe('0:10')
-  })
-
-  it('formats hours correctly', () => {
-    expect(fmtDurDecimal(3600)).toBe('1:00')
-    expect(fmtDurDecimal(3660)).toBe('1:01')
-    expect(fmtDurDecimal(5400)).toBe('1:30')
-    expect(fmtDurDecimal(7322)).toBe('2:02')
   })
 })
 

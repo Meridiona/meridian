@@ -16,10 +16,9 @@
   --rule-2:      #E4DEF6;
   --tint:        #F4F0FD;
 
-  --accent:      #6D28D9;
-  --accent-2:    #9333EA;
+  --accent:      #7C3AED;
   --accent-3:    #DB2777;
-  --accent-soft: #F4F0FD;
+  --accent-soft: var(--tint);
 
   --success:     #10B981;
   --success-bg:  #ECFDF4;
@@ -29,22 +28,13 @@
   --warn-border: #FBE3B4;
   --danger:      #B08A9A;
 
-  /* category dots (retained for tooltip.html reuse) */
-  --cat-coding:            #4F7BE8;
-  --cat-code_review:       #8B5CF6;
-  --cat-meeting:           #F59E0B;
-  --cat-communication:     #10B981;
-  --cat-design:            #EC4899;
-  --cat-documentation:     #14B8A6;
-  --cat-planning:          #F97316;
-  --cat-deployment_devops: #EF4444;
-  --cat-research:          #6366F1;
-  --cat-idle_personal:     #9CA3AF;
-
   --radius: 18px;
 
-  --font-sans: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, "Segoe UI", helvetica, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, "SF Mono", sfmono-regular, menlo, "Cascadia Mono", monospace;
+  /* One voice, SF Pro — matches ui/app/globals.css's --font-sans. No separate
+     mono face; numeric content uses tabular-nums on this same family (see
+     .font-mono below). */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, "Segoe UI", helvetica, sans-serif;
+  --font-mono: var(--font-sans);
 }
 
 *, *::before, *::after {
@@ -75,7 +65,6 @@ html, body {
 .pop {
   background: var(--paper);
   border-radius: var(--radius);
-  border: 1px solid rgba(120, 90, 200, 0.14);
   box-shadow:
     0 24px 60px -18px rgba(30, 15, 70, 0.5),
     0 6px 16px -8px rgba(30, 15, 70, 0.3);
@@ -183,7 +172,7 @@ button:focus-visible {
 }
 .health-dot[data-state="ok"]   { background: var(--success); }
 .health-dot[data-state="warn"] { background: var(--warn); }
-.health-dot[data-state="bad"]  { background: #E5484D; }
+.health-dot[data-state="bad"]  { background: #e53e3e; }
 .health-label {
   flex: 1;
   font: 600 11.5px var(--font-sans);
@@ -247,14 +236,14 @@ button:focus-visible {
   color: #0F7A54;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.status-card.paused .status-title { color: #B45309; }
+.status-card.paused .status-title { color: #B4690E; }
 .status-sub {
   font: 600 11.5px var(--font-sans);
   color: #4FA383;
   margin-top: 1px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.status-card.paused .status-sub { color: #C08A45; }
+.status-card.paused .status-sub { color: #B4690E; }
 .status-sub:empty { display: none; }
 
 .status-kbd {
@@ -265,7 +254,7 @@ button:focus-visible {
   padding: 3px 7px;
   border-radius: 6px;
 }
-.status-card.paused .status-kbd { color: #C08A45; background: rgba(180, 83, 9, 0.1); }
+.status-card.paused .status-kbd { color: #B4690E; background: rgba(180, 83, 9, 0.1); }
 
 .primary-btn {
   width: 100%;
@@ -321,7 +310,7 @@ button:focus-visible {
   font: 600 16px var(--font-mono);
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
-  color: #B45309;
+  color: #B4690E;
 }
 .resume-btn {
   font: 700 11.5px var(--font-sans);
@@ -364,7 +353,7 @@ button:focus-visible {
   width: 100%;
   margin-top: 9px;
   border: none;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2) 55%, var(--accent-3));
+  background: var(--accent);
   border-radius: 12px;
   padding: 12px 14px;
   display: flex; align-items: center; gap: 10px;
@@ -434,3 +423,18 @@ button:focus-visible {
 .foot-btn:hover { background: var(--surface-2); }
 .foot-quit { color: var(--danger); }
 .foot-sep { width: 1px; height: 14px; background: var(--rule-2); }
+
+/* ── Version / channel badge ───────────────────────────────────────────────
+   Muted + neutral for a production build; colored for dev/staging so a
+   non-prod popover is unmistakable at a glance. Empty until boot() paints it
+   (invoke('get_app_info')), so it takes no layout space before then. */
+.pop-meta {
+  text-align: center;
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: .03em;
+  color: var(--ink-4);
+  padding: 0 16px 8px;
+}
+.pop-meta:empty { display: none; }
+.pop-meta[data-channel="dev"] { color: var(--accent); }
+.pop-meta[data-channel="staging"] { color: var(--warn); }

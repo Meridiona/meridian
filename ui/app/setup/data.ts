@@ -46,34 +46,62 @@ export interface SystemSpecs {
 export const MODEL_ID = 'mlx-community/Qwen3.5-2B-OptiQ-4bit'
 export const MODEL_RAM_GB = 1.5
 
+/**
+ * Human label for a model id, e.g. 'mlx-community/Qwen3.5-2B-OptiQ-4bit' →
+ * 'Qwen3.5 2B · 4-bit'. Derived (not hand-typed) so the Completion summary
+ * line can't drift from MODEL_ID or duplicate a segment by hand-editing error.
+ */
+export function fmtModelLabel(id: string): string {
+  const name = id.split('/').pop() ?? id
+  const bits = name.match(/(\d+)-?bit$/i)?.[1]
+  const base = name
+    .replace(/-?\d+-?bit$/i, '')
+    .replace(/-OptiQ$/i, '')
+    .replace(/-/g, ' ')
+  return bits ? `${base} · ${bits}-bit` : base
+}
+
 /** Meridian's own resident footprint (background service), separate from the model. */
 export const APP = { diskGB: 0.18, ramGB: 0.15 }
 
-// ── macOS permissions — the three the backend actually requires + polls ───────
-// (The design's Notifications + Launch-at-login toggles are intentionally
-// omitted: no backend exists for them, and the in-process capture pipeline
-// genuinely needs Input Monitoring, which the design omitted.)
+// ── macOS permissions — two required TCC grants + optional notifications ─────
+// (The design's Launch-at-login toggle is intentionally omitted: no backend
+// exists for it. Input Monitoring is omitted too: the signals the daemon
+// actually consumes — clipboard + app_switch (get_signals) — come from the
+// Accessibility-only workspace observer + clipboard poller, so they need no
+// separate Input Monitoring grant. Input Monitoring would only add the
+// click/key/text CGEventTap, which feeds solely the minor Option-C `ended_at`
+// refinement — not worth its own wizard step + TCC prompt. See
+// screenpipe-a11y/src/platform/macos.rs — Thread 2 is "accessibility only".)
+
+/** Notification authorization (`check_notifications`). Tri-state, not boolean:
+ *  macOS shows the authorization dialog exactly once, so `denied` and `prompt`
+ *  need different grant actions (Settings pane vs system dialog).
+ *  `unavailable` = unbundled run (`tauri dev`) — the card hides itself. */
+export type NotifState = 'granted' | 'denied' | 'prompt' | 'unavailable'
 
 export interface PermissionMeta {
-  id: 'screen' | 'accessibility' | 'input'
-  icon: 'screen' | 'access' | 'power'
+  id: 'screen' | 'accessibility' | 'notifications'
+  icon: 'screen' | 'access' | 'bell'
   name: string
   pane: string      // open_permission_pane argument
   desc: string
+  /** Required grants gate the step's Continue; optional ones never do. */
+  required: boolean
 }
 
 export const PERMISSIONS: PermissionMeta[] = [
   {
-    id: 'accessibility', icon: 'access', name: 'Accessibility', pane: 'accessibility',
+    id: 'accessibility', icon: 'access', name: 'Accessibility', pane: 'accessibility', required: true,
     desc: 'Reads the active app, window titles, and UI labels for accurate context.',
   },
   {
-    id: 'screen', icon: 'screen', name: 'Screen Recording', pane: 'screen_recording',
+    id: 'screen', icon: 'screen', name: 'Screen Recording', pane: 'screen_recording', required: true,
     desc: 'Reads on-screen text to understand your work. Pixels/video are never stored; extracted text stays on-device.',
   },
   {
-    id: 'input', icon: 'power', name: 'Input Monitoring', pane: 'input_monitoring',
-    desc: 'Detects clicks and typing so Meridian knows when you switch tasks.',
+    id: 'notifications', icon: 'bell', name: 'Notifications', pane: 'notifications', required: false,
+    desc: 'Nudges you when a worklog draft is ready or your plan needs attention. Quiet by default - you control every type in Settings.',
   },
 ]
 

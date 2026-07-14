@@ -37,7 +37,7 @@ export function ModalShell({ title, onClose, children, maxWidth = 720, scrollIns
           ...(scrollInside ? { height: 720 } : {}),
         }}
         onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-6 py-4 border-b shrink-0" style={{ borderColor: 'var(--t-hair)' }}>
+        <div className="flex items-center justify-between px-7 py-5 border-b shrink-0" style={{ borderColor: 'var(--t-hair)' }}>
           <p className="mt-modal-title text-title">{title}</p>
           <button onClick={onClose} aria-label="Close"
             className="inline-flex items-center justify-center rounded-full bg-wrap"
@@ -47,7 +47,7 @@ export function ModalShell({ title, onClose, children, maxWidth = 720, scrollIns
         </div>
         {scrollInside
           ? <div className="flex-1 min-h-0 flex flex-col">{children}</div>
-          : <div className="overflow-y-auto nice-scroll p-6">{children}</div>}
+          : <div className="overflow-y-auto nice-scroll p-7">{children}</div>}
       </div>
     </div>
   )

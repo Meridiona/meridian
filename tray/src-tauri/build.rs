@@ -8,6 +8,15 @@ fn main() {
     // explicit so switching channels locally never bakes a stale value.
     println!("cargo:rerun-if-env-changed=MERIDIAN_RUNTIME_MANIFEST_URL");
 
+    // Same compile-time pin, for the HF caching-proxy endpoint
+    // (`mlx_server.rs::hf_endpoint`, `option_env!("MERIDIAN_HF_ENDPOINT")`).
+    println!("cargo:rerun-if-env-changed=MERIDIAN_HF_ENDPOINT");
+
+    // Same reasoning for the PostHog project API key (analytics.rs,
+    // `option_env!("MERIDIAN_POSTHOG_API_KEY")`) — a GitHub Actions secret
+    // baked into the release binary; see .github/workflows/release.yml.
+    println!("cargo:rerun-if-env-changed=MERIDIAN_POSTHOG_API_KEY");
+
     // The notifications plugin's macOS layer is Swift (swift-bridge): its build
     // script links the static Swift lib but adds NO rpath, and the Swift
     // runtime dylibs it references (libswift_Concurrency & co.) resolve via

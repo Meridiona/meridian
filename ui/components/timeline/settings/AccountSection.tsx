@@ -5,10 +5,29 @@
 
 'use client'
 
-import { mutate } from '@/lib/bridge'
+import { useEffect, useState } from 'react'
+import { invoke, load, mutate } from '@/lib/bridge'
+import type { AppInfo } from '@/lib/api-types'
+import { AccountAuthControl } from '@/app/setup/signin'
 import { SectionCard, SectionHeader, FieldRow, SettingsButton } from './fields'
 
+// Colored only for a non-prod build — a prod dashboard shouldn't draw the eye
+// to its own version line; dev/staging should be unmistakable.
+const CHANNEL_COLOR: Record<AppInfo['channel'], string> = {
+  dev: 'var(--color-state-proposal)',
+  staging: 'var(--color-state-pending)',
+  prod: 'var(--t-faint)',
+}
+
 export function AccountSection() {
+  const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
+  const [signedInEmail, setSignedInEmail] = useState<string | null>(null)
+
+  useEffect(() => {
+    load<AppInfo>('/api/app-info', 'get_app_info').then(setAppInfo).catch(() => {})
+    invoke<string | null>('get_account_email').then(setSignedInEmail).catch(() => {})
+  }, [])
+
   return (
     <div className="max-w-[640px] flex flex-col gap-5">
       <div>
@@ -20,6 +39,21 @@ export function AccountSection() {
       </div>
 
       <SectionCard>
+        <SectionHeader>Account</SectionHeader>
+        <AccountAuthControl
+          knownEmail={signedInEmail}
+          onSignedIn={(email) => {
+            setSignedInEmail(email)
+            invoke('save_account_email', { email }).catch(() => {})
+          }}
+          onSignedOut={() => {
+            setSignedInEmail(null)
+            invoke('clear_account_email').catch(() => {})
+          }}
+        />
+      </SectionCard>
+
+      <SectionCard>
         <SectionHeader>Setup &amp; Onboarding</SectionHeader>
         <FieldRow label="Re-run Setup" description="Return to the onboarding wizard to reconfigure permissions, update integrations, or re-check the local model.">
           <SettingsButton onClick={() => {
@@ -27,6 +61,17 @@ export function AccountSection() {
           }}>
             Go to Setup
           </SettingsButton>
+        </FieldRow>
+      </SectionCard>
+
+      <SectionCard>
+        <SectionHeader>About</SectionHeader>
+        <FieldRow label="Version" description="Which build of Meridian this is?">
+          {appInfo && (
+            <span className="mt-body-sm font-mono font-semibold" style={{ color: CHANNEL_COLOR[appInfo.channel] }}>
+              v{appInfo.version}{appInfo.channel !== 'prod' && ` · ${appInfo.channel}`}
+            </span>
+          )}
         </FieldRow>
       </SectionCard>
     </div>

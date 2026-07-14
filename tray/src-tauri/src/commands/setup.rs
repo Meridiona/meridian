@@ -118,9 +118,8 @@ pub async fn check_screen_recording() -> bool {
 /// status read that never registers the app. On a fresh install this means the
 /// list under Privacy → Screen Recording shows "No Items", because macOS only
 /// adds an entry the *first* time the app calls `CGRequestScreenCaptureAccess`.
-/// This command calls that request variant (analogous to `request_input_monitoring`)
-/// so clicking the wizard's grant button both registers the app and shows the
-/// system dialog in one shot.
+/// This command calls that request variant so clicking the wizard's grant
+/// button both registers the app and shows the system dialog in one shot.
 #[tauri::command]
 #[tracing::instrument]
 pub async fn request_screen_recording() -> bool {
@@ -140,67 +139,79 @@ pub async fn request_screen_recording() -> bool {
     false
 }
 
-/// Returns `true` when the tray holds macOS **Input Monitoring** permission.
-///
-/// The in-process input recorder (`capture::ui_events::run_ui_event_recorder`)
-/// runs a `CGEventTap` listener, which macOS gates behind Input Monitoring.
-/// Without it the recorder degrades silently and `capture_ui_events` stays empty,
-/// so the daemon's Option C `ended_at` refinement never fires — hence the wizard
-/// must surface it as its own card. `IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)`
-/// reads the grant directly (no prompt, no side effects), mirroring the
-/// `CGPreflightScreenCaptureAccess` / `AXIsProcessTrusted` probes above. The
-/// *grant* action is the wizard's "Open in System Settings" button
-/// ([`crate::commands::system::open_permission_pane`] `"input_monitoring"`).
-#[tauri::command]
-#[tracing::instrument]
-pub async fn check_input_monitoring() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        #[link(name = "IOKit", kind = "framework")]
-        extern "C" {
-            fn IOHIDCheckAccess(request_type: u32) -> u32;
-        }
-        // kIOHIDRequestTypeListenEvent = 1 (Input Monitoring);
-        // kIOHIDAccessTypeGranted = 0.
-        const LISTEN_EVENT: u32 = 1;
-        const GRANTED: u32 = 0;
-        // Safety: IOHIDCheckAccess is a pure status read — no prompt, no side effects.
-        unsafe { IOHIDCheckAccess(LISTEN_EVENT) == GRANTED }
+// Input Monitoring is intentionally NOT a wizard permission — the `check_` /
+// `request_input_monitoring` commands were removed. The signals the daemon
+// consumes (clipboard + app_switch) ride the Accessibility-only capture path;
+// Input Monitoring only added the click/key/text tap (minor Option-C ended_at
+// refinement) and is redundant with Accessibility for everything the wizard
+// gates. See the note on PERMISSIONS in `ui/app/setup/data.ts` and
+// `capture::ui_events::run_ui_event_recorder`.
+
+/// Map the notification plugin's [`tauri_plugin_notifications::PermissionState`]
+/// to the wizard's wire string. Pure so the mapping is unit-testable without a
+/// live plugin: `granted` / `denied` / `prompt` (not yet asked — a request will
+/// show the one-shot macOS dialog).
+fn notification_state_label(state: tauri_plugin_notifications::PermissionState) -> &'static str {
+    use tauri_plugin_notifications::PermissionState;
+    match state {
+        PermissionState::Granted => "granted",
+        PermissionState::Denied => "denied",
+        PermissionState::Prompt | PermissionState::PromptWithRationale => "prompt",
     }
-    #[cfg(not(target_os = "macos"))]
-    false
 }
 
-/// Surface the macOS Input Monitoring prompt **and register the app** so it
-/// appears in the Input Monitoring list, then return the resulting grant state.
+/// Current macOS notification authorization for the wizard's Notifications card.
 ///
-/// [`check_input_monitoring`] only *reads* status (`IOHIDCheckAccess`) — it never
-/// registers the app, so on a fresh install the System Settings pane shows
-/// "No Items" and the user has nothing to toggle. `IOHIDRequestAccess` is the
-/// grant analogue of `CGRequestScreenCaptureAccess`: on first call it shows the
-/// system prompt and registers the app; thereafter it's a no-op returning the
-/// current state. The wizard calls this from the Input Monitoring card's button
-/// (alongside opening the pane). Note `IOHIDRequestAccess` returns a `Boolean`
-/// (granted/not) — unlike `IOHIDCheckAccess`, which returns the access-type enum.
+/// Returns `granted` / `denied` / `prompt` (never asked — requesting will show
+/// the system dialog) / `unavailable` (unbundled run: the plugin registers only
+/// inside a `.app` bundle, so `tauri dev` has no notification backend at all).
+///
+/// Unlike the TCC probes above this is not a boolean: `denied` and `prompt`
+/// need different grant actions (macOS shows the authorization dialog exactly
+/// once — after a deny the only path back is System Settings → Notifications),
+/// so the wizard must know which side of that line the user is on.
 #[tauri::command]
-#[tracing::instrument]
-pub async fn request_input_monitoring() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        #[link(name = "IOKit", kind = "framework")]
-        extern "C" {
-            fn IOHIDRequestAccess(request_type: u32) -> bool;
+#[tracing::instrument(skip(app))]
+pub async fn check_notifications(app: tauri::AppHandle) -> String {
+    let Some(nf) = crate::sys::notifier(&app) else {
+        return "unavailable".into();
+    };
+    match nf.permission_state().await {
+        Ok(state) => notification_state_label(state).into(),
+        Err(e) => {
+            tracing::warn!(error = %e, "setup: notification permission probe failed");
+            "unavailable".into()
         }
-        // kIOHIDRequestTypeListenEvent = 1 (Input Monitoring).
-        const LISTEN_EVENT: u32 = 1;
-        // Safety: IOHIDRequestAccess surfaces the TCC prompt + registers the app,
-        // then returns a Boolean grant state — no UB.
-        let granted = unsafe { IOHIDRequestAccess(LISTEN_EVENT) };
-        tracing::info!(granted, "setup: requested Input Monitoring access");
-        granted
     }
-    #[cfg(not(target_os = "macos"))]
-    false
+}
+
+/// Surface the one-shot macOS notification authorization dialog and return the
+/// resulting state (same strings as [`check_notifications`]).
+///
+/// The tray already fires this request on every bundled launch (`lib.rs`), so
+/// on a normal first run the dialog appears alongside the wizard; this command
+/// exists for the card's explicit button — covering the user who dismissed
+/// that dialog unanswered. If permission is already `denied`, macOS will NOT
+/// re-prompt: the call returns `denied` unchanged and the frontend falls back
+/// to opening the System Settings pane
+/// ([`crate::commands::system::open_permission_pane`] `"notifications"`).
+#[tauri::command]
+#[tracing::instrument(skip(app))]
+pub async fn request_notifications(app: tauri::AppHandle) -> String {
+    let Some(nf) = crate::sys::notifier(&app) else {
+        return "unavailable".into();
+    };
+    match nf.request_permission().await {
+        Ok(state) => {
+            let label = notification_state_label(state);
+            tracing::info!(state = label, "setup: requested notification permission");
+            label.into()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "setup: notification permission request failed");
+            "unavailable".into()
+        }
+    }
 }
 
 /// Query the current MLX server status. Polled every 3 seconds by the wizard's
@@ -399,5 +410,28 @@ fn detect_specs_blocking() -> SystemSpecs {
         gpu_cores,
         ram_gb,
         free_disk_gb,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::notification_state_label;
+    use tauri_plugin_notifications::PermissionState;
+
+    // The wizard's card branches on these exact strings (grant button action:
+    // prompt → request dialog, denied → System Settings pane), so the mapping
+    // is contract, not cosmetics.
+    #[test]
+    fn notification_states_map_to_wire_strings() {
+        assert_eq!(
+            notification_state_label(PermissionState::Granted),
+            "granted"
+        );
+        assert_eq!(notification_state_label(PermissionState::Denied), "denied");
+        assert_eq!(notification_state_label(PermissionState::Prompt), "prompt");
+        assert_eq!(
+            notification_state_label(PermissionState::PromptWithRationale),
+            "prompt"
+        );
     }
 }

@@ -34,6 +34,10 @@ export interface RuntimeSettings {
   // user's preferences decide whether it surfaces.
   notifications_enabled: boolean
   notify_plan_nudge: boolean
+  // Daily planner auto-open — the tray opens the dashboard on the Plan modal
+  // once per local day. A window behaviour, not a toast, so NOT gated by
+  // notifications_enabled.
+  auto_open_plan: boolean
   notify_worklog_ready: boolean
   notify_system_fault: boolean
   quiet_hours_enabled: boolean
@@ -65,6 +69,7 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   jira_update_enabled: true,
   notifications_enabled: true,
   notify_plan_nudge: true,
+  auto_open_plan: true,
   notify_worklog_ready: true,
   notify_system_fault: true,
   quiet_hours_enabled: false,

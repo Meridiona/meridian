@@ -101,6 +101,32 @@ if [[ -f "${REPO_ROOT}/.env" ]]; then
     MERIDIAN_OTLP_ENDPOINT=$(grep -E '^MERIDIAN_OTLP_ENDPOINT=' "${REPO_ROOT}/.env" | tail -1 | cut -d= -f2- || true)
 fi
 
+# Optional HF caching-proxy override (parity with the tray's in-process MLX
+# supervisor, mlx_server::hf_endpoint). Prefer the process env; fall back to the
+# repo-root .env. Inject a WHOLE key/value block when set, or NOTHING when unset —
+# an empty HF_ENDPOINT would be taken literally by huggingface_hub and break
+# every download, so the key must be absent rather than empty.
+MERIDIAN_HF_ENDPOINT="${MERIDIAN_HF_ENDPOINT:-}"
+if [[ -z "${MERIDIAN_HF_ENDPOINT}" && -f "${REPO_ROOT}/.env" ]]; then
+    MERIDIAN_HF_ENDPOINT=$(grep -E '^MERIDIAN_HF_ENDPOINT=' "${REPO_ROOT}/.env" | tail -1 | cut -d= -f2- || true)
+fi
+if [[ -n "${MERIDIAN_HF_ENDPOINT}" ]]; then
+    # XML-escape the URL BEFORE embedding it in the <string> element — a literal
+    # `&` (e.g. from a query string) is invalid inside XML content and plutil
+    # rejects it outright ("unknown ampersand-escape sequence").
+    MERIDIAN_HF_ENDPOINT_XML="${MERIDIAN_HF_ENDPOINT//&/&amp;}"
+    MERIDIAN_HF_ENDPOINT_XML="${MERIDIAN_HF_ENDPOINT_XML//</&lt;}"
+    MERIDIAN_HF_ENDPOINT_XML="${MERIDIAN_HF_ENDPOINT_XML//>/&gt;}"
+    HF_ENDPOINT_ENTRY="<key>HF_ENDPOINT</key><string>${MERIDIAN_HF_ENDPOINT_XML}</string>"
+else
+    HF_ENDPOINT_ENTRY=""
+fi
+# Separately, escape sed REPLACEMENT metacharacters (\, &, and our `|` delimiter)
+# before this reaches the `sed -e "s|...|${HF_ENDPOINT_ENTRY}|g"` below — a literal
+# `&` in a sed replacement means "the matched text", which would corrupt the plist
+# rather than insert the entry verbatim (independent of the XML-escaping above).
+HF_ENDPOINT_ENTRY="$(printf '%s' "${HF_ENDPOINT_ENTRY}" | sed -e 's/[\&|]/\\&/g')"
+
 mkdir -p "${HOME}/.meridian/logs"
 mkdir -p "${LAUNCH_AGENTS}"
 
@@ -113,6 +139,7 @@ sed \
     -e "s|{{SERVICES_VENV}}|${SERVICES_VENV}|g" \
     -e "s|{{MERIDIAN_OO_AUTH}}|${MERIDIAN_OO_AUTH}|g" \
     -e "s|{{MERIDIAN_OTLP_ENDPOINT}}|${MERIDIAN_OTLP_ENDPOINT}|g" \
+    -e "s|{{HF_ENDPOINT_ENTRY}}|${HF_ENDPOINT_ENTRY}|g" \
     "${TEMPLATE}" > "${PLIST_DEST}"
 
 if ! plutil -lint "${PLIST_DEST}" >/dev/null; then

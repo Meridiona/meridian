@@ -34,9 +34,15 @@ export function NotificationsSection({ settings, patch, save }: {
         <FieldRow label="Notifications" description="Master switch for desktop toasts and in-app banners. Off silences everything below.">
           <Switch checked={settings.notifications_enabled} onCheckedChange={v => patch({ notifications_enabled: v })} />
         </FieldRow>
+        {/* A window behaviour, not a toast — deliberately outside the
+            notifications_enabled gate so silencing toasts doesn't also kill
+            the morning planner. */}
+        <FieldRow label="Open planner each day" description="Once a day, open the dashboard on the Plan view when you start using your machine.">
+          <Switch checked={settings.auto_open_plan} onCheckedChange={v => patch({ auto_open_plan: v })} />
+        </FieldRow>
         {settings.notifications_enabled && (
           <>
-            <FieldRow label="Plan your day" description="Morning reminder to confirm today's working set on the Plan page.">
+            <FieldRow label="Plan your day reminder" description="If you close the planner without confirming a plan, this reminds you an hour later.">
               <Switch checked={settings.notify_plan_nudge} onCheckedChange={v => patch({ notify_plan_nudge: v })} />
             </FieldRow>
             <FieldRow label="Worklog drafts ready" description="When the daily worklog drafts are ready to review and approve.">
@@ -61,6 +67,7 @@ export function NotificationsSection({ settings, patch, save }: {
           status={status}
           onClick={() => save({
             notifications_enabled: settings.notifications_enabled,
+            auto_open_plan: settings.auto_open_plan,
             notify_plan_nudge: settings.notify_plan_nudge,
             notify_worklog_ready: settings.notify_worklog_ready,
             notify_system_fault: settings.notify_system_fault,

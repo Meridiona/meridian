@@ -15,8 +15,9 @@ Meridian is a single-process Rust daemon that normalises raw screen-capture fram
 - Validate all input at system boundaries (config load, DB open, frame parsing)
 - NEVER run `git reset`, `git push --force`, or delete local code — other agents may be working on the codebase in parallel
 - NEVER merge a PR automatically — open/update PRs as needed, but leave the actual merge to a human reviewer
-- NEVER push directly to `main` — always create a separate feature branch, commit there, and raise a PR to `main`
+- NEVER push directly to `main` or `pre-main` — always create a separate feature branch, commit there, and raise a PR to `pre-main`. **All features, fixes, and other changes target `pre-main`** (the staging branch), not `main` — only a maintainer opens the `pre-main → main` release PR, and only after everything on `pre-main` has been tested end-to-end on staging
 - ALWAYS use a separate branch per feature/fix — branch name format: `type/short-description` (e.g. `feat/trello-oauth`, `fix/ui-disconnect`)
+- In all **user-facing app text** — window titles, wizard/UI copy, button and menu labels, notification bodies, tray tooltips, any string the user reads — use a plain hyphen `-` only. NEVER an em-dash (`—`), en-dash (`–`), or double hyphen (`--`). Use it spaced (` - `) where a dash separates clauses. (This rule is about displayed strings; code comments and docs are exempt.)
 
 ---
 
@@ -473,6 +474,17 @@ git tag "runtime-v${VER}"         <commit> && git push origin "runtime-v${VER}" 
 - **Two channels, two audiences.** A fix that must reach everyone has to land on **both** `pre-main` and `main` (or both tags) — one channel never feeds the other.
 - **It is not the app binary.** Updating the `.app` alone ships nothing under `services/`; only a runtime republish does.
 
+### Make a DMG release mandatory (force-install on old versions)
+
+DMG auto-updates are consent-based (in-app banner + click) with one exception: when the update manifest declares a **minimum supported version** and the running app is below it, the app installs the update and relaunches automatically. Use this as a kill-switch for releases old versions must not keep running against (broken update path, data-corrupting bug) — not for routine releases.
+
+1. Commit `tray/minimum-version` containing the floor as plain `X.Y.Z` (usually the new release's own version, forcing everyone older) **before cutting the release**. File absent or empty = consent-based, the default; a malformed value fails the release loudly (`scripts/package-updater.sh`).
+2. The release ships it as a `Minimum-Version: X.Y.Z` line inside `latest.json`'s `notes` — the notes body is the transport because `tauri-plugin-updater` drops unknown manifest fields. The staging channel inherits it via `mirror-staging-release.sh`'s verbatim `latest.json` copy.
+3. Installed apps below the floor force-update via `update::enforce_minimum_version` (`tray/src-tauri/src/update.rs`) — checked 30 s after launch and every 6 h thereafter, so long-running trays catch it without a relaunch. A failed forced install falls back to the consent banner and retries next cycle.
+4. Empty or remove `tray/minimum-version` afterwards if later releases should go back to consent-based — the floor ships with **every** release while the file has content.
+
+Only affects the DMG channel; npm/CLI installs still update via `meridian update`, and the MLX runtime has its own always-automatic upgrade (see the runtime task above).
+
 ---
 
 ## Coding-agent pipeline (`src/coding_agent_session_ingest/`)
@@ -545,4 +557,11 @@ services/.venv/bin/python services/tests/evals/eval_classifier.py         # run,
 - `pre-push` hook runs the full suite: `cargo fmt` + `cargo clippy` + UI build + UI tests + security audit (claude CLI) + `cargo test`
 - Never skip hooks with `--no-verify`
 - Install hooks after cloning: `bash scripts/setup-hooks.sh`
-- Never amend a commit that has already been pushed to `main`
+- Never amend a commit that has already been pushed to `main` or `pre-main`
+
+### PR target branch — `pre-main`, not `main`
+
+- **Every feature/fix PR targets `pre-main`** (`gh pr create --base pre-main`), regardless of what any older doc or habit says — `pre-main` is the staging branch and is where all day-to-day work lands.
+- `pre-main` is deployed to staging and gets exercised end-to-end there (including the staging DMG auto-update channel and `runtime-staging`) before anything reaches production.
+- **Only a maintainer** opens the `pre-main → main` release PR, and only once everything currently on `pre-main` has been verified working end-to-end on staging. Contributors should not open `main`-targeted PRs.
+- This mirrors the runtime-publish model (`runtime-staging` vs `runtime-latest` — see "Ship a `services/` Python change to users" above): `pre-main` is the staging/test channel, `main` is production.
