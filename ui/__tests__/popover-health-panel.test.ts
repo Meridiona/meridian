@@ -27,11 +27,24 @@ import { GlobalRegistrator } from '@happy-dom/global-registrator'
 const trayDir = import.meta.dir + '/../../tray/src'
 
 // Extract the popover markup from index.html (minus its <script> tags, which we
-// load manually) so the elements app.js queries by id actually exist.
+// load manually) so the elements app.js queries by id actually exist. Loops
+// to a fixed point (not a single pass) and tolerates attributes on the open
+// tag / whitespace before the closing '>' (e.g. </script >), matching what a
+// browser actually treats as a script tag.
+function stripScriptTags(html: string): string {
+  let out = html
+  let prev: string
+  do {
+    prev = out
+    out = out.replace(/<script\b[^>]*>[\s\S]*?<\/script(?:\s+[^>]*)?\s*>/gi, '')
+  } while (out !== prev)
+  return out
+}
+
 function popoverBody(): string {
   const html = readFileSync(trayDir + '/index.html', 'utf8')
   const m = html.match(/<body[^>]*>([\s\S]*)<\/body>/i)
-  return (m ? m[1] : '').replace(/<script[\s\S]*?<\/script>/gi, '')
+  return stripScriptTags(m ? m[1] : '')
 }
 
 const pauseUtilsSrc = readFileSync(trayDir + '/pause-utils.js', 'utf8')

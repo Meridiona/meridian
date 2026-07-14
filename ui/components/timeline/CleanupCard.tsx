@@ -51,7 +51,7 @@ export function CleanupCard({
       <div className="relative w-full rounded-2xl overflow-hidden bg-card"
         style={{
           border: '1px solid var(--t-card-border)',
-          boxShadow: '0 20px 46px -14px rgba(20,16,40,0.34)',
+          boxShadow: 'var(--mt-card-shadow)',
           borderLeft: `4px solid ${meta.color}`,
         }}>
         <div className="p-5 space-y-3">

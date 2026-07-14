@@ -59,6 +59,14 @@ jobs:
       # Public GitHub OAuth device-flow client id (see release.yml); GH_OAUTH_CLIENT_ID
       # repo secret. Absent → GitHub browser connect unavailable in the staging build.
       MERIDIAN_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
+      # Baked into the staging binary at compile time (see release.yml); same
+      # secret. Absent → PostHog analytics simply disabled in the staging build.
+      MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+      # Baked into the staging binary at compile time (see release.yml); same
+      # secret — staging is downloadable/installable too, so it gets Clerk
+      # PRODUCTION, not the dev instance (only a source checkout uses dev).
+      # Absent → sign-in unavailable in the staging build.
+      MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
       # Minisign key for the DMG auto-updater: `tauri build` (createUpdaterArtifacts)
       # signs Meridian.app.tar.gz so the installed staging app can verify the
       # update against the pubkey baked in tauri.conf.json. REQUIRED here (unlike
@@ -66,6 +74,15 @@ jobs:
       # latest.json and the mirror no-ops, so the staging channel can't update.
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # Tauri's DMG bundler skips the AppleScript step that sets the Finder
+      # window background/icon layout whenever `CI` is set (every GitHub
+      # Actions job sets `CI=true`), assuming CI runners can't drive Finder —
+      # https://github.com/tauri-apps/tauri/issues/1731. GitHub-hosted macOS
+      # runners DO have a full desktop session, so force the decoration step
+      # to run; without this the DMG ships the drag-to-Applications
+      # background.png as an inert file with no .DS_Store, so Finder never
+      # displays it.
+      TAURI_BUNDLER_DMG_IGNORE_CI: "true"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -139,4 +156,14 @@ jobs:
           # (mlx_server::manifest_url reads this via option_env!). A packaged .app
           # has no shell env, so the staging .app must compile in runtime-staging.
           MERIDIAN_RUNTIME_MANIFEST_URL: "https://github.com/Meridiona/meridian/releases/download/runtime-staging/runtime-manifest.json"
+          # Bake the HF caching-proxy endpoint into the staging build (same
+          # option_env! pattern, mlx_server::hf_endpoint). Production (main)
+          # deliberately leaves this unset until Cache Reserve is enabled on the
+          # zone — staging is where we validate the proxy against real installer
+          # traffic first.
+          MERIDIAN_HF_ENDPOINT: "https://hf.meridiona.com"
+          # Bake the build channel into the binary (commands::version::build_channel,
+          # same option_env! pattern) so the dashboard/popover version badge reads
+          # "staging" instead of the "prod" default. Production leaves this unset.
+          MERIDIAN_CHANNEL: "staging"
         run: npx semantic-release

@@ -88,20 +88,28 @@ fn input_monitoring_granted() -> bool {
 }
 
 /// Run the input recorder until `tx` closes. **Blocking** — call on a dedicated
-/// OS thread. Requests Input Monitoring only when not already granted; degrades
-/// to a no-op recorder (emits nothing) when it's denied, rather than failing.
+/// OS thread. **Never prompts for Input Monitoring:** the setup wizard dropped it
+/// as a permission because the signals the daemon actually consumes
+/// (`clipboard` and `app_switch`, via `get_signals`) come from the
+/// Accessibility-only workspace observer and clipboard poller — see
+/// `screenpipe-a11y` `macos.rs`. When Input Monitoring isn't already granted the
+/// recorder runs in **reduced mode** (clipboard and app/window events, no
+/// click/key/text CGEventTap) rather than surfacing a cold, wizard-less TCC
+/// dialog; the click/key stream feeds only the minor Option-C `ended_at`
+/// refinement. `start()` degrades to a no-op recorder (emits nothing) if even
+/// reduced mode can't attach, rather than failing.
 pub(crate) fn run_ui_event_recorder(tx: UiEventTx) {
     let recorder = UiRecorder::new(recorder_config());
-    // Check Input Monitoring first; only call request_permissions() (which can
-    // prompt) when it isn't already granted, so a granted permission never
-    // re-triggers the system prompt on launch.
+    // Do NOT request Input Monitoring here — prompting would raise a cold TCC
+    // dialog the wizard no longer explains. Just log the current status for
+    // observability; `recorder.start()` selects full vs reduced mode itself.
     if input_monitoring_granted() {
-        info!("capture: input monitoring already granted — not prompting");
+        info!("capture: input monitoring granted — full ui-event capture (incl. click/key/text)");
     } else {
-        let perms = recorder.request_permissions();
-        if !perms.input_monitoring {
-            warn!("capture: input monitoring not granted — ui events unavailable until the user grants it");
-        }
+        info!(
+            "capture: input monitoring not granted — reduced mode \
+             (clipboard + app/window events; no click/key/text tap)"
+        );
     }
     let handle = match recorder.start() {
         Ok(h) => h,

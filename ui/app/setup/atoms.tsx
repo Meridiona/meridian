@@ -38,6 +38,12 @@ export function PermIcon({ icon, size = 18 }: { icon: string; size?: number }) {
     return (<svg viewBox="0 0 18 18" style={c}><rect x="2.5" y="3.5" width="13" height="8.5" rx="1.4" {...s} /><path d="M6.5 15h5M9 12v3" {...s} /></svg>)
   if (icon === 'power')
     return (<svg viewBox="0 0 18 18" style={c}><path d="M9 3v6" {...s} /><path d="M5.5 5.5a5 5 0 1 0 7 0" {...s} /></svg>)
+  if (icon === 'bell')
+    return (<svg viewBox="0 0 18 18" style={c}><path d="M9 3a4 4 0 0 1 4 4v2.5l1.2 2.3H3.8L5 9.5V7a4 4 0 0 1 4-4z" {...s} /><path d="M7.6 14.5a1.5 1.5 0 0 0 2.8 0" {...s} /></svg>)
+  if (icon === 'mail')
+    return (<svg viewBox="0 0 18 18" style={c}><rect x="2" y="4" width="14" height="10" rx="1.6" {...s} /><path d="M2.6 5 9 10 15.4 5" {...s} /></svg>)
+  if (icon === 'shield')
+    return (<svg viewBox="0 0 18 18" style={c}><path d="M9 2.5 15 4.5v3.8c0 4-2.6 6.3-6 7-3.4-.7-6-3-6-7V4.5Z" {...s} /><path d="M6.4 9 8.2 10.8 11.7 6.8" {...s} /></svg>)
   return null
 }
 
@@ -106,6 +112,40 @@ export function Bar({ pct, height = 6, track = 'var(--t-hair)', fill = 'var(--co
       <div style={{ width: `${Math.max(0, Math.min(100, pct))}%`, height: '100%', borderRadius: 99,
         background: fill, transition: 'width .25s linear' }} />
     </div>
+  )
+}
+
+// ── Semi-circular memory gauge ───────────────────────────────────────────────
+// Distinct on purpose from `Bar` above (straight, used for download progress):
+// this reads as a capacity dial rather than a loading indicator, so the two
+// never get confused for one another. Drawn as two arcs meeting at `pct` —
+// amber for the footprint Meridian expects to use, green for the unified
+// memory left over — rather than a single fill against a neutral track.
+export function MemoryGauge({ pct, size = 96, strokeWidth = 9 }: {
+  pct: number; size?: number; strokeWidth?: number
+}) {
+  const r = size / 2 - strokeWidth
+  const cx = size / 2
+  const cy = size / 2
+  const clamped = Math.max(0, Math.min(100, pct))
+  const splitAngle = 180 + (clamped / 100) * 180
+  const polar = (angleDeg: number) => {
+    const rad = (angleDeg * Math.PI) / 180
+    return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) }
+  }
+  const arc = (startAngle: number, endAngle: number) => {
+    const start = polar(startAngle)
+    const end = polar(endAngle)
+    const largeArc = endAngle - startAngle > 180 ? 1 : 0
+    return `M ${start.x} ${start.y} A ${r} ${r} 0 ${largeArc} 1 ${end.x} ${end.y}`
+  }
+  return (
+    <svg width={size} height={size / 2 + strokeWidth} viewBox={`0 0 ${size} ${size / 2 + strokeWidth}`}>
+      <path d={arc(splitAngle, 360)} fill="none" stroke="var(--color-state-approved)"
+        strokeWidth={strokeWidth} strokeLinecap="round" />
+      <path d={arc(180, splitAngle)} fill="none" stroke="var(--color-state-pending)"
+        strokeWidth={strokeWidth} strokeLinecap="round" />
+    </svg>
   )
 }
 

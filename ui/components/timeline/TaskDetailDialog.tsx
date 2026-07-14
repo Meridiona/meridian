@@ -56,9 +56,9 @@ export function TaskDetailDialog({
     <div className="absolute inset-0 z-50 flex items-start justify-center p-6 sm:p-10 rise"
       style={{ background: 'rgba(20,16,40,0.5)', backdropFilter: 'blur(3px)' }} onClick={onClose}>
       <div className="w-full rounded-2xl overflow-hidden flex flex-col bg-panel"
-        style={{ maxWidth: 640, maxHeight: '88%', border: '1px solid var(--t-card-border)', boxShadow: '0 24px 60px -18px rgba(20,16,40,0.5)' }}
+        style={{ maxWidth: 640, maxHeight: '88%', border: '1px solid var(--t-card-border)', boxShadow: 'var(--mt-modal-shadow)' }}
         onClick={e => e.stopPropagation()}>
-        <div className="px-6 pt-5 pb-4 border-b shrink-0" style={{ borderColor: 'var(--t-hair)' }}>
+        <div className="px-7 pt-6 pb-5 border-b shrink-0" style={{ borderColor: 'var(--t-hair)' }}>
           <div className="flex items-center gap-2 mb-2.5">
             <span className="mt-mono-sm text-[11px] px-1.5 py-0.5 rounded bg-key-bg text-key-text">{taskKey}</span>
             {detail?.issue_type && (
@@ -92,7 +92,7 @@ export function TaskDetailDialog({
           )}
         </div>
 
-        <div className="overflow-y-auto nice-scroll p-6 space-y-5">
+        <div className="overflow-y-auto nice-scroll p-7 space-y-5">
           {loading && !detail ? (
             <p className="mt-body-sm italic" style={{ color: 'var(--t-faint-2)' }}>Loading…</p>
           ) : (
@@ -116,7 +116,7 @@ export function TaskDetailDialog({
         </div>
 
         {(detail?.url || onAdd || onRemove) && (
-          <div className="px-6 py-4 border-t shrink-0 flex items-center gap-2.5" style={{ borderColor: 'var(--t-hair)' }}>
+          <div className="px-7 py-5 border-t shrink-0 flex items-center gap-2.5" style={{ borderColor: 'var(--t-hair)' }}>
             {canEdit && (inToday ? (onRemove && (
               <button onClick={() => { onRemove(); onClose() }}
                 className="mt-body-sm px-3.5 py-2 rounded-lg bg-ctrl"

@@ -60,7 +60,9 @@ pub fn is_bundled() -> bool {
 }
 
 /// The plugin state, if the plugin was registered (bundled runs only).
-fn notifier(app: &tauri::AppHandle) -> Option<&Notifications<tauri::Wry>> {
+/// `pub(crate)` so the setup wizard's permission probes
+/// ([`crate::commands::setup::check_notifications`]) share the one lookup.
+pub(crate) fn notifier(app: &tauri::AppHandle) -> Option<&Notifications<tauri::Wry>> {
     let state = app.try_state::<Notifications<tauri::Wry>>()?;
     Some(state.inner())
 }

@@ -43,6 +43,20 @@ use tokio::sync::Mutex;
 const RUNTIME_MANIFEST_URL: &str =
     "https://github.com/Meridiona/meridian/releases/download/runtime-latest/runtime-manifest.json";
 
+/// Base URL of the optional Hugging Face caching proxy — a Cloudflare Worker that
+/// reverse-proxies `huggingface.co` and caches the weight blobs at the edge (see
+/// `infra/hf-proxy/`). When set, it is exported as the MLX server's `HF_ENDPOINT`,
+/// so the wizard's model prefetch and any lazy in-process load pull through our
+/// edge instead of HF directly — the fix for the slow/stalled first-run model
+/// downloads users retry on.
+///
+/// **Empty by default — the proxy is DISABLED until it is actually deployed.**
+/// Baking a live host here before `hf.meridiona.com` resolves would route every
+/// user's download at a dead endpoint. Enable per channel by baking
+/// `MERIDIAN_HF_ENDPOINT` at build time (`option_env!`, see [`hf_endpoint`]), or
+/// flip this default once the Worker + Cache Reserve are live.
+const HF_PROXY_ENDPOINT: &str = "";
+
 /// Hard cap on the runtime download+verify+extract phase (the only unbounded,
 /// network-bound step of a provision/upgrade). A stalled tarball stream is
 /// abandoned after this so first-run setup can't hang and a background upgrade
@@ -226,6 +240,36 @@ pub fn manifest_url() -> Option<String> {
     }
     if !RUNTIME_MANIFEST_URL.is_empty() {
         return Some(RUNTIME_MANIFEST_URL.to_string());
+    }
+    None
+}
+
+/// Resolve the Hugging Face endpoint override (the caching proxy), in priority
+/// order, mirroring [`manifest_url`]:
+/// 1. **Runtime** `MERIDIAN_HF_ENDPOINT` — debug builds only (a release binary
+///    can't be redirected via a compromised env).
+/// 2. **Compile-time** `MERIDIAN_HF_ENDPOINT` (`option_env!`) — baked per channel
+///    at build time (how a shipped build turns the proxy on).
+/// 3. The compiled-in [`HF_PROXY_ENDPOINT`] default (empty = disabled).
+///
+/// `None` → no override; `huggingface_hub` talks to `huggingface.co` directly
+/// (today's behavior). `Some(url)` is exported as `HF_ENDPOINT` to the MLX server.
+pub fn hf_endpoint() -> Option<String> {
+    // Debug-only env override — same guard as `manifest_url`, so a production
+    // binary's HF traffic can't be silently redirected by the environment.
+    #[cfg(debug_assertions)]
+    if let Ok(url) = std::env::var("MERIDIAN_HF_ENDPOINT") {
+        if !url.is_empty() {
+            return Some(url);
+        }
+    }
+    if let Some(url) = option_env!("MERIDIAN_HF_ENDPOINT") {
+        if !url.is_empty() {
+            return Some(url.to_string());
+        }
+    }
+    if !HF_PROXY_ENDPOINT.is_empty() {
+        return Some(HF_PROXY_ENDPOINT.to_string());
     }
     None
 }
@@ -731,9 +775,11 @@ where
 }
 
 /// Stop our managed MLX server (SIGTERM + clear the pid marker). Used by the
-/// background upgrade to take the old runtime offline for the swap; a no-op when
+/// background upgrade to take the old runtime offline for the swap, and by the
+/// uninstall wizard ([`crate::commands::uninstall::execute_uninstall`]) before
+/// it deletes the runtime out from under a still-running process; a no-op when
 /// no server is recorded.
-async fn stop_server(manager: &SharedMlxManager) {
+pub(crate) async fn stop_server(manager: &SharedMlxManager) {
     let pid = manager.lock().await.pid.take();
     if let Some(pid) = pid {
         kill_pid(pid);
@@ -1089,6 +1135,16 @@ pub async fn start(port: u16, manager: &SharedMlxManager) -> Result<(), String> 
         // doesn't interrupt inflight classification.
         .kill_on_drop(false);
 
+    // Route HF traffic through the caching proxy when one is configured
+    // (`hf_endpoint`). huggingface_hub reads HF_ENDPOINT from the env at import,
+    // so setting it on the child makes the wizard's model prefetch + any lazy load
+    // pull through our edge. Unset → direct huggingface.co (today's behavior). The
+    // installed launchd server gets the same value from the mlx-server plist.
+    if let Some(ep) = hf_endpoint() {
+        cmd.env("HF_ENDPOINT", &ep);
+        tracing::info!(hf_endpoint = %ep, "mlx: routing HF downloads through caching proxy");
+    }
+
     let child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -1326,6 +1382,22 @@ mod tests {
         assert_eq!(m.min_macos, "13.5");
         assert_eq!(m.size, 173466456);
         assert!(m.sha256.len() == 64);
+    }
+
+    #[test]
+    fn hf_endpoint_disabled_by_default() {
+        // No other test in this suite touches MERIDIAN_HF_ENDPOINT, so clearing it
+        // here (idempotent if already unset) cannot race a concurrently-running
+        // test — the same reason a full three-tier test of manifest_url()'s
+        // pattern isn't attempted here either; that needs isolation this crate
+        // doesn't have (no serial_test dep), so it's only exercised end-to-end by
+        // the #[ignore]d live_pull_from_runtime_staging test below.
+        std::env::remove_var("MERIDIAN_HF_ENDPOINT");
+        // The safety invariant that makes it safe to merge before the Worker +
+        // Cache Reserve are live: with no override at any tier, the compiled-in
+        // HF_PROXY_ENDPOINT default (empty) must resolve to `None` — the proxy
+        // stays off rather than pointing at a host that doesn't exist yet.
+        assert_eq!(hf_endpoint(), None);
     }
 
     /// Live end-to-end pull of the published `runtime-staging` runtime — the

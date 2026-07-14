@@ -683,3 +683,52 @@ async fn current_task_percent_none_without_story_points() {
         "no pm_tasks row → percent should be None"
     );
 }
+
+// ── plan_handled (tray auto-open gate) ────────────────────────────────────────
+
+#[tokio::test]
+async fn plan_handled_reads_meta_states() {
+    let pool = make_plan_pool().await;
+    let today = "2026-07-13";
+
+    // No row for the date → not handled.
+    assert!(!meridian_core::plan::plan_handled(&pool, today).await);
+
+    // Row present but neither confirmed nor skipped → still not handled.
+    sqlx::query(
+        "INSERT INTO daily_plan_meta (plan_date, confirmed_at, skipped, created_at, updated_at) \
+         VALUES (?, NULL, 0, 't', 't')",
+    )
+    .bind(today)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(!meridian_core::plan::plan_handled(&pool, today).await);
+
+    // Confirmed → handled.
+    sqlx::query("UPDATE daily_plan_meta SET confirmed_at = 't' WHERE plan_date = ?")
+        .bind(today)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(meridian_core::plan::plan_handled(&pool, today).await);
+
+    // Skipped (not confirmed) → handled.
+    sqlx::query("UPDATE daily_plan_meta SET confirmed_at = NULL, skipped = 1 WHERE plan_date = ?")
+        .bind(today)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(meridian_core::plan::plan_handled(&pool, today).await);
+}
+
+#[tokio::test]
+async fn plan_handled_false_without_table() {
+    // A bare DB (no daily_plan_meta) must read as "not handled", not error.
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    assert!(!meridian_core::plan::plan_handled(&pool, "2026-07-13").await);
+}

@@ -10,7 +10,7 @@
 
 import { useMemo } from 'react'
 import { fmtDur, AppGlyph } from '@/components/atoms'
-import { BRAND_ICONS } from '@/lib/brand-icons'
+import { getBrandIcon } from '@/lib/brand-icons'
 import type { TodaySession, AgentTotal } from '@/lib/api-types'
 
 function appHue(app: string): number {
@@ -21,7 +21,7 @@ function appHue(app: string): number {
 
 /** Real brand hex when we have one (matches AppGlyph's logo), else a deterministic hue. */
 function appColor(app: string): string {
-  return BRAND_ICONS[app]?.hex ?? `hsl(${appHue(app)}, 55%, 55%)`
+  return getBrandIcon(app)?.hex ?? `hsl(${appHue(app)}, 55%, 55%)`
 }
 
 /**
