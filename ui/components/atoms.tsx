@@ -230,8 +230,10 @@ export function Badge({
 }: {
   children: React.ReactNode
   color?: string
-  // Defaults to `color` — override for the neutral chips whose border reads
-  // as a plain hairline (`--t-hair`) rather than tinted to match the text.
+  // Outline tone only — `filled`/`ghost` compute their own border from
+  // `color`/tone and ignore this. Defaults to `color` — override for the
+  // neutral chips whose border reads as a plain hairline (`--t-hair`) rather
+  // than tinted to match the text.
   borderColor?: string
   variant?: 'chip' | 'pill'
   tone?: 'outline' | 'filled' | 'ghost'
@@ -251,10 +253,15 @@ export function Badge({
     : `1px solid ${outlineColor}`
   const background = tone === 'filled' ? `color-mix(in srgb, ${color} 12%, transparent)`
     : tone === 'ghost' ? 'var(--t-wrap)' : undefined
+  // `inline-flex` only when a dot is actually rendered — a dot-less badge
+  // stays plain `inline` so its baseline matches the hand-rolled markup it
+  // replaced exactly (inline-flex's baseline calculation can shift vertical
+  // alignment by a pixel or two next to surrounding text).
+  const display = dot ? 'inline-flex items-center gap-1.5' : 'inline'
   return (
     <Tag
       {...props}
-      className={`mt-chip inline-flex items-center gap-1.5 shrink-0 ${shape} ${pad} ${className}`}
+      className={`mt-chip ${display} shrink-0 ${shape} ${pad} ${className}`}
       style={{ color, border, background, ...style }}
     >
       {dot && <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${dotClassName}`} style={{ background: color }} aria-hidden="true" />}
