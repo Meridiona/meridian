@@ -215,6 +215,10 @@ async fn upsert(
 // Prune
 // ---------------------------------------------------------------------------
 
+/// Delete `pm_tasks` rows no longer returned by the active-task fetch (closed,
+/// reassigned, etc.) — EXCEPT a task_key that has worklog history
+/// (`pm_worklogs`), which is kept forever so a completed card's title never
+/// disappears from the timeline once it's closed.
 async fn prune(pool: &SqlitePool, fetched_keys: &[String]) -> Result<usize> {
     let placeholders = fetched_keys
         .iter()
@@ -235,7 +239,8 @@ async fn prune(pool: &SqlitePool, fetched_keys: &[String]) -> Result<usize> {
         .context("pruning trello pm_task_embeddings")?;
 
     let task_sql = format!(
-        "DELETE FROM pm_tasks WHERE provider = 'trello' AND task_key NOT IN ({placeholders})"
+        "DELETE FROM pm_tasks WHERE provider = 'trello' AND task_key NOT IN ({placeholders}) \
+         AND task_key NOT IN (SELECT DISTINCT task_key FROM pm_worklogs)"
     );
     let mut q = sqlx::query(&task_sql);
     for key in fetched_keys {
@@ -292,9 +297,12 @@ pub async fn refresh_if_stale(
                         Ok(p) => tracing::info!(pruned_count = p, "pruned stale trello tasks"),
                         Err(e) => tracing::warn!(error = %e, "trello prune failed"),
                     }
-                } else if let Err(e) = sqlx::query("DELETE FROM pm_tasks WHERE provider = 'trello'")
-                    .execute(pool)
-                    .await
+                } else if let Err(e) = sqlx::query(
+                    "DELETE FROM pm_tasks WHERE provider = 'trello' \
+                     AND task_key NOT IN (SELECT DISTINCT task_key FROM pm_worklogs)",
+                )
+                .execute(pool)
+                .await
                 {
                     tracing::warn!(error = %e, "trello full-clear failed");
                 }

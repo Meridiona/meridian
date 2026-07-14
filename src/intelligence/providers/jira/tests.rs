@@ -77,7 +77,8 @@ async fn run_prune_sql(pool: &SqlitePool, fetched_keys: &[&str]) -> usize {
     q.execute(pool).await.unwrap();
 
     let task_sql = format!(
-        "DELETE FROM pm_tasks WHERE provider = 'jira' AND task_key NOT IN ({placeholders})"
+        "DELETE FROM pm_tasks WHERE provider = 'jira' AND task_key NOT IN ({placeholders}) \
+         AND task_key NOT IN (SELECT DISTINCT task_key FROM pm_worklogs)"
     );
     let mut q = sqlx::query(&task_sql);
     for key in fetched_keys {
@@ -85,6 +86,21 @@ async fn run_prune_sql(pool: &SqlitePool, fetched_keys: &[&str]) -> usize {
     }
     let result = q.execute(pool).await.unwrap();
     result.rows_affected() as usize
+}
+
+/// Inserts a minimal `pm_worklogs` row for `task_key` — enough to mark it as
+/// having worklog history for the prune exclusion.
+async fn insert_worklog(pool: &SqlitePool, task_key: &str) {
+    sqlx::query(
+        "INSERT INTO pm_worklogs
+           (task_key, day_utc, window_start, window_end, state, payload_json)
+         VALUES (?, '2026-07-14', '2026-07-14T10:00:00+00:00', '2026-07-14T11:00:00+00:00',
+                 'posted', '{}')",
+    )
+    .bind(task_key)
+    .execute(pool)
+    .await
+    .unwrap();
 }
 
 /// Helper: count rows in `pm_tasks` with a given `task_key`.
@@ -123,6 +139,40 @@ async fn prune_removes_stale_jira_task() {
     assert_eq!(deleted, 1, "prune must delete exactly the stale row");
     assert_eq!(task_count(&pool, "KAN-1").await, 1, "KAN-1 must survive");
     assert_eq!(task_count(&pool, "KAN-2").await, 0, "KAN-2 must be deleted");
+}
+
+// -----------------------------------------------------------------------
+// Test: a stale task with worklog history is kept (so its title never
+// disappears from the timeline once the ticket is Done/reassigned/closed)
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn prune_keeps_stale_task_with_worklog_history() {
+    let pool = make_db().await;
+
+    insert_jira_task(&pool, "KAN-100").await; // fresh — in fetched set
+    insert_jira_task(&pool, "KAN-101").await; // stale, no worklog — must be pruned
+    insert_jira_task(&pool, "KAN-102").await; // stale, HAS worklog history — must survive
+    insert_worklog(&pool, "KAN-102").await;
+
+    let deleted = run_prune_sql(&pool, &["KAN-100"]).await;
+
+    assert_eq!(deleted, 1, "only the stale task with no worklog is deleted");
+    assert_eq!(
+        task_count(&pool, "KAN-100").await,
+        1,
+        "KAN-100 must survive"
+    );
+    assert_eq!(
+        task_count(&pool, "KAN-101").await,
+        0,
+        "KAN-101 must be pruned"
+    );
+    assert_eq!(
+        task_count(&pool, "KAN-102").await,
+        1,
+        "KAN-102 must survive — it has worklog history"
+    );
 }
 
 // -----------------------------------------------------------------------

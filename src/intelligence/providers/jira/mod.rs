@@ -307,6 +307,10 @@ async fn upsert(
 // Prune
 // ---------------------------------------------------------------------------
 
+/// Delete `pm_tasks` rows no longer returned by the active-task fetch (closed,
+/// reassigned, etc.) — EXCEPT a task_key that has worklog history
+/// (`pm_worklogs`), which is kept forever so a completed ticket's title never
+/// disappears from the timeline once it's Done.
 async fn prune(pool: &SqlitePool, fetched_keys: &[String]) -> Result<usize> {
     let placeholders = fetched_keys
         .iter()
@@ -328,7 +332,8 @@ async fn prune(pool: &SqlitePool, fetched_keys: &[String]) -> Result<usize> {
         .context("pruning pm_task_embeddings")?;
 
     let task_sql = format!(
-        "DELETE FROM pm_tasks WHERE provider = 'jira' AND task_key NOT IN ({placeholders})"
+        "DELETE FROM pm_tasks WHERE provider = 'jira' AND task_key NOT IN ({placeholders}) \
+         AND task_key NOT IN (SELECT DISTINCT task_key FROM pm_worklogs)"
     );
     let mut q = sqlx::query(&task_sql);
     for key in fetched_keys {
