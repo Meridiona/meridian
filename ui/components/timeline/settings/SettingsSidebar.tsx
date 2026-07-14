@@ -45,7 +45,7 @@ export function SettingsSidebar({ section, onSelect, integrations }: {
             style={{
               border: 'none',
               cursor: 'pointer',
-              font: "700 12.5px var(--font-pjs)",
+              font: "700 12.5px var(--font-sans)",
               color: active ? 'var(--color-state-proposal)' : 'var(--t-muted)',
               background: active ? 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)' : 'transparent',
               boxShadow: active ? 'inset 0 0 0 1px color-mix(in srgb, var(--color-state-proposal) 24%, transparent)' : 'none',

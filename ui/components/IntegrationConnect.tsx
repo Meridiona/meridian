@@ -134,23 +134,23 @@ function ConnectedPanel({
   return (
     <div className="px-4 pb-4 pt-2" style={{ background: 'var(--t-box)' }}>
       {cleanError && !reauthorizing && !pickingProjects && (
-        <div className="mb-3 rounded-md px-3 py-2" style={{ background: '#fef3c7', border: '1px solid #fcd34d' }}>
-          <p className="text-[12px] leading-relaxed" style={{ color: '#92400e' }}>
+        <div className="mb-3 rounded-md px-3 py-2" style={{ background: 'var(--status-warning-bg)', border: '1px solid var(--status-warning-border)' }}>
+          <p className="text-[12px] leading-relaxed" style={{ color: 'var(--status-warning-text)' }}>
             <strong>Sync failed:</strong> {cleanError}
           </p>
           <button onClick={() => setReauthorizing(true)} className="mt-2 text-[11px] px-3 py-1 rounded-md"
-            style={{ background: '#92400e', color: '#fff', cursor: 'pointer' }}>
+            style={{ background: 'var(--status-warning-text)', color: '#fff', cursor: 'pointer' }}>
             Fix: Reconnect {tracker.name}
           </button>
         </div>
       )}
       {needsGithubProjects && !reauthorizing && !pickingProjects && (
-        <div className="mb-3 rounded-md px-3 py-2" style={{ background: '#eff6ff', border: '1px solid #bfdbfe' }}>
-          <p className="text-[12px] leading-relaxed" style={{ color: '#1e40af' }}>
-            No GitHub Projects selected — tasks won&apos;t sync yet.
+        <div className="mb-3 rounded-md px-3 py-2" style={{ background: 'var(--status-info-bg)', border: '1px solid var(--status-info-border)' }}>
+          <p className="text-[12px] leading-relaxed" style={{ color: 'var(--status-info-text)' }}>
+            No GitHub Projects selected - tasks won&apos;t sync yet.
           </p>
           <button onClick={() => setPickingProjects(true)} className="mt-2 text-[11px] px-3 py-1 rounded-md"
-            style={{ background: '#1e40af', color: '#fff', cursor: 'pointer' }}>
+            style={{ background: 'var(--status-info-text)', color: '#fff', cursor: 'pointer' }}>
             Select Projects
           </button>
         </div>
@@ -695,14 +695,18 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // Separate from saveError: this one gates the early return below, so
+  // reusing it for save failures would replace the whole picker (losing the
+  // user's selection) instead of showing an inline error next to Save.
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [reloadWarning, setReloadWarning] = useState(false)
 
   useEffect(() => {
     let cancelled = false
     load<{ projects?: GithubProject[] }>('/api/integrations/github/discover', 'discover_github_projects')
       .then((json) => { if (!cancelled) setProjects(json.projects ?? []) })
-      .catch((e) => { if (!cancelled) setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Failed to load GitHub Projects') })
+      .catch((e) => { if (!cancelled) setLoadError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Failed to load GitHub Projects') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [])
@@ -717,7 +721,7 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
 
   const save = async () => {
     if (selected.size === 0 || saving) return
-    setSaving(true); setError(null)
+    setSaving(true); setSaveError(null)
     try {
       const res = await mutate<{ ok: boolean; reloaded: boolean }>('/api/auth/token', 'save_integration_token', {
         provider: 'github', fields: { project_ids: Array.from(selected).join(',') },
@@ -725,7 +729,7 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
       setReloadWarning(res?.reloaded === false)
       clearProviderNotice('github'); onSuccess?.()
     } catch (e) {
-      setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not save project selection')
+      setSaveError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not save project selection')
     } finally {
       setSaving(false)
     }
@@ -733,7 +737,7 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
 
   if (loading) return <p className="text-[11px]" style={{ color: 'var(--ink-3)' }}>Loading your GitHub Projects…</p>
 
-  if (error) return <p className="text-[12px]" style={{ color: '#e53e3e' }}>{error}</p>
+  if (loadError) return <p className="text-[12px]" style={{ color: 'var(--status-error-text)' }}>{loadError}</p>
 
   if (!projects || projects.length === 0) {
     return (
@@ -767,7 +771,7 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
           </div>
         ))}
       </div>
-      {error && <p className="text-[11px]" style={{ color: '#e53e3e' }}>{error}</p>}
+      {saveError && <p className="text-[11px]" style={{ color: 'var(--status-error-text)' }}>{saveError}</p>}
       <button onClick={save} disabled={selected.size === 0 || saving} className="text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
         style={{ background: 'var(--accent)', color: '#fff', opacity: (selected.size === 0 || saving) ? 0.5 : 1, cursor: (selected.size === 0 || saving) ? 'not-allowed' : 'pointer' }}>
         {saving ? 'Saving…' : selected.size === 0 ? 'Select a project' : `Sync ${selected.size} project${selected.size === 1 ? '' : 's'}`}

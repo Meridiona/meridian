@@ -21,6 +21,7 @@
 
 mod live;
 mod notifications;
+mod plan_auto_open;
 mod refresh;
 
 pub(crate) use notifications::notifications_allowed;
@@ -113,6 +114,16 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
             refresh_current_task(pool, &state).await;
             if do_health {
                 refresh_today(pool, &state).await;
+                // Spawned off, not awaited inline: on the rare tick where this
+                // actually fires (≤1 install event ever + ≤1/day), a slow or
+                // hanging PostHog response (5s timeout) must not delay the
+                // more user-visible steps below (notification drain, live
+                // notices/banners, tray icon/menu refresh).
+                let analytics_app = app.clone();
+                let analytics_pool = pool.clone();
+                tauri::async_runtime::spawn(async move {
+                    crate::analytics::maybe_send_daily_tick(&analytics_app, &analytics_pool).await;
+                });
             }
             if do_worklogs {
                 refresh_worklogs(pool, &state).await;
@@ -123,6 +134,10 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
         // feature is enabled; never overrides a user-initiated timed pause.
         if let Some(pool) = &pool {
             check_work_hours(&app, &state, pool).await;
+            // Daily "Plan your day" auto-open — at most once per local day
+            // (marker-file gated; a single file stat on the common path). If
+            // the pool isn't open yet this tick, it simply retries next tick.
+            plan_auto_open::maybe_auto_open_plan(&app, pool).await;
         }
 
         // Drain the daemon's notification outbox every tick — this is the single

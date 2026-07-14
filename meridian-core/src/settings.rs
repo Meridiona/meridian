@@ -65,6 +65,10 @@ pub struct RuntimeSettings {
     // `quiet_hours_*` are 'HH:MM' local time (start inclusive, end exclusive).
     pub notifications_enabled: bool,
     pub notify_plan_nudge: bool,
+    // Daily planner auto-open — once per local day the tray opens the dashboard
+    // on the Plan modal (first launch or first poll tick of a new day). A window
+    // behaviour, not a toast, so it is NOT gated by `notifications_enabled`.
+    pub auto_open_plan: bool,
     pub notify_worklog_ready: bool,
     pub notify_system_fault: bool,
     pub quiet_hours_enabled: bool,
@@ -107,6 +111,7 @@ impl Default for RuntimeSettings {
             // enabled). Must match SETTINGS_DEFAULTS in ui/lib/settings.ts.
             notifications_enabled: true,
             notify_plan_nudge: true,
+            auto_open_plan: true,
             notify_worklog_ready: true,
             notify_system_fault: true,
             quiet_hours_enabled: false,

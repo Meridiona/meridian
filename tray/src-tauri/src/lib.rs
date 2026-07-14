@@ -13,11 +13,14 @@
 //! - [`mlx_server`]  — MLX child-process manager (Approach A bundled venv).
 //! - [`sys`]         — shared uid / notify / dashboard-URL helpers.
 //! - [`format`]      — duration formatting for the popover.
+//! - [`analytics`]   — PostHog product-analytics capture (DMG installs only).
 
+mod analytics;
 mod backend_install;
 #[cfg(feature = "capture")]
 mod capture;
 mod commands;
+mod deep_link;
 
 /// Lowercase product name as macOS reports it after [`set_process_display_name`].
 /// The capture engine uses this to skip self-capture — keep it in sync with the
@@ -90,6 +93,34 @@ pub fn run() {
         // Registered unconditionally; the check is a no-op in a source/dev run
         // (the running binary isn't a packaged `.app` for the updater to swap).
         .plugin(tauri_plugin_updater::Builder::new().build());
+    // Clerk email sign-in on the setup wizard (see commands::account and
+    // ui/app/setup/signin.tsx). `ClerkPluginBuilder::build()` HARD-FAILS
+    // `.setup()` (killing the whole tray, not just sign-in) when the
+    // publishable key is empty or malformed — so, like the notifications
+    // plugin below, this only registers when a real key is configured. A
+    // source build with no `MERIDIAN_CLERK_PUBLISHABLE_KEY` baked in and no
+    // `CLERK_PUBLISHABLE_KEY` env override degrades to no Clerk plugin at
+    // all; `signin.tsx`'s `SignInGate` catches `initClerk()` failing to find
+    // the plugin and shows a message instead of hanging. `tauri_plugin_http`
+    // is the transport the Clerk plugin patches `fetch` through;
+    // `tauri_plugin_store` gives it persistent session storage so a relaunch
+    // doesn't force re-login.
+    let clerk_key = commands::account::clerk_publishable_key();
+    if !clerk_key.is_empty() {
+        builder = builder
+            .plugin(tauri_plugin_http::init())
+            .plugin(tauri_plugin_store::Builder::new().build())
+            .plugin(
+                tauri_plugin_clerk::ClerkPluginBuilder::new()
+                    .publishable_key(clerk_key)
+                    .with_tauri_store()
+                    .build(),
+            );
+    } else {
+        tracing::info!(
+            "no Clerk publishable key configured — Clerk plugin not registered, setup wizard sign-in unavailable"
+        );
+    }
     // Interactive notifications (UNUserNotificationCenter via the community
     // notifications plugin). Its init HARD-FAILS outside a `.app` bundle, which
     // would crash `tauri dev` / `cargo run` — so it's registered only when
@@ -103,6 +134,9 @@ pub fn run() {
     builder
         .manage(app_state.clone())
         .manage(mlx_manager.clone())
+        // Pending dashboard navigation target (e.g. "/plan") — set by tray-side
+        // openers, pulled by the dashboard shell on mount. See `deep_link`.
+        .manage(deep_link::PendingDeepLink(std::sync::Mutex::new(None)))
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -183,15 +217,21 @@ pub fn run() {
                     let app = tray_handle.app_handle();
                     match &event {
                         TrayIconEvent::Click {
-                            button: MouseButton::Left,
+                            button,
                             button_state: MouseButtonState::Up,
                             rect,
                             ..
                         } => {
-                            tracing::info!("tray.event: Click");
-                            // Hide the hover tooltip on click (popover takes over).
+                            tracing::info!(?button, "tray.event: Click");
+                            // Hide the hover tooltip on ANY click — left (popover takes
+                            // over) or right (native menu takes over). Right-click was
+                            // previously unhandled here, leaving the tooltip stuck
+                            // visible behind the context menu.
                             if let Some(tt) = app.get_webview_window("tray-tooltip") {
                                 let _ = tt.hide();
+                            }
+                            if *button != MouseButton::Left {
+                                return;
                             }
                             if let Some(win) = app.get_webview_window("main") {
                                 let visible = win.is_visible().unwrap_or(false);
@@ -412,11 +452,13 @@ pub fn run() {
                 });
             }
 
-            // Stage + register the bundled backend (daemon + a11y-helper) on the
-            // self-contained .app DMG path. No-op under dev/source (no bundled
-            // Resources/backend) and on launches where the binary is unchanged.
-            // Spawned off the setup hook because the launchd bootout-wait can
-            // take several seconds and must not block tray startup.
+            // Stage + register the bundled daemon on the self-contained .app DMG
+            // path (also retires any leftover a11y-helper agent from an older
+            // install — see backend_install's module docs). No-op under
+            // dev/source (no bundled Resources/backend) and on launches where
+            // the binary is unchanged. Spawned off the setup hook because the
+            // launchd bootout-wait can take several seconds and must not block
+            // tray startup.
             {
                 let backend_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -449,7 +491,11 @@ pub fn run() {
             // No silent auto-install on launch: the DMG update surfaces as an
             // in-app banner (sidebar + popover) that checks on open via the
             // `check_update` command, so the user sees + consents to the update
-            // rather than the app restarting itself underneath them.
+            // rather than the app restarting itself underneath them. The ONE
+            // exception is a release whose manifest declares a minimum
+            // supported version below the running one — that installs
+            // automatically (see update::enforce_minimum_version).
+            update::enforce_minimum_version(app.handle());
 
             Ok(())
         })
@@ -489,11 +535,13 @@ pub fn run() {
             commands::export_diagnostics_bundle,
             commands::get_ticket_parents,
             commands::get_version,
+            commands::get_app_info,
             commands::check_update,
             commands::install_update,
             commands::get_app_icon,
             // DB writes (ported /api/* POSTs/PATCH/DELETE)
             commands::plan_action,
+            commands::plan_dismissed,
             commands::triage_decision,
             commands::triage_ignore,
             commands::apply_ticket_fix,
@@ -520,6 +568,7 @@ pub fn run() {
             commands::cancel_oauth,
             commands::get_oauth_status,
             // OS/window actions
+            commands::take_pending_deep_link,
             commands::open_permission_pane,
             commands::open_external_url,
             commands::quit_app,
@@ -527,16 +576,22 @@ pub fn run() {
             // Setup wizard (first-run, permissions, MLX)
             commands::is_first_run,
             commands::mark_setup_complete,
+            commands::save_account_email,
+            commands::get_account_email,
+            commands::clear_account_email,
             commands::check_accessibility,
             commands::check_screen_recording,
             commands::request_screen_recording,
-            commands::check_input_monitoring,
-            commands::request_input_monitoring,
+            commands::check_notifications,
+            commands::request_notifications,
             commands::get_mlx_status,
             commands::start_mlx_server_cmd,
             commands::download_runtime_cmd,
             commands::prefetch_model_cmd,
             commands::detect_system_specs,
+            // Uninstall wizard (plan + execute; see src/uninstall.rs for the CLI it drives)
+            commands::get_uninstall_plan,
+            commands::execute_uninstall,
             tray_debug,
         ])
         .build(tauri::generate_context!())

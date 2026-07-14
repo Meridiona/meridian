@@ -10,11 +10,10 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { load } from '@/lib/bridge'
+import { invoke, load, subscribe } from '@/lib/bridge'
 import type { RuntimeSettings } from '@/lib/settings'
 import { applyTheme } from '@/lib/theme'
 import HealthBanner from '@/components/HealthBanner'
-import MustFixBanner from '@/components/MustFixBanner'
 import { useTimelineData } from './useTimelineData'
 import { dayString, shiftDay, isPending } from './types'
 import { Toolbar } from './Toolbar'
@@ -65,24 +64,32 @@ export default function MeridianTimelineShell() {
       .catch(() => {})
   }, [])
 
-  // NoticeBar/NotificationBanner live at the root layout, outside this tree,
-  // so their "Open"/"Fix in Tasks" CTAs reach the right modal via window
-  // events instead of props. meridian:open-plan/meridian:open-worklogs are
-  // NotificationBanner's deep_link targets for daily-plan and worklog-ready
-  // notices (src/daily_plan.rs, src/pm_worklog/scheduler.rs) — both used to
-  // be routes before the dashboard folded into this one-pager.
+  // NoticeBar lives at the root layout, outside this tree, so its
+  // "Fix in Tasks" CTA reaches the Tasks modal via a window event instead of
+  // props.
   useEffect(() => {
     const openTasks = () => setActiveModal('tasks')
-    const openPlan = () => setActiveModal('plan')
-    const openWorklogs = () => { setReviewFocusKey(null); setActiveModal('review') }
     window.addEventListener('meridian:open-tasks', openTasks)
-    window.addEventListener('meridian:open-plan', openPlan)
-    window.addEventListener('meridian:open-worklogs', openWorklogs)
-    return () => {
-      window.removeEventListener('meridian:open-tasks', openTasks)
-      window.removeEventListener('meridian:open-plan', openPlan)
-      window.removeEventListener('meridian:open-worklogs', openWorklogs)
+    return () => window.removeEventListener('meridian:open-tasks', openTasks)
+  }, [])
+
+  // Tray-side openers (the daily plan auto-open, notification click-throughs)
+  // steer this window to a specific view. subscribe()'s prime is the pull half
+  // (`take_pending_deep_link` — a fresh window misses any event emitted before
+  // its listener exists, so the tray parks the target in managed state), and
+  // its listener is the push half (`dashboard-navigate`, for a window that is
+  // already open and won't remount). Targets are the former route paths the
+  // notification producers still use as `deep_link`s.
+  useEffect(() => {
+    const navigate = (target: string | null) => {
+      if (target === '/plan') {
+        setActiveModal('plan')
+      } else if (target === '/worklogs') {
+        setReviewFocusKey(null)
+        setActiveModal('review')
+      }
     }
+    return subscribe<string | null>('/deep-link', 'take_pending_deep_link', 'dashboard-navigate', navigate)
   }, [])
 
   // Changing day resets the selected hour (its detail no longer applies).
@@ -107,6 +114,15 @@ export default function MeridianTimelineShell() {
     setSelectedCardKey(cardKey)
   }
 
+  // Closing the planner restarts the daemon's plan-nudge hold-back clock
+  // (fire-and-forget; only meaningful on a day the auto-open fired — the
+  // command's marker guard handles that), so the "Plan your day" reminder
+  // lands an hour after the DISMISSAL, not the auto-open.
+  function closePlan() {
+    invoke('plan_dismissed').catch(() => {})
+    setActiveModal(null)
+  }
+
   // Opens the same swipeable Review dialog the pill/nav use, scoped to just
   // one ticket, instead of the right-side Hour-detail panel. Two callers:
   // a still-drafted card clicked directly on the timeline (TimelineColumn —
@@ -122,10 +138,6 @@ export default function MeridianTimelineShell() {
   return (
     <div className="relative h-[100svh] overflow-hidden flex flex-col" style={{ background: 'var(--win-bg)' }}>
       <HealthBanner />
-      <MustFixBanner
-        onOpenCleanup={() => setActiveModal('cleanup')}
-        hidden={activeModal === 'cleanup'}
-      />
 
       <Toolbar
         day={day}
@@ -184,7 +196,7 @@ export default function MeridianTimelineShell() {
         <SettingsModal onClose={() => setActiveModal(null)} initialSection={settingsSection} />
       )}
       {activeModal === 'report' && <ReportModal onClose={() => setActiveModal(null)} />}
-      {activeModal === 'plan' && <PlanModal onClose={() => setActiveModal(null)} />}
+      {activeModal === 'plan' && <PlanModal onClose={closePlan} />}
       {activeModal === 'tasks' && (
         <TasksModal onClose={() => setActiveModal(null)} onOpenTask={(key, title) => setOpenTask({ key, title })} />
       )}

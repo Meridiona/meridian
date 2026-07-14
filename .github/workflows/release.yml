@@ -51,6 +51,22 @@ jobs:
       # named GITHUB_*, which GitHub reserves). The OAuth App must have "Enable
       # Device Flow" checked.
       MERIDIAN_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
+      # Baked into the release binary at compile time (consumed by option_env! in
+      # tray/src-tauri/src/analytics.rs). PostHog Cloud project API key — a
+      # PUBLIC write-only capture token (no account/read access), safe to embed
+      # in a shipped client. Set the POSTHOG_API_KEY repo secret; absent →
+      # analytics compiles in disabled (see analytics::posthog_api_key).
+      MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+      # Baked into the release binary at compile time (consumed by option_env! in
+      # tray/src-tauri/src/commands/account.rs's DEFAULT_CLERK_PUBLISHABLE_KEY).
+      # Clerk PRODUCTION instance's publishable key (meridiona.com) — a public
+      # identifier, safe to embed in a shipped client. Every packaged install
+      # (this channel and staging alike) uses production Clerk; only a source
+      # checkout (`cargo run`/`tauri dev`) uses the dev instance, via the repo
+      # root .env's CLERK_PUBLISHABLE_KEY — see account.rs's module doc. Set the
+      # CLERK_PUBLISHABLE_KEY_PROD repo secret; absent → sign-in unavailable in
+      # this build (lib.rs skips registering the Clerk plugin with no key).
+      MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
       # Minisign key for the DMG auto-updater: `tauri build` (createUpdaterArtifacts)
       # signs Meridian.app.tar.gz with these so the installed app can verify the
       # update against the pubkey baked in tauri.conf.json. The build FAILS LOUDLY
@@ -60,6 +76,15 @@ jobs:
       #   gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # Tauri's DMG bundler skips the AppleScript step that sets the Finder
+      # window background/icon layout whenever `CI` is set (every GitHub
+      # Actions job sets `CI=true`), assuming CI runners can't drive Finder —
+      # https://github.com/tauri-apps/tauri/issues/1731. GitHub-hosted macOS
+      # runners DO have a full desktop session, so force the decoration step
+      # to run; without this the DMG ships the drag-to-Applications
+      # background.png as an inert file with no .DS_Store, so Finder never
+      # displays it.
+      TAURI_BUNDLER_DMG_IGNORE_CI: "true"
     steps:
       - uses: actions/checkout@v4
         with:

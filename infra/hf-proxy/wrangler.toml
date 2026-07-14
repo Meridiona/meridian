@@ -1,0 +1,36 @@
+# Cloudflare Worker: Hugging Face caching proxy for Meridian model downloads.
+#
+# Reverse-proxies huggingface.co and caches the model weight blobs at Cloudflare's
+# edge so first-run downloads stop stalling/retrying against HF directly. The MLX
+# server points `HF_ENDPOINT` at this Worker's route (see
+# tray/src-tauri/src/mlx_server.rs::hf_endpoint + the mlx-server plist).
+#
+# ── Infra status ─────────────────────────────────────────────────────────────
+#  ✓ Zone `meridiona.com` + this Worker deployed + `hf.meridiona.com` custom
+#    domain wired (DNS + SSL auto-provisioned by the route above). Smoke-tested
+#    live against huggingface.co: MISS then HIT on repeat.
+#  ☐ Enable **Cache Reserve** for the zone (Caching → Cache Reserve, dashboard —
+#    a billed add-on, no API/CLI shortcut). Cloudflare's default edge cache won't
+#    retain the ~1.4 GB llm file (non-Enterprise plans cap cacheable objects at
+#    512 MB); Cache Reserve (R2-backed) has no size cap and is what actually
+#    makes the big file persist in cache. Without it the proxy still works —
+#    verified — it just won't durably cache anything over 512 MB.
+#  ☐ Turn the proxy ON in the app by baking MERIDIAN_HF_ENDPOINT=https://hf.meridiona.com
+#    at build time (option_env! in mlx_server::hf_endpoint) — it ships DISABLED
+#    until this is set per channel.
+#
+# Local iteration:  wrangler dev     Redeploy:  wrangler deploy
+
+name = "meridian-hf-proxy"
+main = "src/index.js"
+compatibility_date = "2026-07-01"
+
+# Bind the Worker to the custom domain that HF_ENDPOINT points at. A custom-domain
+# route also provisions the DNS record + SSL cert on the meridiona.com zone.
+routes = [
+  { pattern = "hf.meridiona.com", custom_domain = true },
+]
+
+# Observability — surface request/cache metrics in the Cloudflare dashboard.
+[observability]
+enabled = true

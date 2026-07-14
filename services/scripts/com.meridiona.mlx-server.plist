@@ -58,6 +58,13 @@
              deprecated/ignored on huggingface_hub 1.x and does not handle Xet). -->
         <key>HF_XET_HIGH_PERFORMANCE</key>
         <string>1</string>
+        <!-- Optional HF caching-proxy override (parity with the tray's in-process
+             MLX supervisor, `mlx_server::hf_endpoint`). The installer injects a
+             whole <key>HF_ENDPOINT</key><string>…</string> block here when
+             MERIDIAN_HF_ENDPOINT is set, or NOTHING when it isn't — never an empty
+             HF_ENDPOINT, which huggingface_hub would treat literally and break
+             downloads. -->
+        {{HF_ENDPOINT_ENTRY}}
         <key>UV_PROJECT_ENVIRONMENT</key>
         <string>{{SERVICES_VENV}}</string>
         <key>MERIDIAN_DB</key>

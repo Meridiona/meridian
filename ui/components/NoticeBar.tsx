@@ -11,7 +11,7 @@ import { useEffect, useState } from 'react'
 import { subscribe } from '@/lib/bridge'
 import type { Notice } from '@/lib/api-types'
 
-// Palette lives in globals.css (--status-*), shared with NotificationBanner.
+// Palette lives in globals.css (--status-*).
 const SEVERITY_STYLES: Record<string, { bg: string; border: string; text: string; dot: string }> = {
   error: {
     bg: 'var(--status-error-bg)',

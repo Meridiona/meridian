@@ -1,0 +1,15 @@
+{
+  "name": "meridian-hf-proxy",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Cloudflare Worker: Hugging Face caching proxy for Meridian model downloads",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "check": "wrangler deploy --dry-run --outdir dist"
+  },
+  "devDependencies": {
+    "wrangler": "^4.105.0"
+  }
+}
