@@ -74,6 +74,14 @@ jobs:
       # latest.json and the mirror no-ops, so the staging channel can't update.
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # Apple Developer ID signing + notarization — identical to release.yml (see
+      # the long note there). Staging signs with the SAME Developer ID cert on
+      # purpose: staging is where we prove the signed/notarized DMG works end to
+      # end (Gatekeeper-clean install, TCC grants surviving an auto-update) before
+      # the same machinery ships to production.
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
       # Tauri's DMG bundler skips the AppleScript step that sets the Finder
       # window background/icon layout whenever `CI` is set (every GitHub
       # Actions job sets `CI=true`), assuming CI runners can't drive Finder —
@@ -146,6 +154,45 @@ jobs:
         # is never committed. Keeps the staging config out of main's tree.
         run: cp .releaserc.staging.json .releaserc.json
 
+      - name: Import Developer ID certificate + notarization key
+        # Identical to release.yml — see the commentary there for the two
+        # non-obvious requirements (set-key-partition-list, and APPLE_API_KEY_PATH
+        # being a file path while the secret holds the .p8 content).
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="${RUNNER_TEMP}/meridian-signing.keychain-db"
+          KEYCHAIN_PW="$(uuidgen)"
+          CERT_P12="${RUNNER_TEMP}/certificate.p12"
+          API_KEY="${RUNNER_TEMP}/apple-api-key.p8"
+
+          security create-keychain -p "${KEYCHAIN_PW}" "${KEYCHAIN}"
+          security set-keychain-settings -lut 3600 "${KEYCHAIN}"
+          security unlock-keychain -p "${KEYCHAIN_PW}" "${KEYCHAIN}"
+
+          printf '%s' "${APPLE_CERTIFICATE}" | base64 --decode > "${CERT_P12}"
+          security import "${CERT_P12}" -k "${KEYCHAIN}" \
+            -P "${APPLE_CERTIFICATE_PASSWORD}" -T /usr/bin/codesign
+          rm -f "${CERT_P12}"
+
+          # Without this, codesign hangs forever on a GUI prompt no one can answer.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "${KEYCHAIN_PW}" "${KEYCHAIN}" >/dev/null
+
+          security list-keychains -d user -s "${KEYCHAIN}" \
+            $(security list-keychains -d user | tr -d '"')
+
+          printf '%s' "${APPLE_API_KEY_CONTENT}" > "${API_KEY}"
+          chmod 600 "${API_KEY}"
+          echo "APPLE_API_KEY_PATH=${API_KEY}" >> "${GITHUB_ENV}"
+
+          security find-identity -v -p codesigning "${KEYCHAIN}" | grep -q "Developer ID Application" \
+            || { echo "::error::Developer ID cert not found in the keychain after import"; exit 1; }
+          echo "✓ Developer ID certificate imported"
+
       - name: semantic-release (staging channel)
         env:
           # PAT to create the tag/prerelease past branch protection; falls back
@@ -167,3 +214,10 @@ jobs:
           # "staging" instead of the "prod" default. Production leaves this unset.
           MERIDIAN_CHANNEL: "staging"
         run: npx semantic-release
+
+      - name: Clean up signing material
+        # Runs even on failure — never leave the cert/key on a runner.
+        if: always()
+        run: |
+          security delete-keychain "${RUNNER_TEMP}/meridian-signing.keychain-db" 2>/dev/null || true
+          rm -f "${RUNNER_TEMP}/apple-api-key.p8" "${RUNNER_TEMP}/certificate.p12"
