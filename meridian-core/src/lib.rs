@@ -24,7 +24,10 @@ pub use sqlx::SqlitePool;
 // ── Internal organization ───────────────────────────────────────────────────
 pub mod adapters;
 pub mod canonical_task;
+
 mod db;
+/// The user's centralised AI-provider choice (which LLM runs their pipeline).
+pub mod llm_provider;
 mod readers;
 mod util;
 
@@ -59,5 +62,7 @@ pub use readers::{
 };
 
 pub use canonical_task::{CanonicalTask, PersonRef, Priority, Provider, StatusCategory, TaskKind};
+
+pub use llm_provider::LlmProvider;
 
 pub use adapters::ProviderAdapter;

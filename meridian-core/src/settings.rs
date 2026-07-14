@@ -48,7 +48,21 @@ pub struct RuntimeSettings {
     pub classification_timeout_s: u64,
     pub agent_auto_floor: f64,
     pub agent_queue_floor: f64,
-    pub llm_prefer_local: bool,
+    // Which AI runs the user's prose LLM calls — the wire form of
+    // `crate::llm_provider::LlmProvider` ("claude" | "codex" | "cursor" | "copilot" |
+    // "local"). Deliberately a `String`, NOT the enum: `load_runtime_settings` falls
+    // back to `Default` on any deserialise error, so a variant written by a newer build
+    // would make an older daemon lose EVERY setting (work hours, poll interval, …), not
+    // just this one. Parsed with `LlmProvider::from_wire`, which degrades an unknown
+    // value to the default and takes nothing else down with it.
+    pub llm_provider: String,
+    // Optional model override within the chosen provider (`--model` for claude/cursor,
+    // `-m` for codex). None → the provider's own default.
+    pub llm_provider_model: Option<String>,
+    // Did the setup wizard actually download the on-device chat model? Drives the
+    // conditional download in the wizard, and the fallback: a failing CLI provider can
+    // only fall back to local if the model is on disk.
+    pub llm_local_chat_model_ready: bool,
     pub llm_budget_pct: f64,
     pub poll_interval_secs: u64,
     pub jira_update_enabled: bool,
@@ -97,7 +111,12 @@ impl Default for RuntimeSettings {
             classification_timeout_s: 120,
             agent_auto_floor: 0.65,
             agent_queue_floor: 0.40,
-            llm_prefer_local: true,
+            // On-device by default — nothing leaves the machine unless the user opts in.
+            llm_provider: crate::llm_provider::LlmProvider::default()
+                .as_str()
+                .to_string(),
+            llm_provider_model: None,
+            llm_local_chat_model_ready: false,
             llm_budget_pct: 0.5,
             poll_interval_secs: 60,
             jira_update_enabled: true,
@@ -262,14 +281,21 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// `MERIDIAN_SETTINGS_PATH` is a PROCESS-global env var and cargo runs tests in
+    /// parallel threads, so every test that points settings resolution at a temp file
+    /// must hold this lock — otherwise one test's file is read by another and the
+    /// failure looks like a bug in the code under test rather than in the harness.
+    /// (Held for the whole test body; `set_var`/`remove_var` inside the guard.)
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Point settings resolution at a temp file for the duration of a test.
-    /// (Serialised by the caller via distinct paths — each test uses its own.)
     fn with_settings_path(path: &std::path::Path) {
         std::env::set_var("MERIDIAN_SETTINGS_PATH", path);
     }
 
     #[test]
     fn read_coerces_nulls_and_write_round_trips_extra_keys() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir =
             std::env::temp_dir().join(format!("meridian-settings-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -294,6 +320,75 @@ mod tests {
         write_settings_value(&v).unwrap();
         let again = read_settings_value();
         assert_eq!(again["_extra"], json!("keep me"));
+
+        std::env::remove_var("MERIDIAN_SETTINGS_PATH");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An existing settings.json predates `llm_provider` entirely — it must upgrade to
+    /// the on-device default without a migration. `#[serde(default)]` buys this, and this
+    /// test is what stops someone removing it.
+    #[test]
+    fn settings_without_llm_provider_default_to_local() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "meridian-settings-upgrade-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        with_settings_path(&path);
+
+        std::fs::write(&path, r#"{"log_level":"DEBUG","poll_interval_secs":30}"#).unwrap();
+
+        let s = load_runtime_settings();
+        assert_eq!(s.llm_provider, "local");
+        assert_eq!(s.llm_provider_model, None);
+        assert!(!s.llm_local_chat_model_ready);
+        assert_eq!(s.log_level, "DEBUG", "the pre-existing settings survive");
+
+        std::env::remove_var("MERIDIAN_SETTINGS_PATH");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The landmine this whole design works around: `load_runtime_settings` falls back to
+    /// `Default` on ANY deserialise error, so a bad field would take every OTHER setting
+    /// with it. Typing `llm_provider` as a `String` means an unrecognised provider (say,
+    /// one written by a newer build) costs the user their provider and nothing else — the
+    /// work hours, poll interval and log level all survive. If someone ever retypes this
+    /// field as the enum, this test fails and tells them why.
+    #[test]
+    fn an_unknown_llm_provider_does_not_reset_every_other_setting() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "meridian-settings-badprovider-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        with_settings_path(&path);
+
+        std::fs::write(
+            &path,
+            r#"{"llm_provider":"gemini","poll_interval_secs":30,"work_hours_start":"07:30"}"#,
+        )
+        .unwrap();
+
+        let s = load_runtime_settings();
+        assert_eq!(
+            s.poll_interval_secs, 30,
+            "an unknown provider must not reset this"
+        );
+        assert_eq!(s.work_hours_start, "07:30", "…nor this");
+        // The raw string survives the load; it is the *resolver* that rejects it.
+        assert_eq!(s.llm_provider, "gemini");
+        assert_eq!(
+            crate::llm_provider::LlmProvider::from_wire(&s.llm_provider),
+            None,
+            "and the resolver degrades it to the default"
+        );
 
         std::env::remove_var("MERIDIAN_SETTINGS_PATH");
         let _ = std::fs::remove_dir_all(&dir);

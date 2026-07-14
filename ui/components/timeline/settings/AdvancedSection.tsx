@@ -115,15 +115,16 @@ export function AdvancedSection({ settings, setSettings, patch, save }: {
 
       <SectionCard>
         <SectionHeader>LLM</SectionHeader>
-        <FieldRow label="Prefer Local Model" description="Use Apple Silicon MLX or local LM Studio when available.">
-          <Switch checked={settings.llm_prefer_local} onCheckedChange={v => patch({ llm_prefer_local: v })} />
-        </FieldRow>
+        {/* "Prefer Local Model" lived here and was read by nobody - the daemon never
+            consulted llm_prefer_local, so toggling and saving it did nothing at all.
+            Which AI runs the pipeline is now settings.llm_provider, chosen in the setup
+            wizard and switchable from the Intelligence section. */}
         <FieldRow label="Local Budget" description="Fraction of GPU headroom to allow.">
           <NumberStepper value={settings.llm_budget_pct} onChange={v => patch({ llm_budget_pct: v })} min={0} max={1} step={0.05} />
         </FieldRow>
         <SaveButton
           status={llmStatus}
-          onClick={() => save({ llm_prefer_local: settings.llm_prefer_local, llm_budget_pct: settings.llm_budget_pct }, setLlmStatus)}
+          onClick={() => save({ llm_budget_pct: settings.llm_budget_pct }, setLlmStatus)}
         />
       </SectionCard>
 

@@ -3,6 +3,8 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 
+import type { LlmProviderId } from './llm-providers'
+
 export interface RuntimeSettings {
   // Appearance
   theme: 'lilac' | 'blush' | 'ink'
@@ -21,11 +23,15 @@ export interface RuntimeSettings {
   agent_auto_floor: number
   agent_queue_floor: number
   // LLM
-  llm_prefer_local: boolean
+  // Which AI runs the prose pipeline. Mirrors RuntimeSettings.llm_provider; the wire
+  // forms are the ids in lib/llm-providers.ts. Validated on write by update_settings.
+  llm_provider: LlmProviderId
+  // Optional model override within the chosen provider. null → the provider's default.
+  llm_provider_model: string | null
+  // Has the on-device chat model been downloaded? Gates the setup wizard's model step
+  // and the fallback: a failing CLI provider can only fall back to local if it is there.
+  llm_local_chat_model_ready: boolean
   llm_budget_pct: number
-  // The setup wizard's on-device model choice (HuggingFace repo id). null →
-  // automatic spec-aware selection. Mirrors RuntimeSettings.llm_model_preference.
-  llm_model_preference: string | null
   // Jira updater
   jira_update_enabled: boolean
   // Notifications — master switch + per-event-type toggles + quiet hours.
@@ -63,9 +69,10 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   classification_timeout_s: 120,
   agent_auto_floor: 0.65,
   agent_queue_floor: 0.40,
-  llm_prefer_local: true,
+  llm_provider: 'local',
+  llm_provider_model: null,
+  llm_local_chat_model_ready: false,
   llm_budget_pct: 0.5,
-  llm_model_preference: null,
   jira_update_enabled: true,
   notifications_enabled: true,
   notify_plan_nudge: true,
