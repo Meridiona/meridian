@@ -155,43 +155,14 @@ jobs:
         run: cp .releaserc.staging.json .releaserc.json
 
       - name: Import Developer ID certificate + notarization key
-        # Identical to release.yml — see the commentary there for the two
-        # non-obvious requirements (set-key-partition-list, and APPLE_API_KEY_PATH
-        # being a file path while the secret holds the .p8 content).
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
-        run: |
-          set -euo pipefail
-          KEYCHAIN="${RUNNER_TEMP}/meridian-signing.keychain-db"
-          KEYCHAIN_PW="$(uuidgen)"
-          CERT_P12="${RUNNER_TEMP}/certificate.p12"
-          API_KEY="${RUNNER_TEMP}/apple-api-key.p8"
-
-          security create-keychain -p "${KEYCHAIN_PW}" "${KEYCHAIN}"
-          security set-keychain-settings -lut 3600 "${KEYCHAIN}"
-          security unlock-keychain -p "${KEYCHAIN_PW}" "${KEYCHAIN}"
-
-          printf '%s' "${APPLE_CERTIFICATE}" | base64 --decode > "${CERT_P12}"
-          security import "${CERT_P12}" -k "${KEYCHAIN}" \
-            -P "${APPLE_CERTIFICATE_PASSWORD}" -T /usr/bin/codesign
-          rm -f "${CERT_P12}"
-
-          # Without this, codesign hangs forever on a GUI prompt no one can answer.
-          security set-key-partition-list -S apple-tool:,apple:,codesign: \
-            -s -k "${KEYCHAIN_PW}" "${KEYCHAIN}" >/dev/null
-
-          security list-keychains -d user -s "${KEYCHAIN}" \
-            $(security list-keychains -d user | tr -d '"')
-
-          printf '%s' "${APPLE_API_KEY_CONTENT}" > "${API_KEY}"
-          chmod 600 "${API_KEY}"
-          echo "APPLE_API_KEY_PATH=${API_KEY}" >> "${GITHUB_ENV}"
-
-          security find-identity -v -p codesigning "${KEYCHAIN}" | grep -q "Developer ID Application" \
-            || { echo "::error::Developer ID cert not found in the keychain after import"; exit 1; }
-          echo "✓ Developer ID certificate imported"
+        # Shared composite action (deduped from release.yml) - see the action's
+        # own comments for the set-key-partition-list / APPLE_API_KEY_PATH
+        # gotchas. Also no-ops gracefully when APPLE_CERTIFICATE is unset.
+        uses: ./.github/actions/import-apple-cert
+        with:
+          apple-certificate: ${{ secrets.APPLE_CERTIFICATE }}
+          apple-certificate-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          apple-api-key-content: ${{ secrets.APPLE_API_KEY_CONTENT }}
 
       - name: semantic-release (staging channel)
         env:
