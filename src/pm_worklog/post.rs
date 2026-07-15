@@ -20,7 +20,10 @@
 // see meridian_core::worklogs::rematch_worklog), so idempotency is scoped
 // per-row (`id`), not per (task, window) — two distinct rows may legitimately
 // share a window and both need their own post. A post failure leaves the row
-// `approved` with `last_post_error` recorded, and the next sweep retries.
+// `approved` with `last_post_error` recorded, and the next sweep retries —
+// UNLESS `is_permanent_provider_error` recognises it as unrecoverable (e.g.
+// Jira's per-issue worklog cap), in which case it's failed terminally instead
+// so it doesn't retry-spam the same doomed post forever.
 
 use anyhow::Result;
 use sqlx::SqlitePool;
@@ -68,6 +71,18 @@ pub async fn post_approved(
         match post_one(pool, config, cfg, &w).await {
             Ok(true) => summary.posted += 1,
             Ok(false) => {} // ineligible/skipped — already recorded
+            Err(e) if is_permanent_provider_error(&e) => {
+                // A retry can never succeed (e.g. Jira's hard per-issue
+                // worklog cap) — leaving it `approved` would spam this same
+                // failure every sweep (60s) forever. Fail it terminally, same
+                // as an empty comment or below-minimum duration.
+                summary.failed += 1;
+                tracing::warn!(
+                    pm_worklog_id = w.id, task = %w.task_key, provider = %w.provider, error = %e,
+                    "approved worklog post failed permanently — will not retry"
+                );
+                db::fail_worklog(pool, w.id, &format!("{e:#}")).await?;
+            }
             Err(e) => {
                 summary.failed += 1;
                 tracing::warn!(
@@ -79,6 +94,19 @@ pub async fn post_approved(
         }
     }
     Ok(summary)
+}
+
+/// True for provider errors a retry can never fix — the sweep should fail the
+/// row terminally instead of leaving it `approved` to be retried (and re-fail
+/// identically) every sweep forever.
+///
+/// - `WORKLOGS_PER_ISSUE_LIMIT_EXCEEDED`: Jira hard-caps a single issue at
+///   10,000 worklogs (HTTP 413). Once an issue hits it, POSTing another
+///   worklog to that issue will fail the same way indefinitely — the only
+///   fix is deleting old worklogs on that issue in Jira itself, which this
+///   daemon has no way to do or wait for.
+fn is_permanent_provider_error(e: &anyhow::Error) -> bool {
+    format!("{e:#}").contains("WORKLOGS_PER_ISSUE_LIMIT_EXCEEDED")
 }
 
 /// Format a stored UTC ISO timestamp as local wall-clock — so the worklog_post
