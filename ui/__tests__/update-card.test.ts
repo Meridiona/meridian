@@ -2,35 +2,35 @@
 import { describe, it, expect } from 'bun:test'
 import { readFileSync } from 'fs'
 
-// Guards the dashboard DMG update banner — the sibling of the tray popover's
+// Guards the dashboard DMG update card — the sibling of the tray popover's
 // `.upd` banner. It must reuse the exact same Rust commands (so both surfaces
 // behave identically), stay consent-based (render only when an update is
-// actually available), degrade safely outside Tauri, and be mounted on every
-// non-setup route via LayoutBanners.
+// actually available), degrade safely outside Tauri, and be mounted in the
+// sidebar (OverviewPanel), not as a full-width header banner.
 
 const uiRoot = import.meta.dir + '/..'
 const readSrc = (rel: string): string => readFileSync(uiRoot + '/' + rel, 'utf8')
 
-// ── LayoutBanners mounts it, gated off the wizard ────────────────────────────
+// ── Mounted in the sidebar overview, not the global header ───────────────────
 
-describe('LayoutBanners mounts the update banner', () => {
-  const src = readSrc('components/LayoutBanners.tsx')
-
-  it('renders <UpdateBanner /> alongside the fault-notice bar', () => {
-    expect(src).toContain("import UpdateBanner from '@/components/UpdateBanner'")
-    expect(src).toContain('<UpdateBanner />')
+describe('UpdateCard placement', () => {
+  it('is mounted in the OverviewPanel sidebar', () => {
+    const src = readSrc('components/timeline/OverviewPanel.tsx')
+    expect(src).toContain("import { UpdateCard } from './UpdateCard'")
+    expect(src).toContain('<UpdateCard />')
   })
 
-  it('gates every banner off the setup wizard (self-contained onboarding shell)', () => {
-    expect(src).toContain("pathname?.startsWith('/setup')")
-    expect(src).toContain('return null')
+  it('is NOT a full-width header banner in LayoutBanners', () => {
+    const src = readSrc('components/LayoutBanners.tsx')
+    expect(src).not.toContain('UpdateCard')
+    expect(src).not.toContain('UpdateBanner')
   })
 })
 
-// ── UpdateBanner reuses the popover's commands and stays consent-based ────────
+// ── Reuses the popover's commands and stays consent-based ────────────────────
 
-describe('UpdateBanner', () => {
-  const src = readSrc('components/UpdateBanner.tsx')
+describe('UpdateCard', () => {
+  const src = readSrc('components/timeline/UpdateCard.tsx')
 
   it('checks via `check_update` and installs via `install_update`', () => {
     expect(src).toContain("invoke<UpdateStatus>('check_update')")
@@ -49,5 +49,10 @@ describe('UpdateBanner', () => {
 
   it('no-ops outside Tauri instead of throwing (browser-safe)', () => {
     expect(src).toContain('if (!isTauri()) return')
+  })
+
+  it('is styled as an accent card (matches the cleanup CTA), not a bar', () => {
+    expect(src).toContain('rounded-xl')
+    expect(src).toContain('var(--accent)')
   })
 })
