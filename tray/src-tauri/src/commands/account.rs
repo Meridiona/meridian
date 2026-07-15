@@ -105,30 +105,23 @@ fn account_path() -> Option<PathBuf> {
 /// so the person record picks up the email right away instead of waiting on
 /// the next scheduled `app_installed`/`daily_usage` capture.
 #[tauri::command]
-#[tracing::instrument(skip(app))]
+// skip `email` too: it's PII and must never land in a span field / log line.
+#[tracing::instrument(skip(app, email))]
 pub async fn save_account_email(app: tauri::AppHandle, email: String) -> Result<(), String> {
     let email = email.trim().to_string();
     if email.is_empty() || !email.contains('@') {
         return Err("save_account_email: not a valid email address".into());
     }
     let path = account_path().ok_or("save_account_email: HOME is not set")?;
-    let dir = path
-        .parent()
-        .ok_or("save_account_email: account path has no parent dir")?;
-    tokio::fs::create_dir_all(dir)
-        .await
-        .map_err(|e| format!("create ~/.meridian: {e}"))?;
-    let json = serde_json::to_string_pretty(&AccountState {
+    // Crash-safe write via the shared helper. It's sync, so run it on the
+    // blocking pool rather than stalling the async command's executor thread.
+    let state = AccountState {
         email: email.clone(),
-    })
-    .map_err(|e| format!("serialise account state: {e}"))?;
-    let tmp = path.with_extension("json.tmp");
-    tokio::fs::write(&tmp, json.as_bytes())
+    };
+    tokio::task::spawn_blocking(move || meridian_core::fs_utils::atomic_write_json(&path, &state))
         .await
-        .map_err(|e| format!("write temp account file: {e}"))?;
-    tokio::fs::rename(&tmp, &path)
-        .await
-        .map_err(|e| format!("replace account file: {e}"))?;
+        .map_err(|e| format!("join account write task: {e}"))?
+        .map_err(|e| format!("persist account file: {e:#}"))?;
     tracing::info!("account: email captured");
     crate::analytics::identify_signed_in_email(&app).await;
     Ok(())

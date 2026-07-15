@@ -444,23 +444,16 @@ pub async fn refresh_if_stale(
             // Only prune when the response was not truncated — otherwise tasks
             // beyond the first page would be wrongly deleted.
             if raw_count < MAX_RESULTS {
-                if !kept.is_empty() {
-                    match prune(pool, &kept).await {
-                        Ok(0) => {}
-                        Ok(p) => tracing::info!(pruned_count = p, "pruned stale linear tasks"),
-                        Err(e) => tracing::warn!(error = %e, "linear prune failed"),
-                    }
-                } else {
-                    // No live tasks at all → delete every linear row without worklog history.
-                    if let Err(e) = sqlx::query(
-                        "DELETE FROM pm_tasks WHERE provider = 'linear' \
-                         AND task_key NOT IN (SELECT DISTINCT task_key FROM pm_worklogs)",
-                    )
-                    .execute(pool)
-                    .await
-                    {
-                        tracing::warn!(error = %e, "linear full-clear failed");
-                    }
+                // `prune` is safe for an empty `kept` slice (no live tasks): it
+                // emits `NOT IN ()` (always true in modern SQLite) so it
+                // full-clears, and deletes dependent `pm_task_embeddings` rows
+                // BEFORE `pm_tasks`. The old empty-keys fallback deleted
+                // `pm_tasks` directly and hit the `pm_task_embeddings.task_key`
+                // foreign key, failing the full-clear.
+                match prune(pool, &kept).await {
+                    Ok(0) => {}
+                    Ok(p) => tracing::info!(pruned_count = p, "pruned stale linear tasks"),
+                    Err(e) => tracing::warn!(error = %e, "linear prune failed"),
                 }
             }
             tracing::info!(upserted_count = n, "linear tasks refreshed");

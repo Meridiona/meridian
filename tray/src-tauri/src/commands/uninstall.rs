@@ -114,7 +114,7 @@ pub async fn get_uninstall_plan() -> UninstallPlan {
             }
         }
         Err(e) => {
-            tracing::warn!(error = %e, "get_uninstall_plan failed");
+            tracing::error!(error = %e, "get_uninstall_plan failed");
             UninstallPlan {
                 error: Some(e),
                 ..Default::default()
@@ -168,7 +168,7 @@ pub async fn execute_uninstall(
             })
         }
         Err(e) => {
-            tracing::warn!(error = %e, "execute_uninstall failed");
+            tracing::error!(error = %e, "execute_uninstall failed");
             Err(e)
         }
     }

@@ -827,12 +827,12 @@ pub async fn auto_upgrade_runtime(manager: &SharedMlxManager) {
     {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
-            tracing::warn!(error = %e, "mlx: runtime upgrade download failed — keeping current runtime");
+            tracing::error!(error = %e, "mlx: runtime upgrade download failed — keeping current runtime");
             let _ = tokio::fs::remove_dir_all(staging_dir()).await;
             return;
         }
         Err(_) => {
-            tracing::warn!(
+            tracing::error!(
                 secs = RUNTIME_DOWNLOAD_TIMEOUT.as_secs(),
                 "mlx: runtime upgrade download timed out — keeping current runtime"
             );
@@ -873,7 +873,7 @@ pub async fn auto_upgrade_runtime(manager: &SharedMlxManager) {
             }
         }
         Err(e) => {
-            tracing::warn!(error = %e, "mlx: post-upgrade restart failed — supervise will retry")
+            tracing::error!(error = %e, "mlx: post-upgrade restart failed — supervise will retry")
         }
     }
 }

@@ -96,13 +96,13 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
 
     tracing::info!(hash = %bundled_hash, "backend_install: installing bundled backend");
     if let Err(e) = install(&backend, &home).await {
-        tracing::warn!(error = %e, "backend_install: install failed — will retry next launch");
+        tracing::error!(error = %e, "backend_install: install failed — will retry next launch");
         return;
     }
 
     // Persist the marker only on full success so a partial install retries.
     if let Err(e) = tokio::fs::write(&marker, &bundled_hash).await {
-        tracing::warn!(error = %e, "backend_install: could not write version marker");
+        tracing::error!(error = %e, "backend_install: could not write version marker");
     }
     tracing::info!("backend_install: backend installed");
 }
