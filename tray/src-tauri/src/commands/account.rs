@@ -106,7 +106,8 @@ fn account_path() -> Option<PathBuf> {
 /// the next scheduled `app_installed`/`daily_usage` capture.
 #[tauri::command]
 // skip `email` too: it's PII and must never land in a span field / log line.
-#[tracing::instrument(skip(app, email))]
+// `err` records the failure + marks the span status ERROR on the `Err` path.
+#[tracing::instrument(skip(app, email), err)]
 pub async fn save_account_email(app: tauri::AppHandle, email: String) -> Result<(), String> {
     let email = email.trim().to_string();
     if email.is_empty() || !email.contains('@') {

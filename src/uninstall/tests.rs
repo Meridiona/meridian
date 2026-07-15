@@ -1,8 +1,13 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //! Unit tests for `meridian uninstall`, split out of [`super`] to keep that
 //! file under the 500-line guideline.
+//!
+//! Each test uses a `tempfile::TempDir` for its scratch space so cleanup runs
+//! via `Drop` — including during panic unwinding, so a failing assertion never
+//! leaks a directory under `/tmp`.
 
 use super::*;
+use tempfile::TempDir;
 
 #[test]
 fn label_matches_only_meridiona_plists() {
@@ -46,9 +51,8 @@ fn purge_flag_is_not_implied_by_remove_data_plus_remove_runtime() {
 
 #[test]
 fn enumerates_only_meridiona_agents() {
-    let dir = std::env::temp_dir().join("meridian-uninstall-test-agents");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
     for f in [
         "com.meridiona.daemon.plist",
         "com.meridiona.a11y-helper.plist",
@@ -57,7 +61,7 @@ fn enumerates_only_meridiona_agents() {
     ] {
         std::fs::write(dir.join(f), "x").unwrap();
     }
-    let found: Vec<String> = meridiona_agent_plists(&dir)
+    let found: Vec<String> = meridiona_agent_plists(dir)
         .into_iter()
         .map(|(l, _)| l)
         .collect();
@@ -68,14 +72,14 @@ fn enumerates_only_meridiona_agents() {
             "com.meridiona.daemon".to_string()
         ]
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn missing_launch_agents_dir_is_empty() {
-    let dir = std::env::temp_dir().join("meridian-uninstall-test-nope-xyz");
-    let _ = std::fs::remove_dir_all(&dir);
-    assert!(meridiona_agent_plists(&dir).is_empty());
+    let tmp = TempDir::new().unwrap();
+    // A path *inside* the temp dir that was never created.
+    let missing = tmp.path().join("does-not-exist");
+    assert!(meridiona_agent_plists(&missing).is_empty());
 }
 
 /// `data_items`/`runtime_items` must only list entries that actually exist
@@ -83,19 +87,15 @@ fn missing_launch_agents_dir_is_empty() {
 /// stay disjoint from each other so the two checkboxes don't double-count.
 #[test]
 fn data_and_runtime_items_only_list_existing_entries_and_stay_disjoint() {
-    let dir = std::env::temp_dir().join(format!(
-        "meridian-uninstall-test-items-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
     std::fs::write(dir.join(".env"), "x").unwrap();
     std::fs::write(dir.join("meridian.db"), "x").unwrap();
     std::fs::create_dir_all(dir.join("runtime")).unwrap();
     // "settings.json" and "mlx-server-venv" deliberately absent.
 
-    let data = data_items(&dir);
-    let runtime = runtime_items(&dir);
+    let data = data_items(dir);
+    let runtime = runtime_items(dir);
 
     assert!(data.contains(&dir.join(".env")));
     assert!(data.contains(&dir.join("meridian.db")));
@@ -109,40 +109,29 @@ fn data_and_runtime_items_only_list_existing_entries_and_stay_disjoint() {
             "data and runtime item lists must be disjoint: {p:?}"
         );
     }
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `model_items` only returns catalog entries that exist on disk, and never
 /// invents a path for a model that isn't in [`MODEL_CATALOG`].
 #[test]
 fn model_items_filters_to_existing_catalog_dirs() {
-    let home = std::env::temp_dir().join(format!(
-        "meridian-uninstall-test-models-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&home);
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
     let hub = home.join(".cache/huggingface/hub");
     std::fs::create_dir_all(&hub).unwrap();
     std::fs::create_dir_all(hub.join("models--mlx-community--Qwen3.5-2B-OptiQ-4bit")).unwrap();
     // A non-Meridian model the user downloaded for another tool — must be ignored.
     std::fs::create_dir_all(hub.join("models--some-other-org--unrelated-model")).unwrap();
 
-    let found = model_items(&home);
+    let found = model_items(home);
     assert_eq!(found.len(), 1);
     assert!(found[0].ends_with("models--mlx-community--Qwen3.5-2B-OptiQ-4bit"));
-
-    std::fs::remove_dir_all(&home).ok();
 }
 
 #[test]
 fn remove_path_handles_files_and_directories() {
-    let dir = std::env::temp_dir().join(format!(
-        "meridian-uninstall-test-remove-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
 
     let file = dir.join("a-file");
     std::fs::write(&file, "x").unwrap();
@@ -159,6 +148,4 @@ fn remove_path_handles_files_and_directories() {
         remove_path(&dir.join("missing")).unwrap_err().kind(),
         std::io::ErrorKind::NotFound
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }

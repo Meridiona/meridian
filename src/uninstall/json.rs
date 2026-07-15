@@ -76,6 +76,10 @@ pub(super) fn run_json(plan: &Plan) {
     report.executed = true;
     let uid = uid_str();
     for (label, plist) in &plan.agents {
+        // `bootout` can legitimately return non-zero (the agent isn't currently
+        // loaded); it's best-effort, so its exit status isn't an error. The
+        // meaningful outcome is whether the plist itself was removed, tracked
+        // via `report.removed`/`report.errors` below.
         let _ = std::process::Command::new("launchctl")
             .args(["bootout", &format!("gui/{uid}/{label}")])
             .status();

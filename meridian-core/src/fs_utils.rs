@@ -17,6 +17,7 @@
 
 use anyhow::Context;
 use serde::Serialize;
+use std::io::Write;
 use std::path::Path;
 
 /// Crash-safely persist `value` as pretty (2-space) JSON to `path`.
@@ -32,8 +33,18 @@ pub fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> anyhow::Result
     let json = serde_json::to_string_pretty(value).context("serialising JSON")?;
     // Temp file in the SAME directory so the rename is atomic (same filesystem).
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json.as_bytes())
-        .with_context(|| format!("writing temp file {}", tmp.display()))?;
+    {
+        let mut f = std::fs::File::create(&tmp)
+            .with_context(|| format!("creating temp file {}", tmp.display()))?;
+        f.write_all(json.as_bytes())
+            .with_context(|| format!("writing temp file {}", tmp.display()))?;
+        // fsync the data to disk BEFORE the rename. `rename` only makes the
+        // directory entry swap atomic; without this flush, a crash/power-loss
+        // right after the rename could persist the new dir entry while the data
+        // blocks are still buffered, leaving `path` empty or torn.
+        f.sync_all()
+            .with_context(|| format!("flushing temp file {}", tmp.display()))?;
+    }
     std::fs::rename(&tmp, path)
         .with_context(|| format!("atomically replacing {}", path.display()))?;
     Ok(())
