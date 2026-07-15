@@ -278,7 +278,11 @@ fn run_human(plan: &Plan) {
         );
     }
 
-    if plan.nothing_to_do() {
+    // `--purge` must still wipe ~/.meridian even when none of the itemized
+    // scopes matched — e.g. the directory holds only files the catalog doesn't
+    // name — so don't short-circuit "nothing to do" in that case.
+    let purge_pending = flags.purge && plan.meridian_dir.is_dir();
+    if plan.nothing_to_do() && !purge_pending {
         println!("\nNothing to remove - Meridian is not installed here.");
         return;
     }
@@ -294,11 +298,23 @@ fn run_human(plan: &Plan) {
     // Execute.
     let uid = uid_str();
     for (label, plist) in &plan.agents {
+        // `bootout` can legitimately return non-zero (the agent isn't currently
+        // loaded); it's best-effort, so its exit status isn't an error here.
         let _ = std::process::Command::new("launchctl")
             .args(["bootout", &format!("gui/{uid}/{label}")])
             .status();
-        let _ = std::fs::remove_file(plist);
-        println!("✓ removed agent  {label}");
+        // But don't claim "✓ removed" if the plist deletion actually failed.
+        match std::fs::remove_file(plist) {
+            Ok(()) => println!("✓ removed agent  {label}"),
+            // Already gone (a prior partial uninstall) — still booted out above.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                println!("✓ removed agent  {label}")
+            }
+            Err(e) => eprintln!(
+                "⚠ could not remove agent {label} plist {}: {e}",
+                plist.display()
+            ),
+        }
     }
     for f in &plan.staged_binaries {
         remove_path_reporting(f);
