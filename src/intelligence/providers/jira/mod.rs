@@ -358,10 +358,24 @@ const BACKFILL_BATCH_SIZE: usize = 50;
 /// title can never appear on the timeline: `fetch`'s JQL will never surface
 /// it again, no matter how many times the regular sync runs.
 ///
-/// Cheap when there's nothing to do — the DB check runs unconditionally
-/// (every call to [`refresh_if_stale`]) but only reaches the network when it
-/// actually finds a gap, which is rare once the backlog is caught up.
-async fn backfill_worklogged(pool: &SqlitePool, jira: &JiraConfig) -> Result<usize> {
+/// Called only from inside a real (cache-stale) sync cycle in
+/// [`refresh_if_stale`], so it reuses that cycle's already-resolved `ctx` and
+/// `start_date_field` rather than re-resolving auth + re-discovering the field
+/// itself. This is deliberate: it must **not** run on every tick.
+///
+/// A permanently-deleted/moved Jira ticket that still has `pm_worklogs` rows
+/// never comes back from `fetch_by_keys`, so it stays in the `missing` set. By
+/// gating this behind the [`SYNC_INTERVAL_MINS`] freshness check, a dead ticket
+/// is re-attempted at most once per sync cycle (not once per poll tick), which
+/// bounds the wasted network calls to the same cadence as the regular sync —
+/// no rate-limit hazard. (A dedicated tombstone to stop re-fetching a confirmed
+/// dead ticket entirely would need its own column and is left as follow-up.)
+async fn backfill_worklogged(
+    pool: &SqlitePool,
+    jira: &JiraConfig,
+    ctx: &JiraReqCtx,
+    start_date_field: Option<&str>,
+) -> Result<usize> {
     let missing: Vec<(String,)> = sqlx::query_as(
         "SELECT DISTINCT task_key FROM pm_worklogs
          WHERE provider = 'jira' AND task_key NOT IN
@@ -375,18 +389,13 @@ async fn backfill_worklogged(pool: &SqlitePool, jira: &JiraConfig) -> Result<usi
     }
     let keys: Vec<String> = missing.into_iter().map(|(k,)| k).collect();
 
-    let ctx = crate::intelligence::oauth::jira::resolve(jira)
-        .await
-        .context("resolving Jira auth for worklog backfill")?;
-    let start_date_field = discover_start_date_field(&ctx).await;
-
     let mut backfilled = 0usize;
     for batch in keys.chunks(BACKFILL_BATCH_SIZE) {
-        let issues = fetch_by_keys(&ctx, start_date_field.as_deref(), batch)
+        let issues = fetch_by_keys(ctx, start_date_field, batch)
             .await
             .context("backfilling jira worklogged tasks")?;
         backfilled += issues.len();
-        upsert(pool, &issues, jira, &ctx, start_date_field.as_deref()).await?;
+        upsert(pool, &issues, jira, ctx, start_date_field).await?;
     }
     if backfilled > 0 {
         tracing::info!(
@@ -404,10 +413,6 @@ async fn backfill_worklogged(pool: &SqlitePool, jira: &JiraConfig) -> Result<usi
 
 #[tracing::instrument(skip(pool, jira))]
 pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Option<Vec<String>>> {
-    if let Err(e) = backfill_worklogged(pool, jira).await {
-        tracing::warn!(error = %e, "jira worklog backfill failed — will retry next sync");
-    }
-
     let threshold = format!("-{SYNC_INTERVAL_MINS} minutes");
     let (is_fresh,): (i64,) = sqlx::query_as(
         "SELECT EXISTS(
@@ -460,6 +465,15 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
     let start_date_field = discover_start_date_field(&ctx).await;
     if let Some(ref id) = start_date_field {
         tracing::debug!(field_id = %id, "discovered jira start date field");
+    }
+
+    // Backfill worklogged-but-missing tickets INSIDE the stale sync cycle only,
+    // reusing the auth + field resolved just above. Running this on every tick
+    // (as it used to, before the freshness check) meant a permanently-deleted
+    // ticket triggered auth + field-discovery + fetch on every poll, a
+    // rate-limit hazard. Best-effort: a failure never blocks the main sync.
+    if let Err(e) = backfill_worklogged(pool, jira, &ctx, start_date_field.as_deref()).await {
+        tracing::warn!(error = %e, "jira worklog backfill failed — will retry next sync");
     }
 
     match fetch(&ctx, start_date_field.as_deref()).await {
