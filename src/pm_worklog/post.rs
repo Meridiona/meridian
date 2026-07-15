@@ -25,7 +25,7 @@
 // Jira's per-issue worklog cap), in which case it's failed terminally instead
 // so it doesn't retry-spam the same doomed post forever.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use sqlx::SqlitePool;
 use tokio::sync::watch;
 
@@ -81,7 +81,9 @@ pub async fn post_approved(
                     pm_worklog_id = w.id, task = %w.task_key, provider = %w.provider, error = %e,
                     "approved worklog post failed permanently — will not retry"
                 );
-                db::fail_worklog(pool, w.id, &format!("{e:#}")).await?;
+                db::fail_worklog(pool, w.id, &format!("{e:#}"))
+                    .await
+                    .context("marking worklog failed permanently")?;
             }
             Err(e) => {
                 summary.failed += 1;
@@ -89,7 +91,9 @@ pub async fn post_approved(
                     pm_worklog_id = w.id, task = %w.task_key, provider = %w.provider, error = %e,
                     "approved worklog post failed — left approved for retry"
                 );
-                db::mark_post_failed(pool, w.id, &format!("{e:#}")).await?;
+                db::mark_post_failed(pool, w.id, &format!("{e:#}"))
+                    .await
+                    .context("marking worklog post failed for retry")?;
             }
         }
     }

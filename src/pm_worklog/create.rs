@@ -137,7 +137,12 @@ async fn jira_create(
         .first()
         .context("Jira create needs a project key (none configured)")?;
     let ctx = jira_resolve(jira).await.context("resolving Jira auth")?;
-    let client = reqwest::Client::new();
+    // Bound the up-to-3 sequential calls (type check, self-assign, create) so a
+    // slow/unresponsive tracker can't hang the approved-proposal sweep.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .context("building Jira create HTTP client")?;
 
     let wanted = norm_issue_type(issue_type);
     let has_bug = wanted != "Bug" || jira_has_issue_type(&ctx, &client, project, "Bug").await?;
@@ -358,7 +363,12 @@ async fn azure_create(
         "Basic {}",
         base64::engine::general_purpose::STANDARD.encode(format!(":{}", cfg.pat).as_bytes())
     );
-    let client = reqwest::Client::new();
+    // Bound the up-to-3 sequential calls so a slow/unresponsive tracker can't
+    // hang the approved-proposal sweep.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .context("building Azure DevOps create HTTP client")?;
 
     let wanted = norm_issue_type(issue_type);
     let has_bug = wanted != "Bug" || azure_has_work_item_type(cfg, &client, &auth, "Bug").await?;

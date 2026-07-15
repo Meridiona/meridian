@@ -15,7 +15,7 @@ const proposal = {
   id: 2, task_key: 'MER-NEW-1', task_title: 'Add retry with backoff to hf-proxy fetch', task_url: null,
   provider: 'jira', window_start: '2026-07-09T10:00:00Z', window_end: '2026-07-09T11:00:00Z',
   state: 'proposed', confidence: 0.71, coverage: 0.55, time_spent_seconds: 1800,
-  summary: 'Session matched no existing ticket — proposing a new one from the work observed.',
+  summary: 'Session matched no existing ticket - proposing a new one from the work observed.',
   bullets: [], next_steps: ['Confirm scope with the team'], risk_flags: [], reasoning: 'Keyword match on "hf-proxy" and "retry" across 3 sessions.',
   posted_worklog_id: null, last_post_error: null, edited: false, is_proposed: true, issue_type: 'Task',
 }
@@ -25,7 +25,7 @@ const rejected = {
   provider: 'jira', window_start: '2026-07-09T09:00:00Z', window_end: '2026-07-09T09:30:00Z',
   state: 'dismissed', confidence: 0.4, coverage: 0.3, time_spent_seconds: 900,
   summary: 'Low-confidence match, dismissed by reviewer.',
-  bullets: [], next_steps: [], risk_flags: [], reasoning: 'Weak signal — window titles mostly idle.',
+  bullets: [], next_steps: [], risk_flags: [], reasoning: 'Weak signal - window titles mostly idle.',
   posted_worklog_id: null, last_post_error: null, edited: false, issue_type: 'Task',
 }
 

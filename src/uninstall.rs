@@ -21,7 +21,9 @@
 //!   downloaded separately for another tool).
 //! - `--purge` is shorthand for all three, and additionally removes `~/.meridian`
 //!   as a single `rm -rf` (rather than the itemized list) so nothing new added to
-//!   that directory since is left behind.
+//!   that directory since is left behind. The full `rm -rf` fires on `--purge`
+//!   **only** — not on `--remove-data --remove-runtime`, which stay scoped to the
+//!   itemized lists the plan shows.
 //!
 //! `--json` emits a single machine-readable JSON line instead of the human plan/
 //! result text — the tray's uninstall-wizard commands parse this to drive its
@@ -33,6 +35,8 @@
 //! invoked by `tray/src-tauri/src/commands/uninstall.rs` (the in-app wizard).
 //!
 //! # Related
+//! - [`json`] — the `--json` reporting path (`JsonReport` + `run_json`), split
+//!   out of this file to keep it under the 500-line guideline.
 //! - `tray/src-tauri/src/backend_install.rs` — the install side this undoes
 //!   (same agent labels + staged paths; small intentional duplication across the
 //!   crate boundary — the daemon crate can't depend on the tray).
@@ -40,6 +44,10 @@
 //!   commands, both of which shell out to this binary.
 //! - `scripts/uninstall-*.sh` / `scripts/meridian-cli.sh` — the per-service shell
 //!   uninstallers (npm/dev path); `MODEL_CATALOG` mirrors the bash allowlist.
+
+mod json;
+#[cfg(test)]
+mod tests;
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -96,143 +104,172 @@ impl Item {
     }
 }
 
-/// The `--json` output shape — a full plan (dry-run) or a full result
-/// (executed), depending on `executed`. The tray's uninstall commands are the
-/// only consumers; keep this contract in sync with
-/// `tray/src-tauri/src/commands/uninstall.rs`.
-#[derive(Debug, Serialize, Default)]
-struct JsonReport {
-    dry_run: bool,
-    executed: bool,
+/// The scope + mode flags parsed from `argv`. Grouped into one struct so the
+/// plan builder and both output paths take a single value rather than a long
+/// argument list (Clippy's seven-argument limit).
+#[derive(Debug, Clone, Copy)]
+struct Flags {
+    /// `--purge`: remove everything, then `rm -rf ~/.meridian` wholesale.
+    purge: bool,
     remove_data: bool,
     remove_runtime: bool,
     remove_models: bool,
-    agents: Vec<Item>,
-    staged_binaries: Vec<Item>,
-    data: Vec<Item>,
-    runtime: Vec<Item>,
-    models: Vec<Item>,
-    /// Paths successfully removed (only populated when `executed`).
-    removed: Vec<String>,
-    /// Non-fatal removal failures, `"<path>: <error>"` (only when `executed`).
-    errors: Vec<String>,
+    dry_run: bool,
+    yes: bool,
+    json: bool,
 }
 
-/// Run `meridian uninstall`. User-facing CLI (prints a plan, confirms on a TTY,
-/// unless `--json` is passed — see the module doc for the full flag list).
-pub fn run(args: &[String]) {
-    let purge = args.iter().any(|a| a == "--purge");
-    let remove_data = purge || args.iter().any(|a| a == "--remove-data");
-    let remove_runtime = purge || args.iter().any(|a| a == "--remove-runtime");
-    let remove_models = purge || args.iter().any(|a| a == "--remove-models");
-    let dry_run = args.iter().any(|a| a == "--dry-run");
-    let yes = args.iter().any(|a| a == "--yes" || a == "-y");
-    let json = args.iter().any(|a| a == "--json");
-
-    let home = match std::env::var("HOME") {
-        Ok(h) => PathBuf::from(h),
-        Err(_) => {
-            if json {
-                println!(r#"{{"error":"HOME not set — cannot locate the install"}}"#);
-            } else {
-                eprintln!("✗ HOME not set — cannot locate the install");
-            }
-            std::process::exit(1);
+impl Flags {
+    fn from_args(args: &[String]) -> Self {
+        let purge = args.iter().any(|a| a == "--purge");
+        Self {
+            purge,
+            remove_data: purge || args.iter().any(|a| a == "--remove-data"),
+            remove_runtime: purge || args.iter().any(|a| a == "--remove-runtime"),
+            remove_models: purge || args.iter().any(|a| a == "--remove-models"),
+            dry_run: args.iter().any(|a| a == "--dry-run"),
+            yes: args.iter().any(|a| a == "--yes" || a == "-y"),
+            json: args.iter().any(|a| a == "--json"),
         }
-    };
-    let meridian_dir = home.join(".meridian");
+    }
+}
 
-    let agents = meridiona_agent_plists(&home.join("Library/LaunchAgents"));
-    let staged_binaries: Vec<PathBuf> = [
-        // Staged native binaries (DMG path).
-        ".meridian/bin/meridian",
-        ".meridian/bin/meridian-a11y-helper",
-        ".meridian/backend-version",
-        // CLI on PATH — the DMG symlink and the npm node-wrapper both land here;
-        // "remove the CLI" (SETUP.md) means clearing whichever is present.
-        ".local/bin/meridian",
-        ".local/bin/meridian-daemon",
-    ]
-    .iter()
-    .map(|r| home.join(r))
-    // symlink_metadata so a dangling symlink (target already gone) still counts.
-    .filter(|p| p.symlink_metadata().is_ok())
-    .collect();
+/// A fully-computed uninstall plan: the resolved paths for each scope plus the
+/// flags that produced them. Built once in [`run`], then consumed by either the
+/// human-text path or [`json::run_json`], so both branches see identical data.
+struct Plan {
+    meridian_dir: PathBuf,
+    /// `(label, plist path)` for each Meridian launchd agent found.
+    agents: Vec<(String, PathBuf)>,
+    staged_binaries: Vec<PathBuf>,
+    data: Vec<PathBuf>,
+    runtime: Vec<PathBuf>,
+    models: Vec<PathBuf>,
+    flags: Flags,
+}
 
-    let data = if remove_data {
-        data_items(&meridian_dir)
-    } else {
-        Vec::new()
-    };
-    let runtime = if remove_runtime {
-        runtime_items(&meridian_dir)
-    } else {
-        Vec::new()
-    };
-    let models = if remove_models {
-        model_items(&home)
-    } else {
-        Vec::new()
-    };
+impl Plan {
+    /// Scan the filesystem and build the plan for the given `home` + `flags`.
+    fn build(home: PathBuf, flags: Flags) -> Self {
+        let meridian_dir = home.join(".meridian");
 
-    let nothing_to_do = agents.is_empty()
-        && staged_binaries.is_empty()
-        && data.is_empty()
-        && runtime.is_empty()
-        && models.is_empty();
+        let agents = meridiona_agent_plists(&home.join("Library/LaunchAgents"));
+        let staged_binaries: Vec<PathBuf> = [
+            // Staged native binaries (DMG path).
+            ".meridian/bin/meridian",
+            ".meridian/bin/meridian-a11y-helper",
+            ".meridian/backend-version",
+            // CLI on PATH — the DMG symlink and the npm node-wrapper both land here;
+            // "remove the CLI" (SETUP.md) means clearing whichever is present.
+            ".local/bin/meridian",
+            ".local/bin/meridian-daemon",
+        ]
+        .iter()
+        .map(|r| home.join(r))
+        // symlink_metadata so a dangling symlink (target already gone) still counts.
+        .filter(|p| p.symlink_metadata().is_ok())
+        .collect();
 
-    if json {
-        run_json(
-            &home,
-            &meridian_dir,
+        let data = if flags.remove_data {
+            data_items(&meridian_dir)
+        } else {
+            Vec::new()
+        };
+        let runtime = if flags.remove_runtime {
+            runtime_items(&meridian_dir)
+        } else {
+            Vec::new()
+        };
+        let models = if flags.remove_models {
+            model_items(&home)
+        } else {
+            Vec::new()
+        };
+
+        Self {
+            meridian_dir,
             agents,
             staged_binaries,
             data,
             runtime,
             models,
-            purge,
-            remove_data,
-            remove_runtime,
-            remove_models,
-            dry_run,
-            yes,
-        );
+            flags,
+        }
+    }
+
+    /// True when the scan found no installed artifacts and no in-scope data.
+    fn nothing_to_do(&self) -> bool {
+        self.agents.is_empty()
+            && self.staged_binaries.is_empty()
+            && self.data.is_empty()
+            && self.runtime.is_empty()
+            && self.models.is_empty()
+    }
+}
+
+/// Run `meridian uninstall`. User-facing CLI (prints a plan, confirms on a TTY,
+/// unless `--json` is passed — see the module doc for the full flag list).
+pub fn run(args: &[String]) {
+    let flags = Flags::from_args(args);
+
+    let home = match std::env::var("HOME") {
+        Ok(h) => PathBuf::from(h),
+        Err(_) => {
+            if flags.json {
+                println!(r#"{{"error":"HOME not set - cannot locate the install"}}"#);
+            } else {
+                eprintln!("✗ HOME not set - cannot locate the install");
+            }
+            std::process::exit(1);
+        }
+    };
+
+    let plan = Plan::build(home, flags);
+
+    if flags.json {
+        json::run_json(&plan);
         return;
     }
 
-    // Print the plan (human text).
-    println!("meridian uninstall — plan:");
-    for (label, _) in &agents {
+    run_human(&plan);
+}
+
+/// The human-text path: print the plan, confirm on a TTY, then execute.
+fn run_human(plan: &Plan) {
+    let flags = plan.flags;
+
+    println!("meridian uninstall - plan:");
+    for (label, _) in &plan.agents {
         println!("  • stop + remove launchd agent  {label}");
     }
-    for f in &staged_binaries {
+    for f in &plan.staged_binaries {
         println!("  • remove  {}", f.display());
     }
-    if remove_data {
+    if flags.remove_data {
         println!("  • remove Meridian data:");
-        for f in &data {
+        for f in &plan.data {
             println!("      {}", f.display());
         }
     } else {
         println!(
             "  keeping your data: {0}/.env, meridian.db, oauth/, settings.json, logs/ (pass --remove-data or --purge to remove)",
-            meridian_dir.display()
+            plan.meridian_dir.display()
         );
     }
-    if remove_runtime {
+    if flags.remove_runtime {
         println!("  • remove the Python/MLX runtime:");
-        for f in &runtime {
+        for f in &plan.runtime {
             println!("      {}", f.display());
         }
     } else {
         println!(
             "  keeping the downloaded MLX runtime: {0}/runtime/ (pass --remove-runtime or --purge to remove)",
-            meridian_dir.display()
+            plan.meridian_dir.display()
         );
     }
-    if remove_models {
+    if flags.remove_models {
         println!("  • remove downloaded MLX models from the HuggingFace cache:");
-        for f in &models {
+        for f in &plan.models {
             println!("      {}", f.display());
         }
     } else {
@@ -241,139 +278,63 @@ pub fn run(args: &[String]) {
         );
     }
 
-    if nothing_to_do {
-        println!("\nNothing to remove — Meridian is not installed here.");
+    if plan.nothing_to_do() {
+        println!("\nNothing to remove - Meridian is not installed here.");
         return;
     }
-    if dry_run {
-        println!("\n(dry run — nothing changed)");
+    if flags.dry_run {
+        println!("\n(dry run - nothing changed)");
         return;
     }
-    if !yes && !confirm("\nProceed?") {
-        println!("Aborted — nothing changed.");
+    if !flags.yes && !confirm("\nProceed?") {
+        println!("Aborted - nothing changed.");
         return;
     }
 
     // Execute.
     let uid = uid_str();
-    for (label, plist) in &agents {
+    for (label, plist) in &plan.agents {
         let _ = std::process::Command::new("launchctl")
             .args(["bootout", &format!("gui/{uid}/{label}")])
             .status();
         let _ = std::fs::remove_file(plist);
         println!("✓ removed agent  {label}");
     }
-    for f in &staged_binaries {
+    for f in &plan.staged_binaries {
         remove_path_reporting(f);
     }
-    for f in &data {
+    for f in &plan.data {
         remove_path_reporting(f);
     }
-    for f in &runtime {
+    for f in &plan.runtime {
         remove_path_reporting(f);
     }
-    for f in &models {
+    for f in &plan.models {
         remove_path_reporting(f);
     }
     // `--purge` also nukes anything else left under ~/.meridian that the
     // itemized lists above didn't name, so a future addition to that directory
-    // is never orphaned.
-    if remove_data && remove_runtime && meridian_dir.is_dir() {
-        match std::fs::remove_dir_all(&meridian_dir) {
-            Ok(()) => println!("✓ purged  {}", meridian_dir.display()),
+    // is never orphaned. This wholesale `rm -rf` fires on `--purge` ONLY — the
+    // itemized `--remove-data`/`--remove-runtime` scopes must not silently take
+    // out the rest of ~/.meridian (e.g. an unrelated sibling file the plan
+    // never listed).
+    if flags.purge && plan.meridian_dir.is_dir() {
+        match std::fs::remove_dir_all(&plan.meridian_dir) {
+            Ok(()) => println!("✓ purged  {}", plan.meridian_dir.display()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => eprintln!("⚠ could not purge {}: {e}", meridian_dir.display()),
+            Err(e) => eprintln!("⚠ could not purge {}: {e}", plan.meridian_dir.display()),
         }
     }
 
     println!(
         "\nDone. If the Meridian menubar app is still running, quit it (or drag \
-         Meridian.app to the Trash) — the MLX server is its child and exits with it."
+         Meridian.app to the Trash) - the MLX server is its child and exits with it."
     );
     println!(
         "\nNote: deleting or uninstalling does NOT revoke the Accessibility / \
-         Screen Recording / Input Monitoring grants in System Settings — macOS \
+         Screen Recording / Input Monitoring grants in System Settings - macOS \
          keeps that entry until you remove it there yourself."
     );
-}
-
-/// The `--json` path: same computation as the human branch, emitted as one
-/// JSON line, no prompts (a missing `--yes` under `--json` is treated as a
-/// refusal to execute non-interactively — callers must pass both).
-#[allow(clippy::too_many_arguments)]
-fn run_json(
-    home: &Path,
-    meridian_dir: &Path,
-    agents: Vec<(String, PathBuf)>,
-    staged_binaries: Vec<PathBuf>,
-    data: Vec<PathBuf>,
-    runtime: Vec<PathBuf>,
-    models: Vec<PathBuf>,
-    _purge: bool,
-    remove_data: bool,
-    remove_runtime: bool,
-    remove_models: bool,
-    dry_run: bool,
-    yes: bool,
-) {
-    let mut report = JsonReport {
-        dry_run,
-        executed: false,
-        remove_data,
-        remove_runtime,
-        remove_models,
-        agents: agents
-            .iter()
-            .map(|(label, path)| Item::new(label.clone(), path))
-            .collect(),
-        staged_binaries: staged_binaries.iter().map(|p| Item::from_path(p)).collect(),
-        data: data.iter().map(|p| Item::from_path(p)).collect(),
-        runtime: runtime.iter().map(|p| Item::from_path(p)).collect(),
-        models: models.iter().map(|p| Item::from_path(p)).collect(),
-        removed: Vec::new(),
-        errors: Vec::new(),
-    };
-
-    if dry_run || !yes {
-        println!("{}", serde_json::to_string(&report).unwrap_or_default());
-        return;
-    }
-
-    report.executed = true;
-    let uid = uid_str();
-    for (label, plist) in &agents {
-        let _ = std::process::Command::new("launchctl")
-            .args(["bootout", &format!("gui/{uid}/{label}")])
-            .status();
-        match std::fs::remove_file(plist) {
-            Ok(()) => report.removed.push(plist.display().to_string()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => report.errors.push(format!("{}: {e}", plist.display())),
-        }
-    }
-    for f in staged_binaries
-        .iter()
-        .chain(&data)
-        .chain(&runtime)
-        .chain(&models)
-    {
-        match remove_path(f) {
-            Ok(()) => report.removed.push(f.display().to_string()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => report.errors.push(format!("{}: {e}", f.display())),
-        }
-    }
-    if remove_data && remove_runtime && meridian_dir.is_dir() {
-        match std::fs::remove_dir_all(meridian_dir) {
-            Ok(()) => report.removed.push(meridian_dir.display().to_string()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => report
-                .errors
-                .push(format!("{}: {e}", meridian_dir.display())),
-        }
-    }
-    let _ = home; // reserved for future report fields (e.g. echoing HOME)
-    println!("{}", serde_json::to_string(&report).unwrap_or_default());
 }
 
 /// `~/.meridian` user-data items removed by `--remove-data`/`--purge`.
@@ -479,7 +440,7 @@ fn meridiona_label(path: &Path) -> Option<String> {
 fn confirm(prompt: &str) -> bool {
     use std::io::{BufRead, IsTerminal, Write};
     if !std::io::stdin().is_terminal() {
-        eprintln!("{prompt} refusing without a TTY — pass --yes to confirm.");
+        eprintln!("{prompt} refusing without a TTY - pass --yes to confirm.");
         return false;
     }
     print!("{prompt} [y/N]: ");
@@ -500,143 +461,4 @@ fn uid_str() -> String {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "501".to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn label_matches_only_meridiona_plists() {
-        assert_eq!(
-            meridiona_label(Path::new("/x/com.meridiona.daemon.plist")).as_deref(),
-            Some("com.meridiona.daemon")
-        );
-        assert_eq!(
-            meridiona_label(Path::new("/x/com.meridiona.a11y-helper.plist")).as_deref(),
-            Some("com.meridiona.a11y-helper")
-        );
-        assert_eq!(meridiona_label(Path::new("/x/com.apple.thing.plist")), None);
-        assert_eq!(meridiona_label(Path::new("/x/com.meridiona.daemon")), None); // not a plist
-        assert_eq!(meridiona_label(Path::new("/x/notes.txt")), None);
-    }
-
-    #[test]
-    fn enumerates_only_meridiona_agents() {
-        let dir = std::env::temp_dir().join("meridian-uninstall-test-agents");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        for f in [
-            "com.meridiona.daemon.plist",
-            "com.meridiona.a11y-helper.plist",
-            "com.apple.something.plist",
-            "random.txt",
-        ] {
-            std::fs::write(dir.join(f), "x").unwrap();
-        }
-        let found: Vec<String> = meridiona_agent_plists(&dir)
-            .into_iter()
-            .map(|(l, _)| l)
-            .collect();
-        assert_eq!(
-            found,
-            vec![
-                "com.meridiona.a11y-helper".to_string(),
-                "com.meridiona.daemon".to_string()
-            ]
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn missing_launch_agents_dir_is_empty() {
-        let dir = std::env::temp_dir().join("meridian-uninstall-test-nope-xyz");
-        let _ = std::fs::remove_dir_all(&dir);
-        assert!(meridiona_agent_plists(&dir).is_empty());
-    }
-
-    /// `data_items`/`runtime_items` must only list entries that actually exist
-    /// (a wizard checkbox should never advertise removing nothing), and must
-    /// stay disjoint from each other so the two checkboxes don't double-count.
-    #[test]
-    fn data_and_runtime_items_only_list_existing_entries_and_stay_disjoint() {
-        let dir = std::env::temp_dir().join(format!(
-            "meridian-uninstall-test-items-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(".env"), "x").unwrap();
-        std::fs::write(dir.join("meridian.db"), "x").unwrap();
-        std::fs::create_dir_all(dir.join("runtime")).unwrap();
-        // "settings.json" and "mlx-server-venv" deliberately absent.
-
-        let data = data_items(&dir);
-        let runtime = runtime_items(&dir);
-
-        assert!(data.contains(&dir.join(".env")));
-        assert!(data.contains(&dir.join("meridian.db")));
-        assert!(!data.iter().any(|p| p.ends_with("settings.json")));
-        assert!(runtime.contains(&dir.join("runtime")));
-        assert!(!runtime.iter().any(|p| p.ends_with("mlx-server-venv")));
-
-        for p in &data {
-            assert!(
-                !runtime.contains(p),
-                "data and runtime item lists must be disjoint: {p:?}"
-            );
-        }
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// `model_items` only returns catalog entries that exist on disk, and never
-    /// invents a path for a model that isn't in [`MODEL_CATALOG`].
-    #[test]
-    fn model_items_filters_to_existing_catalog_dirs() {
-        let home = std::env::temp_dir().join(format!(
-            "meridian-uninstall-test-models-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&home);
-        let hub = home.join(".cache/huggingface/hub");
-        std::fs::create_dir_all(&hub).unwrap();
-        std::fs::create_dir_all(hub.join("models--mlx-community--Qwen3.5-2B-OptiQ-4bit")).unwrap();
-        // A non-Meridian model the user downloaded for another tool — must be ignored.
-        std::fs::create_dir_all(hub.join("models--some-other-org--unrelated-model")).unwrap();
-
-        let found = model_items(&home);
-        assert_eq!(found.len(), 1);
-        assert!(found[0].ends_with("models--mlx-community--Qwen3.5-2B-OptiQ-4bit"));
-
-        std::fs::remove_dir_all(&home).ok();
-    }
-
-    #[test]
-    fn remove_path_handles_files_and_directories() {
-        let dir = std::env::temp_dir().join(format!(
-            "meridian-uninstall-test-remove-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let file = dir.join("a-file");
-        std::fs::write(&file, "x").unwrap();
-        remove_path(&file).unwrap();
-        assert!(!file.exists());
-
-        let subdir = dir.join("a-dir");
-        std::fs::create_dir_all(subdir.join("nested")).unwrap();
-        remove_path(&subdir).unwrap();
-        assert!(!subdir.exists());
-
-        // A path that doesn't exist reports NotFound rather than panicking.
-        assert_eq!(
-            remove_path(&dir.join("missing")).unwrap_err().kind(),
-            std::io::ErrorKind::NotFound
-        );
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
 }

@@ -36,7 +36,13 @@ export function EmailCodeForm() {
 
   useEffect(() => {
     if (!resendReadyAt) return
-    const id = setInterval(() => forceTick((n) => n + 1), 1000)
+    const id = setInterval(() => {
+      // Once the cooldown elapses, clear `resendReadyAt` so this effect
+      // re-runs and tears the interval down — otherwise it would keep forcing
+      // a re-render every second forever after the countdown hits zero.
+      if (Date.now() >= resendReadyAt) setResendReadyAt(null)
+      else forceTick((n) => n + 1)
+    }, 1000)
     return () => clearInterval(id)
   }, [resendReadyAt])
 
@@ -70,6 +76,15 @@ export function EmailCodeForm() {
       const sent = await signIn.emailCode.sendCode()
       if (sent.error) { setErr(clerkErrorMessage(sent.error, 'Could not send a code - try again.')); return }
       setMode('signIn'); setPhase('code'); setResendReadyAt(Date.now() + RESEND_COOLDOWN_S * 1000)
+    } catch (e) {
+      // Clerk's Future API returns { error } rather than throwing, but a
+      // transport-level failure still rejects. Catch it here so it surfaces to
+      // the user instead of bubbling as an unhandled rejection (the
+      // ClerkErrorBoundary only covers render/use() failures, not these
+      // async handlers).
+      // eslint-disable-next-line no-console -- only diagnostic for this failure
+      console.error('sign-in: submitEmail threw', e)
+      setErr('Something went wrong - check your connection and try again.')
     } finally {
       submitting.current = false
       setBusy(false)
@@ -118,6 +133,12 @@ export function EmailCodeForm() {
       }
       const finalized = await resource.finalize()
       if (finalized.error) setErr(clerkErrorMessage(finalized.error, 'Could not complete sign-in - try again.'))
+    } catch (e) {
+      // A transport-level rejection (see submitEmail's note) — surface it
+      // rather than letting it escape as an unhandled rejection.
+      // eslint-disable-next-line no-console -- see above
+      console.error('sign-in: submitCode threw', e)
+      setErr('Something went wrong - check your connection and try again.')
     } finally {
       submitting.current = false
       setBusy(false)
@@ -146,6 +167,12 @@ export function EmailCodeForm() {
       }
       setCode('')
       setResendReadyAt(Date.now() + RESEND_COOLDOWN_S * 1000)
+    } catch (e) {
+      // A transport-level rejection (see submitEmail's note) — surface it
+      // rather than letting it escape as an unhandled rejection.
+      // eslint-disable-next-line no-console -- see above
+      console.error('sign-in: resendCode threw', e)
+      setErr('Could not resend the code - check your connection and try again.')
     } finally {
       submitting.current = false
       setBusy(false)

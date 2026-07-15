@@ -239,20 +239,17 @@ pub async fn refresh_if_stale(
         tracing::warn!(
             "partial github fetch — skipping prune to preserve tasks from failed project(s)"
         );
-    } else if !keys.is_empty() {
+    } else {
+        // `prune` is safe for an empty `keys` slice: it emits `NOT IN ()`
+        // (always true in modern SQLite) so it full-clears, and crucially it
+        // deletes dependent `pm_task_embeddings` rows BEFORE `pm_tasks`. The old
+        // empty-keys fallback deleted `pm_tasks` directly and hit the
+        // `pm_task_embeddings.task_key` foreign key, failing the full-clear.
         match prune(pool, &keys).await {
             Ok(0) => {}
             Ok(p) => tracing::info!(pruned_count = p, "pruned stale github tasks"),
             Err(e) => tracing::warn!(error = %e, "github prune failed"),
         }
-    } else if let Err(e) = sqlx::query(
-        "DELETE FROM pm_tasks WHERE provider = 'github' \
-         AND task_key NOT IN (SELECT DISTINCT task_key FROM pm_worklogs)",
-    )
-    .execute(pool)
-    .await
-    {
-        tracing::warn!(error = %e, "github full-clear failed");
     }
 
     tracing::info!(upserted_count = keys.len(), "github tasks refreshed");

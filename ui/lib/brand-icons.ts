@@ -25,11 +25,16 @@
 // `"‎WhatsApp"`, a leading left-to-right mark, not `"WhatsApp"`), which
 // silently fail an exact-match lookup and fall through to the hashed-hue
 // fallback with no visible error.
-export interface BrandIcon {
-  viewBox?: string
-  path?: string
-  hex: string
-}
+// `viewBox` and `path` are tied together: an entry either has a real glyph
+// (both present) or is colour-only (both absent). `AppGlyph` renders
+// `<svg viewBox={brand.viewBox}><path d={brand.path} /></svg>` whenever
+// `brand.path` is set, so a `path` without a `viewBox` would produce a
+// viewBox-less SVG. The union makes that combination a compile error instead
+// of a silent runtime bug.
+export type BrandIcon = { hex: string } & (
+  | { viewBox: string; path: string }
+  | { viewBox?: undefined; path?: undefined }
+)
 
 /** Strips invisible Unicode formatting marks (LRM, RLM, zero-width chars, BOM)
  * that some apps' native window titles carry, then trims — so `BRAND_ICONS`
