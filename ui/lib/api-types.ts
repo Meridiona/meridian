@@ -198,6 +198,38 @@ export interface HourReportsResponse {
   hours: HourReportEntry[]
 }
 
+// ── Day tasks (`get_day_tasks`) ───────────────────────────────────────────────
+// Meridian's own inferred day-level tasks (workstreams), folded hour by hour by
+// the worklog pipeline. Each task carries approximate time `segments` (multiple =
+// breaks) so the timeline can draw it spanning its real start-end; `hours` is the
+// coarse per-hour span the interim UI still renders from. `linked_ticket` is the
+// PM seam — always null for now.
+
+// One approximate "HH:MM"-"HH:MM" local range a task was worked in. Non-contiguous
+// segments on the same task are breaks — the timeline draws them as one workstream.
+export interface DaySegment {
+  start: string            // local "HH:MM", 24-hour
+  end: string              // local "HH:MM", 24-hour ("24:00" = end of day)
+}
+
+export interface DayTask {
+  id: string               // stable within the day: "T1", "T2", …
+  title: string
+  summary: string[]        // running log lines (past-tense, one thing done each)
+  minutes: number          // deterministic measured minutes (summed segment durations)
+  hours: string[]          // local hour labels, "YYYY-MM-DDTHH", ascending
+  segments: DaySegment[]   // approximate time ranges worked, ascending; gaps = breaks
+  first_hour: number       // earliest local hour-of-day (0..23); -1 if none
+  last_hour: number        // latest local hour-of-day (0..23); -1 if none
+  status: string
+  linked_ticket: string | null
+}
+
+export interface DayTasksResponse {
+  day: string
+  tasks: DayTask[]
+}
+
 // ── Hour status (`get_hour_status`) ───────────────────────────────────────────
 
 export interface HourStatus {

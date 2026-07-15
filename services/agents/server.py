@@ -18,7 +18,6 @@ Endpoints:
     POST /summarise
     POST /activity_report
     POST /distill_hour
-    POST /rerank
     POST /worklog_hour
 """
 from __future__ import annotations
@@ -41,7 +40,6 @@ from agents.routes import (
     generate,
     health,
     prefetch,
-    rerank,
     summarise,
     worklog,
 )
@@ -127,7 +125,6 @@ app.include_router(generate.router)
 app.include_router(summarise.router)
 app.include_router(activity.router)
 app.include_router(distill.router)
-app.include_router(rerank.router)
 app.include_router(worklog.router)
 
 

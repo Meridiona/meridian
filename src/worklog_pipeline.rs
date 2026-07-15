@@ -26,13 +26,22 @@ use std::time::Duration as StdDuration;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Local, NaiveDateTime, TimeZone, Timelike, Utc};
-use serde_json::json;
 use sqlx::SqlitePool;
 use tokio::sync::watch;
 use tokio::time::Instant;
 use tracing::Instrument;
 
 use crate::pm_worklog::{ledger, PmWorklogConfig};
+
+mod hour;
+mod hour_db;
+mod hour_input;
+mod segment;
+mod task_db;
+mod workstream;
+mod workstream_parse;
+mod workstream_sanitize;
+mod workstream_state;
 
 /// Seconds past the top of the hour at which a completed hour is processed (HH:03).
 const WAKE_OFFSET_SECS: i64 = 3 * 60;
@@ -46,6 +55,14 @@ const CODING_POLL: StdDuration = StdDuration::from_secs(30);
 /// Hard cap on the coding-summarisation wait, so it can never bleed into the next
 /// HH:03 tick (~57 min away). The indexer's hour-boundary seal makes hitting this rare.
 const CODING_MAX_WAIT: StdDuration = StdDuration::from_secs(20 * 60);
+/// A sealed coding row shorter than this is too trivial to be worth blocking the fold
+/// for: it carries essentially no content to summarise (e.g. a 0-3s Claude Code session
+/// slice, common when the developer's OWN agent conversations get ingested), yet a
+/// pending one would otherwise gate the whole hour for [`CODING_MAX_WAIT`]. Waiting on
+/// it buys nothing — its (absent) summary would fold into the report as nothing. So the
+/// readiness gate ignores trivial pending rows; a genuinely short-but-real session still
+/// summarises on the indexer tick and lands in a later fold.
+const MIN_CODING_READY_S: i64 = 20;
 
 /// Canonical `+00:00` ISO bound (matches stored `started_at`).
 fn iso_bound(dt: DateTime<Utc>) -> String {
@@ -126,12 +143,17 @@ async fn hour_has_coding(pool: &SqlitePool, hs: &str, he: &str) -> Result<bool> 
 /// `subprocess_error`, `mlx_direct`) are NOT counted — so a dead-lettered row can
 /// never make us wait forever.
 async fn coding_in_flight(pool: &SqlitePool, hs: &str, he: &str) -> Result<i64> {
+    // Wait for every LIVE coding row (still being written), but among sealed rows
+    // awaiting summarisation only the non-trivial ones — a 0-3s slice carries nothing
+    // to fold, so blocking the hour on it just wastes the CODING_MAX_WAIT budget.
     sqlx::query_scalar(&format!(
         "SELECT COUNT(*) FROM app_sessions \
          WHERE coding_agent_session_uuid IS NOT NULL \
-           AND task_method IN ('coding_agent_live', 'pending_summariser') \
+           AND ( task_method = 'coding_agent_live' \
+                 OR (task_method = 'pending_summariser' AND duration_s >= ?) ) \
            AND {OVERLAP_PRED}"
     ))
+    .bind(MIN_CODING_READY_S)
     .bind(hs)
     .bind(he)
     .bind(hs)
@@ -180,49 +202,6 @@ async fn await_coding_ready(
 }
 
 // ──────────────────────── Firing one hour ────────────────────────────────────────
-
-/// POST one hour to `/worklog_hour`. Holds the global LLM permit for the whole call
-/// so the pipeline's many model phases (embedder / reranker / 2B) never interleave
-/// with a summarise call — preserving the one-model-at-a-time rule.
-async fn post_worklog_hour(
-    cfg: &PmWorklogConfig,
-    db_path: &str,
-    hour: &str,
-    cycle_index: i64,
-) -> Result<()> {
-    let _llm_permit = crate::llm_gate::acquire().await;
-
-    let url = format!("http://{}:{}/worklog_hour", cfg.mlx_host, cfg.mlx_port);
-    let client = reqwest::Client::builder()
-        .connect_timeout(StdDuration::from_secs(5))
-        // The full pipeline can run for several minutes on a busy hour.
-        .timeout(StdDuration::from_secs(900))
-        .build()
-        .context("building worklog_hour http client")?;
-
-    let traceparent = crate::observability::current_traceparent();
-    let resp = client
-        .post(&url)
-        .json(&json!({
-            "hour": hour,
-            "db_path": db_path,
-            "cycle_index": cycle_index,
-            "traceparent": traceparent,
-        }))
-        .send()
-        .await
-        .with_context(|| {
-            format!("worklog_hour endpoint unreachable at {url} — is the MLX server running?")
-        })?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        let preview: String = body.chars().take(200).collect();
-        anyhow::bail!("/worklog_hour returned {status}: {preview}");
-    }
-    Ok(())
-}
 
 /// Process one completed hour: idempotency check → activity gate → wait for coding →
 /// fire. Returns `true` if shutdown was observed (caller should stop).
@@ -306,10 +285,11 @@ async fn process_hour(
         tracing::warn!(hour = %label, error = %e, "worklog: mark_hour_generating failed");
     }
 
-    // Wrap the POST in a span so `current_traceparent()` nests the hour's trace under
-    // `worklog.hour` (one connected OpenObserve trace).
+    // Wrap the run in a span so `current_traceparent()` nests the hour's trace under
+    // `worklog.hour` (one connected OpenObserve trace). The hour is orchestrated in Rust
+    // now (`hour::run_hour`): distil locally, then summarise through the user's chosen AI.
     let span = tracing::info_span!("worklog.hour", hour = %label, cycle_index);
-    let result = post_worklog_hour(cfg, db_path, label, cycle_index)
+    let result = hour::run_hour(pool, cfg, db_path, label, hs, he)
         .instrument(span)
         .await;
     match result {

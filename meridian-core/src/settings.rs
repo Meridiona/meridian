@@ -93,6 +93,8 @@ pub struct RuntimeSettings {
     pub work_hours_start: String, // "HH:MM" local time, inclusive
     pub work_hours_end: String,   // "HH:MM" local time, exclusive
     pub work_days: String,        // comma-separated 1–7 (Mon=1 … Sun=7), e.g. "1,2,3,4,5"
+    // Pause capture when streaming video (Netflix, Disney+, etc.) is playing.
+    pub pause_on_streaming_video: bool,
 }
 
 /// Default surface palette when `settings.json` predates the `theme` key. Must
@@ -140,6 +142,10 @@ impl Default for RuntimeSettings {
             work_hours_start: "09:00".to_string(),
             work_hours_end: "18:00".to_string(),
             work_days: "1,2,3,4,5".to_string(),
+            // On by default — streaming video is never work signal, and DRM
+            // services black out the screen for any recorder anyway. Must
+            // match SETTINGS_DEFAULTS in ui/lib/settings.ts.
+            pause_on_streaming_video: true,
         }
     }
 }

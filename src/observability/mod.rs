@@ -98,6 +98,7 @@ static FILTER_HANDLE: OnceLock<FilterHandle> = OnceLock::new();
 /// inside an async context panics with "Cannot drop a runtime in a context
 /// where blocking is not allowed".
 pub struct ObservabilityGuard {
+    tracer_provider: Option<TracerProvider>,
     logger_provider: Option<LoggerProvider>,
     otel_enabled: bool,
 }
@@ -105,15 +106,38 @@ pub struct ObservabilityGuard {
 impl ObservabilityGuard {
     /// Flush and shut down both OTel exporters (traces + logs). Must be
     /// `await`ed while the tokio runtime is still alive.
+    ///
+    /// We hold the concrete `TracerProvider`/`LoggerProvider` and `force_flush`
+    /// each one BEFORE shutting it down, rather than relying on
+    /// `global::shutdown_tracer_provider()`. On a long-lived daemon it makes no
+    /// difference (the batch processor's timer already drains spans every few
+    /// seconds), but on a **short-lived one-shot** (`meridian worklog-hour`,
+    /// `coding-agent-*`) the final batch — the parent `worklog.hour`/`.report`
+    /// spans that only close as the process ends — was being lost: the global
+    /// shutdown returned before that last batch reached the spool. An explicit
+    /// `force_flush` pushes it to `~/.meridian/telemetry/pending/` first, so a
+    /// manual run produces the same complete trace the daemon does.
     pub async fn shutdown(self) {
-        if self.otel_enabled {
-            if let Some(lp) = self.logger_provider {
-                let _ = tokio::task::spawn_blocking(move || {
-                    let _ = lp.shutdown();
-                })
-                .await;
-            }
-            let _ = tokio::task::spawn_blocking(global::shutdown_tracer_provider).await;
+        if !self.otel_enabled {
+            return;
+        }
+        if let Some(tp) = self.tracer_provider {
+            let _ = tokio::task::spawn_blocking(move || {
+                for r in tp.force_flush() {
+                    if let Err(e) = r {
+                        eprintln!("observability: span force_flush error: {e:?}");
+                    }
+                }
+                let _ = tp.shutdown();
+            })
+            .await;
+        }
+        if let Some(lp) = self.logger_provider {
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = lp.force_flush();
+                let _ = lp.shutdown();
+            })
+            .await;
         }
     }
 }
@@ -163,46 +187,47 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
     // then construct the layers inline so the subscriber type is concrete at
     // each .with() call — this avoids the Box<dyn Layer<S>> type-erasure issue
     // that arises when chaining two boxed layers with different subscriber types.
-    let (otel_enabled, logger_provider) = match try_build_otel_providers(service_name) {
-        Ok(Some((tracer, lp))) => {
-            let trace_layer = tracing_opentelemetry::layer()
-                .with_tracer(tracer)
-                .with_tracked_inactivity(false);
-            let log_layer = OpenTelemetryTracingBridge::new(&lp);
+    let (otel_enabled, tracer_provider, logger_provider) =
+        match try_build_otel_providers(service_name) {
+            Ok(Some((tracer, tp, lp))) => {
+                let trace_layer = tracing_opentelemetry::layer()
+                    .with_tracer(tracer)
+                    .with_tracked_inactivity(false);
+                let log_layer = OpenTelemetryTracingBridge::new(&lp);
 
-            tracing_subscriber::registry()
-                .with(rl.take().unwrap())
-                .with(fmt_stdout)
-                .with(fmt_stderr)
-                .with(trace_layer)
-                .with(log_layer)
-                .init();
+                tracing_subscriber::registry()
+                    .with(rl.take().unwrap())
+                    .with(fmt_stdout)
+                    .with(fmt_stderr)
+                    .with(trace_layer)
+                    .with(log_layer)
+                    .init();
 
-            (true, Some(lp))
-        }
-        Ok(None) => {
-            // Capture disabled (MERIDIAN_TELEMETRY_DISABLED) — no persisted
-            // sink beyond the filter layer (still gets the debug-build
-            // terminal mirror, if any). Rust's default panic hook still
-            // prints to stderr regardless of any tracing subscriber, so a
-            // hard failure is never silent even here.
-            tracing_subscriber::registry()
-                .with(rl.take().unwrap())
-                .with(fmt_stdout)
-                .with(fmt_stderr)
-                .init();
-            (false, None)
-        }
-        Err(err) => {
-            eprintln!("observability: OTLP exporter init failed: {err:#}");
-            tracing_subscriber::registry()
-                .with(rl.take().unwrap())
-                .with(fmt_stdout)
-                .with(fmt_stderr)
-                .init();
-            (false, None)
-        }
-    };
+                (true, Some(tp), Some(lp))
+            }
+            Ok(None) => {
+                // Capture disabled (MERIDIAN_TELEMETRY_DISABLED) — no persisted
+                // sink beyond the filter layer (still gets the debug-build
+                // terminal mirror, if any). Rust's default panic hook still
+                // prints to stderr regardless of any tracing subscriber, so a
+                // hard failure is never silent even here.
+                tracing_subscriber::registry()
+                    .with(rl.take().unwrap())
+                    .with(fmt_stdout)
+                    .with(fmt_stderr)
+                    .init();
+                (false, None, None)
+            }
+            Err(err) => {
+                eprintln!("observability: OTLP exporter init failed: {err:#}");
+                tracing_subscriber::registry()
+                    .with(rl.take().unwrap())
+                    .with(fmt_stdout)
+                    .with(fmt_stderr)
+                    .init();
+                (false, None, None)
+            }
+        };
 
     // W3C trace-context propagator so we can inject/extract `traceparent` strings
     // across process boundaries via the meridian SQLite handoff.
@@ -223,6 +248,7 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
     }
 
     Ok(ObservabilityGuard {
+        tracer_provider,
         logger_provider,
         otel_enabled,
     })
@@ -242,7 +268,9 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
 ///
 /// Only `MERIDIAN_TELEMETRY_DISABLED` skips capture entirely (an explicit
 /// escape hatch, not tied to shipping config).
-fn try_build_otel_providers(service_name: &str) -> Result<Option<(Tracer, LoggerProvider)>> {
+fn try_build_otel_providers(
+    service_name: &str,
+) -> Result<Option<(Tracer, TracerProvider, LoggerProvider)>> {
     if capture_disabled() {
         return Ok(None);
     }
@@ -286,7 +314,10 @@ fn try_build_otel_providers(service_name: &str) -> Result<Option<(Tracer, Logger
         .build();
 
     let tracer = tracer_provider.tracer(service_name.to_string());
-    global::set_tracer_provider(tracer_provider);
+    // Clone into the global (context propagation) but keep the original so the
+    // guard can force_flush + shutdown it explicitly on exit — a clone is a
+    // cheap Arc bump and both handles drive the same batch processor.
+    global::set_tracer_provider(tracer_provider.clone());
 
     // ── Log pipeline ──────────────────────────────────────────────────────
     let log_exporter = opentelemetry_otlp::LogExporter::builder()
@@ -302,7 +333,7 @@ fn try_build_otel_providers(service_name: &str) -> Result<Option<(Tracer, Logger
         .with_resource(resource)
         .build();
 
-    Ok(Some((tracer, logger_provider)))
+    Ok(Some((tracer, tracer_provider, logger_provider)))
 }
 
 /// Map the settings.json `log_level` value (DEBUG/INFO/WARNING/ERROR) to a

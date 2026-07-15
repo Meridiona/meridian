@@ -517,6 +517,7 @@ pub fn run() {
             // dashboard DB reads (ported /api/* GETs)
             commands::get_active,
             commands::get_today,
+            commands::get_day_tasks,
             commands::get_week,
             commands::get_coding_agents,
             commands::get_worklogs,
@@ -588,6 +589,7 @@ pub fn run() {
             commands::start_mlx_server_cmd,
             commands::download_runtime_cmd,
             commands::prefetch_model_cmd,
+            commands::detect_llm_providers,
             commands::detect_system_specs,
             // Uninstall wizard (plan + execute; see src/uninstall.rs for the CLI it drives)
             commands::get_uninstall_plan,
@@ -961,11 +963,15 @@ pub(crate) fn start_capture(
     // When engine_cancel_tx is dropped, engine_cancel_rx resolves → task exits,
     // dropping tx → frame consumer loop ends naturally.
     tauri::async_runtime::spawn(async move {
+        let settings = meridian_core::settings::load_runtime_settings();
+        let engine = ScreenpipeEngine {
+            pause_on_streaming_video: settings.pause_on_streaming_video,
+        };
         tokio::select! {
             _ = &mut engine_cancel_rx => {
                 tracing::info!("capture: engine stopped (pause)");
             }
-            result = ScreenpipeEngine.run(tx) => {
+            result = engine.run(tx) => {
                 if let Err(e) = result {
                     tracing::error!(error = %e, "capture: engine exited with error");
                 }

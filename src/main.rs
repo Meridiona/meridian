@@ -21,6 +21,31 @@ use tokio::sync::Notify;
 const MLX_DOWN_FIX_HINT: &str =
     "Meridian restarts the classifier automatically. If it keeps happening, quit and reopen Meridian.";
 
+/// Single-instance probe for the daemon socket. Returns `true` only when a live
+/// daemon answers `~/.meridian/daemon.sock` with its greeting — i.e. one is already
+/// running for this data dir. A missing/stale socket with no listener (previous
+/// crash) connects-refused or times out → `false`, so this instance may take over.
+/// Mirrors the tray's `probe_socket`; kept deliberately short (800 ms) so startup
+/// isn't stalled when the socket is genuinely stale.
+async fn daemon_already_running(sock_path: &std::path::Path) -> bool {
+    use tokio::io::AsyncReadExt as _;
+    use tokio::time::timeout;
+
+    let connect = timeout(
+        Duration::from_millis(800),
+        tokio::net::UnixStream::connect(sock_path),
+    )
+    .await;
+    let Ok(Ok(mut stream)) = connect else {
+        return false; // no listener (absent or stale socket) — safe to take over
+    };
+    // A live daemon writes `{"running":true,"pid":…}` on connect. A non-empty read
+    // confirms a real daemon is there, not just a leftover socket file.
+    let mut buf = Vec::new();
+    let _ = timeout(Duration::from_millis(800), stream.read_to_end(&mut buf)).await;
+    !buf.is_empty()
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // 1. Load the repo-local .env — the single source of config, shared by this
@@ -481,13 +506,29 @@ async fn main() -> Result<()> {
     meridian::health::Report::new(meridian::health::capture::checks(&meridian).await)
         .log("startup");
 
-    // 5b. Unix domain socket — health endpoint for the tray / UI.
-    //     ~/.meridian/daemon.sock: connecting succeeds = daemon is running.
-    //     Stale socket from a previous crash is removed before binding.
+    // 5b. Unix domain socket — health endpoint for the tray / UI, AND the
+    //     single-instance guard. ~/.meridian/daemon.sock: a successful connect that
+    //     gets a greeting means ANOTHER daemon already owns this data dir. That
+    //     happens routinely — a leftover packaged install's launchd agent
+    //     (KeepAlive=true) respawning next to a dev build, two `meridian` invocations
+    //     racing — and two daemons on one meridian.db double every ETL pass and fire
+    //     the worklog trigger twice (near-duplicate day_tasks, clobbering folds). So
+    //     if one is already answering, exit cleanly here rather than delete its socket
+    //     and become a second writer. Only a stale socket (no listener) is removed
+    //     before we bind our own. Whoever starts second bows out; dev-start.sh stops
+    //     the installed daemon first so the dev build wins, and any KeepAlive respawn
+    //     self-terminates on the next line.
     let sock_path = {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
         std::path::PathBuf::from(format!("{}/.meridian/daemon.sock", home))
     };
+    if daemon_already_running(&sock_path).await {
+        tracing::warn!(
+            path = %sock_path.display(),
+            "another meridian daemon already owns this data dir — exiting (single-instance guard)"
+        );
+        return Ok(());
+    }
     let _ = std::fs::remove_file(&sock_path);
     let sock_path_cleanup = sock_path.clone();
     {

@@ -26,6 +26,9 @@ pub mod integrations;
 /// Per-hour distilled activity text from `pm_worklog_hours` (migration 053; no route — new work).
 pub mod hour_text;
 
+/// The rolling day-level tasks (`day_tasks`, migration 058; no route — new work).
+pub mod day_tasks;
+
 /// Per-hour generating/paused badge state for the timeline; no route — new work.
 pub mod hour_status;
 

@@ -37,11 +37,10 @@ export interface SystemSpecs {
 }
 
 // ── On-device models ─────────────────────────────────────────────────────────
-// Meridian runs a fixed set of three models — the Qwen3.5-2B generative LLM
-// (which also does classification/matching), a reranker, and an embedder. They
-// load one at a time (single-slot), so peak resident memory is the LLM
-// (MODEL_RAM_GB). No user selection; the wizard auto-downloads the whole set and
-// shows live aggregate progress.
+// Meridian runs two on-device models - the Qwen3.5-2B generative LLM (which also
+// does classification/matching) and an embedder. They load one at a time
+// (single-slot), so peak resident memory is the LLM (MODEL_RAM_GB). The wizard
+// auto-downloads the set and shows live aggregate progress.
 
 export const MODEL_ID = 'mlx-community/Qwen3.5-2B-OptiQ-4bit'
 export const MODEL_RAM_GB = 1.5

@@ -62,7 +62,7 @@ def _candidates(data: dict, keys: list[str]) -> list[dict]:
     out = []
     for k in keys:
         t = data["tickets"][k]
-        out.append({"task_key": k, "title": t["title"], "doc": t.get("doc", ""), "rerank_score": 0.0})
+        out.append({"task_key": k, "title": t["title"], "doc": t.get("doc", "")})
     return out
 
 

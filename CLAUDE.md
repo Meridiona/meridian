@@ -515,13 +515,13 @@ Source-adapter env overrides: `COPILOT_SESSION_STATE_DIR`, `VSCODE_USER_DIR`, `C
 
 > **Daemon config gotcha:** the daemon loads env via `dotenvy::dotenv_override()`, which walks UP from its launchd `WorkingDirectory` and stops at the first `.env`. All install types converge on the **canonical `~/.meridian/.env`** (the same file the tray writes tracker creds to): the **npm bundle**'s `WorkingDirectory` is `~/.meridian/app` but no `~/.meridian/app/.env` is written (the installer creates `~/.meridian/.env`), so dotenvy walks up to it; the **`.app` DMG** (the tray stages the daemon via `tray/src-tauri/src/backend_install.rs`) sets `WorkingDirectory` to `~/.meridian` and reads it directly; **source/dev** reads the repo `.env`. Edit `~/.meridian/.env` (then `meridian restart`) to tune daemon env on an installed system.
 
-The pipeline is fully ported to Rust; the former Python `coding_agent_indexer` + `coding_agent_summariser` packages have been removed. The MLX server (`agents/server.py`) is the only remaining Python hop (it serves `/summarise`, `/distill_hour`, `/activity_report`, `/rerank`, `/worklog_hour`, and OpenAI-compatible `/v1/chat/completions`).
+The pipeline is fully ported to Rust; the former Python `coding_agent_indexer` + `coding_agent_summariser` packages have been removed. The MLX server (`agents/server.py`) is the only remaining Python hop (it serves `/summarise`, `/distill_hour`, `/activity_report`, `/activity_time`, `/worklog_hour`, and OpenAI-compatible `/v1/chat/completions`).
 
 ## Python agent service (`services/`)
 
 These Python services still run alongside the Rust daemon:
 
-1. **MLX server** (`agents/server.py`) — the persistent FastAPI model server (`com.meridiona.mlx-server.plist`). Exposes `/summarise`, `/activity_report`, `/distill_hour`, `/rerank`, `/worklog_hour`, and OpenAI-compatible `/v1/chat/completions`. The one Python piece the pipeline can't replace (outlines + mlx-lm are Python-only).
+1. **MLX server** (`agents/server.py`) — the persistent FastAPI model server (`com.meridiona.mlx-server.plist`). Exposes `/summarise`, `/activity_report`, `/activity_time`, `/distill_hour`, `/worklog_hour`, and OpenAI-compatible `/v1/chat/completions`. The one Python piece the pipeline can't replace (outlines + mlx-lm are Python-only).
 2. **Jira updater** (`agents/pm_worklog_update/`) — agno-powered synthesis workflow that generates Jira comments + worklogs from classified sessions. Runs on an office-hours slot schedule.
 
 For the deep technical reference (classification logic, scoring formulas, recipes for tuning prompts / debugging misclassifications), see `services/agents/README.md`.

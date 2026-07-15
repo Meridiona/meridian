@@ -65,7 +65,11 @@ pub struct EngineOutput {
 }
 
 /// Captured result of a subprocess run.
-pub(super) struct Capture {
+///
+/// `pub(crate)` (not `pub(super)`): `crate::llm`'s CLI backends run the very same
+/// subprocess dance for the prose calls, so they share this runner rather than
+/// growing a second copy of the spawn/timeout/kill-on-drop logic.
+pub(crate) struct Capture {
     pub success: bool,
     pub code: Option<i32>,
     pub stdout: String,
@@ -76,7 +80,7 @@ pub(super) struct Capture {
 /// timeout. `kill_on_drop` guarantees a timed-out child is reaped (no leak);
 /// stdin is written from a concurrent task so a large prompt can't deadlock the
 /// pipe. Summariser stdout is small (a JSON envelope), so no read-side deadlock.
-pub(super) async fn run_capture(
+pub(crate) async fn run_capture(
     program: &str,
     args: &[String],
     stdin_text: &str,
@@ -462,7 +466,7 @@ fn build_prompt(transcript: &str, prior: Option<&str>, cap: usize) -> String {
 /// Bound transcript size: keep the head (task setup) and tail (outcome). Most
 /// bursts pass through untouched. Char-counted to match the Python original.
 /// Also used by copilot.rs to re-cap for argv embedding (no stdin support).
-fn cap_transcript(transcript: &str, cap: usize) -> String {
+pub(crate) fn cap_transcript(transcript: &str, cap: usize) -> String {
     let chars: Vec<char> = transcript.chars().collect();
     if chars.len() <= cap {
         return transcript.to_string();

@@ -896,7 +896,7 @@ struct PrefetchStatus {
 }
 
 /// Trigger the model downloads and stream progress until they finish. Prefetches
-/// every pipeline model (llm + reranker + embedder — the server's model registry)
+/// every pipeline model (llm + embedder — the server's model registry)
 /// so the first worklog run doesn't stall on a silent download mid-pipeline.
 /// `received`/`total` are aggregate byte counts across the whole set.
 ///

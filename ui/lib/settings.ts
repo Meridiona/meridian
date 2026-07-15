@@ -53,6 +53,7 @@ export interface RuntimeSettings {
   work_hours_start: string  // 'HH:MM' local time, inclusive
   work_hours_end: string    // 'HH:MM' local time, exclusive
   work_days: string         // comma-separated 1–7 (Mon=1 … Sun=7), e.g. '1,2,3,4,5'
+  pause_on_streaming_video: boolean
 }
 
 export const SETTINGS_DEFAULTS: RuntimeSettings = {
@@ -86,6 +87,8 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   work_hours_start: '09:00',
   work_hours_end: '18:00',
   work_days: '1,2,3,4,5',
+  // On by default — must match RuntimeSettings::default() in meridian-core/src/settings.rs.
+  pause_on_streaming_video: true,
 }
 
 // repoRoot finds the source-checkout root (nearest ancestor with Cargo.toml).

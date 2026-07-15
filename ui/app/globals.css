@@ -626,3 +626,30 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
 .mt-row-hover:hover {
   background: var(--t-row-hover);
 }
+
+/* Day-task timeline card: a gentle lift on hover so the timeline feels alive
+   without shouting. Transform only (composited) — cheap, and the box-shadow is
+   set inline per-hue in DayTaskColumn. */
+.dt-card {
+  will-change: transform;
+}
+.dt-card:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.02);
+}
+
+/* Day-task detail: a gentle fade+rise as it takes over the right panel from the
+   day's glance when a timeline card is selected. */
+.dt-detail {
+  animation: dt-detail-in 170ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes dt-detail-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

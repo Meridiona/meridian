@@ -621,7 +621,7 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
 
         if [[ "${DRY_RUN}" -eq 0 ]]; then
             # All three pipeline models must be cached (defaults shown; env
-            # overrides MERIDIAN_LLM_ID / WORKLOG_RERANKER_ID / MERIDIAN_EMBEDDER_ID
+            # overrides MERIDIAN_LLM_ID / MERIDIAN_EMBEDDER_ID
             # aren't resolved here, so this is best-effort/informational only).
             _hub="${HOME}/.cache/huggingface/hub"
             _all_cached=1
@@ -638,7 +638,7 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
                 info "MLX server starting (models cached, loading into Metal)..."
             else
                 echo
-                info "First run: downloading on-device models (llm + reranker + embedder, ~2.5 GB total). This takes a few minutes on a fast connection. Do not interrupt."
+                info "First run: downloading on-device models (llm + embedder, ~2 GB total). This takes a few minutes on a fast connection. Do not interrupt."
             fi
             echo "  ─────────────────────────────────────────────────────────────"
             mkdir -p "${HOME}/.meridian/logs"
