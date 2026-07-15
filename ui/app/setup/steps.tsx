@@ -104,7 +104,7 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
       })}
       <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--t-faint)', marginTop: 3 }}>
         <span style={{ width: 5, height: 5, borderRadius: 99, background: 'var(--color-state-approved)' }} />
-        Your screen, tasks, and worklogs stay on this Mac and are never uploaded. We send anonymous usage stats (like daily focus time) to improve Meridian - never your content.
+        Your screen, tasks, and worklogs stay on this Mac and are never uploaded. We send usage stats - daily focus time, app version, and your email once you sign in - to improve Meridian, never your content.
       </p>
     </div>
   )

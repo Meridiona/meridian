@@ -31,6 +31,10 @@ pub mod llm_provider;
 mod readers;
 mod util;
 
+/// Small crash-safe filesystem helpers (atomic JSON write) shared by the
+/// daemon, the app config layer, and the tray.
+pub mod fs_utils;
+
 // ── Public config module (kept top-level; daemon re-exports it) ──────────────
 /// Runtime settings (settings.json) — shared by the daemon (re-exported) and the app.
 pub mod settings;

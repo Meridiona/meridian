@@ -1,0 +1,89 @@
+name: Import Apple Developer ID certificate
+description: >
+  Imports the Developer ID Application certificate into a throwaway keychain
+  that codesign can reach, and materialises the App Store Connect notarization
+  .p8 key on disk (its path exported as APPLE_API_KEY_PATH via GITHUB_ENV).
+  Shared verbatim by release.yml and release-staging.yml. No-ops gracefully
+  when no certificate is configured (fork PRs, or any build not meant to sign)
+  instead of crashing `security import` with an opaque error - matching the
+  early-exit in sign-daemon.sh / notarize-dmg.sh.
+
+inputs:
+  apple-certificate:
+    description: Base64-encoded Developer ID Application .p12 (secrets.APPLE_CERTIFICATE).
+    required: true
+  apple-certificate-password:
+    description: Password for the .p12 (secrets.APPLE_CERTIFICATE_PASSWORD).
+    required: true
+  apple-api-key-content:
+    description: Contents of the App Store Connect .p8 notarization key (secrets.APPLE_API_KEY_CONTENT).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Import Developer ID certificate + notarization key
+      # Puts the Developer ID cert in a throwaway keychain that `codesign` can
+      # reach, and materialises the notarization key on disk.
+      #
+      # Two non-obvious requirements, each of which silently breaks CI signing:
+      #   1. set-key-partition-list - without it, `codesign` blocks FOREVER
+      #      waiting on a "allow access to your keychain?" GUI prompt that no
+      #      one can answer on a headless runner. The job just hangs to timeout.
+      #   2. APPLE_API_KEY_PATH is a FILE PATH, but our secret stores the .p8
+      #      CONTENT (a GitHub secret can't hold a file), so we write it out to
+      #      RUNNER_TEMP and point Tauri at it. Exported via GITHUB_ENV because
+      #      the `runner` context isn't available in job-level `env:`.
+      shell: bash
+      env:
+        APPLE_CERTIFICATE: ${{ inputs.apple-certificate }}
+        APPLE_CERTIFICATE_PASSWORD: ${{ inputs.apple-certificate-password }}
+        APPLE_API_KEY_CONTENT: ${{ inputs.apple-api-key-content }}
+      run: |
+        set -euo pipefail
+
+        # Guard: with no certificate configured (a fork PR, or a build not
+        # meant to sign), skip gracefully rather than letting `base64`/`security
+        # import` crash the job on empty input - the same graceful no-op
+        # sign-daemon.sh / notarize-dmg.sh use.
+        if [ -z "${APPLE_CERTIFICATE:-}" ]; then
+          echo "::notice::APPLE_CERTIFICATE not set - skipping Developer ID import (unsigned build)"
+          exit 0
+        fi
+
+        KEYCHAIN="${RUNNER_TEMP}/meridian-signing.keychain-db"
+        KEYCHAIN_PW="$(uuidgen)"
+        CERT_P12="${RUNNER_TEMP}/certificate.p12"
+        API_KEY="${RUNNER_TEMP}/apple-api-key.p8"
+
+        security create-keychain -p "${KEYCHAIN_PW}" "${KEYCHAIN}"
+        # -lut 3600: don't auto-lock mid-build (a long Rust+Next build can
+        # outrun the 5-minute default and re-lock the keychain under codesign).
+        security set-keychain-settings -lut 3600 "${KEYCHAIN}"
+        security unlock-keychain -p "${KEYCHAIN_PW}" "${KEYCHAIN}"
+
+        printf '%s' "${APPLE_CERTIFICATE}" | base64 --decode > "${CERT_P12}"
+        # -T /usr/bin/codesign grants ONLY codesign use of the key (never -A).
+        security import "${CERT_P12}" -k "${KEYCHAIN}" \
+          -P "${APPLE_CERTIFICATE_PASSWORD}" -T /usr/bin/codesign
+        rm -f "${CERT_P12}"
+
+        # See (1) above - this is the step everyone forgets.
+        security set-key-partition-list -S apple-tool:,apple:,codesign: \
+          -s -k "${KEYCHAIN_PW}" "${KEYCHAIN}" >/dev/null
+
+        # Prepend our keychain to the search list (keep the existing ones, or
+        # codesign can't reach Apple's intermediate certs).
+        security list-keychains -d user -s "${KEYCHAIN}" \
+          $(security list-keychains -d user | tr -d '"')
+
+        # See (2) above.
+        printf '%s' "${APPLE_API_KEY_CONTENT}" > "${API_KEY}"
+        chmod 600 "${API_KEY}"
+        echo "APPLE_API_KEY_PATH=${API_KEY}" >> "${GITHUB_ENV}"
+
+        # Fail loudly HERE if the cert didn't import, rather than 40 minutes
+        # later at the signing step.
+        security find-identity -v -p codesigning "${KEYCHAIN}" | grep -q "Developer ID Application" \
+          || { echo "::error::Developer ID cert not found in the keychain after import"; exit 1; }
+        echo "✓ Developer ID certificate imported"

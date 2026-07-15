@@ -780,8 +780,17 @@ async fn main() -> Result<()> {
                     )
                     .await;
                 }
-                // pm_tasks is refreshed on demand at its read boundaries
-                // (drafting in the worklog driver), so no timer-driven refresh is needed here.
+                // Refresh the PM task cache (pm_tasks) every tick — interval-gated
+                // per provider (~5 min), so this is a cheap no-op most ticks. The
+                // legacy drafting driver that used to trigger this before every
+                // pass was retired when the worklog pipeline moved to the
+                // clock-aligned Python trigger, which never calls this itself —
+                // leaving pm_tasks (and hence a ticket's title on the timeline)
+                // stuck at whatever it was at the last daemon restart. This is
+                // the only thing that keeps it live during normal operation.
+                if let Err(e) = run_pm_sync(&meridian, &cfg).await {
+                    tracing::warn!(error = %e, "pm_tasks refresh failed — using cached tasks");
+                }
             }
         }
     }

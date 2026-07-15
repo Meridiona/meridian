@@ -111,28 +111,12 @@ fn load_or_init_state(path: &std::path::Path) -> AnalyticsState {
     }
 }
 
-/// Crash-safely persist the state file (temp + rename), matching the pattern
-/// `meridian_core::settings::write_settings_value` uses.
+/// Crash-safely persist the state file via the shared atomic-write helper
+/// ([`meridian_core::fs_utils::atomic_write_json`]) — best-effort, logs on
+/// failure like the rest of this module.
 fn save_state(path: &std::path::Path, state: &AnalyticsState) {
-    let Some(dir) = path.parent() else { return };
-    if let Err(e) = std::fs::create_dir_all(dir) {
-        tracing::warn!(error = %e, "analytics: could not create state dir");
-        return;
-    }
-    let json = match serde_json::to_string_pretty(state) {
-        Ok(j) => j,
-        Err(e) => {
-            tracing::warn!(error = %e, "analytics: could not serialise state");
-            return;
-        }
-    };
-    let tmp = path.with_extension("json.tmp");
-    if let Err(e) = std::fs::write(&tmp, json.as_bytes()) {
-        tracing::warn!(error = %e, "analytics: could not write temp state file");
-        return;
-    }
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        tracing::warn!(error = %e, "analytics: could not replace state file");
+    if let Err(e) = meridian_core::fs_utils::atomic_write_json(path, state) {
+        tracing::warn!(error = %e, "analytics: could not persist state file");
     }
 }
 

@@ -1,0 +1,22 @@
+{
+  "projectId": "02da1642-55a3-4fb7-9a7e-4812559374e1",
+  "shape": "package",
+  "pkg": "meridian-design-system",
+  "globalName": "MeridianDS",
+  "buildCmd": "node build.mjs",
+  "cssEntry": "dist/styles.css",
+  "guidelinesGlob": ["../../ui/STYLESHEET.md"],
+  "readmeHeader": ".design-sync/conventions.md",
+  "componentSrcMap": {
+    "CATS": null,
+    "PROVIDER_META": null
+  },
+  "overrides": {
+    "ModalShell": { "cardMode": "single", "viewport": "520x420" },
+    "HourTakeover": { "cardMode": "column" },
+    "FloatingDraftsPill": { "cardMode": "single", "viewport": "320x90" },
+    "EditableSummary": { "cardMode": "column" },
+    "TimeByCategory": { "cardMode": "column" },
+    "TimelineCard": { "cardMode": "column" }
+  }
+}

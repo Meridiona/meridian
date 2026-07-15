@@ -267,17 +267,8 @@ pub fn read_settings_value() -> Value {
 /// practice). Creates the parent dir on first write.
 pub fn write_settings_value(settings: &Value) -> anyhow::Result<()> {
     let path = settings_json_path();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)
-            .with_context(|| format!("creating settings dir {}", dir.display()))?;
-    }
-    let json = serde_json::to_string_pretty(settings).context("serialising settings")?;
-    // Temp file in the SAME directory so the rename is atomic (same filesystem).
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json.as_bytes())
-        .with_context(|| format!("writing temp settings {}", tmp.display()))?;
-    std::fs::rename(&tmp, &path)
-        .with_context(|| format!("atomically replacing {}", path.display()))?;
+    crate::fs_utils::atomic_write_json(&path, settings)
+        .with_context(|| format!("writing settings {}", path.display()))?;
     tracing::info!(path = %path.display(), "settings.json written");
     Ok(())
 }
