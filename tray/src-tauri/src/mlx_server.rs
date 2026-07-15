@@ -775,9 +775,11 @@ where
 }
 
 /// Stop our managed MLX server (SIGTERM + clear the pid marker). Used by the
-/// background upgrade to take the old runtime offline for the swap; a no-op when
+/// background upgrade to take the old runtime offline for the swap, and by the
+/// uninstall wizard ([`crate::commands::uninstall::execute_uninstall`]) before
+/// it deletes the runtime out from under a still-running process; a no-op when
 /// no server is recorded.
-async fn stop_server(manager: &SharedMlxManager) {
+pub(crate) async fn stop_server(manager: &SharedMlxManager) {
     let pid = manager.lock().await.pid.take();
     if let Some(pid) = pid {
         kill_pid(pid);
@@ -825,12 +827,12 @@ pub async fn auto_upgrade_runtime(manager: &SharedMlxManager) {
     {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
-            tracing::warn!(error = %e, "mlx: runtime upgrade download failed — keeping current runtime");
+            tracing::error!(error = %e, "mlx: runtime upgrade download failed — keeping current runtime");
             let _ = tokio::fs::remove_dir_all(staging_dir()).await;
             return;
         }
         Err(_) => {
-            tracing::warn!(
+            tracing::error!(
                 secs = RUNTIME_DOWNLOAD_TIMEOUT.as_secs(),
                 "mlx: runtime upgrade download timed out — keeping current runtime"
             );
@@ -871,7 +873,7 @@ pub async fn auto_upgrade_runtime(manager: &SharedMlxManager) {
             }
         }
         Err(e) => {
-            tracing::warn!(error = %e, "mlx: post-upgrade restart failed — supervise will retry")
+            tracing::error!(error = %e, "mlx: post-upgrade restart failed — supervise will retry")
         }
     }
 }

@@ -230,6 +230,21 @@ async fn load_meta(pool: &SqlitePool, date: &str) -> anyhow::Result<MetaRow> {
     })
 }
 
+/// True when `date`'s plan is already handled — confirmed or explicitly
+/// skipped in `daily_plan_meta`. The tray's daily auto-open gate: an
+/// already-planned day must not pop the planner again. Missing table or no
+/// row for `date` (and any read error) → `false`.
+///
+/// # Who calls this
+/// The tray poll loop (`tray/src-tauri/src/poll/plan_auto_open.rs`).
+#[tracing::instrument(skip(pool))]
+pub async fn plan_handled(pool: &SqlitePool, date: &str) -> bool {
+    load_meta(pool, date)
+        .await
+        .map(|m| m.confirmed_at.is_some() || m.skipped == 1)
+        .unwrap_or(false)
+}
+
 /// task_keys committed on the most recent planned day strictly before `date`.
 async fn carryover_keys(pool: &SqlitePool, date: &str) -> anyhow::Result<HashSet<String>> {
     if !table_exists(pool, "daily_plan").await {

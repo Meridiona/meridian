@@ -81,13 +81,17 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "signingIdentity": null
+      "signingIdentity": null,
+      "dmg": {
+        "background": "dmg/background.png",
+        "windowSize": { "width": 660, "height": 400 },
+        "appPosition": { "x": 180, "y": 170 },
+        "applicationFolderPosition": { "x": 480, "y": 170 }
+      }
     },
     "resources": {
       "../../target/release/meridian": "backend/meridian",
-      "../../scripts/a11y-helper/meridian-a11y-helper": "backend/meridian-a11y-helper",
-      "../../scripts/com.meridiona.daemon.plist": "backend/com.meridiona.daemon.plist",
-      "../../scripts/com.meridiona.a11y-helper.plist": "backend/com.meridiona.a11y-helper.plist"
+      "../../scripts/com.meridiona.daemon.plist": "backend/com.meridiona.daemon.plist"
     }
   }
 }

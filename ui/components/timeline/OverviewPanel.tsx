@@ -310,7 +310,7 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
 // Time by category) so they read as real section breaks, not micro-labels.
 function SectionHeading({ children }: { children: React.ReactNode }) {
   return (
-    <p style={{ font: "800 13px 'Plus Jakarta Sans', var(--font-pjs), sans-serif", color: 'var(--t-title)' }}>
+    <p style={{ font: "800 13px var(--font-sans)", color: 'var(--t-title)' }}>
       {children}
     </p>
   )

@@ -119,7 +119,7 @@ export function ReviewCard({
         style={{
           x, rotate,
           borderColor: 'var(--t-card-border)',
-          boxShadow: '0 20px 46px -14px rgba(20,16,40,0.34)',
+          boxShadow: 'var(--mt-card-shadow)',
           touchAction: 'pan-y',
           borderLeft: `4px solid ${accent}`,
         }}

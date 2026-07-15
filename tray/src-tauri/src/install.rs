@@ -119,7 +119,13 @@ fn dotenv_line_value(line: &str, key: &str) -> Option<String> {
     }
 }
 
-fn env_key_from_path(path: &std::path::Path, key: &str) -> Option<String> {
+/// Read a single `key=value` line out of a `.env` file — the tray's targeted
+/// alternative to the daemon's whole-file `dotenvy::dotenv_override()` (the
+/// tray does NOT auto-load env into its own process; see the crate-level
+/// gotcha in CLAUDE.md). Used wherever a command needs one credential from
+/// [`InstallMode::env_path`] — e.g. `commands::integrations`'s tracker keys,
+/// `commands::account::clerk_publishable_key`.
+pub(crate) fn env_key_from_path(path: &std::path::Path, key: &str) -> Option<String> {
     let contents = std::fs::read_to_string(path).ok()?;
     contents.lines().find_map(|l| dotenv_line_value(l, key))
 }

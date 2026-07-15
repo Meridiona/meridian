@@ -136,7 +136,10 @@ async fn patch_work_item(
     Ok(())
 }
 
-async fn my_unique_name(client: &reqwest::Client, cfg: &AzureDevOpsConfig) -> Result<String> {
+pub(crate) async fn my_unique_name(
+    client: &reqwest::Client,
+    cfg: &AzureDevOpsConfig,
+) -> Result<String> {
     let url = format!(
         "{}/_apis/connectionData?api-version=7.1",
         cfg.api_base.trim_end_matches('/')

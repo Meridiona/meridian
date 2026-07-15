@@ -51,6 +51,22 @@ jobs:
       # named GITHUB_*, which GitHub reserves). The OAuth App must have "Enable
       # Device Flow" checked.
       MERIDIAN_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
+      # Baked into the release binary at compile time (consumed by option_env! in
+      # tray/src-tauri/src/analytics.rs). PostHog Cloud project API key — a
+      # PUBLIC write-only capture token (no account/read access), safe to embed
+      # in a shipped client. Set the POSTHOG_API_KEY repo secret; absent →
+      # analytics compiles in disabled (see analytics::posthog_api_key).
+      MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+      # Baked into the release binary at compile time (consumed by option_env! in
+      # tray/src-tauri/src/commands/account.rs's DEFAULT_CLERK_PUBLISHABLE_KEY).
+      # Clerk PRODUCTION instance's publishable key (meridiona.com) — a public
+      # identifier, safe to embed in a shipped client. Every packaged install
+      # (this channel and staging alike) uses production Clerk; only a source
+      # checkout (`cargo run`/`tauri dev`) uses the dev instance, via the repo
+      # root .env's CLERK_PUBLISHABLE_KEY — see account.rs's module doc. Set the
+      # CLERK_PUBLISHABLE_KEY_PROD repo secret; absent → sign-in unavailable in
+      # this build (lib.rs skips registering the Clerk plugin with no key).
+      MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
       # Minisign key for the DMG auto-updater: `tauri build` (createUpdaterArtifacts)
       # signs Meridian.app.tar.gz with these so the installed app can verify the
       # update against the pubkey baked in tauri.conf.json. The build FAILS LOUDLY
@@ -60,6 +76,35 @@ jobs:
       #   gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # ── Apple Developer ID signing + notarization (Meridiona LLP, AQTYN9PZ83) ──
+      # Consumed by `tauri build` (via tray/package.json's build script) to sign
+      # the .app/DMG and submit them to Apple's notary service. The cert itself is
+      # imported into a temp keychain by the "Import Developer ID certificate"
+      # step below; these are the identifiers Tauri reads.
+      #
+      # Absent → the bundle is ad-hoc signed, which ships TWO regressions:
+      #   • Gatekeeper's "unidentified developer" scare on first launch, and
+      #   • a fresh cdhash every build, so macOS sees each update as a brand-new
+      #     app and silently drops the user's Screen Recording / Accessibility
+      #     grants (the "Permissions not granted after update" bug).
+      # verify-release-bundle.sh now FAILS the release in that state rather than
+      # publishing it.
+      #
+      # APPLE_API_KEY is the 10-char Key ID and APPLE_API_ISSUER the issuer UUID
+      # (both from App Store Connect → Integrations → Team Keys). The private .p8
+      # is passed by PATH, not content — see APPLE_API_KEY_PATH in that step.
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      # Tauri's DMG bundler skips the AppleScript step that sets the Finder
+      # window background/icon layout whenever `CI` is set (every GitHub
+      # Actions job sets `CI=true`), assuming CI runners can't drive Finder —
+      # https://github.com/tauri-apps/tauri/issues/1731. GitHub-hosted macOS
+      # runners DO have a full desktop session, so force the decoration step
+      # to run; without this the DMG ships the drag-to-Applications
+      # background.png as an inert file with no .DS_Store, so Finder never
+      # displays it.
+      TAURI_BUNDLER_DMG_IGNORE_CI: "true"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -132,6 +177,16 @@ jobs:
             url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
             "https://github.com/Meridiona/screenpipe-fork"
 
+      - name: Import Developer ID certificate + notarization key
+        # Shared composite action (deduped from release-staging.yml). It also
+        # no-ops gracefully when APPLE_CERTIFICATE is unset instead of crashing
+        # `security import`. Requires the repo to be checked out first (above).
+        uses: ./.github/actions/import-apple-cert
+        with:
+          apple-certificate: ${{ secrets.APPLE_CERTIFICATE }}
+          apple-certificate-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          apple-api-key-content: ${{ secrets.APPLE_API_KEY_CONTENT }}
+
       - name: semantic-release
         env:
           # GitHub PAT (repo scope) to push the version commit to main past
@@ -142,3 +197,10 @@ jobs:
           # via OIDC trusted publishing using the id-token above. Requires a
           # Trusted Publisher to be configured on npm for BOTH packages.
         run: npx semantic-release
+
+      - name: Clean up signing material
+        # Runs even on failure — never leave the cert/key on a runner.
+        if: always()
+        run: |
+          security delete-keychain "${RUNNER_TEMP}/meridian-signing.keychain-db" 2>/dev/null || true
+          rm -f "${RUNNER_TEMP}/apple-api-key.p8" "${RUNNER_TEMP}/certificate.p12"

@@ -134,23 +134,23 @@ function ConnectedPanel({
   return (
     <div className="px-4 pb-4 pt-2" style={{ background: 'var(--t-box)' }}>
       {cleanError && !reauthorizing && !pickingProjects && (
-        <div className="mb-3 rounded-md px-3 py-2" style={{ background: '#fef3c7', border: '1px solid #fcd34d' }}>
-          <p className="text-[12px] leading-relaxed" style={{ color: '#92400e' }}>
+        <div className="mb-3 rounded-md px-3 py-2" style={{ background: 'var(--status-warning-bg)', border: '1px solid var(--status-warning-border)' }}>
+          <p className="text-[12px] leading-relaxed" style={{ color: 'var(--status-warning-text)' }}>
             <strong>Sync failed:</strong> {cleanError}
           </p>
           <button onClick={() => setReauthorizing(true)} className="mt-2 text-[11px] px-3 py-1 rounded-md"
-            style={{ background: '#92400e', color: '#fff', cursor: 'pointer' }}>
+            style={{ background: 'var(--status-warning-text)', color: '#fff', cursor: 'pointer' }}>
             Fix: Reconnect {tracker.name}
           </button>
         </div>
       )}
       {needsGithubProjects && !reauthorizing && !pickingProjects && (
-        <div className="mb-3 rounded-md px-3 py-2" style={{ background: '#eff6ff', border: '1px solid #bfdbfe' }}>
-          <p className="text-[12px] leading-relaxed" style={{ color: '#1e40af' }}>
-            No GitHub Projects selected — tasks won&apos;t sync yet.
+        <div className="mb-3 rounded-md px-3 py-2" style={{ background: 'var(--status-info-bg)', border: '1px solid var(--status-info-border)' }}>
+          <p className="text-[12px] leading-relaxed" style={{ color: 'var(--status-info-text)' }}>
+            No GitHub Projects selected - tasks won&apos;t sync yet.
           </p>
           <button onClick={() => setPickingProjects(true)} className="mt-2 text-[11px] px-3 py-1 rounded-md"
-            style={{ background: '#1e40af', color: '#fff', cursor: 'pointer' }}>
+            style={{ background: 'var(--status-info-text)', color: '#fff', cursor: 'pointer' }}>
             Select Projects
           </button>
         </div>
@@ -737,7 +737,7 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
 
   if (loading) return <p className="text-[11px]" style={{ color: 'var(--ink-3)' }}>Loading your GitHub Projects…</p>
 
-  if (loadError) return <p className="text-[12px]" style={{ color: '#e53e3e' }}>{loadError}</p>
+  if (loadError) return <p className="text-[12px]" style={{ color: 'var(--status-error-text)' }}>{loadError}</p>
 
   if (!projects || projects.length === 0) {
     return (
@@ -771,7 +771,7 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
           </div>
         ))}
       </div>
-      {saveError && <p className="text-[11px]" style={{ color: '#e53e3e' }}>{saveError}</p>}
+      {saveError && <p className="text-[11px]" style={{ color: 'var(--status-error-text)' }}>{saveError}</p>}
       <button onClick={save} disabled={selected.size === 0 || saving} className="text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
         style={{ background: 'var(--accent)', color: '#fff', opacity: (selected.size === 0 || saving) ? 0.5 : 1, cursor: (selected.size === 0 || saving) ? 'not-allowed' : 'pointer' }}>
         {saving ? 'Saving…' : selected.size === 0 ? 'Select a project' : `Sync ${selected.size} project${selected.size === 1 ? '' : 's'}`}

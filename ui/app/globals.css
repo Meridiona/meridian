@@ -11,7 +11,7 @@
    - The OLD `--paper`/`--surface`/`--ink`/`--accent`/`--type-*` tokens
      (amber-gold edition, driven by html.dark) are still load-bearing for a
      handful of surfaces not yet ported to the Timeline design: the setup
-     wizard (app/setup/**), HealthBanner, MustFixBanner, HygieneDialog, and
+     wizard (app/setup/**), HealthBanner, HygieneDialog, and
      shared primitives in components/atoms.tsx. (The old Sessions/Week/Logs
      routes that originally motivated keeping this palette around were
      removed entirely — see git history — since they were unreachable from
@@ -21,12 +21,15 @@
    ─────────────────────────────────────────────────────────────────────────── */
 
 @theme {
-  /* Fonts — Plus Jakarta Sans / JetBrains Mono is the Timeline design's type
-     system. --font-serif (Georgia) is kept only for the legacy .type-* scale
-     below and the setup wizard's Instrument Serif usage. */
-  --font-sans:  var(--font-pjs);
-  --font-mono:  var(--font-jbmono);
-  --font-serif: Georgia, 'Times New Roman', serif;
+  /* Fonts — one voice, SF Pro, for both UI text and numerics (no separate mono
+     face; numeric alignment comes from font-variant-numeric: tabular-nums —
+     see the .font-mono/.mt-mono-sm rules below). -apple-system/system-ui
+     resolve to the real SF Pro Text/Display already installed on macOS, so no
+     font file is bundled. --font-serif is the setup wizard's Instrument Serif
+     hero font, with the Georgia stack as a load-failure fallback. */
+  --font-sans:  -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  --font-mono:  var(--font-sans);
+  --font-serif: var(--font-instrument-serif), Georgia, 'Times New Roman', serif;
 
   /* Legacy palette → Tailwind utilities (kept for Sessions/Week/setup) */
   --color-paper:       var(--paper);
@@ -86,12 +89,12 @@
   --ink-4:        #B8B5AF;
   --rule:         #EEECE8;
   --rule-2:       #E5E3DE;
-  --accent:       #C4822A;
-  --accent-soft:  #FBF0E2;
-  --live:         #C4822A;
+  --accent:       #7C3AED;
+  --accent-soft:  #F0E7FD;
+  --live:         #7C3AED;
   --success:      #2D7A4F;
   --warn:         #A36A1A;
-  --tint:         rgba(196, 130, 42, 0.07);
+  --tint:         rgba(124, 58, 237, 0.07);
   /* Floating-window shadow — used by the setup wizard's onboarding card. */
   --pop-shadow:   0 1px 1px rgba(0,0,0,.04), 0 18px 40px -10px rgba(20,18,14,.28), 0 44px 88px -18px rgba(20,18,14,.34);
 }
@@ -107,12 +110,12 @@ html.dark {
   --ink-4:        #4A4744;
   --rule:         #1E1D1B;
   --rule-2:       #272522;
-  --accent:       #D4942E;
-  --accent-soft:  rgba(212, 148, 46, 0.14);
-  --live:         #D4942E;
+  --accent:       #7C3AED;
+  --accent-soft:  rgba(124, 58, 237, 0.14);
+  --live:         #7C3AED;
   --success:      #5AB87A;
   --warn:         #D4A044;
-  --tint:         rgba(212, 148, 46, 0.08);
+  --tint:         rgba(124, 58, 237, 0.08);
   --pop-shadow:   0 1px 1px rgba(0,0,0,.4), 0 18px 40px -10px rgba(0,0,0,.6), 0 48px 90px -18px rgba(0,0,0,.66);
 }
 
@@ -131,13 +134,35 @@ html.dark {
      color) — also theme-independent per the Claude Design mock. */
   --gen-ring: rgba(139,92,246,.35);
   --gen-dot:  #A855F7;
+  /* Overlay-card and modal elevation shadows — previously hand-rolled as
+     identical literal strings in 4 separate files (CleanupCard/ReviewCard,
+     ModalShell/TaskDetailDialog). One token per role, theme-independent. */
+  --mt-card-shadow:  0 20px 46px -14px rgba(20,16,40,0.34);
+  --mt-modal-shadow: 0 24px 60px -18px rgba(20,16,40,0.5);
+}
+
+/* Flat, single-accent brand fills — the gradient flourish is reserved for
+   --mer-pill-bg alone (the nav pill lockup); every other "brand" surface,
+   including these two, is a solid var(--t-accent) fill, theme-aware. Hand-kept
+   in sync in tray/src/style.css (no import mechanism there).
+
+   NOT simply var(--t-accent) in every theme: --t-accent's job in `ink` is to
+   stay light (#DCCFFB) so it reads as text/link color against ink's dark
+   surfaces (ReportModal.tsx, SettingsSidebar.tsx active-tab text, etc. pair it
+   with dark backgrounds). These two tokens are the opposite case, a fill
+   that white text (ReportModal's hero + "Suggest a feature" button) sits on
+   top of, so `ink` overrides them back to the same dark violet the other
+   themes use, below. Getting this wrong makes white-on-#DCCFFB, which is
+   barely legible. */
+:root, html[data-theme="lilac"], html[data-theme="blush"] {
+  --btn-primary-bg:  var(--t-accent);
+  --draft-card-bg:   var(--t-accent);
 }
 
 /* ── Status banners — theme-independent semantic palette ──────────────────────
-   Single source for the info/warning/error swatches shared by NoticeBar
-   (stateful faults) and NotificationBanner (dismissible events). These identical
-   sets were previously re-declared inline in both files. Consumed via inline
-   style (JS reads them as var() strings), not Tailwind utilities. */
+   Single source for the info/warning/error swatches used by NoticeBar
+   (stateful faults). Consumed via inline style (JS reads them as var()
+   strings), not Tailwind utilities. */
 :root {
   --status-info-bg:        #eff6ff;
   --status-info-border:    #bfdbfe;
@@ -171,6 +196,9 @@ html.dark {
   --chrome-bg:  linear-gradient(180deg,#FCFBFF,#F0EAFC);
   --toolbar-bg: linear-gradient(180deg,#F9F7FE,#F1ECFB);
   --t-hair:       #E4DDF7;
+  /* The one Meridian accent (STYLESHEET.md §2, Violet 600) — every
+     brand-interactive element (links, primary actions, focus) uses this. */
+  --t-accent:     #7C3AED;
   --t-title:      #211D3D;
   --t-muted:      #6E6A88;
   --t-faint:      #948FB8;
@@ -211,6 +239,7 @@ html[data-theme="blush"] {
   --chrome-bg:  linear-gradient(180deg,#FAF8FF,#EDE4FB);
   --toolbar-bg: linear-gradient(180deg,#F7F3FE,#EDE4FB);
   --t-hair:       #DFD2F5;
+  --t-accent:     #7C3AED;
   --t-title:      #241E3D;
   --t-muted:      #6F6890;
   --t-faint:      #9791BC;
@@ -249,6 +278,11 @@ html[data-theme="ink"] {
   --chrome-bg:  linear-gradient(180deg,#332B72,#221D4E);
   --toolbar-bg: linear-gradient(180deg,#241F52,#1B1740);
   --t-hair:       rgba(255,255,255,.09);
+  --t-accent:     #DCCFFB;
+  /* Fixed dark violet for the white-text fills above (--btn-primary-bg /
+     --draft-card-bg) — deliberately NOT --t-accent, see that rule's comment. */
+  --btn-primary-bg: #7C3AED;
+  --draft-card-bg:  #7C3AED;
   --t-title:      #F4F1FC;
   --t-muted:      #BBB2DC;
   --t-faint:      #9A8FC2;
@@ -293,21 +327,15 @@ html, body {
 }
 
 * { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-/* Serif glyphs rely on fine strokes — subpixel rendering preserves them better */
-.font-serif { -webkit-font-smoothing: auto; -moz-osx-font-smoothing: auto; }
 
 body, .font-sans {
   font-feature-settings: 'ss01', 'cv11';
 }
 
 .font-mono {
-  font-family: var(--font-jbmono), ui-monospace, SFMono-Regular, monospace;
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-feature-settings: 'tnum', 'ss01';
-}
-
-.font-serif {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-feature-settings: 'liga', 'dlig';
 }
 
 ::selection { background: var(--accent); color: #ffffff; }
@@ -457,107 +485,6 @@ button:disabled       { cursor: not-allowed; }
 html.density-compact .density-pad { padding-top: .5rem;   padding-bottom: .5rem; }
 html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25rem; }
 
-/* ── Meridian Type Scale ─────────────────────────────────────────────────────
-   Semantic typography classes. Apply ONE of these instead of raw Tailwind
-   chains. Every class bundles font-family, size, leading, tracking, and
-   antialiasing. Colour is NOT included — pair with text-ink / text-ink-2 etc.
-
-   Usage:
-     <h1 className="type-hero mt-1" style={{ color: 'var(--ink)' }}>Today</h1>
-     <p  className="type-empty" style={{ color: 'var(--ink-2)' }}>No data.</p>
-   ─────────────────────────────────────────────────────────────────────────── */
-
-/* 72px — hero: Today page main heading */
-.type-hero {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 72px;
-  line-height: 0.95;
-  letter-spacing: -0.025em;
-  font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
-}
-
-/* 56px — page title: main heading on every page */
-.type-title {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 56px;
-  line-height: 1;
-  letter-spacing: -0.025em;
-  font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
-}
-
-/* 36px — section heading: task detail title, sub-section heads */
-.type-heading {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 36px;
-  line-height: 1.1;
-  letter-spacing: -0.025em;
-  font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
-}
-
-/* 26px — stat: insight callout / narrative text */
-.type-stat {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 26px;
-  line-height: 1.2;
-  letter-spacing: -0.01em;
-  font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
-}
-
-/* 28px italic — active: "You're on · task name" live heading */
-.type-active {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 28px;
-  line-height: 1;
-  font-style: italic;
-  letter-spacing: 0;
-  font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
-}
-
-/* 24px italic — empty: empty state messages */
-.type-empty {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 24px;
-  line-height: 1.2;
-  font-style: italic;
-  letter-spacing: 0;
-  font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
-}
-
-/* 22px — callout: insight card headline */
-.type-callout {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 22px;
-  line-height: 1.2;
-  letter-spacing: 0;
-  font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
-}
-
-/* 22px italic — wordmark: "meridian" in sidebar — slight tracking is intentional */
-.type-wordmark {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 22px;
-  line-height: 1;
-  font-style: italic;
-  letter-spacing: -0.02em;
-  font-feature-settings: 'liga', 'dlig';
-  -webkit-font-smoothing: auto;
-  -moz-osx-font-smoothing: auto;
-}
-
 /* ── Radix Switch — iOS-style pill ────────────────────────────────────────────
    Restored: these styles were added in 706364e (Apple-style Radix controls)
    and silently dropped when globals.css was rewritten for the type scale.
@@ -580,20 +507,20 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
 }
 
 /* ── Timeline type scale ──────────────────────────────────────────────────────
-   Plus Jakarta Sans, replacing the legacy Georgia .type-* scale for every
-   surface under ui/components/timeline/**. Mirrors the mock's literal `font:`
+   SF Pro (var(--font-sans)), replacing the legacy Georgia .type-* scale for
+   every surface under ui/components/timeline/**. Mirrors the mock's literal `font:`
    shorthand values: negative letter-spacing on large bold text, positive on
    small uppercase labels. Colour is NOT included — pair with text-title /
    text-muted / etc.
    ─────────────────────────────────────────────────────────────────────────── */
 .mt-title {
-  font: 800 17px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  font: 800 17px var(--font-sans);
   letter-spacing: -0.02em;
   line-height: 1.3;
 }
 
 .mt-title-lg {
-  font: 800 19px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  font: 800 19px var(--font-sans);
   letter-spacing: -0.02em;
   line-height: 1.3;
 }
@@ -602,52 +529,52 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
    Jakarta 800, 17–22px, line 1.2, -.02em. Distinct from .mt-title-lg (used for
    the swipe-card ticket title, which specs its own 1.3 line-height). */
 .mt-modal-title {
-  font: 800 20px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  font: 800 20px var(--font-sans);
   letter-spacing: -0.02em;
   line-height: 1.2;
 }
 
 /* Worklog card title — STYLESHEET.md §1: Jakarta 700, 13.5px, line 1.3, -.01em. */
 .mt-card-title {
-  font: 700 13.5px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  font: 700 13.5px var(--font-sans);
   letter-spacing: -0.01em;
   line-height: 1.3;
 }
 
 /* Toolbar date — STYLESHEET.md §1: Jakarta 700, 15px, line 1.1. */
 .mt-toolbar-date {
-  font: 700 15px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  font: 700 15px var(--font-sans);
   line-height: 1.1;
 }
 
 .mt-greeting {
-  font: 800 20px/1.25 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  font: 800 20px/1.25 var(--font-sans);
   letter-spacing: -0.02em;
 }
 
 .mt-label {
-  font: 700 11px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  font: 700 11px var(--font-sans);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .mt-stat {
-  font: 800 17px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  font: 800 17px var(--font-sans);
   letter-spacing: -0.02em;
 }
 
 .mt-body {
-  font: 500 13px/1.5 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  font: 500 13px/1.5 var(--font-sans);
 }
 
 .mt-body-sm {
-  font: 500 12px/1.45 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  font: 500 12px/1.45 var(--font-sans);
 }
 
 /* Status pill (NEEDS REVIEW/DRAFT/APPROVED) — STYLESHEET.md §1: Mono, not
    Jakarta — was previously set to Jakarta by mistake. */
 .mt-chip {
-  font: 700 9.5px var(--font-jbmono), ui-monospace, monospace;
+  font: 700 9.5px var(--font-sans);
   letter-spacing: 0.03em;
   text-transform: uppercase;
 }
@@ -656,11 +583,11 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
    `_pillStyle`) — solid dark lockup, so these set weight/size/tracking only;
    color is per-item (active vs inactive) via inline style. */
 .mt-navpill-brand {
-  font: 800 13.5px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  font: 800 13.5px var(--font-sans);
   letter-spacing: -0.01em;
 }
 .mt-navpill-item {
-  font: 700 12px 'Plus Jakarta Sans', var(--font-pjs), sans-serif;
+  font: 700 12px var(--font-sans);
   letter-spacing: -0.005em;
   transition: background 0.15s, color 0.15s;
 }
@@ -670,7 +597,8 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
    arbitrary Tailwind value (sizes vary 10.5–12px per row); this class only
    owns family/weight/tracking, which were previously missing entirely. */
 .mt-mono-sm {
-  font-family: var(--font-jbmono), ui-monospace, monospace;
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-feature-settings: 'tnum';
   font-weight: 600;
   letter-spacing: 0.02em;

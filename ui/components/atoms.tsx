@@ -1,9 +1,8 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 'use client'
 
-import { useEffect, useState } from 'react'
 import { ProviderIcon } from './ProviderIcon'
-import { BRAND_ICONS } from '@/lib/brand-icons'
+import { getBrandIcon } from '@/lib/brand-icons'
 import { useAppIconUrl } from '@/lib/app-icons'
 
 // ── Time formatting ──────────────────────────────────────────────────────────
@@ -14,15 +13,6 @@ export function fmtDur(seconds: number): string {
   const h = Math.floor(m / 60)
   const rm = m % 60
   return rm > 0 ? `${h}h ${rm}m` : `${h}h`
-}
-
-export function fmtDurDecimal(seconds: number): string {
-  if (seconds < 60) return '0:' + String(seconds).padStart(2, '0')
-  const m = Math.floor(seconds / 60)
-  if (m < 60) return '0:' + String(m).padStart(2, '0')
-  const h = Math.floor(m / 60)
-  const rm = m % 60
-  return `${h}:${String(rm).padStart(2, '0')}`
 }
 
 export function fmtClock(isoOrHours: string | number): string {
@@ -117,25 +107,12 @@ export function CatDot({ cat, size = 6 }: { cat: string; size?: number }) {
   )
 }
 
-export function CatLabel({ cat, className = '' }: { cat: string; className?: string }) {
-  const meta = CATS[cat] ?? CATS.idle_personal
-  return (
-    <span
-      className={`inline-flex items-center gap-1.5 text-[11px] tracking-wide uppercase ${className}`}
-      style={{ color: 'var(--ink-3)' }}
-    >
-      <CatDot cat={cat} />
-      {meta.label}
-    </span>
-  )
-}
-
 export function AppGlyph({ app, size = 24, withName = false }: { app: string | null | undefined; size?: number; withName?: boolean }) {
   // Real icon (extracted from the installed .app bundle) wins once resolved;
   // the brand wordmark / letter monogram render immediately in the meantime
   // (and stay as the permanent fallback for an app we can't resolve).
   const iconUrl = useAppIconUrl(app)
-  const brand = app ? BRAND_ICONS[app] : undefined
+  const brand = getBrandIcon(app)
   const meta = appMeta(app)
   const color = brand?.hex ?? meta.color
   return (
@@ -148,7 +125,7 @@ export function AppGlyph({ app, size = 24, withName = false }: { app: string | n
         {iconUrl ? (
           // eslint-disable-next-line @next/next/no-img-element -- local asset:// URL, not a Next-optimizable remote image
           <img src={iconUrl} alt="" width={size} height={size} style={{ objectFit: 'contain' }} />
-        ) : brand ? (
+        ) : brand?.path ? (
           <svg viewBox={brand.viewBox} width={size * 0.58} height={size * 0.58} fill={brand.hex} aria-hidden="true">
             <path d={brand.path} />
           </svg>
@@ -229,21 +206,6 @@ export function StatusPill({ status, isTerminal }: { status: string; isTerminal?
   )
 }
 
-export function LiveDot({ size = 8 }: { size?: number }) {
-  return (
-    <span className="inline-flex items-center justify-center relative" style={{ width: size, height: size }}>
-      <span
-        className="absolute inline-block rounded-full live-dot"
-        style={{ width: size, height: size, background: 'var(--live)' }}
-      />
-      <span
-        className="inline-block rounded-full"
-        style={{ width: Math.max(3, size - 4), height: Math.max(3, size - 4), background: 'var(--live)' }}
-      />
-    </span>
-  )
-}
-
 export function SectionHead({ kicker, title, right }: { kicker?: string; title: React.ReactNode; right?: React.ReactNode }) {
   return (
     <div className="flex items-end justify-between mb-3">
@@ -258,68 +220,3 @@ export function SectionHead({ kicker, title, right }: { kicker?: string; title: 
   )
 }
 
-export function Card({
-  children,
-  className = '',
-  as: Tag = 'div',
-  style,
-  ...props
-}: {
-  children: React.ReactNode
-  className?: string
-  as?: React.ElementType
-  style?: React.CSSProperties
-  [key: string]: unknown
-}) {
-  return (
-    <Tag
-      {...props}
-      className={`rounded-xl border ${className}`}
-      style={{ background: 'var(--surface)', borderColor: 'var(--rule)', ...style }}
-    >
-      {children}
-    </Tag>
-  )
-}
-
-export function ConfidenceRing({ value, size = 14 }: { value: number; size?: number }) {
-  const r = size / 2 - 1.5
-  const c = 2 * Math.PI * r
-  const filled = c * Math.max(0, Math.min(1, value))
-  const stroke = value > 0.8 ? 'var(--success)' : value > 0.5 ? 'var(--accent)' : 'var(--warn)'
-  return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-label={`${Math.round(value * 100)}% confidence`}>
-      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--rule-2)" strokeWidth="1.5" />
-      <circle
-        cx={size / 2} cy={size / 2} r={r} fill="none"
-        stroke={stroke} strokeWidth="1.5" strokeLinecap="round"
-        strokeDasharray={`${filled} ${c}`}
-        transform={`rotate(-90 ${size / 2} ${size / 2})`}
-      />
-    </svg>
-  )
-}
-
-export function SegBar({ segments, height = 4 }: { segments: Array<{ cat?: string; value: number; color?: string }>; height?: number }) {
-  const total = segments.reduce((s, x) => s + x.value, 0) || 1
-  return (
-    <span className="inline-flex w-full overflow-hidden rounded-full" style={{ height, background: 'var(--rule)' }}>
-      {segments.map((s, i) => (
-        <span
-          key={i}
-          className={s.cat ? `cat-${s.cat}` : ''}
-          style={{ width: `${(s.value / total) * 100}%`, background: s.color ?? undefined }}
-        />
-      ))}
-    </span>
-  )
-}
-
-export function useTick(seconds = 1): number {
-  const [t, setT] = useState(0)
-  useEffect(() => {
-    const id = setInterval(() => setT(x => x + 1), seconds * 1000)
-    return () => clearInterval(id)
-  }, [seconds])
-  return t
-}

@@ -59,6 +59,14 @@ jobs:
       # Public GitHub OAuth device-flow client id (see release.yml); GH_OAUTH_CLIENT_ID
       # repo secret. Absent → GitHub browser connect unavailable in the staging build.
       MERIDIAN_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
+      # Baked into the staging binary at compile time (see release.yml); same
+      # secret. Absent → PostHog analytics simply disabled in the staging build.
+      MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+      # Baked into the staging binary at compile time (see release.yml); same
+      # secret — staging is downloadable/installable too, so it gets Clerk
+      # PRODUCTION, not the dev instance (only a source checkout uses dev).
+      # Absent → sign-in unavailable in the staging build.
+      MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
       # Minisign key for the DMG auto-updater: `tauri build` (createUpdaterArtifacts)
       # signs Meridian.app.tar.gz so the installed staging app can verify the
       # update against the pubkey baked in tauri.conf.json. REQUIRED here (unlike
@@ -66,6 +74,23 @@ jobs:
       # latest.json and the mirror no-ops, so the staging channel can't update.
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # Apple Developer ID signing + notarization — identical to release.yml (see
+      # the long note there). Staging signs with the SAME Developer ID cert on
+      # purpose: staging is where we prove the signed/notarized DMG works end to
+      # end (Gatekeeper-clean install, TCC grants surviving an auto-update) before
+      # the same machinery ships to production.
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      # Tauri's DMG bundler skips the AppleScript step that sets the Finder
+      # window background/icon layout whenever `CI` is set (every GitHub
+      # Actions job sets `CI=true`), assuming CI runners can't drive Finder —
+      # https://github.com/tauri-apps/tauri/issues/1731. GitHub-hosted macOS
+      # runners DO have a full desktop session, so force the decoration step
+      # to run; without this the DMG ships the drag-to-Applications
+      # background.png as an inert file with no .DS_Store, so Finder never
+      # displays it.
+      TAURI_BUNDLER_DMG_IGNORE_CI: "true"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -129,6 +154,16 @@ jobs:
         # is never committed. Keeps the staging config out of main's tree.
         run: cp .releaserc.staging.json .releaserc.json
 
+      - name: Import Developer ID certificate + notarization key
+        # Shared composite action (deduped from release.yml) - see the action's
+        # own comments for the set-key-partition-list / APPLE_API_KEY_PATH
+        # gotchas. Also no-ops gracefully when APPLE_CERTIFICATE is unset.
+        uses: ./.github/actions/import-apple-cert
+        with:
+          apple-certificate: ${{ secrets.APPLE_CERTIFICATE }}
+          apple-certificate-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          apple-api-key-content: ${{ secrets.APPLE_API_KEY_CONTENT }}
+
       - name: semantic-release (staging channel)
         env:
           # PAT to create the tag/prerelease past branch protection; falls back
@@ -145,4 +180,15 @@ jobs:
           # zone — staging is where we validate the proxy against real installer
           # traffic first.
           MERIDIAN_HF_ENDPOINT: "https://hf.meridiona.com"
+          # Bake the build channel into the binary (commands::version::build_channel,
+          # same option_env! pattern) so the dashboard/popover version badge reads
+          # "staging" instead of the "prod" default. Production leaves this unset.
+          MERIDIAN_CHANNEL: "staging"
         run: npx semantic-release
+
+      - name: Clean up signing material
+        # Runs even on failure — never leave the cert/key on a runner.
+        if: always()
+        run: |
+          security delete-keychain "${RUNNER_TEMP}/meridian-signing.keychain-db" 2>/dev/null || true
+          rm -f "${RUNNER_TEMP}/apple-api-key.p8" "${RUNNER_TEMP}/certificate.p12"

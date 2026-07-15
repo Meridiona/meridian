@@ -117,7 +117,7 @@ async fn put_issue(
 }
 
 /// Resolve the current user's accountId for "assign to me".
-async fn my_account_id(ctx: &JiraReqCtx, client: &reqwest::Client) -> Result<String> {
+pub(crate) async fn my_account_id(ctx: &JiraReqCtx, client: &reqwest::Client) -> Result<String> {
     let url = ctx.api_url("/rest/api/3/myself");
     let resp = ctx
         .apply(client.get(&url))

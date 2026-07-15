@@ -49,7 +49,7 @@ export default function HygieneDialog({ task, onClose, onApplied }: {
               <span className="text-[16px] leading-none">×</span>
             </button>
           </div>
-          <h2 className="type-heading leading-snug" style={{ color: 'var(--ink)' }}>{task.title}</h2>
+          <h2 className="mt-modal-title leading-snug" style={{ color: 'var(--ink)' }}>{task.title}</h2>
           <div className="flex items-center gap-2 mt-3">
             <span className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full font-medium"
               style={ done

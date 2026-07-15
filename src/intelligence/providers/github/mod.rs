@@ -103,6 +103,10 @@ async fn upsert(pool: &SqlitePool, tasks: &[(GhTask, serde_json::Value)]) -> Res
 // Prune (scoped to provider = 'github')
 // ---------------------------------------------------------------------------
 
+/// Delete `pm_tasks` rows no longer returned by the active-task fetch (closed,
+/// reassigned, etc.) — EXCEPT a task_key that has worklog history
+/// (`pm_worklogs`), which is kept forever so a completed ticket's title never
+/// disappears from the timeline once it's closed.
 async fn prune(pool: &SqlitePool, fetched_keys: &[String]) -> Result<usize> {
     let placeholders = fetched_keys
         .iter()
@@ -123,7 +127,8 @@ async fn prune(pool: &SqlitePool, fetched_keys: &[String]) -> Result<usize> {
         .context("pruning github pm_task_embeddings")?;
 
     let task_sql = format!(
-        "DELETE FROM pm_tasks WHERE provider = 'github' AND task_key NOT IN ({placeholders})"
+        "DELETE FROM pm_tasks WHERE provider = 'github' AND task_key NOT IN ({placeholders}) \
+         AND task_key NOT IN (SELECT DISTINCT task_key FROM pm_worklogs)"
     );
     let mut q = sqlx::query(&task_sql);
     for key in fetched_keys {
@@ -234,17 +239,17 @@ pub async fn refresh_if_stale(
         tracing::warn!(
             "partial github fetch — skipping prune to preserve tasks from failed project(s)"
         );
-    } else if !keys.is_empty() {
+    } else {
+        // `prune` is safe for an empty `keys` slice: it emits `NOT IN ()`
+        // (always true in modern SQLite) so it full-clears, and crucially it
+        // deletes dependent `pm_task_embeddings` rows BEFORE `pm_tasks`. The old
+        // empty-keys fallback deleted `pm_tasks` directly and hit the
+        // `pm_task_embeddings.task_key` foreign key, failing the full-clear.
         match prune(pool, &keys).await {
             Ok(0) => {}
             Ok(p) => tracing::info!(pruned_count = p, "pruned stale github tasks"),
             Err(e) => tracing::warn!(error = %e, "github prune failed"),
         }
-    } else if let Err(e) = sqlx::query("DELETE FROM pm_tasks WHERE provider = 'github'")
-        .execute(pool)
-        .await
-    {
-        tracing::warn!(error = %e, "github full-clear failed");
     }
 
     tracing::info!(upserted_count = keys.len(), "github tasks refreshed");

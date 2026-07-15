@@ -2,7 +2,10 @@
 //
 // Morning "plan your day" nudge. Once per local day, when the dev has neither
 // confirmed nor skipped today's plan and there are open tickets to plan against,
-// enqueue a `plan.nudge` notification. Idempotent via the outbox dedup key, so
+// enqueue a `plan.nudge` notification. If the tray's daily planner auto-open
+// (`~/.meridian/plan_auto_opened`) fired within the last hour, the nudge waits
+// — it is the second-chance reminder after a dismissed planner, not a
+// duplicate toast over the window that just opened. Idempotent via the outbox dedup key, so
 // the poll loop can call this every tick without spamming. A nudge is only
 // meaningful on its own day, so it carries an `expires_at` of the next local
 // midnight, and any still-live nudge from a previous day (or one whose plan has
@@ -19,6 +22,13 @@ use crate::notifications::{self, NewNotification};
 // once-per-day dedup means the nudge lands on the first tick after the start hour.
 const NUDGE_FROM_HOUR: u32 = 8;
 const NUDGE_UNTIL_HOUR: u32 = 18;
+
+// How long after the tray's daily planner auto-open to hold the nudge back —
+// deliberately the same grace as a "Snooze 1h" answer (`SNOOZE_SECS` in
+// notification_responses.rs). The auto-open already put the planner in the
+// user's face; the nudge is the second chance if they dismissed it without
+// planning, not a toast over the window that just opened.
+const AUTO_OPEN_GRACE_SECS: i64 = 3600;
 
 /// Enqueue today's plan nudge if it's due and not already actioned. Best-effort:
 /// any DB error (e.g. a pre-migration-041 database with no `daily_plan` tables)
@@ -67,6 +77,20 @@ pub async fn maybe_nudge(pool: &SqlitePool) -> Result<()> {
         }
     }
 
+    // Auto-open aware hold-back: if the tray auto-opened the planner today,
+    // give the user an hour with it before reminding (the marker holds the
+    // open's timestamp — see `meridian_core::plan_marker`). Once the hour has
+    // passed and the plan is still unconfirmed, the nudge fires as usual, so
+    // a dismissed planner still gets its reminder later.
+    if let Ok(home) = std::env::var("HOME") {
+        let path =
+            meridian_core::plan_marker::marker_path(&std::path::Path::new(&home).join(".meridian"));
+        let marker = std::fs::read_to_string(path).unwrap_or_default();
+        if nudge_held_back(&marker, &today, &now) {
+            return Ok(());
+        }
+    }
+
     // Nothing on the board to plan against → no nudge.
     let has_open_tasks: i64 = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM pm_tasks WHERE COALESCE(is_terminal, 0) = 0)",
@@ -96,6 +120,24 @@ pub async fn maybe_nudge(pool: &SqlitePool) -> Result<()> {
         nudge = nudge.expiring(exp);
     }
     notifications::enqueue(pool, nudge).await
+}
+
+/// True while the nudge should wait because the tray's planner auto-open
+/// happened less than [`AUTO_OPEN_GRACE_SECS`] ago today. Pure so the three
+/// regimes are unit-testable: no/stale/foreign-day marker → don't hold;
+/// today's marker within the grace hour → hold; past it → fire. A today
+/// marker whose timestamp can't be parsed (legacy bare-date form) → don't
+/// hold — age unknown beats never reminding.
+fn nudge_held_back(marker_contents: &str, today: &str, now: &chrono::DateTime<Local>) -> bool {
+    if !meridian_core::plan_marker::opened_today(marker_contents, today) {
+        return false;
+    }
+    match meridian_core::plan_marker::opened_at(marker_contents) {
+        Some(opened) => {
+            now.signed_duration_since(opened) < chrono::Duration::seconds(AUTO_OPEN_GRACE_SECS)
+        }
+        None => false,
+    }
 }
 
 /// `t` as the UTC ISO-8601 string shape (`2026-07-05T02:30:24Z`) the
@@ -191,6 +233,29 @@ mod tests {
             Some(now),
             "a prior-day nudge must be expired"
         );
+    }
+
+    #[test]
+    fn nudge_hold_back_covers_the_grace_hour_only() {
+        let now = Local::now();
+        let today = now.format("%Y-%m-%d").to_string();
+        let stamp_ago =
+            |secs: i64| meridian_core::plan_marker::stamp(&(now - chrono::Duration::seconds(secs)));
+
+        // No marker / a prior-day marker → nudge free to fire.
+        assert!(!nudge_held_back("", &today, &now));
+        assert!(!nudge_held_back("1999-01-01T09:00:00+00:00", &today, &now));
+        // Opened 30 min ago → held. Opened 2 h ago → fires (second chance).
+        assert!(nudge_held_back(&stamp_ago(1800), &today, &now));
+        assert!(!nudge_held_back(&stamp_ago(7200), &today, &now));
+        // Exactly at the boundary the hold ends.
+        assert!(!nudge_held_back(
+            &stamp_ago(AUTO_OPEN_GRACE_SECS),
+            &today,
+            &now
+        ));
+        // Legacy bare-date marker (no timestamp): age unknown → don't hold.
+        assert!(!nudge_held_back(&today, &today, &now));
     }
 
     #[test]

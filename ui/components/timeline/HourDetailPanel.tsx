@@ -152,7 +152,7 @@ function Section({ label, children, emphasize = false }: { label: string; childr
   return (
     <div>
       {emphasize ? (
-        <p className="mb-2.5" style={{ font: "800 13.5px 'Plus Jakarta Sans', var(--font-pjs), sans-serif", color: 'var(--t-title)' }}>
+        <p className="mb-2.5" style={{ font: "800 13.5px var(--font-sans)", color: 'var(--t-title)' }}>
           {label}
         </p>
       ) : (

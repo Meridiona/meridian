@@ -1,0 +1,11 @@
+node_modules/
+dist/
+
+# design-sync: staged converter scripts + their own deps, generated build
+# output, and machine-local verification state. The durable set (config.json,
+# NOTES.md, conventions.md, previews/) is committed.
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules

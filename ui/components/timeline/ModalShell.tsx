@@ -33,11 +33,11 @@ export function ModalShell({ title, onClose, children, maxWidth = 720, scrollIns
       style={{ background: 'rgba(20,16,40,0.5)', backdropFilter: 'blur(3px)' }} onClick={onClose}>
       <div className="w-full rounded-2xl overflow-hidden flex flex-col bg-panel"
         style={{
-          maxWidth, maxHeight: '92%', border: '1px solid var(--t-card-border)', boxShadow: '0 24px 60px -18px rgba(20,16,40,0.5)',
+          maxWidth, maxHeight: '92%', border: '1px solid var(--t-card-border)', boxShadow: 'var(--mt-modal-shadow)',
           ...(scrollInside ? { height: 720 } : {}),
         }}
         onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-6 py-4 border-b shrink-0" style={{ borderColor: 'var(--t-hair)' }}>
+        <div className="flex items-center justify-between px-7 py-5 border-b shrink-0" style={{ borderColor: 'var(--t-hair)' }}>
           <p className="mt-modal-title text-title">{title}</p>
           <button onClick={onClose} aria-label="Close"
             className="inline-flex items-center justify-center rounded-full bg-wrap"
@@ -47,7 +47,7 @@ export function ModalShell({ title, onClose, children, maxWidth = 720, scrollIns
         </div>
         {scrollInside
           ? <div className="flex-1 min-h-0 flex flex-col">{children}</div>
-          : <div className="overflow-y-auto nice-scroll p-6">{children}</div>}
+          : <div className="overflow-y-auto nice-scroll p-7">{children}</div>}
       </div>
     </div>
   )

@@ -13,11 +13,11 @@ import type { CSSProperties, ReactNode } from 'react'
 import { invoke, load, tauri } from '@/lib/bridge'
 import { STEPS, Welcome, Completion } from './steps'
 import type { Wiz } from './steps'
-import type { DownloadProgress, MlxStatusResponse, SystemSpecs } from './data'
+import type { DownloadProgress, MlxStatusResponse, NotifState, SystemSpecs } from './data'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import { Btn, Check, Kicker } from './atoms'
 
-const SERIF: CSSProperties = { fontFamily: 'var(--font-instrument-serif), Georgia, serif' }
+const SERIF: CSSProperties = { fontFamily: 'var(--font-serif)' }
 
 export default function SetupWizard() {
   const [welcome, setWelcome] = useState(true)
@@ -30,7 +30,7 @@ export default function SetupWizard() {
   const [mlxErr, setMlxErr] = useState('')
 
   // Step 1 — permissions (live)
-  const [perms, setPerms] = useState<Wiz['perms']>({ accessibility: null, screen: null, input: null })
+  const [perms, setPerms] = useState<Wiz['perms']>({ accessibility: null, screen: null, notifications: null })
 
   // Step 3 — local intelligence (MLX runtime + model)
   const [specs, setSpecs] = useState<SystemSpecs | null>(null)
@@ -50,6 +50,10 @@ export default function SetupWizard() {
   // (get_integrations) so the rail status + completion summary stay accurate.
   const [integrations, setIntegrations] = useState<IntegrationsResponse | null>(null)
 
+  // Step 3 — sign in (Clerk email one-time-code — see ./signin.tsx). The
+  // widget owns its own form/busy/error state; this just holds the result.
+  const [signedInEmail, setSignedInEmail] = useState<string | null>(null)
+
   const active = !welcome && !done
 
   // Detect hardware once on mount.
@@ -57,16 +61,31 @@ export default function SetupWizard() {
     invoke<SystemSpecs>('detect_system_specs').then(setSpecs).catch(() => {})
   }, [])
 
-  // Poll the three required permissions on the Permissions step.
+  // Poll the two required permissions + optional notifications on the
+  // Permissions step. Input Monitoring is intentionally not polled — it's
+  // redundant with Accessibility (see the note on PERMISSIONS in ./data.ts).
+  // Notification state also refreshes here after the user answers the OS
+  // dialog or flips the toggle in System Settings.
   useEffect(() => {
     if (!active || step !== 0) return
     const poll = async () => {
-      const [accessibility, screen, input] = await Promise.all([
+      const [accessibility, screen, notifications] = await Promise.all([
         invoke<boolean>('check_accessibility').catch(() => false),
         invoke<boolean>('check_screen_recording').catch(() => false),
-        invoke<boolean>('check_input_monitoring').catch(() => false),
+        invoke<NotifState>('check_notifications').catch((): NotifState => 'unavailable'),
       ])
-      setPerms({ accessibility, screen, input })
+      setPerms((prev) => ({
+        accessibility, screen,
+        // Bundled-ness is fixed for the process lifetime, so once we've seen a
+        // real state (prompt/granted/denied) a later 'unavailable' can only be
+        // a transient Swift-bridge hiccup on this one poll tick, never a
+        // genuine regression — keep the last known-good state instead of
+        // flashing the card away and back every ~2s.
+        notifications:
+          notifications === 'unavailable' && prev.notifications && prev.notifications !== 'unavailable'
+            ? prev.notifications
+            : notifications,
+      }))
     }
     poll()
     const id = setInterval(poll, 2000)
@@ -156,19 +175,33 @@ export default function SetupWizard() {
   }, [])
 
   // Screen Recording needs an explicit request to register the app before the
-  // Settings pane shows anything to toggle (same pattern as grantInput).
+  // Settings pane shows anything to toggle (else it lists "No Items").
   const grantScreen = useCallback(async () => {
     setErr('')
     try { await invoke('request_screen_recording') } catch { /* prompt is best-effort */ }
     invoke('open_permission_pane', { pane: 'screen_recording' }).catch((e) => setErr(String(e)))
   }, [])
 
-  // Input Monitoring needs an explicit request to register the app before the
-  // Settings pane shows anything to toggle (mirrors the original wizard).
-  const grantInput = useCallback(async () => {
+  // Notifications: 'prompt' → request surfaces the one-shot macOS dialog and
+  // returns the answer; after a deny macOS never re-prompts, so the only
+  // recovery is the System Settings → Notifications pane — go straight there
+  // instead of re-requesting (the request would just silently re-resolve to
+  // 'denied' with no dialog, adding a pointless round-trip through the
+  // notification plugin before ever reaching the pane). The request result
+  // updates state immediately; the 2 s poll keeps it honest after pane edits.
+  const grantNotifications = useCallback(async (alreadyDenied: boolean) => {
     setErr('')
-    try { await invoke('request_input_monitoring') } catch { /* prompt is best-effort */ }
-    invoke('open_permission_pane', { pane: 'input_monitoring' }).catch((e) => setErr(String(e)))
+    if (alreadyDenied) {
+      invoke('open_permission_pane', { pane: 'notifications' }).catch((e) => setErr(String(e)))
+      return
+    }
+    try {
+      const state = await invoke<NotifState>('request_notifications')
+      setPerms((prev) => ({ ...prev, notifications: state }))
+      if (state === 'denied') {
+        invoke('open_permission_pane', { pane: 'notifications' }).catch((e) => setErr(String(e)))
+      }
+    } catch (e) { setErr(String(e)) }
   }, [])
 
   // Retry after a runtime/model provisioning error: clear the one-shot guards so
@@ -180,12 +213,22 @@ export default function SetupWizard() {
     setProgress({ received: 0, total: 0, speed: 0, message: 'Retrying…' })
   }, [])
 
+  // Persists the Clerk-verified email so the Rust side knows who's signed in
+  // even after this webview session ends (see commands::save_account_email).
+  // Best-effort: a failed write here never blocks the wizard — the widget
+  // already has a live Clerk session and lets the user through regardless.
+  const onSignedIn = useCallback((email: string) => {
+    setSignedInEmail(email)
+    invoke('save_account_email', { email }).catch(() => {})
+  }, [])
+
   const wiz: Wiz = {
-    perms, openPane, grantScreen, grantInput,
+    perms, openPane, grantScreen, grantNotifications,
     specs, mlx, downloading, prefetching, modelReady, progress,
     speed: progress?.speed ?? null,
     err: mlxErr, retryModel,
     integrations, refetchIntegrations,
+    signedInEmail, onSignedIn,
   }
 
   // ── Navigation ───────────────────────────────────────────────────────────────
@@ -212,11 +255,25 @@ export default function SetupWizard() {
   }
 
   return (
-    <div style={{ position: 'fixed', inset: 0, display: 'grid', placeItems: 'center', background: 'var(--t-panel)' }}>
+    <div style={{
+      position: 'fixed', inset: 0, display: 'grid', placeItems: 'center',
+      // Subtle top-lit depth so the centred card reads as a distinct surface —
+      // otherwise, when the window is enlarged / full-screened, the card floats
+      // on a big flat panel.
+      background: 'radial-gradient(130% 130% at 50% 0%, color-mix(in srgb, var(--t-card) 34%, var(--t-panel)) 0%, var(--t-panel) 62%)',
+    }}>
       <div className="rise" style={{
         width: 948, height: 628, borderRadius: 18, background: 'var(--t-card)',
         border: '0.5px solid var(--t-card-border)', overflow: 'hidden', color: 'var(--t-title)',
         boxShadow: 'var(--pop-shadow)',
+        // Grow the whole card proportionally as the window grows (macOS
+        // full-screen / manual resize) so it stays a prominent, readable surface
+        // instead of a small rectangle. clamp floor = 1 (never shrinks below the
+        // design size at the default window), cap = 1.7 (won't balloon on a 27").
+        // min() of the width- and height-fits guarantees it never exceeds the
+        // viewport; vector text scales crisply.
+        transform: 'scale(clamp(1, min(calc(100vw / 1010), calc(100vh / 700)), 1.7))',
+        transformOrigin: 'center',
       }}>
         {welcome ? (
           <Welcome onBegin={() => { setWelcome(false); setStep(0) }} />

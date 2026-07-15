@@ -3,21 +3,52 @@
 // Real brand mark path data for the "Time by app" glyphs (AppGlyph in
 // components/atoms.tsx). Sourced from simple-icons (CC0) for third-party
 // apps that have a public vector wordmark, plus Font Awesome Free (CC BY 4.0)
-// for Slack, which simple-icons dropped over a trademark dispute. Apple's own
-// system apps (Terminal, Mail) and unreleased/unlisted tools (Antigravity)
-// have no redistributable brand mark, so those keep the letter-monogram
-// fallback in atoms.tsx instead of an invented "logo".
+// for Slack, which simple-icons dropped over a trademark dispute. Apps whose
+// wordmark isn't redistributable anywhere (ChatGPT/OpenAI, VS Code — both
+// dropped by simple-icons over trademark, no Font Awesome equivalent either)
+// get a `hex`-only entry: the real brand color without an invented glyph,
+// falling back to the letter-monogram icon in AppGlyph. Apple's own system
+// apps (Terminal, Mail) and unreleased/unlisted tools (Antigravity) are the
+// same case, but keep their overrides in atoms.tsx's APP_META instead of
+// here since that table predates this file.
 //
-// Each entry is a single-path monochrome glyph + the brand's official hex —
+// A full entry is a single-path monochrome glyph + the brand's official hex —
 // rendered as `fill: hex` on a tinted rounded background, matching the
 // existing AppGlyph treatment. Re-derive by reading
 // `node_modules/simple-icons/icons/<slug>.svg` (path + viewBox) and
 // `node_modules/simple-icons/data/simple-icons.json` (hex) if an entry needs
 // to be added or refreshed.
-export interface BrandIcon {
-  viewBox: string
-  path: string
-  hex: string
+//
+// Lookups MUST go through `getBrandIcon()`, not a raw `BRAND_ICONS[app]`
+// index — real `app_name` values from macOS sometimes carry invisible
+// Unicode formatting characters (e.g. WhatsApp's window title is actually
+// `"‎WhatsApp"`, a leading left-to-right mark, not `"WhatsApp"`), which
+// silently fail an exact-match lookup and fall through to the hashed-hue
+// fallback with no visible error.
+// `viewBox` and `path` are tied together: an entry either has a real glyph
+// (both present) or is colour-only (both absent). `AppGlyph` renders
+// `<svg viewBox={brand.viewBox}><path d={brand.path} /></svg>` whenever
+// `brand.path` is set, so a `path` without a `viewBox` would produce a
+// viewBox-less SVG. The union makes that combination a compile error instead
+// of a silent runtime bug.
+export type BrandIcon = { hex: string } & (
+  | { viewBox: string; path: string }
+  | { viewBox?: undefined; path?: undefined }
+)
+
+/** Strips invisible Unicode formatting marks (LRM, RLM, zero-width chars, BOM)
+ * that some apps' native window titles carry, then trims — so `BRAND_ICONS`
+ * lookups match on the visible name rather than the raw title string. */
+const INVISIBLE_FORMAT_CHARS = /[\u200B-\u200F\uFEFF]/g
+
+export function normalizeAppName(app: string): string {
+  return app.replace(INVISIBLE_FORMAT_CHARS, '').trim()
+}
+
+/** The one supported way to resolve an app's brand entry — normalizes first. */
+export function getBrandIcon(app: string | null | undefined): BrandIcon | undefined {
+  if (!app) return undefined
+  return BRAND_ICONS[normalizeAppName(app)]
 }
 
 export const BRAND_ICONS: Record<string, BrandIcon> = {
@@ -80,5 +111,30 @@ export const BRAND_ICONS: Record<string, BrandIcon> = {
     viewBox: '0 0 448 512',
     hex: '#4A154B',
     path: 'M94.12 315.1c0 25.9-21.16 47.06-47.06 47.06S0 341 0 315.1c0-25.9 21.16-47.06 47.06-47.06h47.06v47.06zm23.72 0c0-25.9 21.16-47.06 47.06-47.06s47.06 21.16 47.06 47.06v117.84c0 25.9-21.16 47.06-47.06 47.06s-47.06-21.16-47.06-47.06V315.1zm47.06-188.98c-25.9 0-47.06-21.16-47.06-47.06S139 32 164.9 32s47.06 21.16 47.06 47.06v47.06H164.9zm0 23.72c25.9 0 47.06 21.16 47.06 47.06s-21.16 47.06-47.06 47.06H47.06C21.16 243.96 0 222.8 0 196.9s21.16-47.06 47.06-47.06H164.9zm188.98 47.06c0-25.9 21.16-47.06 47.06-47.06 25.9 0 47.06 21.16 47.06 47.06s-21.16 47.06-47.06 47.06h-47.06V196.9zm-23.72 0c0 25.9-21.16 47.06-47.06 47.06-25.9 0-47.06-21.16-47.06-47.06V79.06c0-25.9 21.16-47.06 47.06-47.06 25.9 0 47.06 21.16 47.06 47.06V196.9zM283.1 385.88c25.9 0 47.06 21.16 47.06 47.06 0 25.9-21.16 47.06-47.06 47.06-25.9 0-47.06-21.16-47.06-47.06v-47.06h47.06zm0-23.72c-25.9 0-47.06-21.16-47.06-47.06 0-25.9 21.16-47.06 47.06-47.06h117.84c25.9 0 47.06 21.16 47.06 47.06 0 25.9-21.16 47.06-47.06 47.06H283.1z',
+  },
+  Arc: {
+    viewBox: '0 0 24 24',
+    hex: '#FCBFBD',
+    path: 'M23.9371 8.5089c.1471-.7147.0367-1.4661-.3364-2.0967-.4203-.7094-1.1035-1.1876-1.9075-1.3506a2.9178 2.9178 0 0 0-.5623-.0578h-.0105c-1.3768 0-2.5329.988-2.8061 2.3385-.1629.7935-.4782 1.5607-.9196 2.2701a.263.263 0 0 1-.2363.1205.2627.2627 0 0 1-.2209-.1468l-2.8587-5.9906c-.3626-.762-1.0142-1.361-1.8235-1.5975-1.3873-.4099-2.8166.2838-3.4052 1.524L5.897 9.7333c-.0788.1629-.31.1576-.3784-.0053v-.0052a2.8597 2.8597 0 0 0-2.6642-1.7972c-.3784 0-.7515.0736-1.1088.2207-1.4714.6148-2.1283 2.349-1.5187 3.8203.557 1.3295 1.4714 2.5855 2.659 3.668.084.0788.1103.1997.063.3048l-.9563 2.0074c-.6727 1.4188-.1314 3.1477 1.2664 3.8571.4099.2049.846.31 1.298.31 1.1035 0 2.123-.6411 2.5959-1.6395l.825-1.7289a.254.254 0 0 1 .3048-.1366c1.0037.2732 2.0127.4204 3.0058.4204 1.1193 0 2.2229-.1682 3.2896-.4782a.2626.2626 0 0 1 .3101.1366l.8145 1.7131c.4834 1.0195 1.4924 1.7131 2.6169 1.7184.4572 0 .8986-.0999 1.3138-.3101 1.403-.7094 1.939-2.4435 1.2664-3.8676L19.875 15.787c-.0473-.1051-.0263-.226.0578-.3048 1.9864-1.8497 3.4525-4.2723 4.0043-6.9733ZM6.2121 20.0172a1.835 1.835 0 0 1-.6764.7622 1.8352 1.8352 0 0 1-.9788.2835c-.2733 0-.5518-.063-.8093-.1891-.9038-.4467-1.2454-1.5713-.8093-2.4804l.7935-1.6658c.0684-.1471.2575-.1997.3837-.1051.1681.1209.3415.2365.5202.3521.6989.4467 1.4293.825 2.1808 1.1351.1419.0578.205.2154.1419.352l-.7462 1.5555Zm5.0763-2.0442c-4.2092 0-8.6548-2.8534-10.1262-6.4951a1.8286 1.8286 0 0 1 1.009-2.3805c.2259-.0893.4571-.1366.683-.1366.7252 0 1.4084.431 1.6974 1.1456.9196 2.2806 4.0043 4.2092 6.7368 4.2092.4204 0 .8408-.042 1.256-.1156a.2643.2643 0 0 1 .2837.1419l1.3768 2.9007c.0683.1471-.0105.3205-.1629.3626-.8986.2365-1.8182.3678-2.7536.3678Zm-.599-4.9291.6358-1.3348c.0526-.1051.205-.1051.2575 0l.6201 1.3033c.042.0841-.0158.1891-.1051.2049-.268.0368-.536.0578-.7988.0578a5.0634 5.0634 0 0 1-.4887-.0263c-.1103-.0157-.1629-.1208-.1208-.2049Zm8.4604 7.8246a1.831 1.831 0 0 1-2.0329-.2788 1.8292 1.8292 0 0 1-.4316-.5778l-4.987-10.4836c-.0998-.2102-.3994-.2102-.4939 0l-1.545 3.2529a.2623.2623 0 0 1-.3205.1366c-1.051-.3626-2.0495-.9774-2.7904-1.7184a.2552.2552 0 0 1-.0473-.2943l3.3421-7.031c.1156-.247.2943-.4677.5203-.6201 1.051-.6884 2.2806-.2575 2.7378.7041l6.8577 14.4248c.4309.9144.0946 2.0389-.8093 2.4856Zm-1.4451-9.6481a.258.258 0 0 1 .0315-.2732c.783-1.0037 1.3558-2.1756 1.6028-3.421.1734-.867.9354-1.4714 1.7919-1.4714.1472 0 .2943.0158.4467.0526.9722.2417 1.5344 1.2507 1.3295 2.2333-.4835 2.3017-1.6816 4.3879-3.3159 6.0222-.1313.1314-.3468.0946-.4256-.0683l-1.4609-3.0742Z',
+  },
+  'Claude Code': {
+    viewBox: '0 0 24 24',
+    hex: '#D97757',
+    path: 'M21 10.5h3v3h-3v3h-1.5v3H18v-3h-1.5v3H15v-3H9v3H7.5v-3H6v3H4.5v-3H3v-3H0v-3h3v-6h18Zm-15 0h1.5v-3H6Zm10.5 0H18v-3h-1.5z',
+  },
+  WhatsApp: {
+    viewBox: '0 0 24 24',
+    hex: '#25D366',
+    path: 'M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z',
+  },
+  // hex-only: no redistributable wordmark in simple-icons or Font Awesome
+  // Free for either (both dropped/never shipped over trademark), so these
+  // keep the letter-monogram glyph in AppGlyph but get the real brand color
+  // instead of a hashed one.
+  ChatGPT: {
+    hex: '#000000',
+  },
+  Code: {
+    hex: '#007ACC',
   },
 }
