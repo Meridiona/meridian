@@ -13,7 +13,7 @@ mod fetch;
 #[cfg(test)]
 mod tests;
 
-use fetch::{discover_start_date_field, fetch, MAX_RESULTS};
+use fetch::{discover_start_date_field, fetch, fetch_by_keys, MAX_RESULTS};
 
 // ---------------------------------------------------------------------------
 // Jira REST response shapes
@@ -307,6 +307,10 @@ async fn upsert(
 // Prune
 // ---------------------------------------------------------------------------
 
+/// Delete `pm_tasks` rows no longer returned by the active-task fetch (closed,
+/// reassigned, etc.) — EXCEPT a task_key that has worklog history
+/// (`pm_worklogs`), which is kept forever so a completed ticket's title never
+/// disappears from the timeline once it's Done.
 async fn prune(pool: &SqlitePool, fetched_keys: &[String]) -> Result<usize> {
     let placeholders = fetched_keys
         .iter()
@@ -328,7 +332,8 @@ async fn prune(pool: &SqlitePool, fetched_keys: &[String]) -> Result<usize> {
         .context("pruning pm_task_embeddings")?;
 
     let task_sql = format!(
-        "DELETE FROM pm_tasks WHERE provider = 'jira' AND task_key NOT IN ({placeholders})"
+        "DELETE FROM pm_tasks WHERE provider = 'jira' AND task_key NOT IN ({placeholders}) \
+         AND task_key NOT IN (SELECT DISTINCT task_key FROM pm_worklogs)"
     );
     let mut q = sqlx::query(&task_sql);
     for key in fetched_keys {
@@ -339,11 +344,70 @@ async fn prune(pool: &SqlitePool, fetched_keys: &[String]) -> Result<usize> {
 }
 
 // ---------------------------------------------------------------------------
+// Backfill (worklogged tasks the active-task scope will never surface again)
+// ---------------------------------------------------------------------------
+
+/// Batch size for `fetch_by_keys` JQL calls — keeps the request well under
+/// Jira's JQL length limits and `MAX_RESULTS` per page.
+const BACKFILL_BATCH_SIZE: usize = 50;
+
+/// Fetch and upsert a `pm_tasks` row for any Jira task_key that has worklog
+/// history but is missing from `pm_tasks` — a ticket that's Done, reassigned,
+/// or otherwise fell outside [`fetch`]'s active-task JQL and so was never (or
+/// no longer) covered by the regular sync. Without this, such a ticket's
+/// title can never appear on the timeline: `fetch`'s JQL will never surface
+/// it again, no matter how many times the regular sync runs.
+///
+/// Cheap when there's nothing to do — the DB check runs unconditionally
+/// (every call to [`refresh_if_stale`]) but only reaches the network when it
+/// actually finds a gap, which is rare once the backlog is caught up.
+async fn backfill_worklogged(pool: &SqlitePool, jira: &JiraConfig) -> Result<usize> {
+    let missing: Vec<(String,)> = sqlx::query_as(
+        "SELECT DISTINCT task_key FROM pm_worklogs
+         WHERE provider = 'jira' AND task_key NOT IN
+           (SELECT task_key FROM pm_tasks WHERE provider = 'jira')",
+    )
+    .fetch_all(pool)
+    .await
+    .context("finding jira worklogs missing a pm_tasks row")?;
+    if missing.is_empty() {
+        return Ok(0);
+    }
+    let keys: Vec<String> = missing.into_iter().map(|(k,)| k).collect();
+
+    let ctx = crate::intelligence::oauth::jira::resolve(jira)
+        .await
+        .context("resolving Jira auth for worklog backfill")?;
+    let start_date_field = discover_start_date_field(&ctx).await;
+
+    let mut backfilled = 0usize;
+    for batch in keys.chunks(BACKFILL_BATCH_SIZE) {
+        let issues = fetch_by_keys(&ctx, start_date_field.as_deref(), batch)
+            .await
+            .context("backfilling jira worklogged tasks")?;
+        backfilled += issues.len();
+        upsert(pool, &issues, jira, &ctx, start_date_field.as_deref()).await?;
+    }
+    if backfilled > 0 {
+        tracing::info!(
+            requested = keys.len(),
+            backfilled,
+            "backfilled pm_tasks rows for worklogged jira tickets"
+        );
+    }
+    Ok(backfilled)
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
 #[tracing::instrument(skip(pool, jira))]
 pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Option<Vec<String>>> {
+    if let Err(e) = backfill_worklogged(pool, jira).await {
+        tracing::warn!(error = %e, "jira worklog backfill failed — will retry next sync");
+    }
+
     let threshold = format!("-{SYNC_INTERVAL_MINS} minutes");
     let (is_fresh,): (i64,) = sqlx::query_as(
         "SELECT EXISTS(

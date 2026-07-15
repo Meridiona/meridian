@@ -366,6 +366,10 @@ async fn upsert(
 // Prune (identical shape to the Jira connector, scoped to provider = 'linear')
 // ---------------------------------------------------------------------------
 
+/// Delete `pm_tasks` rows no longer returned by the active-task fetch (closed,
+/// reassigned, etc.) — EXCEPT a task_key that has worklog history
+/// (`pm_worklogs`), which is kept forever so a completed ticket's title never
+/// disappears from the timeline once it's closed.
 async fn prune(pool: &SqlitePool, fetched_keys: &[String]) -> Result<usize> {
     let placeholders = fetched_keys
         .iter()
@@ -386,7 +390,8 @@ async fn prune(pool: &SqlitePool, fetched_keys: &[String]) -> Result<usize> {
         .context("pruning linear pm_task_embeddings")?;
 
     let task_sql = format!(
-        "DELETE FROM pm_tasks WHERE provider = 'linear' AND task_key NOT IN ({placeholders})"
+        "DELETE FROM pm_tasks WHERE provider = 'linear' AND task_key NOT IN ({placeholders}) \
+         AND task_key NOT IN (SELECT DISTINCT task_key FROM pm_worklogs)"
     );
     let mut q = sqlx::query(&task_sql);
     for key in fetched_keys {
@@ -446,10 +451,13 @@ pub async fn refresh_if_stale(
                         Err(e) => tracing::warn!(error = %e, "linear prune failed"),
                     }
                 } else {
-                    // No live tasks at all → delete every linear row.
-                    if let Err(e) = sqlx::query("DELETE FROM pm_tasks WHERE provider = 'linear'")
-                        .execute(pool)
-                        .await
+                    // No live tasks at all → delete every linear row without worklog history.
+                    if let Err(e) = sqlx::query(
+                        "DELETE FROM pm_tasks WHERE provider = 'linear' \
+                         AND task_key NOT IN (SELECT DISTINCT task_key FROM pm_worklogs)",
+                    )
+                    .execute(pool)
+                    .await
                     {
                         tracing::warn!(error = %e, "linear full-clear failed");
                     }

@@ -9,6 +9,10 @@
 use anyhow::{Context, Result};
 use sqlx::SqlitePool;
 
+/// Delete `pm_tasks` rows no longer returned by the active-task fetch (closed,
+/// reassigned, etc.) — EXCEPT a task_key that has worklog history
+/// (`pm_worklogs`), which is kept forever so a completed work item's title
+/// never disappears from the timeline once it's closed.
 pub(super) async fn prune(pool: &SqlitePool, kept_keys: &[String]) -> Result<()> {
     if kept_keys.is_empty() {
         sqlx::query(
@@ -18,10 +22,13 @@ pub(super) async fn prune(pool: &SqlitePool, kept_keys: &[String]) -> Result<()>
         .execute(pool)
         .await
         .context("pruning all azure_devops pm_task_embeddings")?;
-        sqlx::query("DELETE FROM pm_tasks WHERE provider = 'azure_devops'")
-            .execute(pool)
-            .await
-            .context("pruning all azure_devops pm_tasks")?;
+        sqlx::query(
+            "DELETE FROM pm_tasks WHERE provider = 'azure_devops' \
+             AND task_key NOT IN (SELECT DISTINCT task_key FROM pm_worklogs)",
+        )
+        .execute(pool)
+        .await
+        .context("pruning all azure_devops pm_tasks")?;
         return Ok(());
     }
 
@@ -42,7 +49,8 @@ pub(super) async fn prune(pool: &SqlitePool, kept_keys: &[String]) -> Result<()>
 
     let sql_tasks = format!(
         "DELETE FROM pm_tasks \
-         WHERE provider = 'azure_devops' AND task_key NOT IN ({placeholders})"
+         WHERE provider = 'azure_devops' AND task_key NOT IN ({placeholders}) \
+         AND task_key NOT IN (SELECT DISTINCT task_key FROM pm_worklogs)"
     );
     let mut q2 = sqlx::query(&sql_tasks);
     for k in kept_keys {

@@ -79,6 +79,49 @@ pub(super) async fn fetch(
     ctx: &JiraReqCtx,
     start_date_field: Option<&str>,
 ) -> Result<Vec<(JiraIssue, serde_json::Value)>> {
+    search(
+        ctx,
+        start_date_field,
+        "assignee = currentUser() AND statusCategory != Done AND type IN (Task, Feature) ORDER BY updated DESC",
+    )
+    .await
+}
+
+/// Fetch specific issues by key regardless of assignee/status/type — used to
+/// backfill a `pm_tasks` row for a ticket that has worklog history but was
+/// never (or is no longer) covered by the active-task scope of [`fetch`] (e.g.
+/// it's Done, or assigned to someone else). Without this, such a ticket's
+/// title can never appear on the timeline once its `pm_tasks` row is missing,
+/// since [`fetch`]'s JQL will never surface it again.
+pub(super) async fn fetch_by_keys(
+    ctx: &JiraReqCtx,
+    start_date_field: Option<&str>,
+    keys: &[String],
+) -> Result<Vec<(JiraIssue, serde_json::Value)>> {
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let jql = key_in_jql(keys);
+    search(ctx, start_date_field, &jql).await
+}
+
+/// Builds a `key IN ("A-1","A-2")` JQL clause. Strips embedded quotes from
+/// each key defensively — a Jira key is always `[A-Z]+-[0-9]+`, so this never
+/// fires in practice, but it keeps a malformed key from breaking the query.
+fn key_in_jql(keys: &[String]) -> String {
+    let list = keys
+        .iter()
+        .map(|k| format!("\"{}\"", k.replace('"', "")))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("key IN ({list})")
+}
+
+async fn search(
+    ctx: &JiraReqCtx,
+    start_date_field: Option<&str>,
+    jql: &str,
+) -> Result<Vec<(JiraIssue, serde_json::Value)>> {
     let client = reqwest::Client::new();
     let url = ctx.api_url("/rest/api/3/search/jql");
 
@@ -104,7 +147,7 @@ pub(super) async fn fetch(
     }
 
     let body = serde_json::json!({
-        "jql": "assignee = currentUser() AND statusCategory != Done AND type IN (Task, Feature) ORDER BY updated DESC",
+        "jql": jql,
         "maxResults": MAX_RESULTS,
         "fields": fields,
     });
@@ -142,4 +185,27 @@ pub(super) async fn fetch(
     let keys: Vec<&str> = data.issues.iter().map(|i| i.key.as_str()).collect();
     tracing::debug!(count = issue_count, ?keys, "parsed Jira response");
     Ok(data.issues.into_iter().zip(raw_issues).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_in_jql_quotes_and_joins_keys() {
+        let keys = vec!["KAN-64".to_string(), "KAN-67".to_string()];
+        assert_eq!(key_in_jql(&keys), r#"key IN ("KAN-64","KAN-67")"#);
+    }
+
+    #[test]
+    fn key_in_jql_single_key() {
+        let keys = vec!["KAN-1".to_string()];
+        assert_eq!(key_in_jql(&keys), r#"key IN ("KAN-1")"#);
+    }
+
+    #[test]
+    fn key_in_jql_strips_embedded_quotes() {
+        let keys = vec!["KAN\"-1".to_string()];
+        assert_eq!(key_in_jql(&keys), r#"key IN ("KAN-1")"#);
+    }
 }

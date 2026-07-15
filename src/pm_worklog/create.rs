@@ -26,6 +26,8 @@ use crate::config::{
 };
 use crate::intelligence::oauth::jira::resolve as jira_resolve;
 use crate::intelligence::oauth::trello as oauth_trello;
+use crate::intelligence::ticket_update::azure_devops as azure_ticket_update;
+use crate::intelligence::ticket_update::jira as jira_ticket_update;
 
 /// Create a real ticket for `provider` from a proposal's (title, description) and
 /// return its `task_key`. `sample_key` is any existing task_key of that provider
@@ -58,6 +60,19 @@ fn norm_issue_type(issue_type: &str) -> &'static str {
         "Bug"
     } else {
         "Task"
+    }
+}
+
+/// Resolve what to actually create when the wanted type is unavailable in the
+/// target project/process (e.g. no "Bug" type configured — common on
+/// team-managed Jira projects and Azure's Basic process template). Falls back
+/// to "Task" with the type prefixed onto the title so the information isn't
+/// silently lost.
+fn bug_fallback(wanted: &'static str, has_bug_type: bool, title: &str) -> (&'static str, String) {
+    if wanted == "Bug" && !has_bug_type {
+        ("Task", format!("Bug: {title}"))
+    } else {
+        (wanted, title.to_string())
     }
 }
 
@@ -121,11 +136,18 @@ async fn jira_create(
         .project_keys
         .first()
         .context("Jira create needs a project key (none configured)")?;
-    let payload = json!({
+    let ctx = jira_resolve(jira).await.context("resolving Jira auth")?;
+    let client = reqwest::Client::new();
+
+    let wanted = norm_issue_type(issue_type);
+    let has_bug = wanted != "Bug" || jira_has_issue_type(&ctx, &client, project, "Bug").await?;
+    let (type_name, title) = bug_fallback(wanted, has_bug, title);
+
+    let mut payload = json!({
         "fields": {
             "project": { "key": project },
             "summary": title,
-            "issuetype": { "name": norm_issue_type(issue_type) },
+            "issuetype": { "name": type_name },
             "description": {
                 "type": "doc", "version": 1,
                 "content": [ { "type": "paragraph",
@@ -133,9 +155,18 @@ async fn jira_create(
             }
         }
     });
-    let ctx = jira_resolve(jira).await.context("resolving Jira auth")?;
+    // Self-assign so the ticket is discoverable by the `assignee = currentUser()`
+    // sync query (see intelligence/providers/jira/fetch.rs) — an unassigned
+    // ticket never enters pm_tasks, so its title never appears on the timeline.
+    // Best-effort: a lookup failure shouldn't block ticket creation.
+    match jira_ticket_update::my_account_id(&ctx, &client).await {
+        Ok(account_id) => payload["fields"]["assignee"] = json!({ "accountId": account_id }),
+        Err(e) => tracing::warn!(
+            error = %e,
+            "Jira create: couldn't resolve self accountId — creating unassigned"
+        ),
+    }
     let url = ctx.api_url("/rest/api/3/issue");
-    let client = reqwest::Client::new();
     let resp = ctx
         .apply(client.post(&url))
         .header("Accept", "application/json")
@@ -153,6 +184,37 @@ async fn jira_create(
         .and_then(|k| k.as_str())
         .map(str::to_string)
         .context("Jira create response missing `key`")
+}
+
+/// True if `name` is one of the project's configured issue types. Used to
+/// avoid a hard 400 (`Specify a valid issue type`) when a project's scheme
+/// doesn't include "Bug" (common on team-managed projects) — the caller
+/// falls back to creating a "Task" prefixed with "Bug: " instead.
+async fn jira_has_issue_type(
+    ctx: &meridian_oauth::jira::JiraReqCtx,
+    client: &reqwest::Client,
+    project: &str,
+    name: &str,
+) -> Result<bool> {
+    let url = ctx.api_url(&format!("/rest/api/3/project/{project}?fields=issueTypes"));
+    let resp = ctx
+        .apply(client.get(&url))
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .with_context(|| format!("network error checking Jira issue types at {url}"))?;
+    let body = resp
+        .text()
+        .await
+        .context("reading Jira project issue-types response")?;
+    let v: Value = serde_json::from_str(&body).context("parsing Jira project issue types")?;
+    Ok(v.get("issueTypes")
+        .and_then(|t| t.as_array())
+        .is_some_and(|types| {
+            types
+                .iter()
+                .any(|t| t.get("name").and_then(|n| n.as_str()) == Some(name))
+        }))
 }
 
 // ── Linear: GraphQL issueCreate ───────────────────────────────────────────────
@@ -292,22 +354,38 @@ async fn azure_create(
     issue_type: &str,
 ) -> Result<String> {
     use base64::Engine;
-    // Azure work-item type goes in the URL (`$Task` / `$Bug`).
-    let url = format!(
-        "{}/{}/_apis/wit/workitems/${}?api-version=7.0",
-        cfg.api_base,
-        cfg.project,
-        norm_issue_type(issue_type)
-    );
     let auth = format!(
         "Basic {}",
         base64::engine::general_purpose::STANDARD.encode(format!(":{}", cfg.pat).as_bytes())
     );
-    let patch = json!([
-        { "op": "add", "path": "/fields/System.Title", "value": title },
-        { "op": "add", "path": "/fields/System.Description", "value": description }
-    ]);
     let client = reqwest::Client::new();
+
+    let wanted = norm_issue_type(issue_type);
+    let has_bug = wanted != "Bug" || azure_has_work_item_type(cfg, &client, &auth, "Bug").await?;
+    let (work_item_type, title) = bug_fallback(wanted, has_bug, title);
+
+    // Azure work-item type goes in the URL (`$Task` / `$Bug`).
+    let url = format!(
+        "{}/{}/_apis/wit/workitems/${work_item_type}?api-version=7.0",
+        cfg.api_base, cfg.project,
+    );
+    let mut patch = vec![
+        json!({ "op": "add", "path": "/fields/System.Title", "value": title }),
+        json!({ "op": "add", "path": "/fields/System.Description", "value": description }),
+    ];
+    // Self-assign so the work item is discoverable by the `AssignedTo = @me`
+    // sync query (see intelligence/providers/azure_devops/fetch.rs) — an
+    // unassigned item never enters pm_tasks, so its title never appears on
+    // the timeline. Best-effort: a lookup failure shouldn't block creation.
+    match azure_ticket_update::my_unique_name(&client, cfg).await {
+        Ok(me) => {
+            patch.push(json!({ "op": "add", "path": "/fields/System.AssignedTo", "value": me }))
+        }
+        Err(e) => tracing::warn!(
+            error = %e,
+            "Azure DevOps create: couldn't resolve self identity — creating unassigned"
+        ),
+    }
     let resp = client
         .post(&url)
         .header("Authorization", auth)
@@ -327,4 +405,71 @@ async fn azure_create(
         .and_then(|i| i.as_i64())
         .context("Azure create response missing `id`")?;
     Ok(id.to_string())
+}
+
+/// True if `name` is one of the project's work-item types. Azure's process
+/// template (e.g. Basic) may not include "Bug" — the caller falls back to
+/// creating a "Task" prefixed with "Bug: " instead of a hard 404.
+async fn azure_has_work_item_type(
+    cfg: &AzureDevOpsConfig,
+    client: &reqwest::Client,
+    auth: &str,
+    name: &str,
+) -> Result<bool> {
+    let url = format!(
+        "{}/{}/_apis/wit/workitemtypes?api-version=7.0",
+        cfg.api_base, cfg.project
+    );
+    let resp = client
+        .get(&url)
+        .header("Authorization", auth)
+        .send()
+        .await
+        .with_context(|| format!("network error checking Azure work-item types at {url}"))?;
+    let body = resp
+        .text()
+        .await
+        .context("reading Azure work-item-types response")?;
+    let v: Value = serde_json::from_str(&body).context("parsing Azure work-item types")?;
+    Ok(v.get("value")
+        .and_then(|t| t.as_array())
+        .is_some_and(|types| {
+            types
+                .iter()
+                .any(|t| t.get("name").and_then(|n| n.as_str()) == Some(name))
+        }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn norm_issue_type_maps_bug_case_insensitively() {
+        assert_eq!(norm_issue_type("bug"), "Bug");
+        assert_eq!(norm_issue_type("BUG"), "Bug");
+        assert_eq!(norm_issue_type("Task"), "Task");
+        assert_eq!(norm_issue_type("Story"), "Task");
+    }
+
+    #[test]
+    fn bug_fallback_keeps_bug_when_project_has_it() {
+        let (kind, title) = bug_fallback("Bug", true, "Fix the thing");
+        assert_eq!(kind, "Bug");
+        assert_eq!(title, "Fix the thing");
+    }
+
+    #[test]
+    fn bug_fallback_demotes_to_task_and_prefixes_title_when_missing() {
+        let (kind, title) = bug_fallback("Bug", false, "Fix the thing");
+        assert_eq!(kind, "Task");
+        assert_eq!(title, "Bug: Fix the thing");
+    }
+
+    #[test]
+    fn bug_fallback_is_noop_for_task() {
+        let (kind, title) = bug_fallback("Task", false, "Do the thing");
+        assert_eq!(kind, "Task");
+        assert_eq!(title, "Do the thing");
+    }
 }
