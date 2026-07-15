@@ -13,14 +13,24 @@
 // Tauri webview. The wizard has external links too (tracker docs, etc.), so it
 // stays mounted in the root layout for every route. `external-links.test.ts`
 // guards that it covers the wizard.
+//
+// UpdateBanner is the dashboard sibling of the tray popover's DMG update
+// banner (same `check_update`/`install_update` commands). Gated off the wizard
+// like NoticeBar so onboarding stays a self-contained shell.
 
 'use client'
 
 import { usePathname } from 'next/navigation'
 import NoticeBar from '@/components/NoticeBar'
+import UpdateBanner from '@/components/UpdateBanner'
 
 export default function LayoutBanners() {
   const pathname = usePathname()
   if (pathname?.startsWith('/setup')) return null
-  return <NoticeBar />
+  return (
+    <>
+      <UpdateBanner />
+      <NoticeBar />
+    </>
+  )
 }
