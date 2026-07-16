@@ -36,6 +36,10 @@ pub mod day_task_worklogs;
 /// Per-hour generating/paused badge state for the timeline; no route — new work.
 pub mod hour_status;
 
+/// Reads for the dev-only LLM-Lab comparison harness (`llm_experiments`,
+/// migration 061; no route — new work).
+pub mod llm_experiments;
+
 /// The `/api/tasks` per-task time + hygiene payload (ported from tasks/route.ts).
 pub mod tasks;
 

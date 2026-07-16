@@ -732,3 +732,149 @@ async fn plan_handled_false_without_table() {
         .unwrap();
     assert!(!meridian_core::plan::plan_handled(&pool, "2026-07-13").await);
 }
+
+// ── llm_experiments (the dev-only LLM Lab reader) ────────────────────────────
+
+/// In-memory pool with the two migration-061 LLM-Lab tables.
+async fn make_llm_lab_pool() -> SqlitePool {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::query(
+        r#"
+        CREATE TABLE llm_experiments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            process TEXT NOT NULL, input_ref TEXT NOT NULL,
+            input_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'running',
+            n_variants INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL, finished_at TEXT
+        );
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"
+        CREATE TABLE llm_experiment_results (
+            experiment_id INTEGER NOT NULL, variant_idx INTEGER NOT NULL,
+            provider TEXT NOT NULL, model TEXT NOT NULL DEFAULT '',
+            params_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'pending',
+            output_text TEXT, output_rendered TEXT, error TEXT,
+            input_tokens INTEGER, output_tokens INTEGER, elapsed_s REAL,
+            started_at TEXT, finished_at TEXT,
+            PRIMARY KEY (experiment_id, variant_idx)
+        );
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool
+}
+
+#[tokio::test]
+async fn llm_experiments_list_orders_newest_first_and_counts_done() {
+    let pool = make_llm_lab_pool().await;
+    for (process, input_ref, created) in [
+        ("hour_report", "2026-07-15T14", "2026-07-15T15:00:00Z"),
+        ("worklog_generate", "2026-07-15/T2", "2026-07-15T16:00:00Z"),
+    ] {
+        sqlx::query(
+            "INSERT INTO llm_experiments (process, input_ref, status, n_variants, created_at) \
+             VALUES (?, ?, 'running', 2, ?)",
+        )
+        .bind(process)
+        .bind(input_ref)
+        .bind(created)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    // Experiment 1: one terminal (ok) + one still running → n_done = 1.
+    for (idx, status) in [(0i64, "ok"), (1i64, "running")] {
+        sqlx::query(
+            "INSERT INTO llm_experiment_results (experiment_id, variant_idx, provider, status) \
+             VALUES (1, ?, 'claude', ?)",
+        )
+        .bind(idx)
+        .bind(status)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let rows = meridian_core::llm_experiments::list_experiments(&pool, 20)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].id, 2, "newest (by created_at) first");
+    assert_eq!(rows[0].n_done, 0);
+    assert_eq!(rows[1].id, 1);
+    assert_eq!(rows[1].n_done, 1, "ok counts, running does not");
+    assert_eq!(rows[1].n_variants, 2);
+}
+
+#[tokio::test]
+async fn llm_experiments_detail_carries_results_in_variant_order() {
+    let pool = make_llm_lab_pool().await;
+    sqlx::query(
+        "INSERT INTO llm_experiments (process, input_ref, input_json, status, n_variants, created_at) \
+         VALUES ('hour_report', '2026-07-15T14', '{\"user\":\"u\"}', 'done', 2, '2026-07-15T15:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO llm_experiment_results \
+         (experiment_id, variant_idx, provider, model, status, output_text, output_rendered, \
+          input_tokens, output_tokens, elapsed_s) \
+         VALUES (1, 1, 'local', 'qwen', 'ok', 'raw', 'rendered', 100, 50, 2.5), \
+                (1, 0, 'claude', '', 'rate_limited', NULL, NULL, NULL, NULL, NULL)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let d = meridian_core::llm_experiments::get_experiment(&pool, 1)
+        .await
+        .unwrap()
+        .expect("experiment exists");
+    assert_eq!(d.input_json, "{\"user\":\"u\"}");
+    assert_eq!(d.results.len(), 2);
+    assert_eq!(d.results[0].variant_idx, 0, "idx order, not insert order");
+    assert_eq!(d.results[0].provider, "claude");
+    assert_eq!(d.results[0].status, "rate_limited");
+    assert_eq!(d.results[1].model, "qwen");
+    assert_eq!(d.results[1].output_rendered.as_deref(), Some("rendered"));
+    assert_eq!(d.results[1].elapsed_s, Some(2.5));
+
+    // Unknown id → None, not an error.
+    assert!(meridian_core::llm_experiments::get_experiment(&pool, 99)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn llm_experiments_degrade_to_empty_on_a_pre_061_db() {
+    // The tray opens meridian.db without running migrations — a DB without the
+    // 061 tables must read as "no experiments", never error.
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    assert!(meridian_core::llm_experiments::list_experiments(&pool, 20)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(meridian_core::llm_experiments::get_experiment(&pool, 1)
+        .await
+        .unwrap()
+        .is_none());
+}
