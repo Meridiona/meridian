@@ -187,6 +187,8 @@ mod tests {
             .unwrap()
     }
 
+    // ── Parsing mechanics (shape-agnostic) ──────────────────────────────────────────
+
     #[test]
     fn parses_bare_pm_reset_later_today() {
         let now = at(13, 0); // 1pm
@@ -226,31 +228,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_compact_hours_and_minutes() {
-        // Observed live from Codex: "You've reached your 5-hour message limit. Try again
-        // in 3h 42m."
-        let now = at(9, 0);
-        let wait = parse_backoff(
-            "You've reached your 5-hour message limit. Try again in 3h 42m.",
-            now,
-        )
-        .unwrap();
-        assert_eq!(wait, Duration::from_secs(3 * 3600 + 42 * 60 + 60));
-    }
-
-    #[test]
-    fn parses_spelled_out_hours_and_minutes() {
-        // Observed live from Copilot: "...your limit to reset in 2 hours 15 minutes."
-        let now = at(9, 0);
-        let wait = parse_backoff(
-            "You've hit your rate limit. Please wait for your limit to reset in 2 hours 15 minutes.",
-            now,
-        )
-        .unwrap();
-        assert_eq!(wait, Duration::from_secs(2 * 3600 + 15 * 60 + 60));
-    }
-
-    #[test]
     fn parses_relative_with_colon_and_minutes() {
         let now = at(9, 0);
         let wait = parse_backoff("rate limited, resets in: 45 minutes", now).unwrap();
@@ -267,9 +244,73 @@ mod tests {
     }
 
     #[test]
-    fn a_full_date_weekly_limit_is_not_parsed() {
-        // Codex's weekly-limit shape names a date, not a bare time — out of scope, caller
-        // falls back to the flat backoff.
+    fn a_wildly_long_relative_wait_is_capped() {
+        let now = at(9, 0);
+        let wait = parse_backoff("rate limit — try again in 999 hours", now).unwrap();
+        assert_eq!(wait, MAX_BACKOFF);
+    }
+
+    // ── Claude Code ──────────────────────────────────────────────────────────────
+    // Source: Meridian's own OTel telemetry spool — real `claude -p --output-format
+    // json` captures from this machine's coding-agent summariser, decoded straight
+    // from the `result` field of a live 429 response.
+
+    #[test]
+    fn claude_session_limit_bare_pm_with_timezone() {
+        let now = at(21, 0); // 9pm
+        let wait = parse_backoff(
+            "You've hit your session limit · resets 10:40pm (Asia/Calcutta)",
+            now,
+        )
+        .unwrap();
+        assert_eq!(wait, Duration::from_secs(100 * 60 + 60)); // 1h40m + margin
+    }
+
+    #[test]
+    fn claude_session_limit_it_resets_at_phrasing() {
+        // A second real phrasing seen live, distinct from "resets <time>".
+        let now = at(9, 0);
+        let wait = parse_backoff(
+            "You've used 91% of your session limit · It resets at 1:40 PM",
+            now,
+        )
+        .unwrap();
+        assert_eq!(wait, Duration::from_secs(4 * 3600 + 40 * 60 + 60));
+    }
+
+    #[test]
+    fn claude_weekly_limit_date_is_not_parsed() {
+        // The weekly-limit variant names a date, not a bare time — out of scope,
+        // caller falls back to the flat backoff.
+        let now = at(9, 0);
+        assert!(parse_backoff(
+            "You've used 78% of your weekly limit · resets Jul 12 at 6:30am (Asia/Calcutta)",
+            now
+        )
+        .is_none());
+    }
+
+    // ── Codex ────────────────────────────────────────────────────────────────────
+    // Source: real quotes from filed GitHub issues (openai/codex) and Meridian's
+    // own existing regression pin (prompts.rs, "observed live 2026-06-06").
+
+    #[test]
+    fn codex_compact_hours_and_minutes() {
+        // openai/codex#11508 (and similar): "You've reached your 5-hour message
+        // limit. Try again in 3h 42m."
+        let now = at(9, 0);
+        let wait = parse_backoff(
+            "You've reached your 5-hour message limit. Try again in 3h 42m.",
+            now,
+        )
+        .unwrap();
+        assert_eq!(wait, Duration::from_secs(3 * 3600 + 42 * 60 + 60));
+    }
+
+    #[test]
+    fn codex_plus_plan_weekly_limit_date_is_not_parsed() {
+        // Pinned in prompts.rs's own rate-limit-marker test as an observed-live
+        // string; the summary format matches what appears here.
         let now = at(9, 0);
         assert!(parse_backoff(
             "You've hit your usage limit. Upgrade to Plus, or try again at Jul 5th, 2026 1:16 PM.",
@@ -279,9 +320,84 @@ mod tests {
     }
 
     #[test]
-    fn a_wildly_long_relative_wait_is_capped() {
+    fn codex_business_seat_weekly_limit_date_is_not_parsed() {
+        // A second real Codex date phrasing (business/team seat), confirming the
+        // "or try again at <date>" shape is consistently out of scope regardless of
+        // which plan copy wraps it.
         let now = at(9, 0);
-        let wait = parse_backoff("rate limit — try again in 999 hours", now).unwrap();
-        assert_eq!(wait, MAX_BACKOFF);
+        assert!(parse_backoff(
+            "You've hit your usage limit. To get more access now, send a request to your admin or try again at Mar 20th, 2027 3:36 PM.",
+            now
+        )
+        .is_none());
+    }
+
+    // ── GitHub Copilot ───────────────────────────────────────────────────────────
+    // Source: decompiled `@github/copilot` CLI bundle (the `ffr()` reset-time
+    // formatter) and github/copilot-cli#2336 (a filed issue quoting real CLI
+    // stderr verbatim).
+
+    #[test]
+    fn copilot_try_again_in_hours_gh_issue_2336() {
+        // Verbatim (trimmed) from the filed issue's pasted stderr.
+        let now = at(9, 0);
+        let wait = parse_backoff(
+            "Sorry, you've hit a rate limit that restricts the number of Copilot model \
+             requests you can make within a specific time period. Please try again in 2 \
+             hours. Please review our Terms of Service (https://docs.github.com/site-policy).",
+            now,
+        )
+        .unwrap();
+        assert_eq!(wait, Duration::from_secs(2 * 3600 + 60));
+    }
+
+    #[test]
+    fn copilot_spelled_out_hours_and_minutes() {
+        // The `ffr()` formatter's 1h-24h branch: "in {H} hour(s) {M} minute(s)".
+        let now = at(9, 0);
+        let wait = parse_backoff(
+            "You've hit your rate limit. Please wait for your limit to reset in 2 hours 15 minutes.",
+            now,
+        )
+        .unwrap();
+        assert_eq!(wait, Duration::from_secs(2 * 3600 + 15 * 60 + 60));
+    }
+
+    #[test]
+    fn copilot_under_a_minute_is_not_parsed() {
+        // The `ffr()` formatter's <=60s branch renders "in under a minute" — no
+        // digit to parse, so this falls back to the flat backoff rather than
+        // guessing. A rare edge case (only fires in the final minute of a window).
+        let now = at(9, 0);
+        assert!(parse_backoff(
+            "You've hit your rate limit. Please wait for your limit to reset in under a minute.",
+            now
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn copilot_weekly_limit_date_is_not_parsed() {
+        // The `ffr()` formatter's >=1-day branch: "on {Month} {D}, {Y} at {time}".
+        let now = at(9, 0);
+        assert!(parse_backoff(
+            "You've hit your rate limit. Please wait for your limit to reset on January 15, 2026 at 3:00 PM.",
+            now
+        )
+        .is_none());
+    }
+
+    // ── Cursor ───────────────────────────────────────────────────────────────────
+    // Source: web research only (cursor.com community forum thread titles quote
+    // this verbatim) — no CLI-specific reset-time phrasing was ever found; Cursor's
+    // usage-limit state is delivered to the editor via a separate structured RPC
+    // (`GetUsageLimitStatusAndActiveGrantsResponse`, `reset_at_ms`) that never
+    // surfaces in `cursor-agent -p`'s text output. This test documents — not
+    // prescribes — the graceful degradation: no shape recognised, flat backoff.
+
+    #[test]
+    fn cursor_usage_limit_banner_has_no_reset_hint() {
+        let now = at(9, 0);
+        assert!(parse_backoff("You've hit your usage limit", now).is_none());
     }
 }
