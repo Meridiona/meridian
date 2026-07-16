@@ -41,8 +41,32 @@ use super::workstream_sanitize::apply_placements;
 use super::workstream_state::{build_state_json, to_rows};
 
 /// The corrected task set is a short JSON object; 2048 tokens is ample for a handful
-/// of tasks each with a few summary lines and their segments.
-const WORKSTREAM_MAX_TOKENS: u32 = 2048;
+/// of tasks each with a few summary lines and their segments. `pub(crate)` so the
+/// LLM-Lab replay ([`crate::llm_experiment`]) rebuilds the identical request contract.
+pub(crate) const WORKSTREAM_MAX_TOKENS: u32 = 2048;
+
+/// The fold's exact [`PromptRequest`] — extracted from [`run`] so the LLM-Lab replay
+/// ([`crate::llm_experiment`]) fans the byte-identical request across arbitrary
+/// providers. `state_json` is [`super::workstream_state::build_state_json`] over the
+/// prior tasks; `report` is the hour's activity report.
+pub(crate) fn workstream_request(
+    state_json: &str,
+    hour_label: &str,
+    report: &str,
+) -> PromptRequest {
+    let user = format!(
+        "=== CURRENT TASKS (anchors from earlier hours - match this hour's work to these by their title and summary; rewrite the whole-story summary of any task you place work into, and leave every other task exactly as it is) ===\n\
+         {state_json}\n\n\
+         === NEW ACTIVITY - HOUR {hour_label} (place this hour's work only) ===\n{report}"
+    );
+    PromptRequest {
+        system: prompts::WORKSTREAM,
+        user,
+        schema: Some(prompts::workstream_schema()),
+        max_tokens: WORKSTREAM_MAX_TOKENS,
+        label: format!("workstream {hour_label}"),
+    }
+}
 
 /// Has `hour_label` (`YYYY-MM-DDTHH`, local) already been folded into the day's tasks?
 ///
@@ -106,18 +130,7 @@ pub async fn run(pool: &SqlitePool, day_local: &str, hour_label: &str, report: &
 
     async {
         let state_json = build_state_json(&prior);
-        let user = format!(
-            "=== CURRENT TASKS (anchors from earlier hours - match this hour's work to these by their title and summary; rewrite the whole-story summary of any task you place work into, and leave every other task exactly as it is) ===\n\
-             {state_json}\n\n\
-             === NEW ACTIVITY - HOUR {hour_label} (place this hour's work only) ===\n{report}"
-        );
-        let req = PromptRequest {
-            system: prompts::WORKSTREAM,
-            user,
-            schema: Some(prompts::workstream_schema()),
-            max_tokens: WORKSTREAM_MAX_TOKENS,
-            label: format!("workstream {hour_label}"),
-        };
+        let req = workstream_request(&state_json, hour_label, report);
 
         let (out, provider) = llm::complete(&req)
             .await

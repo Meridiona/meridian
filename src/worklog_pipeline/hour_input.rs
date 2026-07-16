@@ -20,6 +20,13 @@ use chrono::{DateTime, Local};
 use meridian_core::intervals::{session_interval, union_seconds, Interval};
 use serde_json::Value;
 
+/// A session shorter than this is a burst — a brief alt-tab into an app, a one-line
+/// coding-agent exchange — that clutters the report without representing reportable
+/// work. Such sessions are dropped from the REPORT INPUT (both the screen timeline and
+/// the coding-agent blocks). The span / time math keeps the full set, so excluding a
+/// burst from the prose never removes its measured minutes from the deterministic totals.
+pub const REPORT_MIN_DURATION_S: i64 = 180;
+
 /// One measured session row for the hour (screen or coding-agent).
 #[derive(Debug, Clone)]
 pub struct TimelineRow {
@@ -131,6 +138,61 @@ pub fn format_coding_block(coding: &[CodingRow]) -> String {
         ));
     }
     parts.join("\n")
+}
+
+/// The composed report input plus the facts `run_hour` logs / gates on, so the filter
+/// and join live in exactly one place (the LLM-Lab replay reuses [`compose_report_input`]
+/// to rebuild the identical model input for a past hour).
+#[derive(Debug)]
+pub struct ComposedReportInput {
+    /// The model's full input: timeline block + distilled body + coding block, joined by
+    /// blank lines with empty parts dropped.
+    pub text: String,
+    /// True when no coding row survived the burst filter (the coding block is absent).
+    pub coding_block_empty: bool,
+    /// Coding rows that survived the burst filter.
+    pub coding_kept: usize,
+    /// Rows dropped by the burst filter, for the "hour distilled" log line.
+    pub coding_dropped: usize,
+    pub timeline_dropped: usize,
+}
+
+/// Build the report model's input for one hour: drop sub-[`REPORT_MIN_DURATION_S`] bursts
+/// from BOTH blocks (the span/time math elsewhere keeps the full set), render the timeline
+/// and coding blocks, and join them with the distilled `body`. Pure — reads only its
+/// arguments, so a past hour replays byte-identically from stored inputs.
+pub fn compose_report_input(
+    body: &str,
+    timeline: &[TimelineRow],
+    coding: &[CodingRow],
+) -> ComposedReportInput {
+    let report_timeline: Vec<TimelineRow> = timeline
+        .iter()
+        .filter(|r| r.duration_s > REPORT_MIN_DURATION_S)
+        .cloned()
+        .collect();
+    let report_coding: Vec<CodingRow> = coding
+        .iter()
+        .filter(|c| c.duration_s > REPORT_MIN_DURATION_S)
+        .cloned()
+        .collect();
+
+    let timeline_block = format_timeline_block(&report_timeline);
+    let coding_block = format_coding_block(&report_coding);
+    let text = [timeline_block.as_str(), body, coding_block.as_str()]
+        .iter()
+        .filter(|p| !p.trim().is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    ComposedReportInput {
+        text,
+        coding_block_empty: coding_block.is_empty(),
+        coding_kept: report_coding.len(),
+        coding_dropped: coding.len() - report_coding.len(),
+        timeline_dropped: timeline.len() - report_timeline.len(),
+    }
 }
 
 /// Split call 1's numbered prose into an ordered list of activities. Anything that isn't a
@@ -362,5 +424,42 @@ mod tests {
     fn timeline_block_empty_when_no_rows() {
         assert_eq!(format_timeline_block(&[]), "");
         assert_eq!(format_coding_block(&[]), "");
+    }
+
+    #[test]
+    fn compose_report_input_drops_bursts_but_counts_them() {
+        let mk = |app: &str, dur: i64| TimelineRow {
+            app_name: app.into(),
+            started_at: "2026-05-30T05:00:00+00:00".into(),
+            ended_at: "2026-05-30T05:30:00+00:00".into(),
+            duration_s: dur,
+            window_titles: "[]".into(),
+            is_coding: false,
+        };
+        let timeline = vec![mk("Kept", 300), mk("Burst", 60)];
+        let coding = vec![CodingRow {
+            app_name: "Claude Code".into(),
+            started_at: "2026-05-30T05:00:00+00:00".into(),
+            ended_at: "2026-05-30T05:02:00+00:00".into(),
+            duration_s: 120,
+            session_summary: "one-liner".into(),
+        }];
+        let composed = compose_report_input("distilled body", &timeline, &coding);
+        assert!(composed.text.contains("Kept"));
+        assert!(!composed.text.contains("Burst"));
+        assert!(composed.text.contains("distilled body"));
+        assert_eq!(composed.timeline_dropped, 1);
+        assert_eq!(composed.coding_dropped, 1);
+        assert_eq!(composed.coding_kept, 0);
+        assert!(composed.coding_block_empty);
+    }
+
+    #[test]
+    fn compose_report_input_joins_only_nonempty_parts() {
+        // No timeline, no coding: the input is exactly the distilled body.
+        let composed = compose_report_input("just the body", &[], &[]);
+        assert_eq!(composed.text, "just the body");
+        // Everything empty: empty input.
+        assert_eq!(compose_report_input("", &[], &[]).text, "");
     }
 }

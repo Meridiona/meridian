@@ -36,21 +36,15 @@ use crate::pm_worklog::PmWorklogConfig;
 
 use super::hour_db;
 use super::hour_input::{
-    assemble_report, format_coding_block, format_timeline_block, hour_span_minutes,
-    parse_activities, CodingRow, TimelineRow,
+    assemble_report, compose_report_input, hour_span_minutes, parse_activities,
 };
 use super::{task_db, workstream};
 
 /// Token ceiling for the single report call: "under 300 words" of prose plus a short
 /// per-activity minutes list, as one JSON object. Generous enough not to truncate.
-const REPORT_MAX_TOKENS: u32 = 1536;
-
-/// A session shorter than this is a burst — a brief alt-tab into an app, a one-line
-/// coding-agent exchange — that clutters the report without representing reportable
-/// work. Such sessions are dropped from the REPORT INPUT (both the screen timeline and
-/// the coding-agent blocks). The span / time math keeps the full set, so excluding a
-/// burst from the prose never removes its measured minutes from the deterministic totals.
-const REPORT_MIN_DURATION_S: i64 = 180;
+/// `pub(crate)` so the LLM-Lab replay ([`crate::llm_experiment`]) rebuilds the identical
+/// request contract for this process.
+pub(crate) const REPORT_MAX_TOKENS: u32 = 1536;
 
 /// What `/distill_hour` returns (the embedder-compressed hour body + metrics).
 struct Distilled {
@@ -121,7 +115,19 @@ async fn build_report(
     std::collections::BTreeMap<usize, String>,
     LlmProvider,
 )> {
-    let req = PromptRequest {
+    let req = report_request(report_input, label);
+    let (out, provider) = llm::complete(&req)
+        .await
+        .map_err(|e| anyhow::anyhow!("activity report failed: {e}"))?;
+    let (activities, minutes, stamps) = parse_report(&out.text);
+    Ok((activities, minutes, stamps, provider))
+}
+
+/// The hour report's exact [`PromptRequest`] — extracted from [`build_report`] so the
+/// LLM-Lab replay ([`crate::llm_experiment`]) fans the byte-identical request across
+/// arbitrary providers.
+pub(crate) fn report_request(report_input: String, label: &str) -> PromptRequest {
+    PromptRequest {
         system: prompts::ACTIVITY_REPORT,
         user: report_input,
         // No schema: the report is plain text now — one "<minutes> min  <activity>" line
@@ -131,12 +137,7 @@ async fn build_report(
         schema: None,
         max_tokens: REPORT_MAX_TOKENS,
         label: format!("activity-report {label}"),
-    };
-    let (out, provider) = llm::complete(&req)
-        .await
-        .map_err(|e| anyhow::anyhow!("activity report failed: {e}"))?;
-    let (activities, minutes, stamps) = parse_report(&out.text);
-    Ok((activities, minutes, stamps, provider))
+    }
 }
 
 /// Parse the plain-text report into ordered activity prose + a 1-based `position -> minutes`
@@ -148,7 +149,7 @@ async fn build_report(
 /// (a header, blank line, or trailing note). If NOTHING parses, falls back to reading the
 /// text as numbered prose (minutes/stamps empty, so [`assemble_report`] even-splits the
 /// span) — the hour never fails outright.
-fn parse_report(
+pub(crate) fn parse_report(
     text: &str,
 ) -> (
     Vec<String>,
@@ -304,28 +305,16 @@ pub async fn run_hour(
     let timeline = hour_db::fetch_hour_timeline(pool, hs, he).await;
     sess_span.record("body_chars", d.body.len());
 
-    // Drop sub-REPORT_MIN_DURATION_S bursts from the report input only — `timeline`
-    // (full set) still feeds the span/time math below, so a burst loses its place in
-    // the prose without losing its measured minutes.
-    let report_timeline: Vec<TimelineRow> = timeline
-        .iter()
-        .filter(|r| r.duration_s > REPORT_MIN_DURATION_S)
-        .cloned()
-        .collect();
-    let report_coding: Vec<CodingRow> = coding
-        .iter()
-        .filter(|c| c.duration_s > REPORT_MIN_DURATION_S)
-        .cloned()
-        .collect();
-
-    let coding_block = format_coding_block(&report_coding);
-    let timeline_block = format_timeline_block(&report_timeline);
+    // Burst filter + block rendering + the 3-part join live in `compose_report_input`
+    // (shared with the LLM-Lab replay); `timeline` (full set) still feeds the span/time
+    // math below, so a burst loses its place in the prose without losing its minutes.
+    let composed = compose_report_input(&d.body, &timeline, &coding);
     tracing::info!(
         hour,
         ocr_nsess = d.nsess,
-        coding_nsess = report_coding.len(),
-        coding_dropped_short = coding.len() - report_coding.len(),
-        timeline_dropped_short = timeline.len() - report_timeline.len(),
+        coding_nsess = composed.coding_kept,
+        coding_dropped_short = composed.coding_dropped,
+        timeline_dropped_short = composed.timeline_dropped,
         body_chars = d.body.len(),
         "worklog: hour distilled"
     );
@@ -335,7 +324,7 @@ pub async fn run_hour(
     hour_db::persist_hour_text(pool, hs, &d.body, d.out_chars, d.reduction_pct).await?;
 
     // A truly empty hour: nothing to summarise. Persist an empty report and finish clean.
-    if d.body.trim().is_empty() && coding_block.is_empty() {
+    if d.body.trim().is_empty() && composed.coding_block_empty {
         tracing::info!(hour, "worklog: hour has no sessions — skipping report");
         hour_db::persist_hour_report(pool, hs, "").await?;
         return Ok(());
@@ -351,18 +340,9 @@ pub async fn run_hour(
         // child `llm.call` spans under this one.
         n_calls = tracing::field::Empty
     );
+    let coding_folded = !composed.coding_block_empty;
+    let report_input = composed.text;
     let report = async {
-        let report_input = [
-            timeline_block.as_str(),
-            d.body.as_str(),
-            coding_block.as_str(),
-        ]
-        .iter()
-        .filter(|p| !p.trim().is_empty())
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("\n\n");
-
         if report_input.trim().is_empty() {
             return Ok::<String, anyhow::Error>(String::new());
         }
@@ -386,7 +366,7 @@ pub async fn run_hour(
     tracing::info!(
         hour,
         report_chars = report.chars().count(),
-        coding_folded = !coding_block.is_empty(),
+        coding_folded,
         "worklog: hour report built"
     );
     hour_db::persist_hour_report(pool, hs, &report).await?;
