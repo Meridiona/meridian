@@ -1,7 +1,7 @@
 """Worklog hour route — /worklog_hour.
 
 Entry point for the full agno worklog pipeline: distil → activity report →
-rerank → match → draft/propose → persist. Orchestrates the other endpoints on
+match → draft/propose → persist. Orchestrates the other endpoints on
 this server via loopback HTTP, so it must NOT hold model_sem — each sub-call
 acquires it independently.
 """
@@ -57,7 +57,7 @@ async def worklog_hour(req: _WorklogHourRequest, request: Request) -> dict:
     """Run the worklog pipeline for one hour; returns the HourResult dict."""
     from fastapi.concurrency import run_in_threadpool
 
-    # Loopback URL for the sub-calls (/distill_hour, /rerank, /v1, ...) — derive
+    # Loopback URL for the sub-calls (/distill_hour, /v1, ...) — derive
     # it from the incoming request so it's correct no matter how the server was
     # started (uvicorn --reload in dev never runs __main__, where self_url is set).
     self_url = app_state.get("self_url") or str(request.base_url).rstrip("/")
@@ -68,7 +68,7 @@ async def worklog_hour(req: _WorklogHourRequest, request: Request) -> dict:
         from agents.worklog_pipeline.workflow import run_hour_workflow
 
         # Stages forward `child_traceparent` (this worklog.hour span), so the
-        # loopback distill/report/rerank spans + the in-process agno spans all
+        # loopback distill/report spans + the in-process agno spans all
         # nest UNDER this root rather than as siblings of the Rust caller.
         result = run_hour_workflow(
             req.hour, db_path=req.db_path, server_url=self_url,

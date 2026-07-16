@@ -127,6 +127,30 @@ export interface TasksResponse {
   unassigned_s: number
 }
 
+// ── Task status change (`list_task_statuses` / `set_task_status`) ─────────────
+// The real workflow statuses a task's tracker offers (Jira transitions, Linear
+// workflow states, Trello lists, Azure states, GitHub open/closed). `category`
+// is the canonical taxonomy (backlog|todo|in_progress|in_review|done|cancelled|
+// unknown) so the UI can colour/decide "done" consistently across providers.
+export interface TaskStatusOption {
+  id: string
+  name: string
+  category: string
+}
+
+export interface StatusListResponse {
+  statuses: TaskStatusOption[]
+  current_id: string | null
+  current_name: string | null
+}
+
+export interface SetStatusResponse {
+  // Mirrors apply_ticket_fix: 'applied' wrote to the tracker; 'redirected' means
+  // the tracker couldn't do it in-app and browse_url was opened instead.
+  result: { status: string; browse_url?: string; reason?: string }
+  new_status: TaskStatusOption | null
+}
+
 // ── Worklogs (`get_worklogs`) ────────────────────────────────────────────────
 
 export interface WorklogBullet {
@@ -196,6 +220,91 @@ export interface HourReportEntry {
 export interface HourReportsResponse {
   day: string
   hours: HourReportEntry[]
+}
+
+// ── Day tasks (`get_day_tasks`) ───────────────────────────────────────────────
+// Meridian's own inferred day-level tasks (workstreams), folded hour by hour by
+// the worklog pipeline. Each task carries approximate time `segments` (multiple =
+// breaks) so the timeline can draw it spanning its real start-end; `hours` is the
+// coarse per-hour span the interim UI still renders from. `linked_ticket` is the
+// PM seam — always null for now.
+
+// One approximate "HH:MM"-"HH:MM" local range a task was worked in. Non-contiguous
+// segments on the same task are breaks — the timeline draws them as one workstream.
+export interface DaySegment {
+  start: string            // local "HH:MM", 24-hour
+  end: string              // local "HH:MM", 24-hour ("24:00" = end of day)
+}
+
+export interface DayTask {
+  id: string               // stable within the day: "T1", "T2", …
+  title: string
+  summary: string[]        // running log lines (past-tense, one thing done each)
+  minutes: number          // deterministic measured minutes (summed segment durations)
+  hours: string[]          // local hour labels, "YYYY-MM-DDTHH", ascending
+  segments: DaySegment[]   // approximate time ranges worked, ascending; gaps = breaks
+  first_hour: number       // earliest local hour-of-day (0..23); -1 if none
+  last_hour: number        // latest local hour-of-day (0..23); -1 if none
+  status: string
+  linked_ticket: string | null
+}
+
+export interface DayTasksResponse {
+  day: string
+  tasks: DayTask[]
+}
+
+// ── Generate worklog (`generate_day_task_worklog` / `get_day_task_worklog` /
+//    `approve_day_task_worklog`) ───────────────────────────────────────────────
+// One centralised, provider-agnostic AI call takes a day-task's whole-story
+// summary, matches it against the connected tracker's non-terminal tasks (best
+// fit or none), and drafts a high-level status update. `match` XOR `propose` is
+// set. On approve the draft is posted as a plain status comment (a proposed task
+// is created first) and the day-task is linked to the resulting ticket.
+
+// The chosen existing task the update will comment on (best fit found).
+export interface GeneratedWorklogMatch {
+  task_key: string
+  confidence: number       // 0..1, the model's own fit confidence
+}
+
+// A brand-new task to create when no existing task fits (created on approve).
+export interface GeneratedWorklogPropose {
+  issue_type: string       // e.g. "Task" | "Bug"
+  title: string
+  description: string
+}
+
+// The high-level status update itself — decisions/architecture/status, NOT a
+// time worklog. `summary` is the one-paragraph lead; the arrays add detail.
+export interface GeneratedWorklogUpdate {
+  summary: string
+  decisions: string[]
+  architecture: string[]
+  status: string
+}
+
+export interface DayTaskWorklogDraft {
+  state: 'drafted' | 'approved' | 'posted'
+  provider: string
+  match: GeneratedWorklogMatch | null
+  propose: GeneratedWorklogPropose | null
+  update: GeneratedWorklogUpdate
+  reasoning: string
+  target_key: string | null       // matched or created key; null until known
+  created_task_key: string | null
+  posted_comment_id: string | null
+  browse_url: string | null
+  error: string | null
+}
+
+export interface ApproveWorklogResponse {
+  posted: boolean
+  target_key: string | null
+  created_task_key: string | null
+  created: boolean
+  browse_url: string | null
+  error: string | null
 }
 
 // ── Hour status (`get_hour_status`) ───────────────────────────────────────────

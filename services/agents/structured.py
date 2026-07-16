@@ -174,7 +174,7 @@ def generate_structured(
     # each fire many times per hourly run, so leaving this to the (much later)
     # idle evictor let peak memory ratchet up across an active run instead of
     # settling back down between calls (matches the per-call discipline
-    # reranker._score_one and session_distiller._embed already use).
+    # session_distiller._embed already uses).
     try:
         import mlx.core as mx
         mx.clear_cache()

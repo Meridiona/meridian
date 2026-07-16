@@ -93,6 +93,20 @@ pub async fn update_settings(
             return Err("otlp_endpoint must start with http:// or https://".to_string());
         }
     }
+    // Validate the AI provider. This command is the ONLY writer of settings.json, so it
+    // is the only place the check is needed — and it matters: an unrecognised value would
+    // silently fall back to on-device at resolve time, so the user would pick "claude",
+    // see it saved, and quietly keep getting the local model. Reject it at the door
+    // instead. (The field stays a `String` on disk on purpose — see llm_provider.rs.)
+    if let Some(p) = body_obj.get("llm_provider").and_then(Value::as_str) {
+        if meridian_core::LlmProvider::from_wire(p).is_none() {
+            let valid: Vec<&str> = meridian_core::LlmProvider::all()
+                .iter()
+                .map(|p| p.as_str())
+                .collect();
+            return Err(format!("llm_provider must be one of: {}", valid.join(", ")));
+        }
+    }
     // Reject newlines in credentials (HTTP header-injection vector).
     for field in ["oo_email", "oo_password"] {
         if let Some(v) = body_obj.get(field).and_then(Value::as_str) {

@@ -64,7 +64,6 @@ class _Candidate(BaseModel):
     task_key:     str
     title:        str
     doc:          str = ""
-    rerank_score: float = 0.0
 
 
 class _ClassifyRequest(BaseModel):
@@ -93,8 +92,7 @@ class _ClassifyResponse(BaseModel):
 def _render_candidates(candidates: list[_Candidate]) -> str:
     lines = []
     for c in candidates:
-        hint = f"  [reranker hint: {c.rerank_score:.2f}]" if c.rerank_score else ""
-        lines.append(f"- {c.task_key}: {c.title}{hint}")
+        lines.append(f"- {c.task_key}: {c.title}")
         if c.doc and c.doc.strip() != c.title.strip():
             lines.append(f"    {c.doc}")
     return "\n".join(lines)

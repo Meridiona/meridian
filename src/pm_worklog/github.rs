@@ -67,25 +67,31 @@ pub async fn post_worklog(
     if time_spent_seconds < 60 {
         bail!("time_spent_seconds={time_spent_seconds} below the 60s worklog minimum");
     }
-    let issue = parse_task_key(task_key)?;
     let body = format_worklog_comment(
         comment,
         time_spent_seconds,
         window_start_iso,
         window_end_iso,
     );
+    let comment_id = post_comment(github, task_key, &body).await?;
+    Ok(PostedWorklog {
+        id: comment_id,
+        label: seconds_to_human(time_spent_seconds),
+    })
+}
 
+/// Post a plain COMMENT (`body` verbatim — no time, no `⏱`/`meridian-worklog`
+/// marker) to the GitHub issue `task_key` (`owner/repo#123`). Returns the created
+/// comment's id. The raw primitive [`post_worklog`] wraps (with a formatted worklog
+/// body) and the day-task "Generate worklog" flow uses directly.
+pub async fn post_comment(github: &GitHubConfig, task_key: &str, body: &str) -> Result<String> {
+    let issue = parse_task_key(task_key)?;
     let url = format!(
         "https://api.github.com/repos/{}/{}/issues/{}/comments",
         issue.owner, issue.repo, issue.number
     );
 
-    tracing::info!(
-        task_key,
-        time_spent = %seconds_to_human(time_spent_seconds),
-        comment_len = body.len(),
-        "github worklog comment POST"
-    );
+    tracing::info!(task_key, comment_len = body.len(), "github comment POST");
 
     let client = reqwest::Client::new();
     let resp = client
@@ -105,13 +111,8 @@ pub async fn post_worklog(
         bail!("GitHub comment POST for {task_key} returned {status}: {text}");
     }
     let value: Value = serde_json::from_str(&text).context("parsing GitHub comment response")?;
-    let comment_id = comment_id_from_response(&value)
-        .with_context(|| format!("GitHub comment response for {task_key} missing `id`"))?;
-
-    Ok(PostedWorklog {
-        id: comment_id,
-        label: seconds_to_human(time_spent_seconds),
-    })
+    comment_id_from_response(&value)
+        .with_context(|| format!("GitHub comment response for {task_key} missing `id`"))
 }
 
 /// Delete a previously-posted worklog comment (see `jira::delete_worklog` for

@@ -13,7 +13,7 @@ may abstain; stage_generate drafts every ticket and records "nothing worth loggi
 for an empty hour) — simpler control flow, same trace coverage via the manual spans.
 
 ``Parallel`` is deliberately NOT used: the machine holds one model at a time
-(embedder / reranker / 2B share a single slot), so concurrent model steps would
+(embedder / 2B share a single slot), so concurrent model steps would
 violate that and thrash. Persisted to a SqliteDb for run history. Draft→approve
 stays the EXISTING pm_worklogs UI flow (steps write `state='drafted'` rows), so the
 workflow runs to completion rather than pausing.

@@ -124,7 +124,7 @@ def fetch_sessions_for_hour(conn: sqlite3.Connection, hour: str) -> list[dict]:
 
 
 def render_doc(task: dict) -> str:
-    """Render a ticket into the text the reranker + matcher see."""
+    """Render a ticket into the text the matcher sees."""
     desc = (task.get("description_text") or "").strip().replace("\n", " ")
     itype = task.get("issue_type") or "Task"
     epic = task.get("epic_title") or ""

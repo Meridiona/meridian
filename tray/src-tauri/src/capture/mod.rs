@@ -26,6 +26,7 @@
 // The whole `capture` module is gated behind the `capture` feature at the
 // crate root (`lib.rs`), so everything here is already in a capture-enabled
 // build — no per-item cfg needed.
+pub mod drm_detector;
 pub mod screenpipe;
 pub mod ui_events;
 

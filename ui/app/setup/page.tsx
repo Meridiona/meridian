@@ -10,11 +10,14 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
-import { invoke, load, tauri } from '@/lib/bridge'
+import { invoke, load, mutate, tauri } from '@/lib/bridge'
 import { STEPS, Welcome, Completion } from './steps'
 import type { Wiz } from './steps'
 import type { DownloadProgress, MlxStatusResponse, NotifState, SystemSpecs } from './data'
 import type { IntegrationsResponse } from '@/lib/api-types'
+import type { RuntimeSettings } from '@/lib/settings'
+import { DEFAULT_LLM_PROVIDER, type LlmProviderId } from '@/lib/llm-providers'
+import { useLlmProviderDetection } from '@/components/LlmProviderPicker'
 import { Btn, Check, Kicker } from './atoms'
 
 const SERIF: CSSProperties = { fontFamily: 'var(--font-serif)' }
@@ -53,6 +56,30 @@ export default function SetupWizard() {
   // Step 3 — sign in (Clerk email one-time-code — see ./signin.tsx). The
   // widget owns its own form/busy/error state; this just holds the result.
   const [signedInEmail, setSignedInEmail] = useState<string | null>(null)
+
+  // Step 4 — intelligence. The provider the whole prose pipeline obeys. Persisted to
+  // settings.json immediately on pick (not batched to Finish): if the user quits the
+  // wizard halfway, the choice they made should still be the choice that runs.
+  const [provider, setProviderState] = useState<LlmProviderId>(DEFAULT_LLM_PROVIDER)
+  const { status: providers, scanning: scanningProviders, rescan: rescanProviders } =
+    useLlmProviderDetection()
+
+  // Seed from settings.json rather than assuming the default — a re-run of the wizard
+  // must show what the user actually has, not reset them to on-device.
+  useEffect(() => {
+    load<RuntimeSettings>('/api/settings', 'get_settings')
+      .then((s) => { if (s?.llm_provider) setProviderState(s.llm_provider) })
+      .catch(() => {})
+  }, [])
+
+  const setProvider = useCallback((id: LlmProviderId) => {
+    const prev = provider
+    setProviderState(id)  // optimistic — the picker must feel instant
+    mutate<RuntimeSettings>('/api/settings', 'update_settings', { llm_provider: id }, 'PUT')
+      // Roll back on a rejected write, or the UI would claim a choice the daemon
+      // isn't honouring — the exact silent-mismatch update_settings validates against.
+      .catch((e) => { setProviderState(prev); setErr(String(e)) })
+  }, [provider])
 
   const active = !welcome && !done
 
@@ -229,6 +256,7 @@ export default function SetupWizard() {
     err: mlxErr, retryModel,
     integrations, refetchIntegrations,
     signedInEmail, onSignedIn,
+    provider, setProvider, providers, scanningProviders, rescanProviders,
   }
 
   // ── Navigation ───────────────────────────────────────────────────────────────

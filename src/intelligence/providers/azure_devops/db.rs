@@ -29,6 +29,8 @@ pub(super) async fn prune(pool: &SqlitePool, kept_keys: &[String]) -> Result<()>
         .execute(pool)
         .await
         .context("pruning all azure_devops pm_tasks")?;
+        // No active tasks: every worklog-retained row is off the board now.
+        flag_retained_offboard(pool, kept_keys).await?;
         return Ok(());
     }
 
@@ -66,6 +68,21 @@ pub(super) async fn prune(pool: &SqlitePool, kept_keys: &[String]) -> Result<()>
             removed = result.rows_affected(),
             "pruned stale azure_devops tasks"
         );
+    }
+    // Worklog-retained rows the DELETE kept but that are no longer in the active
+    // fetch (closed, reassigned) must leave the board.
+    flag_retained_offboard(pool, kept_keys).await?;
+    Ok(())
+}
+
+/// Stamp worklog-retained azure_devops rows that fell out of the active fetch as
+/// off-board — thin wrapper over the shared [`super::super::mark_retained_offboard`].
+async fn flag_retained_offboard(pool: &SqlitePool, kept_keys: &[String]) -> Result<()> {
+    let flagged =
+        crate::intelligence::providers::mark_retained_offboard(pool, "azure_devops", kept_keys)
+            .await?;
+    if flagged > 0 {
+        tracing::info!(flagged, "flagged retained azure_devops tasks off-board");
     }
     Ok(())
 }
