@@ -199,6 +199,27 @@ pub async fn approve(
             });
         }
 
+        // A row stuck at `posting` means a prior attempt crashed mid-`post_comment`
+        // call with the outcome unknown — auto-retrying here could double-post the
+        // comment (the provider has no dedup marker to detect that against). Refuse
+        // instead of silently re-attempting; needs manual reconciliation (check the
+        // ticket for the comment, then either leave it or a human resets the row).
+        if draft.state == "posting" {
+            tracing::warn!("worklog: approve refused — row stuck at 'posting' from a prior crash");
+            return Ok(ApproveResult {
+                posted: false,
+                target_key: draft.target_key.clone(),
+                created_task_key: draft.created_task_key.clone(),
+                created: false,
+                browse_url: None,
+                error: Some(
+                    "a previous approve attempt was interrupted mid-post and its outcome is \
+                     unknown — check the ticket for a duplicate comment before retrying"
+                        .to_string(),
+                ),
+            });
+        }
+
         let now = chrono::Utc::now().to_rfc3339();
         day_task_worklogs::mark_approved(pool, day_local, task_id, &now).await?;
 
@@ -280,9 +301,31 @@ async fn approve_inner(
     };
 
     let body = render_update_body(&draft.update);
-    let comment_id = super::post_comment::post_comment(config, provider, &target_key, &body)
+
+    // CAS approved -> posting immediately before the provider call: if this
+    // process dies mid-`post_comment`, the row is left at `posting` (caught by
+    // `approve`'s guard above) instead of `approved` (which would let a retry
+    // silently double-post — post_comment carries no dedup marker to catch that
+    // after the fact, by design; see its module docs).
+    let posting_now = chrono::Utc::now().to_rfc3339();
+    if !day_task_worklogs::mark_posting(pool, day_local, task_id, &posting_now).await? {
+        bail!("could not transition draft to 'posting' — a concurrent approve may be in flight");
+    }
+
+    let comment_id = match super::post_comment::post_comment(config, provider, &target_key, &body)
         .await
-        .context("posting the status-update comment")?;
+    {
+        Ok(id) => id,
+        Err(e) => {
+            // The call definitely failed to post (returned before any process
+            // crash) — safe to revert so a normal retry can re-attempt it.
+            let reverted_now = chrono::Utc::now().to_rfc3339();
+            let _ =
+                day_task_worklogs::mark_posting_reverted(pool, day_local, task_id, &reverted_now)
+                    .await;
+            return Err(e).context("posting the status-update comment");
+        }
+    };
 
     let browse = browse_url(config, provider, &target_key);
     let now = chrono::Utc::now().to_rfc3339();
@@ -408,6 +451,11 @@ fn render_doc(issue_type: &str, title: &str, epic: &str, desc: &str) -> String {
 /// Fetch open (non-terminal, non-curation-excluded) tickets as candidates, each
 /// carrying its provider. Degrades to a curation-free query on a pre-038 DB.
 async fn fetch_open_candidates(pool: &SqlitePool) -> Result<Vec<Candidate>> {
+    // ORDER BY updated_at DESC: an unordered LIMIT is nondeterministic in SQLite
+    // (row order isn't guaranteed), so on boards with more than MAX_CANDIDATES
+    // open tickets the matcher could silently see a different candidate set on
+    // every call. Most-recently-updated is also the more useful cutoff — those
+    // are the tickets most likely to match today's work.
     let sql_with_curation = "SELECT pm_tasks.task_key, COALESCE(pm_tasks.provider,'jira'), \
              COALESCE(title,''), COALESCE(issue_type,'Task'), COALESCE(epic_title,''), \
              COALESCE(description_text,'') \
@@ -415,10 +463,11 @@ async fn fetch_open_candidates(pool: &SqlitePool) -> Result<Vec<Candidate>> {
          LEFT JOIN pm_task_curation c ON c.task_key = pm_tasks.task_key \
          WHERE COALESCE(pm_tasks.is_terminal,0)=0 \
            AND (c.decision IS NULL OR c.decision != 'excluded') \
+         ORDER BY pm_tasks.updated_at DESC \
          LIMIT ?";
     let sql_plain = "SELECT task_key, COALESCE(provider,'jira'), COALESCE(title,''), \
              COALESCE(issue_type,'Task'), COALESCE(epic_title,''), COALESCE(description_text,'') \
-         FROM pm_tasks WHERE COALESCE(is_terminal,0)=0 LIMIT ?";
+         FROM pm_tasks WHERE COALESCE(is_terminal,0)=0 ORDER BY updated_at DESC LIMIT ?";
 
     let rows = match sqlx::query_as::<_, (String, String, String, String, String, String)>(
         sql_with_curation,

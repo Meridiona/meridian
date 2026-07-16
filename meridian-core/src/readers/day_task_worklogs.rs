@@ -288,7 +288,9 @@ pub async fn mark_approved(
 
 /// Persist a created ticket's key BEFORE its comment is posted, so an approve
 /// retry never re-creates the ticket. Sets both `created_task_key` and
-/// `target_key`.
+/// `target_key`. Guarded to `approved` rows only, matching [`mark_approved`] /
+/// [`mark_posting`] — a `drafted` or `posted` row must never have its target
+/// key silently overwritten by a stray call.
 #[tracing::instrument(skip(pool))]
 pub async fn mark_created(
     pool: &SqlitePool,
@@ -300,10 +302,59 @@ pub async fn mark_created(
     sqlx::query(
         "UPDATE day_task_worklogs \
          SET created_task_key = ?, target_key = ?, updated_at = ? \
-         WHERE day_local = ? AND task_id = ?",
+         WHERE day_local = ? AND task_id = ? AND state = 'approved'",
     )
     .bind(created_task_key)
     .bind(created_task_key)
+    .bind(now)
+    .bind(day_local)
+    .bind(task_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// CAS `approved` -> `posting`, set immediately before the provider `post_comment`
+/// call so a crash mid-request leaves the row at `posting` rather than `approved`
+/// — [`crate::readers::day_task_worklogs`]'s caller must treat `posting` as
+/// "outcome unknown, do not auto-retry" rather than silently re-posting. Returns
+/// `true` iff the row was actually `approved` (0 rows affected means someone else
+/// already moved it, e.g. a concurrent approve call).
+#[tracing::instrument(skip(pool))]
+pub async fn mark_posting(
+    pool: &SqlitePool,
+    day_local: &str,
+    task_id: &str,
+    now: &str,
+) -> anyhow::Result<bool> {
+    let result = sqlx::query(
+        "UPDATE day_task_worklogs SET state = 'posting', updated_at = ? \
+         WHERE day_local = ? AND task_id = ? AND state = 'approved'",
+    )
+    .bind(now)
+    .bind(day_local)
+    .bind(task_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// CAS `posting` -> `approved` — used only when the provider call itself
+/// returned a definite error (never sent, or the server rejected it before any
+/// side effect), so a retry is known-safe. Never called after a successful
+/// post; never called for the "crashed mid-request, outcome unknown" case,
+/// which must stay at `posting`.
+#[tracing::instrument(skip(pool))]
+pub async fn mark_posting_reverted(
+    pool: &SqlitePool,
+    day_local: &str,
+    task_id: &str,
+    now: &str,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE day_task_worklogs SET state = 'approved', updated_at = ? \
+         WHERE day_local = ? AND task_id = ? AND state = 'posting'",
+    )
     .bind(now)
     .bind(day_local)
     .bind(task_id)
@@ -505,5 +556,107 @@ mod tests {
             .unwrap();
         assert_eq!(d.state, "drafted");
         assert_eq!(d.error.as_deref(), Some("boom"));
+    }
+
+    #[tokio::test]
+    async fn mark_posting_cas_only_transitions_an_approved_row() {
+        let pool = seeded().await;
+        upsert_draft(&pool, "2026-07-16", "T1", match_upsert(), "t0")
+            .await
+            .unwrap();
+
+        // A `drafted` row is not eligible — CAS must refuse (returns false) and
+        // leave the row untouched.
+        assert!(!mark_posting(&pool, "2026-07-16", "T1", "t1").await.unwrap());
+        let d = get_day_task_worklog(&pool, "2026-07-16", "T1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(d.state, "drafted");
+
+        mark_approved(&pool, "2026-07-16", "T1", "t2")
+            .await
+            .unwrap();
+        assert!(mark_posting(&pool, "2026-07-16", "T1", "t3").await.unwrap());
+        let d = get_day_task_worklog(&pool, "2026-07-16", "T1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(d.state, "posting");
+
+        // A second CAS from `approved` must now fail — the row is already `posting`
+        // (guards against a concurrent approve double-triggering the provider call).
+        assert!(!mark_posting(&pool, "2026-07-16", "T1", "t4").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn posting_reverts_to_approved_only_on_a_confirmed_pre_post_failure() {
+        // Models the crash-safety contract in `pm_worklog::generate::approve_inner`:
+        // a definite `post_comment` failure reverts `posting` -> `approved` (safe to
+        // retry — nothing was posted), but a process crash mid-request that never
+        // calls the revert leaves the row stuck at `posting` (must NOT be silently
+        // retried — see the `approve()` guard in `src/pm_worklog/generate.rs`).
+        let pool = seeded().await;
+        upsert_draft(&pool, "2026-07-16", "T1", match_upsert(), "t0")
+            .await
+            .unwrap();
+        mark_approved(&pool, "2026-07-16", "T1", "t1")
+            .await
+            .unwrap();
+        assert!(mark_posting(&pool, "2026-07-16", "T1", "t2").await.unwrap());
+
+        mark_posting_reverted(&pool, "2026-07-16", "T1", "t3")
+            .await
+            .unwrap();
+        let d = get_day_task_worklog(&pool, "2026-07-16", "T1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            d.state, "approved",
+            "a confirmed failure must revert to approved"
+        );
+
+        // Simulated crash: no revert call. The row stays at `posting` forever until
+        // a human reconciles it — never silently re-enters the retry path.
+        assert!(mark_posting(&pool, "2026-07-16", "T1", "t4").await.unwrap());
+        let d = get_day_task_worklog(&pool, "2026-07-16", "T1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            d.state, "posting",
+            "an un-reverted row must stay stuck at posting"
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_created_only_writes_an_approved_row() {
+        let pool = seeded().await;
+        upsert_draft(&pool, "2026-07-16", "T1", match_upsert(), "t0")
+            .await
+            .unwrap();
+
+        // A `drafted` row must not accept a stray created-key write.
+        mark_created(&pool, "2026-07-16", "T1", "KAN-99", "t1")
+            .await
+            .unwrap();
+        let d = get_day_task_worklog(&pool, "2026-07-16", "T1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(d.created_task_key.is_none());
+
+        mark_approved(&pool, "2026-07-16", "T1", "t2")
+            .await
+            .unwrap();
+        mark_created(&pool, "2026-07-16", "T1", "KAN-99", "t3")
+            .await
+            .unwrap();
+        let d = get_day_task_worklog(&pool, "2026-07-16", "T1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(d.created_task_key.as_deref(), Some("KAN-99"));
     }
 }
