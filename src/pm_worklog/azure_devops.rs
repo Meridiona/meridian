@@ -54,13 +54,25 @@ pub async fn post_worklog(
     if time_spent_seconds < 60 {
         bail!("time_spent_seconds={time_spent_seconds} below the 60s worklog minimum");
     }
-    let item = parse_task_key(task_key)?;
     let body = format_worklog_comment(
         comment,
         time_spent_seconds,
         window_start_iso,
         window_end_iso,
     );
+    let comment_id = post_comment(cfg, task_key, &body).await?;
+    Ok(PostedWorklog {
+        id: comment_id,
+        label: seconds_to_human(time_spent_seconds),
+    })
+}
+
+/// Post a plain COMMENT (`body` verbatim — no time, no `⏱`/`meridian-worklog`
+/// marker) to the Azure DevOps work item `task_key` (`project#id`). Returns the
+/// created comment's id. The raw primitive [`post_worklog`] wraps (with a formatted
+/// worklog body) and the day-task "Generate worklog" flow uses directly.
+pub async fn post_comment(cfg: &AzureDevOpsConfig, task_key: &str, body: &str) -> Result<String> {
+    let item = parse_task_key(task_key)?;
 
     // The Comments endpoint is a preview API; use the -preview.4 suffix as
     // documented for Azure DevOps Services (cloud). On-premises TFS may require
@@ -81,6 +93,12 @@ pub async fn post_worklog(
         .build()
         .context("building HTTP client")?;
 
+    tracing::info!(
+        task_key,
+        comment_len = body.len(),
+        "azure devops comment POST"
+    );
+
     let payload = serde_json::json!({ "text": body });
 
     let resp = client
@@ -99,16 +117,11 @@ pub async fn post_worklog(
     }
 
     let json: Value = resp.json().await.context("parsing comment response")?;
-    let comment_id = json["id"]
+    json["id"]
         .as_u64()
         .map(|n| n.to_string())
         .or_else(|| json["id"].as_str().map(|s| s.to_owned()))
-        .context("Azure DevOps comment response missing 'id'")?;
-
-    Ok(PostedWorklog {
-        id: comment_id,
-        label: seconds_to_human(time_spent_seconds),
-    })
+        .context("Azure DevOps comment response missing 'id'")
 }
 
 /// Delete a previously-posted worklog comment (see `jira::delete_worklog` for

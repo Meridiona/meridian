@@ -30,14 +30,26 @@ pub async fn post_worklog(
         bail!("time_spent_seconds={time_spent_seconds} below the 60s worklog minimum");
     }
 
-    let token = oauth_trello::load_token().context("loading Trello OAuth token")?;
-    let short_link = parse_short_link(task_key)?;
     let body = format_worklog_comment(
         comment,
         time_spent_seconds,
         window_start_iso,
         window_end_iso,
     );
+    let action_id = post_comment(trello, task_key, &body).await?;
+    Ok(PostedWorklog {
+        id: action_id,
+        label: seconds_to_human(time_spent_seconds),
+    })
+}
+
+/// Post a plain COMMENT (`body` verbatim — no time, no `⏱`/`meridian-worklog`
+/// marker) to the Trello card `task_key` (its shortLink). Returns the created
+/// action id. The raw primitive [`post_worklog`] wraps (with a formatted worklog
+/// body) and the day-task "Generate worklog" flow uses directly.
+pub async fn post_comment(trello: &TrelloConfig, task_key: &str, body: &str) -> Result<String> {
+    let token = oauth_trello::load_token().context("loading Trello OAuth token")?;
+    let short_link = parse_short_link(task_key)?;
 
     let url = format!(
         "{TRELLO_BASE}/cards/{short_link}/actions/comments\
@@ -47,13 +59,7 @@ pub async fn post_worklog(
 
     let client = reqwest::Client::new();
 
-    tracing::info!(
-        task_key,
-        short_link = %short_link,
-        time_spent = %seconds_to_human(time_spent_seconds),
-        comment_len = body.len(),
-        "trello worklog comment create"
-    );
+    tracing::info!(task_key, short_link = %short_link, comment_len = body.len(), "trello comment create");
 
     let resp = client
         .post(&url)
@@ -70,15 +76,10 @@ pub async fn post_worklog(
 
     let action: serde_json::Value =
         serde_json::from_str(&text).context("parsing Trello action response")?;
-    let action_id = action["id"]
+    action["id"]
         .as_str()
-        .with_context(|| format!("Trello action response missing id: {text}"))?
-        .to_string();
-
-    Ok(PostedWorklog {
-        id: action_id,
-        label: seconds_to_human(time_spent_seconds),
-    })
+        .map(str::to_string)
+        .with_context(|| format!("Trello action response missing id: {text}"))
 }
 
 /// Delete a previously-posted worklog comment (see `jira::delete_worklog` for

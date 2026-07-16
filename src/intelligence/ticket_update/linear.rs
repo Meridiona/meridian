@@ -11,6 +11,7 @@
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
+use super::statuses::{category_str, resolve_choice, SetStatusResult, StatusList, StatusOption};
 use super::{ApplyResult, WriteField};
 use crate::config::LinearConfig;
 
@@ -60,6 +61,114 @@ pub async fn apply(cfg: &LinearConfig, key: &str, write: &WriteField) -> Result<
     }
 
     Ok(ApplyResult::applied("linear", key, field_name(write)))
+}
+
+/// List the team's workflow states (the statuses this issue can move to) + the
+/// issue's current state. Every Linear state is reachable, so there is no
+/// redirect case on the set side.
+#[tracing::instrument(skip(cfg))]
+pub(super) async fn list_statuses(cfg: &LinearConfig, key: &str) -> Result<StatusList> {
+    let client = reqwest::Client::new();
+    let (statuses, current, _uuid) = fetch_states(&client, cfg, key).await?;
+    tracing::debug!(key, statuses = statuses.len(), "linear status list");
+    let (current_id, current_name) = current.unzip();
+    Ok(StatusList {
+        statuses,
+        current_id,
+        current_name,
+    })
+}
+
+/// Move the issue to the chosen state (id or name, case-insensitive) via
+/// `issueUpdate(input: { stateId })`. Errors if the choice matches no state.
+#[tracing::instrument(skip(cfg))]
+pub(super) async fn set_status(
+    cfg: &LinearConfig,
+    key: &str,
+    choice: &str,
+) -> Result<SetStatusResult> {
+    let client = reqwest::Client::new();
+    let (statuses, _current, uuid) = fetch_states(&client, cfg, key).await?;
+    let target = resolve_choice(&statuses, choice)
+        .with_context(|| format!("no Linear workflow state matches {choice:?}"))?
+        .clone();
+
+    let mutation = "mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {\n  \
+        issueUpdate(id: $id, input: $input) { success }\n}";
+    let payload = json!({
+        "query": mutation,
+        "variables": { "id": uuid, "input": { "stateId": target.id } },
+    });
+    let data = graphql(&client, cfg, &payload)
+        .await
+        .with_context(|| format!("Linear issueUpdate (status) for {key}"))?;
+    if data["issueUpdate"]["success"].as_bool() != Some(true) {
+        bail!("Linear issueUpdate (status) for {key} did not report success: {data}");
+    }
+    Ok(SetStatusResult::applied(target))
+}
+
+/// One round trip: resolve the issue, read its team's states + current state.
+/// Returns `(options, current (id,name), issue_uuid)`.
+async fn fetch_states(
+    client: &reqwest::Client,
+    cfg: &LinearConfig,
+    key: &str,
+) -> Result<(Vec<StatusOption>, Option<(String, String)>, String)> {
+    let query = "query IssueStates($id: String!) { issue(id: $id) { id state { id name } team { states { nodes { id name type } } } } }";
+    let payload = json!({ "query": query, "variables": { "id": key } });
+    let data = graphql(client, cfg, &payload).await?;
+    let uuid = data
+        .pointer("/issue/id")
+        .and_then(|s| s.as_str())
+        .map(String::from)
+        .with_context(|| format!("Linear issue {key} not found"))?;
+    let nodes = data
+        .pointer("/issue/team/states/nodes")
+        .and_then(|n| n.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let statuses = state_options(&nodes);
+    let current = data
+        .pointer("/issue/state/id")
+        .and_then(|s| s.as_str())
+        .map(String::from)
+        .zip(
+            data.pointer("/issue/state/name")
+                .and_then(|s| s.as_str())
+                .map(String::from),
+        );
+    Ok((statuses, current, uuid))
+}
+
+/// Map Linear workflow-state `type`s to the canonical taxonomy.
+fn linear_category(state_type: &str) -> &'static str {
+    use meridian_core::StatusCategory::{Backlog, Cancelled, Done, InProgress, Todo};
+    match state_type {
+        "backlog" => category_str(Backlog),
+        // Linear's "triage" is an inbox-ish pre-todo bucket; treat it as todo.
+        "triage" | "unstarted" => category_str(Todo),
+        "started" => category_str(InProgress),
+        "completed" => category_str(Done),
+        "canceled" => category_str(Cancelled),
+        _ => "unknown",
+    }
+}
+
+fn state_options(nodes: &[Value]) -> Vec<StatusOption> {
+    nodes
+        .iter()
+        .filter_map(|s| {
+            let id = s.get("id")?.as_str()?.to_string();
+            let name = s.get("name")?.as_str()?.to_string();
+            let ty = s.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            Some(StatusOption {
+                id,
+                name,
+                category: linear_category(ty).to_string(),
+            })
+        })
+        .collect()
 }
 
 /// Map a human priority name to Linear's int scale (0 None, 1 Urgent, 2 High,
@@ -326,5 +435,29 @@ mod tests {
                 "field_name mismatch for {expected}"
             );
         }
+    }
+
+    #[test]
+    fn maps_state_types() {
+        assert_eq!(linear_category("backlog"), "backlog");
+        assert_eq!(linear_category("triage"), "todo");
+        assert_eq!(linear_category("unstarted"), "todo");
+        assert_eq!(linear_category("started"), "in_progress");
+        assert_eq!(linear_category("completed"), "done");
+        assert_eq!(linear_category("canceled"), "cancelled");
+        assert_eq!(linear_category("mystery"), "unknown");
+    }
+
+    #[test]
+    fn builds_state_options() {
+        let nodes = vec![
+            json!({ "id": "s1", "name": "Todo", "type": "unstarted" }),
+            json!({ "id": "s2", "name": "In Progress", "type": "started" }),
+        ];
+        let opts = state_options(&nodes);
+        assert_eq!(opts.len(), 2);
+        assert_eq!(opts[0].id, "s1");
+        assert_eq!(opts[0].category, "todo");
+        assert_eq!(opts[1].category, "in_progress");
     }
 }

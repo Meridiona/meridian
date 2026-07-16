@@ -44,7 +44,19 @@ pub async fn post_worklog(
         window_start_iso,
         window_end_iso,
     );
+    let comment_id = post_comment(linear, task_key, &body).await?;
+    Ok(PostedWorklog {
+        id: comment_id,
+        label: seconds_to_human(time_spent_seconds),
+    })
+}
 
+/// Post a plain COMMENT (`body` verbatim — no time, no `⏱`/`meridian-worklog`
+/// marker) to the Linear issue `task_key` (e.g. `ENG-123`) via `commentCreate`.
+/// Returns the created comment's id. This is the raw primitive [`post_worklog`]
+/// wraps (with a formatted worklog body) and the day-task "Generate worklog" flow
+/// uses directly.
+pub async fn post_comment(linear: &LinearConfig, task_key: &str, body: &str) -> Result<String> {
     let client = reqwest::Client::new();
     let issue_uuid = resolve_issue_uuid(&client, linear, task_key).await?;
 
@@ -56,30 +68,20 @@ pub async fn post_worklog(
         "variables": { "issueId": issue_uuid, "body": body },
     });
 
-    tracing::info!(
-        task_key,
-        time_spent = %seconds_to_human(time_spent_seconds),
-        comment_len = body.len(),
-        "linear worklog comment create"
-    );
+    tracing::info!(task_key, comment_len = body.len(), "linear comment create");
 
     let data = graphql(&client, linear, &payload)
         .await
-        .with_context(|| format!("creating Linear worklog comment for {task_key}"))?;
+        .with_context(|| format!("creating Linear comment for {task_key}"))?;
 
     let created = &data["commentCreate"];
     if created["success"].as_bool() != Some(true) {
         bail!("Linear commentCreate for {task_key} did not report success: {created}");
     }
-    let comment_id = created["comment"]["id"]
+    created["comment"]["id"]
         .as_str()
-        .context("Linear commentCreate response missing comment.id")?
-        .to_string();
-
-    Ok(PostedWorklog {
-        id: comment_id,
-        label: seconds_to_human(time_spent_seconds),
-    })
+        .map(str::to_string)
+        .context("Linear commentCreate response missing comment.id")
 }
 
 /// Delete a previously-posted worklog comment (see `jira::delete_worklog` for

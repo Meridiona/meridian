@@ -29,6 +29,10 @@ pub mod hour_text;
 /// The rolling day-level tasks (`day_tasks`, migration 058; no route — new work).
 pub mod day_tasks;
 
+/// The generated-worklog ledger behind the day-task "Generate worklog" action
+/// (`day_task_worklogs`, migration 060; no route — new work).
+pub mod day_task_worklogs;
+
 /// Per-hour generating/paused badge state for the timeline; no route — new work.
 pub mod hour_status;
 

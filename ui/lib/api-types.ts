@@ -127,6 +127,30 @@ export interface TasksResponse {
   unassigned_s: number
 }
 
+// ── Task status change (`list_task_statuses` / `set_task_status`) ─────────────
+// The real workflow statuses a task's tracker offers (Jira transitions, Linear
+// workflow states, Trello lists, Azure states, GitHub open/closed). `category`
+// is the canonical taxonomy (backlog|todo|in_progress|in_review|done|cancelled|
+// unknown) so the UI can colour/decide "done" consistently across providers.
+export interface TaskStatusOption {
+  id: string
+  name: string
+  category: string
+}
+
+export interface StatusListResponse {
+  statuses: TaskStatusOption[]
+  current_id: string | null
+  current_name: string | null
+}
+
+export interface SetStatusResponse {
+  // Mirrors apply_ticket_fix: 'applied' wrote to the tracker; 'redirected' means
+  // the tracker couldn't do it in-app and browse_url was opened instead.
+  result: { status: string; browse_url?: string; reason?: string }
+  new_status: TaskStatusOption | null
+}
+
 // ── Worklogs (`get_worklogs`) ────────────────────────────────────────────────
 
 export interface WorklogBullet {
@@ -228,6 +252,59 @@ export interface DayTask {
 export interface DayTasksResponse {
   day: string
   tasks: DayTask[]
+}
+
+// ── Generate worklog (`generate_day_task_worklog` / `get_day_task_worklog` /
+//    `approve_day_task_worklog`) ───────────────────────────────────────────────
+// One centralised, provider-agnostic AI call takes a day-task's whole-story
+// summary, matches it against the connected tracker's non-terminal tasks (best
+// fit or none), and drafts a high-level status update. `match` XOR `propose` is
+// set. On approve the draft is posted as a plain status comment (a proposed task
+// is created first) and the day-task is linked to the resulting ticket.
+
+// The chosen existing task the update will comment on (best fit found).
+export interface GeneratedWorklogMatch {
+  task_key: string
+  confidence: number       // 0..1, the model's own fit confidence
+}
+
+// A brand-new task to create when no existing task fits (created on approve).
+export interface GeneratedWorklogPropose {
+  issue_type: string       // e.g. "Task" | "Bug"
+  title: string
+  description: string
+}
+
+// The high-level status update itself — decisions/architecture/status, NOT a
+// time worklog. `summary` is the one-paragraph lead; the arrays add detail.
+export interface GeneratedWorklogUpdate {
+  summary: string
+  decisions: string[]
+  architecture: string[]
+  status: string
+}
+
+export interface DayTaskWorklogDraft {
+  state: 'drafted' | 'approved' | 'posted'
+  provider: string
+  match: GeneratedWorklogMatch | null
+  propose: GeneratedWorklogPropose | null
+  update: GeneratedWorklogUpdate
+  reasoning: string
+  target_key: string | null       // matched or created key; null until known
+  created_task_key: string | null
+  posted_comment_id: string | null
+  browse_url: string | null
+  error: string | null
+}
+
+export interface ApproveWorklogResponse {
+  posted: boolean
+  target_key: string | null
+  created_task_key: string | null
+  created: boolean
+  browse_url: string | null
+  error: string | null
 }
 
 // ── Hour status (`get_hour_status`) ───────────────────────────────────────────

@@ -21,6 +21,8 @@
 //! - [`notifications`] — the in-app banner dismiss write.
 //! - [`parents`]   — valid parent tickets for the hygiene "link a parent" fix.
 //! - [`settings`]  — runtime settings read + write (`/api/settings` GET/PUT).
+//! - [`statuses`]  — ticket status list + set (spawns `meridian ticket-statuses`
+//!   / `ticket-set-status`) for the dashboard's status control.
 //! - [`tasks`]     — board re-sync action (`/api/tasks/sync`, spawns `meridian`).
 //! - [`triage`]    — cleanup working set + the decision/ignore DB writes.
 //! - [`setup`]     — first-run detection, permission probes, MLX status/start.
@@ -46,11 +48,13 @@ pub mod parents;
 pub mod pause;
 pub mod settings;
 pub mod setup;
+pub mod statuses;
 pub mod system;
 pub mod tasks;
 pub mod triage;
 pub mod uninstall;
 pub mod version;
+pub mod worklog_generate;
 pub mod worklogs;
 
 // Glob re-exports so callers use `crate::commands::<fn>` regardless of submodule.
@@ -70,9 +74,11 @@ pub use parents::*;
 pub use pause::*;
 pub use settings::*;
 pub use setup::*;
+pub use statuses::*;
 pub use system::*;
 pub use tasks::*;
 pub use triage::*;
 pub use uninstall::*;
 pub use version::*;
+pub use worklog_generate::*;
 pub use worklogs::*;

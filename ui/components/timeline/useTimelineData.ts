@@ -42,12 +42,15 @@ export interface WorklogActions {
 
 const PROVIDER_IDS: TrackerId[] = ['jira', 'linear', 'github', 'trello', 'azure_devops']
 
-/** Count of tasks that would show up in the board-cleanup modal: any connected
- *  task with a fixable hygiene issue or a stale/unsure bucket. Mirrors
+/** Count of tasks that would show up in the board-cleanup modal: any connected,
+ *  still-active task with a fixable hygiene issue or a stale/unsure bucket.
+ *  Excludes off-board (`is_terminal`) tasks — done/reassigned tickets are hidden
+ *  from the board and shouldn't inflate the cleanup count either. Mirrors
  *  CleanupOverlay's queue-length so the Overview notice count matches the
  *  modal exactly. */
 function cleanupCount(tasks: TaskSummary[], integrations: IntegrationsResponse | null): number {
   return filterByConnectedProviders(tasks, integrations)
+    .filter(t => !t.is_terminal)
     .filter(t => t.hygiene)
     .filter(t => {
       const issues = t.hygiene!.issues ?? []

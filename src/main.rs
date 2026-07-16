@@ -387,6 +387,215 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `meridian ticket-statuses --provider P --key K` — list the statuses a
+    // ticket can move to (each normalised to the canonical lifecycle taxonomy)
+    // plus its current status, for the dashboard's status control. Prints ONE
+    // JSON line {"statuses":[{id,name,category}],"current_id":..,"current_name":..}.
+    // Read-only.
+    if std::env::args().nth(1).as_deref() == Some("ticket-statuses") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let provider = flag("--provider").unwrap_or_default();
+        let key = flag("--key").unwrap_or_default();
+        if provider.is_empty() || key.is_empty() {
+            eprintln!("ticket-statuses: --provider and --key are required");
+            std::process::exit(2);
+        }
+        let cfg = Config::from_env();
+        match meridian::intelligence::ticket_update::statuses::list_statuses(&cfg, &provider, &key)
+            .await
+        {
+            Ok(result) => println!("{}", result.to_json()),
+            Err(e) => {
+                eprintln!("ticket-statuses: {e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
+    // `meridian ticket-set-status --provider P --key K --status ID_OR_NAME` —
+    // move a ticket to a status (id, or name case-insensitively — the UI's Undo
+    // passes the previous status NAME). Prints ONE JSON line
+    // {"result":{"status":"applied"|"redirected","browse_url":..,"reason":..},
+    //  "new_status":{id,name,category}|null}. On an applied move it triggers a
+    // force sync so the local mirror's status_raw/is_terminal reflect the change.
+    if std::env::args().nth(1).as_deref() == Some("ticket-set-status") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let provider = flag("--provider").unwrap_or_default();
+        let key = flag("--key").unwrap_or_default();
+        let status = flag("--status").unwrap_or_default();
+        if provider.is_empty() || key.is_empty() || status.is_empty() {
+            eprintln!("ticket-set-status: --provider, --key and --status are required");
+            std::process::exit(2);
+        }
+        let cfg = Config::from_env();
+        match meridian::intelligence::ticket_update::statuses::set_status(
+            &cfg, &provider, &key, &status,
+        )
+        .await
+        {
+            Ok(result) => {
+                // Reflect an applied move back into our mirror + hygiene verdicts.
+                if matches!(
+                    result.status,
+                    meridian::intelligence::ticket_update::ApplyStatus::Applied
+                ) {
+                    if let Ok(pool) = setup_db(&cfg.meridian_db_uri()).await {
+                        let _ = run_pm_force_sync(&pool, &cfg).await;
+                        pool.close().await;
+                    }
+                }
+                println!("{}", result.to_json());
+            }
+            Err(e) => {
+                eprintln!("ticket-set-status: {e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
+    // `meridian worklog-generate --day YYYY-MM-DD --task-id T1` — the day-task
+    // "Generate worklog" action: ONE provider-agnostic LLM call that matches the
+    // day-task's workstream to an existing ticket (or proposes a new one) and
+    // drafts a high-level status update. Prints ONE JSON line: the draft object.
+    // Regenerate = the same command (UPSERT overwrites the drafted row).
+    if std::env::args().nth(1).as_deref() == Some("worklog-generate") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let day = flag("--day").unwrap_or_default();
+        let task_id = flag("--task-id").unwrap_or_default();
+        if day.is_empty() || task_id.is_empty() {
+            eprintln!("worklog-generate: --day and --task-id are required");
+            std::process::exit(2);
+        }
+        let cfg = Config::from_env();
+        // Init observability so the LLM call emits its llm.request/infer/response
+        // subspans under a worklog.generate span; flush before exit.
+        let obs_guard = observability::init("meridian-rust").ok();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                match meridian::pm_worklog::generate(&pool, &cfg, &day, &task_id).await {
+                    Ok(draft) => println!("{}", serde_json::to_string(&draft).unwrap_or_default()),
+                    Err(e) => {
+                        pool.close().await;
+                        if let Some(g) = obs_guard {
+                            g.shutdown().await;
+                        }
+                        eprintln!("worklog-generate: {e:#}");
+                        std::process::exit(1);
+                    }
+                }
+                pool.close().await;
+            }
+            Err(e) => {
+                eprintln!("worklog-generate: open db: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        if let Some(g) = obs_guard {
+            g.shutdown().await;
+        }
+        return Ok(());
+    }
+
+    // `meridian worklog-generate-get --day YYYY-MM-DD --task-id T1` — read the
+    // current draft for a day-task, or print JSON `null` if none exists. Read-only.
+    if std::env::args().nth(1).as_deref() == Some("worklog-generate-get") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let day = flag("--day").unwrap_or_default();
+        let task_id = flag("--task-id").unwrap_or_default();
+        if day.is_empty() || task_id.is_empty() {
+            eprintln!("worklog-generate-get: --day and --task-id are required");
+            std::process::exit(2);
+        }
+        let cfg = Config::from_env();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                match meridian_core::day_task_worklogs::get_day_task_worklog(&pool, &day, &task_id)
+                    .await
+                {
+                    Ok(draft) => println!("{}", serde_json::to_string(&draft).unwrap_or_default()),
+                    Err(e) => {
+                        pool.close().await;
+                        eprintln!("worklog-generate-get: {e:#}");
+                        std::process::exit(1);
+                    }
+                }
+                pool.close().await;
+            }
+            Err(e) => {
+                eprintln!("worklog-generate-get: open db: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
+    // `meridian worklog-generate-approve --day YYYY-MM-DD --task-id T1` — approve
+    // the current draft: create the proposed ticket if any, post the status update
+    // as a comment, link the day-task. Idempotent. Prints ONE JSON line
+    // {"posted":..,"target_key":..,"created_task_key":..,"created":..,"browse_url":..,"error":..}.
+    if std::env::args().nth(1).as_deref() == Some("worklog-generate-approve") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let day = flag("--day").unwrap_or_default();
+        let task_id = flag("--task-id").unwrap_or_default();
+        if day.is_empty() || task_id.is_empty() {
+            eprintln!("worklog-generate-approve: --day and --task-id are required");
+            std::process::exit(2);
+        }
+        let cfg = Config::from_env();
+        let obs_guard = observability::init("meridian-rust").ok();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                match meridian::pm_worklog::approve(&pool, &cfg, &day, &task_id).await {
+                    Ok(res) => println!("{}", serde_json::to_string(&res).unwrap_or_default()),
+                    Err(e) => {
+                        pool.close().await;
+                        if let Some(g) = obs_guard {
+                            g.shutdown().await;
+                        }
+                        eprintln!("worklog-generate-approve: {e:#}");
+                        std::process::exit(1);
+                    }
+                }
+                pool.close().await;
+            }
+            Err(e) => {
+                eprintln!("worklog-generate-approve: open db: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        if let Some(g) = obs_guard {
+            g.shutdown().await;
+        }
+        return Ok(());
+    }
+
     // `meridian worklog-status [--day YYYY-MM-DD]` — a human-readable report of
     // the day's worklogs (hours done/pending/stuck, rows by state, per-ticket
     // comments + flagged ones). Read-only; no daemon init.

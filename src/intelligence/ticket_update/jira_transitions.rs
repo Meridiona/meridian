@@ -137,8 +137,9 @@ fn pick_cancel_transition(transitions: &[Value]) -> Option<String> {
 }
 
 /// `GET /issue/{key}/transitions` — the list of transitions available from the
-/// ticket's current status. Shared by close/reopen/cancel.
-async fn fetch_transitions(
+/// ticket's current status. Shared by close/reopen/cancel and the status
+/// list/set feature (`jira::list_statuses` / `jira::set_status`).
+pub(super) async fn fetch_transitions(
     ctx: &JiraReqCtx,
     client: &reqwest::Client,
     key: &str,
@@ -163,8 +164,9 @@ async fn fetch_transitions(
 }
 
 /// `POST /issue/{key}/transitions` with a chosen transition id. Shared by
-/// close/reopen/cancel; `action` only labels the error message.
-async fn post_transition(
+/// close/reopen/cancel and the status-set feature; `action` only labels the
+/// error message.
+pub(super) async fn post_transition(
     ctx: &JiraReqCtx,
     client: &reqwest::Client,
     key: &str,

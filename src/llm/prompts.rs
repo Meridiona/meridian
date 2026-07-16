@@ -155,6 +155,63 @@ pub fn workstream_schema() -> Value {
     })
 }
 
+/// The "Generate worklog" prompt — one combined, provider-agnostic call behind the
+/// day-task card action. Takes a day-level workstream + the open PM tickets and
+/// returns, in one pass: `match` XOR `propose` (advance an existing ticket or draft
+/// a new one), plus a high-level `update` (summary / decisions / architecture /
+/// status) to post as a comment. Same one-prompt-all-providers rule as the others.
+pub const WORKLOG_GENERATE: &str = include_str!("../../services/prompts/worklog-generate.md");
+
+/// The JSON shape the "Generate worklog" call must answer in. `match` and `propose`
+/// are nullable objects (the model returns exactly one non-null — code enforces the
+/// XOR after parsing); `update` is required with a `summary`, `decisions`/
+/// `architecture` string arrays, and a `status` line; `reasoning` is required.
+///
+/// The nullable branches are `["object", "null"]` so a schema-enforcing backend can
+/// emit `null` for the branch it didn't take; `match`/`propose` are deliberately NOT
+/// in `required` so a backend that omits the unused branch entirely is also valid.
+/// Parsing is tolerant either way (see `parse_json_object`).
+pub fn worklog_generate_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "match": {
+                "type": ["object", "null"],
+                "properties": {
+                    "task_key":   {"type": "string"},
+                    "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+                },
+                "required": ["task_key", "confidence"],
+                "additionalProperties": false
+            },
+            "propose": {
+                "type": ["object", "null"],
+                "properties": {
+                    "issue_type":  {"type": "string"},
+                    "title":       {"type": "string"},
+                    "description": {"type": "string"}
+                },
+                "required": ["issue_type", "title", "description"],
+                "additionalProperties": false
+            },
+            "update": {
+                "type": "object",
+                "properties": {
+                    "summary":      {"type": "string"},
+                    "decisions":    {"type": "array", "items": {"type": "string"}},
+                    "architecture": {"type": "array", "items": {"type": "string"}},
+                    "status":       {"type": "string"}
+                },
+                "required": ["summary", "decisions", "architecture", "status"],
+                "additionalProperties": false
+            },
+            "reasoning": {"type": "string"}
+        },
+        "required": ["update", "reasoning"],
+        "additionalProperties": false
+    })
+}
+
 /// Appended to the prompt for backends with NO schema mechanism (copilot, cursor).
 ///
 /// They cannot be constrained at the token level, so the contract has to ride in the
@@ -186,6 +243,40 @@ mod tests {
         assert!(WORKSTREAM.contains("segment"));
         assert!(WORKSTREAM.to_lowercase().contains("leisure"));
         assert!(WORKSTREAM.contains("NEVER NAME THE PERSON"));
+        // The Generate-worklog prompt's whole design rests on: match XOR propose,
+        // no-match being valid, a high-level status update (not a time worklog),
+        // and never naming the person.
+        assert!(WORKLOG_GENERATE.contains("MUTUALLY EXCLUSIVE"));
+        assert!(WORKLOG_GENERATE.contains("NO MATCH IS A VALID"));
+        assert!(WORKLOG_GENERATE.to_lowercase().contains("status update"));
+        assert!(WORKLOG_GENERATE.contains("NEVER NAME THE PERSON"));
+    }
+
+    #[test]
+    fn worklog_generate_schema_pins_match_xor_propose_and_update() {
+        let s = worklog_generate_schema();
+        let props = &s["properties"];
+        // match / propose are nullable objects, not in `required` (XOR enforced in code).
+        assert_eq!(props["match"]["type"], json!(["object", "null"]));
+        assert_eq!(props["propose"]["type"], json!(["object", "null"]));
+        assert_eq!(s["required"], json!(["update", "reasoning"]));
+        // The match branch carries a task_key + a 0-1 confidence.
+        let m = &props["match"]["properties"];
+        assert_eq!(m["task_key"]["type"], json!("string"));
+        assert_eq!(m["confidence"]["maximum"], json!(1));
+        // The propose branch carries issue_type / title / description.
+        let p = &props["propose"]["properties"];
+        assert_eq!(p["issue_type"]["type"], json!("string"));
+        assert_eq!(p["title"]["type"], json!("string"));
+        assert_eq!(p["description"]["type"], json!("string"));
+        // The update requires all four fields; decisions/architecture are arrays.
+        let u = &props["update"];
+        assert_eq!(
+            u["required"],
+            json!(["summary", "decisions", "architecture", "status"])
+        );
+        assert_eq!(u["properties"]["decisions"]["type"], json!("array"));
+        assert_eq!(u["properties"]["architecture"]["type"], json!("array"));
     }
 
     #[test]

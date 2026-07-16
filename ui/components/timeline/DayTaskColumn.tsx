@@ -26,6 +26,7 @@ import {
   type LaidOutTask,
 } from './dayTaskLayout'
 import type { DayTaskDetail } from './DayTaskDetailPanel'
+import { taskHue, Bullets } from './dayTaskKit'
 
 // The vertical scale (px per minute) is DYNAMIC — the timeline fits itself to the
 // pane. A sparse day (one short task, the first hour after a fresh fold) would
@@ -40,6 +41,10 @@ const GUTTER = 58 // px reserved on the left for hour labels
 // A task card never draws thinner than this, so even a few-minute workstream stays
 // visible, labelled, and tappable (a small honest over-draw for very short work).
 const MIN_SEG_PX = 22
+// The left colour rail floats this many px in from the card's top and bottom
+// edges so it never touches the rounded corners (a solid bar flush to the
+// boundary reads as a broken border, not a rail).
+const RAIL_INSET = 10
 // A hair of extra vertical room folded into lane collision, so side-by-side cards
 // (and stacked ones) read as clearly separate rather than flush against each other.
 const CARD_SEP_PX = 6
@@ -51,20 +56,6 @@ const COMPACT_MAX_PX = 46
 const META_MIN_PX = 62
 const SUMMARY_MIN_PX = 104
 const SUMMARY_LINE_PX = 17 // approx line height of a preview line
-
-/** A stable-ish hue per task so blocks read as distinct workstreams. */
-const TASK_HUES = [
-  'var(--color-state-proposal)',
-  'var(--color-state-approved)',
-  'var(--color-state-pending)',
-  '#8b7cf6',
-  '#f0883e',
-  '#4cc9b0',
-]
-function taskHue(id: string, idx: number): string {
-  const n = parseInt(id.replace(/^T/, ''), 10)
-  return TASK_HUES[(Number.isFinite(n) ? n - 1 : idx) % TASK_HUES.length] ?? TASK_HUES[0]
-}
 
 export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
   day: string
@@ -200,6 +191,7 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
                           ? null
                           : {
                               id: l.task.id,
+                              day,
                               title: l.task.title,
                               minutes: l.task.minutes,
                               hue,
@@ -207,6 +199,7 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
                               summary: l.task.summary ?? [],
                               footLo: l.footLo,
                               footHi: l.footHi,
+                              linkedTicket: l.task.linked_ticket,
                             },
                       )
                     }
@@ -273,13 +266,24 @@ function TaskBand({ laid, hue, winLo, pxPerMin, selected, dimmed, onSelect }: {
         cursor: 'pointer',
         overflow: 'hidden',
       }}>
-      {/* Left rail: one solid segment per worked stretch, gaps = breaks. */}
+      {/* Left rail: one solid segment per worked stretch, gaps = breaks. The
+          whole rail is inset from the card's top and bottom edges (RAIL_INSET)
+          so it floats inside the rounded card rather than running flush into
+          the corners. Interior sitting gaps keep their real positions; only the
+          outermost extremes are clamped in. */}
       {laid.segments.map((s, i) => {
-        const rt = (s.startMin - laid.footLo) * pxPerMin
-        const rh = Math.max((s.endMin - s.startMin) * pxPerMin, 5)
+        // On a short card a full 10px top+bottom inset would swallow the rail,
+        // so cap it at a quarter of the height — the rail stays visible and
+        // still floats off both edges.
+        const inset = Math.min(RAIL_INSET, height * 0.25)
+        const rawTop = (s.startMin - laid.footLo) * pxPerMin
+        const rawBot = (s.endMin - laid.footLo) * pxPerMin
+        const top = Math.max(rawTop, inset)
+        const bot = Math.min(rawBot, height - inset)
+        const rh = Math.max(bot - top, 4)
         return (
           <span key={i} className="absolute" style={{
-            top: rt, height: rh, left: 6, width: 4, borderRadius: 3,
+            top, height: rh, left: 7, width: 4, borderRadius: 3,
             background: hue, opacity: selected ? 1 : 0.9, pointerEvents: 'none',
           }} />
         )
@@ -288,8 +292,14 @@ function TaskBand({ laid, hue, winLo, pxPerMin, selected, dimmed, onSelect }: {
       {/* Content, cleared of the rail. */}
       <div className="absolute inset-0 flex flex-col"
         style={{ padding: compact ? '0 12px 0 20px' : '9px 12px 9px 20px', justifyContent: compact ? 'center' : 'flex-start', pointerEvents: 'none' }}>
-        <div className="flex items-start gap-2">
-          <span className="shrink-0 rounded-full" style={{ width: 7, height: 7, background: hue, marginTop: compact ? 0 : 4 }} />
+        {/* On a compact card the left rail already carries the task colour, so
+            the title dot is dropped and the title is centred against the rail —
+            a second dot beside a short rail just read as misaligned clutter. On
+            a taller card the dot anchors the top of the header next to the rail. */}
+        <div className="flex gap-2" style={{ alignItems: compact ? 'center' : 'flex-start' }}>
+          {!compact && (
+            <span className="shrink-0 rounded-full" style={{ width: 7, height: 7, background: hue, marginTop: 4 }} />
+          )}
           <span className="mt-card-title flex-1 min-w-0"
             style={{ color: 'var(--t-title)', lineHeight: 1.25, display: '-webkit-box', WebkitLineClamp: compact ? 1 : 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
             {laid.task.title || 'Activity'}
@@ -315,22 +325,14 @@ function TaskBand({ laid, hue, winLo, pxPerMin, selected, dimmed, onSelect }: {
         )}
 
         {previewLines > 0 && (
-          <ul className="mt-2 space-y-1" style={{ paddingLeft: 15 }}>
-            {summary.slice(0, previewLines).map((line, i) => (
-              <li key={i} className="mt-body-sm flex gap-1.5"
-                style={{ color: 'var(--t-muted)', fontSize: 11, lineHeight: 1.35, overflow: 'hidden' }}>
-                <span className="shrink-0" style={{ color: hue, opacity: 0.7 }}>·</span>
-                <span className="flex-1 min-w-0" style={{ display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                  {line}
-                </span>
-              </li>
-            ))}
+          <div className="mt-2" style={{ paddingLeft: 15 }}>
+            <Bullets items={summary.slice(0, previewLines)} accent={hue} size={11} clamp />
             {summary.length > previewLines && (
-              <li className="mt-mono-sm" style={{ fontSize: 9.5, color: 'var(--t-faint)', paddingLeft: 12 }}>
+              <p className="mt-mono-sm mt-1" style={{ fontSize: 9.5, color: 'var(--t-faint)', paddingLeft: 12 }}>
                 +{summary.length - previewLines} more
-              </li>
+              </p>
             )}
-          </ul>
+          </div>
         )}
       </div>
     </button>

@@ -50,7 +50,9 @@ export function CleanupOverlay({ onClose }: { onClose: () => void }) {
   // Snapshot the queue + composition stats once the first load lands.
   useEffect(() => {
     if (loading || queue !== null) return
-    const live = filterByConnectedProviders(tasks, integrations).filter(t => t.hygiene)
+    // Off-board (done/reassigned) tasks are excluded — same active-task filter
+    // the board uses, so the cleanup queue never surfaces a hidden ticket.
+    const live = filterByConnectedProviders(tasks, integrations).filter(t => !t.is_terminal).filter(t => t.hygiene)
     const must: TaskSummary[] = []
     const nice: TaskSummary[] = []
     const review: TaskSummary[] = []
