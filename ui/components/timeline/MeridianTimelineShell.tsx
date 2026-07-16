@@ -28,9 +28,12 @@ import { PlanModal } from './PlanModal'
 import { TasksModal } from './TasksModal'
 import { TaskDetailDialog } from './TaskDetailDialog'
 import { ReportModal } from './ReportModal'
+import { LlmLabModal } from './llmlab/LlmLabModal'
+import type { AppInfo } from '@/lib/api-types'
 import type { SettingsSection } from './settings/types'
 
-export type ActiveModal = 'review' | 'cleanup' | 'settings' | 'plan' | 'tasks' | 'report' | null
+export type ActiveModal =
+  | 'review' | 'cleanup' | 'settings' | 'plan' | 'tasks' | 'report' | 'llmlab' | null
 
 export default function MeridianTimelineShell() {
   const [day, setDay] = useState<string>(dayString(0))
@@ -58,6 +61,12 @@ export default function MeridianTimelineShell() {
   // from the timeline/Overview panel.
   const [openTask, setOpenTask] = useState<{ key: string; title?: string } | null>(null)
 
+  // Build channel, for dev-only surfaces (the LLM Lab). 'dev' only under
+  // `tauri dev`/`cargo run` (cfg!(debug_assertions) via get_app_info) - staging
+  // and prod builds never see the Lab button or modal, and its backing commands
+  // are additionally refused there (commands/llm_lab.rs).
+  const [channel, setChannel] = useState<string | null>(null)
+
   const data = useTimelineData(day)
   const { items, isSolo, connectedProviderName, connectedProviderId, isToday } = data
   const pendingCount = items.filter(isPending).length
@@ -66,6 +75,9 @@ export default function MeridianTimelineShell() {
   useEffect(() => {
     load<RuntimeSettings>('/api/settings', 'get_settings')
       .then(s => applyTheme(s.theme))
+      .catch(() => {})
+    load<AppInfo>('/api/version', 'get_app_info')
+      .then(info => setChannel(info.channel))
       .catch(() => {})
   }, [])
 
@@ -156,6 +168,8 @@ export default function MeridianTimelineShell() {
         connectedProviderId={connectedProviderId}
         onOpenSettings={(section) => { setSettingsSection(section); setActiveModal('settings') }}
         onOpenReport={() => setActiveModal('report')}
+        showLlmLab={channel === 'dev'}
+        onOpenLlmLab={() => setActiveModal('llmlab')}
       />
 
       <div className="flex flex-1 min-h-0">
@@ -193,6 +207,9 @@ export default function MeridianTimelineShell() {
         <SettingsModal onClose={() => setActiveModal(null)} initialSection={settingsSection} />
       )}
       {activeModal === 'report' && <ReportModal onClose={() => setActiveModal(null)} />}
+      {activeModal === 'llmlab' && channel === 'dev' && (
+        <LlmLabModal onClose={() => setActiveModal(null)} />
+      )}
       {activeModal === 'plan' && <PlanModal onClose={closePlan} />}
       {activeModal === 'tasks' && (
         <TasksModal onClose={() => setActiveModal(null)} onOpenTask={(key, title) => setOpenTask({ key, title })} />

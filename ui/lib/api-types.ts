@@ -472,3 +472,51 @@ export interface AppInfo {
   version: string
   channel: 'dev' | 'staging' | 'prod'
 }
+
+// ── LLM Lab (`get_llm_experiments` / `get_llm_experiment` / `run_llm_experiment`)
+// Dev-only multi-provider comparison harness: replay one prose stage from stored
+// inputs across several provider/model variants. Mirrors the Rust serde shapes in
+// meridian-core/src/readers/llm_experiments.rs and the run body in
+// tray/src-tauri/src/commands/llm_lab.rs. Never rendered outside a dev build.
+
+export type LlmExperimentProcess = 'hour_report' | 'workstream_fold' | 'worklog_generate'
+
+export interface LlmExperimentSummary {
+  id: number
+  process: string           // LlmExperimentProcess wire form
+  input_ref: string         // "YYYY-MM-DDTHH" or "YYYY-MM-DD/<task_id>"
+  status: 'running' | 'done' | 'failed'
+  n_variants: number
+  n_done: number            // variants already terminal - the progress numerator
+  created_at: string
+  finished_at: string | null
+}
+
+export interface LlmExperimentResult {
+  variant_idx: number
+  provider: string          // LlmProviderId wire form
+  model: string             // '' = the provider's default model
+  params_json: string
+  status: 'pending' | 'running' | 'ok' | 'failed' | 'rate_limited'
+  output_text: string | null      // the model's raw answer
+  output_rendered: string | null  // what the pipeline would have made of it
+  error: string | null
+  input_tokens: number | null     // CLI backends report 0 - render as "-", not 0
+  output_tokens: number | null
+  elapsed_s: number | null
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface LlmExperimentDetail extends Omit<LlmExperimentSummary, 'n_done'> {
+  input_json: string        // {"user","label","render_ctx"} - the exact request sent
+  results: LlmExperimentResult[]
+}
+
+export interface RunLlmExperimentBody {
+  process: LlmExperimentProcess
+  hour?: string             // the two hour processes
+  day?: string              // worklog_generate…
+  task_id?: string          // …with this
+  variants: string[]        // "provider" or "provider:model" tokens
+}
