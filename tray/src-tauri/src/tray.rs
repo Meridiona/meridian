@@ -202,8 +202,19 @@ pub(crate) fn open_wizard_window(app: &tauri::AppHandle) {
         Ok(win) => {
             // Opt the window into native full-screen so the green traffic-light
             // shows the enter-full-screen arrows, not the plain zoom (+) glyph.
+            // make_fullscreenable touches the raw NSWindow directly (no Tauri-safe
+            // wrapper around it), so it must run on the main thread — most callers
+            // of open_wizard_window are already on it (tray menu clicks, dock
+            // reopen are native AppKit callbacks), but the first-launch auto-open
+            // task (lib.rs) calls in from a tokio worker thread after its 800 ms
+            // sleep, and AppKit hard-aborts the process (SIGTRAP) if an NSWindow is
+            // touched off the main thread. run_on_main_thread queues the call
+            // rather than blocking, so it's safe from any caller thread.
             #[cfg(target_os = "macos")]
-            make_fullscreenable(&win);
+            {
+                let fs_win = win.clone();
+                let _ = app.run_on_main_thread(move || make_fullscreenable(&fs_win));
+            }
             // Same gap as the dashboard window — see dismiss_popover_on_focus's
             // doc comment (clicking back into an already-open setup window
             // wouldn't otherwise dismiss a popover reopened on top of it).
@@ -230,8 +241,9 @@ fn make_fullscreenable(win: &tauri::WebviewWindow) {
     };
     // NSWindowCollectionBehaviorFullScreenPrimary = 1 << 7.
     const FULLSCREEN_PRIMARY: usize = 1 << 7;
-    // Safety: called on the main thread (menu dispatch / setup hook) with standard
-    // NSWindow selectors and no ownership transfer.
+    // Safety: caller (open_wizard_window) must run this on the main thread —
+    // AppKit aborts the process if an NSWindow is touched off it. Standard
+    // NSWindow selectors, no ownership transfer.
     unsafe {
         let ns = &*ptr;
         let current: usize = msg_send![ns, collectionBehavior];
