@@ -29,8 +29,10 @@ pub struct DayTaskRow {
     /// Running log of absorbed items, newline-joined (the model sees it as a list).
     pub summary: String,
     /// Local hour labels this task's segments touch (`'YYYY-MM-DDTHH'`) — the
-    /// idempotency key + the interim hour-block UI's coarse span. Code-derived
-    /// from `segments`, not authored by the model.
+    /// interim hour-block UI's coarse span. Code-derived from `segments`, not
+    /// authored by the model. NOT the fold's idempotency key: "touches" includes a
+    /// segment spilling past an hour boundary, which is exactly why
+    /// [`super::workstream::run`]'s guard judges by segment *starts* instead.
     pub hours: Vec<String>,
     /// Approximate `HH:MM-HH:MM` time ranges this task was worked (migration 059).
     /// Non-contiguous segments are breaks; the timeline draws the task across them.

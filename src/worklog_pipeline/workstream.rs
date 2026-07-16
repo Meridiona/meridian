@@ -18,10 +18,11 @@
 //! ([`super::segment`]/[`super::workstream_state`]): a task's `minutes` and `hours`
 //! are always derived from its segments, never from the model.
 //!
-//! Idempotency: if this hour already appears in a task's hours, the fold is a no-op;
-//! re-applying an hour is also a no-op through segment coalescing (and it re-writes
-//! the same bounded story). Safety: an unparseable or empty answer carries the prior
-//! state forward untouched, and an empty summary never blanks a task's story.
+//! Idempotency: if a prior segment STARTS inside this hour, the fold is a no-op
+//! ([`hour_already_folded`]); re-applying an hour is also a no-op through segment
+//! coalescing (and it re-writes the same bounded story). Safety: an unparseable or
+//! empty answer carries the prior state forward untouched, and an empty summary never
+//! blanks a task's story.
 //!
 //! This is thin orchestration; the real work lives in the sibling modules:
 //! [`super::segment`], [`super::workstream_parse`], [`super::workstream_sanitize`],
@@ -43,6 +44,31 @@ use super::workstream_state::{build_state_json, to_rows};
 /// of tasks each with a few summary lines and their segments.
 const WORKSTREAM_MAX_TOKENS: u32 = 2048;
 
+/// Has `hour_label` (`YYYY-MM-DDTHH`, local) already been folded into the day's tasks?
+///
+/// Judged by a prior segment **starting** inside the hour — NOT by `DayTaskRow::hours`
+/// (`hours_json`), which is derived from segments *touching* an hour: a segment that
+/// merely spills past the boundary (`14:44-15:02`, `16:20-17:01`) marks the NEXT hour
+/// as touched, and guarding on that skipped the next hour's real fold, silently
+/// dropping its work (observed live twice on 2026-07-16, hours 15 and 17). A fold's
+/// own placements start inside the hour being folded, so segment starts are the
+/// honest signal. An unparseable hour suffix fails open (fold runs — the merge is
+/// retry-safe) rather than risking a silent drop.
+fn hour_already_folded(prior: &[task_db::DayTaskRow], hour_label: &str) -> bool {
+    let Some(hh) = hour_label
+        .rsplit('T')
+        .next()
+        .and_then(|h| h.parse::<i64>().ok())
+    else {
+        return false;
+    };
+    let (lo, hi) = (hh * 60, (hh + 1) * 60);
+    prior
+        .iter()
+        .flat_map(|t| &t.segments)
+        .any(|s| s.start_min >= lo && s.start_min < hi)
+}
+
 /// Fold the hour's report into the day's tasks. `day_local` is `YYYY-MM-DD`,
 /// `hour_label` is `YYYY-MM-DDTHH` (local). `report` is the hour's human-readable
 /// activity report (the `HH:MM-HH:MM  N min  …` lines from the first call).
@@ -55,10 +81,7 @@ pub async fn run(pool: &SqlitePool, day_local: &str, hour_label: &str, report: &
     let prior = task_db::fetch_state(pool, day_local).await;
 
     // Idempotency: this hour is already folded in — nothing to do.
-    if prior
-        .iter()
-        .any(|t| t.hours.iter().any(|h| h == hour_label))
-    {
+    if hour_already_folded(&prior, hour_label) {
         tracing::info!(
             hour = hour_label,
             "worklog: hour already in workstreams — build skipped"
@@ -143,4 +166,65 @@ pub async fn run(pool: &SqlitePool, day_local: &str, hour_label: &str, report: &
     }
     .instrument(span)
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::segment::Segment;
+    use super::*;
+    use crate::worklog_pipeline::task_db::DayTaskRow;
+
+    fn row_with_segments(segments: Vec<Segment>) -> DayTaskRow {
+        DayTaskRow {
+            task_id: "T1".into(),
+            title: "A task".into(),
+            summary: "Did things".into(),
+            // Deliberately what hours_touched would derive — the guard must NOT read it.
+            hours: vec!["2026-07-16T16".into(), "2026-07-16T17".into()],
+            segments,
+            minutes: 41,
+            status: "active".into(),
+            linked_ticket: None,
+            created_at: "2026-07-16T10:00:00Z".into(),
+        }
+    }
+
+    fn seg(start_min: i64, end_min: i64) -> Segment {
+        Segment { start_min, end_min }
+    }
+
+    /// The live 5-6pm loss on 2026-07-16: a 16:20-17:01 segment spills one minute past
+    /// 17:00, so hours_json contains T17 — but nothing was ever folded FOR hour 17.
+    /// The guard must let hour 17 fold, while still recognising hour 16 as folded.
+    #[test]
+    fn a_segment_spilling_past_the_boundary_does_not_mark_the_next_hour_folded() {
+        let prior = vec![row_with_segments(vec![seg(16 * 60 + 20, 17 * 60 + 1)])];
+        assert!(!hour_already_folded(&prior, "2026-07-16T17"));
+        assert!(hour_already_folded(&prior, "2026-07-16T16"));
+    }
+
+    /// The live 3-4pm loss (same day, same bug): T3's 14:44-15:02 segment from the
+    /// hour-14 fold skipped the hour-15 fold entirely.
+    #[test]
+    fn the_hour_14_spill_regression_does_not_block_hour_15() {
+        let prior = vec![row_with_segments(vec![seg(14 * 60 + 44, 15 * 60 + 2)])];
+        assert!(!hour_already_folded(&prior, "2026-07-16T15"));
+        assert!(hour_already_folded(&prior, "2026-07-16T14"));
+    }
+
+    /// A segment genuinely starting inside the hour IS proof the hour folded.
+    #[test]
+    fn a_segment_starting_in_the_hour_marks_it_folded() {
+        let prior = vec![row_with_segments(vec![seg(17 * 60, 17 * 60 + 58)])];
+        assert!(hour_already_folded(&prior, "2026-07-16T17"));
+    }
+
+    /// No prior tasks, or an unparseable hour label, must fail OPEN (fold runs) —
+    /// the merge is retry-safe, a skipped fold is silent data loss.
+    #[test]
+    fn empty_state_and_garbage_labels_fail_open() {
+        assert!(!hour_already_folded(&[], "2026-07-16T17"));
+        let prior = vec![row_with_segments(vec![seg(0, 60)])];
+        assert!(!hour_already_folded(&prior, "not-an-hour-label"));
+    }
 }
