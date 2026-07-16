@@ -16,21 +16,30 @@
 //! so we probe through a **login shell**, which sources their profile, and fall back to
 //! scanning the usual install locations.
 //!
-//! # Authentication is deliberately NOT probed
+//! # Authentication is not probed by [`detect`]/[`detect_all`]
 //!
-//! There is no cheap non-interactive auth check for these CLIs, and `cursor-agent login`
-//! was observed to hang forever when already signed in. So [`ProviderStatus`] reports
-//! *installed*, not *usable*, and the UI says so plainly: Meridian uses your existing
-//! login, and if it isn't signed in the hour falls back to on-device. Better an honest
-//! unknown than a check that hangs the wizard.
+//! There is no cheap non-interactive AUTH-ONLY check for these CLIs (`cursor-agent login`
+//! was observed to hang forever when already signed in), so the fast install probe never
+//! claims *usable*, only *installed*.
+//!
+//! A real connectivity check is still possible, though: every backend already knows how to
+//! run one real, trivial completion (`-p "reply with OK"`) non-interactively — that's
+//! exactly what [`test_provider`] does, deliberately kept SEPARATE from the free, always-on
+//! install probe because it spends one real request against the user's subscription. It
+//! only runs when explicitly requested (a card's Test button, or a Rescan that re-tests
+//! every already-installed provider) — never silently on mount.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use meridian_core::settings::RuntimeSettings;
 use meridian_core::LlmProvider;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::process::Command;
+
+use super::{resolver::backend_for, LlmConfig, LlmError, PromptRequest};
 
 /// How long a probe may take before we call it absent. A login shell sources the user's
 /// profile, which can be slow (nvm, rbenv, …), but not this slow.
@@ -62,6 +71,10 @@ pub struct ProviderStatus {
     pub path: Option<String>,
     /// Whether the user is signed in. Always `None` — see the module docs.
     pub authenticated: Option<bool>,
+    /// The last real connectivity test on record for this provider, if any — read from
+    /// the on-disk cache, never freshly run by [`detect`]/[`detect_all`] themselves. `None`
+    /// means "never tested", not "failed".
+    pub last_test: Option<ProviderTestResult>,
 }
 
 /// Probe one provider. The on-device model is always "installed" — it is an HTTP call to
@@ -74,6 +87,7 @@ pub async fn detect(provider: LlmProvider) -> ProviderStatus {
             installed: true,
             path: None,
             authenticated: None,
+            last_test: None,
         };
     };
 
@@ -85,13 +99,189 @@ pub async fn detect(provider: LlmProvider) -> ProviderStatus {
         installed: found.is_some(),
         path: found.map(|p| p.display().to_string()),
         authenticated: None,
+        last_test: None,
     }
+}
+
+/// [`detect_all`], with each provider's last on-disk connectivity test (if any) merged in.
+/// This is what the UI actually wants — install state plus the last time we know for sure
+/// whether it worked — without paying for a fresh test on every mount/rescan.
+pub async fn detect_all_with_cache() -> Vec<ProviderStatus> {
+    let cache = load_test_cache();
+    let mut all = detect_all().await;
+    for s in &mut all {
+        s.last_test = cache.get(&s.id).cloned();
+    }
+    all
 }
 
 /// Probe every provider at once. The shell probes are I/O-bound and independent.
 pub async fn detect_all() -> Vec<ProviderStatus> {
     let futures = LlmProvider::all().map(detect);
     futures::future::join_all(futures).await
+}
+
+// ── Real connectivity test ───────────────────────────────────────────────────────────
+
+/// A test call is capped far tighter than a real hourly summary (which can legitimately
+/// take minutes on a big input) — this is one word, so a slow answer already means trouble
+/// and the user is watching a spinner.
+const PROBE_TIMEOUT_S: u64 = 20;
+
+const PROBE_SYSTEM: &str = "Reply with exactly: OK. No other text, no punctuation, nothing else.";
+
+/// What a real connectivity test found. Mirrors [`super::LlmError`]'s two failure shapes
+/// (rate-limited vs everything else) so the UI can tell "this works, just not right now"
+/// from "this doesn't work" — a card can be correctly configured and still be temporarily
+/// rate-limited, which is a very different fix than "sign in" or "install it".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ProviderTestOutcome {
+    Ok,
+    RateLimited { message: String },
+    Failed { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderTestResult {
+    pub id: String,
+    pub outcome: ProviderTestOutcome,
+    pub elapsed_ms: u64,
+    /// RFC3339. When this test was run — the UI reads this back as "Verified 3m ago".
+    pub tested_at: String,
+}
+
+/// Run one real, trivial call against `provider` and report what happened. Does NOT touch
+/// the cache — callers that want the result remembered call [`persist_test_result`]
+/// themselves, so a throwaway/preview test is possible without disturbing what's on disk.
+///
+/// `settings` supplies the model override — but only when `provider` is the user's
+/// currently CHOSEN one: `llm_provider_model` is scoped to "within the chosen provider"
+/// (see [`LlmConfig`]), so applying it while testing a provider the user has NOT selected
+/// would pass one provider's model string to a different CLI's `--model` flag.
+pub async fn test_provider(
+    provider: LlmProvider,
+    settings: &RuntimeSettings,
+) -> ProviderTestResult {
+    let id = provider.as_str().to_string();
+    let t0 = Instant::now();
+
+    if provider.is_local() {
+        return finish_test(id, test_local_reachable(settings).await, t0);
+    }
+
+    let mut cfg = LlmConfig::from_settings(settings);
+    cfg.cli_timeout_s = PROBE_TIMEOUT_S;
+    let is_selected = LlmProvider::from_wire(&settings.llm_provider) == Some(provider);
+    if !is_selected {
+        cfg.model.clear();
+    }
+
+    let req = PromptRequest {
+        system: PROBE_SYSTEM,
+        user: String::new(),
+        schema: None,
+        max_tokens: 16,
+        label: format!("provider-test {id}"),
+    };
+
+    let outcome = match backend_for(provider, cfg).complete(&req).await {
+        Ok(_) => ProviderTestOutcome::Ok,
+        Err(LlmError::RateLimited(m)) => ProviderTestOutcome::RateLimited { message: m },
+        Err(LlmError::Failed(m)) => ProviderTestOutcome::Failed { message: m },
+    };
+    finish_test(id, outcome, t0)
+}
+
+fn finish_test(id: String, outcome: ProviderTestOutcome, t0: Instant) -> ProviderTestResult {
+    ProviderTestResult {
+        id,
+        outcome,
+        elapsed_ms: t0.elapsed().as_millis() as u64,
+        tested_at: chrono::Utc::now().to_rfc3339(),
+    }
+}
+
+/// The on-device provider has no CLI/login to test — its equivalent question is "is the
+/// MLX server actually up and reachable". A plain HTTP GET, not a real generation, so this
+/// stays free and near-instant unlike the CLI probes.
+async fn test_local_reachable(settings: &RuntimeSettings) -> ProviderTestOutcome {
+    let cfg = LlmConfig::from_settings(settings);
+    let url = format!("http://{}:{}/info", cfg.mlx_host, cfg.mlx_port);
+    let client = match reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return ProviderTestOutcome::Failed {
+                message: e.to_string(),
+            }
+        }
+    };
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => ProviderTestOutcome::Ok,
+        Ok(resp) => ProviderTestOutcome::Failed {
+            message: format!("MLX server returned {}", resp.status()),
+        },
+        Err(e) => ProviderTestOutcome::Failed {
+            message: format!("MLX server unreachable at {url}: {e}"),
+        },
+    }
+}
+
+/// Test every provider [`detect_all`] currently reports installed, concurrently — the
+/// "Rescan" action's expensive half. Never spends a request on a provider that isn't even
+/// on the machine. Persists each result as it lands, so a slow/hanging CLI can't hold the
+/// others' verified state hostage.
+pub async fn test_all_installed(settings: &RuntimeSettings) -> Vec<ProviderTestResult> {
+    let installed: Vec<LlmProvider> = detect_all()
+        .await
+        .into_iter()
+        .filter(|s| s.installed)
+        .filter_map(|s| LlmProvider::from_wire(&s.id))
+        .collect();
+
+    let futures = installed.into_iter().map(|p| async move {
+        let result = test_provider(p, settings).await;
+        persist_test_result(&result);
+        result
+    });
+    futures::future::join_all(futures).await
+}
+
+// ── Cache: last-known test result per provider, survives restarts ───────────────────────
+
+fn test_cache_path() -> PathBuf {
+    let home = std::env::var("MERIDIAN_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let h = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            PathBuf::from(h).join(".meridian")
+        });
+    home.join("provider_test_cache.json")
+}
+
+fn load_test_cache() -> HashMap<String, ProviderTestResult> {
+    let path = test_cache_path();
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return HashMap::new();
+    };
+    // A corrupt/foreign-format cache degrades to "never tested" rather than failing the
+    // whole panel — it will simply repopulate on the next test.
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+/// Record one test result to the on-disk cache, crash-safely (temp file + atomic rename,
+/// same idiom as `settings.json`). Logged, not propagated — a failed cache write must not
+/// fail the test the user just watched succeed or fail in front of them.
+pub fn persist_test_result(result: &ProviderTestResult) {
+    let mut cache = load_test_cache();
+    cache.insert(result.id.clone(), result.clone());
+    if let Err(e) = meridian_core::fs_utils::atomic_write_json(&test_cache_path(), &cache) {
+        tracing::warn!(error = %e, provider = %result.id, "failed to persist provider test result");
+    }
 }
 
 /// Ask the user's login shell where the binary is. This is the one that works when the
@@ -168,5 +358,77 @@ mod tests {
             .await
             .is_none());
         assert!(probe_candidates("meridian-definitely-not-a-real-binary").is_none());
+    }
+
+    /// `MERIDIAN_HOME` is a process-global env var and cargo runs tests in parallel threads
+    /// — every test that points the cache at a temp dir must hold this lock (same pattern
+    /// as `meridian_core::settings`'s `ENV_LOCK`).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_temp_meridian_home() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "meridian-detect-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("MERIDIAN_HOME", &dir);
+        dir
+    }
+
+    #[test]
+    fn test_cache_round_trips_and_survives_a_missing_file() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        with_temp_meridian_home();
+
+        // No cache on disk yet — a fresh install, not a failure.
+        assert!(load_test_cache().is_empty());
+
+        let result = ProviderTestResult {
+            id: "claude".into(),
+            outcome: ProviderTestOutcome::Ok,
+            elapsed_ms: 842,
+            tested_at: "2026-07-16T10:00:00+00:00".into(),
+        };
+        persist_test_result(&result);
+
+        let cache = load_test_cache();
+        assert_eq!(cache.get("claude"), Some(&result));
+
+        // A second provider's result must not clobber the first.
+        let rate_limited = ProviderTestResult {
+            id: "cursor".into(),
+            outcome: ProviderTestOutcome::RateLimited {
+                message: "quota".into(),
+            },
+            elapsed_ms: 12,
+            tested_at: "2026-07-16T10:05:00+00:00".into(),
+        };
+        persist_test_result(&rate_limited);
+        let cache = load_test_cache();
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.get("claude"), Some(&result));
+        assert_eq!(cache.get("cursor"), Some(&rate_limited));
+    }
+
+    #[test]
+    fn a_corrupt_cache_file_degrades_to_empty_not_a_panic() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = with_temp_meridian_home();
+        std::fs::write(dir.join("provider_test_cache.json"), "not json").unwrap();
+        assert!(load_test_cache().is_empty());
+    }
+
+    #[test]
+    fn outcome_serde_uses_a_tagged_status_field() {
+        let ok = serde_json::to_value(ProviderTestOutcome::Ok).unwrap();
+        assert_eq!(ok["status"], "ok");
+
+        let rl = serde_json::to_value(ProviderTestOutcome::RateLimited {
+            message: "usage cap".into(),
+        })
+        .unwrap();
+        assert_eq!(rl["status"], "rate_limited");
+        assert_eq!(rl["message"], "usage cap");
     }
 }
