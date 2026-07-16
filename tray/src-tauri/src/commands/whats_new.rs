@@ -30,11 +30,23 @@ pub struct ReleaseNote {
     pub fixes: Vec<String>,
 }
 
-/// One roadmap item. `status` is `in-progress` | `planned` | `considering`.
+/// A roadmap item's status. A serde enum (vs. a bare `String`) so a typo'd
+/// value in `whats-new.json` (e.g. `"Planned"`) fails the JSON parse loudly
+/// instead of silently rendering `undefined` label/color on the frontend's
+/// `ROADMAP_STATUS_LABEL`/`_COLOR` lookups.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RoadmapStatus {
+    InProgress,
+    Planned,
+    Considering,
+}
+
+/// One roadmap item.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RoadmapItem {
     pub title: String,
-    pub status: String,
+    pub status: RoadmapStatus,
     pub description: String,
 }
 
@@ -53,11 +65,15 @@ static PARSED: OnceLock<WhatsNewData> = OnceLock::new();
 
 /// Parse the embedded JSON once and cache it. A malformed file would be a
 /// build-time bug — [`whats_new_json_parses`] below guards against ever
-/// shipping one — so this only ever runs against content already proven valid.
+/// shipping one — but if it somehow happens anyway (hooks bypassed, a hand
+/// edit), degrade to an empty payload instead of panicking the first time a
+/// user opens the modal.
 fn parse_whats_new() -> &'static WhatsNewData {
     PARSED.get_or_init(|| {
-        serde_json::from_str(WHATS_NEW_JSON)
-            .expect("resources/whats-new.json must be valid JSON matching WhatsNewData")
+        serde_json::from_str(WHATS_NEW_JSON).unwrap_or_else(|e| {
+            tracing::error!(error = %e, "whats-new: embedded whats-new.json failed to parse — serving an empty payload");
+            WhatsNewData { releases: Vec::new(), roadmap: Vec::new() }
+        })
     })
 }
 
@@ -90,8 +106,13 @@ pub fn mark_whats_new_seen(home: &Path, current_version: &str) -> std::io::Resul
 }
 
 /// Frontend entry point — called when the modal closes (whether it was
-/// auto-opened or nav-opened), so "seen" always reflects the version actually
-/// viewed rather than only the version that triggered the auto-open.
+/// auto-opened or nav-opened). For the nav-opened path this is the only
+/// place "seen" gets written, so it reflects a version the user actually
+/// viewed. The auto-open path (`whats_new_auto_open`) already wrote the
+/// marker before the window rendered (a deliberate crash-safety tradeoff —
+/// see that module's docs), so this call is a no-op redundant write there;
+/// a crash between that earlier write and the window rendering means that
+/// version's notes are never shown again except via the toolbar pill.
 #[tauri::command]
 #[tracing::instrument(skip(app))]
 pub fn mark_whats_new_seen_cmd(app: tauri::AppHandle) {
