@@ -183,12 +183,17 @@ fn parse_report(
 /// prose)`. The leading time is optional (older/looser answers omit it → `None`) and may be
 /// a single `HH:MM` start or a `HH:MM-HH:MM` range.
 /// Tolerates a leading list marker the model may add against instructions ("1. ", "1) ",
-/// "- ", "* "), the unit written as `min` / `mins` / `minutes`, and arbitrary surrounding
-/// whitespace. Returns `None` for any line without a leading minute count so headers and
-/// notes drop.
+/// "- ", "* "), a literal `<...>` wrapped around the timestamp (the prompt's
+/// `<HH:MM-HH:MM>` is prompt-writing notation for "fill this in" — Claude omits the
+/// brackets, but cursor-agent 2026.06.04 was observed emitting them literally, which
+/// otherwise made the line start with `<` instead of a digit and drop silently), the unit
+/// written as `min` / `mins` / `minutes`, and arbitrary surrounding whitespace. Returns
+/// `None` for any line without a leading minute count so headers and notes drop.
 fn parse_report_line(raw: &str) -> Option<(Option<String>, i64, String)> {
     let s = strip_list_marker(raw.trim());
+    let s = s.strip_prefix('<').unwrap_or(s);
     let (stamp, s) = take_hhmm(s);
+    let s = s.strip_prefix('>').unwrap_or(s);
     let s = s.trim_start();
     let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
     if digits.is_empty() {
@@ -429,6 +434,37 @@ mod tests {
         assert_eq!(mins, 3);
         // A header line with no minute count is dropped.
         assert!(parse_report_line("## Summary of the hour").is_none());
+    }
+
+    #[test]
+    fn parse_report_line_tolerates_a_literal_angle_bracket_wrapper() {
+        // Verbatim output from a live cursor-agent 2026.06.04 call against the real
+        // ACTIVITY_REPORT prompt: it took the prompt's "<HH:MM-HH:MM>" notation literally
+        // and emitted the brackets, instead of writing a bare "HH:MM-HH:MM" like Claude
+        // does. Before this fix the leading '<' isn't a digit, so the line dropped and the
+        // whole hour's report came out empty with no error anywhere in the path.
+        let (stamp, mins, prose) = parse_report_line(
+            "<12:43-12:53>  10 min  Launched the staging macOS release on pre-main (PR #443), \
+             monitoring the GitHub Actions pipeline through Apple signing and notarization \
+             until the staging DMG is ready for team testing.",
+        )
+        .unwrap();
+        assert_eq!(
+            stamp.as_deref(),
+            Some("12:43-12:53"),
+            "brackets must not leak into the stamp"
+        );
+        assert_eq!(mins, 10);
+        assert!(prose.starts_with("Launched the staging macOS release"));
+
+        // A single HH:MM (no range) wrapped the same way.
+        let (stamp, mins, _) = parse_report_line("<08:20>  5 min  Watched YouTube").unwrap();
+        assert_eq!(stamp.as_deref(), Some("08:20"));
+        assert_eq!(mins, 5);
+
+        // A stray leading '<' with no real timestamp behind it must not swallow real
+        // prose or otherwise misparse — it still requires digits right after.
+        assert!(parse_report_line("<not a timestamp>  Did a thing").is_none());
     }
 
     #[test]
