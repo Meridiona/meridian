@@ -33,6 +33,7 @@
 //!   [`crate::pm_worklog::generate`] — the extracted request builders replayed here.
 
 pub mod cli;
+pub mod day_state;
 pub mod request;
 pub mod runner;
 pub mod store;
@@ -52,6 +53,11 @@ pub enum ExperimentProcess {
     WorkstreamFold,
     /// The day-task worklog draft ([`crate::pm_worklog::generate`]).
     WorklogGenerate,
+    /// A whole day of folds, chained: every stored hour report of the day is
+    /// folded in order, each variant evolving its OWN in-memory task state from
+    /// empty — so the final day-task timelines are comparable model-for-model.
+    /// One request per stored hour per variant (not a single snapshot request).
+    DayFold,
 }
 
 impl ExperimentProcess {
@@ -60,6 +66,7 @@ impl ExperimentProcess {
             Self::HourReport => "hour_report",
             Self::WorkstreamFold => "workstream_fold",
             Self::WorklogGenerate => "worklog_generate",
+            Self::DayFold => "day_fold",
         }
     }
 
@@ -70,6 +77,7 @@ impl ExperimentProcess {
             "hour_report" => Some(Self::HourReport),
             "workstream_fold" => Some(Self::WorkstreamFold),
             "worklog_generate" => Some(Self::WorklogGenerate),
+            "day_fold" => Some(Self::DayFold),
             _ => None,
         }
     }
@@ -87,7 +95,9 @@ impl ExperimentProcess {
                 None,
                 crate::worklog_pipeline::hour::REPORT_MAX_TOKENS,
             ),
-            Self::WorkstreamFold => (
+            // The day fold sends the same per-hour request the hour fold does —
+            // one contract, N chained calls (see the runner's day-fold branch).
+            Self::WorkstreamFold | Self::DayFold => (
                 prompts::WORKSTREAM,
                 Some(prompts::workstream_schema()),
                 crate::worklog_pipeline::workstream::WORKSTREAM_MAX_TOKENS,
@@ -161,15 +171,18 @@ pub enum ExperimentInput {
     Hour(String),
     /// A day-task card (worklog generate).
     DayTask { day: String, task_id: String },
+    /// A whole local day `YYYY-MM-DD` (day fold).
+    Day(String),
 }
 
 impl ExperimentInput {
     /// The human `input_ref` stored on the experiment row:
-    /// `YYYY-MM-DDTHH` or `YYYY-MM-DD/<task_id>`.
+    /// `YYYY-MM-DDTHH`, `YYYY-MM-DD/<task_id>`, or `YYYY-MM-DD`.
     pub fn ref_str(&self) -> String {
         match self {
             Self::Hour(label) => label.clone(),
             Self::DayTask { day, task_id } => format!("{day}/{task_id}"),
+            Self::Day(day) => day.clone(),
         }
     }
 }
@@ -192,6 +205,7 @@ mod tests {
             ExperimentProcess::HourReport,
             ExperimentProcess::WorkstreamFold,
             ExperimentProcess::WorklogGenerate,
+            ExperimentProcess::DayFold,
         ] {
             assert_eq!(ExperimentProcess::from_wire(p.as_str()), Some(p));
         }
@@ -213,6 +227,11 @@ mod tests {
         assert!(schema.is_some());
         let (_, schema, _) = ExperimentProcess::WorklogGenerate.contract();
         assert!(schema.is_some());
+        // The day fold rides the hour fold's exact per-call contract.
+        let (sys, _, max) = ExperimentProcess::DayFold.contract();
+        let (fold_sys, _, fold_max) = ExperimentProcess::WorkstreamFold.contract();
+        assert_eq!(sys, fold_sys);
+        assert_eq!(max, fold_max);
     }
 
     #[test]

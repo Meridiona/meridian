@@ -17,17 +17,21 @@
 //! command spawns detached.
 
 use anyhow::{Context, Result};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sqlx::SqlitePool;
 use tracing::Instrument;
 
 use meridian_core::settings::load_runtime_settings;
 
-use crate::llm::{parse_json_object, resolver::backend_for, LlmConfig, LlmProvider};
+use crate::llm::{parse_json_object, resolver::backend_for, LlmBackend, LlmConfig, LlmProvider};
 use crate::worklog_pipeline::hour::parse_report;
 use crate::worklog_pipeline::hour_input::assemble_report;
+use crate::worklog_pipeline::task_db::DayTaskRow;
+use crate::worklog_pipeline::workstream::workstream_request;
+use crate::worklog_pipeline::workstream_parse::parse_placements;
+use crate::worklog_pipeline::workstream_state::build_state_json;
 
-use super::{request, store, ExperimentProcess};
+use super::{day_state, request, store, ExperimentProcess};
 
 /// Run every not-yet-terminal variant of `experiment_id`, then close the ledger.
 /// Resumable: a killed run's `running` rows are simply re-run.
@@ -40,7 +44,18 @@ pub async fn exec(pool: &SqlitePool, experiment_id: i64) -> Result<()> {
             exp.process
         )
     })?;
-    let (req, render_ctx) = request::from_snapshot(process, &exp.input_json)?;
+    // The day fold is a chain of per-hour requests (no single snapshot request);
+    // everything else replays exactly one stored request.
+    let day_fold = if process == ExperimentProcess::DayFold {
+        Some(request::day_fold_from_snapshot(&exp.input_json)?)
+    } else {
+        None
+    };
+    let single = if day_fold.is_none() {
+        Some(request::from_snapshot(process, &exp.input_json)?)
+    } else {
+        None
+    };
 
     tracing::info!(
         experiment_id,
@@ -57,7 +72,7 @@ pub async fn exec(pool: &SqlitePool, experiment_id: i64) -> Result<()> {
             variant_idx = v.variant_idx,
             provider = %v.provider,
             model = %v.model,
-            label = %req.label,
+            label = %exp.input_ref,
             status = tracing::field::Empty,
             elapsed_s = tracing::field::Empty,
         );
@@ -65,7 +80,11 @@ pub async fn exec(pool: &SqlitePool, experiment_id: i64) -> Result<()> {
             let now = chrono::Utc::now().to_rfc3339();
             store::mark_running(pool, experiment_id, v.variant_idx, &now).await?;
 
-            let outcome = run_variant(&v, &req, process, &render_ctx).await;
+            let outcome = match (&day_fold, &single) {
+                (Some((day, hours)), _) => run_day_fold_variant(&v, day, hours).await,
+                (None, Some((req, render_ctx))) => run_variant(&v, req, process, render_ctx).await,
+                (None, None) => unreachable!("one of day_fold/single is always set"),
+            };
             tracing::Span::current().record("status", outcome.status);
             tracing::Span::current().record("elapsed_s", outcome.elapsed_s);
             if let Some(e) = &outcome.error {
@@ -87,6 +106,82 @@ pub async fn exec(pool: &SqlitePool, experiment_id: i64) -> Result<()> {
     store::finish_experiment(pool, experiment_id, &now).await
 }
 
+/// Resolve one variant's backend: the stored provider plus its model override on
+/// top of the live settings-derived config.
+fn variant_backend(v: &store::StoredVariant) -> Result<Box<dyn LlmBackend>, String> {
+    let Some(provider) = LlmProvider::from_wire(&v.provider) else {
+        return Err(format!("unknown provider {:?}", v.provider));
+    };
+    let settings = load_runtime_settings();
+    let mut cfg = LlmConfig::from_settings(&settings);
+    if !v.model.is_empty() {
+        cfg.model = v.model.clone();
+    }
+    Ok(backend_for(provider, cfg))
+}
+
+/// One variant's whole-day chain: fold every stored hour report in order onto the
+/// variant's OWN in-memory task state (starting empty, like a real day). A failed
+/// hour ends the chain but records the partial day, so what DID fold is still
+/// inspectable side by side.
+async fn run_day_fold_variant(
+    v: &store::StoredVariant,
+    day: &str,
+    hours: &[(String, String)],
+) -> store::VariantOutcome {
+    let backend = match variant_backend(v) {
+        Ok(b) => b,
+        Err(e) => return failure("failed", e),
+    };
+
+    let mut state: Vec<DayTaskRow> = Vec::new();
+    let mut raw: Vec<Value> = Vec::new();
+    let (mut in_tokens, mut out_tokens, mut elapsed) = (0u32, 0u32, 0f64);
+
+    for (label, report) in hours {
+        let req = workstream_request(&build_state_json(&state), label, report);
+        match backend.complete(&req).await {
+            Ok(out) => {
+                in_tokens += out.input_tokens;
+                out_tokens += out.output_tokens;
+                elapsed += out.elapsed_s;
+                let now = chrono::Utc::now().to_rfc3339();
+                state = day_state::fold_answer(&state, &out.text, day, &now);
+                raw.push(json!({ "hour": label, "answer": out.text }));
+                tracing::debug!(hour = %label, n_tasks = state.len(), "llm-lab: day-fold hour folded");
+            }
+            Err(e) => {
+                let mut rendered = day_state::day_tasks_json(day, &state);
+                rendered["note"] =
+                    json!(format!("stopped at {label} - later hours were not folded"));
+                return store::VariantOutcome {
+                    status: if e.is_rate_limited() {
+                        "rate_limited"
+                    } else {
+                        "failed"
+                    },
+                    output_text: Some(Value::Array(raw).to_string()),
+                    output_rendered: Some(rendered.to_string()),
+                    error: Some(format!("{label}: {e}")),
+                    input_tokens: in_tokens,
+                    output_tokens: out_tokens,
+                    elapsed_s: elapsed,
+                };
+            }
+        }
+    }
+
+    store::VariantOutcome {
+        status: "ok",
+        output_rendered: Some(day_state::day_tasks_json(day, &state).to_string()),
+        output_text: Some(Value::Array(raw).to_string()),
+        error: None,
+        input_tokens: in_tokens,
+        output_tokens: out_tokens,
+        elapsed_s: elapsed,
+    }
+}
+
 /// One variant, one backend call, one terminal outcome. Never errors — every
 /// failure mode becomes a recorded outcome.
 async fn run_variant(
@@ -95,17 +190,12 @@ async fn run_variant(
     process: ExperimentProcess,
     render_ctx: &Value,
 ) -> store::VariantOutcome {
-    let Some(provider) = LlmProvider::from_wire(&v.provider) else {
-        return failure("failed", format!("unknown provider {:?}", v.provider));
+    let backend = match variant_backend(v) {
+        Ok(b) => b,
+        Err(e) => return failure("failed", e),
     };
 
-    let settings = load_runtime_settings();
-    let mut cfg = LlmConfig::from_settings(&settings);
-    if !v.model.is_empty() {
-        cfg.model = v.model.clone();
-    }
-
-    match backend_for(provider, cfg).complete(req).await {
+    match backend.complete(req).await {
         Ok(out) => {
             let rendered = render(process, &out.text, render_ctx);
             store::VariantOutcome {
@@ -160,13 +250,33 @@ fn render(process: ExperimentProcess, text: &str, render_ctx: &Value) -> String 
                 assembled
             }
         }
-        // The structured stages: show the JSON object the pipeline would parse.
-        ExperimentProcess::WorkstreamFold | ExperimentProcess::WorklogGenerate => {
-            match parse_json_object(text) {
-                Some(v) => serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string()),
-                None => "(unparseable answer - no JSON object found)".to_string(),
+        // The hour fold: APPLY this variant's placements to the snapshotted prior
+        // state and render the resulting day-task set in the dashboard's
+        // `DayTasksResponse` shape, so the UI shows the day's timeline under this
+        // model. An unusable answer keeps the prior state (the fold's own safety
+        // rule) and says so via `note`.
+        ExperimentProcess::WorkstreamFold => {
+            let day = render_ctx.get("day").and_then(Value::as_str).unwrap_or("");
+            let prior = day_state::rows_from_json(render_ctx.get("prior").unwrap_or(&Value::Null));
+            let now = chrono::Utc::now().to_rfc3339();
+            let folded = day_state::fold_answer(&prior, text, day, &now);
+            let mut v = day_state::day_tasks_json(day, &folded);
+            let no_placements = parse_placements(text).map(|p| p.is_empty()).unwrap_or(true);
+            if no_placements {
+                v["note"] = json!(
+                    "no usable placements in the answer - the prior tasks are shown unchanged"
+                );
             }
+            v.to_string()
         }
+        // Day fold renders inside its own chain (`run_day_fold_variant`); this arm
+        // only fires if a stored day_fold row is somehow rendered singly.
+        ExperimentProcess::DayFold => day_state::day_tasks_json("", &[]).to_string(),
+        // The structured stage: show the JSON object the pipeline would parse.
+        ExperimentProcess::WorklogGenerate => match parse_json_object(text) {
+            Some(v) => serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string()),
+            None => "(unparseable answer - no JSON object found)".to_string(),
+        },
     }
 }
 
@@ -196,12 +306,28 @@ mod tests {
             &json!({}),
         );
         assert!(out.contains("\"task_key\": \"KAN-1\""));
+    }
 
+    #[test]
+    fn render_hour_fold_applies_placements_to_the_prior_state() {
+        let render_ctx = json!({ "day": "2026-07-16", "prior": [] });
+        let answer = r#"{"placements":[{"id":"","title":"New work",
+            "summary":["started it"],"segments":[{"start":"10:00","end":"10:30"}]}]}"#;
+        let out = render(ExperimentProcess::WorkstreamFold, answer, &render_ctx);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["day"], "2026-07-16");
+        assert_eq!(v["tasks"][0]["title"], "New work");
+        assert_eq!(v["tasks"][0]["segments"][0]["start"], "10:00");
+        assert!(v.get("note").is_none());
+
+        // Garbage answer: prior state (empty) survives, and the note says why.
         let out = render(
             ExperimentProcess::WorkstreamFold,
             "no json here",
-            &json!({}),
+            &render_ctx,
         );
-        assert!(out.contains("unparseable"));
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["tasks"], json!([]));
+        assert!(v["note"].as_str().unwrap().contains("no usable placements"));
     }
 }

@@ -26,13 +26,25 @@ use crate::worklog_pipeline::{
     workstream_state::build_state_json,
 };
 
-use super::{ExperimentInput, ExperimentProcess, ExperimentSpec};
+use super::{day_state, ExperimentInput, ExperimentProcess, ExperimentSpec};
 
 /// The variant-independent request plus whatever the renderer needs later
 /// (`render_ctx`, e.g. the hour's measured span for the report's minute clamp).
 pub struct BuiltRequest {
     pub req: PromptRequest,
     pub render_ctx: Value,
+}
+
+/// The one entry `cli::create_experiment` uses: the `input_json` snapshot for any
+/// process. Single-request processes snapshot their [`BuiltRequest`]; the day fold
+/// snapshots the day's ordered `(hour, report)` chain instead (it is N requests,
+/// one per stored hour — see the runner's day-fold branch).
+pub async fn build_input_json(pool: &SqlitePool, spec: &ExperimentSpec) -> Result<String> {
+    if let (ExperimentProcess::DayFold, ExperimentInput::Day(day)) = (&spec.process, &spec.input) {
+        return day_fold_input_json(pool, day).await;
+    }
+    let built = build(pool, spec).await?;
+    Ok(snapshot(&built))
 }
 
 /// Assemble the exact [`PromptRequest`] the pipeline would send for `spec`'s input.
@@ -54,7 +66,8 @@ pub async fn build(pool: &SqlitePool, spec: &ExperimentSpec) -> Result<BuiltRequ
             })
         }
         (p, i) => bail!(
-            "process {} does not take input {:?} - hour processes want --hour, worklog-generate wants --day + --task-id",
+            "process {} does not take input {:?} - hour processes want --hour, \
+             worklog-generate wants --day + --task-id, day-fold wants --day",
             p.as_str(),
             i.ref_str()
         ),
@@ -107,8 +120,62 @@ async fn build_workstream_fold(pool: &SqlitePool, label: &str) -> Result<BuiltRe
     let state_json = build_state_json(&prior);
     Ok(BuiltRequest {
         req: workstream_request(&state_json, label, &report),
-        render_ctx: json!({}),
+        // The prior working set rides along so the renderer can APPLY each
+        // variant's placements and show the resulting day-task timeline (not
+        // just the raw placements JSON).
+        render_ctx: json!({
+            "day": b.day_local,
+            "prior": day_state::rows_to_json(&prior),
+        }),
     })
+}
+
+/// The day fold's `input_json`: every hour of `day` (local) that has a stored
+/// activity report, in chronological order. Bails when the day has none — an
+/// unprocessed day has nothing to fold.
+async fn day_fold_input_json(pool: &SqlitePool, day: &str) -> Result<String> {
+    let mut hours: Vec<Value> = Vec::new();
+    for h in 0..24 {
+        let label = format!("{day}T{h:02}");
+        // A DST-skipped hour simply doesn't exist locally; skip it, don't fail the day.
+        let Ok(b) = hour_bounds(&label) else { continue };
+        if let Some(report) = stored_hour_column(pool, &b.hs, "hour_report").await? {
+            hours.push(json!({ "label": label, "report": report }));
+        }
+    }
+    if hours.is_empty() {
+        bail!(
+            "day {day} has no stored hour reports - only days the pipeline already \
+             processed can be day-folded"
+        );
+    }
+    Ok(json!({ "label": format!("day-fold {day}"), "day": day, "hours": hours }).to_string())
+}
+
+/// Decode a day-fold `input_json` back into `(day, [(hour_label, report)])`.
+pub fn day_fold_from_snapshot(input_json: &str) -> Result<(String, Vec<(String, String)>)> {
+    let v: Value = serde_json::from_str(input_json).context("parsing day-fold input_json")?;
+    let day = v
+        .get("day")
+        .and_then(Value::as_str)
+        .context("day-fold input_json has no day")?
+        .to_string();
+    let hours = v
+        .get("hours")
+        .and_then(Value::as_array)
+        .context("day-fold input_json has no hours")?
+        .iter()
+        .filter_map(|h| {
+            Some((
+                h.get("label")?.as_str()?.to_string(),
+                h.get("report")?.as_str()?.to_string(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    if hours.is_empty() {
+        bail!("day-fold input_json has an empty hours list");
+    }
+    Ok((day, hours))
 }
 
 /// One nullable text column off the hour's ledger row. `Ok(None)` = row missing or

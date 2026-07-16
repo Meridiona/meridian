@@ -38,11 +38,11 @@ use crate::pm_worklog::{ledger, PmWorklogConfig};
 pub(crate) mod hour;
 pub(crate) mod hour_db;
 pub(crate) mod hour_input;
-mod segment;
+pub(crate) mod segment;
 pub(crate) mod task_db;
 pub(crate) mod workstream;
 pub(crate) mod workstream_parse;
-mod workstream_sanitize;
+pub(crate) mod workstream_sanitize;
 pub(crate) mod workstream_state;
 
 /// Seconds past the top of the hour at which a completed hour is processed (HH:03).

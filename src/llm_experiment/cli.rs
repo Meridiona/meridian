@@ -25,8 +25,8 @@ use super::{
 };
 
 const USAGE: &str = "usage: meridian llm-experiment \
-run|create --process hour-report|workstream-fold|worklog-generate \
-(--hour YYYY-MM-DDTHH | --day YYYY-MM-DD --task-id T) --variants p1,p2:model,… \
+run|create --process hour-report|workstream-fold|worklog-generate|day-fold \
+(--hour YYYY-MM-DDTHH | --day YYYY-MM-DD [--task-id T]) --variants p1,p2:model,… \
 | exec --id N | list [--limit N] | get --id N";
 
 /// Parse argv and dispatch. Prints exactly one JSON line on success (except
@@ -72,8 +72,7 @@ pub async fn run(pool: &SqlitePool) -> Result<()> {
 
 /// Build + snapshot + insert; returns the new experiment id.
 async fn create_experiment(pool: &SqlitePool, spec: &ExperimentSpec) -> Result<i64> {
-    let built = request::build(pool, spec).await?;
-    let input_json = request::snapshot(&built);
+    let input_json = request::build_input_json(pool, spec).await?;
     let now = chrono::Utc::now().to_rfc3339();
     store::create(pool, spec, &input_json, &now).await
 }
@@ -104,6 +103,9 @@ fn parse_spec(args: &[String]) -> Result<ExperimentSpec> {
                 .with_context(|| "worklog-generate needs --task-id".to_string())?;
             ExperimentInput::DayTask { day, task_id }
         }
+        ExperimentProcess::DayFold => ExperimentInput::Day(
+            flag(args, "--day").with_context(|| "day-fold needs --day YYYY-MM-DD".to_string())?,
+        ),
     };
 
     let variants = parse_variants(
