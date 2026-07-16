@@ -55,23 +55,48 @@ fn parse_relative(low: &str) -> Option<Duration> {
 }
 
 /// Parses a leading "[in ]<N> (hour|hours|h|minute|minutes|min|mins|m)" off `s`, tolerant
-/// of a leading colon/whitespace (the "resets in" anchor leaves ": 3 hours").
+/// of a leading colon/whitespace (the "resets in" anchor leaves ": 3 hours"). When the unit
+/// is hours, also consumes a trailing minutes component if one follows — Codex renders
+/// "Try again in 3h 42m." and Copilot renders "...reset in 2 hours 15 minutes.", both
+/// observed live; dropping the minutes there means retrying up to 59 minutes early.
 fn parse_number_unit(s: &str) -> Option<Duration> {
     let s = s.trim_start_matches(|c: char| c == ':' || c.is_whitespace());
     let s = s.strip_prefix("in ").map(str::trim_start).unwrap_or(s);
-    let digits_end = s.find(|c: char| !c.is_ascii_digit())?;
-    if digits_end == 0 {
-        return None;
-    }
-    let amount: u64 = s[..digits_end].parse().ok()?;
-    let unit = s[digits_end..].trim_start();
+    let (amount, rest) = take_number(s)?;
+    let rest = rest.trim_start();
+    let unit_end = rest
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(rest.len());
+    let unit = &rest[..unit_end];
+
     if unit.starts_with('m') {
         Some(Duration::from_secs(amount * 60))
     } else if unit.starts_with('h') {
-        Some(Duration::from_secs(amount * 3600))
+        let mut secs = amount * 3600;
+        let after_unit = rest[unit_end..].trim_start();
+        if let Some((minutes, mrest)) = take_number(after_unit) {
+            let mrest = mrest.trim_start();
+            let munit_end = mrest
+                .find(|c: char| !c.is_ascii_alphabetic())
+                .unwrap_or(mrest.len());
+            if mrest[..munit_end].starts_with('m') {
+                secs += minutes * 60;
+            }
+        }
+        Some(Duration::from_secs(secs))
     } else {
         None
     }
+}
+
+/// Pulls a leading run of ASCII digits off `s`, returning the parsed number and the
+/// remainder. `None` if `s` doesn't start with a digit.
+fn take_number(s: &str) -> Option<(u64, &str)> {
+    let digits_end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    if digits_end == 0 {
+        return None;
+    }
+    Some((s[..digits_end].parse().ok()?, &s[digits_end..]))
 }
 
 /// Parses "reset(s) [at] H[:MM] [am|pm]" and resolves it against `now`, rolling to
@@ -198,6 +223,31 @@ mod tests {
         let wait =
             parse_backoff("You've hit your usage limit. Try again in 5 hours.", now).unwrap();
         assert_eq!(wait, Duration::from_secs(5 * 3600 + 60));
+    }
+
+    #[test]
+    fn parses_compact_hours_and_minutes() {
+        // Observed live from Codex: "You've reached your 5-hour message limit. Try again
+        // in 3h 42m."
+        let now = at(9, 0);
+        let wait = parse_backoff(
+            "You've reached your 5-hour message limit. Try again in 3h 42m.",
+            now,
+        )
+        .unwrap();
+        assert_eq!(wait, Duration::from_secs(3 * 3600 + 42 * 60 + 60));
+    }
+
+    #[test]
+    fn parses_spelled_out_hours_and_minutes() {
+        // Observed live from Copilot: "...your limit to reset in 2 hours 15 minutes."
+        let now = at(9, 0);
+        let wait = parse_backoff(
+            "You've hit your rate limit. Please wait for your limit to reset in 2 hours 15 minutes.",
+            now,
+        )
+        .unwrap();
+        assert_eq!(wait, Duration::from_secs(2 * 3600 + 15 * 60 + 60));
     }
 
     #[test]
