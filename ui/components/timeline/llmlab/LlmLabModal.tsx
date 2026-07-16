@@ -19,6 +19,7 @@ import type { LlmExperimentSummary } from '@/lib/api-types'
 const PROCESS_NAMES: Record<string, string> = {
   hour_report: 'Hour report',
   workstream_fold: 'Day-task fold',
+  day_fold: 'Full-day fold',
   worklog_generate: 'Worklog draft',
 }
 

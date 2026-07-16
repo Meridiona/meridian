@@ -91,15 +91,17 @@ pub async fn run_llm_experiment(body: RunLlmExperimentBody) -> Result<i64, Strin
         (Some(hour), _, _) if !hour.is_empty() => {
             args.extend(["--hour".into(), hour.clone()]);
         }
-        (_, Some(day), Some(task_id)) if !day.is_empty() && !task_id.is_empty() => {
-            args.extend([
-                "--day".into(),
-                day.clone(),
-                "--task-id".into(),
-                task_id.clone(),
-            ]);
+        // A day, with a task for worklog-generate or bare for day-fold — the CLI
+        // validates the process/input pairing.
+        (_, Some(day), task_id) if !day.is_empty() => {
+            args.extend(["--day".into(), day.clone()]);
+            if let Some(t) = task_id {
+                if !t.is_empty() {
+                    args.extend(["--task-id".into(), t.clone()]);
+                }
+            }
         }
-        _ => return Err("pick an hour (or a day + task) to replay".to_string()),
+        _ => return Err("pick an hour, a day, or a day + task to replay".to_string()),
     }
 
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();

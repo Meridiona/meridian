@@ -479,7 +479,7 @@ export interface AppInfo {
 // meridian-core/src/readers/llm_experiments.rs and the run body in
 // tray/src-tauri/src/commands/llm_lab.rs. Never rendered outside a dev build.
 
-export type LlmExperimentProcess = 'hour_report' | 'workstream_fold' | 'worklog_generate'
+export type LlmExperimentProcess = 'hour_report' | 'workstream_fold' | 'worklog_generate' | 'day_fold'
 
 export interface LlmExperimentSummary {
   id: number

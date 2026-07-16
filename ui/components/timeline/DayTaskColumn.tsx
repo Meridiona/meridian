@@ -57,7 +57,7 @@ const META_MIN_PX = 62
 const SUMMARY_MIN_PX = 104
 const SUMMARY_LINE_PX = 17 // approx line height of a preview line
 
-export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
+export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks }: {
   day: string
   isToday: boolean
   // Selection is owned by the shell so the clicked task's detail can render in
@@ -65,6 +65,10 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
   // selected card and dims the rest.
   selectedId: string | null
   onSelect: (detail: DayTaskDetail | null) => void
+  // Injected task set (the dev-only LLM Lab feeds each model's simulated day
+  // straight into this real timeline). When set, the column renders exactly
+  // these tasks and never fetches or polls — the caller owns the data.
+  tasks?: DayTask[]
 }) {
   const [resp, setResp] = useState<DayTasksResponse | null>(null)
   const [loaded, setLoaded] = useState(false)
@@ -91,6 +95,8 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
   }, [loaded])
 
   useEffect(() => {
+    // Injected data: no fetch, no poll — render what the caller provided.
+    if (tasks) { setResp({ day, tasks }); setLoaded(true); return }
     let alive = true
     const fetchTasks = () =>
       load<DayTasksResponse>('/api/day-tasks', 'get_day_tasks', { day })
@@ -100,7 +106,7 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
     // Only the live day keeps changing; a past day is settled.
     const id = isToday ? setInterval(fetchTasks, 30_000) : undefined
     return () => { alive = false; if (id) clearInterval(id) }
-  }, [day, isToday])
+  }, [day, isToday, tasks])
 
   // Two-pass layout: the window (and thus the pixel scale) depends only on the
   // tasks' real footprints, so lay out once lane-agnostically to size the column,

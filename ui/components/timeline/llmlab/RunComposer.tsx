@@ -18,7 +18,8 @@ import { dayString } from '../types'
 
 const PROCESSES: { id: LlmExperimentProcess; name: string; hint: string }[] = [
   { id: 'hour_report', name: 'Hour report', hint: 'The hourly activity summary - replays a distilled past hour.' },
-  { id: 'workstream_fold', name: 'Day-task fold', hint: 'Folding an hour’s report into the day’s tasks. Uses the day’s CURRENT prior tasks, not the fold-time state.' },
+  { id: 'workstream_fold', name: 'Day-task fold', hint: 'Folding an hour’s report into the day’s tasks - each model’s resulting day renders as the real timeline. Uses the day’s CURRENT prior tasks, not the fold-time state.' },
+  { id: 'day_fold', name: 'Full-day fold', hint: 'Replays EVERY processed hour of the day, in order - each model builds its own day from scratch and the final timelines compare side by side. One request per hour per model.' },
   { id: 'worklog_generate', name: 'Worklog draft', hint: 'Match a day-task to a ticket + draft the status update.' },
 ]
 
@@ -71,8 +72,9 @@ export function RunComposer({ starting, error, onRun }: {
   const canRun = !starting && variants.length > 0 && inputOk
 
   function submit() {
-    const body: RunLlmExperimentBody = process === 'worklog_generate'
-      ? { process, day, task_id: taskId, variants }
+    const body: RunLlmExperimentBody =
+      process === 'worklog_generate' ? { process, day, task_id: taskId, variants }
+      : process === 'day_fold' ? { process, day, variants }
       : { process, hour: hourLabel, variants }
     onRun(body)
   }
@@ -105,7 +107,7 @@ export function RunComposer({ starting, error, onRun }: {
         <input type="date" value={day} max={dayString(0)} onChange={e => setDay(e.target.value)}
           className="rounded-lg px-2.5 py-1.5 bg-ctrl"
           style={{ border: '1px solid var(--t-ctrl-border)', color: 'var(--t-title)', font: '500 12px var(--font-sans)' }} />
-        {process !== 'worklog_generate' ? (
+        {process === 'day_fold' ? null : process !== 'worklog_generate' ? (
           <select value={hour} onChange={e => setHour(Number(e.target.value))}
             className="rounded-lg px-2.5 py-1.5 bg-ctrl"
             style={{ border: '1px solid var(--t-ctrl-border)', color: 'var(--t-title)', font: '500 12px var(--font-sans)' }}>
@@ -124,7 +126,12 @@ export function RunComposer({ starting, error, onRun }: {
           </select>
         )}
       </div>
-      {process !== 'worklog_generate' && (
+      {process === 'day_fold' ? (
+        <p className="mt-body-sm mt-1.5" style={{ color: 'var(--t-faint)' }}>
+          Every hour of this day with a stored activity report is folded in order. Expect a few
+          minutes per model - and one request per processed hour per model.
+        </p>
+      ) : process !== 'worklog_generate' && (
         <p className="mt-body-sm mt-1.5" style={{ color: 'var(--t-faint)' }}>
           Only hours the pipeline already processed can be replayed - an hour with no stored
           {process === 'hour_report' ? ' distilled text' : ' activity report'} will refuse with a clear message.
