@@ -14,6 +14,16 @@
 //! sooner in the future — a provider's session window is never more than ~12h out when it
 //! prints a bare hour, so the near reading is always the right one.
 //!
+//! # Timezone
+//!
+//! An absolute time is resolved against the machine's own local clock ([`chrono::Local`]) —
+//! any zone the provider prints alongside it (e.g. Claude's "(Asia/Calcutta)") is read past,
+//! never parsed or cross-checked. This holds only because every backend here is a CLI
+//! subprocess spawned on this same machine: the CLI computed "resets 10:40pm" from this
+//! machine's own local clock in the first place, so `Local` and the printed zone can never
+//! disagree. It would silently misfire if the daemon and the CLI ever ran on different
+//! hosts/timezones — not the case for Meridian's single-machine architecture.
+//!
 //! # Related
 //! - [`super::resolver`] — the only caller; owns the in-memory backoff state and the flat
 //!   fallback duration.
@@ -59,6 +69,11 @@ fn parse_relative(low: &str) -> Option<Duration> {
 /// is hours, also consumes a trailing minutes component if one follows — Codex renders
 /// "Try again in 3h 42m." and Copilot renders "...reset in 2 hours 15 minutes.", both
 /// observed live; dropping the minutes there means retrying up to 59 minutes early.
+///
+/// `amount`/`minutes` come straight from subprocess stderr text, not a trusted source, so
+/// the `* 3600` / `* 60` scaling uses checked arithmetic: a pathological digit run (fits in
+/// `u64` but overflows once scaled to seconds) degrades to `None` — the caller's flat
+/// backoff — rather than panicking on overflow.
 fn parse_number_unit(s: &str) -> Option<Duration> {
     let s = s.trim_start_matches(|c: char| c == ':' || c.is_whitespace());
     let s = s.strip_prefix("in ").map(str::trim_start).unwrap_or(s);
@@ -70,9 +85,9 @@ fn parse_number_unit(s: &str) -> Option<Duration> {
     let unit = &rest[..unit_end];
 
     if unit.starts_with('m') {
-        Some(Duration::from_secs(amount * 60))
+        Some(Duration::from_secs(amount.checked_mul(60)?))
     } else if unit.starts_with('h') {
-        let mut secs = amount * 3600;
+        let mut secs = amount.checked_mul(3600)?;
         let after_unit = rest[unit_end..].trim_start();
         if let Some((minutes, mrest)) = take_number(after_unit) {
             let mrest = mrest.trim_start();
@@ -80,7 +95,7 @@ fn parse_number_unit(s: &str) -> Option<Duration> {
                 .find(|c: char| !c.is_ascii_alphabetic())
                 .unwrap_or(mrest.len());
             if mrest[..munit_end].starts_with('m') {
-                secs += minutes * 60;
+                secs = secs.checked_add(minutes.checked_mul(60)?)?;
             }
         }
         Some(Duration::from_secs(secs))
@@ -248,6 +263,24 @@ mod tests {
         let now = at(9, 0);
         let wait = parse_backoff("rate limit — try again in 999 hours", now).unwrap();
         assert_eq!(wait, MAX_BACKOFF);
+    }
+
+    #[test]
+    fn a_24h_format_hour_outside_1_12_is_unambiguous() {
+        // No am/pm and hour > 12 means this is already a 24h reading, not the ambiguous
+        // 1-12 case — "resets 14:30" unambiguously means 2:30pm, so there's only ever one
+        // candidate (the `None => vec![hour]` branch), not a nearest-of-two pick.
+        let now = at(9, 0);
+        let wait = parse_backoff("resets 14:30", now).unwrap();
+        assert_eq!(wait, Duration::from_secs(5 * 3600 + 30 * 60 + 60));
+    }
+
+    #[test]
+    fn a_pathological_digit_run_does_not_panic() {
+        // amount parses fine as u64 but overflows once scaled to seconds — must degrade
+        // to the flat backoff, not panic (checked_mul, not `*`).
+        let now = at(9, 0);
+        assert!(parse_backoff("try again in 99999999999999999 hours", now).is_none());
     }
 
     // ── Claude Code ──────────────────────────────────────────────────────────────
