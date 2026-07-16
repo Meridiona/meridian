@@ -26,11 +26,13 @@
 //! # Related
 //! - `src/pm_worklog/generate.rs` — the CLI-side engine these spawn, and the source
 //!   of the exact JSON shapes deserialized below.
-//! - [`crate::commands::statuses`] — sibling CLI-spawning command, same
-//!   spawn/`current_dir(~/.meridian)`/timeout/`parse_last_line` pattern.
+//! - [`crate::commands::cli_exec`] — the shared spawn/`current_dir(~/.meridian)`/
+//!   timeout/`parse_last_line` helpers (this module's former private copies).
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+
+use super::cli_exec::{parse_last_line, run_meridian};
 
 /// The matched-ticket branch (mutually exclusive with [`GeneratedWorklogPropose`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,69 +96,6 @@ pub struct ApproveResponse {
     pub created: bool,
     pub browse_url: Option<String>,
     pub error: Option<String>,
-}
-
-/// Resolve `~/.meridian` (created if missing) — the CWD the CLI must run in so
-/// dotenvy loads `~/.meridian/.env` (see [`crate::commands::statuses`]).
-fn meridian_home() -> Result<std::path::PathBuf, String> {
-    let home = std::env::var("HOME")
-        .map_err(|_| "HOME env var not set — cannot locate ~/.meridian".to_string())?;
-    let dir = std::path::PathBuf::from(&home).join(".meridian");
-    if !dir.exists() {
-        std::fs::create_dir_all(&dir).map_err(|e| format!("could not create ~/.meridian: {e}"))?;
-    }
-    Ok(dir)
-}
-
-/// Run `meridian <args…>` in `~/.meridian` under `timeout`, returning trimmed
-/// stdout on success or a bounded error message. Same pattern as
-/// [`crate::commands::statuses`].
-async fn run_meridian(args: &[&str], timeout: Duration, label: &str) -> Result<String, String> {
-    let home = meridian_home()?;
-    let bin = crate::install::meridian_bin();
-    let child = tokio::process::Command::new(&bin)
-        .args(args)
-        .current_dir(&home)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output();
-
-    let output = match tokio::time::timeout(timeout, child).await {
-        Err(_) => return Err(format!("{label} timed out")),
-        Ok(Err(e)) => {
-            tracing::warn!(bin = %bin, error = %e, "{label} spawn failed");
-            return Err(format!("spawn error: {e}"));
-        }
-        Ok(Ok(o)) => o,
-    };
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let msg = if stderr.is_empty() {
-            format!("{label} exited {:?}", output.status.code())
-        } else {
-            stderr
-        };
-        tracing::warn!("{label} non-zero: {msg}");
-        return Err(msg);
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-/// Parse the LAST non-empty stdout line as JSON `T` (the CLI logs before the
-/// result line).
-fn parse_last_line<T: for<'de> Deserialize<'de>>(stdout: &str) -> Result<T, String> {
-    let last = stdout.lines().rfind(|l| !l.trim().is_empty());
-    match last.and_then(|l| serde_json::from_str::<T>(l).ok()) {
-        Some(v) => Ok(v),
-        None => {
-            let s = stdout.trim();
-            let skip = s.chars().count().saturating_sub(200);
-            let tail: String = s.chars().skip(skip).collect();
-            Err(format!("could not parse result: {tail}"))
-        }
-    }
 }
 
 /// Generate (or regenerate) the draft for a day-task. Spawns
